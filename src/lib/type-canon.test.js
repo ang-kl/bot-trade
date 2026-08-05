@@ -336,55 +336,76 @@ describe('the canon table in the CSS comment states what the CSS declares', () =
 })
 
 // ---------------------------------------------------------------------------
-// A SIZE MAY NOT BE MAPPED TO A ROLE OUTSIDE THE CANON BLOCK (05-08-2026)
+// NO SIZE ATTACHED TO A TYPE ROLE OUTSIDE THE CANON BLOCK (05-08-2026)
 //
-// Three reviewer passes on #658 each found the same defect in a new shape: a
-// stale size stated somewhere other than the canon. First an ASCII table, then
-// a second table twenty lines up, then the prose derivation that produced it.
+// Fourth attempt. The first three each failed differently and each failure is
+// the argument for this one:
 //
-// Two earlier attempts at this guard were both wrong, and their wrongness is
-// the reason for this one:
+//   1. "no px 8-16 in any comment"        → twelve false positives. Unusable.
+//   2. "no >=2 lines LEADING with a px"   → passed by luck; seven prose lines
+//                                           already match and merely are not
+//                                           adjacent. One reword = CI fails on
+//                                           a contrast note.
+//   3. "px + a verbatim role phrase"      → passed VACUOUSLY. `page titles`
+//                                           defeats \bpage title\b on the
+//                                           plural `s`; `column header` defeats
+//                                           \bcolumn head\b on `er`; and a
+//                                           block wrapping "header font size"
+//                                           onto one line and "10px" onto
+//                                           another is invisible to a
+//                                           line-at-a-time scan.
 //
-//   1. "no px figure 8-16 in any comment" — flagged twelve legitimate lines
-//      (rem conversions, a blur radius, contrast notes). Unusable.
-//   2. "no run of >=2 comment lines LEADING with a px size" — passed, but only
-//      by luck. index.css has seven wrapped prose lines that already match
-//      "leads with a px size"; they simply are not adjacent. Reword one
-//      sentence so two wraps land together and CI fails on a contrast note
-//      with a message about size tables. A guard whose failure message
-//      misdirects is worse than no guard.
+// Silence is the worst of those failure modes. A misdirecting message gets
+// investigated; a green test gets believed.
 //
-// So key on what the TRAP actually requires: a size mapped to a ROLE. That is
-// the only thing a reader can act on wrongly — "13px" alone teaches nothing,
-// "13px page title" teaches something false. Shape does not matter, so a
-// markdown row, an em-dash pair and a single leftover line are all caught,
-// which the shape-based version missed.
+// So: scan whole COMMENT BLOCKS, not lines — wrapping is how these hide — and
+// key on what a reader can actually ACT on. A block that names a type SELECTOR
+// or TOKEN, or a role in any inflection, AND carries a px figure in the type
+// range, is stating a size for a role. That belongs in one place.
 // ---------------------------------------------------------------------------
 
-describe('no size is mapped to a type ROLE outside the canon block', () => {
-  it('the canon block is the only place a px figure names a role', () => {
+describe('no size is attached to a type role outside the canon block', () => {
+  it('only the canon block states what size a role is', () => {
     const lines = CSS.split('\n')
     const start = lines.findIndex(l => l.includes('TWO TIERS, ONE BREAKPOINT'))
     expect(start, 'the canon block banner is missing').toBeGreaterThan(-1)
-    const end = lines.findIndex((l, i) => i > start && l.includes('--fs-title:'))
 
-    // Deliberately NOT including bare "body": "a 16px body size" refers to the
-    // browser default root in one comment and is not a canon claim. These are
-    // the phrases that name a slot in THIS scale.
-    const ROLE = /\b(page title|section heading|column head|table head|data cell)\b/i
-    const SIZE = /\b\d{1,2}(?:\.\d)?px\b/
+    // Selectors and tokens cannot be defeated by inflection; the role list
+    // takes suffixes because "page titles" and "column header" are the exact
+    // forms that slipped through attempt 3.
+    const NAMES = /\.t-h[123]\b|\.t-heading\b|--fs-(?:body|head|h|title)\b/
+    const ROLE = /\b(?:page title|section heading|column head|table head|data cell|body text|major heading)(?:er)?s?\b/i
+    const SIZE = /\b(\d{1,2}(?:\.\d)?)px\b/g
+
+    // Gather /* ... */ comment blocks, flattened, with their start line.
+    // Flattening is the point: these hide by WRAPPING, e.g. "header font size"
+    // on one line and "10px" three lines later.
+    const blocks = []
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].includes('/*')) continue
+      let text = lines[i]
+      let k = i
+      while (!lines[k].includes('*/') && k < lines.length - 1) { k++; text += ' ' + lines[k] }
+      blocks.push({ at: i + 1, endAt: k + 1, text })
+      i = k
+    }
 
     const offenders = []
-    lines.forEach((line, i) => {
-      if (i >= start && i <= end) return
-      const t = line.trim()
-      if (!ROLE.test(t) || !SIZE.test(t)) return
-      const n = Number(SIZE.exec(t)[0].replace('px', ''))
-      if (n < 8 || n > 16) return          // 44px targets, 49px bars: not type
-      offenders.push(`index.css:${i + 1}  ${t.slice(0, 76)}`)
-    })
+    for (const b of blocks) {
+      // The canon block itself is where the numbers belong.
+      if (b.at <= start + 2 && b.endAt >= start) continue
+      // A block that ANNOUNCES ITSELF as history may quote superseded figures —
+      // that is provenance, not a trap. The distinction the guard enforces is
+      // "reads as current" vs "says it is past", which is the only distinction
+      // a reader can act on. Marking is cheap and explicit; silence is not.
+      if (/\bSUPERSEDED\b|\bHISTORY —/.test(b.text)) continue
+      if (!NAMES.test(b.text) && !ROLE.test(b.text)) continue
+      const sizes = [...b.text.matchAll(SIZE)].map(m => Number(m[1])).filter(n => n >= 8 && n <= 16)
+      if (!sizes.length) continue
+      offenders.push(`index.css:${b.at}  sizes ${[...new Set(sizes)].join('/')}px — ${b.text.trim().slice(0, 88)}`)
+    }
 
-    expect(offenders, `A size mapped to a role, outside the canon block. The live numbers live in ONE place:\n${offenders.join('\n')}`)
+    expect(offenders, `A size attached to a type role, outside the canon block. Sizes live in ONE place:\n${offenders.join('\n\n')}`)
       .toEqual([])
   })
 })

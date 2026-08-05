@@ -58,23 +58,33 @@
      size, or zooms to 200% (WCAG 2.2 Resize Text, 1.4.4), moves every one of
      these together. A hard-coded px value ignores them both.
 
-     WHY A TOKEN AND NOT A REWRITE OF EVERY CALL SITE IN ONE GO. This app has
-     several hundred `text-(length:--fs-body)` literals across 40+ components, tuned over
-     many rounds against the owner's own "dense desk, 9px tables, OCD about
-     uniform field sizes" instructions. Swapping them blind would be a
-     several-thousand-line change with no way to tell a deliberate density
-     choice from an accident. So the scale lands as tokens FIRST, is adopted by
-     the chrome being rebuilt now (the sidebar and its new footer), and the
-     remaining call sites are migrated behind the measurements in
-     scripts/responsive-audit.mjs rather than by guesswork.
-
-     The floor is deliberately 0.6875rem (11px at a 16px root) rather than the
-     app's current 7-8px: 7px was unreadable, and it is what produced the
-     owner's "Some labels and controls are difficult to read".
+     The floor is deliberately 0.6875rem — the smallest step this scale permits,
+     chosen because the app's older floor was unreadable and is what produced
+     the owner's "Some labels and controls are difficult to read".
      ------------------------------------------------------------------------- */
+  /* HISTORY — 2026-07-30, the rollout argument. Kept for provenance; the sizes
+     it quotes are the PRE-CANON app and are not what anything renders today.
+
+     WHY A TOKEN AND NOT A REWRITE OF EVERY CALL SITE IN ONE GO. This app had
+     several hundred size literals across 40+ components, tuned over many rounds
+     against the owner's own "dense desk, 9px tables, OCD about uniform field
+     sizes" instructions. Swapping them blind would have been a
+     several-thousand-line change with no way to tell a deliberate density
+     choice from an accident. So the scale landed as tokens FIRST, was adopted
+     by the chrome rebuilt at the time (the sidebar and its new footer), and the
+     remaining call sites were migrated behind the measurements in
+     scripts/responsive-audit.mjs rather than by guesswork. The old floor was
+     7-8px; 7px was unreadable. */
   --fs-caption:       0.6875rem; /* 11px @16 — smallest permitted label */
   --fs-secondary:     0.8125rem; /* 13px */
-  --fs-body:          1rem;      /* 16px — the base */
+  /* NO --fs-body HERE. SUPERSEDED — it used to be declared as 1rem in this
+     rem family and
+     was SHADOWED by the px canon further down the same :root — the later
+     declaration wins, so every consumer already got 9.5/11px and behaviour
+     never differed. But a dead declaration inside a LIVE family (--fs-caption,
+     --fs-secondary and --fs-heading-* are all still used) is a trap: someone
+     adding a consumer and reasoning "the rem scale's body is 1rem" would be
+     wrong by 6.5px. Removed 05-08-2026, found by the canon guard. */
   --fs-heading-sm:    1.125rem;  /* 18px */
   --fs-heading-md:    1.25rem;   /* 20px */
   /* The session-status line the owner capped explicitly: "Keep the visible
@@ -557,7 +567,7 @@
 @media (min-width: 2000px) { :root { --content-max: 1200px; } }
 @media (min-width: 2560px) { :root { --content-max: 1320px; } }
 
-/* -- Typography classes --
+/* -- Typography classes --  (the sizes named below are SUPERSEDED history)
    Owner (2026-07-23): headers were rendering far larger than intended
    (.t-heading escalated 17px -> 24px across breakpoints, ON TOP of the
    1.1 zoom below, while every h1/h2 using it also had no color rule of
@@ -575,10 +585,12 @@
 /* Owner (2026-07-25): the whole app moves to the dense scale the tables
    already use — "other than the tables, the rest that display data and data
    information be 9px. heading font size keep to 11px, use 12px if major
-   heading." So: MAJOR headings (page titles, .t-h1/.t-heading) 12px, every
-   other heading 11px, and ALL data/information text 9px. Flat at every
-   breakpoint — the old escalating scale is gone on purpose; weight and the
-   accent colour carry the hierarchy now, not size. */
+   heading." SUPERSEDED — the FIGURES that instruction named, and the "flat at
+   every breakpoint" it asked for, are both gone: the 05-08-2026 canon is two
+   tiers and different values. What survives is the SHAPE — major heading,
+   other heading, everything else — and the canon block owns the numbers.
+   The old escalating per-breakpoint scale is still gone on purpose; weight and
+   the accent colour carry the hierarchy, not size. */
 /* ===========================================================================
    HISTORY — HOW THE CANON WAS ORIGINALLY DERIVED (owner, 05-08-2026 morning).
    SUPERSEDED. THE LIVE NUMBERS ARE AT THE TOP OF THIS FILE — search
@@ -763,12 +775,17 @@ thead th {
   border-right: 1px solid var(--table-head-rule);
   padding-left: 8px;
   padding-right: 8px;
-  /* Owner (2026-07-25, IMG_1224/1226): "too many columns cramp ... adjust the
+  /* Owner (2026-07-25, IMG_1224/1226) — the figures in this quote are
+     SUPERSEDED, see the canon block: "too many columns cramp ... adjust the
      table column header font size by 2px, proper case ... make sure it isn't a
      three row header cell". Three changes, all aimed at the same failure:
-     UPPERCASE widens every label by roughly 10%, 12px was too big for a narrow
-     track, and nothing stopped a head from wrapping — SL / TP AWAY was on its
-     way to three lines. 10px + proper case + nowrap means one line, always.
+     UPPERCASE widens every label by roughly 10%, the head size then in use was
+     too big for a narrow track, and nothing stopped a head from wrapping —
+     SL / TP AWAY was on its way to three lines. Proper case + nowrap + the
+     canon's --fs-head means one line, always. (The FIGURES that instruction
+     named are superseded and deliberately not repeated: --fs-head is now
+     larger on the desk tier than the size this comment called too big, which
+     is precisely why quoting them here would mislead.)
      The table scrolls horizontally instead (owner: "we can scroll on the
      right"), which is the honest trade: a wider table you can reach beats a
      squeezed one you can't read.
