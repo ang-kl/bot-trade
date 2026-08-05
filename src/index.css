@@ -58,25 +58,49 @@
      size, or zooms to 200% (WCAG 2.2 Resize Text, 1.4.4), moves every one of
      these together. A hard-coded px value ignores them both.
 
-     WHY A TOKEN AND NOT A REWRITE OF EVERY CALL SITE IN ONE GO. This app has
-     several hundred `text-(length:--fs-body)` literals across 40+ components, tuned over
-     many rounds against the owner's own "dense desk, 9px tables, OCD about
-     uniform field sizes" instructions. Swapping them blind would be a
-     several-thousand-line change with no way to tell a deliberate density
-     choice from an accident. So the scale lands as tokens FIRST, is adopted by
-     the chrome being rebuilt now (the sidebar and its new footer), and the
-     remaining call sites are migrated behind the measurements in
-     scripts/responsive-audit.mjs rather than by guesswork.
-
-     The floor is deliberately 0.6875rem (11px at a 16px root) rather than the
-     app's current 7-8px: 7px was unreadable, and it is what produced the
-     owner's "Some labels and controls are difficult to read".
+     The floor is deliberately 0.6875rem — the smallest step this scale permits,
+     chosen because the app's older floor was unreadable and is what produced
+     the owner's "Some labels and controls are difficult to read".
      ------------------------------------------------------------------------- */
+  /* HISTORY — 2026-07-30, the rollout argument. Kept for provenance; the sizes
+     it quotes are the PRE-CANON app and are not what anything renders today.
+
+     WHY A TOKEN AND NOT A REWRITE OF EVERY CALL SITE IN ONE GO. This app had
+     several hundred size literals across 40+ components, tuned over many rounds
+     against the owner's own "dense desk, 9px tables, OCD about uniform field
+     sizes" instructions. Swapping them blind would have been a
+     several-thousand-line change with no way to tell a deliberate density
+     choice from an accident. So the scale landed as tokens FIRST, was adopted
+     by the chrome rebuilt at the time (the sidebar and its new footer), and the
+     remaining call sites were migrated behind the measurements in
+     scripts/responsive-audit.mjs rather than by guesswork. The old floor was
+     7-8px; 7px was unreadable. */
   --fs-caption:       0.6875rem; /* 11px @16 — smallest permitted label */
   --fs-secondary:     0.8125rem; /* 13px */
-  --fs-body:          1rem;      /* 16px — the base */
-  --fs-heading-sm:    1.125rem;  /* 18px */
-  --fs-heading-md:    1.25rem;   /* 20px */
+  /* WHAT IS LEFT OF THE REM FAMILY, and what was taken out of it (05-08-2026).
+     Above are the two tokens with real consumers: --fs-caption and
+     --fs-secondary, both read by SessionFooter and BotChanges.
+
+     HISTORY — three tokens were removed here, all dead, for the same reason.
+     The sizes quoted below are what they DECLARED, not what anything renders.
+     A declaration nobody
+     reads is not harmless when it sits in a family a reader believes is live —
+     they reach for "the rem scale's body" or "the rem scale's heading" and get
+     a number this app renders nowhere.
+
+       --fs-body: 1rem      SHADOWED — the px canon further down the same :root
+                            re-declared it and the later declaration wins, so
+                            every consumer already got 9.5/11px and behaviour
+                            never differed. Reaching for it would have been
+                            wrong by 6.5px.
+       --fs-heading-sm      18px, --fs-heading-md 20px. ZERO consumers anywhere
+       --fs-heading-md      in the repo, and both ABOVE every value the canon
+                            permits — with no later declaration shadowing them
+                            into harmlessness the way --fs-body was.
+
+     Found by reading, not by a test: the canon guard matches `NAME: <n>px`, so
+     it never saw a rem value. That is a real gap and it is left stated rather
+     than papered over. */
   /* The session-status line the owner capped explicitly: "Keep the visible
      status text at a maximum font size of 10px" / "Maximum visible font size:
      10px. Suggested line height: 12px". A named token so the cap is one value
@@ -96,9 +120,14 @@
      root (so the cap holds as specified) and scales with the reader's own
      preference (so the accessibility requirement holds too). Anything past
      10px is then the user's explicit choice, not the design overriding them. */
-  /* 05-08-2026: 0.5625rem = 9px at the default root — the canon's body size,
-     and still UNDER the owner's explicit "maximum 10px" cap for this line, so
-     the older instruction is honoured rather than overridden. */
+  /* --fs-session, 05-08-2026: 0.5625rem = 9px at the default root. NOT "the canon's body
+     size" — an earlier version of this comment said that and it was wrong;
+     the canon's body is larger than this on BOTH tiers (the canon block owns
+     those numbers). This line sits BELOW the canon floor deliberately, by the
+     owner's explicit cap above, which is
+     why it is its own token and not a step in the scale. It remains under that
+     "maximum 10px" instruction, so the older instruction is honoured rather
+     than overridden. */
   --fs-session:       0.5625rem;
 
   /* Dense desk type scale (M3 audit item 2, owner-approved 2026-07-31).
@@ -146,14 +175,41 @@
      derived from --fs-body by a fixed offset, so moving the body size moves
      the whole ladder and the hierarchy cannot drift apart:
 
-                        body   +1 head   +3 heading   +4 title
-       tablet/iPhone     9.5     10.5       12.5        13.5
-       desktop ≥1280    11       12         14          15
+                        body   +1 head   +2 heading   +3 title
+       tablet/iPhone     9.5     10.5       11.5        12.5
+       desktop ≥1280    11       12         13          14
 
      9.5px is the FLOOR the owner set and the touch tier sits exactly on it.
-     The +3 heading offset is the owner's own measurement preserved: the
-     reference header was 11px against a 9px body (+2), then "increase by
-     1pt" made it +3.
+
+     HISTORY — the heading offsets were +3/+4 until 05-08-2026 and came down
+     one step. Owner: "the text font size is to big". Measured across five
+     pages at 375px, nothing VISIBLE exceeded the canon — every oversized hit
+     was a screen-reader-only element, a hidden skip link, an SVG <title> or
+     the wordmark — so the canon itself was the complaint, and shown the
+     numbers the owner chose "Headings only". Body and column heads did not
+     move: 9.5/11 and 10.5/12 are the owner's own stated figures and were
+     never what read wrong.
+
+     Why the earlier +3/+4 was wrong, recorded so it is not re-derived by
+     someone reading the original instruction: "increase by 1pt" was about ONE
+     element, .t-h3 in the Strategy Liveness card, read against a 9px body
+     (+2). Deriving a whole ladder from it — and then adding a further step
+     for the page title — compounded a single-element adjustment into every
+     heading on every page.
+
+     BE PRECISE ABOUT WHAT HAPPENED TO THE "+1pt", because the tempting
+     sentence — "the reference element still lands where the owner asked" —
+     is FALSE on the touch tier. The reference .t-h3 was 11px; +1pt is ~12.3px
+     (12px on a 1px reading); the touch --fs-h is now 11.5px. That is BELOW the
+     un-incremented picture size plus a point. The desk --fs-h (13px) clears
+     it. Those two figures are PINNED BY TEST — this is not decorative prose,
+     it is a reasoning chain whose conclusion holds only because 11.5 < 12.3,
+     so a later tier change must break the test rather than leave the paragraph
+     arguing confidently for the opposite of what the file declares.
+     So the +1pt has been SET ASIDE, not relocated — superseded by a
+     later, better-informed instruction from the same owner, given after
+     seeing the rendered result and the measurements. That is a stronger
+     justification than a claimed continuity, and it is the true one.
 
      px, not rem, deliberately: these were chosen against the owner's own
      screens at fixed sizes (see the --fs-d* note above). The rem --fs-*
@@ -161,8 +217,8 @@
      ========================================================================= */
   --fs-body:  9.5px;
   --fs-head:  10.5px;
-  --fs-h:     12.5px;
-  --fs-title: 13.5px;
+  --fs-h:     11.5px;
+  --fs-title: 12.5px;
   --lh-session:       0.75rem;
 
   /* ---------------------------------------------------------------------
@@ -201,8 +257,8 @@
      white reads 6.05:1 on this deep clay. */
   --color-on-accent:    #ffffff;
   /* Owner (05-08-2026): "it has to be darker font colour during light mode".
-     At the canon's 9px body size the sub/muted greys were doing the work of a
-     14px paragraph grey and losing. Measured against the card surface the app
+     At the canon's body size the sub/muted greys were doing the work of a
+     full-size paragraph grey and losing. Measured against the card surface the app
      actually paints — rgba(255,255,255,.62) over #eef1fb ≈ rgb(249,250,253),
      not the raw page colour — so these ratios are the ones a reader sees:
        --color-text        16.56 → 18.14:1
@@ -534,7 +590,7 @@
 @media (min-width: 2000px) { :root { --content-max: 1200px; } }
 @media (min-width: 2560px) { :root { --content-max: 1320px; } }
 
-/* -- Typography classes --
+/* -- Typography classes --  (the sizes named below are SUPERSEDED history)
    Owner (2026-07-23): headers were rendering far larger than intended
    (.t-heading escalated 17px -> 24px across breakpoints, ON TOP of the
    1.1 zoom below, while every h1/h2 using it also had no color rule of
@@ -543,47 +599,65 @@
    FLAT 16px at every breakpoint, in the accent colour, so they read as
    headers regardless of viewport. Body text is bumped ~10% to compensate
    for the loss of the old escalating scale. */
-/* Owner (2026-07-24): Word-style heading hierarchy in 0.2×-of-body steps —
-   H1 = 1.6× body, H2 = 1.4× body, H3 = 1.2× body, all in the accent colour
-   so any heading reads as a heading. .t-heading stays as an alias of .t-h1
-   for the page titles that already use it. Change body sizes and every
-   level below must move with them (values are 1.6/1.4/1.2 × .t-body,
-   rounded to whole px, at each breakpoint). */
+/* Owner (2026-07-24): Word-style heading hierarchy in proportional steps —
+   H1, H2 and H3 each a fixed multiple of body, all in the accent colour so
+   any heading reads as a heading. .t-heading stays as an alias of .t-h1 for
+   the page titles that already use it.
+
+   SUPERSEDED — the RATIOS that instruction named are gone, and so is the
+   "recompute at each breakpoint" rule with them. .t-h2 and .t-h3 both read
+   var(--fs-h) now, so the distinction between them does not exist; .t-h1
+   reads var(--fs-title), which is body+3 — a ratio of about 1.3, not the 1.6
+   this block used to state. The figures are removed rather than updated
+   because a second numeric account of the ladder is the defect, and keeping
+   two in sync only postpones it. What survives is the SHAPE and the colour;
+   the canon block owns every number. */
 /* Owner (2026-07-25): the whole app moves to the dense scale the tables
    already use — "other than the tables, the rest that display data and data
    information be 9px. heading font size keep to 11px, use 12px if major
-   heading." So: MAJOR headings (page titles, .t-h1/.t-heading) 12px, every
-   other heading 11px, and ALL data/information text 9px. Flat at every
-   breakpoint — the old escalating scale is gone on purpose; weight and the
-   accent colour carry the hierarchy now, not size. */
+   heading." SUPERSEDED — the FIGURES that instruction named, and the "flat at
+   every breakpoint" it asked for, are both gone: the 05-08-2026 canon is two
+   tiers and different values. What survives is the SHAPE — major heading,
+   other heading, everything else — and the canon block owns the numbers.
+   The old escalating per-breakpoint scale is still gone on purpose; weight and
+   the accent colour carry the hierarchy, not size. */
 /* ===========================================================================
-   THE TYPE CANON (owner, 05-08-2026, by screenshot rather than by number).
+   HISTORY — HOW THE CANON WAS ORIGINALLY DERIVED (owner, 05-08-2026 morning).
+   SUPERSEDED. THE LIVE NUMBERS ARE AT THE TOP OF THIS FILE — search
+   "TWO TIERS, ONE BREAKPOINT". Nothing below is a current value.
+
    The instruction named two things ON SCREEN instead of two values:
 
      "i like the all body font size to be the same as the picture text
       '7d', '30d'"           → the Segmented pill in the Strategy Liveness
-                               header, which is Segmented's `md` size,
-                               src/components/common/Segmented.jsx:25 → 9px
+                               header, Segmented's `md` size
+                               (src/components/common/Segmented.jsx)
 
      "i like the header's font size to be same as the picture header text
       'Strategy Liveness table' but increase by 1pt."
-                             → StrategyLivenessCard.jsx:160 is <h3
-                               class="t-h3"> → 11px, so +1 → 12px
+                             → StrategyLivenessCard.jsx is <h3 class="t-h3">
 
-   Measured, not assumed: both reference elements were read out of the source
-   before anything moved. The picture's header is a SECTION heading (.t-h3),
-   NOT the 12px page title — so the instruction lands on .t-h2/.t-h3, and
-   .t-h1/.t-heading follows it up to 13px to keep the one-step gap between a
-   page title and the sections inside it. Without that the page title and its
-   own sections would render identically.
+   Both reference elements were read out of the source before anything moved,
+   and the picture's header is a SECTION heading (.t-h3), NOT the page title —
+   so the instruction lands on .t-h2/.t-h3 rather than .t-h1.
 
-   Three sizes, and only three:
-       13px  page title            .t-h1 / .t-heading
-       12px  section heading       .t-h2 / .t-h3
-        9px  EVERYTHING else       body, data, labels, table cells, controls
+   THE RESOLVED FIGURES THAT USED TO BE PRINTED HERE ARE DELETED, not updated.
+   None of them was ever a value this file declared. Worse, after the 05-08
+   afternoon change one of those figures moved a whole level in the hierarchy
+   while the stale text still attached it to the level above — so a reader
+   trusting it got the ORDER backwards, not merely a wrong number. Deleting is
+   the fix rather than correcting, because two numeric accounts in one file IS
+   the defect; keeping them in sync only postpones it.
 
-   src/lib/type-canon.test.js enforces this against the source and lists the
-   deliberate exceptions (icon glyphs, form fields, table heads).
+   The "+1pt" itself was SET ASIDE that afternoon, not relocated — see the
+   canon block. Writing "so +1 → 12px" here would assert exactly the
+   continuity that block establishes is false.
+
+   src/lib/type-canon.test.js enforces the canon against the source. It does
+   NOT list "deliberate exceptions" — that claim was also stale; the exception
+   table was removed on 05-08-2026 (see "THERE IS NO EXCEPTION TABLE ANY MORE"
+   in that file). Glyphs carry --fs-glyph-*, which is a token, not an
+   exception.
    =========================================================================== */
 .t-h1, .t-heading { font-size: var(--fs-title); font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; color: var(--color-accent); }
 .t-h2  { font-size: var(--fs-h); font-weight: 700; line-height: 1.35; color: var(--color-accent); }
@@ -600,8 +674,8 @@
   :root {
     --fs-body:  11px;
     --fs-head:  12px;
-    --fs-h:     14px;
-    --fs-title: 15px;
+    --fs-h:     13px;
+    --fs-title: 14px;
   }
 }
 
@@ -637,13 +711,16 @@
    can no longer change the weight, and the audit that prompted this found all
    three in use (700 in the ledger, 600 in most tables, 500 in a few). Weight
    is 600, matching W_HEAD and docs/ui-spec.md. */
-/* Owner (2026-07-25): "All table data cell be 9px. Table heads 10px" —
-   app-wide, both kinds of table. Unlayered, so per-cell text-(length:--fs-h)/[13px]
-   utilities cannot override it, same mechanism as the head rule below. */
+/* Owner (2026-07-25): every table cell one size, every table head one size,
+   app-wide and across both kinds of table. The FIGURES that instruction named
+   were superseded by the 05-08-2026 canon and are deliberately not repeated
+   here — the rule is "cells ride --fs-body, heads ride --fs-head", and the
+   canon block owns what those are. Unlayered, so a per-cell utility cannot
+   override it, same mechanism as the head rule below. */
 tbody td {
   font-size: var(--fs-body);
   /* Owner (05-08-2026): "please rescale the column to scrollable within table
-     cell or word wrap". Raising the desk body size to 11px widens every
+     cell or word wrap". Raising the desk body size widens every
      column, and the old answer — push the overflow onto a horizontal page
      scroll — stops being honest once the table is wider than the screen by
      more than a nudge.
@@ -689,7 +766,7 @@ tbody td {
 .t-ledger tbody td {
   font-size: var(--fs-body);
   /* Owner (05-08-2026): "please rescale the column to scrollable within table
-     cell or word wrap". Raising the desk body size to 11px widens every
+     cell or word wrap". Raising the desk body size widens every
      column, and the old answer — push the overflow onto a horizontal page
      scroll — stops being honest once the table is wider than the screen by
      more than a nudge.
@@ -728,20 +805,25 @@ thead th {
   border-right: 1px solid var(--table-head-rule);
   padding-left: 8px;
   padding-right: 8px;
-  /* Owner (2026-07-25, IMG_1224/1226): "too many columns cramp ... adjust the
+  /* Owner (2026-07-25, IMG_1224/1226) — the figures in this quote are
+     SUPERSEDED, see the canon block: "too many columns cramp ... adjust the
      table column header font size by 2px, proper case ... make sure it isn't a
      three row header cell". Three changes, all aimed at the same failure:
-     UPPERCASE widens every label by roughly 10%, 12px was too big for a narrow
-     track, and nothing stopped a head from wrapping — SL / TP AWAY was on its
-     way to three lines. 10px + proper case + nowrap means one line, always.
+     UPPERCASE widens every label by roughly 10%, the head size then in use was
+     too big for a narrow track, and nothing stopped a head from wrapping —
+     SL / TP AWAY was on its way to three lines. Proper case + nowrap + the
+     canon's --fs-head means one line, always. (The FIGURES that instruction
+     named are superseded and deliberately not repeated: --fs-head is now
+     larger on the desk tier than the size this comment called too big, which
+     is precisely why quoting them here would mislead.)
      The table scrolls horizontally instead (owner: "we can scroll on the
      right"), which is the honest trade: a wider table you can reach beats a
      squeezed one you can't read.
 
      REVISED 05-08-2026, owner: "please rescale the column to scrollable within
      table cell or word wrap". The head is the widest thing in most columns, so
-     it is the first thing that has to give when the desk body size goes to
-     11px. `nowrap` is gone and the head wraps.
+     it is the first thing that has to give when the desk body size rises.
+     `nowrap` is gone and the head wraps.
 
      What the 2026-07-25 note was actually protecting against was a THREE-row
      header, and that came from UPPERCASE + 12px + an unconstrained break, all
@@ -795,9 +877,9 @@ thead th button { color: inherit; }
 [data-risk-dense] .glass-panel { padding: 10px 14px; }
 
 /* Tiny inline "explain" icon next to field labels (owner 2026-07-24:
-   "a tiny ℹ️ next to explain"). The literal ask was 20% of body size —
-   3px at a 15px body, which no screen can render legibly — so this is the
-   smallest size that still reads as an icon (9px ≈ 60% of body). Tap/click
+   "a tiny ℹ️ next to explain"). The literal ask was 20% of body size,
+   which no screen can render legibly at any body size this app uses — so the
+   icon rides --fs-body itself and is shrunk optically instead. Tap/click
    toggles the explanation inline; hover shows it as a tooltip. */
 .info-i {
   font-size: var(--fs-body);
@@ -1360,8 +1442,8 @@ textarea {
   border-top: 1px solid var(--glass-edge);
   flex-shrink: 0;
   /* Set on the SECTION, not just the line. Measured: the wrapper inherited the
-     16px body size, so any future direct child would silently render at body
-     size inside a footer that is supposed to be capped — which is the same
+     document's default text size, so any future direct child would silently
+     render uncapped inside a footer that is supposed to be capped — which is the same
      shape of mistake as the token bug this whole change started with. */
   font-size: var(--fs-session);
   line-height: var(--lh-session);

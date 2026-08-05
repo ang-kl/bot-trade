@@ -54,13 +54,31 @@ reason written next to it in a comment.
 The sizes were stated by screenshot, not by number: body is "the picture text
 `7d`, `30d`", which is `Segmented md`; the header is "`Strategy Liveness
 table` but increase by 1pt", which was `.t-h3` at 11px against a 9px body —
-body + 2, so +1pt makes it **body + 3**. Then: *"please canonical for tablet
-and iphones"*, *"9.5px will be ideal as minimum"*, *"11 px for desktop"*.
+body + 2. That was first read as *"+1pt ⇒ body + 3"*. The `+1pt` was later
+**set aside** — not re-derived to a smaller number — when the owner said *"the
+text font size is to big"* after seeing the render; `--fs-h` now sits at body+2,
+which is the reference element's size *before* any increment. Saying it was
+"corrected to body + 2" would imply the increment is still honoured and was
+merely mis-added; it isn't. Then: *"please canonical for tablet and iphones"*,
+*"9.5px will be ideal as minimum"*, *"11 px for desktop"*.
 
-|  | `--fs-body` | `--fs-head` (+1) | `--fs-h` (+3) | `--fs-title` (+4) |
+|  | `--fs-body` | `--fs-head` (+1) | `--fs-h` (+2) | `--fs-title` (+3) |
 |---|---|---|---|---|
-| **tablet + iPhone** (`:root`) | `9.5px` | `10.5px` | `12.5px` | `13.5px` |
-| **desktop** (`≥1280px`) | `11px` | `12px` | `14px` | `15px` |
+| **tablet + iPhone** (`:root`) | `9.5px` | `10.5px` | `11.5px` | `12.5px` |
+| **desktop** (`≥1280px`) | `11px` | `12px` | `13px` | `14px` |
+
+**Headings came down one step on 05-08-2026.** Owner: *"the text font size is
+to big"*. Measured across five pages at 375px, nothing visible exceeded the
+canon — every oversized hit was a screen-reader-only element, a hidden skip
+link, an SVG `<title>` or the wordmark. So the canon itself was the complaint,
+and shown the numbers the owner chose **headings only**.
+
+Why the earlier `+3`/`+4` was wrong, recorded so it is not re-derived: the
+"+1pt" instruction was about ONE element — `.t-h3` in the Strategy Liveness
+card, against a 9px body. Turning that into a whole ladder, and then adding a
+further step for the page title, compounded a single-element adjustment into
+every heading on every page. `--fs-body` and `--fs-head` did not move: `9.5`
+and `11` are the owner's own stated numbers and were never what read wrong.
 
 Tablet and iPhone share a tier because they are the same thing for reading: a
 held device where the constraint is fitting a dense table on a narrow screen.
@@ -106,11 +124,29 @@ It was split by what each thing actually is:
 | phone tab-bar icons, `×` close marks | `--fs-glyph-md` 16px | flat |
 | `☰` table-of-contents FAB | `--fs-glyph-lg` 18px | flat |
 | `+` order FAB | `--fs-glyph-xl` 22px | flat |
-| `bot-trade` wordmark | `--fs-wordmark` 15px | flat |
+| `bot-trade` wordmark — **sidebar only** | `--fs-wordmark` 15px | flat |
 
 **Flat across both tiers on purpose.** An icon that resized with the type
 tier would change its own tap target, which is the one thing about a tab-bar
 icon or a floating action button that must not move.
+
+**THE WORDMARK IS ONLY FLAT IN THE SIDEBAR — a known inconsistency, recorded
+rather than quietly fixed.** There are two `bot-trade` spans. `App.jsx:271`
+(desktop sidebar) carries `--fs-wordmark` as documented. `App.jsx:366` (the
+`lg:hidden` touch header) carries **`--fs-title`**, so on a phone the logo
+rides the reading scale and moved with it: 13.5px → 12.5px on 05-08-2026.
+Restoring it to `--fs-wordmark` is a +2.5px jump on every phone screen — a
+visible decision, and one pointing the opposite way to the change the owner
+had just asked for, so it is the owner's call and is deliberately NOT bundled
+into the type change.
+
+How this was missed is worth more than the defect: the audit that "found
+nothing oversized" scanned computed styles across the whole DOM **including
+`display:none` subtrees**, and matched the `bot-trade` hit to the 15px sidebar
+span — which at 375px has a 0×0 box and is never painted. The painted 12.5px
+one was never examined. Reported as *"15px, the wordmark, deliberately flat"*;
+the truth was *"12.5px, on the reading scale, and shrinking"*. Any future
+size audit must filter on a non-zero box, not on the computed style alone.
 
 The phone BUY/SELL and CLOSE buttons went the other way: their **labels** are
 text and now carry `--fs-h`. Their boxes (`w-full`, `py-2.5`) are untouched —
@@ -145,16 +181,31 @@ never from weight.
 ### Headings
 
 A heading is distinguished by weight, colour (`P_ACC`/accent for section
-titles) and position — the scale moves one step per level (`--fs-h` = body+3,
-`--fs-title` = body+4). `.t-h3` is `var(--fs-h) / 700`; the old escalating
+titles) and position — the scale moves one step per level (`--fs-h` = body+2,
+`--fs-title` = body+3; was +3/+4 until 05-08-2026, see §2). `.t-h3` is `var(--fs-h) / 700`; the old escalating
 per-breakpoint heading scale is gone on purpose, and the two-tier canon
 replaced it with exactly one step.
 
 The Performance and Workflow-audit pages build several section titles as
 `<span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>` rather than as
-`.t-h3` elements. Those spans are headings and carry the heading token; a
-`--fs-h` on anything that is not a title is a bug the canon test will not
-catch, because it cannot read intent.
+`.t-h3` elements. Those spans are headings and carry the heading token.
+
+**`--fs-h` is not only headings, and this document used to say otherwise.** It
+also carries the phone trade-action button LABELS — BUY/SELL, Modify, CLOSE and
+the accent confirm (`PositionManager.jsx:217, 230, 246, 311`;
+`OrderManager.jsx:83, 101, 108`) — and the `OID…`/`PID…` row headings
+(`OrderManager.jsx:51`, `PositionManager.jsx:184`). That is deliberate and
+documented in §Glyphs above; the line here that called *"`--fs-h` on anything
+that is not a title a bug"* contradicted it in the same document and is
+removed. What IS a bug is `--fs-h` on ordinary body text or a data cell — and
+the canon test cannot catch that, because it cannot read intent.
+
+**Consequence of the 05-08-2026 heading change, stated plainly:** those phone
+button labels went `12.5px → 11.5px` on touch. Above the 9.5px floor and
+consistent with the token, and the tap targets are unaffected (the
+`≤430px / pointer: coarse` `::after` halo pins 44px independently of font
+size) — but "headings only" is wider than it sounds, and it lands on the
+close-position control.
 
 ### Numbers
 
