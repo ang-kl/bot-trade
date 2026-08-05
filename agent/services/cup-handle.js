@@ -299,6 +299,20 @@ const GATE_RANK = {
 }
 
 /**
+ * The gates in the order the search applies them, derived from GATE_RANK so
+ * the two cannot drift. `null` is excluded — it is not a gate, it is the
+ * absence of one ("cleared everything").
+ *
+ * Exported for services/cup-handle-funnel.js, which reads the persisted
+ * traces as an ORDERED funnel: each gate is reached only by what survived the
+ * one above, so a gate with a small count could mean "rarely blocks" or
+ * "almost nothing gets here", and only the order tells you which.
+ */
+export const GATE_ORDER = Object.keys(GATE_RANK)
+  .filter(k => k !== 'null')
+  .sort((a, b) => GATE_RANK[a] - GATE_RANK[b])
+
+/**
  * Diagnostic twin of searchCupHandle's search loop (Cup & Handle Silence
  * Diagnostics spec, Part A). Never returns a trade signal — instead
  * reports, per scan cycle, WHICH gate stopped the best-progressed

@@ -2025,6 +2025,20 @@ export default function stateRouter(db) {
   // Answers the question that Cup & Handle went weeks without anyone being able
   // to ask: a strategy that is armed, backtests well, and produces nothing looks
   // exactly like a strategy waiting for a setup. This separates them.
+  // Why Cup & Handle never fires — read from the 2.6M diagnostic traces the
+  // scanner has been writing all along. NOT account-scoped: the traces record
+  // market structure at scan time, which is the same for every account.
+  router.get('/cup-handle-funnel', async (req, res) => {
+    try {
+      const { cupHandleFunnel } = await import('../services/cup-handle-funnel.js')
+      const days = Number(req.query.days) > 0 ? Number(req.query.days) : 7
+      const bias = req.query.bias === 'long' || req.query.bias === 'short' ? req.query.bias : null
+      res.json(cupHandleFunnel(db, { days, bias }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/strategy-liveness', async (req, res) => {
     try {
       const { strategyLiveness } = await import('../services/strategy-liveness.js')
