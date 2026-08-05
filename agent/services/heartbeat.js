@@ -487,3 +487,137 @@ export async function probeCppExec(db, deps = {}) {
   } catch { /* status reporting must never break the probe */ }
   return { ...r, ok, ...(error ? { error } : {}) }
 }
+
+// ---------------------------------------------------------------------------
+// ACCOUNT AUTHORISATION WATCH (05-08-2026)
+//
+// THE INCIDENT THIS EXISTS FOR. All four demo accounts sat `enabled = 1` in the
+// registry while absent from the sidecar's authorised roster. Every dispatch for
+// them was short-circuited at loop.js's connectivity gate with an `account_probe`
+// skip — 965 of them in 24h — and ZERO trades opened in twelve hours against 87
+// the day before. Nothing said a word. It surfaced only because the owner asked
+// why entries had stopped.
+//
+// Why the existing checks could not catch it, and why this is a SEPARATE check:
+//
+//   · `cpp_exec` answers "is the sidecar alive". It was alive and connected —
+//     just holding one side's accounts. A green heartbeat was the truth and was
+//     still useless.
+//   · `rosterDrift` (below, :373) answers "does the roster match what we asked
+//     for", and it compares against a creds roster already filtered to ONE side
+//     by the global ctrader_is_live flag. The missing accounts were never in the
+//     comparison set, so drift was structurally undetectable.
+//
+// This check asks the only question that matters to the operator: IS EVERY
+// ENABLED ACCOUNT ACTUALLY REACHABLE RIGHT NOW? It compares the registry against
+// the roster with no side filter at all, which is precisely the thing neither
+// check above does.
+//
+// It reads the roster the probe already persisted rather than making its own
+// HTTP call — this runs on the 60s band, the probe on 120s, and a second hop
+// inside a watchdog is how a watchdog becomes the outage.
+// ---------------------------------------------------------------------------
+
+/** How long an account must be continuously unreachable before it alerts. */
+export const AUTH_ALERT_AFTER_MS = 5 * 60_000
+/** Beyond this, the persisted health snapshot is too old to judge anything by. */
+const HEALTH_STALE_MS = 5 * 60_000
+const AUTH_WATCH_KEY = 'account_auth_watch_json'
+
+/**
+ * Alert when an enabled account is not authorised on the exec sidecar.
+ *
+ * Alerts ONCE per outage and once on recovery — never per tick. The 32,115
+ * identical `unknown_daily_pnl` vetoes in one week are why de-duplication is a
+ * requirement here and not a nicety: an alert that repeats is an alert that gets
+ * muted, and a muted alert is the same as the silence this replaces.
+ *
+ * `unknown` NEVER alerts. A health blip, a js-mode deployment, or a sidecar that
+ * did not report its roster are all "we cannot tell", and telling the owner an
+ * account is down because we could not reach the thing that would know is how a
+ * monitor teaches people to ignore it. Same fail-open rule sidecarRoster already
+ * applies (exec-engine.js:230-236). The `cpp_exec` heartbeat covers the case
+ * where the probe itself is the thing that is broken.
+ *
+ * @returns {{events: Array, roster: string[]|null, fresh: boolean}}
+ */
+export function checkAccountAuthorization(db, {
+  now = new Date(), notify = null, afterMs = AUTH_ALERT_AFTER_MS,
+} = {}) {
+  const say = (text) => { try { notify?.(text) } catch { /* alerting must never throw */ } }
+  const events = []
+  const nowMs = now.getTime()
+
+  let health = null
+  try { health = JSON.parse(getState(db, 'cpp_exec_health_json') || 'null') } catch { health = null }
+  const roster = Array.isArray(health?.accounts) ? health.accounts.map(String) : null
+  const healthAtMs = health?.at ? Date.parse(health.at) : NaN
+  // A snapshot older than the probe's own stall threshold tells us nothing about
+  // NOW. Treat it as unknown rather than as evidence.
+  const fresh = Number.isFinite(healthAtMs) && (nowMs - healthAtMs) < HEALTH_STALE_MS
+
+  let accounts = []
+  try {
+    accounts = db.prepare(
+      'SELECT account_id, trader_login, is_live FROM accounts WHERE enabled = 1'
+    ).all()
+  } catch { accounts = [] }
+  if (!accounts.length) return { events, roster, fresh }
+
+  let watch = {}
+  try { watch = JSON.parse(getState(db, AUTH_WATCH_KEY) || '{}') } catch { watch = {} }
+  const next = {}
+
+  for (const a of accounts) {
+    const id = String(a.account_id)
+    const prev = watch[id] || null
+    const status = (roster == null || !fresh)
+      ? 'unknown'
+      : roster.includes(id) ? 'active' : 'disconnected'
+
+    // Carry the timer across an unknown window rather than restarting it: an
+    // outage interrupted by a health blip is still one continuous outage, and
+    // restarting the dwell on every blip is how a real stall never reaches the
+    // threshold.
+    if (status === 'unknown') {
+      if (prev) next[id] = prev
+      continue
+    }
+
+    if (status === 'disconnected') {
+      const since = prev?.since ?? nowMs
+      const alerted = prev?.alerted === true
+      const downMs = nowMs - since
+      if (!alerted && downMs >= afterMs) {
+        const side = a.is_live === 1 ? 'LIVE' : 'Demo'
+        const label = a.trader_login ? `${side} ${a.trader_login} · ${id}` : `${side} ${id}`
+        say(
+          `🔌 ACCOUNT NOT AUTHORISED: ${label} has been enabled but absent from the exec sidecar's roster for ${Math.round(downMs / 60_000)}m. ` +
+          'No order can be built for it until it reconnects — entries on this account are silently skipped, not vetoed.'
+        )
+        events.push({ accountId: id, event: 'unauthorized', downSec: Math.round(downMs / 1000) })
+        auditControllerEvent(db, {
+          controller: 'account_auth',
+          event: 'unauthorized',
+          detail: `${label} absent from the sidecar roster for ${Math.round(downMs / 60_000)}m`,
+        })
+        next[id] = { since, alerted: true }
+      } else {
+        next[id] = { since, alerted }
+      }
+      continue
+    }
+
+    // active — announce recovery only to someone who heard the alarm.
+    if (prev?.alerted) {
+      const side = a.is_live === 1 ? 'LIVE' : 'Demo'
+      const label = a.trader_login ? `${side} ${a.trader_login} · ${id}` : `${side} ${id}`
+      say(`🔗 ACCOUNT REAUTHORISED: ${label} is back on the exec sidecar's roster and can receive orders again.`)
+      events.push({ accountId: id, event: 'reauthorized' })
+      auditControllerEvent(db, { controller: 'account_auth', event: 'reauthorized', detail: label })
+    }
+  }
+
+  try { setState(db, AUTH_WATCH_KEY, JSON.stringify(next)) } catch { /* watch state is best-effort */ }
+  return { events, roster, fresh }
+}

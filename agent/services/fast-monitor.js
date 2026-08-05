@@ -585,9 +585,13 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null })
       if (due('cpp_probe', 120, nowMs)) await hb.probeCppExec(db)
       if (due('watchdog', 60, nowMs)) {
-        hb.checkHeartbeats(db, {
-          notify: (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
-        })
+        const notify = (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {})
+        hb.checkHeartbeats(db, { notify })
+        // Separate question, same band: checkHeartbeats asks "is the sidecar
+        // alive", this asks "is every enabled account actually reachable
+        // through it". On 05-08-2026 the first answered yes for twelve hours
+        // while four accounts were unreachable and nothing traded.
+        hb.checkAccountAuthorization?.(db, { notify })
       }
     } catch (err) {
       console.error('[fast-monitor] watchdog failed:', err.message)
