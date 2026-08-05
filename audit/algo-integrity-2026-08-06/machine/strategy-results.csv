@@ -1,0 +1,13 @@
+strategy,account,symbol,timeframe,sample_n,win_rate,payoff,expectancy_r,profit_factor,max_dd,cost_model,out_of_sample,status,blocker
+fib_618_fade,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+cup_handle,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+inv_cup_handle,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+ema_pullback,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+donchian_breakout,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+rsi_meanrev,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+vwap_trend,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+vp_value,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+rsi2_reversion,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+fib_confluence,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+va_breakout,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql
+fvg_retrace,NOT EXECUTED,NOT EXECUTED,NOT EXECUTED,0,,,,,,none applied,no,BLOCKED,no agent database - see evidence/data-queries.sql

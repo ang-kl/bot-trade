@@ -1,0 +1,11 @@
+control,enforced_in,both_engines,opportunities_reached,unique_vetoes,risk_avoided,opportunity_cost,status
+naked_order_refusal,exec-engine.validateOrderBracket,yes,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+targetless_refusal,exec-engine.validateOrderBracket,yes,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+halt_kill_switch,exec-engine.validateExecGuard,yes,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+max_order_volume,exec-engine.validateExecGuard,yes,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+account_mismatch_refusal,exec-engine.resolveOrderAccount,yes,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+connectivity_gate,loop.js:1173,n/a,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+unknown_daily_pnl,risk.js,n/a,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+daily_loss_limit,risk.js,n/a,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+margin_level_floor,risk.js,n/a,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log
+news_window,news-calendar.js,n/a,BLOCKED,BLOCKED,BLOCKED,BLOCKED,enforcement VERIFIED in source; effectiveness BLOCKED - no decision_log

@@ -1,0 +1,131 @@
+{
+  "frozenSha": "0e6465158337c40d70952334b685551c7afdd289",
+  "generatedAt": "2026-08-05T22:xx:00Z",
+  "promptVersion": "Bot-Trade_Algorithmic_Decision_Integrity_Audit_Prompt_v1.0.md",
+  "auditCompleteness": "PARTIAL",
+  "liveActionOccurred": false,
+  "orderCommandsExecuted": [],
+  "verdicts": {
+    "economicCharacter": "BOUNDED SPECULATION",
+    "economicCharacterEquityCfd": "UNCLASSIFIED - INSUFFICIENT EVIDENCE",
+    "defencePosture": "MIXED",
+    "edgeStatus": "EDGE UNPROVEN",
+    "edgeStatusScope": "all 12 strategies and the portfolio"
+  },
+  "testsExecuted": [
+    {
+      "cmd": "npm test",
+      "exit": 0,
+      "seconds": 9
+    },
+    {
+      "cmd": "node --test agent/**/*.test.js",
+      "exit": 0,
+      "seconds": 37,
+      "tests": 2815
+    },
+    {
+      "cmd": "npm run lint",
+      "exit": 0,
+      "seconds": 35
+    },
+    {
+      "cmd": "npm run build",
+      "exit": 0,
+      "seconds": 1
+    },
+    {
+      "cmd": "npm run check:no-green",
+      "exit": 0,
+      "seconds": 1
+    },
+    {
+      "cmd": "make -C cpp-exec clean",
+      "exit": 0,
+      "seconds": 0
+    },
+    {
+      "cmd": "make -C cpp-exec CXX=g++ test",
+      "exit": 0,
+      "seconds": 306
+    },
+    {
+      "cmd": "make -C cpp-exec CXX=g++",
+      "exit": 0,
+      "seconds": 20
+    },
+    {
+      "cmd": "node agent/scripts/backtest-parity.mjs",
+      "exit": 0,
+      "seconds": 1
+    },
+    {
+      "cmd": "node agent/scripts/audit-strategy-invariants.mjs",
+      "exit": 0,
+      "seconds": 1
+    }
+  ],
+  "testsBlocked": [
+    {
+      "cmd": "node agent/scripts/exec-parity.js",
+      "exit": 1,
+      "blocker": "cTrader creds not configured in the agent DB"
+    },
+    {
+      "area": "prompt sections 9,10,11,12,14",
+      "blocker": "no agent database present"
+    },
+    {
+      "area": "prompt section 13 broker session proof",
+      "blocker": "sidecar unreachable; read-tier credential"
+    },
+    {
+      "area": "prompt section 15 human awareness study",
+      "blocker": "requires the human operator, blinded"
+    }
+  ],
+  "findingCountsBySeverity": {
+    "capital": 1,
+    "critical": 1,
+    "high": 0,
+    "medium": 0,
+    "low": 1
+  },
+  "hypothesisDispositions": {
+    "H01": "disproved",
+    "H02": "disproved",
+    "H03": "blocked",
+    "H04": "blocked",
+    "H05": "provisional",
+    "H06": "confirmed",
+    "H07": "disproved",
+    "H08": "disproved",
+    "H09": "blocked",
+    "H10": "provisional",
+    "H11": "partially disproved",
+    "H12": "blocked",
+    "H13": "blocked",
+    "H14": "blocked",
+    "H15": "not assessed",
+    "H16": "blocked",
+    "H17": "partially executed",
+    "H18": "confirmed then remediated"
+  },
+  "dataLimitations": [
+    "No agent SQLite database present in this environment.",
+    "Read-tier credential only; no broker session reachable.",
+    "No production bars, trades, decision_log, position_events or pending_orders.",
+    "Synthetic positive controls fired for only 2 of 12 strategies; the remaining ten rest on the repo's own suite and the null-placeholder identity check.",
+    "Look-ahead is NOT proven absent - only determinism on identical input was checked.",
+    "Node/C++ parity verified in aggregate only, not trade-sequence."
+  ],
+  "selfCheck": {
+    "result": "NOT COMPLETE",
+    "failed": [
+      "counterfactuals not produced - blocked"
+    ],
+    "partial": [
+      "independent reference calculations for the section 7 mathematics list"
+    ]
+  }
+}
