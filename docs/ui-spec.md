@@ -521,34 +521,47 @@ visible on short screens; `lg:left-56` clears the sidebar; `z-40`. `main`
 carries `pb-20` / `lg:pb-16` so real content is never permanently hidden under
 it. Content scrolls *behind* the translucent bar.
 
-### The Navigation FAB — full spec
+### The FAB stack — full spec
 
-Purpose: the Performance page has **14 sections**; scrolling to one is the
-single most repeated action on the page.
+Two buttons, one fixed column, bottom-right on every page that mounts
+`SectionNavFab`. They answer the two questions a reader has on any screen, in
+the same corner: **where am I** (☰) and **whose numbers is this** (the account
+pill).
 
 | Property | Value |
 |---|---|
-| Visibility | `hidden min-[700px]:block` — same breakpoint as the section branch |
-| Position | `fixed`, `right: 18`, `bottom: 74` — clears the fixed footer |
-| `z-index` | `40` (same layer as the footer, above content) |
-| Button | `44 × 44`, `borderRadius: '50%'`, `1px solid P_GBD`, `.glass-fixed` |
-| Glyph | `☰` closed / `×` open, `18px / 800`, `P_ACC` |
-| A11y | `aria-label="Jump to section"`, `title` identical |
-| Menu | `.glass-panel`, `marginBottom: 8`, `borderRadius: 12`, `padding: '6px 4px'`, `minWidth: 190`, `maxHeight: '70vh'`, `overflowY: auto` |
-| Menu item | full-width left-aligned button, `12px / W_CELL`, `padding: '5px 10px'`, `borderRadius: 8`, hover fills `P_GL` |
-| Action | `scrollIntoView({ behavior: 'smooth', block: 'start' })`, then close |
-| Source of truth | `PERF_SECTIONS` — `{ id, label }`; every `id` must exist as a section `id` in the JSX |
+| Container | `.fab-stack` — `fixed`, `right: 18px`, `z-index: 40`, column, `align-items: flex-end`, `gap: 8px` |
+| Bottom | `calc(49px + env(safe-area-inset-bottom) + 10px)`; **`18px` at `≥1024px`** |
+| Visibility | **every width.** Never `hidden min-[700px]:*` again — see below |
+| Nav button | `44 × 44`, `borderRadius: '50%'`, `1px solid P_GBD`, `.glass-fixed`, glyph `☰` / `×` at `--fs-glyph-lg` |
+| Account button | `56 × 44`, `borderRadius: 22`, `.glass-fixed`, two stacked lines: `DEMO`/`LIVE`/`ALL`/`ACCT` at `--fs-body`, then the 4-digit login (or `ACCTS` / `?`) at `--fs-head` |
+| Panels | `.glass-panel`, `marginBottom: 8`, `borderRadius: 12`; **one open at a time** — both at once runs off the top of a 375px screen |
+| Panel rows | full-width left-aligned, `--fs-body`, `min-height: 44px` on the account sheet |
+| Nav source of truth | `src/lib/nav-tree.js` — every page, sub-page and section, each tagged T/F/C |
+| Scope source of truth | `lib/scope-fab.js` (face + rows) over `lib/scope-label.js` (naming) |
+| Scope action | `setViewedAccount` — the VIEW lens. **Never** `/actions/ctrader-select-account` |
 
-Section order (must match reading order down the page):
+**The bottom offset is a correctness rule, not a margin.** `MobileTabBar` is
+`min-h-[49px]` and `lg:hidden`, so it occupies the bottom edge at every width
+below 1024px. A FAB parked on top of it steals taps from the app's primary
+navigation. `scripts/responsive-audit.mjs` measures this on every route and
+fails on `OVERLAPS-TABBAR`.
 
-```
-Accounts · Today & open · Weekend 24H · Market sessions · Timeframe ledger ·
-Gradients · FX bands · Strategy × market · Crypto · Winners & laggards ·
-Regime · Balance in/out · Data feed · Tiles & equity
-```
+**Phones see it.** The stack carried `hidden min-[700px]:flex` until
+05-08-2026, so on the owner's iPhone SE (375px) it had never once been painted
+— and the audit's narrowest width was 390px, so nothing measured the width
+where its absence would have shown. 375 is now in the audit's width list.
 
-Adding a section means adding **both** the JSX `id` and the `PERF_SECTIONS`
-entry, in the same PR. A menu entry that scrolls nowhere is a bug.
+**Three states on the account face, and the third is the point.** `DEMO 7353`
+(one account) · `ALL ACCTS` (aggregated) · `ACCT ?` (roster not loaded, or an
+id not in the registry). An unresolved roster must never fall back to the ALL
+face: "I am looking at every account" and "I do not know which account this is"
+are different facts.
+
+**Live is a word, never a colour.** The live account's sheet row carries the
+literal token `LIVE`, and the face says `LIVE` above the digits — the owner
+reads red and green as one thing, so hue cannot be the only carrier on the most
+consequential row.
 
 ### iOS Safari constraint (non-negotiable)
 

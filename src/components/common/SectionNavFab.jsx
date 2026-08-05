@@ -20,11 +20,22 @@
 // The FAB itself is pinned to the BOTTOM-RIGHT and stays there when the
 // panel opens (alignItems flex-end — the panel pulls out leftward/upward
 // from the pinned button); the panel is the app's liquid-glass surface
-// (glass-panel: backdrop blur + specular top streak). Desktop-only (≥700px),
-// same as before.
+// (glass-panel: backdrop blur + specular top streak).
+//
+// PHONES SEE IT TOO, since 05-08-2026. This stack used to carry
+// `hidden min-[700px]:flex`, so on an iPhone SE (375px) the FAB had never once
+// been painted — which made "add the account to the nav FAB" a change that
+// would have done nothing on the device the owner was asking about. The
+// positioning now lives in `.fab-stack` (index.css), which lifts the stack
+// clear of the 49px MobileTabBar and the home indicator below 700px.
+//
+// TWO BUTTONS, ONE PANEL AT A TIME. The account FAB sits above the ☰. Their
+// panels are mutually exclusive — both open at once runs off the top of a
+// 375px screen.
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { NAV_TREE, NAV_KIND_LEGEND, pageForPath } from '../../lib/nav-tree.js'
+import AccountScopeFab from './AccountScopeFab.jsx'
 
 // Collapsed = right-pointing ▸, expanded = down-pointing ▾ (owner-specified
 // Unicode triangles, the same pair every disclosure in the app uses).
@@ -56,7 +67,10 @@ function KindTag({ kind }) {
 }
 
 export default function SectionNavFab({ onSelect }) {
-  const [open, setOpen] = useState(false)
+  // 'nav' | 'acct' | null — one panel at a time.
+  const [panel, setPanel] = useState(null)
+  const open = panel === 'nav'
+  const setOpen = (next) => setPanel((typeof next === 'function' ? next(open) : next) ? 'nav' : null)
   const location = useLocation()
   const navigate = useNavigate()
   const current = pageForPath(location.pathname)
@@ -134,7 +148,7 @@ export default function SectionNavFab({ onSelect }) {
   }
 
   return (
-    <div className="hidden min-[700px]:flex" style={{ position: 'fixed', right: 18, bottom: 18, zIndex: 40, flexDirection: 'column', alignItems: 'flex-end' }}>
+    <div className="fab-stack" data-once="fab-stack">
       {open && (
         <nav aria-label="Table of contents" className="glass-panel"
           style={{ marginBottom: 8, borderRadius: 12, padding: '6px 6px 4px', maxHeight: '72vh', overflowY: 'auto', minWidth: 232 }}>
@@ -149,6 +163,9 @@ export default function SectionNavFab({ onSelect }) {
           </div>
         </nav>
       )}
+      {/* "Whose numbers is this?" answered without opening anything, in the
+          same corner as "where am I?". */}
+      <AccountScopeFab open={panel === 'acct'} onToggle={(v) => setPanel(v ? 'acct' : null)} />
       <button type="button" onClick={() => setOpen(v => !v)} aria-expanded={open} aria-label="Table of contents" title="Table of contents"
         className="glass-fixed"
         style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--glass-border)', color: 'var(--color-accent)', fontSize: 'var(--fs-glyph-lg)', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>

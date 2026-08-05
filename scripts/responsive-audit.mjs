@@ -52,7 +52,12 @@ for (const r of ROUTES) {
   // duplicate only exists below 700px AND only renders once data is present, so
   // the desktop-only live pass and the data-less phone pass each missed it from
   // opposite sides. Live now covers the same widths as layout mode.
-  for (const w of (LIVE ? [1024, 820, 390] : [1024, 820, 390])) {
+  // 375 is the iPhone SE (2019) the owner actually carries. It was missing
+  // until 05-08-2026, and its absence hid a real defect for months: the FAB
+  // stack was `hidden min-[700px]:flex`, so on that phone it had never been
+  // painted — and no audited width was narrow enough to be the one where a
+  // FAB going missing would have shown up as a difference.
+  for (const w of [1024, 820, 390, 375]) {
     const p = await ctx.newPage()
     const errs = []
     p.on('pageerror', e => errs.push(String(e.message).slice(0, 110)))
@@ -136,8 +141,24 @@ for (const r of ROUTES) {
         const f = parseFloat(getComputedStyle(el).fontSize)
         if (f > 0 && f < minPx) minPx = f
       }
-      return { ov: de.scrollWidth - de.clientWidth, wide: [...new Set(wide)].slice(0, 3), small, total, minPx, dupes }
-    }).catch(() => ({ ov: 0, wide: [], small: 0, total: 0, minPx: 0, dupes: [] }))
+      // THE FAB STACK CONTRACT (05-08-2026). It carries the account scope —
+      // "whose numbers am I looking at" — so it has to be on screen, and it
+      // must not cover the bottom tab bar, which is the app's primary
+      // navigation on every touch width. 'none' is legitimate: not every
+      // route mounts SectionNavFab.
+      let fab = 'none'
+      const stack = document.querySelector('.fab-stack')
+      if (stack) {
+        const r = stack.getBoundingClientRect()
+        const bar = document.querySelector('[data-tabbar]')
+        const br = bar?.getBoundingClientRect()
+        const painted = r.width > 0 && r.height > 0
+        if (!painted || r.right > vw + 1 || r.bottom > de.clientHeight + 1) fab = 'OFFSCREEN'
+        else if (br && br.height > 0 && r.bottom > br.top + 1) fab = 'OVERLAPS-TABBAR'
+        else fab = 'ok'
+      }
+      return { ov: de.scrollWidth - de.clientWidth, wide: [...new Set(wide)].slice(0, 3), small, total, minPx, dupes, fab }
+    }).catch(() => ({ ov: 0, wide: [], small: 0, total: 0, minPx: 0, dupes: [], fab: 'none' }))
     // bodyLen is the blank-page canary: a crashed React tree still renders the
     // skip-link and nothing else, which is ~20 characters.
     const bodyLen = await p.evaluate(() => document.body.innerText.trim().length).catch(() => 0)
@@ -148,8 +169,9 @@ for (const r of ROUTES) {
     // bodyLen is only meaningful in LIVE mode — layout mode aborts every
     // off-host request, so a data-driven page renders near-empty BY DESIGN and
     // failing on it would make the layout pass permanently red.
-    if (errs.length || dupes.length || (LIVE && bodyLen < 200)) failed++
-    console.log(`${r} @${w} ov=${m.ov} touch<44=${m.small}/${m.total} minFont=${m.minPx} bodyLen=${bodyLen}`
+    const fabBad = m.fab && m.fab !== 'ok' && m.fab !== 'none'
+    if (errs.length || dupes.length || fabBad || (LIVE && bodyLen < 200)) failed++
+    console.log(`${r} @${w} ov=${m.ov} touch<44=${m.small}/${m.total} minFont=${m.minPx} bodyLen=${bodyLen} fab=${m.fab}`
       + `${errs.length ? ' ERR: ' + errs[0] : ''}${dupes.length ? ' DUP: ' + dupes.join(',') : ''}`
       + `${m.wide.length ? ' WIDE: ' + m.wide.join(' | ') : ''}`)
     await p.close()
@@ -159,6 +181,6 @@ await b.close()
 // Duplicate renders and page errors fail in BOTH modes; the blank-page canary
 // only means something in live mode (layout mode renders empty by design).
 if (failed) {
-  console.error(`\nFAILED: ${failed} route/width combination(s) threw, duplicated a singleton, or rendered blank.`)
+  console.error(`\nFAILED: ${failed} route/width combination(s) threw, duplicated a singleton, misplaced the FAB stack, or rendered blank.`)
   process.exit(1)
 }
