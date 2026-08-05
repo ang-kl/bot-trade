@@ -58,23 +58,23 @@ const TOUCH = { '--fs-body': 9.5, '--fs-head': 10.5, '--fs-h': 12.5, '--fs-title
 const DESK = { '--fs-body': 11, '--fs-head': 12, '--fs-h': 14, '--fs-title': 15 }
 const DESK_MIN_WIDTH = 1280
 
-// The deliberate exceptions, each with the reason it is not body text. An
-// exception is keyed by file + the exact size, so adding a fourth 16px thing
-// somewhere new still fails — the escape hatch does not widen on its own.
+// THERE IS NO EXCEPTION TABLE ANY MORE (owner 05-08-2026: "fix C1").
 //
-// Every entry is a GLYPH (an icon or a wordmark drawn with the font) or a
-// full-width phone action button whose tap target is the point. None of them
-// is text a reader reads at body size, and none should breathe with the type
-// tier: an icon that resized with the body would change the tap target, which
-// is the one thing about it that must not move.
-const EXCEPT = {
-  'src/components/MobileTabBar.jsx': [14, 16],        // tab bar icons + ⋯ glyph
-  'src/components/TradeChronograph.jsx': [16],        // × close glyph
-  'src/App.jsx': [13, 14, 15],                        // "bot-trade" wordmark; sidebar icons
-  'src/pages/Trade.jsx': [22],                        // + floating action button glyph
-  'src/components/OrderManager.jsx': [14, 15],        // phone BUY/SELL + CLOSE buttons
-  'src/components/PositionManager.jsx': [14, 15],     // same
-}
+// There used to be one: six files with a list of allowed px literals — tab-bar
+// icons, × close marks, the wordmark, the FABs, the phone BUY/SELL/CLOSE
+// buttons. It was honest about WHY each was excluded, but an exception list is
+// a list of things nobody owns, and it only ever grows.
+//
+// Split by what the thing actually is instead:
+//   · the phone action-button LABELS were text, and text belongs on the canon
+//     → --fs-h. Their boxes (py-2.5, w-full) are untouched: the tap target has
+//     nothing to do with the type scale.
+//   · the icons and the wordmark are not text → --fs-glyph-* / --fs-wordmark,
+//     flat across both tiers. They must NOT ride --fs-body, because an icon
+//     that resized with the type tier would change its own tap target.
+//
+// So the rule below is now absolute: no px literal, anywhere, in any file.
+const GLYPH_TOKENS = ['--fs-glyph-sm', '--fs-glyph-md', '--fs-glyph-lg', '--fs-glyph-xl', '--fs-wordmark']
 
 const tokenIn = (block, name) => {
   const m = block.match(new RegExp(`${name}:\\s*([\\d.]+)px`))
@@ -150,17 +150,25 @@ describe('no font size outside the canon', () => {
     expect(FILES.length).toBeGreaterThan(20)
   })
 
-  it('no Tailwind text-[Npx] survives outside the listed glyphs', () => {
+  it('NO Tailwind text-[Npx] survives anywhere — no exceptions left', () => {
     const bad = []
     for (const f of FILES) {
       stripComments(readFileSync(f, 'utf8')).split('\n').forEach((line, i) => {
         for (const m of line.matchAll(/text-\[(\d+(?:\.\d+)?)px\]/g)) {
-          if ((EXCEPT[rel(f)] || []).includes(Number(m[1]))) continue
           bad.push(`${rel(f)}:${i + 1}  ${m[1]}px — ${line.trim().slice(0, 90)}`)
         }
       })
     }
-    expect(bad, `Use text-(length:--fs-body) / --fs-h / --fs-title:\n${bad.join('\n')}`).toEqual([])
+    expect(bad, `Text → --fs-body/--fs-h/--fs-title. Icons → --fs-glyph-*:\n${bad.join('\n')}`).toEqual([])
+  })
+
+  it('every glyph token is declared, and flat across both tiers', () => {
+    const desk = CSS.match(/@media \(min-width: 1280px\) \{([\s\S]*?)\n\}/)?.[1] || ''
+    for (const t of GLYPH_TOKENS) {
+      expect(CSS, `${t} is used but never declared`).toMatch(new RegExp(`${t}: *[\\d.]+px`))
+      // An icon that grew with the desk tier would change its own tap target.
+      expect(desk, `${t} must not be re-declared per tier`).not.toContain(t)
+    }
   })
 
   it('every inline fontSize is a token, never a raw px literal', () => {
@@ -177,16 +185,13 @@ describe('no font size outside the canon', () => {
 
   // The old --fs-dN scale was named for pixel values, which is exactly what a
   // responsive canon cannot have: a token called d9 that renders 11px on a
-  // desk is a lie in the source. Only --fs-d18 survives, and only because it
-  // is the ☰ FAB glyph, which does not move with the type tier.
-  it('the px-named --fs-dN scale is gone except the one glyph size', () => {
+  // desk is a lie in the source. It is gone entirely — --fs-d18 was the last
+  // survivor and is now --fs-glyph-lg, named for what it is.
+  it('the px-named --fs-dN scale is gone completely', () => {
     const bad = []
     for (const f of FILES) {
       stripComments(readFileSync(f, 'utf8')).split('\n').forEach((line, i) => {
-        for (const m of line.matchAll(/(--fs-d\d+)/g)) {
-          if (m[1] === '--fs-d18' && rel(f) === 'src/components/common/SectionNavFab.jsx') continue
-          bad.push(`${rel(f)}:${i + 1}  ${m[1]}`)
-        }
+        for (const m of line.matchAll(/(--fs-d\d+)/g)) bad.push(`${rel(f)}:${i + 1}  ${m[1]}`)
       })
     }
     expect(bad, `Semantic tokens only — --fs-body / --fs-head / --fs-h / --fs-title:\n${bad.join('\n')}`).toEqual([])

@@ -109,7 +109,25 @@
      one edit here instead of a sweep. Pixel units on purpose: these sizes
      were chosen against the owner's screens as fixed px and must not breathe
      with the responsive rem base the --fs-* tokens above ride on. */
-  --fs-d18: 18px;
+  /* ICON SIZES, named for what they are (owner 05-08-2026: "fix C1" — the
+     leftover off-canon list). These were px literals sitting in an exception
+     table in the canon test, which is a list of things nobody owns. They are
+     not text and they must NOT ride --fs-body: an icon that resized with the
+     type tier would change its own tap target, which is the one thing about a
+     tab-bar icon or a floating action button that must not move.
+
+     So they get their own scale, flat across both tiers, and the canon can
+     then say something true: every TEXT size is a --fs-* token, and every
+     glyph is a --fs-glyph-* token. Nothing is unaccounted for. */
+  --fs-glyph-sm: 14px;   /* sidebar + tab-bar icons */
+  --fs-glyph-md: 16px;   /* phone tab-bar icons, × close marks */
+  --fs-glyph-lg: 18px;   /* ☰ table-of-contents FAB */
+  --fs-glyph-xl: 22px;   /* + order FAB */
+
+  /* The wordmark is type, not an icon — it is the product's name set in Inter
+     — but it is also the one string in the app that is deliberately NOT on
+     the reading scale, because it is a logo. Its own token says so. */
+  --fs-wordmark: 15px;
 
   /* =========================================================================
      THE RESPONSIVE CANON (owner, 05-08-2026, in three messages):

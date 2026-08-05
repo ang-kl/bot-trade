@@ -120,7 +120,7 @@ export default function TradeChronograph({ pos, onClose }) {
             {tf && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{tf}</span>}
             {trend && <span className="text-(length:--fs-body)" style={{ color: trend === 'UP' ? UP : trend === 'DOWN' ? DOWN : 'var(--color-text-sub)' }}>EMA20 {trend}</span>}
           </div>
-          <button type="button" onClick={onClose} className="text-[var(--color-text-sub)] text-[16px] leading-none px-1" aria-label="Close">×</button>
+          <button type="button" onClick={onClose} className="text-[var(--color-text-sub)] text-(length:--fs-glyph-md) leading-none px-1" aria-label="Close">×</button>
         </div>
 
         <div className="flex items-center gap-1.5 mb-1.5">

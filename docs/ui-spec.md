@@ -87,18 +87,40 @@ Nothing carries a px literal any more. Tailwind call sites use
 | All other data / info text (captions, meta, pills, footnotes, controls) | `--fs-body` | `400` |
 | Headline figure per card | `--fs-body` | `800` — emphasis by weight + colour, not size |
 
-The px-named `--fs-d*` scale is gone except `--fs-d18` (the ☰ FAB glyph): a
-token called `d9` that renders 11px on a desk is a lie in the source. Enforced
-by `src/lib/type-canon.test.js`, which fails on any new size, checks both
-tiers and the offsets, and lists the deliberate glyph exceptions.
+The px-named `--fs-d*` scale is gone entirely: a token called `d9` that renders
+11px on a desk is a lie in the source. Enforced by
+`src/lib/type-canon.test.js`, which fails on **any** px literal in **any**
+file, and checks both tiers and the offsets.
 
-**The only things that are not on the canon** are glyphs — the mobile tab-bar
-icons, the `☰` table-of-contents FAB, the `+` order FAB, the `×` close marks
-and the `bot-trade` wordmark — plus the full-width phone BUY/SELL and CLOSE
-buttons in Order/Position Manager, where the tap target is the point. Form
-fields keep their own older rule (`min(calc(1em + 1px), --font-field-max)`,
-owner 2026-07-28), which still wins over any class — but the cap now rides the
-canon (`--fs-head`) instead of pinning 10px, so fields move with the tier.
+### Glyphs are not text
+
+There is **no exception list**. There used to be one — six files with a
+table of allowed px literals — and an exception list is a list of things
+nobody owns, so it only ever grows. Owner, 05-08-2026: *"fix C1"*.
+
+It was split by what each thing actually is:
+
+| | token | tiers |
+|---|---|---|
+| sidebar + tab-bar icons | `--fs-glyph-sm` 14px | flat |
+| phone tab-bar icons, `×` close marks | `--fs-glyph-md` 16px | flat |
+| `☰` table-of-contents FAB | `--fs-glyph-lg` 18px | flat |
+| `+` order FAB | `--fs-glyph-xl` 22px | flat |
+| `bot-trade` wordmark | `--fs-wordmark` 15px | flat |
+
+**Flat across both tiers on purpose.** An icon that resized with the type
+tier would change its own tap target, which is the one thing about a tab-bar
+icon or a floating action button that must not move.
+
+The phone BUY/SELL and CLOSE buttons went the other way: their **labels** are
+text and now carry `--fs-h`. Their boxes (`w-full`, `py-2.5`) are untouched —
+the tap target has nothing to do with the type scale, and binding the two
+together is what made them look like an exception in the first place.
+
+Form fields keep their own older rule (`min(calc(1em + 1px),
+--font-field-max)`, owner 2026-07-28), which still wins over any class — but
+the cap now rides `--fs-head` instead of pinning 10px, so fields move with
+the tier.
 
 ### Text colour
 

@@ -214,7 +214,7 @@ export default function PositionManager({ p, onDone }) {
           {/* Side buttons — current side active, the other inert (info only) */}
           <div className="flex gap-2 mb-1.5">
             {['SELL', 'BUY'].map(s => (
-              <span key={s} className={`flex-1 text-center rounded-[8px] border py-2 text-[14px] font-bold ${p.side === s ? (s === 'BUY' ? 'border-[var(--color-accent)] text-[var(--color-accent)]' : 'border-[var(--color-down)] text-[var(--color-down)]') : 'border-[var(--color-border)] text-[var(--color-text-sub)] opacity-40'}`}>
+              <span key={s} className={`flex-1 text-center rounded-[8px] border py-2 text-(length:--fs-h) font-bold ${p.side === s ? (s === 'BUY' ? 'border-[var(--color-accent)] text-[var(--color-accent)]' : 'border-[var(--color-down)] text-[var(--color-down)]') : 'border-[var(--color-border)] text-[var(--color-text-sub)] opacity-40'}`}>
                 {s}
               </span>
             ))}
@@ -227,7 +227,7 @@ export default function PositionManager({ p, onDone }) {
           </div>
           <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">Used margin: {money(p.usedMargin)}</div>
 
-          <button type="button" disabled className="w-full rounded-[var(--radius-control)] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
+          <button type="button" disabled className="w-full rounded-[var(--radius-control)] glass-inset py-2.5 text-(length:--fs-h) font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] my-1.5">Leave size intact</div>
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
@@ -243,7 +243,7 @@ export default function PositionManager({ p, onDone }) {
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <button type="button" disabled={busy}
-            className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
+            className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"
             onClick={() => window.confirm(`Close ${p.symbol} ${p.side} ${fmt(p.lots, 2)} lots at market?`) &&
               run(() => agentPost('/actions/position-close', { positionId: p.positionId }), 'Position closed')}>
             Close ({fmt(p.currentPrice, p.digits ?? 5)})
@@ -308,7 +308,7 @@ export default function PositionManager({ p, onDone }) {
           )}
 
           <button type="button" disabled={busy}
-            className="w-full mt-2 rounded-[var(--radius-control)] bg-[var(--color-accent)] text-[var(--color-on-accent)] py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
+            className="w-full mt-2 rounded-[var(--radius-control)] bg-[var(--color-accent)] text-[var(--color-on-accent)] py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"
             onClick={applyProtection}>
             Modify protection
           </button>

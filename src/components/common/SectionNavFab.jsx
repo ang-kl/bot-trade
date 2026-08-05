@@ -151,7 +151,7 @@ export default function SectionNavFab({ onSelect }) {
       )}
       <button type="button" onClick={() => setOpen(v => !v)} aria-expanded={open} aria-label="Table of contents" title="Table of contents"
         className="glass-fixed"
-        style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--glass-border)', color: 'var(--color-accent)', fontSize: 'var(--fs-d18)', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--glass-border)', color: 'var(--color-accent)', fontSize: 'var(--fs-glyph-lg)', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         {open ? '×' : '☰'}
       </button>
     </div>

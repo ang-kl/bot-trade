@@ -268,7 +268,7 @@ export default function App() {
       <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-[var(--sidebar-h)] lg:sticky lg:top-0 p-4">
         <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-hidden">
           <div className="shrink-0 flex items-baseline flex-wrap gap-x-2 gap-y-0.5 mb-3">
-            <span className="text-[15px] font-extrabold tracking-tight text-[var(--color-accent)]">bot-trade</span>
+            <span className="text-(length:--fs-wordmark) font-extrabold tracking-tight text-[var(--color-accent)]">bot-trade</span>
             {/* The version tag is now the handle for agent health: the number
                 alone answered nothing, and whether the BROWSER and the AGENT
                 are on the same build is the question it was always adjacent
@@ -295,7 +295,7 @@ export default function App() {
                 <div className="flex flex-col gap-0.5">
                   {g.items.map(t => (
                     <NavLink key={t.to} to={t.to} viewTransition className={({ isActive }) => navLinkClasses(isActive)}>
-                      <span aria-hidden="true" className="text-[14px] leading-none">{t.icon}</span>{t.label}
+                      <span aria-hidden="true" className="text-(length:--fs-glyph-sm) leading-none">{t.icon}</span>{t.label}
                     </NavLink>
                   ))}
                 </div>
