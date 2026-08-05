@@ -423,6 +423,47 @@ function MxTallies({ tallies, columns, acct, onAcct }) {
   )
 }
 
+/**
+ * The whole switch chain, in one line.
+ *
+ * Owner, 05-08-2026: "the pipeline cards doesn't reconcile the top and bottom
+ * of the strategies … make sure all the strategies display on the UI are not
+ * conflicting with duplicate switches and result in no trading."
+ *
+ * Nine ANDed switches over four screens, and this table only ever knew about
+ * two of them — so a fully-ticked matrix could still sit under a master switch
+ * that was off, and the page had no way to say so. /state/trade-gates walks all
+ * nine server-side and names the FIRST one that is off, plus where to change
+ * it. Both this card and the Liveness card read that same answer.
+ */
+function GateVerdict({ acct }) {
+  const [g, setG] = useState(null)
+  useEffect(() => {
+    let alive = true
+    const q = acct && acct !== 'all' ? `?account=${encodeURIComponent(acct)}` : ''
+    agentGet(`/state/trade-gates${q}`)
+      .then(d => { if (alive) setG(d?.error ? null : d) })
+      .catch(() => { if (alive) setG(null) })
+    return () => { alive = false }
+  }, [acct])
+  if (!g) return null
+
+  const blocked = g.blocked > 0
+  return (
+    <p className={`text-[9px] ${blocked ? 'text-[var(--color-warning-text)]' : 'text-[var(--color-text-sub)]'}`}>
+      <b className="text-[var(--color-text)]">{g.tradable}</b> of {g.tradable + g.blocked} strategies can reach the market
+      {g.accountId ? ` on ${g.accountId}` : ' on the shared matrix'}.
+      {blocked && g.topBlocker && (
+        <>
+          {' '}<b className="text-[var(--color-text)]">{g.topBlocker.strategies}</b> stopped at{' '}
+          <b className="text-[var(--color-text)]">{g.topBlocker.where}</b>
+          {' '}— every switch is an AND, so this one alone is enough.
+        </>
+      )}
+    </p>
+  )
+}
+
 function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }) {
   const [open, setOpen] = useState(() => {
     try { return localStorage.getItem(STAGE_MX_OPEN_KEY) !== '0' } catch { return true }
@@ -538,6 +579,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }
                 </p>
               : <p className="text-[9px] text-[var(--color-text-sub)]">This account follows the shared matrix entirely. Changing a cell here gives it its own copy of that cell only.</p>)
             : <GlobalScopeNote what="Which strategies and filters run at each pipeline stage, including Auto Trade &amp; Open" />}
+          <GateVerdict acct={acct} />
           <MxTallies tallies={mx.tallies} columns={columns} acct={acct} onAcct={onAcct} />
         </div>
       )}

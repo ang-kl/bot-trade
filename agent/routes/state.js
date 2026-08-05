@@ -1194,6 +1194,29 @@ export default function stateRouter(db) {
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
+  // GET /state/trade-gates — why is this strategy not trading?
+  //
+  // Owner, 05-08-2026: "are there too many same exactly strategy-fields
+  // switches … make sure all the strategies display on the UI are not
+  // conflicting with duplicate switches and result in no trading." There are
+  // NINE ANDed switches across four screens and no screen held all of them, so
+  // the answer to "why is nothing trading" was a tour of the UI. This is that
+  // tour, done once, server-side, naming the FIRST gate that is off.
+  //
+  // The Pipeline matrix and the Liveness card both read THIS, which is what
+  // stops the top and the bottom of the page disagreeing.
+  router.get('/trade-gates', async (req, res) => {
+    try {
+      const { tradeGateMatrix, tradeGateChain } = await import('../services/trade-gate-resolver.js')
+      const scope = requestedAccount(db, req)
+      const acct = scope.all ? null : (scope.accountId ?? null)
+      if (req.query.strategy) {
+        return res.json(tradeGateChain(db, { accountId: acct, strategy: String(req.query.strategy) }))
+      }
+      res.json(tradeGateMatrix(db, { accountId: acct }))
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   // GET /state/trade-consistency — does the closed book agree with itself?
   //
   // Go-live Phase 0 (docs/go-live-plan.md §4). Measured 05-08-2026, 56 of 190

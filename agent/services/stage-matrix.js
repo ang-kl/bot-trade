@@ -118,7 +118,15 @@ export function stageOverlayKeys(db, getState, accountId) {
       }
     }
   }
-  if (readJson(db, getState, acctEnabledKey(accountId))) out.push('strategy:*:trade')
+  // LEGACY WHOLESALE LIST. Before 05-08-2026 an account's trade column was one
+  // list that REPLACED the global, so the only honest badge was a wildcard:
+  // "every trade cell on this account is pinned", which is what
+  // `strategy:*:trade` said. Accounts still carrying that list report the same
+  // thing until `migrateTradeOverlay` converts them, because it IS still true
+  // of them — every cell is pinned, just not individually.
+  if (readJson(db, getState, acctEnabledKey(accountId))) {
+    for (const s of STRATEGY_REGISTRY) out.push(`strategy:${s.key}:trade`)
+  }
   return out
 }
 
@@ -135,11 +143,74 @@ export function stageOverlayKeys(db, getState, accountId) {
  * was asking.
  */
 export function armedTradeKeys(db, getState, accountId) {
-  if (accountId != null) {
-    const own = readJson(db, getState, acctEnabledKey(accountId))
-    if (Array.isArray(own)) return new Set(own.filter(k => STRATEGY_KEYS.includes(k)))
+  const global = new Set(enabledStrategies(db, getState).map(s => s.key))
+  if (accountId == null) return global
+
+  // CELL-LEVEL MERGE, matching scan/backtest/manage (owner 05-08-2026, on the
+  // Pipeline card: "the pipeline cards doesn't reconcile the top and bottom").
+  //
+  // It did not reconcile because in ONE table the four columns overrode
+  // differently. Scan, Backtest and Manage merge cell by cell — a cell you
+  // never touched keeps following the global. Trade used to REPLACE the global
+  // list wholesale, so touching one trade cell silently froze all fifteen for
+  // that account, and no global change reached it again. Both demo accounts
+  // were in exactly that state ("strategy:*:trade" pinned).
+  //
+  // Now all four behave the same: an overlay cell wins where it exists, the
+  // global shows through everywhere else.
+  const overlay = readJson(db, getState, acctMatrixKey(accountId))?.strategy || {}
+  const legacy = readJson(db, getState, acctEnabledKey(accountId))
+  const legacySet = Array.isArray(legacy)
+    ? new Set(legacy.filter(k => STRATEGY_KEYS.includes(k)))
+    : null
+
+  const out = new Set()
+  for (const key of STRATEGY_KEYS) {
+    const cell = overlay[key]?.trade
+    if (typeof cell === 'boolean') { if (cell) out.add(key); continue }
+    // An un-migrated account still reads its wholesale list, so behaviour is
+    // byte-identical until migrateTradeOverlay runs.
+    if (legacySet) { if (legacySet.has(key)) out.add(key); continue }
+    if (global.has(key)) out.add(key)
   }
-  return new Set(enabledStrategies(db, getState).map(s => s.key))
+  return out
+}
+
+/**
+ * Convert an account's legacy wholesale trade list into per-cell overlay pins.
+ *
+ * BEHAVIOUR-PRESERVING BY CONSTRUCTION: every strategy in the list is pinned
+ * true and every strategy absent from it is pinned false, which is precisely
+ * what the wholesale list meant. Nothing about what the account trades changes
+ * on the day of the migration. What changes is that the owner can now UNPIN a
+ * single cell and have it follow the global again — which the wholesale list
+ * made impossible without clearing the whole list.
+ *
+ * Idempotent: an account with no legacy list is left alone.
+ *
+ * @returns {{migrated: boolean, accountId: string, pinned: number}}
+ */
+export function migrateTradeOverlay(db, { getState, setState }, accountId) {
+  const acct = String(accountId)
+  const legacy = readJson(db, getState, acctEnabledKey(acct))
+  if (!Array.isArray(legacy)) return { migrated: false, accountId: acct, pinned: 0 }
+  const armed = new Set(legacy.filter(k => STRATEGY_KEYS.includes(k)))
+
+  const stored = readJson(db, getState, acctMatrixKey(acct)) || {}
+  stored.strategy = stored.strategy || {}
+  let pinned = 0
+  for (const key of STRATEGY_KEYS) {
+    // An existing explicit cell is the owner's newer word — never overwrite it.
+    if (typeof stored.strategy[key]?.trade === 'boolean') continue
+    stored.strategy[key] = { ...stored.strategy[key], trade: armed.has(key) }
+    pinned++
+  }
+  setState(db, acctMatrixKey(acct), JSON.stringify(stored))
+  // Drop the legacy list only AFTER the pins are written, so a crash between
+  // the two leaves the account on the old-but-correct path rather than on the
+  // global list it was deliberately diverging from.
+  setState(db, acctEnabledKey(acct), '')
+  return { migrated: true, accountId: acct, pinned }
 }
 
 /**
@@ -204,10 +275,16 @@ export function setStage(db, { kind, key, stage, on, accountId = null }, { getSt
       if (flag) enabled.add(key); else enabled.delete(key)
       const keys = STRATEGY_KEYS.filter(k => enabled.has(k)) // registry order
       if (acct) {
-        // The account's own armed list. The global list and the legacy
+        // ONE CELL, like every other column. The global list and the legacy
         // cup_handle_enabled flag stay exactly as they were — an account
         // arming a strategy must not arm it for anyone else.
-        setState(db, acctEnabledKey(acct), JSON.stringify(keys))
+        //
+        // Writing the whole list here is what froze an account's entire trade
+        // column the first time one cell was touched. Migrate any legacy list
+        // first so the other fourteen cells keep the value they had, then pin
+        // just this one.
+        migrateTradeOverlay(db, { getState, setState }, acct)
+        writeCell(db, { getState, setState }, acct, 'strategy', key, 'trade', flag)
         return loadStageMatrix(db, getState, acct)
       }
       setState(db, 'enabled_strategies_json', JSON.stringify(keys))
