@@ -1,0 +1,2013 @@
+{
+  "generatedFrom": "audit-strategy-invariants.mjs",
+  "strategies": [
+    {
+      "key": "fib_618_fade",
+      "name": "Fibonacci 61.8% Fade",
+      "defaultOn": false,
+      "pendingCapable": true,
+      "registryMinBars": 14,
+      "computeName": "computeFibSignal",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 14,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 13,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 14,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 35,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 33,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 28,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 34,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "cup_handle",
+      "name": "Cup & Handle",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 210,
+      "computeName": "computeCupHandleSignal",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 210,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 209,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 210,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 231,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 229,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 224,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "inv_cup_handle",
+      "name": "Inverted Cup & Handle",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 210,
+      "computeName": "computeInvCupHandleSignal",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 210,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 209,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 210,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 231,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 229,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 224,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 230,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "ema_pullback",
+      "name": "EMA Trend-Pullback",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 450,
+      "computeName": "computeEmaPullback",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 450,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 449,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 450,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 471,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 469,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 464,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 470,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "donchian_breakout",
+      "name": "Range Breakout",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 40,
+      "computeName": "computeDonchianBreakout",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 40,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 39,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 40,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 61,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 59,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 54,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 60,
+          "threw": false,
+          "kind": "signal",
+          "dir": null,
+          "nonFiniteFields": []
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 60,
+          "threw": false,
+          "kind": "signal",
+          "dir": null,
+          "nonFiniteFields": []
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "rsi_meanrev",
+      "name": "RSI Mean-Reversion",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 75,
+      "computeName": "computeRsiMeanrev",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 75,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 74,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 75,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 96,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 94,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 89,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 95,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "vwap_trend",
+      "name": "VWAP Trend",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 30,
+      "computeName": "computeVwapTrend",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 30,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 29,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 30,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 51,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 49,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 44,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 50,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "vp_value",
+      "name": "Vol. Profile Value",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 40,
+      "computeName": "computeVpValue",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 40,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 39,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 40,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 61,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 59,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 54,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "rsi2_reversion",
+      "name": "RSI 2 Reversion",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 104,
+      "computeName": "computeRsi2",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 104,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 103,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 104,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 125,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 123,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 118,
+          "threw": false,
+          "kind": "signal",
+          "dir": null,
+          "nonFiniteFields": []
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 124,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "fib_confluence",
+      "name": "Fibonacci Confluence",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 40,
+      "computeName": "computeFibConfluence",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 40,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 39,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 40,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 61,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 59,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 54,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "va_breakout",
+      "name": "Value-Area Breakout",
+      "defaultOn": true,
+      "pendingCapable": false,
+      "registryMinBars": 60,
+      "computeName": "computeVaBreakout",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 60,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 59,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 81,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 79,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 74,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    },
+    {
+      "key": "fvg_retrace",
+      "name": "FVG Retrace",
+      "defaultOn": false,
+      "pendingCapable": false,
+      "registryMinBars": 60,
+      "computeName": "computeFvgSignal",
+      "liveOrDead": "live module",
+      "minBarsStampedOnFn": 60,
+      "cases": [
+        {
+          "case": "insufficient_history",
+          "bars": 0,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "one_bar",
+          "bars": 1,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "minus_one_bar",
+          "bars": 59,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "exactly_min_history",
+          "bars": 60,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "flat_prices",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_rise",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "monotonic_fall",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_range_bars",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "sawtooth",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "duplicated_bars",
+          "bars": 81,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "out_of_order_timestamps",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "missing_interval",
+          "bars": 79,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "nan_close",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "null_low",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "infinite_high",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "impossible_ohlc",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "zero_volume",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "giant_wick",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "price_scale_change",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_up",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_breakout_down",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_dip_then_bounce",
+          "bars": 74,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_rise_volspike",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        },
+        {
+          "case": "pos_fall_volspike",
+          "bars": 80,
+          "threw": false,
+          "kind": "null"
+        }
+      ],
+      "futureBarInvariance": {
+        "sameForIdenticalInput": true,
+        "note": "appending later bars legitimately changes the CURRENT decision; this only asserts determinism on identical input",
+        "appendedDiffered": false
+      },
+      "symmetry": {
+        "onRise": "null",
+        "onMirroredFall": "null"
+      }
+    }
+  ],
+  "summary": {
+    "total": 12,
+    "dead": [],
+    "threwOnAnyCase": [],
+    "signalledOnFlatPrices": [],
+    "signalledOnZeroRange": [],
+    "signalledBelowMinBars": [],
+    "noPositiveControl": [
+      "fib_618_fade",
+      "cup_handle",
+      "inv_cup_handle",
+      "ema_pullback",
+      "rsi_meanrev",
+      "vwap_trend",
+      "vp_value",
+      "fib_confluence",
+      "va_breakout",
+      "fvg_retrace"
+    ],
+    "producedNonFiniteLevels": [],
+    "minBarsStampMissing": []
+  }
+}

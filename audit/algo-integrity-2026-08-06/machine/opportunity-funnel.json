@@ -1,0 +1,16 @@
+{
+  "frozenSha": "0e6465158337c40d70952334b685551c7afdd289",
+  "status": "NOT EXECUTED - DATA UNAVAILABLE",
+  "blocker": "No agent database present. Executable read-only queries in evidence/data-queries.sql.",
+  "unitWarning": "veto-breakdown counts decision_log SKIP ROWS, not unique opportunities. The owner's 7-day 793-approved / 46,380-vetoed figure is a ROW ratio and must not be read as an opportunity conversion rate - the 32,115 unknown_daily_pnl rows are ONE unresolved closed trade logged 32,115 times.",
+  "onlyMeasuredStage": {
+    "stage": "connectivity_gate",
+    "source": "agent/loop.js:1173",
+    "measuredAt": "2026-08-05T12:26:00Z",
+    "accountProbeSkips24h": 965,
+    "tradesOpened12h": 0,
+    "tradesOpenedPriorDay": 87,
+    "finding": "F-CONN-01"
+  },
+  "stages": []
+}

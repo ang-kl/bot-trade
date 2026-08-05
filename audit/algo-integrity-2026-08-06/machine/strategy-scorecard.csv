@@ -1,0 +1,13 @@
+strategy,default_on,min_bars,pending_capable,module_live,adversarial_series_clean,harness_positive_control,repo_positive_control,edge_status
+fib_618_fade,False,14,True,True,True,False,True,EDGE UNPROVEN
+cup_handle,True,210,False,True,True,False,True,EDGE UNPROVEN
+inv_cup_handle,True,210,False,True,True,False,True,EDGE UNPROVEN
+ema_pullback,True,450,False,True,True,False,True,EDGE UNPROVEN
+donchian_breakout,True,40,False,True,True,True,True,EDGE UNPROVEN
+rsi_meanrev,True,75,False,True,True,False,True,EDGE UNPROVEN
+vwap_trend,True,30,False,True,True,False,True,EDGE UNPROVEN
+vp_value,True,40,False,True,True,False,True,EDGE UNPROVEN
+rsi2_reversion,True,104,False,True,True,True,True,EDGE UNPROVEN
+fib_confluence,True,40,False,True,True,False,True,EDGE UNPROVEN
+va_breakout,True,60,False,True,True,False,True,EDGE UNPROVEN
+fvg_retrace,False,60,False,True,True,False,True,EDGE UNPROVEN

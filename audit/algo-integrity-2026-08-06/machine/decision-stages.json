@@ -1,0 +1,182 @@
+{
+  "frozenSha": "0e6465158337c40d70952334b685551c7afdd289",
+  "note": "Trigger/scope/fail-behaviour read from source at the frozen SHA. Observed traces are BLOCKED - no runtime data.",
+  "stages": [
+    {
+      "stage": "broker_account_eligibility",
+      "source": "agent/loop.js",
+      "trigger": "timer",
+      "scope": "account",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "account_probe skip"
+    },
+    {
+      "stage": "symbol_market_hours",
+      "source": "agent/services/market-hours.js",
+      "trigger": "timer",
+      "scope": "symbol",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "skip"
+    },
+    {
+      "stage": "tick_trendbar_acquisition",
+      "source": "agent/lib/ctrader-ws.js + cpp-exec/src/spot_feed.cpp",
+      "trigger": "broker event",
+      "scope": "symbol",
+      "failBehaviour": "fail-unknown",
+      "blockedDisposition": "null bars"
+    },
+    {
+      "stage": "data_validation_bar_closure",
+      "source": "agent/services/*-strategy.js",
+      "trigger": "closed bar",
+      "scope": "symbol",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "null"
+    },
+    {
+      "stage": "strategy_computation",
+      "source": "agent/services/strategies.js",
+      "trigger": "closed bar",
+      "scope": "symbol+strategy",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "null signal"
+    },
+    {
+      "stage": "candidate_collection",
+      "source": "agent/loop.js",
+      "trigger": "timer",
+      "scope": "symbol",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "empty"
+    },
+    {
+      "stage": "selection",
+      "source": "agent/loop.js",
+      "trigger": "timer",
+      "scope": "symbol+strategy",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "not selected"
+    },
+    {
+      "stage": "analyse_slot_allocation",
+      "source": "agent/loop.js",
+      "trigger": "timer",
+      "scope": "account",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "starved"
+    },
+    {
+      "stage": "stage_matrix_arming",
+      "source": "agent/services/stage-matrix.js",
+      "trigger": "timer",
+      "scope": "account+strategy",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "blocked"
+    },
+    {
+      "stage": "regime_awareness_vol",
+      "source": "agent/services/vol-regime.js",
+      "trigger": "timer",
+      "scope": "symbol",
+      "failBehaviour": "fail-open",
+      "blockedDisposition": "context only"
+    },
+    {
+      "stage": "risk_evaluation_sizing",
+      "source": "agent/services/risk.js",
+      "trigger": "timer",
+      "scope": "account+symbol",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "veto"
+    },
+    {
+      "stage": "opportunity_identity",
+      "source": "agent/services/decision-log.js",
+      "trigger": "timer",
+      "scope": "opportunity",
+      "failBehaviour": "fail-open",
+      "blockedDisposition": "logged"
+    },
+    {
+      "stage": "order_intent",
+      "source": "agent/loop.js",
+      "trigger": "timer",
+      "scope": "order",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "refused"
+    },
+    {
+      "stage": "execution",
+      "source": "agent/lib/exec-engine.js",
+      "trigger": "order intent",
+      "scope": "order",
+      "failBehaviour": "fail-closed + js fallback",
+      "blockedDisposition": "throw"
+    },
+    {
+      "stage": "broker_acknowledgement",
+      "source": "cpp-exec/src/engine.cpp",
+      "trigger": "broker event",
+      "scope": "order",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "error frame"
+    },
+    {
+      "stage": "order_fill_persistence",
+      "source": "agent/db.js",
+      "trigger": "broker event",
+      "scope": "trade",
+      "failBehaviour": "fail-unknown",
+      "blockedDisposition": "missing row"
+    },
+    {
+      "stage": "position_protection_verification",
+      "source": "agent/services/position-protect.js",
+      "trigger": "poll",
+      "scope": "position",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "alert"
+    },
+    {
+      "stage": "management",
+      "source": "agent/services/profit-keeper.js + cpp-exec/src/trail_engine.cpp",
+      "trigger": "tick + poll",
+      "scope": "position",
+      "failBehaviour": "fail-open",
+      "blockedDisposition": "no amend"
+    },
+    {
+      "stage": "amend_close_ack",
+      "source": "agent/lib/exec-engine.js",
+      "trigger": "broker event",
+      "scope": "position",
+      "failBehaviour": "fail-closed",
+      "blockedDisposition": "throw"
+    },
+    {
+      "stage": "reconciliation",
+      "source": "agent/loop.js",
+      "trigger": "poll",
+      "scope": "account",
+      "failBehaviour": "fail-open",
+      "blockedDisposition": "stale"
+    },
+    {
+      "stage": "pnl_backfill",
+      "source": "agent/services/pnl-backfill.js",
+      "trigger": "poll",
+      "scope": "trade",
+      "failBehaviour": "fail-unknown",
+      "blockedDisposition": "null pnl"
+    },
+    {
+      "stage": "performance_governance",
+      "source": "agent/services/perf-ledger.js",
+      "trigger": "poll",
+      "scope": "strategy",
+      "failBehaviour": "fail-open",
+      "blockedDisposition": "no data"
+    }
+  ]
+}

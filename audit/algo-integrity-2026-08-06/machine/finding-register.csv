@@ -1,0 +1,4 @@
+id,title,classification,severity,confidence,status,hypothesis,scope,owner_policy_decision,remedy
+F-RISK-01,sameSideAccountIds selects the WRONG side on every call,defect,critical,high,proved,H06,acting-layer.js:167-177; ctrader-creds.js:23-61; loss-cap.js:377; profit-ratchet.js:157,no,"Return isLive from getCtraderCreds, derived from creds.host"
+F-CONN-01,Enabled accounts cannot self-heal onto the sidecar authorised roster,defect,capital,high,proved,"H06,H18",engine.cpp:106-115; main.cpp:144; heartbeat.js rosterDrift; ctrader-creds.js:42; loop.js:1173,yes (Phase 3 deployment),"Two-sidecar split; Phases 0-1 shipped, 2-3 remain"
+F-OBS-01,Load-bearing exec-engine citations in heartbeat.js pointed at unrelated lines,observability gap,low,high,proved,H01,agent/services/heartbeat.js,no,Re-stamped to 176/248/281-287/293 - fixed during this audit

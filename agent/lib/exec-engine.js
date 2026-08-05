@@ -28,7 +28,7 @@ const fallbackEnabled = () => String(process.env.EXEC_FALLBACK ?? '1') !== '0'
 let onFallback = (note) => console.warn(`[exec] ${note}`)
 export function setFallbackReporter(fn) { onFallback = typeof fn === 'function' ? fn : onFallback }
 
-async function withFallback(op, cppFn, jsFn) {
+async function withFallback(op, cppFn, jsFn, base) {
   try {
     return await cppFn()
   } catch (err) {
@@ -36,10 +36,14 @@ async function withFallback(op, cppFn, jsFn) {
     const { mayFallbackToJs, fallbackNote } = await import('./exec-fallback.js')
     // Ask the sidecar whether it holds a broker session. A short timeout: this
     // runs on an already-failing path and must not add latency to an order.
+    //
+    // `base` is the sidecar the failing call went to. Pinging any OTHER one
+    // would answer a question nobody asked — a healthy live sidecar must never
+    // be read as evidence that the demo sidecar did not act.
     let connected = null
     let reachable = true
     try {
-      const h = await pingSidecar({ timeoutMs: 2_000 })
+      const h = await pingSidecar({ timeoutMs: 2_000, base })
       connected = h?.connected ?? null
       reachable = h?.ok === true || h?.connected !== undefined
     } catch { reachable = false }
@@ -57,12 +61,45 @@ async function ws() {
   return import('../lib/ctrader-ws.js')
 }
 
-function execBase() {
-  return process.env.EXEC_URL || 'http://127.0.0.1:8091'
+// ---------------------------------------------------------------------------
+// THE ROUTING SEAM (Phase 1 of the two-sidecar plan, 2026-08-05).
+//
+// One ExecEngine holds exactly one broker host for its whole life
+// (cpp-exec/src/engine.cpp — POST /connect with a different host TEARS DOWN the
+// existing session rather than adding one). So live and demo accounts cannot
+// share a sidecar process, and on 05-08 they did not share one: all four demo
+// accounts sat `enabled = 1` in the registry and absent from the single
+// sidecar's authorised roster, every dispatch short-circuited at the
+// connectivity gate, and no trade opened for twelve hours.
+//
+// `execBase()` was a no-arg global returning ONE url, which is why nothing in
+// Node could express "the demo account's sidecar". This function is the seam
+// that makes it expressible.
+//
+// MIGRATION PROPERTY: with only EXEC_URL set — today's deployment — every host
+// resolves to the same single base and nothing changes. The split happens later
+// by setting one env var, and unsetting it rolls back.
+//
+// An UNKNOWN host also falls back to the default rather than throwing. Node
+// must not be the thing that decides a host is illegitimate: the sidecar
+// refuses a host that disagrees with its own (Phase 3), which is enforcement at
+// the boundary rather than a guess in the caller.
+// ---------------------------------------------------------------------------
+export const EXEC_HOST_LIVE = 'live.ctraderapi.com'
+export const EXEC_HOST_DEMO = 'demo.ctraderapi.com'
+
+/** @param {{host?: string}|string} [credsOrHost] */
+export function execBaseFor(credsOrHost) {
+  const fallback = process.env.EXEC_URL || 'http://127.0.0.1:8091'
+  const raw = typeof credsOrHost === 'string' ? credsOrHost : credsOrHost?.host
+  const host = String(raw || '').trim().toLowerCase()
+  if (host === EXEC_HOST_LIVE) return process.env.EXEC_URL_LIVE || fallback
+  if (host === EXEC_HOST_DEMO) return process.env.EXEC_URL_DEMO || fallback
+  return fallback
 }
 
-async function sidecar(method, path, body) {
-  const res = await fetch(execBase() + path, {
+async function sidecar(base, method, path, body) {
+  const res = await fetch(base + path, {
     method,
     headers: {
       authorization: `Bearer ${process.env.EXEC_SECRET || ''}`,
@@ -87,7 +124,13 @@ async function sidecar(method, path, body) {
 // The sidecar holds no broker credentials of its own — the access token and
 // account id live in the keeper's DB. Push them before the first call and
 // again whenever they change (token refresh, account switch).
-let lastPushedKey = ''
+//
+// KEYED BY BASE URL, not global. Two sidecars hold two independent sessions,
+// and a scalar memo would let a push to the live sidecar satisfy the demo
+// sidecar's check — the demo process would then serve orders having never been
+// sent any credentials at all. With one base configured this map holds exactly
+// one entry and behaves as the scalar did.
+const lastPushedKey = new Map()
 
 // M4 finding (2026-07-24): when the SIDECAR alone restarts (env change,
 // crash, Railway redeploy of just that service) it loses its credentials,
@@ -95,8 +138,11 @@ let lastPushedKey = ''
 // without pushing and the broker session never comes back until the AGENT
 // restarts. The heartbeat probe calls this when it sees hasCredentials:false
 // on a live sidecar, forcing the next ensure (or its own re-push) through.
+// Clears EVERY base. Its callers mean "forget everything we believe about the
+// sidecar session" — a partial clear would leave exactly the stale belief they
+// are trying to discard.
 export function invalidateSidecarSession() {
-  lastPushedKey = ''
+  lastPushedKey.clear()
 }
 
 // Explicit re-push for the probe path: invalidate + ensure in one call.
@@ -130,9 +176,10 @@ async function ensureSidecarSession(creds) {
   const roster = Array.isArray(creds.accountIds) && creds.accountIds.length
     ? creds.accountIds.join(',')
     : String(creds.accountId)
+  const base = execBaseFor(creds)
   const key = `${creds.host}|${roster}|${creds.accessToken}`
-  if (key === lastPushedKey) return
-  await sidecar('POST', '/connect', {
+  if (key === lastPushedKey.get(base)) return
+  await sidecar(base, 'POST', '/connect', {
     host: creds.host,
     clientId: creds.clientId,
     clientSecret: creds.clientSecret,
@@ -142,7 +189,7 @@ async function ensureSidecarSession(creds) {
       ? { accountIds: creds.accountIds }
       : {}),
   })
-  lastPushedKey = key
+  lastPushedKey.set(base, key)
 }
 
 // Option 4: hand the profit keeper's trail specs to the sidecar's
@@ -154,7 +201,7 @@ export async function pushTrailConfig(creds, positions) {
   if (execEngineMode() !== 'cpp') return false
   try {
     await ensureSidecarSession(creds)
-    const r = await sidecar('POST', '/trail-config', { positions: Array.isArray(positions) ? positions : [] })
+    const r = await sidecar(execBaseFor(creds), 'POST', '/trail-config', { positions: Array.isArray(positions) ? positions : [] })
     // The sidecar now reports specs it REFUSED (bad dir / missing ids) —
     // surface the coverage gap instead of letting "sent N" read as "tracking N".
     if (r && Number(r.rejected) > 0) {
@@ -173,14 +220,18 @@ export async function pushTrailConfig(creds, positions) {
 // back to the JS engine.
 export async function backtestRemote(payload) {
   if (execEngineMode() !== 'cpp') return null
-  return sidecar('POST', '/backtest', payload)
+  // DELIBERATELY the default base, not a routed one. The backtester pushes no
+  // credentials and touches no account, so it has no side to be on; either
+  // sidecar answers identically. Routing it would invent a choice that does
+  // not exist.
+  return sidecar(execBaseFor(), 'POST', '/backtest', payload)
 }
 
 // Liveness probe of the C++ engine for the heartbeat monitor. js mode is
 // trivially "alive" (execution happens in-process); cpp mode polls the
 // sidecar's unauthenticated GET /health, which also reports whether its
 // broker session is up and when it last reconciled.
-export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
+export async function pingSidecar({ timeoutMs = 5_000, base = execBaseFor() } = {}) {
   if (execEngineMode() !== 'cpp') return { ok: true, mode: 'js' }
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), timeoutMs)
@@ -188,7 +239,7 @@ export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
     // Authenticated: the sidecar now serves the account roster on /health
     // ONLY to a bearer-carrying caller when EXEC_SECRET is set (the bare
     // response keeps ok/connected/counts for Railway's probe).
-    const res = await fetch(execBase() + '/health', {
+    const res = await fetch(base + '/health', {
       signal: ctrl.signal,
       headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
     })
@@ -234,17 +285,22 @@ export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
 //     must never silently stop reconciling every account
 //   - js mode → null: every broker call opens its own socket, so there is no
 //     persistent session for an account to be disconnected FROM
-const rosterCache = { at: 0, accounts: null }
-export async function sidecarRoster({ ttlMs = 20_000, timeoutMs = 4_000 } = {}) {
+//
+// CACHED PER BASE. One sidecar's roster is not evidence about another's, and a
+// shared cache entry would hand the demo sidecar's callers the live sidecar's
+// answer for up to the TTL — the exact confusion this whole seam exists to end.
+const rosterCache = new Map() // baseUrl -> {at, accounts}
+export async function sidecarRoster({ ttlMs = 20_000, timeoutMs = 4_000, base = execBaseFor() } = {}) {
   if (execEngineMode() !== 'cpp') return null
   const now = Date.now()
-  if (now - rosterCache.at < ttlMs) return rosterCache.accounts
-  const h = await pingSidecar({ timeoutMs })
-  rosterCache.at = now
-  rosterCache.accounts = h.ok && h.connected === true && Array.isArray(h.accounts)
+  const hit = rosterCache.get(base)
+  if (hit && now - hit.at < ttlMs) return hit.accounts
+  const h = await pingSidecar({ timeoutMs, base })
+  const accounts = h.ok && h.connected === true && Array.isArray(h.accounts)
     ? h.accounts.map(String)
     : null
-  return rosterCache.accounts
+  rosterCache.set(base, { at: now, accounts })
+  return accounts
 }
 
 // P10: read-back of the C++ tick-level ratchet (GET /trail-status) so Node
@@ -258,7 +314,7 @@ export async function getTrailStatus(creds, { timeoutMs = 5_000 } = {}) {
   const t = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
     await ensureSidecarSession(creds)
-    const res = await fetch(execBase() + '/trail-status', {
+    const res = await fetch(execBaseFor(creds) + '/trail-status', {
       signal: ctrl.signal,
       headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
     })
@@ -417,11 +473,11 @@ export async function placeOrder(creds, orderPayload) {
   orderPayload = withNumericIds(withAccount(creds, orderPayload))
   if (execEngineMode() === 'cpp') {
     return withFallback('order',
-      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/order', orderPayload) },
+      async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/order', orderPayload) },
       async () => {
         const m = await ws()
         return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
-      })
+      }, execBaseFor(creds))
   }
   const m = await ws()
   return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
@@ -431,18 +487,18 @@ export async function placeOrder(creds, orderPayload) {
 export async function setExecGuard(creds, cfg) {
   if (execEngineMode() !== 'cpp') return { ok: true, mode: 'js' }
   await ensureSidecarSession(creds)
-  return sidecar('POST', '/config', cfg)
+  return sidecar(execBaseFor(creds), 'POST', '/config', cfg)
 }
 
 export async function amendPosition(creds, args) {
   args = withNumericIds(withAccount(creds, args))
   if (execEngineMode() === 'cpp') {
     return withFallback('amend',
-      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/amend', args) },
+      async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/amend', args) },
       async () => {
         const m = await ws()
         return m.wsAmendPosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
-      })
+      }, execBaseFor(creds))
   }
   const m = await ws()
   return m.wsAmendPosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
@@ -452,11 +508,11 @@ export async function closePosition(creds, args) {
   args = withNumericIds(withAccount(creds, args))
   if (execEngineMode() === 'cpp') {
     return withFallback('close',
-      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/close', args) },
+      async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/close', args) },
       async () => {
         const m = await ws()
         return m.wsClosePosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
-      })
+      }, execBaseFor(creds))
   }
   const m = await ws()
   return m.wsClosePosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
@@ -470,11 +526,11 @@ export async function cancelOrder(creds, { orderId }) {
   const acct = withNumericIds(withAccount(creds, { orderId }))
   if (execEngineMode() === 'cpp') {
     return withFallback('cancel',
-      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/cancel', acct) },
+      async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/cancel', acct) },
       async () => {
         const m = await ws()
         return m.wsCancelOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, { orderId })
-      })
+      }, execBaseFor(creds))
   }
   const m = await ws()
   return m.wsCancelOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, { orderId })
@@ -498,10 +554,10 @@ export async function reconcile(creds) {
       // 404s — fall back to the legacy GET (primary-account view), which is
       // identical in the single-account era.
       try {
-        return await sidecar('POST', '/positions', { ctidTraderAccountId: parseInt(creds.accountId) })
+        return await sidecar(execBaseFor(creds), 'POST', '/positions', { ctidTraderAccountId: parseInt(creds.accountId) })
       } catch (err) {
         if (!/404|not found/i.test(err.message)) throw err
-        return await sidecar('GET', '/positions')
+        return await sidecar(execBaseFor(creds), 'GET', '/positions')
       }
     } catch (err) {
       if (!/no reconcile data yet/.test(err.message)) throw err

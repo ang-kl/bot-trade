@@ -1,0 +1,20 @@
+writer,language,can_amend,can_close,trigger_clock,account_scope_enforced,single_flight,broker_ack_required
+loop.js,js,yes,yes,poll,True,False,yes
+routes/actions.js,js,yes,yes,human,True,False,yes
+services/trade-guard.js,js,yes,yes,poll,True,True,yes
+services/profit-keeper.js,js,yes,yes,tick+poll,True,True,yes
+services/loss-guardian.js,js,yes,yes,poll,True,True,yes
+services/loss-cap.js,js,yes,yes,poll,PARTIAL - F-RISK-01,True,yes
+services/profit-ratchet.js,js,yes,yes,poll,PARTIAL - F-RISK-01,True,yes
+services/weekend-bank.js,js,yes,yes,poll,True,True,yes
+services/restrategize.js,js,yes,yes,poll,True,True,yes
+services/position-protect.js,js,yes,yes,poll,True,True,yes
+services/tp-suggest.js,js,yes,yes,poll,True,True,yes
+services/trade-consistency.js,js,yes,yes,poll,True,True,yes
+services/pnl-backfill.js,js,yes,yes,poll,read-only,False,yes
+services/broker-history-import.js,js,yes,yes,poll,read-only,False,yes
+lib/exec-engine.js,js,yes,yes,delegated,True,False,yes
+services/acting-layer.js,js,yes,yes,arbiter,True,True,yes
+cpp-exec/src/trail_engine.cpp,cpp,yes,yes,tick,session,False,yes
+cpp-exec/src/engine.cpp,cpp,yes,yes,request,session,False,yes
+cpp-exec/src/order_guard.cpp,cpp,yes,yes,pre-order,session,False,yes
