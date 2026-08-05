@@ -52,10 +52,10 @@ function pipsFromPrice(entry, price, pipSize, dir, kind) {
 function Stepper({ label, value, onChange, step = 1, digits = 1 }) {
   return (
     <div className="flex items-center justify-between border-t border-[var(--color-border)] py-1.5">
-      <span className="text-[9px]">{label}</span>
+      <span className="text-(length:--fs-body)">{label}</span>
       <span className="flex items-center gap-2">
         <input
-          className="w-24 text-right text-[9px] bg-transparent border border-[var(--color-border)] rounded-[var(--radius-control)] px-1.5 py-0.5"
+          className="w-24 text-right text-(length:--fs-body) bg-transparent border border-[var(--color-border)] rounded-[var(--radius-control)] px-1.5 py-0.5"
           value={value ?? ''}
           onChange={e => onChange(e.target.value)}
           inputMode="decimal"
@@ -76,7 +76,7 @@ function Stepper({ label, value, onChange, step = 1, digits = 1 }) {
 function ToggleRow({ label, on, onToggle }) {
   return (
     <div className="flex items-center justify-between py-1.5">
-      <span className="text-[9px] font-semibold">{label}</span>
+      <span className="text-(length:--fs-body) font-semibold">{label}</span>
       <button
         type="button" role="switch" aria-checked={on} onClick={onToggle}
         title={`${label}: ${on ? 'ON' : 'OFF'}`}
@@ -181,7 +181,7 @@ export default function PositionManager({ p, onDone }) {
       {/* Header — PID + symbol + lots, exactly like the cTrader sheet title.
           Sticky so the title + close stay reachable while a tall tab scrolls. */}
       <div className="flex items-center justify-between mb-2 sticky top-0 z-10 -mx-3 -mt-3 px-3 pt-3 pb-2 bg-[var(--color-surface)] rounded-t-2xl sm:rounded-t-[12px]">
-        <h3 className="text-[12px] font-bold">PID{p.positionId} {p.symbol} ({fmt(p.lots, 2)})</h3>
+        <h3 className="text-(length:--fs-h) font-bold">PID{p.positionId} {p.symbol} ({fmt(p.lots, 2)})</h3>
         <IconButton size="sm" variant="ghost" label="Close sheet" onClick={onDone}>✕</IconButton>
       </div>
 
@@ -201,13 +201,13 @@ export default function PositionManager({ p, onDone }) {
               const n = (i + d + TABS.length) % TABS.length
               setTab(TABS[n].key); tabRefs.current[n]?.focus()
             }}
-            className={`flex-1 rounded-[var(--radius-control)] px-2 py-1 text-[9px] font-semibold cursor-pointer ${tab === t.key ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
+            className={`flex-1 rounded-[var(--radius-control)] px-2 py-1 text-(length:--fs-body) font-semibold cursor-pointer ${tab === t.key ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
             {t.label}
           </button>
         ))}
       </div>
 
-      {msg && <div className={`mb-2 text-[9px] ${msg.startsWith('Error') ? 'text-[var(--color-down)]' : 'text-[var(--color-accent)]'}`}>{msg}</div>}
+      {msg && <div className={`mb-2 text-(length:--fs-body) ${msg.startsWith('Error') ? 'text-[var(--color-down)]' : 'text-[var(--color-accent)]'}`}>{msg}</div>}
 
       {tab === 'Modify' && (
         <div>
@@ -219,17 +219,17 @@ export default function PositionManager({ p, onDone }) {
               </span>
             ))}
           </div>
-          <div className="text-center text-[9px] text-[var(--color-text-sub)] mb-2">
+          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">
             Entry price: {fmt(p.entry, p.digits ?? 5)} · Now: {fmt(p.currentPrice, p.digits ?? 5)}
           </div>
-          <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-[9px]">
+          <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-(length:--fs-body)">
             <span>Quantity (Lots)</span><span className="font-semibold">{fmt(p.lots, 2)}</span>
           </div>
-          <div className="text-[9px] text-[var(--color-text-sub)] mb-2">Used margin: {money(p.usedMargin)}</div>
+          <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">Used margin: {money(p.usedMargin)}</div>
 
           <button type="button" disabled className="w-full rounded-[var(--radius-control)] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
-          <div className="text-center text-[9px] text-[var(--color-text-sub)] my-1.5">Leave size intact</div>
-          <div className="text-center text-[9px] text-[var(--color-text-sub)] mb-1.5">or</div>
+          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] my-1.5">Leave size intact</div>
+          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <div className="flex gap-2 mb-1.5">
             {/* Real market orders — danger emphasis, not subtle (inventory D20/D21). */}
@@ -240,7 +240,7 @@ export default function PositionManager({ p, onDone }) {
               onClick={() => window.confirm(`Reverse ${p.symbol}: CLOSE this ${p.side} and open ${p.side === 'BUY' ? 'SELL' : 'BUY'} ${fmt(p.lots, 2)} lots at market?`) &&
                 run(() => agentPost('/actions/position-reverse', { positionId: p.positionId }), 'Position reversed')}>Reverse</Button>
           </div>
-          <div className="text-center text-[9px] text-[var(--color-text-sub)] mb-1.5">or</div>
+          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <button type="button" disabled={busy}
             className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
@@ -248,7 +248,7 @@ export default function PositionManager({ p, onDone }) {
               run(() => agentPost('/actions/position-close', { positionId: p.positionId }), 'Position closed')}>
             Close ({fmt(p.currentPrice, p.digits ?? 5)})
           </button>
-          <div className="text-center text-[9px] mt-1.5">
+          <div className="text-center text-(length:--fs-body) mt-1.5">
             Net P&L: <span className={(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote ?? 0) >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{money(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)}</span>
           </div>
         </div>
@@ -288,7 +288,7 @@ export default function PositionManager({ p, onDone }) {
                   if (px != null) setSlPrice(String(Math.round(px * 10 ** (p.digits ?? 5)) / 10 ** (p.digits ?? 5)))
                 }} />
               <Stepper label="Price" value={slPrice} onChange={setSlPrice} step={p.pipSize ?? 0.001} digits={p.digits ?? 5} />
-              <div className="flex items-center justify-between border-t border-[var(--color-border)] py-1.5 text-[9px]">
+              <div className="flex items-center justify-between border-t border-[var(--color-border)] py-1.5 text-(length:--fs-body)">
                 <span>Trigger</span><span className="text-[var(--color-text-sub)]">Trade ›</span>
               </div>
               <ToggleRow label="Trailing Stop Loss" on={trailOn} onToggle={() => setTrailOn(v => !v)} />
@@ -312,7 +312,7 @@ export default function PositionManager({ p, onDone }) {
             onClick={applyProtection}>
             Modify protection
           </button>
-          <p className="mt-1.5 text-[9px] text-[var(--color-text-sub)]">
+          <p className="mt-1.5 text-(length:--fs-body) text-[var(--color-text-sub)]">
             SL and Take profit are held at the broker. Trailing, Break-even and Take profit 2–4 are enforced by the bot every scan cycle (they only ever tighten protection or take profit) — same as cTrader, where these run client-side.
           </p>
         </div>
@@ -323,7 +323,7 @@ export default function PositionManager({ p, onDone }) {
       )}
 
       {tab === 'Details' && (
-        <div className="text-[9px] space-y-1">
+        <div className="text-(length:--fs-body) space-y-1">
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Position</span><span className="font-semibold">PID{p.positionId}</span></div>
           {/* Direction, not P&L — contract: blue = long, red = short (on/off tints). */}
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Side</span><Badge tone={p.side === 'BUY' ? 'on' : 'off'}>{p.side}</Badge></div>

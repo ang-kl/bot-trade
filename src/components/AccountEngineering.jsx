@@ -58,14 +58,14 @@ function PhaseCell({ phases, phase }) {
   return (
     <span
       title={why}
-      className="inline-flex items-center gap-[2px] text-[9px] font-bold"
+      className="inline-flex items-center gap-[2px] text-(length:--fs-body) font-bold"
       style={{ color: on ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)' }}
     >
       <span aria-hidden="true" className="inline-block h-[6px] w-[6px] rounded-full"
         style={{ background: 'currentColor', boxShadow: '0 0 0 1px currentColor' }} />
       {phase.initial}
       {/* A dot marks an account carrying its own setting rather than the master's. */}
-      {!on && src === 'account' && <span aria-hidden="true" className="text-[9px]">•</span>}
+      {!on && src === 'account' && <span aria-hidden="true" className="text-(length:--fs-body)">•</span>}
     </span>
   )
 }
@@ -88,18 +88,18 @@ export default function AccountEngineering() {
       <div className="flex items-center gap-2 mb-1">
         <h3 className="t-h3">Per-account engineering status</h3>
       </div>
-      <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
+      <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">
         What the bot is actually doing for each account on your cTrader ID — not what it is configured to do.
         <strong> Off in Connect</strong> (enabled = no) means the account is not reconciled and never dispatched,
         whatever its switches say. <strong>Mode</strong> <code>active</code> may open new trades;
         <code> manage_only</code> manages what is already open and starts nothing.
         S/A/T are the effective Scan / Analyze / Autotrade switches — hover any of them for why it is off.
       </p>
-      {err && <div className="text-[9px] text-[var(--color-down)]" role="alert">{err}</div>}
-      {!view && !err && <div className="text-[9px] text-[var(--color-text-sub)]">Loading engineering status…</div>}
+      {err && <div className="text-(length:--fs-body) text-[var(--color-down)]" role="alert">{err}</div>}
+      {!view && !err && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading engineering status…</div>}
 
       {view && (
-        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[9px] text-[var(--color-text-sub)]">
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
           <span>
             C++ exec engine:{' '}
             {sc?.rosterKnown
@@ -122,13 +122,13 @@ export default function AccountEngineering() {
       )}
 
       {view && accounts.length === 0 && (
-        <div className="text-[9px] text-[var(--color-text-sub)]">No accounts in the registry yet — pick them on Connect.</div>
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">No accounts in the registry yet — pick them on Connect.</div>
       )}
 
       {accounts.length > 0 && (
         <div className="overflow-x-auto">
           <Collapse id="AccountEngineering_129" label="Switch Rows">
-          <table className="w-full text-[9px] tabular-nums">
+          <table className="w-full text-(length:--fs-body) tabular-nums">
             <thead>
               <tr className="text-left text-[var(--color-text-sub)]">
                 <th className="py-1 pr-3 font-semibold">Account</th>
@@ -153,7 +153,7 @@ export default function AccountEngineering() {
                         {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
                       </span>
                       {a.selected && (
-                        <span className="ml-1 text-[9px] text-[var(--color-accent)]"
+                        <span className="ml-1 text-(length:--fs-body) text-[var(--color-accent)]"
                           title="The account the pages are currently scoped to">viewing</span>
                       )}
                     </Cell>
@@ -193,7 +193,7 @@ export default function AccountEngineering() {
                       ? `${a.lastDecisionAt} — ${a.lastDecisionStage}: ${a.lastDecision}`
                       : 'No decision recorded. Nothing is written when a dispatch succeeds, so this is not evidence of inactivity.'}>
                       {decAge
-                        ? <>{decAge} ago <span className="text-[9px] text-[var(--color-text-sub)]">{a.lastDecisionStage}</span></>
+                        ? <>{decAge} ago <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{a.lastDecisionStage}</span></>
                         : '—'}
                     </Cell>
                     <Cell className="text-right" title={a.leverage ? `leverage 1:${a.leverage}` : ''}>
@@ -209,7 +209,7 @@ export default function AccountEngineering() {
       )}
 
       {view?.legacyOpenPositions > 0 && (
-        <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
+        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
           {view.legacyOpenPositions} open position{view.legacyOpenPositions === 1 ? '' : 's'} predate per-account
           tagging and carry no account. Counted here once rather than against every row, so these totals stay
           comparable with the Positions page.

@@ -46,13 +46,13 @@ function AccountCard({ acct, marketHours, onChanged }) {
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
-        <span className="text-[9px] font-semibold">{acct.traderLogin ? `Login ${acct.traderLogin}` : `Account ${acct.accountId}`}</span>
-        {acct.brokerTitle && <span className="text-[9px] text-[var(--color-text-sub)]">{acct.brokerTitle}</span>}
-        {acct.balance != null && <span className="text-[9px] font-semibold">{fmt(acct.balance, 2)}{acct.currency ? ` ${acct.currency}` : ''}</span>}
+        <span className="text-(length:--fs-body) font-semibold">{acct.traderLogin ? `Login ${acct.traderLogin}` : `Account ${acct.accountId}`}</span>
+        {acct.brokerTitle && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{acct.brokerTitle}</span>}
+        {acct.balance != null && <span className="text-(length:--fs-body) font-semibold">{fmt(acct.balance, 2)}{acct.currency ? ` ${acct.currency}` : ''}</span>}
         {acct.selected && <Badge tone="on">BOT TRADES THIS ONE</Badge>}
       </div>
-      {acct.error && <div className="text-[9px] text-[var(--color-warning-text)]">Snapshot failed: {acct.error}</div>}
-      {acct.metaError && <div className="text-[9px] text-[var(--color-warning-text)]">{acct.metaError} — showing raw ids.</div>}
+      {acct.error && <div className="text-(length:--fs-body) text-[var(--color-warning-text)]">Snapshot failed: {acct.error}</div>}
+      {acct.metaError && <div className="text-(length:--fs-body) text-[var(--color-warning-text)]">{acct.metaError} — showing raw ids.</div>}
 
       <AccountHealth acct={acct} />
       <div className="mt-3">
@@ -60,7 +60,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
       </div>
 
       <button type="button" aria-expanded={open} onClick={() => setOpen(o => !o)} className="w-full text-left cursor-pointer mt-3">
-        <div className="flex items-center gap-2 text-[9px] text-[var(--color-text-sub)] border-t border-[var(--glass-edge)] pt-2">
+        <div className="flex items-center gap-2 text-(length:--fs-body) text-[var(--color-text-sub)] border-t border-[var(--glass-edge)] pt-2">
           <span className="font-semibold">Live positions &amp; pending orders</span>
           <span className="ml-auto">{acct.positions?.length ?? 0} open · {acct.orders?.length ?? 0} pending {open ? '▾ hide' : '▸ show'}</span>
         </div>
@@ -69,7 +69,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
         <div className="mt-1">
           {acct.positions?.length > 0 && (
             <>
-              <div className="text-[9px] font-semibold mt-1 mb-1">Live positions</div>
+              <div className="text-(length:--fs-body) font-semibold mt-1 mb-1">Live positions</div>
               <StdTradeTable
                 rows={brokerPositionRows(acct.positions, { manageable })}
                 countLabel="open positions"
@@ -80,7 +80,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
           )}
           {acct.orders?.length > 0 && (
             <>
-              <div className="text-[9px] font-semibold mt-2 mb-1">Pending (set) orders</div>
+              <div className="text-(length:--fs-body) font-semibold mt-2 mb-1">Pending (set) orders</div>
               <StdTradeTable
                 rows={brokerOrderRows(acct.orders, { manageable })}
                 countLabel="pending orders"
@@ -90,7 +90,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
             </>
           )}
           {!acct.error && !acct.positions?.length && !acct.orders?.length && (
-            <div className="text-[9px] text-[var(--color-text-sub)] mt-1">Flat — no open positions or pending orders.</div>
+            <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-1">Flat — no open positions or pending orders.</div>
           )}
         </div>
       )}
@@ -208,7 +208,7 @@ export default function Accounts() {
       <SectionNavFab />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Accounts</h1>
-        <span className="text-[9px] text-[var(--color-text-sub)]">
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           broker truth for ALL your accounts — manual trades show here · auto-refresh 30s{updatedAt ? ` · updated ${updatedAt.toLocaleTimeString()}` : ''}
         </span>
         <span className="ml-auto">
@@ -217,7 +217,7 @@ export default function Accounts() {
           </Button>
         </span>
       </div>
-      {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
+      {error && <Card className="border-[var(--color-down)] text-(length:--fs-body)">{error}</Card>}
 
       <AccountsSubNav />
 
@@ -237,7 +237,7 @@ export default function Accounts() {
       {!bot && !error && (
         <Card>
           {switchingTo && (
-            <div className="mb-2 text-[9px] font-semibold text-[var(--color-text-sub)]">
+            <div className="mb-2 text-(length:--fs-body) font-semibold text-[var(--color-text-sub)]">
               Loading {switchingTo} from the broker — about 5 seconds.
             </div>
           )}
@@ -259,8 +259,8 @@ export default function Accounts() {
       <div id="sec-primary">{bot && (viewAcct === 'all' || String(bot.accountId) === String(viewAcct)) && <AccountCard acct={bot} marketHours={marketHours} onChanged={loadBot} />}</div>
 
       <div id="sec-others" className="space-y-8">{others?.filter(a => viewAcct === 'all' || String(a.accountId) === String(viewAcct)).map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}</div>
-      {others && others.length === 0 && <p className="text-[9px] text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}
-      {viewAcct !== 'all' && !others && <p className="text-[9px] text-[var(--color-text-sub)]">Fetching that account from the broker…</p>}
+      {others && others.length === 0 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}
+      {viewAcct !== 'all' && !others && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Fetching that account from the broker…</p>}
 
       <AccountCompare accounts={bot ? [bot, ...(others || [])] : []} onNeedAll={loadAll} loading={loadingAll} />
 
@@ -271,7 +271,7 @@ export default function Accounts() {
         <StrategyInsights account={insightsAcct} />
       </div>
 
-      <p className="text-[9px] text-[var(--color-text-sub)]">
+      <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
         *Est. P&L is the price move in the symbol's quote currency (lots × contract size × Δprice), excluding swap and commission — cTrader's own app shows the exact figure.
       </p>
     </div>

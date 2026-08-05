@@ -177,18 +177,18 @@ export default function Connect() {
   return (
     <div className="space-y-8">
       <SectionNavFab />
-      {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
-      {status && <div className="text-[9px] text-[var(--color-info-text)]">{status}</div>}
+      {error && <Card className="border-[var(--color-down)] text-(length:--fs-body)">{error}</Card>}
+      {status && <div className="text-(length:--fs-body) text-[var(--color-info-text)]">{status}</div>}
 
       {/* Agent connection */}
       <Card>
         <h2 className="t-h3 mb-2" id="sec-agent">1 · Agent Backend form</h2>
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block text-[9px]">
+          <label className="block text-(length:--fs-body)">
             <span className="text-[var(--color-text-sub)]">Agent URL</span>
             <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://your-agent-host.example.com" />
           </label>
-          <label className="block text-[9px]">
+          <label className="block text-(length:--fs-body)">
             <span className="text-[var(--color-text-sub)]">Agent secret (AGENT_SECRET) — paste the full secret for order/close/config control; the default here is read-only</span>
             <Input type="password" value={secret} onChange={e => setSecret(e.target.value)} placeholder="shared secret" />
           </label>
@@ -207,7 +207,7 @@ export default function Connect() {
           )}
         </div>
         <div className="mt-3 border-t border-[var(--color-border)] pt-3">
-          <div className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
+          <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">
             Or log in without typing the secret — the bot texts a code to your Telegram:
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -248,7 +248,7 @@ export default function Connect() {
             )}
           </div>
         </div>
-        <p className="mt-2 text-[9px] text-[var(--color-text-sub)]">
+        <p className="mt-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
           One-tap setup link: <code>{'{site}'}/#{'{secret}'}</code> (or full form <code>{'{site}'}/connect#agent={'{agent-url}'}&secret={'{secret}'}</code>). The #fragment never leaves the browser — share it like a password.
         </p>
       </Card>
@@ -262,11 +262,11 @@ export default function Connect() {
 
         <div className="flex flex-wrap items-center gap-2">
           <Button onClick={startOAuth} disabled={linking}>{linking ? 'Connecting…' : 'Connect with cTrader'}</Button>
-          <span className="text-[9px] text-[var(--color-text-sub)]">— log in with your normal cTrader ID; your accounts appear below.</span>
+          <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">— log in with your normal cTrader ID; your accounts appear below.</span>
         </div>
 
         <details className="mt-3">
-          <summary className="text-[9px] text-[var(--color-text-sub)] cursor-pointer">Advanced: paste an access token manually</summary>
+          <summary className="text-(length:--fs-body) text-[var(--color-text-sub)] cursor-pointer">Advanced: paste an access token manually</summary>
           <div className="mt-2 flex gap-2">
             <Input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Spotware OAuth access token" className="flex-1" />
             <Button size="sm" variant="subtle" onClick={loadAccounts} disabled={linking}>Load accounts</Button>
@@ -275,7 +275,7 @@ export default function Connect() {
 
         {accounts && accounts.length > 0 && (
           <div className="mt-3">
-            <div className="text-[9px] text-[var(--color-text-sub)] mb-1.5">Tap the account the bot should trade with:</div>
+            <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">Tap the account the bot should trade with:</div>
             <div className="space-y-1.5">
               {accounts.map(a => {
                 const b = broker[a.accountId]
@@ -296,7 +296,7 @@ export default function Connect() {
                       identity and balance both select (same handler, so the
                       clickable area is unchanged), the chip only toggles
                       detail and gets native Enter AND Space + aria-expanded. */}
-                  <div className="flex w-full items-center gap-3 px-3 py-2 text-[9px] rounded-[7px] hover:bg-[var(--color-accent-soft)]">
+                  <div className="flex w-full items-center gap-3 px-3 py-2 text-(length:--fs-body) rounded-[7px] hover:bg-[var(--color-accent-soft)]">
                     <button
                       type="button"
                       disabled={linking}
@@ -318,7 +318,7 @@ export default function Connect() {
                         type="button"
                         aria-expanded={detailOpen}
                         onClick={() => setOpenDetail(detailOpen ? null : a.accountId)}
-                        className="inline-flex items-center gap-2 text-[9px] glass-inset rounded-[var(--radius-control)] px-2.5 py-1 cursor-pointer hover:shadow-[var(--glow-accent)]"
+                        className="inline-flex items-center gap-2 text-(length:--fs-body) glass-inset rounded-[var(--radius-control)] px-2.5 py-1 cursor-pointer hover:shadow-[var(--glow-accent)]"
                         title="Tap for per-trade detail"
                       >
                         <span>{b ? `${positions.length} live · ${orders.length} set` : 'detail'}</span>
@@ -334,7 +334,7 @@ export default function Connect() {
                     )}
                     {w && (
                       <span
-                        className="inline-flex items-center gap-1.5 text-[9px] glass-inset rounded-[var(--radius-control)] px-2.5 py-1"
+                        className="inline-flex items-center gap-1.5 text-(length:--fs-body) glass-inset rounded-[var(--radius-control)] px-2.5 py-1"
                         title={w.untested > 0
                           ? `Not backtested: ${w.untestedSample.join(', ')}${w.untestedTruncated ? ` and ${w.untested - w.untestedSample.length} more` : ''}`
                           : 'Every symbol on this list has a backtest on record'}
@@ -360,13 +360,13 @@ export default function Connect() {
                         {a.balance != null ? `$${(Number(a.balance) + floating).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
                       </span>
                       {positions.length > 0 && (
-                        <span className="block text-[9px] text-[var(--color-text-sub)]">incl. open trades ({floating >= 0 ? '+' : '−'}${Math.abs(floating).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
+                        <span className="block text-(length:--fs-body) text-[var(--color-text-sub)]">incl. open trades ({floating >= 0 ? '+' : '−'}${Math.abs(floating).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
                       )}
                       {linked?.accountId === a.accountId && <Badge tone="on">SELECTED</Badge>}
                     </button>
                   </div>
                   {detailOpen && (
-                    <div className="px-3 pb-2 text-[9px] border-t border-[var(--color-border)]">
+                    <div className="px-3 pb-2 text-(length:--fs-body) border-t border-[var(--color-border)]">
                       {b && positions.length === 0 && orders.length === 0 && <div className="pt-2 text-[var(--color-text-sub)]">Flat — no open positions or pending orders.</div>}
                       {!b && <div className="pt-2 text-[var(--color-text-sub)]">Positions not loaded for this account — the broker snapshot has not returned.</div>}
                       {positions.map(p => (
@@ -413,13 +413,13 @@ export default function Connect() {
                 )
               })}
             </div>
-            <p className="mt-2 text-[9px] text-[var(--color-warning-text)]">
+            <p className="mt-2 text-(length:--fs-body) text-[var(--color-warning-text)]">
               Start with a DEMO account. Picking it also downloads the broker's full symbol list automatically — no manual IDs needed.
             </p>
           </div>
         )}
 
-        <p className="mt-2 text-[9px] text-[var(--color-text-sub)]">
+        <p className="mt-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
           The token is stored in the agent's database, never in this browser.
         </p>
       </Card>

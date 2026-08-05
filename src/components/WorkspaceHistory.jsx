@@ -32,11 +32,11 @@ export function OriginTag({ row, accountId }) {
 
 export function LogTable({ rows, accountId }) {
   if (!rows.length) {
-    return <p className="text-[9px] text-[var(--color-text-sub)]">No actions recorded for this workspace yet.</p>
+    return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No actions recorded for this workspace yet.</p>
   }
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-[9px] border-collapse">
+      <table className="w-full text-(length:--fs-body) border-collapse">
         <thead>
           <tr className="text-left text-[var(--color-text-sub)]">
             <th className="py-1 pr-2 font-semibold">When</th>
@@ -62,11 +62,11 @@ export function LogTable({ rows, accountId }) {
 
 export function BacktestTable({ rows, accountId }) {
   if (!rows.length) {
-    return <p className="text-[9px] text-[var(--color-text-sub)]">No backtest runs recorded for this workspace yet.</p>
+    return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No backtest runs recorded for this workspace yet.</p>
   }
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-[9px] border-collapse">
+      <table className="w-full text-(length:--fs-body) border-collapse">
         <thead>
           <tr className="text-left text-[var(--color-text-sub)]">
             <th className="py-1 pr-2 font-semibold">When</th>
@@ -123,15 +123,15 @@ export default function WorkspaceHistory() {
 
   useAccountSwitch(useCallback((ev) => { setAcct(ev?.to ?? selectedAccountId()) }, []))
 
-  if (err) return <p className="text-[9px] text-[var(--color-down)]">Workspace history unavailable: {err}</p>
-  if (!log) return <p className="text-[9px] text-[var(--color-text-sub)]">Loading…</p>
+  if (err) return <p className="text-(length:--fs-body) text-[var(--color-down)]">Workspace history unavailable: {err}</p>
+  if (!log) return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading…</p>
 
   const logRows = log.rows || []
   const btRows = backtests?.rows || []
   const unstamped = logRows.filter(r => r.account_id == null).length
 
   return (
-    <div id="sec-workspace" className="flex flex-col gap-2 text-[9px]">
+    <div id="sec-workspace" className="flex flex-col gap-2 text-(length:--fs-body)">
       <div className="flex flex-wrap items-baseline gap-2">
         <h3 className="t-h3">Workspace History table</h3>
         <span className="text-[var(--color-text-sub)]">

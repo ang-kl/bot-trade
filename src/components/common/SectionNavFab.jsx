@@ -47,7 +47,7 @@ const rowBase = {
 function KindTag({ kind }) {
   return (
     <span title={NAV_KIND_LEGEND} style={{
-      marginLeft: 'auto', flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 600,
+      marginLeft: 'auto', flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 600,
       color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
       borderRadius: 'var(--radius-control)', padding: '0 3px', lineHeight: 1.5,
       fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
@@ -111,19 +111,19 @@ export default function SectionNavFab({ onSelect }) {
           <button type="button" aria-expanded={isOpen}
             aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${page.label} sections`}
             onClick={() => setExpanded(x => { const n = new Set(x); n.has(page.path) ? n.delete(page.path) : n.add(page.path); return n })}
-            style={{ ...rowBase, width: 20, flexShrink: 0, justifyContent: 'center', fontSize: 'var(--fs-d9)', color: 'var(--color-text-sub)', padding: '4px 0' }}>
+            style={{ ...rowBase, width: 20, flexShrink: 0, justifyContent: 'center', fontSize: 'var(--fs-body)', color: 'var(--color-text-sub)', padding: '4px 0' }}>
             <span aria-hidden="true">{isOpen ? CARET.open : CARET.closed}</span>
           </button>
           <button type="button" onClick={() => goPage(page)} {...hover}
             aria-current={isCurrent ? 'page' : undefined}
-            style={{ ...rowBase, fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '4px 8px 4px 2px', color: isCurrent ? 'var(--color-accent)' : 'var(--color-text)' }}>
-            {page.icon && <span aria-hidden="true" style={{ fontSize: 'var(--fs-d9)' }}>{page.icon}</span>}
+            style={{ ...rowBase, fontSize: 'var(--fs-body)', fontWeight: 600, padding: '4px 8px 4px 2px', color: isCurrent ? 'var(--color-accent)' : 'var(--color-text)' }}>
+            {page.icon && <span aria-hidden="true" style={{ fontSize: 'var(--fs-body)' }}>{page.icon}</span>}
             {page.label}
           </button>
         </div>
         {isOpen && (page.sections || []).map(s => (
           <button key={s.id} type="button" onClick={() => jumpSection(page, s)} {...hover}
-            style={{ ...rowBase, fontSize: 'var(--fs-d9)', fontWeight: 400, padding: '3px 8px', marginLeft: 20 + depth * 10, width: `calc(100% - ${20 + depth * 10}px)` }}>
+            style={{ ...rowBase, fontSize: 'var(--fs-body)', fontWeight: 400, padding: '3px 8px', marginLeft: 20 + depth * 10, width: `calc(100% - ${20 + depth * 10}px)` }}>
             {s.label}
             <KindTag kind={s.kind} />
           </button>
@@ -140,11 +140,11 @@ export default function SectionNavFab({ onSelect }) {
           style={{ marginBottom: 8, borderRadius: 12, padding: '6px 6px 4px', maxHeight: '72vh', overflowY: 'auto', minWidth: 232 }}>
           {NAV_TREE.map(g => (
             <div key={g.group} style={{ marginBottom: 4 }}>
-              <div style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--color-text-sub)', padding: '3px 8px 1px' }}>{g.group}</div>
+              <div style={{ fontSize: 'var(--fs-body)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--color-text-sub)', padding: '3px 8px 1px' }}>{g.group}</div>
               {g.pages.map(p => pageBranch(p))}
             </div>
           ))}
-          <div style={{ fontSize: 'var(--fs-d9)', color: 'var(--color-text-sub)', padding: '3px 8px 2px', borderTop: '1px solid var(--glass-edge)' }}>
+          <div style={{ fontSize: 'var(--fs-body)', color: 'var(--color-text-sub)', padding: '3px 8px 2px', borderTop: '1px solid var(--glass-edge)' }}>
             {NAV_KIND_LEGEND}
           </div>
         </nav>

@@ -129,12 +129,12 @@ function Bar({ label, n, of, tone }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 34px', gap: 6, alignItems: 'center' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: SB, whiteSpace: 'nowrap' }}>{label}</span>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: SB, whiteSpace: 'nowrap' }}>{label}</span>
         <span style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--color-accent-soft)' }}>
           <span style={{ display: 'block', width: `${pct}%`, height: 6, borderRadius: 3, background: tone }} />
         </span>
       </div>
-      <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: MU, fontVariantNumeric: 'tabular-nums' }}>{n}</span>
+      <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: MU, fontVariantNumeric: 'tabular-nums' }}>{n}</span>
     </div>
   )
 }
@@ -213,7 +213,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
   }, [allTrades, postmortems, at, period])
 
   const pill = (on) => ({
-    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL,
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-body)', fontWeight: W_CELL,
     color: on ? 'var(--color-on-accent)' : SB, background: on ? ACC : 'transparent',
     border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '1px 9px',
   })
@@ -225,8 +225,8 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ flexShrink: 0, fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Debrief — why we won and lost</span>
-        <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>
+        <span style={{ flexShrink: 0, fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Debrief — why we won and lost</span>
+        <span style={{ fontSize: 'var(--fs-body)', color: SB }}>
           who opened it, what the evidence says about the exit, and what was written down · tap a row
         </span>
         {!inModal && (
@@ -244,11 +244,11 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
         <button type="button" style={pill(period === 'day')} aria-pressed={period === 'day'} onClick={() => { setPeriod('day'); setPage(0) }}>Day</button>
         <button type="button" style={pill(period === 'week')} aria-pressed={period === 'week'} onClick={() => { setPeriod('week'); setPage(0) }}>Week</button>
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>from {new Date(model.from).toISOString().slice(0, 16).replace('T', ' ')} UTC (FX {period === 'day' ? 'day' : 'week'} open)</span>
+        <span style={{ fontSize: 'var(--fs-body)', color: MU }}>from {new Date(model.from).toISOString().slice(0, 16).replace('T', ' ')} UTC (FX {period === 'day' ? 'day' : 'week'} open)</span>
       </div>
 
       {model.rows.length === 0 && (
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+        <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
           Nothing closed in {label} — there is nothing to review. This is the honest state, not a loading failure.
         </span>
       )}
@@ -256,10 +256,10 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       {model.rows.length > 0 && (
         <>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', borderTop: `1px solid ${EDG}`, paddingTop: 2 }}>
-            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: model.net >= 0 ? UP : DN }}>{signed(model.net)}</span>
-            <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>{model.wins.length} up · {model.losses.length} down</span>
+            <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: model.net >= 0 ? UP : DN }}>{signed(model.net)}</span>
+            <span style={{ fontSize: 'var(--fs-body)', color: SB }}>{model.wins.length} up · {model.losses.length} down</span>
             {model.byActor.map(a => (
-              <span key={a.who} style={{ fontSize: 'var(--fs-d9)', color: a.who === 'human' ? WRN : SB }}>
+              <span key={a.who} style={{ fontSize: 'var(--fs-body)', color: a.who === 'human' ? WRN : SB }}>
                 {a.who} {a.n} ({a.wins} up) <span style={{ fontVariantNumeric: 'tabular-nums', color: a.net >= 0 ? UP : DN }}>{signed(a.net)}</span>
               </span>
             ))}
@@ -268,12 +268,12 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '2px 12px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <span className="t-gridhead" style={{ background: 'transparent' }}>Why we lost ({model.losses.length})</span>
-              {model.lossBuckets.length === 0 && <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>no losses</span>}
+              {model.lossBuckets.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: MU }}>no losses</span>}
               {model.lossBuckets.map(([b, n]) => <Bar key={b} label={b} n={n} of={model.losses.length} tone={DN} />)}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <span className="t-gridhead" style={{ background: 'transparent' }}>Why we won ({model.wins.length})</span>
-              {model.winBuckets.length === 0 && <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>no wins</span>}
+              {model.winBuckets.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: MU }}>no wins</span>}
               {model.winBuckets.map(([b, n]) => <Bar key={b} label={b} n={n} of={model.wins.length} tone={UP} />)}
             </div>
           </div>
@@ -287,15 +287,15 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
                     onClick={() => setOpenId(o => (o === r.id ? null : r.id))}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === r.id ? null : r.id)) } }}
                     style={{ display: 'grid', gridTemplateColumns: '14px 42px 66px 62px 1fr 84px', gap: 6, alignItems: 'center', borderBottom: `1px solid ${EDG}`, padding: '1px 0', cursor: 'pointer', fontVariantNumeric: 'tabular-nums' }}>
-                    <span aria-hidden="true" style={{ fontSize: 'var(--fs-d9)', color: MU }}>{on ? '▾' : '▸'}</span>
-                    <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>{r.hm}</span>
-                    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{r.sym}</span>
-                    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: r.who === 'human' ? WRN : SB }}>{r.who}</span>
-                    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: r.onPlan === false ? WRN : SB }}>{r.bucket}</span>
-                    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: r.pnl >= 0 ? UP : DN }}>{signed(r.pnl)}</span>
+                    <span aria-hidden="true" style={{ fontSize: 'var(--fs-body)', color: MU }}>{on ? '▾' : '▸'}</span>
+                    <span style={{ fontSize: 'var(--fs-body)', color: MU }}>{r.hm}</span>
+                    <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{r.sym}</span>
+                    <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: r.who === 'human' ? WRN : SB }}>{r.who}</span>
+                    <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: r.onPlan === false ? WRN : SB }}>{r.bucket}</span>
+                    <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: r.pnl >= 0 ? UP : DN }}>{signed(r.pnl)}</span>
                   </div>
                   {on && (
-                    <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 'var(--fs-d9)', color: MU }}>
+                    <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 'var(--fs-body)', color: MU }}>
                       {[r.side, r.strat || 'no strategy label', `${r.who} · ${r.how}`, r.note, r.lesson ? `lesson: ${r.lesson}` : 'no post-mortem written for this trade'].join(' · ')}
                     </div>
                   )}
@@ -308,9 +308,9 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 }}>
               <button
                 type="button" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={safePage === 0}
-                style={{ fontSize: 'var(--fs-d9)', color: safePage === 0 ? MU : ACC, background: 'none', border: 'none', padding: 0, cursor: safePage === 0 ? 'default' : 'pointer' }}
+                style={{ fontSize: 'var(--fs-body)', color: safePage === 0 ? MU : ACC, background: 'none', border: 'none', padding: 0, cursor: safePage === 0 ? 'default' : 'pointer' }}
               >&lsaquo; Newer</button>
-              <span style={{ fontSize: 'var(--fs-d9)', color: MU, fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>
                 {/* The RANGE, not just the page number — "21-40 of 137" answers
                     "how much am I not looking at", which a bare page index does not. */}
                 {safePage * PAGE + 1}&ndash;{Math.min((safePage + 1) * PAGE, model.rows.length)} of {model.rows.length}
@@ -319,12 +319,12 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
                 type="button"
                 onClick={() => setPage(p => (Math.min(p, lastPage) + 1 <= lastPage ? Math.min(p, lastPage) + 1 : p))}
                 disabled={safePage >= lastPage}
-                style={{ fontSize: 'var(--fs-d9)', color: safePage >= lastPage ? MU : ACC, background: 'none', border: 'none', padding: 0, cursor: safePage >= lastPage ? 'default' : 'pointer' }}
+                style={{ fontSize: 'var(--fs-body)', color: safePage >= lastPage ? MU : ACC, background: 'none', border: 'none', padding: 0, cursor: safePage >= lastPage ? 'default' : 'pointer' }}
               >Older &rsaquo;</button>
             </div>
           )}
 
-          <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
             Buckets come from the close reason and the realised loss against the loss the plan budgeted (|entry − SL|) — never from a guess;
             a trade whose evidence does not say lands in &quot;unclassified&quot; on purpose. Wins are split by whether the exit
             <strong style={{ fontWeight: W_CELL }}> followed the plan</strong>, not by skill versus luck: that is a statistical question and this

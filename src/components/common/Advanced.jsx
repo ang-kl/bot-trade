@@ -25,7 +25,7 @@ export default function Advanced({ label = 'Advanced', total = 0, changed = 0, d
         type="button"
         onClick={() => setUserOpen(o => !o)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 text-[9px] text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
+        className="flex w-full items-center gap-1.5 text-(length:--fs-body) text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
       >
         <span aria-hidden="true" className="inline-block w-3">{open ? '▾' : '▸'}</span>
         <span className="font-semibold">{label}</span>

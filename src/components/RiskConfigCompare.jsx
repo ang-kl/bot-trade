@@ -51,17 +51,17 @@ export default function RiskConfigCompare() {
   return (
     <Card id="sec-risk-compare" className="mt-3">
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-[9px] font-semibold">Risk Config Comparison table</div>
-        <span className="text-[9px] text-[var(--color-text-sub)]">
+        <div className="text-(length:--fs-body) font-semibold">Risk Config Comparison table</div>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           effective risk knobs per account (global + that account&rsquo;s overlay) — highlighted cells differ from global
         </span>
       </div>
-      {err && <div className="text-[9px] text-[var(--color-warning-text)]">{err}</div>}
+      {err && <div className="text-(length:--fs-body) text-[var(--color-warning-text)]">{err}</div>}
       {!err && !cols && <Skeleton lines={3} />}
       {cols && (
         <div className="overflow-x-auto">
           <Collapse id="RiskConfigCompare" label="Risk Knob Rows">
-            <table className="std-cols w-full text-[9px] tabular-nums">
+            <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
               <thead>
                 <tr className="border-b border-[var(--color-border)]">
                   <th className="py-1 pr-3 text-left">Knob</th>

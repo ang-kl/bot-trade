@@ -42,7 +42,7 @@ export default function ScopeMismatchNote({ scope, onUse, sharedLabel }) {
 
   const editing = scope === 'all' || !scope ? sharedLabel : `account ${scope}`
   return (
-    <div className="text-[9px] rounded-[6px] border border-[var(--md-outline-variant)] px-2 py-1 flex flex-wrap items-center gap-2">
+    <div className="text-(length:--fs-body) rounded-[6px] border border-[var(--md-outline-variant)] px-2 py-1 flex flex-wrap items-center gap-2">
       <span>
         The bot is trading <strong>{accountLabel(sel) || sel}</strong>, but you are editing{' '}
         <strong>{editing}</strong>.

@@ -66,14 +66,14 @@ export default function InstrumentMatrix({ symbols = [], descriptions = null, in
   const openCells = [...open].filter(k => (cells.get(k)?.length ?? 0) > 0)
 
   return (
-    <div className="text-[9px]">
+    <div className="text-(length:--fs-body)">
       {/* Sticky filter bar — it stays put while the grid scrolls, which is the
           only way search stays reachable on a half-width iPad split. */}
       <div className="sticky top-0 z-20 bg-[var(--color-bg)] pb-1.5 flex flex-wrap items-center gap-1.5">
         <input
           type="search" value={q} onChange={e => setQ(e.target.value)}
           placeholder="Search all instruments…" aria-label="Search all instruments"
-          className="glass-inset rounded-[7px] px-2 py-1.5 text-[9px] min-h-[44px] flex-1 min-w-[140px]"
+          className="glass-inset rounded-[7px] px-2 py-1.5 text-(length:--fs-body) min-h-[44px] flex-1 min-w-[140px]"
         />
         <div className="flex gap-1" role="group" aria-label="Session filter">
           {SESSION_FILTERS.map(f => (
@@ -128,7 +128,7 @@ export default function InstrumentMatrix({ symbols = [], descriptions = null, in
             return [
               <div key={`h:${r.key}`} className="px-1 py-1 font-semibold leading-tight break-words" title={`${r.label} — ${live ? 'open now' : 'closed now'}`}>
                 {r.short}
-                <span className={`block text-[9px] font-normal ${live ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'}`}>
+                <span className={`block text-(length:--fs-body) font-normal ${live ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'}`}>
                   {live ? 'OPEN' : 'CLOSED'}
                 </span>
               </div>,
@@ -151,7 +151,7 @@ export default function InstrumentMatrix({ symbols = [], descriptions = null, in
                           : 'border-[var(--glass-edge)] text-[var(--color-text-sub)]'
                     }`}
                   >
-                    <span className="block truncate text-[9px]">{c.short}</span>
+                    <span className="block truncate text-(length:--fs-body)">{c.short}</span>
                     <span className="block font-semibold tabular-nums">
                       [{list.length}]
                       {/* The highlight the ask names: a COLLAPSED cell still

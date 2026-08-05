@@ -20,7 +20,7 @@ export default function Collapse({ id, label, sub = null, defaultOpen = true, ch
   return (
     <div>
       <button type="button" aria-expanded={open} onClick={toggle}
-        className="flex items-center gap-1.5 text-[9px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]">
+        className="flex items-center gap-1.5 text-(length:--fs-body) font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]">
         <span aria-hidden="true" className="inline-block w-3">{open ? '▾' : '▸'}</span>
         {label}
         {sub && <span className="font-normal text-[var(--color-muted)]">{sub}</span>}

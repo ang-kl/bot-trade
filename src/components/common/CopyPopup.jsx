@@ -75,7 +75,7 @@ export default function CopyPopup({ title, text, json = null, html = null, onClo
   }
 
   const btn = {
-    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', lineHeight: 1,
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-body)', lineHeight: 1,
     color: 'var(--color-text-sub)', background: 'transparent',
     border: '1px solid var(--glass-edge)', borderRadius: 8, padding: '4px 9px',
   }
@@ -91,7 +91,7 @@ export default function CopyPopup({ title, text, json = null, html = null, onClo
       <div ref={panelRef} tabIndex={-1} className="glass-panel"
         style={{ width: 'min(90vw, 760px)', height: 'min(72vh, 640px)', borderRadius: 16, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8, outline: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>⧉ {title}</span>
+          <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>⧉ {title}</span>
           <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
             {tabBtn('text', 'Text')}
             {json != null && tabBtn('json', 'JSON')}
@@ -102,7 +102,7 @@ export default function CopyPopup({ title, text, json = null, html = null, onClo
             <button type="button" title="Close (Esc)" aria-label="Close" style={btn} onClick={onClose}>✕</button>
           </span>
         </div>
-        <pre style={{ flex: 1, margin: 0, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 'var(--fs-d9)', lineHeight: 1.5, fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 10, padding: '8px 10px', userSelect: 'text' }}>
+        <pre style={{ flex: 1, margin: 0, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 'var(--fs-body)', lineHeight: 1.5, fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 10, padding: '8px 10px', userSelect: 'text' }}>
           {content}
         </pre>
       </div>

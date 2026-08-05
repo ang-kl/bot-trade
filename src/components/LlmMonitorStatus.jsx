@@ -68,7 +68,7 @@ export default function LlmMonitorStatus() {
         aria-expanded={open}
         title={title}
         className="flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-left
-                   text-[9px] font-semibold uppercase tracking-wide
+                   text-(length:--fs-body) font-semibold uppercase tracking-wide
                    text-[var(--color-warning-text)] hover:bg-[var(--color-warning-bg)]"
       >
         <img src="/llm-monitor-failed.png" alt="LLM monitor degraded" className="h-4 w-4 shrink-0" />
@@ -80,7 +80,7 @@ export default function LlmMonitorStatus() {
       {open && (
         <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-[6px] border
                         border-[var(--color-warning-border)] bg-[var(--color-surface)]
-                        px-2 py-1.5 text-[9px] leading-snug shadow-lg
+                        px-2 py-1.5 text-(length:--fs-body) leading-snug shadow-lg
                         text-[var(--color-warning-text)]">
           <div className="font-semibold">
             The LLM position-monitor is down — {health.failStreak} failures in a row
@@ -92,7 +92,7 @@ export default function LlmMonitorStatus() {
             optional LLM second-opinion on open positions is missing.
           </div>
           {health.lastFailReason && (
-            <div className="mt-1 break-words font-mono text-[9px] text-[var(--color-text-sub)]">
+            <div className="mt-1 break-words font-mono text-(length:--fs-body) text-[var(--color-text-sub)]">
               {String(health.lastFailReason).slice(0, 160)}
             </div>
           )}

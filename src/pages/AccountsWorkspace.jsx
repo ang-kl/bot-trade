@@ -17,7 +17,7 @@ export default function AccountsWorkspace() {
       <SectionNavFab />
       <AccountsSubNav />
       {!agentConfigured() && (
-        <Card className="text-[9px]">Agent not connected — configure it on the Connect tab.</Card>
+        <Card className="text-(length:--fs-body)">Agent not connected — configure it on the Connect tab.</Card>
       )}
       <Card><WorkspaceHistory /></Card>
     </div>

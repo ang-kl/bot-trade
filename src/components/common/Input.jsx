@@ -15,8 +15,8 @@
 // any unlayered rule, so it must sit on the element's own class list).
 
 const DENSITY = {
-  standard: 'w-full px-3 py-2 text-[9px] min-h-[36px]',
-  compact: '!w-[76px] !min-h-[26px] max-[430px]:!min-h-[44px] !py-0.5 !px-2 !text-[9px] text-right',
+  standard: 'w-full px-3 py-2 text-(length:--fs-body) min-h-[36px]',
+  compact: '!w-[76px] !min-h-[26px] max-[430px]:!min-h-[44px] !py-0.5 !px-2 !text-(length:--fs-body) text-right',
 }
 
 export default function Input({ value, onChange, type = 'text', density = 'standard', className = '', ...rest }) {

@@ -37,7 +37,7 @@ import { aggregateAccounts, scopeLabel, ALL_SCOPE } from '../lib/perf-aggregate.
 
 // Matches the palette the Performance page already uses (passed in, so this
 // component never re-declares the theme).
-const cell = { fontSize: 'var(--fs-d9)', fontVariantNumeric: 'tabular-nums' }
+const cell = { fontSize: 'var(--fs-body)', fontVariantNumeric: 'tabular-nums' }
 
 /**
  * @param {{acctCards: Array, palette: object, money: Function, signed: Function}} props
@@ -82,7 +82,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
   )
 
   const selChip = (on) => on ? (
-    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>
+    <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>
       ✓ selected
     </span>
   ) : null
@@ -121,7 +121,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
         {card(active === ALL_SCOPE, () => setScope(ALL_SCOPE), '__all',
           <>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>
+              <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>
                 All accounts · summary
               </span>
               <span style={{ marginLeft: 'auto' }}>{selChip(active === ALL_SCOPE)}</span>
@@ -146,7 +146,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
           return card(on, () => setScope(a.id), a.id,
             <>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>
+                <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>
                   {a.name} · {a.ccy}
                 </span>
                 <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'baseline' }}>
@@ -245,8 +245,8 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
 function Metric({ label, value, palette, tone = null, hint = null }) {
   return (
     <span style={{ display: 'flex', flexDirection: 'column' }} title={hint || undefined}>
-      <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', color: palette.P_MU }}>{label}</span>
-      <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: tone || 'inherit' }}>{value}</span>
+      <span style={{ fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', color: palette.P_MU }}>{label}</span>
+      <span style={{ fontSize: 'var(--fs-body)', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: tone || 'inherit' }}>{value}</span>
     </span>
   )
 }

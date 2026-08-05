@@ -83,7 +83,7 @@ export default function ScopeDot({ scope, showReason = false, className = '' }) 
       {/* The screen reader gets the whole sentence, not a decorative circle. */}
       <span className="sr-only">{title}</span>
       {showReason && scope.reason && (
-        <span className="text-[9px] text-[var(--color-text-sub)] whitespace-nowrap">
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)] whitespace-nowrap">
           {scope.reason}
         </span>
       )}

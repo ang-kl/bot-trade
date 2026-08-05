@@ -85,7 +85,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   const p = Math.min(page, pages - 1)
   const slice = sorted.slice(p * PAGE, p * PAGE + PAGE)
 
-  if (rows.length === 0) return <div className="text-[9px] text-[var(--color-text-sub)]">None yet.</div>
+  if (rows.length === 0) return <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">None yet.</div>
 
   const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: priceDp(v) }))
   const money2 = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '' : '−'}${Math.abs(Number(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
@@ -100,7 +100,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   }
   const PctTag = ({ entry, price }) => {
     const pct = pctOf(entry, price)
-    return pct ? <span className="text-[9px] text-[var(--color-text-sub)]"> {pct}</span> : null
+    return pct ? <span className="text-(length:--fs-body) text-[var(--color-text-sub)]"> {pct}</span> : null
   }
   // What the bracket is WORTH, on its own line under the price (owner
   // 2026-07-29: "[SL Loss in $] to existing Stop Loss on second line and
@@ -116,14 +116,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     const unit = est ? 'USD' : (ccy || '')
     return (
       <span
-        className={`block leading-tight text-[9px] ${n >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}
+        className={`block leading-tight text-(length:--fs-body) ${n >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}
         title={est
           ? `estimated ${label} if this level is hit, at this size — price move only, excludes swap and commission`
           : `${label} if this level is hit, at this size — broker figure, includes swap and commission`}
       >
         {n >= 0 ? '+' : '−'}{Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        {unit && <span className="ml-0.5 text-[9px] text-[var(--color-text-sub)]">{unit}</span>}
-        {est && <span className="ml-0.5 text-[9px] text-[var(--color-text-sub)]">est</span>}
+        {unit && <span className="ml-0.5 text-(length:--fs-body) text-[var(--color-text-sub)]">{unit}</span>}
+        {est && <span className="ml-0.5 text-(length:--fs-body) text-[var(--color-text-sub)]">est</span>}
       </span>
     )
   }
@@ -141,7 +141,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   }
   // Trading currency beside the essential figures (owner spec): prices
   // carry the symbol's QUOTE ccy, money figures the DEPOSIT ccy.
-  const ccyTag = (c) => (c ? <span className="ml-0.5 text-[9px] text-[var(--color-text-sub)]">{c}</span> : null)
+  const ccyTag = (c) => (c ? <span className="ml-0.5 text-(length:--fs-body) text-[var(--color-text-sub)]">{c}</span> : null)
   // cTrader's compulsory position columns (owner spec) appear only when the
   // rows actually carry them — closed deals and order-log rows stay lean.
   const OPT_COLS = [
@@ -193,7 +193,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
           collapsible triangle, even inside an already-collapsible card). */}
       <Collapse id={`stt_${countLabel.replace(/\W+/g, '_')}`} label={`${rows?.length ?? 0} ${countLabel}`}>
       <div className="overflow-x-auto">
-        <table className="std-cols min-w-[880px] w-full text-[9px] tabular-nums">
+        <table className="std-cols min-w-[880px] w-full text-(length:--fs-body) tabular-nums">
           <thead>
             <tr className="border-b border-[var(--color-border)]">
               <th aria-sort={ariaSort('time')} className={`py-1 pr-2 ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
@@ -259,7 +259,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     </td>
                     <td className={`py-1 pr-3 whitespace-nowrap ${stick2}`} style={{ left: COL1_W }}>
                       {mh && mh.open === false && (
-                        <span className="block text-[9px] leading-none" title="market closed" aria-label="market closed">🔒</span>
+                        <span className="block text-(length:--fs-body) leading-none" title="market closed" aria-label="market closed">🔒</span>
                       )}
                       {onSymbolClick
                         ? <button type="button" className="font-bold cursor-pointer underline-offset-2 hover:underline" onClick={() => onSymbolClick(r.symbol)}>{r.symbol}</button>
@@ -282,7 +282,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                           </SymbolTarget>
                         )}
                       {mh && mh.open === false && mh.next_open_at && (
-                        <span className="block text-[9px] leading-tight font-normal text-[var(--color-text-sub)]" title="next market open (your timezone)">
+                        <span className="block text-(length:--fs-body) leading-tight font-normal text-[var(--color-text-sub)]" title="next market open (your timezone)">
                           {nextOpenLabel(mh.next_open_at)}
                         </span>
                       )}
@@ -313,7 +313,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       <MoneyLine v={r.slMoney} label="loss" est={r.moneyEst} ccy={r.moneyCcy} />
                       {r.slAt && (() => {
                         const s = dateTimeParts(r.slAt)
-                        return s ? <span className="block text-[9px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
+                        return s ? <span className="block text-(length:--fs-body) leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
                       })()}
                     </td>
                     {/* Take Profit — cTrader supports laddered TPs, so the
@@ -333,7 +333,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       <MoneyLine v={r.tpMoney} label="profit" est={r.moneyEst} ccy={r.moneyCcy} />
                       {r.tpAt && (() => {
                         const s = dateTimeParts(r.tpAt)
-                        return s ? <span className="block text-[9px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
+                        return s ? <span className="block text-(length:--fs-body) leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
                       })()}
                     </td>
                     <td className={`py-1 pr-3 text-right whitespace-nowrap ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
@@ -371,7 +371,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                               {c.fmt(r[c.key])}
                               {c.money ? ccyTag(r.moneyCcy) : null}
                               {/* An estimate must never look like broker truth. */}
-                              {c.estKey && r[c.estKey] ? <span className="text-[9px] text-[var(--color-text-sub)]" title="estimated from notional ÷ leverage at entry — the broker stops reporting margin once a position closes"> est</span> : null}
+                              {c.estKey && r[c.estKey] ? <span className="text-(length:--fs-body) text-[var(--color-text-sub)]" title="estimated from notional ÷ leverage at entry — the broker stops reporting margin once a position closes"> est</span> : null}
                             </>
                           : '—'}
                       </td>
@@ -435,8 +435,8 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                   <td colSpan={8 + (anyRef ? 1 : 0) + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1 pr-3 text-right text-[var(--color-text-sub)]">
                     Sub-total ({rows.length} rows)
                   </td>
-                  <td className="py-1 pr-3 text-right whitespace-nowrap text-[9px]">{hasSl ? sumCell(slSum) : ''}</td>
-                  <td className="py-1 pr-3 text-right whitespace-nowrap text-[9px]">{hasTp ? sumCell(tpSum) : ''}</td>
+                  <td className="py-1 pr-3 text-right whitespace-nowrap text-(length:--fs-body)">{hasSl ? sumCell(slSum) : ''}</td>
+                  <td className="py-1 pr-3 text-right whitespace-nowrap text-(length:--fs-body)">{hasTp ? sumCell(tpSum) : ''}</td>
                   <td className={`py-1 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                     {`${pnlSum >= 0 ? '+' : '−'}${Math.abs(pnlSum).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                   </td>
@@ -458,7 +458,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
         </table>
       </div>
       {/* Pagination — keeps every panel the same height */}
-      <div className="mt-2 flex items-center gap-2 text-[9px] text-[var(--color-text-sub)]">
+      <div className="mt-2 flex items-center gap-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
         <Button size="sm" variant="subtle" disabled={p === 0} onClick={() => setPage(p - 1)}>‹ Newer</Button>
         <span>page {p + 1} / {pages} · {rows.length} {countLabel}</span>
         <Button size="sm" variant="subtle" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>Older ›</Button>

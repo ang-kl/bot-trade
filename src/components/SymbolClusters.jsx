@@ -56,21 +56,21 @@ function ClusterRow({ c, open, onToggle }) {
         onClick={toggle}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } }}
         style={{ display: 'grid', gridTemplateColumns: COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
-        <span aria-hidden="true" style={{ fontSize: 'var(--fs-d9)', color: MU }}>{open ? '▾' : '▸'}</span>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{c.symbol}</span>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: SB }}>
+        <span aria-hidden="true" style={{ fontSize: 'var(--fs-body)', color: MU }}>{open ? '▾' : '▸'}</span>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{c.symbol}</span>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: SB }}>
           {String(c.firstOpenedAt || '').slice(5, 16)}
         </span>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: c.count > 2 ? WRN : SB }}>×{c.count}</span>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: c.crossPath ? WRN : SB }}>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: c.count > 2 ? WRN : SB }}>×{c.count}</span>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: c.crossPath ? WRN : SB }}>
           {c.paths.join(' + ')}{c.crossPath ? ' · cross-path' : ''}{c.hedged ? ' · hedged' : ''}
         </span>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: c.netPnl == null ? MU : c.netPnl >= 0 ? UP : DN }}>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: c.netPnl == null ? MU : c.netPnl >= 0 ? UP : DN }}>
           {signed(c.netPnl)}
         </span>
       </div>
       {open && (
-        <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 'var(--fs-d9)', color: MU, fontVariantNumeric: 'tabular-nums' }}>
+        <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>
           {[
             `acct ${c.accountId}`,
             `${c.sides.join('/')} · ${c.count} legs over ${c.spanMinutes}m`,
@@ -119,7 +119,7 @@ export default function SymbolClusters({
   const worstCount = clusters[0]?.count ?? 0
 
   const pill = (on) => ({
-    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL,
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-body)', fontWeight: W_CELL,
     color: on ? '#fff' : SB, background: on ? ACC : 'transparent',
     border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '1px 8px',
   })
@@ -127,8 +127,8 @@ export default function SymbolClusters({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ flexShrink: 0, fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Same-symbol clusters</span>
-        <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>
+        <span style={{ flexShrink: 0, fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Same-symbol clusters</span>
+        <span style={{ fontSize: 'var(--fs-body)', color: SB }}>
           2+ separate fills on one account &amp; symbol inside the window · distinct broker position ids, so these are real
           separate trades, not one fill recorded twice · tap a row for the legs
         </span>
@@ -147,21 +147,21 @@ export default function SymbolClusters({
       </div>
 
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Range</span>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Range</span>
         {CLUSTER_RANGES.map(d => (
           <button key={d} type="button" aria-pressed={d === days} style={pill(d === days)} onClick={() => onDays(d)}>{d}D</button>
         ))}
-        <span style={{ marginLeft: 6, fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Window</span>
+        <span style={{ marginLeft: 6, fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Window</span>
         {CLUSTER_WINDOWS.map(w => (
           <button key={w.label} type="button" aria-pressed={w.windowMinutes === windowMinutes} style={pill(w.windowMinutes === windowMinutes)} onClick={() => onWindow(w.windowMinutes)}>{w.label}</button>
         ))}
       </div>
 
-      {error && <span style={{ fontSize: 'var(--fs-d9)', color: DN }}>{error}</span>}
+      {error && <span style={{ fontSize: 'var(--fs-body)', color: DN }}>{error}</span>}
       {loading && !data && <Skeleton lines={4} />}
 
       {!loading && !error && data && clusters.length === 0 && (
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+        <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
           No clusters in the last {days} days at a {windowMinutes}-minute window — no account opened the same symbol twice
           that close together. If the tables still look doubled, check whether the account filter is on All: one signal
           opens the same symbol once per enabled account, which is by design and is not counted here.
@@ -171,10 +171,10 @@ export default function SymbolClusters({
       {clusters.length > 0 && (
         <>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
-            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: worstCount > 2 ? WRN : SB, fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, color: worstCount > 2 ? WRN : SB, fontVariantNumeric: 'tabular-nums' }}>
               {clusters.length} cluster{clusters.length === 1 ? '' : 's'} · worst ×{worstCount}
             </span>
-            <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+            <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
               extra legs by path — {ranked.length ? ranked.map(([p, n]) => `${p} ${n}`).join(' · ') : '—'}
             </span>
           </div>
@@ -200,7 +200,7 @@ export default function SymbolClusters({
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 }}>
               <button type="button" aria-label="Previous page" disabled={pageSafe === 0} style={{ ...pill(false), opacity: pageSafe === 0 ? 0.4 : 1 }}
                 onClick={() => setPage(p => Math.max(0, p - 1))}>‹</button>
-              <span style={{ fontSize: 'var(--fs-d9)', color: SB, fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 'var(--fs-body)', color: SB, fontVariantNumeric: 'tabular-nums' }}>
                 page {pageSafe + 1} / {pages} · {clusters.length} clusters
               </span>
               <button type="button" aria-label="Next page" disabled={pageSafe >= pages - 1} style={{ ...pill(false), opacity: pageSafe >= pages - 1 ? 0.4 : 1 }}

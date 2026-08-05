@@ -31,7 +31,7 @@ import { originOf } from '../lib/risk-origin.js'
 
 /** Local title — Risk.jsx's SectionTitle is defined inside that page, not shared. */
 function SectionTitle({ children }) {
-  return <h3 className="w3-heading text-[12px] font-semibold mb-1">{children}</h3>
+  return <h3 className="w3-heading text-(length:--fs-h) font-semibold mb-1">{children}</h3>
 }
 
 /** Compact display. Percent-shaped keys are stored as fractions. */
@@ -87,7 +87,7 @@ export default function RiskMatrix() {
   if (error) return (
     <Card id="sec-risk-matrix" data-risk-card>
       <SectionTitle>Risk Setup Summary — Table</SectionTitle>
-      <div className="text-[9px] text-[var(--color-warning-text)]">Could not load: {error}</div>
+      <div className="text-(length:--fs-body) text-[var(--color-warning-text)]">Could not load: {error}</div>
     </Card>
   )
   if (!data) return null
@@ -98,7 +98,7 @@ export default function RiskMatrix() {
   return (
     <Card id="sec-risk-matrix" data-risk-card className="w3-hover-shadow">
       <SectionTitle>Risk Setup Summary — Table</SectionTitle>
-      <div className="text-[9px] text-[var(--color-text-sub)] mb-1">
+      <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">
         Global settings and every account&apos;s effective values.{' '}
         <span className="font-semibold text-[var(--color-accent)]">Bold</span> = set on that account ·
         plain = inherited from global · dimmed<span className="opacity-40">·</span> = built-in default.
@@ -109,7 +109,7 @@ export default function RiskMatrix() {
           groups — it has no row to appear in. Saying so here is the only place
           an operator finds out the number they set stopped mattering. */}
       {(data.retired || []).length > 0 && (
-        <div className="text-[9px] text-[var(--color-warning-text)] mb-1">
+        <div className="text-(length:--fs-body) text-[var(--color-warning-text)] mb-1">
           Stored but no longer enforced:{' '}
           {data.retired.map(r => (
             <span key={`${r.key}@${r.where}`} className="mr-2" title={r.why}>
@@ -125,7 +125,7 @@ export default function RiskMatrix() {
       {(data.groups || []).map(g => (
         <div key={g.id} className="overflow-x-auto">
           <Collapse id={`RiskMatrix_${g.id}`} label={g.label} defaultOpen={g.id === 'day'}>
-            <table className="w-full text-[9px] tabular-nums">
+            <table className="w-full text-(length:--fs-body) tabular-nums">
               <thead>
                 <tr className="text-left text-[var(--color-text-sub)]">
                   <th className="pr-3 font-semibold">Setting</th>

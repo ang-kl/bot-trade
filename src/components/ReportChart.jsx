@@ -178,8 +178,8 @@ export default function ReportChart({ allTrades, events, daily }) {
   return (
     <Card>
       <div className="flex flex-wrap items-baseline gap-2 mb-1">
-        <h2 className="text-[12px] font-extrabold text-[var(--color-accent)]">Equity &amp; Drawdown · Decisions per Day chart</h2>
-        <span className="text-[9px] text-[var(--color-text-sub)]">
+        <h2 className="text-(length:--fs-h) font-extrabold text-[var(--color-accent)]">Equity &amp; Drawdown · Decisions per Day chart</h2>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           top: where the account is against its own high-water mark · bottom: what the bot decided, and how much it refused
         </span>
         <div className="ml-auto">
@@ -189,14 +189,14 @@ export default function ReportChart({ allTrades, events, daily }) {
       </div>
 
       {hasData && (
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-1 text-[9px]">
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-1 text-(length:--fs-body)">
           <span className="text-[var(--color-text-sub)]">max drawdown in range <span className="tabular-nums" style={{ color: 'var(--color-down)' }}>{totals.maxDd < 0 ? fmtN(totals.maxDd) : '—'}</span></span>
           <span className="text-[var(--color-text-sub)]">{totals.decisions} decisions · <span className="tabular-nums">{totals.vetoPct == null ? '—' : `${totals.vetoPct}% vetoed`}</span></span>
         </div>
       )}
 
       {!hasData && (
-        <div className="text-[9px] text-[var(--color-text-sub)] py-6">
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)] py-6">
           No activity in this range — this draws from the bot&apos;s decisions and closed trades. Widen the range to see more.
         </div>
       )}
@@ -268,7 +268,7 @@ export default function ReportChart({ allTrades, events, daily }) {
             )}
           </svg>
           {hv && (
-            <div className="pointer-events-none absolute pos-absolute top-1 glass-panel rounded-[10px] px-3 py-1.5 text-[9px] leading-5"
+            <div className="pointer-events-none absolute pos-absolute top-1 glass-panel rounded-[10px] px-3 py-1.5 text-(length:--fs-body) leading-5"
               style={{ left: `${Math.min(74, Math.max(2, (geom.X(hv.t) / W) * 100))}%` }}>
               <div>{shortDate(hv.t)}</div>
               <div>equity <span className="tabular-nums">{fmtN(hv.equity)}</span></div>
@@ -278,7 +278,7 @@ export default function ReportChart({ allTrades, events, daily }) {
           )}
         </div>
       )}
-      <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
+      <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
         Dashed grey is the equity high-water mark; the red band between it and the curve is the drawdown you were actually in.
         Bars are that day&apos;s decisions, vetoed stacked on approved. Both panels share one date axis — decisions and equity are
         NOT plotted against each other, because nothing here shows that one drives the other.

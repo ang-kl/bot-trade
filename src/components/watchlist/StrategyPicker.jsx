@@ -37,7 +37,7 @@ export default function StrategyPicker({ all = [], value = null, onChange, onCan
   const effective = following ? armed.map(s => s.key) : armed.filter(s => sel.has(s.key)).map(s => s.key)
 
   return (
-    <div className="text-[9px]">
+    <div className="text-(length:--fs-body)">
       <div className="flex flex-wrap items-center gap-2 mb-1.5">
         <span className="font-semibold">{label} — strategies allowed to trade it</span>
         <label className="flex items-center gap-1.5 cursor-pointer">
@@ -72,11 +72,11 @@ export default function StrategyPicker({ all = [], value = null, onChange, onCan
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Button size="sm" className="!px-2 !py-0.5 !min-h-0 text-[9px]"
+        <Button size="sm" className="!px-2 !py-0.5 !min-h-0 text-(length:--fs-body)"
           onClick={() => onChange(following ? null : [...sel])}>
           Save
         </Button>
-        <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={onCancel}>Cancel</Button>
+        <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-(length:--fs-body)" onClick={onCancel}>Cancel</Button>
         <span className="text-[var(--color-text-sub)]">
           {following
             ? `Following the global set — ${armed.length} strategies may trade ${label}.`

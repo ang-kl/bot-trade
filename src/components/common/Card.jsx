@@ -107,7 +107,7 @@ export default function Card({
 
   const btn = {
     position: 'absolute', top: 6, zIndex: 5, cursor: 'pointer', fontFamily: 'inherit',
-    fontSize: 'var(--fs-d9)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent',
+    fontSize: 'var(--fs-body)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent',
     border: '1px solid transparent', borderRadius: 8, padding: '3px 6px', opacity: .55,
   }
   const hoverOn = (e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.borderColor = 'var(--glass-edge)' }
@@ -128,7 +128,7 @@ export default function Card({
       {kind && (
         <span title={NAV_KIND_LEGEND} style={{
           position: 'absolute', top: 8, right: slotKind,
-          zIndex: 5, fontSize: 'var(--fs-d9)', fontWeight: 600, lineHeight: 1.5,
+          zIndex: 5, fontSize: 'var(--fs-body)', fontWeight: 600, lineHeight: 1.5,
           color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
           borderRadius: 'var(--radius-control)', padding: '0 3px', opacity: .7,
           whiteSpace: 'nowrap',
@@ -172,7 +172,7 @@ export default function Card({
           identifiable, and hide (not unmount) the body so sort/page state
           survives and the card collapses to a single line. */}
       {collapsed && !maximized && (
-        <span className="text-[9px] font-semibold text-[var(--color-text-sub)]">
+        <span className="text-(length:--fs-body) font-semibold text-[var(--color-text-sub)]">
           {label || copyTitle || 'Section'}
         </span>
       )}
@@ -204,10 +204,10 @@ function MaxOverlay({ title, onRestore, children }) {
       style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(6,9,19,.55)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div className="glass-panel" style={{ width: 'min(96vw, 1720px)', maxHeight: '92vh', borderRadius: 16, padding: '12px 16px', overflow: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>{title}</span>
+          <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>{title}</span>
           <button type="button" title="Restore this section to its place in the page (Esc)" aria-label="Restore this section"
             onClick={onRestore}
-            style={{ marginLeft: 'auto', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent', border: '1px solid var(--glass-edge)', borderRadius: 8, padding: '3px 7px' }}>
+            style={{ marginLeft: 'auto', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-body)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent', border: '1px solid var(--glass-edge)', borderRadius: 8, padding: '3px 7px' }}>
             ⇱
           </button>
         </div>

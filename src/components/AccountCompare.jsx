@@ -36,13 +36,13 @@ export default function AccountCompare({ accounts, onNeedAll, loading }) {
   return (
     <Card id="sec-compare">
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-[9px] font-semibold">Account Comparison table</div>
-        <span className="text-[9px] text-[var(--color-text-sub)]">
+        <div className="text-(length:--fs-body) font-semibold">Account Comparison table</div>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           every account side by side — same broker-truth health figures as each Account Health table
         </span>
       </div>
       {all.length < 2 && (
-        <p className="text-[9px] text-[var(--color-text-sub)]">
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           Needs the all-accounts snapshot —{' '}
           <button type="button" onClick={onNeedAll} disabled={loading}
             className="text-[var(--color-accent)] underline cursor-pointer disabled:opacity-50">
@@ -54,7 +54,7 @@ export default function AccountCompare({ accounts, onNeedAll, loading }) {
       {all.length >= 2 && (
         <>
           {/* M3 filter chips — many-of-N column filter. */}
-          <div className="flex flex-wrap items-center gap-1 mb-2 text-[9px]" role="group" aria-label="Accounts to compare">
+          <div className="flex flex-wrap items-center gap-1 mb-2 text-(length:--fs-body)" role="group" aria-label="Accounts to compare">
             {all.map(a => {
               const on = !hidden.has(a.accountId)
               return (
@@ -69,7 +69,7 @@ export default function AccountCompare({ accounts, onNeedAll, loading }) {
           </div>
           <div className="overflow-x-auto">
             <Collapse id="AccountCompare" label="Comparison Rows">
-              <table className="std-cols w-full text-[9px] tabular-nums">
+              <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
                 <thead>
                   <tr className="border-b border-[var(--color-border)]">
                     <th className="py-1 pr-3 text-left">Metric</th>

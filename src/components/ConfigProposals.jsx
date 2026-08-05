@@ -24,17 +24,17 @@ const TONE = { danger: 'down', warn: 'warn', info: 'info' }
 export function Proposal({ accountId, p }) {
   return (
     <div className="border-t border-[var(--color-border)] py-1">
-      <div className="flex items-center gap-1.5 text-[9px]">
+      <div className="flex items-center gap-1.5 text-(length:--fs-body)">
         <Badge tone={TONE[p.severity] || 'info'}>{String(p.severity).toUpperCase()}</Badge>
         <span className="font-semibold">{p.setting}</span>
         <span className="text-[var(--color-text-sub)]">{String(p.current)} → </span>
         <span className="font-semibold">{String(p.proposed)}</span>
       </div>
-      <div className="text-[9px] text-[var(--color-text-sub)] mt-0.5">{p.why}</div>
-      <div className="text-[9px] text-[var(--color-text-sub)] mt-0.5">
+      <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">{p.why}</div>
+      <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
         <span className="font-semibold">Expect:</span> {p.expect}
       </div>
-      <code className="block text-[9px] mt-0.5 overflow-x-auto whitespace-pre">
+      <code className="block text-(length:--fs-body) mt-0.5 overflow-x-auto whitespace-pre">
         {commandFor(accountId, p.setting, p.proposed)}
       </code>
     </div>
@@ -45,16 +45,16 @@ export function AccountBlock({ a }) {
   const e = a.econ || {}
   return (
     <div className="mb-2">
-      <div className="text-[9px] font-semibold">{a.accountId}</div>
-      <div className="text-[9px] text-[var(--color-text-sub)]">
+      <div className="text-(length:--fs-body) font-semibold">{a.accountId}</div>
+      <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
         {e.trades ?? 0} closed trades · win rate {pct(e.winRate)} · payoff {num(e.payoff)}× · profit factor {num(e.profitFactor)}
       </div>
       {/* Silence is stated. An account with no proposals and an account with
           too little data to have any are different facts, and folding them
           together would let a thin sample read as approval. */}
-      {a.skipped && <div className="text-[9px] text-[var(--color-text-sub)] mt-0.5">No advice — {a.skipped}</div>}
+      {a.skipped && <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">No advice — {a.skipped}</div>}
       {!a.skipped && a.proposals.length === 0 && (
-        <div className="text-[9px] text-[var(--color-text-sub)] mt-0.5">Nothing to propose against this record.</div>
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">Nothing to propose against this record.</div>
       )}
       {a.proposals.map(p => <Proposal key={p.rule} accountId={a.accountId} p={p} />)}
     </div>
@@ -76,15 +76,15 @@ export default function ConfigProposals() {
   return (
     <Card id="sec-config-proposals" data-risk-card className="w3-hover-shadow">
       <h2 className="t-h3">Settings vs the Record card</h2>
-      <p className="text-[9px] text-[var(--color-text-sub)] mb-1">
+      <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">
         What this desk&apos;s own closed trades say the settings should be. Read-only:
         nothing here changes a value, and the controller has no write path.
         {data?.scope?.note ? ` ${data.scope.note}.` : ''}
       </p>
-      {error && <div className="text-[9px] text-[var(--color-warning-text)]">Could not load: {error}</div>}
-      {!data && !error && <div className="text-[9px] text-[var(--color-text-sub)]">…</div>}
+      {error && <div className="text-(length:--fs-body) text-[var(--color-warning-text)]">Could not load: {error}</div>}
+      {!data && !error && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">…</div>}
       {data?.accounts?.length === 0 && (
-        <div className="text-[9px] text-[var(--color-text-sub)]">No enabled demo accounts to assess.</div>
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">No enabled demo accounts to assess.</div>
       )}
       {(data?.accounts || []).map(a => <AccountBlock key={a.accountId} a={a} />)}
     </Card>

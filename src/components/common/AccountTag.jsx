@@ -30,7 +30,7 @@ export default function AccountTag({ accountId, legacyRows = 0, className = '' }
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-[4px] border px-1.5 py-[1px]
-                  text-[9px] font-semibold tabular-nums whitespace-nowrap
+                  text-(length:--fs-body) font-semibold tabular-nums whitespace-nowrap
                   border-[var(--color-border)] text-[var(--color-text-sub)] ${className}`}
       title={all
         ? 'Every enabled account — not one account'

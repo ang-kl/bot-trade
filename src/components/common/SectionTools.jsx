@@ -101,7 +101,7 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
   const htmlPayload = () => dataToHtml(data, title) || textToHtml(title, textPayload())
 
   const btn = {
-    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', lineHeight: 1,
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-body)', lineHeight: 1,
     color: 'var(--color-text-sub)', background: 'transparent',
     border: '1px solid var(--glass-edge)', borderRadius: 8, padding: '3px 7px',
   }
@@ -123,7 +123,7 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
       {popupHost && createPortal(
         <div className="glass-panel" style={{ borderRadius: 16, padding: '14px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>{title}</span>
+            <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>{title}</span>
           </div>
           {render ? render({ variant: 'modal' }) : null}
         </div>,
@@ -136,7 +136,7 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
           <div ref={panelRef} tabIndex={-1} className="glass-panel"
             style={{ width: 'min(96vw, 1720px)', height: 'min(92vh, 1100px)', borderRadius: 16, padding: '14px 16px', overflow: 'auto', outline: 'none' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>{title}</span>
+              <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>{title}</span>
               <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
                 <button type="button" title="Copy section" style={btn} onClick={() => setCopyOpen(true)}>⧉ Copy</button>
                 <button type="button" title="Restore (Esc)" aria-label="Restore" style={btn} onClick={() => setOpen(false)}>⇱</button>

@@ -26,7 +26,7 @@ export default function DoneCue({ message, className = '' }) {
     <span
       role="status"
       className={`inline-flex items-center gap-1 rounded-[4px] border px-1.5 py-[1px]
-                  text-[9px] font-semibold whitespace-nowrap
+                  text-(length:--fs-body) font-semibold whitespace-nowrap
                   border-[var(--color-state-on-border)]
                   bg-[var(--color-state-on-bg)]
                   text-[var(--color-state-on-text)] ${className}`}
