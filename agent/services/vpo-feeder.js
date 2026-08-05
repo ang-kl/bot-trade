@@ -19,6 +19,7 @@
 
 import { getState } from '../db.js'
 import { getCtraderCreds } from '../lib/ctrader-creds.js'
+import { execBaseFor } from '../lib/exec-engine.js'
 import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume, persistRiskEvent } from './risk.js'
 import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
@@ -71,12 +72,14 @@ export function vpoPreArmVeto(db, cfg, symbol) {
   return null
 }
 
-function execBase() {
-  return process.env.EXEC_URL || 'http://127.0.0.1:8091'
-}
-
+// The VPO config is not account-scoped — it is a strategy arming table the
+// sidecar evaluates against its own tick feed — so it resolves to the default
+// base rather than a routed one. It goes through the shared resolver anyway so
+// there is ONE definition of what the default is; when a second sidecar exists
+// this is the line that has to grow a loop, and it is easier to find here than
+// as a re-implemented url in a service file.
 async function pushToSidecar(payload) {
-  const res = await fetch(execBase() + '/vpo-config', {
+  const res = await fetch(execBaseFor() + '/vpo-config', {
     method: 'POST',
     headers: {
       authorization: `Bearer ${process.env.EXEC_SECRET || ''}`,

@@ -35,6 +35,11 @@ Set on the **agent** service:
 
 - `EXEC_ENGINE=cpp` — routes execution through this sidecar.
 - `EXEC_URL=http://<cpp-exec-host>:8091` — where to reach it.
+- `EXEC_URL_LIVE` / `EXEC_URL_DEMO` — optional. A sidecar process serves ONE
+  broker host for its whole life (`POST /connect` with a different host tears
+  the session down rather than adding one), so a live and a demo account
+  cannot share one process. Set these to run a sidecar per side; leave both
+  unset and every account resolves to `EXEC_URL`, exactly as today.
 - `EXEC_SECRET` — must match the sidecar's value.
 
 With `EXEC_ENGINE=cpp`, the agent stops sending order traffic itself and

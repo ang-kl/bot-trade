@@ -14,10 +14,14 @@
 
 import readline from 'node:readline'
 
-const EXEC_URL = process.env.EXEC_URL || 'http://127.0.0.1:8091'
+import { execBaseFor } from '../lib/exec-engine.js'
+
+// Resolved per call rather than once at import: the creds this script loads
+// from the DB decide which sidecar it should be proving parity against.
+let execUrl = execBaseFor()
 
 async function sidecar(method, path, body) {
-  const res = await fetch(EXEC_URL + path, {
+  const res = await fetch(execUrl + path, {
     method,
     headers: {
       authorization: `Bearer ${process.env.EXEC_SECRET || ''}`,
@@ -38,6 +42,9 @@ async function main() {
   const db = initDB(process.env.DB_PATH || './agent.db')
   const creds = getCtraderCreds(db)
   if (!creds.ready) { console.error('cTrader creds not configured in the agent DB'); process.exit(1) }
+  // Now that the host is known, aim every call at THAT side's sidecar.
+  execUrl = execBaseFor(creds)
+  console.log(`[parity] sidecar base for ${creds.host}: ${execUrl}`)
 
   // 0 — push broker credentials (the sidecar holds none of its own)
   await sidecar('POST', '/connect', {

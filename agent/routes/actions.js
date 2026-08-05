@@ -17,7 +17,7 @@ import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { describeBracketGap } from '../lib/bracket-advice.js'
 import { setPhaseFlag } from '../services/phase-audit.js'
-import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard } from '../lib/exec-engine.js'
+import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard, execBaseFor } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
 import { setStage, accountStageTallies } from '../services/stage-matrix.js'
@@ -1800,7 +1800,7 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/vpo-status', async (_req, res) => {
     try {
-      const base = process.env.EXEC_URL || 'http://127.0.0.1:8091'
+      const base = execBaseFor()
       const r = await fetch(base + '/vpo-status', {
         headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
       })
@@ -1820,7 +1820,8 @@ export default function actionsRouter(db) {
     try {
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
-      const base = process.env.EXEC_URL || 'http://127.0.0.1:8091'
+      // Parity is proved against the sidecar THESE credentials route to.
+      const base = execBaseFor(creds)
       const call = async (method, path, body) => {
         const r = await fetch(base + path, {
           method,

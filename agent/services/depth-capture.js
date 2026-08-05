@@ -18,6 +18,8 @@
 // an order write.
 // ---------------------------------------------------------------------------
 
+import { execBaseFor } from '../lib/exec-engine.js'
+
 /**
  * Size-weighted top-of-book imbalance in [-1, 1], or null when the book
  * can't support an honest number (missing, empty, or zero total size).
@@ -74,8 +76,9 @@ export async function fetchDepthRaw(symbolId, { levels = 10, timeoutMs = 1500 } 
   if (process.env.EXEC_ENGINE !== 'cpp') return null
   if (!Number.isFinite(Number(symbolId)) || Number(symbolId) <= 0) return null
   try {
-    const base = process.env.EXEC_URL || 'http://127.0.0.1:8091'
-    const res = await fetch(`${base}/depth`, {
+    // Depth books are per-SYMBOL, not per-account, and both sidecars would
+    // hold the same book. Default base, via the shared resolver.
+    const res = await fetch(`${execBaseFor()}/depth`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${process.env.EXEC_SECRET || ''}`,

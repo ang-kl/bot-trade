@@ -4,7 +4,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget, validateExecGuard } from './exec-engine.js'
+import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget, validateExecGuard, execBaseFor, invalidateSidecarSession } from './exec-engine.js'
 
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'ci', clientSecret: 'cs', accessToken: 'at', accountId: '123' }
 
@@ -392,5 +392,144 @@ test('pingSidecar reports a MISSING roster as null, not as an empty roster', asy
     globalThis.fetch = prevFetch
     if (prevEngine === undefined) delete process.env.EXEC_ENGINE; else process.env.EXEC_ENGINE = prevEngine
     if (prevUrl === undefined) delete process.env.EXEC_URL; else process.env.EXEC_URL = prevUrl
+  }
+})
+
+// ---------------------------------------------------------------------------
+// THE ROUTING SEAM (two-sidecar plan, Phase 1).
+//
+// One ExecEngine holds one broker host for its whole life, so live and demo
+// accounts cannot share a sidecar process. `execBase()` was a no-arg global
+// returning ONE url — there was no way for Node to even NAME the demo
+// account's sidecar, which is why the outage of 05-08 (four demo accounts
+// enabled, none authorised, twelve hours without a trade) had no expressible
+// fix on this side.
+//
+// Two properties are worth testing and they pull in opposite directions:
+//   · with only EXEC_URL set, NOTHING changes — that is what makes this phase
+//     deployable ahead of the second process;
+//   · with both set, a demo call must never touch the live sidecar, including
+//     its credential push and its memo.
+// ---------------------------------------------------------------------------
+
+test('execBaseFor: with only EXEC_URL set, every host resolves to the same base', () => {
+  const prev = { u: process.env.EXEC_URL, l: process.env.EXEC_URL_LIVE, d: process.env.EXEC_URL_DEMO }
+  delete process.env.EXEC_URL_LIVE
+  delete process.env.EXEC_URL_DEMO
+  process.env.EXEC_URL = 'http://only-one:8091'
+  try {
+    assert.equal(execBaseFor('live.ctraderapi.com'), 'http://only-one:8091')
+    assert.equal(execBaseFor('demo.ctraderapi.com'), 'http://only-one:8091')
+    assert.equal(execBaseFor({ host: 'demo.ctraderapi.com' }), 'http://only-one:8091')
+    // No creds, unknown host, empty host — all the default. Node never decides
+    // a host is illegitimate; the sidecar refuses a host that disagrees with
+    // its own, which is enforcement at the boundary rather than a guess here.
+    assert.equal(execBaseFor(), 'http://only-one:8091')
+    assert.equal(execBaseFor('nonsense.example'), 'http://only-one:8091')
+    assert.equal(execBaseFor({}), 'http://only-one:8091')
+    assert.equal(execBaseFor({ host: '' }), 'http://only-one:8091')
+  } finally {
+    for (const [k, v] of Object.entries({ EXEC_URL: prev.u, EXEC_URL_LIVE: prev.l, EXEC_URL_DEMO: prev.d })) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+})
+
+test('execBaseFor: each side goes to its own base when configured, case-insensitively', () => {
+  const prev = { u: process.env.EXEC_URL, l: process.env.EXEC_URL_LIVE, d: process.env.EXEC_URL_DEMO }
+  process.env.EXEC_URL = 'http://default:8091'
+  process.env.EXEC_URL_LIVE = 'http://live-sidecar:8091'
+  process.env.EXEC_URL_DEMO = 'http://demo-sidecar:8091'
+  try {
+    assert.equal(execBaseFor('live.ctraderapi.com'), 'http://live-sidecar:8091')
+    assert.equal(execBaseFor('DEMO.CtraderAPI.com'), 'http://demo-sidecar:8091')
+    assert.equal(execBaseFor(' demo.ctraderapi.com '), 'http://demo-sidecar:8091')
+    // One side configured, the other not: the unconfigured side keeps today's
+    // single-sidecar base rather than becoming unreachable.
+    delete process.env.EXEC_URL_DEMO
+    assert.equal(execBaseFor('demo.ctraderapi.com'), 'http://default:8091')
+    assert.equal(execBaseFor('live.ctraderapi.com'), 'http://live-sidecar:8091')
+  } finally {
+    for (const [k, v] of Object.entries({ EXEC_URL: prev.u, EXEC_URL_LIVE: prev.l, EXEC_URL_DEMO: prev.d })) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+})
+
+test('two sidecars: a demo order reaches the demo sidecar and NEVER the live one', async () => {
+  // Two stub sidecars on two ports. The assertion that matters is the negative
+  // one: `live.length === 0`. Routing that merely "usually" picks the right
+  // process would place a demo order on a live account.
+  const seen = { live: [], demo: [] }
+  const mk = (bucket) => http.createServer((req, res) => {
+    let raw = ''
+    req.on('data', (c) => { raw += c })
+    req.on('end', () => {
+      seen[bucket].push({ url: req.url, body: raw })
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true}')
+    })
+  })
+  const liveSrv = mk('live')
+  const demoSrv = mk('demo')
+  await new Promise(r => liveSrv.listen(0, '127.0.0.1', r))
+  await new Promise(r => demoSrv.listen(0, '127.0.0.1', r))
+  const prev = { l: process.env.EXEC_URL_LIVE, d: process.env.EXEC_URL_DEMO }
+  process.env.EXEC_URL_LIVE = `http://127.0.0.1:${liveSrv.address().port}`
+  process.env.EXEC_URL_DEMO = `http://127.0.0.1:${demoSrv.address().port}`
+  process.env.EXEC_ENGINE = 'cpp'
+  invalidateSidecarSession()
+  const entry = { symbolId: 41, tradeSide: 'BUY', volume: 100, relativeStopLoss: 5, relativeTakeProfit: 5 }
+  try {
+    await placeOrder({ ...CREDS, host: 'demo.ctraderapi.com', accountId: '111' }, entry)
+    assert.deepEqual(seen.live, [], 'a demo order must not touch the live sidecar at all — not even its /connect')
+    assert.deepEqual(seen.demo.map(r => r.url), ['/connect', '/order'])
+
+    // The live side gets its OWN credential push. A scalar memo would have let
+    // the demo push satisfy this check, and the live sidecar would then serve
+    // an order having never been sent any credentials.
+    await placeOrder({ ...CREDS, host: 'live.ctraderapi.com', accountId: '222' }, entry)
+    assert.deepEqual(seen.live.map(r => r.url), ['/connect', '/order'])
+    assert.equal(seen.demo.length, 2, 'the live order must not have re-touched the demo sidecar')
+    assert.equal(JSON.parse(seen.live[1].body).ctidTraderAccountId, 222)
+    assert.equal(JSON.parse(seen.demo[1].body).ctidTraderAccountId, 111)
+
+    // And the memo still works per side: a repeat on demo re-pushes nothing.
+    await placeOrder({ ...CREDS, host: 'demo.ctraderapi.com', accountId: '111' }, entry)
+    assert.deepEqual(seen.demo.map(r => r.url), ['/connect', '/order', '/order'])
+  } finally {
+    invalidateSidecarSession()
+    liveSrv.close(); demoSrv.close()
+    for (const [k, v] of Object.entries({ EXEC_URL_LIVE: prev.l, EXEC_URL_DEMO: prev.d })) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+})
+
+test('sidecarRoster caches per base — one sidecar\'s roster is not evidence about the other\'s', async () => {
+  const prevFetch = globalThis.fetch
+  const prev = { e: process.env.EXEC_ENGINE, l: process.env.EXEC_URL_LIVE, d: process.env.EXEC_URL_DEMO }
+  process.env.EXEC_ENGINE = 'cpp'
+  process.env.EXEC_URL_LIVE = 'http://live.test'
+  process.env.EXEC_URL_DEMO = 'http://demo.test'
+  const byHost = { 'http://live.test': [42993489], 'http://demo.test': [43097342, 46130058] }
+  globalThis.fetch = async (url) => {
+    const base = String(url).replace('/health', '')
+    return { ok: true, json: async () => ({ ok: true, connected: true, accounts: byHost[base] ?? [] }) }
+  }
+  try {
+    const { sidecarRoster } = await import('./exec-engine.js')
+    const live = await sidecarRoster({ base: execBaseFor('live.ctraderapi.com') })
+    const demo = await sidecarRoster({ base: execBaseFor('demo.ctraderapi.com') })
+    assert.deepEqual(live, ['42993489'])
+    // Before this was keyed by base, the demo call inside the 20s TTL returned
+    // the LIVE roster — which reads as "the demo accounts are disconnected",
+    // the exact wrong answer during the outage this seam exists to fix.
+    assert.deepEqual(demo, ['43097342', '46130058'])
+  } finally {
+    globalThis.fetch = prevFetch
+    for (const [k, v] of Object.entries({ EXEC_ENGINE: prev.e, EXEC_URL_LIVE: prev.l, EXEC_URL_DEMO: prev.d })) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
   }
 })

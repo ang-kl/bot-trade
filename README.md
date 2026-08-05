@@ -70,6 +70,7 @@ node --test "agent/**/*.test.js"           # agent test suite
 | `OPENAI_MODEL_REASONING` | agent | Rare, high-value, genuinely hard: the Risk page's Re-Risk (financial analysis). Unset ⇒ falls back to DEFAULT |
 | `CTRADER_CLIENT_ID` / `CTRADER_CLIENT_SECRET` | agent + Vercel | Spotware Connect OAuth2 app |
 | `EXEC_ENGINE` / `EXEC_URL` / `EXEC_SECRET` | agent | `cpp` routes orders through the C++ sidecar at `EXEC_URL` |
+| `EXEC_URL_LIVE` / `EXEC_URL_DEMO` | agent | Optional per-broker-host sidecars. One sidecar process holds ONE broker host for its whole life, so live and demo accounts cannot share one. Unset (the default) = both sides use `EXEC_URL` and behaviour is identical to before. |
 | `VITE_AGENT_URL` | Vercel (build) | Default agent connection (overridable per-browser on Connect) |
 | `VITE_AGENT_SECRET_READ` | Vercel (build) | Default agent secret for a fresh browser — READ TIER ONLY (D12, 2026-07-27). Safe to embed in the public bundle: a leak exposes account/dashboard data, never control. Full (order/close/config) access always requires pasting the real `AGENT_SECRET` into Connect, saved to that browser's `localStorage`. `VITE_AGENT_SECRET` / `VITE_AGENT_SECRET_AUTOPILOT` are no longer read by the frontend — remove them from the Vercel build once this is set. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_OWNER_CHAT_ID` | agent | Alerts: fills, vetoes, stalls, tampering, spend caps |
