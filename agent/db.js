@@ -1022,6 +1022,33 @@ export function initDB(dbPath) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_risk_events_disposition
              ON risk_events(disposition, created_at);`);
 
+  // §70.8 OPPORTUNITY IDENTITY — the last missing primitive, and the one that
+  // made the other two hard to read.
+  //
+  // Measured in production 05-08-2026 over 75 minutes: 500 risk-gate
+  // evaluations resolved to 63 distinct account|symbol|side — a 7.9x
+  // re-evaluation rate. Every scan cycle re-scores the same setup and writes
+  // another row, so `approved` has never counted opportunities. It counts
+  // evaluations, and subtracting a position count from it compares two
+  // different units. That is how "276 approved, 59 opened, 217 went nowhere"
+  // was produced — the same error shape as the earlier "96 approved, 79
+  // orders, 17 went nowhere" recorded in decision-audit.js's header.
+  //
+  // The lineage column above answers "which row did this approval produce".
+  // This one answers the question underneath it: "how many of these rows are
+  // the same opportunity". See services/opportunity-identity.js for the rule.
+  {
+    const cols = new Set(db.prepare(`PRAGMA table_info(risk_events)`).all().map(c => c.name));
+    if (!cols.has('opportunity_key')) db.exec(`ALTER TABLE risk_events ADD COLUMN opportunity_key TEXT`);
+  }
+  // The lookback is (symbol, side, account, newest-first) on every evaluation,
+  // i.e. on the hot path. Without this index it is a scan of the whole audit
+  // table per proposal.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_risk_events_opportunity
+             ON risk_events(opportunity_key, created_at);
+           CREATE INDEX IF NOT EXISTS idx_risk_events_lookback
+             ON risk_events(symbol, side, account_id, created_at);`);
+
   // §70.9 P&L RECONCILIATION EVIDENCE. The backfill's "we tried and gave up"
   // record lived in a module-level Map keyed by ACCOUNT — so it was forgotten
   // on every restart, and this service redeploys on every push to main. The

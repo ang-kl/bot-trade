@@ -3989,6 +3989,26 @@ async function runLoop(db) {
         log('Symbol-cap detector failed (non-fatal):', err.message)
       }
 
+      // §70.8 OPPORTUNITY BACKFILL. New evaluations are keyed at the gate, but
+      // the history the owner reads the funnel over is not, and until it is
+      // every rate describes only the rows written since the migration. The
+      // key is derived, so replaying the rule over old rows produces exactly
+      // what the live path would have written.
+      //
+      // Bounded and idempotent: one batch per housekeeping pass walks the
+      // backlog down and then costs a single indexed count forever after. Not
+      // run at boot — a full-table rewrite is not something to put in front of
+      // the first trading cycle.
+      try {
+        const { backfillOpportunityKeys } = await import('./services/opportunity-identity.js')
+        const b = backfillOpportunityKeys(db, { limit: 5000 })
+        if (b.keyed > 0) {
+          log(`Opportunity backfill: keyed ${b.keyed} evaluation(s) into ${b.opportunities} opportunities, ${b.remaining} remaining`)
+        }
+      } catch (err) {
+        log('Opportunity backfill failed (non-fatal):', err.message)
+      }
+
       // OVER-CEILING RESTING ORDERS — the half the detector above could not
       // see. On 04-08 the DOW.US cluster was thirteen LIMIT orders resting at
       // 29.84 from 10:41, and monitored_positions stayed empty until the US

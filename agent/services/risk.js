@@ -25,6 +25,8 @@ import { DEFAULT_NULL_EXIT_MIN_R } from './null-exit-guard.js'
 // not import risk.js, so this adds no cycle.
 import { pulseFor } from './market-pulse.js'
 import { checkSymbolCap, DEFAULT_MAX_PER_SYMBOL } from './symbol-position-cap.js'
+// Leaf module (pure rule + one indexed lookback) — no cycle back into risk.js.
+import { nextOpportunityKey } from './opportunity-identity.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
@@ -1269,12 +1271,30 @@ export function persistPostApprovalVeto(db, proposal, reason, checks = {}) {
  * Persist a risk evaluation to the risk_events audit table.
  */
 export function persistRiskEvent(db, proposal, result) {
+  const accountId = proposal.accountId != null
+    ? String(proposal.accountId)
+    : (getState(db, 'ctrader_account_id') || null)
+
+  // §70.8 OPPORTUNITY IDENTITY. Stamped HERE because this is the one choke
+  // point every evaluation passes through — the same reason the lineage id is
+  // returned from here. Measured 05-08-2026: the scanner re-scores one setup
+  // ~8x, so without this column `approved` counts evaluations and every
+  // funnel built on it compares evaluations to positions.
+  //
+  // Wrapped: an identity is a LABEL and the row it labels is a money decision.
+  // A failure to name the opportunity must never be the reason a risk
+  // evaluation goes unrecorded.
+  let opportunityKey = null
+  try {
+    opportunityKey = nextOpportunityKey(db, proposal, { accountId }).key
+  } catch { opportunityKey = null }
+
   // §70.9: RETURNS THE ROW ID. Callers thread it onto the trade or pending
   // order the approval produces, which is what turns "17 approvals went
   // nowhere" from a subtraction into a list of rows.
   const info = db.prepare(
-    `INSERT INTO risk_events (symbol, side, approved, veto_reason, checks_json, proposal_json, account_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO risk_events (symbol, side, approved, veto_reason, checks_json, proposal_json, account_id, created_at, opportunity_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     proposal.symbol,
     proposal.side,
@@ -1290,8 +1310,9 @@ export function persistRiskEvent(db, proposal, result) {
     // M1 provenance: which account this decision was evaluated FOR — the
     // proposal's own account when the caller carries one, else the
     // currently-selected account (identical in the single-account era).
-    proposal.accountId != null ? String(proposal.accountId) : (getState(db, 'ctrader_account_id') || null),
-    new Date().toISOString()
+    accountId,
+    new Date().toISOString(),
+    opportunityKey
   )
   return info?.lastInsertRowid ?? null
 }
