@@ -473,6 +473,34 @@ function strategyFns(opts) {
  *   exactly as before. The scan uses it to give Cup & Handle the deeper history
  *   it needs without changing what any other strategy sees.
  */
+/**
+ * EVERY armed strategy's candidate for this timeframe, not just the winner.
+ *
+ * Owner, 05-08-2026, approving the change: "Break the winner-take-all, so a
+ * symbol/timeframe can surface more than one armed strategy's signal."
+ *
+ * pickBestSignal returns ONE candidate per timeframe, and only that winner is
+ * ever written to `scans`. Measured on 7 days of production traces, cup_handle
+ * produced 2,643 setups that cleared every one of its gates including the R:R
+ * floor — and emitted zero signals, because each one lost the conviction
+ * contest to fib_confluence or vwap_trend. With conviction saturated at 9-10
+ * across the registry that contest is close to arbitrary, so the same two
+ * strategies win nearly every time and the rest are structurally invisible.
+ *
+ * The function's own history says this is a repeat: the armed-beats-unarmed
+ * rule below was added because "RSI-2 and VP sat at 0 trades for hours despite
+ * being armed". That fixed the case where the winner could not trade. It does
+ * nothing when BOTH are armed — which is this case.
+ */
+export function pickAllSignals(fns, closed, timeframe, opts, barsFor = null) {
+  const out = []
+  for (const fn of fns) {
+    const c = fn(barsFor ? barsFor(fn) : closed, timeframe, opts)
+    if (c) out.push(c)
+  }
+  return out
+}
+
 export function pickBestSignal(fns, closed, timeframe, opts, barsFor = null) {
   // Prefer a strategy that is ARMED to trade over a higher-conviction one that
   // isn't. Only an armed strategy can actually place an order, so surfacing the
@@ -485,9 +513,14 @@ export function pickBestSignal(fns, closed, timeframe, opts, barsFor = null) {
   const armedRaw = opts?.armedStrategyKeys
   const armedSet = armedRaw instanceof Set ? armedRaw : (Array.isArray(armedRaw) ? new Set(armedRaw) : null)
   const isArmed = (c) => !armedSet || armedSet.size === 0 || armedSet.has(c.strategy)
+  return bestOf(pickAllSignals(fns, closed, timeframe, opts, barsFor), isArmed)
+}
+
+/** The winner under the armed-then-conviction rule. Exported so the multi-
+ *  signal path and the legacy single-signal path cannot rank differently. */
+export function bestOf(cands, isArmed = () => true) {
   let best = null
-  for (const fn of fns) {
-    const c = fn(barsFor ? barsFor(fn) : closed, timeframe, opts)
+  for (const c of cands || []) {
     if (!c) continue
     if (!best) { best = c; continue }
     const ca = isArmed(c), ba = isArmed(best)
@@ -495,6 +528,13 @@ export function pickBestSignal(fns, closed, timeframe, opts, barsFor = null) {
     if ((c.conviction ?? 0) > (best.conviction ?? 0)) best = c  // else strongest wins
   }
   return best
+}
+
+/** The armed-set predicate pickBestSignal uses, shared with scanSymbolFib. */
+export function armedPredicate(opts) {
+  const armedRaw = opts?.armedStrategyKeys
+  const armedSet = armedRaw instanceof Set ? armedRaw : (Array.isArray(armedRaw) ? new Set(armedRaw) : null)
+  return (c) => !armedSet || armedSet.size === 0 || armedSet.has(c.strategy)
 }
 
 export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
@@ -529,6 +569,9 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   }
 
   let signal = null
+  // Best candidate PER STRATEGY across every timeframe. Keyed by strategy so
+  // one loud strategy cannot occupy the only slot; see pickAllSignals.
+  const bestByStrategy = new Map()
   let lastPrice = null
   let lastPriceT = -1
   const now = Date.now()
@@ -555,28 +598,49 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     const isPreferred = (tf) => !preferred || preferred.includes(tf)
     const periodMs = tfMs(timeframe) || 0
     const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
-    if (cupHandleOn) cupHandleTraces.push(traceCupHandleSearch(closed, timeframe))
-    if (invCupHandleOn) cupHandleTraces.push(traceInvCupHandleSearch(closed, timeframe))
-    if (!signal || (preferred && !signal._preferred)) {
-      // Best-conviction across ALL enabled strategies on this timeframe (not
-      // "first in registry order wins" — that starved every strategy but fib).
-      // All strategies share the one bar fetch/cache above.
-      // Each strategy sees exactly its own requirement, floored at SIGNAL_BARS.
-      // A strategy that needs less than the floor keeps the 150-bar window it
-      // was tuned on; one that needs more gets what it needs. Nothing silently
-      // starves and nothing silently widens.
-      const barsFor = (fn) => {
-        const want = Math.max(SIGNAL_BARS, Number(fn?.minBars) || 0)
-        return closed.length > want ? closed.slice(-want) : closed
-      }
-      const cand = pickBestSignal(fns, closed, timeframe, opts, barsFor)
-      if (cand) {
-        cand._preferred = isPreferred(timeframe)
-        if (!signal || (cand._preferred && !signal._preferred)) signal = cand
-      }
+    // Each strategy sees exactly its own requirement, floored at SIGNAL_BARS.
+    // A strategy that needs less than the floor keeps the 150-bar window it
+    // was tuned on; one that needs more gets what it needs. Nothing silently
+    // starves and nothing silently widens.
+    const barsFor = (fn) => {
+      const want = Math.max(SIGNAL_BARS, Number(fn?.minBars) || 0)
+      return closed.length > want ? closed.slice(-want) : closed
+    }
+    // THE TRACE MUST SEE EXACTLY WHAT THE SEARCH SEES (05-08-2026). It used to
+    // be handed the full `closed` array while computeCupHandleSignal was handed
+    // barsFor() — up to 450 bars (ema_pullback's requirement sets the fetch
+    // depth) versus cup_handle's own 210. So the diagnostic searched more than
+    // twice the history of the code it claims to mirror, and over-reported
+    // clean setups. A diagnostic that is more permissive than the thing it
+    // diagnoses is worse than none: it manufactures the exact "would have
+    // fired" alarm it exists to make trustworthy.
+    if (cupHandleOn) cupHandleTraces.push(traceCupHandleSearch(barsFor(computeCupHandleSignal), timeframe))
+    if (invCupHandleOn) cupHandleTraces.push(traceInvCupHandleSearch(barsFor(computeInvCupHandleSignal), timeframe))
+
+    // EVERY armed strategy's candidate, kept per strategy — not one winner per
+    // symbol. All strategies share the one bar fetch/cache above.
+    //
+    // Note this now evaluates every timeframe rather than stopping at the first
+    // preferred hit. That early exit was what made a strategy invisible when a
+    // louder one fired on an earlier timeframe, so it cannot stay; the scan
+    // deadline (`options.deadlineAt` in runFibScan) remains the bound on cost.
+    for (const cand of pickAllSignals(fns, closed, timeframe, opts, barsFor)) {
+      cand._preferred = isPreferred(timeframe)
+      const prev = bestByStrategy.get(cand.strategy)
+      // Per strategy: a preferred (armed) timeframe wins outright; within the
+      // same preference tier, conviction decides.
+      const better = !prev
+        || (cand._preferred && !prev._preferred)
+        || (cand._preferred === prev._preferred && (cand.conviction ?? 0) > (prev.conviction ?? 0))
+      if (better) bestByStrategy.set(cand.strategy, cand)
     }
   }
-  return { symbol, signal, lastPrice, error: null, cupHandleTraces }
+  // `signal` stays the single winner under the unchanged armed-then-conviction
+  // rule, so every existing caller behaves exactly as before. `signals` is the
+  // new, wider view.
+  const signals = [...bestByStrategy.values()]
+  signal = bestOf(signals, armedPredicate(opts))
+  return { symbol, signal, signals, lastPrice, error: null, cupHandleTraces }
 }
 
 /**
@@ -684,42 +748,74 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     results.push(...chunkResults)
   }
 
-  const scans = results.map(r => {
-    const sig = r.signal
-    return {
-      symbol: r.symbol,
-      bias: sig ? sig.bias : 'skip',
-      confidence: sig ? sig.conviction : 0,
-      thesis: sig ? sig.thesis : (r.error ? `SCAN ERROR: ${r.error}` : 'No 61.8% reaction zone found'),
-      strategy: sig ? sig.strategy : null,
-      timeframe: sig ? sig.timeframe : null,
-      session_fit: 'n/a',
-      trade_at: 'now',
-      price: sig ? sig.entry : r.lastPrice,
-      trade_grade: sig ? (sig.conviction >= hotThreshold ? 'potential' : 'weak') : 'none',
-    }
+  // ONE ROW PER (symbol, strategy), not per symbol. Before this a symbol
+  // produced exactly one scan row — the conviction winner — so every other
+  // armed strategy's setup was thrown away before it was ever recorded. That
+  // is why the Strategy Liveness card reported cup_handle at 0 signals while
+  // its own diagnostics showed thousands of complete setups: they existed,
+  // they just never became a row.
+  const rowFor = (r, sig) => ({
+    symbol: r.symbol,
+    bias: sig ? sig.bias : 'skip',
+    confidence: sig ? sig.conviction : 0,
+    thesis: sig ? sig.thesis : (r.error ? `SCAN ERROR: ${r.error}` : 'No 61.8% reaction zone found'),
+    strategy: sig ? sig.strategy : null,
+    timeframe: sig ? sig.timeframe : null,
+    session_fit: 'n/a',
+    trade_at: 'now',
+    price: sig ? sig.entry : r.lastPrice,
+    trade_grade: sig ? (sig.conviction >= hotThreshold ? 'potential' : 'weak') : 'none',
+  })
+  const scans = results.flatMap(r => {
+    const list = r.signals?.length ? r.signals : (r.signal ? [r.signal] : [])
+    // A symbol with nothing still gets its skip row — the monitor phase
+    // resolves open-position prices from these rows and must not lose one.
+    if (!list.length) return [rowFor(r, null)]
+    // Best first, so anything that reads scans positionally still sees the
+    // strongest candidate at the front.
+    return [...list].sort((a, b) => (b.conviction ?? 0) - (a.conviction ?? 0)).map(sig => rowFor(r, sig))
   })
 
+  // signals[symbol] stays the single winner — every existing caller keeps its
+  // behaviour. signalsByStrategy is the addressable view the analyze phase
+  // needs to dispatch the strategy a fair-share slot was actually granted for.
   const signals = {}
-  for (const r of results) if (r.signal) signals[r.symbol] = r.signal
+  const signalsByStrategy = {}
+  for (const r of results) {
+    if (r.signal) signals[r.symbol] = r.signal
+    for (const sig of r.signals || []) {
+      if (!sig?.strategy) continue
+      ;(signalsByStrategy[r.symbol] ||= {})[sig.strategy] = sig
+    }
+  }
 
   const errors = results.filter(r => r.error).map(r => `${r.symbol}: ${r.error}`)
   const cupHandleDiagnostics = results.flatMap(r => (r.cupHandleTraces || []).map(t => ({ symbol: r.symbol, ...t })))
-  const hot = scans.filter(s => s.confidence >= hotThreshold && s.bias !== 'skip').map(s => s.symbol)
-  const warm = scans.filter(s => s.confidence >= 4 && s.confidence < hotThreshold && s.bias !== 'skip').map(s => s.symbol)
+  // hot/warm are SYMBOL lists and must stay one entry per symbol — a symbol
+  // with four qualifying strategies is still one symbol to analyse, and
+  // repeating it would silently multiply its share of the analyze slots, which
+  // is the same starvation this change exists to remove.
+  const uniq = (xs) => [...new Set(xs)]
+  const hot = uniq(scans.filter(s => s.confidence >= hotThreshold && s.bias !== 'skip').map(s => s.symbol))
+  const warmOnly = scans.filter(s => s.confidence >= 4 && s.confidence < hotThreshold && s.bias !== 'skip').map(s => s.symbol)
+  const warm = uniq(warmOnly).filter(sym => !hot.includes(sym))
 
+  // Coverage counts SYMBOLS, not rows — `scans.length` is now rows, and
+  // reporting "42 of 30 symbols" would be nonsense.
+  const scannedSymbols = uniq(scans.map(s => s.symbol)).length
   const rounds = restCount ? Math.ceil(restCount / Math.max(1, batch.length || 1)) : 1
   return {
     scans,
     hot,
     warm,
-    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scans.length} of ${symbols.length} symbols this run (full watchlist every ~${rounds} run${rounds > 1 ? 's' : ''}), ${hot.length} hot, ${warm.length} warm${errors.length ? `, ${errors.length} fetch error(s)` : ''}${deadlineHit ? ' — scan DEADLINE hit, partial batch (broker calls running slow)' : ''}.`,
+    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scannedSymbols} of ${symbols.length} symbols this run (${scans.length} strategy rows; full watchlist every ~${rounds} run${rounds > 1 ? 's' : ''}), ${hot.length} hot, ${warm.length} warm${errors.length ? `, ${errors.length} fetch error(s)` : ''}${deadlineHit ? ' — scan DEADLINE hit, partial batch (broker calls running slow)' : ''}.`,
     deadlineHit,
     usage: { output_tokens: 0 },
     signals,
+    signalsByStrategy,
     errors,
     next_cursor: nextCursor,
-    coverage: { scanned: scans.length, total: symbols.length },
+    coverage: { scanned: scannedSymbols, total: symbols.length, rows: scans.length },
     cupHandleDiagnostics,
   }
 }

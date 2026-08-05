@@ -3084,10 +3084,19 @@ async function runLoop(db) {
         // the old best-first list is already in hotToAnalyze.
         log('Fair-share slot allocation failed (non-fatal, using best-first):', err.message)
       }
+      // A slot granted to a STRATEGY must dispatch that strategy's signal.
+      // Until now the slot allocator picked a symbol because (say) cup_handle
+      // signalled there, and then dispatch handed over `signals[sym]` — the
+      // conviction winner, which was fib_confluence. So the fair share was
+      // real at the allocation step and thrown away at the dispatch step, and
+      // the starved strategy stayed starved while the logs said otherwise.
+      const slotStrategy = new Map((fairShare?.byStrategy || []).map(b => [b.symbol, b.strategy]))
       phase(`analyzing ${hotToAnalyze.join(', ')}`, 'analyze')
       for (const sym of hotToAnalyze) {
         try {
-          await dispatchSymbolSignal(db, s, symbols, sym, scanResult.signals[sym])
+          const want = slotStrategy.get(sym)
+          const sig = (want && scanResult.signalsByStrategy?.[sym]?.[want]) || scanResult.signals[sym]
+          await dispatchSymbolSignal(db, s, symbols, sym, sig)
         } catch (err) {
           log(`Analysis failed for ${sym}:`, err.message)
         }
