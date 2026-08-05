@@ -9,6 +9,7 @@ import { useState } from 'react'
 import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import Collapse from './common/Collapse.jsx'
+import { accountNumbers } from "../lib/scope-label.js"
 
 const METRICS = [
   { key: 'balance', label: 'Account balance' },
@@ -62,7 +63,7 @@ export default function AccountCompare({ accounts, onNeedAll, loading }) {
                   className={`rounded-[8px] px-2 h-[32px] font-semibold cursor-pointer border transition-colors ${on
                     ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)] border-transparent'
                     : 'border-[var(--md-outline-variant)] text-[var(--md-on-surface)]'}`}>
-                  {on ? '✓ ' : ''}{a.isLive ? 'Live' : 'Demo'} · {a.traderLogin || a.accountId}
+                  {on ? '✓ ' : ''}{a.isLive ? 'Live' : 'Demo'} · {accountNumbers(a)}
                 </button>
               )
             })}
@@ -75,7 +76,7 @@ export default function AccountCompare({ accounts, onNeedAll, loading }) {
                     <th className="py-1 pr-3 text-left">Metric</th>
                     {shown.map(a => (
                       <th key={a.accountId} className="py-1 px-2 text-right whitespace-nowrap">
-                        {a.traderLogin || a.accountId} <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
+                        {accountNumbers(a)} <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
                         {a.selected && <span className="block font-normal text-[var(--color-muted)]">bot trades this one</span>}
                       </th>
                     ))}

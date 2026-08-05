@@ -15,6 +15,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { useAccountPhases, refreshPhases } from '../lib/use-active-account.js'
 import { PHASES } from '../lib/account-phases.js'
+import { accountNumbers } from "../lib/scope-label.js"
 
 const CACHE = 'accounts_cache_v1'
 
@@ -86,7 +87,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
     if (busy || a.accountId === data.selectedAccountId) return
     if (a.isLive) {
       const word = window.prompt(
-        `⚠ ${a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`} is a LIVE account with REAL money.\n\n` +
+        `⚠ ${accountNumbers(a)} is a LIVE account with REAL money.\n\n` +
         'If Autotrade is armed, the bot will place REAL orders on it.\n\nType LIVE to confirm.'
       )
       if (word !== 'LIVE') return
@@ -109,7 +110,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
   // a LIVE account additionally goes through the server's confirmLive
   // carve-out with a typed word.
   const setConnected = async (a, next) => {
-    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${a.traderLogin || a.accountId}`
+    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${accountNumbers(a)}`
     if (!next && !window.confirm(`Disconnect ${who}? The bot stops ALL activity for this account — scanning, analysis, autotrade AND position management/reconcile — and the sidecar drops its credentials on the next roster push. Open positions are left to their broker-side SL/TP.`)) return
     let confirmLive
     if (next && a.isLive) {
@@ -126,7 +127,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
   }
 
   const setAccountPhase = async (a, key, next) => {
-    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${a.traderLogin || a.accountId}`
+    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${accountNumbers(a)}`
     if (key === 'autotrade' && next) {
       if (!window.confirm(`Arm autotrade on ${who}? The agent will place REAL orders on this account when a signal passes the risk gate.`)) return
     }
@@ -185,7 +186,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
               >
                 <span className="flex items-center gap-1.5 text-(length:--fs-body) font-semibold text-[var(--color-text)]">
                   <span className={`text-(length:--fs-body) font-bold ${a.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-up)]'}`}>{a.isLive ? 'LIVE' : 'DEMO'}</span>
-                  <span>{a.traderLogin ?? a.accountId}</span>
+                  <span>{accountNumbers(a)}</span>
                   {active && <span aria-hidden="true" className="ml-auto text-[var(--color-accent)]">●</span>}
                 </span>
               </button>
@@ -212,7 +213,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
                     return (
                       <MiniSwitch
                         key={p.key} initial={p.initial} ov={ov}
-                        label={`${p.label} for account ${a.traderLogin || a.accountId}`}
+                        label={`${p.label} for account ${accountNumbers(a)}`}
                         on={eff}
                         disabled={!ph || !masterOn}
                         busy={phaseBusy === `${a.accountId}:${p.key}`}
@@ -220,7 +221,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
                           ? `${p.label} state not loaded yet`
                           : !masterOn
                             ? `Master ${p.label} is OFF (Tune › Pipeline) — turn it on there first. This account's own setting (${ov === null ? 'inherit' : ov ? 'on' : 'off'}) is remembered.`
-                            : `${p.label} is ${eff ? 'ON' : 'OFF'} for ${a.traderLogin || a.accountId}${ov === null ? ' (following the master)' : ' (set on this account)'} — tap to turn ${eff ? 'off' : 'on'}`}
+                            : `${p.label} is ${eff ? 'ON' : 'OFF'} for ${accountNumbers(a)}${ov === null ? ' (following the master)' : ' (set on this account)'} — tap to turn ${eff ? 'off' : 'on'}`}
                         onClick={() => setAccountPhase(a, p.key, !eff)}
                       />
                     )

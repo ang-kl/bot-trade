@@ -52,13 +52,20 @@ export function selectedAccount() {
   return c.accounts.find(a => a.accountId === c.selectedAccountId) ?? null
 }
 
-/** A human label for an account id — the broker LOGIN, which is what the
- *  owner reads, not the ctidTraderAccountId. */
+/**
+ * A human label for an account id — BOTH the broker login and the account id.
+ *
+ * Owner, 05-08-2026: "All accounts listed must include the ID as I only know
+ * the Account #". This used to read `traderLogin ?? accountId`, so the id only
+ * appeared when the login was missing — i.e. never. Switch toasts named an
+ * account by a number the operator could not cross-reference.
+ */
 export function accountLabel(id) {
   const c = readCache()
   const a = c?.accounts?.find(x => x.accountId === id)
   if (!a) return id == null ? 'another account' : String(id)
-  return `${a.isLive ? 'LIVE' : 'DEMO'} ${a.traderLogin ?? a.accountId}`
+  const side = a.isLive ? 'LIVE' : 'DEMO'
+  return a.traderLogin ? `${side} ${a.traderLogin} · ${a.accountId}` : `${side} ${a.accountId}`
 }
 
 /**

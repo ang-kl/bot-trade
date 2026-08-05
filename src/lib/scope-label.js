@@ -27,24 +27,53 @@
 // rather than the same thing said differently, which is part of what made the
 // page hard to read in the first place.
 
-/** Last-N digits of the broker login — the part the owner recognises. */
-export const LABEL_DIGITS = 4
+// BOTH NUMBERS, ALWAYS (owner, 05-08-2026): "All accounts listed must include
+// the ID as I only know the Account #".
+//
+// Every account-naming site in the app was written `traderLogin || accountId`
+// — 39 of them. That OR is the defect. The broker login is always present, so
+// the branch that shows the internal account id NEVER RUNS: the id the owner
+// works from, the one in every log line, veto reason and `?account=` query,
+// was structurally unreachable on screen. Not "hard to find" — absent.
+//
+// So the label carries both, in the order the one surface that already got
+// this right (AccountChrome) established:
+//
+//     DEMO 5203012 · 46130058
+//     ^^^^ ^^^^^^^   ^^^^^^^^
+//     side  login    account id
+//
+// AND NEITHER IS TRUNCATED. An earlier version of this function showed the
+// last four digits of the login ("the part the owner recognises"). That was my
+// inference and it was wrong in the way that matters: a 4-digit tail is not a
+// number you can look up anywhere, and it hides the very digits being asked
+// for. When identifiers are what the reader navigates by, abbreviating them is
+// not tidying — it is deleting the content.
 
 /**
- * "Live · 1247" / "Demo · 7353". Falls back to the internal account id only
- * when there is no broker login, and says so by keeping the full value rather
- * than trimming it to a lookalike 4-digit tail.
+ * "Demo 5067353 · 43097342". Degrades to whichever number exists when one is
+ * missing, and returns null only when there is nothing to name at all.
  */
-export function accountLabel(account, { digits = LABEL_DIGITS } = {}) {
+export function accountLabel(account) {
   if (!account) return null
   const login = account.trader_login ?? account.traderLogin ?? null
+  const id = account.account_id ?? account.accountId ?? null
   const side = (account.is_live ?? account.isLive) ? 'Live' : 'Demo'
-  if (login == null || login === '') {
-    const id = account.account_id ?? account.accountId
-    return id == null || id === '' ? null : `${side} · ${String(id)}`
-  }
-  const s = String(login)
-  return `${side} · ${s.length > digits ? s.slice(-digits) : s}`
+  const has = (v) => v != null && v !== ''
+  if (has(login) && has(id)) return `${side} ${login} · ${id}`
+  if (has(login)) return `${side} ${login}`
+  if (has(id)) return `${side} ${id}`
+  return null
+}
+
+/**
+ * "5067353 · 43097342" — the two numbers WITHOUT the Live/Demo word, for the
+ * many sites that already render a LIVE/DEMO badge beside the name and would
+ * otherwise say it twice. Same both-numbers rule, same no-truncation rule.
+ */
+export function accountNumbers(account) {
+  const label = accountLabel(account)
+  return label == null ? null : label.replace(/^(Live|Demo) /, '')
 }
 
 /** Find a registry row by either id shape, without coercing null to 0. */

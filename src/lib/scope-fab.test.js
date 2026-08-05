@@ -75,7 +75,7 @@ describe('fabOptions — the sheet', () => {
   })
 
   it('names each row the same way every other surface does', () => {
-    expect(fabOptions(ACCOUNTS)[1].label).toBe('Demo · 7353')
+    expect(fabOptions(ACCOUNTS)[1].label).toBe('Demo 5067353 · 43097342')
   })
 
   it('marks which account the bot is actually TRADING — viewing is not arming', () => {

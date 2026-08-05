@@ -23,12 +23,13 @@
 // sidebar.
 import { PHASES } from '../lib/account-phases.js'
 import { useActiveAccount, formatBalance } from '../lib/use-active-account.js'
+import { accountNumbers } from "../lib/scope-label.js"
 
 export default function PageAccountLine() {
   const { acct, phases, armed, ccy } = useActiveAccount()
   if (!acct) return null
   const trading = armed === true
-  const label = `${acct.isLive ? 'LIVE' : 'DEMO'} ${acct.traderLogin ?? acct.accountId}`
+  const label = `${acct.isLive ? 'LIVE' : 'DEMO'} ${accountNumbers(acct)}`
   return (
     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-1 text-(length:--fs-body) leading-[1.35]">
       <span

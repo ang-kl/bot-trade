@@ -23,15 +23,18 @@
 // Pure functions, no React and no fetch, so the face can be tested without a
 // DOM — the failure being guarded against is a face that renders a plausible
 // wrong account, which a render test would not notice.
-import { scopeLabel, findAccount, accountLabel, LABEL_DIGITS } from './scope-label.js'
+import { scopeLabel, findAccount, accountLabel } from './scope-label.js'
 
 /** The aggregate scope, spelled the same way `useLensAccount` spells it. */
 export const FAB_ALL = 'all'
 
-/** Last-N digits of a broker login — the part the owner recognises. */
+/** Digits the 56px FACE can hold. The face is a glance, not a listing — the
+ *  sheet behind it carries the full login and the full account id, which is
+ *  where "all accounts listed must include the ID" is satisfied. */
+const FACE_DIGITS = 4
 function tail(login) {
   const s = String(login ?? '')
-  return s.length > LABEL_DIGITS ? s.slice(-LABEL_DIGITS) : s
+  return s.length > FACE_DIGITS ? s.slice(-FACE_DIGITS) : s
 }
 
 /**

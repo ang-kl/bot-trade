@@ -23,6 +23,7 @@ import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-r
 import { useLensAccount } from '../lib/use-lens-account.js'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import Skeleton from '../components/common/Skeleton.jsx'
+import { accountNumbers } from "../lib/scope-label.js"
 
 const REFRESH_MS = 30_000
 
@@ -46,7 +47,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
-        <span className="text-(length:--fs-body) font-semibold">{acct.traderLogin ? `Login ${acct.traderLogin}` : `Account ${acct.accountId}`}</span>
+        <span className="text-(length:--fs-body) font-semibold">{accountNumbers(acct) || `Account ${acct.accountId}`}</span>
         {acct.brokerTitle && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{acct.brokerTitle}</span>}
         {acct.balance != null && <span className="text-(length:--fs-body) font-semibold">{fmt(acct.balance, 2)}{acct.currency ? ` ${acct.currency}` : ''}</span>}
         {acct.selected && <Badge tone="on">BOT TRADES THIS ONE</Badge>}
