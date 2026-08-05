@@ -62,7 +62,7 @@ export const STRATEGY_REGISTRY = [
   { key: 'inv_cup_handle',    name: 'Inverted Cup & Handle', compute: computeInvCupHandleSignal, defaultOn: true, pendingCapable: false, minBars: 210 },
   { key: 'ema_pullback',      name: 'EMA Trend-Pullback', compute: computeEmaPullback,      defaultOn: true,  pendingCapable: false, minBars: 450 },
   { key: 'donchian_breakout', name: 'Range Breakout',     compute: computeDonchianBreakout, defaultOn: true,  pendingCapable: false, minBars: 40  },
-  { key: 'rsi_meanrev',       name: 'RSI Mean-Reversion', compute: computeRsiMeanrev,       defaultOn: true,  pendingCapable: false, minBars: 60  },
+  { key: 'rsi_meanrev',       name: 'RSI Mean-Reversion', compute: computeRsiMeanrev,       defaultOn: true,  pendingCapable: false, minBars: 75  },
   { key: 'vwap_trend',        name: 'VWAP Trend', compute: computeVwapTrend,       defaultOn: true,  pendingCapable: false, minBars: 30  },
   { key: 'vp_value',          name: 'Vol. Profile Value', compute: computeVpValue,     defaultOn: true,  pendingCapable: false, minBars: 40  },
   { key: 'rsi2_reversion',    name: 'RSI 2 Reversion', compute: computeRsi2,      defaultOn: true,  pendingCapable: false, minBars: 104 },
