@@ -11,6 +11,10 @@
 // (no portfolio aggregate) can pass allowAll={false}.
 import { useEffect, useState } from 'react'
 import { agentGet } from '../../lib/agent-api.js'
+// Same formatter the ScopeChip uses. Six call sites were building this string
+// in five different formats — `Live · 7353`, `Live 5067353`, `Live ·353` — so
+// on one page the same idea read as several different kinds of thing.
+import { accountLabel } from '../../lib/scope-label.js'
 
 // `allLabel` renames the All pill where "all" does not mean "every account's
 // data merged". On the watchlist it means the SHARED list that accounts
@@ -31,7 +35,7 @@ export default function AccountScopePills({ value, onChange, allowAll = true, no
     ...(allowAll ? [{ id: 'all', label: allLabel }] : []),
     ...accounts.map(a => ({
       id: String(a.account_id),
-      label: `${a.is_live ? 'Live' : 'Demo'} · ${String(a.trader_login || a.account_id).slice(-4)}`,
+      label: accountLabel(a),
       disabled: !a.enabled,
     })),
   ]

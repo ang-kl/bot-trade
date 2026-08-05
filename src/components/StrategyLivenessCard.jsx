@@ -135,18 +135,24 @@ export function StrategyCards({ data }) {
   )
 }
 
-export default function StrategyLivenessCard() {
+// `acct` is the PAGE's scope, passed in. It used to resolve its own account,
+// which is exactly the contradiction in the owner's 05-08-2026 screenshot: the
+// card above it was showing Demo 8549 while this one showed Demo 7353, with
+// nothing on either saying so. A card that picks its own account cannot be
+// kept in step with the page by anything except luck.
+export default function StrategyLivenessCard({ acct = null }) {
   const [days, setDays] = useState(WINDOWS[0])
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
 
   useEffect(() => {
     let alive = true
-    agentGet(`/state/strategy-liveness?days=${days}`)
+    const scope = acct == null || acct === '' ? '' : `&account=${encodeURIComponent(acct)}`
+    agentGet(`/state/strategy-liveness?days=${days}${scope}`)
       .then(d => { if (alive) { setData(d); setErr(d?.error || null) } })
       .catch(e => { if (alive) setErr(e?.message || String(e)) })
     return () => { alive = false }
-  }, [days])
+  }, [days, acct])
 
   // Render only data that belongs to the SELECTED window. Without this the
   // previous window's counts sit under the new window's label for the length
