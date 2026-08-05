@@ -7,11 +7,19 @@
 // THE TREND IS MEASURED BEFORE THE DIP (owner's call, 05-08-2026).
 //
 // It used to be measured ON the cross bar: `rsiPrev < 30 && last.c > sma50`.
-// Those two terms fight each other. The selling that drives a 14-period RSI
-// under 30 is usually the same selling that pulls close under its own 50-bar
-// mean, so the pair is close to mutually exclusive — measured across 52,590
-// RSI-30/70 crosses in flat, rising and falling regimes, ZERO passed. The
-// strategy was never quiet; it could not fire at all.
+// Those two terms pull against each other. The selling that drives a 14-period
+// RSI under 30 is usually the same selling that pulls close under its own
+// 50-bar mean, so the pair is close to mutually exclusive in practice: zero
+// passed across the 52,590 RSI-30/70 crosses measured, in flat, rising and
+// falling regimes.
+//
+// BE PRECISE ABOUT WHAT THAT IS. It is a frequency result on one sample, NOT
+// an impossibility proof, and the difference matters to anyone reading this
+// later. The old condition WAS satisfiable — a shallow enough washout inside a
+// steep enough uptrend clears it, and the synthetic fixture in the adjacent
+// test file did exactly that before this change. What the measurement shows is
+// that such setups are rare to absent in real bars, which is a good enough
+// reason to move the gate and a more defensible claim than "it could not fire".
 //
 // The repair keeps SMA50 and keeps the gate hard. It only stops asking the
 // question on the bar the answer has already been distorted by: was this an
@@ -30,9 +38,16 @@ import { parseTimeframe } from '../lib/timeframes.js'
 const RSI_PERIOD = 14
 const TROUGH_LOOKBACK = 10 // bars scanned for the washout extreme
 const TREND_LOOKBACK = 15 // bars back at which the trend is read, pre-dip
-// SMA50 measured TREND_LOOKBACK bars back needs 50 + 15 bars behind it, plus
-// RSI warm-up. Raised from 60 when the trend read moved off the cross bar.
-const MIN_BARS = 75
+// DERIVED, not a literal. SMA50 read TREND_LOOKBACK bars back needs 50 +
+// TREND_LOOKBACK bars behind it, plus 10 of RSI warm-up — the same slack the
+// old 60 carried. Written as the expression because the header above invites
+// re-measuring TREND_LOOKBACK: raise it against a hard-coded 75 and, on a
+// short history, `prior` becomes shorter than 50, priorSma50 is null, and the
+// strategy returns null SILENTLY — the exact "armed but structurally cannot
+// fire" failure this whole change is repairing. strategy-bar-requirements.test.js
+// carries the matching SOURCE_OF_TRUTH note, so the registry cannot drift
+// away from it either.
+export const MIN_BARS = 50 + TREND_LOOKBACK + 10
 
 /** Simple moving average of closes over the last `period` bars. */
 function sma(bars, period) {
@@ -43,6 +58,31 @@ function sma(bars, period) {
 }
 
 const round2 = x => Math.round(x * 100) / 100
+
+/**
+ * priorTrend(bars) → 'up' | 'down' | null
+ *
+ * The gate decision on its own, EXPORTED SO IT CAN BE TESTED ON ITS OWN. The
+ * full compute() can also return null for reward:risk or for a target on the
+ * wrong side of entry, so a test that only checks "signal or no signal" cannot
+ * tell which gate rejected a bar set — and the trend gate is the one this
+ * change moved. Splitting it out means the boundary can be stated as an
+ * assertion instead of inferred.
+ *
+ * null means "not enough history", which is a third answer, not a false.
+ */
+export function priorTrend(bars) {
+  if (!Array.isArray(bars) || bars.length <= TREND_LOOKBACK) return null
+  const prior = bars.slice(0, bars.length - TREND_LOOKBACK)
+  const priorSma50 = sma(prior, 50)
+  if (priorSma50 == null) return null
+  const priorClose = prior[prior.length - 1].c
+  // Exactly equal falls through to null on purpose: a hard gate should not
+  // guess a direction it has no evidence for.
+  if (priorClose > priorSma50) return 'up'
+  if (priorClose < priorSma50) return 'down'
+  return null
+}
 
 /**
  * computeRsiMeanrev(bars, timeframe, opts) → signal | null
@@ -73,15 +113,13 @@ export function computeRsiMeanrev(bars, timeframe, opts = {}) {
 
   // The trend read, taken TREND_LOOKBACK bars back — before the washout that
   // produced this RSI cross had a chance to drag SMA50 down through price.
-  const prior = bars.slice(0, bars.length - TREND_LOOKBACK)
-  const priorSma50 = sma(prior, 50)
-  if (priorSma50 == null) return null
-  const priorClose = prior[prior.length - 1].c
-  const upTrend = priorClose > priorSma50
-  const downTrend = priorClose < priorSma50
+  // ONE implementation, shared with the exported predicate, so a test of the
+  // gate is a test of the gate this function actually uses.
+  const trend = priorTrend(bars)
+  if (trend == null) return null
 
-  const longCross = rsiPrev < 30 && rsiNow >= 30 && upTrend
-  const shortCross = rsiPrev > 70 && rsiNow <= 70 && downTrend
+  const longCross = rsiPrev < 30 && rsiNow >= 30 && trend === 'up'
+  const shortCross = rsiPrev > 70 && rsiNow <= 70 && trend === 'down'
   if (!longCross && !shortCross) return null
 
   const bias = longCross ? 'long' : 'short'
@@ -151,7 +189,7 @@ export function computeRsiMeanrev(bars, timeframe, opts = {}) {
     time_cap_minutes: timeCap,
     strategy: 'rsi_meanrev',
     thesis: bias === 'long'
-      ? `RSI washed out below 30 and turned back up, and ${TREND_LOOKBACK} bars before the dip price was already above its 50-bar average — buying the dip back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`
-      : `RSI ran hot above 70 and turned back down, and ${TREND_LOOKBACK} bars before the pop price was already below its 50-bar average — selling the pop back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`,
+      ? `RSI washed out below 30 and turned back up, and ${TREND_LOOKBACK} bars before this bar price was already above its 50-bar average — buying the dip back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`
+      : `RSI ran hot above 70 and turned back down, and ${TREND_LOOKBACK} bars before this bar price was already below its 50-bar average — selling the pop back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`,
   }
 }

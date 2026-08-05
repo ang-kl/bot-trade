@@ -24,6 +24,13 @@ import fs from 'node:fs'
 import {
   STRATEGY_REGISTRY, minBarsFor, fetchDepthFor, windowFor,
 } from './strategies.js'
+// IMPORTED, not regex-read. rsi_meanrev's MIN_BARS is an EXPRESSION
+// (50 + TREND_LOOKBACK + 10), and `readConst` only understands a literal — it
+// would return null and this guard would compare against nothing. Importing the
+// real value means re-measuring TREND_LOOKBACK moves the requirement here
+// automatically and fails loudly if the registry is not moved with it. That is
+// the whole point of the file: the coupling must be visible to the guard.
+import { MIN_BARS as RSI_MEANREV_MIN_BARS } from './rsi-meanrev.js'
 
 // Where each strategy's own length guard actually lives. Computed constants are
 // resolved by hand with the arithmetic shown, so a change to the parts fails the
@@ -34,7 +41,7 @@ const SOURCE_OF_TRUTH = {
   inv_cup_handle: { file: 'cup-handle.js', const: 'MIN_BARS' },
   ema_pullback: { file: 'ema-pullback.js', const: 'MIN_BARS' },
   donchian_breakout: { file: 'donchian-breakout.js', const: 'MIN_BARS' },
-  rsi_meanrev: { file: 'rsi-meanrev.js', const: 'MIN_BARS' },
+  rsi_meanrev: { file: 'rsi-meanrev.js', note: '50 + TREND_LOOKBACK + 10', expect: RSI_MEANREV_MIN_BARS },
   vwap_trend: { file: 'vwap-trend.js', const: 'MIN_BARS' },
   vp_value: { file: 'vp-value.js', const: 'MIN_BARS' },
   rsi2_reversion: { file: 'rsi2-reversion.js', note: 'TREND_PERIOD + RSI_PERIOD + 2 = 104', expect: 104 },

@@ -3,7 +3,7 @@
 // (lets Wilder RSI settle) → sharp counter-move (washout) → reversal bar.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { computeRsiMeanrev } from './rsi-meanrev.js'
+import { computeRsiMeanrev, priorTrend } from './rsi-meanrev.js'
 
 function bar(c, spread = 0.4) {
   return { o: c, h: c + spread, l: c - spread, c, v: 1000 }
@@ -159,7 +159,7 @@ test('a dip that closes BELOW the live SMA50 still fires when the trend preceded
   assert.ok(sig, 'the old same-bar gate rejected exactly this; the new one must not')
   assert.equal(sig.bias, 'long')
   assert.ok(sig.tp1 > sig.entry && sig.sl < sig.entry)
-  assert.match(sig.thesis, /15 bars before the dip/)
+  assert.match(sig.thesis, /15 bars before this bar/)
 })
 
 test('a crash is still a falling knife — no trend behind it, no signal', () => {
@@ -183,4 +183,65 @@ test('unparseable timeframe gives null time cap, not a crash', () => {
   const sig = computeRsiMeanrev(longSetup(), 'weird-tf')
   assert.ok(sig)
   assert.equal(sig.time_cap_minutes, null)
+})
+
+// ---------------------------------------------------------------------------
+// THE BOUNDARY THIS CHANGE ACTUALLY MOVES, stated rather than left implied.
+//
+// The falling-knife test above blocks a PRE-EXISTING downtrend — which the old
+// same-bar gate blocked too. The case genuinely opened up is a FRESH REVERSAL:
+// above SMA50 fifteen bars ago, then a collapse straight through it inside the
+// lookback window. That reads as "uptrend before the dip" and the gate admits
+// it, at any depth — nothing bounds how far below the mean price has fallen.
+//
+// That is a consequence of the owner's choice of option 2 over option 3 (SMA50
+// rising), made on the measured evidence, and these tests do not argue with
+// it. They pin it, so the next reader learns it from a test instead of from a
+// trade. Asserted through priorTrend rather than a full signal, because
+// compute() also rejects on reward:risk — "no signal" alone would not say
+// which gate spoke.
+// ---------------------------------------------------------------------------
+
+/** Uptrend, then a collapse of `drop` per bar over the last six bars. */
+function collapseAfterUptrend(drop) {
+  const bars = []
+  let p = 100
+  for (let i = 0; i < 30; i++) bars.push(bar(p))
+  for (let i = 0; i < 20; i++) { p += 3.5; bars.push(bar(p)) }
+  for (let i = 0; i < 20; i++) bars.push(bar(p))
+  for (let i = 0; i < 6; i++) { p -= drop; bars.push(bar(p)) }
+  bars.push(bar(p + 3))
+  return bars
+}
+
+test('a FRESH break through SMA50 still reads as an uptrend — at any depth', () => {
+  for (const drop of [6, 18, 30]) {
+    const bars = collapseAfterUptrend(drop)
+    assert.ok(bars.at(-1).c < smaOf(bars, 50), `drop ${drop}: fixture must be below the live SMA50`)
+    assert.equal(priorTrend(bars), 'up', `drop ${drop}: the gate admits it — this is the design, not an oversight`)
+  }
+  // A 30-per-bar collapse puts close ~45% under the mean and the trend gate
+  // still says up. If that is ever judged too permissive, the fix is a floor on
+  // the distance (or option 3, SMA50 rising) — and this test is what will fail.
+})
+
+test('the mirror: a fresh rally through SMA50 still reads as a downtrend', () => {
+  const bars = []
+  let p = 300
+  for (let i = 0; i < 30; i++) bars.push(bar(p))
+  for (let i = 0; i < 20; i++) { p -= 3.5; bars.push(bar(p)) }
+  for (let i = 0; i < 20; i++) bars.push(bar(p))
+  for (let i = 0; i < 6; i++) { p += 30; bars.push(bar(p)) }
+  bars.push(bar(p - 3))
+  assert.ok(bars.at(-1).c > smaOf(bars, 50), 'fixture must be above the live SMA50')
+  assert.equal(priorTrend(bars), 'down')
+})
+
+test('priorTrend answers null rather than guessing when it cannot know', () => {
+  assert.equal(priorTrend(null), null)
+  assert.equal(priorTrend([]), null)
+  // 64 bars: prior is 49 long, one short of the 50 the SMA needs.
+  assert.equal(priorTrend(longSetup().slice(-64)), null)
+  // Exactly on the mean is not a direction. Flat bars → priorClose === sma50.
+  assert.equal(priorTrend(Array.from({ length: 80 }, () => bar(100))), null)
 })
