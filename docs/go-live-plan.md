@@ -213,10 +213,38 @@ Without this, every later measurement is unfalsifiable.
 
 ### Phase 1 — stop the self-inflicted blocking (~1 day)
 
-- **P1-1.** `unknown_daily_pnl` at 30,806 is a *consequence* of the DOW.US
-  cluster, already fixed in #639/#640. Re-measure the veto breakdown 48h after
-  those deploys; if it has not collapsed, the age-out ladder (#180) is still
-  parked on its 6-hour rung and needs the unresolvable rows written off.
+- **P1-1. MEASURED 05-08-2026 — it collapsed.** `unknown_daily_pnl` was a
+  *consequence* of the DOW.US cluster, fixed in #639/#640. The 48-hour mark
+  lands ~07-08, so this is an early read, but it is decisive enough to record:
+
+  | window | vetoes | `unknown_daily_pnl` | share |
+  |---|---|---|---|
+  | 7 days | 59,480 | 30,806 | **51.8%** |
+  | 2 days | 16,821 | 3,427 | 20.4% |
+  | 1 day | 9,756 | 2,340 | **24.0%** |
+
+  The 7-day figure is not a current reading — it is dominated by the pre-fix
+  window and will keep falling out of the average on its own. The 1-day number
+  is the live one. **The age-out ladder does not need forcing.** Re-confirm on
+  07-08 rather than acting now.
+
+  What the collapse uncovered underneath it — the blockers that matter next,
+  1-day window:
+
+  | count | guard |
+  |---|---|
+  | 2,340 | `unknown_daily_pnl (account)` — falling |
+  | 1,815 | `bad_rr <n> < 3.2` |
+  | 1,143 | `bad_rr <n> < 2.68` |
+  | 1,076 | `overexposed_0005.HK=<n>` |
+  | 1,010 | `strategy 'fib_confluence' is OFF in Auto Trade & Open` |
+
+  Two of those are now the top of the list and neither is a bug: **`bad_rr` at
+  2,958 combined is the `minRR` setting doing its job** on the accounts that
+  have one above 2.68 — which is the same knob as A1 (`minRR` 6.16 on
+  43097342, still at 1.5). Raising it will *raise* this count, deliberately.
+  And **`fib_confluence` OFF at 1,010** is D-2 restating itself: the strategy
+  is disarmed but still being scanned for.
 - **P1-2.** Decide `fib_618_fade` / `fib_confluence`. It is the worst strategy by
   net (−$4,000, PF 0.63), it caused all three duplicate clusters, and it is
   currently OFF while still generating 1,840 skipped signals a week. Either
@@ -271,10 +299,27 @@ owner's call, not this document's.
 
 ## Decisions required from the owner
 
-- **D-1.** Restate the gate. "68% and 1.68" implies PF ≥ 4.10 at our R:R. Either
-  (a) **win ≥ 68% with R:R ≥ 0.79** — the mean-reversion build, or (b) **PF ≥
-  1.68 at the win rate the book actually produces** — the trend build. Phase 2
-  cannot start without this.
+- **D-1. DECIDED 05-08-2026 — option (b).** Owner: *"D-1 (I recommend PF ≥ 1.68
+  at ~46.5% win)"*, accepting the recommendation. **The gate is profit factor.**
+
+  Win rate is still computed and shown; it no longer vetoes. The ~46.5% is not
+  a second bar to clear — it is what PF 1.68 *implies* at the payoff the book
+  is currently producing, and it moves when the payoff moves.
+
+  **This was already the code's behaviour, so nothing was changed to implement
+  it.** `goal-tracker.js` has carried `gateOn: 'profitFactor'` since
+  03-08-2026, with `impliedWinRatePct` computed **per account from that
+  account's own avgWin/avgLoss** — which is better than the single ~46.5%
+  figure, because 46.5% is only right for the book's current average payoff.
+  What was open was the *decision*, not the mechanism; this entry closes it.
+
+  For the record of why the original wording could not stand: "68% **and**
+  1.68" made the weaker-looking target binding for the wrong reason. At the
+  observed R:R, 68% wins implies PF ≈ 4.10, so requiring both meant requiring
+  PF 4.10 without anyone having decided to.
+
+  Phase 2 is unblocked, and it is the **trend** build: the work is entries and
+  R:R, not `rsi2_reversion`'s exits.
 - **D-2.** `fib_618_fade` — re-arm or retire (P1-2).
 - **D-3.** Move 12 Aug from a start date to a review date, or hold it and accept
   starting on uncertified numbers.

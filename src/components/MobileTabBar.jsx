@@ -68,7 +68,7 @@ export default function MobileTabBar({ footerNote = null, themeButton = null }) 
                       isActive ? 'text-[var(--md-on-secondary-container)] bg-[var(--md-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'
                     }`}
                 >
-                  <span aria-hidden="true" className="text-[14px] leading-none">{t.icon}</span>{t.label}
+                  <span aria-hidden="true" className="text-(length:--fs-glyph-sm) leading-none">{t.icon}</span>{t.label}
                 </NavLink>
               ))}
               {themeButton}
@@ -97,7 +97,7 @@ export default function MobileTabBar({ footerNote = null, themeButton = null }) 
       >
         {PRIMARY_TABS.map(t => (
           <NavLink key={t.to} to={t.to} viewTransition className={({ isActive }) => tabClass(isActive)}>
-            <span aria-hidden="true" className="text-[16px] leading-none">{t.icon}</span>
+            <span aria-hidden="true" className="text-(length:--fs-glyph-md) leading-none">{t.icon}</span>
             <span className="truncate max-w-full">{t.label}</span>
           </NavLink>
         ))}
@@ -107,7 +107,7 @@ export default function MobileTabBar({ footerNote = null, themeButton = null }) 
           aria-expanded={moreOpen}
           className={`${tabClass(moreActive || moreOpen)} cursor-pointer`}
         >
-          <span aria-hidden="true" className="text-[16px] leading-none">⋯</span>
+          <span aria-hidden="true" className="text-(length:--fs-glyph-md) leading-none">⋯</span>
           <span>More</span>
         </button>
       </nav>

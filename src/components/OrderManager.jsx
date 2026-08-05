@@ -80,7 +80,7 @@ export default function OrderManager({ o, onDone }) {
           {/* Side buttons — the order's side active, the other inert */}
           <div className="flex gap-2 mb-1.5">
             {['SELL', 'BUY'].map(s => (
-              <span key={s} className={`flex-1 text-center rounded-[8px] border py-2 text-[14px] font-bold ${o.side === s ? (s === 'BUY' ? 'border-[var(--color-accent)] text-[var(--color-accent)]' : 'border-[var(--color-down)] text-[var(--color-down)]') : 'border-[var(--color-border)] text-[var(--color-text-sub)] opacity-40'}`}>
+              <span key={s} className={`flex-1 text-center rounded-[8px] border py-2 text-(length:--fs-h) font-bold ${o.side === s ? (s === 'BUY' ? 'border-[var(--color-accent)] text-[var(--color-accent)]' : 'border-[var(--color-down)] text-[var(--color-down)]') : 'border-[var(--color-border)] text-[var(--color-text-sub)] opacity-40'}`}>
                 {s}
               </span>
             ))}
@@ -98,14 +98,14 @@ export default function OrderManager({ o, onDone }) {
             <span>Take Profit</span><span className="font-semibold">{fmt(o.tp, o.digits ?? 5)}</span>
           </div>
 
-          <button type="button" disabled className="w-full mt-2 rounded-[var(--radius-control)] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
+          <button type="button" disabled className="w-full mt-2 rounded-[var(--radius-control)] glass-inset py-2.5 text-(length:--fs-h) font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] my-1.5">
             Amend-in-place isn't wired yet — cancel and let the bot re-stage (or edit in cTrader)
           </div>
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <button type="button" disabled={busy}
-            className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
+            className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"
             onClick={cancel}>
             Cancel order
           </button>

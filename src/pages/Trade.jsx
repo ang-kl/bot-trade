@@ -837,7 +837,7 @@ export default function Trade() {
           aria-label="Manual order"
           title="Manual order — same risk gate as the bot"
           onClick={() => setOrderOpen(o => !o)}
-          className="h-12 w-12 rounded-full bg-[var(--color-accent)] text-white text-[22px] font-bold shadow-lg cursor-pointer flex items-center justify-center"
+          className="h-12 w-12 rounded-full bg-[var(--color-accent)] text-white text-(length:--fs-glyph-xl) font-bold shadow-lg cursor-pointer flex items-center justify-center"
         >
           {orderOpen ? '×' : '+'}
         </button>
