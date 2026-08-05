@@ -15,6 +15,7 @@
 
 import { getState } from '../db.js'
 import { categorize, MARKETS, dayAnchorMs, weekAnchorMs, closedAtMs } from '../shared/formulas.js'
+import { realisedRR, checkTradeConsistency } from './trade-consistency.js'
 
 export { categorize, MARKETS, closedAtMs }
 
@@ -89,7 +90,10 @@ export function plannedRr(row) {
 }
 
 function emptyStats() {
-  return { net: 0, gross_win: 0, gross_loss: 0, trades: 0, wins: 0, tp: 0, part: 0, sl: 0, manual: 0, rrSum: 0, rrN: 0 }
+  return {
+    net: 0, gross_win: 0, gross_loss: 0, trades: 0, wins: 0, tp: 0, part: 0, sl: 0, manual: 0,
+    rrSum: 0, rrN: 0, realSum: 0, realN: 0, mismatch: 0,
+  }
 }
 function foldTrade(st, tr) {
   st.net += tr.pnl
@@ -97,6 +101,12 @@ function foldTrade(st, tr) {
   if (tr.pnl > 0) { st.wins++; st.gross_win += tr.pnl } else st.gross_loss += -tr.pnl
   st[tr.out]++
   if (tr.rr != null) { st.rrSum += tr.rr; st.rrN++ }
+  // Realised R (go-live Phase 0, P0-2). Losers carry NEGATIVE realised R, so
+  // this average is the true payoff of the book and is normally well below
+  // the planned one — averaging |R| instead would hide exactly the gap this
+  // was built to expose.
+  if (tr.realRr != null) { st.realSum += tr.realRr; st.realN++ }
+  if (tr.mismatch) st.mismatch++
 }
 function finalizeStats(st) {
   const winPct = st.trades ? (st.wins / st.trades) * 100 : null
@@ -104,6 +114,23 @@ function finalizeStats(st) {
   const avgRr = st.rrN ? st.rrSum / st.rrN : null
   const requiredWinPct = avgRr != null ? 100 / (1 + avgRr) : null
   const round = (v, dp = 2) => (v == null ? null : (Number.isFinite(v) ? Number(v.toFixed(dp)) : null))
+
+  // THE HONEST BREAK-EVEN. `requiredWinPct` above is derived from PLANNED R:R
+  // — the bracket we set — so `edge` compares a REALISED win rate against an
+  // INTENDED break-even. That only holds if trades finish where we aimed them,
+  // and measured 05-08-2026 only 52.5% reach a bracket while 25% are cut by
+  // the time cap. This pair is the same arithmetic against what actually
+  // happened, and is the number the go-live gate should be read on.
+  //
+  // The payoff ratio for break-even purposes is avg win over avg loss, taken
+  // from realised R across winners and losers separately — a single signed
+  // mean cannot express it.
+  const avgRealisedRr = st.realN ? st.realSum / st.realN : null
+  const payoff = st.gross_loss > 0 && st.wins > 0 && st.trades > st.wins
+    ? (st.gross_win / st.wins) / (st.gross_loss / (st.trades - st.wins))
+    : null
+  const requiredWinPctRealised = payoff != null ? 100 / (1 + payoff) : null
+
   return {
     net: round(st.net), trades: st.trades,
     winPct: round(winPct, 1),
@@ -111,6 +138,16 @@ function finalizeStats(st) {
     tp: st.tp, part: st.part, sl: st.sl, manual: st.manual,
     avgRr: round(avgRr), requiredWinPct: round(requiredWinPct, 1),
     edge: winPct != null && requiredWinPct != null ? round(winPct - requiredWinPct, 1) : null,
+    // Realised counterparts. `edgeRealised` is the one to trust.
+    avgRealisedRr: round(avgRealisedRr),
+    realisedRrN: st.realN,
+    payoffRatio: round(payoff),
+    requiredWinPctRealised: round(requiredWinPctRealised, 1),
+    edgeRealised: winPct != null && requiredWinPctRealised != null
+      ? round(winPct - requiredWinPctRealised, 1) : null,
+    // How much of this window disagrees with itself. A non-zero count is a
+    // warning that the prices behind these R figures are not all trustworthy.
+    pnlPriceMismatch: st.mismatch,
   }
 }
 
@@ -131,7 +168,8 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
 
   const rows = db.prepare(
     `SELECT symbol, side, entry_price, sl_price, tp_price, net_pnl, closed_at, closed_at_ms,
-            close_reason, exit_price, account_id, label_strategy, strategy
+            close_reason, exit_price, account_id, label_strategy, strategy,
+            realised_rr, pnl_price_mismatch
        FROM trades
       WHERE status = 'closed' AND net_pnl IS NOT NULL ${scope.sql}`
   ).all(...scope.params)
@@ -143,6 +181,12 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
     sym: String(r.symbol || '').toUpperCase(),
     out: classifyOutcome(r),
     rr: plannedRr(r),
+    // Prefer the column stamped at close; fall back to computing it, so
+    // historical rows written before the Phase 0 migration still contribute.
+    realRr: r.realised_rr != null ? Number(r.realised_rr) : realisedRR(r),
+    mismatch: r.pnl_price_mismatch != null
+      ? !!Number(r.pnl_price_mismatch)
+      : (() => { const c = checkTradeConsistency(r); return c.decidable && !c.ok })(),
     acc: r.account_id != null ? String(r.account_id) : null,
     strat: r.label_strategy || r.strategy || null,
   })).filter(tr => tr.t != null)
