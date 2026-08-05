@@ -82,7 +82,27 @@ test('signalling but never trading is its own verdict, distinct from silence', (
 
   const vp = strategyLiveness(db, { nowMs }).strategies.find(s => s.key === 'vp_value')
   assert.equal(vp.verdict, 'signalling_not_trading')
-  assert.match(vp.note, /gates/)
+  // 05-08-2026: the note used to say "check the gates that stopped it" for
+  // BOTH shapes of this verdict, and the two are different failures — the gate
+  // refused it, versus the gate never saw it. This fixture has zero decisions
+  // and no analyze slot on record, which is the second, so the note must name
+  // the slot rather than send the reader to look at gates that never ran.
+  assert.equal(vp.decisions, 0)
+  assert.equal(vp.lastAnalyzedAt, null, 'null means NEVER, not unknown')
+  assert.match(vp.note, /never given an analyze slot/)
+})
+
+test('the SAME verdict with decisions on record still points at the gates', () => {
+  const db = tmpDb()
+  setState(db, 'enabled_strategies_json', JSON.stringify(['vp_value']))
+  seedScans(db, 'vp_value', MIN_SCANS_FOR_VERDICT + 5)
+  db.prepare(`INSERT INTO decision_log (symbol, stage, decision, reason, strategy, created_at)
+              VALUES ('NATGAS','risk_gate','veto','bad_rr','vp_value',datetime('now'))`).run()
+
+  const vp = strategyLiveness(db, { nowMs }).strategies.find(s => s.key === 'vp_value')
+  assert.equal(vp.verdict, 'signalling_not_trading')
+  assert.ok(vp.decisions > 0)
+  assert.match(vp.note, /gates/, 'this one WAS evaluated and refused — the gates are the right place to look')
 })
 
 test('a strategy that opened a position reads as TRADING', () => {

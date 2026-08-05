@@ -3045,7 +3045,45 @@ async function runLoop(db) {
       const afterCluster = clusterRead?.enforce
         ? ranked.filter(sym => !clusterRead.supersededBy[String(sym).toUpperCase()])
         : ranked
-      const hotToAnalyze = (afterCluster.length ? afterCluster : ranked).slice(0, 3)
+      // FAIR SHARE ACROSS ARMED STRATEGIES (owner 05-08-2026, from the
+      // Strategy Liveness card: "lots of wasted efforts ... cannot trade").
+      //
+      // Measured, 7 days: five armed strategies produced 3,668 signals and
+      // ZERO decisions — they never reached the risk gate, because the three
+      // slots below always went to the same three strategies. Conviction is
+      // saturated at 9-10 across the board, so `ranked` is a wide tie and this
+      // slice took whatever sorted first. vp_value has the HIGHEST average
+      // conviction of any strategy and had not been analysed once.
+      //
+      // fairShareSlots gives each strategy present in the batch one slot,
+      // least-recently-analysed first, then fills any remainder best-first as
+      // before. The loud strategies still take most slots — they appear in
+      // most batches — but no strategy can be starved indefinitely.
+      const pool = afterCluster.length ? afterCluster : ranked
+      let hotToAnalyze = pool.slice(0, 3)
+      let fairShare = null
+      try {
+        const { fairShareSlots, markAnalyzed, fairShareLine, LAST_ANALYZED_KEY } =
+          await import('./services/analyze-fair-share.js')
+        let lastAnalyzed = {}
+        try { lastAnalyzed = JSON.parse(getState(db, LAST_ANALYZED_KEY) || '{}') || {} } catch { lastAnalyzed = {} }
+        fairShare = fairShareSlots(scanResult.scans, pool, {
+          slots: 3,
+          lastAnalyzed,
+          provenEdgeSymbols: provenEdgeSymbolsFrom(baseline),
+        })
+        if (fairShare.picked.length) {
+          hotToAnalyze = fairShare.picked
+          setState(db, LAST_ANALYZED_KEY,
+            JSON.stringify(markAnalyzed(lastAnalyzed, fairShare.byStrategy.map(b => b.strategy))))
+          const line = fairShareLine(fairShare)
+          if (line) log(`Analyze slots (fair share): ${line}`)
+        }
+      } catch (err) {
+        // Slot allocation must never be the reason a cycle analyses nothing —
+        // the old best-first list is already in hotToAnalyze.
+        log('Fair-share slot allocation failed (non-fatal, using best-first):', err.message)
+      }
       phase(`analyzing ${hotToAnalyze.join(', ')}`, 'analyze')
       for (const sym of hotToAnalyze) {
         try {
