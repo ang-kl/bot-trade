@@ -110,7 +110,13 @@ export function StrategyCards({ data }) {
             <div className="flex flex-wrap items-baseline gap-1.5">
               <Badge tone={v.tone}>{v.label}</Badge>
               <span className="font-semibold">{s.name}</span>
-              <Badge tone={s.armed ? 'on' : 'off'}>{s.armed ? 'ARMED' : 'OFF'}</Badge>
+              {/* The badge NAMES ITS SCOPE. Owner, 05-08-2026, from an iPhone:
+                  "keeps disarmed and i cannot see which account is disarmed."
+                  On a phone the account switcher is nowhere near this badge, so
+                  ARMED/OFF was a verdict with no subject. */}
+              <Badge tone={s.armed ? 'on' : 'off'}>
+                {s.armed ? 'ARMED' : 'OFF'}{data.armedScope ? ` · ${data.armedScope}` : ''}
+              </Badge>
               <span className="ml-auto text-[var(--color-text-sub)]">{ago(s.lastSignalAt)}</span>
             </div>
             {/* The funnel on one line. The arrows carry the "a zero here under
@@ -160,6 +166,13 @@ export default function StrategyLivenessCard() {
             data={shown} toText={() => toText(shown)} render={() => <Table data={shown} />} />
         )}
       </div>
+      {shown?.armedScope && (
+        <p className="text-[9px] text-[var(--color-text-sub)] mb-0.5">
+          ARMED/OFF is the <strong>Auto Trade &amp; Open</strong> column for{' '}
+          <strong>{shown.armedScope === 'global default' ? 'the global default' : `account ${shown.armedScope}`}</strong>
+          {' '}— a different switch from an account being Active. Change it in Tune → Pipeline.
+        </p>
+      )}
       <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
         Does each armed strategy actually reach the market — signals → decisions → orders opened → trades closed.
         A stage at zero under a stage that is not is a findable problem; an armed strategy with no signal at all is

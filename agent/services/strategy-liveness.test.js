@@ -145,3 +145,51 @@ test('every registry strategy appears exactly once', () => {
   assert.equal(new Set(keys).size, keys.length, 'no duplicates')
   assert.ok(keys.includes('cup_handle') && keys.includes('inv_cup_handle'))
 })
+
+// ---------------------------------------------------------------------------
+// ARMED IS PER ACCOUNT (05-08-2026)
+//
+// Owner, from an iPhone screenshot of this card: "keeps disarmed and i cannot
+// see which account is disarmed". Both demo accounts had fib_confluence
+// TRADE-armed in their own stage-matrix overlay at the time, and the card went
+// on reporting "Not armed" — because the badge read the GLOBAL enabled list,
+// not the account's. There was no account to name because the number was never
+// about an account.
+// ---------------------------------------------------------------------------
+
+test('the ARMED badge follows the ACCOUNT overlay, not the global list', () => {
+  const db = tmpDb()
+  seedScans(db, 'fib_confluence', MIN_SCANS_FOR_VERDICT + 10)
+  // Global says only fib_618_fade trades…
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade']))
+  // …but THIS account has armed fib_confluence for Auto Trade & Open.
+  setState(db, 'acct:46130058:enabled_strategies_json', JSON.stringify(['fib_confluence']))
+
+  const scoped = strategyLiveness(db, { nowMs, accountId: '46130058' })
+  const fc = scoped.strategies.find(s => s.key === 'fib_confluence')
+  assert.equal(fc.armed, true, 'armed on the account whose overlay armed it')
+  assert.notEqual(fc.note, 'not armed — absence here is expected')
+
+  // And the global view still reports the global truth.
+  const global = strategyLiveness(db, { nowMs })
+  assert.equal(global.strategies.find(s => s.key === 'fib_confluence').armed, false)
+})
+
+test('an account with NO overlay still follows the global list', () => {
+  // The overlay is opt-in. An account that never diverged must not suddenly
+  // read as disarmed just because the lookup became account-aware.
+  const db = tmpDb()
+  seedScans(db, 'fib_618_fade', MIN_SCANS_FOR_VERDICT + 10)
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade']))
+  const scoped = strategyLiveness(db, { nowMs, accountId: '43097342' })
+  assert.equal(scoped.strategies.find(s => s.key === 'fib_618_fade').armed, true)
+})
+
+test('the payload NAMES whose arming it is reporting', () => {
+  // The half the owner could not see on a phone: a verdict with no subject.
+  const db = tmpDb()
+  seedScans(db, 'fib_618_fade', 5)
+  assert.equal(strategyLiveness(db, { nowMs, accountId: '46130058' }).armedScope, '46130058')
+  assert.equal(strategyLiveness(db, { nowMs }).armedScope, 'global default')
+  assert.equal(strategyLiveness(db, { nowMs, accountId: 'all' }).armedScope, 'global default')
+})
