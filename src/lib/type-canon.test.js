@@ -456,6 +456,12 @@ describe('no size is attached to a type role outside the canon block', () => {
       // 0-indexed (findIndex); `at`/`endAt` are 1-indexed — so the banner's own
       // line number is start + 1, and the exemption must be exactly that wide.
       // Anything looser silently exempts the block above or below it.
+      //
+      // This branch is DORMANT today: the canon block also carries a HISTORY
+      // marker (for the +3/+4 offsets it superseded), so the marker branch
+      // below catches it first. Kept because the marker is prose someone may
+      // reasonably delete once that history stops mattering, and the canon
+      // block must not start failing its own guard the day they do.
       if (b.at <= start + 1 && b.endAt >= start + 1) continue
       // A block that ANNOUNCES ITSELF as history may quote superseded figures —
       // that is provenance, not a trap. The distinction the guard enforces is
@@ -468,6 +474,15 @@ describe('no size is attached to a type role outside the canon block', () => {
       // block that mentions its own history in passing. The shout is the
       // signal. The failure message below names the convention so nobody has to
       // find it here.
+      //
+      // KNOWN LIMIT, stated rather than hidden: the marker is matched against
+      // the WHOLE flattened block, so one marker exempts every figure in it —
+      // including a current one that happens to share the block with genuinely
+      // historic prose. That is how "the desk body size goes to 11px" sat
+      // inside a SUPERSEDED `thead th` block whose marker was placed for a
+      // different, older quote. The figure was removed rather than the rule
+      // narrowed: a marked block should be talking about the past, and a live
+      // number in it is a sign the block is doing two jobs.
       if (/\bSUPERSEDED\b|\bHISTORY —/.test(b.text)) continue
       // A DECLARATION'S OWN COMMENT MAY STATE ITS OWN VALUE. --fs-session sits
       // deliberately off the canon (the owner capped that one line at 10px by

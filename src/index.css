@@ -822,8 +822,8 @@ thead th {
 
      REVISED 05-08-2026, owner: "please rescale the column to scrollable within
      table cell or word wrap". The head is the widest thing in most columns, so
-     it is the first thing that has to give when the desk body size goes to
-     11px. `nowrap` is gone and the head wraps.
+     it is the first thing that has to give when the desk body size rises.
+     `nowrap` is gone and the head wraps.
 
      What the 2026-07-25 note was actually protecting against was a THREE-row
      header, and that came from UPPERCASE + 12px + an unconstrained break, all
