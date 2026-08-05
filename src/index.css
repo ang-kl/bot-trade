@@ -580,34 +580,36 @@
    breakpoint — the old escalating scale is gone on purpose; weight and the
    accent colour carry the hierarchy now, not size. */
 /* ===========================================================================
-   THE TYPE CANON (owner, 05-08-2026, by screenshot rather than by number).
+   HISTORY — HOW THE CANON WAS ORIGINALLY DERIVED (owner, 05-08-2026 morning).
+   SUPERSEDED. THE LIVE NUMBERS ARE AT THE TOP OF THIS FILE — search
+   "TWO TIERS, ONE BREAKPOINT". Nothing below is a current value.
+
    The instruction named two things ON SCREEN instead of two values:
 
      "i like the all body font size to be the same as the picture text
       '7d', '30d'"           → the Segmented pill in the Strategy Liveness
-                               header, which is Segmented's `md` size,
-                               src/components/common/Segmented.jsx:25 → 9px
+                               header, Segmented's `md` size
+                               (src/components/common/Segmented.jsx)
 
      "i like the header's font size to be same as the picture header text
       'Strategy Liveness table' but increase by 1pt."
-                             → StrategyLivenessCard.jsx:160 is <h3
-                               class="t-h3"> → 11px, so +1 → 12px
+                             → StrategyLivenessCard.jsx is <h3 class="t-h3">
 
-   Measured, not assumed: both reference elements were read out of the source
-   before anything moved. The picture's header is a SECTION heading (.t-h3),
-   NOT the page title — so the instruction lands on .t-h2/.t-h3, and
-   .t-h1/.t-heading sits one step above it to keep the gap between a page
-   title and the sections inside it. Without that the page title and its own
-   sections would render identically.
+   Both reference elements were read out of the source before anything moved,
+   and the picture's header is a SECTION heading (.t-h3), NOT the page title —
+   so the instruction lands on .t-h2/.t-h3 rather than .t-h1.
 
-   THE NUMBERS LIVE IN ONE PLACE: the canon block at the top of this file
-   (search "TWO TIERS, ONE BREAKPOINT"). A second table used to sit here,
-   printing 13/12/9 — values this file has never declared, and after the
-   05-08-2026 heading change actively inverted: 13px became the DESK SECTION
-   heading while that table called 13px the PAGE title. A reader trusting it
-   got the hierarchy backwards, not merely a stale figure. It is deleted
-   rather than corrected, because two numeric tables in one file is the
-   defect; keeping both in sync is only a way of postponing it.
+   THE RESOLVED FIGURES THAT USED TO BE PRINTED HERE ARE DELETED, not updated.
+   None of them was ever a value this file declared. Worse, after the 05-08
+   afternoon change one of those figures moved a whole level in the hierarchy
+   while the stale text still attached it to the level above — so a reader
+   trusting it got the ORDER backwards, not merely a wrong number. Deleting is
+   the fix rather than correcting, because two numeric accounts in one file IS
+   the defect; keeping them in sync only postpones it.
+
+   The "+1pt" itself was SET ASIDE that afternoon, not relocated — see the
+   canon block. Writing "so +1 → 12px" here would assert exactly the
+   continuity that block establishes is false.
 
    src/lib/type-canon.test.js enforces the canon against the source. It does
    NOT list "deliberate exceptions" — that claim was also stale; the exception
@@ -667,9 +669,12 @@
    can no longer change the weight, and the audit that prompted this found all
    three in use (700 in the ledger, 600 in most tables, 500 in a few). Weight
    is 600, matching W_HEAD and docs/ui-spec.md. */
-/* Owner (2026-07-25): "All table data cell be 9px. Table heads 10px" —
-   app-wide, both kinds of table. Unlayered, so per-cell text-(length:--fs-h)/[13px]
-   utilities cannot override it, same mechanism as the head rule below. */
+/* Owner (2026-07-25): every table cell one size, every table head one size,
+   app-wide and across both kinds of table. The FIGURES that instruction named
+   were superseded by the 05-08-2026 canon and are deliberately not repeated
+   here — the rule is "cells ride --fs-body, heads ride --fs-head", and the
+   canon block owns what those are. Unlayered, so a per-cell utility cannot
+   override it, same mechanism as the head rule below. */
 tbody td {
   font-size: var(--fs-body);
   /* Owner (05-08-2026): "please rescale the column to scrollable within table

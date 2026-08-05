@@ -336,46 +336,55 @@ describe('the canon table in the CSS comment states what the CSS declares', () =
 })
 
 // ---------------------------------------------------------------------------
-// ONE NUMERIC TABLE PER FILE (05-08-2026, second reviewer finding on #658)
+// A SIZE MAY NOT BE MAPPED TO A ROLE OUTSIDE THE CANON BLOCK (05-08-2026)
 //
-// The guard above pinned the canon table and passed — while a SECOND table
-// twenty lines above the .t-h* declarations printed 13/12/9, values this file
-// has never declared. Worse, after the heading change 13px became the desk
-// SECTION heading while that table called 13px the PAGE title: a reader who
-// trusted it got the hierarchy inverted, not merely a stale number.
+// Three reviewer passes on #658 each found the same defect in a new shape: a
+// stale size stated somewhere other than the canon. First an ASCII table, then
+// a second table twenty lines up, then the prose derivation that produced it.
 //
-// A regex per table is a losing game — the next stale table is the one nobody
-// wrote a regex for. So the invariant is stronger and simpler: OUTSIDE the
-// canon block, no comment in this file may print a px figure that looks like a
-// type size. Sizes belong in one table and in the declarations.
+// Two earlier attempts at this guard were both wrong, and their wrongness is
+// the reason for this one:
+//
+//   1. "no px figure 8-16 in any comment" — flagged twelve legitimate lines
+//      (rem conversions, a blur radius, contrast notes). Unusable.
+//   2. "no run of >=2 comment lines LEADING with a px size" — passed, but only
+//      by luck. index.css has seven wrapped prose lines that already match
+//      "leads with a px size"; they simply are not adjacent. Reword one
+//      sentence so two wraps land together and CI fails on a contrast note
+//      with a message about size tables. A guard whose failure message
+//      misdirects is worse than no guard.
+//
+// So key on what the TRAP actually requires: a size mapped to a ROLE. That is
+// the only thing a reader can act on wrongly — "13px" alone teaches nothing,
+// "13px page title" teaches something false. Shape does not matter, so a
+// markdown row, an em-dash pair and a single leftover line are all caught,
+// which the shape-based version missed.
 // ---------------------------------------------------------------------------
 
-describe('the CSS carries exactly one table of type sizes', () => {
-  it('no SECOND size table is written in a comment', () => {
-    // A prose mention of a px figure is fine and there are many legitimate
-    // ones — rem conversions, a blur radius, a contrast note. What is not
-    // fine is a TABLE: consecutive comment lines each LEADING with a size,
-    // which is the shape a reader parses as authoritative. That is exactly
-    // what 13/12/9 was, and what made it able to invert the hierarchy.
+describe('no size is mapped to a type ROLE outside the canon block', () => {
+  it('the canon block is the only place a px figure names a role', () => {
     const lines = CSS.split('\n')
     const start = lines.findIndex(l => l.includes('TWO TIERS, ONE BREAKPOINT'))
-    const end = lines.findIndex((l, i) => i > start && l.includes('--fs-title:'))
     expect(start, 'the canon block banner is missing').toBeGreaterThan(-1)
+    const end = lines.findIndex((l, i) => i > start && l.includes('--fs-title:'))
 
-    // A "row" is a comment line whose first token is a px size in the type
-    // range, followed by something that reads like a role.
-    const isRow = (line) => /^\s*\*?\s*\d{1,2}(\.\d)?px\s+\S/.test(line)
+    // Deliberately NOT including bare "body": "a 16px body size" refers to the
+    // browser default root in one comment and is not a canon claim. These are
+    // the phrases that name a slot in THIS scale.
+    const ROLE = /\b(page title|section heading|column head|table head|data cell)\b/i
+    const SIZE = /\b\d{1,2}(?:\.\d)?px\b/
+
     const offenders = []
-    let run = []
     lines.forEach((line, i) => {
-      const inCanon = i >= start && i <= end
-      if (!inCanon && isRow(line)) { run.push(`index.css:${i + 1}  ${line.trim().slice(0, 70)}`); return }
-      if (run.length >= 2) offenders.push(...run)
-      run = []
+      if (i >= start && i <= end) return
+      const t = line.trim()
+      if (!ROLE.test(t) || !SIZE.test(t)) return
+      const n = Number(SIZE.exec(t)[0].replace('px', ''))
+      if (n < 8 || n > 16) return          // 44px targets, 49px bars: not type
+      offenders.push(`index.css:${i + 1}  ${t.slice(0, 76)}`)
     })
-    if (run.length >= 2) offenders.push(...run)
 
-    expect(offenders, `A second size table. Sizes belong in the canon block and the declarations:\n${offenders.join('\n')}`)
+    expect(offenders, `A size mapped to a role, outside the canon block. The live numbers live in ONE place:\n${offenders.join('\n')}`)
       .toEqual([])
   })
 })

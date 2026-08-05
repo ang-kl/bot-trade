@@ -54,8 +54,12 @@ reason written next to it in a comment.
 The sizes were stated by screenshot, not by number: body is "the picture text
 `7d`, `30d`", which is `Segmented md`; the header is "`Strategy Liveness
 table` but increase by 1pt", which was `.t-h3` at 11px against a 9px body —
-body + 2, so +1pt was first read as **body + 3** — a derivation later corrected
-to **body + 2** (see below). Then: *"please canonical for tablet and iphones"*,
+body + 2. That was first read as *"+1pt ⇒ body + 3"*. The `+1pt` was later
+**set aside** — not re-derived to a smaller number — when the owner said *"the
+text font size is to big"* after seeing the render; `--fs-h` now sits at body+2,
+which is the reference element's size *before* any increment. Saying it was
+"corrected to body + 2" would imply the increment is still honoured and was
+merely mis-added; it isn't. Then: *"please canonical for tablet and iphones"*,
 *"9.5px will be ideal as minimum"*, *"11 px for desktop"*.
 
 |  | `--fs-body` | `--fs-head` (+1) | `--fs-h` (+2) | `--fs-title` (+3) |
@@ -184,9 +188,24 @@ replaced it with exactly one step.
 
 The Performance and Workflow-audit pages build several section titles as
 `<span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>` rather than as
-`.t-h3` elements. Those spans are headings and carry the heading token; a
-`--fs-h` on anything that is not a title is a bug the canon test will not
-catch, because it cannot read intent.
+`.t-h3` elements. Those spans are headings and carry the heading token.
+
+**`--fs-h` is not only headings, and this document used to say otherwise.** It
+also carries the phone trade-action button LABELS — BUY/SELL, Modify, CLOSE and
+the accent confirm (`PositionManager.jsx:217, 230, 246, 311`;
+`OrderManager.jsx:83, 101, 108`) — and the `OID…`/`PID…` row headings
+(`OrderManager.jsx:51`, `PositionManager.jsx:184`). That is deliberate and
+documented in §Glyphs above; the line here that called *"`--fs-h` on anything
+that is not a title a bug"* contradicted it in the same document and is
+removed. What IS a bug is `--fs-h` on ordinary body text or a data cell — and
+the canon test cannot catch that, because it cannot read intent.
+
+**Consequence of the 05-08-2026 heading change, stated plainly:** those phone
+button labels went `12.5px → 11.5px` on touch. Above the 9.5px floor and
+consistent with the token, and the tap targets are unaffected (the
+`≤430px / pointer: coarse` `::after` halo pins 44px independently of font
+size) — but "headings only" is wider than it sounds, and it lands on the
+close-position control.
 
 ### Numbers
 
