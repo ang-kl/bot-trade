@@ -1028,6 +1028,37 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/opportunity-funnel — the §70.8 funnel in ONE unit.
+  //
+  // veto-breakdown above answers "which guard eats entries" and counts
+  // EVALUATIONS. This answers "of the setups we found, how many reached the
+  // market", and counts OPPORTUNITIES — 8 re-evaluations of one setup being
+  // one row, not eight. Measured 05-08-2026: the scanner re-scores a setup
+  // 7.9x, which is why every previous approved-minus-landed subtraction
+  // produced an alarming number that was a unit error.
+  //
+  // ?days (fractional allowed) · ?account · ?silent=1 for the named list of
+  // approvals that produced nothing. Read-only.
+  router.get('/opportunity-funnel', async (req, res) => {
+    try {
+      const { opportunityFunnel, silentOpportunities } = await import('../services/opportunity-funnel.js')
+      const opts = {
+        days: req.query.days,
+        account: req.query.account != null && req.query.account !== '' ? String(req.query.account) : null,
+      }
+      const payload = opportunityFunnel(db, opts)
+      if (req.query.silent === '1' || req.query.silent === 'true') {
+        // Capped: this is a diagnostic list, not a feed, and an unbounded one
+        // is how /state routes started returning half a megabyte (#122).
+        payload.silent = silentOpportunities(db, opts).slice(0, 200)
+        payload.silentTruncated = payload.silent.length === 200
+      }
+      res.json(payload)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/route-timings — per-route p50/p90/p99/max and average payload
   // size, since process start.
