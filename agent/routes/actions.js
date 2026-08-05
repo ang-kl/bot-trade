@@ -1800,7 +1800,10 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/vpo-status', async (_req, res) => {
     try {
-      const base = execBaseFor()
+      // The SAME creds the feeder arms with (vpo-feeder.js), so the status
+      // page reads the sidecar that was actually configured rather than
+      // whichever one EXEC_URL names.
+      const base = execBaseFor(getCtraderCreds(db))
       const r = await fetch(base + '/vpo-status', {
         headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
       })

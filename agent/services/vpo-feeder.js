@@ -72,14 +72,20 @@ export function vpoPreArmVeto(db, cfg, symbol) {
   return null
 }
 
-// The VPO config is not account-scoped — it is a strategy arming table the
-// sidecar evaluates against its own tick feed — so it resolves to the default
-// base rather than a routed one. It goes through the shared resolver anyway so
-// there is ONE definition of what the default is; when a second sidecar exists
-// this is the line that has to grow a loop, and it is easier to find here than
-// as a re-implemented url in a service file.
-async function pushToSidecar(payload) {
-  const res = await fetch(execBaseFor() + '/vpo-config', {
+// ROUTED BY CREDS, not the default base — this channel IS account-scoped even
+// though the bars and the arming table are not. The payload carries
+// `ctidTraderAccountId` (see the PHASE 2 note at the push site) and the
+// sidecar's dispatcher stamps that id onto the orders it places
+// (cpp-exec/src/main.cpp → vpoDispatcher->setAccountId).
+//
+// Pushing it to a base resolved WITHOUT an account is the unit mismatch this
+// whole seam exists to remove. Under a split it would not fail loudly: it
+// would call setAccountId SUCCESSFULLY on whichever sidecar EXEC_URL happens
+// to name, overwriting that dispatcher's account with an id its session was
+// never authorised for, while the other sidecar's VPO tier is never armed at
+// all. Both halves are silent at the HTTP layer.
+async function pushToSidecar(payload, base) {
+  const res = await fetch(base + '/vpo-config', {
     method: 'POST',
     headers: {
       authorization: `Bearer ${process.env.EXEC_SECRET || ''}`,
@@ -198,7 +204,7 @@ export async function runVpoFeeder(db, deps = {}) {
   const acct = Number(creds?.accountId)
   const payload = { bars: barsOut, volumes: volumesOut }
   if (Number.isFinite(acct) && acct > 0) payload.ctidTraderAccountId = acct
-  await push(payload)
+  await push(payload, execBaseFor(creds))
   return { ok: true, bars: barsOut.length, volumes: volumesOut.length, accountId: payload.ctidTraderAccountId ?? null }
 }
 
