@@ -6,6 +6,7 @@ import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import StrategyLivenessCard from '../components/StrategyLivenessCard.jsx'
+import CupHandleFunnelCard from '../components/CupHandleFunnelCard.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
@@ -1815,6 +1816,13 @@ export default function Tune() {
                 says whether arming it did anything. */}
             <Card id="sec-pipe-liveness" className="w3-hover-shadow" scope={pipeAcct} pageScope={pipeAcct}>
               <StrategyLivenessCard acct={pipeAcct === 'all' ? null : pipeAcct} />
+            </Card>
+            {/* Liveness says a strategy is SILENT; this says why. GLOBAL scope:
+                the traces record market structure at scan time, which is the
+                same for every account — labelling it per-account would be a
+                lie the chip would then repeat. */}
+            <Card id="sec-pipe-cuphandle" className="w3-hover-shadow" scope="global">
+              <CupHandleFunnelCard />
             </Card>
             {/* GLOBAL, and now it says so. These breakers are not per-account,
                 and a card that was simply silent about scope was

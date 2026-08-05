@@ -534,6 +534,12 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_risk_events_symbol     ON risk_events(symbol, created_at);
   CREATE INDEX IF NOT EXISTS idx_pending_signals_status ON pending_signals(status, symbol);
   CREATE INDEX IF NOT EXISTS idx_cup_handle_diag_symbol_at ON cup_handle_diagnostics(symbol, scanned_at);
+  -- The funnel readout (services/cup-handle-funnel.js) scans a TIME window
+  -- across every symbol, which the (symbol, scanned_at) index cannot serve.
+  -- Production holds 2.6M rows here; without this the route is a full table
+  -- scan per request, and slow read routes are a defect this repo has already
+  -- paid for once.
+  CREATE INDEX IF NOT EXISTS idx_cup_handle_diag_at ON cup_handle_diagnostics(scanned_at);
 `;
 
 // ---------------------------------------------------------------------------
