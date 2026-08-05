@@ -280,3 +280,60 @@ test('level moved → cancels the stale order and places a fresh one', async () 
   assert.equal(working.length, 1)
   assert.equal(working[0].level, 95)
 })
+
+// ---------------------------------------------------------------------------
+// §70.9 LINEAGE THROUGH THE FILL (05-08-2026)
+//
+// Measured across all three accounts, 7 days: 62 fib_confluence and 26
+// fib_618_fade opens, EVERY ONE with risk_event_id NULL — while the
+// pending_orders rows that produced them carried ids 97150-97729. The approval
+// was recorded; it just never reached the trade.
+// ---------------------------------------------------------------------------
+
+test('an adopted fill INHERITS the approval id from the order that produced it', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id, risk_event_id)
+    VALUES ('DOW.US', '901', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058', 97150)
+  `).run()
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('901', 'DOW.US', 'gone')`).run()
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, opened_at, account_id) VALUES ('DOW.US', '2026-08-04T11:00:00Z', '46130058')`
+  ).run().lastInsertRowid
+
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-08-04T12:00:00Z') })
+  assert.equal(r.filled, 1)
+  assert.equal(db.prepare(`SELECT risk_event_id FROM trades WHERE id = ?`).get(tradeId).risk_event_id, 97150,
+    'the trade can now name the approval that authorised it')
+})
+
+test('an approval id already on the trade is NEVER overwritten', () => {
+  // A more direct writer knows better than this heuristic link.
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id, risk_event_id)
+    VALUES ('DOW.US', '902', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058', 97150)
+  `).run()
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('902', 'DOW.US', 'gone')`).run()
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, opened_at, account_id, risk_event_id) VALUES ('DOW.US', '2026-08-04T11:00:00Z', '46130058', 55555)`
+  ).run().lastInsertRowid
+
+  reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-08-04T12:00:00Z') })
+  assert.equal(db.prepare(`SELECT risk_event_id FROM trades WHERE id = ?`).get(tradeId).risk_event_id, 55555)
+})
+
+test('a pending row with no approval id leaves the trade alone', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id)
+    VALUES ('DOW.US', '903', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058')
+  `).run()
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('903', 'DOW.US', 'gone')`).run()
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, opened_at, account_id) VALUES ('DOW.US', '2026-08-04T11:00:00Z', '46130058')`
+  ).run().lastInsertRowid
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-08-04T12:00:00Z') })
+  assert.equal(r.filled, 1)
+  assert.equal(db.prepare(`SELECT risk_event_id FROM trades WHERE id = ?`).get(tradeId).risk_event_id, null)
+})
