@@ -350,7 +350,7 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
  * broken:
  *
  *   · `ensureSidecarSession` DOES include the roster in its memo key
- *     (exec-engine.js:112), so a shrunk roster is a new key.
+ *     (exec-engine.js:176), so a shrunk roster is a new key.
  *   · the sidecar DOES rebuild its roster from scratch on /connect
  *     (cpp-exec/src/engine.cpp:95 clears accountIds_ before refilling).
  *
@@ -536,7 +536,7 @@ const AUTH_WATCH_KEY = 'account_auth_watch_json'
  * did not report its roster are all "we cannot tell", and telling the owner an
  * account is down because we could not reach the thing that would know is how a
  * monitor teaches people to ignore it. Same fail-open rule sidecarRoster already
- * applies (exec-engine.js:230-236). The `cpp_exec` heartbeat covers the case
+ * applies (exec-engine.js:281-287). The `cpp_exec` heartbeat covers the case
  * where the probe itself is the thing that is broken.
  *
  * @returns {{events: Array, roster: string[]|null, fresh: boolean}}
@@ -558,9 +558,9 @@ export function checkAccountAuthorization(db, {
   // REPRODUCE THE GATE'S CONDITION, WHICH IS NOT THE SAME AS THE PERSISTED `ok`.
   //
   // This alert describes the connectivity gate's behaviour, so it must agree
-  // with the value that gate reads — sidecarRoster (exec-engine.js:244), whose
+  // with the value that gate reads — sidecarRoster (exec-engine.js:293), whose
   // test is `h.ok && h.connected === true && Array.isArray(h.accounts)` where
-  // `h.ok` is HTTP-level only (`res.ok && body?.ok === true`, :197).
+  // `h.ok` is HTTP-level only (`res.ok && body?.ok === true`, :248).
   //
   // `health.ok` in the snapshot is NOT that value. probeCppExec overwrites it
   // with its own verdict before persisting, and two of those overwrites fire
