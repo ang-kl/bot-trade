@@ -1725,7 +1725,7 @@ export default function Tune() {
                 return drifted ? { ...c, ...next } : c
               })}
             />
-            <Card id="sec-pipe-strategy" className="w3-hover-shadow">
+            <Card id="sec-pipe-strategy" className="w3-hover-shadow" scope={pipeAcct} pageScope={pipeAcct}>
               <SectionTitle>What May Trade form</SectionTitle>
               <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">Which strategies and filters act at each pipeline stage, why the trade column vetoed, and whether the nightly evidence loop may change the arming for you.</p>
             {/* Strategy × stage matrix replaces the old strategy/filter chips:
@@ -1812,10 +1812,13 @@ export default function Tune() {
             {/* Liveness sits directly under "What May Trade": that card is
                 where a strategy gets armed, and this is the only surface that
                 says whether arming it did anything. */}
-            <Card id="sec-pipe-liveness" className="w3-hover-shadow">
-              <StrategyLivenessCard />
+            <Card id="sec-pipe-liveness" className="w3-hover-shadow" scope={pipeAcct} pageScope={pipeAcct}>
+              <StrategyLivenessCard acct={pipeAcct === 'all' ? null : pipeAcct} />
             </Card>
-            <Card id="sec-pipe-breakers" className="w3-hover-shadow">
+            {/* GLOBAL, and now it says so. These breakers are not per-account,
+                and a card that was simply silent about scope was
+                indistinguishable from one nobody had labelled. */}
+            <Card id="sec-pipe-breakers" className="w3-hover-shadow" scope="global">
               <SectionTitle>Breakers and Gates form</SectionTitle>
               <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">When the bot must adapt or stand down on its own — a loss streak, a decayed edge, the wrong regime, or the minutes right after a session opens.</p>
             {/* Adaptive breaker + fast monitor cadence — the owner's "no

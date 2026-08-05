@@ -37,11 +37,18 @@ import { useEffect, useRef, useState } from 'react'
 import CopyPopup from './CopyPopup.jsx'
 import { tableToJson as scrapeJson, tableToHtml, dataToHtml, textToJson, textToHtml } from '../../lib/copy-serialize.js'
 import { sectionKind, NAV_KIND_LEGEND } from '../../lib/nav-tree.js'
+import ScopeChip from './ScopeChip.jsx'
 
 export default function Card({
   children, className = '', copyable = true, copyTitle = null,
   data = null, toText = null, collapsible = true, defaultCollapsed = false,
   kind: kindProp = null,
+  // WHOSE numbers is this card showing (owner 05-08-2026). 'all', 'global',
+  // or an account id. Undefined means the card has not declared a scope yet
+  // and renders no chip — deliberately NOT defaulted to 'global', because
+  // that would relabel every unlabelled card as an intentional decision.
+  scope = undefined,
+  pageScope = undefined,
   ...rest
 }) {
   const ref = useRef(null)
@@ -120,11 +127,18 @@ export default function Card({
   const slotCollapse = collapsible ? (copyable ? 34 : 8) : null
   const slotMax = (collapsible ? 26 : 0) + (copyable ? 26 : 0) + 8
   const slotKind = slotMax + 26 + 2
+  // The scope chip is variable-width, so it takes the slot LEFT of the fixed
+  // ones and grows leftwards rather than pushing them out of place.
+  const slotScope = slotKind + (kind ? 26 : 0)
 
   const body = <div style={collapsed && !maximized ? { display: 'none' } : undefined}>{children}</div>
 
   return (
     <div ref={attachRef} className={cls} {...rest}>
+      {scope !== undefined && (
+        <ScopeChip scope={scope} pageScope={pageScope}
+          style={{ position: 'absolute', top: 8, right: slotScope, zIndex: 5, opacity: .85 }} />
+      )}
       {kind && (
         <span title={NAV_KIND_LEGEND} style={{
           position: 'absolute', top: 8, right: slotKind,
