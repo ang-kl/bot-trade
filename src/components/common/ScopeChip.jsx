@@ -16,25 +16,12 @@
 // because a silent difference is exactly the screenshot the owner sent: two
 // adjacent cards on 8549 and 7353 with nothing to say which was which.
 import { useEffect, useState } from 'react'
-import { agentGet } from '../../lib/agent-api.js'
+import { accountRoster } from '../../lib/account-roster.js'
 import { scopeLabel, scopeDiffers } from '../../lib/scope-label.js'
 
-// One fetch shared by every chip on the page. Without this a page with a dozen
-// cards would issue a dozen identical /state/accounts requests on mount.
-let rosterPromise = null
-function roster() {
-  if (!rosterPromise) {
-    rosterPromise = agentGet('/state/accounts')
-      .then(r => r?.accounts || [])
-      .catch(() => {
-        // Do not cache a failure — the next chip should retry rather than
-        // every chip on the page rendering "Account 43097342" forever.
-        rosterPromise = null
-        return []
-      })
-  }
-  return rosterPromise
-}
+// The roster fetch is shared with the account FAB (lib/account-roster.js) —
+// one request per page, and one cache, so the chip on a card and the FAB that
+// set that card's scope can never be naming accounts from different rosters.
 
 const TONE = {
   account: { fg: 'var(--color-state-on-text)', bd: 'var(--color-state-on-border)', bg: 'var(--color-state-on-bg)' },
@@ -54,7 +41,7 @@ export default function ScopeChip({ scope, pageScope = undefined, style = null }
     let alive = true
     // 'all' and 'global' need no roster to render their word — skip the fetch.
     if (scope === 'all' || scope === 'global' || scope == null || scope === '') return undefined
-    roster().then(a => { if (alive) setAccounts(a) })
+    accountRoster().then(a => { if (alive) setAccounts(a) })
     return () => { alive = false }
   }, [scope])
 

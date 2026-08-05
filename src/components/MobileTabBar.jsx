@@ -92,6 +92,10 @@ export default function MobileTabBar({ footerNote = null, themeButton = null }) 
 
       <nav
         aria-label="Main sections"
+        // Marks the bar for scripts/responsive-audit.mjs, which asserts that
+        // the FAB stack clears it. A FAB parked on top of the app's primary
+        // navigation steals taps, and only a measurement catches that.
+        data-tabbar=""
         className="glass-fixed fixed bottom-0 inset-x-0 z-50 flex items-stretch lg:hidden"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
       >

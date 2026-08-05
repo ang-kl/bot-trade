@@ -966,6 +966,31 @@ button, a, [role="button"], summary {
   transform: translateZ(0);
   will-change: transform;
 }
+/* THE FAB STACK — the account-scope pill above the ☰ table-of-contents, pinned
+   bottom-right on every page.
+
+   Owner, 05-08-2026, asking for an account FAB on an iPhone SE: the stack used
+   to carry `hidden min-[700px]:flex`, so it had never been painted on a 375px
+   screen at all. The positioning moved here from an inline style because the
+   phone case needs a media query and an env() — neither expressible inline.
+
+   The bottom offset clears the MobileTabBar (min-h 49px, `lg:hidden`, so it is
+   present below 1024px) and the home indicator underneath it. A FAB sitting on
+   top of the tab bar is not a cosmetic defect: it steals taps from the app's
+   primary navigation. */
+.fab-stack {
+  position: fixed;
+  right: 18px;
+  bottom: calc(49px + env(safe-area-inset-bottom, 0px) + 10px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+/* At lg the tab bar is gone, so the stack drops back to the corner. */
+@media (min-width: 1024px) { .fab-stack { bottom: 18px; } }
+
 /* Same reasoning for the sticky sidebar panel: drop its blur and let it
    scroll internally, so a long account roster can never push its own
    navigation off the top of a short (744px) tablet viewport. */
