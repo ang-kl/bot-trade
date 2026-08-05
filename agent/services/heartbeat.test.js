@@ -515,6 +515,8 @@ function seedAuth(db, { roster, atMs = T0.getTime(), accounts = null }) {
       'INSERT OR REPLACE INTO accounts (account_id, trader_login, is_live, enabled) VALUES (?, ?, ?, 1)'
     ).run(a.id, a.login, a.live)
   }
+  // connected+ok on purpose: the check treats a DOWN session as "cannot tell",
+  // matching sidecarRoster (exec-engine.js:244).
   setState(db, 'cpp_exec_health_json', JSON.stringify({
     accounts: roster, connected: true, ok: true, at: new Date(atMs).toISOString(),
   }))
@@ -678,4 +680,55 @@ test('account auth: every enabled account is checked, with NO side filter', () =
     ['43097342', '46130058', '46979908', '47790949'],
   )
   assert.equal(alerts.length, 4)
+})
+
+test('account auth: a DOWN broker session is unknown, not four false alarms', () => {
+  // The 02-08 shape: sidecar HTTP alive, broker session gone. GET /health still
+  // answers ok:true with an EMPTY accounts array (main.cpp:272,289), so a naive
+  // read calls every enabled account unauthorised. But sidecarRoster returns
+  // null in that state, so loop.js:1173 gates nobody — the alert would assert
+  // something the code is not doing, and cpp_exec is already red with the right
+  // cause. That incident held this state for 22 HOURS.
+  const db = initDB(':memory:')
+  const alerts = []
+  const notify = (t) => alerts.push(t)
+  seedAuth(db, { roster: ['42993489'] })
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: [], connected: false, ok: false, at: T0.toISOString(),
+  }))
+  assert.deepEqual(checkAccountAuthorization(db, { now: plus(60), notify }).events, [])
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: [], connected: false, ok: false, at: plus(3600).toISOString(),
+  }))
+  assert.deepEqual(checkAccountAuthorization(db, { now: plus(3601), notify }).events, [])
+  assert.equal(alerts.length, 0, 'a down session must never produce an authorisation alert')
+})
+
+test('account auth: the alert does not claim entries are skipped — the query is wider than the entry roster', () => {
+  // `enabled = 1` also covers manage_only accounts, which never reach the
+  // connectivity gate for ENTRIES at all. The wide query is correct (such an
+  // account cannot receive closes either) but the sentence must stay true for
+  // every account it can name.
+  const db = initDB(':memory:')
+  const alerts = []
+  const notify = (t) => alerts.push(t)
+  seedAuth(db, { roster: ['42993489'] })
+  checkAccountAuthorization(db, { now: T0, notify })
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['42993489'], connected: true, ok: true, at: plus(300).toISOString(),
+  }))
+  checkAccountAuthorization(db, { now: plus(301), notify })
+  assert.equal(alerts.length, 1)
+  assert.doesNotMatch(alerts[0], /entries/i)
+  assert.match(alerts[0], /No order can be built/)
+})
+
+test('account auth: watch state is cleared when no account is enabled', () => {
+  const db = initDB(':memory:')
+  seedAuth(db, { roster: ['42993489'] })
+  checkAccountAuthorization(db, { now: T0 })
+  assert.notEqual(getState(db, 'account_auth_watch_json'), '{}')
+  db.prepare('UPDATE accounts SET enabled = 0').run()
+  checkAccountAuthorization(db, { now: plus(60) })
+  assert.equal(getState(db, 'account_auth_watch_json'), '{}', 'stale entries must not linger')
 })

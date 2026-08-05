@@ -555,6 +555,25 @@ export function checkAccountAuthorization(db, {
   // A snapshot older than the probe's own stall threshold tells us nothing about
   // NOW. Treat it as unknown rather than as evidence.
   const fresh = Number.isFinite(healthAtMs) && (nowMs - healthAtMs) < HEALTH_STALE_MS
+  // MATCH sidecarRoster'S RULE EXACTLY (exec-engine.js:244) — `ok && connected`.
+  // Not a stylistic echo: this alert DESCRIBES the connectivity gate's
+  // behaviour, so it has to agree with the value that gate reads.
+  //
+  // GET /health sets ok:true unconditionally (main.cpp:272) and fills
+  // `accounts` from engine.accountIds() — EMPTY right after a sidecar restart,
+  // stale-but-populated after a WS drop. `connected` is the only field that
+  // says the broker session is gone. In that state sidecarRoster() returns null,
+  // so `if (sidecarAccounts && …)` at loop.js:1173 gates NOBODY — and an alert
+  // saying "entries on this account are silently skipped" would assert
+  // something the code is not doing, while duplicating the cpp_exec alarm that
+  // already names the real cause. The 02-08 incident held exactly that state
+  // for 22 hours; with five enabled accounts that is five wrong alerts sitting
+  // next to the one right one.
+  //
+  // This does not weaken the 05-08 case this check exists for: there the
+  // sidecar was connected:true holding only the live account, so all four demo
+  // accounts still flag.
+  const sessionUp = health?.ok === true && health?.connected === true
 
   let accounts = []
   try {
@@ -562,7 +581,6 @@ export function checkAccountAuthorization(db, {
       'SELECT account_id, trader_login, is_live FROM accounts WHERE enabled = 1'
     ).all()
   } catch { accounts = [] }
-  if (!accounts.length) return { events, roster, fresh }
 
   let watch = {}
   try { watch = JSON.parse(getState(db, AUTH_WATCH_KEY) || '{}') } catch { watch = {} }
@@ -571,7 +589,7 @@ export function checkAccountAuthorization(db, {
   for (const a of accounts) {
     const id = String(a.account_id)
     const prev = watch[id] || null
-    const status = (roster == null || !fresh)
+    const status = (roster == null || !fresh || !sessionUp)
       ? 'unknown'
       : roster.includes(id) ? 'active' : 'disconnected'
 
@@ -591,9 +609,17 @@ export function checkAccountAuthorization(db, {
       if (!alerted && downMs >= afterMs) {
         const side = a.is_live === 1 ? 'LIVE' : 'Demo'
         const label = a.trader_login ? `${side} ${a.trader_login} · ${id}` : `${side} ${id}`
+        // DELIBERATELY STOPS AT "no order can be built". The query is
+        // `enabled = 1` — wider than the entry roster, which getAutopilotAccounts
+        // further filters to the `enter` capability (loop.js:224-249). The wide
+        // query is right: a `manage_only` account off the roster cannot receive
+        // closes or amends either, which is worth knowing. But saying "entries
+        // are skipped" would be false for exactly those accounts, and a sentence
+        // that is wrong for some of its subjects is how an alert loses its
+        // reader.
         say(
           `🔌 ACCOUNT NOT AUTHORISED: ${label} has been enabled but absent from the exec sidecar's roster for ${Math.round(downMs / 60_000)}m. ` +
-          'No order can be built for it until it reconnects — entries on this account are silently skipped, not vetoed.'
+          'No order can be built for it until it reconnects.'
         )
         events.push({ accountId: id, event: 'unauthorized', downSec: Math.round(downMs / 1000) })
         auditControllerEvent(db, {
