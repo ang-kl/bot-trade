@@ -334,3 +334,48 @@ describe('the canon table in the CSS comment states what the CSS declares', () =
     expect(title).toBe(TOUCH['--fs-title'] - TOUCH['--fs-body'])
   })
 })
+
+// ---------------------------------------------------------------------------
+// ONE NUMERIC TABLE PER FILE (05-08-2026, second reviewer finding on #658)
+//
+// The guard above pinned the canon table and passed — while a SECOND table
+// twenty lines above the .t-h* declarations printed 13/12/9, values this file
+// has never declared. Worse, after the heading change 13px became the desk
+// SECTION heading while that table called 13px the PAGE title: a reader who
+// trusted it got the hierarchy inverted, not merely a stale number.
+//
+// A regex per table is a losing game — the next stale table is the one nobody
+// wrote a regex for. So the invariant is stronger and simpler: OUTSIDE the
+// canon block, no comment in this file may print a px figure that looks like a
+// type size. Sizes belong in one table and in the declarations.
+// ---------------------------------------------------------------------------
+
+describe('the CSS carries exactly one table of type sizes', () => {
+  it('no SECOND size table is written in a comment', () => {
+    // A prose mention of a px figure is fine and there are many legitimate
+    // ones — rem conversions, a blur radius, a contrast note. What is not
+    // fine is a TABLE: consecutive comment lines each LEADING with a size,
+    // which is the shape a reader parses as authoritative. That is exactly
+    // what 13/12/9 was, and what made it able to invert the hierarchy.
+    const lines = CSS.split('\n')
+    const start = lines.findIndex(l => l.includes('TWO TIERS, ONE BREAKPOINT'))
+    const end = lines.findIndex((l, i) => i > start && l.includes('--fs-title:'))
+    expect(start, 'the canon block banner is missing').toBeGreaterThan(-1)
+
+    // A "row" is a comment line whose first token is a px size in the type
+    // range, followed by something that reads like a role.
+    const isRow = (line) => /^\s*\*?\s*\d{1,2}(\.\d)?px\s+\S/.test(line)
+    const offenders = []
+    let run = []
+    lines.forEach((line, i) => {
+      const inCanon = i >= start && i <= end
+      if (!inCanon && isRow(line)) { run.push(`index.css:${i + 1}  ${line.trim().slice(0, 70)}`); return }
+      if (run.length >= 2) offenders.push(...run)
+      run = []
+    })
+    if (run.length >= 2) offenders.push(...run)
+
+    expect(offenders, `A second size table. Sizes belong in the canon block and the declarations:\n${offenders.join('\n')}`)
+      .toEqual([])
+  })
+})

@@ -595,18 +595,25 @@
 
    Measured, not assumed: both reference elements were read out of the source
    before anything moved. The picture's header is a SECTION heading (.t-h3),
-   NOT the 12px page title — so the instruction lands on .t-h2/.t-h3, and
-   .t-h1/.t-heading follows it up to 13px to keep the one-step gap between a
-   page title and the sections inside it. Without that the page title and its
-   own sections would render identically.
+   NOT the page title — so the instruction lands on .t-h2/.t-h3, and
+   .t-h1/.t-heading sits one step above it to keep the gap between a page
+   title and the sections inside it. Without that the page title and its own
+   sections would render identically.
 
-   Three sizes, and only three:
-       13px  page title            .t-h1 / .t-heading
-       12px  section heading       .t-h2 / .t-h3
-        9px  EVERYTHING else       body, data, labels, table cells, controls
+   THE NUMBERS LIVE IN ONE PLACE: the canon block at the top of this file
+   (search "TWO TIERS, ONE BREAKPOINT"). A second table used to sit here,
+   printing 13/12/9 — values this file has never declared, and after the
+   05-08-2026 heading change actively inverted: 13px became the DESK SECTION
+   heading while that table called 13px the PAGE title. A reader trusting it
+   got the hierarchy backwards, not merely a stale figure. It is deleted
+   rather than corrected, because two numeric tables in one file is the
+   defect; keeping both in sync is only a way of postponing it.
 
-   src/lib/type-canon.test.js enforces this against the source and lists the
-   deliberate exceptions (icon glyphs, form fields, table heads).
+   src/lib/type-canon.test.js enforces the canon against the source. It does
+   NOT list "deliberate exceptions" — that claim was also stale; the exception
+   table was removed on 05-08-2026 (see "THERE IS NO EXCEPTION TABLE ANY MORE"
+   in that file). Glyphs carry --fs-glyph-*, which is a token, not an
+   exception.
    =========================================================================== */
 .t-h1, .t-heading { font-size: var(--fs-title); font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; color: var(--color-accent); }
 .t-h2  { font-size: var(--fs-h); font-weight: 700; line-height: 1.35; color: var(--color-accent); }

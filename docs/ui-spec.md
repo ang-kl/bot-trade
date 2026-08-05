@@ -120,11 +120,29 @@ It was split by what each thing actually is:
 | phone tab-bar icons, `×` close marks | `--fs-glyph-md` 16px | flat |
 | `☰` table-of-contents FAB | `--fs-glyph-lg` 18px | flat |
 | `+` order FAB | `--fs-glyph-xl` 22px | flat |
-| `bot-trade` wordmark | `--fs-wordmark` 15px | flat |
+| `bot-trade` wordmark — **sidebar only** | `--fs-wordmark` 15px | flat |
 
 **Flat across both tiers on purpose.** An icon that resized with the type
 tier would change its own tap target, which is the one thing about a tab-bar
 icon or a floating action button that must not move.
+
+**THE WORDMARK IS ONLY FLAT IN THE SIDEBAR — a known inconsistency, recorded
+rather than quietly fixed.** There are two `bot-trade` spans. `App.jsx:271`
+(desktop sidebar) carries `--fs-wordmark` as documented. `App.jsx:366` (the
+`lg:hidden` touch header) carries **`--fs-title`**, so on a phone the logo
+rides the reading scale and moved with it: 13.5px → 12.5px on 05-08-2026.
+Restoring it to `--fs-wordmark` is a +2.5px jump on every phone screen — a
+visible decision, and one pointing the opposite way to the change the owner
+had just asked for, so it is the owner's call and is deliberately NOT bundled
+into the type change.
+
+How this was missed is worth more than the defect: the audit that "found
+nothing oversized" scanned computed styles across the whole DOM **including
+`display:none` subtrees**, and matched the `bot-trade` hit to the 15px sidebar
+span — which at 375px has a 0×0 box and is never painted. The painted 12.5px
+one was never examined. Reported as *"15px, the wordmark, deliberately flat"*;
+the truth was *"12.5px, on the reading scale, and shrinking"*. Any future
+size audit must filter on a non-zero box, not on the computed style alone.
 
 The phone BUY/SELL and CLOSE buttons went the other way: their **labels** are
 text and now carry `--fs-h`. Their boxes (`w-full`, `py-2.5`) are untouched —
