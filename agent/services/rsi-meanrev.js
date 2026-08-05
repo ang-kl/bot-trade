@@ -3,12 +3,36 @@
 // back up) and sells the pop in a downtrend. Trend filter is SMA50 — without
 // it an RSI-30 cross in a crash is a falling knife, so the filter is a hard
 // gate, not a score.
+//
+// THE TREND IS MEASURED BEFORE THE DIP (owner's call, 05-08-2026).
+//
+// It used to be measured ON the cross bar: `rsiPrev < 30 && last.c > sma50`.
+// Those two terms fight each other. The selling that drives a 14-period RSI
+// under 30 is usually the same selling that pulls close under its own 50-bar
+// mean, so the pair is close to mutually exclusive — measured across 52,590
+// RSI-30/70 crosses in flat, rising and falling regimes, ZERO passed. The
+// strategy was never quiet; it could not fire at all.
+//
+// The repair keeps SMA50 and keeps the gate hard. It only stops asking the
+// question on the bar the answer has already been distorted by: was this an
+// uptrend BEFORE the dip started? Same 52,590 crosses, 20.4% now pass.
+//
+// TREND_LOOKBACK IS A JUDGEMENT, AND IT IS THE ONE NUMBER TO WATCH. It has to
+// sit far enough back that the washout has not yet bent SMA50, and near enough
+// that it is still the same trend. 15 bars is what was measured. It is
+// expressed in BARS, so it scales with the signal timeframe in duration
+// (75 minutes on M5, three trading weeks on D1) but not in market meaning — if
+// this strategy later reads badly on one timeframe and well on another, this
+// constant is the first thing to re-measure, not the RSI thresholds.
 import { atr, rsi } from './fib-strategy.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 
-const MIN_BARS = 60 // SMA50 + enough RSI warm-up to trust the smoothing
 const RSI_PERIOD = 14
 const TROUGH_LOOKBACK = 10 // bars scanned for the washout extreme
+const TREND_LOOKBACK = 15 // bars back at which the trend is read, pre-dip
+// SMA50 measured TREND_LOOKBACK bars back needs 50 + 15 bars behind it, plus
+// RSI warm-up. Raised from 60 when the trend read moved off the cross bar.
+const MIN_BARS = 75
 
 /** Simple moving average of closes over the last `period` bars. */
 function sma(bars, period) {
@@ -24,8 +48,8 @@ const round2 = x => Math.round(x * 100) / 100
  * computeRsiMeanrev(bars, timeframe, opts) → signal | null
  *
  * Long: RSI(14) crosses back UP through 30 (prev bar < 30, current >= 30)
- * while close sits above SMA50 — a dip inside an uptrend. Short mirrors:
- * cross back DOWN through 70 with close below SMA50.
+ * while price sat above SMA50 fifteen bars ago — a dip inside an uptrend.
+ * Short mirrors: cross back DOWN through 70 with price below SMA50 then.
  *
  * entry = close; sl = 5-bar extreme padded by 0.25*ATR; tp1 = SMA20 (the
  * mean we revert to), tp2 = 1.5x that distance. rr must clear 1.5 — same
@@ -44,12 +68,20 @@ export function computeRsiMeanrev(bars, timeframe, opts = {}) {
   const rsiPrev = rsi(bars.slice(0, -1), RSI_PERIOD)
   if (rsiNow == null || rsiPrev == null) return null
 
-  const sma50 = sma(bars, 50)
   const sma20 = sma(bars, 20)
-  if (sma50 == null || sma20 == null) return null
+  if (sma20 == null) return null
 
-  const longCross = rsiPrev < 30 && rsiNow >= 30 && last.c > sma50
-  const shortCross = rsiPrev > 70 && rsiNow <= 70 && last.c < sma50
+  // The trend read, taken TREND_LOOKBACK bars back — before the washout that
+  // produced this RSI cross had a chance to drag SMA50 down through price.
+  const prior = bars.slice(0, bars.length - TREND_LOOKBACK)
+  const priorSma50 = sma(prior, 50)
+  if (priorSma50 == null) return null
+  const priorClose = prior[prior.length - 1].c
+  const upTrend = priorClose > priorSma50
+  const downTrend = priorClose < priorSma50
+
+  const longCross = rsiPrev < 30 && rsiNow >= 30 && upTrend
+  const shortCross = rsiPrev > 70 && rsiNow <= 70 && downTrend
   if (!longCross && !shortCross) return null
 
   const bias = longCross ? 'long' : 'short'
@@ -78,9 +110,10 @@ export function computeRsiMeanrev(bars, timeframe, opts = {}) {
   if (rr < minRr) return null
 
   // tp2 must sit BEYOND tp1 on the profit side — position management scales
-  // out at tp1 and runs the rest toward tp2. SMA50 is the WRONG level here:
-  // longs require entry above SMA50, so it sits on the LOSS side. Stretch
-  // target instead: 1.5x the reversion distance past entry.
+  // out at tp1 and runs the rest toward tp2. SMA50 is the WRONG level for it:
+  // in a dip-inside-an-uptrend it can sit on either side of entry, so it is
+  // not a target at all. Stretch target instead: 1.5x the reversion distance
+  // past entry.
   const tp2 = entry + (bias === 'long' ? 1 : -1) * 1.5 * Math.abs(tp1 - entry)
 
   // Conviction: 8 base. +1 for a deeper washout (RSI extreme past 25/75 in
@@ -118,7 +151,7 @@ export function computeRsiMeanrev(bars, timeframe, opts = {}) {
     time_cap_minutes: timeCap,
     strategy: 'rsi_meanrev',
     thesis: bias === 'long'
-      ? `RSI washed out below 30 and turned back up while price holds above the 50-bar average — buying the dip back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`
-      : `RSI ran hot above 70 and turned back down while price sits below the 50-bar average — selling the pop back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`,
+      ? `RSI washed out below 30 and turned back up, and ${TREND_LOOKBACK} bars before the dip price was already above its 50-bar average — buying the dip back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`
+      : `RSI ran hot above 70 and turned back down, and ${TREND_LOOKBACK} bars before the pop price was already below its 50-bar average — selling the pop back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`,
   }
 }
