@@ -26,6 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import { normPosId } from '../lib/pos-id.js'
+import { checkTradeConsistency, realisedRR } from './trade-consistency.js'
 
 const WEEK_MS = 7 * 24 * 3_600_000
 
@@ -105,7 +106,26 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // "something was missing and the broker had no matching close". Those two
   // look identical from backfilled === 0 alone, and only the second one
   // should cost a retry.
-  if (!gap || gap.n === 0) return { backfilled: 0, attributed: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0 }
+  // ROWS TO REPAIR ARE A SECOND REASON TO FETCH.
+  //
+  // Caught by this file's own test run: the gate below used to skip the broker
+  // round-trip whenever no closed trade was missing P&L — and every one of the
+  // 56 self-contradicting rows HAS its P&L. That is the whole point of them:
+  // the money is right and the price is wrong. So the exit repair would have
+  // shipped and never once fired in production, which is worse than not
+  // shipping it. A row worth repairing now counts as work to do.
+  const mismatch = (() => {
+    try {
+      return db.prepare(
+        `SELECT COUNT(*) AS n FROM trades
+          WHERE status = 'closed' AND pnl_price_mismatch = 1 ${gapScopeSql}`
+      ).get(...scopeParams)?.n || 0
+    } catch { return 0 }
+  })()
+
+  if ((!gap || gap.n === 0) && mismatch === 0) {
+    return { backfilled: 0, attributed: 0, exitsRepaired: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0 }
+  }
 
   // THE LIVE GAP — rows still worth retrying for, which is NOT the same set.
   //
@@ -189,9 +209,23 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     const m = (v) => (v == null ? 0 : v / scale)
     const gross = m(cpd.grossProfit)
     const net = gross + m(cpd.swap) + m(cpd.commission)
-    const agg = byPosition.get(positionId) || { net: 0, gross: 0, swap: 0, commission: 0 }
+    const agg = byPosition.get(positionId) || { net: 0, gross: 0, swap: 0, commission: 0, pxVol: 0, vol: 0 }
     agg.net += net
     agg.gross += gross
+    // THE EXIT PRICE THE LEDGER NEVER RECORDED (go-live Phase 0, P0-1).
+    // The deal carries the price the close actually executed at. Weighted by
+    // volume so a scaled-out close resolves to one honest average rather than
+    // whichever partial happened to be last. 56 of 190 decidable closed rows
+    // carry an exit_price that contradicts their own P&L; this is the only
+    // source that can settle them.
+    {
+      const px = Number(d.executionPrice)
+      const vol = Number(d.volume ?? d.filledVolume ?? 0)
+      if (Number.isFinite(px) && px > 0 && Number.isFinite(vol) && vol > 0) {
+        agg.pxVol += px * vol
+        agg.vol += vol
+      }
+    }
     // Forensics: keep the cost components separate too (Performance Ledger
     // shows cost-per-strategy; folding them into net loses that).
     agg.swap += m(cpd.swap)
@@ -239,8 +273,20 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
         AND status = 'closed' AND net_pnl IS NULL
         AND account_id IS NULL`
   )
+  // EXIT-PRICE REPAIR. Deliberately separate from the P&L fill above, and
+  // deliberately narrow: it touches ONLY rows the consistency check has
+  // already flagged as disagreeing with themselves. A row whose exit price is
+  // merely absent is left alone — absence is honest, and inventing a price for
+  // it would turn a known unknown into a plausible wrong answer.
+  const repairExit = db.prepare(
+    `UPDATE trades
+        SET exit_price = ?
+      WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
+        AND status = 'closed' AND pnl_price_mismatch = 1 ${scopeSql}`
+  )
   let backfilled = 0
   let attributed = 0
+  let exitsRepaired = 0
   const tx = db.transaction((entries) => {
     for (const [positionId, agg] of entries) {
       const money = [
@@ -257,6 +303,28 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
         const c = claim.run(String(acct), ...money, positionId)
         attributed += c.changes
         backfilled += c.changes
+      }
+      // Volume-weighted exit, only for rows already flagged as contradicting
+      // themselves. Re-stamp realised R and clear the flag from the repaired
+      // row rather than assuming the repair worked — if the deal price still
+      // disagrees with the money, that is a finding, not a success.
+      if (agg.vol > 0) {
+        const vwap = agg.pxVol / agg.vol
+        const rep = repairExit.run(vwap, positionId, ...scopeParams)
+        if (rep.changes) {
+          exitsRepaired += rep.changes
+          try {
+            const rows = db.prepare(
+              `SELECT id, side, entry_price, exit_price, sl_price, net_pnl FROM trades
+                WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'`
+            ).all(positionId)
+            for (const row of rows) {
+              const c2 = checkTradeConsistency(row)
+              db.prepare(`UPDATE trades SET realised_rr = ?, pnl_price_mismatch = ? WHERE id = ?`)
+                .run(realisedRR(row), c2.decidable && !c2.ok ? 1 : 0, row.id)
+            }
+          } catch { /* the audit columns must never fail a backfill */ }
+        }
       }
     }
   })
@@ -276,7 +344,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // longer NULL, so the UPDATE below cannot reach them.
   noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString() })
 
-  return { backfilled, attributed, closingDeals, scanned: deals.length, gap: gap.n, liveGap }
+  return { backfilled, attributed, exitsRepaired, closingDeals, scanned: deals.length, gap: gap.n, liveGap }
 }
 
 // ---------------------------------------------------------------------------
