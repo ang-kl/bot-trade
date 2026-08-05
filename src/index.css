@@ -155,14 +155,28 @@
      reference header was 11px against a 9px body (+2), then "increase by
      1pt" made it +3.
 
+     HEADINGS CAME BACK DOWN ONE STEP (owner, 05-08-2026 afternoon: "the text
+     font size is to big", then, shown the measurements, "Headings only").
+     Body and column heads did NOT move — 9.5/11 and 10.5/12 are the owner's
+     own stated numbers and were never the complaint. The ladder is now
+     head +1, heading +2, title +3 in BOTH tiers.
+
+     Worth recording why the earlier +3/+4 was wrong rather than just changing
+     it: the "+1pt" instruction was about ONE element, .t-h3 in the Strategy
+     Liveness card, read against a 9px body. Deriving a whole ladder from it —
+     and then adding a further step for the page title — compounded a
+     single-element adjustment into every heading on every page. The reference
+     element still lands where the owner asked; what changed is that the rest
+     of the scale no longer inherits an offset it was never given.
+
      px, not rem, deliberately: these were chosen against the owner's own
      screens at fixed sizes (see the --fs-d* note above). The rem --fs-*
      scale further up still exists for the chrome that rides the root size.
      ========================================================================= */
   --fs-body:  9.5px;
   --fs-head:  10.5px;
-  --fs-h:     12.5px;
-  --fs-title: 13.5px;
+  --fs-h:     11.5px;
+  --fs-title: 12.5px;
   --lh-session:       0.75rem;
 
   /* ---------------------------------------------------------------------
@@ -600,8 +614,8 @@
   :root {
     --fs-body:  11px;
     --fs-head:  12px;
-    --fs-h:     14px;
-    --fs-title: 15px;
+    --fs-h:     13px;
+    --fs-title: 14px;
   }
 }
 

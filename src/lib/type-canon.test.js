@@ -54,8 +54,8 @@ const CSS = readFileSync(join(SRC, 'index.css'), 'utf8')
 // ---------------------------------------------------------------------------
 // The canon: four tokens, two tiers. The FLOOR is the owner's stated minimum.
 const FLOOR = 9.5
-const TOUCH = { '--fs-body': 9.5, '--fs-head': 10.5, '--fs-h': 12.5, '--fs-title': 13.5 }
-const DESK = { '--fs-body': 11, '--fs-head': 12, '--fs-h': 14, '--fs-title': 15 }
+const TOUCH = { '--fs-body': 9.5, '--fs-head': 10.5, '--fs-h': 11.5, '--fs-title': 12.5 }
+const DESK = { '--fs-body': 11, '--fs-head': 12, '--fs-h': 13, '--fs-title': 14 }
 const DESK_MIN_WIDTH = 1280
 
 // THERE IS NO EXCEPTION TABLE ANY MORE (owner 05-08-2026: "fix C1").
@@ -128,12 +128,27 @@ describe('the two tiers', () => {
     }
   })
 
-  it('both tiers keep the same ladder: head +1, heading +3, title +4', () => {
+  it('both tiers keep the same ladder: head +1, heading +2, title +3', () => {
+    // Was +1/+3/+4 until 05-08-2026. The owner said "the text font size is to
+    // big"; measured, nothing exceeded the canon, so the canon itself was the
+    // complaint — and shown the numbers they chose "Headings only". Body and
+    // column heads are unchanged because 9.5/11 and 10.5/12 are the owner's
+    // own figures and were never what read wrong.
     for (const tier of [TOUCH, DESK]) {
       expect(tier['--fs-head'] - tier['--fs-body']).toBe(1)
-      expect(tier['--fs-h'] - tier['--fs-body']).toBe(3)
-      expect(tier['--fs-title'] - tier['--fs-body']).toBe(4)
+      expect(tier['--fs-h'] - tier['--fs-body']).toBe(2)
+      expect(tier['--fs-title'] - tier['--fs-body']).toBe(3)
     }
+  })
+
+  it('BODY and column heads are untouched — they were never the complaint', () => {
+    // Pinned separately from the ladder above so a future ladder change cannot
+    // quietly drag the one number the owner stated twice ("9.5px will be ideal
+    // as minimum" / "11 px for desktop") along with it.
+    expect(TOUCH['--fs-body']).toBe(9.5)
+    expect(DESK['--fs-body']).toBe(11)
+    expect(TOUCH['--fs-head']).toBe(10.5)
+    expect(DESK['--fs-head']).toBe(12)
   })
 
   it('the desk tier is the larger one — a phone is not a small desktop', () => {

@@ -54,13 +54,27 @@ reason written next to it in a comment.
 The sizes were stated by screenshot, not by number: body is "the picture text
 `7d`, `30d`", which is `Segmented md`; the header is "`Strategy Liveness
 table` but increase by 1pt", which was `.t-h3` at 11px against a 9px body —
-body + 2, so +1pt makes it **body + 3**. Then: *"please canonical for tablet
-and iphones"*, *"9.5px will be ideal as minimum"*, *"11 px for desktop"*.
+body + 2, so +1pt was first read as **body + 3** — a derivation later corrected
+to **body + 2** (see below). Then: *"please canonical for tablet and iphones"*,
+*"9.5px will be ideal as minimum"*, *"11 px for desktop"*.
 
-|  | `--fs-body` | `--fs-head` (+1) | `--fs-h` (+3) | `--fs-title` (+4) |
+|  | `--fs-body` | `--fs-head` (+1) | `--fs-h` (+2) | `--fs-title` (+3) |
 |---|---|---|---|---|
-| **tablet + iPhone** (`:root`) | `9.5px` | `10.5px` | `12.5px` | `13.5px` |
-| **desktop** (`≥1280px`) | `11px` | `12px` | `14px` | `15px` |
+| **tablet + iPhone** (`:root`) | `9.5px` | `10.5px` | `11.5px` | `12.5px` |
+| **desktop** (`≥1280px`) | `11px` | `12px` | `13px` | `14px` |
+
+**Headings came down one step on 05-08-2026.** Owner: *"the text font size is
+to big"*. Measured across five pages at 375px, nothing visible exceeded the
+canon — every oversized hit was a screen-reader-only element, a hidden skip
+link, an SVG `<title>` or the wordmark. So the canon itself was the complaint,
+and shown the numbers the owner chose **headings only**.
+
+Why the earlier `+3`/`+4` was wrong, recorded so it is not re-derived: the
+"+1pt" instruction was about ONE element — `.t-h3` in the Strategy Liveness
+card, against a 9px body. Turning that into a whole ladder, and then adding a
+further step for the page title, compounded a single-element adjustment into
+every heading on every page. `--fs-body` and `--fs-head` did not move: `9.5`
+and `11` are the owner's own stated numbers and were never what read wrong.
 
 Tablet and iPhone share a tier because they are the same thing for reading: a
 held device where the constraint is fitting a dense table on a narrow screen.
