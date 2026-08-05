@@ -27,6 +27,7 @@
 
 import { STRATEGY_REGISTRY } from './strategies.js'
 import { armedTradeKeys } from './stage-matrix.js'
+import { LAST_ANALYZED_KEY } from './analyze-fair-share.js'
 import { getState } from '../db.js'
 
 /** Rolling window, in days, used when the caller does not specify one. */
@@ -158,6 +159,20 @@ export function strategyLiveness(db, opts = {}) {
   // Enough scanning has happened for an absence to be evidence.
   const verdictable = totalScans >= MIN_SCANS_FOR_VERDICT
 
+  // WHICH GATE STOPPED IT — the card used to say "check the gates that stopped
+  // it" and leave the reader to go and check. Measured 05-08-2026: five armed
+  // strategies had 3,668 signals and ZERO decisions, because the analyze phase
+  // takes three symbols per cycle ranked by a conviction score that is 9-or-10
+  // on everything, so the same three strategies won every tie. Nothing vetoed
+  // the other five; they were never asked. That is not "check the gates" — it
+  // is a specific, nameable answer, and the card can give it.
+  let lastAnalyzed = {}
+  try { lastAnalyzed = JSON.parse(getState(db, LAST_ANALYZED_KEY) || '{}') || {} } catch { lastAnalyzed = {} }
+  const analyzedAt = (key) => {
+    const raw = lastAnalyzed?.[key]
+    return raw == null || raw === '' ? null : String(raw)
+  }
+
   const strategies = STRATEGY_REGISTRY.map(({ key, name }) => {
     const armed = armedKeys.has(key)
     const s = scans.get(key)
@@ -180,7 +195,14 @@ export function strategyLiveness(db, opts = {}) {
       note = 'producing signals and opening positions'
     } else if (signals > 0) {
       verdict = 'signalling_not_trading'
-      note = 'producing signals but none reached an order — check the gates that stopped it'
+      // ZERO decisions is a different failure from "vetoed at the gate", and
+      // conflating them is what made this unreadable: one means the risk gate
+      // refused it, the other means the risk gate never saw it.
+      note = Number(d?.n || 0) === 0
+        ? (analyzedAt(key) == null
+          ? 'never given an analyze slot — it signals, but the three slots per cycle always went to another strategy, so nothing has ever evaluated it'
+          : 'signals reached NO gate in this window — the analyze slots went elsewhere; last slot ' + analyzedAt(key))
+        : 'producing signals but none reached an order — check the gates that stopped it'
     } else {
       verdict = 'silent'
       note = 'armed but produced NO signal in this window — a quiet market, or a code path that cannot run'
@@ -197,6 +219,8 @@ export function strategyLiveness(db, opts = {}) {
       closed: Number(c?.n || 0),
       lastSignalAt: s?.last_at || null,
       lastTradeAt: o?.last_at || null,
+      // null means NEVER, not "unknown" — the loudest case, kept distinct.
+      lastAnalyzedAt: analyzedAt(key),
       verdict,
       note,
     }
