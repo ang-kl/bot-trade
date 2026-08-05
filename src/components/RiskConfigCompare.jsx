@@ -11,6 +11,7 @@ import Badge from './common/Badge.jsx'
 import Collapse from './common/Collapse.jsx'
 import Skeleton from './common/Skeleton.jsx'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
+import { accountNumbers } from "../lib/scope-label.js"
 
 const KNOBS = [
   ['perTradeRiskPct', 'Risk per trade (%)'],
@@ -68,7 +69,7 @@ export default function RiskConfigCompare() {
                   <th className="py-1 px-2 text-right">Global</th>
                   {cols.per.map(({ acct }) => (
                     <th key={acct.account_id} className="py-1 px-2 text-right whitespace-nowrap">
-                      {acct.trader_login || acct.account_id} <Badge tone={acct.is_live ? 'down' : 'info'}>{acct.is_live ? 'LIVE' : 'DEMO'}</Badge>
+                      {accountNumbers(acct)} <Badge tone={acct.is_live ? 'down' : 'info'}>{acct.is_live ? 'LIVE' : 'DEMO'}</Badge>
                     </th>
                   ))}
                 </tr>

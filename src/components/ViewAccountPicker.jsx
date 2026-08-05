@@ -25,6 +25,7 @@
 // to the traded account — a lens you cannot tell you are wearing is worse than
 // no lens, because every number below it is then unlabelled.
 import { useEffect, useState, useSyncExternalStore } from 'react'
+import { accountNumbers } from "../lib/scope-label.js"
 import {
   viewedAccountId, setViewedAccount, isViewingOther,
   selectedAccountId, onAccountSwitch,
@@ -85,7 +86,7 @@ export default function ViewAccountPicker() {
       >
         {roster.map(a => (
           <option key={a.accountId} value={String(a.accountId)}>
-            {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin ?? a.accountId}
+            {a.isLive ? 'LIVE' : 'DEMO'} {accountNumbers(a)}
             {String(a.accountId) === String(selectedAccountId()) ? ' · trading' : ''}
           </option>
         ))}

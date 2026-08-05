@@ -39,6 +39,7 @@ import ScreenerChat from '../components/ScreenerChat.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import Segmented from '../components/common/Segmented.jsx'
 import Collapse from '../components/common/Collapse.jsx'
+import { accountNumbers } from "../lib/scope-label.js"
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
 // 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
@@ -385,10 +386,10 @@ function MxTallies({ tallies, columns, acct, onAcct }) {
                 <td className="py-0.5 pr-3 whitespace-nowrap">
                   <button
                     type="button" onClick={() => onAcct?.(String(t.accountId))}
-                    title={`Show ${t.traderLogin || t.accountId}'s matrix — mode ${t.mode || 'unknown'}${t.enabled ? '' : ', disabled in the registry'}`}
+                    title={`Show ${accountNumbers(t)}'s matrix — mode ${t.mode || 'unknown'}${t.enabled ? '' : ', disabled in the registry'}`}
                     className="cursor-pointer font-bold tabular-nums hover:underline"
                   >
-                    <span className={t.isLive ? 'text-[var(--color-down)]' : ''}>{t.isLive ? 'LIVE' : 'DEMO'} {t.traderLogin || t.accountId}</span>
+                    <span className={t.isLive ? 'text-[var(--color-down)]' : ''}>{t.isLive ? 'LIVE' : 'DEMO'} {accountNumbers(t)}</span>
                   </button>
                   {/* The mode belongs beside the count: an account can have
                       every cell armed and still enter nothing. */}

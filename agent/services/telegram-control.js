@@ -215,7 +215,13 @@ export function fmtAccountLines(db) {
       `SELECT COUNT(*) AS n FROM trades WHERE status = 'open'
         AND (account_id = ? ${isSelected ? 'OR account_id IS NULL' : ''})`
     ).get(id).n
-    return `  ${isSelected ? '▶' : '·'} ${a.trader_login || id} ${a.is_live ? 'LIVE' : 'demo'} · $${bal != null ? bal.toFixed(2) : '?'} · ${open} open`
+    // BOTH numbers. Owner, 05-08-2026: "All accounts listed must include the
+    // ID as I only know the Account #". `trader_login || id` showed the id
+    // only when the login was absent, which at the broker is never — so the
+    // one line you read on a phone named an account by a number you could not
+    // match to anything else in the system.
+    const who = a.trader_login ? `${a.trader_login} · ${id}` : String(id)
+    return `  ${isSelected ? '▶' : '·'} ${who} ${a.is_live ? 'LIVE' : 'demo'} · $${bal != null ? bal.toFixed(2) : '?'} · ${open} open`
   })
 }
 

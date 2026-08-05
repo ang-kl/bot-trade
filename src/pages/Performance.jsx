@@ -39,6 +39,7 @@ import { MARKET_COLS, categorize as catOf, dayAnchorMs, isFxWeekend, closedAtMs 
 import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 import Collapse from '../components/common/Collapse.jsx'
+import { accountNumbers } from "../lib/scope-label.js"
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -1471,7 +1472,7 @@ export default function Performance() {
         // out would break the first time the label changed. (It shipped reading
         // 0 live · 0 demo for exactly this reason.)
         isLive: a.is_live === 1,
-        name: `${a.is_live ? 'Live' : 'Demo'} · ${a.trader_login || a.account_id}${dormantButHeld ? ' · OFF' : ''}`,
+        name: `${a.is_live ? 'Live' : 'Demo'} · ${accountNumbers(a)}${dormantButHeld ? ' · OFF' : ''}`,
         ccy: a.base_currency || '—',
         bal, day, gw, gl, n30, cap, used, equity, live,
         hasToday: rows.length > 0,
@@ -1805,7 +1806,7 @@ export default function Performance() {
         stratLabel: strategyLabel(t2.label_strategy || t2.strategy),
       }))
       .filter(t2 => t2.t != null)
-    const AC3 = [...accounts.map(a => ({ name: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}`, id: a.account_id })), { name: 'Overall', id: null }]
+    const AC3 = [...accounts.map(a => ({ name: `${a.is_live ? 'Live' : 'Demo'} ·${String(accountNumbers(a)).slice(-3)}`, id: a.account_id })), { name: 'Overall', id: null }]
     // Owner (2026-07-25): "add strategy column, asset columns" to the
     // timeframe gradient. Column axis becomes three GROUPS sharing the window
     // rows: account, strategy, asset class. Strategies come from the data
@@ -2122,7 +2123,7 @@ export default function Performance() {
           <>
             <div className="md-chip-row">
               <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Acct</span>
-              {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
+              {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(accountNumbers(a)).slice(-3)}` }))].map(f => {
                 const on = acct === f.id
                 return (
                   <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
@@ -2139,7 +2140,7 @@ export default function Performance() {
         {(screen === 'markets' || screen === 'trades') && (
           <div className="md-chip-row">
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Acct</span>
-            {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
+            {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(accountNumbers(a)).slice(-3)}` }))].map(f => {
               const on = acct === f.id
               return (
                 <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}

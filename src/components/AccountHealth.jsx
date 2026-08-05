@@ -8,6 +8,7 @@
 import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import Collapse from './common/Collapse.jsx'
+import { accountNumbers } from "../lib/scope-label.js"
 
 function fmtMoney(n, ccy) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -48,7 +49,7 @@ export default function AccountHealth({ acct }) {
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <div className="text-(length:--fs-body) font-semibold">Account health</div>
         <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
-        {acct.traderLogin && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">Login {acct.traderLogin}</span>}
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{accountNumbers(acct)}</span>
         <span className="ml-auto flex items-center gap-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
           {(h.positionsInProfit != null || h.positionsInLoss != null) && (
             <span>

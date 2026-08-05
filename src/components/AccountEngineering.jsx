@@ -22,6 +22,7 @@ import Badge from './common/Badge.jsx'
 import { agentGet } from '../lib/agent-api.js'
 import { PHASES } from '../lib/account-phases.js'
 import Collapse from './common/Collapse.jsx'
+import { accountNumbers } from "../lib/scope-label.js"
 
 /** "4m", "3h", "2d" since an ISO stamp — or null when there is nothing to age. */
 function ago(iso) {
@@ -150,7 +151,7 @@ export default function AccountEngineering() {
                   <tr key={a.accountId} className="border-t border-[var(--color-border)]">
                     <Cell title={`cTrader account ${a.accountId}`}>
                       <span className={`font-bold ${a.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
-                        {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
+                        {a.isLive ? 'LIVE' : 'DEMO'} {accountNumbers(a)}
                       </span>
                       {a.selected && (
                         <span className="ml-1 text-(length:--fs-body) text-[var(--color-accent)]"

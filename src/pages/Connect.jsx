@@ -10,6 +10,7 @@ import Input from '../components/common/Input.jsx'
 import WatchlistCompare from '../components/watchlist/WatchlistCompare.jsx'
 import { getAgentConn, setAgentConn, clearAgentConn, agentGet, agentPost } from '../lib/agent-api.js'
 import { writeSelection } from '../lib/selected-account.js'
+import { accountNumbers } from "../lib/scope-label.js"
 
 
 export default function Connect() {
@@ -152,7 +153,7 @@ export default function Connect() {
     // autotrade and manual orders would act on.)
     if (a.isLive) {
       const word = window.prompt(
-        `⚠ ${a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`} is a LIVE account with REAL money.\n\n` +
+        `⚠ ${accountNumbers(a)} is a LIVE account with REAL money.\n\n` +
         'Backtests and charts never trade — but if you later arm Autotrade or place a manual order, it will use REAL funds on this account.\n\n' +
         'Type LIVE to confirm, or Cancel to pick a DEMO account instead.'
       )
@@ -304,7 +305,13 @@ export default function Connect() {
                       className="flex flex-1 items-center gap-3 text-left cursor-pointer min-w-0"
                     >
                       <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
-                      <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
+                      <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : 'Login —'}</span>
+                      {/* The ACCOUNT ID, always. Owner, 05-08-2026: "All
+                          accounts listed must include the ID as I only know
+                          the Account #" — this row used to show the id only
+                          when the login was missing, which at the broker is
+                          never. */}
+                      <span className="text-[var(--color-text-sub)]">· ID {a.accountId}</span>
                       {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
                     </button>
                     {/* The expander used to require a broker snapshot. It now

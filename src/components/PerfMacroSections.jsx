@@ -14,6 +14,7 @@
 import { useState } from 'react'
 import SectionTools from './common/SectionTools.jsx'
 import { sideLabelUpper } from '../lib/side.js'
+import { accountNumbers } from "../lib/scope-label.js"
 
 const ACC = 'var(--color-accent)', UP = 'var(--color-up)', DN = 'var(--color-down)'
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
@@ -161,7 +162,7 @@ export function RegimeMatrix({ trades30, positions, accounts, account, onAccount
     tot: '—',
     bg: QPAL[q][0] + '0.10)', bd: QPAL[q][1],
   }))
-  const rOpts = [{ id: 'all', label: 'All Accounts' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ${a.trader_login || a.account_id}` }))]
+  const rOpts = [{ id: 'all', label: 'All Accounts' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ${accountNumbers(a)}` }))]
   return (
     <div style={{ ...panel, gap: 2 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>

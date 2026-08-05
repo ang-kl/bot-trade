@@ -35,6 +35,7 @@ import { offSummary } from '../lib/account-phases.js'
 import { isPollPaused, setPollPaused, subscribePollPaused } from '../lib/agent-api.js'
 import PhaseDots from './common/PhaseDots.jsx'
 import { useActiveAccount, formatBalance } from '../lib/use-active-account.js'
+import { accountNumbers } from "../lib/scope-label.js"
 
 // Same session cache AccountSwitcher fills — reading it here costs nothing
 // and avoids a second /actions/ctrader-accounts round-trip on every mount.
@@ -55,7 +56,7 @@ export function ActiveAccountHeaderCompact() {
       className={`text-(length:--fs-body) font-bold tabular-nums whitespace-nowrap ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
       title={trading ? 'autotrade is ARMED on this account' : 'autotrade is OFF on this account'}
     >
-      {acct.isLive ? 'LIVE' : 'DEMO'} {acct.traderLogin ?? acct.accountId}
+      {acct.isLive ? 'LIVE' : 'DEMO'} {accountNumbers(acct)}
       {acct.balance != null && (
         <span className="ml-1 font-normal text-[var(--color-text-sub)]">
           {formatBalance(acct.balance, ccy, { decimals: 0 })}
@@ -77,7 +78,7 @@ export default function ActiveAccountHeader() {
   const paused = useSyncExternalStore(subscribePollPaused, isPollPaused, isPollPaused)
   if (!acct) return null
 
-  const label = `${acct.isLive ? 'LIVE' : 'DEMO'} ${acct.traderLogin ?? acct.accountId}`
+  const label = `${acct.isLive ? 'LIVE' : 'DEMO'} ${accountNumbers(acct)}`
   const trading = armed === true
   const summary = offSummary(phases)
   return (

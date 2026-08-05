@@ -32,6 +32,7 @@ import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost } from '../lib/agent-api.js'
 import { PHASES } from '../lib/account-phases.js'
+import { accountNumbers } from "../lib/scope-label.js"
 
 /**
  * One phase switch for one account.
@@ -72,12 +73,12 @@ function PhaseSwitch({ phase, acct, masterOn, busy, onSet }) {
   const why = blocked
     ? `Master ${phase.label} is off above — turn it on there first. This account's own setting (${ov === null ? 'inherit' : ov ? 'on' : 'off'}) is remembered.`
     : overruled
-      ? `You armed ${phase.label} on ${acct.traderLogin || acct.accountId} and that setting is SAVED — but ${capWhy}. Change the mode on this row to Active and it takes effect. Tap to withdraw the arm instead.`
-      : `${phase.label} is ${eff ? 'ON' : 'OFF'} for ${acct.traderLogin || acct.accountId}${ov === null ? ' (following the master)' : ' (set on this account)'} — tap to turn ${eff ? 'off' : 'on'}`
+      ? `You armed ${phase.label} on ${accountNumbers(acct)} and that setting is SAVED — but ${capWhy}. Change the mode on this row to Active and it takes effect. Tap to withdraw the arm instead.`
+      : `${phase.label} is ${eff ? 'ON' : 'OFF'} for ${accountNumbers(acct)}${ov === null ? ' (following the master)' : ' (set on this account)'} — tap to turn ${eff ? 'off' : 'on'}`
   return (
     <button
       type="button" role="switch" aria-checked={overruled ? true : eff} disabled={blocked || busy}
-      aria-label={`${phase.label} for account ${acct.traderLogin || acct.accountId}${overruled ? ' — armed but blocked by account mode' : ''}`}
+      aria-label={`${phase.label} for account ${accountNumbers(acct)}${overruled ? ' — armed but blocked by account mode' : ''}`}
       title={why}
       onClick={() => onSet(phase.key, overruled ? false : !eff)}
       className={`inline-flex items-center justify-center rounded-[3px] border leading-none
@@ -178,7 +179,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
   // confirms exactly like arming does. Every other direction only ever removes
   // permission, and management of open positions survives all four.
   const setMode = async (a, next) => {
-    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${a.traderLogin || a.accountId}`
+    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${accountNumbers(a)}`
     const enabled = next !== 'disabled'
     const mode = enabled ? next : 'manage_only'
     if (next === 'active') {
@@ -188,7 +189,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
     try {
       await agentPost('/actions/registry-account', { accountId: a.accountId, enabled, mode })
       await load()
-      showDone(`Mode ${next} · ${a.traderLogin || a.accountId}`)
+      showDone(`Mode ${next} · ${accountNumbers(a)}`)
       setErr('')
     } catch (e) { setErr(e.message) } finally { setBusyId('') }
   }
@@ -207,7 +208,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
   useEffect(() => { if (masterKey) load() }, [masterKey, load])
 
   const set = async (acct, phaseKey, on) => {
-    const who = `${acct.isLive ? 'LIVE' : 'Demo'} ${acct.traderLogin || acct.accountId}`
+    const who = `${acct.isLive ? 'LIVE' : 'Demo'} ${accountNumbers(acct)}`
     // Arming REAL orders on an account gets the same confirmation the master
     // Autotrade switch gets.
     if (phaseKey === 'autotrade' && on) {
@@ -226,7 +227,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
       await agentPost('/actions/account-phases', { accountId: acct.accountId, [phaseKey]: on })
       await load()
       const label = PHASES.find(p => p.key === phaseKey)?.label || phaseKey
-      showDone(`${label} ${on ? 'on' : 'off'} · ${acct.traderLogin || acct.accountId}`)
+      showDone(`${label} ${on ? 'on' : 'off'} · ${accountNumbers(acct)}`)
       setErr('')
     } catch (e) {
       setErr(e.message)
@@ -239,7 +240,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
       await agentPost('/actions/account-phases',
         { accountId: acct.accountId, scan: null, analyze: null, autotrade: null })
       await load()
-      showDone(`Following the master · ${acct.traderLogin || acct.accountId}`)
+      showDone(`Following the master · ${accountNumbers(acct)}`)
       setErr('')
     } catch (e) {
       setErr(e.message)
@@ -286,7 +287,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
             {stale.map(a => (
               <li key={a.accountId} className="flex flex-wrap items-center gap-2">
                 <span className={`font-bold tabular-nums ${a.isLive ? 'text-[var(--color-down)]' : ''}`}>
-                  {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
+                  {a.isLive ? 'LIVE' : 'DEMO'} {accountNumbers(a)}
                 </span>
                 <span className="text-(length:--fs-body) text-[var(--color-text-sub)] tabular-nums">#{a.accountId}</span>
                 {a.enabled
@@ -342,7 +343,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
               className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1"
             >
               <span className={`text-(length:--fs-body) font-bold tabular-nums ${a.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
-                {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
+                {a.isLive ? 'LIVE' : 'DEMO'} {accountNumbers(a)}
               </span>
               <span className="text-(length:--fs-body) text-[var(--color-text-sub)] tabular-nums">#{a.accountId}</span>
               {/* Owner (2026-07-31): "I need more details like current balance,
@@ -389,7 +390,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                   without confirmLive — that stays a deliberate act, never a
                   dropdown. */}
               <select
-                aria-label={`Trading mode for account ${a.traderLogin || a.accountId}`}
+                aria-label={`Trading mode for account ${accountNumbers(a)}`}
                 value={a.enabled ? (a.mode || 'manage_only') : 'disabled'}
                 disabled={a.isLive || busyId === a.accountId}
                 title={a.isLive
