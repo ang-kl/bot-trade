@@ -159,8 +159,8 @@ never from weight.
 ### Headings
 
 A heading is distinguished by weight, colour (`P_ACC`/accent for section
-titles) and position — the scale moves one step per level (`--fs-h` = body+3,
-`--fs-title` = body+4). `.t-h3` is `var(--fs-h) / 700`; the old escalating
+titles) and position — the scale moves one step per level (`--fs-h` = body+2,
+`--fs-title` = body+3; was +3/+4 until 05-08-2026, see §2). `.t-h3` is `var(--fs-h) / 700`; the old escalating
 per-breakpoint heading scale is gone on purpose, and the two-tier canon
 replaced it with exactly one step.
 

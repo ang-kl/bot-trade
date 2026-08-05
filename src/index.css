@@ -146,28 +146,37 @@
      derived from --fs-body by a fixed offset, so moving the body size moves
      the whole ladder and the hierarchy cannot drift apart:
 
-                        body   +1 head   +3 heading   +4 title
-       tablet/iPhone     9.5     10.5       12.5        13.5
-       desktop ≥1280    11       12         14          15
+                        body   +1 head   +2 heading   +3 title
+       tablet/iPhone     9.5     10.5       11.5        12.5
+       desktop ≥1280    11       12         13          14
 
      9.5px is the FLOOR the owner set and the touch tier sits exactly on it.
-     The +3 heading offset is the owner's own measurement preserved: the
-     reference header was 11px against a 9px body (+2), then "increase by
-     1pt" made it +3.
 
-     HEADINGS CAME BACK DOWN ONE STEP (owner, 05-08-2026 afternoon: "the text
-     font size is to big", then, shown the measurements, "Headings only").
-     Body and column heads did NOT move — 9.5/11 and 10.5/12 are the owner's
-     own stated numbers and were never the complaint. The ladder is now
-     head +1, heading +2, title +3 in BOTH tiers.
+     HISTORY — the heading offsets were +3/+4 until 05-08-2026 and came down
+     one step. Owner: "the text font size is to big". Measured across five
+     pages at 375px, nothing VISIBLE exceeded the canon — every oversized hit
+     was a screen-reader-only element, a hidden skip link, an SVG <title> or
+     the wordmark — so the canon itself was the complaint, and shown the
+     numbers the owner chose "Headings only". Body and column heads did not
+     move: 9.5/11 and 10.5/12 are the owner's own stated figures and were
+     never what read wrong.
 
-     Worth recording why the earlier +3/+4 was wrong rather than just changing
-     it: the "+1pt" instruction was about ONE element, .t-h3 in the Strategy
-     Liveness card, read against a 9px body. Deriving a whole ladder from it —
-     and then adding a further step for the page title — compounded a
-     single-element adjustment into every heading on every page. The reference
-     element still lands where the owner asked; what changed is that the rest
-     of the scale no longer inherits an offset it was never given.
+     Why the earlier +3/+4 was wrong, recorded so it is not re-derived by
+     someone reading the original instruction: "increase by 1pt" was about ONE
+     element, .t-h3 in the Strategy Liveness card, read against a 9px body
+     (+2). Deriving a whole ladder from it — and then adding a further step
+     for the page title — compounded a single-element adjustment into every
+     heading on every page.
+
+     BE PRECISE ABOUT WHAT HAPPENED TO THE "+1pt", because the tempting
+     sentence — "the reference element still lands where the owner asked" —
+     is FALSE on the touch tier. The reference .t-h3 was 11px; +1pt is ~12.3px
+     (12px on a 1px reading); --fs-h is now 11.5px. That is BELOW the
+     un-incremented picture size plus a point. On the desk tier (13px) it
+     clears. So the +1pt has been SET ASIDE, not relocated — superseded by a
+     later, better-informed instruction from the same owner, given after
+     seeing the rendered result and the measurements. That is a stronger
+     justification than a claimed continuity, and it is the true one.
 
      px, not rem, deliberately: these were chosen against the owner's own
      screens at fixed sizes (see the --fs-d* note above). The rem --fs-*

@@ -8,7 +8,15 @@
 //   "i like the header's font size to be same as the picture header text
 //    'Strategy Liveness table' but increase by 1pt."
 //                                    → .t-h3 was 11px against a 9px body,
-//                                      i.e. body + 2, so +1pt makes it body + 3
+//                                      i.e. body + 2. This was first read as
+//                                      "+1pt ⇒ body + 3" and that over-read a
+//                                      single element into a whole ladder.
+//   "the text font size is to big" (05-08 pm) → shown the measurements, the
+//                                      owner chose HEADINGS ONLY, and the
+//                                      ladder became +1 / +2 / +3. The +1pt is
+//                                      SET ASIDE, not relocated — --fs-h on
+//                                      touch (11.5px) is below the 11px
+//                                      reference plus a point.
 //   "please canonical for tablet and iphones"
 //   "9.5px will be ideal as minimum" / "11 px for desktop"
 //
@@ -283,4 +291,46 @@ describe('text tokens clear 4.5:1 on the card each theme paints', () => {
       })
     }
   }
+})
+
+// ---------------------------------------------------------------------------
+// THE COMMENT MUST NOT CONTRADICT THE CODE (05-08-2026)
+//
+// The automated reviewer on #658 caught this and it was a real defect: the
+// ladder moved, the declarations moved, and the ASCII table in the comment
+// twenty lines above them did not. A reader hits a numbered table asserting
+// values the same block no longer declares — and in a file whose entire
+// argument is "recorded so it is not re-derived by someone reading the
+// original instruction", the stale table is the most authoritative-looking
+// thing in it.
+//
+// The prose is deliberately not checked; prose that lags is a nuisance. A
+// TABLE OF NUMBERS that lags is a trap, because it reads as the spec.
+// ---------------------------------------------------------------------------
+
+describe('the canon table in the CSS comment states what the CSS declares', () => {
+  const row = (label) => {
+    const m = CSS.match(new RegExp(`${label}\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)`))
+    expect(m, `the "${label}" row is missing from the canon comment`).toBeTruthy()
+    return m.slice(1).map(Number)
+  }
+
+  it('the touch row matches :root', () => {
+    expect(row('tablet/iPhone')).toEqual(
+      [TOUCH['--fs-body'], TOUCH['--fs-head'], TOUCH['--fs-h'], TOUCH['--fs-title']])
+  })
+
+  it('the desk row matches the 1280px block', () => {
+    expect(row('desktop ≥1280')).toEqual(
+      [DESK['--fs-body'], DESK['--fs-head'], DESK['--fs-h'], DESK['--fs-title']])
+  })
+
+  it('the offsets printed in the header match the offsets that exist', () => {
+    const m = CSS.match(/body\s+\+(\d) head\s+\+(\d) heading\s+\+(\d) title/)
+    expect(m, 'the offset header line is missing from the canon comment').toBeTruthy()
+    const [head, heading, title] = m.slice(1).map(Number)
+    expect(head).toBe(TOUCH['--fs-head'] - TOUCH['--fs-body'])
+    expect(heading).toBe(TOUCH['--fs-h'] - TOUCH['--fs-body'])
+    expect(title).toBe(TOUCH['--fs-title'] - TOUCH['--fs-body'])
+  })
 })
