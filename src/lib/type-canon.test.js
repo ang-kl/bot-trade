@@ -423,8 +423,19 @@ describe('no size is attached to a type role outside the canon block', () => {
     // "column heading" and "table heading" are the same word wearing the other
     // suffix, and `(?:er)?s?` alone could not consume them.
     const NAMES = /\.t-h[123]\b|\.t-heading\b|--fs-(?:body|head|h|title)\b/
+    // …and BARE NOUNS. Inflection was one of two ways attempt 3 failed; the
+    // other is the plain word, which is the commoner phrasing in this file:
+    // "the canon's body size … 9px", "heading font size keep to 11px",
+    // "raising the desk body size to 11px". A closed vocabulary of compound
+    // phrases matched none of them. `body`/`heading` count only when the block
+    // is talking about a SIZE or a FONT, which is what makes them a claim
+    // rather than a word.
     const ROLE = /\b(?:page title|section head|column head|table head|data cell|body text|major head)(?:er|ing)?s?\b/i
+    const BARE = /\b(?:body|headings?)\b[^.]{0,40}\b(?:size|font)\b|\b(?:size|font)\b[^.]{0,40}\b(?:body|headings?)\b/i
+    // A RATIO ATTACHED TO A ROLE READS AS THE SPEC just as strongly as a px
+    // figure does — "H1 = 1.6× body" is a ladder, stated in a different unit.
     const SIZE = /\b(\d{1,2}(?:\.\d)?)px\b/g
+    const MULT = /\b\d(?:\.\d+)?\s*(?:×|x)\s*(?:body|\.t-body)/i
 
     // Gather /* ... */ comment blocks, flattened, with their start line.
     // Flattening is the point: these hide by WRAPPING, e.g. "header font size"
@@ -458,10 +469,22 @@ describe('no size is attached to a type role outside the canon block', () => {
       // signal. The failure message below names the convention so nobody has to
       // find it here.
       if (/\bSUPERSEDED\b|\bHISTORY —/.test(b.text)) continue
-      if (!NAMES.test(b.text) && !ROLE.test(b.text)) continue
+      // A DECLARATION'S OWN COMMENT MAY STATE ITS OWN VALUE. --fs-session sits
+      // deliberately off the canon (the owner capped that one line at 10px by
+      // name), and the comment directly above it is the only place that cap is
+      // recorded. The rule this guard enforces is "one place per size", not
+      // "no sizes outside the canon block" — and for an off-canon token the one
+      // place IS its declaration. Recognised structurally, by the token being
+      // declared on the next line or two, not by a marker anyone can type.
+      const declaresOwn = lines.slice(b.endAt, b.endAt + 2)
+        .some(l => /^\s*(--fs-[\w-]+):/.test(l) && b.text.includes(l.trim().split(':')[0]))
+      if (declaresOwn) continue
+      if (!NAMES.test(b.text) && !ROLE.test(b.text) && !BARE.test(b.text)) continue
       const sizes = [...b.text.matchAll(SIZE)].map(m => Number(m[1])).filter(n => n >= 8 && n <= 16)
-      if (!sizes.length) continue
-      offenders.push(`index.css:${b.at}  sizes ${[...new Set(sizes)].join('/')}px — ${b.text.trim().slice(0, 88)}`)
+      const ratio = MULT.test(b.text)
+      if (!sizes.length && !ratio) continue
+      const what = sizes.length ? `sizes ${[...new Set(sizes)].join('/')}px` : 'a ratio of body'
+      offenders.push(`index.css:${b.at}  ${what} — ${b.text.trim().slice(0, 88)}`)
     }
 
     expect(offenders, `A size attached to a type role, outside the canon block. Sizes live in ONE place — strip the figure, or, if the block is genuinely a record of a past decision, open it with "HISTORY —" or the word SUPERSEDED in capitals (the check is case-sensitive: the shout is the marker, a passing mention is not):\n${offenders.join('\n\n')}`)

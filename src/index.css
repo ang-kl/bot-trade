@@ -120,9 +120,14 @@
      root (so the cap holds as specified) and scales with the reader's own
      preference (so the accessibility requirement holds too). Anything past
      10px is then the user's explicit choice, not the design overriding them. */
-  /* 05-08-2026: 0.5625rem = 9px at the default root — the canon's body size,
-     and still UNDER the owner's explicit "maximum 10px" cap for this line, so
-     the older instruction is honoured rather than overridden. */
+  /* --fs-session, 05-08-2026: 0.5625rem = 9px at the default root. NOT "the canon's body
+     size" — an earlier version of this comment said that and it was wrong;
+     the canon's body is larger than this on BOTH tiers (the canon block owns
+     those numbers). This line sits BELOW the canon floor deliberately, by the
+     owner's explicit cap above, which is
+     why it is its own token and not a step in the scale. It remains under that
+     "maximum 10px" instruction, so the older instruction is honoured rather
+     than overridden. */
   --fs-session:       0.5625rem;
 
   /* Dense desk type scale (M3 audit item 2, owner-approved 2026-07-31).
@@ -252,8 +257,8 @@
      white reads 6.05:1 on this deep clay. */
   --color-on-accent:    #ffffff;
   /* Owner (05-08-2026): "it has to be darker font colour during light mode".
-     At the canon's 9px body size the sub/muted greys were doing the work of a
-     14px paragraph grey and losing. Measured against the card surface the app
+     At the canon's body size the sub/muted greys were doing the work of a
+     full-size paragraph grey and losing. Measured against the card surface the app
      actually paints — rgba(255,255,255,.62) over #eef1fb ≈ rgb(249,250,253),
      not the raw page colour — so these ratios are the ones a reader sees:
        --color-text        16.56 → 18.14:1
@@ -594,12 +599,19 @@
    FLAT 16px at every breakpoint, in the accent colour, so they read as
    headers regardless of viewport. Body text is bumped ~10% to compensate
    for the loss of the old escalating scale. */
-/* Owner (2026-07-24): Word-style heading hierarchy in 0.2×-of-body steps —
-   H1 = 1.6× body, H2 = 1.4× body, H3 = 1.2× body, all in the accent colour
-   so any heading reads as a heading. .t-heading stays as an alias of .t-h1
-   for the page titles that already use it. Change body sizes and every
-   level below must move with them (values are 1.6/1.4/1.2 × .t-body,
-   rounded to whole px, at each breakpoint). */
+/* Owner (2026-07-24): Word-style heading hierarchy in proportional steps —
+   H1, H2 and H3 each a fixed multiple of body, all in the accent colour so
+   any heading reads as a heading. .t-heading stays as an alias of .t-h1 for
+   the page titles that already use it.
+
+   SUPERSEDED — the RATIOS that instruction named are gone, and so is the
+   "recompute at each breakpoint" rule with them. .t-h2 and .t-h3 both read
+   var(--fs-h) now, so the distinction between them does not exist; .t-h1
+   reads var(--fs-title), which is body+3 — a ratio of about 1.3, not the 1.6
+   this block used to state. The figures are removed rather than updated
+   because a second numeric account of the ladder is the defect, and keeping
+   two in sync only postpones it. What survives is the SHAPE and the colour;
+   the canon block owns every number. */
 /* Owner (2026-07-25): the whole app moves to the dense scale the tables
    already use — "other than the tables, the rest that display data and data
    information be 9px. heading font size keep to 11px, use 12px if major
@@ -708,7 +720,7 @@
 tbody td {
   font-size: var(--fs-body);
   /* Owner (05-08-2026): "please rescale the column to scrollable within table
-     cell or word wrap". Raising the desk body size to 11px widens every
+     cell or word wrap". Raising the desk body size widens every
      column, and the old answer — push the overflow onto a horizontal page
      scroll — stops being honest once the table is wider than the screen by
      more than a nudge.
@@ -754,7 +766,7 @@ tbody td {
 .t-ledger tbody td {
   font-size: var(--fs-body);
   /* Owner (05-08-2026): "please rescale the column to scrollable within table
-     cell or word wrap". Raising the desk body size to 11px widens every
+     cell or word wrap". Raising the desk body size widens every
      column, and the old answer — push the overflow onto a horizontal page
      scroll — stops being honest once the table is wider than the screen by
      more than a nudge.
@@ -865,9 +877,9 @@ thead th button { color: inherit; }
 [data-risk-dense] .glass-panel { padding: 10px 14px; }
 
 /* Tiny inline "explain" icon next to field labels (owner 2026-07-24:
-   "a tiny ℹ️ next to explain"). The literal ask was 20% of body size —
-   3px at a 15px body, which no screen can render legibly — so this is the
-   smallest size that still reads as an icon (9px ≈ 60% of body). Tap/click
+   "a tiny ℹ️ next to explain"). The literal ask was 20% of body size,
+   which no screen can render legibly at any body size this app uses — so the
+   icon rides --fs-body itself and is shrunk optically instead. Tap/click
    toggles the explanation inline; hover shows it as a tooltip. */
 .info-i {
   font-size: var(--fs-body);
@@ -1430,8 +1442,8 @@ textarea {
   border-top: 1px solid var(--glass-edge);
   flex-shrink: 0;
   /* Set on the SECTION, not just the line. Measured: the wrapper inherited the
-     16px body size, so any future direct child would silently render at body
-     size inside a footer that is supposed to be capped — which is the same
+     document's default text size, so any future direct child would silently
+     render uncapped inside a footer that is supposed to be capped — which is the same
      shape of mistake as the token bug this whole change started with. */
   font-size: var(--fs-session);
   line-height: var(--lh-session);
