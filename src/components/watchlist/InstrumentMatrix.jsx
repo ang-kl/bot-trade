@@ -128,7 +128,7 @@ export default function InstrumentMatrix({ symbols = [], descriptions = null, in
             return [
               <div key={`h:${r.key}`} className="px-1 py-1 font-semibold leading-tight break-words" title={`${r.label} — ${live ? 'open now' : 'closed now'}`}>
                 {r.short}
-                <span className={`block text-[7px] font-normal ${live ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'}`}>
+                <span className={`block text-[9px] font-normal ${live ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'}`}>
                   {live ? 'OPEN' : 'CLOSED'}
                 </span>
               </div>,
@@ -151,7 +151,7 @@ export default function InstrumentMatrix({ symbols = [], descriptions = null, in
                           : 'border-[var(--glass-edge)] text-[var(--color-text-sub)]'
                     }`}
                   >
-                    <span className="block truncate text-[8px]">{c.short}</span>
+                    <span className="block truncate text-[9px]">{c.short}</span>
                     <span className="block font-semibold tabular-nums">
                       [{list.length}]
                       {/* The highlight the ask names: a COLLAPSED cell still

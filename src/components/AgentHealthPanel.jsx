@@ -106,7 +106,7 @@ const TONE_COLOR = {
 export function Line({ state, children }) {
   return (
     <div className="flex items-baseline gap-1.5">
-      <span aria-hidden="true" style={{ color: TONE_COLOR[state], fontSize: 'var(--fs-d7)', lineHeight: 1 }}>●</span>
+      <span aria-hidden="true" style={{ color: TONE_COLOR[state], fontSize: 'var(--fs-d9)', lineHeight: 1 }}>●</span>
       <span>{children}</span>
     </div>
   )
@@ -171,7 +171,7 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
   if (!agentConfigured()) {
     // Nothing to compare against — show the plain tag the sidebar always had.
     return (
-      <span className="text-[11px] text-[var(--color-text-sub)]">
+      <span className="text-[9px] text-[var(--color-text-sub)]">
         v{appVersion}{compact ? '' : ` · ${buildSha}`}
       </span>
     )
@@ -194,10 +194,10 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
         aria-expanded={open}
         aria-controls={popoverId}
         onClick={() => setOpen(o => !o)}
-        className={`${compact ? 'text-[9px]' : 'text-[11px]'} text-[var(--color-text-sub)] hover:text-[var(--color-text)] cursor-pointer inline-flex items-baseline gap-1 shrink-0`}
+        className={`${compact ? 'text-[9px]' : 'text-[9px]'} text-[var(--color-text-sub)] hover:text-[var(--color-text)] cursor-pointer inline-flex items-baseline gap-1 shrink-0`}
         title="Build and agent health — tap for detail"
       >
-        <span aria-hidden="true" style={{ color: TONE_COLOR[overall], fontSize: 'var(--fs-d7)', lineHeight: 1 }}>●</span>
+        <span aria-hidden="true" style={{ color: TONE_COLOR[overall], fontSize: 'var(--fs-d9)', lineHeight: 1 }}>●</span>
         <span>v{appVersion}{compact ? '' : ` · ${buildSha}`}</span>
       </button>
 
@@ -220,7 +220,7 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
           className="glass-panel pos-fixed fixed z-50 rounded-[12px] p-3 text-[9px] w-[min(420px,calc(100vw-16px))] max-h-[70vh] overflow-y-auto"
         >
           <div className="flex items-baseline gap-2 mb-1.5">
-            <span className="font-extrabold text-[var(--color-accent)] text-[11px]">Agent Health card</span>
+            <span className="font-extrabold text-[var(--color-accent)] text-[12px]">Agent Health card</span>
             <button
               type="button"
               onClick={() => {

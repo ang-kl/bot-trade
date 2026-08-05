@@ -128,7 +128,7 @@ export default function Card({
       {kind && (
         <span title={NAV_KIND_LEGEND} style={{
           position: 'absolute', top: 8, right: slotKind,
-          zIndex: 5, fontSize: '8px', fontWeight: 600, lineHeight: 1.5,
+          zIndex: 5, fontSize: 'var(--fs-d9)', fontWeight: 600, lineHeight: 1.5,
           color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
           borderRadius: 'var(--radius-control)', padding: '0 3px', opacity: .7,
           whiteSpace: 'nowrap',
@@ -207,7 +207,7 @@ function MaxOverlay({ title, onRestore, children }) {
           <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>{title}</span>
           <button type="button" title="Restore this section to its place in the page (Esc)" aria-label="Restore this section"
             onClick={onRestore}
-            style={{ marginLeft: 'auto', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d11)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent', border: '1px solid var(--glass-edge)', borderRadius: 8, padding: '3px 7px' }}>
+            style={{ marginLeft: 'auto', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent', border: '1px solid var(--glass-edge)', borderRadius: 8, padding: '3px 7px' }}>
             ⇱
           </button>
         </div>

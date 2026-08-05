@@ -250,7 +250,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
             {busy === 'run' ? 'Assessing…' : 'Run'}
           </Button>
           <Button onClick={() => setAsk(null)} disabled={!!busy}>Cancel</Button>
-          <span className="text-[8px] text-[var(--color-text-sub)]">
+          <span className="text-[9px] text-[var(--color-text-sub)]">
             {ask.includeWatchlist
               ? 'watchlist composition included'
               : 'balance + record only, no instruments'}
@@ -381,7 +381,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
                               what. Absent until something changes it — an
                               invented stamp would be worse than none. */}
                           {ch && (
-                            <div className="text-[8px] text-[var(--color-text-sub)]"
+                            <div className="text-[9px] text-[var(--color-text-sub)]"
                                  title={`Last changed ${stamp(ch.at)} by ${ch.by || 'unknown'}: ${show(p.key, ch.from, proposable)} → ${show(p.key, ch.to, proposable)}`}>
                               last changed {stamp(ch.at)}{ch.by ? ` · ${ch.by}` : ''}
                             </div>
@@ -394,15 +394,15 @@ export default function RiskReassess({ onChanged, onApplied }) {
                               past presented under a heading that says now. */}
                           {show(p.key, live[p.key], proposable)}
                           {status === 'superseded' && (
-                            <div className="text-[8px] text-[var(--color-warning-text)]" title="This row was applied, but the setting no longer carries the proposed value">
+                            <div className="text-[9px] text-[var(--color-warning-text)]" title="This row was applied, but the setting no longer carries the proposed value">
                               changed since apply
                             </div>
                           )}
                         </td>
                         <td className="pr-2 py-0.5 font-semibold">
                           {show(p.key, p.proposed, proposable)}
-                          {status === 'holds' && <span className="ml-1 text-[8px] font-semibold uppercase text-[var(--color-accent)]">applied</span>}
-                          {status === 'superseded' && <span className="ml-1 text-[8px] font-semibold uppercase text-[var(--color-warning-text)]">superseded</span>}
+                          {status === 'holds' && <span className="ml-1 text-[9px] font-semibold uppercase text-[var(--color-accent)]">applied</span>}
+                          {status === 'superseded' && <span className="ml-1 text-[9px] font-semibold uppercase text-[var(--color-warning-text)]">superseded</span>}
                         </td>
                         <td className="py-0.5 text-[var(--color-text-sub)]">{p.reason}</td>
                       </tr>

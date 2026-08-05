@@ -68,7 +68,7 @@ export default function LlmMonitorStatus() {
         aria-expanded={open}
         title={title}
         className="flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-left
-                   text-[8px] font-semibold uppercase tracking-wide
+                   text-[9px] font-semibold uppercase tracking-wide
                    text-[var(--color-warning-text)] hover:bg-[var(--color-warning-bg)]"
       >
         <img src="/llm-monitor-failed.png" alt="LLM monitor degraded" className="h-4 w-4 shrink-0" />
@@ -92,7 +92,7 @@ export default function LlmMonitorStatus() {
             optional LLM second-opinion on open positions is missing.
           </div>
           {health.lastFailReason && (
-            <div className="mt-1 break-words font-mono text-[8px] text-[var(--color-text-sub)]">
+            <div className="mt-1 break-words font-mono text-[9px] text-[var(--color-text-sub)]">
               {String(health.lastFailReason).slice(0, 160)}
             </div>
           )}

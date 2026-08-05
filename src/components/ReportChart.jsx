@@ -178,7 +178,7 @@ export default function ReportChart({ allTrades, events, daily }) {
   return (
     <Card>
       <div className="flex flex-wrap items-baseline gap-2 mb-1">
-        <h2 className="text-[11px] font-extrabold text-[var(--color-accent)]">Equity &amp; Drawdown · Decisions per Day chart</h2>
+        <h2 className="text-[12px] font-extrabold text-[var(--color-accent)]">Equity &amp; Drawdown · Decisions per Day chart</h2>
         <span className="text-[9px] text-[var(--color-text-sub)]">
           top: where the account is against its own high-water mark · bottom: what the bot decided, and how much it refused
         </span>

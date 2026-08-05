@@ -100,7 +100,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   }
   const PctTag = ({ entry, price }) => {
     const pct = pctOf(entry, price)
-    return pct ? <span className="text-[7px] text-[var(--color-text-sub)]"> {pct}</span> : null
+    return pct ? <span className="text-[9px] text-[var(--color-text-sub)]"> {pct}</span> : null
   }
   // What the bracket is WORTH, on its own line under the price (owner
   // 2026-07-29: "[SL Loss in $] to existing Stop Loss on second line and
@@ -116,14 +116,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     const unit = est ? 'USD' : (ccy || '')
     return (
       <span
-        className={`block leading-tight text-[8px] ${n >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}
+        className={`block leading-tight text-[9px] ${n >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}
         title={est
           ? `estimated ${label} if this level is hit, at this size — price move only, excludes swap and commission`
           : `${label} if this level is hit, at this size — broker figure, includes swap and commission`}
       >
         {n >= 0 ? '+' : '−'}{Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        {unit && <span className="ml-0.5 text-[7px] text-[var(--color-text-sub)]">{unit}</span>}
-        {est && <span className="ml-0.5 text-[7px] text-[var(--color-text-sub)]">est</span>}
+        {unit && <span className="ml-0.5 text-[9px] text-[var(--color-text-sub)]">{unit}</span>}
+        {est && <span className="ml-0.5 text-[9px] text-[var(--color-text-sub)]">est</span>}
       </span>
     )
   }
@@ -371,7 +371,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                               {c.fmt(r[c.key])}
                               {c.money ? ccyTag(r.moneyCcy) : null}
                               {/* An estimate must never look like broker truth. */}
-                              {c.estKey && r[c.estKey] ? <span className="text-[7px] text-[var(--color-text-sub)]" title="estimated from notional ÷ leverage at entry — the broker stops reporting margin once a position closes"> est</span> : null}
+                              {c.estKey && r[c.estKey] ? <span className="text-[9px] text-[var(--color-text-sub)]" title="estimated from notional ÷ leverage at entry — the broker stops reporting margin once a position closes"> est</span> : null}
                             </>
                           : '—'}
                       </td>
@@ -435,8 +435,8 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                   <td colSpan={8 + (anyRef ? 1 : 0) + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1 pr-3 text-right text-[var(--color-text-sub)]">
                     Sub-total ({rows.length} rows)
                   </td>
-                  <td className="py-1 pr-3 text-right whitespace-nowrap text-[8px]">{hasSl ? sumCell(slSum) : ''}</td>
-                  <td className="py-1 pr-3 text-right whitespace-nowrap text-[8px]">{hasTp ? sumCell(tpSum) : ''}</td>
+                  <td className="py-1 pr-3 text-right whitespace-nowrap text-[9px]">{hasSl ? sumCell(slSum) : ''}</td>
+                  <td className="py-1 pr-3 text-right whitespace-nowrap text-[9px]">{hasTp ? sumCell(tpSum) : ''}</td>
                   <td className={`py-1 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                     {`${pnlSum >= 0 ? '+' : '−'}${Math.abs(pnlSum).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                   </td>

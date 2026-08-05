@@ -127,7 +127,7 @@ export default function SymbolClusters({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ flexShrink: 0, fontSize: 'var(--fs-d11)', fontWeight: 800, color: ACC }}>Same-symbol clusters</span>
+        <span style={{ flexShrink: 0, fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Same-symbol clusters</span>
         <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>
           2+ separate fills on one account &amp; symbol inside the window · distinct broker position ids, so these are real
           separate trades, not one fill recorded twice · tap a row for the legs

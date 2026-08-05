@@ -32,7 +32,7 @@ export const FIELD_W = '!w-[76px]'
 // number on the page declares what it is measured in (owner 2026-07-28: the
 // mixed decimals/percentages/dollars were unreadable without labels).
 export function Unit({ children }) {
-  return <span className="text-[8px] text-[var(--color-text-sub)] border border-[var(--glass-edge)] rounded-[1px] px-1 py-px min-w-[24px] text-center shrink-0">{children}</span>
+  return <span className="text-[9px] text-[var(--color-text-sub)] border border-[var(--glass-edge)] rounded-[1px] px-1 py-px min-w-[24px] text-center shrink-0">{children}</span>
 }
 
 // UI-4 — the "(default)" suffix was TEN characters on ~19 labels, in columns
@@ -109,7 +109,7 @@ export default function Field({
         <span className="text-[var(--color-text-sub)] min-w-0 leading-tight">
           {text}
           {applied && (
-            <span className="ml-1 text-[8px] font-semibold uppercase text-[var(--color-accent)]"
+            <span className="ml-1 text-[9px] font-semibold uppercase text-[var(--color-accent)]"
               title="This value was set by the last Re-Risk apply">applied</span>
           )}
           {isDefault && (

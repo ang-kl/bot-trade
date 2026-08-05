@@ -67,7 +67,7 @@ const VARIANTS = {
 const SIZES = {
   sm: 'p-[2px] text-[9px]',
   md: 'p-[2px] text-[9px]',
-  lg: 'p-[2px] text-[11px]',
+  lg: 'p-[2px] text-[9px]',
 }
 
 export default function Button({ children, variant = 'primary', size = 'md', loading = false, className = '', ...rest }) {

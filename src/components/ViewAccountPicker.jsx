@@ -67,7 +67,7 @@ export default function ViewAccountPicker() {
         {lensOn && (
           <span
             className="rounded-[3px] border border-[var(--color-warning-border)] bg-[var(--color-warning-bg)]
-                       px-1 text-[8px] font-bold not-italic text-[var(--color-warning-text)]"
+                       px-1 text-[9px] font-bold not-italic text-[var(--color-warning-text)]"
             title="You are looking at an account the bot is NOT trading. Reads only — nothing here changes the agent."
           >
             LENS
@@ -80,7 +80,7 @@ export default function ViewAccountPicker() {
         onChange={(e) => setViewedAccount(e.target.value === '' ? null : e.target.value)}
         title="Changes which account these pages SHOW. It does not change which account the bot trades — that switch lives on Accounts."
         className="w-full cursor-pointer rounded-[6px] border border-[var(--color-border)]
-                   bg-transparent px-1.5 py-1 text-[10px] font-semibold tabular-nums
+                   bg-transparent px-1.5 py-1 text-[9px] font-semibold tabular-nums
                    text-[var(--color-text)]"
       >
         {roster.map(a => (

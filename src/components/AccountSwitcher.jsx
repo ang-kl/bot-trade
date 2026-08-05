@@ -27,7 +27,7 @@ function MiniSwitch({ label, initial, on, disabled, busy, title, onClick, ov = n
       aria-label={label} title={title}
       onClick={onClick}
       className={`inline-flex items-center justify-center rounded-[3px] border leading-none
-                  min-w-[18px] px-[3px] py-[2px] text-[8px] font-bold transition-colors
+                  min-w-[18px] px-[3px] py-[2px] text-[9px] font-bold transition-colors
                   ${disabled || busy ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer'} ${
         on
           ? 'border-[var(--color-state-on-border)] text-[var(--color-state-on-text)] bg-[var(--color-state-on-bg)]'
@@ -35,7 +35,7 @@ function MiniSwitch({ label, initial, on, disabled, busy, title, onClick, ov = n
       }`}
     >
       {initial}
-      {ov !== null && ov !== undefined && <span aria-hidden="true" className="ml-[1px] text-[6px] leading-none">•</span>}
+      {ov !== null && ov !== undefined && <span aria-hidden="true" className="ml-[1px] text-[9px] leading-none">•</span>}
     </button>
   )
 }
@@ -196,7 +196,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
                     though every switch may be ON. */}
                 {ph?.ratchet && (
                   <span
-                    className="text-[8px] font-bold text-[var(--color-warning-text)]"
+                    className="text-[9px] font-bold text-[var(--color-warning-text)]"
                     title={ph.ratchet === 'halt'
                       ? 'Profit ratchet HALT — the protected floor was hit; entries stopped on this account. Re-arm from the Telegram alert button, or it re-arms itself on sustained recovery.'
                       : 'Profit ratchet warning — equity is just above the protected floor; new entries paused until it recovers.'}
@@ -232,7 +232,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
                     title={disabled
                       ? 'Disconnected — the bot ignores this account entirely. Tap to reconnect: re-enables it in the registry and re-establishes its sidecar credentials.'
                       : 'Disconnect this account from ALL bot activity (scan, analyse, autotrade AND management) and drop its sidecar credentials. The S/A/T switches are the finer control; this is the full unplug.'}
-                    className={`ml-1 inline-flex items-center rounded-[var(--radius-control)] border leading-none px-[4px] py-[2px] text-[8px] font-bold cursor-pointer transition-colors disabled:opacity-45 ${
+                    className={`ml-1 inline-flex items-center rounded-[var(--radius-control)] border leading-none px-[4px] py-[2px] text-[9px] font-bold cursor-pointer transition-colors disabled:opacity-45 ${
                       disabled
                         ? 'border-[var(--color-state-off-border)] text-[var(--color-state-off-text)] bg-[var(--color-state-off-bg)]'
                         : 'border-[var(--color-down)] text-[var(--color-down)] bg-transparent hover:bg-[color-mix(in_srgb,var(--color-down)_12%,transparent)]'
@@ -243,7 +243,7 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
               {/* Under-the-bonnet line (owner 2026-08-01): W/L, positions +
                   floating, equity/margin, watchlist + mode, connectivity. */}
               {st && (
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[8px] text-[var(--color-text-sub)] tabular-nums pt-0.5">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px] text-[var(--color-text-sub)] tabular-nums pt-0.5">
                   <span title="Wins / losses over the past 24 hours">24h {wl(st.wl24h)}</span>
                   <span title={`Wins / losses since connected${st.connectedAt ? ` (${st.connectedAt.slice(0, 10)})` : ''} · net $${st.wlAll?.net ?? '—'}`}>all {wl(st.wlAll)}</span>
                   <span title="Open positions this account is carrying (bot ledger)">

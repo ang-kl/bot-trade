@@ -91,7 +91,7 @@ export default function CopyPopup({ title, text, json = null, html = null, onClo
       <div ref={panelRef} tabIndex={-1} className="glass-panel"
         style={{ width: 'min(90vw, 760px)', height: 'min(72vh, 640px)', borderRadius: 16, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8, outline: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800 }}>⧉ {title}</span>
+          <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>⧉ {title}</span>
           <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
             {tabBtn('text', 'Text')}
             {json != null && tabBtn('json', 'JSON')}

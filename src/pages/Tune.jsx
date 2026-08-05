@@ -392,7 +392,7 @@ function MxTallies({ tallies, columns, acct, onAcct }) {
                   </button>
                   {/* The mode belongs beside the count: an account can have
                       every cell armed and still enter nothing. */}
-                  <span className="ml-1 text-[8px] text-[var(--color-text-sub)]">
+                  <span className="ml-1 text-[9px] text-[var(--color-text-sub)]">
                     · {t.enabled ? (t.mode || '') : 'disabled'}
                   </span>
                 </td>
@@ -2640,7 +2640,7 @@ export default function Tune() {
                           closed a trade here — an empty stamp says that more
                           honestly than a dash pretending to be a date. */}
                       {lastTraded && (
-                        <span className="ml-1 text-[8px] text-[var(--color-text-sub)]"
+                        <span className="ml-1 text-[9px] text-[var(--color-text-sub)]"
                           title={`Last closed trade on this account: ${wlStats?.by?.[stUp]?.lastAt}`}>
                           {lastTraded}
                         </span>
@@ -2683,7 +2683,7 @@ export default function Tune() {
                           indicate at the start of the field." The marker says
                           `lot` because that is what the field holds — see
                           capMarker() for why a $ here would be a lie. */}
-                      <span className="text-[7px] text-[var(--color-text-sub)] align-middle mr-0.5" title={cap.title}>{cap.mark}</span>
+                      <span className="text-[9px] text-[var(--color-text-sub)] align-middle mr-0.5" title={cap.title}>{cap.mark}</span>
                       <Input
                         type="number" step="0.01" min="0.01" className="w-[4ch] !px-1 !py-0.5 !min-h-0 text-[9px]" value={s.maxVolume ?? ''}
                         placeholder="auto" title={cap.title} aria-label={`Max lots cap for ${s.symbol}`}
@@ -3538,7 +3538,7 @@ export default function Tune() {
                       aria-expanded={open}
                       className="w-full flex flex-wrap items-center gap-2 text-left mb-1 cursor-pointer min-h-[28px]"
                     >
-                      <span className="text-[11px] font-bold">{open ? '\u25be' : '\u25b8'} {sym}</span>
+                      <span className="text-[9px] font-bold">{open ? '\u25be' : '\u25b8'} {sym}</span>
                       <span className="text-[9px] text-[var(--color-text-sub)]">
                         {sr.error
                           ? 'run failed'

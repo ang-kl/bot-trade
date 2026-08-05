@@ -113,7 +113,7 @@ export default function ActiveAccountHeader() {
           <span className="text-[9px] uppercase tracking-wide text-[var(--color-text-sub)]">Account</span>
           {summary && (
             <span
-              className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-state-off-text)]"
+              className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-state-off-text)]"
               title="Scan finds candidates, Analyze judges them, Autotrade sends the order. Anything off stops the pipeline at that point."
             >
               {summary}
@@ -121,7 +121,7 @@ export default function ActiveAccountHeader() {
           )}
         </div>
         <div
-          className={`text-[11px] font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
+          className={`text-[9px] font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
           title={armed == null
             ? 'checking whether autotrade is armed…'
             : trading ? 'autotrade is ARMED — the bot is trading this account' : 'autotrade is OFF — the bot is not opening new trades on this account'}
@@ -166,7 +166,7 @@ export default function ActiveAccountHeader() {
           // smaller, which is what the instruction was for.
           <span
             className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 bg-[var(--color-bg)] px-1
-                       text-[8px] font-semibold uppercase tracking-wide leading-none text-[var(--color-down)]"
+                       text-[9px] font-semibold uppercase tracking-wide leading-none text-[var(--color-down)]"
           >
             pause
           </span>

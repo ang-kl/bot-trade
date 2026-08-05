@@ -157,7 +157,7 @@ export default function DecisionFeed({ variant = 'full' }) {
     return (
       <div id="sec-decisions-mobile" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 'var(--fs-d10)', fontWeight: 800, color: ACC }}>Why it did or did not trade</span>
+          <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Why it did or did not trade</span>
           <Segmented label="Decision window" value={String(hours)}
             options={WINDOWS.map(h => ({ value: String(h), label: `${h}h` }))}
             onChange={v => setHours(Number(v))} />
@@ -208,7 +208,7 @@ export default function DecisionFeed({ variant = 'full' }) {
   return (
     <div id="sec-decisions" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: ACC }}>Decision Feed card</span>
+        <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Decision Feed card</span>
         <Segmented label="Decision window" value={String(hours)}
           options={WINDOWS.map(h => ({ value: String(h), label: `${h}h` }))}
           onChange={v => setHours(Number(v))} />

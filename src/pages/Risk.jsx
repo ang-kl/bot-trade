@@ -120,7 +120,7 @@ function Pill({ on, label, offLabel = null, onClick, commit = 'save', radio = fa
 }
 
 // Save buttons: "Overall save button can be 1 point increase font size."
-const SAVE_BTN = '!text-[10px]'
+const SAVE_BTN = '!text-[9px]'
 
 // Every independently-saved form on this page, and the three that make up the
 // Position Protection card. Module scope so load() can name them without
@@ -993,7 +993,7 @@ export default function Risk() {
                 and each number carries its unit chip). */}
             <div className="space-y-3">
               <div>
-                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Entry sizing</div>
+                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Entry sizing</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} anchor="perTradeRiskPct" applied={appliedKeys.has('perTradeRiskPct')} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
                     hint="% of balance one trade may lose at its SL." recommend="5% (aggressive default, sized against the proven combos)." />
@@ -1023,7 +1023,7 @@ export default function Risk() {
                 </Advanced>
               </div>
               <div>
-                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop Loss &amp; Take Profit</div>
+                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop Loss &amp; Take Profit</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Min SL distance${mark('minSLDistancePct')}`} anchor="minSLDistancePct" applied={appliedKeys.has('minSLDistancePct')} unit="% px" value={risk.minSLDistancePct} onChange={v => setRisk(r => ({ ...r, minSLDistancePct: v }))}
                     hint="% of price — stops tighter than this get swept by noise. (Entered as a plain percent: 0.15 = 0.15% of price.)" recommend="0.15% of price." />
@@ -1032,12 +1032,12 @@ export default function Risk() {
                   <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} anchor="maxSpreadFracOfSL" pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
                     hint="Veto when the live spread exceeds this fraction of the SL distance." recommend="25% of the SL distance." />
                 </div>
-                <div className="text-[8px] text-[var(--color-text-sub)] mt-1">
+                <div className="text-[9px] text-[var(--color-text-sub)] mt-1">
                   Dollar loss floors per position (the GOOGL case) live in <a href="#sec-protection" className="underline">Position protection</a> above — this group only shapes where SL/TP are PLACED at entry.
                 </div>
               </div>
               <div>
-                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Exposure limits</div>
+                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Exposure limits</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Max open positions${mark('maxOpenPositions')}`} anchor="maxOpenPositions" applied={appliedKeys.has('maxOpenPositions')} unit="pos" value={risk.maxOpenPositions} onChange={v => setRisk(r => ({ ...r, maxOpenPositions: v }))}
                     recommend="5 concurrent positions." />
@@ -1054,7 +1054,7 @@ export default function Risk() {
                 changed={['symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes'].filter(k => overridden.has(k)).length}
                 dirty={!!dirty['risk']}>
               <div>
-                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Cooldowns &amp; streaks</div>
+                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Cooldowns &amp; streaks</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Symbol cooldown${mark('symbolCooldownMinutes')}`} anchor="symbolCooldownMinutes" applied={appliedKeys.has('symbolCooldownMinutes')} unit="min" duration value={risk.symbolCooldownMinutes} onChange={v => setRisk(r => ({ ...r, symbolCooldownMinutes: v }))}
                     hint="Lock a symbol after any closed trade on it." recommend="240 minutes (4h) after any closed trade on that symbol." />
@@ -1065,7 +1065,7 @@ export default function Risk() {
                 </div>
               </div>
               <div>
-                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Monitoring &amp; weekends</div>
+                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Monitoring &amp; weekends</div>
                 <GlobalScopeNote className="mb-1.5" what="The guardian move %, weekend profit bank and weekend loss flag" />
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label="Guardian move" pct value={guardianPct} onChange={v => setGuardianPct(v ?? 0)}

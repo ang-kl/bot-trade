@@ -203,25 +203,25 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 8 }}>
         <div style={{ ...glass, padding: '8px 11px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: ACC }}>Phase 1 · The Lab</span>
+            <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Phase 1 · The Lab</span>
             <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>research / backtest → strategy</span>
-            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d11)', fontWeight: 800, color: UP }}>{trades.length ? `${nLab}/${trades.length} ✓` : '—'}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, color: UP }}>{trades.length ? `${nLab}/${trades.length} ✓` : '—'}</span>
           </div>
           <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — historical price action, order blocks, volume profiles mined for a statistical edge; rules frozen into code. <b style={{ color: TX }}>I</b> — backtest proves the past only: it assumes perfect liquidity, zero latency, zero slippage. <b style={{ color: TX }}>A</b> — final parameters: quadrant criteria, entry triggers, risk sizing.</span>
         </div>
         <div style={{ ...glass, padding: '8px 11px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: WRN }}>Phase 2 · The Bridge</span>
+            <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: WRN }}>Phase 2 · The Bridge</span>
             <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>forward test — the missing step</span>
-            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d11)', fontWeight: 800, color: UP }}>{trades.length ? `${nBridge}/${trades.length} ✓` : '—'}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, color: UP }}>{trades.length ? `${nBridge}/${trades.length} ✓` : '—'}</span>
           </div>
           <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — history can't simulate news-event spread widening or broker delays. <b style={{ color: TX }}>I</b> — a bot overfitted to the past fails live. <b style={{ color: TX }}>A</b> — demo / micro-lot deployment must reproduce backtest behavior on live feeds before real size.</span>
         </div>
         <div style={{ ...glass, padding: '8px 11px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: VIO }}>Phase 3 · The Market</span>
+            <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: VIO }}>Phase 3 · The Market</span>
             <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>pending → live → manage → close</span>
-            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d11)', fontWeight: 800, color: UP }}>{trades.length ? `${trades.length - nEbad}/${trades.length} ✓` : '—'}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, color: UP }}>{trades.length ? `${trades.length - nEbad}/${trades.length} ✓` : '—'}</span>
           </div>
           <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — limit/stop orders convert to live positions; risk managed until SL/TP or manual close. <b style={{ color: TX }}>I</b> — automation removes emotion; trailing stops &amp; partial scale-outs run as coded. <b style={{ color: TX }}>A</b> — manual closure is an emergency circuit breaker only, never routine.</span>
         </div>
@@ -249,15 +249,15 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
           <div key={t.id} style={{ display: 'grid', gridTemplateColumns: GRID_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${EDG}`, padding: '4px 0', fontVariantNumeric: 'tabular-nums', background: t.rowBg }}>
             <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.35, color: SB }}>{t.when}</span>
             <span style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800 }}>{t.sym}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800 }}>{t.sym}</span>
               <span style={{ fontSize: 'var(--fs-d9)', color: t.sideCol }}>{t.sd}</span>
             </span>
             {/* Same acronym fix. '\u2014' (no strategy recorded) passes through
                 strategyLabel unchanged, so an unattributed trade still reads as a
                 dash rather than being dressed up as a strategy name. */}
             <span style={{ fontSize: 'var(--fs-d9)', color: SB }} title={t.strat}>{strategyLabel(t.strat)}</span>
-            <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: t.labCol }}>{t.lab}</span>
-            <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: t.brCol }}>{t.br}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: t.labCol }}>{t.lab}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: t.brCol }}>{t.br}</span>
             {/* Stepper padding tightened 12/10 → 9/9 (PDF review: "plentiful
                 blank spaces") — the time labels above and stage labels below
                 still clear their rows at 9px type. */}
@@ -275,7 +275,7 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
             </span>
             <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 700, color: t.closeCol }}>{t.close}</span>
             <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.4, color: t.noteCol }}>{t.note}</span>
-            <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, textAlign: 'right', color: t.col }}>{t.pnl}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, textAlign: 'right', color: t.col }}>{t.pnl}</span>
           </div>
         ))}
         {rows.length > PAGE_SIZE && (
@@ -296,8 +296,8 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
         {verdicts.map(v => (
           <div key={v.title} style={{ flex: 1, minWidth: 280, background: GL, border: `1px solid ${v.bd}`, borderRadius: 12, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: v.tcol }}>{v.title}</span>
-              <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d11)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: v.ncol }}>{v.stat}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: v.tcol }}>{v.title}</span>
+              <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: v.ncol }}>{v.stat}</span>
             </div>
             <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.4, color: SB }}>{v.txt}</span>
           </div>

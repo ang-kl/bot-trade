@@ -33,7 +33,7 @@ export default function PhaseDots({ phases, className = '', letters = true, who 
             key={p.key}
             aria-label={`${p.label} ${on ? 'on' : 'off'}${suffix}`}
             title={`${p.label} is ${on ? 'ON' : 'OFF'}${suffix}`}
-            className="inline-flex items-center gap-[1px] text-[8px] font-bold leading-none"
+            className="inline-flex items-center gap-[1px] text-[9px] font-bold leading-none"
             style={{ color: colour }}
           >
             <span
