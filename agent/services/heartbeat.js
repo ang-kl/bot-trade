@@ -487,3 +487,204 @@ export async function probeCppExec(db, deps = {}) {
   } catch { /* status reporting must never break the probe */ }
   return { ...r, ok, ...(error ? { error } : {}) }
 }
+
+// ---------------------------------------------------------------------------
+// ACCOUNT AUTHORISATION WATCH (05-08-2026)
+//
+// THE INCIDENT THIS EXISTS FOR. All four demo accounts sat `enabled = 1` in the
+// registry while absent from the sidecar's authorised roster. Every dispatch for
+// them was short-circuited at loop.js's connectivity gate with an `account_probe`
+// skip — 965 of them in 24h — and ZERO trades opened in twelve hours against 87
+// the day before. Nothing said a word. It surfaced only because the owner asked
+// why entries had stopped.
+//
+// Why the existing checks could not catch it, and why this is a SEPARATE check:
+//
+//   · `cpp_exec` answers "is the sidecar alive". It was alive and connected —
+//     just holding one side's accounts. A green heartbeat was the truth and was
+//     still useless.
+//   · `rosterDrift` (below, :373) answers "does the roster match what we asked
+//     for", and it compares against a creds roster already filtered to ONE side
+//     by the global ctrader_is_live flag. The missing accounts were never in the
+//     comparison set, so drift was structurally undetectable.
+//
+// This check asks the only question that matters to the operator: IS EVERY
+// ENABLED ACCOUNT ACTUALLY REACHABLE RIGHT NOW? It compares the registry against
+// the roster with no side filter at all, which is precisely the thing neither
+// check above does.
+//
+// It reads the roster the probe already persisted rather than making its own
+// HTTP call — this runs on the 60s band, the probe on 120s, and a second hop
+// inside a watchdog is how a watchdog becomes the outage.
+// ---------------------------------------------------------------------------
+
+/** How long an account must be continuously unreachable before it alerts. */
+export const AUTH_ALERT_AFTER_MS = 5 * 60_000
+/** Beyond this, the persisted health snapshot is too old to judge anything by. */
+const HEALTH_STALE_MS = 5 * 60_000
+const AUTH_WATCH_KEY = 'account_auth_watch_json'
+
+/**
+ * Alert when an enabled account is not authorised on the exec sidecar.
+ *
+ * Alerts ONCE per outage and once on recovery — never per tick. The 32,115
+ * identical `unknown_daily_pnl` vetoes in one week are why de-duplication is a
+ * requirement here and not a nicety: an alert that repeats is an alert that gets
+ * muted, and a muted alert is the same as the silence this replaces.
+ *
+ * `unknown` NEVER alerts. A health blip, a js-mode deployment, or a sidecar that
+ * did not report its roster are all "we cannot tell", and telling the owner an
+ * account is down because we could not reach the thing that would know is how a
+ * monitor teaches people to ignore it. Same fail-open rule sidecarRoster already
+ * applies (exec-engine.js:230-236). The `cpp_exec` heartbeat covers the case
+ * where the probe itself is the thing that is broken.
+ *
+ * @returns {{events: Array, roster: string[]|null, fresh: boolean}}
+ */
+export function checkAccountAuthorization(db, {
+  now = new Date(), notify = null, afterMs = AUTH_ALERT_AFTER_MS,
+} = {}) {
+  const say = (text) => { try { notify?.(text) } catch { /* alerting must never throw */ } }
+  const events = []
+  const nowMs = now.getTime()
+
+  let health = null
+  try { health = JSON.parse(getState(db, 'cpp_exec_health_json') || 'null') } catch { health = null }
+  const roster = Array.isArray(health?.accounts) ? health.accounts.map(String) : null
+  const healthAtMs = health?.at ? Date.parse(health.at) : NaN
+  // A snapshot older than the probe's own stall threshold tells us nothing about
+  // NOW. Treat it as unknown rather than as evidence.
+  const fresh = Number.isFinite(healthAtMs) && (nowMs - healthAtMs) < HEALTH_STALE_MS
+  // REPRODUCE THE GATE'S CONDITION, WHICH IS NOT THE SAME AS THE PERSISTED `ok`.
+  //
+  // This alert describes the connectivity gate's behaviour, so it must agree
+  // with the value that gate reads — sidecarRoster (exec-engine.js:244), whose
+  // test is `h.ok && h.connected === true && Array.isArray(h.accounts)` where
+  // `h.ok` is HTTP-level only (`res.ok && body?.ok === true`, :197).
+  //
+  // `health.ok` in the snapshot is NOT that value. probeCppExec overwrites it
+  // with its own verdict before persisting, and two of those overwrites fire
+  // while connected === true (:463 no reconcile yet, :466 reconcile stale). So
+  // gating on the persisted `ok` is strictly NARROWER than the gate, and the
+  // error mode is silence: sidecar up, session connected, roster holding only
+  // the live account, engine loop stalled → sidecarRoster returns the roster and
+  // loop.js:1173 skips all four demo accounts, while this check would say
+  // "unknown" and never alert. That is the 05-08 outage plus a stalled loop —
+  // and cpp_exec, which does go red, reports "last reconcile 10m ago": it names
+  // the loop, not the four unreachable accounts. Exactly the gap this check
+  // exists to close.
+  //
+  // `roster != null` stands in for the array test: probeCppExec persists
+  // `accounts` non-null only when the ping returned an array, which already
+  // implies a parsed /health body. `connected` is persisted raw.
+  //
+  // The 02-08 case is still covered — GET /health sets ok:true unconditionally
+  // (main.cpp:272) and fills `accounts` from engine.accountIds(), empty after a
+  // restart and stale after a WS drop, but `connected` is false there and
+  // sidecarRoster returns null too, so both stay silent together.
+  const sessionUp = health?.connected === true && roster != null
+
+  // A FAILED READ IS NOT "NO ACCOUNTS ARE ENABLED", and conflating them wipes
+  // every dwell timer and every `alerted` flag. `next` is built from this list,
+  // so an empty list persists `{}` over the watch state: an account already
+  // alerted and still down would restart its dwell, alert a SECOND time for one
+  // continuous outage, and lose the flag that gates the recovery message.
+  // That is the exact repeat-alert shape the docstring calls a requirement,
+  // reintroduced by an unrelated SQLITE_BUSY. The `unknown` branch already
+  // treats "cannot tell" as "carry the state"; this is the same epistemic
+  // position, and only a flag can tell it apart from a legitimately empty
+  // registry (which SHOULD clear).
+  let accounts = []
+  let registryRead = true
+  try {
+    accounts = db.prepare(
+      'SELECT account_id, trader_login, is_live FROM accounts WHERE enabled = 1'
+    ).all()
+  } catch { accounts = []; registryRead = false }
+
+  let watch = {}
+  try { watch = JSON.parse(getState(db, AUTH_WATCH_KEY) || '{}') } catch { watch = {} }
+  const next = {}
+
+  for (const a of accounts) {
+    const id = String(a.account_id)
+    const prev = watch[id] || null
+    const status = (roster == null || !fresh || !sessionUp)
+      ? 'unknown'
+      : roster.includes(id) ? 'active' : 'disconnected'
+
+    // Carry the timer across an unknown window rather than restarting it: an
+    // outage interrupted by a health blip is still one continuous outage, and
+    // restarting the dwell on every blip is how a real stall never reaches the
+    // threshold.
+    if (status === 'unknown') {
+      if (prev) next[id] = { ...prev, unknownSince: prev.unknownSince ?? nowMs }
+      continue
+    }
+
+    if (status === 'disconnected') {
+      let since = prev?.since ?? nowMs
+      const alerted = prev?.alerted === true
+      // A LONG BLIND WINDOW RE-ARMS THE DWELL. Carrying `since` is right for a
+      // brief blip — the outage really was continuous. It is wrong when we
+      // stopped looking for hours: flip EXEC_ENGINE to js overnight (no roster,
+      // no gate, trading fine) and the first cpp probe next morning would fire
+      // instantly, reporting "absent for 720m", with none of the five-minute
+      // grace that exists so a restarting sidecar can re-authorise before
+      // anyone is paged. The noisiest moment — a deploy or a mode flip — is
+      // exactly where the dwell would already be spent.
+      //
+      // A blind window shorter than the dwell is still one outage and carries.
+      // One longer than it starts the clock again, which also makes the minutes
+      // in the message an observed span rather than mostly-unseen wall clock.
+      // `alerted` is deliberately NOT reset: someone already told is not told
+      // twice.
+      if (prev?.unknownSince != null && (nowMs - prev.unknownSince) >= afterMs) {
+        since = nowMs
+      }
+      const downMs = nowMs - since
+      if (!alerted && downMs >= afterMs) {
+        const side = a.is_live === 1 ? 'LIVE' : 'Demo'
+        const label = a.trader_login ? `${side} ${a.trader_login} · ${id}` : `${side} ${id}`
+        // DELIBERATELY STOPS AT "no order can be built". The query is
+        // `enabled = 1` — wider than the entry roster, which getAutopilotAccounts
+        // further filters to the `enter` capability (loop.js:224-249). The wide
+        // query is right: a `manage_only` account off the roster cannot receive
+        // closes or amends either, which is worth knowing. But saying "entries
+        // are skipped" would be false for exactly those accounts, and a sentence
+        // that is wrong for some of its subjects is how an alert loses its
+        // reader.
+        say(
+          `🔌 ACCOUNT NOT AUTHORISED: ${label} has been enabled but absent from the exec sidecar's roster for ${Math.round(downMs / 60_000)}m. ` +
+          'No order can be built for it until it reconnects.'
+        )
+        events.push({ accountId: id, event: 'unauthorized', downSec: Math.round(downMs / 1000) })
+        auditControllerEvent(db, {
+          controller: 'account_auth',
+          event: 'unauthorized',
+          detail: `${label} absent from the sidecar roster for ${Math.round(downMs / 60_000)}m`,
+        })
+        next[id] = { since, alerted: true }
+      } else {
+        next[id] = { since, alerted }
+      }
+      continue
+    }
+
+    // active — announce recovery only to someone who heard the alarm.
+    if (prev?.alerted) {
+      const side = a.is_live === 1 ? 'LIVE' : 'Demo'
+      const label = a.trader_login ? `${side} ${a.trader_login} · ${id}` : `${side} ${id}`
+      say(`🔗 ACCOUNT REAUTHORISED: ${label} is back on the exec sidecar's roster and can receive orders again.`)
+      events.push({ accountId: id, event: 'reauthorized' })
+      auditControllerEvent(db, { controller: 'account_auth', event: 'reauthorized', detail: label })
+    }
+  }
+
+  // Only persist what we actually observed. See the registryRead note above:
+  // writing `{}` after a failed read is how a transient becomes a duplicate page.
+  if (registryRead) {
+    try { setState(db, AUTH_WATCH_KEY, JSON.stringify(next)) } catch { /* watch state is best-effort */ }
+  }
+  return { events, roster, fresh }
+}
