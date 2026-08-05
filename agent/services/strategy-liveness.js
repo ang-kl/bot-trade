@@ -25,7 +25,8 @@
 // and performance breaker. This answers the prior question those cannot: is it
 // even in the game.
 
-import { enabledStrategies, STRATEGY_REGISTRY } from './strategies.js'
+import { STRATEGY_REGISTRY } from './strategies.js'
+import { armedTradeKeys } from './stage-matrix.js'
 import { getState } from '../db.js'
 
 /** Rolling window, in days, used when the caller does not specify one. */
@@ -111,7 +112,17 @@ export function strategyLiveness(db, opts = {}) {
   const acctScope = acct ? 'AND (account_id = ? OR account_id IS NULL)' : ''
   const acctParams = acct ? [acct] : []
 
-  const armedKeys = new Set(enabledStrategies(db, getState).map(s => s.key))
+  // ARMED IS PER ACCOUNT, and this used to read the global key.
+  //
+  // Owner, 05-08-2026, on an iPhone screenshot of this card: "keeps disarmed
+  // and i cannot see which account is disarmed". Both halves had one cause.
+  // The trade column that actually gates order placement is per-account
+  // (stage-matrix's acct:<id>:enabled_strategies_json overlay), and both demo
+  // accounts had fib_confluence TRADE-armed at the time. This badge was
+  // reading the GLOBAL list, so it reported "Not armed" about a scope the card
+  // never showed — and there was no account to name because the number was not
+  // about an account.
+  const armedKeys = armedTradeKeys(db, getState, acct)
 
   const scans = countBy(db, `
     SELECT strategy, COUNT(*) AS n, MAX(scanned_at) AS last_at
@@ -203,8 +214,13 @@ export function strategyLiveness(db, opts = {}) {
     // Named per stage so a reader can never mistake a global number for a
     // scoped one.
     scope: acct
-      ? { signals: 'all accounts (scans are market observations)', decisions: acct, opened: acct, closed: acct }
-      : { signals: 'all accounts', decisions: 'all accounts', opened: 'all accounts', closed: 'all accounts' },
+      ? { signals: 'all accounts (scans are market observations)', decisions: acct, opened: acct, closed: acct, armed: acct }
+      : { signals: 'all accounts', decisions: 'all accounts', opened: 'all accounts', closed: 'all accounts', armed: 'global default' },
+    // Whose arming the ARMED/OFF badge is reporting. Without this the card can
+    // show "Not armed" and leave the reader with no way to know what it is
+    // "not armed" ON — which is exactly the question the owner asked from a
+    // phone, where the account switcher is not on screen beside the badge.
+    armedScope: acct ?? 'global default',
     totalScans,
     verdictable,
     strategies,

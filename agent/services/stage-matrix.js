@@ -123,7 +123,18 @@ export function stageOverlayKeys(db, getState, accountId) {
 }
 
 /** The trade-armed strategy keys FOR ONE ACCOUNT (its own list, or global). */
-function armedTradeKeys(db, getState, accountId) {
+/**
+ * Which strategies are TRADE-armed for this account: its own overlay when it
+ * has one, the global list otherwise.
+ *
+ * Exported 05-08-2026 because strategy-liveness.js was calling the GLOBAL
+ * `enabledStrategies` to decide its ARMED/OFF badge while the card itself was
+ * account-scoped. An owner who armed a strategy per account saw the card go on
+ * saying "Not armed", with no account named — because the badge was not about
+ * an account at all. This is the function that answers the question the badge
+ * was asking.
+ */
+export function armedTradeKeys(db, getState, accountId) {
   if (accountId != null) {
     const own = readJson(db, getState, acctEnabledKey(accountId))
     if (Array.isArray(own)) return new Set(own.filter(k => STRATEGY_KEYS.includes(k)))
