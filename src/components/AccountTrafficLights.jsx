@@ -36,7 +36,7 @@ export function LightDot({ name, light }) {
   const state = light?.state || 'unknown'
   return (
     <span
-      className="inline-flex items-center gap-0.5 text-[8px]"
+      className="inline-flex items-center gap-0.5 text-[9px]"
       title={`${LIGHT_LABEL[name] || name}: ${state} — ${light?.reason || 'no reading'}`}
     >
       <span aria-hidden="true" style={{ color: COLOR[state], lineHeight: 1 }}>

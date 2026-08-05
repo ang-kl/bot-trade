@@ -49,20 +49,44 @@ reason written next to it in a comment.
 
 ## 2 · Type scale
 
-**The scale is 12 / 11 / 10 / 9** (owner, 2026-07-25): major headings 12,
-headings 11, table heads 10, and everything that displays data or data
-information 9 — the Timeframe ledger's cells are the one 9.5 exception.
-Font is self-hosted **Inter** only (`public/fonts/`), never a stack fallback.
+**The scale is 13 / 12 / 10 / 9** (owner, 05-08-2026 — the *type canon*).
+Stated by screenshot, not by number: body is "the picture text `7d`, `30d`",
+which is `Segmented md` → **9px**; the header is "`Strategy Liveness table`
+but increase by 1pt", which is `.t-h3` at 11px → **12px**. Page titles follow
+the section headings up to 13px so a page still outranks the sections inside
+it. Table heads keep their own 10px (owner, 2026-07-25) — a head is not body.
+
+The 2026-07-25 scale this replaces was 12 / 11 / 10 / 9 with a 9.5px ledger
+exception; the ledger exception is gone. Enforced by
+`src/lib/type-canon.test.js`, which fails on any new size and lists the
+deliberate glyph exceptions.
 
 | Role | Size | Weight |
 |---|---|---|
-| Major heading (page title, modal/print title, `.t-h1`/`.t-heading`) | `12px` | `800` |
-| Section title (card heading, `.t-h3`) | `11px` | `700–800`, accent |
+| Major heading (page title, modal/print title, `.t-h1`/`.t-heading`) | `13px` | `800` |
+| Section title (card heading, `.t-h2`/`.t-h3`, `--fs-d12`) | `12px` | `700–800`, accent |
 | Column header cell (`thead th` / `.t-gridhead`) | **`10px`**, proper case, one line | `600` (`W_HEAD`) |
-| Row identifier / first-column head | `10px` | `500` (`W_ROWLABEL`) |
-| Every data cell (`tbody td`, app-wide) | `9px` (`9.5px` Timeframe ledger via `.t-ledger`) | `400` (`W_CELL`) |
-| All other data / info text (captions, meta, pills, footnotes) | `9px` | `400` |
+| Row identifier / first-column head | `9px` | `500` (`W_ROWLABEL`) |
+| Every data cell (`tbody td`, app-wide, ledger included) | `9px` | `400` (`W_CELL`) |
+| All other data / info text (captions, meta, pills, footnotes, controls) | `9px` (`--fs-d9`) | `400` |
 | Headline figure per card | `9px` | `800` — emphasis by weight + colour, not size |
+
+**The only things that are not on the canon** are glyphs — the mobile tab-bar
+icons, the `☰` table-of-contents FAB, the `+` order FAB, the `×` close marks
+and the `bot-trade` wordmark — plus the full-width phone BUY/SELL and CLOSE
+buttons in Order/Position Manager, where the tap target is the point. Form
+fields are governed by their own older rule (`min(calc(1em + 1px), 10px)`,
+owner 2026-07-28), which still wins over any class.
+
+### Text colour
+
+Owner, 05-08-2026: "darker font colour during light mode and light-brighter in
+dark mode." Contrast is measured against the surface the app actually paints —
+the glass card, `rgba(255,255,255,.62)` over `--color-bg`, not `--color-bg`
+itself — and every text token clears **4.5:1** in all three themes. Two of them
+did not before: `--color-muted-light` sat at 2.83:1 (light) and 2.50:1 (dark),
+i.e. effectively invisible at 9px. `src/lib/type-canon.test.js` recomputes the
+ratios from `index.css` on every run.
 
 ### The bold rule
 
@@ -77,9 +101,15 @@ never from weight.
 ### Headings
 
 A heading is distinguished by weight, colour (`P_ACC`/accent for section
-titles) and position — scale moves only one step (11px heading, 12px major).
-`.t-h3` is `11px / 700` with no responsive bumps; the old escalating
+titles) and position — scale moves only one step (12px heading, 13px major).
+`.t-h3` is `12px / 700` with no responsive bumps; the old escalating
 responsive heading scale is gone on purpose.
+
+The Performance and Workflow-audit pages build several section titles as
+`<span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>` rather than as
+`.t-h3` elements. Those spans are headings and carry the heading size; a
+`--fs-d12` on anything that is not a title is a bug the canon test will not
+catch, because it cannot read intent.
 
 ### Numbers
 
@@ -290,7 +320,7 @@ thead th {
   color: var(--table-head-fg);
   border-right: 1px solid var(--table-head-rule);  /* none on last cell */
   padding: 0 8px;          /* → 0 3px at ≤1279px */
-  font-size: 10px;          /* the ONE exception to the 12px body size */
+  font-size: 10px;          /* the ONE exception to the 9px body size */
   font-weight: 600;
   text-transform: none;     /* proper case — UPPERCASE widens ~10% */
   letter-spacing: normal;
@@ -299,14 +329,14 @@ thead th {
 }
 ```
 
-**Column heads are the single exception to the 12px rule, and they are 10px in
-proper case on one line.** All three parts exist for the same reason: with many
-columns, an uppercase 12px wrapping label cramps the table and `SL / TP AWAY`
+**Column heads are the single exception to the 9px body rule, and they are
+10px in proper case on one line.** All three parts exist for the same reason:
+with many columns, an uppercase wrapping label cramps the table and `SL / TP AWAY`
 was heading for a three-line cell. A head that is wider than its track
 ellipsises and carries the full text in a `title`; the table scrolls
 horizontally rather than squeezing, because a wide table you can reach beats a
 narrow one you can't read. Header cells are the only place where 10px is
-allowed — data cells, captions and detail lines all stay at 12px.
+allowed — data cells, captions and detail lines all stay at 9px.
 
 **CSS-grid tables** (most of the Performance page) get `.t-gridhead` on the
 header row, which declares the same font, size, weight, case, colour and
@@ -530,8 +560,9 @@ or any figure the app did not actually compute.
 Before a UI PR is opened, walk this list on an iPad-mini-width viewport, in
 **portrait and landscape**, in all three themes:
 
-- [ ] Every font size is `12px` except section titles (`12/800`) and at most one
-      headline figure per card (`14/800`).
+- [ ] Every font size is `9px` except section titles (`12/800`), page titles
+      (`13/800`) and column heads (`10/600`). `npx vitest run
+      src/lib/type-canon.test.js` checks this without opening a browser.
 - [ ] No bold body text anywhere.
 - [ ] No vertical gap over `12px` without a comment justifying it.
 - [ ] Data rows are `padding: '1px 0'`.

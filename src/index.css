@@ -96,7 +96,10 @@
      root (so the cap holds as specified) and scales with the reader's own
      preference (so the accessibility requirement holds too). Anything past
      10px is then the user's explicit choice, not the design overriding them. */
-  --fs-session:       0.625rem;
+  /* 05-08-2026: 0.5625rem = 9px at the default root — the canon's body size,
+     and still UNDER the owner's explicit "maximum 10px" cap for this line, so
+     the older instruction is honoured rather than overridden. */
+  --fs-session:       0.5625rem;
 
   /* Dense desk type scale (M3 audit item 2, owner-approved 2026-07-31).
      M3's own floor is 11px Label Small; this desk deliberately runs denser
@@ -151,14 +154,25 @@
   /* Text drawn ON the accent fill (active nav pill). Measured, not assumed:
      white reads 6.05:1 on this deep clay. */
   --color-on-accent:    #ffffff;
-  --color-text:         #131a2e;
-  --color-text-sub:     #47536f;
+  /* Owner (05-08-2026): "it has to be darker font colour during light mode".
+     At the canon's 9px body size the sub/muted greys were doing the work of a
+     14px paragraph grey and losing. Measured against the card surface the app
+     actually paints — rgba(255,255,255,.62) over #eef1fb ≈ rgb(249,250,253),
+     not the raw page colour — so these ratios are the ones a reader sees:
+       --color-text        16.56 → 18.14:1
+       --color-text-sub     7.36 → 10.83:1
+       --color-muted        5.42 →  8.46:1
+       --color-muted-light  2.83 →  5.35:1   ← was BELOW AA at any size
+     Hue is unchanged; only lightness moved, so nothing in the palette's
+     blue/red semantics shifts. */
+  --color-text:         #0b1020;
+  --color-text-sub:     #2f3a55;
   /* Apple system-grey table header (light): systemGray6 + secondary label */
   --table-head-bg:      #f2f2f7;
   --table-head-fg:      #3c3c43;
   --table-head-rule:    rgba(60, 60, 67, 0.29);
-  --color-muted:        #5a6785;
-  --color-muted-light:  #8b96b2;
+  --color-muted:        #3d4a68;
+  --color-muted-light:  #5c6883;
 
   /* -- Trading semantics -- */
   --color-up:           #2b5cff;
@@ -280,14 +294,20 @@
   /* This clay is LIGHT, so white on it is only 3.12:1 — fails AA for the
      9px nav labels. Near-black reads 5.93:1. */
   --color-on-accent:    #1a1207;
-  --color-text:         #e8edfb;
-  --color-text-sub:     #9aa8cc;
+  /* Owner (05-08-2026): "light-brighter in dark mode". Same measurement as
+     the light theme, against rgba(20,26,48,.55) over #060913 ≈ rgb(14,18,35):
+       --color-text        15.88 → 17.21:1
+       --color-text-sub     7.83 → 11.72:1
+       --color-muted        4.22 →  8.80:1
+       --color-muted-light  2.50 →  5.86:1   ← was effectively invisible */
+  --color-text:         #f3f6ff;
+  --color-text-sub:     #c3cdea;
   /* Apple system-grey table header (dark): systemGray6 dark + secondary label */
   --table-head-bg:      #1c1c1e;
   --table-head-fg:      #ebebf5;
   --table-head-rule:    rgba(235, 235, 245, 0.3);
-  --color-muted:        #6b7899;
-  --color-muted-light:  #4a5570;
+  --color-muted:        #a6b2d4;
+  --color-muted-light:  #8590b0;
 
   --color-up:           #4f8cff;
   --color-down:         #ff4d6d;
@@ -378,13 +398,18 @@
   --color-accent:       #8c5a1c;
   --color-accent-soft:  rgba(140, 90, 28, 0.12);
   --color-down-soft:    rgba(163, 58, 30, 0.12);
-  --color-text:         #3a2f1b;
-  --color-text-sub:     #5a4a30;
+  /* Sepia is a light theme, so it moves the same way as light (05-08-2026):
+       --color-text        11.72 → 14.04:1
+       --color-text-sub     7.65 →  9.80:1
+       --color-muted        3.98 →  6.22:1
+       --color-muted-light  2.41 →  4.62:1 */
+  --color-text:         #2b220f;
+  --color-text-sub:     #4a3a20;
   --table-head-bg:      #efe7d8;
   --table-head-fg:      #4a3d26;
   --table-head-rule:    rgba(74, 61, 38, 0.28);
-  --color-muted:        #8a7548;
-  --color-muted-light:  #b89a5a;
+  --color-muted:        #6a5730;
+  --color-muted-light:  #806a3c;
 
   --color-up:           #8c5a1c;
   --color-down:         #a33a1e;
@@ -485,9 +510,38 @@
    other heading 11px, and ALL data/information text 9px. Flat at every
    breakpoint — the old escalating scale is gone on purpose; weight and the
    accent colour carry the hierarchy now, not size. */
-.t-h1, .t-heading { font-size: 12px; font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; color: var(--color-accent); }
-.t-h2  { font-size: 11px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
-.t-h3  { font-size: 11px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
+/* ===========================================================================
+   THE TYPE CANON (owner, 05-08-2026, by screenshot rather than by number).
+   The instruction named two things ON SCREEN instead of two values:
+
+     "i like the all body font size to be the same as the picture text
+      '7d', '30d'"           → the Segmented pill in the Strategy Liveness
+                               header, which is Segmented's `md` size,
+                               src/components/common/Segmented.jsx:25 → 9px
+
+     "i like the header's font size to be same as the picture header text
+      'Strategy Liveness table' but increase by 1pt."
+                             → StrategyLivenessCard.jsx:160 is <h3
+                               class="t-h3"> → 11px, so +1 → 12px
+
+   Measured, not assumed: both reference elements were read out of the source
+   before anything moved. The picture's header is a SECTION heading (.t-h3),
+   NOT the 12px page title — so the instruction lands on .t-h2/.t-h3, and
+   .t-h1/.t-heading follows it up to 13px to keep the one-step gap between a
+   page title and the sections inside it. Without that the page title and its
+   own sections would render identically.
+
+   Three sizes, and only three:
+       13px  page title            .t-h1 / .t-heading
+       12px  section heading       .t-h2 / .t-h3
+        9px  EVERYTHING else       body, data, labels, table cells, controls
+
+   src/lib/type-canon.test.js enforces this against the source and lists the
+   deliberate exceptions (icon glyphs, form fields, table heads).
+   =========================================================================== */
+.t-h1, .t-heading { font-size: 13px; font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; color: var(--color-accent); }
+.t-h2  { font-size: 12px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
+.t-h3  { font-size: 12px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
 .t-body    { font-size: 9px; font-weight: 500; line-height: 1.5; }
 .t-label   { font-size: 9px; font-weight: 600; line-height: 1.5; }
 .t-sub     { font-size: 9px; font-weight: 400; line-height: 1.6; }
@@ -536,9 +590,15 @@ tbody td {
    size 9.5px, except those tiny information like '5t · 40% · PF 0.76'". The
    ledger is the page's core table and gets the half-point back; its 9px
    sublines (trade-count/win/PF, date ranges) keep their own explicit size.
-   Unlayered and AFTER the app-wide 9px rule, so it wins on order+specificity. */
+   Unlayered and AFTER the app-wide 9px rule, so it wins on order+specificity.
+
+   SUPERSEDED 05-08-2026 by the type canon above: "all body font size to be
+   the same as … '7d'". The half-point was the ledger's alone, and a canon
+   with one exception in it is not a canon. Kept as a rule rather than
+   deleted so the ledger still has a named place to differ if the owner asks
+   for it back — it just no longer differs. */
 .t-ledger tbody td {
-  font-size: 9.5px;
+  font-size: 9px;
 }
 
 thead th {
@@ -620,9 +680,11 @@ thead th button { color: inherit; }
 }
 .info-i:hover { opacity: 1; }
 
-/* Uppercase section label helper */
+/* Uppercase section label helper. 10px → 9px with the 05-08-2026 canon: it is
+   a label, not a heading, and uppercase + 700 + letter-spacing already carry
+   it without the extra pixel. */
 .t-section-label {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   line-height: 1.5;
   letter-spacing: 0.05em;

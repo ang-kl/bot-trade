@@ -181,7 +181,7 @@ export default function PositionManager({ p, onDone }) {
       {/* Header — PID + symbol + lots, exactly like the cTrader sheet title.
           Sticky so the title + close stay reachable while a tall tab scrolls. */}
       <div className="flex items-center justify-between mb-2 sticky top-0 z-10 -mx-3 -mt-3 px-3 pt-3 pb-2 bg-[var(--color-surface)] rounded-t-2xl sm:rounded-t-[12px]">
-        <h3 className="text-[11px] font-bold">PID{p.positionId} {p.symbol} ({fmt(p.lots, 2)})</h3>
+        <h3 className="text-[12px] font-bold">PID{p.positionId} {p.symbol} ({fmt(p.lots, 2)})</h3>
         <IconButton size="sm" variant="ghost" label="Close sheet" onClick={onDone}>✕</IconButton>
       </div>
 

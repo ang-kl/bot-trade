@@ -69,7 +69,7 @@ export default class PageErrorBoundary extends Component {
     return (
       <div className="p-4">
         <div
-          className="glass-inset rounded-[2px] p-3 text-[10px]"
+          className="glass-inset rounded-[2px] p-3 text-[9px]"
           style={{ borderTop: '2px solid var(--color-down)' }}
           role="alert"
         >

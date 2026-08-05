@@ -82,7 +82,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
   )
 
   const selChip = (on) => on ? (
-    <span style={{ fontSize: 'var(--fs-d8)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>
+    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>
       ✓ selected
     </span>
   ) : null

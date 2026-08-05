@@ -63,7 +63,7 @@ function MetricRow({ m, label, fmt, row }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 'var(--fs-d9)', color: MU, textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</span>
-        <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: m.verdict === 'met' ? UP : TX }}>
+        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: m.verdict === 'met' ? UP : TX }}>
           {fmt(m.value)}
         </span>
         <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>vs {fmt(m.target)}</span>
@@ -138,7 +138,7 @@ function AccountRow({ row }) {
             Showing only one leaves a translation step the operator has to do
             in their head — which is the step that made "why is DEMO 5203012
             ratchet" unanswerable from a screenshot. */}
-        <span style={{ fontSize: 'var(--fs-d10)', fontWeight: 800, color: ACC }}>
+        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: ACC }}>
           {row.login ? `#${row.login}` : (row.label || row.accountId)}
         </span>
         {row.login && row.label && (
@@ -236,7 +236,7 @@ export default function GoalTracker({ variant = 'full' }) {
     return (
       <div id="sec-goal-mobile" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 'var(--fs-d10)', fontWeight: 800, color: ACC }}>Go-Live Gate</span>
+          <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Go-Live Gate</span>
           <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
             {data.goal.winRatePct}% win · PF {data.goal.profitFactor} ·{' '}
             <strong style={{ color: data.daysRemaining <= 3 ? WRN : MU }}>
@@ -262,7 +262,7 @@ export default function GoalTracker({ variant = 'full' }) {
   return (
     <div id="sec-goal" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: ACC, flexShrink: 0 }}>
+        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: ACC, flexShrink: 0 }}>
           Go-Live Gate — Progress card
         </span>
         <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>

@@ -65,7 +65,7 @@ function PhaseCell({ phases, phase }) {
         style={{ background: 'currentColor', boxShadow: '0 0 0 1px currentColor' }} />
       {phase.initial}
       {/* A dot marks an account carrying its own setting rather than the master's. */}
-      {!on && src === 'account' && <span aria-hidden="true" className="text-[7px]">•</span>}
+      {!on && src === 'account' && <span aria-hidden="true" className="text-[9px]">•</span>}
     </span>
   )
 }
@@ -153,7 +153,7 @@ export default function AccountEngineering() {
                         {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
                       </span>
                       {a.selected && (
-                        <span className="ml-1 text-[8px] text-[var(--color-accent)]"
+                        <span className="ml-1 text-[9px] text-[var(--color-accent)]"
                           title="The account the pages are currently scoped to">viewing</span>
                       )}
                     </Cell>
@@ -193,7 +193,7 @@ export default function AccountEngineering() {
                       ? `${a.lastDecisionAt} — ${a.lastDecisionStage}: ${a.lastDecision}`
                       : 'No decision recorded. Nothing is written when a dispatch succeeds, so this is not evidence of inactivity.'}>
                       {decAge
-                        ? <>{decAge} ago <span className="text-[8px] text-[var(--color-text-sub)]">{a.lastDecisionStage}</span></>
+                        ? <>{decAge} ago <span className="text-[9px] text-[var(--color-text-sub)]">{a.lastDecisionStage}</span></>
                         : '—'}
                     </Cell>
                     <Cell className="text-right" title={a.leverage ? `leverage 1:${a.leverage}` : ''}>

@@ -149,14 +149,20 @@ describe('the session line obeys the 10px cap', () => {
   const css = readFileSync(new URL('../index.css', import.meta.url).pathname, 'utf8')
   const jsx = readFileSync(new URL('../components/SessionFooter.jsx', import.meta.url).pathname, 'utf8')
 
-  it('defines the cap as 10px-at-default-root, in rem so font scaling works', () => {
-    // 0.625rem === 10px and 0.75rem === 12px at the default 16px root. rem
-    // rather than px is deliberate: see the comment on the token in index.css.
-    // A px literal would satisfy the 10px cap and silently defeat the brief's
-    // own "user font scaling remain effective" requirement.
-    expect(css).toMatch(/--fs-session:\s*0\.625rem/)
+  it('stays at or under the 10px cap, in rem so font scaling works', () => {
+    // rem rather than px is deliberate: see the comment on the token in
+    // index.css. A px literal would satisfy the 10px cap and silently defeat
+    // the brief's own "user font scaling remain effective" requirement.
+    //
+    // 05-08-2026: the value moved 0.625rem → 0.5625rem (10px → 9px) with the
+    // type canon — "all body font size to be the same as … '7d'". So this
+    // asserts the CAP, which is what the owner actually stated, rather than
+    // one particular value under it. Pinning the literal is what would have
+    // made the two instructions look like a conflict when they are not.
+    const rem = Number(css.match(/--fs-session:\s*([\d.]+)rem/)?.[1])
+    expect(Number.isFinite(rem)).toBe(true)
+    expect(rem * 16).toBeLessThanOrEqual(10)
     expect(css).toMatch(/--lh-session:\s*0\.75rem/)
-    expect(0.625 * 16).toBe(10)
     expect(0.75 * 16).toBe(12)
   })
 

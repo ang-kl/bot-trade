@@ -114,17 +114,17 @@ export default function TradeChronograph({ pos, onClose }) {
       <div ref={panelRef} className="w3-animate-zoom bg-[var(--color-bg)] border border-[var(--color-border)] shadow-2xl rounded-2xl p-4 max-w-[420px] w-full" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-baseline gap-2">
-            <span className="text-[11px] font-bold">{pos.symbol}</span>
+            <span className="text-[9px] font-bold">{pos.symbol}</span>
             <span className={isLong(side) ? 'text-[var(--color-up)] text-[9px]' : 'text-[var(--color-down)] text-[9px]'}>{isLong(side) ? 'Long' : 'Short'}</span>
-            {strat && <span className="text-[10px] uppercase px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)]">{strat}</span>}
-            {tf && <span className="text-[10px] text-[var(--color-text-sub)]">{tf}</span>}
-            {trend && <span className="text-[10px]" style={{ color: trend === 'UP' ? UP : trend === 'DOWN' ? DOWN : 'var(--color-text-sub)' }}>EMA20 {trend}</span>}
+            {strat && <span className="text-[9px] uppercase px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)]">{strat}</span>}
+            {tf && <span className="text-[9px] text-[var(--color-text-sub)]">{tf}</span>}
+            {trend && <span className="text-[9px]" style={{ color: trend === 'UP' ? UP : trend === 'DOWN' ? DOWN : 'var(--color-text-sub)' }}>EMA20 {trend}</span>}
           </div>
           <button type="button" onClick={onClose} className="text-[var(--color-text-sub)] text-[16px] leading-none px-1" aria-label="Close">×</button>
         </div>
 
         <div className="flex items-center gap-1.5 mb-1.5">
-          <label htmlFor="chrono-indicator" className="text-[10px] text-[var(--color-text-sub)] uppercase tracking-wide">Indicator</label>
+          <label htmlFor="chrono-indicator" className="text-[9px] text-[var(--color-text-sub)] uppercase tracking-wide">Indicator</label>
           <select
             id="chrono-indicator"
             value={indicator}

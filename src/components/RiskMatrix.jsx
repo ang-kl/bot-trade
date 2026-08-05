@@ -31,7 +31,7 @@ import { originOf } from '../lib/risk-origin.js'
 
 /** Local title — Risk.jsx's SectionTitle is defined inside that page, not shared. */
 function SectionTitle({ children }) {
-  return <h3 className="w3-heading text-[11px] font-semibold mb-1">{children}</h3>
+  return <h3 className="w3-heading text-[12px] font-semibold mb-1">{children}</h3>
 }
 
 /** Compact display. Percent-shaped keys are stored as fractions. */

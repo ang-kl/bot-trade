@@ -134,7 +134,7 @@ function Bar({ label, n, of, tone }) {
           <span style={{ display: 'block', width: `${pct}%`, height: 6, borderRadius: 3, background: tone }} />
         </span>
       </div>
-      <span style={{ fontSize: 'var(--fs-d11)', fontWeight: W_CELL, textAlign: 'right', color: MU, fontVariantNumeric: 'tabular-nums' }}>{n}</span>
+      <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: MU, fontVariantNumeric: 'tabular-nums' }}>{n}</span>
     </div>
   )
 }
@@ -225,7 +225,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ flexShrink: 0, fontSize: 'var(--fs-d11)', fontWeight: 800, color: ACC }}>Debrief — why we won and lost</span>
+        <span style={{ flexShrink: 0, fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Debrief — why we won and lost</span>
         <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>
           who opened it, what the evidence says about the exit, and what was written down · tap a row
         </span>
@@ -292,7 +292,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
                     <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{r.sym}</span>
                     <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: r.who === 'human' ? WRN : SB }}>{r.who}</span>
                     <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: r.onPlan === false ? WRN : SB }}>{r.bucket}</span>
-                    <span style={{ fontSize: 'var(--fs-d11)', fontWeight: W_CELL, textAlign: 'right', color: r.pnl >= 0 ? UP : DN }}>{signed(r.pnl)}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: r.pnl >= 0 ? UP : DN }}>{signed(r.pnl)}</span>
                   </div>
                   {on && (
                     <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 'var(--fs-d9)', color: MU }}>

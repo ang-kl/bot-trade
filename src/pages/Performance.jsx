@@ -320,7 +320,7 @@ function GradientBody({
 
   const template = `${grid} repeat(${visCols.length},${colW})`
   const pillS = {
-    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d10)', fontWeight: W_CELL,
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL,
     color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`,
     borderRadius: 6, padding: '0 5px',
   }
@@ -348,7 +348,7 @@ function GradientBody({
   const subSep = subtotals && colsOpen && visRows.length ? gr++ : null
   const subRow = subtotals && colsOpen && visRows.length ? gr++ : null
 
-  const headStyle = smallHead ? { fontSize: 'var(--fs-d8)' } : undefined
+  const headStyle = smallHead ? { fontSize: 'var(--fs-d9)' } : undefined
   // Right-aligned, square-cornered, ledger-style — the number is the signal,
   // not the shape around it.
   const cellStyle = { fontSize: GRAD_FONT, fontWeight: W_CELL, textAlign: 'right', paddingRight: 6, fontVariantNumeric: 'tabular-nums' }
@@ -459,7 +459,7 @@ function FxBandsBody({ fxBands }) {
       {fxBands.map(b => (
         <div key={b.band} className="perf-band-row" style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 5 }}>
           <span style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: 'var(--fs-d10)', fontWeight: W_ROWLABEL }}>{b.band}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{b.band}</span>
             <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{b.meta}</span>
           </span>
           <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
@@ -594,7 +594,7 @@ function OpenTableBody({ rows }) {
               current open trade but market is closed so show the locked
               sign" — same 🔒 convention as the weekend 24H table, replacing
               the old OPEN/CLOSED/? text label. */}
-          <span style={{ fontSize: 'var(--fs-d10)', textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable — market closed' : undefined}>{p2.marketOpen === false ? '🔒' : ''}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable — market closed' : undefined}>{p2.marketOpen === false ? '🔒' : ''}</span>
           <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{p2.sld} / {p2.tpd}</span>
         </div>
         {openId === p2.id && (
@@ -686,7 +686,7 @@ function Weekend24Body({ rows }) {
               <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{p2.sym}</span>
               <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
               <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
-              <span style={{ fontSize: 'var(--fs-d10)', textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable' : undefined}>{p2.marketOpen === false ? '\u{1F512}' : ''}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable' : undefined}>{p2.marketOpen === false ? '\u{1F512}' : ''}</span>
             </div>
             {openId === p2.id && (
               <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${P_EDG}`, fontSize: 'var(--fs-d9)', color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
@@ -732,10 +732,10 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
             <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.15, color: r.isLive ? P_TX : P_MU, fontWeight: r.isLive ? 700 : undefined, display: 'block' }}>
               <span style={{ whiteSpace: 'nowrap' }}>
                 {L.local}
-                {r.showDate && <span style={{ fontSize: 'var(--fs-d7)', marginLeft: 3 }}>({L.date})</span>}
-                {r.isLive && <span style={{ fontSize: 'var(--fs-d6)', marginLeft: 3, fontWeight: 800, letterSpacing: '.03em', border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px' }}>NOW</span>}
+                {r.showDate && <span style={{ fontSize: 'var(--fs-d9)', marginLeft: 3 }}>({L.date})</span>}
+                {r.isLive && <span style={{ fontSize: 'var(--fs-d9)', marginLeft: 3, fontWeight: 800, letterSpacing: '.03em', border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px' }}>NOW</span>}
               </span>
-              <span style={{ display: 'block', fontSize: 'var(--fs-d7)', color: P_MU, fontWeight: 400 }}>{L.utc}</span>
+              <span style={{ display: 'block', fontSize: 'var(--fs-d9)', color: P_MU, fontWeight: 400 }}>{L.utc}</span>
             </span>
             <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{r.openBal != null ? money(r.openBal) : '—'}</span>
             {/* Realized P&L from closes in this hour. On the LIVE hour the
@@ -746,7 +746,7 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
               {r.closedN ? signed(r.net) : '—'}
               {r.isLive && floatingNow != null && (
                 <span title="Floating (unrealized) P&L on the positions open right now. Not part of this hour's realized figure and not in the balance columns — balance is realized-only; equity is balance + floating."
-                  style={{ fontSize: 'var(--fs-d7)', marginLeft: 3, color: floatingNow > 0 ? P_UP : floatingNow < 0 ? P_DN : P_MU }}>
+                  style={{ fontSize: 'var(--fs-d9)', marginLeft: 3, color: floatingNow > 0 ? P_UP : floatingNow < 0 ? P_DN : P_MU }}>
                   ({signed(floatingNow)} float)
                 </span>
               )}
@@ -834,10 +834,10 @@ function SessionStatsBody({ stats }) {
             <span>
               <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{s.key}</span>
               {s.open === false && (
-                <span title="market closed right now — figures are the last computed value" style={{ marginLeft: 3, fontSize: 'var(--fs-d6)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
+                <span title="market closed right now — figures are the last computed value" style={{ marginLeft: 3, fontSize: 'var(--fs-d9)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
               )}
               {twins[s.key] && (
-                <span title={`Same UTC cash-hours window as ${twins[s.key]} this time of year — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 'var(--fs-d6)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={twins[s.key]}</span>
+                <span title={`Same UTC cash-hours window as ${twins[s.key]} this time of year — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 'var(--fs-d9)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={twins[s.key]}</span>
               )}
             </span>
             <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n || '—'}</span>
@@ -978,7 +978,7 @@ function LedgerRow({ w, forceOpen = null, nowMs }) {
           <span aria-hidden="true" className={`inline-block w-3 text-[9px] ${SUB}`}>{open ? '▾' : '▸'}</span>
           {/* 10px: the app-wide first-column-head size, not the 9.5px cell size —
               the window label is the row's head. */}
-          <span className="text-[10px] font-extrabold">{w.label}</span>
+          <span className="text-[9px] font-extrabold">{w.label}</span>
           <div className={`ml-3 text-[9px] ${SUB}`}>{dRange(w.from, w.to)}</div>
         </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-[9px] ${SUB}`}>{money(w.carryIn)}</td>
@@ -2156,7 +2156,7 @@ export default function Performance() {
             {/* Crypto — exact mobile panel (price/Δ not streamed → —). */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
+                <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
                   {crypto.k.map(k2 => (
                     <span key={k2.k} style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, padding: '2px 7px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
@@ -2180,7 +2180,7 @@ export default function Performance() {
             </div>
             {/* Forex bands — exact mobile panel. */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
+              <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
               {fxBands.map(b => (
                 <div key={b.band} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 3 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
@@ -2229,7 +2229,7 @@ export default function Performance() {
           <>
             {/* Gradients — exact mobile panels (52px label col, 7px headers). */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</span>
+              <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</span>
               <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, color: P_MU }}>
                 <span>Window</span>
                 {gradients.cols.map(c2 => <span key={c2.name} style={{ textAlign: 'center' }}>{c2.name}</span>)}
@@ -2243,7 +2243,7 @@ export default function Performance() {
               <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>blue = net gain · red = net loss · shaded per column</span>
             </div>
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — asset × account · 30D</span>
+              <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — asset × account · 30D</span>
               {gradients.a.map(r => (
                 <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
                   <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{r.label}</span>
@@ -2298,7 +2298,7 @@ export default function Performance() {
         {acctCards.length > 0 && (
           <div id="sec-accounts">
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
+            <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
             <SectionTools id="accounts" title="Accounts — Capital Safety table"
               data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
               toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
@@ -2516,7 +2516,7 @@ export default function Performance() {
         <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 8, alignItems: 'stretch' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
+              <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
               <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance Gradient — Timeframe × Account table"
                 data={gradients.tWide.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.wideCols[ci]?.name || ci, c.v])) }))}
@@ -2526,7 +2526,7 @@ export default function Performance() {
           </div>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
+              <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
               <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance Gradient — Asset Class × Account table" window="30D"
                 data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.assetCols[ci]?.name || ci, c.v])) }))}
@@ -2549,7 +2549,7 @@ export default function Performance() {
         <div id="sec-fx-bands" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ minWidth: 0, background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
+              <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
               <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · tap a pair for TP/SL detail</span>
               <SectionTools id="fx-bands" title="Forex — Banded, All Pairs table" window="1W" data={fxBands}
                 toText={(rows) => ['Forex — banded, all pairs (1W)', ...(rows || []).map(b => `${b.band} · ${b.net} · ${b.meta} · ${b.pairs.filter(p2 => p2.v !== '·').map(p2 => `${p2.sym} ${p2.v}`).join(' · ') || 'no trades'}`)].join('\n')}
@@ -2560,7 +2560,7 @@ export default function Performance() {
           <div className="perf-2col-even">
             <div id="sec-strategy-matrix" style={{ minWidth: 0, overflowX: 'auto', background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
+                <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
                 <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
                 <SectionTools id="strategy-matrix" title="Strategy × Market — 30D table" window="30D" data={stratMx}
                   toText={(rows) => ['Strategy × market — 30D', ...(rows || []).map(s => `${s.label || s.name} · net ${s.net} · edge ${s.edge} · ${s.cells.map((c, ci) => `${MARKET_COLS[ci].label} ${c.v}`).join(' · ')}`)].join('\n')}
@@ -2572,7 +2572,7 @@ export default function Performance() {
                 streamed to this page → honest —. */}
             <div id="sec-crypto" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
+                <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
                 <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>tracked separately · never session-gated · = the ledger's Crypto column</span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 5 }}>
                   {crypto.k.map(k2 => (

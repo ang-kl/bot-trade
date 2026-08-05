@@ -47,7 +47,7 @@ const rowBase = {
 function KindTag({ kind }) {
   return (
     <span title={NAV_KIND_LEGEND} style={{
-      marginLeft: 'auto', flexShrink: 0, fontSize: '8px', fontWeight: 600,
+      marginLeft: 'auto', flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 600,
       color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
       borderRadius: 'var(--radius-control)', padding: '0 3px', lineHeight: 1.5,
       fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
@@ -117,7 +117,7 @@ export default function SectionNavFab({ onSelect }) {
           <button type="button" onClick={() => goPage(page)} {...hover}
             aria-current={isCurrent ? 'page' : undefined}
             style={{ ...rowBase, fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '4px 8px 4px 2px', color: isCurrent ? 'var(--color-accent)' : 'var(--color-text)' }}>
-            {page.icon && <span aria-hidden="true" style={{ fontSize: '10px' }}>{page.icon}</span>}
+            {page.icon && <span aria-hidden="true" style={{ fontSize: 'var(--fs-d9)' }}>{page.icon}</span>}
             {page.label}
           </button>
         </div>
@@ -140,11 +140,11 @@ export default function SectionNavFab({ onSelect }) {
           style={{ marginBottom: 8, borderRadius: 12, padding: '6px 6px 4px', maxHeight: '72vh', overflowY: 'auto', minWidth: 232 }}>
           {NAV_TREE.map(g => (
             <div key={g.group} style={{ marginBottom: 4 }}>
-              <div style={{ fontSize: '8px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--color-text-sub)', padding: '3px 8px 1px' }}>{g.group}</div>
+              <div style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--color-text-sub)', padding: '3px 8px 1px' }}>{g.group}</div>
               {g.pages.map(p => pageBranch(p))}
             </div>
           ))}
-          <div style={{ fontSize: '8px', color: 'var(--color-text-sub)', padding: '3px 8px 2px', borderTop: '1px solid var(--glass-edge)' }}>
+          <div style={{ fontSize: 'var(--fs-d9)', color: 'var(--color-text-sub)', padding: '3px 8px 2px', borderTop: '1px solid var(--glass-edge)' }}>
             {NAV_KIND_LEGEND}
           </div>
         </nav>

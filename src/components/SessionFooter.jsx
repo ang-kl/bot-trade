@@ -106,7 +106,7 @@ export default function SessionFooter({ appVersion, buildSha }) {
           className="session-status-line compact-control text-[var(--color-text-sub)] hover:text-[var(--color-text)] min-w-0"
           title="This browser's session — click for full detail and to disconnect other browsers"
         >
-          <span aria-hidden="true" style={{ color: STATE_TONE[line.state], fontSize: 'var(--fs-d7)', lineHeight: 1 }}>●</span>
+          <span aria-hidden="true" style={{ color: STATE_TONE[line.state], fontSize: 'var(--fs-d9)', lineHeight: 1 }}>●</span>
           {/* The state WORD is in the line, so status never depends on the dot
               colour alone (WCAG 1.4.1, and the brief says so twice). */}
           <span className="session-text">
@@ -295,7 +295,7 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
       <ul className="mt-0.5 flex flex-col">
         {(others || []).map(s => (
           <li key={s.id} className="border-t border-[var(--glass-edge)] py-1 flex items-start gap-2">
-            <span aria-hidden="true" style={{ color: STATE_TONE[s.state], fontSize: 'var(--fs-d7)', lineHeight: 2 }}>●</span>
+            <span aria-hidden="true" style={{ color: STATE_TONE[s.state], fontSize: 'var(--fs-d9)', lineHeight: 2 }}>●</span>
             <div className="min-w-0 flex-1">
               <p className="truncate">{s.label}{s.deviceType ? ` · ${s.deviceType}` : ''}</p>
               <p className="text-[var(--color-text-sub)]">

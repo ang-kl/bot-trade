@@ -291,7 +291,7 @@ export default function App() {
           <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col gap-4" id="main-content">
             {NAV_GROUPS.map(g => (
               <div key={g.title}>
-                <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{g.title}</div>
+                <div className="px-3 pb-1 text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{g.title}</div>
                 <div className="flex flex-col gap-0.5">
                   {g.items.map(t => (
                     <NavLink key={t.to} to={t.to} viewTransition className={({ isActive }) => navLinkClasses(isActive)}>

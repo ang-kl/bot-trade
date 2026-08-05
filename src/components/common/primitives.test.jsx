@@ -107,11 +107,18 @@ describe('Disclosure', () => {
 })
 
 describe('Input density variants', () => {
-  it('standard keeps the historical full-size rendering', () => {
+  it('standard keeps its full-size BOX, at the canon text size', () => {
+    // 05-08-2026: the type size moved 14px → 9px with the canon; the 36px box
+    // did NOT, because that is the tap target and has nothing to do with the
+    // type scale. Splitting them here on purpose — the earlier assertion bound
+    // the two together and would have read as "the field shrank".
+    // In practice the unlayered `input { font-size: min(calc(1em + 1px), 10px)
+    // } !important` rule in index.css still governs what renders; this class
+    // is what it computes `1em` against.
     const c = cls(Input({}))
     expect(c).toContain('w-full')
     expect(c).toContain('min-h-[36px]')
-    expect(c).toContain('text-[14px]')
+    expect(c).toContain('text-[9px]')
   })
   it('compact reproduces the Field treatment class-for-class (pixel parity)', () => {
     const c = cls(Input({ density: 'compact' }))
