@@ -38,11 +38,12 @@ import { getState } from '../db.js'
 import { masterPhases, effectivePhases } from './account-phases.js'
 import { readWatchlist } from './watchlists.js'
 
-/** The sidecar's last reported roster, as persisted by probeCppExec. */
-export function sidecarRoster(db) {
+const EMPTY_ROSTER = { accounts: null, connected: null, at: null, ok: null, error: null }
+
+function readRoster(db, key) {
   let raw = null
-  try { raw = getState(db, 'cpp_exec_health_json') } catch { raw = null }
-  if (!raw) return { accounts: null, connected: null, at: null, ok: null, error: null }
+  try { raw = getState(db, key) } catch { raw = null }
+  if (!raw) return { ...EMPTY_ROSTER }
   try {
     const h = JSON.parse(raw)
     return {
@@ -53,8 +54,37 @@ export function sidecarRoster(db) {
       at: h.at ?? null,
     }
   } catch {
-    return { accounts: null, connected: null, at: null, ok: null, error: null }
+    return { ...EMPTY_ROSTER }
   }
+}
+
+/** The sidecar's last reported roster, as persisted by probeCppExec. */
+export function sidecarRoster(db) {
+  return readRoster(db, 'cpp_exec_health_json')
+}
+
+/**
+ * The DEMO sidecar's roster, when a second process is deployed.
+ *
+ * ONE SIDECAR PER BROKER HOST means one roster per host, and this screen is
+ * the place where that stops being an implementation detail: the whole point
+ * of the column is "is this account authorised RIGHT NOW", and a live-only
+ * read answers that question wrong for every demo account.
+ *
+ * It did, in production, the moment the second service went up: heartbeat.js
+ * writes `cpp_exec_demo_health_json` (:593) and checkAccountAuthorization
+ * reads it (:683), but this module read only the live key, so all four demo
+ * accounts rendered `sidecarAuthorised: false` while the demo sidecar itself
+ * reported `accountCount: 4, hasCredentials: true`. A false NEGATIVE on the
+ * exact indicator built to catch the outage of 2026-08-05 — the screen would
+ * have shown the failure state during a perfectly healthy day, which is the
+ * fastest way to teach an operator to ignore it.
+ *
+ * Absent key = single-sidecar deployment: every roster read falls back to the
+ * live one and nothing changes.
+ */
+export function sidecarRosterDemo(db) {
+  return readRoster(db, 'cpp_exec_demo_health_json')
 }
 
 /**
@@ -100,6 +130,11 @@ const NUM = (v) => {
 export function engineeringView(db) {
   const selectedId = getState(db, 'ctrader_account_id') || null
   const roster = sidecarRoster(db)
+  // Single-sidecar deployments have no demo key; `rosterDemo` then carries
+  // nulls and `rosterFor` falls back to the live roster for BOTH sides, which
+  // is exactly today's behaviour.
+  const rosterDemo = sidecarRosterDemo(db)
+  const rosterFor = (isLive) => (isLive || rosterDemo.accounts == null ? roster : rosterDemo)
 
   let rows = []
   try {
@@ -188,9 +223,25 @@ export function engineeringView(db) {
       error: roster.error,
       at: roster.at,
     },
+    // The SECOND process, when one is deployed. Reported separately rather
+    // than merged into `sidecar`: two processes can fail independently, and a
+    // merged view would hide "demo is down, live is fine" — the precise
+    // distinction the two-sidecar split exists to make visible. All-null means
+    // single-sidecar, and the field can be ignored.
+    sidecarDemo: {
+      rosterKnown: rosterDemo.accounts != null,
+      accounts: rosterDemo.accounts,
+      connected: rosterDemo.connected,
+      ok: rosterDemo.ok,
+      error: rosterDemo.error,
+      at: rosterDemo.at,
+    },
     legacyOpenPositions: legacyOpen,
     accounts: rows.map(r => {
       const id = String(r.account_id)
+      // The account's OWN side picks the roster. One sidecar per broker host,
+      // so a demo account's authorisation is never a fact about the live one.
+      const sideRoster = rosterFor(r.is_live === 1)
       const phases = effectivePhases(db, id, master)
       const rec = lastReconcileAt(db, id, selectedId)
       const dec = decByAcct.get(id) || null
@@ -214,7 +265,7 @@ export function engineeringView(db) {
         balance: NUM(getState(db, `acct:${id}:account_balance_usd`)),
         phases: { scan: phases.scan, analyze: phases.analyze, autotrade: phases.autotrade, source: phases.source },
         // true / false / null — null is "unknown", never assumed to be false.
-        sidecarAuthorised: roster.accounts == null ? null : roster.accounts.includes(id),
+        sidecarAuthorised: sideRoster.accounts == null ? null : sideRoster.accounts.includes(id),
         openPositions: openByAcct.get(id) ?? 0,
         lastReconcileAt: rec.at,
         lastReconcileSource: rec.source,
