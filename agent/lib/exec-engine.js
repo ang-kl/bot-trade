@@ -303,6 +303,42 @@ export async function sidecarRoster({ ttlMs = 20_000, timeoutMs = 4_000, base = 
   return accounts
 }
 
+/**
+ * The authorised roster of the sidecar that serves ONE side.
+ *
+ * Phase 2 of the two-sidecar plan. Every roster consumer was asking a no-arg
+ * `sidecarRoster()` — i.e. `EXEC_URL`'s sidecar — and then comparing the answer
+ * against accounts from BOTH sides. With one sidecar that is harmless, because
+ * there is only one roster to be right about. Under a split it is the 05-08
+ * outage rebuilt on purpose: the demo accounts would be measured against the
+ * live sidecar's roster, found absent, and skipped before the (correctly
+ * routed) order path was ever reached.
+ *
+ * Callers must ask per ACCOUNT SIDE, not once per pass. With only EXEC_URL set
+ * both sides resolve to the same base and the 20s cache makes the second call
+ * free, so nothing changes today.
+ *
+ * @param {boolean} isLive
+ */
+export async function sidecarRosterForSide(isLive, opts = {}) {
+  return sidecarRoster({ ...opts, base: execBaseFor(isLive ? EXEC_HOST_LIVE : EXEC_HOST_DEMO) })
+}
+
+/** Both sides at once, for a caller that gates a mixed list of accounts. */
+export async function sidecarRostersBySide(opts = {}) {
+  // Sequential, not Promise.all: with one base configured the first call
+  // populates the cache and the second is a map lookup. Racing them would
+  // issue two identical HTTP probes for no benefit.
+  const live = await sidecarRosterForSide(true, opts)
+  const demo = await sidecarRosterForSide(false, opts)
+  return { live, demo }
+}
+
+/** The roster relevant to one account row, honouring the fail-open contract. */
+export function rosterForAccount(rosters, isLive) {
+  return isLive ? rosters?.live ?? null : rosters?.demo ?? null
+}
+
 // P10: read-back of the C++ tick-level ratchet (GET /trail-status) so Node
 // can journal each ratchet as a position_event — the sidecar itself must
 // never write the DB directly. js mode / a disabled trail engine both

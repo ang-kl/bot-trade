@@ -8,7 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
 import {
-  CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec, rosterDrift,
+  CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec, rosterDrift, execSidesToProbe,
   checkAccountAuthorization,
   _resetBootStateForTests, OBSERVED_LOOP_CEIL_SEC,
 } from './heartbeat.js'
@@ -844,4 +844,174 @@ test('account auth: a LONG blind window re-arms the dwell; a short one does not'
   const fired = checkAccountAuthorization(db, { now: plus(3902), notify })
   assert.deepEqual(fired.events.map(e => e.event), ['unauthorized'])
   assert.ok(fired.events[0].downSec < 400, `reported ${fired.events[0].downSec}s — observed, not wall clock`)
+})
+
+// ---------------------------------------------------------------------------
+// PHASE 2 — ONE SIDECAR PER BROKER HOST.
+//
+// `rosterDrift` was STRUCTURALLY BLIND to the 05-08 outage. It compared one
+// sidecar's roster against `getCtraderCreds(db).accountIds`, which is filtered
+// `WHERE enabled = 1 AND is_live = ?` off the single global `ctrader_is_live`
+// flag. With that flag on LIVE, the comparison set was {live account} — which
+// matched — so four disconnected demo accounts could never register as drift.
+// The self-heal that should have caught the outage was incapable of seeing it.
+//
+// The property under test is not "it now works with two sidecars". It is that
+// with ONE base configured NOTHING CHANGES, and that with two, no check ever
+// measures one sidecar's roster against the other side's registry.
+// ---------------------------------------------------------------------------
+
+const HOSTS = { EXEC_HOST_LIVE: 'live.ctraderapi.com', EXEC_HOST_DEMO: 'demo.ctraderapi.com' }
+/** A fake exec module whose execBaseFor mirrors the real resolver. */
+function execWithBases({ dflt = 'http://one:8091', live = null, demo = null } = {}) {
+  return {
+    ...HOSTS,
+    execEngineMode: () => 'cpp',
+    execBaseFor: (h) => {
+      const host = String(typeof h === 'string' ? h : h?.host || '').toLowerCase()
+      if (host === HOSTS.EXEC_HOST_LIVE) return live || dflt
+      if (host === HOSTS.EXEC_HOST_DEMO) return demo || dflt
+      return dflt
+    },
+  }
+}
+
+test('execSidesToProbe: ONE probe when both sides resolve to the same base', () => {
+  // The migration property. With only EXEC_URL set there is exactly one sidecar
+  // and exactly one thing to be right about, so splitting the probe would invent
+  // a second controller that can only ever duplicate the first.
+  const sides = execSidesToProbe(execWithBases())
+  assert.equal(sides.length, 1)
+  assert.equal(sides[0].name, 'cpp_exec')
+  assert.equal(sides[0].isLive, null, 'null = serves whichever side the global flag names')
+})
+
+test('execSidesToProbe: two probes, each responsible for its OWN side', () => {
+  const sides = execSidesToProbe(execWithBases({ live: 'http://live:8091', demo: 'http://demo:8091' }))
+  assert.deepEqual(sides.map(s => [s.name, s.base, s.isLive]), [
+    ['cpp_exec', 'http://live:8091', true],
+    ['cpp_exec_demo', 'http://demo:8091', false],
+  ])
+})
+
+test('probeCppExec split: each sidecar beats its own controller and writes its own snapshot', async () => {
+  const db = initDB(':memory:')
+  const seen = []
+  const exec = {
+    ...execWithBases({ live: 'http://live:8091', demo: 'http://demo:8091' }),
+    pingSidecar: async ({ base } = {}) => {
+      seen.push(base)
+      return base === 'http://live:8091'
+        ? { ok: true, mode: 'cpp', connected: true, accounts: [42993489], lastReconcileAt: T0.getTime() - 30_000 }
+        : { ok: false, mode: 'cpp', error: 'demo sidecar unreachable' }
+    },
+  }
+  await probeCppExec(db, { exec, now: T0 })
+
+  assert.deepEqual(seen, ['http://live:8091', 'http://demo:8091'], 'both bases probed, neither twice')
+  const live = db.prepare(`SELECT * FROM controller_heartbeats WHERE name = 'cpp_exec'`).get()
+  const demo = db.prepare(`SELECT * FROM controller_heartbeats WHERE name = 'cpp_exec_demo'`).get()
+  assert.equal(live.consecutive_failures, 0)
+  assert.equal(demo.consecutive_failures, 1, 'a dead demo sidecar must not be masked by a healthy live one')
+  assert.equal(demo.last_error, 'demo sidecar unreachable')
+
+  // Two snapshots, each labelled with the side it can answer for.
+  const l = JSON.parse(getState(db, 'cpp_exec_health_json'))
+  const d = JSON.parse(getState(db, 'cpp_exec_demo_health_json'))
+  assert.deepEqual(l.accounts, ['42993489'])
+  assert.equal(l.side, 'live')
+  assert.equal(d.side, 'demo')
+})
+
+test('probeCppExec single sidecar: still ONE snapshot, side null, no demo controller row', async () => {
+  // The regression guard for today's deployment. A stray cpp_exec_demo row would
+  // show up in the Controllers panel as a controller that does not exist.
+  const db = initDB(':memory:')
+  const exec = {
+    ...execWithBases(),
+    pingSidecar: async () => ({ ok: true, mode: 'cpp', connected: true, accounts: [1], lastReconcileAt: T0.getTime() - 30_000 }),
+  }
+  await probeCppExec(db, { exec, now: T0 })
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM controller_heartbeats WHERE name = 'cpp_exec_demo'`).get().n, 0)
+  assert.equal(getState(db, 'cpp_exec_demo_health_json'), null)
+  assert.equal(JSON.parse(getState(db, 'cpp_exec_health_json')).side, null)
+})
+
+test('checkAccountAuthorization: a demo account is judged by the DEMO sidecar, not the live one', () => {
+  // THE FAKE-ALARM CASE. This check reads the registry with NO side filter — that
+  // blindness is deliberate, and it is what made rosterDrift useless. But it means
+  // a single roster measured against both sides would report every account on the
+  // other side as disconnected while its own sidecar was perfectly healthy: the
+  // alarm built for the 05-08 outage manufacturing one.
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, is_live, enabled) VALUES ('900', 1, 1)`).run()
+  db.prepare(`INSERT INTO accounts (account_id, is_live, enabled) VALUES ('100', 0, 1)`).run()
+  // Snapshot stamped AT the check time. A snapshot older than the 5-minute
+  // staleness window reads as `unknown`, which would make this test pass
+  // whatever the code did — the first draft did exactly that.
+  const snap = (when) => {
+    const at = when.toISOString()
+    setState(db, 'cpp_exec_health_json', JSON.stringify({ accounts: ['900'], connected: true, at, side: 'live' }))
+    setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ accounts: ['100'], connected: true, at, side: 'demo' }))
+  }
+  const notes = []
+  snap(T0);        checkAccountAuthorization(db, { now: T0, notify: (t) => notes.push(t) })
+  snap(plus(400)); const r = checkAccountAuthorization(db, { now: plus(400), notify: (t) => notes.push(t) })
+  assert.deepEqual(notes, [], 'both accounts are on their own sidecar — nothing to alert')
+  assert.deepEqual(r.events, [])
+  // Positive control: the harness CAN see a disconnect. Drop 100 from the demo
+  // roster and the very same call alerts.
+  const demoDown = (when) => setState(db, 'cpp_exec_demo_health_json',
+    JSON.stringify({ accounts: [], connected: true, at: when.toISOString(), side: 'demo' }))
+  // Each observation carries a FRESH snapshot. A stale one reads as `unknown`,
+  // and a long enough unknown window deliberately re-arms the dwell — correct
+  // behaviour, and it silently ate the first version of this control.
+  demoDown(plus(500)); checkAccountAuthorization(db, { now: plus(500), notify: (t) => notes.push(t) })
+  assert.equal(notes.length, 0, 'dwell starts at the first disconnected observation')
+  demoDown(plus(700)); checkAccountAuthorization(db, { now: plus(700), notify: (t) => notes.push(t) })
+  assert.equal(notes.length, 0, 'still inside the 5-minute dwell')
+  demoDown(plus(900)); checkAccountAuthorization(db, { now: plus(900), notify: (t) => notes.push(t) })
+  assert.equal(notes.length, 1, 'and it DOES alert once the dwell is spent — the harness is not blind')
+  assert.match(notes[0], /100/)
+})
+
+test('checkAccountAuthorization: a genuinely absent demo account still alerts under a split', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, is_live, enabled) VALUES ('900', 1, 1)`).run()
+  db.prepare(`INSERT INTO accounts (account_id, is_live, enabled) VALUES ('100', 0, 1)`).run()
+  const snap = (when) => {
+    const at = when.toISOString()
+    setState(db, 'cpp_exec_health_json', JSON.stringify({ accounts: ['900'], connected: true, at, side: 'live' }))
+    // Demo sidecar is up and holds NOTHING — the real outage shape.
+    setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ accounts: [], connected: true, at, side: 'demo' }))
+  }
+  const notes = []
+  snap(T0)
+  checkAccountAuthorization(db, { now: T0, notify: (t) => notes.push(t) })
+  assert.deepEqual(notes, [], 'silent before the dwell')
+  snap(plus(400))
+  const r = checkAccountAuthorization(db, { now: plus(400), notify: (t) => notes.push(t) })
+  assert.equal(notes.length, 1)
+  assert.match(notes[0], /100/)
+  assert.ok(!notes[0].includes('900'), 'the healthy live account must not be dragged into it')
+  assert.deepEqual(r.events.map(e => [e.accountId, e.event]), [['100', 'unauthorized']])
+})
+
+test('checkAccountAuthorization: with no demo snapshot, both sides use the single one (today)', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, is_live, enabled) VALUES ('900', 1, 1)`).run()
+  db.prepare(`INSERT INTO accounts (account_id, is_live, enabled) VALUES ('100', 0, 1)`).run()
+  const snap = (when) => setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['900'], connected: true, at: when.toISOString(), side: null,
+  }))
+  const notes = []
+  snap(T0)
+  checkAccountAuthorization(db, { now: T0, notify: (t) => notes.push(t) })
+  snap(plus(400))
+  const r = checkAccountAuthorization(db, { now: plus(400), notify: (t) => notes.push(t) })
+  // 100 is absent from the ONE roster — which is exactly the 05-08 outage, and
+  // it must still alert. Unchanged from #660.
+  assert.equal(notes.length, 1)
+  assert.match(notes[0], /100/)
+  assert.deepEqual(r.events.map(e => e.accountId), ['100'])
 })

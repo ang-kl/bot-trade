@@ -533,3 +533,45 @@ test('sidecarRoster caches per base — one sidecar\'s roster is not evidence ab
     }
   }
 })
+
+test('sidecarRosterForSide: each side asks its OWN sidecar; one base makes the second free', async () => {
+  const prevFetch = globalThis.fetch
+  const prev = { e: process.env.EXEC_ENGINE, u: process.env.EXEC_URL, l: process.env.EXEC_URL_LIVE, d: process.env.EXEC_URL_DEMO }
+  process.env.EXEC_ENGINE = 'cpp'
+  process.env.EXEC_URL_LIVE = 'http://live.test'
+  process.env.EXEC_URL_DEMO = 'http://demo.test'
+  const hits = []
+  const byBase = { 'http://live.test': [42993489], 'http://demo.test': [43097342, 46130058] }
+  globalThis.fetch = async (url) => {
+    const base = String(url).replace('/health', '')
+    hits.push(base)
+    return { ok: true, json: async () => ({ ok: true, connected: true, accounts: byBase[base] ?? [] }) }
+  }
+  try {
+    const { sidecarRostersBySide } = await import('./exec-engine.js')
+    const r = await sidecarRostersBySide({ ttlMs: 0 })
+    assert.deepEqual(r.live, ['42993489'])
+    // Before this existed, the demo accounts were measured against the LIVE
+    // sidecar's roster, found absent, and skipped at loop.js's connectivity
+    // gate — the 05-08 outage, rebuilt by the split that was meant to fix it.
+    assert.deepEqual(r.demo, ['43097342', '46130058'])
+    assert.deepEqual(hits, ['http://live.test', 'http://demo.test'])
+
+    // Single-base config: both sides resolve to one URL, and the 20s cache
+    // makes the second lookup free rather than a second HTTP probe.
+    delete process.env.EXEC_URL_LIVE
+    delete process.env.EXEC_URL_DEMO
+    process.env.EXEC_URL = 'http://one.test'
+    byBase['http://one.test'] = [1, 2]
+    hits.length = 0
+    const one = await sidecarRostersBySide()
+    assert.deepEqual(one.live, ['1', '2'])
+    assert.deepEqual(one.demo, ['1', '2'])
+    assert.equal(hits.length, 1, 'one base = one probe, not two')
+  } finally {
+    globalThis.fetch = prevFetch
+    for (const [k, v] of Object.entries({ EXEC_ENGINE: prev.e, EXEC_URL: prev.u, EXEC_URL_LIVE: prev.l, EXEC_URL_DEMO: prev.d })) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+})

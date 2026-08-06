@@ -1077,11 +1077,19 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     // authorized cannot receive an order — strategize/size/risk-gate work for
     // it is guaranteed waste, and the submit would only fail downstream.
     // null = unknown (js mode, health blip) → no account is skipped for it.
-    let sidecarAccounts = null
+    //
+    // PER SIDE (Phase 2). This used to be ONE roster compared against accounts
+    // from both sides. Under a two-sidecar split that is the 05-08 outage
+    // rebuilt on purpose: the demo accounts would be measured against the LIVE
+    // sidecar's roster, found absent, and skipped here — before the order path
+    // that Phase 1 correctly routed was ever reached. With only EXEC_URL set
+    // both sides resolve to the same base and the 20s cache makes the second
+    // lookup free, so this changes nothing today.
+    let sidecarRosters = { live: null, demo: null }
     try {
-      const { sidecarRoster } = await import('./lib/exec-engine.js')
-      sidecarAccounts = await sidecarRoster()
-    } catch { /* unknown — fail open */ }
+      const { sidecarRostersBySide } = await import('./lib/exec-engine.js')
+      sidecarRosters = await sidecarRostersBySide()
+    } catch { /* unknown — fail open on BOTH sides */ }
     for (const acct of apAccounts) {
       // PER-ACCOUNT AUTOTRADE GATE — the enforcement point for the owner's
       // independent switches. Without this the switches would be decorative:
@@ -1170,15 +1178,16 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
       // order built for it this cycle. Skips are recorded, and the account
       // rejoins automatically the moment the roster reports it again (the
       // heartbeat's roster-drift re-push is the recovery mechanism).
+      const sidecarAccounts = acct.isLive ? sidecarRosters.live : sidecarRosters.demo
       if (sidecarAccounts && !sidecarAccounts.includes(String(acct.accountId))) {
-        log(`Connectivity gate: ${sym} skipped on ${acct.accountId} — account not in the sidecar's authorized roster`)
+        log(`Connectivity gate: ${sym} skipped on ${acct.accountId} — account not in the ${acct.isLive ? 'LIVE' : 'demo'} sidecar's authorized roster`)
         try {
           const { recordDecision } = await import('./services/decision-log.js')
           recordDecision(db, {
             accountId: String(acct.accountId),
             symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
             stage: 'account_probe', decision: 'skip',
-            reason: 'enabled in registry but not in the sidecar authorized roster — no order built until it reconnects',
+            reason: `enabled in registry but not in the ${acct.isLive ? 'LIVE' : 'demo'} sidecar's authorized roster — no order built until it reconnects`,
           })
         } catch { /* provenance never blocks */ }
         continue
@@ -2603,8 +2612,12 @@ async function runLoop(db) {
             // buys a timeout per account per cycle and nothing else. Roster
             // null = unknown → probe all, exactly as before this gate.
             try {
-              const { sidecarRoster } = await import('./lib/exec-engine.js')
-              const roster = await sidecarRoster()
+              // `others` is already filtered to ONE side (`(a.is_live === 1)
+              // === isLive` above), so this needs exactly that side's sidecar —
+              // not EXEC_URL's. Under a split the wrong roster would skip every
+              // cross-account reconcile on the other side.
+              const { sidecarRosterForSide } = await import('./lib/exec-engine.js')
+              const roster = await sidecarRosterForSide(isLive)
               if (roster) {
                 const off = others.filter(a => !roster.includes(String(a.account_id)))
                 if (off.length) {
@@ -2615,7 +2628,7 @@ async function runLoop(db) {
                     for (const a of off) {
                       recordDecision(db, {
                         accountId: String(a.account_id), stage: 'account_probe', decision: 'skip',
-                        reason: 'enabled in registry but not in the sidecar authorized roster — reconcile sweep skipped until it reconnects',
+                        reason: `enabled in registry but not in the ${isLive ? 'LIVE' : 'demo'} sidecar's authorized roster — reconcile sweep skipped until it reconnects`,
                       })
                     }
                   } catch { /* decision log is best-effort */ }

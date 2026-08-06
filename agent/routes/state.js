@@ -1660,9 +1660,15 @@ export default function stateRouter(db) {
       // WITHOUT it, 'unknown' when the roster itself is unknown (js mode /
       // health blip) — unknown is stated, never guessed either way.
       try {
-        const { sidecarRoster } = await import('../lib/exec-engine.js')
-        const roster = await sidecarRoster()
+        // PER SIDE. `view.accounts` spans both sides, so one roster cannot
+        // answer for all of them. Before this, a split deployment would report
+        // every demo account `disconnected` while its own sidecar was healthy —
+        // a diagnostic stating the wrong side confidently, which is worse than
+        // one that says `unknown`.
+        const { sidecarRostersBySide } = await import('../lib/exec-engine.js')
+        const rosters = await sidecarRostersBySide()
         for (const a of view.accounts) {
+          const roster = a.isLive ? rosters.live : rosters.demo
           a.connectivity = roster == null ? 'unknown' : roster.includes(String(a.accountId)) ? 'active' : 'disconnected'
         }
       } catch {

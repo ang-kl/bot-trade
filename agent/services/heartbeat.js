@@ -55,6 +55,11 @@ export const CONTROLLERS = {
   weekend_loss_flag: { label: 'Weekend loss flag',     tiedToLoop: true, loopMultiplier: 3, factor: 4 },
   guardian:         { label: 'Tick guardian',          expectedSec: 30,   factor: 10 },
   cpp_exec:         { label: 'C++ exec engine',        expectedSec: 120,  factor: 3 },
+  // Two-sidecar Phase 2. Safe to declare unconditionally: rows are created by
+  // beat(), and checkHeartbeats skips a name with no row — so with one sidecar
+  // configured this never appears, rather than reading as a STALLED controller
+  // that does not exist.
+  cpp_exec_demo:    { label: 'C++ exec engine (demo)', expectedSec: 120,  factor: 3 },
   // Answers "is every open position actually protected right now?" — the one
   // question no controller asked before 2026-07-29, when an ETHUSD short was
   // found to have closed with no stop loss at all while the ledger called it
@@ -395,10 +400,112 @@ export function rosterDrift(sidecarAccounts, credsAccountIds) {
  * GET /health and records the result as the cpp_exec heartbeat. No-op (and
  * no cpp_exec row → 'idle') when EXEC_ENGINE isn't cpp.
  */
+/**
+ * Which sidecar(s) to probe, and what each one is responsible for.
+ *
+ * PHASE 2 of the two-sidecar plan. `rosterDrift` was structurally blind: it
+ * compared ONE sidecar's roster against `getCtraderCreds(db).accountIds`, which
+ * is filtered `WHERE enabled = 1 AND is_live = ?` off the single global
+ * `ctrader_is_live` flag. With that flag on LIVE the comparison set was
+ * `{live account}` — which matched — so the four disconnected demo accounts
+ * could never register as drift. The self-heal that should have caught the
+ * 05-08 outage was incapable of seeing it.
+ *
+ * `isLive: null` means "this one sidecar serves whichever side the global flag
+ * names" — today's deployment, and the branch that keeps behaviour identical.
+ * Only when the two bases actually differ does this split into two responsible
+ * probes, at which point each compares against its OWN side's registry rows.
+ */
+export function execSidesToProbe(exec) {
+  const live = exec.execBaseFor(exec.EXEC_HOST_LIVE)
+  const demo = exec.execBaseFor(exec.EXEC_HOST_DEMO)
+  if (live === demo) return [{ name: 'cpp_exec', base: live, isLive: null }]
+  return [
+    { name: 'cpp_exec', base: live, isLive: true },
+    // Safe to introduce unconditionally: heartbeat rows are created by beat(),
+    // and checkHeartbeats skips a name with no row — so an unconfigured demo
+    // side simply never appears rather than reading as STALLED.
+    { name: 'cpp_exec_demo', base: demo, isLive: false },
+  ]
+}
+
+/** Enabled account ids on one side, primary first — the drift comparison set. */
+function enabledOnSide(db, isLive) {
+  try {
+    return db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 AND is_live = ? ORDER BY account_id')
+      .all(isLive ? 1 : 0).map(r => String(r.account_id))
+  } catch { return null }
+}
+
 export async function probeCppExec(db, deps = {}) {
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
   if (exec.execEngineMode() !== 'cpp') return null
-  const r = await exec.pingSidecar()
+  const sides = typeof exec.execBaseFor === 'function'
+    ? execSidesToProbe(exec)
+    : [{ name: 'cpp_exec', base: undefined, isLive: null }]
+  let primary = null
+  for (const side of sides) {
+    const out = await probeOneSidecar(db, exec, side, deps)
+    if (side.name === 'cpp_exec') primary = out
+  }
+  return primary
+}
+
+/**
+ * Credentials for the sidecar this probe is responsible for.
+ *
+ * `isLive === null` is today's single-sidecar case and returns exactly what the
+ * old code used — `getCtraderCreds(db)` with no override — so nothing changes.
+ * A split passes an explicit side, which flips both the host and the
+ * `WHERE is_live = ?` roster filter to match the process being probed.
+ */
+async function sideCreds(db, side) {
+  const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
+  if (side.isLive === null) return getCtraderCreds(db)
+  const ids = enabledOnSide(db, side.isLive) || []
+  // The side's own primary: the globally selected account when it belongs to
+  // this side, else the first enabled row on it. Without a primary the sidecar
+  // has nothing to authorise first, so there is nothing to push.
+  const selected = getState(db, 'ctrader_account_id')
+  const primary = selected && ids.includes(String(selected)) ? String(selected) : ids[0]
+  if (!primary) return { ready: false, accountIds: ids }
+  return getCtraderCreds(db, { accountId: primary, isLive: side.isLive })
+}
+
+/**
+ * Push a rotated OAuth token that nothing else would ever push.
+ *
+ * `ensureSidecarSession` memoises on a key that includes the access token, so
+ * rotation invalidates it — but only LAZILY, on the next trading call. On a
+ * healthy-but-idle session nothing pushes at all. That is the documented 22-hour
+ * outage: the sidecar sat "reconnecting" with `hasCredentials: true`, retrying
+ * with a token Node had already replaced, all weekend, because no order path ran
+ * to notice. The connected-branch below never fired because it only handled a
+ * DOWN session.
+ *
+ * With two sidecars an idle demo side makes this more likely, not less.
+ */
+const TOKEN_PUSH_KEY = 'cpp_exec_token_push_json'
+async function repushRotatedToken(db, exec, side) {
+  const refreshedAt = getState(db, 'ctrader_token_refreshed_at')
+  if (!refreshedAt) return false
+  let seen = {}
+  try { seen = JSON.parse(getState(db, TOKEN_PUSH_KEY) || '{}') } catch { seen = {} }
+  if (seen[side.name] === refreshedAt) return false
+  try {
+    const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(await sideCreds(db, side)) : false
+    // Record the stamp on ANY outcome, not only success. A not-ready credential
+    // set is not going to become ready because we retried in 2 minutes, and
+    // re-pushing every probe forever is the unconditional-re-push shape this
+    // file already records as having cost real behaviour once.
+    seen[side.name] = refreshedAt
+    try { setState(db, TOKEN_PUSH_KEY, JSON.stringify(seen)) } catch { /* best effort */ }
+    return pushed
+  } catch { return false }
+}
+
+async function probeOneSidecar(db, exec, side, deps = {}) {
+  const r = await exec.pingSidecar(side.base ? { base: side.base } : {})
   // The sidecar's GET /health says ok:true whenever its HTTP server answers
   // — even while the broker WS behind it has never connected or completed a
   // reconcile pass. Owner saw exactly that lie: "C++ exec engine" beating
@@ -431,8 +538,7 @@ export async function probeCppExec(db, deps = {}) {
     // token the sidecar already holds is one cheap /connect no-op, pushing a
     // rotated one revives the session within a probe interval.
     try {
-      const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
-      const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(getCtraderCreds(db)) : false
+      const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(sideCreds(db, side)) : false
       if (pushed) error += ' — credentials re-pushed, session should return shortly'
     } catch { /* creds not ready or sidecar went away — next probe retries */ }
   } else if (ok && r.connected === true) {
@@ -441,13 +547,22 @@ export async function probeCppExec(db, deps = {}) {
     // an account the owner disabled is the kind of divergence that only shows
     // up when something trades on it.
     try {
-      const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
-      const creds = getCtraderCreds(db)
+      const creds = await sideCreds(db, side)
+      // THE COMPARISON SET IS THIS SIDECAR'S OWN SIDE. Comparing a live
+      // sidecar's roster against a demo registry (or vice versa) can never
+      // converge — the sets describe two different processes — so drift would
+      // be true on every probe forever, re-pushing each time and logging a
+      // "correction" that did not happen.
       const drift = rosterDrift(r.accounts, creds.accountIds)
       // No `creds.ready` check here on purpose: pushSidecarSession already
       // returns false for not-ready creds and pushes nothing, so duplicating
       // that policy would just give it two places to drift out of step. Same
       // shape as the credential-less self-heal path above.
+      // Rotation first: a token that changed while this session was healthy and
+      // idle is invisible to the drift check (the ROSTER still matches).
+      if (await repushRotatedToken(db, exec, side)) {
+        console.warn(`[heartbeat] ${side.name}: rotated access token re-pushed to a healthy idle session`)
+      }
       if (drift.drifted && exec.pushSidecarSession) {
         const pushed = await exec.pushSidecarSession(creds)
         if (pushed) {
@@ -467,7 +582,7 @@ export async function probeCppExec(db, deps = {}) {
     ok = false
     error = `last reconcile ${Math.round((nowMs - Number(r.lastReconcileAt)) / 60_000)}m ago — engine loop looks stalled`
   }
-  beat(db, 'cpp_exec', { ok, error, ...(deps.now ? { now: deps.now } : {}) })
+  beat(db, side.name, { ok, error, ...(deps.now ? { now: deps.now } : {}) })
   // Persist what the probe learned so a READ route never has to call the
   // sidecar itself. This probe already runs every ~2 minutes; making
   // /state/account-engineering re-fetch /health on every page load would put an
@@ -475,13 +590,17 @@ export async function probeCppExec(db, deps = {}) {
   // slow read routes already on the backlog. Stamped with the observation time
   // so the UI can say "as of 2 min ago" instead of implying it is live.
   try {
-    setState(db, 'cpp_exec_health_json', JSON.stringify({
+    setState(db, side.name === 'cpp_exec' ? 'cpp_exec_health_json' : `${side.name}_health_json`, JSON.stringify({
       accounts: Array.isArray(r.accounts) ? r.accounts.map(String) : null,
       connected: r.connected ?? null,
       hasCredentials: r.hasCredentials ?? null,
       lastReconcileAt: r.lastReconcileAt ?? null,
       ok,
       error: error || null,
+      // Which side this snapshot describes. null = one sidecar serving whatever
+      // the global flag names, i.e. today. checkAccountAuthorization reads this
+      // to know whether the roster it is holding can answer for an account.
+      side: side.isLive === null ? null : (side.isLive ? 'live' : 'demo'),
       at: new Date(nowMs).toISOString(),
     }))
   } catch { /* status reporting must never break the probe */ }
@@ -548,9 +667,24 @@ export function checkAccountAuthorization(db, {
   const events = []
   const nowMs = now.getTime()
 
-  let health = null
-  try { health = JSON.parse(getState(db, 'cpp_exec_health_json') || 'null') } catch { health = null }
-  const roster = Array.isArray(health?.accounts) ? health.accounts.map(String) : null
+  const readSnap = (key) => {
+    try { return JSON.parse(getState(db, key) || 'null') } catch { return null }
+  }
+  const health = readSnap('cpp_exec_health_json')
+  // PHASE 2: a second sidecar publishes its own snapshot. Absent — today — every
+  // account is evaluated against the single one, exactly as before.
+  //
+  // This matters because the roster and the registry are counted in different
+  // units the moment a split exists: this check deliberately reads the registry
+  // with NO side filter (that blindness is what made rosterDrift useless), so a
+  // single roster measured against both sides would report every account on the
+  // other side as `disconnected` while its own sidecar was perfectly healthy.
+  // The alarm built for the 05-08 outage would then manufacture a fake one.
+  const demoHealth = readSnap('cpp_exec_demo_health_json')
+  const snapFor = (isLive) => (demoHealth && !isLive ? demoHealth : health)
+
+  const rosterOf = (h) => (Array.isArray(h?.accounts) ? h.accounts.map(String) : null)
+  const roster = rosterOf(health)
   const healthAtMs = health?.at ? Date.parse(health.at) : NaN
   // A snapshot older than the probe's own stall threshold tells us nothing about
   // NOW. Treat it as unknown rather than as evidence.
@@ -584,6 +718,19 @@ export function checkAccountAuthorization(db, {
   // sidecarRoster returns null too, so both stay silent together.
   const sessionUp = health?.connected === true && roster != null
 
+  /** The three facts this check needs about ONE account's own sidecar. */
+  const viewFor = (isLive) => {
+    const h = snapFor(isLive)
+    if (h === health) return { roster, fresh, sessionUp }
+    const rr = rosterOf(h)
+    const atMs = h?.at ? Date.parse(h.at) : NaN
+    return {
+      roster: rr,
+      fresh: Number.isFinite(atMs) && (nowMs - atMs) < HEALTH_STALE_MS,
+      sessionUp: h?.connected === true && rr != null,
+    }
+  }
+
   // A FAILED READ IS NOT "NO ACCOUNTS ARE ENABLED", and conflating them wipes
   // every dwell timer and every `alerted` flag. `next` is built from this list,
   // so an empty list persists `{}` over the watch state: an account already
@@ -609,9 +756,11 @@ export function checkAccountAuthorization(db, {
   for (const a of accounts) {
     const id = String(a.account_id)
     const prev = watch[id] || null
-    const status = (roster == null || !fresh || !sessionUp)
+    // THIS ACCOUNT'S OWN SIDECAR, not whichever one EXEC_URL names.
+    const view = viewFor(a.is_live === 1)
+    const status = (view.roster == null || !view.fresh || !view.sessionUp)
       ? 'unknown'
-      : roster.includes(id) ? 'active' : 'disconnected'
+      : view.roster.includes(id) ? 'active' : 'disconnected'
 
     // Carry the timer across an unknown window rather than restarting it: an
     // outage interrupted by a health blip is still one continuous outage, and
