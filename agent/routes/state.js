@@ -1441,6 +1441,29 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/exit-counterfactual — Phase 7. What would a DIFFERENT exit rule
+  // have returned over the trades this system actually decided to open?
+  //
+  // Read-only, and it REFUSES to report on too small a sample: `verdict:
+  // 'INSUFFICIENT'` names the shortfall rather than printing a profit factor
+  // that would read exactly as authoritative as one that had earned it.
+  // ?days=30 &minSample=30 &allOrigins=1 (the last is NOT evidence of edge).
+  router.get('/exit-counterfactual', async (req, res) => {
+    try {
+      const { exitCounterfactual } = await import('../services/exit-counterfactual.js')
+      const days = Math.min(365, Math.max(1, Number(req.query.days) || 30))
+      const minSample = Math.max(1, Number(req.query.minSample) || undefined || 30)
+      const scope = requestedAccount(db, req)
+      res.json(exitCounterfactual(db, {
+        days, minSample,
+        cleanOnly: String(req.query.allOrigins || '') !== '1',
+        accountId: scope.all ? null : (scope.accountId ?? null),
+      }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/lot-size-parity — where the broker's definition of a lot and our
   // hardcoded contractSize() table disagree, and by how much.
   //
