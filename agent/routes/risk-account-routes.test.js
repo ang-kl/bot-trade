@@ -163,3 +163,59 @@ test('the profit-ratchet staircase is the QUERIED account\'s, not the selected o
     assert.equal(g.profitRatchet.state.baseline, 50548.76)
   } finally { s.close() }
 })
+
+// ---------------------------------------------------------------------------
+// Phase 4 — an unsupported parameter must FAIL, not answer about something else
+// ---------------------------------------------------------------------------
+
+test('a misspelled account parameter is a 400, not a silent global answer', async () => {
+  // THE AUDIT'S CENTRAL CONFUSION. The route read ?account= and ignored every
+  // other parameter, so ?accountId=47790949 returned the GLOBAL config in the
+  // shape of an answer about that account — which is how the Risk page could
+  // show minRR 1.5 while the accounts were gated at 4.5-6.16.
+  const s = await server()
+  try {
+    const r = await fetch(s.url('/state/risk-full?accountId=47790949'))
+    assert.equal(r.status, 400)
+    const body = await r.json()
+    assert.deepEqual(body.unsupported, ['accountId'])
+    assert.deepEqual(body.supported, ['account'])
+  } finally { s.close() }
+})
+
+test('the supported parameter still works, and nothing else is required', async () => {
+  const s = await server()
+  try {
+    assert.equal((await fetch(s.url('/state/risk-full'))).status, 200)
+    assert.equal((await fetch(s.url('/state/risk-full?account=47790949'))).status, 200)
+  } finally { s.close() }
+})
+
+test('an UNKNOWN account id is labelled as such rather than reading as global truth', async () => {
+  const s = await server()
+  try {
+    s.db.prepare("INSERT OR REPLACE INTO accounts (account_id, is_live, enabled) VALUES ('47790949', 0, 1)").run()
+    const known = await riskFull(s, '47790949')
+    const bogus = await riskFull(s, '99999999')
+    assert.equal(known.risk.accountScope, 'account')
+    assert.equal(bogus.risk.accountScope, 'unknown_account')
+    assert.equal((await riskFull(s)).risk.accountScope, 'global')
+  } finally { s.close() }
+})
+
+test('provenance separates the global value from the account value, per key', async () => {
+  const s = await server()
+  try {
+    await setRisk(s, { minRR: 1.5 })
+    await setRisk(s, { accountId: '47790949', minRR: 4.68 })
+    const a = await riskFull(s, '47790949')
+    const row = a.risk.provenance.find(p => p.key === 'minRR')
+    assert.equal(row.globalValue, 1.5)
+    assert.equal(row.overlayValue, 4.68)
+    assert.equal(row.effectiveValue, 4.68)
+    assert.equal(row.scope, 'account')
+    assert.equal(row.source, 'manual', 'the write site records who wrote it')
+    assert.ok(row.writtenAt, 'and when')
+    assert.equal(row.reason, null, 'nothing records a reason today, and it says so')
+  } finally { s.close() }
+})

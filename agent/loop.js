@@ -4185,6 +4185,18 @@ async function runLoop(db) {
           log(`Dispositions: settled ${sw.written} of ${sw.scanned} in ${sw.batches} batch(es) (${JSON.stringify(sw.counts)}), ${sw.pending} still in flight`)
         }
         if (!sw.drained) log(`Dispositions: batch cap reached — backlog NOT fully settled, another pass will continue`)
+        // WRITE THE OUTCOME DOWN, on a read-only route. PR #670 could name the
+        // mechanism (an unguarded step cancels the sweep) but not the step,
+        // because housekeeping only ever spoke through console output nobody
+        // can query. A pass that reports "which steps failed, what the sweep
+        // settled, when the next window is" turns the next reading of
+        // /state/dispositions from an inference into a fact.
+        setState(db, 'housekeeping_last_result_json', JSON.stringify({
+          at: new Date().toISOString(),
+          ran: pass.ran,
+          failed: pass.failed,
+          dispositions: { written: sw.written, batches: sw.batches, drained: sw.drained, pending: sw.pending },
+        }))
         if (sw.counts.dropped > 0) {
           // The §70.8 finding itself: the gate said yes and nothing acted.
           log(`§70.8 SILENT GAP: ${sw.counts.dropped} approval(s) produced no order — see GET /state/dispositions`)

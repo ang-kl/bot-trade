@@ -60,3 +60,36 @@ test('changesOf keeps the summary honest when a delete never happened', () => {
   assert.equal(changesOf(null), 0)
   assert.equal(changesOf({}), 0)
 })
+
+// ---------------------------------------------------------------------------
+// The readout — "why is counts empty?" must be answerable from a route
+// ---------------------------------------------------------------------------
+
+test('housekeepingStatus answers the question an empty disposition report raises', async () => {
+  const { initDB, setState } = await import('../db.js')
+  const { housekeepingStatus } = await import('./housekeeping-run.js')
+  const db = initDB(':memory:')
+
+  // Never run: due now, nothing to report — NOT "ran and found nothing".
+  const cold = housekeepingStatus(db)
+  assert.equal(cold.lastAt, null)
+  assert.equal(cold.due, true)
+  assert.equal(cold.lastResult, null)
+  assert.equal(cold.nextDueAt, null)
+
+  // Ran an hour ago and a step failed: the next window is seven hours out, and
+  // "deployed but not due yet" is now distinguishable from "the fix failed".
+  const hourAgo = new Date(Date.now() - 3600_000).toISOString()
+  setState(db, 'housekeeping_last_at', hourAgo)
+  setState(db, 'housekeeping_last_result_json', JSON.stringify({
+    at: hourAgo, ran: 7, failed: [{ name: 'prune-operational', message: 'database is locked' }],
+    dispositions: { written: 0, batches: 1, drained: true, pending: 55608 },
+  }))
+
+  const warm = housekeepingStatus(db)
+  assert.equal(warm.due, false)
+  assert.equal(warm.lastAt, hourAgo)
+  assert.ok(warm.dueInMs > 6 * 3600_000 && warm.dueInMs <= 7 * 3600_000)
+  assert.equal(warm.lastResult.failed[0].name, 'prune-operational')
+  assert.equal(warm.lastResult.dispositions.pending, 55608)
+})
