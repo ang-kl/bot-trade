@@ -173,7 +173,32 @@ cap.** Owner decision; no change made.
 
 ---
 
-## 3. F-PEND-01 — the pending-order engine is arming a disabled strategy
+## 3. F-PEND-01 — the pending-order engine armed a disabled strategy
+
+**Correction, made before this document was merged.** An earlier draft of this section
+asserted in the present tense that `fib_confluence` "is OFF". **It is not.** The registry
+has carried `defaultOn: true` for `fib_confluence` since 2026-07-27, and
+`GET /state/strategy-liveness` reads `armed: true` for it right now. The owner said so,
+and the owner was right.
+
+What the veto-breakdown actually shows is a **historical** window:
+
+| Vetoes | Guard | Last occurrence |
+|---:|---|---|
+| 2,353 | `strategy 'fib_confluence' is OFF` | 2026-08-05 12:27:13 |
+| 1,225 | `strategy 'vwap_trend' is OFF` | 2026-08-05 03:01:55 |
+
+Both stopped roughly sixteen hours before this audit ran. Both strategies are armed now.
+The 7-day veto window aggregates a period when they were toggled off in
+`enabled_strategies_json` — a state override, never the code default — and I read a
+cumulative count as a current condition. That is the same error Part 1 made in a
+different key: **treating an aggregate over a window as a description of now.**
+
+The finding that survives is narrower and still real: **for roughly a day, the
+pending-order engine placed 45 resting orders for a strategy the risk gate was
+refusing on sight, and 49 of 50 expired unfilled.** Nothing checked the strategy toggle
+before arming a pending order, and nothing will stop it recurring the next time a
+strategy is toggled off with orders already resting.
 
 `GET /state/pending-orders`, account 47790949, 50 rows:
 
@@ -203,6 +228,57 @@ pending-order rows carry no account stamp**, so the per-account figures above de
 under a quarter of the population. The direction of the finding is not in doubt — 45 of
 50 for a disabled strategy is not a sampling artefact — but the magnitude is not
 established, and no rate computed from these rows should be treated as portfolio-wide.
+
+---
+
+## 3b. F-LIVE-01 — four armed strategies produced 22,966 signals and opened nothing
+
+Re-reading `GET /state/strategy-liveness` to check §3's correction turned up a stronger
+result than §3 itself. Seven days, decisions and opens scoped to 47790949, signals
+across all accounts (scans are market observations):
+
+| Strategy | Armed | Signals | Opened | System's own verdict |
+|---|---|---:|---:|---|
+| `fib_confluence` | ✔ | 26,409 | 1 | trading |
+| `vwap_trend` | ✔ | 21,583 | **0** | **signalling_not_trading** |
+| `rsi2_reversion` | ✔ | 6,044 | 3 | trading |
+| `vp_value` | ✔ | 3,733 | 3 | trading |
+| `donchian_breakout` | ✔ | 2,409 | 2 | trading |
+| `va_breakout` | ✔ | 539 | **0** | **signalling_not_trading** |
+| `ema_pullback` | ✔ | 521 | **0** | **signalling_not_trading** |
+| `rsi_meanrev` | ✔ | 373 | 1 | trading |
+| `fvg_retrace` | ✔ | 323 | **0** | **signalling_not_trading** |
+| `fib_618_fade` | ✔ | 3 | 6 | trading |
+| `cup_handle` | ✔ | **0** | 0 | **silent** |
+| `inv_cup_handle` | ✔ | **0** | 0 | **silent** |
+| **TOTAL** | | **61,937** | **16** | |
+
+**Every strategy is armed.** Nothing is switched off. And yet:
+
+- **Four strategies produced 22,966 signals in seven days and opened zero positions.**
+  The system labels these `signalling_not_trading` itself — the verdict already existed,
+  computed and served on a route, and nobody had read it.
+- **Two strategies produced no signals at all in seven days.** `cup_handle` and
+  `inv_cup_handle` are `silent`. Armed, scanned, and never once firing. That is a
+  different failure from being vetoed and needs a different investigation — a detector
+  that never signals is either mis-specified or starved of the bars it needs
+  (`minBars: 210`, the highest in the registry after `ema_pullback`).
+- **61,937 signals produced 16 opened positions**, a 0.026% conversion.
+- `fib_618_fade` opened 6 positions on 3 signals — more opens than signals, which means
+  those opens came from the pending-order path rather than live scan signals. Consistent
+  with §3, and the only strategy where that inversion appears.
+
+### A wrong inference I nearly published
+
+The same payload shows `vetoes == decisions` exactly, for every strategy, all twelve
+rows. That looks damning and **means nothing.** Part 1 §2 already established why:
+`decision_log` only records skips and vetoes — *"nothing in the pipeline writes a row
+when a dispatch SUCCEEDS (grep: no `decision: 'proceed'` anywhere), so a healthy,
+busily-trading account produces NO decision rows."* The identity is a property of the
+table's schema, not of the system's behaviour, and quoting it as evidence of a
+100%-veto rate would have been exactly the kind of number this audit is supposed to
+catch. **The honest column is `opened`.** Recorded here because the trap is well
+disguised and the next reader deserves the warning.
 
 ---
 
@@ -389,10 +465,13 @@ audit did. **Credit where due: the machine caught this one itself. Nobody had re
    investigate.
 4. **§3 pending orders for disabled strategies** — cheap fix, removes 2,353 vetoes and
    49 wasted broker orders from the record.
-5. **§5 `entry_quality` always `unknown`** — a dead field silently degrading every
+5. **§3b the two `silent` detectors** — `cup_handle` and `inv_cup_handle` produced zero
+   signals in seven days while armed. Either mis-specified or starved of their 210-bar
+   history requirement; a detector that never fires is invisible in every veto table.
+6. **§5 `entry_quality` always `unknown`** — a dead field silently degrading every
    analysis keyed on it.
 
-Items 3–5 are ordinary defects I can take without a risk decision. Items 1–2 are yours.
+Items 3–6 are ordinary defects I can take without a risk decision. Items 1–2 are yours.
 
 ---
 
@@ -411,6 +490,15 @@ Stated plainly, because an audit that will not correct itself is not an audit.
 3. **`minRR: 1.5` was reported as fact** in Part 1 and again by me earlier in this
    session, from an unscoped read. The scoped read gives 4.5–6.16. The number was never
    1.5 on any account that trades.
+
+And one correction to an earlier draft of **this** document, kept rather than erased:
+
+4. **§3 asserted `fib_confluence` "is OFF".** It is not, and the registry has carried
+   `defaultOn: true` for it since 2026-07-27. The owner said so and was right. I had
+   read a cumulative 7-day veto count as a current condition; the OFF vetoes stopped at
+   2026-08-05 12:27. The same mistake in a different key as (1): **an aggregate over a
+   window is not a description of now.** Chasing the correction is what produced §3b,
+   which is a larger finding than the one it replaced.
 
 ---
 
