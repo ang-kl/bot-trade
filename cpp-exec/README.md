@@ -77,6 +77,20 @@ docker build -t cpp-exec .
 
 ## Deploy checklist (owner steps — Railway dashboard)
 
+> **One service per broker host.** An `ExecEngine` holds one host for its whole
+> life — `POST /connect` with a different host tears the session down rather
+> than adding one — so a live and a demo account **cannot** share a sidecar.
+> On 2026-08-05 they did not: four demo accounts sat enabled in the registry and
+> absent from the single sidecar's roster, and no trade opened for twelve hours.
+>
+> Deploy this service **twice** when you want both sides trading, following the
+> steps below for each, and set `CTRADER_HOST` on both (step 2a). A pinned
+> sidecar refuses a `/connect` that names any other host, so a mis-set
+> `EXEC_URL_DEMO` fails loudly instead of quietly reconnecting the wrong broker.
+>
+> One service with `CTRADER_HOST` unset is the historical single-sidecar
+> deployment and behaves exactly as it always has.
+
 1. Railway → New Service → "Deploy from GitHub repo" → pick this repo, set
    **Root Directory = cpp-exec** (it finds the Dockerfile).
 2. Variables: just `EXEC_SECRET` (a long random string — same value you set
@@ -84,8 +98,17 @@ docker build -t cpp-exec .
    keeper pushes host/clientId/secret/access token/account id to the sidecar
    at runtime via POST /connect (they live in the keeper's DB, and survive
    token refreshes/account switches automatically).
+2a. **Per-side only** — set `CTRADER_HOST` to `live.ctraderapi.com` on the live
+   service and `demo.ctraderapi.com` on the demo one. This PINS the process:
+   `/connect` for any other host is refused with 400, and a `/connect` that
+   omits `host` takes the pin rather than the historical `live` default. Leave
+   it unset to run a single unpinned sidecar. Give each service its own
+   `EXEC_SECRET`.
 3. On the **Node agent** service add: `EXEC_URL` = the sidecar's private URL,
    `EXEC_SECRET` = same value. Do NOT set `EXEC_ENGINE` yet.
+   Running two sidecars? Also set `EXEC_URL_LIVE` and `EXEC_URL_DEMO` to their
+   private URLs — and **keep `EXEC_URL` set**, because unrouted callers
+   (`backtestRemote`, `/depth`) still resolve to it.
 4. Parity: `node agent/scripts/exec-parity.js` (read-only), then
    `node agent/scripts/exec-parity.js --order` (one min order on DEMO,
    auto-closed). Both must print PASS.

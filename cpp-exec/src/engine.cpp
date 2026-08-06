@@ -1,6 +1,8 @@
 // cpp-exec/src/engine.cpp
 #include "engine.hpp"
 
+#include <cctype>
+
 #include <cstdio>
 #include <thread>
 
@@ -192,6 +194,40 @@ bool isAuthFamilyError(const std::string& code) {
 AuthErrorAction authErrorAction(const std::string& code, bool authorizingExtra) {
   if (!isAuthFamilyError(code)) return AuthErrorAction::Ignore;
   return authorizingExtra ? AuthErrorAction::SkipAccount : AuthErrorAction::KillSession;
+}
+
+// --- host pin -------------------------------------------------------------
+// Same shape and same reason as authErrorAction above: a rule that only exists
+// as scattered ifs inside a request handler is a rule two handlers can come to
+// disagree about.
+namespace {
+std::string normalizeHost(const std::string& h) {
+  std::string out;
+  out.reserve(h.size());
+  for (char c : h) {
+    if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+    out.push_back((char)std::tolower((unsigned char)c));
+  }
+  return out;
+}
+} // namespace
+
+bool connectHostAllowed(const std::string& pinned, const std::string& requested) {
+  const std::string p = normalizeHost(pinned);
+  if (p.empty()) return true;               // unpinned — today's deployment
+  const std::string r = normalizeHost(requested);
+  if (r.empty()) return true;               // caller substitutes the pin
+  return r == p;
+}
+
+std::string effectiveConnectHost(const std::string& pinned, const std::string& requested) {
+  const std::string p = normalizeHost(pinned);
+  const std::string r = normalizeHost(requested);
+  if (!connectHostAllowed(pinned, requested)) return "";
+  if (!p.empty()) return p;                 // a pinned process serves ONE host
+  // Unpinned: the request decides, and an absent host keeps the historical
+  // default rather than inventing a new one.
+  return r.empty() ? "live.ctraderapi.com" : r;
 }
 
 void ExecEngine::noteBrokerErrorLocked(const std::string& errorCode) {

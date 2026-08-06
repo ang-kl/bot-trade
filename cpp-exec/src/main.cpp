@@ -143,8 +143,15 @@ int main(int argc, char** argv) {
 
   ExecEngine engine;
   if (telemetry) engine.setTelemetry(telemetry.get());
+  // THE PIN. Set CTRADER_HOST and this process serves that broker host and only
+  // that one, for its whole life — /connect refuses anything else. Unset (the
+  // default, and today's deployment) leaves the sidecar unpinned and every
+  // /connect is honoured exactly as before.
+  const std::string pinnedHost = envOr("CTRADER_HOST", "");
+  if (!pinnedHost.empty())
+    logLine("host PINNED to " + pinnedHost + " — /connect for any other host will be refused");
   {
-    std::string host = envOr("CTRADER_HOST", "");
+    const std::string& host = pinnedHost;
     std::string clientId = envOr("CTRADER_CLIENT_ID", "");
     std::string clientSecret = envOr("CTRADER_CLIENT_SECRET", "");
     std::string accessToken = envOr("CTRADER_ACCESS_TOKEN", "");
@@ -336,7 +343,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -361,10 +368,24 @@ int main(int argc, char** argv) {
                                   : std::strtoll(e.asString().c_str(), nullptr, 10);
       if (id > 0 && id != accountId) extraIds.push_back(id);
     }
-    engine.setCredentials(host.empty() ? "live.ctraderapi.com" : host,
-                          clientId, clientSecret, accessToken, accountId,
+    // HOST PIN (Phase 3). A sidecar deployed to serve ONE broker host refuses a
+    // /connect that names another. Node already routes by host, but routing is
+    // a property of the caller being correct; this is the property that survives
+    // a caller being wrong — a mis-set EXEC_URL_DEMO, a hand-rolled curl, a
+    // future call site nobody has written yet. Without it the request would not
+    // fail: setCredentials would SUCCEED, tear down the session every other
+    // account is trading on, and reconnect to the wrong broker.
+    //
+    // Unset CTRADER_HOST = unpinned = today's deployment, byte-for-byte.
+    if (!connectHostAllowed(pinnedHost, host)) {
+      logLine("REFUSED /connect for host '" + host + "' — this sidecar is pinned to '" + pinnedHost + "'");
+      return {400, "{\"error\":\"host mismatch: this sidecar serves '" + pinnedHost +
+                   "' and cannot switch to '" + host + "'\"}"};
+    }
+    const std::string useHost = effectiveConnectHost(pinnedHost, host);
+    engine.setCredentials(useHost, clientId, clientSecret, accessToken, accountId,
                           extraIds);
-    logLine("credentials updated via /connect (" +
+    logLine("credentials updated via /connect for " + useHost + " (" +
             std::to_string(1 + extraIds.size()) + " account(s) requested)");
 
     // (Re)start the VPO tick feed against the freshly pushed session — the
