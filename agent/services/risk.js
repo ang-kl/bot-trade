@@ -16,6 +16,7 @@
 import { getState } from '../db.js'
 import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { sizingBalance } from '../lib/sizing-balance.js'
+import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
@@ -1045,7 +1046,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   if (config.symbolCooldownMinutes > 0) {
     const lastClosed = db
       .prepare(
-        `SELECT closed_at FROM trades
+        `SELECT closed_at, net_pnl FROM trades
          WHERE status = 'closed' AND symbol = ? AND closed_at IS NOT NULL
          ORDER BY closed_at DESC LIMIT 1`
       )
@@ -1056,6 +1057,22 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
         const mins = Math.ceil((unlockAt - Date.now()) / 60_000)
         checks.symbol_cooldown_wait = mins
         return veto(`symbol_cooldown wait=${mins}m`, checks, proposal)
+      }
+      // THE ENTRY THE SHORT WINDOW LET THROUGH. Nothing above this line
+      // changes: the gate has already decided to allow, and it still allows.
+      // What was missing was any record that a LONGER window — the one this
+      // system ships with — would have refused. Two JPN225 re-entries 38 and
+      // 37 minutes after a loss cost −$10,487.68, and the only trace either
+      // left was an approval like any other. Recorded, never enforced.
+      const cf = cooldownCounterfactual({
+        lastCloseAt: lastClosed.closed_at,
+        lastNetPnl: lastClosed.net_pnl,
+        configuredMin: config.symbolCooldownMinutes,
+      })
+      if (cf.note) {
+        checks.symbol_cooldown_counterfactual = cf.note
+        checks.symbol_cooldown_would_block_at_default = true
+        checks.symbol_cooldown_minutes_since_loss = cf.minutesSince
       }
     }
   }
