@@ -178,10 +178,17 @@ export const DEFAULT_RISK_CONFIG = {
   minLotSize: 0.01,                // Broker minimum lot size.
   maxConsecutiveLosses: 3,         // After N losses in a row → cooldown.
   cooldownMinutes: 60,             // Cool-off window after hitting the streak.
-  symbolCooldownMinutes: 240,      // Per-symbol lock after ANY closed trade on
-                                   // that symbol (freqtrade "CooldownPeriod").
-                                   // Stops instant re-entry into the same
-                                   // broken level after a stop-out.
+  // OWNER DECISION 2026-08-06: 240 → 60, and the gate is now LOSS-ONLY and
+  // ACCOUNT-SCOPED (step 4b). 240 was the borrowed freqtrade "CooldownPeriod"
+  // default and was never measured against this book. 60 is: it refuses both
+  // JPN225 re-entries that cost −$10,487.68 (gaps 38.1 and 36.6 min) and is the
+  // smallest value that does, which matters because everything above it is
+  // unpaid-for restriction on a system whose entry breadth was the other half
+  // of the same audit finding.
+  symbolCooldownMinutes: 60,       // Per-symbol lock after a LOSING trade on
+                                   // that symbol, on this account. Stops
+                                   // instant re-entry into the same broken
+                                   // level after a stop-out.
   maxOpenPositions: 5,             // Hard cap on concurrent positions.
   equityStopPct: null,             // Daily-drawdown EQUITY STOP: when today's
                                    // realized PnL breaches -(balance × pct),
@@ -1042,21 +1049,57 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // ---- 4b. Per-symbol re-entry cooldown -----------------------------------
   // A signal zone persists after knocking us out, so without this the very
   // next loop re-enters the same broken level. Locks the symbol for
-  // symbolCooldownMinutes after its most recent closed trade.
+  // symbolCooldownMinutes after its most recent LOSING trade ON THIS ACCOUNT.
+  //
+  // OWNER DECISION, 2026-08-06: "proceed with loss-only and account-scoped
+  // cooldown" alongside symbolCooldownMinutes 5 → 60. The two halves are one
+  // decision and must be read together:
+  //
+  //   LOSS-ONLY. The gate used to fire after ANY close, so a symbol that had
+  //   just PAID was locked exactly as long as one that stopped us out. The
+  //   hazard this guard exists for is re-entering the level that knocked us
+  //   out; re-entering a working trend is not that hazard. On a book whose
+  //   entry breadth was the other half of the 2026-08-06 audit finding,
+  //   locking winners was unpaid-for restriction.
+  //
+  //   ACCOUNT-SCOPED. It used to have no account_id clause at all, so a close
+  //   on 43097342 locked the same symbol on 46130058 and on the live account.
+  //   The consecutive-loss breaker directly above (step 2) has always been
+  //   scoped; this was the outlier, and across five enabled accounts the
+  //   difference is large. Same clause shape as step 2 and the reconciler:
+  //   NULL-account legacy rows belong to the current account only.
+  //
+  // BOTH NARROWINGS WEAKEN THE GATE ON THEIR OWN, and were approved together
+  // with a 12× longer window. 60 minutes refuses both JPN225 re-entries that
+  // cost −$10,487.68 (gaps of 38.1 and 36.6 minutes); the old 5-minute setting
+  // refused neither, however broadly it was scoped. Breadth was never what was
+  // wrong with it.
   if (config.symbolCooldownMinutes > 0) {
-    const lastClosed = db
+    const lastLoss = db
       .prepare(
         `SELECT closed_at, net_pnl FROM trades
          WHERE status = 'closed' AND symbol = ? AND closed_at IS NOT NULL
+           AND net_pnl IS NOT NULL AND net_pnl < 0
+           AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
          ORDER BY closed_at DESC LIMIT 1`
       )
-      .get(proposal.symbol)
+      .get(proposal.symbol, acct, acct)
+    // A close whose realised P&L has not arrived yet is UNKNOWN, not a win.
+    // `unknown_daily_pnl` is the guard that owns that condition and it blocks
+    // account-wide; duplicating the judgement here would either double-block or
+    // silently disagree with it. `net_pnl IS NOT NULL` keeps this gate to the
+    // question it can answer.
+    const lastClosed = lastLoss
     if (lastClosed?.closed_at) {
       const unlockAt = new Date(lastClosed.closed_at).getTime() + config.symbolCooldownMinutes * 60_000
       if (unlockAt > Date.now()) {
         const mins = Math.ceil((unlockAt - Date.now()) / 60_000)
         checks.symbol_cooldown_wait = mins
-        return veto(`symbol_cooldown wait=${mins}m`, checks, proposal)
+        checks.symbol_cooldown_last_loss = lastClosed.net_pnl
+        return veto(
+          `symbol_cooldown wait=${mins}m after=${Number(lastClosed.net_pnl).toFixed(2)} account=${acct ?? 'all'}`,
+          checks, proposal,
+        )
       }
       // THE ENTRY THE SHORT WINDOW LET THROUGH. Nothing above this line
       // changes: the gate has already decided to allow, and it still allows.

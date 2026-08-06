@@ -23,7 +23,10 @@ test('the JPN225 re-entry the 5-minute window allowed and the default would not'
   assert.equal(cf.minutesSince, 38)
   assert.equal(cf.wouldBlockAtDefault, true)
   assert.match(cf.note, /configured 5m/)
-  assert.match(cf.note, /default of 240m would have REFUSED/)
+  // The default became 60 on 2026-08-06 (owner). 60 still refuses this
+  // re-entry — that is exactly why 60 was the number chosen — so the incident
+  // stays pinned; only the figure quoted in the sentence moves.
+  assert.match(cf.note, /default of 60m would have REFUSED/)
   assert.match(cf.note, /loss of \$1,315\.92, 38m ago/)
 })
 
@@ -77,9 +80,10 @@ test('past the default window, both agree and nothing is said', () => {
 
 test('exactly at the default boundary the default would NOT have blocked', () => {
   const cf = cooldownCounterfactual({
-    lastCloseAt: '2026-08-03T20:15:36Z', lastNetPnl: -100, configuredMin: 5, nowMs: at(240),
+    lastCloseAt: '2026-08-03T20:15:36Z', lastNetPnl: -100, configuredMin: 5, nowMs: at(60),
   })
-  assert.equal(cf.wouldBlockAtDefault, false, '240m elapsed on a 240m window is unlocked')
+  assert.equal(cf.wouldBlockAtDefault, false, '60m elapsed on a 60m window is unlocked')
+  assert.equal(DEFAULT_SYMBOL_COOLDOWN_MIN, 60, 'and the default really is 60')
 })
 
 test('no close history yields a shaped result, not a throw', () => {
@@ -168,4 +172,74 @@ test('inside the CONFIGURED window the veto still fires, unchanged', async () =>
   // The counterfactual is for entries that got THROUGH; a refusal needs no
   // second opinion about a longer window that would also have refused.
   assert.equal(v.checks.symbol_cooldown_counterfactual, undefined)
+})
+
+// ---------------------------------------------------------------------------
+// OWNER DECISION 2026-08-06 — the cooldown is LOSS-ONLY and ACCOUNT-SCOPED
+// ---------------------------------------------------------------------------
+
+test('a WIN two minutes ago does not lock the symbol', async () => {
+  // It used to. The gate fired after ANY close, so a symbol that had just paid
+  // was locked exactly as long as one that stopped us out.
+  const { evaluateTrade } = await import('../services/risk.js')
+  const db = dbWithClosedTrade({ closedAt: new Date(Date.now() - 2 * 60_000).toISOString(), netPnl: 900 })
+  const v = evaluateTrade(db, { symbol: 'JPN225', bias: 'short', entry: 40000, sl: 40400, tp1: 39400, accountId: '43097342' })
+  assert.ok(!/symbol_cooldown/.test(v.veto_reason || ''), v.veto_reason || '(approved)')
+})
+
+test('a LOSS two minutes ago still locks it, and the veto names the loss', async () => {
+  const { evaluateTrade } = await import('../services/risk.js')
+  const db = dbWithClosedTrade({ closedAt: new Date(Date.now() - 2 * 60_000).toISOString(), netPnl: -1315.92 })
+  const v = evaluateTrade(db, { symbol: 'JPN225', bias: 'short', entry: 40000, sl: 40400, tp1: 39400, accountId: '43097342' })
+  assert.equal(v.approved, false)
+  assert.match(v.veto_reason, /symbol_cooldown wait=\d+m after=-1315\.92 account=43097342/)
+  assert.equal(v.checks.symbol_cooldown_last_loss, -1315.92)
+})
+
+test('the most recent WIN does not hide an older loss still inside the window', async () => {
+  // The query takes the latest LOSS, not the latest close. A win logged after a
+  // loss must not unlock the level the loss was taken at.
+  const { evaluateTrade } = await import('../services/risk.js')
+  const db = dbWithClosedTrade({ closedAt: new Date(Date.now() - 4 * 60_000).toISOString(), netPnl: -800 })
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, closed_at, net_pnl, account_id)
+     VALUES ('JPN225', 'sell', 'closed', ?, 120, '43097342')`
+  ).run(new Date(Date.now() - 1 * 60_000).toISOString())
+  const v = evaluateTrade(db, { symbol: 'JPN225', bias: 'short', entry: 40000, sl: 40400, tp1: 39400, accountId: '43097342' })
+  assert.equal(v.approved, false)
+  assert.match(v.veto_reason, /after=-800\.00/)
+})
+
+test("ANOTHER account's loss no longer locks this account's symbol", async () => {
+  // It did, for the whole life of this gate: the query had no account_id
+  // clause, so a close on 43097342 locked JPN225 on 46130058 and on live.
+  const { evaluateTrade } = await import('../services/risk.js')
+  const db = dbWithClosedTrade({ closedAt: new Date(Date.now() - 2 * 60_000).toISOString(), netPnl: -1315.92 })
+  db.prepare("INSERT OR REPLACE INTO accounts (account_id, is_live, enabled) VALUES ('46130058', 0, 1)").run()
+  setState(db, 'acct:46130058:account_balance_usd', '50000')
+  const v = evaluateTrade(db, { symbol: 'JPN225', bias: 'short', entry: 40000, sl: 40400, tp1: 39400, accountId: '46130058' })
+  assert.ok(!/symbol_cooldown/.test(v.veto_reason || ''), v.veto_reason || '(approved)')
+})
+
+test('a close with NO realised P&L yet is unknown, not a win — and does not lock', async () => {
+  // `unknown_daily_pnl` owns that condition and blocks account-wide; judging it
+  // again here would either double-block or silently disagree with it.
+  const { evaluateTrade } = await import('../services/risk.js')
+  const db = dbWithClosedTrade({ closedAt: new Date(Date.now() - 2 * 60_000).toISOString(), netPnl: null })
+  const v = evaluateTrade(db, { symbol: 'JPN225', bias: 'short', entry: 40000, sl: 40400, tp1: 39400, accountId: '43097342' })
+  assert.ok(!/symbol_cooldown/.test(v.veto_reason || ''), v.veto_reason || '(approved)')
+})
+
+test('AT 60 MINUTES the two JPN225 re-entries that cost -$10,487.68 are refused', async () => {
+  // The whole point of choosing 60. Gaps were 38.1 and 36.6 minutes.
+  const { evaluateTrade } = await import('../services/risk.js')
+  for (const gapMin of [38, 37]) {
+    const db = dbWithClosedTrade({ closedAt: new Date(Date.now() - gapMin * 60_000).toISOString(), netPnl: -1315.92 })
+    setState(db, 'risk_config_json', JSON.stringify({
+      symbolCooldownMinutes: 60, dailyLossLimit: 1e9, dailyLossPct: 0.99, maxConsecutiveLosses: 0,
+    }))
+    const v = evaluateTrade(db, { symbol: 'JPN225', bias: 'short', entry: 40000, sl: 40400, tp1: 39400, accountId: '43097342' })
+    assert.equal(v.approved, false, `gap ${gapMin}m must be refused at 60m`)
+    assert.match(v.veto_reason, /symbol_cooldown wait=/)
+  }
 })
