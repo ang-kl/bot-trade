@@ -4005,26 +4005,42 @@ async function runLoop(db) {
       // Stamped BEFORE the work, not after. A pass that throws half way must
       // not re-run on the very next loop and re-throw forever — the retention
       // deletes are the expensive part and a crash loop over them would be
-      // worse than skipping one window. Every step below is individually
-      // try/caught anyway, so a partial pass still makes progress.
+      // worse than skipping one window.
+      //
+      // THE COMMENT HERE USED TO CLAIM "every step below is individually
+      // try/caught anyway, so a partial pass still makes progress", and the
+      // eight deletes immediately following it were not. So one throw skipped
+      // everything after it — including the §70.8 disposition sweep — and
+      // stamp-before-work kept it skipped for the next eight hours. Measured
+      // in production on 2026-08-06, after #668's cadence fix had deployed:
+      // 55,443 approvals, not one settled. runHousekeepingSteps makes the old
+      // comment true rather than deleting it.
       setState(db, LAST_RUN_KEY, new Date().toISOString())
       const cutoff30d = new Date(Date.now() - 30 * 86400_000).toISOString()
       const cutoff90d = new Date(Date.now() - 90 * 86400_000).toISOString()
-      const d1 = db.prepare('DELETE FROM scans WHERE scanned_at < ?').run(cutoff30d)
-      const d2 = db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d)
-      const d3 = db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d)
-      const d4 = db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d)
-      const { pruneDecisionLog } = await import('./services/decision-log.js')
-      const d5 = pruneDecisionLog(db)
-      const { prunePositionEvents } = await import('./services/position-events.js')
-      const d6 = prunePositionEvents(db)
-      // Long-horizon ledger retention (hardening 6c): closed trades +
-      // postmortems past ~2 years (retention_json overrides; null disables).
-      const { pruneTradeHistory, pruneOperationalTables } = await import('./services/retention.js')
-      const d7 = pruneTradeHistory(db)
-      // Owner-approved 01-08 ("approve retention") — the three tables that
-      // grew production's DB to 526MB, cup_handle_diagnostics alone 40%.
-      const d8 = pruneOperationalTables(db)
+      const { runHousekeepingSteps, changesOf } = await import('./services/housekeeping-run.js')
+      const pass = await runHousekeepingSteps([
+        { name: 'prune-scans', run: () => db.prepare('DELETE FROM scans WHERE scanned_at < ?').run(cutoff30d) },
+        { name: 'prune-signals', run: () => db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d) },
+        { name: 'prune-regimes', run: () => db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d) },
+        { name: 'prune-risk-events', run: () => db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d) },
+        { name: 'prune-decision-log', run: async () => (await import('./services/decision-log.js')).pruneDecisionLog(db) },
+        { name: 'prune-position-events', run: async () => (await import('./services/position-events.js')).prunePositionEvents(db) },
+        // Long-horizon ledger retention (hardening 6c): closed trades +
+        // postmortems past ~2 years (retention_json overrides; null disables).
+        { name: 'prune-trade-history', run: async () => (await import('./services/retention.js')).pruneTradeHistory(db) },
+        // Owner-approved 01-08 ("approve retention") — the three tables that
+        // grew production's DB to 526MB, cup_handle_diagnostics alone 40%.
+        { name: 'prune-operational', run: async () => (await import('./services/retention.js')).pruneOperationalTables(db) },
+      ], { log })
+      const d1 = pass.results['prune-scans']
+      const d2 = pass.results['prune-signals']
+      const d3 = pass.results['prune-regimes']
+      const d4 = pass.results['prune-risk-events']
+      const d5 = pass.results['prune-decision-log'] ?? 0
+      const d6 = pass.results['prune-position-events'] ?? 0
+      const d7 = pass.results['prune-trade-history'] ?? {}
+      const d8 = pass.results['prune-operational'] ?? {}
       // Phase-flag tracer rows: tiny, but unbounded is unbounded. 90 days
       // matches risk_events — flips older than that are history, not evidence.
       try { db.prepare("DELETE FROM phase_flag_trace WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
@@ -4160,18 +4176,23 @@ async function runLoop(db) {
       }
 
       try {
-        const { sweepDispositions } = await import('./services/opportunity-disposition.js')
-        const sw = sweepDispositions(db)
+        const { drainDispositions } = await import('./services/opportunity-disposition.js')
+        // DRAIN, not one batch. A single sweep settles at most 5,000 rows and
+        // this pass runs every eight hours, so production's 55,443-row backlog
+        // would have taken four days to become visible.
+        const sw = drainDispositions(db)
         if (sw.written > 0) {
-          log(`Dispositions: settled ${sw.written} of ${sw.scanned} (${JSON.stringify(sw.counts)}), ${sw.pending} still in flight`)
+          log(`Dispositions: settled ${sw.written} of ${sw.scanned} in ${sw.batches} batch(es) (${JSON.stringify(sw.counts)}), ${sw.pending} still in flight`)
         }
+        if (!sw.drained) log(`Dispositions: batch cap reached — backlog NOT fully settled, another pass will continue`)
         if (sw.counts.dropped > 0) {
           // The §70.8 finding itself: the gate said yes and nothing acted.
           log(`§70.8 SILENT GAP: ${sw.counts.dropped} approval(s) produced no order — see GET /state/dispositions`)
         }
       } catch (e) { log('Disposition sweep failed (non-fatal):', e.message) }
 
-      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades} old trades, ${d7.postmortems + d7.orphanPostmortems} postmortems, ${d8.cupHandle} cup-handle diags, ${d8.analyses} analyses, ${d8.actionLog} action-log rows`)
+      log(`Housekeeping: pruned ${changesOf(d1)} scans, ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows`
+        + (pass.failed.length ? ` — ${pass.failed.length} step(s) FAILED: ${pass.failed.map(f => f.name).join(', ')}` : ''))
     } catch (err) {
       log('Housekeeping error:', err.message)
     }

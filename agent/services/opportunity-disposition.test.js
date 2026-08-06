@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import {
   DISPOSITIONS, DEFAULT_GRACE_MIN, dispositionFor,
-  sweepDispositions, recordSubmitted, dispositionReport,
+  sweepDispositions, drainDispositions, recordSubmitted, dispositionReport,
 } from './opportunity-disposition.js'
 
 const RECEIPT = JSON.stringify({ pending_order_placed: true, orderId: 352974283 })
@@ -228,4 +228,49 @@ test('account=all is the portfolio read, NOT an account named "all"', () => {
   // from `all` only because `all` above is non-empty.
   const none = dispositionReport(db, { account: '99999999' })
   assert.deepEqual(none.counts, {})
+})
+
+// ---------------------------------------------------------------------------
+// The drain — one batch was not enough
+// ---------------------------------------------------------------------------
+
+test('drainDispositions settles a backlog larger than one batch', () => {
+  // THE PRODUCTION CASE, in miniature. On 2026-08-06 `/state/dispositions`
+  // reported 55,443 unsettled approvals. The sweep caps at `limit` rows per
+  // call and housekeeping runs every eight hours, so at 5,000 a pass the
+  // backlog needed four days to become readable — and until then the §70.8
+  // finding was invisible for exactly the rows it is about.
+  const db = fresh()
+  for (let i = 0; i < 25; i++) riskEvent(db, { minsAgo: 60, symbol: `SYM${i}` })
+
+  const one = sweepDispositions(db, { limit: 10 })
+  assert.equal(one.written, 10, 'a single sweep is capped')
+
+  const out = drainDispositions(db, { limit: 10 })
+  assert.equal(out.written, 15, 'the drain finishes the remaining rows')
+  assert.ok(out.batches >= 2)
+  assert.equal(out.drained, true)
+  assert.equal(out.counts.dropped, 15)
+
+  const left = db.prepare('SELECT COUNT(*) AS n FROM risk_events WHERE disposition IS NULL').get().n
+  assert.equal(left, 0)
+})
+
+test('the drain stops at its cap and SAYS so rather than reading as complete', () => {
+  const db = fresh()
+  for (let i = 0; i < 20; i++) riskEvent(db, { minsAgo: 60, symbol: `S${i}` })
+  const out = drainDispositions(db, { limit: 5, maxBatches: 2 })
+  assert.equal(out.written, 10)
+  assert.equal(out.drained, false, 'a truncated drain must not claim it drained')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_events WHERE disposition IS NULL').get().n, 10)
+})
+
+test('the drain terminates when everything left is still in flight', () => {
+  const db = fresh()
+  riskEvent(db, { minsAgo: 1 })
+  const out = drainDispositions(db)
+  assert.equal(out.written, 0)
+  assert.equal(out.pending, 1)
+  assert.equal(out.batches, 1, 'no repeated queries for the same answer')
+  assert.equal(out.drained, true)
 })

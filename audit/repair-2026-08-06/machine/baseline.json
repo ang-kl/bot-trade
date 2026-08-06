@@ -1,0 +1,54 @@
+{
+  "frozenAt": "2026-08-06T07:39:20Z",
+  "sha": "9101eb4b206d5cbafc155c75cd68aaa9ba5f96c5",
+  "branch": "claude/handover-outstanding-file-1ktjs7",
+  "node": "v22.22.2",
+  "npm": "10.9.7",
+  "cxx": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "commands": [
+    {
+      "cmd": "node --test agent/**/*.test.js",
+      "exit": 1,
+      "pass": 2841,
+      "fail": 1,
+      "note": "agent/services/vpo-feeder.test.js 'skips when cTrader credentials are not ready' — real network call, fails 'fetch failed' in this sandbox. Pre-existing; identical with a clean tree."
+    },
+    { "cmd": "npx eslint .", "exit": 0 },
+    { "cmd": "npx vitest run", "exit": 0, "files": 59, "tests": 755 },
+    { "cmd": "npm run build", "exit": 0 },
+    { "cmd": "npm run check:no-green", "exit": 0 },
+    { "cmd": "make -C cpp-exec clean && make -C cpp-exec CXX=g++ test", "exit": 0 },
+    {
+      "cmd": "node agent/scripts/backtest-parity.mjs",
+      "exit": 2,
+      "note": "first run only: 'make clean' had removed cpp-exec/bin, so the script had no binary to compare against. Re-run after a full build — see backtest-parity in this file's sibling logs."
+    },
+    {
+      "cmd": "node agent/scripts/exec-parity.js",
+      "exit": 1,
+      "note": "'fetch failed' — the script needs a running sidecar on 127.0.0.1:8091. Environmental, not a defect. NEVER run with --order."
+    }
+  ],
+  "productionReads": [
+    {
+      "at": "2026-08-06T07:41:18Z",
+      "route": "/state/opportunity-funnel?days=7",
+      "funnel": { "opportunities": 2105, "approved": 34, "ordered": 24, "filled": 19 },
+      "unkeyed": 42220
+    },
+    {
+      "at": "2026-08-06T07:41Z",
+      "route": "/state/dispositions?days=7",
+      "counts": {},
+      "pendingNow": 55417
+    },
+    {
+      "at": "2026-08-06T07:43:48Z",
+      "route": "/state/dispositions?days=7",
+      "counts": {},
+      "pendingNow": 55443,
+      "note": "agent restarted 07:38:17Z, i.e. after #668 deployed. Empty counts with a rising backlog is finding R3-1."
+    }
+  ],
+  "liveActions": "none"
+}
