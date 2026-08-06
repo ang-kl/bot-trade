@@ -15,6 +15,7 @@
 
 import { getState } from '../db.js'
 import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
+import { sizingBalance } from '../lib/sizing-balance.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
@@ -685,9 +686,28 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // stamped, legacy global keys otherwise) so caps size off the right equity.
   const balance = getAccountBalance(db, acct)
   const leverage = getAccountLeverage(db, config, acct)
+  // WHOSE BALANCE IS THIS? (owner, 06-08-2026, two screenshots.) The same
+  // 5,000-unit 0003.HK position sat on a USD 46,073 account and a USD 1,984
+  // one — 0.3% of one account's budget and 7.5x the other's. getAccountBalance
+  // falls back to the LEGACY GLOBAL key when an account has no stamp of its
+  // own, and that key is, in its own comment, "whatever account refreshed it
+  // last". For a display that is wrong; for SIZING it multiplies every
+  // configured risk percentage by the ratio between two accounts, invisibly,
+  // because every downstream number is computed from the same wrong balance
+  // and therefore agrees with itself.
+  //
+  // Recorded here, NOT yet gating. Turning this into a veto would stop entries
+  // on any account whose per-account balance has not been stamped, which is a
+  // trading-behaviour change and therefore the owner's decision — see
+  // audit/repair-2026-08-06/01-sizing-incident.md. What ships now is the
+  // evidence: every verdict says which account the balance belonged to.
+  const bal = sizingBalance(db, acct)
   const checks = {
     balance, leverage, account_id: acct,
     account_source: acctExplicit ? 'proposal' : 'selected',
+    balance_source: bal.source,
+    balance_is_account_scoped: bal.ok,
+    ...(bal.ok ? {} : { balance_scope_warning: bal.reason }),
   }
 
   // MARKET PULSE — ADVISORY, recorded, never gating.
