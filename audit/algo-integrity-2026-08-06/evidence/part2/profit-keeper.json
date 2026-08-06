@@ -1,0 +1,1 @@
+{"config":{"on":true,"scope":"all","mode":"adaptive","atrTimeframe":"1h","atrPeriod":14,"armAtrMult":1,"armBalancePct":0.01,"trailAtrMult":2.5,"scaleOutFrac":0,"spikeTightenEnabled":true,"spikeRangeAtrMult":2,"spikeTrailAtrMult":1,"spikeBars":3,"armProfitUsd":50,"givebackPct":40,"takeProfitUsd":null}}
