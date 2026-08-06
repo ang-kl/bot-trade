@@ -190,8 +190,19 @@ defensible controls whose combination has a behaviour neither intends.
   behind eight unguarded retention steps; one throw skipped it and the
   stamp-before-work schedule kept it skipped for eight hours at a time. Fixed
   today (#670/#671); first pass under the fixed code is 15:09 UTC.
-- **Two of our own tables disagree about position size** — `trades` says 83.14
-  and 3.45 where the broker holds 5,000 and 62 units.
+- ~~**Two of our own tables disagree about position size** — `trades` says 83.14
+  and 3.45 where the broker holds 5,000 and 62 units.~~ **CORRECTED
+  2026-08-06.** Those numbers are *consistent*: `trades.volume` is LOTS, the
+  broker reports UNITS, and 5,000 ÷ ~60 units-per-lot ≈ 83 (0005.HK: 62 ÷ ~18
+  ≈ 3.45). Nothing was mis-sized at entry. The real defect is on the READ side
+  and is narrower: the system holds **two independent definitions of a lot** —
+  the broker's own `lotSize` on the order path, and the hardcoded
+  `contractSize()` table on the reconcile path, which returns **1** for every
+  unlisted symbol including all `.HK` names. An *adopted* 0003.HK position
+  would therefore be recorded as 5,000 lots rather than 83, and that figure
+  feeds `notionalUsd` and the margin gate. Fixed by single-sourcing the
+  definition from the broker (`agent/lib/lot-size-registry.js`); the
+  disagreement is now readable at `GET /state/lot-size-parity`.
 - Until #671 shipped this morning, **no route could say who set a risk limit**.
   The §1.2 provenance block is the first time that question was answerable in one
   read.
@@ -220,8 +231,12 @@ All threshold changes are labelled as the prompt requires. None has been applied
 5. Make the protection audit's staleness loud — alert when the last verified
    reading exceeds a threshold, and surface it beside the heartbeat that
    currently contradicts it.
-6. Resolve the `trades` vs `monitored_positions` volume disagreement; the risk
-   gate reasons about a number the broker does not hold.
+6. ~~Resolve the `trades` vs `monitored_positions` volume disagreement; the risk
+   gate reasons about a number the broker does not hold.~~ **DONE, and the
+   framing was wrong** — see the correction in §4. There was no table
+   disagreement; there were two definitions of a lot. Single-sourced from the
+   broker's declaration, with `GET /state/lot-size-parity` to show where the old
+   hardcoded table would still have been used and by what multiple it was out.
 7. Make the cooldown veto print its own counterfactual (`configured 5m; last loss
    −$1,315 on this symbol 38m ago`) so a short window reads as a choice.
 
