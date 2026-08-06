@@ -33,6 +33,9 @@
 // so "housekeeping ran" stops being a claim and becomes a list.
 // ---------------------------------------------------------------------------
 
+import { getState } from '../db.js'
+import { housekeepingDue, LAST_RUN_KEY, DEFAULT_INTERVAL_MS } from './housekeeping-due.js'
+
 /**
  * Run housekeeping steps, isolating each one.
  *
@@ -72,4 +75,37 @@ export async function runHousekeepingSteps(steps, { log } = {}) {
 export function changesOf(result) {
   const n = Number(result?.changes)
   return Number.isFinite(n) ? n : 0
+}
+
+/**
+ * What the last housekeeping pass actually did — for a read-only route.
+ *
+ * PR #670 established the mechanism (an unguarded step cancels every later
+ * step, including the disposition sweep) but could not name the failing step,
+ * because housekeeping's only output was console logging that no route can
+ * query. The consequence was visible in the numbers: `/state/dispositions`
+ * answered `counts {}` with a rising backlog and nothing on the wire could say
+ * whether the sweep had run and failed, or simply never run.
+ *
+ * `dueIn` is the other half of that question. The schedule stamp is written
+ * before the work, so a pass that failed at 04:00 cannot try again until
+ * 12:00 — and "the fix is deployed but the window has not come round" reads
+ * identically to "the fix did not work" unless the next window is stated.
+ *
+ * @returns {{lastAt: string|null, nextDueAt: string|null, dueInMs: number|null,
+ *   due: boolean, lastResult: object|null}}
+ */
+export function housekeepingStatus(db, nowMs = Date.now()) {
+  let lastAt = null, lastResult = null
+  try { lastAt = getState(db, LAST_RUN_KEY) || null } catch { lastAt = null }
+  try { lastResult = JSON.parse(getState(db, 'housekeeping_last_result_json') || 'null') } catch { lastResult = null }
+  const t = lastAt ? Date.parse(String(lastAt)) : NaN
+  const nextMs = Number.isFinite(t) ? t + DEFAULT_INTERVAL_MS : null
+  return {
+    lastAt,
+    nextDueAt: nextMs != null ? new Date(nextMs).toISOString() : null,
+    dueInMs: nextMs != null ? Math.max(0, nextMs - nowMs) : null,
+    due: housekeepingDue(lastAt, nowMs),
+    lastResult,
+  }
 }

@@ -1160,10 +1160,18 @@ export default function stateRouter(db) {
   router.get('/dispositions', async (req, res) => {
     try {
       const { dispositionReport } = await import('../services/opportunity-disposition.js')
-      res.json(dispositionReport(db, {
-        days: req.query.days,
-        account: req.query.account != null && req.query.account !== '' ? String(req.query.account) : null,
-      }))
+      const { housekeepingStatus } = await import('../services/housekeeping-run.js')
+      res.json({
+        ...dispositionReport(db, {
+          days: req.query.days,
+          account: req.query.account != null && req.query.account !== '' ? String(req.query.account) : null,
+        }),
+        // WHY IS `counts` EMPTY? Before this, that question had no answer on
+        // any read route — the sweep runs inside housekeeping, and housekeeping
+        // only ever spoke to the console. An empty report now says whether the
+        // pass has run, when it next can, and which steps failed.
+        housekeeping: housekeepingStatus(db),
+      })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -2817,10 +2825,32 @@ export default function stateRouter(db) {
   router.get('/risk-full', async (req, res) => {
     try {
       const { DEFAULT_RISK_CONFIG, loadRiskConfig, getAccountBalance, getAccountLeverage, accountRiskOverlay } = await import('../services/risk.js')
+      const { accountKnown, effectiveRiskEntries, unknownQueryParams } = await import('../services/risk-effective.js')
+      // STRICT PARAMETERS. This route used to read `?account=` and ignore
+      // everything else, so `?accountId=47790949` returned the GLOBAL config
+      // presented as an answer about that account — which is how the audit
+      // came to report `minRR 1.5` for accounts gated at 4.5–6.16. A
+      // parameter this route does not understand is now a 400, because
+      // answering a question nobody asked, in the shape of the one they did,
+      // is the failure mode being repaired.
+      const unknown = unknownQueryParams(req.query, ['account'])
+      if (unknown.length) {
+        return res.status(400).json({
+          error: 'unsupported query parameter(s)',
+          unsupported: unknown,
+          supported: ['account'],
+          hint: 'Use ?account=<id> for one account, or omit it for the global configuration.',
+        })
+      }
       // ?account=<id> resolves the config THAT ACCOUNT actually trades under —
       // the global config with its overlay merged on top. Without it the
       // global config is returned exactly as before.
       const acct = req.query?.account ? String(req.query.account) : null
+      // THREE STATES, NOT TWO. "no account named", "a known account" and "an
+      // account id the registry has never heard of" produced identical bodies
+      // before this, so a typo'd id read as plausible numbers belonging to
+      // nobody. `null` means the registry itself could not be read.
+      const known = accountKnown(db, acct)
       const effective = loadRiskConfig(db, acct)
       const overridden = Object.keys(DEFAULT_RISK_CONFIG).filter(
         k => JSON.stringify(effective[k]) !== JSON.stringify(DEFAULT_RISK_CONFIG[k])
@@ -2851,6 +2881,15 @@ export default function stateRouter(db) {
           scopedTo: acct,
           overlayKeys,
           global: acct ? globalCfg : null,
+          // WHICH of the three scope states this answer is in. `unknown_account`
+          // is the one worth having: the numbers below are the global config,
+          // and they belong to no account.
+          accountScope: acct == null ? 'global' : known === false ? 'unknown_account' : known === true ? 'account' : 'account_unverified',
+          // Per key: global, overlay, effective, and where the overlay came
+          // from. Provenance is READ from the change history, never invented —
+          // `source: 'unknown'` and `writtenAt: null` mean nothing recorded it.
+          // `reason` is null for every key because nothing records one today.
+          provenance: effectiveRiskEntries(db, acct),
         },
         account: {
           // Balance and leverage follow the same scope: an account's risk is

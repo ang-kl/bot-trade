@@ -149,3 +149,51 @@ rule is that a defect must be reproduced before it is repaired:
 
 **Deployment status:** not deployed at the time of writing. **No live trading
 action was taken.**
+
+---
+
+## Addendum, 08:20 UTC — the fix deployed, and the report is still empty
+
+PR #670 merged and deployed (agent restart 08:09:58Z). Read at 08:12:
+
+```
+GET /state/dispositions?days=7   counts {}   pendingNow 55,608
+```
+
+**This is expected, and it is the self-renewing part of R3-1 showing itself
+one last time.** The schedule stamp is written before the work, so whichever
+earlier pass failed also consumed the window: the next attempt cannot happen
+until eight hours after that stamp. The fix is in the process; the process is
+waiting for its turn.
+
+That produces a new, smaller problem — "deployed but not due yet" and "deployed
+and still broken" read identically from outside, and the failing step's name
+goes to `console.log`, which no route can query.
+
+### R3-3 — the housekeeping outcome was not observable from any read route
+
+**Classification:** `OBSERVABILITY FIX` · **Status:** reproduced (I hit it
+myself, twice, within an hour of shipping the fix it was meant to verify)
+
+`housekeepingStatus(db)` persists and serves the pass outcome, and
+`/state/dispositions` now carries it:
+
+```json
+"housekeeping": {
+  "lastAt": "2026-08-06T04:12:00.000Z",
+  "nextDueAt": "2026-08-06T12:12:00.000Z",
+  "dueInMs": 14040000,
+  "due": false,
+  "lastResult": {
+    "at": "…", "ran": 7,
+    "failed": [{"name": "prune-operational", "message": "database is locked"}],
+    "dispositions": {"written": 0, "batches": 1, "drained": true, "pending": 55608}
+  }
+}
+```
+
+So the next reading answers three questions that previously required guessing:
+has the pass run, when can it next run, and which step failed. Tested in
+`housekeeping-run.test.js` — a cold database reports `due: true` with
+`lastResult: null` (never run, **not** "ran and found nothing"), and a pass an
+hour old reports `due: false` with roughly seven hours to go.
