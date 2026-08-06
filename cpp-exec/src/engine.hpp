@@ -31,6 +31,33 @@ enum class AuthErrorAction { Ignore, SkipAccount, KillSession };
 bool isAuthFamilyError(const std::string& code);
 AuthErrorAction authErrorAction(const std::string& code, bool authorizingExtra);
 
+// ---------------------------------------------------------------------------
+// HOST PIN (two-sidecar plan, Phase 3).
+//
+// One ExecEngine holds one host_ for its whole life: setCredentials REPLACES it
+// and tears the session down. So a live and a demo account cannot share a
+// process, and on 05-08 they did not — all four demo accounts sat enabled in
+// the registry and absent from the single sidecar's roster, and no trade opened
+// for twelve hours.
+//
+// Node now routes by host (execBaseFor) and every roster consumer is
+// side-aware. This is the other half: the sidecar REFUSES a /connect that
+// disagrees with the host it was deployed to serve. Enforcement at the
+// boundary, not trust in the caller — the same reasoning as withAccount()
+// making the sidecar's default account unreachable from Node.
+//
+// `pinned` empty = UNPINNED = today's single-sidecar deployment, where anything
+// is allowed and nothing changes. An empty `requested` is allowed too, and the
+// caller substitutes the pin: a pinned sidecar must never fall back to the
+// hardcoded "live.ctraderapi.com" default, which is how a demo process would
+// quietly connect to the LIVE broker.
+//
+// Pure and free-standing so the rule can be tested without a broker socket.
+bool connectHostAllowed(const std::string& pinned, const std::string& requested);
+// The host to actually connect with. Empty result means refuse — callers must
+// consult connectHostAllowed first.
+std::string effectiveConnectHost(const std::string& pinned, const std::string& requested);
+
 namespace pt {
 constexpr int HEARTBEAT               = 51;
 constexpr int APP_AUTH_REQ            = 2100;
