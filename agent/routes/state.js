@@ -1420,10 +1420,22 @@ export default function stateRouter(db) {
   router.get('/protection-audit', async (_req, res) => {
     try {
       const { lastProtectionAudit } = await import('../services/naked-position-guard.js')
+      const { protectionFreshness, maxAgeSecFrom } = await import('../services/protection-freshness.js')
       // Reconcile — and so the audit — runs every 3rd loop.
       const loopMin = Number(getState(db, 'loop_interval_min'))
       const expectedSec = (Number.isFinite(loopMin) && loopMin >= 1 ? loopMin : 5) * 60 * 3
-      res.json(lastProtectionAudit(db, { expectedSec }))
+      const last = lastProtectionAudit(db, { expectedSec })
+      // `freshness` is the SAME verdict the heartbeat panel now shows, computed
+      // from the same function — so this route and /state/heartbeats can no
+      // longer disagree about whether the audit's answer is current. They did,
+      // on 2026-08-06: "ok" here, 174,009 seconds old there.
+      res.json({
+        ...last,
+        freshness: protectionFreshness({
+          at: last.at, lastAttemptAt: last.lastAttemptAt, lastAttemptError: last.lastAttemptError,
+          maxAgeSec: maxAgeSecFrom(db),
+        }),
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
