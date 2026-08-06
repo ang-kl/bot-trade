@@ -1243,6 +1243,14 @@ test('evaluateTrade applies the account overlay even over a pre-loaded configOve
   const { loadRiskConfig } = await import('./risk.js')
   const db = freshDB()
   setBalance(db, 10_000)
+  // Both accounts get their OWN balance stamp. Without it the sizing-scope
+  // guard fires first — correctly, since a named account with no balance of
+  // its own would be sized against the shared key — and this test would be
+  // asserting the wrong veto (owner decision D-1, 06-08-2026).
+  for (const id of ['46130058', '43097342']) {
+    db.prepare('INSERT OR REPLACE INTO agent_state (key, value) VALUES (?, ?)')
+      .run(`acct:${id}:account_balance_usd`, '10000')
+  }
   // The overlay blocks this symbol only for THIS account — visible proof the
   // overlay reached the gate despite the caller passing a global override.
   db.prepare(`INSERT INTO agent_state (key, value) VALUES ('acct:46130058:risk_config_json', ?)`)
