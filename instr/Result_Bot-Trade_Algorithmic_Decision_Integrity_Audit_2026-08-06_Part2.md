@@ -194,11 +194,24 @@ The 7-day veto window aggregates a period when they were toggled off in
 cumulative count as a current condition. That is the same error Part 1 made in a
 different key: **treating an aggregate over a window as a description of now.**
 
-The finding that survives is narrower and still real: **for roughly a day, the
-pending-order engine placed 45 resting orders for a strategy the risk gate was
-refusing on sight, and 49 of 50 expired unfilled.** Nothing checked the strategy toggle
-before arming a pending order, and nothing will stop it recurring the next time a
-strategy is toggled off with orders already resting.
+**SECOND CORRECTION, 2026-08-06 14:35 SGT — the residual finding does not survive
+either.** The paragraph that stood here claimed *"nothing checked the strategy toggle
+before arming a pending order, and nothing will stop it recurring"*. Both halves are
+wrong:
+
+- `pause-disposition.js:222` cancels any working pending order whose strategy is no
+  longer armed, with an explicit `strategy_disarmed` signal and a reason string.
+- `pending-orders.js:277-283` feeds it the live armed set on every pass.
+- `pause-disposition.test.js:172` pins the behaviour.
+
+The mechanism exists, is wired, and is tested. And `expired` is not `cancelled`: the
+49 rows hit their own expiry deadline, which is what a resting order that was never
+touched is supposed to do. Placed while the strategy was armed — which it was, by
+default, throughout — and expired normally.
+
+**There is no defect here.** What is left is an observation with no action attached:
+`fib_confluence` accounts for 45 of 50 pending orders and 1 opened position, which is
+a fill rate worth understanding but is not a bug in the lifecycle.
 
 `GET /state/pending-orders`, account 47790949, 50 rows:
 
@@ -282,6 +295,62 @@ disguised and the next reader deserves the warning.
 
 ---
 
+## 3c. F-CUP-01 — the system diagnosed its own silent strategy, and nobody read it
+
+§3b reported `cup_handle` and `inv_cup_handle` as `silent` — zero signals in seven
+days — and guessed at the 210-bar `minBars`. The guess was unnecessary. **A
+diagnostic for exactly this question already exists**, built 2026-08-05, writing to
+`cup_handle_diagnostics` and served at `GET /state/cup-handle-funnel`. Its output:
+
+```
+window 7d · 1,137,570 traces · 218 symbols
+
+scanned                     1,137,570   stopped 836,790
+trend context holds           300,780
+cup shape valid               300,780   stopped 274,403
+handle length vs cup length    26,377   stopped  13,551
+cup bottom is rounded          12,826   stopped   2,982
+handle retrace within half      9,844   stopped     165
+handle volume below the leg     9,679   stopped     589
+price broke the rim             9,090   stopped   4,104
+breakout volume confirms        4,986   stopped   3,209
+reward:risk clears the floor    1,777   stopped       0
+
+wouldHaveFired  1,777
+deepestReached  cleared_every_gate
+```
+
+And its own verdict field, written by whoever built it:
+
+> *"1777 trace(s) cleared every gate. If no signal was emitted for those, the
+> diagnostic twin has drifted from the search it mirrors — that is a bug, not a
+> market."*
+
+**No signal was emitted for those.** `strategy-liveness` counts `signals` as rows in
+the `scans` table grouped by strategy, and `cup_handle` has **zero** over the same
+seven days. The two numbers are comparable in the way that matters: the twin mirrors
+the search, the twin says 1,777 setups qualified, and the search recorded none.
+
+So the antecedent of the diagnostic's own conditional is satisfied, and the conclusion
+is its author's, not mine: **this is a bug, not a market.**
+
+**What is NOT yet established.** Whether the drift is in the twin (too permissive) or
+in the search (dropping qualifying setups). The twin was already tightened once for
+exactly this class of error — `fib-strategy.js` carries a comment dated 05-08-2026
+about the trace having been handed 450 bars where `computeCupHandleSignal` got 210,
+*"a diagnostic that is more permissive than the thing it diagnoses is worse than
+none"*. That fix may be incomplete, or the remaining gap may be elsewhere: the search
+keeps only the BEST candidate per strategy per symbol (`bestByStrategy`), while the
+trace counts every bar it examines. That alone could explain a large ratio — but not
+a ratio of 1,777 to zero.
+
+**This is the second finding today that the system had already computed and served on
+a route that nobody had read** — the first being the `danger` sizing proposal in §2.
+That pattern is worth more than either finding: the instrumentation is good and the
+reading of it is not.
+
+---
+
 ## 4. §10 — the opportunity and veto funnel, previously blocked
 
 `GET /state/opportunity-funnel`, 1-day window:
@@ -352,10 +421,26 @@ thesis being wrong — only 2 of 30 are `thesis_wrong`. **The strategies are not
 primarily being beaten on direction. They are being beaten on stop placement, holding
 time, and exit discipline.**
 
-**`entry_quality` is `unknown` on all 30 rows.** The field exists, is selected, and is
-populated by nothing. Any analysis keyed on entry quality — including anything on the
-Performance page that groups by it — is reading a constant. Reported as a data-quality
-defect, not repaired here.
+**`entry_quality` is `unknown` on all 30 rows — and the reason is not the one stated
+here originally.** This section claimed the field was *"populated by nothing"*. That is
+wrong. It is written at `loss-postmortem.js:528` from `entryQuality(t.confluence_count)`,
+`trades.confluence_count` is written at `loop.js:721`, and
+`loss-postmortem.test.js:305` pins `'Watch'` at a confluence count of 2. The chain is
+intact.
+
+`entryQuality` returns `'unknown'` when `confluence_count` is null, and on all 30 rows
+it is. So is `confluence_tool_count`, and `setup_thesis` is the empty string on all 30.
+
+**`loop.js:721` is the DISPATCH path** — the UPDATE that runs when the bot consciously
+opens a position. Thirty closed trades with null confluence and no thesis did not go
+through it. **They were adopted by the reconciler, not opened by a decision.**
+
+That is a larger and more useful finding than a dead column, and it connects to the
+duplicate-cluster incidents (tasks #179, #184) and to the 63% `other` attribution
+noted below: **the postmortem corpus is mostly positions the bot found rather than
+chose.** Entry-quality analysis has nothing to work with because there was no recorded
+entry, and no amount of fixing the field will change that. The question to ask instead
+is why so few closed trades carry a dispatch record.
 
 The strategy label is `other` on 19 of 30 rows, so per-strategy attribution from this
 table is weak: 63% of the sample is unattributed. Part 1's §21 rule applies — that is
@@ -499,6 +584,28 @@ And one correction to an earlier draft of **this** document, kept rather than er
    2026-08-05 12:27. The same mistake in a different key as (1): **an aggregate over a
    window is not a description of now.** Chasing the correction is what produced §3b,
    which is a larger finding than the one it replaced.
+5. **§3's residual claim — "nothing checks the strategy toggle" — was also wrong.**
+   `pause-disposition.js:222` does exactly that, wired and tested. No defect remains in
+   that section.
+6. **§5 called `entry_quality` "populated by nothing".** It is populated, from
+   `confluence_count`, with a test. The rows are `unknown` because the trades were
+   adopted rather than dispatched — a different and larger finding, now stated there.
+
+### The pattern behind 4, 5 and 6
+
+All three failed the same way, and the shape is worth naming because it will recur:
+**I read a seven-day aggregate and described it as current behaviour.** A veto count
+is a record of what happened across a window, not a statement about the system as it
+stands; a null column is evidence about the rows that produced it, not about the code
+that fills it. In each case the check that would have caught it was cheap and specific
+— `lastAt` on the veto row, a grep for the writer, a look at the test file — and in
+each case I reached the conclusion before running it.
+
+Of the four defects this audit proposed for repair, **one was real** (§4's
+approval→order leak, which led to the housekeeping outage in PR #668 and was the
+largest finding of the day). Two dissolved on inspection. One (§3c) was already
+diagnosed by the system itself. That ratio is the honest measure of this document's
+first draft, and it is recorded here rather than quietly edited away.
 
 ---
 
