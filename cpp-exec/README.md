@@ -102,8 +102,13 @@ docker build -t cpp-exec .
    service and `demo.ctraderapi.com` on the demo one. This PINS the process:
    `/connect` for any other host is refused with 400, and a `/connect` that
    omits `host` takes the pin rather than the historical `live` default. Leave
-   it unset to run a single unpinned sidecar. Give each service its own
-   `EXEC_SECRET`.
+   it unset to run a single unpinned sidecar.
+
+   **Both services must share ONE `EXEC_SECRET`.** The Node agent holds a single
+   value and sends it as the bearer to whichever base it routes to, so a
+   per-service secret would make every call to the second sidecar 401. (An
+   earlier revision of this file said "give each service its own" — that was
+   wrong and would have failed on the first routed order.)
 3. On the **Node agent** service add: `EXEC_URL` = the sidecar's private URL,
    `EXEC_SECRET` = same value. Do NOT set `EXEC_ENGINE` yet.
    Running two sidecars? Also set `EXEC_URL_LIVE` and `EXEC_URL_DEMO` to their

@@ -88,6 +88,56 @@ test('an EMPTY roster is known and means authorised for nothing', () => {
   for (const a of out.accounts) assert.equal(a.sidecarAuthorised, false, a.accountId)
 })
 
+test('TWO sidecars: each account is judged against its OWN side roster', () => {
+  // THE PRODUCTION FALSE NEGATIVE, 2026-08-06. With a second sidecar deployed,
+  // the live process's roster carries only the live account — so reading it for
+  // a demo account answers "not authorised" for four accounts that are, at that
+  // moment, connected and trading. Before this fix every demo row rendered
+  // `false` while the demo sidecar reported accountCount 4, hasCredentials true.
+  const db = db_()
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['42993489'], connected: true, ok: true, at: '2026-08-06T03:04:39.626Z',
+  }))
+  setState(db, 'cpp_exec_demo_health_json', JSON.stringify({
+    accounts: ['46130058'], connected: true, ok: true, at: '2026-08-06T03:05:11.000Z',
+  }))
+  const out = engineeringView(db)
+  assert.equal(find(out, '46130058').sidecarAuthorised, true, 'demo acct on the DEMO roster')
+  assert.equal(find(out, '42993489').sidecarAuthorised, true, 'live acct on the LIVE roster')
+  // And the split stays honest in the negative direction: a demo account absent
+  // from the demo roster is still false, and the live roster cannot rescue it.
+  assert.equal(find(out, '46979908').sidecarAuthorised, false)
+  assert.equal(out.sidecarDemo.rosterKnown, true)
+  assert.equal(out.sidecarDemo.at, '2026-08-06T03:05:11.000Z')
+})
+
+test('ONE sidecar: the demo block is absent and every account reads the live roster', () => {
+  // The migration property. No demo key = today's single-process deployment,
+  // and nothing about the answer changes.
+  const db = db_()
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['46130058', '42993489'], connected: true, ok: true,
+  }))
+  const out = engineeringView(db)
+  assert.equal(out.sidecarDemo.rosterKnown, false)
+  assert.equal(out.sidecarDemo.accounts, null)
+  assert.equal(find(out, '46130058').sidecarAuthorised, true)
+  assert.equal(find(out, '42993489').sidecarAuthorised, true)
+  assert.equal(find(out, '46979908').sidecarAuthorised, false)
+})
+
+test('a demo roster that is KNOWN but EMPTY still overrides the live one', () => {
+  // "The demo sidecar is up and authorised for nothing" is a real, reportable
+  // state — a restart mid-recovery looks exactly like this. Falling back to the
+  // live roster here would paper over it.
+  const db = db_()
+  setState(db, 'cpp_exec_health_json', JSON.stringify({ accounts: ['46130058'], ok: true }))
+  setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ accounts: [], connected: false, ok: true }))
+  const out = engineeringView(db)
+  assert.equal(find(out, '46130058').sidecarAuthorised, false, 'demo acct judged by the demo roster')
+  assert.equal(out.sidecarDemo.connected, false)
+})
+
 test('sidecarRoster survives junk without throwing', () => {
   const db = db_()
   for (const junk of ['not json', '{"accounts":"nope"}', '[]', 'null']) {

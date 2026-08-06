@@ -42,6 +42,40 @@ const Cell = ({ children, title, className = '' }) => (
 )
 
 /**
+ * One sidecar process's status line.
+ *
+ * Extracted so the second process gets the SAME line rather than a summarised
+ * one. Two processes with two different renderings would be two things to keep
+ * in sync, and the demo line is the one nobody is watching — it should be the
+ * one that cannot quietly say less.
+ */
+function SidecarLine({ label, sc }) {
+  const age = ago(sc?.at)
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span>
+        {label}:{' '}
+        {sc?.rosterKnown
+          ? <Badge tone={sc.connected ? 'on' : 'off'}>{sc.connected ? 'connected' : 'disconnected'}</Badge>
+          : <Badge tone="neutral">roster unknown</Badge>}
+      </span>
+      {sc?.rosterKnown && (
+        <span title="The accounts the sidecar is currently authorised to trade. It is re-pushed from the registry when it drifts.">
+          authorised: {sc.accounts.length ? sc.accounts.join(', ') : 'none'}
+        </span>
+      )}
+      {age && <span title={sc.at}>as of {age} ago</span>}
+      {sc?.error && <span className="text-[var(--color-warning-text)]" title={sc.error}>{String(sc.error).slice(0, 70)}</span>}
+      {!sc?.rosterKnown && (
+        <span title="Either EXEC_ENGINE is not 'cpp' (execution runs in-process) or the sidecar has not been probed yet. Not the same as 'no accounts authorised'.">
+          — js exec mode, or not probed yet
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
  * One phase's effective state, with WHY when it is off.
  *
  * The `source` field is the point: "off because the master switch is off" and
@@ -82,7 +116,12 @@ export default function AccountEngineering() {
 
   const accounts = view?.accounts || []
   const sc = view?.sidecar
-  const scAge = ago(sc?.at)
+  // TWO SIDECARS, TWO LINES. One process serves one broker host, so they fail
+  // independently — and a single "C++ exec engine: connected" badge sourced
+  // from the live process would read as all-clear while every demo account sat
+  // dark. Absent (single-sidecar deployment) → the second line is not rendered
+  // and this reads exactly as it did before.
+  const scDemo = view?.sidecarDemo?.rosterKnown ? view.sidecarDemo : null
 
   return (
     <Card id="sec-acct-engineering" className="w3-hover-shadow">
@@ -100,25 +139,9 @@ export default function AccountEngineering() {
       {!view && !err && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading engineering status…</div>}
 
       {view && (
-        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
-          <span>
-            C++ exec engine:{' '}
-            {sc?.rosterKnown
-              ? <Badge tone={sc.connected ? 'on' : 'off'}>{sc.connected ? 'connected' : 'disconnected'}</Badge>
-              : <Badge tone="neutral">roster unknown</Badge>}
-          </span>
-          {sc?.rosterKnown && (
-            <span title="The accounts the sidecar is currently authorised to trade. It is re-pushed from the registry when it drifts.">
-              authorised: {sc.accounts.length ? sc.accounts.join(', ') : 'none'}
-            </span>
-          )}
-          {scAge && <span title={sc.at}>as of {scAge} ago</span>}
-          {sc?.error && <span className="text-[var(--color-warning-text)]" title={sc.error}>{String(sc.error).slice(0, 70)}</span>}
-          {!sc?.rosterKnown && (
-            <span title="Either EXEC_ENGINE is not 'cpp' (execution runs in-process) or the sidecar has not been probed yet. Not the same as 'no accounts authorised'.">
-              — js exec mode, or not probed yet
-            </span>
-          )}
+        <div className="mb-1.5 flex flex-col gap-0.5 text-(length:--fs-body) text-[var(--color-text-sub)]">
+          <SidecarLine label={scDemo ? 'C++ exec engine (live)' : 'C++ exec engine'} sc={sc} />
+          {scDemo && <SidecarLine label="C++ exec engine (demo)" sc={scDemo} />}
         </div>
       )}
 
