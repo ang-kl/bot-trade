@@ -1441,6 +1441,24 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/lot-size-parity — where the broker's definition of a lot and our
+  // hardcoded contractSize() table disagree, and by how much.
+  //
+  // This answers the question the 2026-08-06 audit could not: WHICH SIDE IS
+  // WRONG. A row with ratio 60 means an adopted position on that symbol would be
+  // recorded as 60× its real size, and that figure feeds the margin gate.
+  // ?symbols=0003.HK,0005.HK to check named symbols even if never recorded.
+  router.get('/lot-size-parity', async (req, res) => {
+    try {
+      const { lotSizeParity } = await import('../lib/lot-size-registry.js')
+      const raw = String(req.query.symbols || '').trim()
+      const symbols = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : null
+      res.json(lotSizeParity(db, symbols))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/symbol-clusters — 2+ DISTINCT fills on one account+symbol
   // inside a window (owner: "double or triple trading symbols for past EU and
   // NY sessions"). /state/duplicate-trades only sees identical-value records;

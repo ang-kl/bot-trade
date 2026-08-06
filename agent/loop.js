@@ -442,6 +442,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   try {
     const meta = await getVolumeMeta(hostForMeta, clientId, clientSecret, accessToken, accountId, symbolId)
     symbolDigits = meta.digits ?? 5
+    // ONE DEFINITION OF A LOT. This is the only place that holds the broker's
+    // own answer, and until now it was used to place the order and then thrown
+    // away — so reconciliation had to fall back to contractSize(), a hardcoded
+    // table that returns 1 for every unlisted symbol. Recording it here is what
+    // lets an ADOPTED position be converted with the same number the order was
+    // placed with. See lib/lot-size-registry.js.
+    try {
+      const { rememberLotSize } = await import('./lib/lot-size-registry.js')
+      rememberLotSize(db, symbol, meta.lotSize)
+    } catch { /* non-fatal: sizing must never fail on bookkeeping */ }
     sized = lotsToVolume(volLots, meta)
     if (sized.belowMin) {
       const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume} — balance too small for this symbol at the configured risk`

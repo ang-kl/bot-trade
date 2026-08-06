@@ -2,6 +2,7 @@ import { isOurs, parseLabel } from '../lib/trade-labels.js'
 import { normPosId } from '../lib/pos-id.js'
 import { getState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
+import { lotsFromUnits } from '../lib/lot-size-registry.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -12,9 +13,21 @@ import { contractSize } from '../lib/contracts.js'
 // `insufficient_margin` and corrupted the keeper's scale-out maths. Convert to
 // lots: lots = (volume / 100) / unitsPerLot, unitsPerLot = contractSize(symbol)
 // (100k for FX, 1 for indices/crypto). Returns null when volume is absent.
-export function brokerVolumeToLots(bp, symbol) {
+// SECOND SOURCE OF TRUTH, REMOVED (2026-08-06). `contractSize` is a hardcoded
+// table that returns 1 for anything unlisted — including every `.HK` share CFD,
+// whose real lot is ~60 or ~18 units. An adopted 0003.HK position converted
+// through the table becomes 5,000 lots instead of ~83, and that figure feeds the
+// margin gate. The broker's own declaration, recorded at order time by
+// lot-size-registry.js, now wins; the table remains the fallback for a symbol
+// the broker has never described to us. `db` is optional so every existing
+// caller keeps working — without it the behaviour is exactly as before.
+export function brokerVolumeToLots(bp, symbol, db = null) {
   const units = bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null
   if (units == null) return null
+  if (db != null) {
+    const { lots } = lotsFromUnits(db, symbol, units)
+    if (lots != null) return lots
+  }
   const perLot = contractSize(symbol) || 1
   return perLot > 0 ? units / perLot : units
 }
@@ -242,7 +255,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       // signature) and that differs from the true lots (i.e. contractSize > 1),
       // or when it's missing. A correctly-sized lots row is never touched.
       const healUnits = bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null
-      const healLots = brokerVolumeToLots(bp, row.symbol)
+      const healLots = brokerVolumeToLots(bp, row.symbol, db)
       if (row.trade_id && healLots != null && healLots > 0 && healUnits != null) {
         const cur = Number(row.tradeVolume)
         const looksLikeUnits = cur > 0 && Math.abs(cur - healUnits) <= Math.max(1e-9, healUnits * 0.01)
@@ -276,7 +289,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     const tp = bp.takeProfit ?? null
     const symbolName = bp.symbolName || `ID:${bp.tradeData?.symbolId || '?'}`
     // Store LOTS (not raw broker units) so the risk/keeper stack reads it right.
-    const volume = brokerVolumeToLots(bp, symbolName)
+    const volume = brokerVolumeToLots(bp, symbolName, db)
     const initialRisk = (entry && sl) ? Math.abs(entry - sl) : null
 
     // DUPLICATE-ADOPTION GUARD: we only reach here because no ACTIVE monitored

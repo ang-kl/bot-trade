@@ -53,9 +53,19 @@ that it did, and the difference matters:
 
 - Our `trades` rows for these two positions carry **`volume 83.14`** (0003.HK)
   and **`3.45`** (0005.HK), while `monitored_positions` and the broker show
-  5,000 and 62. Ratios 60.1 and 18.0 — not a constant, so not a clean
-  lots-to-units conversion either. Two of our own tables disagree about the
-  size of the same position.
+  5,000 and 62. Ratios 60.1 and 18.0.
+
+  **CORRECTED 2026-08-06.** This was written as "two of our own tables disagree
+  about the size of the same position". They do not. `trades.volume` is LOTS and
+  the broker reports UNITS, so a ratio is *expected* — and 60.1 and 18.0 are the
+  broker's own units-per-lot for those two Hong Kong names, which differ from
+  each other because HK CFD lot sizes are per-instrument. The reason the ratios
+  looked like nonsense is that `contractSize()` has no entry for either symbol
+  and returns 1, so nothing in the codebase could name the expected ratio. That
+  is a real defect — on the READ path, for ADOPTED positions — and it is fixed
+  in `agent/lib/lot-size-registry.js`. It does not weaken the finding below: the
+  identical 5,000-unit position on two accounts of very different size is
+  unaffected by any units question.
 - Both rows have **`risk_event_id: NULL`**. There is no gate verdict attached,
   so nothing recorded which balance was used, what budget was computed, or why
   this volume. Under the Phase 6 rules shipped in #673 they are
