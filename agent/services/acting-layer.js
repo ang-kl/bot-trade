@@ -164,10 +164,27 @@ export function scopeToAccount(rows, {
  * The selected account always leads and is always included, so a registry gap
  * can never silently drop the account the operator is actually looking at.
  */
+export function credsAreLive(creds) {
+  // HOST FIRST, and deliberately so. `isLive` is now returned by
+  // getCtraderCreds, but it was absent for months (F-RISK-01) and nothing
+  // failed — `!!undefined` is a valid boolean, so the wrong side was selected
+  // silently on every call. `host` cannot go missing the same way: it is what
+  // reaches the broker, so a wrong or absent host fails loudly at connect
+  // rather than quietly here. Several call sites also hand-assemble creds as
+  // `{ host: isLive ? live : demo, … }` (loop.js:324, :493, :1387, :2137,
+  // :3824, :3885) and carry no `isLive` field at all — reading the host is the
+  // only rule that is correct for those too.
+  const host = String(creds?.host || '').trim().toLowerCase()
+  if (host === 'live.ctraderapi.com') return true
+  if (host === 'demo.ctraderapi.com') return false
+  // Unknown or absent host — fall back to the flag rather than guessing a side.
+  return !!creds?.isLive
+}
+
 export function sameSideAccountIds(db, baseCreds) {
   let roster = []
   try {
-    const isLive = !!baseCreds?.isLive
+    const isLive = credsAreLive(baseCreds)
     roster = db.prepare('SELECT account_id, is_live FROM accounts WHERE enabled = 1').all()
       .filter(a => (a.is_live === 1) === isLive)
       .map(a => String(a.account_id))

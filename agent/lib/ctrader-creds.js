@@ -51,6 +51,13 @@ export function getCtraderCreds(db, accountOverride) {
 
   return {
     host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
+    // F-RISK-01: this was COMPUTED at :23-25, used at :43 and :53, and then
+    // dropped on the floor. `sameSideAccountIds` reads `baseCreds?.isLive`, so
+    // it evaluated `!!undefined === false` on every call and selected the DEMO
+    // side unconditionally — including for live credentials, which then swept
+    // demo accounts and silently DROPPED any second live account from the loss
+    // cap and profit ratchet.
+    isLive,
     clientId,
     clientSecret,
     accessToken,
