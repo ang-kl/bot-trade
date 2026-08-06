@@ -85,6 +85,10 @@ Measurement history — each line is a real run of the script, not a claim:
   (1,274 owner turns, 34,583 assistant entries, 22,365 user entries, 90
   compact events). Rebased to `№ 5,269` as the last reply; the next reply is
   `№ 5,270`. Owner: *"rebase the CLAUDE.md"*.
+- 2026-08-06 14:00 UTC, **all 79 session files**: **6,253** reply turns
+  (1,609 owner turns, 40,929 assistant entries, 26,658 user entries, 114
+  compact events). Rebased to `№ 6,253` as the last reply; the next reply is
+  `№ 6,254`. Owner: *"rebase the CLAUDE.md serial"*.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
@@ -98,6 +102,14 @@ not a visible 1,500-reply collapse but a quiet undercount that nobody would
 catch by reading. It is why the rule is "run the script first", not "run the
 script when the number looks wrong": a number that looks wrong is already the
 rare case.
+
+THE 2026-08-06 RUN IS THE FIRST CLEAN ONE, and it is worth recording as the
+control case. The in-context count had reached `№ 6,251`; the measurement said
+6,253. A drift of two across a session of roughly a thousand replies — which is
+what the discipline looks like when it is actually followed: the script was run
+at the start of the session and re-run before each stamp, so there was nothing
+to recover. Two is the residue of replies made between the last run and this
+one, not an error. Compare 1,589 (2026-07-30) and 28 (2026-08-04).
 
 Two earlier claims in this file were wrong and are corrected here:
 
