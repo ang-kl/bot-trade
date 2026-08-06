@@ -198,3 +198,34 @@ test('an empty database is a calm empty report', () => {
   assert.deepEqual(rep.dropped, [])
   assert.equal(rep.latency, null)
 })
+
+test('account=all is the portfolio read, NOT an account named "all"', () => {
+  // PRODUCTION, 2026-08-06. GET /state/dispositions?days=7&account=all returned
+  // `counts {}` and `pendingNow 0` for a window that held 54,815 rows. The
+  // filter had become `account_id = 'all'`, which matches nothing, so the route
+  // answered a confident, empty, WRONG report — the worst of the three, and for
+  // the query an operator reaches for first when asking where an approval went.
+  //
+  // opportunity-funnel.js:44 already spelled this correctly. The two functions
+  // are read side by side on the same screen, and only one of them was right.
+  const db = fresh()
+  riskEvent(db, { minsAgo: 60, symbol: 'NAS100', account: '46130058' })
+  riskEvent(db, { minsAgo: 60, symbol: 'USDZAR', account: '47790949' })
+  riskEvent(db, { approved: 0, minsAgo: 60, account: '42993489' })
+  sweepDispositions(db)
+
+  const all = dispositionReport(db, { account: 'all' })
+  assert.equal(all.counts.dropped, 2, 'both accounts\' drops are counted')
+  assert.equal(all.counts.vetoed, 1)
+
+  // And scoping to ONE account still narrows, so the fix did not turn the
+  // filter off altogether — which would be the same bug facing the other way.
+  const one = dispositionReport(db, { account: '46130058' })
+  assert.equal(one.counts.dropped, 1)
+  assert.equal(one.counts.vetoed ?? 0, 0)
+
+  // An account that exists but owns nothing reports nothing — distinguishable
+  // from `all` only because `all` above is non-empty.
+  const none = dispositionReport(db, { account: '99999999' })
+  assert.deepEqual(none.counts, {})
+})

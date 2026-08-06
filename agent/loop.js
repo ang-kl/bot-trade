@@ -33,6 +33,9 @@ import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes } from './lib/timeframes.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
+// Housekeeping cadence. Wall-clock and persisted, because the loop-counter
+// version never fired on a day with deploys — see housekeeping-due.js.
+import { housekeepingDue, LAST_RUN_KEY } from './services/housekeeping-due.js'
 import { recordFxRates } from './services/fx-rates.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
@@ -3983,10 +3986,28 @@ async function runLoop(db) {
   consecutiveErrors = 0
   setState(db, 'circuit_breaker_tripped_at', null)
 
-  // ---- Housekeeping: data retention (once per 100 loops ≈ 8 hours) ----
-  if (loopCount % 100 === 0) {
+  // ---- Housekeeping: data retention (once per 8 hours, WALL CLOCK) --------
+  //
+  // This was `loopCount % 100 === 0`. `loopCount` is module state reset to 0
+  // on every process start, so the pass fired eight hours after a RESTART, not
+  // every eight hours — and the agent restarts on every deploy. On 2026-08-06
+  // that was seven times before noon, with `/health` reporting two hours of
+  // uptime, and `/state/dispositions` reporting `counts {}` against
+  // `pendingNow 54,815`: not one risk_event had ever been settled, and the
+  // 90-day retention cutoff below had never pruned anything either.
+  //
+  // The cadence now comes from a persisted stamp, so a restart resumes the
+  // schedule instead of restarting it. See housekeeping-due.js for why the
+  // condition is a tested function rather than an inline expression.
+  if (housekeepingDue(getState(db, LAST_RUN_KEY))) {
     try {
       phase('housekeeping')
+      // Stamped BEFORE the work, not after. A pass that throws half way must
+      // not re-run on the very next loop and re-throw forever — the retention
+      // deletes are the expensive part and a crash loop over them would be
+      // worse than skipping one window. Every step below is individually
+      // try/caught anyway, so a partial pass still makes progress.
+      setState(db, LAST_RUN_KEY, new Date().toISOString())
       const cutoff30d = new Date(Date.now() - 30 * 86400_000).toISOString()
       const cutoff90d = new Date(Date.now() - 90 * 86400_000).toISOString()
       const d1 = db.prepare('DELETE FROM scans WHERE scanned_at < ?').run(cutoff30d)

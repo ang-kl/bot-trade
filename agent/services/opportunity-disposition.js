@@ -140,8 +140,15 @@ export function recordSubmitted(db, riskEventId, nowIso = new Date().toISOString
  */
 export function dispositionReport(db, { days = 7, account = null } = {}) {
   const d = Math.max(1, Math.min(90, Number(days) || 7))
-  const acct = account != null ? 'AND (account_id = ? OR account_id IS NULL)' : ''
-  const params = account != null ? [String(account)] : []
+  // `all` is the portfolio-wide read, not an account named "all". Without this
+  // the filter became `account_id = 'all'`, matched nothing, and the route
+  // answered `counts {}, pendingNow 0` — a confident, empty, WRONG report for
+  // the one query an operator reaches for first. opportunityFunnel:44 already
+  // spells it this way; this function did not, and the two are read side by
+  // side on the same screen.
+  const wanted = account == null || account === 'all' ? null : String(account)
+  const acct = wanted != null ? 'AND (account_id = ? OR account_id IS NULL)' : ''
+  const params = wanted != null ? [wanted] : []
 
   let rows = []
   try {
