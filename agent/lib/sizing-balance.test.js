@@ -10,6 +10,19 @@ import { sizingBalance, riskBudgetMultiple, overBudget } from './sizing-balance.
 
 const fresh = () => initDB(':memory:')
 
+/**
+ * A database with TWO enabled accounts — the only situation in which the
+ * shared `account_balance_usd` key is ambiguous, and therefore the only one
+ * the guard refuses. A single-account install is left alone on purpose.
+ */
+function twoAccounts() {
+  const db = fresh()
+  for (const id of ['46130058', '43097342']) {
+    db.prepare('INSERT OR REPLACE INTO accounts (account_id, is_live, enabled) VALUES (?, 0, 1)').run(id)
+  }
+  return db
+}
+
 test('an account with its own stamped balance sizes against that balance', () => {
   const db = fresh()
   setState(db, 'acct:43097342:account_balance_usd', '1983.52')
@@ -22,7 +35,7 @@ test('an account with NO stamped balance must not borrow another account\'s', ()
   // Sizing 43097342 against 46130058's equity multiplies every configured risk
   // percentage by 23 — and every downstream number is computed from the same
   // wrong balance, so they all agree with each other.
-  const db = fresh()
+  const db = twoAccounts()
   setState(db, 'account_balance_usd', '46072.92')   // the big account refreshed last
   const r = sizingBalance(db, '43097342')
   assert.equal(r.ok, false, 'must NOT be usable for sizing')
@@ -92,7 +105,7 @@ test('an unusable budget yields null rather than a confident ratio', () => {
 
 test('every verdict says whether the balance belonged to the account it sized', async () => {
   const { evaluateTrade } = await import('../services/risk.js')
-  const db = fresh()
+  const db = twoAccounts()
   setState(db, 'account_balance_usd', '46072.92')          // the big account refreshed last
   const proposal = { symbol: 'EURUSD', bias: 'long', entry: 1.1, sl: 1.09, tp1: 1.13, accountId: '43097342' }
 
@@ -106,4 +119,48 @@ test('every verdict says whether the balance belonged to the account it sized', 
   assert.equal(owned.checks.balance_source, 'account')
   assert.equal(owned.checks.balance_is_account_scoped, true)
   assert.equal(owned.checks.balance_scope_warning, undefined)
+})
+
+test('OWNER DECISION D-1: a named account with no balance of its own is VETOED', async () => {
+  // 2026-08-06, owner: "D-1 proceed to risk gate veto". The gate now refuses
+  // to size a position against a balance that belongs to a different account.
+  const { evaluateTrade } = await import('../services/risk.js')
+  const db = twoAccounts()
+  setState(db, 'account_balance_usd', '46072.92')   // the big account refreshed last
+  const proposal = { symbol: 'EURUSD', bias: 'long', entry: 1.1, sl: 1.09, tp1: 1.13, accountId: '43097342' }
+
+  const refused = evaluateTrade(db, proposal)
+  assert.equal(refused.approved, false, 'must not size 43097342 against 46130058 money')
+  assert.match(refused.veto_reason, /balance_not_account_scoped/)
+  assert.match(refused.veto_reason, /43097342/, 'the veto names the account with no balance')
+
+  // Stamp the account's own balance and the objection disappears.
+  setState(db, 'acct:43097342:account_balance_usd', '1983.52')
+  const allowed = evaluateTrade(db, proposal)
+  assert.ok(!/balance_not_account_scoped/.test(allowed.veto_reason || ''))
+  assert.equal(allowed.checks.balance_source, 'account')
+})
+
+test('the veto is scoped to BORROWED balances, not to missing ones', () => {
+  // "No balance at all" is a different condition — it already produces volume
+  // 0 downstream, and vetoing it here would change behaviour far beyond the
+  // hazard D-1 approved acting on.
+  const db = fresh()
+  assert.equal(sizingBalance(db, '43097342').source, 'none')
+  assert.equal(sizingBalance(db).source, 'none')
+})
+
+test('a single-account database is NOT punished for the multi-account hazard', () => {
+  // One enabled account: the global key has no second account to belong to
+  // instead, so there is nothing to confuse it with. Refusing here would block
+  // a correct install to guard against a confusion it cannot have.
+  const db = fresh()
+  db.prepare("INSERT OR REPLACE INTO accounts (account_id, is_live, enabled) VALUES ('43097342', 0, 1)").run()
+  setState(db, 'account_balance_usd', '5000')
+  const named = sizingBalance(db, '43097342')
+  assert.equal(named.ok, true)
+  assert.equal(named.source, 'legacy_single_account')
+  assert.equal(named.balance, 5000)
+  // And with no account context at all.
+  assert.equal(sizingBalance(fresh() && db).ok, true)
 })
