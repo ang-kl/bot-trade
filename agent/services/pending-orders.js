@@ -85,11 +85,13 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
         symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
         status, ctrader_position_id, analysis_id, strategy, conviction,
         label_raw, source, label_version, label_strategy, label_conviction,
-        label_session, label_timeframe, label_regime, account_id, risk_event_id
+        label_session, label_timeframe, label_regime, account_id, risk_event_id,
+        origin, origin_source
       ) VALUES (
         ?, ?, ?, ?, ?, ?, datetime('now'),
         'open', ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        'bot_pending_fill', 'write'
       )
     `).run(
       row.symbol, side, executionPrice, row.sl ?? null, row.tp ?? null, row.volume ?? null,

@@ -4447,8 +4447,10 @@ export default function actionsRouter(db) {
       db.transaction(() => {
         const tradeInsert = db.prepare(`
           INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-            ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open')
+            ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status,
+            origin, origin_source)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open',
+                  'manual_broker', 'write')
         `).run(analysis.symbol, side, entryP, sl, tp1, volLots, positionId, structuredLabel,
           parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session)
         const tradeId = tradeInsert.lastInsertRowid
@@ -4586,8 +4588,10 @@ export default function actionsRouter(db) {
       db.transaction(() => {
         const tradeInsert = db.prepare(`
           INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-            ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open')
+            ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status,
+            origin, origin_source)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open',
+                  'manual_broker', 'write')
         `).run(symbol, side, entryP, proposal.sl, proposal.tp1, volLots, positionId, structuredLabel,
           parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session)
         db.prepare(`

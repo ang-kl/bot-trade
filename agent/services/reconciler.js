@@ -334,10 +334,16 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       // backfill's selected-account assumption).
       const tradeInsert = db.prepare(`
         INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-          ctrader_position_id, source, label_raw, label_strategy, account_id, status)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'open')
+          ctrader_position_id, source, label_raw, label_strategy, account_id, status,
+          origin, origin_source)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'open', 'reconciler_adopted', 'write')
       `).run(symbolName, side === 'long' ? 'BUY' : 'SELL', entry, sl, tp, volume, posId,
         adoptedSource, label || null, parsed.strategy || null, acct)
+      // ADOPTED, and it says so. `parsed.strategy` above is the label found on
+      // the broker's position, not a decision this system made — recording it
+      // is right, presenting it as strategy edge is not. Phase 6 of the
+      // Verified Defect Repair prompt: "Reconciliation must not invent a
+      // strategy."  
       const tradeId = tradeInsert.lastInsertRowid
 
       db.prepare(`
