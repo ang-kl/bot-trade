@@ -10,6 +10,7 @@ import { loadRiskConfig, accountRiskOverlay, DEFAULT_RISK_CONFIG, getAccountBala
 import { readWatchlist, hasOwnWatchlist } from '../services/watchlists.js'
 import { tierForBalance } from '../lib/contracts.js'
 import { describeLabel } from '../lib/trade-labels.js'
+import { originCoverage } from '../lib/trade-origin.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { stateEpoch } from '../lib/state-cache.js'
 import { armedTimeframes } from '../lib/timeframes.js'
@@ -2633,6 +2634,11 @@ export default function stateRouter(db) {
       timeframe:        ['label_timeframe'],
       source_strategy:  ['source', 'label_strategy'],
       strategy_regime:  ['label_strategy', 'label_regime'],
+      // Phase 6: group by HOW the trade came to exist. The other dimensions
+      // answer "which label", this one answers "did this system decide to take
+      // it" — and it is the dimension that tells a strategy's own record apart
+      // from positions reconciliation adopted off the broker.
+      origin:           ['origin'],
     }
     const groupBy = String(req.query.groupBy || 'strategy')
     const cols = allowed[groupBy]
@@ -2679,8 +2685,22 @@ export default function stateRouter(db) {
       r.win_rate = t > 0 ? Number((r.wins / t).toFixed(3)) : null
     }
 
+    // ATTRIBUTION COVERAGE, printed beside the numbers rather than instead of
+    // them (audit Part 2, Phase 6). A win rate computed over a mixture of this
+    // system's own entries and positions adopted from the broker is not a
+    // measurement of strategy edge, and until now nothing on this route said
+    // what the mixture was.
+    let originRows = []
+    try {
+      originRows = db.prepare(`
+        SELECT origin FROM trades
+         WHERE status = 'closed' AND closed_at >= ?${acct.active ? ` AND ${acct.where}` : ''}
+      `).all(sinceISO, ...acct.params)
+    } catch { originRows = [] }
+
     res.json({
       groupBy, days, since: sinceISO, rows,
+      originCoverage: originCoverage(originRows),
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
       scope: scopeReport(scope, scopeCoverage(db, {

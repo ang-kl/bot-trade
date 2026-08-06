@@ -618,8 +618,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // and the post-decision auditor counts it.
     const intentId = db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
-                          opened_at, status, strategy, account_id, source, risk_event_id)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade', ?)
+                          opened_at, status, strategy, account_id, source, risk_event_id,
+                          origin, origin_source)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade', ?,
+              'bot_market_dispatch', 'write')
     `).run(
       symbol, side, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
       volLots, synth.strategy || null, String(accountId), riskEventId ?? null,

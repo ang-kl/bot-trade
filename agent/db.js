@@ -866,6 +866,18 @@ export function initDB(dbPath) {
     ['confirmation_candles_required', 'INTEGER'],
     ['vol_volume_divergence_flag',  'INTEGER'],  // HIGH vol on thin participation
     ['fvg_origin_vol_regime',       'TEXT'],
+    // HOW THE TRADE CAME TO EXIST (audit Part 2, Phase 6). One of
+    // lib/trade-origin.js's ORIGINS. `source` and `label_strategy` answer who
+    // wrote the label and which strategy was named; neither answers whether
+    // this system DECIDED to take the trade. A reconciler-adopted position
+    // carries a label because reconciliation parsed one off the broker's
+    // position comment — provenance of a string, not of a decision — and
+    // counting it as strategy edge is what made the win rate a mixture.
+    ['origin',                      'TEXT'],
+    // 'write' when stamped at creation, 'backfill' when derived afterwards by
+    // scripts/backfill-trade-origin.mjs. Keeps the reversal targeted: rolling
+    // back a backfill must not clear origins the write paths recorded.
+    ['origin_source',               'TEXT'],
     ['fvg_fill_target_pct',         'INTEGER'],
     ['confluence_tool_count',       'INTEGER'],
     ['confluence_conflict_flagged', 'INTEGER'],
