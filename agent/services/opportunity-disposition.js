@@ -119,6 +119,39 @@ export function sweepDispositions(db, { graceMin = DEFAULT_GRACE_MIN, limit = 50
 }
 
 /**
+ * Sweep repeatedly until the backlog stops shrinking.
+ *
+ * ONE PASS IS NOT ENOUGH WHEN THERE IS A BACKLOG. `sweepDispositions` settles
+ * at most `limit` rows, and housekeeping runs once every eight hours, so a
+ * production backlog of 55,443 unsettled approvals would take four days to
+ * drain at 5,000 a pass — during which `/state/dispositions` keeps answering
+ * `counts {}` and the §70.8 finding stays invisible for the very rows it is
+ * about. The work is one indexed scan and an UPDATE over rows that are already
+ * written; there is no broker call and nothing to rate-limit.
+ *
+ * Bounded anyway. `maxBatches` caps the pass so a pathological table cannot
+ * hold the loop, and the return says whether it stopped because the work was
+ * done (`drained: true`) or because it hit the cap — a silent truncation would
+ * read as "settled everything" when it settled a slice.
+ */
+export function drainDispositions(db, { maxBatches = 40, ...opts } = {}) {
+  const counts = {}
+  let scanned = 0, written = 0, pending = 0, batches = 0
+  for (; batches < maxBatches; batches++) {
+    const r = sweepDispositions(db, opts)
+    scanned += r.scanned
+    written += r.written
+    pending = r.pending
+    for (const [k, v] of Object.entries(r.counts)) counts[k] = (counts[k] || 0) + v
+    // Nothing settled this time: either the backlog is gone or everything left
+    // is still inside its grace window. Either way another batch would repeat
+    // the same query for the same answer.
+    if (r.written === 0) { batches++; break }
+  }
+  return { scanned, written, counts, pending, batches, drained: batches < maxBatches }
+}
+
+/**
  * Approval → submit latency, the half §70.8 is actually named after.
  *
  * `trades.entry_latency_ms` times submit → execution event. Nothing timed the
