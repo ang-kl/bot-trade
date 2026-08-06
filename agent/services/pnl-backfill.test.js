@@ -71,7 +71,7 @@ test('skips the broker round-trip entirely when no closed trade is missing P&L',
   // `gap: 0` joined the shape when the caller gained the ability to tell
   // "nothing was missing" from "something was missing and would not fill" —
   // this test's point is the assertion above: NO broker call.
-  assert.deepEqual(r, { backfilled: 0, attributed: 0, exitsRepaired: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0 })
+  assert.deepEqual(r, { backfilled: 0, attributed: 0, exitsRepaired: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0, blockingGap: 0 })
 })
 
 test('an open trade is never backfilled, even with a matching deal', async () => {
@@ -288,6 +288,59 @@ test('pacing is per account — one stuck account never delays another', () => {
   assert.equal(dueForBackfill('STUCK', T + 1000), false)
   assert.equal(dueForBackfill('HEALTHY', T + 1000), true,
     'a permanently unfillable row on one account must not blind the others')
+})
+
+// --- the blocked desk paces the repair (2026-08-07) -------------------------
+//
+// MEASURED 06-08 22:38 UTC: 194 of the last 200 decisions vetoed
+// `unknown_daily_pnl`, off ONE trade closed 22:09:46 — 29 minutes old, inside
+// every write-off rule. The veto engages at the 15m grace window while the
+// ladder had already backed the repair off to an hour. These lock that in.
+
+test('a BLOCKING row caps the backoff at the grace window', () => {
+  resetBackfillPacing()
+  const T = 1_000_000
+  // Four non-filling passes would normally reach the 6-hour rung.
+  for (let i = 0; i < 4; i++) {
+    noteBackfillAttempt('BLOCKED', { backfilled: 0, gap: 1, liveGap: 1, blockingGap: 1 }, T)
+  }
+  assert.equal(dueForBackfill('BLOCKED', T + 14 * 60_000), false,
+    'still not due inside the grace window — we do not ask for history that is not yet late')
+  assert.equal(dueForBackfill('BLOCKED', T + 15 * 60_000), true,
+    'due at the grace window: a desk blocked at 15m must be retried at 15m, not in six hours')
+})
+
+test('the cap applies only while something is actually blocking', () => {
+  resetBackfillPacing()
+  const T = 1_000_000
+  // Same four passes, but nothing is past the grace window yet.
+  for (let i = 0; i < 4; i++) {
+    noteBackfillAttempt('QUIET', { backfilled: 0, gap: 1, liveGap: 1, blockingGap: 0 }, T)
+  }
+  assert.equal(dueForBackfill('QUIET', T + 60 * 60_000), false,
+    'no block, no acceleration — the ladder backs off exactly as it did before')
+  assert.equal(dueForBackfill('QUIET', T + 6 * 3_600_000), true)
+})
+
+test('the rung still climbs while capped — the cap delays, it does not reset', () => {
+  resetBackfillPacing()
+  const T = 1_000_000
+  for (let i = 0; i < 4; i++) {
+    noteBackfillAttempt('CLIMB', { backfilled: 0, gap: 1, liveGap: 1, blockingGap: 1 }, T)
+  }
+  // The block clears (row filled elsewhere, or aged out) but the gap remains:
+  // the account must resume at the rung it had climbed to, not at the bottom.
+  const next = noteBackfillAttempt('CLIMB', { backfilled: 0, gap: 1, liveGap: 1, blockingGap: 0 }, T)
+  assert.equal(next.n, 4, 'the rung was never rewound by the cap')
+  assert.equal(dueForBackfill('CLIMB', T + 60 * 60_000), false, 'back to the six-hour wait')
+})
+
+test('a caller that predates blockingGap behaves exactly as before', () => {
+  resetBackfillPacing()
+  const T = 1_000_000
+  for (let i = 0; i < 4; i++) noteBackfillAttempt('OLD', { backfilled: 0, gap: 1 }, T)
+  assert.equal(dueForBackfill('OLD', T + 60 * 60_000), false,
+    'absent field means no claim of blocking, so pacing is untouched')
 })
 
 test('the ladder is bounded — it cannot grow without limit', () => {

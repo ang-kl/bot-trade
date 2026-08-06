@@ -27,6 +27,7 @@
 
 import { normPosId } from '../lib/pos-id.js'
 import { checkTradeConsistency, realisedRR } from './trade-consistency.js'
+import { DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
 
 const WEEK_MS = 7 * 24 * 3_600_000
 
@@ -124,7 +125,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   })()
 
   if ((!gap || gap.n === 0) && mismatch === 0) {
-    return { backfilled: 0, attributed: 0, exitsRepaired: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0 }
+    return { backfilled: 0, attributed: 0, exitsRepaired: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0, blockingGap: 0 }
   }
 
   // THE LIVE GAP — rows still worth retrying for, which is NOT the same set.
@@ -174,6 +175,63 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       // A schema without the columns behaves exactly as before: every missing
       // row counts. Same fail-safe reasoning as unresolved-pnl.js.
       return gap.n
+    }
+  })()
+
+  // THE BLOCKING GAP — live rows that are ALREADY vetoing entries.
+  //
+  // MEASURED 06-08-2026 22:38 UTC, production: 194 vetoes in the last 200
+  // decisions, every one `unknown_daily_pnl`, off ONE trade closed 22:09:46 —
+  // twenty-nine minutes old, far inside the 6-hour age-out and far under the
+  // 6-attempt cap. Nothing was written off, nothing was stale. The row was
+  // simply young, and its deal history had not arrived.
+  //
+  // WHY THAT BLOCKED FOR LONGER THAN IT SHOULD HAVE. The veto engages at the
+  // grace window (15m). The retry ladder is [0, 5m, 15m, 1h, 6h] and steps up
+  // on any pass where a live row did not fill — and a fresh row whose deal
+  // history has not published yet is exactly that. Three non-filling passes
+  // take about twenty minutes of wall clock and land the account on the
+  // ONE-HOUR rung; a fourth lands it on six hours. So the repair backs off at
+  // the very moment the block engages, and the desk waits hours for a figure
+  // a retry at 15 minutes would probably have collected.
+  //
+  // #574's `liveGap` fixed DEAD rows polluting the pacing. It cannot help
+  // here: these rows are live, they legitimately count as outstanding, and
+  // they legitimately ratchet the ladder. The missing idea is that a row which
+  // is *currently blocking the desk* must pace the repair at least as often as
+  // it blocks.
+  //
+  // So this counts the rows past the grace window — the ones actually costing
+  // trades right now — and noteBackfillAttempt caps the backoff at the grace
+  // window while any exist. Nothing about the VETO changes: same threshold,
+  // same scope, same fail-closed semantics, and net_pnl still comes only from
+  // broker deal history. What changes is how often we ask.
+  const blockingGap = (() => {
+    try {
+      const grace = Number.isFinite(Number(opts.graceMin)) && Number(opts.graceMin) >= 0
+        ? Number(opts.graceMin)
+        : DEFAULT_UNKNOWN_PNL_GRACE_MIN
+      const cols = db.prepare('PRAGMA table_info(trades)').all()
+      const clauses = []
+      const args = [...scopeParams]
+      if (cols.some(c => c.name === 'pnl_unresolvable')) clauses.push('AND COALESCE(pnl_unresolvable, 0) = 0')
+      if (cols.some(c => c.name === 'pnl_attempts')) { clauses.push('AND COALESCE(pnl_attempts, 0) < ?'); args.push(LIVE_GAP_MAX_ATTEMPTS) }
+      // Same REPLACE(closed_at,'T',' ') normalisation the veto and the caps
+      // use — mixing the two timestamp formats silently excluded every
+      // production-closed trade once before (risk.js:525-534).
+      clauses.push(`AND REPLACE(closed_at, 'T', ' ') <= datetime('now', ?)`)
+      args.push(`-${grace} minutes`)
+      const row = db.prepare(
+        `SELECT COUNT(*) AS n FROM trades
+          WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql} ${clauses.join(' ')}`
+      ).get(...args)
+      return row?.n ?? 0
+    } catch {
+      // Unknown means "do not claim the desk is blocked", which leaves pacing
+      // exactly as it was. This is the one place where fail-safe points at the
+      // OLD behaviour rather than at blocking: capping the backoff is a repair
+      // accelerator, and accelerating on a failed count would be guessing.
+      return 0
     }
   })()
 
@@ -344,7 +402,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // longer NULL, so the UPDATE below cannot reach them.
   noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString() })
 
-  return { backfilled, attributed, exitsRepaired, closingDeals, scanned: deals.length, gap: gap.n, liveGap }
+  return { backfilled, attributed, exitsRepaired, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap }
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +456,7 @@ export function dueForBackfill(accountId, now = Date.now()) {
  * Anything filled, or no gap at all, resets the ladder — the account is
  * healthy. A gap that did not fill is the only case that costs a step.
  */
-export function noteBackfillAttempt(accountId, result, now = Date.now()) {
+export function noteBackfillAttempt(accountId, result, now = Date.now(), opts = {}) {
   const id = String(accountId)
   const filled = (result?.backfilled || 0) > 0
   // LIVE gap, not total gap — see backfillClosedPnl. A row the repair has
@@ -412,7 +470,30 @@ export function noteBackfillAttempt(accountId, result, now = Date.now()) {
   if (!stuck) { attempts.delete(id); return { n: 0, nextAt: now } }
   const prev = attempts.get(id)?.n || 0
   const n = Math.min(prev + 1, BACKOFF_MS.length - 1)
-  const next = { n, nextAt: now + BACKOFF_MS[n] }
+  // A BLOCKED DESK IS RETRIED AT THE RATE IT IS BLOCKED.
+  //
+  // The rung still climbs — this does not reset or slow the ladder, and an
+  // account with nothing blocking backs off exactly as before. What it refuses
+  // is the specific perversity measured on 06-08: the veto engages at the
+  // grace window (15m) while the repair that would clear it has already backed
+  // off to an hour, then six. The desk then waits hours for a figure the next
+  // retry would probably have collected, and every minute of that is trades
+  // not taken.
+  //
+  // Capping at the grace window is the tightest bound that is still honest:
+  // retrying faster than the veto blocks would be asking the broker for deal
+  // history that, by the veto's own definition, is not yet late.
+  //
+  // NOT A WEAKENING. This changes how often we ASK, never what we accept.
+  // net_pnl still comes only from broker deal history; the veto's threshold,
+  // scope and fail-closed semantics are untouched. The only thing that can
+  // happen sooner is the truth arriving.
+  const blocking = Number(result?.blockingGap) || 0
+  const graceMs = (Number.isFinite(Number(opts.graceMin)) && Number(opts.graceMin) >= 0
+    ? Number(opts.graceMin)
+    : DEFAULT_UNKNOWN_PNL_GRACE_MIN) * 60_000
+  const delay = blocking > 0 ? Math.min(BACKOFF_MS[n], graceMs) : BACKOFF_MS[n]
+  const next = { n, nextAt: now + delay }
   attempts.set(id, next)
   return next
 }
