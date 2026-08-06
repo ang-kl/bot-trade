@@ -23,6 +23,7 @@
 
 import { getState, setState } from '../db.js'
 import { auditControllerEvent } from './phase-audit.js'
+import { checkProtectionFreshness, protectionFreshnessFrom } from './protection-freshness.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
@@ -295,6 +296,24 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
       events.push({ name: row.name, event: 'failure_recovered' })
     }
   }
+
+  // TICKER LIVENESS IS NOT PRODUCT LIVENESS. Everything above this line asks
+  // "did the controller beat?". For protection_audit that is the wrong
+  // question: on 2026-08-06 it beat happily while its last completed reading
+  // was 48 hours old, so the panel showed `ok` beside an answer from two days
+  // earlier. Edge-triggered, so a two-day gap sends one alert rather than one
+  // per sweep — see protection-freshness.js.
+  const product = checkProtectionFreshness(db, {
+    nowMs: now.getTime(), notify, audit: auditControllerEvent,
+  })
+  if (product.event) {
+    events.push({
+      name: 'protection_audit',
+      event: product.event === 'stale' ? 'product_stale' : 'product_fresh',
+      ageSec: product.freshness.ageSec,
+    })
+  }
+
   return events
 }
 
@@ -306,19 +325,31 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
   const lsec = effectiveLoopSec(db, loopSec)
   const byName = {}
   for (const row of db.prepare('SELECT * FROM controller_heartbeats').all()) byName[row.name] = row
+  // Read once, outside the loop — one controller consults it and the panel is
+  // on a hot path.
+  const protection = protectionFreshnessFrom(db, { nowMs: now.getTime() })
   return Object.entries(CONTROLLERS).map(([name, def]) => {
     const row = byName[name]
     const expected = expectedSecFor(def, lsec)
+    const product = name === 'protection_audit' ? protection : null
     if (!row) {
-      return { name, label: def.label, status: 'idle', expected_sec: expected, runs: 0 }
+      return { name, label: def.label, status: 'idle', expected_sec: expected, runs: 0,
+        ...(product ? { work_product: product } : {}) }
     }
     const age = ageSecOf(row, now)
-    const status = age > expected * def.factor
+    let status = age > expected * def.factor
       ? 'stalled'
       : row.consecutive_failures >= FAIL_ALERT_AT
         ? 'error'
         : row.consecutive_failures > 0 ? 'warn' : 'ok'
+    // THE CONTRADICTION, FIXED WHERE IT IS READ. A beating ticker with a stale
+    // answer must not print `ok` — that is the exact reading that let a 48-hour
+    // gap sit in plain sight. `warn`, not `stalled`: the process genuinely is
+    // running, and overstating it as a stall would misdirect whoever acts on
+    // it. `work_product` carries the age so the panel can say WHY.
+    if (product && product.enabled && !product.fresh && status === 'ok') status = 'warn'
     return {
+      ...(product ? { work_product: product } : {}),
       name,
       label: def.label,
       status,
