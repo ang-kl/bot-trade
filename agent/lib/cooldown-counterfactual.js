@@ -32,8 +32,16 @@
 // that just knocked us out.
 // ---------------------------------------------------------------------------
 
-/** The shipped default, mirrored from DEFAULTS.symbolCooldownMinutes. */
-export const DEFAULT_SYMBOL_COOLDOWN_MIN = 240
+/**
+ * The shipped default, mirrored from DEFAULTS.symbolCooldownMinutes.
+ *
+ * Was 240 — the borrowed freqtrade figure — until the owner set it to 60 on
+ * 2026-08-06. 60 is the measured number: it refuses both JPN225 re-entries and
+ * is the smallest value that does. This constant must stay in step with
+ * risk.js, because a counterfactual computed against a default the system no
+ * longer ships would be a sentence about nothing.
+ */
+export const DEFAULT_SYMBOL_COOLDOWN_MIN = 60
 
 // `Number(null)` is 0 and 0 is finite, so a missing P&L would otherwise read as
 // a scratch trade — a confident "not a loss" for a figure nobody has. Absent is
