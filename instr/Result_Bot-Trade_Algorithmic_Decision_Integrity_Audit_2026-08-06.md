@@ -44,7 +44,7 @@ reachable today.
 | Verdict axis | Classification | Basis |
 |---|---|---|
 | **Economic character** (§3.1) | `BOUNDED SPECULATION` for FX/indices/commodities/CFD; `UNCLASSIFIED — INSUFFICIENT EVIDENCE` for equity CFDs | No valuation or margin-of-safety pipeline exists anywhere in the repo. Graham test part 1 (thorough analysis) is met on *price* evidence only; part 3 (adequate return after costs) is unproven. Bounded, because per-trade risk, daily loss caps, equity stop and position caps all exist and are enforced in code. |
-| **Defence posture** (§3.2) | `MIXED` | Entry-side defences are numerous, layered and — on the 7-day figures the owner surfaced on 04-08 — collectively近 prohibitive (1.7% approval). Execution-side authority is well arbitrated (`acting-layer.js` single-flight + dual ledger/broker gate). Cross-account scoping has one proven hole. |
+| **Defence posture** (§3.2) | `MIXED` | Entry-side defences are numerous, layered and — on the 7-day figures the owner surfaced on 04-08 — collectively near-prohibitive (1.7% approval). Execution-side authority is well arbitrated (`acting-layer.js` single-flight + dual ledger/broker gate). Cross-account scoping has one proven hole. |
 | **Edge status** (§3.3) | `EDGE UNPROVEN` for all 12 strategies, portfolio included | Not `EDGE NEGATIVE` — that would also be a claim requiring the data. No out-of-sample trade sequence was reachable. |
 
 **Defence posture is `MIXED`, not `OVER-DEFENDED`,** even though the approval rate is
