@@ -1015,3 +1015,37 @@ test('checkAccountAuthorization: with no demo snapshot, both sides use the singl
   assert.match(notes[0], /100/)
   assert.deepEqual(r.events.map(e => e.accountId), ['100'])
 })
+
+test('probeCppExec: the credential-less self-heal pushes REAL creds, not a pending Promise', async () => {
+  // REGRESSION, introduced by me in the Phase 2 refactor and caught against
+  // production. `sideCreds` became async; this call site kept the old
+  // synchronous shape, so `pushSidecarSession` received a PROMISE. It does not
+  // throw on one — it reads `creds?.ready`, gets `undefined`, and returns false.
+  //
+  // Silent, and on the worst possible path: this is the M4 self-heal that
+  // revives a sidecar which restarted and lost its credentials. Nothing else
+  // re-pushes, because ensureSidecarSession memoises on an unchanged key. The
+  // failure mode is a sidecar that stays dead until the AGENT restarts.
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, is_live, enabled) VALUES ('100', 0, 1)`).run()
+  setState(db, 'ctrader_access_token', 'tok')
+  setState(db, 'ctrader_account_id', '100')
+  setState(db, 'ctrader_is_live', 'false')
+  process.env.CTRADER_CLIENT_ID = 'ci'
+  process.env.CTRADER_CLIENT_SECRET = 'cs'
+
+  let pushedArg = 'NEVER CALLED'
+  const exec = {
+    ...execWithBases(),
+    // A live HTTP server whose broker session is down and holds no credentials
+    // — the exact shape that arms the self-heal.
+    pingSidecar: async () => ({ ok: true, mode: 'cpp', connected: false, hasCredentials: false }),
+    pushSidecarSession: async (creds) => { pushedArg = creds; return !!creds?.ready },
+  }
+  await probeCppExec(db, { exec, now: T0 })
+
+  assert.notEqual(pushedArg, 'NEVER CALLED', 'the self-heal must fire on a credential-less sidecar')
+  assert.ok(!(pushedArg instanceof Promise), 'a Promise reaches pushSidecarSession as `ready: undefined` and pushes NOTHING')
+  assert.equal(pushedArg.ready, true, 'and the resolved creds must actually be ready to push')
+  assert.equal(pushedArg.host, 'demo.ctraderapi.com')
+})
