@@ -4,6 +4,7 @@
 // deployments keep working without touching the UI.
 
 import { viewedAccountId, isViewingOther } from './selected-account.js'
+import { parseConnHash } from './conn-hash.js'
 
 const LS_URL = 'agent_url'
 const LS_SECRET = 'agent_secret'
@@ -17,23 +18,19 @@ const LS_SECRET = 'agent_secret'
 function initConnFromHash() {
   if (typeof window === 'undefined' || !window.location?.hash) return
   try {
-    const raw = window.location.hash.slice(1)
-    let url = null
-    let secret = null
-    if (raw.includes('=')) {
-      const params = new URLSearchParams(raw)
-      url = params.get('agent')
-      secret = params.get('secret')
-    } else if (raw) {
-      // Shorthand: the entire hash IS the secret (e.g. site.app/#123).
-      // Agent URL comes from what's already saved or the VITE_ default.
-      secret = decodeURIComponent(raw)
-    }
-    if (url) localStorage.setItem(LS_URL, url.trim())
-    if (secret) localStorage.setItem(LS_SECRET, secret.trim())
+    // A FRAGMENT ONLY RECONFIGURES WHEN IT LOOKS LIKE A CREDENTIAL. This used
+    // to treat any `=`-free hash as the secret, so following an in-page anchor
+    // — `#risk-minRR` on the Risk page — overwrote the stored session token
+    // and signed the operator out mid-edit. See conn-hash.js for the incident.
+    const { url, secret, ignored } = parseConnHash(window.location.hash)
+    if (url) localStorage.setItem(LS_URL, url)
+    if (secret) localStorage.setItem(LS_SECRET, secret)
+    // Strip the fragment ONLY when it carried connection details, so a real
+    // anchor still scrolls to its target instead of being erased on load.
     if (url || secret) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search)
     }
+    void ignored
   } catch { /* malformed hash — ignore */ }
 }
 initConnFromHash()
