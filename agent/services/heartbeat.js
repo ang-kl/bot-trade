@@ -538,7 +538,7 @@ async function probeOneSidecar(db, exec, side, deps = {}) {
     // token the sidecar already holds is one cheap /connect no-op, pushing a
     // rotated one revives the session within a probe interval.
     try {
-      const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(sideCreds(db, side)) : false
+      const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(await sideCreds(db, side)) : false
       if (pushed) error += ' — credentials re-pushed, session should return shortly'
     } catch { /* creds not ready or sidecar went away — next probe retries */ }
   } else if (ok && r.connected === true) {
