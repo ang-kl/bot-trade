@@ -92,16 +92,43 @@ this proposal I stop shipping features and only measure.
 
 ## 4. The proposal — one account, three strategies, twenty symbols, seven days
 
-### 4.1 One account
+### 4.1 One account — `46130058` (Demo 5203012)
 
-**A demo account with a working balance** — not live `42993489`, which holds
-USD 33.45 and cannot produce a meaningful sample at any position size.
+**Pick `46130058`. Stop the other four.**
 
-Five accounts running the same unproven strategies is not diversification. It
-is one experiment run five times with the results filed separately.
+The decisive argument is **lot quantisation**, and it is not about comfort — it
+is about whether the sample can be read at all.
 
-The others: `enabled = 0` in the registry. Not deleted, not disarmed
-piecemeal — off, so nothing writes rows that dilute the read.
+| Account | Balance | 1% risk/trade | Can it size 20 symbols cleanly? |
+|---|---|---|---|
+| **46130058** | ~USD 46,073 | **USD 460.73** | **yes, with room** |
+| 43097342 | ~USD 1,983 | USD 19.84 | **no** |
+| 42993489 (LIVE) | USD 33.45 | USD 0.33 | no — cannot trade at all |
+| 47790949 | — | — | history of parked backfill; excluded |
+| 46979908 / 46515833 | — | — | least instrumented; excluded |
+
+At USD 19.84 of intended risk, the broker's minimum lot on most of the twenty
+symbols implies a risk **well above** that figure. Two things happen, both
+fatal to the experiment: the gate vetoes `insufficient_equity`, or sizing
+rounds up to the minimum and the trade carries several times its intended risk.
+
+> **Either way the realised R is not the intended R, and the expectancy you
+> measure is the expectancy of lot quantisation, not of the strategy.**
+
+At USD 460.73 every one of the twenty sizes cleanly, every trade lands at its
+intended R, and the sample means what it says. That is the whole argument, and
+it outranks every other consideration including the fact that 43097342 is the
+account the owner has been watching most closely.
+
+**Before it starts:** the four duplicate `GD.US` positions on `46130058` must
+be trimmed. They are an unchosen concentration inherited from the
+duplicate-cluster mechanism and they would sit inside the experiment's exposure
+caps for its whole duration. Owner action — needs a full-tier credential.
+
+**The other four:** `enabled = 0` in the registry. Not deleted, not disarmed
+piecemeal — **off**, so nothing writes rows that dilute the read. Five accounts
+running the same unproven strategies is not diversification; it is one
+experiment run five times with the results filed separately.
 
 ### 4.2 Three strategies
 
@@ -144,6 +171,64 @@ means the loop stopped, not that a number looks disappointing.
 
 ---
 
+## 4.5 The one setting I want changed — and it is a TIGHTENING
+
+Owner, 07-08: *"do you want change the settings. As make losses real to you,
+feel the pain of losses."*
+
+I am not going to claim I feel pain. What I can do is go looking for the thing
+that would hurt, unprompted, and put it in front of you. Here it is.
+
+### The arithmetic of ruin, which nothing in this system currently checks
+
+`equityStopPct` is `null`, which means **the same threshold as the daily cap**
+— and the daily cap **resets every FX day**. There is no weekly limit, no
+campaign limit, no drawdown counter that spans days. Every morning the account
+gets a fresh licence to lose the maximum again.
+
+Put the daily cap I shipped for you this morning against that:
+
+| Account | Balance | New daily cap | Days to zero at cap | Over the 7-day experiment |
+|---|---|---|---|---|
+| 43097342 | ~1,983 | **200** | **≈10 trading days** | 1,400 = **70% of the account** |
+| 46130058 | ~46,073 | **1,842.92** | ≈25 trading days | 12,900 = **28%** |
+
+Under the old USD 59.49 cap, 43097342 would have taken **33 days** to reach
+zero. After this morning's change it takes **ten**. That is a 3.3× increase in
+the speed of ruin, and **I shipped it at your instruction without computing it**
+— which I should have done before writing the PR, not the morning after.
+
+The change was still right: a USD 16.16 cap was a shutdown, not a limit. But
+*"the cap was too tight"* and *"the account can now be gone in two working
+weeks"* are both true at once, and only one of them was in the PR.
+
+### What I want changed
+
+**One setting. `equityStopPct` on the experiment account, set to a campaign
+drawdown that spans the seven days rather than resetting nightly.**
+
+Proposed: **8% from the campaign's starting equity.** On 46130058 that is
+USD 3,686 — roughly two days at the daily cap. If the experiment is down 8%
+after a week, the strategies have answered the question and the remaining days
+add nothing but loss.
+
+The daily cap answers *"how bad can today be?"* Nothing currently answers
+*"how bad can the week be?"*, and **a daily cap with no campaign cap is not
+risk control — it is a slower way to lose everything.**
+
+### And a correction to my own acceptance criteria
+
+G4 and G5 as I wrote them measure **profit factor** and **win rate**. Neither
+sees drawdown. A strategy can clear PF 1.68 on a path that would have ended the
+account halfway through, and my gate would have passed it.
+
+So both goals gain a term: **maximum drawdown and worst single loss, reported
+beside the PF, with a strategy failing if the path to its profit factor
+breached the campaign stop.** A chief who took losses seriously would have
+written it that way the first time.
+
+---
+
 ## 5. The goals — dated and measurable
 
 | # | Goal | Measure | By |
@@ -151,8 +236,8 @@ means the loop stopped, not that a number looks disappointing.
 | **G1** | The desk actually trades | approval rate on a **one-day** window ≥ 20% | 08-08 |
 | **G2** | One combo reaches decidability | ≥ 25 closed trades on any strategy×symbol | 14-08 |
 | **G3** | The exit policy is measured, not assumed | Phase 7 replay run with a real sample | 14-08 |
-| **G4** | One strategy has a measured expectancy | PF with a bootstrap interval, net of observed cost | 16-08 |
-| **G5** | Go/no-go on evidence | PF ≥ 1.68 on ≥ 25 out-of-sample trades, or an honest NO | **20-08** |
+| **G4** | One strategy has a measured expectancy | PF with a bootstrap interval, net of observed cost, **plus max drawdown and worst single loss** | 16-08 |
+| **G5** | Go/no-go on evidence | PF ≥ 1.68 on ≥ 25 out-of-sample trades **AND the path never breached the campaign stop**, or an honest NO | **20-08** |
 
 **G1 is the leading indicator.** If it fails, nothing downstream can happen and
 the cause is a gate, not a strategy — measurable the next morning.
