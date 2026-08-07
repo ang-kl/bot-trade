@@ -243,7 +243,15 @@ test('usdLossPerLot — EURJPY sizes instead of vetoing once JPY is derivable', 
 // currency. The uniform 3,900 across currencies was the bug.
 // ---------------------------------------------------------------------------
 test('the quote currency of a non-FX instrument is declared, not assumed', () => {
-  assert.equal(fxQuoteCurrency('JPN225'), 'JPY')
+  // CHANGED 07-08-2026. This asserted 'JPY' and the assertion was the problem:
+  // it pinned a hand-entered guess as if it were a measurement, so the 158×
+  // sizing error it caused was protected by a green test for months. Three
+  // real fills say USD — under JPY, trade 641's 9,171.76 loss requires a
+  // 20,000-point move on a 62,487 index. See the note in contracts.js.
+  assert.equal(fxQuoteCurrency('JPN225'), 'USD')
+  // These are the same hand-entered assumption, still unverified. Kept as-is
+  // deliberately (no evidence either way) — sizing-parity.js is what will
+  // settle them, and it will do it from realised broker P&L, not from here.
   assert.equal(fxQuoteCurrency('GER40'), 'EUR')
   assert.equal(fxQuoteCurrency('UK100'), 'GBP')
   assert.equal(fxQuoteCurrency('AUS200'), 'AUD')

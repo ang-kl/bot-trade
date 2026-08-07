@@ -116,6 +116,22 @@ if (!DB_PATH) {
 }
 const db = initDB(resolvedDbPath);
 
+// Quote-currency overrides, BEFORE anything can size a position. A wrong entry
+// in contracts.js mis-sizes every trade on that symbol by an FX rate, and
+// until now correcting one took a code change and a deploy — which is exactly
+// how JPN225 stayed wrong long enough to produce a 9,171.76 loss on a 45,211
+// account. `symbol_quote_ccy_json` makes it a config edit instead.
+// Loaded loudly: a silent override is a second hidden assumption, and hidden
+// assumptions are the whole subject here.
+try {
+  const { setQuoteCurrencyOverrides } = await import('./lib/contracts.js');
+  const raw = JSON.parse(getState(db, 'symbol_quote_ccy_json') || 'null');
+  const applied = setQuoteCurrencyOverrides(raw);
+  if (applied.length) console.log(`[boot] quote-currency overrides active: ${applied.join(', ')}`);
+} catch (e) {
+  console.warn('[boot] quote-currency overrides NOT applied:', e.message);
+}
+
 // Exhaustive lifecycle/crash diagnostics to stdout (owner reads these from
 // Railway to find the ~4-min restarts). Installed as early as possible so a
 // boot-time error is still captured; the heartbeat reads live loop stats.
