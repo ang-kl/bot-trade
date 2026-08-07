@@ -793,6 +793,76 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET/POST /actions/early-trim-settings — the switch T2's shadow shipped
+  // without.
+  //
+  // #685 added early-trim as a log-only shadow reading `early_trim_json`, and
+  // nothing anywhere WRITES that key: no route, no UI, no seed. The feature
+  // was therefore unreachable — permanently off, with a full test suite
+  // asserting how correctly it stays that way. A shadow nobody can start is
+  // not a cautious shadow, it is a dead one, and the caution reads as working
+  // software until somebody goes looking for the rows.
+  //
+  // Body: { enabled?: bool, atR?: number, frac?: number,
+  //         moveSlToBreakeven?: bool }. Everything is validated by
+  // earlyTrimConfig(), which silently repairs nonsense to defaults and forces
+  // mode to 'log' — so the response echoes the EFFECTIVE config rather than
+  // what was sent, and a rejected value is visible instead of assumed.
+  //
+  // Still log-only. There is no act path in early-trim.js to switch on.
+  // -----------------------------------------------------------------------
+  router.get('/early-trim-settings', async (_req, res) => {
+    try {
+      const { earlyTrimConfig } = await import('../services/early-trim.js')
+      const { loadProfitKeeperConfig } = await import('../services/profit-keeper.js')
+      let raw = null
+      try { raw = JSON.parse(getState(db, 'early_trim_json') || 'null') } catch { raw = null }
+      const cfg = earlyTrimConfig(raw)
+      res.json({
+        ok: true, effective: cfg,
+        // The shadow runs inside the profit keeper's sweep and returns early
+        // when the keeper is off (profit-keeper.js:258). Reporting
+        // enabled:true while the keeper is off would describe a feature that
+        // never runs, which is the same lie in a smaller box.
+        profitKeeperOn: loadProfitKeeperConfig(db).on === true,
+        writes: 'action_log rows, kind=early_trim_shadow, applied:false — decisions only, nothing is traded',
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  router.post('/early-trim-settings', async (req, res) => {
+    try {
+      const { earlyTrimConfig, DEFAULT_EARLY_TRIM } = await import('../services/early-trim.js')
+      const { loadProfitKeeperConfig } = await import('../services/profit-keeper.js')
+      const body = req.body || {}
+      let current = null
+      try { current = JSON.parse(getState(db, 'early_trim_json') || 'null') } catch { current = null }
+      const merged = { ...DEFAULT_EARLY_TRIM, ...(current || {}) }
+      for (const k of ['enabled', 'atR', 'frac', 'moveSlToBreakeven']) {
+        if (k in body) merged[k] = body[k]
+      }
+      const cfg = earlyTrimConfig(merged)
+      setState(db, 'early_trim_json', JSON.stringify(cfg))
+      const keeperOn = loadProfitKeeperConfig(db).on === true
+      console.log(`[actions] early-trim shadow → enabled=${cfg.enabled} atR=${cfg.atR} frac=${cfg.frac} keeperOn=${keeperOn}`)
+      res.json({
+        ok: true, effective: cfg, profitKeeperOn: keeperOn,
+        // Turning the shadow on while the keeper is off produces no rows and
+        // no error. Say so at the moment of the write, not in a week when the
+        // record turns out to be empty.
+        warning: cfg.enabled && !keeperOn
+          ? 'the shadow is enabled but the Profit Keeper is OFF — the sweep it runs inside returns early, so NO rows will be written'
+          : null,
+      })
+    } catch (err) {
+      console.error('[actions/early-trim-settings] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/exec-guard — { halt?, requireBracket?, requireTarget?,
   // maxOrderVolume? } stores the C++ sidecar's atomic order-guard knobs and
   // pushes them to the sidecar (best-effort — in js exec mode there is no
