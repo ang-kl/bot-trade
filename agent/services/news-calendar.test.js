@@ -96,3 +96,24 @@ test('signalButtons + tvSymbol: rows, callback data, TV mapping', async () => {
   assert.match(tv.url, /tradingview\.com\/chart\/\?symbol=MCHP$/)
   assert.ok(rows[0].every(b => (b.callback_data || '').length <= 64))
 })
+
+test('the staleness bound honours the CALLER\'s clock, not the wall clock', async () => {
+  // This is the regression the cockpit tests hit: they seeded a cache "7 hours
+  // old" relative to a hardcoded 2026-07-31, and passed until real time drifted
+  // more than MAX_CACHE_AGE_MS past that date — at which point the bound, the
+  // only part of the read still measuring against Date.now(), started returning
+  // [] for a cache that was fresh at the moment being rendered. A test that
+  // rots is bad; a cockpit that silently reports "no news scheduled" for a
+  // historical moment is worse.
+  const { initDB, setState } = await import('../db.js')
+  const { cachedEventsSync } = await import('./news-calendar.js')
+  const db = initDB(':memory:')
+  const asOf = Date.parse('2020-01-15T12:00:00Z')   // deliberately long past
+  setState(db, 'news_calendar_json', JSON.stringify([
+    { title: 'CPI y/y', country: 'USD', impact: 'High', date: new Date(asOf + 30 * 60_000).toISOString() },
+  ]))
+  setState(db, 'news_calendar_fetched_ms', String(asOf - 3600_000))
+  assert.equal(cachedEventsSync(db, asOf).length, 1, 'one hour old, as of that moment')
+  assert.equal(cachedEventsSync(db, asOf + 8 * 24 * 3600_000).length, 0, 'eight days on, out of bound')
+  assert.equal(cachedEventsSync(db).length, 0, 'and against the wall clock it is years stale')
+})

@@ -67,7 +67,7 @@ export function buildEnvironment(db, symbol, nowMs = Date.now()) {
   try {
     const fetchedMs = Number(getState(db, 'news_calendar_fetched_ms'))
     const haveFetch = Number.isFinite(fetchedMs) && fetchedMs > 0
-    const all = cachedEventsSync(db)
+    const all = cachedEventsSync(db, nowMs)
     const cfg = (() => { try { return loadRiskConfig(db) } catch { return {} } })()
     const inWin = newsWindowEvent(all, symbol, nowMs, {
       minBefore: cfg.newsGateMinBefore ?? 15,
