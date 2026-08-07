@@ -45,6 +45,69 @@
 /** One FX trading day. The anchor is risk.js fxDayOpenMs (17:00 New York). */
 export const FX_DAY_MS = 24 * 60 * 60 * 1000
 
+// ---------------------------------------------------------------------------
+// THE TIERED FLOOR — OWNER DECISION, 2026-08-07, verbatim:
+//
+//   "Change immediately dailyLossPct for 43097342 to $200 min. or 3% for
+//    accounts < $10000. 4% for account > $10000."
+//
+// WHAT WAS WRONG. On 43097342 the cap had collapsed to USD 16.16 — 3% of a
+// balance that had shrunk — and `daily_loss_limit_hit pnl=-912.72 limit=16.16`
+// logged 4,717 vetoes in seven days. A percentage of a small balance is not a
+// risk limit, it is a shutdown: any single ordinary loss ends the day, so the
+// account can never trade its way back and never accumulates the sample the
+// go-live gate needs.
+//
+// THE RULE, exactly as specified:
+//
+//   cap = max( floorUsd , balance × (balance < tierAt ? smallPct : largePct) )
+//        = max( 200 , balance × (balance < 10,000 ? 3% : 4%) )
+//
+// so 1,983 → max(200, 59.50)  = 200      (was 59.50, and 16.16 when smaller)
+//    46,073 → max(200, 1,842.92) = 1,842.92
+//
+// THIS RAISES A RISK LIMIT. It is recorded here rather than buried in config
+// because that is what it is: on a small account the day's allowance goes from
+// tens of dollars to two hundred. The owner asked for it in those words, with
+// those numbers, after seeing the veto counts. It is not a correctness fix and
+// must not be described as one.
+//
+// FLOOR, NOT CEILING — and this is the part that inverts existing behaviour.
+// `dailyLossLimit` combines by MIN (see below): two caps are reconciled by
+// obeying the tighter. A FLOOR is the opposite instruction — "never less than
+// this" — so it is applied AFTER the min, deliberately, and only when set.
+// Leaving it inside the min would make it a no-op on exactly the small
+// accounts it exists for.
+//
+// OFF BY DEFAULT AT THE MODULE LEVEL. `floorUsd` null and both tier pcts null
+// reproduce the previous arithmetic byte for byte; the defaults live in
+// risk.js's DEFAULT_RISK_CONFIG where every other risk number lives, so this
+// module stays a pure function of what it is handed.
+// ---------------------------------------------------------------------------
+
+/**
+ * The percentage that applies to a balance under the owner's two-tier rule.
+ * Returns null when the tier rule is off or the balance is unknown, so the
+ * caller falls back to the flat `basePct` exactly as before.
+ *
+ * @param {number|null} balance
+ * @param {{smallPct?:number|null, largePct?:number|null, tierAt?:number|null}} tier
+ * @returns {number|null}
+ */
+export function tieredDailyPct(balance, { smallPct = null, largePct = null, tierAt = null } = {}) {
+  const bal = Number(balance)
+  const small = Number(smallPct)
+  const large = Number(largePct)
+  const at = Number(tierAt)
+  if (!Number.isFinite(bal) || bal <= 0) return null
+  if (!Number.isFinite(small) || small <= 0) return null
+  if (!Number.isFinite(large) || large <= 0) return null
+  // A missing or nonsensical boundary would silently pick one tier for every
+  // account; treated as "rule off" rather than guessed.
+  if (!Number.isFinite(at) || at <= 0) return null
+  return bal < at ? small : large
+}
+
 /**
  * Pure. The daily-loss allowance for one account at one instant.
  *
@@ -89,7 +152,15 @@ export const FX_DAY_MS = 24 * 60 * 60 * 1000
 export function pacedDailyCap({
   balance, basePct, maxPct, absoluteFallback,
   nowMs, dayOpenMs, spentUsd = 0, perTradeRiskUsd = 0,
+  floorUsd = null, tierSmallPct = null, tierLargePct = null, tierAtUsd = null,
 }) {
+  // The tier rule REPLACES basePct when it applies — it is a statement about
+  // which percentage is correct for this balance, not an extra bound. When it
+  // is off (any knob null/absent) basePct is used unchanged.
+  const tierPct = tieredDailyPct(balance, {
+    smallPct: tierSmallPct, largePct: tierLargePct, tierAt: tierAtUsd,
+  })
+  if (tierPct != null) basePct = tierPct
   // ---- the flat USD check -------------------------------------------------
   // A limit of zero is not a limit of zero dollars — nobody configures "lose
   // nothing, ever" — it is how an empty field arrives after a Number() cast.
@@ -117,12 +188,33 @@ export function pacedDailyCap({
       : balance * base
 
   // ---- combine ------------------------------------------------------------
-  const both = [pctCapUsd, usdCapUsd].filter(v => v != null)
-  const capUsd = both.length ? Math.min(...both) : null
+  // WHEN THE TIER RULE IS ON IT DEFINES THE DAY, and the flat `dailyLossLimit`
+  // stops clamping. This is a real consequence and is stated rather than
+  // discovered: with the flat 300 still in the min, a 46,073 account would cap
+  // at 300 instead of the 4% (1,842.92) the owner specified — the tier rule
+  // would be dead on exactly the large accounts its 4% tier exists for.
+  //
+  // The owner's instruction describes the WHOLE rule ("$200 min. or 3% … 4%")
+  // and names no flat ceiling, so honouring both would be obeying an
+  // instruction they did not give. `dailyLossLimit` remains fully in force
+  // whenever the tier rule is off.
+  const both = [pctCapUsd, ...(tierPct != null ? [] : [usdCapUsd])].filter(v => v != null)
+  const minCapUsd = both.length ? Math.min(...both) : null
+  // THE FLOOR IS APPLIED LAST, and only to a cap that already exists. Lifting
+  // a null (both checks off) to the floor would INVENT a limit where the owner
+  // turned every one of them off — the opposite of what a floor is for.
+  const floor = Number(floorUsd)
+  const floorOn = Number.isFinite(floor) && floor > 0
+  const capUsd = minCapUsd == null ? null : (floorOn ? Math.max(minCapUsd, floor) : minCapUsd)
+  const floorBinding = capUsd != null && floorOn && capUsd > minCapUsd
+  // When the floor lifted the cap, the floor IS what is binding — reporting
+  // 'pct' there would name a number the operator can see is not the one in
+  // force, which is the class of quiet lie this file already refuses.
   const binding = capUsd == null ? null
-    : pctCapUsd != null && usdCapUsd != null
-      ? (pctCapUsd === usdCapUsd ? 'both' : (pctCapUsd < usdCapUsd ? 'pct' : 'usd'))
-      : (pctCapUsd != null ? 'pct' : 'usd')
+    : floorBinding ? 'floor'
+      : pctCapUsd != null && usdCapUsd != null
+        ? (pctCapUsd === usdCapUsd ? 'both' : (pctCapUsd < usdCapUsd ? 'pct' : 'usd'))
+        : (pctCapUsd != null ? 'pct' : 'usd')
 
   const remainingUsd = capUsd == null ? null : Math.max(0, capUsd - spentUsd)
 
@@ -137,7 +229,12 @@ export function pacedDailyCap({
     // check is the one actually holding the line. A ramp the flat USD cap sits
     // below is not pacing anything, and saying so would explain the day's
     // allowance with the wrong mechanism.
-    paced: hasCeiling && binding !== 'usd',
+    paced: hasCeiling && binding !== 'usd' && binding !== 'floor',
+    // The owner's two-tier floor, reported so the Risk page can say WHICH
+    // rule produced the number rather than leaving it to be re-derived.
+    floorUsd: floorOn ? floor : null,
+    floorBinding,
+    tierPct,
     elapsed,
     ceilingUsd: hasCeiling ? balance * ceil : null,
     remainingUsd,

@@ -13,7 +13,7 @@
 // arithmetic that will run in production.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pacedDailyCap, describePacing, describeBinding, FX_DAY_MS } from './daily-loss-pacing.js'
+import { pacedDailyCap, describePacing, describeBinding, tieredDailyPct, FX_DAY_MS } from './daily-loss-pacing.js'
 
 const BAL = 48386.46
 const OPEN = Date.UTC(2026, 7, 2, 21, 0, 0)   // 17:00 New York = 21:00 UTC
@@ -222,4 +222,67 @@ test('the description names the number, the clock and what is left', () => {
 
 test('FX_DAY_MS is a whole day — the ramp denominator, stated once', () => {
   assert.equal(FX_DAY_MS, 86_400_000)
+})
+
+// --- the owner's two-tier floor (2026-08-07) --------------------------------
+//
+// "Change immediately dailyLossPct for 43097342 to $200 min. or 3% for
+//  accounts < $10000. 4% for account > $10000."
+//
+// A RISK LIMIT INCREASE, tested as one: these assert the allowance goes UP on
+// small accounts, which is the point and must not be mistaken for a fix.
+
+const TIER = { floorUsd: 200, tierSmallPct: 0.03, tierLargePct: 0.04, tierAtUsd: 10_000 }
+const tiered = (balance, over = {}) => pacedDailyCap({
+  balance, basePct: 0.03, maxPct: null, absoluteFallback: 300,
+  nowMs: at(0), dayOpenMs: OPEN, ...TIER, ...over,
+})
+
+test('a small account is lifted to the floor instead of shut down', () => {
+  // 43097342's own numbers. 3% of 1,983 is 59.49 — one ordinary loss ends the
+  // day, which is what produced 4,717 vetoes in a week.
+  const r = tiered(1983)
+  assert.equal(Number(r.capUsd.toFixed(2)), 200)
+  assert.equal(r.binding, 'floor', 'the floor is named as the binding rule, not the pct')
+  assert.equal(r.floorBinding, true)
+  assert.equal(r.tierPct, 0.03)
+})
+
+test('the tier boundary is < / >=, exactly as specified', () => {
+  assert.equal(tiered(9_999).tierPct, 0.03)
+  assert.equal(tiered(10_000).tierPct, 0.04)
+})
+
+test('a large account gets its 4% — the flat cap no longer clamps it to 300', () => {
+  // The consequence worth being explicit about: with dailyLossLimit still in
+  // the min this would be 300, and the 4% tier would be dead on arrival.
+  const r = tiered(46_073)
+  assert.equal(Number(r.capUsd.toFixed(2)), 1842.92)
+  assert.equal(r.tierPct, 0.04)
+})
+
+test('with the tier rule OFF the arithmetic is byte-for-byte what it was', () => {
+  const off = tiered(46_073, { floorUsd: null, tierSmallPct: null, tierLargePct: null, tierAtUsd: null })
+  assert.equal(off.capUsd, 300, 'dailyLossLimit clamps again the moment the rule is off')
+  assert.equal(off.binding, 'usd')
+  assert.equal(off.tierPct, null)
+  const small = tiered(1983, { floorUsd: null, tierSmallPct: null, tierLargePct: null, tierAtUsd: null })
+  assert.equal(Number(small.capUsd.toFixed(2)), 59.49)
+})
+
+test('the floor never INVENTS a cap where the owner turned every check off', () => {
+  // Both checks off means uncapped. Lifting null to 200 would create a limit
+  // out of nothing — the opposite of what a floor is for.
+  const r = pacedDailyCap({
+    balance: 1983, basePct: null, maxPct: null, absoluteFallback: null,
+    nowMs: at(0), dayOpenMs: OPEN, ...TIER, tierSmallPct: null, tierLargePct: null, tierAtUsd: null,
+  })
+  assert.equal(r.capUsd, null)
+  assert.equal(r.uncapped, true)
+})
+
+test('an unknown balance leaves the tier rule off rather than guessing a tier', () => {
+  assert.equal(tieredDailyPct(null, { smallPct: 0.03, largePct: 0.04, tierAt: 10_000 }), null)
+  assert.equal(tieredDailyPct(0, { smallPct: 0.03, largePct: 0.04, tierAt: 10_000 }), null)
+  assert.equal(tieredDailyPct(5000, { smallPct: 0.03, largePct: 0.04, tierAt: null }), null)
 })

@@ -41,15 +41,19 @@ describe('AccountScopeFab', () => {
     expect(html()).not.toContain('role="dialog"')
   })
 
-  it('opened, it says the switch is VIEW-only — the guarantee is worthless unsaid', () => {
+  // OWNER CHANGE 07-08-2026: the FAB now moves the TRADED account, not just
+  // the lens. The sheet has to say which kind of switch it is — the previous
+  // wording promised view-only, and a control that quietly re-points real
+  // trading while claiming otherwise is worse than either behaviour alone.
+  it('opened, it says it sets the TRADED account and warns about the live confirm', () => {
     // Choosing a row here calls setViewedAccount, never
     // /actions/ctrader-select-account. A control this easy to reach must not
     // be readable as "this re-points what the bot trades".
     const h = html({ open: true })
     expect(h).toContain('role="dialog"')
     expect(h).toContain('All accounts')
-    expect(h).toMatch(/LOOKING at/)
-    expect(h).toMatch(/Connect, not here/)
+    expect(h).toMatch(/TRADES/)
+    expect(h).toMatch(/type LIVE/i)
   })
 
   it('every sheet row clears 44px', () => {
