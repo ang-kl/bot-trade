@@ -38,6 +38,7 @@
 
 import { getState } from '../db.js'
 import { instrumentType } from '../lib/contracts.js'
+import { earlyTrimConfig, earlyTrimDecision, earlyTrimShadowRow } from './early-trim.js'
 import { getAccountBalance } from './risk.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
@@ -251,10 +252,15 @@ export function runProfitKeeper(db, creds, deps = {}) {
 }
 
 async function profitKeeperPass(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, errors: [] }
+  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, errors: [] }
   try {
     const cfg = loadProfitKeeperConfig(db)
     if (!cfg.on) return summary
+    // Read once per sweep, not per position. Unreadable config leaves the
+    // shadow OFF — see earlyTrimConfig.
+    let trimCfg
+    try { trimCfg = earlyTrimConfig(JSON.parse(getState(db, 'early_trim_json') || 'null')) }
+    catch { trimCfg = earlyTrimConfig(null) }
 
     const accountId = authorisedAccountId(creds)
     const scopeSql = cfg.scope === 'all'
@@ -262,7 +268,8 @@ async function profitKeeperPass(db, creds, deps = {}) {
       : "mp.source IN ('external', 'manual')"
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.peak_profit_usd,
-              mp.scaled_out, mp.trade_id, mp.account_id, t.ctrader_position_id AS position_id
+              mp.scaled_out, mp.trade_id, mp.account_id, t.ctrader_position_id AS position_id,
+              t.sl_price AS original_sl, mp.early_trimmed
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
@@ -393,6 +400,46 @@ async function profitKeeperPass(db, creds, deps = {}) {
         scaledOut: !!r.scaled_out,
         bars: barsBySymbolId[td.symbolId] ?? null,
       })
+      // ── EARLY TRIM, SHADOW ONLY (owner 07-08: "ship T2 log-only now") ──
+      // Computed here because this is the one place that already holds broker
+      // truth for the position — live volume, live price and the broker's own
+      // minimum lot. Recomputing it anywhere else would mean a second source
+      // for the same numbers, which is how the two of them start disagreeing.
+      //
+      // NOTHING IS ACTED ON. No close, no amend, no volume change. The row is
+      // written so that in a week there is a live record to set beside Phase
+      // 7's offline replay, and the decision to switch it on can be made
+      // against two independent readings instead of an intuition.
+      try {
+        const trimDecision = earlyTrimDecision({
+          side: r.side,
+          entry: bp.price ?? r.entry_price,
+          // The ORIGINAL stop, never bp.stopLoss — the keeper ratchets that,
+          // and R measured against a moving stop reaches 1R without the trade
+          // going anywhere. See early-trim.js §1.
+          originalSl: r.original_sl,
+          price,
+          volume: td.volume,
+          minVolume: meta.minVolume ?? 0,
+          alreadyTrimmed: !!r.early_trimmed,
+          cfg: trimCfg,
+        })
+        if (trimDecision.trim) {
+          summary.earlyTrimShadow++
+          const row = earlyTrimShadowRow(trimDecision, {
+            symbol: r.symbol, positionId: r.position_id, tradeId: r.trade_id,
+            accountId: r.account_id, price,
+          })
+          db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+            .run('SHADOW', '/early-trim', JSON.stringify(row), r.account_id ?? null)
+        }
+      } catch (err) {
+        // A shadow observation must never be able to break the keeper. This is
+        // the one place a swallowed error is correct: the feature's whole
+        // purpose is to change nothing, and that includes failing.
+        summary.errors.push(`early-trim shadow ${r.symbol}: ${err.message}`)
+      }
+
       if (decision.newPeak !== (r.peak_profit_usd || 0)) updPeak.run(decision.newPeak, r.id)
       if (decision.trail && !decision.action?.close) {
         const s = String(r.side || '').toUpperCase()
