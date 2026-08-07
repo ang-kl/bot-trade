@@ -353,6 +353,14 @@ export default function Risk() {
   // has already left the account uncapped.
   const capState = dailyCapState(risk, Number(acct.balance) || null)
   const capBinding = describeBinding(capState)
+  // A campaign is armed only with ALL of percentage, starting equity and start
+  // time — the same all-or-nothing rule the engine applies in
+  // campaign-stop.js. Showing "armed" on a partial config would be the exact
+  // false comfort the read-only row exists to prevent.
+  const campaignArmed = !!(risk?.campaign
+    && Number(risk.campaign.maxDrawdownPct) > 0 && Number(risk.campaign.maxDrawdownPct) < 1
+    && Number(risk.campaign.startEquity) > 0
+    && typeof risk.campaign.startAt === 'string' && risk.campaign.startAt.length >= 10)
 
   // GSAP entrance + scroll reveals (guarded — static page if the CDN is
   // blocked). Runs once after the first successful data load.
@@ -824,6 +832,33 @@ export default function Risk() {
             {/* Owner 03-08-2026: "raise to 8.8% and dynamic-intelligent
                 adjusted down from 18.8% … for longevity to trade". Empty =
                 the flat cap above, unchanged — the ramp is opt-in. */}
+            {/* CAMPAIGN STOP — read-only here ON PURPOSE. It is four fields
+                (percentage, starting equity, start time, label), and a
+                campaign armed with three of the four is worse than none: a
+                drawdown measured from a guessed anchor either halts a healthy
+                account or fails to halt a bleeding one. So it is set as one
+                object and REPORTED here, with the live numbers on
+                GET /state/campaign. Owner 07-08: this is the limit that spans
+                DAYS — the daily cap below resets every FX day, and ten days at
+                it would end a small account. */}
+            <div id="risk-campaign" className="text-(length:--fs-body)">
+              <span className="font-semibold">Campaign stop</span>{' '}
+              {campaignArmed ? (
+                <span>
+                  armed — {(risk.campaign.maxDrawdownPct * 100).toFixed(1)}% of{' '}
+                  {Number(risk.campaign.startEquity).toLocaleString()} from {risk.campaign.startAt}
+                  {risk.campaign.label ? ` · ${risk.campaign.label}` : ''}
+                </span>
+              ) : (
+                <span className="text-[var(--color-text-sub)]">
+                  not armed — nothing limits a WEEK. The daily cap resets every FX day, so a run of
+                  ordinary days compounds with nothing counting. Set
+                  {' '}<code>campaign</code>{' '}
+                  to {'{maxDrawdownPct, startEquity, startAt, label}'} to arm it; live numbers at
+                  {' '}<code>GET /state/campaign</code>.
+                </span>
+              )}
+            </div>
             {/* ⚠️ OWNER DECISION 07-08-2026, a RISK LIMIT INCREASE:
                 "$200 min. or 3% for accounts < $10000. 4% for account >
                 $10000." The floor is what stops a shrunken balance turning
