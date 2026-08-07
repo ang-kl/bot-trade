@@ -138,6 +138,27 @@ export const DEFAULT_RISK_CONFIG = {
   // between them with elapsed day time. null (or ≤ dailyLossPct) = the flat
   // cap, unchanged. See services/daily-loss-pacing.js.
   dailyLossPctMax: null,
+  // ⚠️ OWNER DECISION, 2026-08-07 — A RISK LIMIT INCREASE, verbatim:
+  // "Change immediately dailyLossPct for 43097342 to $200 min. or 3% for
+  //  accounts < $10000. 4% for account > $10000."
+  //
+  //   cap = max(dailyLossFloorUsd, balance × (balance < tierAt ? small : large))
+  //
+  // On 43097342 the cap had collapsed to USD 16.16 and logged 4,717
+  // `daily_loss_limit_hit` vetoes in a week: a percentage of a shrunken
+  // balance is a shutdown, not a limit. The floor is what stops that.
+  //
+  // TWO CONSEQUENCES, STATED RATHER THAN DISCOVERED:
+  //   1. Small accounts get a LARGER daily allowance (1,983 → 200, was 59.50).
+  //   2. When the tier rule is on, `dailyLossLimit` (300) STOPS clamping —
+  //      otherwise a 46,073 account would cap at 300 instead of the specified
+  //      4% (1,842.92) and the large tier would be dead on arrival.
+  // Set any of the three tier knobs to null to restore the previous arithmetic
+  // exactly, `dailyLossLimit` included.
+  dailyLossFloorUsd: 200,          // USD floor. null = no floor.
+  dailyLossTierAtUsd: 10000,       // balance boundary between the two tiers
+  dailyLossTierSmallPct: 0.03,     // balance <  tierAt
+  dailyLossTierLargePct: 0.04,     // balance >= tierAt
   // P1 / audit F-L6-06: a closed trade with NULL net_pnl is UNKNOWN, not zero.
   // Past the grace window it blocks new entries rather than letting the
   // daily-loss sum silently under-count it. See services/unresolved-pnl.js.
@@ -897,6 +918,11 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     basePct: config.dailyLossPct,
     maxPct: config.dailyLossPctMax,
     absoluteFallback: config.dailyLossLimit,
+    // Owner's two-tier floor, 2026-08-07. See DEFAULT_RISK_CONFIG.
+    floorUsd: config.dailyLossFloorUsd,
+    tierAtUsd: config.dailyLossTierAtUsd,
+    tierSmallPct: config.dailyLossTierSmallPct,
+    tierLargePct: config.dailyLossTierLargePct,
     nowMs,
     dayOpenMs: fxDayOpenMs(nowMs),
     spentUsd: Math.max(0, -todayPnl),
@@ -915,6 +941,11 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   checks.daily_cap_binding = pacing.binding
   checks.daily_cap_pct_usd = pacing.pctCapUsd == null ? null : Number(pacing.pctCapUsd.toFixed(2))
   checks.daily_cap_flat_usd = pacing.usdCapUsd == null ? null : Number(pacing.usdCapUsd.toFixed(2))
+  // The owner's floor, recorded on every verdict so the Risk page can say
+  // WHICH rule produced the cap instead of leaving it to be re-derived.
+  checks.daily_cap_floor_usd = pacing.floorUsd
+  checks.daily_cap_floor_binding = !!pacing.floorBinding
+  checks.daily_cap_tier_pct = pacing.tierPct == null ? null : Number((pacing.tierPct * 100).toFixed(3))
   if (pacing.paced) {
     checks.daily_cap_paced = true
     checks.daily_cap_pct = Number((pacing.pct * 100).toFixed(3))

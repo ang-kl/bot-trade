@@ -41,6 +41,7 @@ import { loadRiskConfigChanges } from './risk-config-history.js'
 export const RISK_GROUPS = Object.freeze([
   { id: 'day', label: 'Day limits', keys: [
     'dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'equityStopPct',
+    'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'dailyLossTierSmallPct', 'dailyLossTierLargePct',
     'maxMarginUsagePct', 'marginLevelFloorPct',
   ] },
   { id: 'size', label: 'Position size', keys: [

@@ -824,6 +824,29 @@ export default function Risk() {
             {/* Owner 03-08-2026: "raise to 8.8% and dynamic-intelligent
                 adjusted down from 18.8% … for longevity to trade". Empty =
                 the flat cap above, unchanged — the ramp is opt-in. */}
+            {/* ⚠️ OWNER DECISION 07-08-2026, a RISK LIMIT INCREASE:
+                "$200 min. or 3% for accounts < $10000. 4% for account >
+                $10000." The floor is what stops a shrunken balance turning
+                the daily cap into a shutdown — 43097342 had fallen to $16.16.
+                While the tier rule is on it REPLACES the % above and the flat
+                fallback stops clamping; clear any tier field to restore the
+                previous arithmetic exactly. */}
+            <Field label={`Daily floor $${mark('dailyLossFloorUsd')}`} anchor="dailyLossFloorUsd" applied={appliedKeys.has('dailyLossFloorUsd')} value={risk.dailyLossFloorUsd} onChange={v => setRisk(r => ({ ...r, dailyLossFloorUsd: v }))}
+              placeholder="off"
+              hint="The day's allowance is never LESS than this, whatever the percentage works out to. A percentage of a small balance is a shutdown, not a limit: one ordinary loss ends the day and the account can never trade its way back. Empty = no floor."
+              recommend="200 — the owner's figure, 07-08-2026." />
+            <Field label={`Tier boundary $${mark('dailyLossTierAtUsd')}`} anchor="dailyLossTierAtUsd" applied={appliedKeys.has('dailyLossTierAtUsd')} value={risk.dailyLossTierAtUsd} onChange={v => setRisk(r => ({ ...r, dailyLossTierAtUsd: v }))}
+              placeholder="off"
+              hint="Balances BELOW this use the small-account percentage; at or above it, the large-account one. Empty turns the whole tier rule off and the single % above applies again."
+              recommend="10000." />
+            <Field label={`Tier % under boundary${mark('dailyLossTierSmallPct')}`} anchor="dailyLossTierSmallPct" applied={appliedKeys.has('dailyLossTierSmallPct')} pct value={risk.dailyLossTierSmallPct} onChange={v => setRisk(r => ({ ...r, dailyLossTierSmallPct: v }))}
+              placeholder="off"
+              hint="Applies when the balance is under the tier boundary. The floor still wins whenever it is the larger number."
+              recommend="3%." />
+            <Field label={`Tier % at or over boundary${mark('dailyLossTierLargePct')}`} anchor="dailyLossTierLargePct" applied={appliedKeys.has('dailyLossTierLargePct')} pct value={risk.dailyLossTierLargePct} onChange={v => setRisk(r => ({ ...r, dailyLossTierLargePct: v }))}
+              placeholder="off"
+              hint="Applies at or above the tier boundary. NOTE: while the tier rule is on, the flat daily cap fallback no longer clamps — otherwise a large account would sit at that fallback and never reach this percentage."
+              recommend="4%." />
             <Field label={`Day ceiling (paced)${mark('dailyLossPctMax')}`} anchor="dailyLossPctMax" applied={appliedKeys.has('dailyLossPctMax')} pct value={risk.dailyLossPctMax} onChange={v => setRisk(r => ({ ...r, dailyLossPctMax: v }))}
               placeholder="off"
               hint="The MOST a day may ever cost. Set it above the cap and the allowance ramps from the cap at the FX day open to this by the day's end — so a bad first hour stops early instead of spending the whole day's budget. Empty = flat cap."
@@ -964,7 +987,7 @@ export default function Risk() {
             </div>
             </Advanced>
             <div className="flex items-center gap-2">
-              <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'marginLevelFloorPct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
+              <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'dailyLossTierSmallPct', 'dailyLossTierLargePct', 'equityStopPct', 'maxMarginUsagePct', 'marginLevelFloorPct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
               {/* Migrated from Tune > Risk (UI-6). This resets EVERY key in
                   risk_config_json, not just this card's — it is the only
                   control on the page with that reach, so it confirms first. */}

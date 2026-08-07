@@ -482,13 +482,17 @@ test('equity-aware — $10k balance, EURUSD: risk-based volume computed (5% defa
 // was.
 
 test('paced budget — no dailyLossPctMax leaves the flat cap untouched', () => {
+  // OWNER DECISION 07-08: at 10,000 the tier rule applies 4% (not 3%), so the
+  // cap is 400. The point of this test is the ABSENCE of pacing, not the
+  // number; the boundary moves with the policy and the assertions below are
+  // unchanged.
   const db = freshDB()
-  setBalance(db, 10000)                       // 3% = $300
-  insertClosedTrade(db, -299)
+  setBalance(db, 10000)                       // 4% = $400 (tier: balance >= 10,000)
+  insertClosedTrade(db, -399)
   assert.equal(evaluateTrade(db, goodProposal(), NO_SYMBOL_COOLDOWN).approved, true)
   const db2 = freshDB()
   setBalance(db2, 10000)
-  insertClosedTrade(db2, -301)
+  insertClosedTrade(db2, -401)
   const res = evaluateTrade(db2, goodProposal(), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /daily_loss_limit_hit/)
@@ -539,8 +543,8 @@ test('paced budget — the ceiling still stops it, with the pacing explained', (
 
 test('equity-aware — daily cap scales with balance (%)', () => {
   const db = freshDB()
-  setBalance(db, 10000) // 3% = $300 daily cap
-  insertClosedTrade(db, -350)
+  setBalance(db, 10000) // 4% = $400 daily cap (owner's tier rule, 07-08)
+  insertClosedTrade(db, -450)
   const res = evaluateTrade(db, goodProposal())
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /daily_loss_limit_hit/)
@@ -559,7 +563,11 @@ test('equity-aware — check.balance and check.daily_cap_usd are populated', () 
   setBalance(db, 5000)
   const res = evaluateTrade(db, goodProposal())
   assert.equal(res.checks.balance, 5000)
-  assert.equal(res.checks.daily_cap_usd, 150) // 5000 × 3%
+  // 5000 × 3% = 150, lifted to the owner's 200 floor (07-08). The floor is
+  // named as the binding rule so the page cannot show 150 and mean 200.
+  assert.equal(res.checks.daily_cap_usd, 200)
+  assert.equal(res.checks.daily_cap_binding, 'floor')
+  assert.equal(res.checks.daily_cap_floor_usd, 200)
   assert.equal(res.checks.risk_budget, 250)   // 5000 × 5% default
 })
 

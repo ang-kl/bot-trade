@@ -89,7 +89,15 @@ test('contamination: balance and leverage resolve per-account (M1c seam)', () =>
   setState(db, 'acct:B:account_balance_usd', '1000')
   setState(db, 'acct:B:account_leverage', '200')
 
-  const cfg = { ...DEFAULT_RISK_CONFIG, dailyLossPct: 0.03 }
+  // The owner's two-tier floor (07-08) is switched OFF here on purpose: this
+  // test is about per-account SCOPING, not about the cap policy, and plain 3%
+  // arithmetic keeps the isolation claim readable. It doubles as proof the
+  // off-switch restores the previous behaviour exactly.
+  const cfg = {
+    ...DEFAULT_RISK_CONFIG, dailyLossPct: 0.03,
+    dailyLossFloorUsd: null, dailyLossTierAtUsd: null,
+    dailyLossTierSmallPct: null, dailyLossTierLargePct: null,
+  }
   // A has no scoped keys → falls back to the legacy global values.
   const resA = evaluateTrade(db, proposalFor('A'), cfg)
   assert.equal(resA.checks.balance, 10000)
