@@ -10,13 +10,27 @@
 // questions a reader has on any page — "where am I" and "whose numbers is
 // this" — are answered in the same corner.
 //
-// WHAT IT SETS. `setViewedAccount` — the VIEW lens, not the traded account.
-// Moving what the bot trades is POST /actions/ctrader-select-account and lives
-// on Connect and Accounts behind its own confirmations. A control this easy to
-// reach must never be able to re-point live trading, so choosing the Live row
-// here changes what you are LOOKING at and nothing else. The sheet says so in
-// as many words, because the guarantee is worthless if the operator cannot
-// tell which kind of switch they just used.
+// WHAT IT SETS — CHANGED BY THE OWNER, 07-08-2026: "when I change the account
+// using FAB, you should fire a refresh on the new selected account as THE
+// SELECTED, it still tagged to the cTrader Account as SELECTED."
+//
+// It now moves BOTH: the view lens AND the traded account
+// (POST /actions/ctrader-select-account). Picking an account here re-points
+// what the bot trades.
+//
+// I argued against this and was overruled, which is the owner's call to make;
+// what I would not do is ship it without the guard the other switch has. The
+// LIVE row therefore carries the SAME typed-word confirmation AccountSwitcher
+// uses — a one-tap control that can re-point real money is the exact hazard
+// the previous design existed to prevent, and the confirm is what keeps a
+// mis-tap from being expensive.
+//
+// "All accounts" stays VIEW-ONLY, necessarily: there is no such thing as
+// trading "all", so that row must never reach the server.
+//
+// ORDER MATTERS. The server call goes first; the lens and the cached selection
+// move only after it succeeds. A failed POST must leave the app showing what
+// is actually true, not what was tapped.
 //
 // ON SIZE. The owner asked for "a small tiny FAB". This is 44px tall, which is
 // the HIG minimum this app's own spec pins, and narrow instead — a ~56x44
@@ -25,7 +39,8 @@
 import { useEffect, useState } from 'react'
 import { accountRoster } from '../../lib/account-roster.js'
 import { fabFace, fabOptions, FAB_ALL } from '../../lib/scope-fab.js'
-import { viewedAccountId, selectedAccountId, setViewedAccount, onAccountSwitch } from '../../lib/selected-account.js'
+import { viewedAccountId, selectedAccountId, setViewedAccount, onAccountSwitch, writeSelection } from '../../lib/selected-account.js'
+import { agentPost } from '../../lib/agent-api.js'
 
 const readScope = () => {
   try {
@@ -46,6 +61,8 @@ export default function AccountScopeFab({ open = false, onToggle = () => {} }) {
   const [accounts, setAccounts] = useState([])
   const [scope, setScope] = useState(readScope)
   const [traded, setTraded] = useState(() => { try { return selectedAccountId() } catch { return null } })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -71,13 +88,53 @@ export default function AccountScopeFab({ open = false, onToggle = () => {} }) {
   const face = fabFace(scope, accounts)
   const options = fabOptions(accounts, { tradedId: traded })
 
-  const pick = (value) => {
+  const pick = async (value) => {
     setOpen(false)
-    setViewedAccount(value === FAB_ALL ? FAB_ALL : value)
-    // setViewedAccount fans out to onAccountSwitch, which sets `scope` above —
-    // but only when the value actually changed. Re-reading covers the no-op
-    // tap so the face never disagrees with the store.
-    setScope(readScope())
+    setErr('')
+    // "All accounts" is a lens and only a lens — nothing to select at the
+    // broker, so it never reaches the server.
+    if (value === FAB_ALL) {
+      setViewedAccount(FAB_ALL)
+      setScope(readScope())
+      return
+    }
+    const row = accounts.find(a => String(a.accountId) === String(value)) || null
+    // Already the traded account: move the lens and stop. Re-POSTing a
+    // selection that is already in force would churn the server's symbol map
+    // and balance for no reason.
+    if (row && String(selectedAccountId()) === String(value)) {
+      setViewedAccount(value)
+      setScope(readScope())
+      return
+    }
+    if (row?.isLive) {
+      const word = window.prompt(
+        `⚠ LIVE account ${row.traderLogin ? `${row.traderLogin} · ` : ''}${row.accountId} holds REAL money.\n\n` +
+        'Picking it here makes it THE account the bot trades. If Autotrade is armed, the bot will place REAL orders on it.\n\nType LIVE to confirm.'
+      )
+      if (word !== 'LIVE') return
+    }
+    setBusy(true)
+    try {
+      await agentPost('/actions/ctrader-select-account', {
+        accountId: row?.accountId ?? value,
+        isLive: !!row?.isLive,
+        traderLogin: row?.traderLogin ?? null,
+      })
+      // Cache first, lens second. writeSelection moves the TRADING badge and
+      // ticks the watcher; setViewedAccount fans out to every page's
+      // useAccountSwitch(load). Both are needed: one fixes the labelling, the
+      // other fixes the numbers.
+      writeSelection(row?.accountId ?? value)
+      setTraded(selectedAccountId())
+      setViewedAccount(value)
+      setScope(readScope())
+    } catch (e) {
+      // The switch did NOT happen, so nothing moves. Saying so is the whole
+      // point — a lens that moved on a failed POST would show one account's
+      // numbers under another account's name.
+      setErr(e.message || 'switch failed')
+    } finally { setBusy(false) }
   }
 
   return (
@@ -92,7 +149,7 @@ export default function AccountScopeFab({ open = false, onToggle = () => {} }) {
           {options.map(o => {
             const active = String(scope) === o.value
             return (
-              <button key={o.value} type="button" onClick={() => pick(o.value)}
+              <button key={o.value} type="button" onClick={() => pick(o.value)} disabled={busy}
                 aria-current={active ? 'true' : undefined}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--glass-bg)' }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
@@ -120,12 +177,18 @@ export default function AccountScopeFab({ open = false, onToggle = () => {} }) {
               </button>
             )
           })}
+          {err && (
+            <div role="alert" style={{
+              fontSize: 'var(--fs-body)', color: 'var(--color-warning-text)', padding: '3px 8px',
+              maxWidth: 216, whiteSpace: 'normal',
+            }}>{err} — nothing was changed.</div>
+          )}
           <div style={{
             fontSize: 'var(--fs-body)', color: 'var(--color-text-sub)', padding: '4px 8px 3px',
             borderTop: '1px solid var(--glass-edge)', maxWidth: 216, whiteSpace: 'normal',
           }}>
-            Changes what you are LOOKING at. The account the bot trades is
-            changed on Connect, not here.
+            Sets the account the bot TRADES, and what you are looking at.
+            A live account asks you to type LIVE first.
           </div>
         </div>
       )}
