@@ -4037,6 +4037,114 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/concentrate-apply — the concentrate-to-prove change, whole.
+  //
+  // Body: { account, dryRun?: true, campaignPct?: 0.08, startAt?: <now>,
+  //         label?: 'concentrate-to-prove', strategies?: [...] }
+  //
+  // DRY RUN BY DEFAULT. This replaces an account's tradable universe and arms
+  // a multi-day loss limit in one call; both are config writes on the money
+  // path. `dryRun: false` has to be typed, and the response of a dry run is
+  // exactly the plan the real call would execute — same object, computed the
+  // same way — so the review is of the thing itself and not a description.
+  //
+  // IT NEVER CLOSES A POSITION. The account's open-position overage is the
+  // first thing blocking entries and it is reported first, with the number
+  // that has to go, but closing realises P&L and stays with a human holding a
+  // full-tier credential.
+  //
+  // The campaign anchors to the balance read HERE, at call time. Every written
+  // figure for these accounts has gone stale within a day; a start equity
+  // typed into a config file measures drawdown from a balance that never
+  // existed, and the arithmetic looks perfect while doing it.
+  // -----------------------------------------------------------------------
+  router.post('/concentrate-apply', async (req, res) => {
+    try {
+      const { concentratePlan, CONCENTRATE_SYMBOLS, CONCENTRATE_STRATEGIES } =
+        await import('../services/concentrate-plan.js')
+      const { readWatchlist, writeWatchlist } = await import('../services/watchlists.js')
+      const { getAccountBalance } = await import('../services/risk.js')
+
+      const body = req.body || {}
+      const acct = body.account == null || body.account === '' ? null : String(body.account)
+      if (!acct) {
+        // No account means the SHARED list, which every account without its
+        // own list inherits. Concentrating one account by editing the list
+        // five others read from is the opposite of concentrating.
+        return res.status(400).json({ error: 'account is required — this change is scoped to ONE account by design' })
+      }
+      const dryRun = body.dryRun !== false
+      const strategies = Array.isArray(body.strategies) && body.strategies.length
+        ? body.strategies.map(String)
+        : [...CONCENTRATE_STRATEGIES]
+      const bad = strategies.filter(k => !STRATEGY_KEYS.includes(k))
+      if (bad.length) {
+        return res.status(400).json({ error: `Unknown strategy key(s): ${bad.join(', ')}. Known: ${STRATEGY_KEYS.join(', ')}` })
+      }
+
+      const cfg = loadRiskConfig(db, acct)
+      const openPositions = db
+        .prepare(`SELECT COUNT(*) AS n FROM monitored_positions
+                  WHERE status = 'active' AND (account_id = ? OR account_id IS NULL)`)
+        .get(acct)?.n ?? null
+      const plan = concentratePlan({
+        current: readWatchlist(db, acct),
+        equity: getAccountBalance(db, acct),
+        openPositions,
+        maxOpenPositions: cfg.maxOpenPositions,
+        startAt: typeof body.startAt === 'string' ? body.startAt : new Date().toISOString(),
+        campaignPct: body.campaignPct == null ? 0.08 : Number(body.campaignPct),
+        label: body.label || 'concentrate-to-prove',
+        strategies,
+      })
+
+      if (dryRun) {
+        return res.json({ ok: true, dryRun: true, account: acct, applied: null, plan })
+      }
+
+      // A plan whose campaign could not be built is not applied HALFWAY. The
+      // watchlist swap raises trade frequency; the campaign is the limit that
+      // makes the higher frequency survivable. Shipping the first without the
+      // second is the exact trade nobody would agree to if asked.
+      if (!plan.campaign) {
+        return res.status(409).json({
+          ok: false, account: acct, plan,
+          error: 'campaign could not be armed (equity, percentage or start time unreadable) — nothing was written, '
+            + 'because the watchlist change increases trade frequency and the campaign is what bounds it',
+        })
+      }
+
+      const symbols = CONCENTRATE_SYMBOLS.map(s => ({ symbol: s.symbol, enabled: true, group: s.group, strategies }))
+      writeWatchlist(db, acct, symbols)
+
+      const key = `acct:${acct}:risk_config_json`
+      let overlay = {}
+      try { overlay = JSON.parse(getState(db, key) || '{}') || {} } catch { overlay = {} }
+      const beforeOverlay = { ...overlay }
+      overlay.campaign = plan.campaign
+      setState(db, key, JSON.stringify(overlay))
+      noteRiskConfigChanges(db, beforeOverlay, overlay, { accountId: acct, by: 'concentrate-apply' })
+      invalidateStateCache()
+
+      console.log(`[actions/concentrate-apply] account ${acct}: ${symbols.length} symbols, `
+        + `${strategies.join('/')}, campaign ${(plan.campaign.maxDrawdownPct * 100).toFixed(2)}% of `
+        + `${plan.campaign.startEquity} = ${plan.budgetUsd}`)
+
+      res.json({
+        ok: true, dryRun: false, account: acct, plan,
+        applied: { symbols: symbols.length, strategies, campaign: plan.campaign, budgetUsd: plan.budgetUsd },
+        effective: loadRiskConfig(db, acct),
+        // Repeated at the top level because it is the one thing still owed and
+        // the one thing this route deliberately did not do.
+        stillBlocked: plan.blocker.blocked ? plan.blocker.reason : null,
+      })
+    } catch (err) {
+      console.error('[actions/concentrate-apply] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/risk-reassess — "Re-Risk". Ask a CHOSEN LLM to re-derive the
   // risk limits for the selected account, from its balance and its actual
   // closed-trade record, optionally with its watchlist in mind.

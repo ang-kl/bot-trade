@@ -61,9 +61,9 @@ export function formatNewsLines(events, nowMs) {
 }
 
 /** The cached events, or [] when the cache is missing, corrupt, or too old. */
-function cachedEventsWithinBound(db) {
+function cachedEventsWithinBound(db, nowMs = Date.now()) {
   const at = Number(getState(db, CACHE_AT)) || 0
-  if (!at || Date.now() - at > MAX_CACHE_AGE_MS) return []
+  if (!at || nowMs - at > MAX_CACHE_AGE_MS) return []
   try {
     const parsed = JSON.parse(getState(db, CACHE_KEY) || '[]')
     return Array.isArray(parsed) ? parsed : []
@@ -111,9 +111,22 @@ export function newsWindowEvent(events, symbol, nowMs, { minBefore = 15, minAfte
   return null
 }
 
-/** Cached events, sync (for the risk gate). Memoized per cache write. */
+/**
+ * Cached events, sync (for the risk gate). Memoized per cache write.
+ *
+ * `nowMs` is the moment the staleness bound is measured against, and it
+ * defaults to the wall clock so every existing caller is unchanged. It exists
+ * because the bound was previously the ONE part of this read that ignored its
+ * caller's clock: buildEnvironment(db, symbol, nowMs) honours nowMs for event
+ * filtering, window matching and age reporting, then called in here and got a
+ * verdict measured against real time. Rendering the cockpit for any moment
+ * more than a week ago therefore returned zero events — not because the cache
+ * was empty at that moment, but because it is old NOW. The failure is silent
+ * and reads as "no news scheduled", which is the one thing this module's
+ * header says it must never fabricate.
+ */
 let gateParseMemo = { at: null, events: [] }
-export function cachedEventsSync(db) {
+export function cachedEventsSync(db, nowMs = Date.now()) {
   try {
     const at = getState(db, CACHE_AT)
     // P8: the bound is checked BEFORE the memo, not inside it. Memoising on
@@ -121,9 +134,11 @@ export function cachedEventsSync(db) {
     // so a memo populated while the calendar was fresh would keep serving it
     // forever — the same fossil-read this bound exists to stop.
     const ts = Number(at) || 0
-    if (!ts || Date.now() - ts > MAX_CACHE_AGE_MS) return []
+    if (!ts || nowMs - ts > MAX_CACHE_AGE_MS) return []
+    // The memo holds PARSED EVENTS, which do not depend on nowMs — the
+    // time-varying part is the bound above, and it has already been applied.
     if (gateParseMemo.at === at) return gateParseMemo.events
-    const events = cachedEventsWithinBound(db)
+    const events = cachedEventsWithinBound(db, nowMs)
     gateParseMemo = { at, events }
     return gateParseMemo.events
   } catch { return [] }
