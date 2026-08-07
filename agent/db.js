@@ -728,6 +728,12 @@ export function initDB(dbPath) {
     ['broker_sl',            'REAL'],
     ['broker_tp',            'REAL'],
     ['keeper_opt_out',       'INTEGER DEFAULT 0'],
+    // Early-trim shadow (owner 07-08, "ship T2 log-only now"). One trim per
+    // POSITION, ever — not one per leg, so that a future add-on-trend cannot
+    // re-arm the trim on every add and produce trim/add/trim churn. Written
+    // only when the feature is switched from shadow to acting; the shadow pass
+    // reads it and never sets it.
+    ['early_trimmed',        'INTEGER DEFAULT 0'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {
