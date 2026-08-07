@@ -1534,6 +1534,57 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/sizing-parity — does our arithmetic agree with the broker's?
+  //
+  // For every closed trade, the P&L our sizing model predicts against the P&L
+  // the broker actually paid. A symbol whose `impliedFactor` sits at an FX
+  // rate has a wrong quote currency, and the factor names which one. This is
+  // the check that would have caught JPN225 on the day instead of three days
+  // later via a coincidence — see services/sizing-parity.js.
+  //
+  // ?days (default 30) · ?account · ?minTrades · ?tolerance
+  // -----------------------------------------------------------------------
+  router.get('/sizing-parity', async (req, res) => {
+    try {
+      const { sizingParity } = await import('../services/sizing-parity.js')
+      const days = Math.max(1, Math.min(365, Number(req.query.days) || 30))
+      const acct = req.query.account == null || req.query.account === '' ? null : String(req.query.account)
+      const trades = db.prepare(`
+        SELECT symbol, side, entry_price, exit_price, volume, net_pnl, closed_at
+        FROM trades
+        WHERE status = 'closed' AND net_pnl IS NOT NULL AND exit_price IS NOT NULL
+          AND closed_at >= datetime('now', ?)
+          AND (? IS NULL OR account_id = ?)
+      `).all(`-${days} days`, acct, acct)
+      // The SAME rates table the sizing path builds (sizing-preview.js:33-41),
+      // read the same way — deliberately, so a currency the sizer cannot
+      // convert is one this readout cannot convert either. An audit with
+      // better inputs than the thing it audits reports a health the system
+      // does not have.
+      const rates = {}
+      try {
+        const last = JSON.parse(getState(db, 'last_scan_results') || 'null')
+        for (const r of (last?.scans || last?.rows || [])) {
+          const px = r.price ?? r.close
+          if (r.symbol && px != null) rates[String(r.symbol).toUpperCase()] = Number(px)
+        }
+      } catch { /* no scan yet — conversions simply resolve to null */ }
+      res.json({
+        ...sizingParity(trades, {
+          rates,
+          minTrades: Number(req.query.minTrades) || undefined,
+          tolerance: Number(req.query.tolerance) || undefined,
+        }),
+        days,
+        accountId: acct,
+        ratesAvailable: Object.keys(rates).length,
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/symbol-clusters — 2+ DISTINCT fills on one account+symbol
   // inside a window (owner: "double or triple trading symbols for past EU and
   // NY sessions"). /state/duplicate-trades only sees identical-value records;

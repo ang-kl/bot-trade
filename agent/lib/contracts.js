@@ -112,9 +112,41 @@ export function contractSize(symbol) {
 // unlisted symbol keeps today's USD assumption rather than guessing, because
 // a wrong currency here mis-sizes real money in whichever direction it errs.
 // ---------------------------------------------------------------------------
+// CORRECTED 07-08-2026 — JPN225 was 'JPY' and it cost 158× on every trade.
+//
+// The premise "indices are quoted in the local currency of their market" is
+// true of the QUOTE and false of the SETTLEMENT on this broker's index CFDs.
+// Three real fills say so, and the JPY reading is not merely wrong, it is
+// physically impossible:
+//
+//   trade 641  vol 72.54  pnl -9,171.76  → USD: 126.4 pts adverse
+//                                          JPY: 20,000 pts = 32% of the index
+//   trade      vol 51.51  pnl -2,681.29  → USD:  52.1 pts
+//                                          JPY:  8,224 pts = 12.9%, in 45 min
+//   trade      vol 74.59  pnl -1,315.92  → USD:  17.6 pts
+//                                          JPY:  2,790 pts =  4.4%
+//
+// The HK share CFDs in the same file reconcile PERFECTLY under HKD (0016.HK
+// modelled 539 USD against 563.16 realised), so this is not "the conversion
+// is broken". It is one hand-entered currency, wrong, for four years of
+// nobody checking. Share CFDs settle in the share's currency; this broker's
+// index CFDs settle in USD.
+//
+// The real lesson is not the value — it is that this table is hand-written at
+// all while the broker publishes quoteAssetId on every symbol. Until that is
+// wired (see services/sizing-parity.js and the follow-up it names), entries
+// here are HYPOTHESES, and sizing-parity.js is the thing that tests them
+// against realised broker P&L instead of trusting them.
 const QUOTE_CCY = {
-  // Indices, quoted in the local currency of their market.
-  JPN225: 'JPY',
+  // Indices. USD-settled on this broker despite the local-currency quote —
+  // see the note above before "correcting" any of these back.
+  JPN225: 'USD',
+  // UNVERIFIED. These carry the same assumption JPN225 just failed, and if
+  // this broker settles index CFDs in USD they are wrong too — by 1.08× and
+  // 1.34×, small enough to hide inside a profit factor and never be noticed.
+  // They are NOT changed here: "probably the same" is not evidence, and a
+  // wrong correction errs in the opposite direction. sizing-parity.js will
+  // say, once each has traded.
   GER40: 'EUR', FRA40: 'EUR', SPA35: 'EUR', SPAIN35: 'EUR',
   ITALY40: 'EUR', NETH25: 'EUR', EUSTX: 'EUR', EUSTX50: 'EUR',
   UK100: 'GBP',
@@ -140,8 +172,44 @@ const QUOTE_CCY = {
  *     vetoed their sizing as usd_per_lot_unknown).
  *  4. The six-letter FX pattern.
  */
+// Runtime overrides, highest priority of all. A wrong entry in QUOTE_CCY
+// mis-sizes every trade on that symbol by the FX rate, and today that took a
+// code change and a deploy to correct — which is why JPN225 stayed wrong long
+// enough to produce a 9,171.76 loss on a 45,211 account. `null` for a symbol
+// means "no conversion, treat as USD" and is a legitimate override, so the
+// map distinguishes ABSENT from SET-TO-NULL.
+let QUOTE_CCY_OVERRIDES = new Map()
+
+/**
+ * Replace the override map (from `symbol_quote_ccy_json` at boot, or an
+ * operator action). Values must be a 3-letter code or null; anything else is
+ * dropped rather than stored, because a malformed currency here is the exact
+ * failure this exists to fix.
+ *
+ * @param {Record<string,string|null>|null} raw
+ * @returns {string[]} the symbols actually applied
+ */
+export function setQuoteCurrencyOverrides(raw) {
+  const next = new Map()
+  for (const [sym, ccy] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
+    const s = String(sym).toUpperCase().trim()
+    if (!s) continue
+    if (ccy === null) { next.set(s, null); continue }
+    const c = String(ccy).toUpperCase().trim()
+    if (/^[A-Z]{3}$/.test(c)) next.set(s, c)
+  }
+  QUOTE_CCY_OVERRIDES = next
+  return [...next.keys()]
+}
+
+/** What is currently overridden — for the Risk page and the parity readout. */
+export function quoteCurrencyOverrides() {
+  return Object.fromEntries(QUOTE_CCY_OVERRIDES)
+}
+
 export function fxQuoteCurrency(symbol) {
   const s = (symbol || '').toUpperCase()
+  if (QUOTE_CCY_OVERRIDES.has(s)) return QUOTE_CCY_OVERRIDES.get(s)
   if (QUOTE_CCY[s] != null) return QUOTE_CCY[s]
   if (s.endsWith('.HK')) return 'HKD'
   if (s.endsWith('.US')) return 'USD'
