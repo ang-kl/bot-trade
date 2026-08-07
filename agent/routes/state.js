@@ -1014,6 +1014,58 @@ export default function stateRouter(db) {
   // more"). Counts risk_events vetoes grouped by reason head plus upstream
   // decision_log skips per stage, over ?days (default 7, max 90), optionally
   // ?account=… scoping the upstream rows. Read-only.
+  // GET /state/campaign — the one screen that answers "how is the experiment
+  // going, and how much rope is left". Owner 07-08: "how to feedback visually".
+  //
+  // Deliberately ONE object with a handful of numbers rather than another
+  // table. The concentrate-to-prove plan exists because there is already too
+  // much to read; adding a tenth dashboard would repeat the mistake it is
+  // meant to correct.
+  router.get('/campaign', async (req, res) => {
+    try {
+      const { campaignConfig, campaignReadout } = await import('../services/campaign-stop.js')
+      const { loadRiskConfig } = await import('../services/risk.js')
+      const scope = req.query.account != null && req.query.account !== '' ? String(req.query.account) : null
+      const cfg = campaignConfig(loadRiskConfig(db, scope)?.campaign)
+      let realised = null
+      if (cfg.armed) {
+        try {
+          realised = db.prepare(
+            `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
+              WHERE status = 'closed' AND net_pnl IS NOT NULL
+                AND REPLACE(closed_at, 'T', ' ') >= REPLACE(?, 'T', ' ')
+                AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+          ).get(cfg.startAt, scope, scope)?.pnl ?? null
+        } catch { realised = null }
+      }
+      // Trades since the campaign started, per strategy — the G2 counter. 25
+      // on any one row is what makes a strategy decidable, so this is the
+      // number worth watching daily.
+      let perStrategy = []
+      if (cfg.armed) {
+        try {
+          perStrategy = db.prepare(
+            `SELECT COALESCE(strategy, 'unlabelled') AS strategy, COUNT(*) AS trades,
+                    SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                    ROUND(COALESCE(SUM(net_pnl), 0), 2) AS net
+               FROM trades
+              WHERE status = 'closed'
+                AND REPLACE(closed_at, 'T', ' ') >= REPLACE(?, 'T', ' ')
+                AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+              GROUP BY 1 ORDER BY trades DESC`
+          ).all(cfg.startAt, scope, scope)
+        } catch { perStrategy = [] }
+      }
+      res.json({
+        account: scope,
+        ...campaignReadout({ cfg, realisedSinceStart: realised, nowMs: Date.now() }),
+        perStrategy,
+        // The arming bar, restated here so the page never has to hard-code it.
+        decidableAt: 25,
+      })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   router.get('/veto-breakdown', async (req, res) => {
     try {
       const { vetoBreakdown } = await import('../services/veto-breakdown.js')

@@ -20,6 +20,7 @@ import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
+import { campaignConfig, campaignStopVerdict } from './campaign-stop.js'
 import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN, DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
 import { DEFAULT_NULL_EXIT_MIN_R } from './null-exit-guard.js'
@@ -155,6 +156,12 @@ export const DEFAULT_RISK_CONFIG = {
   //      4% (1,842.92) and the large tier would be dead on arrival.
   // Set any of the three tier knobs to null to restore the previous arithmetic
   // exactly, `dailyLossLimit` included.
+  // CAMPAIGN STOP (owner 07-08, "proceed" on concentrate-to-prove). The daily
+  // cap resets every FX day, so nothing limited a WEEK: ten trading days at the
+  // 200 floor would end a 1,983 account. This is the only limit that spans
+  // days. All three fields required — a percentage with no anchor is a guess.
+  // See services/campaign-stop.js.
+  campaign: null,                  // { maxDrawdownPct, startEquity, startAt, label }
   dailyLossFloorUsd: 200,          // USD floor. null = no floor.
   dailyLossTierAtUsd: 10000,       // balance boundary between the two tiers
   dailyLossTierSmallPct: 0.03,     // balance <  tierAt
@@ -960,6 +967,30 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // entries through while the Risk page carries the warning. Every other
   // guard — per-trade risk, margin, equity stop, the portfolio layer — is
   // untouched, so "uncapped daily" is not "unprotected".
+  // CAMPAIGN STOP — spans days, so it is checked separately from the daily cap
+  // and cannot be reset by the FX day rolling over. Deliberately placed AFTER
+  // the daily figures are computed and BEFORE the daily veto, so a verdict that
+  // trips both reports the campaign — the longer-horizon fact is the one the
+  // operator needs, and "you are out for the day" would hide "you are out for
+  // the week".
+  const campaign = campaignConfig(config.campaign)
+  if (campaign.armed) {
+    let sinceStart = null
+    try {
+      sinceStart = db.prepare(
+        `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
+          WHERE status = 'closed' AND net_pnl IS NOT NULL
+            AND REPLACE(closed_at, 'T', ' ') >= REPLACE(?, 'T', ' ')
+            AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+      ).get(campaign.startAt, acct, acct)?.pnl ?? null
+    } catch { sinceStart = null }  // → halts, by campaignStopVerdict's own rule
+    const cs = campaignStopVerdict({ cfg: campaign, realisedSinceStart: sinceStart })
+    checks.campaign_drawdown_usd = cs.drawdownUsd
+    checks.campaign_drawdown_pct = cs.drawdownPct
+    checks.campaign_budget_left_usd = cs.remainingUsd
+    if (cs.halt) return veto(cs.reason, checks, proposal)
+  }
+
   if (effectiveDailyCap != null && todayPnl <= -Math.abs(effectiveDailyCap)) {
     const tail = [describeBinding(pacing), describePacing(pacing)].filter(Boolean).join(', ')
     return veto(

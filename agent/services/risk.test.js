@@ -1272,3 +1272,45 @@ test('evaluateTrade applies the account overlay even over a pre-loaded configOve
   const out2 = evaluateTrade(db, { ...goodProposal(), accountId: '43097342' }, globalCfg)
   assert.ok(!/blocked/i.test(out2.veto_reason || ''), `unexpected blocked veto: ${out2.veto_reason}`)
 })
+
+// --- campaign stop (owner 07-08 "proceed") ---------------------------------
+//
+// The daily cap resets every FX day; this is the only limit that spans days.
+
+test('campaign stop: unarmed changes nothing', () => {
+  const db = freshDB()
+  setBalance(db, 46073)
+  insertClosedTrade(db, -5000)   // way past any campaign budget
+  const res = evaluateTrade(db, goodProposal(), { ...DEFAULT_RISK_CONFIG, campaign: null, dailyLossFloorUsd: null, dailyLossTierAtUsd: null, dailyLossPct: null, dailyLossLimit: null })
+  assert.ok(!/campaign_stop/.test(res.veto_reason || ''), 'no campaign, no campaign veto')
+})
+
+test('campaign stop: halts on the WEEK even when the day is fine', () => {
+  const db = freshDB()
+  setBalance(db, 46073)
+  // A loss booked days ago — inside the campaign window, outside today's.
+  insertClosedTrade(db, -4000, 3 * 24 * 60)
+  const cfg = {
+    ...DEFAULT_RISK_CONFIG,
+    campaign: { maxDrawdownPct: 0.08, startEquity: 46073, startAt: '2020-01-01T00:00:00Z', label: 'test' },
+  }
+  const res = evaluateTrade(db, goodProposal(), cfg)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /campaign_stop \(test\)/)
+  assert.match(res.veto_reason, /The daily cap resets tomorrow; this does not/)
+  assert.equal(res.checks.campaign_budget_left_usd, 0)
+})
+
+test('campaign stop: inside the budget it reports and approves', () => {
+  const db = freshDB()
+  setBalance(db, 46073)
+  insertClosedTrade(db, -100, 3 * 24 * 60)
+  const cfg = {
+    ...DEFAULT_RISK_CONFIG,
+    campaign: { maxDrawdownPct: 0.08, startEquity: 46073, startAt: '2020-01-01T00:00:00Z', label: 'test' },
+  }
+  const res = evaluateTrade(db, goodProposal(), cfg, NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.equal(res.checks.campaign_drawdown_usd, 100)
+  assert.equal(res.checks.campaign_budget_left_usd, 3585.84)
+})
