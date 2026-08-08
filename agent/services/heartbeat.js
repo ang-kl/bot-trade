@@ -342,7 +342,7 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
       // and a sidecar side with no enabled account to serve. The second one
       // used to arrive as ERROR with a climbing failure count; it must not now
       // arrive as a bare "idle" the operator has to interpret.
-      const dormant = EXEC_SIDE_NAMES.has(name) ? dormancyOf(db, name) : null
+      const dormant = EXEC_SIDE_NAMES.has(name) ? dormancyOf(db, name, now.getTime()) : null
       return { name, label: def.label, status: 'idle', expected_sec: expected, runs: 0,
         ...(dormant ? { dormant: true, last_error: dormant.reason, error_is_current: false } : {}),
         ...(product ? { work_product: product } : {}) }
@@ -518,6 +518,23 @@ export function sideIsDormant(db, side) {
   const mine = enabledOnSide(db, side.isLive)
   const theirs = enabledOnSide(db, !side.isLive)
   if (!Array.isArray(mine) || !Array.isArray(theirs)) return false
+  // FOURTH EXCLUSION, AND THE ONE THAT IS NOT IN THE REGISTRY (review, 08-08).
+  // The three above all ask `accounts.enabled`. Dispatch does not: every
+  // fast-monitor writer runs on `getCtraderCreds(db)`, which prepends the
+  // globally-selected account with NO enabled test (ctrader-creds.js:44) and
+  // picks its host from `ctrader_is_live`. So with the flag on `live` and a
+  // DISABLED live account selected, `enabledOnSide(true)` is empty while trade
+  // guards, profit keeper, the session-open guard and the protection audit all
+  // keep dispatching to that live sidecar — and this function would delete its
+  // heartbeat row and stop probing it. A sidecar carrying stop amendments would
+  // then have no beat, no probe and no watchdog, under a panel saying it has
+  // nothing to serve. That is strictly worse than the 630 this change removes.
+  //
+  // `sideCreds` already distrusts the selected id; `getCtraderCreds` does not,
+  // and dormancy must not inherit the looser view. A side the flag names still
+  // carries traffic, whatever the registry says about it.
+  const flagIsLive = getState(db, 'ctrader_is_live') === 'true'
+  if (flagIsLive === side.isLive && getState(db, 'ctrader_account_id')) return false
   return mine.length === 0 && theirs.length > 0
 }
 
@@ -547,11 +564,29 @@ function markSideDormant(db, side, nowMs) {
   } catch { /* status reporting must never break the probe */ }
 }
 
-/** The dormancy note a side left behind, if it is currently dormant. */
-function dormancyOf(db, name) {
+/**
+ * The dormancy note a side left behind — only as current as the probe that
+ * wrote it.
+ *
+ * THE AGE TEST IS NOT DECORATION (review, 08-08). Every other reader of these
+ * snapshots applies HEALTH_STALE_MS, for the reason spelled out in
+ * checkAccountAuthorization: a snapshot older than the probe's own stall
+ * threshold tells us nothing about NOW. Nothing clears this flag except a later
+ * probe of the same side, and two ordinary changes stop that call happening at
+ * all — EXEC_ENGINE set to `js` (probeCppExec returns before any side is
+ * touched) and the split collapsing to one sidecar (execSidesToProbe drops
+ * cpp_exec_demo). Either would leave the panel asserting a current, specific
+ * reason for a controller nothing is evaluating any more — which is the same
+ * "an error that cannot go away" defect this whole change is against.
+ *
+ * Expired, it falls back to the honest generic idle text.
+ */
+function dormancyOf(db, name, nowMs) {
   try {
     const snap = JSON.parse(getState(db, healthKeyFor(name)) || 'null')
-    return snap?.dormant === true ? snap : null
+    if (snap?.dormant !== true) return null
+    const atMs = snap.at ? Date.parse(snap.at) : NaN
+    return Number.isFinite(atMs) && (nowMs - atMs) < HEALTH_STALE_MS ? snap : null
   } catch { return null }
 }
 

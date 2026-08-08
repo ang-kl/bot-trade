@@ -1157,3 +1157,60 @@ test('probeCppExec: the credential-less self-heal pushes REAL creds, not a pendi
   assert.equal(pushedArg.ready, true, 'and the resolved creds must actually be ready to push')
   assert.equal(pushedArg.host, 'demo.ctraderapi.com')
 })
+
+test('REVIEW FINDING: a side the global flag names is never dormant, however the registry reads', async () => {
+  // The dangerous one. getCtraderCreds prepends the selected account with no
+  // enabled test and takes its host from ctrader_is_live, so with the flag on
+  // `live` and a DISABLED live account selected, trade guards / profit keeper /
+  // the protection audit all keep dispatching to the live sidecar — while
+  // enabledOnSide(true) is empty. Calling that side dormant would delete the
+  // heartbeat of a sidecar carrying stop amendments: no beat, no probe, no
+  // watchdog, under a panel saying it has nothing to serve.
+  const db = initDB(':memory:')
+  enable(db, 46130058, false)
+  enable(db, 42993489, true, 0)
+  setState(db, 'ctrader_is_live', 'true')
+  setState(db, 'ctrader_account_id', '42993489')
+
+  const probed = []
+  const exec = splitExec(async ({ base } = {}) => {
+    probed.push(base)
+    return { ok: false, mode: 'cpp', error: 'live sidecar unreachable' }
+  })
+  await probeCppExec(db, { exec, now: T0 })
+
+  assert.ok(probed.includes('http://live:8091'), 'the side being written to is still probed')
+  const row = db.prepare(`SELECT * FROM controller_heartbeats WHERE name='cpp_exec'`).get()
+  assert.equal(row.consecutive_failures, 1, 'and its failure is real, not silenced')
+
+  // Flag pointing the other way, same registry → dormancy applies again.
+  const db2 = initDB(':memory:')
+  enable(db2, 46130058, false)
+  enable(db2, 42993489, true, 0)
+  setState(db2, 'ctrader_is_live', 'false')
+  setState(db2, 'ctrader_account_id', '46130058')
+  await probeCppExec(db2, { exec: splitExec(async () => ({ ok: true, mode: 'cpp', connected: true, accounts: [46130058], lastReconcileAt: T0.getTime() - 30_000 })), now: T0 })
+  assert.equal(heartbeatView(db2, { now: T0 }).find(c => c.name === 'cpp_exec').status, 'idle')
+})
+
+test('REVIEW FINDING: the dormancy note expires — it is only as current as its probe', async () => {
+  // Nothing clears the flag but a later probe of the same side, and EXEC_ENGINE=js
+  // or a collapse back to one sidecar both stop that call happening at all. A
+  // reason that cannot go stale is the same defect as an error that cannot go
+  // away, which is what this whole change is against.
+  const db = initDB(':memory:')
+  enable(db, 46130058, false)
+  enable(db, 42993489, true, 0)
+  await probeCppExec(db, {
+    exec: splitExec(async () => ({ ok: true, mode: 'cpp', connected: true, accounts: [46130058], lastReconcileAt: T0.getTime() - 30_000 })),
+    now: T0,
+  })
+  assert.equal(heartbeatView(db, { now: T0 }).find(c => c.name === 'cpp_exec').dormant, true)
+
+  // Past the probe's own stall threshold, the specific claim is withdrawn and
+  // the row falls back to a plain idle.
+  const stale = heartbeatView(db, { now: plus(6 * 60) }).find(c => c.name === 'cpp_exec')
+  assert.equal(stale.status, 'idle', 'still idle — the row is genuinely absent')
+  assert.equal(stale.dormant, undefined, 'but it no longer asserts a current reason')
+  assert.equal(stale.last_error, undefined)
+})

@@ -682,6 +682,22 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
   // So the honest rule is per-sweep, not per-account: reaching some accounts
   // and being refused by others is a real audit with a named gap; reaching NONE
   // of them means the sweep verified nothing and must say so.
-  out.blind = out.accounts === 0 && (out.unauditable.length > 0 || out.errors.length > 0)
+  //
+  // MEASURED AGAINST `roster`, NOT AGAINST `ids` (review, 08-08). `ids` prepends
+  // `primary` unconditionally — no enabled test, no side test — so with the
+  // global flag on `live` and a DISABLED live account selected, `ids` is that
+  // one account, its reconcile throws CANT_ROUTE_REQUEST, and `accounts === 0`.
+  // Against an implicit `ids` denominator that reads as blind, and the fast
+  // monitor would beat failed every 60s for ever: the amber this change removes,
+  // returned as permanent red, on the very same account and error. The
+  // classification fix above would have been undone by its own counterweight.
+  //
+  // `roster` is the set we were actually obliged to reach — enabled, same side.
+  // Empty roster plus an unreachable selected account is not a blind sweep;
+  // there was nothing we were required to audit. The staleness of the work
+  // product (checkProtectionFreshness) is what catches a sweep that stops
+  // producing readings, and that is the right instrument for it.
+  out.blind = out.accounts === 0 && roster.length > 0 &&
+    (out.unauditable.length > 0 || out.errors.length > 0)
   return out
 }

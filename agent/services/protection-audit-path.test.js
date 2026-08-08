@@ -208,3 +208,28 @@ test('blind is about reaching nothing, not about finding nothing', async () => {
   assert.equal(out.accounts, 2)
   assert.equal(out.blind, false)
 })
+
+test('blind is measured against the enabled roster, not against the id list', async () => {
+  // REVIEW FINDING, 08-08. `ids` prepends `primary` with no enabled test, so a
+  // disabled selected account can be the ONLY entry. Against an implicit `ids`
+  // denominator that read as blind — the fast monitor beating failed every 60s
+  // for ever, on the same account and the same error this PR set out to stop
+  // reporting as a breakage. The counterweight would have undone the fix.
+  db.prepare('UPDATE accounts SET enabled = 0').run()          // nothing enabled → roster []
+  const exec = {
+    reconcile: async () => { throw new Error('cTrader error: CANT_ROUTE_REQUEST — Cannot route request') },
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.accounts, 0)
+  assert.equal(out.unauditable.length, 1, 'only the selected account was in the sweep')
+  assert.equal(out.blind, false, 'there was nothing we were obliged to reach')
+})
+
+test('and an enabled roster that is wholly unreachable is STILL blind', async () => {
+  // The half that must survive the narrowing above.
+  const exec = {
+    reconcile: async () => { throw new Error('cTrader error: CANT_ROUTE_REQUEST — Cannot route request') },
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.blind, true)
+})
