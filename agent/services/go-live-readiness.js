@@ -1,6 +1,10 @@
 // ---------------------------------------------------------------------------
-// agent/services/go-live-readiness.js — one read that answers the 12-08
+// agent/services/go-live-readiness.js — one read that answers the go-live
 // question, INCLUDING whether the answer can be trusted.
+//
+// The date itself is DEFAULT_GOAL.deadline (goal-tracker.js), overridable via
+// agent_state — deliberately not restated here, because a deadline written in
+// two places moves in one of them.
 //
 // Owner, 08-08-2026: "building is a single /state/go-live-readiness read".
 //
@@ -32,6 +36,13 @@
 // ---------------------------------------------------------------------------
 
 import { GO_LIVE_BAR, ARM_BAR } from './edge-bars.js'
+// The deadline comes from goal-tracker's DEFAULT_GOAL, not a second copy of the
+// date. A duplicated literal is how a moved deadline moves in one file and not
+// the other, and this module's whole job is to be the ONE place the go-live
+// question is answered.
+import { DEFAULT_GOAL } from './goal-tracker.js'
+
+const DEFAULT_GOAL_DEADLINE = DEFAULT_GOAL.deadline
 
 /**
  * Share of rows that may be flagged/unattributed before the record stops
@@ -164,7 +175,7 @@ export function bucketsOf(rows, bar = ARM_BAR) {
  * @param {{rows:Array, goal:object, nowMs:number, windowDays:number}} a
  */
 export function goLiveReadiness({ rows, goal, nowMs = null, windowDays = 30 }) {
-  const g = goal || { profitFactor: GO_LIVE_BAR.profitFactor, winRatePct: GO_LIVE_BAR.winRatePct, gateOn: 'profitFactor', minTrades: 30, deadline: '2026-08-12' }
+  const g = goal || { profitFactor: GO_LIVE_BAR.profitFactor, winRatePct: GO_LIVE_BAR.winRatePct, gateOn: 'profitFactor', minTrades: 30, deadline: DEFAULT_GOAL_DEADLINE }
   const integrity = integrityOf(rows)
   const edge = edgeOf(rows)
   const buckets = bucketsOf(rows)
