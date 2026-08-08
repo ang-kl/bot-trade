@@ -1629,6 +1629,48 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/go-live-readiness — the 12-08 question, in one read.
+  //
+  // Owner, 08-08-2026: "building is a single /state/go-live-readiness read."
+  //
+  // Returns GO / NO / **UNMEASURABLE**. That third verdict is the whole point:
+  // a pass/fail gate would have reported this account's PF 0.84 as a clean NO
+  // all week while 29.5% of rows contradicted themselves and two thirds had no
+  // strategy attached. NO means the edge is not there; UNMEASURABLE means fix
+  // the ledger before asking again. See services/go-live-readiness.js.
+  //
+  // ?days=30 · ?account
+  // -----------------------------------------------------------------------
+  router.get('/go-live-readiness', async (req, res) => {
+    try {
+      const { goLiveReadiness } = await import('../services/go-live-readiness.js')
+      const { loadGoal } = await import('../services/goal-tracker.js')
+      const days = Math.max(1, Math.min(365, Number(req.query.days) || 30))
+      const acct = req.query.account == null || req.query.account === '' ? null : String(req.query.account)
+      // Every closed row with money, flags and attribution — the integrity
+      // check needs the rows it would otherwise exclude, so this deliberately
+      // does NOT filter on entry/exit being present the way an edge query
+      // would. Filtering them out here is precisely how a dirty record starts
+      // looking clean.
+      const rows = db.prepare(`
+        SELECT id, symbol, side, entry_price, exit_price, volume, net_pnl, closed_at,
+               COALESCE(label_strategy, strategy) AS label_strategy,
+               label_timeframe, pnl_price_mismatch, exit_price_suspect
+          FROM trades
+         WHERE status = 'closed' AND net_pnl IS NOT NULL
+           AND closed_at >= datetime('now', ?)
+           AND (account_id = ? OR ? IS NULL)
+      `).all(`-${days} days`, acct, acct)
+      res.json({
+        ...goLiveReadiness({ rows, goal: loadGoal(db), nowMs: Date.now(), windowDays: days }),
+        accountId: acct,
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/symbol-clusters — 2+ DISTINCT fills on one account+symbol
   // inside a window (owner: "double or triple trading symbols for past EU and
   // NY sessions"). /state/duplicate-trades only sees identical-value records;
