@@ -117,7 +117,13 @@ export function protectionFreshness({
     summary = 'no completed protection audit on record — nothing has verified that open positions are protected'
       + (lastAttemptAt ? ` (last attempt ${lastAttemptAt})` : '') + attemptNote
   } else if (fresh) {
-    summary = `verified ${minutes(ageSec)} ago`
+    // THE NOTE BELONGS HERE TOO (review, 08-08). It used to be appended only to
+    // the never-run and stale branches, so a book where most accounts verified
+    // fine and one could not be reached rendered as a bare "verified 2m ago" —
+    // the single most reassuring sentence this module can produce, printed over
+    // a named gap. `fresh` is untouched, so no new alerts fire from this; the
+    // reading really is current, it is just not complete.
+    summary = `verified ${minutes(ageSec)} ago` + attemptNote
   } else {
     summary = `LAST VERIFIED ${minutes(ageSec)} AGO — past the ${minutes(limit)} freshness limit. `
       + 'The controller may still be beating; its answer is not current.' + attemptNote

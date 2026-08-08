@@ -668,8 +668,23 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       // sweep failed. A genuine audit failure on a REACHABLE account still
       // does — because there, "we could not check" really does mean positions
       // may be sitting unprotected.
-      if (UNAUDITABLE_RE.test(msg)) out.unauditable.push(`${id}: ${msg}`)
-      else out.errors.push(`${id}: ${msg}`)
+      if (UNAUDITABLE_RE.test(msg)) {
+        out.unauditable.push(`${id}: ${msg}`)
+        // MAKE THE GAP SURVIVE THE RECLASSIFICATION (review, 08-08). Before
+        // this PR a CANT_ROUTE_REQUEST landed in `errors`, so the operator saw
+        // amber with the account named. Reclassifying it as an access fact
+        // stops it holding the controller red — correctly — but `unauditable`
+        // reached only a console.warn, so the PARTIAL case (some accounts
+        // reached, one refused) would render as a plain green with the gap
+        // named nowhere. `blind` cannot catch that; it only fires when EVERY
+        // account is refused.
+        //
+        // "We could not check this account" is exactly what this per-account
+        // record was built to carry (see ¶D·2 above), and it preserves the last
+        // successful reading rather than overwriting it. So the beat stays green
+        // and the panel still says which account went unverified.
+        recordAuditUnavailable(db, msg, { accountId: id, ...(deps.auditOpts?.nowMs ? { nowMs: deps.auditOpts.nowMs } : {}) })
+      } else out.errors.push(`${id}: ${msg}`)
     }
   }
   // AN AUDIT THAT REACHED NOTHING IS NOT A CLEAN AUDIT, and this is the price

@@ -233,3 +233,44 @@ test('and an enabled roster that is wholly unreachable is STILL blind', async ()
   const out = await runProtectionAuditAllAccounts(db, creds, { exec })
   assert.equal(out.blind, true)
 })
+
+test('an unauditable account leaves a named gap in the work product, not just a console line', async () => {
+  // REVIEW FINDING, 08-08. Reclassifying CANT_ROUTE_REQUEST stops it holding
+  // the controller red — right — but `unauditable` reached only a console.warn,
+  // so the PARTIAL case rendered as a plain green with the gap named nowhere.
+  // `blind` cannot catch it: it fires only when EVERY account is refused.
+  const { protectionFreshnessFrom } = await import('./protection-freshness.js')
+  seedPosition(A, 'EURUSD', '111', 1.05)
+  const exec = {
+    reconcile: async (c) => {
+      if (String(c.accountId) === B) throw new Error('cTrader error: CANT_ROUTE_REQUEST — Cannot route request')
+      return { position: [{ positionId: '111', stopLoss: 1.05, takeProfit: 1.09 }] }
+    },
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.blind, false, 'the sweep really did verify an account')
+
+  const rec = JSON.parse(db.prepare('SELECT value v FROM agent_state WHERE key = ?')
+    .get(`acct:${B}:protection_audit_last_json`).v)
+  assert.equal(rec.lastAttemptOk, false)
+  assert.match(rec.lastAttemptError, /CANT_ROUTE_REQUEST/)
+
+  // And it reaches the reader the panel actually renders.
+  const f = protectionFreshnessFrom(db, { lastAudit: rec })
+  assert.match(f.summary, /CANT_ROUTE_REQUEST/)
+})
+
+test('a fresh reading still names an account it could not reach', async () => {
+  // "verified 2m ago" is the most reassuring sentence this module produces. It
+  // must not be printed over a gap. `fresh` is unchanged, so no new alert fires.
+  const { protectionFreshness } = await import('./protection-freshness.js')
+  const now = Date.parse('2026-08-08T12:00:00Z')
+  const f = protectionFreshness({
+    at: new Date(now - 120_000).toISOString(),
+    lastAttemptError: '42993489: cTrader error: CANT_ROUTE_REQUEST',
+    nowMs: now,
+  })
+  assert.equal(f.fresh, true, 'the reading IS current — it is just not complete')
+  assert.match(f.summary, /verified 2m ago/)
+  assert.match(f.summary, /42993489/)
+})

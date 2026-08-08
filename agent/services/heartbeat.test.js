@@ -1214,3 +1214,27 @@ test('REVIEW FINDING: the dormancy note expires — it is only as current as its
   assert.equal(stale.dormant, undefined, 'but it no longer asserts a current reason')
   assert.equal(stale.last_error, undefined)
 })
+
+test('the selected-account check resolves like getCtraderCreds — state key OR env', async () => {
+  // Note 2 of the review: reading only the state key agrees today (index.js
+  // seeds it from env at boot) and would disagree the moment that changes.
+  // Matching the resolution makes the drift impossible rather than absent.
+  const db = initDB(':memory:')
+  enable(db, 46130058, false)
+  enable(db, 42993489, true, 0)
+  setState(db, 'ctrader_is_live', 'true')          // flag names live, state key EMPTY
+  const prev = process.env.CTRADER_ACCOUNT_ID
+  process.env.CTRADER_ACCOUNT_ID = '42993489'
+  try {
+    await probeCppExec(db, {
+      exec: splitExec(async () => ({ ok: false, mode: 'cpp', error: 'live sidecar unreachable' })),
+      now: T0,
+    })
+    const row = db.prepare(`SELECT * FROM controller_heartbeats WHERE name='cpp_exec'`).get()
+    assert.ok(row, 'an env-selected account still counts as traffic on that side')
+    assert.equal(row.consecutive_failures, 1)
+  } finally {
+    if (prev === undefined) delete process.env.CTRADER_ACCOUNT_ID
+    else process.env.CTRADER_ACCOUNT_ID = prev
+  }
+})

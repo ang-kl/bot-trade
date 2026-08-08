@@ -24,6 +24,7 @@
 import { getState, setState } from '../db.js'
 import { auditControllerEvent } from './phase-audit.js'
 import { checkProtectionFreshness, protectionFreshnessFrom } from './protection-freshness.js'
+import { ctraderEnv } from '../lib/ctrader-env.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
@@ -533,8 +534,16 @@ export function sideIsDormant(db, side) {
   // `sideCreds` already distrusts the selected id; `getCtraderCreds` does not,
   // and dormancy must not inherit the looser view. A side the flag names still
   // carries traffic, whatever the registry says about it.
+  //
+  // Resolved the SAME way getCtraderCreds resolves it — state key first, env
+  // fallback second (ctrader-creds.js:22). Reading only the state key would
+  // agree today (index.js seeds it from env at boot and nothing clears it) and
+  // disagree the moment that seeding changes, which is the kind of drift that
+  // is absent rather than impossible. Matching the resolution makes it the
+  // latter.
   const flagIsLive = getState(db, 'ctrader_is_live') === 'true'
-  if (flagIsLive === side.isLive && getState(db, 'ctrader_account_id')) return false
+  const selected = getState(db, 'ctrader_account_id') || ctraderEnv('accountId')
+  if (flagIsLive === side.isLive && selected) return false
   return mine.length === 0 && theirs.length > 0
 }
 
