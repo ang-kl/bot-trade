@@ -37,7 +37,7 @@ export const GO_LIVE_BAR = {
   winRatePct: 68,
   profitFactor: 1.68,
   source: 'agent/services/goal-tracker.js — DEFAULT_GOAL',
-  question: 'may this system trade real money on 2026-08-12?',
+  question: 'may this system trade real money on 2026-08-15?',
 }
 
 /** Which backtested strategy/symbol/timeframe combos may be ARMED live. */

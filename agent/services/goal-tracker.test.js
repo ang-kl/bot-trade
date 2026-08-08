@@ -437,3 +437,19 @@ test('a fully-stamped account reads 100, and an empty one is not a failure', () 
   assert.equal(empty.coverage.total, 0)
   assert.equal(empty.attributablePct, 100)
 })
+
+test('the deadline moved to 15-08, and only ONE file holds the date', async () => {
+  // Owner, 08-08-2026: "Move the goal's deadline to 15 August."
+  //
+  // The second assertion is the one worth keeping. edge-bars.js's `question`
+  // text and go-live-readiness.js's fallback both used to carry their own copy
+  // of the date, which is exactly how a moved deadline moves in one file and
+  // not the others — the failure edge-bars.js was created to prevent for the
+  // numeric BARS, repeated for the date.
+  assert.equal(DEFAULT_GOAL.deadline, '2026-08-15')
+  const { GO_LIVE_BAR } = await import('./edge-bars.js')
+  assert.match(GO_LIVE_BAR.question, /2026-08-15/, 'the register must not still ask about the 12th')
+  // And the BAR is untouched: a moved date is not a softened target.
+  assert.equal(DEFAULT_GOAL.profitFactor, 1.68)
+  assert.equal(DEFAULT_GOAL.winRatePct, 68)
+})

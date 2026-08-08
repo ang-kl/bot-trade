@@ -76,7 +76,24 @@ export const DEFAULT_GOAL = {
   // the two without anyone deciding to. Win rate is still computed and shown;
   // it just no longer vetoes the gate. 'both' restores the old behaviour.
   gateOn: 'profitFactor',
-  deadline: '2026-08-12',
+  // MOVED 08-08-2026, owner: "Move the goal's deadline to 15 August."
+  //
+  // The reason is recorded because a moved deadline with no reason reads, later,
+  // as a target quietly softened until it was met. It was not softened — the
+  // BAR is untouched at PF 1.68. What moved is the date, and it moved because
+  // the evidence could not arrive before it:
+  //
+  //   · 13 trades in 30 days on the only positive-expectancy strategy
+  //     (vwap_trend, Kelly +0.219), against a 30-trade minimum
+  //   · markets shut until Mon 01:00 SGT, leaving 2.5 trading days to the 12th
+  //   · and the record only became measurable on the 8th, after a 158x sizing
+  //     error and exit prices wrong on four of five close paths were fixed
+  //
+  // Deciding on the 12th would have meant deciding on four-day-old data, half
+  // of it one losing strategy, cleaned that morning. /state/go-live-readiness
+  // returns UNMEASURABLE for exactly this shape, and moving the date is the
+  // honest response to that verdict rather than an argument with it.
+  deadline: '2026-08-15',
   // Below this many closed trades the numbers are noise, not evidence.
   minTrades: 30,
 }
