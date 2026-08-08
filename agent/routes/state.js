@@ -1585,6 +1585,50 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/exit-price-suspects — exit prices wrong in MAGNITUDE.
+  //
+  // The companion to /state/trade-consistency, which asks about DIRECTION.
+  // A row can point the right way and still be wrong by a factor of fifty,
+  // and until 08-08-2026 nothing looked for that — so the backfill's repair,
+  // gated on the sign flag alone, never touched those rows.
+  //
+  // Needs no contract table or FX rate: each symbol's money-per-point is
+  // derived from its own trades. See services/exit-price-suspects.js on why
+  // that makes it blind to SYSTEMATIC error (which /state/sizing-parity
+  // covers) and good at per-row error.
+  //
+  // ?days=90 · ?account · ?tolerance=3 · ?minTrades=4 · ?sweep=1 to stamp
+  // -----------------------------------------------------------------------
+  router.get('/exit-price-suspects', async (req, res) => {
+    try {
+      const { exitPriceSuspects, sweepExitPriceSuspects } = await import('../services/exit-price-suspects.js')
+      const days = Math.max(1, Math.min(3650, Number(req.query.days) || 90))
+      const acct = req.query.account == null || req.query.account === '' ? null : String(req.query.account)
+      const opts = {
+        tolerance: Number(req.query.tolerance) || undefined,
+        minTrades: Number(req.query.minTrades) || undefined,
+      }
+      // `sweep=1` stamps exit_price_suspect so the backfill's repair can find
+      // them. Opt-in rather than automatic on a GET: a read that silently
+      // writes is how an audit becomes an actor nobody asked for.
+      const swept = (req.query.sweep === '1' || req.query.sweep === 'true')
+        ? sweepExitPriceSuspects(db, { accountId: acct, days, ...opts })
+        : null
+      const rows = db.prepare(`
+        SELECT id, symbol, side, entry_price, exit_price, volume, net_pnl, closed_at, close_reason
+          FROM trades
+         WHERE status = 'closed' AND net_pnl IS NOT NULL
+           AND entry_price IS NOT NULL AND exit_price IS NOT NULL
+           AND closed_at >= datetime('now', ?)
+           AND (account_id = ? OR ? IS NULL)
+      `).all(`-${days} days`, acct, acct)
+      res.json({ ...exitPriceSuspects(rows, opts), days, accountId: acct, swept })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/symbol-clusters — 2+ DISTINCT fills on one account+symbol
   // inside a window (owner: "double or triple trading symbols for past EU and
   // NY sessions"). /state/duplicate-trades only sees identical-value records;
