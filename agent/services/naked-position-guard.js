@@ -578,6 +578,15 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
 const UNAUTHORISED_CODES = [
   'CH_ACCESS_TOKEN_INVALID', 'CH_ACCESS_TOKEN_EXPIRED', 'ACCOUNT_NOT_AUTHORIZED',
   'NOT_AUTHENTICATED', 'CH_CLIENT_AUTH_FAILURE',
+  // ADDED 08-08-2026. `CANT_ROUTE_REQUEST` is the broker refusing to route to
+  // an account this session was never authorised for — the disabled LIVE
+  // account 42993489, which is still swept because `manage_only` accounts hold
+  // open positions and dropping them from the audit would stop checking whether
+  // those positions have stops. So it belongs in the same class as the token
+  // codes above: a fact about ACCESS, not about exposure. Left out of the list,
+  // it counted as a real audit failure and parked protection_audit in `warn` —
+  // the "always amber, so nobody reads it" failure this list exists to prevent.
+  'CANT_ROUTE_REQUEST',
 ]
 const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
 
@@ -586,7 +595,7 @@ const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
  *            errors:string[], unauditable:string[]}}
  */
 export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, errors: [], unauditable: [] }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -605,6 +614,16 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
   const primary = baseCreds.accountId != null ? String(baseCreds.accountId) : null
   const ids = [...new Set([...(primary ? [primary] : []), ...roster])]
   if (!ids.length) return out
+
+  // THE NUMERATOR MUST COUNT THE SAME SET AS THE DENOMINATOR (review, 08-08).
+  // `out.accounts` counts any id in `ids` that reconciled, and `ids` prepends
+  // `primary` with no enabled test — so one reachable NON-roster account defeats
+  // `blind` for the whole obliged set: a disabled-but-selected account
+  // reconciles fine (the sidecar authorises it, ctrader-creds.js:45), every
+  // ENABLED account is refused, and the sweep beats green having verified
+  // nothing it was obliged to verify. One account short of the alarm firing.
+  const obliged = new Set(roster)
+  let reachedObliged = 0
 
   const stmt = db.prepare(
     `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.account_id, mp.source,
@@ -625,7 +644,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       // No local rows AND no broker positions is a genuinely clean account —
       // but a broker position with no local row is exactly what the audit is
       // for, so an empty openRows does not skip the pass.
-      if (!openRows.length && !positions.length) { out.accounts++; continue }
+      if (!openRows.length && !positions.length) { out.accounts++; if (obliged.has(String(id))) reachedObliged++; continue }
       const brokerSl = positions.map(p => ({
         positionId: p.positionId,
         stopLoss: p.stopLoss ?? null,
@@ -639,6 +658,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
         sendMessage, accountId: id, ...(deps.auditOpts || {}),
       })
       out.accounts++
+      if (obliged.has(String(id))) reachedObliged++
       out.naked += prot.naked.length
       out.targetless += prot.targetless.length
       out.phantom += prot.phantom.length
@@ -659,9 +679,51 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       // sweep failed. A genuine audit failure on a REACHABLE account still
       // does — because there, "we could not check" really does mean positions
       // may be sitting unprotected.
-      if (UNAUDITABLE_RE.test(msg)) out.unauditable.push(`${id}: ${msg}`)
-      else out.errors.push(`${id}: ${msg}`)
+      if (UNAUDITABLE_RE.test(msg)) {
+        out.unauditable.push(`${id}: ${msg}`)
+        // MAKE THE GAP SURVIVE THE RECLASSIFICATION (review, 08-08). Before
+        // this PR a CANT_ROUTE_REQUEST landed in `errors`, so the operator saw
+        // amber with the account named. Reclassifying it as an access fact
+        // stops it holding the controller red — correctly — but `unauditable`
+        // reached only a console.warn, so the PARTIAL case (some accounts
+        // reached, one refused) would render as a plain green with the gap
+        // named nowhere. `blind` cannot catch that; it only fires when EVERY
+        // account is refused.
+        //
+        // "We could not check this account" is exactly what this per-account
+        // record was built to carry (see ¶D·2 above), and it preserves the last
+        // successful reading rather than overwriting it. So the beat stays green
+        // and the panel still says which account went unverified.
+        recordAuditUnavailable(db, msg, { accountId: id, ...(deps.auditOpts?.nowMs ? { nowMs: deps.auditOpts.nowMs } : {}) })
+      } else out.errors.push(`${id}: ${msg}`)
     }
   }
+  // AN AUDIT THAT REACHED NOTHING IS NOT A CLEAN AUDIT, and this is the price
+  // of every widening of UNAUTHORISED_CODES above. `CANT_ROUTE_REQUEST` is an
+  // access fact per account — but if the whole sidecar session goes down, EVERY
+  // account returns it, every one lands in `unauditable`, and the controller
+  // would read `ok` while not a single position was checked. That is a worse
+  // lie than the amber it replaces: green means "your positions are protected".
+  //
+  // So the honest rule is per-sweep, not per-account: reaching some accounts
+  // and being refused by others is a real audit with a named gap; reaching NONE
+  // of them means the sweep verified nothing and must say so.
+  //
+  // MEASURED AGAINST `roster`, NOT AGAINST `ids` (review, 08-08). `ids` prepends
+  // `primary` unconditionally — no enabled test, no side test — so with the
+  // global flag on `live` and a DISABLED live account selected, `ids` is that
+  // one account, its reconcile throws CANT_ROUTE_REQUEST, and `accounts === 0`.
+  // Against an implicit `ids` denominator that reads as blind, and the fast
+  // monitor would beat failed every 60s for ever: the amber this change removes,
+  // returned as permanent red, on the very same account and error. The
+  // classification fix above would have been undone by its own counterweight.
+  //
+  // `roster` is the set we were actually obliged to reach — enabled, same side.
+  // Empty roster plus an unreachable selected account is not a blind sweep;
+  // there was nothing we were required to audit. The staleness of the work
+  // product (checkProtectionFreshness) is what catches a sweep that stops
+  // producing readings, and that is the right instrument for it.
+  out.blind = reachedObliged === 0 && roster.length > 0 &&
+    (out.unauditable.length > 0 || out.errors.length > 0)
   return out
 }

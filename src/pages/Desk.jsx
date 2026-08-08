@@ -1072,7 +1072,11 @@ export default function Desk() {
             {heartbeats.map(c => {
               const dot = c.status === 'ok' ? 'var(--color-accent)' : c.status === 'warn' ? '#c2410c' : c.status === 'idle' ? '#94a3b8' : 'var(--color-down)'
               return (
-                <li key={c.name} className="flex items-baseline gap-1.5 min-w-0 py-px" title={c.status === 'idle' ? 'never ran (not armed / not applicable)' : `${c.status} · last beat ${c.last_run_at ?? '—'} · ${c.age_sec ?? '?'}s ago`}>
+                // An idle row has two very different causes and the grey dot reads
+                // the same for both: never armed, or nothing to serve. The second
+                // arrived here as ERROR with a climbing failure count until 08-08,
+                // so it earns its own words.
+                <li key={c.name} className="flex items-baseline gap-1.5 min-w-0 py-px" title={c.status === 'idle' ? (c.dormant ? c.last_error : 'never ran (not armed / not applicable)') : `${c.status} · last beat ${c.last_run_at ?? '—'} · ${c.age_sec ?? '?'}s ago`}>
                   <span aria-hidden="true" style={{ color: dot }}>●</span>
                   <span className="font-semibold shrink-0">{c.label}</span>
                   {(c.status === 'stalled' || c.status === 'error' || c.consecutive_failures > 0) && (

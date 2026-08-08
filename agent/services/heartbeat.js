@@ -24,6 +24,7 @@
 import { getState, setState } from '../db.js'
 import { auditControllerEvent } from './phase-audit.js'
 import { checkProtectionFreshness, protectionFreshnessFrom } from './protection-freshness.js'
+import { ctraderEnv } from '../lib/ctrader-env.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
@@ -110,6 +111,10 @@ export const CONTROLLERS = {
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
+
+// The two sidecar-probe controllers. Only these can be DORMANT — see
+// sideIsDormant — so only these pay for the dormancy lookup in heartbeatView.
+const EXEC_SIDE_NAMES = new Set(['cpp_exec', 'cpp_exec_demo'])
 
 function loopSecFrom(db) {
   const n = Number(getState(db, 'loop_interval_min'))
@@ -333,7 +338,14 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
     const expected = expectedSecFor(def, lsec)
     const product = name === 'protection_audit' ? protection : null
     if (!row) {
+      // IDLE, AND THE REASON WHY. Two very different things arrive here: a
+      // controller that has never run (burn-in on a box that never armed it),
+      // and a sidecar side with no enabled account to serve. The second one
+      // used to arrive as ERROR with a climbing failure count; it must not now
+      // arrive as a bare "idle" the operator has to interpret.
+      const dormant = EXEC_SIDE_NAMES.has(name) ? dormancyOf(db, name, now.getTime()) : null
       return { name, label: def.label, status: 'idle', expected_sec: expected, runs: 0,
+        ...(dormant ? { dormant: true, last_error: dormant.reason, error_is_current: false } : {}),
         ...(product ? { work_product: product } : {}) }
     }
     const age = ageSecOf(row, now)
@@ -468,14 +480,149 @@ function enabledOnSide(db, isLive) {
   } catch { return null }
 }
 
+/** Where a side's probe result is persisted for the read path. */
+const healthKeyFor = (name) => (name === 'cpp_exec' ? 'cpp_exec_health_json' : `${name}_health_json`)
+
+export const DORMANT_REASON =
+  'no enabled account on this side — nothing for this sidecar to serve'
+
+/**
+ * Has this sidecar side got anything to serve?
+ *
+ * THE COUNTER THAT COULD ONLY GO UP (owner, 08-08-2026, reading the panel:
+ * "C++ exec engine — ERROR, 630 failing"). Every live account was disabled, so
+ * `sideCreds` correctly returned `{ready: false}`, `pushSidecarSession`
+ * correctly pushed nothing, the sidecar correctly stayed disconnected, and
+ * `beat()` correctly recorded a failure — every step right, and the conclusion
+ * wrong. "No account exists to authorise" was being reported as "the engine is
+ * broken", once every two minutes, for ever.
+ *
+ * That is the same defect as an error string that cannot go away (see
+ * `error_is_current` above): a row that is permanently red teaches the operator
+ * to stop reading red, and the one time the live sidecar genuinely breaks it
+ * will look exactly like this.
+ *
+ * DELIBERATELY THE NARROWEST STATEMENT THAT COVERS THE CASE: the accounts that
+ * ARE enabled are all on the OTHER side. Three exclusions, each one a way this
+ * could have silenced a probe that should have been shouting:
+ *
+ *   · `isLive === null` — the single sidecar serving whatever the global flag
+ *     names. It always has work by definition, so it can never be dormant.
+ *   · an unreadable registry — "we could not count the accounts" is not "there
+ *     are none". A probe silenced by a SQLITE_BUSY is how a real outage hides.
+ *   · nothing enabled ANYWHERE — a fresh or half-seeded registry. That is an
+ *     unconfigured agent, not a side with no work, and the operator needs to
+ *     see the probe rather than a reassuring "idle".
+ */
+export function sideIsDormant(db, side) {
+  if (!side || side.isLive === null || side.isLive === undefined) return false
+  const mine = enabledOnSide(db, side.isLive)
+  const theirs = enabledOnSide(db, !side.isLive)
+  if (!Array.isArray(mine) || !Array.isArray(theirs)) return false
+  // FOURTH EXCLUSION, AND THE ONE THAT IS NOT IN THE REGISTRY (review, 08-08).
+  // The three above all ask `accounts.enabled`. Dispatch does not: every
+  // fast-monitor writer runs on `getCtraderCreds(db)`, which prepends the
+  // globally-selected account with NO enabled test (ctrader-creds.js:44) and
+  // picks its host from `ctrader_is_live`. So with the flag on `live` and a
+  // DISABLED live account selected, `enabledOnSide(true)` is empty while trade
+  // guards, profit keeper, the session-open guard and the protection audit all
+  // keep dispatching to that live sidecar — and this function would delete its
+  // heartbeat row and stop probing it. A sidecar carrying stop amendments would
+  // then have no beat, no probe and no watchdog, under a panel saying it has
+  // nothing to serve. That is strictly worse than the 630 this change removes.
+  //
+  // `sideCreds` already distrusts the selected id; `getCtraderCreds` does not,
+  // and dormancy must not inherit the looser view. A side the flag names still
+  // carries traffic, whatever the registry says about it.
+  //
+  // Resolved the SAME way getCtraderCreds resolves it — state key first, env
+  // fallback second (ctrader-creds.js:22). Reading only the state key would
+  // agree today (index.js seeds it from env at boot and nothing clears it) and
+  // disagree the moment that seeding changes, which is the kind of drift that
+  // is absent rather than impossible. Matching the resolution makes it the
+  // latter.
+  //
+  // Wrapped for the same reason enabledOnSide is: a throw here propagates out of
+  // probeCppExec, and fast-monitor wraps the probe and the watchdogs in ONE try
+  // — so a SQLITE_BUSY on these two reads would skip checkHeartbeats and
+  // checkAccountAuthorization for that tick. Unreadable means "assume it has
+  // work", the same fail-safe direction as everywhere else here.
+  try {
+    const flagIsLive = getState(db, 'ctrader_is_live') === 'true'
+    const selected = getState(db, 'ctrader_account_id') || ctraderEnv('accountId')
+    if (flagIsLive === side.isLive && selected) return false
+  } catch { return false }
+  return mine.length === 0 && theirs.length > 0
+}
+
+/**
+ * Record "nothing to serve" — which is not a beat, and not a failure.
+ *
+ * Deleting the row is the mechanism on purpose: `heartbeatView` already returns
+ * `status: 'idle'` for a controller with no row, and `checkHeartbeats` iterates
+ * rows, so a dormant side stops alerting without a new status needing to be
+ * invented. Merely SKIPPING the probe would be worse than the bug — the row's
+ * age would keep growing until it read STALLED, which claims the engine died.
+ *
+ * The snapshot carries the reason so the panel can say WHY it is idle instead
+ * of leaving the operator to guess. `accounts: null` because this side was not
+ * probed: an empty array would assert the sidecar authorises nothing, which we
+ * did not ask it.
+ */
+function markSideDormant(db, side, nowMs) {
+  // Deleting the row also discards `stalled` and `fail_alerted`, so a side that
+  // had already sent "🔴 CONTROLLER FAILING" will never send the matching
+  // recovery line — the row simply vanishes. That is intended: it did not
+  // recover to "working", it recovered to "nothing to serve", and announcing a
+  // recovery would claim the first thing. A missing recovery message here is
+  // not a dropped alert.
+  try { db.prepare('DELETE FROM controller_heartbeats WHERE name = ?').run(side.name) } catch { /* telemetry only */ }
+  try {
+    setState(db, healthKeyFor(side.name), JSON.stringify({
+      accounts: null, connected: null, hasCredentials: null, lastReconcileAt: null,
+      ok: null, error: null, dormant: true, reason: DORMANT_REASON,
+      side: side.isLive ? 'live' : 'demo',
+      at: new Date(nowMs).toISOString(),
+    }))
+  } catch { /* status reporting must never break the probe */ }
+}
+
+/**
+ * The dormancy note a side left behind — only as current as the probe that
+ * wrote it.
+ *
+ * THE AGE TEST IS NOT DECORATION (review, 08-08). Every other reader of these
+ * snapshots applies HEALTH_STALE_MS, for the reason spelled out in
+ * checkAccountAuthorization: a snapshot older than the probe's own stall
+ * threshold tells us nothing about NOW. Nothing clears this flag except a later
+ * probe of the same side, and two ordinary changes stop that call happening at
+ * all — EXEC_ENGINE set to `js` (probeCppExec returns before any side is
+ * touched) and the split collapsing to one sidecar (execSidesToProbe drops
+ * cpp_exec_demo). Either would leave the panel asserting a current, specific
+ * reason for a controller nothing is evaluating any more — which is the same
+ * "an error that cannot go away" defect this whole change is against.
+ *
+ * Expired, it falls back to the honest generic idle text.
+ */
+function dormancyOf(db, name, nowMs) {
+  try {
+    const snap = JSON.parse(getState(db, healthKeyFor(name)) || 'null')
+    if (snap?.dormant !== true) return null
+    const atMs = snap.at ? Date.parse(snap.at) : NaN
+    return Number.isFinite(atMs) && (nowMs - atMs) < HEALTH_STALE_MS ? snap : null
+  } catch { return null }
+}
+
 export async function probeCppExec(db, deps = {}) {
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
   if (exec.execEngineMode() !== 'cpp') return null
   const sides = typeof exec.execBaseFor === 'function'
     ? execSidesToProbe(exec)
     : [{ name: 'cpp_exec', base: undefined, isLive: null }]
+  const nowMs = (deps.now ?? new Date()).getTime()
   let primary = null
   for (const side of sides) {
+    if (sideIsDormant(db, side)) { markSideDormant(db, side, nowMs); continue }
     const out = await probeOneSidecar(db, exec, side, deps)
     if (side.name === 'cpp_exec') primary = out
   }
@@ -621,7 +768,7 @@ async function probeOneSidecar(db, exec, side, deps = {}) {
   // slow read routes already on the backlog. Stamped with the observation time
   // so the UI can say "as of 2 min ago" instead of implying it is live.
   try {
-    setState(db, side.name === 'cpp_exec' ? 'cpp_exec_health_json' : `${side.name}_health_json`, JSON.stringify({
+    setState(db, healthKeyFor(side.name), JSON.stringify({
       accounts: Array.isArray(r.accounts) ? r.accounts.map(String) : null,
       connected: r.connected ?? null,
       hasCredentials: r.hasCredentials ?? null,
