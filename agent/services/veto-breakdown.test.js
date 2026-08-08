@@ -30,11 +30,20 @@ function mkDb() {
 
 test('groups vetoes by the machine-readable reason head, newest example kept', () => {
   const db = mkDb()
-  const ins = db.prepare(`INSERT INTO risk_events (symbol, approved, veto_reason, created_at) VALUES (?,?,?,?)`)
-  ins.run('INTC.US', 0, 'unknown_daily_pnl (account): 7 closed trade(s) today have no realised P&L', '2026-08-01 00:10:00')
-  ins.run('EURUSD', 0, 'unknown_daily_pnl (account): 3 closed trade(s) today have no realised P&L', '2026-08-01 01:10:00')
-  ins.run('BTCUSD', 0, 'tp_required — order has no take profit', '2026-08-01 00:20:00')
-  ins.run('ETHUSD', 1, null, '2026-08-01 00:30:00')
+  // RELATIVE, not hardcoded. These were fixed at '2026-08-01 00:1x' against a
+  // 7-day window, so the test passed for exactly one week and then began
+  // dropping a row per minute as 08-08 caught up with it — vetoedCount went
+  // 3 -> 1 with no code change. Same rot as the cockpit news cache (#688):
+  // a fixture pinned to a wall-clock date inside a relative window is a timer,
+  // not a test. Ordering is what the assertions care about, so express that.
+  const ago = (mins) => `datetime('now', '-${mins} minutes')`
+  const insAt = (sym, ok, reason, mins) => db.prepare(
+    `INSERT INTO risk_events (symbol, approved, veto_reason, created_at) VALUES (?,?,?,${ago(mins)})`
+  ).run(sym, ok, reason)
+  insAt('INTC.US', 0, 'unknown_daily_pnl (account): 7 closed trade(s) today have no realised P&L', 60)
+  insAt('EURUSD', 0, 'unknown_daily_pnl (account): 3 closed trade(s) today have no realised P&L', 10) // newest of the pair
+  insAt('BTCUSD', 0, 'tp_required — order has no take profit', 50)
+  insAt('ETHUSD', 1, null, 40)
 
   const out = vetoBreakdown(db, { days: 7 })
   assert.equal(out.summary.proposalsApproved, 1)

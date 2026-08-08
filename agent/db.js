@@ -1021,6 +1021,16 @@ export function initDB(dbPath) {
     const cols = new Set(db.prepare(`PRAGMA table_info(trades)`).all().map(c => c.name));
     if (!cols.has('realised_rr')) db.exec(`ALTER TABLE trades ADD COLUMN realised_rr REAL`);
     if (!cols.has('pnl_price_mismatch')) db.exec(`ALTER TABLE trades ADD COLUMN pnl_price_mismatch INTEGER`);
+    // `exit_price_suspect` — the MAGNITUDE half of the same question, added
+    // 08-08-2026. pnl_price_mismatch is a SIGN check, and a sign check cannot
+    // see a row that points the right way and is wrong by a factor of fifty.
+    // Because the exit-price repair in pnl-backfill.js only fired on the sign
+    // flag, those rows were never re-fetched and stayed wrong permanently —
+    // while realised R, the Phase 7 counterfactual and the early-trim shadow
+    // all read them as fact. Written by services/exit-price-suspects.js, which
+    // derives each symbol's money-per-point from the trades themselves and
+    // needs no contract table to do it.
+    if (!cols.has('exit_price_suspect')) db.exec(`ALTER TABLE trades ADD COLUMN exit_price_suspect INTEGER`);
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_trades_risk_event ON trades(risk_event_id);
            CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);`);

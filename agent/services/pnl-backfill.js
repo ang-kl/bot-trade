@@ -332,15 +332,27 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
         AND account_id IS NULL`
   )
   // EXIT-PRICE REPAIR. Deliberately separate from the P&L fill above, and
-  // deliberately narrow: it touches ONLY rows the consistency check has
-  // already flagged as disagreeing with themselves. A row whose exit price is
-  // merely absent is left alone — absence is honest, and inventing a price for
-  // it would turn a known unknown into a plausible wrong answer.
+  // deliberately narrow: it touches ONLY rows an audit has already flagged. A
+  // row whose exit price is merely absent is left alone — absence is honest,
+  // and inventing a price for it would turn a known unknown into a plausible
+  // wrong answer.
+  //
+  // WIDENED 08-08-2026. The trigger was `pnl_price_mismatch = 1` alone, and
+  // that flag is a SIGN check: it fires when the money and the prices disagree
+  // about DIRECTION. Direction is half a price. A row pointing the right way
+  // but wrong by a FACTOR — trade 641's 2.6 recorded points against a 9,171.76
+  // charge — was never flagged, so it was never re-fetched and never repaired,
+  // and every consumer computing R from prices went on reading it as fact.
+  //
+  // `exit_price_suspect` is the other half, written by the magnitude check in
+  // services/exit-price-suspects.js. Either flag now earns a repair, because
+  // either is enough to know the recorded price is not the fill.
   const repairExit = db.prepare(
     `UPDATE trades
         SET exit_price = ?
       WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
-        AND status = 'closed' AND pnl_price_mismatch = 1 ${scopeSql}`
+        AND status = 'closed'
+        AND (pnl_price_mismatch = 1 OR exit_price_suspect = 1) ${scopeSql}`
   )
   let backfilled = 0
   let attributed = 0
