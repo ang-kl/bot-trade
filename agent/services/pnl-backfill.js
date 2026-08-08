@@ -99,6 +99,11 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // willing to fetch while one exists — that is what lets attribute-on-match
   // below ever run. (The strict scope stays on the UPDATE; only the "should
   // we bother fetching" question widens.)
+  // Hoisted above the gate: the missing-exit count below MUST be bounded by
+  // the same window the deal fetch actually covers, or a row older than the
+  // window counts as work that can never be done and pins the gate open for
+  // ever — a broker round-trip every cycle, permanently, for nothing.
+  const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
   const gapScopeSql = acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
   const gap = db.prepare(
     `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql}`
@@ -115,17 +120,55 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // the money is right and the price is wrong. So the exit repair would have
   // shipped and never once fired in production, which is worse than not
   // shipping it. A row worth repairing now counts as work to do.
-  const mismatch = (() => {
+  // WIDENED 08-08-2026, and this is the change that makes #691's repair fire
+  // at all. That PR taught `repairExit` to accept `exit_price_suspect` — the
+  // MAGNITUDE flag — but this gate still counted only the SIGN flag. A row
+  // whose price is wrong by a factor and right in direction therefore never
+  // made the pass fetch, so the widened repair sat behind a gate that could
+  // not see the rows it was widened for. Same shape as the bug the comment
+  // above describes, one flag later: a repair that ships and never fires is
+  // worse than not shipping it.
+  const repairable = (() => {
     try {
       return db.prepare(
         `SELECT COUNT(*) AS n FROM trades
-          WHERE status = 'closed' AND pnl_price_mismatch = 1 ${gapScopeSql}`
+          WHERE status = 'closed'
+            AND (pnl_price_mismatch = 1 OR exit_price_suspect = 1) ${gapScopeSql}`
       ).get(...scopeParams)?.n || 0
+    } catch {
+      // A schema without `exit_price_suspect` must still fetch for the sign
+      // flag alone, exactly as before — a missing column is not a reason to
+      // stop repairing the rows we CAN see.
+      try {
+        return db.prepare(
+          `SELECT COUNT(*) AS n FROM trades
+            WHERE status = 'closed' AND pnl_price_mismatch = 1 ${gapScopeSql}`
+        ).get(...scopeParams)?.n || 0
+      } catch { return 0 }
+    }
+  })()
+
+  // AND A THIRD REASON: closed rows that have their money and no price at all.
+  // Same trap one more time — `fillMissingExit` below can fill these from the
+  // deal's execution price, but they are in neither `gap` (net_pnl is present)
+  // nor `repairable` (a NULL is not a contradiction, so nothing flags it). Left
+  // out, the fill would ship and never fire, which is the third instance of
+  // this exact mistake in this one function.
+  //
+  // Bounded to `days`, deliberately: outside the fetch window there is no deal
+  // to fill from, so counting those rows would keep the gate open for ever.
+  const missingExits = (() => {
+    try {
+      return db.prepare(
+        `SELECT COUNT(*) AS n FROM trades
+          WHERE status = 'closed' AND net_pnl IS NOT NULL AND exit_price IS NULL
+            AND REPLACE(closed_at, 'T', ' ') >= datetime('now', ?) ${gapScopeSql}`
+      ).get(`-${days} days`, ...scopeParams)?.n || 0
     } catch { return 0 }
   })()
 
-  if ((!gap || gap.n === 0) && mismatch === 0) {
-    return { backfilled: 0, attributed: 0, exitsRepaired: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0, blockingGap: 0 }
+  if ((!gap || gap.n === 0) && repairable === 0 && missingExits === 0) {
+    return { backfilled: 0, attributed: 0, exitsRepaired: 0, exitsFilled: 0, dealsPersisted: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0, blockingGap: 0 }
   }
 
   // THE LIVE GAP — rows still worth retrying for, which is NOT the same set.
@@ -235,7 +278,6 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     }
   })()
 
-  const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
   const now = opts.now ?? Date.now()
   const from = now - days * 24 * 3_600_000
 
@@ -250,6 +292,46 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   for (let t0 = from; t0 < now; t0 += WEEK_MS) {
     const chunk = await getDeals(t0, Math.min(t0 + WEEK_MS, now))
     deals.push(...((chunk && chunk.deal) || []))
+  }
+
+  // PERSIST THE EVIDENCE. Best-effort, and deliberately after the fetch rather
+  // than instead of it.
+  //
+  // Until now these deals were fetched, used to compute a number, and thrown
+  // away. `broker_deals` was written ONLY by importBrokerHistory, called only
+  // from a manual route nobody had ever run — so GET /state/broker-deals
+  // returned zero rows for position 234799435, the 9,171.76 trade, and there
+  // was no way to check the P&L against its own source. The figure was
+  // broker-true and unverifiable at the same time, which is a bad combination
+  // for the one number every risk brake keys on.
+  //
+  // Same shaper and same upsert as the manual route, so the two agree by
+  // construction rather than by coincidence. Wrapped: a persistence failure
+  // must never stop a backfill — the P&L fill is the job, this is the receipt.
+  let dealsPersisted = 0
+  try {
+    if (deals.length) {
+      const { shapeDeals, persistDeals } = await import('./broker-history-import.js')
+      // symbolId -> { symbolName }, inverted from the map the loop already
+      // keeps locally. The manual route builds richer metadata from TWO extra
+      // broker calls; this path deliberately does not, because a receipt is
+      // not worth adding round-trips to the trading loop for. The cost is that
+      // `lots` may be absent where lotSize is unknown — acceptable, since the
+      // fields this exists to preserve (deal id, position id, close price,
+      // realised money, timestamps) do not depend on it, and a MISSING lot
+      // size is honest where a guessed one would be the JPN225 mistake again.
+      let symMeta = {}
+      try {
+        const idMap = JSON.parse((db.prepare(
+          `SELECT value FROM agent_state WHERE key = 'symbol_id_map'`
+        ).get()?.value) || '{}') || {}
+        for (const [name, id] of Object.entries(idMap)) symMeta[id] = { symbolName: name }
+      } catch { symMeta = {} }
+      const shaped = shapeDeals(deals, symMeta, acct)
+      dealsPersisted = persistDeals(db, shaped)?.seen || 0
+    }
+  } catch (e) {
+    console.warn('[pnl-backfill] deal persistence skipped:', e.message)
   }
 
   // Only deals that CLOSE (part of) a position carry realised P&L. Aggregate
@@ -354,9 +436,32 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
         AND status = 'closed'
         AND (pnl_price_mismatch = 1 OR exit_price_suspect = 1) ${scopeSql}`
   )
+  // AND THE MISSING ONES. Separate statement, separate counter, because it is
+  // a different intent and conflating them would hide which is doing the work.
+  //
+  // 08-08-2026. The note above says an absent exit price is "left alone —
+  // absence is honest, and inventing a price for it would turn a known unknown
+  // into a plausible wrong answer." That reasoning is right about INVENTING and
+  // wrong about this: `d.executionPrice` is not a guess, it is the price the
+  // close actually filled at. The consequence of the old rule was that FOUR of
+  // the five close paths leave exit_price NULL (reconciler.js:392 being the
+  // dominant one), no audit flags a NULL — correctly, absence is not a
+  // contradiction — and so those rows were never filled by anything. The
+  // ledger had the money and permanently lacked the price, for the majority of
+  // its closes.
+  //
+  // Filling a NULL from broker truth is the opposite of inventing. What we
+  // still refuse to do is OVERWRITE a price that is present and unflagged.
+  const fillMissingExit = db.prepare(
+    `UPDATE trades
+        SET exit_price = ?
+      WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
+        AND status = 'closed' AND exit_price IS NULL ${scopeSql}`
+  )
   let backfilled = 0
   let attributed = 0
   let exitsRepaired = 0
+  let exitsFilled = 0
   const tx = db.transaction((entries) => {
     for (const [positionId, agg] of entries) {
       const money = [
@@ -381,7 +486,12 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       if (agg.vol > 0) {
         const vwap = agg.pxVol / agg.vol
         const rep = repairExit.run(vwap, positionId, ...scopeParams)
-        if (rep.changes) {
+        // Fill the absent ones from the same volume-weighted deal price. Run
+        // AFTER the repair so a row cannot be counted in both buckets, and
+        // counted separately so "we corrected 3 and filled 40" stays legible.
+        const fil = fillMissingExit.run(vwap, positionId, ...scopeParams)
+        exitsFilled += fil.changes
+        if (rep.changes || fil.changes) {
           exitsRepaired += rep.changes
           try {
             const rows = db.prepare(
@@ -414,7 +524,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // longer NULL, so the UPDATE below cannot reach them.
   noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString() })
 
-  return { backfilled, attributed, exitsRepaired, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap }
+  return { backfilled, attributed, exitsRepaired, exitsFilled, dealsPersisted, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap }
 }
 
 // ---------------------------------------------------------------------------
