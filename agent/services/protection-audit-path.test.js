@@ -274,3 +274,34 @@ test('a fresh reading still names an account it could not reach', async () => {
   assert.match(f.summary, /verified 2m ago/)
   assert.match(f.summary, /42993489/)
 })
+
+test('THE ONE-SHORT CASE: a reachable non-roster account must not defeat blind', async () => {
+  // REVIEW FINDING, 08-08. `out.accounts` counted any id in `ids`, but `ids`
+  // prepends the selected account with no enabled test. So a disabled-but-
+  // selected account reconciling fine, while EVERY enabled account is refused,
+  // read as a successful sweep — green on a controller whose green means "your
+  // positions are protected", having verified nothing it was obliged to verify.
+  const SELECTED = '99999999'
+  const exec = {
+    reconcile: async (c) => {
+      if (String(c.accountId) === SELECTED) return { position: [] }   // reachable, NOT enabled
+      throw new Error('cTrader error: ACCOUNT_NOT_AUTHORIZED')        // every enabled one refused
+    },
+  }
+  const out = await runProtectionAuditAllAccounts(db, { ...creds, accountId: SELECTED }, { exec })
+  assert.equal(out.accounts, 1, 'one account did reconcile')
+  assert.equal(out.unauditable.length, 2, 'but both obliged accounts were refused')
+  assert.equal(out.blind, true, 'so the sweep is blind — this returned false before the fix')
+})
+
+test('and a reached ROSTER account still clears blind', async () => {
+  const SELECTED = '99999999'
+  const exec = {
+    reconcile: async (c) => {
+      if (String(c.accountId) === A) throw new Error('cTrader error: ACCOUNT_NOT_AUTHORIZED')
+      return { position: [] }
+    },
+  }
+  const out = await runProtectionAuditAllAccounts(db, { ...creds, accountId: SELECTED }, { exec })
+  assert.equal(out.blind, false, 'B is enabled and was audited')
+})

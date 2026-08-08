@@ -615,6 +615,16 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
   const ids = [...new Set([...(primary ? [primary] : []), ...roster])]
   if (!ids.length) return out
 
+  // THE NUMERATOR MUST COUNT THE SAME SET AS THE DENOMINATOR (review, 08-08).
+  // `out.accounts` counts any id in `ids` that reconciled, and `ids` prepends
+  // `primary` with no enabled test — so one reachable NON-roster account defeats
+  // `blind` for the whole obliged set: a disabled-but-selected account
+  // reconciles fine (the sidecar authorises it, ctrader-creds.js:45), every
+  // ENABLED account is refused, and the sweep beats green having verified
+  // nothing it was obliged to verify. One account short of the alarm firing.
+  const obliged = new Set(roster)
+  let reachedObliged = 0
+
   const stmt = db.prepare(
     `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.account_id, mp.source,
             t.ctrader_position_id
@@ -634,7 +644,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       // No local rows AND no broker positions is a genuinely clean account —
       // but a broker position with no local row is exactly what the audit is
       // for, so an empty openRows does not skip the pass.
-      if (!openRows.length && !positions.length) { out.accounts++; continue }
+      if (!openRows.length && !positions.length) { out.accounts++; if (obliged.has(String(id))) reachedObliged++; continue }
       const brokerSl = positions.map(p => ({
         positionId: p.positionId,
         stopLoss: p.stopLoss ?? null,
@@ -648,6 +658,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
         sendMessage, accountId: id, ...(deps.auditOpts || {}),
       })
       out.accounts++
+      if (obliged.has(String(id))) reachedObliged++
       out.naked += prot.naked.length
       out.targetless += prot.targetless.length
       out.phantom += prot.phantom.length
@@ -712,7 +723,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
   // there was nothing we were required to audit. The staleness of the work
   // product (checkProtectionFreshness) is what catches a sweep that stops
   // producing readings, and that is the right instrument for it.
-  out.blind = out.accounts === 0 && roster.length > 0 &&
+  out.blind = reachedObliged === 0 && roster.length > 0 &&
     (out.unauditable.length > 0 || out.errors.length > 0)
   return out
 }

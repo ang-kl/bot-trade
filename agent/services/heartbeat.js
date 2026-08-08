@@ -541,9 +541,17 @@ export function sideIsDormant(db, side) {
   // disagree the moment that seeding changes, which is the kind of drift that
   // is absent rather than impossible. Matching the resolution makes it the
   // latter.
-  const flagIsLive = getState(db, 'ctrader_is_live') === 'true'
-  const selected = getState(db, 'ctrader_account_id') || ctraderEnv('accountId')
-  if (flagIsLive === side.isLive && selected) return false
+  //
+  // Wrapped for the same reason enabledOnSide is: a throw here propagates out of
+  // probeCppExec, and fast-monitor wraps the probe and the watchdogs in ONE try
+  // — so a SQLITE_BUSY on these two reads would skip checkHeartbeats and
+  // checkAccountAuthorization for that tick. Unreadable means "assume it has
+  // work", the same fail-safe direction as everywhere else here.
+  try {
+    const flagIsLive = getState(db, 'ctrader_is_live') === 'true'
+    const selected = getState(db, 'ctrader_account_id') || ctraderEnv('accountId')
+    if (flagIsLive === side.isLive && selected) return false
+  } catch { return false }
   return mine.length === 0 && theirs.length > 0
 }
 
@@ -562,6 +570,12 @@ export function sideIsDormant(db, side) {
  * did not ask it.
  */
 function markSideDormant(db, side, nowMs) {
+  // Deleting the row also discards `stalled` and `fail_alerted`, so a side that
+  // had already sent "🔴 CONTROLLER FAILING" will never send the matching
+  // recovery line — the row simply vanishes. That is intended: it did not
+  // recover to "working", it recovered to "nothing to serve", and announcing a
+  // recovery would claim the first thing. A missing recovery message here is
+  // not a dropped alert.
   try { db.prepare('DELETE FROM controller_heartbeats WHERE name = ?').run(side.name) } catch { /* telemetry only */ }
   try {
     setState(db, healthKeyFor(side.name), JSON.stringify({
