@@ -578,6 +578,15 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
 const UNAUTHORISED_CODES = [
   'CH_ACCESS_TOKEN_INVALID', 'CH_ACCESS_TOKEN_EXPIRED', 'ACCOUNT_NOT_AUTHORIZED',
   'NOT_AUTHENTICATED', 'CH_CLIENT_AUTH_FAILURE',
+  // ADDED 08-08-2026. `CANT_ROUTE_REQUEST` is the broker refusing to route to
+  // an account this session was never authorised for — the disabled LIVE
+  // account 42993489, which is still swept because `manage_only` accounts hold
+  // open positions and dropping them from the audit would stop checking whether
+  // those positions have stops. So it belongs in the same class as the token
+  // codes above: a fact about ACCESS, not about exposure. Left out of the list,
+  // it counted as a real audit failure and parked protection_audit in `warn` —
+  // the "always amber, so nobody reads it" failure this list exists to prevent.
+  'CANT_ROUTE_REQUEST',
 ]
 const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
 
@@ -586,7 +595,7 @@ const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
  *            errors:string[], unauditable:string[]}}
  */
 export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, errors: [], unauditable: [] }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -663,5 +672,16 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       else out.errors.push(`${id}: ${msg}`)
     }
   }
+  // AN AUDIT THAT REACHED NOTHING IS NOT A CLEAN AUDIT, and this is the price
+  // of every widening of UNAUTHORISED_CODES above. `CANT_ROUTE_REQUEST` is an
+  // access fact per account — but if the whole sidecar session goes down, EVERY
+  // account returns it, every one lands in `unauditable`, and the controller
+  // would read `ok` while not a single position was checked. That is a worse
+  // lie than the amber it replaces: green means "your positions are protected".
+  //
+  // So the honest rule is per-sweep, not per-account: reaching some accounts
+  // and being refused by others is a real audit with a named gap; reaching NONE
+  // of them means the sweep verified nothing and must say so.
+  out.blind = out.accounts === 0 && (out.unauditable.length > 0 || out.errors.length > 0)
   return out
 }

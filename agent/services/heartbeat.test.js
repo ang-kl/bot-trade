@@ -10,7 +10,7 @@ import { initDB, setState, getState } from '../db.js'
 import {
   CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec, rosterDrift, execSidesToProbe,
   checkAccountAuthorization,
-  _resetBootStateForTests, OBSERVED_LOOP_CEIL_SEC,
+  _resetBootStateForTests, OBSERVED_LOOP_CEIL_SEC, BOOT_GRACE_SEC,
 } from './heartbeat.js'
 
 const T0 = new Date('2026-07-17T12:00:00Z')
@@ -935,6 +935,114 @@ test('probeCppExec single sidecar: still ONE snapshot, side null, no demo contro
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM controller_heartbeats WHERE name = 'cpp_exec_demo'`).get().n, 0)
   assert.equal(getState(db, 'cpp_exec_demo_health_json'), null)
   assert.equal(JSON.parse(getState(db, 'cpp_exec_health_json')).side, null)
+})
+
+// ---------------------------------------------------------------------------
+// DORMANT SIDES (08-08-2026). Owner, reading the panel: "C++ exec engine —
+// ERROR, 630 failing" while every live account was disabled and the demo
+// sidecar was perfectly healthy. Not one trade was lost; the counter was
+// measuring "asked a question that has no answer" and calling it a breakage.
+// ---------------------------------------------------------------------------
+
+/** A split deployment whose sidecars answer however the test says. */
+const splitExec = (ping) => ({
+  ...execWithBases({ live: 'http://live:8091', demo: 'http://demo:8091' }),
+  pingSidecar: ping,
+})
+const enable = (db, id, isLive, enabled = 1) =>
+  db.prepare('INSERT INTO accounts (account_id, is_live, enabled) VALUES (?,?,?)').run(String(id), isLive ? 1 : 0, enabled)
+
+test('THE POINT: a side with no enabled account is idle, not a climbing failure count', async () => {
+  const db = initDB(':memory:')
+  enable(db, 46130058, false)             // demo enabled — the real deployment
+  enable(db, 42993489, true, 0)           // live present but DISABLED
+  const probed = []
+  const exec = splitExec(async ({ base } = {}) => {
+    probed.push(base)
+    return { ok: true, mode: 'cpp', connected: true, accounts: [46130058], lastReconcileAt: T0.getTime() - 30_000 }
+  })
+
+  await probeCppExec(db, { exec, now: T0 })
+
+  assert.deepEqual(probed, ['http://demo:8091'], 'the live sidecar is not asked a question it cannot answer')
+  const view = heartbeatView(db, { now: T0 }).find(c => c.name === 'cpp_exec')
+  assert.equal(view.status, 'idle', 'NOT error — this was the bug')
+  assert.equal(view.dormant, true)
+  assert.match(view.last_error, /nothing for this sidecar to serve/)
+  assert.equal(view.error_is_current, false)
+  assert.equal(heartbeatView(db, { now: T0 }).find(c => c.name === 'cpp_exec_demo').status, 'ok')
+})
+
+test('a dormant side stops alerting — no row means checkHeartbeats has nothing to shout about', async () => {
+  const db = initDB(':memory:')
+  enable(db, 46130058, false)
+  enable(db, 42993489, true, 0)
+  // The state production was in: 630 failures already banked on the live side.
+  for (let i = 0; i < 5; i++) beat(db, 'cpp_exec', { ok: false, error: 'broker session down', now: plus(i * 120) })
+  assert.equal(db.prepare(`SELECT consecutive_failures f FROM controller_heartbeats WHERE name='cpp_exec'`).get().f, 5)
+
+  const exec = splitExec(async () => ({ ok: true, mode: 'cpp', connected: true, accounts: [46130058], lastReconcileAt: T0.getTime() - 30_000 }))
+  await probeCppExec(db, { exec, now: T0 })
+
+  // The row is DELETED rather than left to age, because a stale row reads as
+  // STALLED — which claims the engine died, the opposite of the truth.
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM controller_heartbeats WHERE name='cpp_exec'`).get().n, 0)
+  _resetBootStateForTests(plus(100_000).getTime() - BOOT_GRACE_SEC * 1000 - 1000)
+  const alerts = []
+  checkHeartbeats(db, { now: plus(100_000), notify: (t) => alerts.push(t) })
+  // The demo row DOES go stale over that jump and alerts, which is correct — it
+  // has work. The live side, having none, must stay silent.
+  assert.deepEqual(
+    alerts.filter(a => /exec engine/i.test(a) && !/\(demo\)/.test(a)),
+    [], 'a side with nothing to serve never alerts')
+})
+
+test('THE COUNTERWEIGHT: enabling a live account makes the side answerable again', async () => {
+  // The dangerous half of this change. If dormancy outlived the condition, the
+  // live sidecar would sit silently "idle" through a real outage on the very
+  // day it starts carrying money.
+  const db = initDB(':memory:')
+  enable(db, 46130058, false)
+  enable(db, 42993489, true, 0)
+  const exec = splitExec(async () => ({ ok: false, mode: 'cpp', error: 'live sidecar unreachable' }))
+  await probeCppExec(db, { exec, now: T0 })
+  assert.equal(heartbeatView(db, { now: T0 }).find(c => c.name === 'cpp_exec').status, 'idle')
+
+  db.prepare('UPDATE accounts SET enabled = 1 WHERE account_id = ?').run('42993489')
+  await probeCppExec(db, { exec, now: plus(120) })
+
+  const row = db.prepare(`SELECT * FROM controller_heartbeats WHERE name='cpp_exec'`).get()
+  assert.equal(row.consecutive_failures, 1, 'the probe is live again and the failure is real')
+  assert.equal(row.last_error, 'live sidecar unreachable')
+  const view = heartbeatView(db, { now: plus(120) }).find(c => c.name === 'cpp_exec')
+  assert.equal(view.dormant, undefined, 'the dormancy note must not outlive the dormancy')
+  assert.equal(view.error_is_current, true)
+})
+
+test('dormancy is the narrowest claim: it needs accounts enabled on the OTHER side', async () => {
+  // Three ways this could have silenced a probe that should be shouting.
+  const probedWith = async (seed) => {
+    const db = initDB(':memory:')
+    seed(db)
+    const probed = []
+    const exec = splitExec(async ({ base } = {}) => {
+      probed.push(base)
+      return { ok: true, mode: 'cpp', connected: true, accounts: [1], lastReconcileAt: T0.getTime() - 30_000 }
+    })
+    await probeCppExec(db, { exec, now: T0 })
+    return probed
+  }
+  // An empty registry is an UNCONFIGURED agent, not a side with no work.
+  assert.equal((await probedWith(() => {})).length, 2, 'empty registry: both sides still probed')
+  // Nothing enabled anywhere is the same situation with rows present.
+  assert.equal((await probedWith((db) => { enable(db, 1, true, 0); enable(db, 2, false, 0) })).length, 2)
+  // And a single sidecar (isLive null) serves whichever side the flag names, so
+  // it can never be dormant however the registry looks.
+  const db = initDB(':memory:')
+  enable(db, 46130058, false)
+  const single = { ...execWithBases(), pingSidecar: async () => ({ ok: false, mode: 'cpp', error: 'down' }) }
+  await probeCppExec(db, { exec: single, now: T0 })
+  assert.equal(db.prepare(`SELECT consecutive_failures f FROM controller_heartbeats WHERE name='cpp_exec'`).get().f, 1)
 })
 
 test('checkAccountAuthorization: a demo account is judged by the DEMO sidecar, not the live one', () => {

@@ -157,3 +157,54 @@ test('a NON-auth failure on a reachable account still fails the sweep', async ()
   assert.equal(out.unauditable.length, 0)
   assert.equal(out.errors.length, 2, 'both accounts report a real failure')
 })
+
+// ---------------------------------------------------------------------------
+// CANT_ROUTE_REQUEST (08-08-2026). Owner, reading the panel: "Position
+// protection audit — WARN, 42993489: cTrader error: CANT_ROUTE_REQUEST".
+//
+// 42993489 is the DISABLED live account, and it is still swept on purpose:
+// `manage_only` accounts hold open positions, and dropping them from the audit
+// would stop checking whether those positions have stops. So the refusal has to
+// be classified, not routed around.
+// ---------------------------------------------------------------------------
+
+test('CANT_ROUTE_REQUEST is an access fact, so it does not fail the sweep', async () => {
+  seedPosition(A, 'EURUSD', '111', 1.05)
+  const exec = {
+    reconcile: async (c) => {
+      if (String(c.accountId) === B) throw new Error('cTrader error: CANT_ROUTE_REQUEST — Cannot route request')
+      return { position: [{ positionId: '111', stopLoss: 1.05, takeProfit: 1.09 }] }
+    },
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.errors.length, 0, 'the broker refusing to route is not a protection finding')
+  assert.equal(out.unauditable.length, 1)
+  assert.equal(out.accounts, 1, 'the reachable account was still audited')
+  assert.equal(out.blind, false, 'a real audit with a named gap')
+})
+
+test('THE COUNTERWEIGHT: a sweep that reached NO account is blind, not clean', async () => {
+  // The price of the widening above. If the whole sidecar session goes down,
+  // every account returns CANT_ROUTE_REQUEST and every one lands in
+  // `unauditable` — and green on this controller means "your positions are
+  // protected". Reaching none of them verified nothing and must say so.
+  seedPosition(A, 'EURUSD', '111', 1.05)
+  seedPosition(B, 'GBPUSD', '222', 1.25)
+  const exec = {
+    reconcile: async () => { throw new Error('cTrader error: CANT_ROUTE_REQUEST — Cannot route request') },
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.accounts, 0)
+  assert.equal(out.unauditable.length, 2)
+  assert.equal(out.errors.length, 0, 'still not per-account failures')
+  assert.equal(out.blind, true, 'but the SWEEP failed — it checked nothing')
+})
+
+test('blind is about reaching nothing, not about finding nothing', async () => {
+  // Two clean accounts is the healthiest possible outcome and must never be
+  // confused with the case above.
+  const exec = { reconcile: async () => ({ position: [] }) }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.accounts, 2)
+  assert.equal(out.blind, false)
+})

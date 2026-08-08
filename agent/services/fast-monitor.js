@@ -567,9 +567,16 @@ export function startFastMonitor(db, getCreds, deps = {}) {
           // operator to ignore the one light that says their positions are
           // being checked.
           const hb = deps.heartbeat ?? await import('./heartbeat.js')
+          // `blind` is the counterweight to that: an account the broker refuses
+          // does not fail the beat, but a sweep that reached NO account verified
+          // nothing, and green there would claim protection nobody checked.
           hb.beat(db, 'protection_audit', {
-            ok: pa.errors.length === 0,
-            error: pa.errors.length ? pa.errors.join(' · ') : null,
+            ok: pa.errors.length === 0 && !pa.blind,
+            error: pa.errors.length
+              ? pa.errors.join(' · ')
+              : pa.blind
+                ? `no account could be audited — ${pa.unauditable.join(' · ') || 'nothing reachable'}`
+                : null,
           })
         }
       } catch (err) {
