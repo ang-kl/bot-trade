@@ -71,7 +71,14 @@ test('skips the broker round-trip entirely when no closed trade is missing P&L',
   // `gap: 0` joined the shape when the caller gained the ability to tell
   // "nothing was missing" from "something was missing and would not fill" —
   // this test's point is the assertion above: NO broker call.
-  assert.deepEqual(r, { backfilled: 0, attributed: 0, exitsRepaired: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0, blockingGap: 0 })
+  // `exitsFilled` and `dealsPersisted` joined 08-08 with the missing-exit fill
+  // and the deal receipt. Kept as a deepEqual on purpose: the early-return
+  // shape must stay in step with the success shape, and the one time it did
+  // not, a caller read `undefined` as zero work done.
+  assert.deepEqual(r, {
+    backfilled: 0, attributed: 0, exitsRepaired: 0, exitsFilled: 0, dealsPersisted: 0,
+    closingDeals: 0, scanned: 0, gap: 0, liveGap: 0, blockingGap: 0,
+  })
 })
 
 test('an open trade is never backfilled, even with a matching deal', async () => {
@@ -560,4 +567,96 @@ test('a deal with no price leaves the flagged row alone rather than writing zero
   assert.equal(r.exitsRepaired, 0)
   assert.equal(db.prepare(`SELECT exit_price FROM trades WHERE id = ?`).get(id).exit_price, 90,
     'a known-wrong price is still better than an invented zero')
+})
+
+
+// ---------------------------------------------------------------------------
+// 08-08-2026. Three changes, each guarding against the SAME mistake this file
+// has now made twice: a repair that ships behind a gate which cannot see the
+// rows it was written for. So the GATE is what these test, not just the write.
+// ---------------------------------------------------------------------------
+
+test('the magnitude flag alone makes the pass fetch — #691 shipped behind a blind gate', async () => {
+  const db = initDB(':memory:')
+  // P&L present, so NOT in `gap`. Sign-consistent, so NOT pnl_price_mismatch.
+  // Only exit_price_suspect marks it: the exact row #691 widened the repair
+  // for, and the exact row the old gate refused to fetch for.
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, entry_price, exit_price, volume, net_pnl,
+       pnl_price_mismatch, exit_price_suspect, closed_at)
+     VALUES ('EURUSD','BUY','closed','9101', 100, 101, 1, 50, 0, 1, datetime('now','-1 day'))`
+  ).run()
+  let called = false
+  const api = dealsApi([pricedDeal(9101, 5000, 150, 1)])
+  const getDeals = async (t0, t1) => { called = true; return api(t0, t1) }
+  const r = await backfillClosedPnl(db, {}, { getDeals, now: NOW })
+  assert.equal(called, true, 'a suspect row is work to do')
+  assert.equal(r.exitsRepaired, 1)
+  assert.equal(db.prepare(`SELECT exit_price FROM trades WHERE ctrader_position_id='9101'`).get().exit_price, 150)
+})
+
+test('an ABSENT exit price is filled from broker truth, counted apart from a repair', async () => {
+  const db = initDB(':memory:')
+  // reconciler.js:392's shape — the dominant close path leaves BOTH null. The
+  // money filled via `gap`; the price was left for ever, because no audit
+  // flags a NULL and the repair only touched flagged rows.
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, entry_price, exit_price, volume, net_pnl, closed_at)
+     VALUES ('EURUSD','BUY','closed','9102', 100, NULL, 1, NULL, datetime('now','-1 day'))`
+  ).run()
+  const r = await backfillClosedPnl(db, {}, { getDeals: dealsApi([pricedDeal(9102, -2500, 97.5, 1)]), now: NOW })
+  assert.equal(r.backfilled, 1, 'money filled as before')
+  assert.equal(r.exitsFilled, 1, 'and now the price too')
+  assert.equal(r.exitsRepaired, 0, 'a fill is not a repair — the buckets stay distinct')
+  assert.equal(db.prepare(`SELECT exit_price FROM trades WHERE ctrader_position_id='9102'`).get().exit_price, 97.5)
+})
+
+test('a PRESENT and unflagged exit price is never overwritten', async () => {
+  const db = initDB(':memory:')
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, entry_price, exit_price, volume, net_pnl, closed_at)
+     VALUES ('EURUSD','BUY','closed','9103', 100, 101, 1, NULL, datetime('now','-1 day'))`
+  ).run()
+  const r = await backfillClosedPnl(db, {}, { getDeals: dealsApi([pricedDeal(9103, 5000, 150, 1)]), now: NOW })
+  assert.equal(r.exitsFilled, 0)
+  assert.equal(r.exitsRepaired, 0)
+  assert.equal(db.prepare(`SELECT exit_price FROM trades WHERE ctrader_position_id='9103'`).get().exit_price, 101,
+    'filling a NULL is broker truth; overwriting a value is a different claim')
+})
+
+test('a missing exit OUTSIDE the fetch window does not pin the gate open', async () => {
+  const db = initDB(':memory:')
+  // Money present, price absent, closed 60 days ago against a 14-day fetch.
+  // No deal exists to fill from, so counting it as work would mean a broker
+  // round-trip every cycle, for ever, achieving nothing.
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, entry_price, exit_price, volume, net_pnl, closed_at)
+     VALUES ('EURUSD','BUY','closed','9104', 100, NULL, 1, 25, datetime('now','-60 days'))`
+  ).run()
+  let called = false
+  const getDeals = async () => { called = true; return { deal: [] } }
+  await backfillClosedPnl(db, {}, { getDeals, now: NOW, days: 14 })
+  assert.equal(called, false, 'unfillable is not work to do')
+})
+
+test('the fetched deals are persisted, so a P&L can be checked against its source', async () => {
+  const db = initDB(':memory:')
+  seedClosed(db, { positionId: 9105, net: null })
+  const r = await backfillClosedPnl(db, {}, { getDeals: dealsApi([pricedDeal(9105, -3000, 99, 1)]), now: NOW })
+  assert.equal(r.backfilled, 1)
+  assert.ok(r.dealsPersisted >= 1, `dealsPersisted was ${r.dealsPersisted}`)
+  // The receipt. /state/broker-deals returned ZERO rows for position 234799435
+  // — the 9,171.76 trade — because these were fetched, used and discarded, so
+  // the one number every risk brake keys on was unverifiable after the fact.
+  assert.ok(db.prepare(`SELECT COUNT(*) AS c FROM broker_deals WHERE position_id = '9105'`).get().c >= 1,
+    'the deal that produced the number is now on record')
+})
+
+test('a persistence failure never fails the backfill — the receipt is not the job', async () => {
+  const db = initDB(':memory:')
+  seedClosed(db, { positionId: 9106, net: null })
+  db.exec('DROP TABLE broker_deals')   // make the receipt impossible
+  const r = await backfillClosedPnl(db, {}, { getDeals: dealsApi([pricedDeal(9106, -1000, 99, 1)]), now: NOW })
+  assert.equal(r.backfilled, 1, 'the P&L still filled')
+  assert.equal(r.dealsPersisted, 0)
 })
