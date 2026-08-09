@@ -227,3 +227,24 @@ test('a round-trip through encodeLabel is readable', () => {
   assert.match(d.text, /M15 timeframe/)
   assert.match(d.text, /trending market/)
 })
+
+test('preopen is its own source and round-trips through the label', () => {
+  // Owner 09-08-2026: pre-open resting limits must be measurable apart from
+  // intraday entries. Until this, closed-market-limits stamped `autopilot`, so
+  // a filled pre-open limit was adopted as an ordinary autopilot trade and its
+  // P&L blended into the intraday profit factor the go-live gate reads.
+  const label = encodeLabel({
+    source: 'preopen', version: 'v1', strategy: 'donchian_breakout',
+    conviction: 'high', session: 'Tokyo', timeframe: '1h', regime: null,
+  })
+  assert.ok(label.length <= MAX_LABEL_LEN)
+  const back = parseLabel(label)
+  assert.equal(back.source, 'preopen')
+  assert.equal(back.strategy, 'donchian_breakout', 'the SIGNAL is untouched — only the placement differs')
+})
+
+test('the three existing sources are unchanged by the addition', () => {
+  for (const s of ['autopilot', 'copilot', 'manual']) {
+    assert.equal(parseLabel(encodeLabel({ source: s, version: 'v1' })).source, s)
+  }
+})

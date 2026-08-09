@@ -24,6 +24,19 @@ export const SOURCES = {
   autopilot: 'AP',
   copilot:   'CP',
   manual:    'MAN', // placed directly in cTrader native, imported via reconcile
+  // A RESTING LIMIT PLACED BEFORE THE OPEN IS NOT AN INTRADAY ENTRY, and until
+  // 09-08-2026 the ledger could not tell them apart: closed-market-limits.js
+  // stamped `autopilot` on its label, so once the order filled the reconciler
+  // adopted it as an ordinary autopilot trade and its P&L blended into the
+  // intraday numbers.
+  //
+  // They are different bets. An intraday entry is computed on live structure;
+  // a pre-open limit is computed on the PREVIOUS session's close — loop.js's
+  // own "Friday's stale close dressed up as a signal". Blending them means the
+  // profit factor the go-live gate reads is an average of two strategies, and
+  // neither one can be judged. Separating the label is what makes the pre-open
+  // window (added the same day) measurable instead of merely enabled.
+  preopen:   'PRE',
 }
 
 export const STRATEGIES = {
