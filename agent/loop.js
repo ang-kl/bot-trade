@@ -33,6 +33,7 @@ import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes } from './lib/timeframes.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
+import { llmDisabled } from './lib/llm-switch.js'
 // Housekeeping cadence. Wall-clock and persisted, because the loop-counter
 // version never fired on a day with deploys — see housekeeping-due.js.
 import { housekeepingDue, LAST_RUN_KEY } from './services/housekeeping-due.js'
@@ -1724,6 +1725,15 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   }
 
   // Fallback: free-text theses and ambiguous cases → LLM Monitor.
+  //
+  // SWITCHED OFF IS NOT FAILED (owner 09-08-2026, "runs 24/7 without credit
+  // from AI needed"). Returning here — before the call, before the catch —
+  // is the whole point: an exhausted balance would otherwise throw ~1,900
+  // times a day, each throw feeding a failure streak, a Telegram alert and a
+  // stale api_anthropic_last_ok, describing a decision the owner made on
+  // purpose as an outage. The deterministic rules above have already run and
+  // the broker still holds the SL/TP, so this position is managed either way.
+  if (llmDisabled(db, getState)) return
   let check
   try {
     check = await runMonitorCheck(client, {
@@ -2803,19 +2813,34 @@ async function runLoop(db) {
       // only what was scanned, so the exemption propagates by construction.
       // ONLY the scan/analyze/recommendation phase is silenced; monitoring,
       // protection, guards, reconcile and the P&L backfill run unchanged.
-      const { weekendQuietNow, quietUntilMs, quietScanSymbols } = await import('./lib/quiet-hours.js')
+      const { weekendQuietNow, quietUntilMs, quietScanSymbols, preOpenHoursFrom } = await import('./lib/quiet-hours.js')
       const weekendQuiet = weekendQuietNow()
 
-      // 24/7 scanning — all symbols always (no market-hours filter), except
-      // weekend quiet narrows the list to crypto.
-      const symbols = weekendQuiet
-        ? quietScanSymbols(allSymbols, categoriseSymbol).symbols
-        : allSymbols
+      // PRE-OPEN WINDOW (owner 09-08-2026): "some markets which open on Monday
+      // should start monitoring and set pre-trade 6 hours before". Quiet hours
+      // and that instruction were in conflict — on a Sunday evening the
+      // symbols about to open were exactly the ones narrowed out of the scan.
+      // A symbol now rejoins the scan when ITS OWN next open is within the
+      // window, read from the broker's schedule rather than a guessed session
+      // table. Everything with nothing opening soon stays quiet as before.
+      const { nextOpenInfo } = await import('./services/symbol-hours.js')
+      const preOpenHours = preOpenHoursFrom(getState(db, 'pre_open_hours'))
+      const nowForHours = new Date()
+      const quietPick = weekendQuiet
+        ? quietScanSymbols(allSymbols, categoriseSymbol, nowForHours.getTime(), {
+          preOpenHours,
+          hoursFor: (sym) => nextOpenInfo(db, sym, nowForHours),
+        })
+        : null
+      const symbols = weekendQuiet ? quietPick.symbols : allSymbols
+      if (weekendQuiet && quietPick.preOpen?.length) {
+        log(`Pre-open window (${preOpenHours}h) — ${quietPick.preOpen.length} symbol(s) rejoin the scan before their open: ${quietPick.preOpen.join(', ')}`)
+      }
 
       if (allSymbols.length === 0) {
         log('No enabled symbols configured')
       } else if (weekendQuiet && symbols.length === 0) {
-        log(`Weekend quiet hours — no crypto on the watchlist, so no scan or recommendations until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); monitoring/protection unaffected`)
+        log(`Weekend quiet hours — no crypto on the watchlist and nothing opening within ${preOpenHours}h, so no scan or recommendations until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); monitoring/protection unaffected`)
         try {
           const { recordDecision } = await import('./services/decision-log.js')
           recordDecision(db, { stage: 'weekend_quiet', decision: 'skip', reason: 'weekend quiet hours (Sat 00:00 → Mon 01:00 SGT)', loopId: loopCount })
@@ -2826,7 +2851,7 @@ async function runLoop(db) {
         log(`Scan off on every trading account (${rosterIds.join(', ')}) — skipping; nothing would use the result`)
       } else {
         if (weekendQuiet) {
-          log(`Weekend quiet hours — crypto-only scan (${symbols.length} of ${allSymbols.length} symbols) until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); non-crypto stays quiet`)
+          log(`Weekend quiet hours — crypto + pre-open scan (${symbols.length} of ${allSymbols.length} symbols) until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); everything with nothing opening within ${preOpenHours}h stays quiet`)
           try {
             const { recordDecision } = await import('./services/decision-log.js')
             recordDecision(db, { stage: 'weekend_quiet', decision: 'skip', reason: 'weekend quiet hours (Sat 00:00 → Mon 01:00 SGT) — non-crypto silenced; crypto exempt', loopId: loopCount })
@@ -3603,7 +3628,7 @@ async function runLoop(db) {
       const weekendPositions = weekendNow
         ? tradPositions.filter(p => !isSymbolMarketOpen(p.symbol).open)
         : []
-      if (weekendPositions.length > 0 && loopCount % 12 === 1 && !cycleOverBudget()) {
+      if (weekendPositions.length > 0 && loopCount % 12 === 1 && !cycleOverBudget() && !llmDisabled(db, getState)) {
         phase(`weekend watch (${weekendPositions.length})`, 'weekend-watch')
         log(`Weekend watch — reviewing ${weekendPositions.length} closed-market position(s)`)
         // D4b: bounded-concurrency, not one-position-at-a-time — see

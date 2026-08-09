@@ -273,7 +273,13 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   }
 
   const label = encodeLabel({
-    source: 'autopilot',
+    // `preopen`, not `autopilot` — see SOURCES in lib/trade-labels.js. The
+    // strategy field is left exactly as the setup computed it, so this splits
+    // the record by HOW the entry was placed without corrupting WHAT signalled
+    // it: donchian_breakout stays donchian_breakout, and the pre-open slice of
+    // it becomes separable rather than blended into the intraday numbers the
+    // go-live gate reads.
+    source: 'preopen',
     version: LABEL_VERSION,
     strategy: synth.strategy || 'other',
     conviction: convictionBucket(synth.overall_conviction),

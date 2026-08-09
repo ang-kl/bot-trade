@@ -1031,6 +1031,39 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/llm-switch — { enabled: false } stops the bot ATTEMPTING
+  // any model call. Owner 09-08-2026: "runs 24/7 without credit from AI".
+  //
+  // Not a budget and not a cap: those describe money, this describes whether
+  // the capability is on at all. With it off the position monitor and weekend
+  // watch are skipped before the call, so an exhausted balance stops producing
+  // ~1,900 failures a day, a Telegram streak alert and a permanently stale
+  // Anthropic health stamp. Trading is untouched — every entry, risk check,
+  // sizing decision and stop/target adjustment is deterministic, and the
+  // broker holds the SL/TP regardless.
+  //
+  // The env var LLM_DISABLED outranks this key and cannot be released from
+  // here; that is the durable brake, this is the fast one.
+  // -----------------------------------------------------------------------
+  router.post('/llm-switch', async (req, res) => {
+    const raw = req.body?.enabled
+    if (typeof raw !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be true or false' })
+    }
+    setState(db, 'llm_disabled', raw ? null : '1')
+    console.log(`[actions] LLM layer ${raw ? 'ENABLED' : 'DISABLED'} by owner`)
+    // Report the EFFECTIVE state, which is not the same as what was just
+    // written: LLM_DISABLED in the environment still wins.
+    const { llmDisabled, llmDisabledReason } = await import('../lib/llm-switch.js')
+    res.json({
+      ok: true,
+      requested: raw,
+      effectiveEnabled: !llmDisabled(db, getState),
+      disabledBy: llmDisabledReason(db, getState),
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/monitor-interval — { minutes: 1..5 } base cadence for the
   // fast position monitor (volume scales it 1×/2×/3× automatically).
   // -----------------------------------------------------------------------
@@ -1503,6 +1536,12 @@ export default function actionsRouter(db) {
       const universe = Object.keys(map || {})
       if (universe.length === 0) return res.status(400).json({ error: 'no symbols available from this broker account' })
 
+      const { llmDisabled } = await import('../lib/llm-switch.js')
+      if (llmDisabled(db, getState)) {
+        // 503, not 502: nothing failed. The capability is switched off, and
+        // the caller should be told that rather than shown a model error.
+        return res.status(503).json({ error: 'LLM layer disabled — symbol search is unavailable while the AI layer is off' })
+      }
       const { createLLMClient } = await import('../lib/llm-provider.js')
       const { searchScreenerSymbols } = await import('../services/screener-search.js')
       // Matching a plain-language query against a known symbol list is the
