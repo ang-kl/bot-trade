@@ -71,3 +71,37 @@ export function llmDisabledReason(db, getState, env = process.env) {
   if (norm(raw)) return 'llm_disabled state key'
   return null
 }
+
+/**
+ * THE ONE ANSWER TO "MAY WE CALL A MODEL?" — the switch OR the daily ceiling.
+ *
+ * Kept as a third function rather than folded into `llmDisabled` because the
+ * two are different in kind and the difference is operationally load-bearing:
+ * the switch is a standing decision, the cap is a condition that clears itself
+ * at midnight UTC. A panel that showed them as one state would leave the owner
+ * unable to tell "I turned this off" from "it spent its allowance today", and
+ * only one of those is worth acting on.
+ *
+ * Async because the spend read pulls in the pricing table; every call site here
+ * is already async.
+ */
+export async function llmBlocked(db, getState, env = process.env) {
+  if (llmDisabled(db, getState, env)) {
+    return { blocked: true, kind: 'switch', reason: llmDisabledReason(db, getState, env) }
+  }
+  try {
+    const { spendCapState } = await import('../services/llm-spend.js')
+    const s = spendCapState(db)
+    if (s.exceeded) {
+      return {
+        blocked: true,
+        kind: 'spend_cap',
+        reason: `daily LLM spend cap reached — $${s.spent.toFixed(2)} of $${s.cap.toFixed(2)} (resets ${s.day} 00:00 UTC)`,
+      }
+    }
+  } catch {
+    // Same fail-open direction as the state read above: an unreadable ledger
+    // must not silence position review.
+  }
+  return { blocked: false, kind: null, reason: null }
+}

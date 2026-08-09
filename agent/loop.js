@@ -33,7 +33,7 @@ import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes } from './lib/timeframes.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
-import { llmDisabled } from './lib/llm-switch.js'
+import { llmBlocked } from './lib/llm-switch.js'
 // Housekeeping cadence. Wall-clock and persisted, because the loop-counter
 // version never fired on a day with deploys — see housekeeping-due.js.
 import { housekeepingDue, LAST_RUN_KEY } from './services/housekeeping-due.js'
@@ -1733,7 +1733,8 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // stale api_anthropic_last_ok, describing a decision the owner made on
   // purpose as an outage. The deterministic rules above have already run and
   // the broker still holds the SL/TP, so this position is managed either way.
-  if (llmDisabled(db, getState)) return
+  const gate = await llmBlocked(db, getState)
+  if (gate.blocked) return
   let check
   try {
     check = await runMonitorCheck(client, {
@@ -3628,7 +3629,7 @@ async function runLoop(db) {
       const weekendPositions = weekendNow
         ? tradPositions.filter(p => !isSymbolMarketOpen(p.symbol).open)
         : []
-      if (weekendPositions.length > 0 && loopCount % 12 === 1 && !cycleOverBudget() && !llmDisabled(db, getState)) {
+      if (weekendPositions.length > 0 && loopCount % 12 === 1 && !cycleOverBudget() && !(await llmBlocked(db, getState)).blocked) {
         phase(`weekend watch (${weekendPositions.length})`, 'weekend-watch')
         log(`Weekend watch — reviewing ${weekendPositions.length} closed-market position(s)`)
         // D4b: bounded-concurrency, not one-position-at-a-time — see

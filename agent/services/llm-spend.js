@@ -164,3 +164,63 @@ export function checkSpendAlert(db, { now = new Date(), notify = null } = {}) {
   } catch { /* alerting must never throw */ }
   return { alerted: true, spent }
 }
+
+// ---------------------------------------------------------------------------
+// A CAP THAT ACTUALLY CAPS (owner, 09-08-2026, on discovering ~$2,314 in 30
+// days against a "$5 daily cap").
+//
+// `llm_daily_cost_alert_usd` above is an ALERT THRESHOLD and always was — the
+// route that sets it is documented as arming "the once-a-day Telegram". It
+// notifies and nothing else, so production ran at roughly $77/day against a $5
+// line for weeks while looking configured. A number labelled "cap" that cannot
+// stop anything is worse than no number: it answers the question the operator
+// was going to ask, wrongly.
+//
+// THIS REVERSES A DELIBERATE EARLIER DECISION, and it should be read as such.
+// loop.js:2770 says of the token budget: the monitor checks "must not be paused
+// mid-position, so an exceeded budget warns instead of gating." That reasoning
+// was sound when the only cost was tokens. It is no longer the whole picture at
+// $3,000/month on a demo account — and the thing being paused is a SECOND
+// OPINION, not a safety layer: entries, the risk gate, sizing and every
+// stop/target adjustment are deterministic, and the broker holds the SL/TP
+// whatever this returns.
+//
+// So the cap is real, and OFF BY DEFAULT. An unset key behaves exactly as
+// today. Setting it is the owner choosing to trade position-review coverage for
+// a spend ceiling, which is a choice only they can make.
+// ---------------------------------------------------------------------------
+
+export const SPEND_CAP_KEY = 'llm_daily_cost_cap_usd'
+
+/**
+ * Today's spend against the hard cap.
+ *
+ * @returns {{cap: number|null, spent: number, exceeded: boolean, day: string}}
+ *   cap null = no ceiling configured, which is the default.
+ */
+export function spendCapState(db, { now = new Date() } = {}) {
+  const day = now.toISOString().slice(0, 10)
+  let raw = null
+  try { raw = getState(db, SPEND_CAP_KEY) } catch { raw = null }
+  // `Number(null)` and `Number('')` are 0, and 0 here would read as a cap of
+  // zero dollars — an instant, permanent shutdown of the LLM layer from a key
+  // nobody set. Reject the empty values by identity before coercing.
+  const cap = (raw == null || raw === '') ? null : Number(raw)
+  if (!Number.isFinite(cap) || cap <= 0) return { cap: null, spent: 0, exceeded: false, day }
+
+  let spent = 0
+  try {
+    spent = totals(db.prepare('SELECT * FROM token_usage WHERE day = ?').all(day)).cost_usd
+  } catch {
+    // UNREADABLE SPEND IS NOT ZERO SPEND, but it is also not grounds to cut the
+    // monitor: the same fail-open direction as llm-switch's state read, and for
+    // the same reason. A SQLITE_BUSY must not silence position review.
+    return { cap, spent: 0, exceeded: false, day, unreadable: true }
+  }
+  return { cap, spent, exceeded: spent >= cap, day }
+}
+
+/** True when a hard cap is configured AND today's spend has reached it. */
+export function spendCapExceeded(db, opts = {}) {
+  return spendCapState(db, opts).exceeded === true
+}

@@ -234,8 +234,9 @@ export async function generateExplanation(db, body, deps = {}) {
   if (!client) {
     // Switched off is a stated position, not a fault — say so plainly rather
     // than letting the caller read a model error and wonder what broke.
-    const { llmDisabled } = await import('../lib/llm-switch.js')
-    if (llmDisabled(db, getState)) return { ...fallback, reason: 'LLM layer disabled' }
+    const { llmBlocked } = await import('../lib/llm-switch.js')
+    const gate = await llmBlocked(db, getState)
+    if (gate.blocked) return { ...fallback, reason: gate.reason || 'LLM layer disabled' }
     try {
       const { createLLMClient } = await import('../lib/llm-provider.js')
       client = createLLMClient(process.env, { task: { type: 'cockpit_explanation' } })
