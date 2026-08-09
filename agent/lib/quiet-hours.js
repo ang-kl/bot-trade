@@ -72,12 +72,87 @@ export function quietUntilMs(nowMs = Date.now()) {
  * @param {(symbol:string)=>string} categorise
  * @returns {{quiet:boolean, symbols:Array<{symbol:string}>}}
  */
-export function quietScanSymbols(watch, categorise, nowMs = Date.now()) {
+export function quietScanSymbols(watch, categorise, nowMs = Date.now(), opts = {}) {
   if (!weekendQuietNow(nowMs)) return { quiet: false, symbols: watch }
+  const hoursFor = typeof opts.hoursFor === 'function' ? opts.hoursFor : null
+  const preOpenHours = preOpenHoursFrom(opts.preOpenHours)
+  const preOpen = []
   const symbols = (watch || []).filter(w => {
-    try { return categorise(w.symbol) === 'crypto' } catch { return false }
+    try { if (categorise(w.symbol) === 'crypto') return true } catch { /* not crypto */ }
+    if (!hoursFor) return false
+    let hours = null
+    try { hours = hoursFor(w.symbol) } catch { return false }
+    if (!inPreOpenWindow(hours, nowMs, preOpenHours)) return false
+    preOpen.push(w.symbol)
+    return true
   })
-  return { quiet: true, symbols }
+  return { quiet: true, symbols, preOpen }
+}
+
+/**
+ * PRE-OPEN WINDOW (owner, 09-08-2026): "some markets which open on Monday
+ * should start monitoring and set pre-trade 6 hours before and reacts to the
+ * market."
+ *
+ * The blanket weekend rule above and that instruction are in direct conflict:
+ * on a Sunday evening, six hours before the Sydney or Tokyo open, quiet hours
+ * has already narrowed the scan to crypto, so the symbols about to open are the
+ * ones the bot is not looking at. This replaces "it is the weekend" with
+ * "nothing is opening soon" — which is what the weekend rule was reaching for.
+ *
+ * Deliberately per SYMBOL and off the broker's own schedule (symbol-hours
+ * nextOpenInfo), not a guessed session table. A symbol re-enters the scan when
+ * its own next open is within the window; everything else stays quiet exactly
+ * as before. The crypto exemption is untouched and evaluated first, so a 24/7
+ * market never depends on having a "next open" at all.
+ *
+ * WHAT THIS DOES NOT CHANGE, and the caller must not assume otherwise: a setup
+ * computed six hours before the open is computed on the PREVIOUS session's
+ * closing structure. loop.js's own comment calls that "Friday's stale close
+ * dressed up as a signal", and it is still true — the answer is not to hide the
+ * symbol but to label what comes out of it (see the pre_open strategy tag) so
+ * its edge is measured on its own terms rather than blended into intraday.
+ *
+ * UNKNOWN HOURS STAY QUIET. `recommendableToday` above fails OPEN on unknown
+ * hours because muting a symbol forever is the worse error there. Here the
+ * default runs the other way: this function ADDS symbols to a deliberately
+ * silenced window, so "we do not know when it opens" must not become "scan it".
+ */
+export const PRE_OPEN_HOURS_DEFAULT = 6
+const MAX_PRE_OPEN_HOURS = 48
+
+/** Clamp the configured window; a bad value falls back rather than disabling. */
+export function preOpenHoursFrom(raw) {
+  // `Number(null)` and `Number('')` are 0, and 0 would silently switch the
+  // whole feature off while looking configured. Reject the empty values by
+  // identity before coercing — the same trap that has bitten this codebase in
+  // entryBlocker, modelledPnlUsd and impliedUnitValue.
+  if (raw == null || raw === '') return PRE_OPEN_HOURS_DEFAULT
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return PRE_OPEN_HOURS_DEFAULT
+  return Math.min(n, MAX_PRE_OPEN_HOURS)
+}
+
+/**
+ * Is this symbol inside its pre-open window — closed now, opening within N hours?
+ *
+ * `hours` is the nextOpenInfo/isSymbolOpenCached shape: {open, next_open_at} or
+ * {open, nextOpenAt}. Already-open returns FALSE: open is not pre-open, and the
+ * caller's quiet window has its own reason for excluding it.
+ */
+export function inPreOpenWindow(hours, nowMs = Date.now(), preOpenHours = PRE_OPEN_HOURS_DEFAULT) {
+  if (!hours || typeof hours !== 'object') return false
+  if (hours.open === true) return false
+  const nextRaw = hours.next_open_at ?? hours.nextOpenAt ?? null
+  if (nextRaw == null) return false        // unknown → stays quiet, see above
+  const nextMs = typeof nextRaw === 'number' ? nextRaw : Date.parse(nextRaw)
+  if (!Number.isFinite(nextMs)) return false
+  const delta = nextMs - nowMs
+  // A next-open already in the past is stale schedule data, not an imminent
+  // open — treating it as "opening now" would scan on a timestamp nobody
+  // refreshed.
+  if (delta < 0) return false
+  return delta <= preOpenHours * 3_600_000
 }
 
 /**
