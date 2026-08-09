@@ -33,6 +33,7 @@ import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes } from './lib/timeframes.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
+import { llmDisabled } from './lib/llm-switch.js'
 // Housekeeping cadence. Wall-clock and persisted, because the loop-counter
 // version never fired on a day with deploys — see housekeeping-due.js.
 import { housekeepingDue, LAST_RUN_KEY } from './services/housekeeping-due.js'
@@ -1724,6 +1725,15 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   }
 
   // Fallback: free-text theses and ambiguous cases → LLM Monitor.
+  //
+  // SWITCHED OFF IS NOT FAILED (owner 09-08-2026, "runs 24/7 without credit
+  // from AI needed"). Returning here — before the call, before the catch —
+  // is the whole point: an exhausted balance would otherwise throw ~1,900
+  // times a day, each throw feeding a failure streak, a Telegram alert and a
+  // stale api_anthropic_last_ok, describing a decision the owner made on
+  // purpose as an outage. The deterministic rules above have already run and
+  // the broker still holds the SL/TP, so this position is managed either way.
+  if (llmDisabled(db, getState)) return
   let check
   try {
     check = await runMonitorCheck(client, {
@@ -3603,7 +3613,7 @@ async function runLoop(db) {
       const weekendPositions = weekendNow
         ? tradPositions.filter(p => !isSymbolMarketOpen(p.symbol).open)
         : []
-      if (weekendPositions.length > 0 && loopCount % 12 === 1 && !cycleOverBudget()) {
+      if (weekendPositions.length > 0 && loopCount % 12 === 1 && !cycleOverBudget() && !llmDisabled(db, getState)) {
         phase(`weekend watch (${weekendPositions.length})`, 'weekend-watch')
         log(`Weekend watch — reviewing ${weekendPositions.length} closed-market position(s)`)
         // D4b: bounded-concurrency, not one-position-at-a-time — see

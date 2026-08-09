@@ -5,6 +5,7 @@
 import { Router } from 'express'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
+import { llmDisabled as llmDisabledFlag, llmDisabledReason as llmDisabledWhy } from '../lib/llm-switch.js'
 import { loadRiskConfig, accountRiskOverlay, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
 // Static, not the dynamic import used further down: /config is a SYNC handler.
 import { readWatchlist, hasOwnWatchlist } from '../services/watchlists.js'
@@ -188,6 +189,11 @@ export default function stateRouter(db) {
       errorsToday: Number(getState(db, 'errors_today') || 0),
       dailyTokensUsed: Number(getState(db, 'daily_tokens_used') || 0),
       dailyTokenBudget: 500000,
+      // Off is a stated position, not a fault. Without this the panel can only
+      // show a stale api_anthropic_last_ok and a failure streak, which reads as
+      // an outage when it is a decision — see lib/llm-switch.js.
+      llmDisabled: llmDisabledFlag(db, getState),
+      llmDisabledBy: llmDisabledWhy(db, getState),
       lastError: lastError || null,
       // The causes behind errorsToday — see services/error-log.js. Without
       // this the counter is a number the owner cannot resolve to anything.
