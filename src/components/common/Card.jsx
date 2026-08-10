@@ -38,6 +38,7 @@ import CopyPopup from './CopyPopup.jsx'
 import { tableToJson as scrapeJson, tableToHtml, dataToHtml, textToJson, textToHtml } from '../../lib/copy-serialize.js'
 import { sectionKind, NAV_KIND_LEGEND } from '../../lib/nav-tree.js'
 import ScopeChip from './ScopeChip.jsx'
+import { CardChromeContext } from './CardChromeContext.js'
 
 export default function Card({
   children, className = '', copyable = true, copyTitle = null,
@@ -134,6 +135,7 @@ export default function Card({
   const body = <div style={collapsed && !maximized ? { display: 'none' } : undefined}>{children}</div>
 
   return (
+    <CardChromeContext.Provider value={true}>
     <div ref={attachRef} className={cls} {...rest}>
       {scope !== undefined && (
         <ScopeChip scope={scope} pageScope={pageScope}
@@ -201,6 +203,7 @@ export default function Card({
         : body}
       {popup && <CopyPopup title={popup.title} text={popup.text} json={popup.json} html={popup.html} onClose={() => setPopup(null)} />}
     </div>
+    </CardChromeContext.Provider>
   )
 }
 
