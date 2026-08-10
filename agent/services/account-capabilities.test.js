@@ -4,6 +4,7 @@ import { initDB } from '../db.js'
 import {
   capabilitiesFor, accountCapabilities, canScan, canEnter, canManage,
   openWork, archiveAccount, unarchiveAccount, capabilityView, MODES, SETTABLE_MODES,
+  repairRosterMembership, rosterInvariantViolations,
 } from './account-capabilities.js'
 
 const NOW = '2026-08-03T00:00:00Z'
@@ -237,4 +238,87 @@ test('unmanagedExposure catches a mode written straight into the column', () => 
   seedPosition(db, 'p1', { account: 'A' })
   const row = capabilityView(db).find(r => r.accountId === 'A')
   assert.equal(row.unmanagedExposure, true)
+})
+
+// ---------------------------------------------------------------------------
+// THE ROSTER INVARIANT — mode !== 'archived' ⇒ enabled = 1 (10-08-2026).
+//
+// `manage` is deliberately never gated on `enabled`, on the principle that an
+// account out of the roster still holds positions worth watching. The principle
+// is right and the mechanism did not honour it: `enabled = 0` drops the row
+// from the roster pushed to the sidecar, so no amend and no close can reach it.
+// MANAGE read `true` while being unreachable — six of seven production accounts,
+// 17 open positions, every one reporting "manage": true beside
+// "connectivity": "disconnected".
+// ---------------------------------------------------------------------------
+
+test('repair promotes every non-archived account back into the roster', () => {
+  const db = freshDb()
+  seedAccount(db, 'ACTIVE', { mode: 'active', enabled: 0 })
+  seedAccount(db, 'MANAGE', { mode: 'manage_only', enabled: 0, isLive: 1 })
+  seedAccount(db, 'PAUSED', { mode: 'paused', enabled: 0 })
+
+  const out = repairRosterMembership(db)
+  assert.equal(out.promoted.length, 3)
+  for (const id of ['ACTIVE', 'MANAGE', 'PAUSED']) {
+    const row = db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get(id)
+    assert.equal(row.enabled, 1, `${id} must be reachable to be manageable`)
+  }
+  // The LIVE side is repaired too — its positions are the ones that matter most.
+  assert.ok(out.promoted.find(p => p.accountId === 'MANAGE').isLive)
+})
+
+test('repair never touches an archived account — that mode means MANAGE is off', () => {
+  const db = freshDb()
+  seedAccount(db, 'GONE', { mode: 'archived', enabled: 0 })
+  assert.deepEqual(repairRosterMembership(db).promoted, [])
+  assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get('GONE').enabled, 0)
+})
+
+test('repair grants no new capability — mode is untouched, so SCAN and ENTER hold', () => {
+  // The whole safety case: promoting a row into the roster restores REACH, not
+  // permission. `manage_only` must still refuse to enter afterwards.
+  const db = freshDb()
+  seedAccount(db, 'M', { mode: 'manage_only', enabled: 0 })
+  repairRosterMembership(db)
+  const caps = accountCapabilities(db, 'M')
+  assert.equal(caps.mode, 'manage_only', 'the preset the owner set is not rewritten')
+  assert.equal(caps.enter, false, 'a repaired account may still not open anything')
+  assert.equal(caps.manage, true)
+})
+
+test('repair is idempotent — a second boot finds nothing to promote', () => {
+  const db = freshDb()
+  seedAccount(db, 'A', { mode: 'manage_only', enabled: 0 })
+  assert.equal(repairRosterMembership(db).promoted.length, 1)
+  assert.deepEqual(repairRosterMembership(db).promoted, [])
+})
+
+test('after repair no account reports unmanaged exposure', () => {
+  // capabilityView already computes `unmanagedExposure`; nothing had ever made
+  // it false in production. This is that assertion, as a test.
+  const db = freshDb()
+  seedAccount(db, 'A', { mode: 'manage_only', enabled: 0 })
+  seedPosition(db, 'A', { account: 'A' })
+  repairRosterMembership(db)
+  for (const row of capabilityView(db)) {
+    assert.equal(row.unmanagedExposure, false, `${row.accountId} holds work it cannot reach`)
+  }
+})
+
+test('the invariant reports violations, and reports nothing once repaired', () => {
+  // What /state/heartbeats surfaces. A writer that recreates the pair between
+  // boots must be visible without waiting for the next restart to heal it.
+  const db = freshDb()
+  seedAccount(db, 'OK', { mode: 'active', enabled: 1 })
+  seedAccount(db, 'GONE', { mode: 'archived', enabled: 0 })
+  seedAccount(db, 'BAD', { mode: 'manage_only', enabled: 0, isLive: 1 })
+
+  const bad = rosterInvariantViolations(db)
+  assert.equal(bad.length, 1)
+  assert.equal(bad[0].accountId, 'BAD')
+  assert.equal(bad[0].isLive, true)
+
+  repairRosterMembership(db)
+  assert.deepEqual(rosterInvariantViolations(db), [], 'healthy is the empty list')
 })

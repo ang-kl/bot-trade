@@ -167,6 +167,73 @@ export function archiveAccount(db, accountId) {
   return { ok: true, accountId: id, mode: 'archived' }
 }
 
+/**
+ * MANAGE CLAIMED IS NOT MANAGE REACHABLE (10-08-2026).
+ *
+ * `accountCapabilities` returns `manage: caps.manage` and says, correctly, that
+ * it is NEVER gated on `enabled` — an account out of the roster still holds
+ * positions and those positions still need watching. That is the intent. It is
+ * not what happens.
+ *
+ * `enabled = 0` removes the row from `ctrader-creds.js:42`, which builds the
+ * roster pushed to the sidecar in `/connect`. An account outside that roster is
+ * never authorised at the broker, so no amend and no close can be routed to it.
+ * MANAGE is therefore asserted and unreachable at the same time — the one
+ * combination worse than the abandonment bug this file exists to prevent,
+ * because it reports itself as healthy.
+ *
+ * Production, this morning: six of seven accounts sat `enabled = 0` with a
+ * non-archived mode, every one reporting `"manage": true` beside
+ * `"connectivity": "disconnected"`, between them holding 17 open positions and
+ * 5 working entry orders that nothing could reach.
+ *
+ * The invariant, stated once so it can be tested:
+ *
+ *     mode !== 'archived'  ⇒  enabled = 1
+ *
+ * `archived` is the only mode that turns MANAGE off, and archiveAccount already
+ * refuses to set it while anything is open. So every other mode is a promise to
+ * keep managing, and this repair makes the roster keep it.
+ *
+ * Idempotent: after the first pass there is nothing left to promote. `mode` is
+ * never touched, so no account gains SCAN or ENTER from being repaired — those
+ * two are `caps.x && enabled`, and the modes that had them false keep them
+ * false.
+ *
+ * @returns {{promoted: Array<{accountId:string, mode:string, isLive:boolean}>}}
+ */
+export function rosterInvariantViolations(db) {
+  try {
+    return db.prepare(
+      `SELECT account_id AS accountId, mode, is_live AS isLive FROM accounts
+        WHERE enabled != 1 AND mode IS NOT NULL AND mode != 'archived'
+        ORDER BY is_live DESC, account_id`
+    ).all().map(r => ({ accountId: String(r.accountId), mode: r.mode, isLive: r.isLive === 1 }))
+  } catch { return [] }
+}
+
+export function repairRosterMembership(db) {
+  let rows = []
+  try {
+    rows = db.prepare(
+      `SELECT account_id, mode, is_live FROM accounts
+        WHERE enabled != 1 AND mode IS NOT NULL AND mode != 'archived'`
+    ).all()
+  } catch { return { promoted: [] } }
+  if (rows.length === 0) return { promoted: [] }
+
+  const upd = db.prepare('UPDATE accounts SET enabled = 1, updated_at = ? WHERE account_id = ?')
+  const stamp = new Date().toISOString()
+  const promoted = []
+  for (const r of rows) {
+    try {
+      upd.run(stamp, String(r.account_id))
+      promoted.push({ accountId: String(r.account_id), mode: r.mode, isLive: r.is_live === 1 })
+    } catch { /* one bad row must not abandon the rest */ }
+  }
+  return { promoted }
+}
+
 /** Bring an archived account back. Always returns to the quietest live mode. */
 export function unarchiveAccount(db, accountId, mode = 'manage_only') {
   const id = String(accountId)
