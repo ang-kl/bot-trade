@@ -114,76 +114,72 @@ export default function Card({
   }
 
   const btn = {
-    position: 'absolute', top: 6, zIndex: 5, cursor: 'pointer', fontFamily: 'inherit',
+    cursor: 'pointer', fontFamily: 'inherit',
     fontSize: 'var(--fs-body)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent',
     border: '1px solid transparent', borderRadius: 8, padding: '3px 6px', opacity: .55,
   }
   const hoverOn = (e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.borderColor = 'var(--glass-edge)' }
   const hoverOff = (e) => { e.currentTarget.style.opacity = '.55'; e.currentTarget.style.borderColor = 'transparent' }
 
-  // Top-right chrome slots, right-to-left: ⧉ copy · ▸/▾ collapse · ⇲
-  // maximize · kind tag. Offsets are computed so an opted-out button frees
-  // its slot instead of leaving a hole.
-  const slotCopy = copyable ? 8 : null
-  const slotCollapse = collapsible ? (copyable ? 34 : 8) : null
-  const slotMax = (collapsible ? 26 : 0) + (copyable ? 26 : 0) + 8
-  const slotKind = slotMax + 26 + 2
-  // The scope chip is variable-width, so it takes the slot LEFT of the fixed
-  // ones and grows leftwards rather than pushing them out of place.
-  const slotScope = slotKind + (kind ? 26 : 0)
-
-  const body = <div style={collapsed && !maximized ? { display: 'none' } : undefined}>{children}</div>
+  // Card controls used to be absolutely positioned over the top-right corner.
+  // That made them cover the header summary and, on dense Performance/Desk
+  // cards, real table columns. A floated toolbar remains at the right edge,
+  // but now participates in layout: the first content line wraps around it
+  // and content that does not fit starts below it. There is therefore no
+  // overlay target to obscure.
+  const body = <div className="card-body" style={collapsed && !maximized ? { display: 'none' } : undefined}>{children}</div>
 
   return (
     <CardChromeContext.Provider value={true}>
     <div ref={attachRef} className={cls} {...rest}>
-      {scope !== undefined && (
-        <ScopeChip scope={scope} pageScope={pageScope}
-          style={{ position: 'absolute', top: 8, right: slotScope, zIndex: 5, opacity: .85 }} />
-      )}
-      {kind && (
-        <span title={NAV_KIND_LEGEND} style={{
-          position: 'absolute', top: 8, right: slotKind,
-          zIndex: 5, fontSize: 'var(--fs-body)', fontWeight: 600, lineHeight: 1.5,
-          color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
-          borderRadius: 'var(--radius-control)', padding: '0 3px', opacity: .7,
-          whiteSpace: 'nowrap',
-        }}>{kind}</span>
-      )}
-      {/* ⇲ maximize (owner 2026-08-01: U+21F2 to expand, U+21F1 to restore) */}
-      <button type="button"
-        title="Expand this section to full screen (⇱ restores)"
-        aria-label="Expand this section to full screen"
-        aria-expanded={maximized}
-        onClick={() => {
-          // Captured at click time — refs must not be read during render.
-          setLabel(copyTitle || headingOf(ref.current) || 'Section')
-          setMaximized(true)
-        }}
-        style={{ ...btn, right: slotMax }}
-        onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
-        ⇲
-      </button>
-      {collapsible && (
-        <button type="button" aria-expanded={!collapsed}
-          title={collapsed ? 'Expand this section' : 'Collapse this section'}
-          aria-label={collapsed ? 'Expand this section' : 'Collapse this section'}
+      <span role="toolbar" aria-label="Section controls" style={{
+        float: 'right', display: 'inline-flex', alignItems: 'center', gap: 2,
+        marginLeft: 8, position: 'relative', zIndex: 5,
+      }}>
+        {scope !== undefined && <ScopeChip scope={scope} pageScope={pageScope} style={{ opacity: .85 }} />}
+        {kind && (
+          <span title={NAV_KIND_LEGEND} style={{
+            fontSize: 'var(--fs-body)', fontWeight: 600, lineHeight: 1.5,
+            color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
+            borderRadius: 'var(--radius-control)', padding: '0 3px', opacity: .7,
+            whiteSpace: 'nowrap',
+          }}>{kind}</span>
+        )}
+        {/* ⇲ maximize (owner 2026-08-01: U+21F2 to expand, U+21F1 to restore) */}
+        <button type="button"
+          title="Expand this section to full screen (⇱ restores)"
+          aria-label="Expand this section to full screen"
+          aria-expanded={maximized}
           onClick={() => {
-            if (!collapsed) setLabel(copyTitle || headingOf(ref.current) || 'Section')
-            setCollapsed(c => !c)
+            // Captured at click time — refs must not be read during render.
+            setLabel(copyTitle || headingOf(ref.current) || 'Section')
+            setMaximized(true)
           }}
-          style={{ ...btn, right: slotCollapse }}
+          style={btn}
           onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
-          {collapsed ? '▸' : '▾'}
+          ⇲
         </button>
-      )}
-      {copyable && (
-        <button type="button" title="Copy this section" aria-label="Copy this section"
-          onClick={openCopy} style={{ ...btn, right: slotCopy }}
-          onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
-          ⧉
-        </button>
-      )}
+        {collapsible && (
+          <button type="button" aria-expanded={!collapsed}
+            title={collapsed ? 'Expand this section' : 'Collapse this section'}
+            aria-label={collapsed ? 'Expand this section' : 'Collapse this section'}
+            onClick={() => {
+              if (!collapsed) setLabel(copyTitle || headingOf(ref.current) || 'Section')
+              setCollapsed(c => !c)
+            }}
+            style={btn}
+            onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
+            {collapsed ? '▸' : '▾'}
+          </button>
+        )}
+        {copyable && (
+          <button type="button" title="Copy this section" aria-label="Copy this section"
+            onClick={openCopy} style={btn}
+            onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
+            ⧉
+          </button>
+        )}
+      </span>
       {/* Collapsed: show just the heading text so the bar is still
           identifiable, and hide (not unmount) the body so sort/page state
           survives and the card collapses to a single line. */}
