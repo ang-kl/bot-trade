@@ -14,10 +14,11 @@
 //   stylesheets cloned across. If the browser blocks the popup (or on a
 //   ?expand=<id> deep link, where no user gesture exists), it falls back to
 //   the in-page modal so the content is never unreachable.
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import CopyPopup from './CopyPopup.jsx'
 import { dataToHtml, textToHtml } from '../../lib/copy-serialize.js'
+import { CardChromeContext } from './CardChromeContext.js'
 
 function genericText(title, data) {
   const rows = Array.isArray(data) ? data : data != null ? [data] : []
@@ -29,6 +30,7 @@ function genericText(title, data) {
 }
 
 export default function SectionTools({ id, title, window: windowLabel = null, data = null, toText = null, render }) {
+  const cardOwnsChrome = useContext(CardChromeContext)
   const [open, setOpen] = useState(false) // in-page fallback modal
   const [copyOpen, setCopyOpen] = useState(false)
   const [popupHost, setPopupHost] = useState(null) // portal target inside the popup window
@@ -97,13 +99,15 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
   }
 
   return (
-    <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, position: 'relative', flexShrink: 0 }}>
-      <button type="button" title="Copy — opens the copy pop-up (text / JSON / HTML)" aria-label={`Copy ${title}`} style={btn}
-        onClick={() => setCopyOpen(true)}>⧉</button>
-      {/* ⇲ per the app-wide expand vocabulary (owner 2026-08-01: U+21F2
-          expands, U+21F1 restores) — same action as before, new glyph. */}
-      <button type="button" title={`Open ${title} in a pop-up window (⇱ / Esc restores)`} aria-label={`Expand ${title}`} style={btn}
-        onClick={openExpand}>⇲</button>
+    <span style={{ marginLeft: 'auto', display: cardOwnsChrome ? 'none' : 'inline-flex', gap: 4, position: 'relative', flexShrink: 0 }}>
+      {!cardOwnsChrome && <>
+        <button type="button" title="Copy — opens the copy pop-up (text / JSON / HTML)" aria-label={`Copy ${title}`} style={btn}
+          onClick={() => setCopyOpen(true)}>⧉</button>
+        {/* ⇲ per the app-wide expand vocabulary (owner 2026-08-01: U+21F2
+            expands, U+21F1 restores) — same action as before, new glyph. */}
+        <button type="button" title={`Open ${title} in a pop-up window (⇱ / Esc restores)`} aria-label={`Expand ${title}`} style={btn}
+          onClick={openExpand}>⇲</button>
+      </>}
       {copyOpen && (
         <CopyPopup title={title} text={textPayload()} json={jsonPayload()} html={htmlPayload()} onClose={() => setCopyOpen(false)} />
       )}
