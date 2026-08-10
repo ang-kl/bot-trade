@@ -1064,6 +1064,37 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/llm-spend-cap — { dailyCapUsd } a REAL ceiling, not an alert.
+  //
+  // Owner 09-08-2026, on finding ~$2,314 in 30 days against a "$5 daily cap":
+  // /actions/llm-budget arms a Telegram message and stops nothing. This one
+  // stops the calls. Off by default (0/null); setting it is the owner choosing
+  // to trade position-review coverage for a spend ceiling.
+  //
+  // It reverses the reasoning at loop.js's token budget ("must not be paused
+  // mid-position, so an exceeded budget warns instead of gating") — sound when
+  // the only cost was tokens, no longer the whole picture at $3,000/month. What
+  // pauses is a SECOND OPINION: entries, the risk gate, sizing and every
+  // stop/target adjustment stay deterministic and the broker holds the SL/TP.
+  // -----------------------------------------------------------------------
+  router.post('/llm-spend-cap', async (req, res) => {
+    const raw = req.body?.dailyCapUsd
+    const { SPEND_CAP_KEY, spendCapState } = await import('../services/llm-spend.js')
+    if (raw == null || raw === '' || Number(raw) === 0) {
+      setState(db, SPEND_CAP_KEY, null)
+      console.log('[actions] LLM hard spend cap REMOVED')
+      return res.json({ ok: true, dailyCapUsd: null, ...spendCapState(db) })
+    }
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n < 0.1 || n > 1000) {
+      return res.status(400).json({ error: 'dailyCapUsd must be between 0.10 and 1000 (or 0 to remove the cap)' })
+    }
+    setState(db, SPEND_CAP_KEY, String(n))
+    console.log(`[actions] LLM hard spend cap: $${n}/day`)
+    res.json({ ok: true, dailyCapUsd: n, ...spendCapState(db) })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/monitor-interval — { minutes: 1..5 } base cadence for the
   // fast position monitor (volume scales it 1×/2×/3× automatically).
   // -----------------------------------------------------------------------
@@ -1536,11 +1567,12 @@ export default function actionsRouter(db) {
       const universe = Object.keys(map || {})
       if (universe.length === 0) return res.status(400).json({ error: 'no symbols available from this broker account' })
 
-      const { llmDisabled } = await import('../lib/llm-switch.js')
-      if (llmDisabled(db, getState)) {
+      const { llmBlocked } = await import('../lib/llm-switch.js')
+      const gate = await llmBlocked(db, getState)
+      if (gate.blocked) {
         // 503, not 502: nothing failed. The capability is switched off, and
         // the caller should be told that rather than shown a model error.
-        return res.status(503).json({ error: 'LLM layer disabled — symbol search is unavailable while the AI layer is off' })
+        return res.status(503).json({ error: `LLM layer unavailable — ${gate.reason}` })
       }
       const { createLLMClient } = await import('../lib/llm-provider.js')
       const { searchScreenerSymbols } = await import('../services/screener-search.js')

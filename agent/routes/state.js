@@ -2515,6 +2515,54 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/strategy-asset?days=7 — where the money actually went.
+  //
+  // Owner 09-08-2026, auditing the week. `/state/perf-ledger`'s per-market cut
+  // said FX lost 4,342.97 at PF 0.15; a cross over the latest 100 rows said the
+  // biggest single loser was fib_confluence ON STOCKS with zero winners. Both
+  // were computable, neither was actionable, because an asset margin and a
+  // strategy margin cannot tell "this asset is bad" from "this strategy is bad
+  // at this asset" — and those call for opposite switches.
+  //
+  // AND the week was not readable at all: `/state/trades` is LIMIT 100 with no
+  // offset and no window, so 183 trades could not be pulled through the API and
+  // the 100-row sample skewed to the most recent days, under-counting FX damage
+  // that happened Monday to Wednesday.
+  //
+  // Read-only. It decides nothing — it exists so that switching an instrument or
+  // a strategy off is a measured act rather than a guess.
+  // -----------------------------------------------------------------------
+  router.get('/strategy-asset', async (req, res) => {
+    try {
+      const { strategyAssetCross } = await import('../services/strategy-asset-cross.js')
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
+      // `Number(null)` is 0 and a 0-day window would silently answer "no
+      // trades" over a bad parameter. Clamp into a sane band instead.
+      const rawDays = req.query.days
+      const days = Math.min(365, Math.max(1, Number(rawDays) > 0 ? Number(rawDays) : 7))
+      const sinceMs = Date.now() - days * 86_400_000
+      const since = new Date(sinceMs).toISOString()
+      const rows = db.prepare(
+        `SELECT symbol, net_pnl, label_strategy, strategy, closed_at
+           FROM trades
+          WHERE status = 'closed'
+            AND COALESCE(closed_at, opened_at) >= ?
+            ${acct.active ? `AND ${acct.where}` : ''}`
+      ).all(since, ...acct.params)
+      res.json({
+        windowDays: days,
+        since,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        rowsRead: rows.length,
+        ...strategyAssetCross(rows),
+      })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/activity — unified live event stream for the Trade Window
   // Merges scans, analyses, monitor checks, trades, regime snapshots, flips
   // into one time-sorted feed. Cheap: single UNION ALL, LIMIT-capped.
