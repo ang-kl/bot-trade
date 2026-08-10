@@ -51,6 +51,48 @@ function posField(p, key) {
 }
 
 /**
+ * The position time cap for a pending order that just FILLED — measured from
+ * the fill, never from the placement.
+ *
+ * `expires_at` is the ORDER's deadline: fill by then or be cancelled. It was
+ * being written straight into `monitored_positions.time_cap_at`, which is the
+ * POSITION's deadline: close when the clock passes it. The two are the same
+ * absolute instant only for an order that fills the moment it is placed. A fib
+ * limit rests for most of its life by design — `timeCapFor('15m')` is 480
+ * minutes — so a fill seven hours in produced a position with a one-hour life,
+ * and a fill after the deadline (a weekend of resting, then a Monday-open gap
+ * through the level) produced one that was ALREADY past its cap at birth.
+ * evaluatePosition checks the cap first, above the price gate, so those closed
+ * on the first monitor pass: thirteen in the hour after the 2026-08-10 open,
+ * each paying the spread to enter and exit a position it never held.
+ *
+ * Precedence: the hold recorded at placement; else, for rows written before
+ * that column existed, the placed→expires span — which IS the `expiryMinutes`
+ * the placement computed, so the intent is recoverable rather than guessed. A
+ * span equal to DEFAULT_EXPIRY_MINUTES means the signal carried no cap and the
+ * order took the fallback, so the position gets none either: null, and the
+ * loss-guardian's maxHoldHours becomes its backstop exactly as designed.
+ *
+ * @param {{time_cap_minutes?:number|null, placed_at?:string|null, expires_at?:string|null}} row
+ * @param {number} fillMs  epoch ms the position actually opened
+ * @returns {string|null}  ISO time_cap_at, or null for "no cap of its own"
+ */
+export function fillTimeCapAt(row, fillMs) {
+  if (!Number.isFinite(fillMs)) return null
+  let holdMin = Number(row?.time_cap_minutes)
+  if (!Number.isFinite(holdMin) || holdMin <= 0) {
+    const placed = Date.parse(row?.placed_at ?? '')
+    const expires = Date.parse(row?.expires_at ?? '')
+    const span = (expires - placed) / 60_000
+    holdMin = Number.isFinite(span) && span > 0 && Math.round(span) !== DEFAULT_EXPIRY_MINUTES
+      ? span
+      : null
+  }
+  if (holdMin == null || !Number.isFinite(holdMin) || holdMin <= 0) return null
+  return new Date(fillMs + holdMin * 60_000).toISOString()
+}
+
+/**
  * Mirror of loop.js's persistTrade transaction (trades + monitored_positions
  * in one atomic write) for a pending order that FILLED at the broker while
  * we weren't looking. Column set intentionally identical to loop.js so every
@@ -71,6 +113,11 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
   const initialRisk = (executionPrice != null && row.sl != null)
     ? Math.abs(executionPrice - row.sl)
     : null
+  // Anchor the cap on the broker's own open timestamp when it gives us one —
+  // this pass may be seeing a fill that happened several cycles ago, and the
+  // position's clock started at the fill, not at our noticing it.
+  const openedMs = Number(posField(pos, 'openTimestamp'))
+  const timeCapAt = fillTimeCapAt(row, Number.isFinite(openedMs) && openedMs > 0 ? openedMs : Date.now())
   const parsedLabel = parseLabel(posField(pos, 'label') || encodeLabel({
     source: 'autopilot',
     version: LABEL_VERSION,
@@ -126,7 +173,7 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       `Pending fib 61.8% limit filled at broker (order ${row.order_id})`,
       initialRisk,
       null,
-      row.expires_at || null,
+      timeCapAt,
       'fib_618_fade',
       parsedLabel.source,
       parsedLabel.raw,
@@ -414,9 +461,16 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
 
     const slDistance = signal.sl != null && signal.entry != null ? Math.abs(signal.entry - signal.sl) : null
     const tpDistance = signal.tp1 != null && signal.entry != null ? Math.abs(signal.tp1 - signal.entry) : null
-    const expiryMinutes = Number.isFinite(signal.time_cap_minutes) && signal.time_cap_minutes > 0
+    // The setup's intended HOLD. It doubles as the order's fill deadline —
+    // a level that has not been reached within the life of the trade it was
+    // priced for is a stale level — but the two deadlines are counted from
+    // different instants, so the hold is recorded separately and the position
+    // gets its cap from the FILL. A signal with no cap of its own gets the
+    // fallback expiry for the order and no position cap at all.
+    const holdMinutes = Number.isFinite(signal.time_cap_minutes) && signal.time_cap_minutes > 0
       ? signal.time_cap_minutes
-      : DEFAULT_EXPIRY_MINUTES
+      : null
+    const expiryMinutes = holdMinutes ?? DEFAULT_EXPIRY_MINUTES
     const expiresAtMs = Date.now() + expiryMinutes * 60_000
 
     const baseLabel = encodeLabel({
@@ -463,8 +517,8 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // resting order cannot be scoped by anything downstream, and the reads
       // that must scope it silently widen to every account instead.
       db.prepare(`
-        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?)
+        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?)
       `).run(
         symbol,
         timeframe || null,
@@ -478,6 +532,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         'pending-fib',
         riskEventId ?? null,
         acctKey,
+        holdMinutes,
       )
       try {
         const { recordSubmitted } = await import('./opportunity-disposition.js')
