@@ -145,11 +145,11 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
           const on = String(active) === String(a.id)
           return card(on, () => setScope(a.id), a.id,
             <>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ minWidth: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, overflowWrap: 'anywhere' }}>
                   {a.name} · {a.ccy}
                 </span>
-                <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   {selChip(on)}
                   <span style={{ ...cell, fontWeight: 600, color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>
                     day {a.hasToday ? signed(a.day) : '—'}

@@ -1509,13 +1509,6 @@ textarea {
 }
 .glass-panel.is-menu::before { content: none; }   /* no sheen over list rows */
 
-/* SectionTools ▸ collapse (owner 02-08-2026: collapse/expand on every card
-   and table): the section panel keeps its header row (first child, where the
-   title and ▸/⧉/⇲ tools live) and hides the body. */
-.sec-collapsed > :not(:first-child) {
-  display: none !important;
-}
-
 /* Bot-changed highlight (owner 02-08-2026): a yellow border on any section
    the bot changed on the owner's behalf in the last 48h — the sidebar
    Bot Changes panel lists what and when. */
