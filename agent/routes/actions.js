@@ -3928,7 +3928,14 @@ export default function actionsRouter(db) {
               // The role decides the MODE, which is the entry question and the
               // only one it was ever qualified to answer. Roster membership
               // follows the invariant instead: non-archived means managed.
-              db.prepare(`UPDATE accounts SET enabled = 1, mode = ?, updated_at = ? WHERE account_id = ?`)
+              //
+              // `AND mode != 'archived'` — an archived account appearing in the
+              // pushed list must not be silently un-filed and put back on the
+              // roster. Clobbering `mode` here predates this change; pairing it
+              // with `enabled = 1` is what made it dangerous, because archived
+              // is the one state that turns MANAGE off and it should take
+              // /actions/account-archive to leave it, not a routine list push.
+              db.prepare(`UPDATE accounts SET enabled = 1, mode = ?, updated_at = ? WHERE account_id = ? AND mode != 'archived'`)
                 .run(a.autopilot ? 'active' : 'manage_only', new Date().toISOString(), String(a.accountId))
             }
           } catch (e) { console.warn('[actions/ctrader-config] registry mirror failed (non-fatal):', e.message) }
