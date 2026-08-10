@@ -252,20 +252,58 @@ test('unmanagedExposure catches a mode written straight into the column', () => 
 // "connectivity": "disconnected".
 // ---------------------------------------------------------------------------
 
-test('repair promotes every non-archived account back into the roster', () => {
+test('repair promotes the accounts holding work nothing can reach', () => {
   const db = freshDb()
-  seedAccount(db, 'ACTIVE', { mode: 'active', enabled: 0 })
   seedAccount(db, 'MANAGE', { mode: 'manage_only', enabled: 0, isLive: 1 })
+  seedPosition(db, 'MANAGE', { account: 'MANAGE' })
   seedAccount(db, 'PAUSED', { mode: 'paused', enabled: 0 })
+  seedPending(db, { account: 'PAUSED' })
 
   const out = repairRosterMembership(db)
-  assert.equal(out.promoted.length, 3)
-  for (const id of ['ACTIVE', 'MANAGE', 'PAUSED']) {
+  assert.equal(out.promoted.length, 2)
+  for (const id of ['MANAGE', 'PAUSED']) {
     const row = db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get(id)
     assert.equal(row.enabled, 1, `${id} must be reachable to be manageable`)
   }
   // The LIVE side is repaired too — its positions are the ones that matter most.
   assert.ok(out.promoted.find(p => p.accountId === 'MANAGE').isLive)
+  // A working entry order is live work, exactly as archiveAccount treats it.
+  assert.ok(out.promoted.find(p => p.accountId === 'PAUSED'))
+})
+
+test('a flat account is left alone — registering is not enabling', () => {
+  // Three legitimate states match `mode != archived AND enabled != 1`: a
+  // discovery row from browsing the broker's list, an unarchived row whose
+  // re-entry to the roster is a separate decision, and a deliberate disable.
+  // None is the bug, and all three are flat.
+  const db = freshDb()
+  seedAccount(db, 'DISCOVERED', { mode: 'manage_only', enabled: 0 })
+  seedAccount(db, 'UNARCHIVED', { mode: 'manage_only', enabled: 0 })
+  seedAccount(db, 'DISABLED', { mode: 'manage_only', enabled: 0, isLive: 1 })
+
+  assert.deepEqual(repairRosterMembership(db).promoted, [])
+  for (const id of ['DISCOVERED', 'UNARCHIVED', 'DISABLED']) {
+    assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get(id).enabled, 0)
+  }
+  assert.deepEqual(rosterInvariantViolations(db), [], 'and an intended state is not flagged as a fault')
+})
+
+test('an enter-capable mode is reported, never auto-promoted', () => {
+  // `enabled = 0, mode = 'active'` is contradictory config reachable from two
+  // live routes. Promoting it would flip ENTER on — registryAutopilotAccounts
+  // is enabled ∩ enter — which is a boot job handing out entry permission and
+  // bypassing the confirmLive carve-out. It needs a human, so it is reported.
+  const db = freshDb()
+  seedAccount(db, 'ACTIVE', { mode: 'active', enabled: 0, isLive: 1 })
+  seedPosition(db, 'ACTIVE', { account: 'ACTIVE' })
+
+  assert.deepEqual(repairRosterMembership(db).promoted, [])
+  assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get('ACTIVE').enabled, 0)
+  assert.equal(accountCapabilities(db, 'ACTIVE').enter, false, 'no entry permission from a boot job')
+
+  const flagged = rosterInvariantViolations(db)
+  assert.equal(flagged.length, 1, 'but it does not go unreported')
+  assert.equal(flagged[0].accountId, 'ACTIVE')
 })
 
 test('repair never touches an archived account — that mode means MANAGE is off', () => {
@@ -275,21 +313,39 @@ test('repair never touches an archived account — that mode means MANAGE is off
   assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get('GONE').enabled, 0)
 })
 
-test('repair grants no new capability — mode is untouched, so SCAN and ENTER hold', () => {
-  // The whole safety case: promoting a row into the roster restores REACH, not
-  // permission. `manage_only` must still refuse to enter afterwards.
+test('repair grants no ENTRY — and DOES grant SCAN, which is the honest cost', () => {
+  // The safety case is about ENTRY, and only about entry. `scan` is
+  // `caps.scan && enabled` with `capabilitiesFor('manage_only').scan` true by
+  // default, so `enabled` was the false term and promoting flips scan on. An
+  // earlier version of this test asserted mode/enter/manage and quietly omitted
+  // scan — shaped to the claim rather than testing it. Both are asserted now.
   const db = freshDb()
   seedAccount(db, 'M', { mode: 'manage_only', enabled: 0 })
+  seedPosition(db, 'M', { account: 'M' })
+  assert.equal(accountCapabilities(db, 'M').scan, false, 'scan was off only because enabled was')
+
   repairRosterMembership(db)
+
   const caps = accountCapabilities(db, 'M')
   assert.equal(caps.mode, 'manage_only', 'the preset the owner set is not rewritten')
   assert.equal(caps.enter, false, 'a repaired account may still not open anything')
   assert.equal(caps.manage, true)
+  assert.equal(caps.scan, true, 'promoting a row DOES widen the scan roster — documented, not hidden')
+})
+
+test('a promoted paused account keeps SCAN off — its own capability says so', () => {
+  const db = freshDb()
+  seedAccount(db, 'P', { mode: 'paused', enabled: 0 })
+  seedPosition(db, 'P', { account: 'P' })
+  repairRosterMembership(db)
+  assert.equal(accountCapabilities(db, 'P').scan, false)
+  assert.equal(accountCapabilities(db, 'P').manage, true)
 })
 
 test('repair is idempotent — a second boot finds nothing to promote', () => {
   const db = freshDb()
   seedAccount(db, 'A', { mode: 'manage_only', enabled: 0 })
+  seedPosition(db, 'A', { account: 'A' })
   assert.equal(repairRosterMembership(db).promoted.length, 1)
   assert.deepEqual(repairRosterMembership(db).promoted, [])
 })
@@ -314,6 +370,7 @@ test('the invariant reports violations, and reports nothing once repaired', () =
   seedAccount(db, 'GONE', { mode: 'archived', enabled: 0 })
   seedAccount(db, 'BAD', { mode: 'manage_only', enabled: 0, isLive: 1 })
 
+  seedPosition(db, 'BAD', { account: 'BAD' })
   const bad = rosterInvariantViolations(db)
   assert.equal(bad.length, 1)
   assert.equal(bad[0].accountId, 'BAD')

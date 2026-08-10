@@ -187,39 +187,77 @@ export function archiveAccount(db, accountId) {
  * `"connectivity": "disconnected"`, between them holding 17 open positions and
  * 5 working entry orders that nothing could reach.
  *
- * The invariant, stated once so it can be tested:
+ * WHAT COUNTS AS THE BUG — narrower than the invariant it looks like.
  *
- *     mode !== 'archived'  ⇒  enabled = 1
+ * `mode !== 'archived' ⇒ enabled = 1` states the intent, but as a repair
+ * PREDICATE it is far too wide. Three legitimate states satisfy
+ * `mode != 'archived' AND enabled != 1` and none of them is this defect:
  *
- * `archived` is the only mode that turns MANAGE off, and archiveAccount already
- * refuses to set it while anything is open. So every other mode is a promise to
- * keep managing, and this repair makes the roster keep it.
+ *   1. DISCOVERY ROWS. `upsertAccount` registers at `enabled = 0,
+ *      mode = 'manage_only'`, so browsing the broker's account list makes an
+ *      account visible and configurable WITHOUT becoming tradeable —
+ *      "registering is not enabling". Promoting those would enlist the entire
+ *      broker list into the sidecar roster at the next boot.
+ *   2. `unarchiveAccount` DELIBERATELY leaves `enabled = 0`, because
+ *      "re-entering the sidecar roster is a separate, louder decision than
+ *      un-filing the account". A boot job must not take that decision.
+ *   3. A FLAT DELIBERATE DISABLE. An account with nothing open is not being
+ *      abandoned; reverting the owner's off-switch on every restart would
+ *      leave them without one.
  *
- * Idempotent: after the first pass there is nothing left to promote. `mode` is
- * never touched, so no account gains SCAN or ENTER from being repaired — those
- * two are `caps.x && enabled`, and the modes that had them false keep them
- * false.
+ * So the gate is the harm actually measured, not the invariant: OPEN WORK THAT
+ * NOTHING CAN REACH. `openWork` decides — a row is promoted only when its
+ * MANAGE claim is right now a lie about positions or working orders that exist.
  *
- * @returns {{promoted: Array<{accountId:string, mode:string, isLive:boolean}>}}
+ * ENTRY IS NEVER GRANTED BY A REPAIR. `enabled = 0, mode = 'active'` is
+ * contradictory config reachable through two live routes, and promoting it
+ * would flip ENTER on — `registryAutopilotAccounts` is enabled ∩ enter — which
+ * is a boot job handing out entry permission and bypassing the `confirmLive`
+ * carve-out that exists precisely because that is the owner's word and never a
+ * default. Such rows are REPORTED and left for a human.
+ *
+ * SCAN, STATED HONESTLY. This DOES turn SCAN on for the rows it promotes, and
+ * an earlier draft of this comment claimed the opposite. `scan` is
+ * `caps.scan && enabled` and `capabilitiesFor('manage_only').scan` is `true` by
+ * default, so `enabled` was the false term and flipping it flips scan. The
+ * effect is real — `scanAccountIds` feeds the loop's scan roster and
+ * `phaseWanted` is `.some(...)`, so a wider roster makes the scan/analyze phase
+ * harder to switch off from one account's override. Accepted rather than
+ * hidden: the promoted set is exactly the accounts holding live positions,
+ * whose instruments are worth keeping warm, and scanning is a shared
+ * universe-level pass. `paused` keeps `scan: false` from its own capability.
+ *
+ * @returns {Array<{accountId:string, mode:string, isLive:boolean}>} every
+ *   account whose MANAGE claim is unreachable — a superset of what the repair
+ *   fixes, because the `active` case above is reported and deliberately not
+ *   auto-promoted. Empty is healthy.
  */
 export function rosterInvariantViolations(db) {
-  try {
-    return db.prepare(
-      `SELECT account_id AS accountId, mode, is_live AS isLive FROM accounts
-        WHERE enabled != 1 AND mode IS NOT NULL AND mode != 'archived'
-        ORDER BY is_live DESC, account_id`
-    ).all().map(r => ({ accountId: String(r.accountId), mode: r.mode, isLive: r.isLive === 1 }))
-  } catch { return [] }
+  return unreachableManageRows(db)
+    .map(r => ({ accountId: String(r.account_id), mode: r.mode, isLive: r.is_live === 1 }))
 }
 
-export function repairRosterMembership(db) {
+/**
+ * Rows claiming MANAGE that the sidecar roster cannot reach, open work and all.
+ * Shared by the reporter and the repair so "healthy" means one thing.
+ */
+function unreachableManageRows(db) {
   let rows = []
   try {
     rows = db.prepare(
       `SELECT account_id, mode, is_live FROM accounts
-        WHERE enabled != 1 AND mode IS NOT NULL AND mode != 'archived'`
+        WHERE enabled != 1 AND mode IS NOT NULL AND mode != 'archived'
+        ORDER BY is_live DESC, account_id`
     ).all()
-  } catch { return { promoted: [] } }
+  } catch { return [] }
+  return rows.filter(r => !openWork(db, String(r.account_id)).flat)
+}
+
+export function repairRosterMembership(db) {
+  // Never auto-grant ENTER: a mode whose capability can enter is left for the
+  // owner, and rosterInvariantViolations keeps reporting it until they act.
+  const rows = unreachableManageRows(db)
+    .filter(r => capabilitiesFor(r.mode).enter !== true)
   if (rows.length === 0) return { promoted: [] }
 
   const upd = db.prepare('UPDATE accounts SET enabled = 1, updated_at = ? WHERE account_id = ?')
