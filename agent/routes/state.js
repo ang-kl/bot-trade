@@ -3601,7 +3601,17 @@ export default function stateRouter(db) {
       // the panel alone, and that is the gap this closes.
       let atrRefresh = null
       try { atrRefresh = JSON.parse(getState(db, 'atr_refresh_last_json') || 'null') } catch { atrRefresh = null }
-      res.json({ controllers: heartbeatView(db), atrRefresh })
+      // The roster invariant, reported rather than assumed. The boot repair
+      // restores `mode !== 'archived' ⇒ enabled = 1`, but a writer that
+      // recreates the pair at runtime would go unnoticed until the next boot —
+      // and the state it creates is an account whose capabilities claim MANAGE
+      // while no amend or close can reach it. Empty is the healthy answer.
+      let rosterInvariant = []
+      try {
+        const { rosterInvariantViolations } = await import('../services/account-capabilities.js')
+        rosterInvariant = rosterInvariantViolations(db)
+      } catch { rosterInvariant = [] }
+      res.json({ controllers: heartbeatView(db), atrRefresh, rosterInvariant })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }

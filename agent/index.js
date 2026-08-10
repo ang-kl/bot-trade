@@ -198,6 +198,15 @@ try {
   // first boot there is nothing left to fold. See services/account-arming.js.
   const { migrateLegacyArmFlags } = await import('./services/account-arming.js')
   migrateLegacyArmFlags(db)
+  // Restore the roster invariant: a non-archived mode promises to keep MANAGING
+  // the account's open positions, and only membership of the sidecar roster can
+  // keep that promise. Idempotent. See services/account-capabilities.js.
+  const { repairRosterMembership } = await import('./services/account-capabilities.js')
+  const repair = repairRosterMembership(db)
+  if (repair.promoted.length) {
+    const names = repair.promoted.map(p => `${p.isLive ? 'LIVE' : 'demo'} ${p.accountId} (${p.mode})`)
+    console.log(`[boot] roster repair: ${repair.promoted.length} account(s) claimed MANAGE while out of the sidecar roster — ${names.join(', ')}`)
+  }
 } catch (e) {
   console.warn('[boot] account registry init failed (non-fatal):', e.message)
 }

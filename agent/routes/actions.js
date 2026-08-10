@@ -3913,8 +3913,23 @@ export default function actionsRouter(db) {
             for (const a of accounts) {
               if (a?.accountId == null) continue
               upsertAccount(db, { accountId: a.accountId, traderLogin: a.traderLogin ?? null, isLive: !!a.isLive })
-              db.prepare(`UPDATE accounts SET enabled = ?, mode = ?, updated_at = ? WHERE account_id = ?`)
-                .run(a.autopilot ? 1 : 0, a.autopilot ? 'active' : 'manage_only', new Date().toISOString(), String(a.accountId))
+              // `enabled` IS NO LONGER MIRRORED FROM THE AUTOPILOT ROLE (10-08-2026).
+              //
+              // This wrote `enabled = a.autopilot ? 1 : 0` alongside the mode, so
+              // every account without the autopilot role was ejected from the
+              // sidecar roster while keeping a mode that still claims MANAGE.
+              // That pair is the unmanaged-exposure state: amends and closes
+              // cannot be routed to a roster-absent account, so its open
+              // positions go unwatched under a capability reading `manage: true`.
+              // Six of seven production accounts sat that way this morning,
+              // holding 17 positions between them, and this push recreated it
+              // every time the account list was sent.
+              //
+              // The role decides the MODE, which is the entry question and the
+              // only one it was ever qualified to answer. Roster membership
+              // follows the invariant instead: non-archived means managed.
+              db.prepare(`UPDATE accounts SET enabled = 1, mode = ?, updated_at = ? WHERE account_id = ?`)
+                .run(a.autopilot ? 'active' : 'manage_only', new Date().toISOString(), String(a.accountId))
             }
           } catch (e) { console.warn('[actions/ctrader-config] registry mirror failed (non-fatal):', e.message) }
         }).catch(() => {})
