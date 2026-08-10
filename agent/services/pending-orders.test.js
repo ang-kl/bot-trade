@@ -422,3 +422,104 @@ test('a filled fib order carries its approval id onto the trade', () => {
   assert.equal(t.risk_event_id, 97150)
   assert.equal(t.account_id, '123')
 })
+
+// ---------------------------------------------------------------------------
+// The position's clock starts at the FILL — 2026-08-10.
+//
+// `expires_at` (order deadline) was written straight into
+// `monitored_positions.time_cap_at` (position deadline). A fib limit rests for
+// most of its life by design, so the position inherited only the REMAINDER of
+// its intended hold — and a fill after the deadline inherited a cap already in
+// the past. evaluatePosition checks the cap before anything else, so those
+// closed on the first monitor pass: thirteen in the hour after the open.
+// ---------------------------------------------------------------------------
+
+test('a fill late in the order life still gets its FULL intended hold', () => {
+  const db = freshDb()
+  // Placed 7h ago with an 8h hold — under the old rule this position would
+  // have been born with 60 minutes to live instead of 480.
+  const placed = new Date(Date.now() - 7 * 3_600_000).toISOString()
+  const expires = new Date(Date.parse(placed) + 480 * 60_000).toISOString()
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, account_id, time_cap_minutes)
+    VALUES ('EURUSD', '15m', '901', 1, 1.1, 1.095, 1.11, 0.01, ?, ?, 'working', 'pending-fib', '123', 480)
+  `).run(placed, expires)
+  const row = db.prepare(`SELECT * FROM pending_orders WHERE order_id = '901'`).get()
+
+  const openedMs = Date.now()
+  persistFilledTrade(db, row, { positionId: 901, price: 1.1002, tradeData: { openTimestamp: openedMs } }, '123')
+
+  const mp = db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE symbol = 'EURUSD'`).get()
+  const capMs = Date.parse(mp.time_cap_at)
+  assert.ok(capMs > Date.now() + 470 * 60_000, 'the hold is measured from the fill, not the placement')
+  assert.ok(capMs < Date.now() + 490 * 60_000)
+  assert.ok(capMs > Date.parse(expires), 'and therefore outlives the order deadline it used to copy')
+})
+
+test('a fill AFTER the order deadline is not born already expired', () => {
+  // The Monday-open case: an order that rested through the weekend and filled
+  // on the gap. Copying expires_at made time_cap_at two days stale, so the
+  // very first monitor pass returned FULL_EXIT time_cap_expired.
+  const db = freshDb()
+  const placed = new Date(Date.now() - 72 * 3_600_000).toISOString()
+  const expires = new Date(Date.now() - 48 * 3_600_000).toISOString()
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, account_id, time_cap_minutes)
+    VALUES ('EURUSD', '15m', '902', 1, 1.1, 1.095, 1.11, 0.01, ?, ?, 'working', 'pending-fib', '123', 480)
+  `).run(placed, expires)
+  const row = db.prepare(`SELECT * FROM pending_orders WHERE order_id = '902'`).get()
+  persistFilledTrade(db, row, { positionId: 902, price: 1.1002 }, '123')
+
+  const mp = db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE symbol = 'EURUSD'`).get()
+  assert.ok(Date.parse(mp.time_cap_at) > Date.now(), 'a position may not be born past its own cap')
+})
+
+test('a legacy row recovers its hold from the placed→expires span', () => {
+  // Rows written before time_cap_minutes existed. The span IS the
+  // expiryMinutes the placement computed, so the intent is recoverable.
+  const db = freshDb()
+  const placed = new Date(Date.now() - 200 * 60_000).toISOString()
+  const expires = new Date(Date.parse(placed) + 240 * 60_000).toISOString()
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, account_id)
+    VALUES ('EURUSD', '5m', '903', 1, 1.1, 1.095, 1.11, 0.01, ?, ?, 'working', 'pending-fib', '123')
+  `).run(placed, expires)
+  const row = db.prepare(`SELECT * FROM pending_orders WHERE order_id = '903'`).get()
+  persistFilledTrade(db, row, { positionId: 903, price: 1.1002 }, '123')
+
+  const mp = db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE symbol = 'EURUSD'`).get()
+  const capMs = Date.parse(mp.time_cap_at)
+  assert.ok(capMs > Date.now() + 235 * 60_000 && capMs < Date.now() + 245 * 60_000,
+    '240 minutes from the fill, not the 40 minutes left on the order')
+})
+
+test('a signal with no cap of its own yields no position cap', () => {
+  // The order took the 24h fallback expiry; that fallback is an order-lifetime
+  // default and was never a statement about how long to hold. A null cap hands
+  // the position to the loss-guardian's maxHoldHours, which is the designed
+  // backstop for exactly this case.
+  const db = freshDb()
+  const placed = new Date(Date.now() - 60 * 60_000).toISOString()
+  const expires = new Date(Date.parse(placed) + 24 * 3_600_000).toISOString()
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, account_id)
+    VALUES ('EURUSD', '4h', '904', 1, 1.1, 1.095, 1.11, 0.01, ?, ?, 'working', 'pending-fib', '123')
+  `).run(placed, expires)
+  const row = db.prepare(`SELECT * FROM pending_orders WHERE order_id = '904'`).get()
+  persistFilledTrade(db, row, { positionId: 904, price: 1.1002 }, '123')
+
+  const mp = db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE symbol = 'EURUSD'`).get()
+  assert.equal(mp.time_cap_at, null)
+})
+
+test('placement records the hold alongside the order deadline', async () => {
+  const db = freshDb()
+  const { deps } = makeDeps({
+    setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: { bias: 'long', entry: 1.1, sl: 1.09, tp1: 1.12, conviction: 7, time_cap_minutes: 4320 } }],
+  })
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  const row = db.prepare(`SELECT time_cap_minutes, placed_at, expires_at FROM pending_orders WHERE symbol = 'EURUSD'`).get()
+  assert.equal(row.time_cap_minutes, 4320, 'the hold is stored, not inferred later')
+  const span = (Date.parse(row.expires_at) - Date.parse(row.placed_at)) / 60_000
+  assert.ok(Math.abs(span - 4320) < 2, 'and the order deadline still tracks it')
+})

@@ -938,6 +938,14 @@ export function initDB(dbPath) {
   if (!poColNames.has('strategy')) {
     db.exec("ALTER TABLE pending_orders ADD COLUMN strategy TEXT");
   }
+  // The INTENDED HOLD of the position the order would become, in minutes —
+  // a different quantity from `expires_at`, which is the deadline for the
+  // ORDER to fill. Conflating the two gave every pending fill a time cap
+  // measured from placement, so a limit that rested most of its life before
+  // filling produced a position that was born at or past its cap (2026-08-10).
+  if (!poColNames.has('time_cap_minutes')) {
+    db.exec("ALTER TABLE pending_orders ADD COLUMN time_cap_minutes INTEGER");
+  }
 
   // Inverted Cup & Handle (owner-directed 2026-07-22): diagnostics rows now
   // come from either direction — tag which one so they don't read as
