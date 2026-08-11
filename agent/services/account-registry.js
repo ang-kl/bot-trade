@@ -18,7 +18,7 @@
 import { getState, setState } from '../db.js'
 // capabilitiesFor is a PURE preset table with no imports of its own, so
 // importing it here cannot create a cycle back through this module.
-import { capabilitiesFor } from './account-capabilities.js'
+import { capabilitiesFor, SETTABLE_MODES, enabledForMode, liveEntryRefusal, archiveAccount } from './account-capabilities.js'
 
 const now = () => new Date().toISOString()
 
@@ -72,7 +72,7 @@ export function upsertAccount(db, { accountId, traderLogin = null, brokerLabel =
   } else {
     db.prepare(`
       INSERT INTO accounts (account_id, trader_login, broker_label, is_live, base_currency, leverage, enabled, mode, params, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 0, 'manage_only', '{}', ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 'registered', '{}', ?, ?)
     `).run(
       id,
       traderLogin != null ? String(traderLogin) : null,
@@ -134,16 +134,30 @@ export function syncSelectedAccount(db, accountId, isLive, traderLogin = null, {
  * already exist (created by selection or an accounts push) — enabling an
  * unknown id is refused rather than inventing a row with no metadata.
  */
-export function setAccountEnabled(db, accountId, enabled, mode = null) {
+export function setAccountEnabled(db, accountId, enabled, mode = null, { confirmLive = false } = {}) {
   if (accountId == null) return { ok: false, error: 'accountId required' }
   const id = String(accountId)
   const row = db.prepare('SELECT account_id, is_live FROM accounts WHERE account_id = ?').get(id)
   if (!row) return { ok: false, error: `unknown account ${id} — select it once or push the account list first` }
-  const m = mode || (enabled ? 'active' : 'manage_only')
-  if (!['active', 'manage_only', 'paused'].includes(m)) return { ok: false, error: `invalid mode ${m}` }
+
+  // DISABLING IS ARCHIVING, and archiving has a refusal. This used to write
+  // `enabled = 0, mode = 'manage_only'` — a row still claiming MANAGE with no
+  // way to reach it, which is the pair PR A repaired six of in production. The
+  // only legitimate way off the roster is archiveAccount, whose open-work
+  // refusal is the thing that stops an account being abandoned mid-position.
+  if (!enabled) {
+    const out = archiveAccount(db, id)
+    return out.ok ? { ...out, enabled: false, isLive: row.is_live === 1 } : out
+  }
+
+  const m = mode || 'active'
+  if (!SETTABLE_MODES.includes(m)) return { ok: false, error: `invalid mode ${m}` }
+  const gate = liveEntryRefusal(row.is_live === 1, m, confirmLive)
+  if (gate) return gate
+  // `enabled` is derived, never passed in — see enabledForMode.
   db.prepare('UPDATE accounts SET enabled = ?, mode = ?, updated_at = ? WHERE account_id = ?')
-    .run(enabled ? 1 : 0, m, now(), id)
-  return { ok: true, accountId: id, enabled: !!enabled, mode: m, isLive: row.is_live === 1 }
+    .run(enabledForMode(m) ? 1 : 0, m, now(), id)
+  return { ok: true, accountId: id, enabled: enabledForMode(m), mode: m, isLive: row.is_live === 1 }
 }
 
 /**

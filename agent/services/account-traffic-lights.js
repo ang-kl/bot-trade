@@ -130,7 +130,7 @@ function linkLight(db, id, roster, byName, now) {
 
 function scanLight(a, byName) {
   if (!a.scan) {
-    return light('red', a.mode === 'archived' ? 'archived' : `scanning is off in ${a.mode}`)
+    return light('red', a.mode === 'archived' ? 'archived' : a.mode === 'registered' ? 'registered, not engaged' : `scanning is off in ${a.mode}`)
   }
   const loop = byName.get('main_loop')
   if (!loop || loop.status === 'idle') return light('unknown', 'scanning is on, but the loop has not reported yet')
@@ -141,6 +141,7 @@ function scanLight(a, byName) {
 function enterLight(a, globalHalt, guardEval) {
   if (!a.enter) {
     if (a.mode === 'archived') return light('red', 'archived')
+    if (a.mode === 'registered') return light('red', 'registered, not engaged — enable it to trade')
     if (!a.enabled) return light('red', 'the account is disabled, so it is not in the sidecar roster')
     return light('red', `entries are off in ${a.mode}`)
   }
@@ -154,7 +155,7 @@ function manageLight(a, stoplessCount, stoplessKnown) {
     if (!a.flat) {
       return light('red', `NOT WATCHING while ${a.reasonsText || describeWork(a)} remain open`)
     }
-    return light('unknown', 'archived and flat — nothing to manage')
+    return light('unknown', `${a.mode === 'registered' ? 'registered' : 'archived'} and flat — nothing to manage`)
   }
   if (a.flat) return light('green', 'nothing open to manage')
   if (!stoplessKnown) return light('unknown', `watching ${describeWork(a)}; stop coverage unknown`)
