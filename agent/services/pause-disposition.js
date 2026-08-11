@@ -216,8 +216,17 @@ export function planPendingDisposition(db, { accountId, now = Date.now(), rows =
     }
 
     // supervised-drain.
-    if (caps.mode === 'archived') {
-      return { ...base, action: 'cancel', signal: 'account_archived', reason: 'the account was archived' }
+    // `!caps.manage`, not `mode === 'archived'`. `registered` is off the roster
+    // for the same reason and with the same capability row, so a resting order
+    // on one is equally unmanageable — naming one mode meant the other silently
+    // kept its pendings armed.
+    if (!caps.manage) {
+      return {
+        ...base,
+        action: 'cancel',
+        signal: 'account_archived',
+        reason: `the account is ${caps.mode || 'off the roster'} — nothing is managing its orders`,
+      }
     }
     if (armedStrategies && row.strategy && !armedStrategies.includes(row.strategy)) {
       return {
