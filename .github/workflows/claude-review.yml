@@ -67,7 +67,8 @@ jobs:
       # CI green. A second opinion that can block the first is worse than no
       # second opinion: it converts a convenience into a hard dependency on an
       # external API being reachable, in credit, and in a good mood.
-      - if: steps.guard.outputs.have == 'true'
+      - id: review
+        if: steps.guard.outputs.have == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -124,3 +125,54 @@ jobs:
           # reviewer needs to read the code and say something, not change it.
           claude_args: |
             --allowedTools "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*)"
+
+      # A DEAD REVIEWER AND A CLEAN REVIEW MUST NOT LOOK THE SAME (11-08-2026).
+      #
+      # `continue-on-error` above is the right contract and stays: a second
+      # opinion that can block the first is worse than none. But it also means
+      # this job reports SUCCESS whatever happens, so "review ✅" in the check
+      # list has meant three different things, and only one of them is a review.
+      #
+      # 1. IT REVIEWED. #701 and #702: ran ~7 minutes, posted findings. On #701
+      #    three were real and one reached `main` because a green check was read
+      #    as a read review.
+      # 2. IT DIED. #703 and #704's first push: `is_error: true, num_turns: 1,
+      #    total_cost_usd: 0` after ~330ms — an API call that never started, the
+      #    signature of a key that is rejected, expired or out of credit.
+      # 3. IT WAS SKIPPED BY WORKFLOW VALIDATION. #704's second push, because it
+      #    edits THIS FILE: the action refuses to run when the workflow differs
+      #    from the copy on the default branch. It exits ZERO doing so, which is
+      #    why `outcome` alone cannot see case 3 — the first version of this
+      #    check missed it, on its own PR, immediately.
+      #
+      # The discriminator for case 3 is the execution log: the action writes
+      # claude-execution-output.json only once the SDK has actually run, and
+      # exits before that on a validation skip.
+      #
+      # This is failure class 4 from the prompt above, turned on the reviewer
+      # itself: a diagnostic more permissive than the thing it describes. The job
+      # still cannot fail. It just stops being quiet about doing nothing.
+      - if: steps.guard.outputs.have == 'true'
+        env:
+          OUTCOME: ${{ steps.review.outcome }}
+        run: |
+          LOG="${RUNNER_TEMP}/claude-execution-output.json"
+          if [ "$OUTCOME" = "success" ] && [ -f "$LOG" ]; then
+            echo "Claude review completed (outcome=$OUTCOME, execution log present)."
+            exit 0
+          fi
+          if [ ! -f "$LOG" ]; then
+            WHY="the action never started the review — on a PR that edits .github/workflows/claude-review.yml this is EXPECTED, because the action requires the workflow to match the default branch. It will run again once this PR is merged."
+          else
+            WHY="the reviewer ran and errored (outcome=$OUTCOME). A sub-second run with num_turns 1 and zero cost means ANTHROPIC_API_KEY was rejected, expired, or out of credit."
+          fi
+          echo "::warning title=Claude review did not review::$WHY DO NOT read a green 'review' check on this PR as 'this diff was reviewed'."
+          {
+            echo "### :warning: Claude review did not review this diff"
+            echo
+            echo "$WHY"
+            echo
+            echo "This job is \`continue-on-error\` by contract and can never block a merge."
+            echo "That is deliberate. What is not deliberate is a dead or skipped reviewer"
+            echo "looking identical to a clean one in the check list — hence this note."
+          } >> "$GITHUB_STEP_SUMMARY"

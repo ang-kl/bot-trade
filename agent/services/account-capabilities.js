@@ -64,6 +64,41 @@ export const SETTABLE_MODES = ['active', 'manage_only', 'paused']
  */
 export const OFF_ROSTER_MODES = ['archived', 'registered']
 
+/**
+ * What a pushed account-list entry means for an account's mode.
+ *
+ * Extracted from /actions/ctrader-config so the rule can be TESTED rather than
+ * re-described. The route has no HTTP-level harness, and the first two attempts
+ * at this write both shipped over-wide — `enabled = 0` ejecting managed
+ * accounts, then `enabled = 1` enlisting every account the broker listed. A
+ * test that re-implements the rule would have passed for both.
+ *
+ * Only the AUTOPILOT ROLE is a statement of intent. An entry without it
+ * DESCRIBES an account; it does not engage one.
+ *
+ * @param {string|null|undefined} currentMode the mode the row has right now
+ * @param {boolean} autopilot the role on the pushed entry
+ * @returns {string|null} the mode to write, or null to leave the row alone
+ */
+export function modeForPushedEntry(currentMode, autopilot) {
+  const mode = String(currentMode || '')
+  // A MODE WE DO NOT RECOGNISE IS NOT A MODE TO OVERWRITE. An absent row (the
+  // lookup returned undefined) or a value outside MODES means we do not know
+  // what state this account is in, and a background sync is the last thing
+  // that should decide. The file's own default-case reasoning applies: the
+  // safe reading of an unknown state starts nothing and changes nothing.
+  if (!MODES.includes(mode)) return null
+  // Un-filing an archived account takes /actions/account-archive, never a
+  // routine list refresh — the one state that turns MANAGE off is not
+  // something a background sync may undo.
+  if (mode === 'archived') return null
+  if (autopilot) return 'active'
+  // Off the roster on purpose (`registered`): described, not engaged.
+  if (!enabledForMode(mode)) return null
+  // On the roster already: losing the role costs entries and nothing else.
+  return 'manage_only'
+}
+
 /** The one rule. `enabled` is a function of `mode`, never an independent switch. */
 export function enabledForMode(mode) {
   return !OFF_ROSTER_MODES.includes(String(mode || ''))

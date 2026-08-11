@@ -69,6 +69,7 @@ function PhaseSwitch({ phase, acct, masterOn, busy, onSet }) {
       : cap.mode === 'manage_only' ? 'its mode is Manage only — existing positions are still managed, but no new entries'
         : cap.mode === 'paused' ? 'its mode is Paused — no scanning and no new entries'
           : cap.mode === 'archived' ? 'this account is Archived'
+            : cap.mode === 'registered' ? 'this account is Registered only — it is known to the registry but has never been engaged, so it is not in the broker roster'
             : `its mode is ${cap.mode || 'unknown'}`
   const why = blocked
     ? `Master ${phase.label} is off above — turn it on there first. This account's own setting (${ov === null ? 'inherit' : ov ? 'on' : 'off'}) is remembered.`

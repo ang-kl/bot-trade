@@ -7,7 +7,7 @@ import {
   capabilitiesFor, accountCapabilities, canScan, canEnter, canManage,
   openWork, archiveAccount, unarchiveAccount, capabilityView, MODES, SETTABLE_MODES,
   OFF_ROSTER_MODES, enabledForMode,
-  repairRosterMembership, rosterInvariantViolations,
+  repairRosterMembership, rosterInvariantViolations, modeForPushedEntry,
 } from './account-capabilities.js'
 
 const NOW = '2026-08-03T00:00:00Z'
@@ -503,4 +503,48 @@ test('setAccountEnabled will not hand a LIVE account entry without the word', ()
 
   assert.equal(setAccountEnabled(db, 'L', true, 'active', { confirmLive: true }).ok, true)
   assert.equal(accountCapabilities(db, 'L').enter, true)
+})
+
+// ---------------------------------------------------------------------------
+// The mirror rule, as a unit — 11-08-2026.
+//
+// /actions/ctrader-config has no route-level harness, and that is exactly how
+// its first fix shipped over-wide: `enabled = 1` for every pushed account,
+// which put all SEVEN production accounts on the roster including the two flat
+// live rows the boot repair had been narrowed to leave alone. The rule the
+// route now applies is small enough to state and assert directly.
+// ---------------------------------------------------------------------------
+
+test('a push without the autopilot role never enlists an unengaged account', () => {
+  // `registered` and `archived` are off-roster ON PURPOSE. A routine
+  // account-list refresh describes them; it does not engage them. `null` means
+  // "leave the row alone", which is the only answer that cannot over-reach.
+  assert.equal(modeForPushedEntry('registered', false), null)
+  assert.equal(modeForPushedEntry('archived', false), null)
+})
+
+test('losing the autopilot role costs entries and nothing else', () => {
+  // An account already on the roster keeps managing what it holds — the whole
+  // point of manage_only, and what the pre-#701 `enabled = 0` write destroyed.
+  for (const m of ['active', 'manage_only', 'paused']) {
+    assert.equal(modeForPushedEntry(m, false), 'manage_only')
+    assert.equal(enabledForMode(modeForPushedEntry(m, false)), true, `${m} keeps its reach`)
+  }
+})
+
+test('the autopilot role engages an account, but cannot un-file an archived one', () => {
+  assert.equal(modeForPushedEntry('registered', true), 'active')
+  assert.equal(modeForPushedEntry('manage_only', true), 'active')
+  assert.equal(modeForPushedEntry('archived', true), null, 'un-filing takes /actions/account-archive')
+})
+
+test('an unknown or absent mode is left alone rather than guessed at', () => {
+  // `undefined` is what the row lookup returns when there is no row. Writing a
+  // mode into that is guessing, and guessing is how both previous versions of
+  // this write went over-wide. It holds with the autopilot role too — the role
+  // says "engage this", not "engage whatever this turns out to be".
+  for (const bad of [null, undefined, '', 'nonsense']) {
+    assert.equal(modeForPushedEntry(bad, false), null, `${bad} must be left alone`)
+    assert.equal(modeForPushedEntry(bad, true), null, `${bad} must be left alone even with the role`)
+  }
 })

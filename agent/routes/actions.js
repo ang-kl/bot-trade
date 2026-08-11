@@ -3912,7 +3912,10 @@ export default function actionsRouter(db) {
         // Account Registry mirror (M0): keep the registry in step with the
         // pushed roles so both sources agree (identity/metadata only here;
         // the enabled flag follows each entry's autopilot role).
-        import('../services/account-registry.js').then(({ upsertAccount }) => {
+        Promise.all([
+          import('../services/account-registry.js'),
+          import('../services/account-capabilities.js'),
+        ]).then(([{ upsertAccount }, { enabledForMode, modeForPushedEntry }]) => {
           try {
             for (const a of accounts) {
               if (a?.accountId == null) continue
@@ -3933,14 +3936,31 @@ export default function actionsRouter(db) {
               // only one it was ever qualified to answer. Roster membership
               // follows the invariant instead: non-archived means managed.
               //
-              // `AND mode != 'archived'` — an archived account appearing in the
-              // pushed list must not be silently un-filed and put back on the
-              // roster. Clobbering `mode` here predates this change; pairing it
-              // with `enabled = 1` is what made it dangerous, because archived
-              // is the one state that turns MANAGE off and it should take
-              // /actions/account-archive to leave it, not a routine list push.
-              db.prepare(`UPDATE accounts SET enabled = 1, mode = ?, updated_at = ? WHERE account_id = ? AND mode != 'archived'`)
-                .run(a.autopilot ? 'active' : 'manage_only', new Date().toISOString(), String(a.accountId))
+              // A PUSH MUST NOT ENLIST WHAT NOBODY ENGAGED (11-08-2026).
+              //
+              // The first version of the fix above wrote `enabled = 1` for every
+              // account in the pushed list. That traded one over-reach for
+              // another: measured on production the same day, all SEVEN accounts
+              // came back `enabled = 1, connectivity: active`, including the two
+              // flat live rows the boot repair had been deliberately narrowed to
+              // leave alone. The repair was careful and this write was not, so
+              // the careless one won.
+              //
+              // Only the AUTOPILOT ROLE is a statement of intent. An account
+              // pushed without it is being described, not engaged, so this must
+              // not drag it onto the roster — and must not overwrite a mode that
+              // says it is off the roster on purpose (`archived` by the owner's
+              // gesture, `registered` because discovery only ever registers).
+              // The rule itself lives in account-capabilities.js so it can be
+              // tested directly. This route has no HTTP-level harness, and a
+              // test that re-implemented the rule here would have passed for
+              // both of the over-wide versions that preceded it.
+              const current = db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get(String(a.accountId))?.mode
+              const nextMode = modeForPushedEntry(current, !!a.autopilot)
+              if (nextMode) {
+                db.prepare('UPDATE accounts SET enabled = ?, mode = ?, updated_at = ? WHERE account_id = ?')
+                  .run(enabledForMode(nextMode) ? 1 : 0, nextMode, new Date().toISOString(), String(a.accountId))
+              }
             }
           } catch (e) { console.warn('[actions/ctrader-config] registry mirror failed (non-fatal):', e.message) }
         }).catch(() => {})
