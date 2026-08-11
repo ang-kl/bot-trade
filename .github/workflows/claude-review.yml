@@ -131,30 +131,48 @@ jobs:
       # `continue-on-error` above is the right contract and stays: a second
       # opinion that can block the first is worse than none. But it also means
       # this job reports SUCCESS whatever happens, so "review ✅" in the check
-      # list means either "read the diff and found nothing" or "died in 333ms
-      # and read nothing at all".
+      # list has meant three different things, and only one of them is a review.
       #
-      # Measured: on #703 and #704 the action returned
-      # `is_error: true, num_turns: 1, total_cost_usd: 0` after ~330ms — an API
-      # call that never got started — and both PRs still showed a green review.
-      # On #701 the reviewer ran ~7 minutes and found three real defects, one of
-      # which reached `main` because a green check was read as a read review.
+      # 1. IT REVIEWED. #701 and #702: ran ~7 minutes, posted findings. On #701
+      #    three were real and one reached `main` because a green check was read
+      #    as a read review.
+      # 2. IT DIED. #703 and #704's first push: `is_error: true, num_turns: 1,
+      #    total_cost_usd: 0` after ~330ms — an API call that never started, the
+      #    signature of a key that is rejected, expired or out of credit.
+      # 3. IT WAS SKIPPED BY WORKFLOW VALIDATION. #704's second push, because it
+      #    edits THIS FILE: the action refuses to run when the workflow differs
+      #    from the copy on the default branch. It exits ZERO doing so, which is
+      #    why `outcome` alone cannot see case 3 — the first version of this
+      #    check missed it, on its own PR, immediately.
+      #
+      # The discriminator for case 3 is the execution log: the action writes
+      # claude-execution-output.json only once the SDK has actually run, and
+      # exits before that on a validation skip.
       #
       # This is failure class 4 from the prompt above, turned on the reviewer
-      # itself: a diagnostic more permissive than the thing it describes. The
-      # job still cannot fail. It just stops being quiet about doing nothing.
-      - if: steps.guard.outputs.have == 'true' && steps.review.outcome != 'success'
+      # itself: a diagnostic more permissive than the thing it describes. The job
+      # still cannot fail. It just stops being quiet about doing nothing.
+      - if: steps.guard.outputs.have == 'true'
+        env:
+          OUTCOME: ${{ steps.review.outcome }}
         run: |
-          echo "::warning title=Claude review did not run::The reviewer exited '${{ steps.review.outcome }}'. This job stays green by design, so DO NOT read a green 'review' check as 'this diff was reviewed'."
+          LOG="${RUNNER_TEMP}/claude-execution-output.json"
+          if [ "$OUTCOME" = "success" ] && [ -f "$LOG" ]; then
+            echo "Claude review completed (outcome=$OUTCOME, execution log present)."
+            exit 0
+          fi
+          if [ ! -f "$LOG" ]; then
+            WHY="the action never started the review — on a PR that edits .github/workflows/claude-review.yml this is EXPECTED, because the action requires the workflow to match the default branch. It will run again once this PR is merged."
+          else
+            WHY="the reviewer ran and errored (outcome=$OUTCOME). A sub-second run with num_turns 1 and zero cost means ANTHROPIC_API_KEY was rejected, expired, or out of credit."
+          fi
+          echo "::warning title=Claude review did not review::$WHY DO NOT read a green 'review' check on this PR as 'this diff was reviewed'."
           {
-            echo "### :warning: Claude review did not complete"
+            echo "### :warning: Claude review did not review this diff"
             echo
-            echo "The action exited \`${{ steps.review.outcome }}\`, so **no review happened on this PR**."
+            echo "$WHY"
             echo
             echo "This job is \`continue-on-error\` by contract and can never block a merge."
-            echo "That is deliberate. What is not deliberate is a dead reviewer looking"
-            echo "identical to a clean one in the check list — hence this note."
-            echo
-            echo "Common cause: \`ANTHROPIC_API_KEY\` rejected, expired, or out of credit"
-            echo "(the signature is \`num_turns: 1\`, \`total_cost_usd: 0\`, a sub-second run)."
+            echo "That is deliberate. What is not deliberate is a dead or skipped reviewer"
+            echo "looking identical to a clean one in the check list — hence this note."
           } >> "$GITHUB_STEP_SUMMARY"
