@@ -38,10 +38,36 @@
 // asks. Nothing here reads or writes trading state — it answers questions.
 import { listAccounts } from './account-registry.js'
 
-export const MODES = ['active', 'manage_only', 'paused', 'archived']
+export const MODES = ['active', 'manage_only', 'paused', 'archived', 'registered']
 
 /** Modes an operator may set directly. `archived` goes through archiveAccount. */
 export const SETTABLE_MODES = ['active', 'manage_only', 'paused']
+
+/**
+ * THE MODES THAT ARE OFF THE SIDECAR ROSTER, and the derivation that makes the
+ * unreachable-MANAGE pair unproducible rather than merely repaired (PR B).
+ *
+ * `enabled` used to be a switch of its own, silently gating SCAN, ENTER and —
+ * despite the comment on accountCapabilities saying otherwise — reach for
+ * MANAGE too. Nothing in the mode table named it, which is how `enabled = 0`
+ * beside a mode that claims MANAGE came to exist six times over in production.
+ *
+ * It is now DERIVED. `enabledForMode` is the single rule, every writer uses it,
+ * and the contradictory pair has no gesture that can produce it.
+ *
+ * `registered` is what "registering is not enabling" needed all along.
+ * Discovery used to insert `enabled = 0, mode = 'manage_only'` — a row claiming
+ * MANAGE while off the roster, i.e. the exact shape of the bug, written by
+ * design on every account the broker has ever shown. As a MODE it says the true
+ * thing: known to the registry, configurable, engaged with nothing. Its
+ * capabilities match `archived` so it adds no new safety surface.
+ */
+export const OFF_ROSTER_MODES = ['archived', 'registered']
+
+/** The one rule. `enabled` is a function of `mode`, never an independent switch. */
+export function enabledForMode(mode) {
+  return !OFF_ROSTER_MODES.includes(String(mode || ''))
+}
 
 /**
  * Preset → capabilities (plan §2 table).
@@ -60,6 +86,11 @@ export function capabilitiesFor(mode, { scanWhileManageOnly = true } = {}) {
     case 'paused':
       return { scan: false, enter: false, manage: true }
     case 'archived':
+    // Deliberately identical to `archived`: a registered-but-unengaged account
+    // is off the roster, and MANAGE off is only safe because both states are
+    // unreachable while the account holds anything (archiveAccount refuses,
+    // and discovery rows are new by definition).
+    case 'registered': // eslint-disable-line no-fallthrough
       return { scan: false, enter: false, manage: false }
     default:
       // An unrecognised mode must not silently become 'active'. The safe
@@ -246,7 +277,7 @@ function unreachableManageRows(db) {
   try {
     rows = db.prepare(
       `SELECT account_id, mode, is_live FROM accounts
-        WHERE enabled != 1 AND mode IS NOT NULL AND mode != 'archived'
+        WHERE enabled != 1 AND mode IS NOT NULL AND mode NOT IN ('archived', 'registered')
         ORDER BY is_live DESC, account_id`
     ).all()
   } catch { return [] }
@@ -273,17 +304,45 @@ export function repairRosterMembership(db) {
 }
 
 /** Bring an archived account back. Always returns to the quietest live mode. */
-export function unarchiveAccount(db, accountId, mode = 'manage_only') {
+export function unarchiveAccount(db, accountId, mode = 'manage_only', { confirmLive = false } = {}) {
   const id = String(accountId)
   if (!SETTABLE_MODES.includes(mode)) return { ok: false, error: `invalid mode ${mode}` }
-  const row = db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get(id)
+  const row = db.prepare('SELECT mode, is_live FROM accounts WHERE account_id = ?').get(id)
   if (!row) return { ok: false, error: `account ${id} is not in the registry` }
-  if (row.mode !== 'archived') return { ok: false, error: `account ${id} is not archived` }
-  db.prepare('UPDATE accounts SET mode = ?, updated_at = ? WHERE account_id = ?')
-    .run(mode, new Date().toISOString(), id)
-  // Deliberately does NOT re-enable: re-entering the sidecar roster is a
-  // separate, louder decision than un-filing the account.
-  return { ok: true, accountId: id, mode, enabled: false }
+  if (!OFF_ROSTER_MODES.includes(row.mode)) return { ok: false, error: `account ${id} is not archived` }
+  const gate = liveEntryRefusal(row.is_live === 1, mode, confirmLive)
+  if (gate) return gate
+  // RE-ENABLING IS NO LONGER A SEPARATE DECISION, because `enabled` is no
+  // longer a decision at all — it is derived from the mode being set here. The
+  // old note ("a separate, louder decision") described a switch that existed;
+  // leaving it 0 now would recreate the very pair this file forbids.
+  db.prepare('UPDATE accounts SET mode = ?, enabled = ?, updated_at = ? WHERE account_id = ?')
+    .run(mode, enabledForMode(mode) ? 1 : 0, new Date().toISOString(), id)
+  return { ok: true, accountId: id, mode, enabled: enabledForMode(mode) }
+}
+
+/**
+ * The live-entry carve-out, in ONE place so every path that can grant a live
+ * account ENTER is covered rather than just the route that happened to have it.
+ *
+ * It used to gate `enabled = true` on a live account, from the era when
+ * `enabled` was the only switch. With `enabled` derived, the gate attaches to
+ * what it was always protecting: giving a LIVE account the ability to open
+ * positions. That is strictly tighter than before — `unarchiveAccount(id,
+ * 'active')` reached live-active with no confirmation at all.
+ *
+ * Roster membership is deliberately NOT gated. Reaching an account to amend or
+ * close its existing positions is not a privilege to be confirmed; that is the
+ * principle this file opens with, and #701/#702 are what it cost to relearn.
+ */
+export function liveEntryRefusal(isLive, mode, confirmLive) {
+  if (!isLive) return null
+  if (!capabilitiesFor(mode).enter) return null
+  if (confirmLive === true) return null
+  return {
+    ok: false,
+    error: `letting a LIVE account ENTER requires confirmLive:true — mode '${mode}' grants entry (M5 cutover carve-out)`,
+  }
 }
 
 /** Every account with its capabilities and open work — the A4 traffic-light feed. */

@@ -1,9 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
+import { upsertAccount, setAccountEnabled } from './account-registry.js'
+import { setAccountArmed } from './account-arming.js'
 import {
   capabilitiesFor, accountCapabilities, canScan, canEnter, canManage,
   openWork, archiveAccount, unarchiveAccount, capabilityView, MODES, SETTABLE_MODES,
+  OFF_ROSTER_MODES, enabledForMode,
   repairRosterMembership, rosterInvariantViolations,
 } from './account-capabilities.js'
 
@@ -44,9 +47,17 @@ test('the presets match the plan table exactly', () => {
   assert.deepEqual(capabilitiesFor('archived'), { scan: false, enter: false, manage: false })
 })
 
-test('MANAGE is on in every mode but archived — the safety principle, as an assertion', () => {
-  for (const m of MODES.filter(x => x !== 'archived')) {
+test('MANAGE is on in every ENGAGED mode — the safety principle, as an assertion', () => {
+  // `registered` joins `archived` as a mode with MANAGE off. Both are off the
+  // roster and both are only reachable while the account holds nothing —
+  // archiveAccount refuses otherwise, and a discovery row is new by
+  // definition. Every mode that engages an account still manages it.
+  for (const m of MODES.filter(x => !OFF_ROSTER_MODES.includes(x))) {
     assert.equal(capabilitiesFor(m).manage, true, `${m} must keep managing`)
+  }
+  for (const m of OFF_ROSTER_MODES) {
+    assert.equal(capabilitiesFor(m).manage, false, `${m} is off the roster`)
+    assert.equal(enabledForMode(m), false, `${m} derives enabled = 0`)
   }
 })
 
@@ -182,15 +193,51 @@ test('archiving an unknown account fails rather than inserting one', () => {
   assert.match(r.error, /not in the registry/)
 })
 
-test('unarchive returns to the quietest live mode and does not re-enable', () => {
+test('unarchive returns to the quietest live mode AND re-enters the roster', () => {
+  // Changed deliberately. Leaving `enabled = 0` beside `manage_only` was the
+  // old "separate, louder decision" — and it is precisely the pair that claims
+  // MANAGE with no way to reach it. With `enabled` derived from `mode` the
+  // state cannot be written, so un-filing an account puts it back on the
+  // roster in the quietest mode that still watches its positions.
   const db = freshDb()
   seedAccount(db, 'A')
   archiveAccount(db, 'A')
   const r = unarchiveAccount(db, 'A')
   assert.equal(r.ok, true)
   assert.equal(r.mode, 'manage_only')
-  assert.equal(r.enabled, false, 're-entering the roster is a separate, louder decision')
+  assert.equal(r.enabled, true, 'managing requires reaching')
   assert.equal(accountCapabilities(db, 'A').manage, true)
+  assert.equal(accountCapabilities(db, 'A').enter, false, 'but it enters nothing')
+})
+
+test('unarchiving a LIVE account straight to active needs the owner word', () => {
+  // The hole this closes: unarchiveAccount(id, 'active') reached live-active
+  // with no confirmation, while /actions/registry-account had demanded
+  // confirmLive for years. One carve-out, one place, every path.
+  const db = freshDb()
+  seedAccount(db, 'L', { isLive: 1 })
+  archiveAccount(db, 'L')
+  const refused = unarchiveAccount(db, 'L', 'active')
+  assert.equal(refused.ok, false)
+  assert.match(refused.error, /confirmLive/)
+  assert.equal(db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get('L').mode, 'archived')
+
+  const allowed = unarchiveAccount(db, 'L', 'active', { confirmLive: true })
+  assert.equal(allowed.ok, true)
+  assert.equal(accountCapabilities(db, 'L').enter, true)
+})
+
+test('a LIVE account may be MANAGED without confirmation — reach is not a privilege', () => {
+  // The other half, and the one #701/#702 were about: confirmLive guards
+  // ENTRY. Getting a live account back on the roster so its open positions can
+  // be amended and closed must never require a ceremony.
+  const db = freshDb()
+  seedAccount(db, 'L', { isLive: 1 })
+  archiveAccount(db, 'L')
+  const r = unarchiveAccount(db, 'L', 'manage_only')
+  assert.equal(r.ok, true)
+  assert.equal(r.enabled, true)
+  assert.equal(accountCapabilities(db, 'L').enter, false)
 })
 
 test('unarchive refuses a mode outside the settable set, and a non-archived account', () => {
@@ -378,4 +425,82 @@ test('the invariant reports violations, and reports nothing once repaired', () =
 
   repairRosterMembership(db)
   assert.deepEqual(rosterInvariantViolations(db), [], 'healthy is the empty list')
+})
+
+// ---------------------------------------------------------------------------
+// PR B — the pair is no longer repairable, it is unproducible.
+//
+// PR A repaired six production rows at `enabled = 0` beside a mode claiming
+// MANAGE. This asserts no gesture can write that pair again: `enabled` is
+// derived from `mode`, and the only way off the roster is a mode that turns
+// MANAGE off — which refuses while the account holds anything.
+// ---------------------------------------------------------------------------
+
+test('no registry gesture can produce an unreachable MANAGE claim', () => {
+  const db = freshDb()
+  seedAccount(db, 'A', { mode: 'active' })
+
+  const gestures = [
+    () => setAccountEnabled(db, 'A', true, 'active'),
+    () => setAccountEnabled(db, 'A', true, 'manage_only'),
+    () => setAccountEnabled(db, 'A', true, 'paused'),
+    () => setAccountEnabled(db, 'A', false),
+    () => unarchiveAccount(db, 'A', 'manage_only'),
+    () => unarchiveAccount(db, 'A', 'paused'),
+    () => archiveAccount(db, 'A'),
+    () => upsertAccount(db, { accountId: 'A' }),
+    () => setAccountArmed(db, 'A', true),
+    () => setAccountArmed(db, 'A', false),
+  ]
+  for (const [i, run] of gestures.entries()) {
+    run()
+    const row = db.prepare('SELECT enabled, mode FROM accounts WHERE account_id = ?').get('A')
+    assert.equal(
+      row.enabled === 1, enabledForMode(row.mode),
+      `gesture ${i} left enabled=${row.enabled} with mode='${row.mode}' — the derivation must hold after every write`,
+    )
+    assert.deepEqual(rosterInvariantViolations(db), [], `gesture ${i} produced an unreachable MANAGE claim`)
+  }
+})
+
+test('an account holding work cannot be taken off the roster at all', () => {
+  // The refusal is the whole safety case: disabling routes through
+  // archiveAccount, so "I'm done with this account" cannot strand its
+  // positions. Both the disable gesture and the archive gesture must refuse.
+  const db = freshDb()
+  seedAccount(db, 'A', { mode: 'manage_only' })
+  seedPosition(db, 'A', { account: 'A' })
+
+  const disabled = setAccountEnabled(db, 'A', false)
+  assert.equal(disabled.ok, false)
+  assert.match(disabled.error, /open position/)
+  assert.equal(archiveAccount(db, 'A').ok, false)
+
+  const row = db.prepare('SELECT enabled, mode FROM accounts WHERE account_id = ?').get('A')
+  assert.equal(row.enabled, 1, 'still reachable')
+  assert.equal(accountCapabilities(db, 'A').manage, true)
+})
+
+test('a registered account is off the roster and claims nothing', () => {
+  const db = freshDb()
+  upsertAccount(db, { accountId: 'NEW', isLive: true })
+  const caps = accountCapabilities(db, 'NEW')
+  assert.equal(caps.mode, 'registered')
+  assert.equal(caps.enabled, false, 'registering is not enabling')
+  assert.equal(caps.scan, false)
+  assert.equal(caps.enter, false)
+  assert.equal(caps.manage, false, 'and it claims no MANAGE it cannot deliver')
+  assert.deepEqual(rosterInvariantViolations(db), [], 'an honest off-roster row is not a violation')
+})
+
+test('setAccountEnabled will not hand a LIVE account entry without the word', () => {
+  const db = freshDb()
+  seedAccount(db, 'L', { mode: 'manage_only', isLive: 1 })
+  const refused = setAccountEnabled(db, 'L', true, 'active')
+  assert.equal(refused.ok, false)
+  assert.match(refused.error, /confirmLive/)
+  assert.equal(accountCapabilities(db, 'L').enter, false)
+
+  assert.equal(setAccountEnabled(db, 'L', true, 'active', { confirmLive: true }).ok, true)
+  assert.equal(accountCapabilities(db, 'L').enter, true)
 })

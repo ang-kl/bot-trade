@@ -3771,12 +3771,13 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'need accountId and enabled:boolean' })
       }
       const { setAccountEnabled, listAccounts } = await import('../services/account-registry.js')
-      const target = listAccounts(db).find(a => String(a.account_id) === String(accountId))
-      if (enabled && target?.is_live === 1 && confirmLive !== true) {
-        return res.status(403).json({ error: 'enabling a LIVE account requires confirmLive:true (M5 cutover carve-out)' })
-      }
-      const out = setAccountEnabled(db, accountId, enabled, mode || null)
-      if (!out.ok) return res.status(400).json({ error: out.error })
+      // THE CARVE-OUT MOVED INTO THE SERVICE (PR B). It used to live here and
+      // guard `enabled`, which was the only switch at the time. `enabled` is
+      // now derived from `mode`, so the check guards what it was always for —
+      // letting a LIVE account ENTER — and it lives in one place, so the
+      // unarchive path is covered too instead of reaching live-active free.
+      const out = setAccountEnabled(db, accountId, enabled, mode || null, { confirmLive: confirmLive === true })
+      if (!out.ok) return res.status(out.error && /confirmLive/.test(out.error) ? 403 : 400).json({ error: out.error, ...out })
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
           .run('POST', '/actions/registry-account', JSON.stringify(out).slice(0, 2000))
@@ -3871,14 +3872,17 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/account-archive', async (req, res) => {
     try {
-      const { accountId, archived, mode } = req.body || {}
+      const { accountId, archived, mode, confirmLive } = req.body || {}
       if (accountId == null || typeof archived !== 'boolean') {
         return res.status(400).json({ error: 'need accountId and archived:boolean' })
       }
       const { archiveAccount, unarchiveAccount } = await import('../services/account-capabilities.js')
+      // Un-filing now re-enters the roster (enabled is derived), so this path
+      // can grant a live account ENTER when mode='active' — it needs the same
+      // confirmation the registry route has always had.
       const out = archived
         ? archiveAccount(db, accountId)
-        : unarchiveAccount(db, accountId, mode || 'manage_only')
+        : unarchiveAccount(db, accountId, mode || 'manage_only', { confirmLive: confirmLive === true })
       if (!out.ok) return res.status(409).json(out)
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')

@@ -107,7 +107,9 @@ test('a DISARMED account is not armed by selecting something else', () => {
   syncSelectedAccount(db, 'OTHER', false)
   const off = listAccounts(db).find(a => a.account_id === 'OFF')
   assert.equal(off.enabled, 0)
-  assert.equal(off.mode, 'manage_only')
+  // Disabling IS archiving now — the only legitimate way off the roster, and
+  // the only one carrying the open-work refusal.
+  assert.equal(off.mode, 'archived')
 })
 
 test('upsertAccount: enriches metadata without touching enabled/mode', () => {
@@ -186,7 +188,7 @@ test('M4 setAccountEnabled: lifts sole-enabled, refuses unknown ids, modes valid
   // A stays selected/primary; roles include both.
   assert.equal(registryAutopilotAccounts(db).length, 2)
   // Disable B → back to sole-enabled without touching A.
-  assert.equal(setAccountEnabled(db, 'B', false).mode, 'manage_only')
+  assert.equal(setAccountEnabled(db, 'B', false).mode, 'archived')
   assert.deepEqual(getEnabledAccounts(db).map(a => a.account_id), ['A'])
   // Unknown id refused; bad mode refused.
   assert.equal(setAccountEnabled(db, 'ZZZ', true).ok, false)
@@ -209,14 +211,18 @@ test('M4 setAccountEnabled: lifts sole-enabled, refuses unknown ids, modes valid
 // opening the Connect page would arm a live account.
 // ---------------------------------------------------------------------------
 
-test('a newly discovered account arrives DISABLED and manage_only', () => {
+test('a newly discovered account arrives DISABLED and registered', () => {
   const db = initDB(':memory:')
   upsertAccount(db, { accountId: '1251247', traderLogin: '1251247', isLive: true, brokerLabel: 'Pepperstone' })
 
   const row = db.prepare('SELECT * FROM accounts WHERE account_id = ?').get('1251247')
   assert.ok(row, 'discovery registers it')
   assert.equal(row.enabled, 0, 'visible, NOT tradeable')
-  assert.equal(row.mode, 'manage_only')
+  // `registered`, not `manage_only`. Discovery used to insert a row claiming
+  // MANAGE while off the roster — the unreachable pair, written by design on
+  // every account the broker has ever shown. The mode now says the true thing:
+  // known to the registry, engaged with nothing.
+  assert.equal(row.mode, 'registered')
   assert.equal(row.is_live, 1)
   assert.equal(row.trader_login, '1251247')
 })
