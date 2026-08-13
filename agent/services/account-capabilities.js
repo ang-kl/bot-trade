@@ -320,22 +320,40 @@ function unreachableManageRows(db) {
 }
 
 export function repairRosterMembership(db) {
-  // Never auto-grant ENTER: a mode whose capability can enter is left for the
-  // owner, and rosterInvariantViolations keeps reporting it until they act.
-  const rows = unreachableManageRows(db)
-    .filter(r => capabilitiesFor(r.mode).enter !== true)
-  if (rows.length === 0) return { promoted: [] }
-
-  const upd = db.prepare('UPDATE accounts SET enabled = 1, updated_at = ? WHERE account_id = ?')
-  const stamp = new Date().toISOString()
-  const promoted = []
-  for (const r of rows) {
-    try {
-      upd.run(stamp, String(r.account_id))
-      promoted.push({ accountId: String(r.account_id), mode: r.mode, isLive: r.is_live === 1 })
-    } catch { /* one bad row must not abandon the rest */ }
-  }
-  return { promoted }
+  // INVARIANT 5 — IT NO LONGER REPAIRS. IT REPORTS. (owner, 14-08-2026)
+  //
+  // bot_trade_remediation_plan_aligned.md §2.4.5: "A server reboot, roster
+  // repair script, or role update shall NEVER modify an explicit `enabled = 0`
+  // database setting without direct user input."
+  //
+  // That invariant and the one this function was written for — an account
+  // holding open positions must be reachable, or its stops go unfed — looked
+  // irreconcilable for four days. They are not, and what reconciles them is
+  // #703 rather than a compromise between them.
+  //
+  // THE CONFLICT WAS ABOUT A STATE THAT CAN NO LONGER BE CREATED. Before #703,
+  // `enabled` was an independent switch and half a dozen paths could set it to
+  // 0 beside a mode still claiming MANAGE — so the state arrived constantly and
+  // something had to clean up after it. Since #703 `enabled` is DERIVED from
+  // `mode`, and the only route off the roster is archiveAccount, which refuses
+  // while the account holds a position or a working order. The bad pair has no
+  // gesture that produces it. A repair for a state nothing can create is a
+  // write with no cause, and Invariant 5 is right that a boot job should not be
+  // making that decision on the owner's behalf.
+  //
+  // Measured before the change, not after: all seven production accounts read
+  // `enabled = 1`. Nothing depended on this function writing anything.
+  //
+  // WHAT REMAINS IS THE HONEST HALF. Any row still carrying the pair is legacy
+  // residue or a direct column write, and both need a human rather than a
+  // silent restart-time fix. They are returned as `flagged`, logged loudly at
+  // boot, and reported at /state/heartbeats as `rosterInvariant` — visible
+  // until somebody acts, which is the property the old repair destroyed by
+  // quietly making the symptom disappear every restart.
+  const flagged = unreachableManageRows(db)
+    .map(r => ({ accountId: String(r.account_id), mode: r.mode, isLive: r.is_live === 1 }))
+  // `promoted` stays in the shape for callers, and stays empty forever.
+  return { promoted: [], flagged }
 }
 
 /** Bring an archived account back. Always returns to the quietest live mode. */
