@@ -36,6 +36,41 @@ import { loadFxRates } from './fx-rates.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 
 /**
+ * THE EXPECTANCY FLOOR. Owner-set 13-08-2026, and not overridable from the
+ * database, an account overlay, or a strategy's own declared floor.
+ *
+ * Measured on the 28 Jul - 13 Aug statement, 438 closed deals:
+ *
+ *   win rate    24.9%   (109 wins / 329 losses)
+ *   avg win     $211.66
+ *   avg loss    $121.91   -> realised payoff 1.74 : 1
+ *   expectancy  -$38.34 per trade  ->  -$16,794.78 over the period
+ *
+ * At a 24.9% win rate, breakeven needs (1 - W) / W = 3.02 : 1. The account was
+ * being paid 1.74. That single gap is the whole drawdown: not a bad month, not
+ * variance, just a price that does not cover the odds. Volume then guarantees
+ * the outcome, because every trade has a negative expected value and the system
+ * takes hundreds of them.
+ *
+ * 3.0, NOT THE PLAN'S 2.8. The remediation plan asks for a 2.8 floor. 2.8 is
+ * BELOW the measured 3.02 breakeven, so a system trading exactly at that floor
+ * still loses money - slowly, which is worse than obviously. The plan's own
+ * stated target is 3.5; 3.0 is the point where the arithmetic stops being
+ * negative, and it is the number the owner chose when shown the measurement.
+ *
+ * IT OVERRIDES THE PER-STRATEGY FLOOR TOO, and that is a real cost worth
+ * naming: rsi2_reversion declares 1.0 because a genuine high-win-rate
+ * mean-reversion edge does not need 3:1. Under this floor it will veto almost
+ * everything it proposes. That is the correct default while the MEASURED win
+ * rate of this system is 24.9% - a strategy claiming it deserves a lower floor
+ * has to show a win rate that earns one, and none of them has. The honest
+ * long-term fix is the plan's own dynamic expectancy test
+ * (E = W x rr - (1 - W)), gated on a per-strategy rolling win rate; until that
+ * exists, a blanket floor is the safe direction to be wrong in.
+ */
+export const HARD_MIN_RR = 3.0
+
+/**
  * Carry-cost check (pure apart from the sync symbol_hours read). Returns
  * null when swap data is unknown (never a block), otherwise
  * { detail, vetoReason? } — vetoReason set when the proposal's side pays a
@@ -245,7 +280,7 @@ export const DEFAULT_RISK_CONFIG = {
                                    // and disarms autotrade (the dailyLossPct
                                    // veto only blocks NEW trades). null =
                                    // same threshold as dailyLossPct.
-  minRR: 1.5,                      // TP must be ≥ minRR × SL distance.
+  minRR: 3.0,                      // TP must be ≥ minRR × SL distance. Floored by HARD_MIN_RR.
   minSLDistancePct: 0.15,          // SL must be ≥ this % from entry (stops too
                                    // tight get swept by noise).
   maxSpreadFracOfSL: 0.25,         // Microstructure gate: the live bid/ask
@@ -1239,9 +1274,18 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       checks.rr = rr
       // Per-strategy floor: a high-win-rate mean-reversion strategy runs a
       // small R:R on purpose, so it declares a lower floor than the global 1.5.
-      const rrFloor = minRrFor(proposal.strategy, config.minRR)
+      // HARD_MIN_RR sits above BOTH — see its definition. Neither an account
+      // override nor a strategy's declared floor may go under it.
+      const requested = minRrFor(proposal.strategy, config.minRR)
+      const rrFloor = Math.max(HARD_MIN_RR, requested)
+      if (requested < HARD_MIN_RR) {
+        checks.rr_floor_raised = { requested, enforced: rrFloor }
+      }
       if (rr < rrFloor) {
-        return veto(`bad_rr ${rr.toFixed(2)}<${rrFloor}`, checks, proposal)
+        const why = requested < rrFloor
+          ? ` (requested ${requested}, raised to the ${HARD_MIN_RR} expectancy floor)`
+          : ''
+        return veto(`bad_rr ${rr.toFixed(2)}<${rrFloor}${why}`, checks, proposal)
       }
     }
   }

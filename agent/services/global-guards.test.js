@@ -35,7 +35,7 @@ function insertOpenTrade(db, { account, symbol }) {
 }
 
 const proposal = (account) => ({
-  symbol: 'GBPUSD', side: 'BUY', entry: 1.25, sl: 1.245, tp1: 1.26,
+  symbol: 'GBPUSD', side: 'BUY', entry: 1.25, sl: 1.245, tp1: 1.2675,
   requestedVolume: 0.01, accountId: account,
 })
 
