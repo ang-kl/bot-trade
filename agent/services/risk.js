@@ -34,6 +34,7 @@ import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
+import { accountEconomics } from './config-controller.js'
 
 /**
  * THE EXPECTANCY FLOOR. Owner-set 13-08-2026, and not overridable from the
@@ -69,6 +70,49 @@ import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pac
  * exists, a blanket floor is the safe direction to be wrong in.
  */
 export const HARD_MIN_RR = 3.0
+
+/**
+ * INVARIANT 2, SECOND CLAUSE — the dynamic expectancy gate.
+ * (bot_trade_remediation_plan_aligned.md §2.4.2 and §2.5.2.2)
+ *
+ * The contract demands BOTH `minRR >= 2.8` AND `E > 0.15R`, where
+ * E = (W x rr) - ((1 - W) x 1.0). Those two clauses contradict each other at
+ * this account's measured win rate, and the contradiction is arithmetic, not
+ * interpretation:
+ *
+ *   W = 24.9%   rr 2.80 -> E = -0.054R   the invariant's own floor fails it
+ *               rr 3.00 -> E = -0.004R
+ *               rr 3.50 -> E = +0.120R   the plan's target still fails it
+ *               rr 3.62 -> E = +0.150R   the first ratio that satisfies it
+ *
+ * Hardcoding 3.62 would satisfy the contract and be wrong in a year: the
+ * required ratio is a FUNCTION of the win rate, and freezing today's answer
+ * repeats the mistake that put a hand-entered constant in the contract table.
+ * So the static floor stays at HARD_MIN_RR and this gate rides on top,
+ * deriving the requirement from the rolling measured win rate. At 24.9% it
+ * asks for 3.62 on its own; if the win rate reaches 35% it asks for 2.86, and
+ * a genuine high-win-rate strategy earns its lower floor by measurement rather
+ * than by declaring one.
+ *
+ * FAILS OPEN ON A THIN SAMPLE, deliberately. Under minSample closed trades
+ * there is no win rate worth the name, and vetoing every entry on four rows of
+ * history would halt the account to prevent a risk we cannot yet see. The
+ * static HARD_MIN_RR floor is what covers that window.
+ *
+ * @returns {{ok:boolean, e:number|null, W:number|null, need:number|null, trades:number}}
+ */
+export function expectancyVerdict(stats, rr, { minE = 0.15, minSample = 20 } = {}) {
+  const trades = Number(stats?.trades) || 0
+  const W = Number(stats?.winRate)
+  if (trades < minSample || !Number.isFinite(W) || W <= 0 || W >= 1) {
+    return { ok: true, e: null, W: Number.isFinite(W) ? W : null, need: null, trades }
+  }
+  const e = W * rr - (1 - W)
+  // The ratio this win rate would need to clear minE — quoted in the veto so
+  // the message says what to do, not merely that something is wrong.
+  const need = Math.round(((minE + (1 - W)) / W) * 100) / 100
+  return { ok: e > minE, e: Math.round(e * 1000) / 1000, W, need, trades }
+}
 
 /**
  * Carry-cost check (pure apart from the sync symbol_hours read). Returns
@@ -229,7 +273,13 @@ export const DEFAULT_RISK_CONFIG = {
   //   budget  = min(base, ceiling) × drawdown-de-risk factor
   perTradeRiskPct: 0.05,           // 5% of balance per trade (aggressive)
   perTradeRiskUsd: null,           // absolute $ risk/trade; when > 0, overrides the pct
-  maxRiskCapPct: 0.05,             // hard ceiling — never risk more than this % of balance
+  // 1.5%, down from 5% — aligned plan Invariant 1. The invariant states this
+  // as a cap on NOTIONAL, which is arithmetically impossible: 1.5% of a
+  // $35,320 balance is $530 of exposure and a single 0.01-lot EURUSD is
+  // $1,100, so nothing could ever trade. 1.5% is a RISK number, and that is
+  // how it is applied here; the notional half of the invariant is the
+  // measured maxNotionalXBalance ceiling below.
+  maxRiskCapPct: 0.015,            // hard ceiling — never risk more than this % of balance
   maxRiskUsd: null,                // optional absolute $ ceiling per trade
   // NOTIONAL CEILING — the check that does not trust the contract table.
   //
@@ -281,6 +331,9 @@ export const DEFAULT_RISK_CONFIG = {
                                    // veto only blocks NEW trades). null =
                                    // same threshold as dailyLossPct.
   minRR: 3.0,                      // TP must be ≥ minRR × SL distance. Floored by HARD_MIN_RR.
+  // Invariant 2's second clause: veto when E = W×rr − (1−W) ≤ this. Dynamic —
+  // the required ratio follows the measured win rate. null = off.
+  minExpectancyR: 0.15,
   minSLDistancePct: 0.15,          // SL must be ≥ this % from entry (stops too
                                    // tight get swept by noise).
   maxSpreadFracOfSL: 0.25,         // Microstructure gate: the live bid/ask
@@ -1286,6 +1339,26 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
           ? ` (requested ${requested}, raised to the ${HARD_MIN_RR} expectancy floor)`
           : ''
         return veto(`bad_rr ${rr.toFixed(2)}<${rrFloor}${why}`, checks, proposal)
+      }
+
+      // Invariant 2, second clause. The static floor above is a constant; this
+      // asks whether THIS ratio actually pays at the win rate the account is
+      // measurably achieving. See expectancyVerdict — thin samples pass.
+      if (config.minExpectancyR != null && Number.isFinite(Number(config.minExpectancyR))) {
+        const stats = accountEconomics(db, acct, { days: 30 })
+        const ev = expectancyVerdict(stats, rr, { minE: Number(config.minExpectancyR) })
+        if (ev.e != null) {
+          checks.expectancy_r = ev.e
+          checks.win_rate = Math.round(ev.W * 1000) / 10
+          checks.expectancy_sample = ev.trades
+        }
+        if (!ev.ok) {
+          return veto(
+            `negative_expectancy E=${ev.e}R at a measured ${(ev.W * 100).toFixed(1)}% win rate over ${ev.trades} closed trades ` +
+            `— needs R:R ≥ ${ev.need} to clear ${config.minExpectancyR}R (this signal is ${rr.toFixed(2)})`,
+            checks, proposal,
+          )
+        }
       }
     }
   }
