@@ -26,13 +26,14 @@
 // account and records, for every operation, whether its account came from the
 // caller or was filled in from the primary — which turns the question into an
 // assertion and turned that wrong assumption into a failing test.
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { startFakeBroker } from './test-support/fake-broker.js'
 import {
   placeOrder, amendPosition, closePosition, cancelOrder, reconcile,
   invalidateSidecarSession, pushSidecarSession, pingSidecar, setFallbackReporter,
   resolveOrderAccount,
+  _resetOrderLocks,
 } from './lib/exec-engine.js'
 import { mayFallbackToJs } from './lib/exec-fallback.js'
 
@@ -108,6 +109,13 @@ async function withBroker(fn, brokerOpts) {
 // ---------------------------------------------------------------------------
 // 1. THE PATHS THAT ARE ALREADY CORRECT — entries and reads stamp the account.
 // ---------------------------------------------------------------------------
+
+// These cases place the SAME order shape repeatedly — that is the point of a
+// characterisation suite, which pins behaviour by repetition. The order
+// boundary now holds a process-global 60s idempotency lock (Invariant 3), so
+// without clearing it each case would be refused for a duplicate the previous
+// case sent. In production that refusal is the feature.
+beforeEach(() => { _resetOrderLocks() })
 
 test('an entry lands on the account its credentials name, not on the session primary', async () => {
   // loop.js:418 builds the autotrade payload with an explicit

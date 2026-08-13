@@ -499,6 +499,82 @@ export function withNumericIds(args) {
   return out
 }
 
+/**
+ * INVARIANT 3 — ATOMIC ORDER IDEMPOTENCY.
+ * (bot_trade_remediation_plan_aligned.md §2.4.3, acceptance §2.6.3)
+ *
+ * 04-08-2026, 23:31:48: seventeen identical DOW.US sells, deal ids
+ * DID312704298-DID312704314, one second, -$1,615.00.
+ *
+ * A 20-MINUTE DEDUPE ALREADY EXISTED and did not fire. loop.js:565 says why in
+ * its own words: those orders "never reached the gate - they carry
+ * risk_event_id NULL and were adopted by the reconciler 89 seconds after
+ * filling". The window was never the missing piece. The missing piece is that
+ * a window living in ONE CALLER cannot protect the paths that do not call it.
+ *
+ * So this sits at the boundary instead. `placeOrder` is the single funnel every
+ * order passes through - pending-orders.js, closed-market-limits.js, autoTrade
+ * and the manual routes all arrive here - which makes it the only place a lock
+ * covers the path that actually doubled. The plan asks for this in
+ * pending-orders.js; putting it there would have left the market-order path
+ * uncovered, which is the same shape of mistake as the gate it replaces.
+ *
+ * IN-MEMORY, AND THAT IS THE RIGHT SCOPE. The failure is a re-entrant event
+ * loop inside one process, and JavaScript's single thread makes the read and
+ * the write below genuinely atomic: there is no `await` between them, so no
+ * second dispatch can interleave. A SQLite lock would add durability across
+ * restarts and buy nothing against the storm this exists to stop.
+ *
+ * THE KEY DELIBERATELY OMITS THE RAW TIMESTAMP. The contract's formula is
+ * hash(accountId + symbol + strategy + direction + signalTimestamp), but a
+ * millisecond timestamp inside the key defeats the key: seventeen dispatches a
+ * few milliseconds apart would hash seventeen different ways and every one
+ * would pass. The timestamp is therefore BUCKETED to the TTL window, which is
+ * what "within 60 seconds" means when written as a hash.
+ */
+const ORDER_LOCK_TTL_MS = 60_000
+const orderLocks = new Map()
+
+export function orderIdempotencyKey(payload, nowMs = Date.now()) {
+  const bucket = Math.floor(nowMs / ORDER_LOCK_TTL_MS)
+  return [
+    payload?.ctidTraderAccountId ?? '',
+    payload?.symbolId ?? '',
+    payload?.tradeSide ?? '',
+    payload?.orderType ?? '',
+    // The strategy rides in the structured label; a fib entry and a trend
+    // entry on the same symbol and side are different intents, not a double.
+    String(payload?.label ?? '').split('|')[2] ?? '',
+    bucket,
+  ].join('|')
+}
+
+/** Exposed for tests and for the /state readout. */
+export function _orderLockState() {
+  return { size: orderLocks.size, keys: [...orderLocks.keys()] }
+}
+
+/**
+ * TEST HOOK ONLY. Deliberately not called from anywhere in the running system:
+ * a runtime path that can clear this map is a runtime path that can re-enable
+ * the storm. Tests need it because two cases legitimately place the SAME order
+ * twice — checking argument delegation, and checking that a demo order never
+ * reaches the live sidecar — and outside a test that repetition is the bug.
+ */
+export function _resetOrderLocks() {
+  orderLocks.clear()
+}
+
+export function claimOrderLock(payload, nowMs = Date.now()) {
+  // Sweep first so a long-running process does not accumulate dead keys.
+  for (const [k, exp] of orderLocks) if (exp <= nowMs) orderLocks.delete(k)
+  const key = orderIdempotencyKey(payload, nowMs)
+  const held = orderLocks.get(key)
+  if (held != null && held > nowMs) return { ok: false, key, msLeft: held - nowMs }
+  orderLocks.set(key, nowMs + ORDER_LOCK_TTL_MS)
+  return { ok: true, key }
+}
+
 export async function placeOrder(creds, orderPayload) {
   const g = validateExecGuard(orderPayload, creds?.execGuard)
   if (!g.ok) throw new Error(g.reason)
@@ -507,16 +583,59 @@ export async function placeOrder(creds, orderPayload) {
   // Throws on an unresolvable or contradictory account, BEFORE the guard-passed
   // order can reach either engine.
   orderPayload = withNumericIds(withAccount(creds, orderPayload))
-  if (execEngineMode() === 'cpp') {
-    return withFallback('order',
-      async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/order', orderPayload) },
-      async () => {
-        const m = await ws()
-        return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
-      }, execBaseFor(creds))
+  // AFTER withAccount, so the key carries the resolved account rather than
+  // whatever the caller happened to pass, and BEFORE any await, so the claim
+  // cannot interleave with a second dispatch.
+  const lock = claimOrderLock(orderPayload)
+  if (!lock.ok) {
+    const err = new Error(
+      `DUPLICATE_ORDER_DISPATCH_BLOCKED: an identical order (${lock.key}) was already sent ` +
+      `${((ORDER_LOCK_TTL_MS - lock.msLeft) / 1000).toFixed(1)}s ago — ` +
+      `${(lock.msLeft / 1000).toFixed(1)}s left on the ${ORDER_LOCK_TTL_MS / 1000}s idempotency lock`,
+    )
+    err.code = 'DUPLICATE_ORDER_DISPATCH_BLOCKED'
+    throw err
   }
-  const m = await ws()
-  return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+  try {
+    if (execEngineMode() === 'cpp') {
+      return await withFallback('order',
+        async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/order', orderPayload) },
+        async () => {
+          const m = await ws()
+          return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+        }, execBaseFor(creds))
+    }
+    const m = await ws()
+    return await m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+  } catch (err) {
+    // A DEFINITE REJECTION RELEASES THE LOCK. loop.js already draws this line
+    // for its own dedupe and draws it correctly: "a plain order_failed —
+    // broker REJECTED it, provably no position — is NOT caught here, so
+    // ordinary rejections still retry next cycle as before."
+    //
+    // The asymmetry is the whole point. Holding the key after a reject costs
+    // an entry for no safety: the broker has told us nothing was opened.
+    // Releasing after an AMBIGUOUS failure — a timeout, a dropped socket, a
+    // lost EXECUTION_EVENT — would re-arm the storm against a position that
+    // may well be live, which is the expensive direction. So anything that is
+    // not provably a rejection keeps the lock for its full 60 seconds.
+    if (isDefiniteRejection(err)) releaseOrderLock(lock.key)
+    throw err
+  }
+}
+
+/**
+ * Provably-not-filled, from the broker's own words. Deliberately narrow: the
+ * default for an unrecognised failure is to KEEP the lock, because the cost of
+ * being wrong runs one way (a duplicate live position) and not the other.
+ */
+export function isDefiniteRejection(err) {
+  const m = `${err?.message || ''}`
+  return /order rejected|\bREJECTED\b|MARKET_CLOSED|INVALID_REQUEST|TRADING_BAD_VOLUME|NOT_ENOUGH_MONEY/i.test(m)
+}
+
+function releaseOrderLock(key) {
+  orderLocks.delete(key)
 }
 
 /** Push the atomic guard config to the C++ sidecar (#3). No-op in js mode. */
