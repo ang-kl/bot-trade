@@ -202,10 +202,17 @@ try {
   // the account's open positions, and only membership of the sidecar roster can
   // keep that promise. Idempotent. See services/account-capabilities.js.
   const { repairRosterMembership } = await import('./services/account-capabilities.js')
+  // Invariant 5: this REPORTS, it does not write. A restart may not change an
+  // explicit `enabled = 0`. Anything it finds needs a person, so it is said
+  // loudly and left standing rather than quietly fixed every boot.
   const repair = repairRosterMembership(db)
-  if (repair.promoted.length) {
-    const names = repair.promoted.map(p => `${p.isLive ? 'LIVE' : 'demo'} ${p.accountId} (${p.mode})`)
-    console.log(`[boot] roster repair: ${repair.promoted.length} account(s) claimed MANAGE while out of the sidecar roster — ${names.join(', ')}`)
+  if (repair.flagged.length) {
+    const names = repair.flagged.map(p => `${p.isLive ? 'LIVE' : 'demo'} ${p.accountId} (${p.mode})`)
+    console.warn(
+      `[boot] ROSTER INVARIANT VIOLATED — ${repair.flagged.length} account(s) claim MANAGE while OUT of the sidecar roster, ` +
+      `holding open positions or working orders nothing can reach: ${names.join(', ')}. ` +
+      'NOT auto-enabled (Invariant 5). Re-enable deliberately, or close the work.',
+    )
   }
 } catch (e) {
   console.warn('[boot] account registry init failed (non-fatal):', e.message)

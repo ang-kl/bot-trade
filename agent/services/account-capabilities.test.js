@@ -299,23 +299,40 @@ test('unmanagedExposure catches a mode written straight into the column', () => 
 // "connectivity": "disconnected".
 // ---------------------------------------------------------------------------
 
-test('repair promotes the accounts holding work nothing can reach', () => {
+test('2.6.5 — the roster check PRESERVES enabled = 0; it never promotes', () => {
   const db = freshDb()
   seedAccount(db, 'MANAGE', { mode: 'manage_only', enabled: 0, isLive: 1 })
   seedPosition(db, 'MANAGE', { account: 'MANAGE' })
   seedAccount(db, 'PAUSED', { mode: 'paused', enabled: 0 })
   seedPending(db, { account: 'PAUSED' })
 
+  // Invariant 5 (aligned plan §2.4.5): a reboot may not change an explicit
+  // `enabled = 0`. These two rows DO hold unreachable work — the condition the
+  // old repair existed for — and they are still not written to. They are
+  // reported instead, and stay reported until a person acts.
   const out = repairRosterMembership(db)
-  assert.equal(out.promoted.length, 2)
+  assert.deepEqual(out.promoted, [], 'nothing is ever promoted')
   for (const id of ['MANAGE', 'PAUSED']) {
     const row = db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get(id)
-    assert.equal(row.enabled, 1, `${id} must be reachable to be manageable`)
+    assert.equal(row.enabled, 0, `${id} keeps the operator's explicit enabled = 0`)
   }
-  // The LIVE side is repaired too — its positions are the ones that matter most.
-  assert.ok(out.promoted.find(p => p.accountId === 'MANAGE').isLive)
-  // A working entry order is live work, exactly as archiveAccount treats it.
-  assert.ok(out.promoted.find(p => p.accountId === 'PAUSED'))
+  assert.equal(out.flagged.length, 2, 'but both are surfaced, not swallowed')
+  assert.ok(out.flagged.find(p => p.accountId === 'MANAGE').isLive, 'the LIVE row is named')
+  assert.ok(out.flagged.find(p => p.accountId === 'PAUSED'), 'a working order counts as live work')
+})
+
+test('2.6.5 — the state it used to repair can no longer be created (#703)', () => {
+  // Why dropping the write is safe rather than a regression: `enabled` is
+  // derived from `mode`, and the only route off the roster refuses while the
+  // account holds anything. So a repair for this state is a write with no
+  // cause — which is exactly what Invariant 5 objects to.
+  const db = freshDb()
+  seedAccount(db, 'A', { mode: 'manage_only' })
+  seedPosition(db, 'A', { account: 'A' })
+  const off = setAccountEnabled(db, 'A', false)
+  assert.equal(off.ok, false, 'a held position cannot be taken off the roster at all')
+  assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get('A').enabled, 1)
+  assert.deepEqual(repairRosterMembership(db).flagged, [], 'so there is nothing left to flag')
 })
 
 test('a flat account is left alone — registering is not enabling', () => {
@@ -360,7 +377,7 @@ test('repair never touches an archived account — that mode means MANAGE is off
   assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get('GONE').enabled, 0)
 })
 
-test('repair grants no ENTRY — and DOES grant SCAN, which is the honest cost', () => {
+test('the check grants nothing at all — no ENTRY, and no SCAN either', () => {
   // The safety case is about ENTRY, and only about entry. `scan` is
   // `caps.scan && enabled` with `capabilitiesFor('manage_only').scan` true by
   // default, so `enabled` was the false term and promoting flips scan on. An
@@ -373,11 +390,13 @@ test('repair grants no ENTRY — and DOES grant SCAN, which is the honest cost',
 
   repairRosterMembership(db)
 
+  // The SCAN widening this test used to document is gone with the write that
+  // caused it. Nothing is granted because nothing is written.
   const caps = accountCapabilities(db, 'M')
   assert.equal(caps.mode, 'manage_only', 'the preset the owner set is not rewritten')
-  assert.equal(caps.enter, false, 'a repaired account may still not open anything')
-  assert.equal(caps.manage, true)
-  assert.equal(caps.scan, true, 'promoting a row DOES widen the scan roster — documented, not hidden')
+  assert.equal(caps.enter, false)
+  assert.equal(caps.scan, false, 'no longer widened — the roster is untouched')
+  assert.equal(caps.manage, true, 'the CLAIM stands; the reachability gap is what gets reported')
 })
 
 test('a promoted paused account keeps SCAN off — its own capability says so', () => {
@@ -389,12 +408,16 @@ test('a promoted paused account keeps SCAN off — its own capability says so', 
   assert.equal(accountCapabilities(db, 'P').manage, true)
 })
 
-test('repair is idempotent — a second boot finds nothing to promote', () => {
+test('the report is stable — it does not go quiet on the second boot', () => {
+  // The old repair was idempotent by making the symptom vanish. This one is
+  // idempotent by changing nothing, which means a restart cannot be mistaken
+  // for a resolution.
   const db = freshDb()
   seedAccount(db, 'A', { mode: 'manage_only', enabled: 0 })
   seedPosition(db, 'A', { account: 'A' })
-  assert.equal(repairRosterMembership(db).promoted.length, 1)
-  assert.deepEqual(repairRosterMembership(db).promoted, [])
+  assert.equal(repairRosterMembership(db).flagged.length, 1)
+  assert.equal(repairRosterMembership(db).flagged.length, 1, 'still flagged after a second boot')
+  assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get('A').enabled, 0)
 })
 
 test('after repair no account reports unmanaged exposure', () => {
@@ -409,7 +432,7 @@ test('after repair no account reports unmanaged exposure', () => {
   }
 })
 
-test('the invariant reports violations, and reports nothing once repaired', () => {
+test('the invariant reports violations, and reports nothing once resolved', () => {
   // What /state/heartbeats surfaces. A writer that recreates the pair between
   // boots must be visible without waiting for the next restart to heal it.
   const db = freshDb()
@@ -423,7 +446,9 @@ test('the invariant reports violations, and reports nothing once repaired', () =
   assert.equal(bad[0].accountId, 'BAD')
   assert.equal(bad[0].isLive, true)
 
-  repairRosterMembership(db)
+  // Resolved by a PERSON re-enabling it — the gesture Invariant 5 reserves for
+  // direct user input — not by a restart.
+  db.prepare('UPDATE accounts SET enabled = 1 WHERE account_id = ?').run('BAD')
   assert.deepEqual(rosterInvariantViolations(db), [], 'healthy is the empty list')
 })
 
