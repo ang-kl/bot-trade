@@ -21,7 +21,10 @@ const CONTRACT_SIZE = {
   // Metals (troy ounces per lot — cTrader convention)
   XAUUSD: 100,
   XAGUSD: 5000,
-  XPTUSD: 50,
+  // 100, not 50 — measured. Two closed XPTUSD deals imply $100.00 per dollar
+  // of platinum per lot; 50 would imply $50.00. The half-size entry sized
+  // every platinum position at twice the intended risk (−$817.11 on one).
+  XPTUSD: 100,
   XPDUSD: 100,
   // Energies
   SPOTCRUDE: 1000,
@@ -39,8 +42,21 @@ const CONTRACT_SIZE = {
   // Base metals
   COPPER: 25000,
   // Indices — cTrader typically gives 1 unit = $1/point per lot
-  US30: 1, US500: 1, NAS100: 1, GER40: 1, UK100: 1, JPN225: 1,
+  US30: 1, US500: 1, NAS100: 1, GER40: 1, UK100: 1,
   FRA40: 1, SPA35: 1, CN50: 1, VIX: 1, SDY: 1, HK50: 1, AUS200: 1,
+  // MEASURED FROM FILLS, NOT ASSUMED (13-08-2026). See the QUOTE_CCY note:
+  // JPN225 was carried as `contractSize 1, quote USD` on an assumption that
+  // this broker settles index CFDs in USD. Nine closed JPN225 deals on the
+  // 28 Jul–13 Aug statement imply $0.638 of P&L per index point per lot.
+  // `1 × USD` would imply exactly $1.000. `100 JPY ÷ ~157 JPY/USD` = $0.637.
+  // The contract is 100 yen a point, not one dollar a point.
+  JPN225: 100,
+  // Currency indices. USDX and EURX were in neither table, so contractSize
+  // fell through to 1 and the quote to USD: the sizer valued a point at $1
+  // when USDX pays $100 and EURX pays €100 (~$115). It therefore bought
+  // ~100× the intended size. EURX lost $2,535.41 in two minutes on 22 lots
+  // and USDX $1,090.00 on 100 lots — both on the same statement.
+  USDX: 100, EURX: 100, JPYX: 100,
   // Crypto
   BTCUSD: 1, ETHUSD: 1, XRPUSD: 1, SOLUSD: 1, LTCUSD: 1, ADAUSD: 1,
   DOGEUSD: 1, BNBUSD: 1,
@@ -138,15 +154,35 @@ export function contractSize(symbol) {
 // here are HYPOTHESES, and sizing-parity.js is the thing that tests them
 // against realised broker P&L instead of trusting them.
 const QUOTE_CCY = {
-  // Indices. USD-settled on this broker despite the local-currency quote —
-  // see the note above before "correcting" any of these back.
-  JPN225: 'USD',
-  // UNVERIFIED. These carry the same assumption JPN225 just failed, and if
-  // this broker settles index CFDs in USD they are wrong too — by 1.08× and
-  // 1.34×, small enough to hide inside a profit factor and never be noticed.
-  // They are NOT changed here: "probably the same" is not evidence, and a
-  // wrong correction errs in the opposite direction. sizing-parity.js will
-  // say, once each has traded.
+  // JPN225 IS YEN-QUOTED. THE EVIDENCE ARRIVED (13-08-2026).
+  //
+  // This said `JPN225: 'USD'` under the note that the broker settles index
+  // CFDs in USD "despite the local-currency quote", and told the next reader
+  // that sizing-parity.js would settle it once the symbol had traded. It has
+  // traded: nine closed deals on the 28 Jul–13 Aug statement imply $0.638 of
+  // P&L per point per lot. USD settlement at contractSize 1 implies exactly
+  // $1.000; 100 JPY a point at ~157 JPY/USD implies $0.637. The measurement
+  // is not close to the assumption, and it is not a rounding argument.
+  //
+  // The old pair understated nothing — `1 × USD` OVERSTATES risk per lot
+  // versus `100 × JPY`, so it sized JPN225 too SMALL, not too large. That
+  // matters for honesty about the loss: JPN225's −$9,171.76 is not a
+  // valuation-understatement story like EURX and USDX. It is a large adverse
+  // move on a position the risk budget genuinely permitted, and the fix for
+  // that lives in the R:R floor and the stop, not here.
+  JPN225: 'JPY',
+  JPYX: 'JPY',
+  // EURX is a EUR-denominated currency index: 100 EUR a point, ~$115 at
+  // EURUSD 1.1525, which is exactly what its one closed deal implies.
+  // USDX is dollar-denominated, so it needs no conversion — but it did need
+  // a contract size, and had neither.
+  EURX: 'EUR', USDX: 'USD',
+  // STILL UNVERIFIED, and now with a cautionary example attached: these carry
+  // the same shape of assumption JPN225 just failed. They are NOT changed
+  // here — "probably the same" is not evidence, and JPN225 shows a wrong
+  // correction is as costly as a wrong original. sizing-parity.js will say,
+  // once each has traded, and GER40's eight deals already imply $1.153 =
+  // 1 × EURUSD, which is consistent with the EUR entry below.
   GER40: 'EUR', FRA40: 'EUR', SPA35: 'EUR', SPAIN35: 'EUR',
   ITALY40: 'EUR', NETH25: 'EUR', EUSTX: 'EUR', EUSTX50: 'EUR',
   UK100: 'GBP',

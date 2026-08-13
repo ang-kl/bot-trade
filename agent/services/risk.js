@@ -196,6 +196,27 @@ export const DEFAULT_RISK_CONFIG = {
   perTradeRiskUsd: null,           // absolute $ risk/trade; when > 0, overrides the pct
   maxRiskCapPct: 0.05,             // hard ceiling — never risk more than this % of balance
   maxRiskUsd: null,                // optional absolute $ ceiling per trade
+  // NOTIONAL CEILING — the check that does not trust the contract table.
+  //
+  // Every ceiling above is denominated in RISK, and risk is
+  // `slDistance × usdLossPerLot`. That makes all of them worthless against a
+  // wrong contract spec: when the table valued a EURX point at $1 instead of
+  // $115, the 5% risk cap was computed on a denominator 115× too small and
+  // faithfully authorised a position 115× too large. The cap held. The
+  // arithmetic under it did not.
+  //
+  // Notional needs no stop distance and no risk model — just size × price ×
+  // FX — so it fails in a DIFFERENT way from the thing it is guarding, which
+  // is the only reason to add a second check at all.
+  //
+  // 10× is measured, not chosen. Across the 432 priced deals on the
+  // 28 Jul–13 Aug statement, notional/balance ran a median of 0.8× and a 90th
+  // percentile of 3.4×. The blow-ups sat at 20×–79×: JPN225 at 78.8×
+  // ($2.89M on a $36.6k account), EURX at 76.7×, USDX at 25.6×. A 10× ceiling
+  // is three times normal trading and vetoes 12 of 432 deals — 2.8% — whose
+  // combined realised P&L is −$7,366, including the +$14,259 JPN225 winner
+  // that the same oversizing produced. null = off.
+  maxNotionalXBalance: 10,
   // Anti-tilt: when realized PnL over the last window is down more than
   // deriskTriggerPct of balance, scale the budget by deriskMult — a losing run
   // sizes DOWN automatically instead of compounding at 5%.
@@ -1397,6 +1418,33 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     checks.notional_usd = Number(notional.toFixed(2))
     checks.margin_required_usd = Number(marginRequired.toFixed(2))
     checks.margin_total_usd = Number((usedMargin + marginRequired).toFixed(2))
+
+    // NOTIONAL CEILING. Deliberately the LAST word on size, after every
+    // risk-based ceiling and after the margin shrink, because it is the only
+    // check here that does not read the contract table through a stop
+    // distance — and a wrong contract table is what defeated all the others.
+    //
+    // It does NOT shrink the position. Every other gate above shrinks,
+    // because "too big for the margin left" is a sizing problem with a
+    // smaller answer. Notional 20-79x balance is not a sizing problem; it is
+    // the symptom of a valuation the system cannot be trusted to have got
+    // right, and quietly trading a smaller slice of a number we do not
+    // believe is how the EURX position came to exist at all. Refuse, name the
+    // multiple, and let a human look at the symbol.
+    const xCap = Number(config.maxNotionalXBalance)
+    if (Number.isFinite(xCap) && xCap > 0 && Number.isFinite(notional) && notional > 0) {
+      const x = notional / balance
+      checks.notional_x_balance = Number(x.toFixed(2))
+      if (x > xCap) {
+        return veto(
+          `notional_exposure_exceeded: ${proposal.symbol} ${volume} lots = $${notional.toFixed(0)} notional, ` +
+          `${x.toFixed(1)}x the $${balance.toFixed(0)} balance (ceiling ${xCap}x). ` +
+          'Normal trading on this account runs ~0.8x with a 90th percentile of 3.4x, so this is a contract-valuation ' +
+          'failure rather than a large trade — check the symbol\'s contract size and quote currency before re-arming it.',
+          checks, proposal,
+        )
+      }
+    }
   }
 
   const combinedNote = sizingNote ? `${sizingNote} · ${kellyNote}` : kellyNote
