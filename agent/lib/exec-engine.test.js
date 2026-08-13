@@ -4,7 +4,9 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget, validateExecGuard, execBaseFor, invalidateSidecarSession } from './exec-engine.js'
+import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget, validateExecGuard, execBaseFor, invalidateSidecarSession,
+  _resetOrderLocks,
+} from './exec-engine.js'
 
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'ci', clientSecret: 'cs', accessToken: 'at', accountId: '123' }
 
@@ -42,6 +44,11 @@ beforeEach(() => {
   requests = []
   nextResponse = { status: 200, body: '{}' }
   process.env.EXEC_ENGINE = 'cpp'
+  // The order-idempotency lock is process-global and 60s wide by design, so
+  // without this a test inherits the previous test's dispatch and is refused
+  // for a duplicate it never sent. Cleared per test rather than per file so no
+  // case can quietly depend on another's lock state.
+  _resetOrderLocks()
 })
 
 test('execEngineMode: js by default, cpp only when EXEC_ENGINE=cpp', () => {
@@ -495,6 +502,13 @@ test('two sidecars: a demo order reaches the demo sidecar and NEVER the live one
     assert.equal(JSON.parse(seen.demo[1].body).ctidTraderAccountId, 111)
 
     // And the memo still works per side: a repeat on demo re-pushes nothing.
+    //
+    // This repeat is the SUBJECT of the assertion, and in production it is
+    // exactly what Invariant 3 refuses — the same account, symbol, side and
+    // strategy inside the 60s window is the DOW.US signature. The lock is
+    // cleared here so the session-memo property can still be tested; that it
+    // has to be cleared is the lock working, not the lock being wrong.
+    _resetOrderLocks()
     await placeOrder({ ...CREDS, host: 'demo.ctraderapi.com', accountId: '111' }, entry)
     assert.deepEqual(seen.demo.map(r => r.url), ['/connect', '/order', '/order'])
   } finally {

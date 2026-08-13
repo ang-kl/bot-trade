@@ -17,7 +17,7 @@ import {
   requiredMargin,
   portfolioMarginStatus,
   evaluateCommissionCost,
-  evaluateSlippageDrift, fxDayOpenMs,
+  evaluateSlippageDrift, fxDayOpenMs, HARD_MIN_RR, expectancyVerdict
 } from './risk.js'
 
 // Helpers ------------------------------------------------------------------
@@ -68,7 +68,12 @@ function goodProposal(overrides = {}) {
     side: 'long',
     entry: 1.1000,
     sl: 1.0970,     // 30 pip risk (0.27% of entry, above minSLDistancePct 0.15%)
-    tp1: 1.1060,    // RR = 2.0
+    // RR = 3.5. Was 2.0, which every test below inherited while testing
+    // something else entirely — so raising the floor to HARD_MIN_RR 3.0 made a
+    // dozen unrelated cases fail on their fixture rather than on their subject.
+    // 3.5 is the plan's target rather than the 3.0 boundary, so a case that
+    // means to sit AT the floor has to say so explicitly.
+    tp1: 1.1105,
     requestedVolume: 0.01,
     strategy: 'trend',
     conviction: 8,
@@ -272,7 +277,8 @@ test('R:R below 1.5 vetoes', () => {
 test('R:R exactly at floor approves', () => {
   const db = freshDB()
   // 30 pip SL, 45 pip TP = RR 1.5
-  const res = evaluateTrade(db, goodProposal({ tp1: 1.1045 }))
+  // AT the floor now means 3.0, not 1.5: 30 pip risk x 3 = 90 pip reward.
+  const res = evaluateTrade(db, goodProposal({ tp1: 1.1090 }))
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
 })
 
@@ -464,13 +470,15 @@ test('equity-aware — $50 balance: EURUSD 30 pip SL insufficient → veto', () 
   assert.match(res.veto_reason, /insufficient_equity/)
 })
 
-test('equity-aware — $10k balance, EURUSD: risk-based volume computed (5% default)', () => {
+test('equity-aware — $10k balance, EURUSD: risk-based volume computed (1.5% cap)', () => {
   const db = freshDB()
   setBalance(db, 10000)
-  // budget = $10k × 5% = $500, usd_per_lot = $300 → 1.66 lot, capped by requestedVolume 0.01
+  // perTradeRiskPct 5% proposes $500, but maxRiskCapPct is now 1.5% (aligned
+  // plan Invariant 1), so the budget is $150. usd_per_lot = $300 → 0.5 lot,
+  // still capped by requestedVolume 0.01.
   const res = evaluateTrade(db, goodProposal())
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
-  assert.equal(res.checks.risk_based_volume, 1.66)
+  assert.equal(res.checks.risk_based_volume, 0.49) // floored to the 0.01 lot step
   // Final volume is min(1.66, 0.01 requested) = 0.01
   assert.equal(res.adjusted_volume, 0.01)
 })
@@ -568,7 +576,7 @@ test('equity-aware — check.balance and check.daily_cap_usd are populated', () 
   assert.equal(res.checks.daily_cap_usd, 200)
   assert.equal(res.checks.daily_cap_binding, 'floor')
   assert.equal(res.checks.daily_cap_floor_usd, 200)
-  assert.equal(res.checks.risk_budget, 250)   // 5000 × 5% default
+  assert.equal(res.checks.risk_budget, 75)    // 5000 × 1.5% cap (perTradeRiskPct 5% is ceilinged by maxRiskCapPct)
 })
 
 // Tier label + blocked-symbol gate ---------------------------------------
@@ -587,7 +595,7 @@ test('tier label — full attached when balance > $10k', () => {
   const db = freshDB()
   setBalance(db, 20000)
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 53500,
   }))
   assert.equal(res.checks.tier, 'full')
 })
@@ -597,7 +605,7 @@ test('crypto allowed at any tier when budget supports it', () => {
   const db = freshDB()
   setBalance(db, 5000)
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 53500,
     requestedVolume: 0.01,
   }))
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
@@ -609,7 +617,7 @@ test('XAUUSD allowed on small account when SL distance affordable', () => {
   const db = freshDB()
   setBalance(db, 1500)
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2417.5,
     requestedVolume: 0.01,
   }))
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
@@ -620,7 +628,7 @@ test('blockedSymbols config vetoes listed symbols', () => {
   setBalance(db, 10000)
   const config = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['BTCUSD', 'XRPUSD'] }
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 53500,
   }), config)
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /symbol_blocked/)
@@ -631,7 +639,7 @@ test('blockedSymbols is case-insensitive', () => {
   setBalance(db, 10000)
   const config = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['btcusd'] }
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 53500,
   }), config)
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /symbol_blocked/)
@@ -683,7 +691,7 @@ test('margin gate — $500 @ 1:5 leverage vetoes XAUUSD 0.01 lot', () => {
   setBalance(db, 500)
   setLeverage(db, 5)
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2417.5,
     requestedVolume: 0.01,
   }))
   assert.equal(res.approved, false)
@@ -697,7 +705,7 @@ test('margin gate — $500 @ 1:500 leverage approves XAUUSD 0.01 lot', () => {
   setBalance(db, 500)
   setLeverage(db, 500)
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2417.5,
     requestedVolume: 0.01,
   }))
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
@@ -717,7 +725,7 @@ test('margin gate — not enforced when balance unset', () => {
   // Absolute fallback mode skips the margin check entirely.
   const db = freshDB()
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2417.5,
   }))
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
   assert.equal(res.checks.notional_usd, undefined)
@@ -730,7 +738,7 @@ test('maxMarginUsagePct config is honoured', () => {
   // Margin = 2400/100 = $24; cap default = $500; custom cap 2% = $20 → veto
   const config = { ...DEFAULT_RISK_CONFIG, maxMarginUsagePct: 0.02 }
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2417.5,
     requestedVolume: 0.01,
   }), config)
   assert.equal(res.approved, false)
@@ -866,7 +874,7 @@ test('empty blockedSymbols allows everything budget supports', () => {
       symbol: sym,
       entry: sym === 'BTCUSD' ? 50000 : sym === 'XAUUSD' ? 2400 : sym === 'US30' ? 40000 : 1.1,
       sl:    sym === 'BTCUSD' ? 49000 : sym === 'XAUUSD' ? 2395 : sym === 'US30' ? 39800 : 1.097,
-      tp1:   sym === 'BTCUSD' ? 52000 : sym === 'XAUUSD' ? 2410 : sym === 'US30' ? 40400 : 1.106,
+      tp1:   sym === 'BTCUSD' ? 53500 : sym === 'XAUUSD' ? 2417.5 : sym === 'US30' ? 40700 : 1.1105,
       requestedVolume: 0.01,
     }))
     assert.equal(res.approved, true, `${sym} rejected: ${res.veto_reason}`)
@@ -886,7 +894,7 @@ test('no balance → uses absolute dailyLossLimit', () => {
 test('no balance → no tier gate, crypto approves', () => {
   const db = freshDB()
   const res = evaluateTrade(db, goodProposal({
-    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 53500,
   }))
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
 })
@@ -900,7 +908,7 @@ test('no Max lots cap → adjusted volume is the full risk-based size', () => {
   setBalance(db, 50_000)
   setLeverage(db, 200)
   // EURUSD, 50-pip stop: risk budget 1% = $500; usd/lot = 100000×0.005 = $500 → 1 lot
-  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0950, tp1: 1.1100, requestedVolume: null }
+  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0950, tp1: 1.1175, requestedVolume: null }
   const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01 })
   assert.equal(r.approved, true, r.veto_reason)
   assert.ok(r.adjusted_volume >= 0.9, `expected ~1 lot risk-based size, got ${r.adjusted_volume}`)
@@ -911,7 +919,7 @@ test('explicit Max lots cap still reduces the risk-based size', () => {
   const db = freshDB()
   setBalance(db, 50_000)
   setLeverage(db, 200)
-  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0950, tp1: 1.1100, requestedVolume: 0.05 }
+  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0950, tp1: 1.1175, requestedVolume: 0.05 }
   const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01 })
   assert.equal(r.approved, true, r.veto_reason)
   assert.equal(r.adjusted_volume, 0.05)
@@ -927,7 +935,7 @@ test('maxConsecutiveLosses 0 disables the streak breaker entirely', () => {
        VALUES ('US30', 'BUY', 'closed', -10, datetime('now', '-1 hour'), datetime('now'))`
     ).run()
   }
-  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.09, tp1: 1.12, requestedVolume: 0.01 }
+  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.09, tp1: 1.135, requestedVolume: 0.01 }
   const off = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, maxConsecutiveLosses: 0 })
   assert.equal(off.approved, true, off.veto_reason)
   const on = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, maxConsecutiveLosses: 3, cooldownMinutes: 60 })
@@ -966,7 +974,7 @@ test('evaluateTrade sizes a cross end-to-end using scan rates from state', () =>
   db.prepare(
     `INSERT INTO agent_state (key, value) VALUES ('last_scan_results', ?)`
   ).run(JSON.stringify({ scans: [{ symbol: 'USDJPY', price: 150 }] }))
-  const proposal = { symbol: 'GBPJPY', side: 'BUY', entry: 195, sl: 194.5, tp1: 195.9, requestedVolume: null }
+  const proposal = { symbol: 'GBPJPY', side: 'BUY', entry: 195, sl: 194.5, tp1: 196.75, requestedVolume: null }
   const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01 })
   assert.equal(r.approved, true, r.veto_reason)
   assert.ok(r.adjusted_volume >= 1.4, `expected ~1.5 lots, got ${r.adjusted_volume}`)
@@ -1313,4 +1321,138 @@ test('campaign stop: inside the budget it reports and approves', () => {
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
   assert.equal(res.checks.campaign_drawdown_usd, 100)
   assert.equal(res.checks.campaign_budget_left_usd, 3585.84)
+})
+
+// ---------------------------------------------------------------------------
+// THE EXPECTANCY FLOOR (owner, 13-08-2026). Measured on 438 closed deals,
+// 28 Jul – 13 Aug: 24.9% win rate at a realised 1.74:1 payoff, expectancy
+// −$38.34 a trade, −$16,794.78 over the period. Breakeven at that win rate is
+// (1−W)/W = 3.02:1. These assert the floor cannot be lowered from anywhere,
+// because "non-bypassable" was the whole requirement.
+// ---------------------------------------------------------------------------
+
+test('HARD_MIN_RR is 3.0 — above the 3.02 breakeven, not the plan\'s 2.8', () => {
+  assert.equal(HARD_MIN_RR, 3.0)
+  const W = 0.249
+  assert.ok((1 - W) / W > 2.8, 'a 2.8 floor sits BELOW breakeven at the measured win rate')
+  assert.ok(Math.abs((1 - W) / W - 3.02) < 0.02)
+})
+
+test('an account override BELOW the floor cannot lower it', () => {
+  // The plan's §2.2.2: overrides permitted minRR 1.2, which at a 24.9% win
+  // rate is −0.428R a trade. Config is not allowed to buy that back.
+  const db = freshDB()
+  setBalance(db, 20000)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('risk_config_json', ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify({ minRR: 1.2 }))
+  const res = evaluateTrade(db, goodProposal({ tp1: 1.1060 })) // RR 2.0
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /bad_rr/)
+  assert.match(res.veto_reason, /raised to the 3 expectancy floor/)
+})
+
+test('a STRATEGY may not declare its way under the floor either', () => {
+  // rsi2_reversion declares 1.0 in STRATEGY_MIN_RR. That is the second bypass
+  // and it was the one a config-only fix would have missed entirely.
+  const db = freshDB()
+  setBalance(db, 20000)
+  const res = evaluateTrade(db, goodProposal({ strategy: 'rsi2_reversion', tp1: 1.1060 }))
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /bad_rr 2.00<3/)
+  assert.deepEqual(res.checks.rr_floor_raised, { requested: 1, enforced: 3 })
+})
+
+test('a floor ABOVE the hard minimum is still respected — this is a floor, not a setting', () => {
+  const db = freshDB()
+  setBalance(db, 20000)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('risk_config_json', ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify({ minRR: 4.0 }))
+  assert.equal(evaluateTrade(db, goodProposal({ tp1: 1.1105 })).approved, false, 'RR 3.5 < 4.0')
+  assert.equal(evaluateTrade(db, goodProposal({ tp1: 1.1130 })).approved, true, 'RR 4.33 clears it')
+})
+
+test('3.0 is BREAKEVEN, not profit — the floor stops the bleeding, it does not earn', () => {
+  // Written to assert what is true rather than what would be reassuring.
+  // E = W×rr − (1−W) at the measured W = 24.9%:
+  //   realised 1.74 : E = −0.318R   ← the drawdown
+  //   floor    3.00 : E = −0.004R   ← flat, a rounding either side of zero
+  //   target   3.50 : E = +0.120R   ← the plan's target, and the first
+  //                                   ratio that actually pays
+  // So 3.0 removes the structural loss and buys nothing more. Profit needs a
+  // better win rate or a higher ratio, and that is the honest position to
+  // hold rather than calling the floor a fix for the P&L.
+  const W = 0.249
+  const E = rr => W * rr - (1 - W)
+  assert.ok(E(1.74) < -0.3, 'the realised payoff bleeds')
+  assert.ok(Math.abs(E(HARD_MIN_RR)) < 0.01, 'the floor lands on breakeven, within a rounding')
+  assert.ok(E(3.5) > 0.1, 'the plan\'s 3.5 target is the one that pays')
+  assert.ok(E(2.8) < E(HARD_MIN_RR), 'and 2.8 would still have been negative')
+})
+
+// ---------------------------------------------------------------------------
+// ACCEPTANCE 2.6.2, second clause — Invariant 2's expectancy gate.
+// bot_trade_remediation_plan_aligned.md §2.4.2 / §2.5.2.2.
+//
+// The invariant asks for minRR >= 2.8 AND E > 0.15R. Those contradict at this
+// account's win rate, so the static floor and the dynamic gate are separate
+// mechanisms: HARD_MIN_RR covers the thin-sample window, this covers the rest.
+// ---------------------------------------------------------------------------
+
+function seedClosed(db, { wins, losses }) {
+  const ins = db.prepare(
+    `INSERT INTO trades (symbol, status, net_pnl, closed_at, account_id)
+     VALUES ('EURUSD', 'closed', ?, datetime('now', '-1 day'), NULL)`)
+  for (let i = 0; i < wins; i++) ins.run(100)
+  for (let i = 0; i < losses; i++) ins.run(-100)
+}
+
+test('2.6.2 — the required R:R follows the MEASURED win rate, not a constant', () => {
+  // The reason this is not hardcoded at 3.62: that number is a function of a
+  // win rate, and freezing it repeats the contract-table mistake.
+  const at = (W, rr) => expectancyVerdict({ trades: 100, winRate: W }, rr)
+  assert.equal(at(0.249, 3.5).ok, false, '24.9% needs more than the plan target')
+  assert.equal(at(0.249, 3.5).need, 3.62)
+  assert.equal(at(0.35, 2.9).ok, true, 'a better win rate earns a lower ratio')
+  assert.ok(at(0.35, 2.9).need < 2.9)
+  // And the invariant's own 2.8 floor fails its own E test at 24.9%.
+  assert.equal(at(0.249, 2.8).ok, false)
+})
+
+test('2.6.2 — a real signal is vetoed as NEGATIVE EXPECTANCY, naming the ratio it needs', () => {
+  const db = freshDB()
+  setBalance(db, 20000)
+  seedClosed(db, { wins: 25, losses: 75 })          // 25% win rate, 100 trades
+  const res = evaluateTrade(db, goodProposal({ tp1: 1.1105 })) // RR 3.5, clears HARD_MIN_RR
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /negative_expectancy/)
+  assert.match(res.veto_reason, /25\.0% win rate/)
+  assert.match(res.veto_reason, /needs R:R ≥ 3\.6/)
+  assert.equal(res.checks.win_rate, 25)
+  assert.equal(res.checks.expectancy_sample, 100)
+})
+
+test('2.6.2 — the same signal passes once the win rate justifies it', () => {
+  const db = freshDB()
+  setBalance(db, 20000)
+  seedClosed(db, { wins: 40, losses: 60 })          // 40% — E at 3.5 is +0.8R
+  const res = evaluateTrade(db, goodProposal({ tp1: 1.1105 }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.ok(res.checks.expectancy_r > 0.15)
+})
+
+test('2.6.2 — a thin sample FAILS OPEN; the static floor covers that window', () => {
+  // Four closed trades is not a win rate. Vetoing every entry on it would halt
+  // the account to prevent a risk nothing has measured yet.
+  const db = freshDB()
+  setBalance(db, 20000)
+  seedClosed(db, { wins: 1, losses: 3 })
+  const res = evaluateTrade(db, goodProposal({ tp1: 1.1105 }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.equal(res.checks.expectancy_r, undefined, 'no verdict is recorded from four rows')
+})
+
+test('Invariant 1 — the risk ceiling is 1.5%, and it binds over perTradeRiskPct', () => {
+  assert.equal(DEFAULT_RISK_CONFIG.maxRiskCapPct, 0.015)
+  assert.ok(DEFAULT_RISK_CONFIG.perTradeRiskPct > DEFAULT_RISK_CONFIG.maxRiskCapPct,
+    'the cap is the binding term, which is the point of it being a cap')
 })

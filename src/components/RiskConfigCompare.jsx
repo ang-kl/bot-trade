@@ -17,6 +17,7 @@ const KNOBS = [
   ['perTradeRiskPct', 'Risk per trade (%)'],
   ['maxRiskCapPct', 'Max risk cap (%)'],
   ['maxNotionalXBalance', 'Exposure ceiling (× balance)'],
+  ['minExpectancyR', 'Min expectancy (R)'],
   ['dailyLossPct', 'Daily loss cap (%)'],
   ['dailyLossLimit', 'Daily loss limit ($)'],
   ['maxOpenPositions', 'Max open positions'],
