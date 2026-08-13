@@ -16,6 +16,7 @@ import { accountNumbers } from "../lib/scope-label.js"
 const KNOBS = [
   ['perTradeRiskPct', 'Risk per trade (%)'],
   ['maxRiskCapPct', 'Max risk cap (%)'],
+  ['maxNotionalXBalance', 'Exposure ceiling (× balance)'],
   ['dailyLossPct', 'Daily loss cap (%)'],
   ['dailyLossLimit', 'Daily loss limit ($)'],
   ['maxOpenPositions', 'Max open positions'],

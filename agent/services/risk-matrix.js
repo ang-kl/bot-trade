@@ -46,6 +46,11 @@ export const RISK_GROUPS = Object.freeze([
   ] },
   { id: 'size', label: 'Position size', keys: [
     'perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'minLotSize',
+    // Grouped with the risk ceilings because an operator reads it as one, but
+    // it is the only one here denominated in EXPOSURE rather than risk — which
+    // is what lets it catch a wrong contract spec that the others compute
+    // through and authorise. See the note on the default in risk.js.
+    'maxNotionalXBalance',
   ] },
   { id: 'quality', label: 'Entry quality', keys: [
     'minRR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'stopTriggerMethod',

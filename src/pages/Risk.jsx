@@ -1057,6 +1057,9 @@ export default function Risk() {
                     hint="% of balance one trade may lose at its SL." recommend="5% (aggressive default, sized against the proven combos)." />
                   <Field label={`Risk hard cap${mark('maxRiskCapPct')}`} anchor="maxRiskCapPct" applied={appliedKeys.has('maxRiskCapPct')} pct value={risk.maxRiskCapPct} onChange={v => setRisk(r => ({ ...r, maxRiskCapPct: v }))}
                     hint="Never risk more than this % of balance regardless of other settings." recommend="5% — matches the per-trade % above, so it's a true ceiling, not extra headroom." />
+                  <Field label={`Exposure ceiling (× balance)${mark('maxNotionalXBalance')}`} anchor="maxNotionalXBalance" applied={appliedKeys.has('maxNotionalXBalance')} value={risk.maxNotionalXBalance} onChange={v => setRisk(r => ({ ...r, maxNotionalXBalance: v }))}
+                    hint="Refuses any entry whose position VALUE exceeds this multiple of balance. Unlike the two above it is not computed from the stop distance, so it still catches a trade sized off a wrong contract spec — the failure that put $2.9M of JPN225 on a $37k account."
+                    recommend="10× — measured: normal trading here runs 0.8× with a 90th percentile of 3.4×, while the blow-ups sat at 20–79×. Blank turns it off." />
                 </div>
                 {/* The two knobs above are the ones that get changed. These
                     five are real and reachable — they are simply not what
@@ -1150,7 +1153,7 @@ export default function Risk() {
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
-                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'minLotSize', 'minRR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxOpenPositions', 'maxPositionsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
+                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'minLotSize', 'minRR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxOpenPositions', 'maxPositionsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
               }}>Save bot risk</Button></span>
             </div>

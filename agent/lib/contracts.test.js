@@ -243,12 +243,24 @@ test('usdLossPerLot — EURJPY sizes instead of vetoing once JPY is derivable', 
 // currency. The uniform 3,900 across currencies was the bug.
 // ---------------------------------------------------------------------------
 test('the quote currency of a non-FX instrument is declared, not assumed', () => {
-  // CHANGED 07-08-2026. This asserted 'JPY' and the assertion was the problem:
-  // it pinned a hand-entered guess as if it were a measurement, so the 158×
-  // sizing error it caused was protected by a green test for months. Three
-  // real fills say USD — under JPY, trade 641's 9,171.76 loss requires a
-  // 20,000-point move on a 62,487 index. See the note in contracts.js.
-  assert.equal(fxQuoteCurrency('JPN225'), 'USD')
+  // CHANGED BACK 13-08-2026, and this time with the whole sample.
+  //
+  // The 07-08 note reasoned correctly that `contractSize 1 + JPY` was
+  // impossible — trade 641's 9,171.76 loss would need a 20,000-point move on a
+  // 62,487 index — and then concluded USD. That varied the CURRENCY while
+  // holding the CONTRACT SIZE fixed, and the contract size was the wrong term.
+  // The third option was never tested: `contractSize 100 + JPY`.
+  //
+  // 23 closed deals (9 JPN225, 14 JPYX) on the 28 Jul–13 Aug statement imply
+  // $0.6275–$0.6394 of realised P&L per point per lot. Not one row is near
+  // 1.0000. And the value DRIFTS across the period exactly as 100 ÷ USDJPY
+  // does while the yen moves ~159 → ~156.6. A USD-settled contract cannot
+  // drift with the yen; a yen-quoted one cannot do anything else. That drift,
+  // not any single trade, is the proof.
+  //
+  // Under the corrected pair the 9,171.76 loss is a 197.9-point move on 72.5
+  // lots — an ordinary move on an extraordinary position.
+  assert.equal(fxQuoteCurrency('JPN225'), 'JPY')
   // These are the same hand-entered assumption, still unverified. Kept as-is
   // deliberately (no evidence either way) — sizing-parity.js is what will
   // settle them, and it will do it from realised broker P&L, not from here.
@@ -289,4 +301,71 @@ test('USD-quoted instruments are untouched — US30 and NAS100 were always right
   const us30 = usdLossPerLot('US30', 52813 - 51567.5, 52813, {}) * 3.12
   assert.ok(Math.abs(us30 - 3885.96) < 0.01, `expected ≈3,885.96 USD, got ${us30}`)
   assert.ok(Number.isFinite(usdLossPerLot('NAS100', 682.7376, 28447.4, {})))
+})
+
+// ---------------------------------------------------------------------------
+// CONTRACT SPECS MEASURED FROM CLOSED FILLS — statement 28 Jul → 13 Aug 2026.
+//
+// Every number below is `|Net USD| ÷ (|price move| × lots)` taken from the
+// broker's own closed deals: the realised dollars a one-point move pays on one
+// lot. It is the one figure the sizer must agree with, because sizing is
+// `lots = riskBudget ÷ usdLossPerLot` — get the denominator wrong by 100× and
+// the position is 100× too big, which is precisely what happened.
+//
+// These assertions exist so a future "correction" on a plausible-sounding
+// assumption has to argue with the broker rather than with a comment. That is
+// how `JPN225: 'USD'` survived: it read as reasonable and nothing measured it.
+// ---------------------------------------------------------------------------
+
+const RATES = { EURUSD: 1.1525, USDJPY: 157.0, USDZAR: 16.46 }
+
+test('the instruments that blew up now price the way the fills did', () => {
+  // symbol, measured $/point/lot, tolerance, n deals behind the measurement
+  const cases = [
+    ['USDX', 100.0, 0.01, 2],     // was contractSize 1 → valued a point at $1
+    ['EURX', 115.25, 0.05, 1],    // 100 EUR × 1.1525 — was $1
+    ['XPTUSD', 100.0, 0.01, 2],   // was 50 → every platinum trade double-risk
+    ['JPN225', 0.6369, 0.005, 9], // 100 JPY ÷ 157 — was $1.000 as "USD-settled"
+    ['JPYX', 0.6369, 0.005, 14],
+  ]
+  for (const [sym, expected, tol, n] of cases) {
+    const got = usdLossPerLot(sym, 1, 100, RATES)
+    assert.ok(
+      Number.isFinite(got) && Math.abs(got - expected) <= tol,
+      `${sym}: sizer values one point at $${got} but ${n} closed deal(s) paid $${expected}`,
+    )
+  }
+})
+
+test('the symbols the fills already agreed with are left alone', () => {
+  // A correction that moves something already correct is the mirror of the
+  // bug. These were measured on the same statement and matched exactly.
+  for (const [sym, expected] of [['NAS100', 1], ['US30', 1], ['VIX', 1],
+    ['LTCUSD', 1], ['BTCUSD', 1], ['XAUUSD', 100], ['NATGAS', 10000]]) {
+    assert.equal(usdLossPerLot(sym, 1, 100, RATES), expected, `${sym} moved when it should not have`)
+  }
+})
+
+test('a 100x valuation error is a 100x position — the arithmetic that cost the money', () => {
+  // EURX, 2 Aug: 22 lots, dead in two minutes, −$2,535.41. With a $500 risk
+  // budget and a 1.0-point stop, the old table sized 500 lots; the corrected
+  // one sizes 4.34. The bug was never subtle — it was invisible.
+  const budget = 500, stop = 1.0
+  const correct = budget / usdLossPerLot('EURX', stop, 100, RATES)
+  const asIfUnpriced = budget / (stop * 1) // contractSize 1, quote treated USD
+  assert.ok(correct < 5, `corrected sizing should be a few lots, got ${correct}`)
+  assert.ok(asIfUnpriced / correct > 100, 'the old table sized >100x larger')
+})
+
+test('notional is what exposes the blow-ups — risk alone does not', () => {
+  // The 12 deals a 10x ceiling would have refused all sat at 20x-79x balance,
+  // while normal trading ran a 0.8x median. These are the two extremes, priced
+  // with the corrected table against the balance each actually ran on.
+  const bal = 36630 // account balance at the JPN225 deal
+  const jpn = notionalUsd('JPN225', 72.5, 62286.5, RATES)
+  assert.ok(jpn / bal > 70, `JPN225 was ${(jpn / bal).toFixed(0)}x balance, expected >70x`)
+  const eurx = notionalUsd('EURX', 22, 107.8, RATES)
+  assert.ok(eurx / 35600 > 5, 'EURX ran far above normal exposure too')
+  // A normal trade for contrast: 0.8 lots of NAS100 is well under the ceiling.
+  assert.ok(notionalUsd('NAS100', 0.8, 29720, RATES) / bal < 1)
 })

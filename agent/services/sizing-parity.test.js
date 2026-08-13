@@ -13,16 +13,26 @@ import { setQuoteCurrencyOverrides, fxQuoteCurrency } from '../lib/contracts.js'
 
 const RATES = { USDJPY: 158.329, GBPUSD: 1.34532, USDHKD: 7.84335 }
 
-// The three real JPN225 shorts from account 46130058, 03-08 and 04-08.
-// exit_price is derived from the realised P&L under the USD reading, which is
-// the reading the evidence supports; the point of the fixture is the RATIO.
+// The three real JPN225 shorts, now with the BROKER's prices.
+//
+// THE FIXTURE WAS CIRCULAR (found 13-08-2026). Its own comment said
+// "exit_price is derived from the realised P&L under the USD reading" — the
+// exits were reverse-engineered from the conclusion, so the ratio came out at
+// 1.0000, 1.0001, 1.0001 and the test proved the model agreed with a number
+// the model had produced. A parity check fed synthetic prices cannot detect a
+// pricing error; it can only confirm one.
+//
+// These entry/exit prices are read off the 28 Jul–13 Aug statement for the
+// same three deals (same P&L, same volumes). The moves are 197.9 / 82.2 / 27.7
+// points, not 126.44 / 52.05 / 17.64, and they imply $0.6392 / $0.6334 /
+// $0.6377 per point per lot — 100 JPY at USDJPY ~156-158, not $1.
 const JPN = [
-  { symbol: 'JPN225', side: 'SELL', entry_price: 62487, exit_price: 62613.44, volume: 72.54, net_pnl: -9171.76 },
-  { symbol: 'JPN225', side: 'SELL', entry_price: 63814.8, exit_price: 63866.85, volume: 51.51, net_pnl: -2681.29 },
-  { symbol: 'JPN225', side: 'SELL', entry_price: 62552, exit_price: 62569.64, volume: 74.59, net_pnl: -1315.92 },
+  { symbol: 'JPN225', side: 'SELL', entry_price: 62286.5, exit_price: 62484.4, volume: 72.50, net_pnl: -9171.76 },
+  { symbol: 'JPN225', side: 'SELL', entry_price: 63659.7, exit_price: 63741.9, volume: 51.50, net_pnl: -2681.29 },
+  { symbol: 'JPN225', side: 'SELL', entry_price: 62506.6, exit_price: 62534.3, volume: 74.50, net_pnl: -1315.92 },
 ]
 
-test('with JPN225 read as USD the model now agrees with the broker', () => {
+test('with JPN225 read as JPY the model agrees with the broker', () => {
   const r = sizingParity(JPN, { rates: RATES })
   const s = r.symbols[0]
   assert.equal(s.symbol, 'JPN225')
@@ -30,26 +40,31 @@ test('with JPN225 read as USD the model now agrees with the broker', () => {
   assert.ok(Math.abs(s.impliedFactor - 1) < 0.01, `factor ${s.impliedFactor} should be ~1`)
 })
 
-test('THE REGRESSION: under the old JPY reading the factor names the rate', () => {
-  // This is what the check would have reported on 03-08 had it existed. The
-  // headline is not "something is wrong" — it is that the number IS the FX
-  // rate, which points straight at the mistake instead of at the symbol.
-  setQuoteCurrencyOverrides({ JPN225: 'JPY' })
+test('THE REGRESSION: under the USD reading the factor names the rate', () => {
+  // What the check reports when JPN225 is read as USD — the state the table
+  // was actually in from 07-08 to 13-08. The headline is not "something is
+  // wrong": it is that the number IS the FX rate, which points straight at the
+  // mistake instead of at the symbol. Under USD the model expects 197.9 pts x
+  // 72.5 lots = $14,348 and the broker charged $9,171.76.
+  setQuoteCurrencyOverrides({ JPN225: 'USD' })
   try {
-    assert.equal(fxQuoteCurrency('JPN225'), 'JPY', 'override must win over the corrected table')
+    assert.equal(fxQuoteCurrency('JPN225'), 'USD', 'override must win over the corrected table')
     const s = sizingParity(JPN, { rates: RATES }).symbols[0]
     assert.equal(s.verdict, 'disagrees')
-    assert.ok(Math.abs(s.impliedFactor - 158.329) / 158.329 < 0.01,
-      `factor ${s.impliedFactor} should land on USDJPY 158.329`)
-    assert.match(s.suggests, /1\/JPY→USD/)
-    assert.match(s.suggests, /may settle in USD/)
+    // The factor is now the RECIPROCAL of the rate, because the wrong reading
+    // is `contractSize 100 + USD` rather than the old `contractSize 1 + JPY` —
+    // both terms moved. What matters is unchanged and is the whole point of
+    // the check: the number is the yen rate, so it names the mistake.
+    assert.ok(Math.abs(1 / s.impliedFactor - 158.329) / 158.329 < 0.03,
+      `1/factor ${(1 / s.impliedFactor).toFixed(2)} should land on the yen rate`)
+    assert.match(s.suggests, /JPY→USD/)
   } finally { setQuoteCurrencyOverrides(null) }
 })
 
 test('the override map is cleared by null, restoring the table', () => {
-  setQuoteCurrencyOverrides({ JPN225: 'JPY' })
+  setQuoteCurrencyOverrides({ JPN225: 'USD' })
   setQuoteCurrencyOverrides(null)
-  assert.equal(fxQuoteCurrency('JPN225'), 'USD')
+  assert.equal(fxQuoteCurrency('JPN225'), 'JPY')
 })
 
 test('an override may set null — "no conversion" is a real answer', () => {
@@ -66,7 +81,7 @@ test('a malformed override is dropped, not stored', () => {
   const applied = setQuoteCurrencyOverrides({ JPN225: 'JAPANESE YEN', US30: 'x', GER40: 'USD' })
   try {
     assert.deepEqual(applied, ['GER40'])
-    assert.equal(fxQuoteCurrency('JPN225'), 'USD', 'unchanged by the bad value')
+    assert.equal(fxQuoteCurrency('JPN225'), 'JPY', 'unchanged by the bad value')
     assert.equal(fxQuoteCurrency('GER40'), 'USD')
   } finally { setQuoteCurrencyOverrides(null) }
 })
@@ -136,7 +151,7 @@ test('HKD names reconcile — proof this is not "conversion is broken"', () => {
 })
 
 test('disagreeing symbols are listed, and sorted to the top', () => {
-  setQuoteCurrencyOverrides({ JPN225: 'JPY' })
+  setQuoteCurrencyOverrides({ JPN225: 'USD' })
   try {
     const clean = [1, 2, 3].map(i => ({
       symbol: 'US30', side: 'BUY', entry_price: 50000, exit_price: 50000 + i, volume: 2, net_pnl: i * 2,
