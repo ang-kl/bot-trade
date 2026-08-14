@@ -1506,3 +1506,104 @@ test('Invariant 1 — the risk ceiling is 1.5%, and it binds over perTradeRiskPc
   assert.ok(DEFAULT_RISK_CONFIG.perTradeRiskPct > DEFAULT_RISK_CONFIG.maxRiskCapPct,
     'the cap is the binding term, which is the point of it being a cap')
 })
+
+// ---------------------------------------------------------------------------
+// ACCEPTANCE 2.6.1 — Notional Exposure Calculation.
+//
+// The plan asks: "verify 72.5 lots of JPN225 or 22 lots of EURX trigger
+// NOTIONAL_EXPOSURE_EXCEEDED". Both are reconstructed end-to-end below, at the
+// risk setting those positions were actually opened under (maxRiskCapPct 0.05,
+// the pre-#706 value), because the volume is not an input — it is derived from
+// balance ÷ $-per-lot, so the only honest way to arrive at 72.5 lots is to
+// supply the account that produces 72.5 lots.
+//
+// The veto string is `notional_exposure_exceeded`; the plan's
+// NOTIONAL_EXPOSURE_EXCEEDED is the same gate under a constant name this
+// codebase does not use.
+// ---------------------------------------------------------------------------
+
+function seedRate(db, symbol, price) {
+  db.prepare(
+    `INSERT INTO agent_state (key, value) VALUES ('last_scan_results', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(JSON.stringify({ scans: [{ symbol, price }] }))
+}
+
+const LOOSE_RISK = { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.05, maxRiskCapPct: 0.05 }
+
+test('2.6.1 — 72.5 lots of JPN225 is refused as a notional-exposure failure', () => {
+  const db = freshDB()
+  setBalance(db, 55_100)
+  setLeverage(db, 500)
+  seedRate(db, 'USDJPY', 150)
+  // SL exactly on the 0.15% floor: 57 index points on 38,000.
+  // $/lot = 57 × 100 ÷ 150 = $38 → 5% of $55,100 ÷ 38 = 72.5 lots.
+  const res = evaluateTrade(db, {
+    symbol: 'JPN225', side: 'long', entry: 38_000, sl: 37_943, tp1: 38_199.5,
+    requestedVolume: null, strategy: 'trend', conviction: 8,
+  }, LOOSE_RISK)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /notional_exposure_exceeded/)
+  assert.match(res.veto_reason, /72\.5 lots/)
+  assert.equal(res.checks.risk_based_volume, 72.5)
+  // $1.84m of notional on a $55k account
+  assert.ok(res.checks.notional_x_balance > 33 && res.checks.notional_x_balance < 34,
+    `got ${res.checks.notional_x_balance}x`)
+})
+
+test('2.6.1 — 22 lots of EURX is refused the same way', () => {
+  const db = freshDB()
+  setBalance(db, 7_610)
+  setLeverage(db, 500)
+  seedRate(db, 'EURUSD', 1.08)
+  // 0.16 index points of stop — a hair OVER the 0.15% floor, since a stop
+  // sitting exactly on it lands on the wrong side of the comparison once the
+  // percentage is recomputed in floating point. $/lot = 0.16 × 100 × 1.08 =
+  // $17.28 → 5% of $7,610 ÷ 17.28 = 22 lots.
+  const res = evaluateTrade(db, {
+    symbol: 'EURX', side: 'long', entry: 105, sl: 104.84, tp1: 105.56,
+    requestedVolume: null, strategy: 'trend', conviction: 8,
+  }, LOOSE_RISK)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /notional_exposure_exceeded/)
+  assert.ok(res.checks.risk_based_volume >= 22, `got ${res.checks.risk_based_volume} lots`)
+})
+
+test('2.6.1 — under the CURRENT risk cap the ceiling sits exactly on the boundary', () => {
+  // Worth pinning, because it is the shape of the gate rather than a number
+  // someone chose: with risk-based sizing, notional ÷ balance reduces to
+  // riskPct ÷ slPct — the symbol cancels out entirely. At the shipped 1.5% cap
+  // and the 0.15% stop floor that is exactly 10.0×, which is the ceiling.
+  //
+  // So the notional gate cannot bind on a correctly-valued trade today. It
+  // binds when the risk cap is loosened (the two cases above), or when the two
+  // valuation paths disagree — $-per-lot understated against notional, which
+  // is precisely the JPN225/EURX contract-table bug it was built to catch.
+  const db = freshDB()
+  setBalance(db, 55_100)
+  setLeverage(db, 500)
+  seedRate(db, 'USDJPY', 150)
+  const res = evaluateTrade(db, {
+    symbol: 'JPN225', side: 'long', entry: 38_000, sl: 37_943, tp1: 38_199.5,
+    requestedVolume: null, strategy: 'trend', conviction: 8,
+  }, NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.ok(Math.abs(res.checks.notional_x_balance - 10) < 0.05,
+    `expected the boundary, got ${res.checks.notional_x_balance}x`)
+})
+
+// ---------------------------------------------------------------------------
+// ACCEPTANCE 2.6.2, first clause — a minRR of 1.2 is raised to the floor.
+// (The second clause, the dynamic expectancy gate, is covered further above.)
+// ---------------------------------------------------------------------------
+
+test('2.6.2 — a 1.2 R:R request is raised to the 3.0 floor and the signal is vetoed', () => {
+  const db = freshDB()
+  setBalance(db, 20_000)
+  // 30 pips of risk, 36 pips of reward — exactly the 1.2 the plan names.
+  const res = evaluateTrade(db, goodProposal({ tp1: 1.1036 }), { ...NO_SYMBOL_COOLDOWN, minRR: 1.2 })
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /bad_rr 1\.20</)
+  assert.match(res.veto_reason, /raised to the 3 expectancy floor/)
+  assert.deepEqual(res.checks.rr_floor_raised, { requested: 1.2, enforced: HARD_MIN_RR })
+})

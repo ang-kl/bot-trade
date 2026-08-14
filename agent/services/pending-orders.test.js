@@ -523,3 +523,36 @@ test('placement records the hold alongside the order deadline', async () => {
   const span = (Date.parse(row.expires_at) - Date.parse(row.placed_at)) / 60_000
   assert.ok(Math.abs(span - 4320) < 2, 'and the order deadline still tracks it')
 })
+
+// ---------------------------------------------------------------------------
+// ACCEPTANCE 2.6.4 — Fill-Time Clock Calculation.
+//
+// The plan asks: "verify duration evaluates from T_fill, not T_placed". The
+// cases above cover the behaviour this protects (a late fill keeps its full
+// hold; a post-deadline fill is not born expired). This states the identity
+// itself, as an equation rather than a bound, so a future change that merely
+// moves the cap in the right direction cannot pass for correctness.
+// ---------------------------------------------------------------------------
+
+test('2.6.4 — time_cap_at == T_fill + hold, exactly, and never T_placed + hold', () => {
+  const db = freshDb()
+  const HOLD_MIN = 240
+  const placedMs = Date.now() - 95 * 60_000          // rested 95 minutes
+  const placed = new Date(placedMs).toISOString()
+  const expires = new Date(placedMs + HOLD_MIN * 60_000).toISOString()
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, account_id, time_cap_minutes)
+    VALUES ('EURUSD', '4h', '2604', 1, 1.1, 1.095, 1.11, 0.01, ?, ?, 'working', 'pending-fib', '123', ?)
+  `).run(placed, expires, HOLD_MIN)
+  const row = db.prepare(`SELECT * FROM pending_orders WHERE order_id = '2604'`).get()
+
+  const fillMs = Date.now()
+  persistFilledTrade(db, row, { positionId: 2604, price: 1.1002, tradeData: { openTimestamp: fillMs } }, '123')
+
+  const capMs = Date.parse(db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE symbol = 'EURUSD'`).get().time_cap_at)
+  assert.equal(capMs, fillMs + HOLD_MIN * 60_000, 'the cap is fill + hold, to the millisecond')
+  assert.notEqual(capMs, placedMs + HOLD_MIN * 60_000)
+  // The 95 minutes the order spent resting are the whole bug: under the old
+  // rule this position was born with 145 minutes to live instead of 240.
+  assert.equal(capMs - (placedMs + HOLD_MIN * 60_000), 95 * 60_000)
+})
