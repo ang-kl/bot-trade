@@ -1718,7 +1718,10 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   if (skipLlm()) {
     s.updatePositionCheck.run(
       'HOLD',
-      `${eval_.reason} | llm_skipped: cycle past its soft deadline — deterministic rules only this cycle`,
+      // Two reasons reach here now — the cycle ran out of budget, or the LLM
+      // monitor is in manual. The row should say which, or a quiet account
+      // reads like a stalled loop.
+      `${eval_.reason} | llm_skipped: advisory monitor off (manual mode) or cycle past its soft deadline — deterministic rules only`,
       new Date().toISOString(), 'intact', pos.id
     )
     return
@@ -2047,6 +2050,30 @@ async function runLoop(db) {
   // beats a perfect one the watchdog never lets finish.)
   const CYCLE_SOFT_DEADLINE_MS = Math.max(120_000, Number(process.env.CYCLE_SOFT_DEADLINE_MS || 7 * 60_000))
   const cycleOverBudget = () => Date.now() - start > CYCLE_SOFT_DEADLINE_MS
+
+  // LLM MONITOR: ADVISORY, AND NOW OPTIONAL (owner, 14-08-2026).
+  //
+  // "I like to remove the LLM assessment to manual since I don't read them as
+  // often." Safe to honour, and this is why rather than on preference alone:
+  // the LLM monitor has no hands. evaluatePosition runs first and RETURNS on
+  // any action, so the model is only consulted about positions the
+  // deterministic rules already decided to hold; and since the 47790949
+  // measurement (12 llm_monitor exits, -$2,229.85, not one stop moved) it has
+  // been absent from CLOSE_AUTHORITY and this file no longer calls the
+  // executor for it at all — see the note above the LLM EXIT advisory log.
+  //
+  // So its entire product is a journalled opinion and an alert. Every real
+  // exit — broker SL/TP, time cap, invalidation trigger, bank target, partial,
+  // runner trail, breakeven, plus the loss guardian and profit keeper — is
+  // deterministic and unaffected. Turning it off removes a cost and a log
+  // line, and removes nothing that protects a position. It is also what the
+  // aligned plan asks for in E4 and §2.5.7.2.
+  //
+  // MANUAL IS THE DEFAULT. An unset key means off: the owner asked for it off,
+  // and a spend that resumes silently on a fresh database is the wrong
+  // direction for a knob whose only output is advice nobody reads.
+  const llmMonitorManual = () => getState(db, 'llm_monitor_mode') !== 'auto'
+  const skipLlmMonitor = () => llmMonitorManual() || cycleOverBudget()
   console.log(`[diag] LOOP #${loopCount} start`)
 
   // -------------------------------------------------------------------------
@@ -3678,7 +3705,7 @@ async function runLoop(db) {
       await runMonitorPhase(db, s, activePositions, pos => {
         const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
         return heldPrices[String(pos.symbol).toUpperCase()] ?? scanRow?.price ?? null
-      }, client, cycleOverBudget)
+      }, client, skipLlmMonitor)
 
       // ---------------------------------------------------------------------
       // 4a-bis. ADAPTIVE BREAKER — the machine response to a loss streak:
