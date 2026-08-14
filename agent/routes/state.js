@@ -1659,9 +1659,18 @@ export default function stateRouter(db) {
       // does NOT filter on entry/exit being present the way an edge query
       // would. Filtering them out here is precisely how a dirty record starts
       // looking clean.
+      //
+      // BOTH columns, unmerged: `COALESCE(label_strategy, strategy)` used to
+      // collapse them into one field here, and COALESCE only falls through on
+      // NULL — not on the string 'other'. A row with strategy='va_breakout'
+      // but label_strategy='other' (a strategy with no code in the broker
+      // label vocabulary — see trade-labels.js) got 'other' from the
+      // COALESCE, and strategyOf() downstream never even saw the column that
+      // still had the answer. Selecting both lets strategyOf() do the
+      // 'other'-is-absence reasoning it was built for.
       const rows = db.prepare(`
         SELECT id, symbol, side, entry_price, exit_price, volume, net_pnl, closed_at,
-               COALESCE(label_strategy, strategy) AS label_strategy,
+               label_strategy, strategy,
                label_timeframe, pnl_price_mismatch, exit_price_suspect
           FROM trades
          WHERE status = 'closed' AND net_pnl IS NOT NULL

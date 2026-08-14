@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { sizingBalance } from '../lib/sizing-balance.js'
 import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
@@ -760,6 +761,16 @@ export function kellyVolume(stats, defaultVolume, config) {
  * This scopes expectancy to the proposal's OWN record, so a strategy with too
  * few trades returns a small total_trades and kellyVolume SKIPS (default size)
  * instead of vetoing. Shape matches performance_snapshots columns.
+ *
+ * The match used to be `COALESCE(label_strategy, strategy) = ?`, which prefers
+ * `label_strategy` whenever it is non-NULL — including when it is the string
+ * 'other', which a strategy with no code in trade-labels.js always produces.
+ * That made this query's WHERE clause unmatchable for such a strategy: every
+ * one of its rows read total_trades=0 here regardless of `strategy`, so the
+ * Kelly veto for negative expectancy could never fire for it — the strategy
+ * traded at a permanently unproven size no matter how it actually performed.
+ * strategyAttrSql() treats 'other' as absent in both columns, same as
+ * strategyOf() does for the go-live gate.
  */
 export function strategyPerfStats(db, strategyKey, windowDays = 30) {
   if (!strategyKey) return null
@@ -771,7 +782,7 @@ export function strategyPerfStats(db, strategyKey, windowDays = 30) {
               AVG(CASE WHEN net_pnl <= 0 THEN net_pnl END) AS avg_loss
        FROM trades
        WHERE status = 'closed' AND net_pnl IS NOT NULL
-         AND COALESCE(label_strategy, strategy) = ?
+         AND ${strategyAttrSql()} = ?
          AND closed_at >= datetime('now', ?)`
     ).get(strategyKey, `-${Math.max(1, Math.round(windowDays))} days`)
   } catch { return null }
