@@ -8,7 +8,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
-import { runBurnIn, loadBurnInConfig, DEFAULT_BURN_IN, pickPlan, pacePlan } from './burn-in.js'
+import { runBurnIn, loadBurnInConfig, DEFAULT_BURN_IN, pickPlan, pacePlan, burnInWindow } from './burn-in.js'
 
 const CREDS = { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }
 const DAY = 86_400_000
@@ -99,7 +99,63 @@ test('defaults are safe: off, 0.01 lots, 200-in-2d target; clamps hold', () => {
   assert.equal(cfg.windowDays, 7)
 })
 
+// ---- burnInWindow: the window is terminal ----------------------------------
+
+test('burnInWindow: expiry is startedAt + windowDays, and unstamped is not expired', () => {
+  const NOW = 1_000_000_000_000
+  const armed = new Date(NOW - 3 * DAY).toISOString()
+  const w = burnInWindow({ startedAt: armed, windowDays: 2, now: NOW })
+  assert.equal(w.expired, true)
+  assert.equal(w.endsAt, new Date(NOW - DAY).toISOString())
+  assert.equal(w.elapsedMs, 3 * DAY)
+
+  const young = burnInWindow({ startedAt: new Date(NOW - DAY).toISOString(), windowDays: 2, now: NOW })
+  assert.equal(young.expired, false)
+
+  // exactly at the boundary counts as expired — a 2-day window is 2 days
+  const edge = burnInWindow({ startedAt: new Date(NOW - 2 * DAY).toISOString(), windowDays: 2, now: NOW })
+  assert.equal(edge.expired, true)
+
+  // no stamp / garbage stamp → no window to be past
+  for (const s of [null, '', 'not-a-date']) {
+    assert.deepEqual(burnInWindow({ startedAt: s, windowDays: 2, now: NOW }).expired, false)
+  }
+})
+
 // ---- runBurnIn -------------------------------------------------------------
+
+test('an expired window places nothing, even with autotrade armed and symbols due', async () => {
+  const NOW = 1_000_000_000_000
+  // production shape: armed 2026-07-28 with windowDays 2, still running weeks on
+  const db = mkDb({ watch: ['EURUSD', 'GBPUSD'], startedAt: new Date(NOW - 16 * DAY).toISOString() })
+  const placed = []
+  const out = await runBurnIn(db, CREDS, deps(placed))
+  assert.equal(out.skipped, 'window expired')
+  assert.equal(out.placed, 0)
+  assert.equal(placed.length, 0, 'autoTrade is never reached once the window is past')
+  assert.equal(getState(db, 'burn_in_expired_at'), new Date(NOW - 14 * DAY).toISOString())
+})
+
+test('a live window still places; re-arming a lapsed burn-in revives it', async () => {
+  const NOW = 1_000_000_000_000
+  const db = mkDb({ watch: ['EURUSD'], startedAt: new Date(NOW - 16 * DAY).toISOString() })
+  const placed = []
+  assert.equal((await runBurnIn(db, CREDS, deps(placed))).placed, 0)
+  // Tune re-arms: startedAt re-stamped. Config is owner-written; expiry only
+  // ever refused, it never rewrote it.
+  setState(db, 'burn_in_json', JSON.stringify({ on: true, startedAt: new Date(NOW - 60_000).toISOString() }))
+  assert.equal((await runBurnIn(db, CREDS, deps(placed))).placed, 1)
+})
+
+test('armed with no start stamp: the window is stamped rather than left unbounded', async () => {
+  const NOW = 1_000_000_000_000
+  const db = mkDb({ watch: ['EURUSD'], startedAt: null })
+  const placed = []
+  assert.equal((await runBurnIn(db, CREDS, deps(placed))).placed, 1, 'first pass still runs')
+  assert.equal(loadBurnInConfig(db).startedAt, new Date(NOW).toISOString())
+  assert.equal(loadBurnInConfig(db).on, true, 'stamping preserves the rest of the config')
+})
+
 
 test('off / autotrade-off / no creds → skipped, nothing placed', async () => {
   const placed = []
