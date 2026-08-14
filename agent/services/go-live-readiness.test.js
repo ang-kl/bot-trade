@@ -8,7 +8,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { goLiveReadiness, integrityOf, edgeOf, bucketsOf, deadlineProjection, INTEGRITY_LIMITS } from './go-live-readiness.js'
+import { goLiveReadiness, integrityOf, edgeOf, bucketsOf, deadlineProjection, INTEGRITY_LIMITS, strategyOf } from './go-live-readiness.js'
 
 const GOAL = { profitFactor: 1.68, winRatePct: 68, gateOn: 'profitFactor', minTrades: 30, deadline: '2026-08-12' }
 const NOW = Date.parse('2026-08-08T00:00:00Z')
@@ -153,4 +153,42 @@ test('integrity counts decidability separately from flags', () => {
   assert.equal(i.flagged, 0)
   assert.equal(i.decidable, 0)
   assert.match(i.blockers.join(' '), /fields needed to judge/)
+})
+
+// ---------------------------------------------------------------------------
+// 'other' is the ABSENCE of an answer — it must never shadow one.
+//
+// The loop writes BOTH columns: `trades.strategy` gets the real key, and
+// `label_strategy` gets whatever survives a round-trip through the broker
+// label. A strategy with no code in trade-labels.js round-trips as the string
+// 'other', which is not null — so `label_strategy ?? strategy` preferred it.
+//
+// Production, 2026-08-14: 629 of 882 closed rows (71.3%) read as unattributed
+// and the gate returned UNMEASURABLE. The ledger knew what those trades were.
+// ---------------------------------------------------------------------------
+
+test('strategyOf: a real strategy column is not shadowed by a label that says "other"', () => {
+  assert.equal(strategyOf({ label_strategy: 'other', strategy: 'va_breakout' }), 'va_breakout')
+  assert.equal(strategyOf({ label_strategy: null, strategy: 'fvg_retrace' }), 'fvg_retrace')
+  assert.equal(strategyOf({ label_strategy: 'vp_value', strategy: 'other' }), 'vp_value')
+  // genuinely unattributed stays unattributed — the fix must not invent one
+  assert.equal(strategyOf({ label_strategy: 'other', strategy: 'other' }), null)
+  assert.equal(strategyOf({ label_strategy: 'OTHER', strategy: '  ' }), null)
+  assert.equal(strategyOf({}), null)
+  assert.equal(strategyOf(null), null)
+})
+
+test('rows recoverable from trades.strategy no longer block the verdict', () => {
+  const rows = Array.from({ length: 40 }, (_, i) => ({
+    label_strategy: 'other',          // the label vocabulary lost it…
+    strategy: 'va_breakout',          // …the ledger did not
+    symbol: 'US30', label_timeframe: '15m',
+    net_pnl: i % 2 ? 12 : -5, entry_price: 100, exit_price: 101,
+  }))
+  const i = integrityOf(rows)
+  assert.equal(i.unattributed, 0, 'these were never unattributed — they were misread')
+  assert.deepEqual(i.blockers, [])
+  // and they now form a bucket instead of being dropped on the floor
+  assert.equal(bucketsOf(rows).length, 1)
+  assert.equal(bucketsOf(rows)[0].strategy, 'va_breakout')
 })

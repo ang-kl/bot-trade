@@ -608,3 +608,51 @@ test('2.6.5 — enabled = 0 survives boot in every mode, with exposure open', ()
   assert.deepEqual(second.flagged, first.flagged,
     'and the report is identical on the second boot — a restart cannot look like a resolution')
 })
+
+// ---------------------------------------------------------------------------
+// §2.5.6.2 — "scope all queries with WHERE account_id = ? AND account_id IS
+// NOT NULL".
+//
+// Audited rather than applied, and NOT applied to `openWork`, because here the
+// plan's rewrite makes the system less safe rather than more.
+//
+// `openWork` answers "is there open work that forbids archiving this account".
+// A row with a NULL account_id is not attributed to nobody — it is attributed
+// to somebody UNKNOWN, and it might be this account's. Counting it for every
+// account is the conservative reading: at worst an archive is refused and a
+// human looks. Excluding it, which is what `AND account_id IS NOT NULL` does,
+// lets an account be archived while holding exposure the ledger could not name
+// — which is the abandonment bug this whole module exists to prevent.
+//
+// Measured on production 2026-08-14 before deciding: positions coverage is
+// 100% (`legacyRows: 0`, `unstamped: 0`) and the 24h decision feed reports
+// `unstamped: 0`, so the OR-NULL branch currently matches nothing at all. It
+// costs nothing today and is the right behaviour on the day it does not.
+// ---------------------------------------------------------------------------
+
+test('§2.5.6.2: an UNATTRIBUTED open position blocks archiving every account', () => {
+  const db = freshDb()
+  seedAccount(db, 'A', { mode: 'active' })
+  seedAccount(db, 'B', { mode: 'active' })
+  seedPosition(db, 'orphan', { account: null })   // account_id IS NULL
+
+  for (const id of ['A', 'B']) {
+    assert.equal(openWork(db, id).flat, false, `${id}: unknown exposure must not read as flat`)
+    assert.equal(openWork(db, id).positions, 1)
+    const res = archiveAccount(db, id)
+    assert.equal(res.ok, false, `${id}: archived while an unattributable position was open`)
+  }
+})
+
+test('§2.5.6.2: attributed work is still scoped to its own account', () => {
+  // The conservative NULL branch must not become a free-for-all: a position
+  // that HAS an owner belongs to that owner alone.
+  const db = freshDb()
+  seedAccount(db, 'A', { mode: 'active' })
+  seedAccount(db, 'B', { mode: 'active' })
+  seedPosition(db, 'a-pos', { account: 'A' })
+
+  assert.equal(openWork(db, 'A').flat, false)
+  assert.equal(openWork(db, 'B').flat, true, "A's position must not block B")
+  assert.equal(archiveAccount(db, 'B').ok, true)
+})
