@@ -589,3 +589,69 @@ test('sidecarRosterForSide: each side asks its OWN sidecar; one base makes the s
     }
   }
 })
+
+// ---------------------------------------------------------------------------
+// ACCEPTANCE 2.6.3 — Order Idempotency Lock.
+//
+// The plan asks: "simulate 20 concurrent duplicate HTTP POSTs; verify 1 order
+// executes and 19 return DUPLICATE_ORDER_DISPATCH_BLOCKED".
+//
+// The production event this stands for is the 17 × DOW.US SELL that landed on
+// account 46130058 inside 89 milliseconds. 89ms is the whole difficulty: any
+// guard that reads state, awaits, and then writes has a window that wide to be
+// raced through. The lock is claimed AFTER `withAccount` (so the key carries
+// the resolved account) and BEFORE the first `await` — which on a single JS
+// thread makes the check-and-set atomic, no mutex required.
+//
+// Fired with Promise.all so all 20 are in flight before any of them resolves;
+// a sequential loop would pass even against a guard that only worked because
+// each call had already finished.
+// ---------------------------------------------------------------------------
+
+test('2.6.3 — 20 concurrent identical dispatches: 1 order, 19 DUPLICATE_ORDER_DISPATCH_BLOCKED', async () => {
+  nextResponse = { status: 200, body: JSON.stringify({ ok: true, positionId: 7 }) }
+  const payload = {
+    symbolId: 41, tradeSide: 'SELL', volume: 100000,
+    relativeStopLoss: 50000, relativeTakeProfit: 50000,
+    label: 'bot|x|donchian_breakout',
+  }
+  const results = await Promise.all(
+    Array.from({ length: 20 }, () => placeOrder(CREDS, { ...payload }).then(
+      (ok) => ({ ok }),
+      (err) => ({ err }),
+    )),
+  )
+
+  const sent = results.filter(r => r.ok)
+  const blocked = results.filter(r => r.err)
+  assert.equal(sent.length, 1, 'exactly one dispatch may reach the broker')
+  assert.equal(blocked.length, 19)
+  for (const b of blocked) {
+    assert.equal(b.err.code, 'DUPLICATE_ORDER_DISPATCH_BLOCKED')
+    assert.match(b.err.message, /idempotency lock/)
+  }
+  // The count that actually matters is at the wire, not in the return values:
+  // one /connect plus exactly one /order.
+  assert.deepEqual(requests.map(r => r.url), ['/connect', '/order'])
+})
+
+test('2.6.3 — the lock is keyed on the ORDER, not on the burst', async () => {
+  // A different symbol, side or strategy inside the same 60s window is a
+  // different trade and must still go through — otherwise the guard against
+  // seventeen duplicates would also block the sixteen legitimate entries a
+  // busy cycle can produce.
+  nextResponse = { status: 200, body: '{"ok":true}' }
+  const base = { volume: 100000, relativeStopLoss: 50000, relativeTakeProfit: 50000 }
+  await placeOrder(CREDS, { ...base, symbolId: 41, tradeSide: 'SELL', label: 'bot|x|donchian_breakout' })
+  await placeOrder(CREDS, { ...base, symbolId: 42, tradeSide: 'SELL', label: 'bot|x|donchian_breakout' })
+  await placeOrder(CREDS, { ...base, symbolId: 41, tradeSide: 'BUY', label: 'bot|x|donchian_breakout' })
+  await placeOrder(CREDS, { ...base, symbolId: 41, tradeSide: 'SELL', label: 'bot|x|fvg_strategy' })
+  assert.equal(requests.filter(r => r.url === '/order').length, 4)
+
+  // …and the fifth, identical to the first, is refused.
+  await assert.rejects(
+    placeOrder(CREDS, { ...base, symbolId: 41, tradeSide: 'SELL', label: 'bot|x|donchian_breakout' }),
+    (err) => err.code === 'DUPLICATE_ORDER_DISPATCH_BLOCKED',
+  )
+  assert.equal(requests.filter(r => r.url === '/order').length, 4, 'nothing more reached the wire')
+})

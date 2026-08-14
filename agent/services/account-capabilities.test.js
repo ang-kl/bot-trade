@@ -573,3 +573,38 @@ test('an unknown or absent mode is left alone rather than guessed at', () => {
     assert.equal(modeForPushedEntry(bad, true), null, `${bad} must be left alone even with the role`)
   }
 })
+
+// ---------------------------------------------------------------------------
+// ACCEPTANCE 2.6.5 — Roster Preservation on Reboot.
+//
+// The plan asks: "verify repairRosterMembership() preserves enabled = 0".
+// The cases above prove it for the two modes that had the bug; this sweeps
+// EVERY mode, because the original defect was a promotion rule that reasoned
+// about one mode and wrote to a column shared by all of them.
+//
+// `enabled = 0` is an instruction, not a symptom. Reading it as damage to be
+// repaired is what put unreachable accounts back on the roster in the first
+// place.
+// ---------------------------------------------------------------------------
+
+test('2.6.5 — enabled = 0 survives boot in every mode, with exposure open', () => {
+  const db = freshDb()
+  for (const mode of MODES) {
+    seedAccount(db, mode, { mode, enabled: 0 })
+    seedPosition(db, mode, { account: mode })   // the exposure that tempts a repair
+    seedPending(db, { account: mode })
+  }
+
+  const first = repairRosterMembership(db)
+  const second = repairRosterMembership(db)     // the reboot
+
+  for (const mode of MODES) {
+    const row = db.prepare('SELECT enabled, mode FROM accounts WHERE account_id = ?').get(mode)
+    assert.equal(row.enabled, 0, `${mode}: the owner's roster instruction was rewritten`)
+    assert.equal(row.mode, mode, `${mode}: the preset was rewritten`)
+  }
+  assert.deepEqual(first.promoted, [], 'nothing is promoted, ever')
+  assert.deepEqual(second.promoted, [])
+  assert.deepEqual(second.flagged, first.flagged,
+    'and the report is identical on the second boot — a restart cannot look like a resolution')
+})
