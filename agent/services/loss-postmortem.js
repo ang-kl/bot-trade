@@ -28,6 +28,7 @@
 // ---------------------------------------------------------------------------
 
 import { tfMs } from '../lib/timeframes.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { isSymbolMarketOpen } from '../lib/sessions.js'
 
 export const AFTERMATH_BARS = 12   // how many post-exit bars the verdict may use
@@ -337,7 +338,7 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
     rows = db.prepare(`
       SELECT t.id, t.symbol, t.side, t.net_pnl, t.exit_price, t.entry_price,
              t.closed_at, t.close_reason, t.account_id,
-             COALESCE(t.label_strategy, t.strategy) AS strategy,
+             ${strategyAttrSql('t.label_strategy', 't.strategy')} AS strategy,
              t.label_timeframe AS timeframe
         FROM trades t
         LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id
@@ -447,7 +448,7 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
            t.entry_vol_regime, t.entry_vol_percentile, t.position_size_ratio_applied,
            t.stop_loss_expanded_pips, t.vol_volume_divergence_flag,
            t.confluence_tool_count, t.confluence_conflict_flagged, t.vol_gate_mode,
-           COALESCE(t.label_strategy, t.strategy) AS strategy,
+           ${strategyAttrSql('t.label_strategy', 't.strategy')} AS strategy,
            t.label_timeframe AS timeframe,
            (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk
     FROM trades t

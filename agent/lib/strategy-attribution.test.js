@@ -52,3 +52,49 @@ test('strategyAttrSql accepts table-qualified column names', () => {
   ).get()
   assert.equal(row.k, 'rsi2_reversion')
 })
+
+// ---------------------------------------------------------------------------
+// The pattern guard.
+//
+// This bug was fixed three times before it was fixed everywhere: #714 patched
+// the JS reader, #715 patched the SQL feeding it plus the Kelly gate, and a
+// sweep afterwards found seven more live sites. Each fix was correct and each
+// left the same shape somewhere else, because the shape is easy to type and
+// reads as obviously right.
+//
+// So the guard is not another unit test of another call site — it is a ban on
+// the shape itself. A plain COALESCE over these two columns is always wrong:
+// COALESCE falls through on NULL only, and the value that needs falling
+// through is the string 'other'.
+// ---------------------------------------------------------------------------
+
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+
+function sourceFiles(dir, out = []) {
+  for (const name of readdirSync(dir)) {
+    if (name === 'node_modules' || name === '.git' || name === 'dist') continue
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) sourceFiles(p, out)
+    else if (name.endsWith('.js') && !name.endsWith('.test.js')) out.push(p)
+  }
+  return out
+}
+
+test('no source file COALESCEs label_strategy over strategy — use strategyAttrSql()', () => {
+  // Matches COALESCE(label_strategy, strategy) and the t.-qualified form,
+  // with or without a third fallback argument.
+  const banned = /COALESCE\(\s*(\w+\.)?label_strategy\s*,\s*(\w+\.)?strategy\b/i
+  const offenders = []
+  for (const file of sourceFiles(new URL('../..', import.meta.url).pathname)) {
+    const src = readFileSync(file, 'utf8')
+    src.split('\n').forEach((line, i) => {
+      // The lib's own header quotes the bad pattern to explain it.
+      if (file.endsWith('strategy-attribution.js')) return
+      if (line.trimStart().startsWith('//') || line.trimStart().startsWith('*')) return
+      if (banned.test(line)) offenders.push(`${file}:${i + 1}: ${line.trim()}`)
+    })
+  }
+  assert.deepEqual(offenders, [],
+    `COALESCE over these columns lets the string 'other' shadow a real strategy:\n${offenders.join('\n')}`)
+})

@@ -10,11 +10,12 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
 /** Compose the journal for one UTC day ('YYYY-MM-DD'). Pure DB read. */
 export function buildDailyJournal(db, day) {
   const trades = db.prepare(
-    `SELECT symbol, side, net_pnl, COALESCE(label_strategy, strategy) AS strat
+    `SELECT symbol, side, net_pnl, ${strategyAttrSql()} AS strat
      FROM trades WHERE status = 'closed' AND net_pnl IS NOT NULL
        AND substr(closed_at, 1, 10) = ?`
   ).all(day)

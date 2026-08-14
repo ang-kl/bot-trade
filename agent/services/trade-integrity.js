@@ -19,6 +19,7 @@
 // ---------------------------------------------------------------------------
 
 import { accountWhere } from '../lib/account-scope.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
 /**
  * Group CLOSED trades sharing symbol+side+entry+exit+net_pnl. Real
@@ -172,7 +173,7 @@ export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minC
     rows = db.prepare(`
       SELECT id, account_id, symbol, side, volume, entry_price, net_pnl, status,
              opened_at, closed_at, ctrader_position_id,
-             label_raw, source, COALESCE(label_strategy, strategy) AS strategy,
+             label_raw, source, ${strategyAttrSql()} AS strategy,
              label_session
       FROM trades
       WHERE opened_at IS NOT NULL AND opened_at >= datetime('now', ?)${acct.active ? ` AND ${acct.where}` : ''}
