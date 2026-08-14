@@ -17,7 +17,7 @@ import {
   requiredMargin,
   portfolioMarginStatus,
   evaluateCommissionCost,
-  evaluateSlippageDrift, fxDayOpenMs, HARD_MIN_RR, expectancyVerdict
+  evaluateSlippageDrift, fxDayOpenMs, HARD_MIN_RR, expectancyVerdict, strategyPerfStats
 } from './risk.js'
 
 // Helpers ------------------------------------------------------------------
@@ -1606,4 +1606,74 @@ test('2.6.2 — a 1.2 R:R request is raised to the 3.0 floor and the signal is v
   assert.match(res.veto_reason, /bad_rr 1\.20</)
   assert.match(res.veto_reason, /raised to the 3 expectancy floor/)
   assert.deepEqual(res.checks.rr_floor_raised, { requested: 1.2, enforced: HARD_MIN_RR })
+})
+
+// ---------------------------------------------------------------------------
+// strategyPerfStats — the Kelly gate's own read of a strategy's record.
+//
+// The query used to be `WHERE COALESCE(label_strategy, strategy) = ?`, the
+// same shape that made the go-live gate misread 71.3% of closed rows as
+// unattributed. Here the consequence is sharper: kellyVolume treats
+// total_trades below minTradesForKelly as "unproven" and SKIPS the veto
+// (ships the default size) rather than blocking it — so a strategy whose
+// rows were all mismatched here traded at a permanently unproven size
+// forever, no matter how badly it actually performed.
+// ---------------------------------------------------------------------------
+
+function insertStrategyClosedTrade(db, { strategy, labelStrategy, netPnl, closedAt }) {
+  db.prepare(`
+    INSERT INTO trades (symbol, side, status, strategy, label_strategy, net_pnl, closed_at)
+    VALUES ('EURUSD', 'BUY', 'closed', ?, ?, ?, ?)
+  `).run(strategy, labelStrategy, netPnl, closedAt)
+}
+
+test('strategyPerfStats: a strategy with no label code (label_strategy="other") is still found via trades.strategy', () => {
+  const db = freshDB()
+  const now = new Date().toISOString()
+  // va_breakout's real shape before it had a label code: strategy carries the
+  // truth, label_strategy carries the broker round-trip's fallback.
+  for (let i = 0; i < 25; i++) {
+    insertStrategyClosedTrade(db, {
+      strategy: 'va_breakout', labelStrategy: 'other',
+      netPnl: i % 5 === 0 ? -40 : 10, closedAt: now,
+    })
+  }
+  const stats = strategyPerfStats(db, 'va_breakout')
+  assert.equal(stats.total_trades, 25, 'the 25 rows must be found via trades.strategy, not lost to label_strategy="other"')
+  assert.ok(stats.win_rate > 0 && stats.win_rate < 1)
+})
+
+test('strategyPerfStats: a real negative-expectancy record now actually vetoes through kellyVolume', () => {
+  const db = freshDB()
+  const now = new Date().toISOString()
+  // A losing strategy, mislabeled the same way — every closed row scores a
+  // small win, occasional large loss, net negative. Kelly should see this
+  // and veto; before the fix it never even measured it (total_trades read 0).
+  for (let i = 0; i < 30; i++) {
+    insertStrategyClosedTrade(db, {
+      strategy: 'fvg_retrace', labelStrategy: 'other',
+      netPnl: i % 3 === 0 ? -100 : 20, closedAt: now,
+    })
+  }
+  const stats = strategyPerfStats(db, 'fvg_retrace')
+  assert.equal(stats.total_trades, 30)
+  const kelly = kellyVolume(stats, 0.5, { ...DEFAULT_RISK_CONFIG, minTradesForKelly: 30 })
+  assert.equal(kelly.volume, 0, `expected a Kelly veto on a losing record, got: ${kelly.note}`)
+  assert.match(kelly.note, /kelly_negative/)
+})
+
+test('strategyPerfStats: still scoped to the requested strategy — no cross-contamination via the fix', () => {
+  const db = freshDB()
+  const now = new Date().toISOString()
+  for (let i = 0; i < 25; i++) {
+    insertStrategyClosedTrade(db, { strategy: 'va_breakout', labelStrategy: 'other', netPnl: 10, closedAt: now })
+  }
+  for (let i = 0; i < 25; i++) {
+    insertStrategyClosedTrade(db, { strategy: 'fvg_retrace', labelStrategy: 'other', netPnl: -10, closedAt: now })
+  }
+  assert.equal(strategyPerfStats(db, 'va_breakout').total_trades, 25)
+  assert.equal(strategyPerfStats(db, 'fvg_retrace').total_trades, 25)
+  assert.equal(strategyPerfStats(db, 'rsi2_reversion').total_trades, 0,
+    'a strategy with no rows must not match the other two')
+  assert.equal(strategyPerfStats(db, null), null, 'no strategyKey at all fails closed')
 })

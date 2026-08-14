@@ -36,6 +36,12 @@
 // ---------------------------------------------------------------------------
 
 import { GO_LIVE_BAR, ARM_BAR } from './edge-bars.js'
+// strategyOf() lives in lib/strategy-attribution.js — it is no longer just
+// this module's problem (see that file's header: the same COALESCE shape
+// that broke this gate silently blinded risk.js's Kelly gate too).
+// Re-exported below so nothing that already imports it from this module
+// breaks.
+import { strategyOf } from '../lib/strategy-attribution.js'
 // The deadline comes from goal-tracker's DEFAULT_GOAL, not a second copy of the
 // date. A duplicated literal is how a moved deadline moves in one file and not
 // the other, and this module's whole job is to be the ONE place the go-live
@@ -85,26 +91,7 @@ export function edgeOf(rows) {
   }
 }
 
-/**
- * The strategy a closed row can actually be attributed to, or null.
- *
- * `label_strategy` is parsed back out of the BROKER label, so it is only ever
- * as good as the label vocabulary was on the day the order was sent. A key
- * with no code in trade-labels.js encodes to OTH and parses back as the string
- * 'other' — which is not null, so `label_strategy ?? strategy` preferred it
- * over `trades.strategy`, where the loop had written the real key all along.
- *
- * That is the whole of the 71.3% unattributed reading: the ledger knew what
- * those trades were and the gate was reading the wrong column. 'other' is the
- * ABSENCE of an answer, so it must never shadow one.
- */
-export function strategyOf(row) {
-  const pick = (v) => {
-    const s = v == null ? '' : String(v).trim()
-    return s === '' || s.toLowerCase() === 'other' ? null : s
-  }
-  return pick(row?.label_strategy) ?? pick(row?.strategy)
-}
+export { strategyOf }
 
 /**
  * Can this record carry the question? Pure.
