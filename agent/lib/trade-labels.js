@@ -62,6 +62,17 @@ export const STRATEGIES = {
   vp_value: 'VP',
   rsi2_reversion: 'RSI2',
   fib_confluence: 'FIBC',
+  // Added 2026-08-14, measured rather than noticed: the go-live gate reported
+  // 629 of 882 closed rows (71.3%) with no strategy attribution and refused to
+  // form a verdict. `va_breakout` and `fvg_retrace` are REGISTRY strategies and
+  // `burnin` placed hundreds of orders over sixteen days — none of the three
+  // had a code here, so encodeLabel sent every one of their orders to the
+  // broker labelled OTH. The comment above says an unrecognised key lands in
+  // the "other" bucket rather than a blank; that is true and it is still a
+  // permanent loss of attribution at the broker.
+  va_breakout: 'VAB',
+  fvg_retrace: 'FVG',
+  burnin:     'BURN',
   other:      'OTH',
 }
 
@@ -192,6 +203,12 @@ export const STRATEGY_DISPLAY = {
   vp_value: 'Vol. Profile Value',
   rsi2_reversion: 'RSI 2 Reversion',
   fib_confluence: 'Fibonacci Confluence',
+  va_breakout: 'Value-Area Breakout',
+  fvg_retrace: 'FVG Retrace',
+  // Not a registry strategy — the burn-in sampling harness places its own
+  // orders through the same dispatcher and deserves its own bucket rather
+  // than polluting "other".
+  burnin: 'Burn-in sample',
   // Free-text buckets that predate the registry — no registry entry to mirror.
   trend: 'Trend',
   meanrev: 'Mean reversion',

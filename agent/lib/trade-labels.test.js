@@ -209,9 +209,38 @@ test('display names MIRROR the strategy registry — neither may drift', () => {
   // browser loads too), so the registry stays the single owner of the name and
   // this test is what keeps the mirror honest.
   for (const s of STRATEGY_REGISTRY) {
-    if (!STRATEGIES[s.key]) continue   // not encodable — nothing to mirror
     assert.equal(STRATEGY_DISPLAY[s.key], s.name,
       `${s.key}: display name drifted from STRATEGY_REGISTRY`)
+  }
+})
+
+// §2.5.7.1 — "tag all orders with mandatory strategy labels".
+test('EVERY registry strategy has its own label code — none may fall to OTH', () => {
+  // This test used to exist with `if (!STRATEGIES[s.key]) continue` at the top
+  // of the loop above, which exempted precisely the strategies that were
+  // broken. `va_breakout` and `fvg_retrace` had no code, so every order they
+  // ever sent carried OTH at the broker, permanently. A guard that skips the
+  // cases it cannot satisfy is not a guard.
+  //
+  // Measured on production 2026-08-14: the go-live gate read 629 of 882 closed
+  // rows (71.3%) as unattributed and refused to form a verdict.
+  for (const s of STRATEGY_REGISTRY) {
+    assert.ok(STRATEGIES[s.key], `${s.key} is an armed registry strategy with no label code`)
+    assert.notEqual(STRATEGIES[s.key], STRATEGIES.other,
+      `${s.key} encodes to the "other" bucket — its trades cannot be told apart from anything else's`)
+    assert.equal(parseLabel(encodeLabel({ source: 'autopilot', strategy: s.key })).strategy, s.key,
+      `${s.key} does not survive a round-trip through the broker label`)
+  }
+  // burn-in is not a registry strategy but places real orders through the same
+  // dispatcher, and ran for sixteen days doing so.
+  assert.equal(parseLabel(encodeLabel({ source: 'autopilot', strategy: 'burnin' })).strategy, 'burnin')
+})
+
+test('label codes are UNIQUE — a collision merges two strategies\' analytics', () => {
+  const seen = new Map()
+  for (const [key, code] of Object.entries(STRATEGIES)) {
+    assert.ok(!seen.has(code), `${key} and ${seen.get(code)} both encode to ${code}`)
+    seen.set(code, key)
   }
 })
 

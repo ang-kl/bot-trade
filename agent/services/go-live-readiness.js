@@ -86,6 +86,27 @@ export function edgeOf(rows) {
 }
 
 /**
+ * The strategy a closed row can actually be attributed to, or null.
+ *
+ * `label_strategy` is parsed back out of the BROKER label, so it is only ever
+ * as good as the label vocabulary was on the day the order was sent. A key
+ * with no code in trade-labels.js encodes to OTH and parses back as the string
+ * 'other' — which is not null, so `label_strategy ?? strategy` preferred it
+ * over `trades.strategy`, where the loop had written the real key all along.
+ *
+ * That is the whole of the 71.3% unattributed reading: the ledger knew what
+ * those trades were and the gate was reading the wrong column. 'other' is the
+ * ABSENCE of an answer, so it must never shadow one.
+ */
+export function strategyOf(row) {
+  const pick = (v) => {
+    const s = v == null ? '' : String(v).trim()
+    return s === '' || s.toLowerCase() === 'other' ? null : s
+  }
+  return pick(row?.label_strategy) ?? pick(row?.strategy)
+}
+
+/**
  * Can this record carry the question? Pure.
  *
  * @param {Array<object>} rows closed trades with the audit columns present
@@ -94,10 +115,7 @@ export function integrityOf(rows) {
   const all = Array.isArray(rows) ? rows : []
   const total = all.length
   const flagged = all.filter(r => r?.pnl_price_mismatch === 1 || r?.exit_price_suspect === 1).length
-  const unattributed = all.filter(r => {
-    const s = r?.label_strategy ?? r?.strategy
-    return s == null || String(s).toLowerCase() === 'other'
-  }).length
+  const unattributed = all.filter(r => strategyOf(r) == null).length
   // "Decidable" in the same sense trade-consistency.js uses it: the row has
   // the fields required to judge it. A row we cannot judge is not a clean row.
   const decidable = all.filter(r =>
@@ -138,8 +156,8 @@ export function integrityOf(rows) {
 export function bucketsOf(rows, bar = ARM_BAR) {
   const by = new Map()
   for (const r of Array.isArray(rows) ? rows : []) {
-    const strat = r?.label_strategy ?? r?.strategy
-    if (strat == null || String(strat).toLowerCase() === 'other') continue
+    const strat = strategyOf(r)
+    if (strat == null) continue
     const key = `${strat}|${r.symbol}|${r.label_timeframe ?? r.timeframe ?? '?'}`
     if (!by.has(key)) by.set(key, [])
     by.get(key).push(r)
