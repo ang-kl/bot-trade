@@ -496,7 +496,8 @@ export default function Desk() {
           {(config?.autotrade_scope ?? 'all') === 'all'
             ? <>full watchlist — {watch.length || '…'} symbols × armed strategies × any scanned TF</>
             : <>the {armedChips.length} backtest-armed combos only (widen in Tune)</>}
-          {' '}· sizing {(config?.burn_in?.sizeMode ?? 'auto') === 'fixed' && config?.burn_in?.on ? `fixed ${config?.burn_in?.lots ?? 0.01} lots (burn-in)` : 'risk-based'}
+          {/* burn-in is fixed-only; auto signals are still risk-sized */}
+          {' '}· sizing {config?.burn_in?.on ? `risk-based (burn-in: fixed ${config?.burn_in?.lots ?? 0.01} lots)` : 'risk-based'}
           {config?.burn_in?.on ? <> · pacing {config?.burn_in?.targetTrades ?? 200} trades/{config?.burn_in?.windowDays ?? 2}d</> : null}
           {' '}· guardrails: risk gate · stage matrix · market hours · equity stop
         </p>

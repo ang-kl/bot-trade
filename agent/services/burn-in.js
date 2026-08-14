@@ -35,12 +35,21 @@ import { relVolFromBars } from './fast-monitor.js'
 
 export const DEFAULT_BURN_IN = {
   on: false,
-  // Sizing (owner 2026-07-17: "I already uncapped … where is the dynamic
-  // sizing?"): 'auto' sends each burn-in trade through the SAME uncapped
-  // risk-based sizing as auto signals (balance × per-trade % ÷ $-per-lot);
-  // 'fixed' pins `lots` (0.01–0.05) for a deliberately cheap sample.
-  sizeMode: 'auto',
-  lots: 0.01,          // fixed-mode pin — the sample must be cheap
+  // Sizing. There used to be a choice here: 'auto' sent each burn-in trade
+  // through the SAME uncapped risk-based sizing as a real signal (owner
+  // 2026-07-17: "I already uncapped … where is the dynamic sizing?"), 'fixed'
+  // pinned `lots`. Production ran 'auto' for 16 days and the 13.08 statement
+  // priced the choice: −$3,989 across 122 closed burn-in deals. That is not
+  // what a sample costs — it is what a strategy costs, and burn-in is not a
+  // strategy. It exists to manufacture completed round-trips so that sizing
+  // decisions have a track record to read, and a sample whose own losses move
+  // the balance corrupts the very statistics it was armed to collect.
+  //
+  // Owner, 2026-08-14: "pin burn-in to fixed". The mode is now fixed-only —
+  // `loadBurnInConfig` coerces any stored value, so the production config's
+  // `"sizeMode":"auto"` is neutralised without a migration.
+  sizeMode: 'fixed',
+  lots: 0.01,          // the pin — the sample must be cheap
   maxPerCycle: 4,      // base new positions per 5-min loop (pacing adjusts)
   targetTrades: 200,   // completed round-trips the pacing steers toward…
   windowDays: 2,       // …within this window from arming
@@ -52,7 +61,7 @@ export function loadBurnInConfig(db) {
     const parsed = JSON.parse(getState(db, 'burn_in_json') || 'null')
     if (parsed && typeof parsed === 'object') {
       const cfg = { ...DEFAULT_BURN_IN, ...parsed }
-      cfg.sizeMode = cfg.sizeMode === 'fixed' ? 'fixed' : 'auto'
+      cfg.sizeMode = 'fixed' // pinned: burn-in never sizes off the balance
       cfg.lots = Math.min(0.05, Math.max(0.01, Number(cfg.lots) || 0.01))
       cfg.maxPerCycle = Math.min(8, Math.max(1, Math.round(Number(cfg.maxPerCycle) || 4)))
       cfg.targetTrades = Math.min(500, Math.max(10, Math.round(Number(cfg.targetTrades) || 200)))
@@ -298,12 +307,12 @@ export async function runBurnIn(db, creds, deps = {}) {
         invalidation_trigger: null,
         source: 'burnin',
       }
-      // auto → maxVolume null: the risk gate sizes uncapped (balance ×
-      // per-trade risk); fixed → pinned cheap-sample lots.
-      const result = await autoTrade(db, symbol, synth, { maxVolume: cfg.sizeMode === 'fixed' ? cfg.lots : null }, null)
+      // maxVolume is the pin, not a ceiling on a risk-based size: burn-in
+      // trades at cfg.lots and nothing about the balance changes that.
+      const result = await autoTrade(db, symbol, synth, { maxVolume: cfg.lots }, null)
       if (result) {
         placed++
-        log(`${symbol}: ${result.side} ${cfg.sizeMode === 'fixed' ? cfg.lots : 'auto-sized'} [${plan.regime}/${plan.tf}] cap ${plan.capMin}m (pace ${completed}/${pace.expected} of ${cfg.targetTrades})`)
+        log(`${symbol}: ${result.side} ${cfg.lots} [${plan.regime}/${plan.tf}] cap ${plan.capMin}m (pace ${completed}/${pace.expected} of ${cfg.targetTrades})`)
       }
     } catch (err) {
       notes.push(`${symbol}: ${err.message}`)
