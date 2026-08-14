@@ -58,7 +58,14 @@ export const DEFAULT_PROFIT_KEEPER = {
   // adaptive mode
   atrTimeframe: '1h',
   atrPeriod: 14,
-  armAtrMult: 1,          // arm once peak profit ≥ this × the position's ATR-value…
+  // Arming. The aligned plan (§2.5.4) asks for "≥ +1.2R". This module protects
+  // MANUAL/EXTERNAL positions, which have no `initial_risk` to divide by — an
+  // imported position arrives with a size and a price and nothing that says
+  // what its owner was risking. The unit that exists here is the position's
+  // own ATR-value, which is what R is measured in when the stop was set from
+  // volatility. So 1.2R is implemented as 1.2 ATR-values, and the honest
+  // statement of that is this comment, not a variable named `armR`.
+  armAtrMult: 1.2,        // arm once peak profit ≥ this × the position's ATR-value…
   armBalancePct: 0.1,     // …and at least this % of balance (noise floor)
   trailAtrMult: 2.5,      // Chandelier: SL trails this × ATR behind the peak price
   scaleOutFrac: 0,        // fraction closed once armed (0 = off, 0.5 = half)
@@ -72,6 +79,15 @@ export const DEFAULT_PROFIT_KEEPER = {
   spikeRangeAtrMult: 2,   // a bar with range ≥ this × ATR counts as a spike
   spikeTrailAtrMult: 1,   // trail distance (× ATR) while the spike holds
   spikeBars: 3,           // how many recent bars are checked for a spike
+  // Structure trailing (aligned plan §2.5.4): trail behind the last CONFIRMED
+  // swing on the protective side instead of a fixed distance from the peak.
+  // Bars are the ATR timeframe's own bars (default 1h) — already fetched and
+  // cached, so this costs no extra broker call. Falls back to the Chandelier
+  // whenever no pivot qualifies, and never widens an existing stop.
+  structureTrailEnabled: true,
+  structurePivotBars: 2,      // bars either side that must be higher/lower
+  structureBufferAtrMult: 0.25, // slack beyond the swing, in ATR
+  structureMaxAtrMult: 4,     // giveback from the peak stays bounded by this
   // fixed mode
   armProfitUsd: 50,
   givebackPct: 40,
@@ -148,6 +164,69 @@ export function atrFromBars(bars, period = 14) {
   return atr
 }
 
+/**
+ * The most recent CONFIRMED swing pivot on the protective side of the trade,
+ * as a stop level. Pure and tested.
+ *
+ * A Chandelier stop is a distance; a structure stop is a place. The
+ * difference matters on the way up: a trail measured from the peak moves with
+ * every new high, so an ordinary pullback into the last higher low — the one
+ * the trend is supposed to make — can take the position out at a level the
+ * market never treated as broken. Trailing behind the swing instead means the
+ * position survives everything except the thing that actually invalidates it.
+ *
+ * A pivot is CONFIRMED, never live: index i qualifies only when `pivotBars`
+ * bars on BOTH sides are higher (for a low). The most recent `pivotBars` bars
+ * therefore cannot produce a pivot, which is the point — an unconfirmed low
+ * is a guess about a bar that has not finished being a bar.
+ *
+ * @param {Array<{h:number,l:number}>} bars oldest→newest
+ * @param {{dir:number, pivotBars?:number, atr?:number, bufferAtrMult?:number,
+ *          maxAtrMult?:number, peakPrice?:number|null, price?:number|null}} opt
+ * @returns {number|null} stop level, or null when no pivot qualifies
+ */
+export function swingTrailLevel(bars, {
+  dir, pivotBars = 2, atr = 0, bufferAtrMult = 0.25, maxAtrMult = null,
+  peakPrice = null, price = null,
+} = {}) {
+  if (!Array.isArray(bars) || bars.length < pivotBars * 2 + 1) return null
+  const n = Number(pivotBars)
+  if (!Number.isFinite(n) || n < 1) return null
+  const long = dir === 1
+
+  let level = null
+  // newest→oldest: the FIRST qualifying pivot is the most recent one.
+  for (let i = bars.length - 1 - n; i >= n; i--) {
+    const b = bars[i]
+    if (!b || !Number.isFinite(b.h) || !Number.isFinite(b.l)) continue
+    let ok = true
+    for (let k = 1; k <= n && ok; k++) {
+      const a = bars[i - k], c = bars[i + k]
+      if (!a || !c) { ok = false; break }
+      ok = long ? (a.l > b.l && c.l > b.l) : (a.h < b.h && c.h < b.h)
+    }
+    if (!ok) continue
+    const candidate = long ? b.l - bufferAtrMult * atr : b.h + bufferAtrMult * atr
+    // A pivot on the wrong side of price is history, not a stop: taking it
+    // would place the stop where the trade is already beaten.
+    if (Number.isFinite(price)) {
+      if (long ? candidate >= price : candidate <= price) continue
+    }
+    level = candidate
+    break
+  }
+  if (level == null) return null
+
+  // Structure gives room; it must not give unlimited room. The giveback from
+  // the peak stays bounded by maxAtrMult, so a swing that happens to sit far
+  // below cannot quietly turn a protected winner back into a scratch.
+  if (maxAtrMult != null && Number.isFinite(peakPrice) && atr > 0) {
+    const bound = long ? peakPrice - maxAtrMult * atr : peakPrice + maxAtrMult * atr
+    level = long ? Math.max(level, bound) : Math.min(level, bound)
+  }
+  return level
+}
+
 // Quote-ccy ⇄ USD conversion for the P&L math — exact for USD-quoted
 // symbols (incl. commodities/indices via instrumentType, which knows that
 // NATGAS is energy, not an FX pair) and USD-base pairs; crosses with no
@@ -207,16 +286,45 @@ export function decideProfitKeeper(cfg, {
       if (spiked) trailMult = Math.min(trailMult, Number(cfg.spikeTrailAtrMult || 1))
     }
     const peakPrice = entry + dir * q.toQuote(out.newPeak) / (lots * unitsPerLot)
-    const slTarget = roundToDigits(peakPrice - dir * trailMult * atr, digits)
+    const chandelier = peakPrice - dir * trailMult * atr
+
+    // Structure trail: the last confirmed swing wins when one exists, EXCEPT
+    // while a spike is tightening — a spike says the peak is probably the
+    // move, and honouring a swing four bars back would give the whole spike
+    // away. Ratchet-only semantics are untouched either way: `tighter()`
+    // below is what actually decides whether the stop moves.
+    let level = chandelier
+    let viaStructure = false
+    if (cfg.structureTrailEnabled !== false && !spiked && Array.isArray(bars) && bars.length) {
+      const swing = swingTrailLevel(bars, {
+        dir,
+        pivotBars: Number(cfg.structurePivotBars) || 2,
+        atr,
+        bufferAtrMult: Number(cfg.structureBufferAtrMult ?? 0.25),
+        // An explicit null means "unbounded" — an ABSENT key must not, or a
+        // partial config silently buys unlimited giveback.
+        maxAtrMult: cfg.structureMaxAtrMult === null ? null : Number(cfg.structureMaxAtrMult ?? 4),
+        peakPrice,
+        price,
+      })
+      if (swing != null) { level = swing; viaStructure = true }
+    }
+
+    const slTarget = roundToDigits(level, digits)
     const breached = dir === 1 ? price <= slTarget : price >= slTarget
     if (breached) {
-      out.action = { close: true, reason: `chandelier peak=${out.newPeak.toFixed(2)} trail=${slTarget} now=${price}` }
+      out.action = {
+        close: true,
+        reason: `${viaStructure ? 'structure' : 'chandelier'} peak=${out.newPeak.toFixed(2)} trail=${slTarget} now=${price}`,
+      }
       return out
     }
     // Armed and not breached: expose the live trail parameters so the
     // caller can hand them to the C++ tick-level ratchet (option 4). This
-    // is the POLICY output — distance already reflects spike tightening.
-    out.trail = { distance: trailMult * atr, peakPrice }
+    // is the POLICY output — the distance is measured from the level that
+    // actually applies, so the sidecar trails the structure stop rather than
+    // a Chandelier the policy has already stopped using.
+    out.trail = { distance: Math.abs(peakPrice - level), peakPrice }
 
     const action = {}
     if (Number(cfg.scaleOutFrac) > 0 && !scaledOut) action.scaleOutFrac = Math.min(0.9, Number(cfg.scaleOutFrac))
@@ -224,6 +332,7 @@ export function decideProfitKeeper(cfg, {
       action.sl = slTarget
       action.lockUsd = Math.round(q.toUsd((slTarget - entry) * dir * lots * unitsPerLot) * 100) / 100
       if (spiked) action.spike = true // for the notify message — policy, not extra risk
+      if (viaStructure) action.structure = true // ditto: which trail set this level
     }
     out.action = Object.keys(action).length ? action : null
     return out
@@ -511,12 +620,13 @@ async function profitKeeperPass(db, creds, deps = {}) {
           await exec.amendPosition(creds, { positionId: parseInt(r.position_id), stopLoss: decision.action.sl })
           updAct.run(decision.action.sl, 'profit_keeper_lock', r.id)
           summary.slMoves++
-          notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${decision.action.sl}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}${decision.action.spike ? ' — spike detected, trail tightened' : ''}`)
+          notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${decision.action.sl}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}${decision.action.spike ? ' — spike detected, trail tightened' : ''}${decision.action.structure ? ' — trailing the last swing' : ''}`)
           recordPositionEvent(db, {
             accountId: r.account_id, positionId: r.position_id, tradeId: r.trade_id,
             symbol: r.symbol, kind: 'sl_moved',
             fromValue: bp.stopLoss ?? r.current_sl ?? null, toValue: decision.action.sl,
-            priceAt: price, reason: decision.action.spike ? 'spike_tighten' : 'chandelier_ratchet',
+            priceAt: price, reason: decision.action.spike ? 'spike_tighten'
+              : decision.action.structure ? 'structure_ratchet' : 'chandelier_ratchet',
             source: 'profit_keeper',
           })
         } catch (err) {

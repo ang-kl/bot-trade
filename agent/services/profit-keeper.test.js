@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper, clearAtrCache, readAtrCache, writeAtrCache } from './profit-keeper.js'
+import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper, clearAtrCache, readAtrCache, writeAtrCache, swingTrailLevel } from './profit-keeper.js'
 import { recentPositionEvents } from './position-events.js'
 
 const CFG = { on: true, scope: 'external', armProfitUsd: 50, givebackPct: 40, takeProfitUsd: null }
@@ -139,6 +139,106 @@ test('adaptive: price through the trail → close at market', () => {
   })
   assert.ok(out.action?.close, `expected close, got ${JSON.stringify(out.action)}`)
   assert.match(out.action.reason, /chandelier/)
+})
+
+// ---- structure trailing (aligned plan §2.5.4) ------------------------------
+//
+// Short NatGas from 2.8795, peak $60 → peak price 2.2795, ATR 0.05.
+// Chandelier (2.5 ATR) sits at 2.4045. Every fixture below keeps bar ranges
+// under 2 × ATR so the spike detector stays out of the way.
+const swingBars = (highs) => highs.map(h => ({ h, l: h - 0.02, c: h - 0.01 }))
+
+test('swingTrailLevel: the most recent CONFIRMED pivot, buffered and bounded', () => {
+  // pivot high 2.44 at index 2 — two lower highs on each side
+  const bars = swingBars([2.30, 2.38, 2.44, 2.38, 2.30, 2.29, 2.28])
+  const lvl = swingTrailLevel(bars, { dir: -1, pivotBars: 2, atr: 0.05, bufferAtrMult: 0.25, price: 2.30 })
+  assert.ok(Math.abs(lvl - 2.4525) < 1e-9, `got ${lvl}`)
+
+  // the bound wins when structure sits too far from the peak
+  const bounded = swingTrailLevel(bars, {
+    dir: -1, pivotBars: 2, atr: 0.05, bufferAtrMult: 0.25, price: 2.30,
+    maxAtrMult: 1, peakPrice: 2.2795,
+  })
+  assert.ok(Math.abs(bounded - 2.3295) < 1e-9, `got ${bounded}`)
+
+  // a pivot needs confirmation on BOTH sides: a still-forming high at the
+  // right edge is not a pivot, and a monotone series has none at all
+  assert.equal(swingTrailLevel(swingBars([2.20, 2.22, 2.24, 2.26, 2.28]), { dir: -1, pivotBars: 2, price: 2.10 }), null)
+  assert.equal(swingTrailLevel(swingBars([2.30, 2.40]), { dir: -1, pivotBars: 2, price: 2.10 }), null)
+
+  // longs mirror it: pivot LOW, buffered downward
+  const longBars = [2.40, 2.32, 2.26, 2.32, 2.40, 2.41, 2.42].map(l => ({ l, h: l + 0.02, c: l + 0.01 }))
+  const longLvl = swingTrailLevel(longBars, { dir: 1, pivotBars: 2, atr: 0.05, bufferAtrMult: 0.25, price: 2.45 })
+  assert.ok(Math.abs(longLvl - 2.2475) < 1e-9, `got ${longLvl}`)
+})
+
+test('structure trail survives the pullback that the Chandelier would have closed', () => {
+  const bars = swingBars([2.30, 2.38, 2.44, 2.38, 2.30, 2.29, 2.28])
+  // price 2.42 is through the 2.4045 Chandelier but short of the 2.4525 swing
+  const structure = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.42, peak: 60, currentSl: null, atr: 0.05, balance: 50_000, bars,
+  })
+  assert.ok(!structure.action?.close, `expected survival, got ${JSON.stringify(structure.action)}`)
+  assert.ok(Math.abs(structure.action.sl - 2.4525) < 0.001, `got ${structure.action?.sl}`)
+  assert.equal(structure.action.structure, true)
+  // the C++ ratchet must be handed the distance that actually applies
+  assert.ok(Math.abs(structure.trail.distance - (2.4525 - 2.2795)) < 1e-9)
+
+  // same bar, structure trailing off → the old behaviour closes it
+  const chandelier = decideProfitKeeper({ ...ADAPTIVE, structureTrailEnabled: false }, {
+    ...NATGAS, price: 2.42, peak: 60, currentSl: null, atr: 0.05, balance: 50_000, bars,
+  })
+  assert.ok(chandelier.action?.close, 'the Chandelier still exits here')
+  assert.match(chandelier.action.reason, /chandelier/)
+})
+
+test('structure trail still ratchets, still bounded, still yields to a spike', () => {
+  // A nearer swing (2.35 + buffer = 2.3625) tightens PAST the Chandelier.
+  const near = swingBars([2.20, 2.28, 2.35, 2.28, 2.20, 2.19, 2.18])
+  const tight = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: null, atr: 0.05, balance: 50_000, bars: near,
+  })
+  assert.ok(Math.abs(tight.action.sl - 2.3625) < 0.001, `got ${tight.action?.sl}`)
+
+  // tighten-only is unchanged: an existing stop already tighter stays put
+  const held = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: 2.34, atr: 0.05, balance: 50_000, bars: near,
+  })
+  assert.equal(held.action, null)
+
+  // giveback stays bounded even when the only swing is miles away
+  const far = swingBars([2.30, 2.50, 2.90, 2.50, 2.30, 2.29, 2.28])
+  const bounded = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: null, atr: 0.05, balance: 50_000, bars: far,
+  })
+  assert.ok(Math.abs(bounded.action.sl - (2.2795 + 4 * 0.05)) < 0.001, `got ${bounded.action?.sl}`)
+
+  // a spike says the peak IS the move — the 1-ATR spike trail wins over structure
+  const spiky = swingBars([2.30, 2.38, 2.44, 2.38, 2.30, 2.29, 2.28])
+  spiky[spiky.length - 1] = { h: 2.40, l: 2.25, c: 2.30 } // range 0.15 ≥ 2 × ATR
+  const out = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: null, atr: 0.05, balance: 50_000, bars: spiky,
+  })
+  assert.ok(Math.abs(out.action.sl - (2.2795 + 0.05)) < 0.001, `got ${out.action?.sl}`)
+  assert.equal(out.action.spike, true)
+  assert.equal(out.action.structure, undefined)
+})
+
+test('arming is 1.2 ATR-values (plan §2.5.4 "≥ +1.2R" in the unit this module has)', () => {
+  assert.equal(DEFAULT_PROFIT_KEEPER.armAtrMult, 1.2)
+  // 1 lot × 100 units × ATR 0.50 = $50 of ATR-value → arms at $60, not $50.
+  // Balance floor set to 0 so the ATR arm is the only gate under test.
+  const cfg = { ...ADAPTIVE, armAtrMult: 1.2, armBalancePct: 0, trailAtrMult: 2.5, structureTrailEnabled: false }
+  const at1R = decideProfitKeeper(cfg, {
+    ...NATGAS, price: 2.3795, peak: 0, currentSl: null, atr: 0.50, balance: 50_000,
+  })
+  assert.equal(at1R.profitUsd, 50)
+  assert.equal(at1R.action, null, '1.0 ATR-value no longer arms')
+  const at12R = decideProfitKeeper(cfg, {
+    ...NATGAS, price: 2.2795, peak: 0, currentSl: null, atr: 0.50, balance: 50_000,
+  })
+  assert.equal(at12R.profitUsd, 60)
+  assert.ok(at12R.action?.sl != null, '1.2 ATR-values arms')
 })
 
 test('adaptive: scale-out fires once at arm, then never again', () => {
