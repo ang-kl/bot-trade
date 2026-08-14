@@ -1135,9 +1135,12 @@ export default function actionsRouter(db) {
 
   // -----------------------------------------------------------------------
   // POST /actions/burn-in — arm/disarm track-record burn-in mode.
-  // Body: { on: boolean, sizeMode?: 'auto'|'fixed', lots?, maxPerCycle?,
-  // targetTrades?, windowDays? }. 'auto' = uncapped risk-based sizing;
-  // 'fixed' pins lots 0.01–0.05. Values clamped in loadBurnInConfig.
+  // Body: { on: boolean, lots?, maxPerCycle?, targetTrades?, windowDays? }.
+  // Sizing is FIXED-ONLY (owner 2026-08-14) — lots 0.01–0.05. A `sizeMode` in
+  // the body is accepted and ignored rather than 400'd, so an older client
+  // still arms burn-in instead of failing; loadBurnInConfig pins the stored
+  // value and the response echoes what actually took effect. Values clamped
+  // in loadBurnInConfig.
   // -----------------------------------------------------------------------
   router.post('/burn-in', async (req, res) => {
     try {
@@ -1146,7 +1149,6 @@ export default function actionsRouter(db) {
       const next = {
         ...current,
         ...(typeof req.body?.on === 'boolean' ? { on: req.body.on } : {}),
-        ...(req.body?.sizeMode != null ? { sizeMode: String(req.body.sizeMode) } : {}),
         ...(req.body?.lots != null ? { lots: Number(req.body.lots) } : {}),
         ...(req.body?.maxPerCycle != null ? { maxPerCycle: Number(req.body.maxPerCycle) } : {}),
         ...(req.body?.targetTrades != null ? { targetTrades: Number(req.body.targetTrades) } : {}),
@@ -1156,7 +1158,7 @@ export default function actionsRouter(db) {
       if (next.on && !current.on) next.startedAt = new Date().toISOString()
       setState(db, 'burn_in_json', JSON.stringify(next))
       const clamped = loadBurnInConfig(db)
-      console.log(`[actions] burn-in ${clamped.on ? 'ARMED' : 'disarmed'} — size=${clamped.sizeMode === 'fixed' ? clamped.lots : 'auto'} target=${clamped.targetTrades} in ${clamped.windowDays}d mpc=${clamped.maxPerCycle}`)
+      console.log(`[actions] burn-in ${clamped.on ? 'ARMED' : 'disarmed'} — size=${clamped.lots} (fixed) target=${clamped.targetTrades} in ${clamped.windowDays}d mpc=${clamped.maxPerCycle}`)
       res.json({ ok: true, config: clamped })
     } catch (e) {
       res.status(400).json({ error: e.message })

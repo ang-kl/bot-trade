@@ -89,14 +89,26 @@ test('pacePlan: no target/window → base pacing untouched', () => {
 
 // ---- config ---------------------------------------------------------------
 
-test('defaults are safe: off, 0.01 lots, 200-in-2d target; clamps hold', () => {
+test('defaults are safe: off, fixed 0.01 lots, 200-in-2d target; clamps hold', () => {
   const db = initDB(':memory:')
   assert.deepEqual(loadBurnInConfig(db), DEFAULT_BURN_IN)
+  assert.equal(DEFAULT_BURN_IN.sizeMode, 'fixed')
   setState(db, 'burn_in_json', JSON.stringify({ on: true, lots: 5, targetTrades: 9999, windowDays: 99 }))
   const cfg = loadBurnInConfig(db)
   assert.equal(cfg.lots, 0.05)
   assert.equal(cfg.targetTrades, 500)
   assert.equal(cfg.windowDays, 7)
+})
+
+test('sizeMode is pinned to fixed — a stored "auto" is coerced, not honoured', () => {
+  const db = initDB(':memory:')
+  // the exact production shape: armed 2026-07-28 at sizeMode auto
+  setState(db, 'burn_in_json', JSON.stringify({ on: true, sizeMode: 'auto', lots: 0.01 }))
+  assert.equal(loadBurnInConfig(db).sizeMode, 'fixed', 'no migration needed — the read pins it')
+  for (const m of ['auto', 'AUTO', 'anything', null, 42]) {
+    setState(db, 'burn_in_json', JSON.stringify({ on: true, sizeMode: m }))
+    assert.equal(loadBurnInConfig(db).sizeMode, 'fixed')
+  }
 })
 
 // ---- burnInWindow: the window is terminal ----------------------------------
@@ -165,21 +177,23 @@ test('off / autotrade-off / no creds → skipped, nothing placed', async () => {
   assert.equal(placed.length, 0)
 })
 
-test('fixed size mode pins burn-in lots via maxVolume', async () => {
-  const db = mkDb({ watch: ['EURUSD'], sizeMode: 'fixed' })
-  const placed = []
-  await runBurnIn(db, CREDS, deps(placed))
-  assert.equal(placed.length, 1)
-  assert.equal(placed[0].wItem.maxVolume, 0.01, 'size pinned to burn-in lots')
+test('burn-in lots are pinned via maxVolume — even when the stored config says auto', async () => {
+  for (const sizeMode of ['fixed', 'auto', undefined]) {
+    const db = mkDb({ watch: ['EURUSD'], sizeMode })
+    const placed = []
+    await runBurnIn(db, CREDS, deps(placed))
+    assert.equal(placed.length, 1)
+    assert.equal(placed[0].wItem.maxVolume, 0.01, `stored sizeMode=${sizeMode} still sizes 0.01`)
+  }
 })
 
-test('places auto-sized trades (default) on the PLAN timeframe with the plan time cap', async () => {
+test('places trades on the PLAN timeframe with the plan time cap', async () => {
   const db = mkDb({})
   const placed = []
   const out = await runBurnIn(db, CREDS, deps(placed))
   assert.equal(out.placed, 2)
   for (const p of placed) {
-    assert.equal(p.wItem.maxVolume, null, 'auto mode → uncapped risk-based sizing')
+    assert.equal(p.wItem.maxVolume, 0.01, 'burn-in never sizes off the balance')
     assert.equal(p.synth.source, 'burnin')
     assert.equal(p.synth.strategy, 'burnin')
     // flat 1m volume → relVol ≈ 1 → 'active' regime → 15m plan, 30m cap

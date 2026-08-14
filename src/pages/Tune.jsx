@@ -2174,22 +2174,23 @@ export default function Tune() {
             <div className="mt-3 flex flex-wrap items-center gap-2 text-(length:--fs-body)">
               <Toggle on={config?.burn_in?.on} label="Burn-in (track record)" onClick={() => {
                 const next = !config?.burn_in?.on
-                const sizeWord = (config?.burn_in?.sizeMode ?? 'auto') === 'fixed' ? `fixed ${config?.burn_in?.lots ?? 0.01}-lot` : 'risk-sized (auto)'
+                const sizeWord = `fixed ${config?.burn_in?.lots ?? 0.01}-lot`
                 if (next && !window.confirm(`Arm BURN-IN (micro-quant)? Every 5 minutes the bot opens REAL ${sizeWord} positions across the enabled watchlist. The operating timeframe is chosen PER SYMBOL from live volume & condition — hot tape → 5m scalps (~12m cap), active → 15m (~30m), trending-quiet → 1h (~2h) — and the pace steers itself toward ${config?.burn_in?.targetTrades ?? 200} completed trades in ${config?.burn_in?.windowDays ?? 2} days. Runs only while Autotrade is armed; /pause, Kill all and the equity stop all stop it.`)) return
                 run(async () => {
                   await agentPost('/actions/burn-in', { on: next })
                   setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), on: next } }))
                 }, `Burn-in ${next ? 'ARMED' : 'disarmed'}`)
               }} />
-              <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">Sizing:</span>
-              <Segmented label="Burn-in sizing" value={config?.burn_in?.sizeMode ?? 'auto'}
-                options={[{ value: 'auto', label: 'Auto (risk-based)' }, { value: 'fixed', label: 'Fixed 0.01–0.05' }]}
-                onChange={mode => run(async () => {
-                  await agentPost('/actions/burn-in', { sizeMode: mode })
-                  setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), sizeMode: mode } }))
-                }, `Burn-in sizing → ${mode === 'auto' ? 'Auto (risk-based)' : 'Fixed 0.01–0.05'}`)} />
+              {/* The Auto/Fixed segmented control is gone: sizing is
+                  fixed-only (owner 2026-08-14, "pin burn-in to fixed").
+                  Auto ran for 16 days and cost −$3,989 across 122 closed
+                  burn-in deals — a sample that moves the balance corrupts the
+                  statistics it was armed to collect. */}
               <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-                micro-quant: timeframe adapts per symbol to live volume &amp; condition (5m scalps ↔ 1h swings), self-pacing toward {config?.burn_in?.targetTrades ?? 200} completed trades in {config?.burn_in?.windowDays ?? 2} days — behind pace → more symbols per cycle &amp; shorter cooldowns. Auto sizing uses the SAME uncapped risk-based lot as auto signals; Fixed pins a cheap 0.01–0.05 sample. Every attempt lands in the Order log (BURN-IN badge).
+                sizing: fixed {config?.burn_in?.lots ?? 0.01} lots
+              </span>
+              <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+                micro-quant: timeframe adapts per symbol to live volume &amp; condition (5m scalps ↔ 1h swings), self-pacing toward {config?.burn_in?.targetTrades ?? 200} completed trades in {config?.burn_in?.windowDays ?? 2} days — behind pace → more symbols per cycle &amp; shorter cooldowns. Sizing is pinned to a cheap 0.01–0.05 sample and never sizes off the balance; the window is terminal, so burn-in stops itself {config?.burn_in?.windowDays ?? 2} days after arming and must be re-armed here to continue. Every attempt lands in the Order log (BURN-IN badge).
               </span>
             </div>
             {/* Loss Guardian — safety net the Profit Keeper's opposite number:
