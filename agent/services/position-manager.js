@@ -28,7 +28,13 @@ export const DEFAULT_RULES = Object.freeze({
   // big winners (LLY sat at +17R) held ALL the margin hostage and armed
   // strategies couldn't get a fill (owner chose: cap + bank). 0/null disables.
   bankTriggerR: 4,
-  defaultTimeCapMinutes: 180, // 3 hours if Analyst didn't set one
+  // NOTE (2026-08-14): there is deliberately no `defaultTimeCapMinutes` here.
+  // One was defined for months and never read by anything — evaluatePosition
+  // only ever consults `pos.time_cap_at`, which is written at fill time from
+  // the signal's own `time_cap_minutes`. A setup that declares no cap has no
+  // cap, and exits on its stop, its target, or invalidation. Re-introducing a
+  // blanket default would put a clock on technical setups that were sized to
+  // a structure, not to a deadline.
 })
 
 // ---------------------------------------------------------------------------

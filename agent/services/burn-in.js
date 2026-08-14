@@ -105,6 +105,38 @@ export function pacePlan({ targetTrades, windowMs, elapsedMs, completed, baseMax
   return { maxPerCycle: base, cooldownScale: 1, expected }
 }
 
+/**
+ * The arming window, as a fact rather than a hope. Pure and tested.
+ *
+ * `windowDays` was written into the config from the first day ("≥200 completed
+ * trades in 2 days") and then never enforced: `pacePlan` scales pacing toward
+ * the target but has no terminal state, so a burn-in armed once ran until
+ * somebody turned it off by hand. Production, measured 2026-08-14: burn-in was
+ * armed 2026-07-28 with `windowDays: 2` and was still placing trades 16 days
+ * later — its 2-day window had expired 14 days earlier. Its short caps
+ * (12/30/45m) account for −$3,989 across 122 closed deals in the statement.
+ *
+ * A sampling harness that cannot stop is not a sample, it is a strategy.
+ *
+ * @returns {{armedMs:number|null, windowMs:number, elapsedMs:number,
+ *            endsAt:string|null, expired:boolean}}
+ */
+export function burnInWindow({ startedAt, windowDays, now }) {
+  const windowMs = Math.max(1, Number(windowDays) || 0) * 86_400_000
+  const armedMs = startedAt ? Date.parse(startedAt) : NaN
+  if (!Number.isFinite(armedMs)) {
+    return { armedMs: null, windowMs, elapsedMs: 0, endsAt: null, expired: false }
+  }
+  const endsMs = armedMs + windowMs
+  return {
+    armedMs,
+    windowMs,
+    elapsedMs: Math.max(0, Number(now) - armedMs),
+    endsAt: new Date(endsMs).toISOString(),
+    expired: Number(now) >= endsMs,
+  }
+}
+
 function log(...args) {
   console.log('[burn-in]', ...args)
 }
@@ -125,6 +157,30 @@ export async function runBurnIn(db, creds, deps = {}) {
   const wsGetTrendbarsBatch = deps.wsGetTrendbarsBatch ?? (await import('../lib/ctrader-ws.js')).wsGetTrendbarsBatch
   const now = deps.now ?? (() => Date.now())
 
+  // The window is terminal. Expiry REFUSES new entries; it does not rewrite
+  // the owner's config (same discipline as repairRosterMembership: report,
+  // don't mutate someone's stated intent), and it never touches positions that
+  // are already open — those keep their own caps and stops. Re-arming from
+  // Tune re-stamps `startedAt` and the window starts again.
+  const win = burnInWindow({ startedAt: cfg.startedAt, windowDays: cfg.windowDays, now: now() })
+  if (win.expired) {
+    if (getState(db, 'burn_in_expired_at') !== win.endsAt) {
+      setState(db, 'burn_in_expired_at', win.endsAt)
+      log(`window expired ${win.endsAt} — armed ${cfg.startedAt} for ${cfg.windowDays}d; no further entries until re-armed`)
+    }
+    return { skipped: 'window expired', attempted: 0, placed: 0, expiredAt: win.endsAt, armedAt: cfg.startedAt }
+  }
+  // An armed burn-in with no arming stamp has an unenforceable window. Stamp
+  // it on first pass rather than letting it run unbounded on a technicality.
+  if (!cfg.startedAt) {
+    cfg.startedAt = new Date(now()).toISOString()
+    try {
+      const stored = JSON.parse(getState(db, 'burn_in_json') || '{}') || {}
+      setState(db, 'burn_in_json', JSON.stringify({ ...stored, startedAt: cfg.startedAt }))
+    } catch { /* corrupt state — the in-memory stamp still bounds this pass */ }
+    log(`armed without a start stamp — window now starts ${cfg.startedAt} (${cfg.windowDays}d)`)
+  }
+
   let watch = []
   try {
     // The UNION across enabled accounts, not one account's list — the
@@ -142,7 +198,6 @@ export async function runBurnIn(db, creds, deps = {}) {
   )
 
   // Pace toward the target: completed burn-in round-trips since arming.
-  const startedMs = cfg.startedAt ? Date.parse(cfg.startedAt) : NaN
   const completed = cfg.startedAt
     ? db.prepare(
         `SELECT COUNT(*) AS n FROM trades
@@ -151,8 +206,8 @@ export async function runBurnIn(db, creds, deps = {}) {
     : 0
   const pace = pacePlan({
     targetTrades: cfg.targetTrades,
-    windowMs: cfg.windowDays * 86_400_000,
-    elapsedMs: Number.isFinite(startedMs) ? Math.max(0, now() - startedMs) : 0,
+    windowMs: win.windowMs,
+    elapsedMs: win.elapsedMs,
     completed,
     baseMaxPerCycle: cfg.maxPerCycle,
   })
