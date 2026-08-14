@@ -243,6 +243,30 @@ test('duplicate symbol vetoes', () => {
   assert.match(res.veto_reason, /duplicate_symbol/)
 })
 
+// Aligned plan §2.5.5.1 — Mutually Exclusive Directionality.
+//
+// The plan asks the scanner to "reject signal −D on Symbol X if position D is
+// open". The gate already refuses BOTH directions on an occupied symbol, so
+// the plan's rule is a strict subset of `duplicate_symbol` rather than
+// something missing. This test pins the −D half specifically: without it, the
+// only coverage is the same-direction case above, and a future relaxation of
+// duplicate_symbol into "same side only" would pass every existing test while
+// re-opening hedged pairs on one symbol.
+test('§2.5.5.1: an OPPOSITE-side signal on an occupied symbol is refused too', () => {
+  for (const [held, proposed] of [['long', 'short'], ['short', 'long']]) {
+    const db = freshDB()
+    insertOpenPosition(db, 'EURUSD', held)
+    const res = evaluateTrade(db, goodProposal(
+      proposed === 'short'
+        ? { side: 'short', entry: 1.1000, sl: 1.1030, tp1: 1.0895 }
+        : { side: 'long' },
+    ))
+    assert.equal(res.approved, false, `${proposed} against an open ${held} must not pass`)
+    assert.match(res.veto_reason, /duplicate_symbol/)
+    assert.match(res.veto_reason, new RegExp(`existing_side=${held}`))
+  }
+})
+
 // Correlation-cluster cap -------------------------------------------------
 
 test('correlation cap vetoes a third correlated position across cluster members', () => {
@@ -263,6 +287,32 @@ test('correlation cap: a hedging position on the same cluster is allowed', () =>
   // Long EURUSD reduces long-USD exposure (beta -1) — a hedge, not a stack.
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', side: 'long' }))
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+})
+
+// Aligned plan §2.5.5.2 — net cluster directional exposure capped at ±2.0.
+//
+// The +3 case above proves the long side. The cap is stated as ±2.0, so the
+// short side needs its own evidence: a sign error in the netting would leave
+// the long test green and the short side uncapped, which is precisely the
+// direction the book was running in the 13.08 statement.
+test('§2.5.5.2: the ±2 cluster cap binds on the SHORT side too, and +2 itself is allowed', () => {
+  const short = freshDB()
+  insertOpenPosition(short, 'US30', 'short')
+  insertOpenPosition(short, 'US500', 'short')
+  const stacked = evaluateTrade(short, goodProposal({
+    symbol: 'NAS100', side: 'short', entry: 18000, sl: 18100, tp1: 17650,
+  }))
+  assert.equal(stacked.approved, false, 'a third US-equity SHORT stacks the cluster to −3')
+  assert.match(stacked.veto_reason, /correlated_us_equity/)
+
+  // The cap is a ceiling, not a fence: the position that lands exactly ON ±2
+  // is allowed — otherwise the effective cap would silently be 1.
+  const at2 = freshDB()
+  insertOpenPosition(at2, 'US30', 'short')
+  const allowed = evaluateTrade(at2, goodProposal({
+    symbol: 'US500', side: 'short', entry: 5000, sl: 5030, tp1: 4895,
+  }))
+  assert.equal(allowed.approved, true, `net −2 must pass; got: ${allowed.veto_reason}`)
 })
 
 // R:R floor --------------------------------------------------------------
