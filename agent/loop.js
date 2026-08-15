@@ -2709,6 +2709,25 @@ async function runLoop(db) {
                   { accountId: acc.account_id })
                 log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)`)
 
+                // THIS ACCOUNT'S OWN EQUITY. The primary pass above stamps the
+                // selected account's balance and leverage; this sweep used to
+                // reconcile positions and audit protection for every other
+                // account and never ask the broker what they were worth. With
+                // nothing stamped, getAccountBalance falls through to the
+                // unowned global — whichever account refreshed it last — so a
+                // percentage loss cap on those accounts was priced against
+                // somebody else's equity (measured 2026-08-15: 43002148 and
+                // 43069009 both reporting the selected account's 35,319.80,
+                // making a 3% cap ~51x too permissive to ever bind).
+                try {
+                  const { stampAccountEquity } = await import('./services/account-equity.js')
+                  const eq = await stampAccountEquity(
+                    db, { host, clientId, clientSecret, accessToken }, acc.account_id,
+                  )
+                  if (eq.error) log(`Equity[${acc.account_id}]: not stamped — ${eq.error}`)
+                  else if (eq.balance == null) log(`Equity[${acc.account_id}]: broker returned no usable balance`)
+                } catch { /* equity is best-effort; never break the sweep */ }
+
                 // Audit THIS account against ITS OWN broker truth. Without
                 // this, every position on a non-primary account is `unmatched`
                 // — counted as checked and never actually verified. On staging

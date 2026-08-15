@@ -1692,16 +1692,18 @@ test('strategyPerfStats: still scoped to the requested strategy — no cross-con
 // this failure — "worse than missing: it is printed next to somebody else's
 // name" — and the earlier fix closed only the no-accountId path.
 //
-// WHY IT IS STILL HERE. The obvious repair (a named account with nothing
-// stamped reads null) was tried and reverted: `effectiveCapUsd` drops the
-// percentage cap when balance is null, so returning null would SILENTLY
+// WHY THE RESOLVER STILL DOES THIS. The obvious repair (a named account with
+// nothing stamped reads null) was tried and reverted: `effectiveCapUsd` drops
+// the percentage cap when balance is null, so returning null would SILENTLY
 // REMOVE the % loss cap on exactly those accounts — 14 loss-cap, equity-stop
 // and profit-ratchet tests caught it. Trading a display defect for a disabled
-// safety gate is a bad trade.
+// safety gate is a bad trade, so this fallback stays exactly as it is.
 //
-// THE REAL FIX is upstream: stamp `acct:<id>:account_balance_usd` for every
-// enabled account so nothing ever needs the unowned global. That is a loop
-// change (a broker balance read per account), not a resolver change.
+// THE FIX WENT UPSTREAM INSTEAD (services/account-equity.js): the loop's
+// per-account sweep now stamps every reachable account's own balance, so in a
+// live system nothing REACHES this fallback. The behaviour asserted below is
+// the safety net underneath that, not the normal path — and it is asserted so
+// that anyone who later changes the resolver lands here and reads why.
 // ---------------------------------------------------------------------------
 
 test('CHARACTERISATION: an unstamped account inherits the global balance — a known, deliberate trap', () => {
