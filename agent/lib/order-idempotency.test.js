@@ -15,7 +15,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { orderIdempotencyKey, claimOrderLock, _orderLockState, isDefiniteRejection } from './exec-engine.js'
+import { orderIdempotencyKey, claimOrderLock, _orderLockState, _resetOrderLocks, isDefiniteRejection } from './exec-engine.js'
 
 const DOW = {
   ctidTraderAccountId: 46130058,
@@ -30,26 +30,61 @@ test('2.6.3 — the same intent hashes to one key across a burst of dispatches',
   // The seventeen arrived inside one second. Seventeen different keys would
   // mean seventeen orders, which is exactly what happened.
   const t0 = 1_754_349_108_000
-  const keys = new Set(Array.from({ length: 17 }, (_, i) => orderIdempotencyKey(DOW, t0 + i * 3)))
+  const keys = new Set(Array.from({ length: 17 }, () => orderIdempotencyKey(DOW)))
   assert.equal(keys.size, 1, 'a millisecond-jittered burst must collapse to one key')
+  // The burst arriving as CLAIMS is the assertion that matters — one order out.
+  _resetOrderLocks()
+  const claims = Array.from({ length: 17 }, (_, i) => claimOrderLock(DOW, t0 + i * 3))
+  assert.equal(claims.filter(c => c.ok).length, 1, 'and seventeen dispatches must yield one order')
 })
 
 test('2.6.3 — different intents are NOT collapsed', () => {
-  const t = 1_754_349_108_000
-  const base = orderIdempotencyKey(DOW, t)
-  assert.notEqual(orderIdempotencyKey({ ...DOW, tradeSide: 'BUY' }, t), base, 'the other direction is a different trade')
-  assert.notEqual(orderIdempotencyKey({ ...DOW, symbolId: 999 }, t), base, 'another symbol is a different trade')
-  assert.notEqual(orderIdempotencyKey({ ...DOW, ctidTraderAccountId: 43097342 }, t), base, 'another account is a different trade')
+  const base = orderIdempotencyKey(DOW)
+  assert.notEqual(orderIdempotencyKey({ ...DOW, tradeSide: 'BUY' }), base, 'the other direction is a different trade')
+  assert.notEqual(orderIdempotencyKey({ ...DOW, symbolId: 999 }), base, 'another symbol is a different trade')
+  assert.notEqual(orderIdempotencyKey({ ...DOW, ctidTraderAccountId: 43097342 }), base, 'another account is a different trade')
   assert.notEqual(
-    orderIdempotencyKey({ ...DOW, label: 'autopilot|3|fib_618_fade|H|LDN|15m|' }, t), base,
+    orderIdempotencyKey({ ...DOW, label: 'autopilot|3|fib_618_fade|H|LDN|15m|' }), base,
     'a fib entry and a trend entry on the same symbol are different intents, not a double',
   )
 })
 
-test('2.6.3 — the key is bucketed, so it expires rather than blocking forever', () => {
+test('2.6.3 — the key is pure IDENTITY; the window lives in the lock, not the hash', () => {
+  // This test used to assert the opposite — that the key CHANGED a minute
+  // later — because the key carried a bucketed timestamp. That made the key do
+  // two jobs and it did the second one wrong (see the boundary test below).
+  // The identity of an order does not depend on what time it is.
   const t = 1_754_349_108_000
-  assert.notEqual(orderIdempotencyKey(DOW, t + 60_000), orderIdempotencyKey(DOW, t),
-    'a minute later is a new intent — this is a lock, not a ban')
+  assert.equal(orderIdempotencyKey(DOW), orderIdempotencyKey(DOW),
+    'the same intent is the same key, always')
+
+  // The release is the LOCK expiring, which is what "within 60 seconds" means.
+  _resetOrderLocks()
+  assert.equal(claimOrderLock(DOW, t).ok, true, 'first dispatch goes')
+  assert.equal(claimOrderLock(DOW, t + 59_999).ok, false, 'still inside the window — refused')
+  assert.equal(claimOrderLock(DOW, t + 60_001).ok, true, 'past the window — a new intent, allowed')
+})
+
+test('2.6.3 — INVARIANT 3 IS A ROLLING WINDOW: a boundary-straddling burst is still one order', () => {
+  // The defect this replaces: the key was `Math.floor(now / 60_000)`, so two
+  // identical orders 2ms apart hashed DIFFERENTLY if they fell either side of
+  // a wall-clock minute, and both dispatched. The DOW.US storm was 89ms wide;
+  // one landing on a boundary would have split and leaked an order per side.
+  //
+  // t0 is chosen to sit exactly on a bucket edge so the old code is guaranteed
+  // to fail this and the new code is guaranteed not to.
+  const edge = Math.ceil(1_754_349_108_000 / 60_000) * 60_000
+  _resetOrderLocks()
+  const first = claimOrderLock(DOW, edge - 1)   // 11:59:59.999
+  const second = claimOrderLock(DOW, edge + 1)  // 12:00:00.001 — 2ms later
+  assert.equal(first.ok, true)
+  assert.equal(second.ok, false, '2ms apart across a minute boundary is still the same order')
+  assert.equal(first.key, second.key, 'and it is the SAME key — identity does not depend on the clock')
+
+  // The whole 89ms storm, straddling the edge.
+  _resetOrderLocks()
+  const burst = Array.from({ length: 17 }, (_, i) => claimOrderLock(DOW, edge - 44 + i * 5))
+  assert.equal(burst.filter(r => r.ok).length, 1, 'seventeen across the boundary must still be one order')
 })
 
 test('2.6.3 — 20 concurrent dispatches produce ONE order and 19 blocks', () => {

@@ -525,18 +525,29 @@ export function withNumericIds(args) {
  * second dispatch can interleave. A SQLite lock would add durability across
  * restarts and buy nothing against the storm this exists to stop.
  *
- * THE KEY DELIBERATELY OMITS THE RAW TIMESTAMP. The contract's formula is
- * hash(accountId + symbol + strategy + direction + signalTimestamp), but a
- * millisecond timestamp inside the key defeats the key: seventeen dispatches a
- * few milliseconds apart would hash seventeen different ways and every one
- * would pass. The timestamp is therefore BUCKETED to the TTL window, which is
- * what "within 60 seconds" means when written as a hash.
+ * THE KEY CARRIES NO TIME AT ALL, AND THAT IS THE POINT. The contract's
+ * formula is hash(accountId + symbol + strategy + direction + signalTimestamp),
+ * but a millisecond timestamp inside the key defeats the key: seventeen
+ * dispatches a few milliseconds apart would hash seventeen different ways and
+ * every one would pass.
+ *
+ * The first fix for that BUCKETED the timestamp to the TTL window
+ * (`Math.floor(now / 60_000)`), which collapsed the burst but quietly bought a
+ * different hole: buckets are fixed wall-clock windows, so two identical
+ * orders 2ms apart that straddle a boundary — 11:59:59.999 and 12:00:00.001 —
+ * hash differently and BOTH dispatch. Invariant 3 says "within 60 seconds",
+ * which is a ROLLING window; a bucket is not one. The DOW.US storm was 89ms
+ * wide, so a burst landing on a boundary would have split and leaked an order
+ * from each side.
+ *
+ * So the key is pure identity, and the 60-second window lives where it always
+ * belonged: in the lock's EXPIRY. Claim stamps `now + TTL`; any identical
+ * order before that expiry is refused, whatever the wall clock says.
  */
 const ORDER_LOCK_TTL_MS = 60_000
 const orderLocks = new Map()
 
-export function orderIdempotencyKey(payload, nowMs = Date.now()) {
-  const bucket = Math.floor(nowMs / ORDER_LOCK_TTL_MS)
+export function orderIdempotencyKey(payload) {
   return [
     payload?.ctidTraderAccountId ?? '',
     payload?.symbolId ?? '',
@@ -545,7 +556,6 @@ export function orderIdempotencyKey(payload, nowMs = Date.now()) {
     // The strategy rides in the structured label; a fib entry and a trend
     // entry on the same symbol and side are different intents, not a double.
     String(payload?.label ?? '').split('|')[2] ?? '',
-    bucket,
   ].join('|')
 }
 
@@ -568,7 +578,7 @@ export function _resetOrderLocks() {
 export function claimOrderLock(payload, nowMs = Date.now()) {
   // Sweep first so a long-running process does not accumulate dead keys.
   for (const [k, exp] of orderLocks) if (exp <= nowMs) orderLocks.delete(k)
-  const key = orderIdempotencyKey(payload, nowMs)
+  const key = orderIdempotencyKey(payload)
   const held = orderLocks.get(key)
   if (held != null && held > nowMs) return { ok: false, key, msLeft: held - nowMs }
   orderLocks.set(key, nowMs + ORDER_LOCK_TTL_MS)
