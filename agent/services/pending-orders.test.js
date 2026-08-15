@@ -537,7 +537,15 @@ test('placement records the hold alongside the order deadline', async () => {
 test('2.6.4 — time_cap_at == T_fill + hold, exactly, and never T_placed + hold', () => {
   const db = freshDb()
   const HOLD_MIN = 240
-  const placedMs = Date.now() - 95 * 60_000          // rested 95 minutes
+  const RESTED_MIN = 95
+  // ONE clock reading for the whole test. This used to call Date.now() twice —
+  // once for `placed`, once for `fill` — and then assert their difference was
+  // exactly 95 minutes, which is only true when both calls land in the same
+  // millisecond. The DB insert between them usually takes under 1ms, so it
+  // passed most of the time and failed roughly one run in five. A test about
+  // clock arithmetic must not race the clock.
+  const fillMs = Date.now()
+  const placedMs = fillMs - RESTED_MIN * 60_000      // rested 95 minutes
   const placed = new Date(placedMs).toISOString()
   const expires = new Date(placedMs + HOLD_MIN * 60_000).toISOString()
   db.prepare(`
@@ -546,7 +554,6 @@ test('2.6.4 — time_cap_at == T_fill + hold, exactly, and never T_placed + hold
   `).run(placed, expires, HOLD_MIN)
   const row = db.prepare(`SELECT * FROM pending_orders WHERE order_id = '2604'`).get()
 
-  const fillMs = Date.now()
   persistFilledTrade(db, row, { positionId: 2604, price: 1.1002, tradeData: { openTimestamp: fillMs } }, '123')
 
   const capMs = Date.parse(db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE symbol = 'EURUSD'`).get().time_cap_at)
@@ -554,5 +561,5 @@ test('2.6.4 — time_cap_at == T_fill + hold, exactly, and never T_placed + hold
   assert.notEqual(capMs, placedMs + HOLD_MIN * 60_000)
   // The 95 minutes the order spent resting are the whole bug: under the old
   // rule this position was born with 145 minutes to live instead of 240.
-  assert.equal(capMs - (placedMs + HOLD_MIN * 60_000), 95 * 60_000)
+  assert.equal(capMs - (placedMs + HOLD_MIN * 60_000), RESTED_MIN * 60_000)
 })
