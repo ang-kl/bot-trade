@@ -26,6 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from './strategies.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
 export const STAGES = ['scan', 'backtest', 'trade', 'manage']
 export const STAGE_LABELS = {
@@ -453,7 +454,7 @@ export function stageMatrixStats(db, getState) {
 
   try {
     const rows = db.prepare(
-      `SELECT COALESCE(label_strategy, strategy) AS k,
+      `SELECT ${strategyAttrSql()} AS k,
               SUM(CASE WHEN COALESCE(net_pnl, gross_pnl, 0) > 0 THEN 1 ELSE 0 END) AS ok,
               SUM(CASE WHEN COALESCE(net_pnl, gross_pnl, 0) > 0 THEN 0 ELSE 1 END) AS fail
          FROM trades

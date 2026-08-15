@@ -26,6 +26,7 @@
 // even in the game.
 
 import { STRATEGY_REGISTRY } from './strategies.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { armedTradeKeys } from './stage-matrix.js'
 import { LAST_ANALYZED_KEY } from './analyze-fair-share.js'
 import { getState } from '../db.js'
@@ -140,19 +141,22 @@ export function strategyLiveness(db, opts = {}) {
      GROUP BY strategy`, [since, ...acctParams])
 
   // label_strategy is the reconciled attribution; strategy is what the signal
-  // claimed. COALESCE matches how perf-ledger and the breakers read it.
+  // claimed. strategyAttrSql() prefers the reconciled one but treats 'other'
+  // as ABSENT rather than as an answer — a plain COALESCE let the string
+  // 'other' (what a strategy with no broker-label code round-trips to) hide a
+  // real key sitting in the next column.
   const opened = countBy(db, `
-    SELECT COALESCE(label_strategy, strategy) AS strategy,
+    SELECT ${strategyAttrSql()} AS strategy,
            COUNT(*) AS n, MAX(opened_at) AS last_at
       FROM trades
      WHERE ${AT_LEAST('opened_at')} ${acctScope}
-     GROUP BY COALESCE(label_strategy, strategy)`, [since, ...acctParams])
+     GROUP BY ${strategyAttrSql()}`, [since, ...acctParams])
 
   const closed = countBy(db, `
-    SELECT COALESCE(label_strategy, strategy) AS strategy, COUNT(*) AS n
+    SELECT ${strategyAttrSql()} AS strategy, COUNT(*) AS n
       FROM trades
      WHERE status = 'closed' AND closed_at IS NOT NULL AND ${AT_LEAST('closed_at')} ${acctScope}
-     GROUP BY COALESCE(label_strategy, strategy)`, [since, ...acctParams])
+     GROUP BY ${strategyAttrSql()}`, [since, ...acctParams])
 
   let totalScans = 0
   for (const row of scans.values()) totalScans += Number(row.n || 0)

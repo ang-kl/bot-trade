@@ -18,6 +18,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from './strategies.js'
 import { STRATEGY_KIND } from './regime-gate.js'
 import { accountWhere } from '../lib/account-scope.js'
@@ -105,7 +106,7 @@ export function alphaDecayView(db, { window = 30, scope = null } = {}) {
   const acct = accountWhere(scope, 't.account_id')
   const trades = db.prepare(
     `SELECT t.net_pnl, t.closed_at, t.opened_at, t.source,
-            COALESCE(t.label_strategy, t.strategy) AS strat,
+            ${strategyAttrSql('t.label_strategy', 't.strategy')} AS strat,
             a.analyzed_at AS signal_at
      FROM trades t
      LEFT JOIN analyses a ON a.id = t.analysis_id

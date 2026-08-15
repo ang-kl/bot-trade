@@ -13,6 +13,8 @@
 // rate sits below its own break-even line is losing by design, not luck.
 // ---------------------------------------------------------------------------
 
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
+
 export function strategyInsights(db, { sinceDays = null, accountId = null } = {}) {
   const sinceClause = sinceDays ? `AND closed_at >= datetime('now', '-${Math.max(1, Math.floor(sinceDays))} days')` : ''
   // Per-account scope (owner 02-08: "is this for current account or which
@@ -23,7 +25,7 @@ export function strategyInsights(db, { sinceDays = null, accountId = null } = {}
   let rows = []
   try {
     rows = db.prepare(`
-      SELECT COALESCE(NULLIF(label_strategy, ''), NULLIF(strategy, ''), 'manual / external') AS strat,
+      SELECT COALESCE(${strategyAttrSql()}, 'manual / external') AS strat,
              COUNT(*)                                                    AS trades,
              SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END)                AS wins,
              SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END)                AS losses,

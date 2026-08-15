@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { llmDisabled as llmDisabledFlag, llmDisabledReason as llmDisabledWhy } from '../lib/llm-switch.js'
@@ -3491,7 +3492,7 @@ export default function stateRouter(db) {
       // (strict equality — legacy NULL-account rows only count in All).
       const acct = req.query.account && req.query.account !== 'all' ? String(req.query.account) : null
       const rows = db.prepare(
-        `SELECT COALESCE(label_strategy, strategy, 'unlabelled') AS strat,
+        `SELECT COALESCE(${strategyAttrSql()}, 'unlabelled') AS strat,
                 COALESCE(label_timeframe, '—') AS tf,
                 COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl > 0) AS wins
          FROM trades

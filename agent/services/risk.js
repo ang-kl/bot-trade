@@ -1179,7 +1179,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     .prepare(`
       SELECT mp.symbol, mp.side, mp.entry_price, mp.strategy AS strategy,
              mp.last_check_action AS lastCheckAction, mp.last_check_at AS lastCheckAt,
-             t.opened_at, t.volume AS volume, COALESCE(t.label_strategy, t.strategy) AS tradeStrategy
+             t.opened_at, t.volume AS volume, ${strategyAttrSql('t.label_strategy', 't.strategy')} AS tradeStrategy
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.status = 'active'
