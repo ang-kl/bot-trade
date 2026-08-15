@@ -3,6 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import { effectiveCapUsd } from './loss-cap.js'
 import {
   DEFAULT_RISK_CONFIG,
   evaluateTrade,
@@ -1676,4 +1677,58 @@ test('strategyPerfStats: still scoped to the requested strategy — no cross-con
   assert.equal(strategyPerfStats(db, 'rsi2_reversion').total_trades, 0,
     'a strategy with no rows must not match the other two')
   assert.equal(strategyPerfStats(db, null), null, 'no strategyKey at all fails closed')
+})
+
+// ---------------------------------------------------------------------------
+// CHARACTERISATION — the unowned balance. Documents CURRENT behaviour,
+// including the part that is wrong, because changing it is not safe to do
+// blind and the next person needs to know the trap is here.
+//
+// Measured on production 2026-08-15: /state/profit-ratchet reported the SAME
+// balance, 35,319.80, for THREE accounts — 46130058 (selected), 43002148 and
+// 43069009. The latter two have no `acct:<id>:account_balance_usd` of their
+// own, so the lookup falls through to the legacy global, which holds whichever
+// account refreshed it last. The comment above getAccountBalance already names
+// this failure — "worse than missing: it is printed next to somebody else's
+// name" — and the earlier fix closed only the no-accountId path.
+//
+// WHY IT IS STILL HERE. The obvious repair (a named account with nothing
+// stamped reads null) was tried and reverted: `effectiveCapUsd` drops the
+// percentage cap when balance is null, so returning null would SILENTLY
+// REMOVE the % loss cap on exactly those accounts — 14 loss-cap, equity-stop
+// and profit-ratchet tests caught it. Trading a display defect for a disabled
+// safety gate is a bad trade.
+//
+// THE REAL FIX is upstream: stamp `acct:<id>:account_balance_usd` for every
+// enabled account so nothing ever needs the unowned global. That is a loop
+// change (a broker balance read per account), not a resolver change.
+// ---------------------------------------------------------------------------
+
+test('CHARACTERISATION: an unstamped account inherits the global balance — a known, deliberate trap', () => {
+  const db = freshDB()
+  const put = db.prepare(
+    `INSERT INTO agent_state (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  )
+  put.run('ctrader_account_id', '46130058')
+  put.run('account_balance_usd', '35319.8')
+  put.run('acct:47790949:account_balance_usd', '45312.41')
+
+  // Its own stamped balance wins — this half is correct.
+  assert.equal(getAccountBalance(db, '47790949'), 45312.41)
+
+  // These two are the production symptom, asserted as-is so a future change
+  // that fixes it fails HERE and forces the reader to this comment.
+  assert.equal(getAccountBalance(db, '43002148'), 35319.8,
+    'CURRENT behaviour: unstamped account reports the selected account\'s balance')
+  assert.equal(getAccountBalance(db, '43069009'), 35319.8)
+  assert.equal(getAccountBalance(db, '43002148'), getAccountBalance(db, '43069009'),
+    'two unrelated accounts agreeing exactly is the tell')
+
+  // The safety consequence, made explicit: a % cap computed off this number
+  // is priced against equity the account does not have.
+  const capOnTruth = effectiveCapUsd({ maxLossPctOfBalance: 3 }, 688.17)     // its real balance
+  const capOnGlobal = effectiveCapUsd({ maxLossPctOfBalance: 3 }, 35319.8)   // what it actually gets
+  assert.ok(capOnGlobal > capOnTruth * 40,
+    'the inherited cap is ~51x too permissive — it can never bind on a small account')
 })
