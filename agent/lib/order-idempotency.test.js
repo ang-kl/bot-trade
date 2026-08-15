@@ -15,7 +15,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { orderIdempotencyKey, claimOrderLock, _orderLockState, _resetOrderLocks, isDefiniteRejection } from './exec-engine.js'
+import { orderIdempotencyKey, claimOrderLock, _orderLockState, _resetOrderLocks, isDefiniteRejection, reconcileFallbackReason } from './exec-engine.js'
 
 const DOW = {
   ctidTraderAccountId: 46130058,
@@ -145,4 +145,55 @@ test('2.6.3 — a broker REJECTION releases the lock; an ambiguous failure does 
   for (const msg of ['socket hang up', 'ETIMEDOUT', 'exec sidecar 502 on /order', '']) {
     assert.equal(isDefiniteRejection(new Error(msg)), false, `${msg} could have filled — keep the lock`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Reconcile fallback — the sidecar outage that lasted six days.
+//
+// reconcile() fell back to the WS path ONLY on /no reconcile data yet/, which
+// is a sidecar that is UP but not READY. When cpp-exec went down on 4 Aug,
+// every reconcile threw on Railway's 502 and the whole phase died with it:
+// no position sync, no broker_orders ledger, no protection audit, until the
+// service happened to redeploy. Resting broker orders were invisible for days
+// because the table that records them is only ever written by that phase.
+// ---------------------------------------------------------------------------
+
+test('reconcile falls back when the sidecar is UNREACHABLE, not just when it is "not ready"', () => {
+  const falls = [
+    'no reconcile data yet',                                                    // the only one it used to catch
+    '{"status":"error","code":502,"message":"Application failed to respond"}',   // the real six-day outage
+    'exec sidecar 503 on /positions',
+    'fetch failed',
+    'The operation was aborted due to timeout',
+    'connect ECONNREFUSED 10.0.0.2:8090',
+    'socket hang up',
+  ]
+  for (const m of falls) {
+    assert.notEqual(reconcileFallbackReason(new Error(m)), null, `should fall back on: ${m}`)
+  }
+})
+
+test('reconcile does NOT read around a sidecar that IS answering', () => {
+  // The line is "nobody answered" vs "the answer was an error". A sidecar
+  // replying 500, or replying NOT_CONNECTED because it lost its broker
+  // session, is up and telling us something true — and something needs to act
+  // on it. Reading around those would hide the M4 credential-memo deadlock,
+  // which three existing tests exist to keep visible, and would leave a bad
+  // EXEC_SECRET undetected forever: one invisible failure traded for another.
+  const surface = [
+    'exec sidecar 401 on /positions', 'Unauthorized', '403 Forbidden',
+    'NOT_CONNECTED', 'sidecar exploded', 'exec sidecar 500 on /positions',
+  ]
+  for (const m of surface) {
+    assert.equal(reconcileFallbackReason(new Error(m)), null, `must surface, not swallow: ${m}`)
+  }
+})
+
+test('reconcileFallbackReason yields a loggable reason, or null to re-throw', () => {
+  // A truncated-but-present availability error still logs something useful.
+  assert.ok(reconcileFallbackReason(new Error('fetch failed ' + 'x'.repeat(500))).length <= 200,
+    'a huge broker blob is truncated')
+  // And an error nobody classified is surfaced rather than silently swallowed.
+  assert.equal(reconcileFallbackReason(new Error('')), null)
+  assert.equal(reconcileFallbackReason(null), null)
 })
