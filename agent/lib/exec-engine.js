@@ -525,18 +525,29 @@ export function withNumericIds(args) {
  * second dispatch can interleave. A SQLite lock would add durability across
  * restarts and buy nothing against the storm this exists to stop.
  *
- * THE KEY DELIBERATELY OMITS THE RAW TIMESTAMP. The contract's formula is
- * hash(accountId + symbol + strategy + direction + signalTimestamp), but a
- * millisecond timestamp inside the key defeats the key: seventeen dispatches a
- * few milliseconds apart would hash seventeen different ways and every one
- * would pass. The timestamp is therefore BUCKETED to the TTL window, which is
- * what "within 60 seconds" means when written as a hash.
+ * THE KEY CARRIES NO TIME AT ALL, AND THAT IS THE POINT. The contract's
+ * formula is hash(accountId + symbol + strategy + direction + signalTimestamp),
+ * but a millisecond timestamp inside the key defeats the key: seventeen
+ * dispatches a few milliseconds apart would hash seventeen different ways and
+ * every one would pass.
+ *
+ * The first fix for that BUCKETED the timestamp to the TTL window
+ * (`Math.floor(now / 60_000)`), which collapsed the burst but quietly bought a
+ * different hole: buckets are fixed wall-clock windows, so two identical
+ * orders 2ms apart that straddle a boundary — 11:59:59.999 and 12:00:00.001 —
+ * hash differently and BOTH dispatch. Invariant 3 says "within 60 seconds",
+ * which is a ROLLING window; a bucket is not one. The DOW.US storm was 89ms
+ * wide, so a burst landing on a boundary would have split and leaked an order
+ * from each side.
+ *
+ * So the key is pure identity, and the 60-second window lives where it always
+ * belonged: in the lock's EXPIRY. Claim stamps `now + TTL`; any identical
+ * order before that expiry is refused, whatever the wall clock says.
  */
 const ORDER_LOCK_TTL_MS = 60_000
 const orderLocks = new Map()
 
-export function orderIdempotencyKey(payload, nowMs = Date.now()) {
-  const bucket = Math.floor(nowMs / ORDER_LOCK_TTL_MS)
+export function orderIdempotencyKey(payload) {
   return [
     payload?.ctidTraderAccountId ?? '',
     payload?.symbolId ?? '',
@@ -545,7 +556,6 @@ export function orderIdempotencyKey(payload, nowMs = Date.now()) {
     // The strategy rides in the structured label; a fib entry and a trend
     // entry on the same symbol and side are different intents, not a double.
     String(payload?.label ?? '').split('|')[2] ?? '',
-    bucket,
   ].join('|')
 }
 
@@ -568,7 +578,7 @@ export function _resetOrderLocks() {
 export function claimOrderLock(payload, nowMs = Date.now()) {
   // Sweep first so a long-running process does not accumulate dead keys.
   for (const [k, exp] of orderLocks) if (exp <= nowMs) orderLocks.delete(k)
-  const key = orderIdempotencyKey(payload, nowMs)
+  const key = orderIdempotencyKey(payload)
   const held = orderLocks.get(key)
   if (held != null && held > nowMs) return { ok: false, key, msLeft: held - nowMs }
   orderLocks.set(key, nowMs + ORDER_LOCK_TTL_MS)
@@ -691,6 +701,40 @@ export async function cancelOrder(creds, { orderId }) {
   return m.wsCancelOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, { orderId })
 }
 
+/**
+ * Should a failed sidecar reconcile fall back to the WS path? Returns the
+ * reason string to log, or null to re-throw.
+ *
+ * Everything falls back EXCEPT credential/permission failures. Those are the
+ * sidecar answering correctly that WE are misconfigured, and silently reading
+ * around them would leave a broken EXEC_SECRET undetected forever — trading
+ * one invisible failure for another. Every other error means "no answer from
+ * the sidecar", and for a read that is simply a reason to ask elsewhere.
+ */
+export function reconcileFallbackReason(err) {
+  const m = `${err?.message ?? err ?? ''}`.trim()
+  // UNAVAILABILITY ONLY — "nobody answered", not "the answer was an error".
+  //
+  // The distinction is deliberate and three existing tests depend on it. A
+  // sidecar that replies 500, or replies NOT_CONNECTED because it lost its
+  // broker session, is UP and telling us something true; reading around that
+  // would hide a state that needs fixing (the M4 credential-memo deadlock is
+  // only detectable because those calls fail). A sidecar that cannot be
+  // reached at all is a different thing entirely, and for a pure read there is
+  // no reason to fail with a working alternative available.
+  const unavailable = new RegExp([
+    'no reconcile data yet',            // up, not ready yet — the original case
+    'Application failed to respond',    // Railway's own 502 page: the six-day outage
+    '\\b(502|503|504)\\b',
+    'bad gateway', 'service unavailable', 'gateway time-?out',
+    'fetch failed', 'socket hang up',
+    'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT',
+    'aborted', 'timeout',
+  ].join('|'), 'i')
+  if (!unavailable.test(m)) return null
+  return (m.slice(0, 200) || 'unknown sidecar error')
+}
+
 export async function reconcile(creds) {
   if (execEngineMode() === 'cpp') {
     // The sidecar's own reconcile loop hasn't completed a single pass yet
@@ -715,7 +759,27 @@ export async function reconcile(creds) {
         return await sidecar(execBaseFor(creds), 'GET', '/positions')
       }
     } catch (err) {
-      if (!/no reconcile data yet/.test(err.message)) throw err
+      // WHY THIS IS BROADER THAN IT LOOKS. This used to fall back ONLY on
+      // /no reconcile data yet/ — a sidecar that is UP but not yet ready. It
+      // did not recognise a sidecar that is DOWN, and the two are the same
+      // situation from here: nobody can answer, and reconcile is a pure READ
+      // with a working alternative sitting right there.
+      //
+      // Measured cost of the narrow version: the cpp-exec service was
+      // unavailable from 2026-08-04, every reconcile threw on Railway's 502
+      // ("Application failed to respond"), and the whole phase died with it —
+      // no position sync, no broker_orders ledger, no protection audit — for
+      // SIX DAYS, until the service happened to redeploy. `broker_orders` was
+      // still empty days later, which is why resting orders at the broker
+      // were invisible to every view that reads it.
+      //
+      // Orders/amends/closes already do this properly via withFallback() and
+      // mayFallbackToJs(), which weigh whether a WRITE might have landed
+      // twice. Reconcile is the one exec path that hand-rolled its own check,
+      // and a read needs no such care — re-reading is free.
+      const reason = reconcileFallbackReason(err)
+      if (reason == null) throw err
+      try { onFallback(`reconcile: sidecar unusable (${reason}) — reading via the WS path`) } catch { /* logging must never break the read */ }
       const m = await ws()
       return m.wsReconcile(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId)
     }
