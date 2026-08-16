@@ -12,6 +12,7 @@
     "check:no-green": "bash scripts/check-no-green.sh",
     "serial": "node scripts/count-interactions.js --serial",
     "audit:ui": "node scripts/responsive-audit.mjs /performance,/desk,/trade,/accounts,/tune,/risk,/connect",
+    "audit:ui:rows": "node scripts/connect-rows-audit.mjs",
     "audit:ui:live": "node scripts/responsive-audit.mjs /performance,/desk,/trade,/accounts,/tune,/risk,/connect --live"
   },
   "dependencies": {
