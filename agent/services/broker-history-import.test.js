@@ -1,6 +1,7 @@
 // node --test agent/services/broker-history-import.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import { fetchDeals, shapeDeals, persistDeals, importBrokerHistory } from './broker-history-import.js'
 
@@ -282,4 +283,28 @@ test('a matched deal pointing at no trade row is ignored, not an error', () => {
   const out = reconcileTradePricesToBroker(db)
   assert.equal(out.corrected, 0)
   assert.equal(out.examined, 0)
+})
+
+test('the repair is reachable from the loop, not only the manual route', () => {
+  // importBrokerHistory is called ONLY from a manual POST route (verified:
+  // agent/routes/actions.js is its sole caller). A repair that lived solely
+  // there would be a repair that never runs — the exact shape of defect this
+  // fix exists to remove. So the loop calls it directly.
+  //
+  // NOT via pnl-backfill, which is also on the loop and already writes
+  // broker_deals: that service fills a NULL price and repairs a FLAGGED row
+  // but never overwrites a present, unflagged one ("filling a NULL is broker
+  // truth; overwriting a value is a different claim" — pnl-backfill.test.js).
+  // This IS that different claim, and hanging it there broke those two tests,
+  // correctly. It belongs in the open as its own step.
+  //
+  // Pinned here because the wiring is invisible in the module under test and
+  // a refactor would drop it silently.
+  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  assert.match(loop, /reconcileTradePricesToBroker\(db\)/,
+    'the loop must invoke the correction, or it only ever runs by hand')
+
+  const backfill = readFileSync(new URL('./pnl-backfill.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(backfill, /reconcileTradePricesToBroker/,
+    'pnl-backfill promises not to overwrite a present price — keep this out of it')
 })

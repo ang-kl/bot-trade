@@ -2021,6 +2021,28 @@ async function runLoop(db) {
   //
   // The flush runs AFTER the command poll on purpose: a /quiet off typed at
   // 06:55 takes effect on this cycle's flush rather than the next one.
+  // Correct closed trades' fill prices from the broker's own ledger.
+  //
+  // ITS OWN STEP, deliberately. importBrokerHistory is reachable only from a
+  // manual POST route, so a repair living solely there would never run. The
+  // obvious alternative — hanging it off pnl-backfill, which is on the loop
+  // and already writes broker_deals — is WRONG, and its tests say why: that
+  // service fills a NULL price and repairs a FLAGGED row, but never overwrites
+  // a present, unflagged one, because "filling a NULL is broker truth;
+  // overwriting a value is a different claim". This is that different claim —
+  // the broker's fill price is authoritative for a closed trade — so it is
+  // made explicitly here rather than smuggled into a service that promises not
+  // to make it.
+  //
+  // Pure local work: reads broker_deals, writes only closed `trades` rows
+  // whose price disagrees, and settles to `corrected: 0` once the record
+  // agrees. No broker round-trip, so it costs the cycle nothing.
+  try {
+    const { reconcileTradePricesToBroker } = await import('./services/broker-history-import.js')
+    const fix = reconcileTradePricesToBroker(db)
+    if (fix.corrected) log(`corrected ${fix.corrected} fill price(s) from the broker ledger`)
+  } catch { /* a repair pass must never stall trading */ }
+
   try {
     const digest = await import('./services/telegram-digest.js')
     digest.attachNotifyDb(db)
