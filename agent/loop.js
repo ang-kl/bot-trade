@@ -2773,6 +2773,30 @@ async function runLoop(db) {
               }
             }
           } catch { /* registry optional on old DBs */ }
+
+          // ---- CROSS-SIDE EQUITY (READ ONLY) -----------------------------
+          // The sweep above is deliberately one-sided: a demo session must
+          // never manage live positions. But an account whose balance is
+          // never read answers out of the unowned global — measured
+          // 2026-08-16 with the session on demo, the live accounts 43002148
+          // and 43069009 reported the selected DEMO account's 35,319.80
+          // through /state/profit-ratchet while /state/account-engineering
+          // showed `None` for the same two. Two endpoints, same accounts,
+          // different answers.
+          //
+          // Reading what an account is worth is not managing it, so this
+          // crosses the boundary for that ONE purpose: wsGetTrader per
+          // account on that account's own host, writing only its own two
+          // `acct:<id>:` keys. No positions, no orders, no audit, and never
+          // the legacy global.
+          try {
+            const { sweepCrossSideEquity } = await import('./services/account-equity.js')
+            const x = await sweepCrossSideEquity(db, { clientId, clientSecret, accessToken }, { isLive })
+            if (x.swept > 0) {
+              log(`Cross-side equity: ${x.stamped}/${x.swept} ${isLive ? 'demo' : 'live'} account(s) stamped`
+                + (x.failed ? ` — ${x.results.filter(r => r.error).map(r => `${r.accountId}: ${r.error}`).join(' · ')}` : ''))
+            }
+          } catch { /* equity is best-effort; never break the cycle */ }
         } else {
           // No credentials — the audit cannot run, and saying nothing would
           // read on screen as "checked, all clear". ¶D·2.

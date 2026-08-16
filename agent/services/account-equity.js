@@ -92,3 +92,55 @@ export function accountsMissingEquity(db, getState) {
     return []
   }
 }
+
+/** cTrader's two hosts. An account is only ever reachable on its own side. */
+export const hostForSide = (isLive) => (isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')
+
+/**
+ * Stamp equity for enabled accounts on the OTHER side from the running
+ * session. READ-ONLY BY CONSTRUCTION: it asks the broker what an account is
+ * worth and writes that account's own two state keys. Nothing else — no
+ * position reconcile, no order sync, no protection audit, no writes to any
+ * row belonging to those accounts.
+ *
+ * WHY IT HAS TO EXIST. The loop resolves ONE host from `ctrader_is_live` and
+ * the per-account sweep filters to that side (`(a.is_live === 1) === isLive`),
+ * because a demo session must not manage live positions. Correct for
+ * MANAGEMENT, but it also meant the other side's accounts never had their
+ * balance read — and `getAccountBalance` answers for an unstamped account out
+ * of the unowned global. Measured 2026-08-16, with the session on demo: the
+ * three live accounts all showed `lastReconcileAt: None`, two of them reported
+ * the selected demo account's 35,319.80 through /state/profit-ratchet while
+ * /state/account-engineering correctly showed `None` for the same accounts.
+ * Two endpoints, same accounts, different answers.
+ *
+ * Reading a balance is not managing a position, so this crosses the side
+ * boundary for that one purpose and nothing more.
+ *
+ * @returns {Promise<{swept:number, stamped:number, failed:number,
+ *                    results:Array<{accountId:string,balance:number|null,error:string|null}>}>}
+ */
+export async function sweepCrossSideEquity(db, creds, { isLive, deps = {} } = {}) {
+  const out = { swept: 0, stamped: 0, failed: 0, results: [] }
+  let rows = []
+  try {
+    rows = db.prepare(
+      `SELECT account_id, is_live FROM accounts WHERE enabled = 1 ORDER BY account_id`,
+    ).all()
+  } catch { return out }
+
+  const others = rows.filter(r => (r.is_live === 1) !== !!isLive)
+  for (const r of others) {
+    out.swept++
+    const res = await stampAccountEquity(
+      db,
+      { ...creds, host: hostForSide(r.is_live === 1) },
+      r.account_id,
+      deps,
+    )
+    out.results.push({ accountId: res.accountId, balance: res.balance, error: res.error })
+    if (res.error != null || res.balance == null) out.failed++
+    else out.stamped++
+  }
+  return out
+}
