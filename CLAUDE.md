@@ -119,3 +119,43 @@ Two earlier claims in this file were wrong and are corrected here:
   `№ 176` a pure fabrication referencing no ledger; that was itself wrong.
 - That sequence undercounted, because it only stamped replies Claude judged
   "substantive". The transcript is the authority: every text reply counts.
+
+## Custom commands (owner, 2026-08-16)
+
+Three slash-commands the owner may type at any point. They are questions about
+Claude's *reasoning*, not about the code, and they are answered from the
+current state of the conversation — not re-derived by re-reading files.
+
+They live here rather than in a session because session scope is exactly what
+evaporated on the serial numbering, twice.
+
+**`/UNDERSTANDING`** — What do you think I mean, including what you are
+treating as given?
+
+State the read of the request AND the assumptions being carried silently.
+The second half is the point: the failure mode is not misreading the words,
+it is the unstated premise underneath them. Name what would have to be true
+for the current plan to be the right one.
+
+**`/GAPS`** — Which unresolved interpretations could materially change the
+outcome?
+
+Only the ones that CHANGE something. An ambiguity with the same answer either
+way is not a gap, it is noise. For each: what the readings are, and what
+would be built differently under each. If there are none, say so plainly
+rather than manufacturing a list.
+
+**`/DELTA`** — What has changed from your earlier understanding?
+
+Corrections, not a progress report. What was believed, what is now believed,
+and what caused the change — a measurement, a failing test, a contradiction
+between two endpoints. "Nothing has changed" is a valid and useful answer;
+inventing a delta to look responsive is not.
+
+**Why these exist.** This session's pattern was that every real defect came
+from a gap between what the system SAID and what it DID, and several of my
+own mistakes came from an unexamined premise rather than a coding error — a
+test shaped to the claim, a mutation check that could not fail, a fix whose
+first version broke three older tests that encoded reasoning I had not read.
+These commands are the owner's handle on that: a way to inspect the premises
+before they become commits.
