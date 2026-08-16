@@ -1,6 +1,7 @@
 // node --test agent/services/broker-history-import.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import { fetchDeals, shapeDeals, persistDeals, importBrokerHistory } from './broker-history-import.js'
 
@@ -163,4 +164,147 @@ test('a matched imported deal is not double-counted as its own leg', async () =>
   `).run(tid)
   const { clusters } = findSameSymbolClusters(db)
   assert.equal(clusters.length, 0) // one real trade, not a pair
+})
+
+// ---------------------------------------------------------------------------
+// Fill-price reconciliation (owner, 2026-08-16: "fix the P&L contradiction")
+//
+// 26.9% of closed trades had a price move whose sign disagreed with net_pnl.
+// Measured against the broker's own ledger (98.3% self-consistent), the money
+// was right and the ENTRY PRICE was wrong: `trades` kept the price the bot
+// intended, broker_deals had the price it actually filled at, and nothing
+// wrote the truth back. The errors are only 0.1–0.2% — but the recorded move
+// is (close − entry), so any true move smaller than the slippage points the
+// wrong way. These tests pin the repair and, more importantly, its limits.
+// ---------------------------------------------------------------------------
+
+import { reconcileTradePricesToBroker } from './broker-history-import.js'
+
+function seed(db, { id, entry, exit, status = 'closed' }) {
+  db.prepare(
+    `INSERT INTO trades (id, symbol, side, entry_price, exit_price, status) VALUES (?, 'EURX', 'BUY', ?, ?, ?)`,
+  ).run(id, entry, exit, status)
+}
+function deal(db, { dealId, tid, entry, close }) {
+  db.prepare(
+    `INSERT INTO broker_deals (deal_id, position_id, symbol, side, entry_price, close_price, net_pnl, matched_trade_id)
+     VALUES (?, ?, 'EURX', 'BUY', ?, ?, -2535.41, ?)`,
+  ).run(String(dealId), String(dealId), entry, close, tid)
+}
+
+test('the real EURX case: a sign-flipping entry error is corrected', () => {
+  // Recorded 1076.3 → 1076.4 reads as +0.1 (a gain) while net_pnl says
+  // -2535.41. The broker filled at 1077.4, which is a 1.0 LOSS and agrees.
+  const db = initDB(':memory:')
+  seed(db, { id: 1233, entry: 1076.3, exit: 1076.4 })
+  deal(db, { dealId: 236717915, tid: 1233, entry: 1077.4, close: 1076.4 })
+
+  const before = db.prepare('SELECT * FROM trades WHERE id = 1233').get()
+  assert.ok(before.exit_price - before.entry_price > 0, 'before: reads as a gain')
+
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.corrected, 1)
+
+  const after = db.prepare('SELECT * FROM trades WHERE id = 1233').get()
+  assert.equal(after.entry_price, 1077.4)
+  assert.ok(after.exit_price - after.entry_price < 0, 'after: reads as the loss net_pnl always said it was')
+})
+
+test('OPEN positions are left alone — their entry feeds live R', () => {
+  // Rewriting entry_price mid-flight would move initial_risk and every
+  // currentR under the trail, the ratchet and the loss cap at once. Open rows
+  // get corrected when they close, which is when the deal arrives anyway.
+  const db = initDB(':memory:')
+  seed(db, { id: 900, entry: 100, exit: null, status: 'open' })
+  deal(db, { dealId: 9001, tid: 900, entry: 101, close: null })
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.corrected, 0)
+  assert.equal(out.examined, 0, 'an open row is not even examined')
+  assert.equal(db.prepare('SELECT entry_price FROM trades WHERE id = 900').get().entry_price, 100)
+})
+
+test('a trade matched to SEVERAL deals is skipped, not averaged', () => {
+  // Partial fill / scale-out: "the" fill price is a volume-weighted question
+  // this function has no volumes to answer. Guessing an average would be the
+  // same class of defect as the one being fixed.
+  const db = initDB(':memory:')
+  seed(db, { id: 677, entry: 5.0, exit: 5.5 })
+  deal(db, { dealId: 1, tid: 677, entry: 5.1, close: 5.5 })
+  deal(db, { dealId: 2, tid: 677, entry: 5.3, close: 5.5 })
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.skippedMultiDeal, 1)
+  assert.equal(out.corrected, 0)
+  assert.equal(db.prepare('SELECT entry_price FROM trades WHERE id = 677').get().entry_price, 5.0)
+})
+
+test('a missing broker price never blanks a real one', () => {
+  // A narrower import window can leave entry_price NULL on the deal. Writing
+  // that through would destroy the only price we have.
+  const db = initDB(':memory:')
+  seed(db, { id: 5, entry: 2.87, exit: 2.90 })
+  deal(db, { dealId: 50, tid: 5, entry: null, close: null })
+  reconcileTradePricesToBroker(db)
+  const row = db.prepare('SELECT * FROM trades WHERE id = 5').get()
+  assert.equal(row.entry_price, 2.87)
+  assert.equal(row.exit_price, 2.90)
+
+  // Zero is "no answer" too, not a price.
+  const db2 = initDB(':memory:')
+  seed(db2, { id: 6, entry: 2.87, exit: 2.90 })
+  deal(db2, { dealId: 60, tid: 6, entry: 0, close: 0 })
+  reconcileTradePricesToBroker(db2)
+  assert.equal(db2.prepare('SELECT entry_price FROM trades WHERE id = 6').get().entry_price, 2.87)
+})
+
+test('net_pnl is never touched — it was the field that was right', () => {
+  const db = initDB(':memory:')
+  db.prepare(
+    `INSERT INTO trades (id, symbol, side, entry_price, exit_price, net_pnl, status)
+     VALUES (7, 'EURX', 'BUY', 1076.3, 1076.4, -2535.41, 'closed')`,
+  ).run()
+  deal(db, { dealId: 70, tid: 7, entry: 1077.4, close: 1076.4 })
+  reconcileTradePricesToBroker(db)
+  assert.equal(db.prepare('SELECT net_pnl FROM trades WHERE id = 7').get().net_pnl, -2535.41)
+})
+
+test('running twice changes nothing the second time', () => {
+  const db = initDB(':memory:')
+  seed(db, { id: 8, entry: 1076.3, exit: 1076.4 })
+  deal(db, { dealId: 80, tid: 8, entry: 1077.4, close: 1076.4 })
+  assert.equal(reconcileTradePricesToBroker(db).corrected, 1)
+  const second = reconcileTradePricesToBroker(db)
+  assert.equal(second.corrected, 0)
+  assert.equal(second.unchanged, 1)
+})
+
+test('a matched deal pointing at no trade row is ignored, not an error', () => {
+  const db = initDB(':memory:')
+  deal(db, { dealId: 90, tid: 4242, entry: 1, close: 2 })
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.corrected, 0)
+  assert.equal(out.examined, 0)
+})
+
+test('the repair is reachable from the loop, not only the manual route', () => {
+  // importBrokerHistory is called ONLY from a manual POST route (verified:
+  // agent/routes/actions.js is its sole caller). A repair that lived solely
+  // there would be a repair that never runs — the exact shape of defect this
+  // fix exists to remove. So the loop calls it directly.
+  //
+  // NOT via pnl-backfill, which is also on the loop and already writes
+  // broker_deals: that service fills a NULL price and repairs a FLAGGED row
+  // but never overwrites a present, unflagged one ("filling a NULL is broker
+  // truth; overwriting a value is a different claim" — pnl-backfill.test.js).
+  // This IS that different claim, and hanging it there broke those two tests,
+  // correctly. It belongs in the open as its own step.
+  //
+  // Pinned here because the wiring is invisible in the module under test and
+  // a refactor would drop it silently.
+  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  assert.match(loop, /reconcileTradePricesToBroker\(db\)/,
+    'the loop must invoke the correction, or it only ever runs by hand')
+
+  const backfill = readFileSync(new URL('./pnl-backfill.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(backfill, /reconcileTradePricesToBroker/,
+    'pnl-backfill promises not to overwrite a present price — keep this out of it')
 })
