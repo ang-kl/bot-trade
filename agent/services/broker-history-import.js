@@ -162,6 +162,113 @@ export function persistDeals(db, rows) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// FILL-PRICE RECONCILIATION (owner, 2026-08-16: "fix the P&L contradiction")
+//
+// THE SYMPTOM. /state/trade-consistency reported 104 of 387 decidable closed
+// trades (26.9%) whose price move and net P&L have opposite signs — e.g.
+// "#1233 EURX BUY 1076.3→1076.4 (move +0.1) but net -2535.41". A profitable
+// move booked as a loss reads as corrupt money, and it made every P&L-derived
+// number in the system unusable: profit factor, avgWin/avgLoss, net.
+//
+// WHAT IT ACTUALLY IS. Measured against the broker's own ledger, which is
+// 98.3% self-consistent (9 contradictions in 531 decidable deals):
+//
+//   trades vs broker_deals, 276 matched pairs — entry_price differs on 184,
+//   exit differs on 26, net_pnl differs on 2 (and both of those are one trade
+//   matched to TWO deals, where 11.94 + 7.80 = 19.74 exactly — correct
+//   aggregation, not a mismatch).
+//
+// So the MONEY IS RIGHT and the ENTRY PRICE IS WRONG. persistDeals already
+// stores the broker's true fill price in broker_deals and links it by
+// position id — it just never wrote it back to `trades`, which keeps the
+// price the bot INTENDED to fill at, forever.
+//
+// WHY THAT FLIPS SIGNS. The errors are small: ratios of 0.998–1.002, i.e. the
+// ordinary 0.1–0.2% of spread and slippage between intent and fill. But the
+// sign of the recorded move is (close − entry), so whenever the true move is
+// SMALLER than the slippage, the recorded move points the wrong way. EURX
+// filled at 1077.4 and closed at 1076.4 — a 1.0 loss — but was recorded as
+// entering at 1076.3, turning it into a +0.1 "gain". A 0.1% error in one
+// field, and a quarter of the ledger appears to contradict itself.
+//
+// THE FIX is one write: where a broker deal is matched to a CLOSED trade,
+// correct that trade's entry and exit price to the broker's fill.
+//
+// CLOSED ONLY, deliberately. An open position's entry_price feeds initial_risk
+// and every currentR the manager computes; rewriting it mid-flight would move
+// the R of a live position under the trail, the ratchet and the loss cap at
+// once. Open rows are corrected when they close, which is when the deal
+// arrives anyway.
+//
+// net_pnl is NEVER touched — it already agrees with the broker, and it is the
+// broker's number rather than ours to compute.
+// ---------------------------------------------------------------------------
+
+/** Usable price: a real, positive number. Zero and NULL are "no answer". */
+const usablePrice = (v) => Number.isFinite(v) && v > 0
+
+/**
+ * Correct closed trades' fill prices from the matched broker deals.
+ *
+ * Runs over ALL matched deals, not just the ones in this import window, so a
+ * single run repairs the existing record rather than only new rows.
+ *
+ * @returns {{examined:number, corrected:number, skippedMultiDeal:number, unchanged:number}}
+ */
+export function reconcileTradePricesToBroker(db) {
+  const out = { examined: 0, corrected: 0, skippedMultiDeal: 0, unchanged: 0 }
+  let deals = []
+  try {
+    deals = db.prepare(
+      `SELECT matched_trade_id AS tid, entry_price, close_price
+         FROM broker_deals
+        WHERE matched_trade_id IS NOT NULL`,
+    ).all()
+  } catch { return out }
+
+  // A trade matched to SEVERAL deals is a partial fill or a scale-out, where
+  // "the" fill price is a volume-weighted question this function does not have
+  // the volumes to answer. Counted and skipped rather than guessed at — a
+  // wrong average would be the same class of defect as the one being fixed.
+  const byTrade = new Map()
+  for (const d of deals) {
+    const k = Number(d.tid)
+    if (!byTrade.has(k)) byTrade.set(k, [])
+    byTrade.get(k).push(d)
+  }
+
+  const read = db.prepare(
+    `SELECT id, entry_price, exit_price, status FROM trades WHERE id = ?`,
+  )
+  const write = db.prepare(
+    `UPDATE trades SET entry_price = ?, exit_price = ? WHERE id = ?`,
+  )
+
+  const run = db.transaction(() => {
+    for (const [tid, group] of byTrade) {
+      const t = read.get(tid)
+      if (!t) continue
+      if (t.status !== 'closed' && t.status !== 'rejected') continue // open rows: see header
+      out.examined++
+      if (group.length > 1) { out.skippedMultiDeal++; continue }
+      const d = group[0]
+      // Keep whatever we already have when the broker gives no usable price —
+      // a NULL from a narrower import window must never blank a real fill.
+      const entry = usablePrice(d.entry_price) ? d.entry_price : t.entry_price
+      const exit = usablePrice(d.close_price) ? d.close_price : t.exit_price
+      const same = (a, b) =>
+        (a == null && b == null) ||
+        (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= Math.max(1e-9, Math.abs(a) * 1e-6))
+      if (same(entry, t.entry_price) && same(exit, t.exit_price)) { out.unchanged++; continue }
+      write.run(entry, exit, tid)
+      out.corrected++
+    }
+  })
+  try { run() } catch { /* a repair pass must never take the import down */ }
+  return out
+}
+
 /**
  * Import `days` of broker deal history.
  *
@@ -182,6 +289,9 @@ export async function importBrokerHistory(db, { days = 30, nowMs = Date.now(), d
   }
   const rows = shapeDeals(deals, symMeta, deps.accountId ?? null)
   const result = persistDeals(db, rows)
-  log(`${span}d: ${deals.length} deals → ${result.seen} closes · ${result.inserted} new · ${result.unmatched} with no local trade row`)
-  return { days: span, from: iso(from), to: iso(nowMs), deals: deals.length, ...result }
+  // Correct the local rows' fill prices from the broker's, now that this
+  // window's deals are linked. See the header above reconcileTradePricesToBroker.
+  const priceFix = reconcileTradePricesToBroker(db)
+  log(`${span}d: ${deals.length} deals → ${result.seen} closes · ${result.inserted} new · ${result.unmatched} with no local trade row · ${priceFix.corrected} fill prices corrected`)
+  return { days: span, from: iso(from), to: iso(nowMs), deals: deals.length, ...result, priceFix }
 }
