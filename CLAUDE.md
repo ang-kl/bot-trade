@@ -129,6 +129,14 @@ current state of the conversation — not re-derived by re-reading files.
 They live here rather than in a session because session scope is exactly what
 evaporated on the serial numbering, twice.
 
+Documenting them here is necessary but NOT sufficient. A leading `/...` is
+resolved by the client against registered commands before any of this file is
+consulted, so a command that exists only as prose in `CLAUDE.md` comes back as
+an unknown command and never reaches the model at all. Each one is therefore
+also registered as a project command in `.claude/commands/` — `UNDERSTANDING.md`,
+`GAPS.md`, `DELTA.md`. The prose below is the rationale; those three files are
+what makes typing the command do anything.
+
 **`/UNDERSTANDING`** — What do you think I mean, including what you are
 treating as given?
 
