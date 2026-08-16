@@ -297,12 +297,29 @@ export default function Connect() {
                       identity and balance both select (same handler, so the
                       clickable area is unchanged), the chip only toggles
                       detail and gets native Enter AND Space + aria-expanded. */}
-                  <div className="flex w-full items-center gap-3 px-3 py-2 text-(length:--fs-body) rounded-[7px] hover:bg-[var(--color-accent-soft)]">
+                  {/* PHONE LAYOUT (owner, 16-08-2026, iPhone screenshot: the
+                      badge, login, ID, broker name and both chips painted on
+                      top of each other).
+                      This was FOUR non-shrinking children in a nowrap flex. At
+                      390px they cannot fit, so the identity button — the only
+                      one that could give, carrying `flex-1 min-w-0` — was
+                      squeezed to between 0 and 21px wide while its 191-225px
+                      of text carried on painting straight over the chips.
+                      `min-w-0` is what permitted the collapse all the way to
+                      nothing, and it bought nothing, because no child of that
+                      button truncates.
+                      Two changes: the row WRAPS, so the chips drop to a second
+                      line instead of competing for width, and the identity has
+                      a min-width floor so it can never be crushed again. The
+                      siblings are shrink-0 so the give happens by wrapping
+                      rather than by squeezing. Above ~640px everything still
+                      fits on one line, so the desktop layout is unchanged. */}
+                  <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 text-(length:--fs-body) rounded-[7px] hover:bg-[var(--color-accent-soft)]">
                     <button
                       type="button"
                       disabled={linking}
                       onClick={() => selectAccount(a)}
-                      className="flex flex-1 items-center gap-3 text-left cursor-pointer min-w-0"
+                      className="flex min-w-[11rem] flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 text-left cursor-pointer"
                     >
                       <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
                       <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : 'Login —'}</span>
@@ -325,7 +342,7 @@ export default function Connect() {
                         type="button"
                         aria-expanded={detailOpen}
                         onClick={() => setOpenDetail(detailOpen ? null : a.accountId)}
-                        className="inline-flex items-center gap-2 text-(length:--fs-body) glass-inset rounded-[var(--radius-control)] px-2.5 py-1 cursor-pointer hover:shadow-[var(--glow-accent)]"
+                        className="inline-flex shrink-0 items-center gap-2 text-(length:--fs-body) glass-inset rounded-[var(--radius-control)] px-2.5 py-1 cursor-pointer hover:shadow-[var(--glow-accent)]"
                         title="Tap for per-trade detail"
                       >
                         <span>{b ? `${positions.length} live · ${orders.length} set` : 'detail'}</span>
@@ -341,7 +358,7 @@ export default function Connect() {
                     )}
                     {w && (
                       <span
-                        className="inline-flex items-center gap-1.5 text-(length:--fs-body) glass-inset rounded-[var(--radius-control)] px-2.5 py-1"
+                        className="inline-flex shrink-0 items-center gap-1.5 text-(length:--fs-body) glass-inset rounded-[var(--radius-control)] px-2.5 py-1"
                         title={w.untested > 0
                           ? `Not backtested: ${w.untestedSample.join(', ')}${w.untestedTruncated ? ` and ${w.untested - w.untestedSample.length} more` : ''}`
                           : 'Every symbol on this list has a backtest on record'}
@@ -361,7 +378,7 @@ export default function Connect() {
                       type="button"
                       disabled={linking}
                       onClick={() => selectAccount(a)}
-                      className="ml-auto text-right cursor-pointer"
+                      className="ml-auto shrink-0 text-right cursor-pointer"
                     >
                       <span className="font-semibold block">
                         {a.balance != null ? `$${(Number(a.balance) + floating).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
