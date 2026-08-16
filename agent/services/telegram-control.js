@@ -16,7 +16,17 @@
 //              cross-account P&L)
 //   /haltall — 5A GLOBAL HALT: no new entries on ANY account (positions and
 //              their SL/TP untouched); /resumeall lifts it
+//   /quiet   — sleep hours in SGT ("/quiet 23:00 07:00"); alerts inside the
+//              window are HELD and delivered as one summary when it ends
+//   /digest  — "/digest on" batches an hour of alerts into one message;
+//              "/digest now" sends what is queued; "/digest off" is live
+//   /notify  — master on/off for outbound alerts (queued, never dropped)
 //   /help    — this list
+//
+// /quiet, /digest and /notify change WHEN THE BOT TALKS and nothing else. No
+// risk knob, no scan/autotrade flag, no halt. /pause is still the one that
+// stops trading — and /status prints the alert state so a quiet phone is never
+// mistaken for a stopped bot.
 
 //   /chart   — /chart <SYMBOL> [tf=1h] [+ai]: render a self-contained HTML
 //              chart (candles + default overlays) and send it as a document
@@ -28,6 +38,7 @@ import path from 'node:path'
 import { getState, setState } from '../db.js'
 import { loadGlobalGuards, evaluateGlobalGuards } from './global-guards.js'
 import { setPhaseFlag } from './phase-audit.js'
+import * as notify from './telegram-digest.js'
 
 const TG_API = 'https://api.telegram.org'
 
@@ -225,6 +236,73 @@ export function fmtAccountLines(db) {
   })
 }
 
+/**
+ * /notify, /quiet and /digest — the owner's control over WHEN the bot talks.
+ *
+ * Pure apart from the state write, and exported so the parsing can be tested
+ * without a Telegram round trip. Returns the reply text.
+ *
+ * NOTE ON SCOPE: these change only when alerts are DELIVERED. Nothing here
+ * touches scan, autotrade, halt, or any risk knob — a quiet phone and a quiet
+ * bot are different things, and /pause is still the one that stops trading.
+ */
+export function handleNotifyCommand(db, cmd, argsText, nowMs = Date.now()) {
+  const d = notify
+  const args = String(argsText || '').trim().split(/\s+/).filter(Boolean)
+  const a0 = (args[0] || '').toLowerCase()
+
+  if (cmd === '/notify') {
+    if (a0 === 'on' || a0 === 'off') {
+      const cfg = d.saveNotifyConfig(db, { enabled: a0 === 'on' })
+      return a0 === 'on'
+        ? `🔔 Notifications ON — ${d.describeConfig(cfg)}.\nAnything queued while off is still there; /digest now sends it.`
+        : `🔕 Notifications OFF — alerts are QUEUED, not dropped. /notify on or /digest now delivers them as one summary.\nTrading is unaffected: this only changes when the bot talks. Use /pause to stop trading.`
+    }
+    const cfg = d.loadNotifyConfig(db)
+    const pend = d.pendingMessages(db).length
+    return `🔔 ${d.describeConfig(cfg)}\nqueued right now: ${pend}\nUse: /notify on | off`
+  }
+
+  if (cmd === '/quiet') {
+    if (a0 === 'off' || a0 === 'none') {
+      d.saveNotifyConfig(db, { quiet: null })
+      return '☀️ Quiet hours off — alerts come through at any time.'
+    }
+    if (args.length >= 2) {
+      const [start, end] = args
+      if (!d.isHHMM(start) || !d.isHHMM(end)) {
+        return 'Usage: /quiet 23:00 07:00 (24h, SGT) · /quiet off · /quiet to show'
+      }
+      if (start === end) {
+        // Refused rather than stored: a start equal to the end is either a
+        // 24-hour mute or a typo, and silently picking one of those readings
+        // for a trading system's alerts is not a call to make for the owner.
+        return '⚠️ Start and end are the same — that would be a 24-hour mute. Use /notify off if that is what you want.'
+      }
+      const cfg = d.saveNotifyConfig(db, { quiet: { start, end } })
+      return `🌙 Quiet hours ${start}–${end} SGT. Alerts in that window are held and delivered as ONE summary when it ends.${cfg.urgentBypass ? '\nUrgent alerts (halts, margin, breaches, errors) still come through immediately.' : ''}`
+    }
+    const cfg = d.loadNotifyConfig(db)
+    const now = d.inQuietHours(nowMs, cfg.quiet, cfg.tz)
+    return cfg.quiet
+      ? `🌙 Quiet hours ${cfg.quiet.start}–${cfg.quiet.end} SGT — currently ${now ? 'INSIDE (holding alerts)' : 'outside'}.\nUse: /quiet 23:00 07:00 · /quiet off`
+      : '☀️ No quiet hours set. Use: /quiet 23:00 07:00 (24h, SGT)'
+  }
+
+  if (cmd === '/digest') {
+    if (a0 === 'on' || a0 === 'off') {
+      const cfg = d.saveNotifyConfig(db, { mode: a0 === 'on' ? 'hourly' : 'live' })
+      return a0 === 'on'
+        ? '🗞 Hourly digest ON — one summary per hour instead of a message per event. Urgent alerts still arrive immediately.'
+        : `⚡ Hourly digest OFF — messages arrive as they happen${cfg.quiet ? ' outside quiet hours' : ''}.`
+    }
+    const cfg = d.loadNotifyConfig(db)
+    const pend = d.pendingMessages(db).length
+    return `🗞 Mode: ${cfg.mode === 'hourly' ? 'hourly digest' : 'live'} · queued: ${pend}\nUse: /digest on | off | now`
+  }
+  return null
+}
+
 function fmtStatus(db) {
   const on = (k, dflt) => (getState(db, k) ?? dflt)
   let matrix = {}
@@ -246,6 +324,13 @@ function fmtStatus(db) {
       const lines = fmtAccountLines(db)
       return lines.length ? ['accounts:', ...lines] : []
     })(),
+    // Owner-visible, because a quiet phone and a stopped bot look identical
+    // from the outside. If alerts are being held, /status must say so — the
+    // alternative is reading silence as "nothing is happening".
+    `alerts: ${notify.describeConfig(notify.loadNotifyConfig(db))}${(() => {
+      const n = notify.pendingMessages(db).length
+      return n ? ` · ${n} queued (/digest now)` : ''
+    })()}`,
     `last error: ${on('last_loop_error', 'none')}`,
   ].join('\n')
 }
@@ -469,8 +554,34 @@ export async function pollTelegramCommands(db, deps = {}) {
         }
         if (!audit) audit = auditDecisions(db, { accountId: symArg })
         reply = `🔎 Why: ${audit.scope}\n${whyText(audit)}`
+      } else if (cmd === '/notify' || cmd === '/quiet' || cmd === '/digest') {
+        const args = msg.text.trim().split(/\s+/).slice(1).join(' ')
+        if (cmd === '/digest' && args.trim().toLowerCase() === 'now') {
+          // Deliberate manual flush: force it past the "not an hour yet" and
+          // "still inside quiet hours" gates. The owner asking for the summary
+          // outranks the schedule that exists to avoid asking them.
+          const { flushDigest } = await import('./telegram-digest.js')
+          const { sendMessageRaw } = await import('./telegram.js')
+          const res = await flushDigest(db, { send: sendMessageRaw, force: true })
+          reply = res.sent
+            ? null // the digest itself is the answer; no second message
+            : (res.reason === 'empty' ? 'Nothing queued — you are up to date.' : `Digest not sent: ${res.reason}`)
+          if (res.sent) handled++
+        } else {
+          reply = handleNotifyCommand(db, cmd, args)
+        }
       } else if (cmd === '/help' || cmd === '/start') {
-        reply = 'Commands: /status /why [account] /guards /haltall /resumeall /pause /resume /pending /killall /chart <SYM> [tf] [+ai] /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
+        reply = [
+          'Commands: /status /why [account] /guards /haltall /resumeall /pause /resume /pending /killall /chart <SYM> [tf] [+ai] /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help',
+          '',
+          'When the bot talks (does NOT affect trading):',
+          '  /quiet 23:00 07:00 — sleep hours in SGT; alerts held, delivered as one summary at 07:00',
+          '  /quiet off — no quiet hours · /quiet — show',
+          '  /digest on — one summary per hour instead of a message per event',
+          '  /digest now — send what is queued right now · /digest off — live',
+          '  /notify off — hold everything (queued, not dropped) · /notify on — resume',
+          'Urgent alerts (halts, margin, breaches, errors) come through regardless.',
+        ].join('\n')
       }
       if (reply) {
         handled++
@@ -485,10 +596,20 @@ export async function pollTelegramCommands(db, deps = {}) {
   return handled
 }
 
-/** Fire-and-forget owner notification (used by the pending manager). */
+/**
+ * Fire-and-forget owner notification (used by the pending manager).
+ *
+ * Goes through the same quiet-hours / digest gate as telegram.js sendMessage —
+ * this is the OTHER outbound path, and a mute that silences one of two paths
+ * is not a mute. See telegram-digest.js.
+ */
 export async function notifyOwner(text) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return
   const owner = ownerChatId()
   if (!owner) return
+  try {
+    const { routeOutbound } = await import('./telegram-digest.js')
+    if (!routeOutbound(text, { kind: 'notice' }).send) return
+  } catch { /* gate unavailable → send, never mute by accident */ }
   try { await tg('sendMessage', { chat_id: owner, text }) } catch { /* best effort */ }
 }

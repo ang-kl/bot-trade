@@ -112,7 +112,15 @@ export async function runVpoFeeder(db, deps = {}) {
   const entries = getVpoConfig(db)
   if (!entries.length) return { skipped: 'vpo_config_json is empty' }
 
-  const creds = getCtraderCreds(db)
+  // deps.creds is injectable so the credential gate can be exercised without
+  // the ambient process environment deciding the answer. getCtraderCreds falls
+  // back to CTRADER_* env vars for the access token and account id, so a test
+  // that asserted "skips when credentials are not ready" passed only on a
+  // machine that happened to have none set — and inside the deployment
+  // container, where all five are set, the feeder sailed past the gate and
+  // attempted a real sidecar push. A test whose result depends on where it
+  // runs is not testing the gate.
+  const creds = deps.creds ?? getCtraderCreds(db)
   if (!creds?.ready) return { skipped: 'cTrader credentials not ready' }
 
   const { wsGetTrendbarsBatch } = deps.ws || await import('../lib/ctrader-ws.js')
