@@ -96,6 +96,12 @@ export async function sendScanAlert(scans, deskNote, session, opts = {}) {
   const botToken = getToken()
   const chatId = getChatId()
   const text = formatScanAlert(scans, deskNote, session)
+  // Scan alerts are the highest-volume class and the least actionable while
+  // asleep — the exact thing the digest exists for. Buttons do not survive a
+  // digest, which is correct: a one-tap Chart button on an hour-old scan is a
+  // button for a level that has moved.
+  const routed = await gate(text, { ...opts, kind: 'scan' })
+  if (!routed.send) return { ok: true, queued: true, reason: routed.reason, messageId: null }
   const msg = await tgPost(botToken, 'sendMessage', {
     chat_id: chatId,
     text,
@@ -117,6 +123,8 @@ export async function sendTradeAlert(trade) {
   const botToken = getToken()
   const chatId = getChatId()
   const text = formatTradeAlert(trade)
+  const routed = await gate(text, { kind: 'trade' })
+  if (!routed.send) return { ok: true, queued: true, reason: routed.reason, messageId: null }
   const msg = await tgPost(botToken, 'sendMessage', {
     chat_id: chatId,
     text,
@@ -145,7 +153,33 @@ function versionFooter() {
   return _version ? `\n\n_bot-trade v${_version}_` : ''
 }
 
+// THE CHOKE POINT. Quiet hours / master mute / hourly digest are enforced HERE
+// rather than at the ~78 call sites that alert the owner, because routing 78
+// call sites means 78 chances to miss one — and the one missed is the 03:00
+// buzz that proves the feature does not work. Deferred messages are written to
+// the telegram_outbox and summarised by the hourly flush; nothing is dropped.
+//
+// Defaults are "behave exactly as before" and every uncertainty (no db, bad
+// config, failed queue write) resolves toward SENDING. See telegram-digest.js.
+async function gate(text, opts) {
+  try {
+    const { routeOutbound } = await import('./telegram-digest.js')
+    return routeOutbound(text, opts)
+  } catch { return { send: true, reason: 'gate_unavailable' } }
+}
+
 export async function sendMessage(text, opts = {}) {
+  const routed = await gate(text, opts)
+  if (!routed.send) return { ok: true, queued: true, reason: routed.reason, messageId: null }
+  return sendMessageRaw(text, opts)
+}
+
+/**
+ * UNGATED send. The digest flush uses this so the summary it produces cannot
+ * recurse back through the gate and re-queue itself — which, in quiet hours,
+ * would be an outbox that grows and never delivers.
+ */
+export async function sendMessageRaw(text, opts = {}) {
   const botToken = getToken()
   const chatId = getChatId()
   const msg = await tgPost(botToken, 'sendMessage', {

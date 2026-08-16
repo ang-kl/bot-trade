@@ -1141,6 +1141,25 @@ export function initDB(dbPath) {
   // hand-typed sqlite3 command. A flip with a trace row and NO matching audit
   // row is the smoking gun the last two incidents never produced.
   // -------------------------------------------------------------------------
+  // Telegram outbox — messages DEFERRED by quiet hours, the master mute or the
+  // hourly digest, so they can be summarised and delivered later instead of
+  // buzzing a phone at 03:00 SGT. `sent_at IS NULL` is the pending set; rows
+  // are stamped only after the digest send resolves, so a Telegram outage
+  // leaves the hour pending rather than swallowing it.
+  // -------------------------------------------------------------------------
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS telegram_outbox (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    queued_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    kind      TEXT NOT NULL DEFAULT 'alert',
+    priority  TEXT NOT NULL DEFAULT 'normal',
+    text      TEXT NOT NULL,
+    reason    TEXT,
+    sent_at   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_tg_outbox_pending ON telegram_outbox(sent_at, id);
+  `);
+
   db.exec(`
   CREATE TABLE IF NOT EXISTS phase_flag_trace (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

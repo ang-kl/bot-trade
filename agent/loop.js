@@ -2012,6 +2012,21 @@ async function runLoop(db) {
     const { cancelOrder } = await import('./lib/exec-engine.js')
     await pollTelegramCommands(db, { cancelOrder, creds: getCtraderCreds(db) })
   } catch { /* telegram trouble must never stall trading */ }
+
+  // Quiet hours / hourly digest. attachNotifyDb registers the open handle for
+  // the choke point inside telegram.js's senders, which have no db of their
+  // own; UNTIL it is called, routeOutbound sends everything immediately, so a
+  // missing wiring step can never mute an alert. Re-attaching every cycle is
+  // idempotent and survives a db handle being replaced under us.
+  //
+  // The flush runs AFTER the command poll on purpose: a /quiet off typed at
+  // 06:55 takes effect on this cycle's flush rather than the next one.
+  try {
+    const digest = await import('./services/telegram-digest.js')
+    digest.attachNotifyDb(db)
+    const { sendMessageRaw } = await import('./services/telegram.js')
+    await digest.flushDigest(db, { send: sendMessageRaw })
+  } catch { /* a held summary is not worth stalling the loop for */ }
   // ---- Mutex: prevent overlapping iterations ----
   if (loopRunning) {
     log('Loop still running — skipping this tick')

@@ -20,6 +20,23 @@ function fakeWs(bars = { '4h': [bar(0, 1, 1.1, 0.9, 1.05)], '15m': [bar(0, 1, 1.
   }
 }
 
+// Credentials are INJECTED, never inherited from the environment. These tests
+// used to set/delete process.env.CTRADER_CLIENT_ID/SECRET and rely on the rest
+// being absent — which made the "not ready" case pass only on a machine with no
+// CTRADER_* vars set. In the deployment container all five are set, so
+// getCtraderCreds answered `ready: true`, the feeder skipped nothing and tried a
+// real network push. Injecting removes the ambient dependency in both
+// directions: ready and not-ready are now stated, not inherited.
+const READY_CREDS = {
+  ready: true,
+  host: 'demo.ctraderapi.com',
+  clientId: 'cid',
+  clientSecret: 'csecret',
+  accessToken: 'tok',
+  accountId: '42',
+}
+const UNREADY_CREDS = { ...READY_CREDS, ready: false, accessToken: null }
+
 function fakeSizing({ lotSize = 100 } = {}) {
   return {
     getVolumeMeta: async () => ({ lotSize, minVolume: 1, digits: 5 }),
@@ -44,8 +61,38 @@ test('skips when cTrader credentials are not ready', async () => {
   const db = freshDB()
   setState(db, 'vpo_enabled', 'true')
   setState(db, 'vpo_config_json', JSON.stringify([{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1 }]))
-  const r = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing() })
+  const r = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: UNREADY_CREDS })
   assert.match(r.skipped, /credentials/)
+})
+
+// REGRESSION. The point of the test above is that the feeder skips; the point
+// of this one is that it skips FOR THE STATED REASON and not because the
+// machine happened to be bare. With every CTRADER_* var set — the deployment
+// container's actual state — the old test did not skip at all: it fell through
+// to a real network push and failed with `fetch failed`. Green on a laptop,
+// red in the container, and the difference was ambient environment rather than
+// anything about the code.
+test('the credential gate ignores ambient CTRADER_* env when creds are injected', async () => {
+  const db = freshDB()
+  setState(db, 'vpo_enabled', 'true')
+  setState(db, 'vpo_config_json', JSON.stringify([{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1 }]))
+  const saved = {}
+  const keys = ['CTRADER_CLIENT_ID', 'CTRADER_CLIENT_SECRET', 'CTRADER_ACCESS_TOKEN', 'CTRADER_ACCOUNT_ID']
+  for (const k of keys) { saved[k] = process.env[k]; process.env[k] = 'ambient' }
+  try {
+    let pushed = false
+    const r = await runVpoFeeder(db, {
+      ws: fakeWs(), sizing: fakeSizing(), creds: UNREADY_CREDS,
+      push: async () => { pushed = true },
+    })
+    assert.match(r.skipped, /credentials/)
+    assert.equal(pushed, false, 'a skipped pass must not push')
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+  }
 })
 
 test('pushes real bars + resolved volume for a configured entry', async () => {
@@ -56,14 +103,12 @@ test('pushes real bars + resolved volume for a configured entry', async () => {
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  process.env.CTRADER_CLIENT_ID = 'cid'
-  process.env.CTRADER_CLIENT_SECRET = 'csecret'
   setState(db, 'account_balance_usd', '10000')
 
   let pushed = null
   const ws = fakeWs()
   const r = await runVpoFeeder(db, {
-    ws, sizing: fakeSizing(),
+    ws, sizing: fakeSizing(), creds: READY_CREDS,
     push: async (payload) => { pushed = payload },
   })
 
@@ -78,8 +123,6 @@ test('pushes real bars + resolved volume for a configured entry', async () => {
   assert.equal(pushed.volumes[0].key, 'vwap_trend:EURUSD')
   assert.ok(pushed.volumes[0].volume > 0)
 
-  delete process.env.CTRADER_CLIENT_ID
-  delete process.env.CTRADER_CLIENT_SECRET
 })
 
 test('reports volume -1 (unavailable) when balance is unset, but still pushes bars', async () => {
@@ -90,21 +133,17 @@ test('reports volume -1 (unavailable) when balance is unset, but still pushes ba
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  process.env.CTRADER_CLIENT_ID = 'cid'
-  process.env.CTRADER_CLIENT_SECRET = 'csecret'
   // account_balance_usd deliberately left unset
 
   let pushed = null
   const r = await runVpoFeeder(db, {
-    ws: fakeWs(), sizing: fakeSizing(),
+    ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS,
     push: async (payload) => { pushed = payload },
   })
 
   assert.equal(r.ok, true)
   assert.equal(pushed.volumes[0].volume, -1)
 
-  delete process.env.CTRADER_CLIENT_ID
-  delete process.env.CTRADER_CLIENT_SECRET
 })
 
 test('one bad entry does not stop the others from being pushed', async () => {
@@ -116,8 +155,6 @@ test('one bad entry does not stop the others from being pushed', async () => {
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  process.env.CTRADER_CLIENT_ID = 'cid'
-  process.env.CTRADER_CLIENT_SECRET = 'csecret'
   setState(db, 'account_balance_usd', '10000')
 
   const ws = {
@@ -129,7 +166,7 @@ test('one bad entry does not stop the others from being pushed', async () => {
 
   let pushed = null
   const r = await runVpoFeeder(db, {
-    ws, sizing: fakeSizing(),
+    ws, sizing: fakeSizing(), creds: READY_CREDS,
     push: async (payload) => { pushed = payload },
   })
 
@@ -137,8 +174,6 @@ test('one bad entry does not stop the others from being pushed', async () => {
   assert.equal(pushed.volumes.length, 1)
   assert.equal(pushed.volumes[0].key, 'vwap_trend:EURUSD')
 
-  delete process.env.CTRADER_CLIENT_ID
-  delete process.env.CTRADER_CLIENT_SECRET
 })
 
 // ---------------------------------------------------------------------------
@@ -213,14 +248,12 @@ test('feeder: a vetoed symbol pushes volume -1 (bars still pushed) and records a
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  process.env.CTRADER_CLIENT_ID = 'cid'
-  process.env.CTRADER_CLIENT_SECRET = 'csecret'
   setState(db, 'account_balance_usd', '10000')
   setState(db, 'global_guards_json', JSON.stringify({ halt: true }))
 
   let pushed = null
   const r = await runVpoFeeder(db, {
-    ws: fakeWs(), sizing: fakeSizing(),
+    ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS,
     push: async (payload) => { pushed = payload },
   })
 
@@ -237,8 +270,6 @@ test('feeder: a vetoed symbol pushes volume -1 (bars still pushed) and records a
   assert.equal(ev.approved, 0)
   assert.match(ev.veto_reason, /global_halt/)
 
-  delete process.env.CTRADER_CLIENT_ID
-  delete process.env.CTRADER_CLIENT_SECRET
 })
 
 test('feeder: an unvetoed symbol still sizes normally with the gate present', async () => {
@@ -249,19 +280,15 @@ test('feeder: an unvetoed symbol still sizes normally with the gate present', as
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  process.env.CTRADER_CLIENT_ID = 'cid'
-  process.env.CTRADER_CLIENT_SECRET = 'csecret'
   setState(db, 'account_balance_usd', '10000')
 
   let pushed = null
   const r = await runVpoFeeder(db, {
-    ws: fakeWs(), sizing: fakeSizing(),
+    ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS,
     push: async (payload) => { pushed = payload },
   })
 
   assert.equal(r.ok, true)
   assert.ok(pushed.volumes[0].volume > 0)
 
-  delete process.env.CTRADER_CLIENT_ID
-  delete process.env.CTRADER_CLIENT_SECRET
 })
