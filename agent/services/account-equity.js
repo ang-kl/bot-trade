@@ -120,8 +120,8 @@ export const hostForSide = (isLive) => (isLive ? 'live.ctraderapi.com' : 'demo.c
  * @returns {Promise<{swept:number, stamped:number, failed:number,
  *                    results:Array<{accountId:string,balance:number|null,error:string|null}>}>}
  */
-export async function sweepCrossSideEquity(db, creds, { isLive, deps = {} } = {}) {
-  const out = { swept: 0, stamped: 0, failed: 0, results: [] }
+export async function sweepCrossSideEquity(db, creds, { isLive, deps = {}, timeoutMs = 12_000 } = {}) {
+  const out = { swept: 0, stamped: 0, failed: 0, timedOut: 0, results: [] }
   let rows = []
   try {
     rows = db.prepare(
@@ -130,17 +130,53 @@ export async function sweepCrossSideEquity(db, creds, { isLive, deps = {} } = {}
   } catch { return out }
 
   const others = rows.filter(r => (r.is_live === 1) !== !!isLive)
-  for (const r of others) {
-    out.swept++
-    const res = await stampAccountEquity(
+  if (others.length === 0) return out
+  out.swept = others.length
+
+  // BOUNDED AND CONCURRENT, because this runs on the main trading loop.
+  //
+  // wsGetTrader allows 3 attempts at a 20s timeout with 2s+4s backoff — 66s
+  // for ONE unreachable account. Run sequentially, three unreachable live
+  // accounts would hold the cycle for 198s before scanning or dispatch
+  // resumed, every reconcile pass, and an equity read that stalls trading is
+  // worse than the wrong balance it set out to fix. So the reads go out
+  // together and the whole sweep answers by `timeoutMs` whatever the broker
+  // does. Accounts that beat the deadline still stamp — stampAccountEquity
+  // writes as soon as it has an answer, so a slow straggler costs its own
+  // result and nothing else.
+  // The timer is CLEARED in the finally below rather than unref'd. unref was
+  // the first attempt and it is subtly wrong: it lets the event loop exit
+  // before the deadline fires, so the guarantee "this returns within
+  // timeoutMs" would hold only while something ELSE kept the loop alive. A
+  // bound that depends on unrelated work existing is not a bound.
+  let timer = null
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => resolve('__deadline__'), timeoutMs)
+  })
+
+  try {
+  const settled = await Promise.all(others.map(async (r) => {
+    const task = stampAccountEquity(
       db,
       { ...creds, host: hostForSide(r.is_live === 1) },
       r.account_id,
       deps,
     )
-    out.results.push({ accountId: res.accountId, balance: res.balance, error: res.error })
-    if (res.error != null || res.balance == null) out.failed++
-    else out.stamped++
+    const won = await Promise.race([task, deadline])
+    return won === '__deadline__'
+      ? { accountId: String(r.account_id), balance: null, error: `no answer within ${timeoutMs}ms` }
+      : { accountId: won.accountId, balance: won.balance, error: won.error }
+  }))
+
+  for (const res of settled) {
+    out.results.push(res)
+    if (res.error != null || res.balance == null) {
+      out.failed++
+      if (res.error?.startsWith('no answer within')) out.timedOut++
+    } else out.stamped++
   }
   return out
+  } finally {
+    clearTimeout(timer)
+  }
 }

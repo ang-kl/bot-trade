@@ -216,3 +216,65 @@ test('disabled accounts are never touched', async () => {
   await sweepCrossSideEquity(db, {}, { isLive: false, deps: { ws, setAccountState: (d, id, k, v) => setState(d, `acct:${id}:${k}`, v) } })
   assert.deepEqual(seen, ['LIVE_ON'], 'an account the owner disabled must not be probed')
 })
+
+test('P2: a hanging broker cannot stall the trading loop — the sweep answers by its deadline', async () => {
+  // wsGetTrader allows 3 x 20s + backoff = 66s per account. Sequentially,
+  // three unreachable accounts would hold the cycle ~198s every reconcile
+  // pass. The sweep must return regardless.
+  const db = db0([['DEMO', false], ['L1', true], ['L2', true], ['L3', true]])
+  const never = new Promise(() => {})            // a call that never settles
+  const ws = { wsGetTrader: () => never, traderBalance: () => null }
+
+  const t0 = Date.now()
+  const r = await sweepCrossSideEquity(db, {}, {
+    isLive: false, timeoutMs: 150,
+    deps: { ws, setAccountState: (d, id, k, v) => setState(d, `acct:${id}:${k}`, v) },
+  })
+  const elapsed = Date.now() - t0
+
+  assert.ok(elapsed < 1000, `sweep must not outlive its deadline; took ${elapsed}ms`)
+  assert.deepEqual({ swept: r.swept, stamped: r.stamped, timedOut: r.timedOut }, { swept: 3, stamped: 0, timedOut: 3 })
+  assert.ok(r.results.every(x => /no answer within/.test(x.error)))
+})
+
+test('P2: the reads run CONCURRENTLY, so N slow accounts cost one wait, not N', async () => {
+  const db = db0([['DEMO', false], ['L1', true], ['L2', true], ['L3', true]])
+  let inFlight = 0, maxInFlight = 0
+  const ws = {
+    wsGetTrader: async () => {
+      inFlight++; maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise(r => setTimeout(r, 60))
+      inFlight--
+      return { balance: 10, leverageInCents: 0 }
+    },
+    traderBalance: (t) => t?.balance ?? null,
+  }
+  const t0 = Date.now()
+  const r = await sweepCrossSideEquity(db, {}, {
+    isLive: false, timeoutMs: 5000,
+    deps: { ws, setAccountState: (d, id, k, v) => setState(d, `acct:${id}:${k}`, v) },
+  })
+  const elapsed = Date.now() - t0
+
+  assert.equal(maxInFlight, 3, 'all three reads must be in flight together')
+  assert.ok(elapsed < 150, `3 x 60ms sequential would be ~180ms; got ${elapsed}ms`)
+  assert.equal(r.stamped, 3)
+})
+
+test('P2: an account that BEATS the deadline still stamps while another hangs', async () => {
+  const db = db0([['DEMO', false], ['FAST', true], ['HUNG', true]])
+  const ws = {
+    wsGetTrader: async (_h, _a, _b, _c, id) => {
+      if (String(id) === 'HUNG') return new Promise(() => {})
+      return { balance: 42, leverageInCents: 0 }
+    },
+    traderBalance: (t) => t?.balance ?? null,
+  }
+  const r = await sweepCrossSideEquity(db, {}, {
+    isLive: false, timeoutMs: 200,
+    deps: { ws, setAccountState: (d, id, k, v) => setState(d, `acct:${id}:${k}`, v) },
+  })
+  assert.equal(getState(db, 'acct:FAST:account_balance_usd'), '42', 'the fast account is not punished for the slow one')
+  assert.equal(getState(db, 'acct:HUNG:account_balance_usd'), null)
+  assert.deepEqual({ stamped: r.stamped, timedOut: r.timedOut }, { stamped: 1, timedOut: 1 })
+})
