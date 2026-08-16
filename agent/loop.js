@@ -85,6 +85,8 @@ const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops ent
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
 const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens exceed this
 let loopCount = 0
+// Seeded once per process: see the FIRST-CYCLE SEED block in runLoop.
+let crossSideEquitySeeded = false
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
@@ -2186,6 +2188,32 @@ async function runLoop(db) {
     // case one reconcile cycle" instead of "one reconcile cycle plus one
     // scan/dispatch ordering".
     // -----------------------------------------------------------------------
+    // FIRST-CYCLE SEED. The reconcile block below runs on `loopCount % 3 === 0`
+    // and loopCount is incremented to 1 before reaching it, so cycles 1 and 2
+    // never reconcile — and until the cross-side sweep has run once, an
+    // opposite-side account with no stamped balance still answers
+    // getAccountBalance out of the unowned global. On a fresh database, or the
+    // first cycles after a deploy, that is a window in which an account could
+    // be sized against somebody else's equity.
+    //
+    // So the cross-side equity read is seeded ONCE, before the first dispatch,
+    // and the periodic refresh in the reconcile block carries it from there.
+    // Same bounded, read-only sweep — it cannot cost more than its deadline.
+    if (!crossSideEquitySeeded) {
+      try {
+        const clientId = ctraderEnv('clientId')
+        const clientSecret = ctraderEnv('clientSecret')
+        const accessToken = getState(db, 'ctrader_access_token')
+        const isLive = getState(db, 'ctrader_is_live') === 'true'
+        if (clientId && clientSecret && accessToken) {
+          const { sweepCrossSideEquity } = await import('./services/account-equity.js')
+          const x = await sweepCrossSideEquity(db, { clientId, clientSecret, accessToken }, { isLive })
+          crossSideEquitySeeded = true
+          if (x.swept > 0) log(`Cross-side equity (seed): ${x.stamped}/${x.swept} stamped`)
+        }
+      } catch { /* seeding is best-effort; the periodic pass retries */ }
+    }
+
     if (loopCount % 3 === 0) {
       try {
         const clientId = ctraderEnv('clientId')
@@ -2773,6 +2801,31 @@ async function runLoop(db) {
               }
             }
           } catch { /* registry optional on old DBs */ }
+
+          // ---- CROSS-SIDE EQUITY (READ ONLY) -----------------------------
+          // The sweep above is deliberately one-sided: a demo session must
+          // never manage live positions. But an account whose balance is
+          // never read answers out of the unowned global — measured
+          // 2026-08-16 with the session on demo, the live accounts 43002148
+          // and 43069009 reported the selected DEMO account's 35,319.80
+          // through /state/profit-ratchet while /state/account-engineering
+          // showed `None` for the same two. Two endpoints, same accounts,
+          // different answers.
+          //
+          // Reading what an account is worth is not managing it, so this
+          // crosses the boundary for that ONE purpose: wsGetTrader per
+          // account on that account's own host, writing only its own two
+          // `acct:<id>:` keys. No positions, no orders, no audit, and never
+          // the legacy global.
+          try {
+            const { sweepCrossSideEquity } = await import('./services/account-equity.js')
+            const x = await sweepCrossSideEquity(db, { clientId, clientSecret, accessToken }, { isLive })
+            crossSideEquitySeeded = true
+            if (x.swept > 0) {
+              log(`Cross-side equity: ${x.stamped}/${x.swept} ${isLive ? 'demo' : 'live'} account(s) stamped`
+                + (x.failed ? ` — ${x.results.filter(r => r.error).map(r => `${r.accountId}: ${r.error}`).join(' · ')}` : ''))
+            }
+          } catch { /* equity is best-effort; never break the cycle */ }
         } else {
           // No credentials — the audit cannot run, and saying nothing would
           // read on screen as "checked, all clear". ¶D·2.
