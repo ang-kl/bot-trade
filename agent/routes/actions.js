@@ -2883,7 +2883,24 @@ export default function actionsRouter(db) {
       const b = req.body || {}
       const num = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null)
       const clamp = (v, lo, hi, fallback) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : fallback)
+      // START FROM THE STORED CONFIG, not from an empty object.
+      //
+      // This used to build `next` field by field from a fixed list, which
+      // silently DROPPED every key the list did not mention — the whole spike
+      // and structure block (spikeTightenEnabled, spikeRangeAtrMult,
+      // spikeTrailAtrMult, spikeBars, structureTrailEnabled,
+      // structurePivotBars, structureBufferAtrMult, structureMaxAtrMult).
+      // Changing armAtrMult through this route therefore reset eight unrelated
+      // trailing knobs.
+      //
+      // It has been harmless so far only by luck: every one of those stored
+      // values happened to equal its code default, and loadProfitKeeperConfig
+      // merges over the defaults, so they came back identical. The first time
+      // any of them is tuned away from its default, the next unrelated POST
+      // reverts it — with a 200 and a reply that looks correct, because the
+      // reply is built from the same truncated object.
       const next = {
+        ...current,
         on: b.on != null ? b.on === true : current.on,
         scope: b.scope === 'all' ? 'all' : b.scope === 'external' ? 'external' : current.scope,
         mode: b.mode === 'fixed' ? 'fixed' : b.mode === 'adaptive' ? 'adaptive' : current.mode,
@@ -2894,6 +2911,26 @@ export default function actionsRouter(db) {
         armBalancePct: b.armBalancePct !== undefined ? clamp(b.armBalancePct, 0.01, 5, current.armBalancePct) : current.armBalancePct,
         trailAtrMult: b.trailAtrMult !== undefined ? clamp(b.trailAtrMult, 0.5, 10, current.trailAtrMult) : current.trailAtrMult,
         scaleOutFrac: b.scaleOutFrac !== undefined ? clamp(b.scaleOutFrac, 0, 0.9, current.scaleOutFrac) : current.scaleOutFrac,
+        // Spike + structure trailing. Previously settable NOWHERE — no route
+        // accepted them, so the only way to change how tightly a winner is
+        // trailed was to edit the defaults and redeploy. Measured 16-08-2026:
+        // non-burn-in winners captured a median of 23% of their planned
+        // target, and the spike trail (1 x ATR ~ 0.4R behind peak, armed by a
+        // single wide bar in the last three) is the most likely reason a 2R
+        // plan exits at 0.2R. Tuning it needed these to be reachable.
+        spikeTightenEnabled: b.spikeTightenEnabled != null ? b.spikeTightenEnabled === true : current.spikeTightenEnabled,
+        spikeRangeAtrMult: b.spikeRangeAtrMult !== undefined ? clamp(b.spikeRangeAtrMult, 0.5, 10, current.spikeRangeAtrMult) : current.spikeRangeAtrMult,
+        spikeTrailAtrMult: b.spikeTrailAtrMult !== undefined ? clamp(b.spikeTrailAtrMult, 0.25, 10, current.spikeTrailAtrMult) : current.spikeTrailAtrMult,
+        spikeBars: b.spikeBars !== undefined ? Math.round(clamp(b.spikeBars, 1, 20, current.spikeBars)) : current.spikeBars,
+        structureTrailEnabled: b.structureTrailEnabled != null ? b.structureTrailEnabled === true : current.structureTrailEnabled,
+        structurePivotBars: b.structurePivotBars !== undefined ? Math.round(clamp(b.structurePivotBars, 1, 10, current.structurePivotBars)) : current.structurePivotBars,
+        structureBufferAtrMult: b.structureBufferAtrMult !== undefined ? clamp(b.structureBufferAtrMult, 0, 5, current.structureBufferAtrMult) : current.structureBufferAtrMult,
+        // null is MEANINGFUL here (unbounded giveback), so it is preserved
+        // rather than clamped into a number — see profit-keeper.js, where an
+        // absent key defaulting to 4 was itself a fix.
+        structureMaxAtrMult: b.structureMaxAtrMult === null ? null
+          : b.structureMaxAtrMult !== undefined ? clamp(b.structureMaxAtrMult, 0.5, 20, current.structureMaxAtrMult)
+          : current.structureMaxAtrMult,
         // fixed
         armProfitUsd: b.armProfitUsd !== undefined ? (num(b.armProfitUsd) ?? current.armProfitUsd) : current.armProfitUsd,
         givebackPct: b.givebackPct !== undefined ? Math.min(95, Math.max(5, Number(b.givebackPct) || current.givebackPct)) : current.givebackPct,
