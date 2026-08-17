@@ -167,3 +167,103 @@ test shaped to the claim, a mutation check that could not fail, a fix whose
 first version broke three older tests that encoded reasoning I had not read.
 These commands are the owner's handle on that: a way to inspect the premises
 before they become commits.
+
+## Recurring failure modes (measured, 2026-08-16/17)
+
+Written after a session that merged #720–#726 and needed four public
+corrections along the way. These are not general advice. Each one is a thing
+that actually happened here, with the evidence that exposed it, and each cost
+real money or real time.
+
+**THE SHAPE THEY ALL SHARE: something reports healthy because the thing it
+measures never reached it.** Not a wrong answer — an answer to a question
+nobody asked. A red test is cheap; a green one that cannot go red is what
+gets shipped.
+
+### 1. A mutation check that cannot fail proves nothing
+
+Three times in one session a mutation "passed" because the edit never landed.
+Renaming `reconcileTradePricesToBroker` to `...XX` still matched the
+assertion's regex. A perl substitution silently matched nothing. Both reported
+a working guard as verified.
+
+**The rule: assert the mutation target is PRESENT before replacing it, and
+assert it is ABSENT after.** `grep -c` before and after, and fail loudly if
+the count did not change. A mutation you did not confirm applied is not a
+check, it is a hope.
+
+### 2. A test can pass by matching its own comment
+
+`amend-preserves-tp.test.js` asserted `/takeProfit/` against a source slice
+that INCLUDED the explanatory comment above the code. The comment contained
+the words. Deleting the actual payload line left the test green.
+
+**Strip comments before asserting on source.** And treat any test that reads
+source rather than behaviour as suspect by default: it is a last resort for
+wiring that has no injection point, never a substitute for exercising the code.
+
+### 3. A guard whose trigger is out of reach of what it guards
+
+Every one of these was ON, configured, and unable to fire:
+
+- profit keeper `armBalancePct` 0.01 → a **$3.53** noise floor on a $35,320
+  account, where the default 0.1 gives $35
+- `maxRiskCapPct` 3.5% sitting above `perTradeRiskPct` 3% — a ceiling above
+  the target reduces nothing (NOTE: above the *default* base this is the
+  correct shape for a backstop against overlays; it was wrong here because the
+  overlay raised BOTH)
+- `npm run audit:ui` reporting `/connect` clean at 390px because it renders
+  with no agent, so the account rows that overlap do not exist
+- the protection audit, dead since 4 August on a sidecar 502, while 8 of 12
+  positions ran with no take profit
+
+**Ask of every guard: what input would make this fire, and has that input ever
+arrived?** If you cannot answer the second half, the guard is decoration.
+
+### 4. A repair that nothing calls
+
+`reconcileTradePricesToBroker` was first wired only into `importBrokerHistory`
+— reachable solely from a manual POST route nobody runs. Same shape as #685's
+early-trim shadow. `early-trim-route.test.js` says it best: *"a shadow nobody
+can switch on is not a cautious shadow, it is a dead one."*
+
+**Pin the wiring with a test.** The call site is invisible from the module
+under test and a refactor drops it in silence.
+
+### 5. An endpoint that rebuilds instead of merging
+
+`POST /actions/profit-keeper` constructed its reply field-by-field from a
+fixed list, silently dropping eight spike/structure knobs. Harmless only by
+luck — every dropped value happened to equal its default. The reply looked
+correct because it was built from the same truncated object.
+
+**Start from what is stored, then apply the patch.** And when reading a config
+back, diff against the STORED global, not the code defaults — comparing a
+value against `effective` is circular, and comparing against `defaults`
+reports differences that are not there. Both mistakes were made here within
+ten minutes of each other.
+
+### 6. Say which field is wrong before saying the data is corrupt
+
+26.9% of closed trades had P&L disagreeing with their price move. The reading
+"the money is corrupt" was wrong: the broker's own ledger was 98.3%
+self-consistent, and across 276 matched pairs `entry_price` differed on 184
+while `net_pnl` differed on **zero** (the two apparent ones were a partial
+fill summing exactly). A 0.1% intent-vs-fill error flips the sign of the
+recorded move whenever the true move is smaller than the slippage.
+
+**Find the disagreeing FIELD against an external source of truth before
+concluding anything about the dataset.** The first diagnosis inverted which
+half was trustworthy, and the R:R conclusions built on it had to be withdrawn.
+
+### 7. Diagnose the mechanism, not the symptom, before proposing a fix
+
+"No take profit on the position" was called a missing target, then a lost
+`tp1`, then a guard bypass. It was none of them: cTrader's amend REPLACES
+protection, so every stop-only amend DELETED the take profit. The tell was
+that the broker's stop (2.681) was not the stop that was sent (2.687) — the
+position had been amended after the fill. The prediction that followed
+(`be_moved=1` ⇒ no TP) held on both cases available to test.
+
+**A diagnosis that does not predict something checkable is a guess.** Three
+guesses were published as findings before the mechanism was found.
