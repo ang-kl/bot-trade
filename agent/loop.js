@@ -1416,9 +1416,28 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 
   try {
     if (action === 'MOVE_SL') {
+      // CARRY THE EXISTING TAKE PROFIT. cTrader's AMEND_POSITION_SLTP_REQ
+      // REPLACES a position's protection: a payload with stopLoss and no
+      // takeProfit does not mean "leave the target alone", it means "this
+      // position has no target". So every SL-only amend — this one, the
+      // keeper's trail, the session-open breakeven lock — silently DELETED
+      // the take profit at the broker.
+      //
+      // Measured 17-08-2026: the 4 Aug protection audit found 8 of 12
+      // positions with no take profit, and the two on 42993489 that had been
+      // trailed (be_moved=1) both read tp=None while their trade rows carried
+      // one. The NatGas breakout was placed with a target of 2.595 and held
+      // none minutes later. One cause, not several.
+      //
+      // pos.current_tp is the bot's own record of the target it placed, so
+      // re-sending it restores the leg the broker is about to drop. undefined
+      // when there genuinely is no target, which leaves the payload exactly as
+      // it was — this cannot invent a TP that was never set.
+      const keepTp = Number(pos.current_tp) > 0 ? Number(pos.current_tp) : undefined
       const res = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         stopLoss: eval_.newSL,
+        ...(keepTp !== undefined ? { takeProfit: keepTp } : {}),
       })
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }

@@ -411,9 +411,23 @@ export async function wsAmendPosition(host, clientId, clientSecret, accessToken,
   const hasTp = typeof takeProfit === 'number' && takeProfit > 0
   if (!hasSl && !hasTp) throw new Error('wsAmendPosition: stopLoss or takeProfit required')
 
+  // AMEND REPLACES, IT DOES NOT PATCH.
+  //
+  // ProtoOAAmendPositionSLTPReq sets the position's protection to exactly what
+  // this payload carries. An absent takeProfit is therefore "no take profit",
+  // NOT "leave the existing one". Every SL-only amend deletes the target.
+  //
+  // That is how 8 of 12 positions ended up targetless in the 4 Aug audit, and
+  // why AVY.US and GEV.US — both be_moved=1 — read tp=None while their trade
+  // rows carried one. Callers that move a stop on a position WITH a target
+  // must re-send that target; loop.js executeBrokerAction does this for
+  // MOVE_SL. Omitting it is a deliberate clear, and is logged as one.
   const payload = { ctidTraderAccountId: parseInt(accountId), positionId: parseInt(positionId) }
   if (hasSl) payload.stopLoss = Number(stopLoss)
   if (hasTp) payload.takeProfit = Number(takeProfit)
+  if (hasSl && !hasTp) {
+    console.warn(`[ctrader-ws] amend ${positionId}: stop-only — this CLEARS any take profit at the broker`)
+  }
 
   try {
     const exec = await wsRun(host, [
