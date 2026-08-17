@@ -214,11 +214,28 @@ Every one of these was ON, configured, and unable to fire:
   overlay raised BOTH)
 - `npm run audit:ui` reporting `/connect` clean at 390px because it renders
   with no agent, so the account rows that overlap do not exist
-- the protection audit, dead since 4 August on a sidecar 502, while 8 of 12
-  positions ran with no take profit
+- the protection audit's REPORTING, which showed a 4 August success and a
+  10 August failure while the sweep itself ran every 50 seconds, 20,492 times
+  (see the correction below)
 
 **Ask of every guard: what input would make this fire, and has that input ever
 arrived?** If you cannot answer the second half, the guard is decoration.
+
+**CORRECTION, made before this file was merged.** The protection-audit entry
+originally read "dead since 4 August". That was wrong, and wrong in a way this
+very entry warns about. `/state/protection-audit` reports `at: 2026-08-04`
+(last SUCCESS) and `lastAttemptAt: 2026-08-10`, so the panel looked like a
+controller that had stopped. The heartbeat says otherwise: `protection_audit`
+ran 50 seconds ago and 20,492 times, failing each pass on a 502 for ONE account.
+
+The guard fires constantly. Its RECORD is what is stuck: the failure path beats
+the heartbeat but never stamps `lastAttemptAt`, so a week-old attempt is
+presented as the current state. Trusting the panel over the controller is the
+mistake — and I made it repeatedly across a whole session, including in the
+first draft of this list.
+
+**Two readings of the same subsystem disagreed, and the one that updates every
+50 seconds is the one to believe.**
 
 ### 4. A repair that nothing calls
 
