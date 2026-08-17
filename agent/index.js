@@ -18,6 +18,7 @@ import { tierTable } from './lib/model-router.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
 import { publicPipelineView } from './services/decision-audit.js';
 import { readRecentErrors } from './services/error-log.js';
+import ctraderOauthRouter from './routes/ctrader-oauth.js';
 import { startLagMonitor } from './services/event-loop-lag.js';
 import { recordRequest } from './services/route-timing.js';
 
@@ -381,6 +382,54 @@ app.use((req, res, next) => {
   next();
 });
 
+// ---------------------------------------------------------------------------
+// THE FRONTEND AND THE OAUTH EXCHANGE — both moved off Vercel.
+//
+// Owner, 17-08-2026: "I am paying a lot at vercel. I want to decomm. the
+// bot-trade at Vercel." Vercel served the ONLY browser UI (GET / here returned
+// 502 — nothing was mounted) plus /api/ctrader, so deleting the project without
+// this leaves Telegram as the sole interface.
+//
+// The trading loop, every controller, and — checked first, because it is the
+// one that would have mattered — the cTrader TOKEN REFRESH all run here
+// already, straight against Spotware in lib/ctrader-auth.js. Nothing about the
+// broker connection depended on Vercel.
+//
+// BOTH MOUNT BEFORE authMiddleware, matching what Vercel did. The bundle is a
+// public static asset (it holds no secret; the browser authenticates afterwards
+// with a device session or the secret), and the OAuth endpoints are called
+// precisely because the browser has no credential yet.
+// ---------------------------------------------------------------------------
+app.use('/api/ctrader', ctraderOauthRouter());
+
+// dist/ is built by `npm run build` at the repo root. When it is absent — a
+// dev container that never built, or a deploy that skipped it — serve nothing
+// rather than 404-ing every API path through a broken fallback: the agent's
+// job is trading, and it must boot without a frontend.
+const DIST_DIR = resolve(dirname(new URL(import.meta.url).pathname), '../dist');
+const HAS_DIST = (() => { try { return fs.existsSync(resolve(DIST_DIR, 'index.html')); } catch { return false; } })();
+if (HAS_DIST) {
+  app.use(express.static(DIST_DIR, { index: 'index.html', maxAge: '1h' }));
+  console.log(`[http] serving frontend from ${DIST_DIR}`);
+} else {
+  console.warn('[http] no dist/index.html — frontend not served (API unaffected)');
+}
+
+// The SPA fallback goes here — BEFORE authMiddleware — and the reason is
+// worth stating because I got it backwards first.
+//
+// I originally mounted it last, after the API routers, on the argument that
+// ordering was what stopped it swallowing /state. Every unit test passed and
+// the UI returned 401 on every path: authMiddleware sits between, so a request
+// for /connect was rejected before the fallback ever saw it. The page was
+// unreachable while the tests were green.
+//
+// What actually makes this safe is `isSpaPath`, an EXPLICIT exclusion list —
+// not position. With that, running early is both safe and necessary: the HTML
+// shell is a public asset and must be served without a credential, exactly as
+// Vercel served it.
+mountSpaFallback();
+
 app.use(authMiddleware);
 
 // ---------------------------------------------------------------------------
@@ -698,6 +747,33 @@ async function mountRoutes() {
   } catch (err) {
     console.warn('[boot] routes/actions.js not loaded:', err.message);
   }
+}
+
+// ---------------------------------------------------------------------------
+// SPA FALLBACK — mirrors vercel.json's rewrite: /((?!api/).*) → /index.html
+//
+// Registered HERE, after every API router, and that ordering is the whole
+// correctness argument. Mounted earlier it would answer /state and /actions
+// with the HTML shell before their routers ever ran — the API would "work"
+// while returning a web page, which is the kind of green-looking failure this
+// codebase has been bitten by repeatedly.
+//
+// GET only, and the API prefixes are excluded EXPLICITLY as well as by
+// ordering. Belt and braces: a genuine 404 inside /state must stay a JSON 404
+// for the client to handle, not become an index.html the fetch then fails to
+// parse with a message that points nowhere near the real problem.
+// ---------------------------------------------------------------------------
+export function isSpaPath(path) {
+  return !/^\/(api|state|actions|auth|health|icon\.png)(\/|$)/.test(path)
+}
+
+function mountSpaFallback() {
+  if (!HAS_DIST) return
+  app.get(/.*/, (req, res, next) => {
+    if (!isSpaPath(req.path)) return next()
+    res.sendFile(resolve(DIST_DIR, 'index.html'))
+  })
+  console.log('[http] SPA fallback mounted for non-API GETs')
 }
 
 // ---------------------------------------------------------------------------
