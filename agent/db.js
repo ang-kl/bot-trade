@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { openJournal } from './lib/wal-open.js';
+import { maybeEmergencyReclaim } from './services/emergency-reclaim.js';
 // Leaf module — imports nothing, takes `db` as a parameter — so this cannot
 // cycle back into db.js. See closeTradeRow for why the stamp lives here.
 import { realisedRR, checkTradeConsistency } from './services/trade-consistency.js';
@@ -584,6 +585,12 @@ export function initDB(dbPath) {
   // compaction that reclaims the space.
   const journal = openJournal(db, resolvedPath);
   if (journal.degraded) db.__journalDegraded = journal;
+
+  // A full volume is a deadlock: compaction reclaims the space, compaction
+  // runs inside the agent, and the agent cannot boot on a full volume. So the
+  // reclaim happens HERE — after the journal is up and before db.exec(TABLES)
+  // below, which writes and would be the next thing to fail.
+  maybeEmergencyReclaim(db, resolvedPath);
   console.log(`[boot] storage: ${journal.storage} journal=${journal.mode}`);
   db.pragma('busy_timeout = 5000');
   db.pragma('synchronous = NORMAL');
