@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { openJournal } from './lib/wal-open.js';
 // Leaf module — imports nothing, takes `db` as a parameter — so this cannot
 // cycle back into db.js. See closeTradeRow for why the stamp lives here.
 import { realisedRR, checkTradeConsistency } from './services/trade-consistency.js';
@@ -572,8 +573,18 @@ export function initDB(dbPath) {
   const resolvedPath = dbPath || process.env.DB_PATH || './agent.db';
   const db = new Database(resolvedPath);
 
-  // Performance / concurrency pragmas
-  db.pragma('journal_mode = WAL');
+  // Performance / concurrency pragmas.
+  //
+  // The journal open is delegated because it is the one pragma that can fail
+  // for a reason outside SQL: a full volume cannot size the WAL's `-shm`
+  // file, and the resulting SQLITE_IOERR_SHMSIZE crash-looped this agent for
+  // hours on 18-08-2026 while reporting only its mechanism. openJournal logs
+  // what the disk actually looked like and falls back to exclusive locking
+  // (wal-index in heap, no -shm) so the process can at least boot and run the
+  // compaction that reclaims the space.
+  const journal = openJournal(db, resolvedPath);
+  if (journal.degraded) db.__journalDegraded = journal;
+  console.log(`[boot] storage: ${journal.storage} journal=${journal.mode}`);
   db.pragma('busy_timeout = 5000');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
