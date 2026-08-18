@@ -4237,6 +4237,29 @@ async function runLoop(db) {
       // Phase-flag tracer rows: tiny, but unbounded is unbounded. 90 days
       // matches risk_events — flips older than that are history, not evidence.
       try { db.prepare("DELETE FROM phase_flag_trace WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
+      // RETURN THE FREED PAGES TO THE FILESYSTEM.
+      //
+      // Every prune above works, and every one of them has worked for months.
+      // The file still only grew, because SQLite does not shrink on DELETE —
+      // freed pages go on the freelist and are reused for new rows, so a
+      // database inserting faster than it deletes grows for ever however much
+      // it prunes. Nothing here ran VACUUM; storage-report.js had been
+      // REPORTING `freelistPages` the whole time with the comment "pages
+      // already reclaimable without VACUUM", measuring the problem while
+      // nothing acted on it.
+      //
+      // Measured cost: on 2026-08-17 the Railway volume filled and the agent
+      // crash-looped on boot with SQLITE_IOERR_SHMSIZE at `journal_mode = WAL`
+      // — it could not create the -shm file, so it never reached line 200.
+      //
+      // Runs LAST in the pass, after the deletes it is reclaiming, and refuses
+      // itself unless the disk can hold a second copy — see db-compact.js.
+      try {
+        const { runCompact } = await import('./services/db-compact.js')
+        const c = runCompact(db)
+        if (c.ran) log(`housekeeping: compacted ${Math.round((c.freedBytes || 0) / 1e6)}MB from the database file`)
+        else if (c.blocked) console.warn(`[housekeeping] compaction BLOCKED — ${c.reason}`)
+      } catch { /* a cleanup must never take down the process it protects */ }
       // §70.8: settle the terminal disposition of every approval that can be
       // settled. Rides in housekeeping because it is a derivation over rows
       // that are already written — one indexed scan, no broker call — and
