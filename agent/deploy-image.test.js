@@ -77,3 +77,31 @@ test('a missing UI is announced, never silent', () => {
   assert.match(idx, /no dist\/index\.html/,
     'if the UI is absent the log must say so — that absence is exactly what went unnoticed')
 })
+
+test('the image can be started by `npm start`, not only by the CMD', () => {
+  // THE FAILURE THIS EXISTS FOR. Railway runs a custom start command of
+  // `npm start`, which overrides a Dockerfile CMD entirely. The old image
+  // satisfied that by accident — WORKDIR was /app and the AGENT's package.json
+  // happened to sit there. Moving the agent to /app/agent to make room for the
+  // built site removed it, and the container died on
+  // `ENOENT: open '/app/package.json'` before printing one line of its own.
+  //
+  // Asserting on the CMD alone could never have caught this: the CMD was
+  // correct throughout, and was never the thing being run.
+  const df = code('Dockerfile')
+  assert.match(df, /> \/app\/package\.json/,
+    'the image must provide a start script at /app, since the platform may use npm start')
+  assert.match(df, /"start": "node agent\/index\.js"/)
+
+  // And it must not be the repo root package.json, which is the frontend's:
+  // `npm start` against that would run vite, not the agent.
+  const rootPkg = JSON.parse(read('package.json'))
+  assert.notEqual(rootPkg.scripts?.start, 'node agent/index.js',
+    'the repo root package.json is the frontend build, not the runtime entrypoint')
+})
+
+test('the generated start script is verified inside the build', () => {
+  // A printf that silently wrote the wrong thing would reproduce the same
+  // crash, so the build checks its own output rather than assuming.
+  assert.match(code('Dockerfile'), /node -e .*scripts\.start.*process\.exit\(1\)/)
+})

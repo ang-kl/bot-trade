@@ -43,6 +43,34 @@ WORKDIR /app
 COPY agent ./agent
 COPY --from=frontend /build/dist ./dist
 
+# A START SCRIPT AT /app, because the platform may not use the CMD below.
+#
+# Railway is configured with a custom start command of `npm start`, which
+# overrides a Dockerfile CMD entirely. The previous image satisfied that by
+# accident: WORKDIR was /app and the AGENT's package.json sat there, so
+# `npm start` found `node index.js`. Moving the agent to /app/agent to make
+# room for the built site broke it, and the container died before printing a
+# single line of its own:
+#
+#   npm error Could not read package.json:
+#     ENOENT: no such file or directory, open '/app/package.json'
+#
+# Written here rather than copied from the repo root on purpose: the repo's root
+# package.json is the FRONTEND's, and `npm start` against it would run vite.
+# This one exists only to name the entrypoint, so the image boots the same way
+# whether the platform runs `npm start` or the CMD.
+#
+# No "type" field: Node resolves the nearest package.json per file, so agent
+# code keeps using /app/agent/package.json. Declaring a module type here would
+# only add a second, contradictory answer for anything that lands in /app.
+RUN printf '%s\n' \
+      '{' \
+      '  "name": "bot-trade-runtime",' \
+      '  "private": true,' \
+      '  "scripts": { "start": "node agent/index.js" }' \
+      '}' > /app/package.json \
+    && node -e "if(require('/app/package.json').scripts.start!=='node agent/index.js')process.exit(1)"
+
 ENV NODE_ENV=production
 EXPOSE 3001
 CMD ["node", "agent/index.js"]
