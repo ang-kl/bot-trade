@@ -1,5 +1,6 @@
 // ---------------------------------------------------------------------------
-// agent/services/prune-scans.js — delete old scans without tripping the FK.
+// agent/services/prune-scans.js — delete old scans without tripping the FK,
+// and without holding the event loop long enough to be shot for it.
 //
 // MEASURED IN PRODUCTION, 19-08-2026:
 //
@@ -9,38 +10,85 @@
 //
 // `analyses.scan_id REFERENCES scans(id)` and the connection runs with
 // `foreign_keys = ON`, so ONE surviving analysis row aborts the entire DELETE.
-// The step therefore pruned nothing, every pass, for months — while reporting
-// itself as a non-fatal failure that nobody read. scans is the highest-churn
-// table in the system: every loop writes a row per symbol scanned.
+// The step pruned nothing, every pass, for months — while reporting itself as
+// a non-fatal failure that nobody read. scans is the highest-churn table here:
+// a row per symbol per loop.
 //
-// This is the same shape the compaction work chased and did not find. Freed
-// pages being reused explains a file that never SHRINKS; it does not explain
-// one that reaches 1.4GB. A retention step that deletes zero rows does.
+// Freed pages being reused explains a file that never SHRINKS. It does not
+// explain one that reaches 1.4GB. A retention step deleting zero rows does.
 //
-// The fix is not new: retention.js already excludes analyses still referenced
-// by trades, with exactly this NOT IN. It was simply never applied here.
+// NOT `ON DELETE CASCADE`, AND NOT A DELETE OF THE ANALYSES. An analysis is
+// the reasoning behind a trade and outlives its scan on purpose. A referenced
+// scan waits and is collected on a later pass, once the analysis ages out
+// under its own retention. Retention that destroys the record it is
+// referenced BY is a worse bug than the one being fixed.
 //
-// Deliberately NOT `ON DELETE CASCADE` and NOT a delete of the analyses:
-// an analysis is the reasoning behind a trade and outlives its scan on
-// purpose. A scan still referenced is a scan still in use — it waits for the
-// analysis to age out under its own retention, and is collected on a later
-// pass. Retention that quietly destroys the record it is referenced BY is a
-// worse bug than the one being fixed.
+// WHY IT IS BATCHED, which matters more here than it would anywhere else.
+// Fixing the FK means MONTHS of backlog become deletable in a single pass. In
+// one synchronous statement, on the event loop, that is the same hazard as the
+// VACUUM this codebase just had to guard: overrun the 12-minute loop watchdog
+// and the process is killed, the implicit transaction rolls back, zero rows
+// are deleted, and it repeats every 8 hours — a silent no-op replaced by a
+// restart loop. So the work goes in bounded batches with a heartbeat between
+// them, and progress survives even if a later batch is interrupted.
+//
+// The FK check is also why `idx_analyses_scan_id` exists (db.js). Deleting a
+// PARENT row requires proving no child references it; without an index on the
+// child key SQLite scans `analyses` once per deleted scan. That cost does not
+// show up in EXPLAIN QUERY PLAN, which is exactly why it is easy to ship.
 // ---------------------------------------------------------------------------
+
+export const DEFAULT_BATCH = 20_000
 
 /**
  * Delete scans older than `cutoffIso`, except those an analysis still points
- * at. Returns the better-sqlite3 RunResult so the caller reads `.changes`.
+ * at, in bounded batches.
+ *
+ * @param {object} db
+ * @param {string} cutoffIso
+ * @param {{batch?: number, maxBatches?: number, onProgress?: (n: number) => void}} [opts]
+ * @returns {{changes: number, batches: number, done: boolean}}
+ *   `changes` matches better-sqlite3's RunResult field so callers reading
+ *   `.changes` keep working. `done` is false when the cap stopped it early —
+ *   the remainder is collected on the next pass rather than pretending.
  */
-export function pruneScans(db, cutoffIso) {
-  return db.prepare(
+export function pruneScans(db, cutoffIso, opts = {}) {
+  const batch = Number(opts.batch) > 0 ? Number(opts.batch) : DEFAULT_BATCH
+  const maxBatches = Number(opts.maxBatches) > 0 ? Number(opts.maxBatches) : 50
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null
+
+  // `id IN (SELECT … LIMIT ?)` rather than a bare LIMIT on the DELETE, which
+  // SQLite only supports when compiled with SQLITE_ENABLE_UPDATE_DELETE_LIMIT.
+  const stmt = db.prepare(
     `DELETE FROM scans
-      WHERE scanned_at < ?
-        AND id NOT IN (SELECT scan_id FROM analyses WHERE scan_id IS NOT NULL)`
-  ).run(cutoffIso)
+      WHERE id IN (
+        SELECT id FROM scans
+         WHERE scanned_at < ?
+           AND id NOT IN (SELECT scan_id FROM analyses WHERE scan_id IS NOT NULL)
+         LIMIT ?
+      )`
+  )
+
+  let changes = 0
+  let batches = 0
+  for (; batches < maxBatches; batches += 1) {
+    const n = stmt.run(cutoffIso, batch).changes
+    changes += n
+    // The heartbeat goes BETWEEN batches, where the caller can actually be
+    // heard — a callback after the whole delete would be the stall it is
+    // meant to prevent.
+    if (onProgress) onProgress(changes)
+    if (n < batch) return { changes, batches: batches + 1, done: true }
+  }
+  return { changes, batches, done: false }
 }
 
-/** How many old scans are being held back, and by how many analyses. */
+/**
+ * How many old scans are being held back because an analysis still points at
+ * them. Reported in the housekeeping summary: if analyses retention ever
+ * breaks, this number climbs while `pruned N scans` still looks healthy — and
+ * a diagnostic nobody prints is the defect this whole area keeps producing.
+ */
 export function heldByAnalyses(db, cutoffIso) {
   return db.prepare(
     `SELECT COUNT(*) AS n FROM scans

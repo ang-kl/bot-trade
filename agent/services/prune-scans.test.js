@@ -1,136 +1,173 @@
-// Reproduces the production failure exactly: foreign_keys ON, an analysis
-// pointing at an old scan, and a DELETE that took the whole statement down.
+// ---------------------------------------------------------------------------
+// These tests run against the REAL schema, built by initDB, and execute the
+// real statements. The previous version asserted on loop.js SOURCE TEXT and
+// was green against `FROM positions` — a table that does not exist in this
+// schema at all. A test that matches text near the code instead of exercising
+// it is the failure mode in CLAUDE.md #2, and it cost a shipped blocker.
+// ---------------------------------------------------------------------------
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import Database from 'better-sqlite3'
 
-import { pruneScans, heldByAnalyses } from './prune-scans.js'
+import { initDB, accountsWithOpenPositions } from '../db.js'
+import { pruneScans, heldByAnalyses, DEFAULT_BATCH } from './prune-scans.js'
 
-function db() {
+function realDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prunescans-'))
-  const d = new Database(path.join(dir, 'a.db'))
-  d.pragma('foreign_keys = ON')          // as production runs
-  d.exec(`
-    CREATE TABLE scans (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      symbol TEXT NOT NULL,
-      scanned_at TEXT NOT NULL
-    );
-    CREATE TABLE analyses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      symbol TEXT NOT NULL,
-      analyzed_at TEXT NOT NULL,
-      scan_id INTEGER REFERENCES scans(id)
-    );
-  `)
-  return { d, dir }
+  const db = initDB(path.join(dir, 'agent.db'))
+  return { db, dir, cleanup: () => { db.close(); fs.rmSync(dir, { recursive: true, force: true }) } }
 }
 
 const OLD = '2020-01-01T00:00:00.000Z'
-const OLDER = '2019-01-01T00:00:00.000Z'
 const CUT = '2024-01-01T00:00:00.000Z'
 const NEW = '2030-01-01T00:00:00.000Z'
 
-test('the unguarded DELETE really does fail — this is the bug, not a theory', () => {
-  const { d, dir } = db()
-  d.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)').run('EURUSD', OLD)
-  d.prepare('INSERT INTO analyses (symbol, analyzed_at, scan_id) VALUES (?, ?, 1)').run('EURUSD', OLD)
+const addScan = (db, at) =>
+  db.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)').run('EURUSD', at).lastInsertRowid
+const addAnalysis = (db, scanId, at = OLD) =>
+  db.prepare('INSERT INTO analyses (symbol, analyzed_at, scan_id) VALUES (?, ?, ?)').run('EURUSD', at, scanId)
+
+test('foreign_keys is ON — without it none of this bug exists', () => {
+  const { db, cleanup } = realDb()
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1)
+  cleanup()
+})
+
+test('the unguarded DELETE really fails on the real schema', () => {
+  const { db, cleanup } = realDb()
+  const id = addScan(db, OLD)
+  addAnalysis(db, id)
   assert.throws(
-    () => d.prepare('DELETE FROM scans WHERE scanned_at < ?').run(CUT),
+    () => db.prepare('DELETE FROM scans WHERE scanned_at < ?').run(CUT),
     /FOREIGN KEY constraint failed/,
   )
-  d.close(); fs.rmSync(dir, { recursive: true, force: true })
+  cleanup()
 })
 
 test('one referenced row no longer blocks every other deletion', () => {
-  const { d, dir } = db()
-  const ins = d.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)')
-  ins.run('EURUSD', OLD)      // id 1 — referenced
-  ins.run('GBPUSD', OLD)      // id 2
-  ins.run('USDJPY', OLDER)    // id 3
-  d.prepare('INSERT INTO analyses (symbol, analyzed_at, scan_id) VALUES (?, ?, 1)').run('EURUSD', OLD)
+  const { db, cleanup } = realDb()
+  const held = addScan(db, OLD)
+  addScan(db, OLD)
+  addScan(db, OLD)
+  addAnalysis(db, held)
 
-  const r = pruneScans(d, CUT)
-  assert.equal(r.changes, 2, 'the two unreferenced old scans go')
-  const left = d.prepare('SELECT id FROM scans ORDER BY id').all().map((x) => x.id)
-  assert.deepEqual(left, [1], 'only the referenced one is held back')
-  d.close(); fs.rmSync(dir, { recursive: true, force: true })
+  const r = pruneScans(db, CUT)
+  assert.equal(r.changes, 2)
+  assert.equal(r.done, true)
+  assert.deepEqual(db.prepare('SELECT id FROM scans').all().map((x) => x.id), [held])
+  cleanup()
 })
 
-test('scans inside the retention window are never touched', () => {
-  const { d, dir } = db()
-  const ins = d.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)')
-  ins.run('EURUSD', OLD)
-  ins.run('GBPUSD', NEW)
-  pruneScans(d, CUT)
-  const left = d.prepare('SELECT symbol FROM scans').all().map((x) => x.symbol)
-  assert.deepEqual(left, ['GBPUSD'])
-  d.close(); fs.rmSync(dir, { recursive: true, force: true })
-})
-
-test('a held scan is collected once its analysis ages out', () => {
-  const { d, dir } = db()
-  d.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)').run('EURUSD', OLD)
-  d.prepare('INSERT INTO analyses (symbol, analyzed_at, scan_id) VALUES (?, ?, 1)').run('EURUSD', OLD)
-  assert.equal(pruneScans(d, CUT).changes, 0)
-  assert.equal(heldByAnalyses(d, CUT), 1)
-
-  d.prepare('DELETE FROM analyses').run()          // its own retention runs
-  assert.equal(pruneScans(d, CUT).changes, 1, 'the next pass collects it')
-  d.close(); fs.rmSync(dir, { recursive: true, force: true })
-})
-
-test('the analysis itself is never deleted to make room for the prune', () => {
-  const { d, dir } = db()
-  d.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)').run('EURUSD', OLD)
-  d.prepare('INSERT INTO analyses (symbol, analyzed_at, scan_id) VALUES (?, ?, 1)').run('EURUSD', OLD)
-  pruneScans(d, CUT)
-  assert.equal(d.prepare('SELECT COUNT(*) c FROM analyses').get().c, 1,
-    'an analysis is the reasoning behind a trade — retention must not destroy it')
-  d.close(); fs.rmSync(dir, { recursive: true, force: true })
+test('scans inside the retention window are untouched', () => {
+  const { db, cleanup } = realDb()
+  addScan(db, OLD)
+  addScan(db, NEW)
+  pruneScans(db, CUT)
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM scans').get().c, 1)
+  cleanup()
 })
 
 test('a NULL scan_id does not swallow the whole NOT IN', () => {
-  // SQL trap: `id NOT IN (SELECT scan_id ...)` yields NULL — and deletes
-  // NOTHING — the moment one scan_id is NULL. The WHERE clause guards it.
-  const { d, dir } = db()
-  d.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)').run('EURUSD', OLD)
-  d.prepare('INSERT INTO analyses (symbol, analyzed_at, scan_id) VALUES (?, ?, NULL)').run('X', OLD)
-  assert.equal(pruneScans(d, CUT).changes, 1, 'a NULL reference must not protect every row')
-  d.close(); fs.rmSync(dir, { recursive: true, force: true })
+  const { db, cleanup } = realDb()
+  addScan(db, OLD)
+  addAnalysis(db, null)
+  assert.equal(pruneScans(db, CUT).changes, 1, 'a NULL reference must not protect every row')
+  cleanup()
 })
 
-test('loop.js calls the service rather than re-inlining the broken DELETE', () => {
-  const src = fs.readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
-    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
-  assert.match(src, /pruneScans\(db, cutoff30d\)/)
-  assert.ok(
-    !/DELETE FROM scans WHERE scanned_at < \?'\)/.test(src),
-    'the unguarded statement is what failed for months — it must not return',
-  )
+test('the analysis is never destroyed to make room for the prune', () => {
+  const { db, cleanup } = realDb()
+  const id = addScan(db, OLD)
+  addAnalysis(db, id)
+  pruneScans(db, CUT)
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM analyses').get().c, 1)
+  cleanup()
 })
 
-test('compaction is deferred while positions are open, and stamps the watchdog', () => {
+test('a held scan is collected once its analysis ages out', () => {
+  const { db, cleanup } = realDb()
+  const id = addScan(db, OLD)
+  addAnalysis(db, id)
+  assert.equal(pruneScans(db, CUT).changes, 0)
+  assert.equal(heldByAnalyses(db, CUT), 1)
+  db.prepare('DELETE FROM analyses').run()
+  assert.equal(pruneScans(db, CUT).changes, 1)
+  cleanup()
+})
+
+test('the delete is batched, and progress is reported between batches', () => {
+  const { db, cleanup } = realDb()
+  const ins = db.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)')
+  const many = db.transaction(() => { for (let i = 0; i < 25; i += 1) ins.run('EURUSD', OLD) })
+  many()
+
+  const beats = []
+  const r = pruneScans(db, CUT, { batch: 10, onProgress: (n) => beats.push(n) })
+  assert.equal(r.changes, 25)
+  assert.equal(r.batches, 3, '10 + 10 + 5')
+  assert.deepEqual(beats, [10, 20, 25],
+    'the heartbeat fires BETWEEN batches — after the whole delete it would be the stall it prevents')
+  cleanup()
+})
+
+test('hitting the batch cap reports done:false rather than pretending', () => {
+  const { db, cleanup } = realDb()
+  const ins = db.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)')
+  const many = db.transaction(() => { for (let i = 0; i < 12; i += 1) ins.run('EURUSD', OLD) })
+  many()
+  const r = pruneScans(db, CUT, { batch: 5, maxBatches: 2 })
+  assert.equal(r.changes, 10)
+  assert.equal(r.done, false, 'the remainder is collected next pass, and says so')
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM scans').get().c, 2)
+  cleanup()
+})
+
+test('the FK child index exists — without it the delete is a full analyses scan per row', () => {
+  const { db, cleanup } = realDb()
+  const idx = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_analyses_scan_id'"
+  ).get()
+  assert.ok(idx, 'idx_analyses_scan_id must exist: the FK check is invisible in EXPLAIN QUERY PLAN')
+  cleanup()
+})
+
+test('the compaction guard queries a table that actually exists', () => {
+  // THE TEST THAT WAS MISSING. The shipped guard read `FROM positions`, which
+  // is not a table here; it threw at prepare time and disabled compaction
+  // entirely. Executing the real helper against the real schema is what makes
+  // that impossible to ship again.
+  const { db, cleanup } = realDb()
+  assert.deepEqual(accountsWithOpenPositions(db), [], 'no open positions in a fresh database')
+
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, status, account_id) VALUES (?, 'active', ?)`
+  ).run('EURUSD', '42993489')
+  assert.deepEqual(accountsWithOpenPositions(db), ['42993489'])
+
+  db.prepare("UPDATE monitored_positions SET status = 'closed'").run()
+  assert.deepEqual(accountsWithOpenPositions(db), [], 'a closed position must not defer compaction for ever')
+  cleanup()
+})
+
+test('loop.js defers on that helper, and stamps the watchdog after the rebuild', () => {
   const src = fs.readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
     .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
-  // A 1.4GB VACUUM blocked the event loop for 23 minutes and the watchdog
-  // killed the process mid-rebuild. Both halves of the fix are load-bearing.
-  assert.match(src, /compaction deferred/)
-  // SCOPED TO THE COMPACTION BLOCK ON PURPOSE. The first version of this
-  // asserted `lastLoopActivityAt = Date.now()` against the whole file, and
-  // loop.js stamps that in three other places — so deleting the one that
-  // matters left the test green. A mutation check that cannot fail proves
-  // nothing (CLAUDE.md, failure mode 1).
+  assert.match(src, /accountsWithOpenPositions\(db\)/)
+  assert.ok(!/FROM positions\b/.test(src), 'there is no `positions` table — it is monitored_positions')
+  assert.ok(!/DELETE FROM scans WHERE scanned_at/.test(src),
+    'the unguarded statement failed for months; it must not be re-inlined')
+
+  // Scoped: loop.js stamps lastLoopActivityAt in three other places, so a
+  // whole-file match here would pass with the line deleted.
   const start = src.indexOf('const { runCompact }')
   const end = src.indexOf('compaction failed (non-fatal)')
-  assert.ok(start > 0 && end > start, 'the compaction block is findable')
-  const block = src.slice(start, end)
-  assert.match(block, /lastLoopActivityAt = Date\.now\(\)/,
-    'the rebuild holds the thread — without this stamp the watchdog reads it as a hang')
-  assert.match(src, /compaction not needed/,
-    'a decision that logs nothing is indistinguishable from a step that never ran')
+  assert.ok(start > 0 && end > start)
+  assert.match(src.slice(start, end), /lastLoopActivityAt = Date\.now\(\)/)
+})
+
+test('the default batch is large enough to be useful and small enough to yield', () => {
+  assert.ok(DEFAULT_BATCH >= 1000 && DEFAULT_BATCH <= 100_000)
 })

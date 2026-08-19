@@ -4222,8 +4222,13 @@ async function runLoop(db) {
         // referenced rows is the same shape retention.js already uses for
         // analyses-vs-trades; it was simply never applied here.
         {
+          // Batched with a heartbeat: fixing the FK makes months of backlog
+          // deletable in ONE pass, and a single synchronous statement that
+          // overruns the 12-minute watchdog would be killed, roll back, delete
+          // nothing, and repeat every 8 hours.
           name: 'prune-scans',
-          run: async () => (await import('./services/prune-scans.js')).pruneScans(db, cutoff30d),
+          run: async () => (await import('./services/prune-scans.js'))
+            .pruneScans(db, cutoff30d, { onProgress: () => { lastLoopActivityAt = Date.now() } }),
         },
         { name: 'prune-signals', run: () => db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d) },
         { name: 'prune-regimes', run: () => db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d) },
@@ -4285,11 +4290,17 @@ async function runLoop(db) {
       // decided, every time.
       try {
         const { runCompact } = await import('./services/db-compact.js')
-        const openNow = db.prepare(
-          "SELECT COUNT(*) AS n FROM positions WHERE status = 'active'"
-        ).get()?.n ?? 0
-        if (openNow > 0) {
-          log(`housekeeping: compaction deferred — ${openNow} position(s) open, a rebuild blocks the event loop`)
+        // `accountsWithOpenPositions` and not a hand-written query: the first
+        // version of this read `FROM positions`, which is not a table in this
+        // schema (it is `monitored_positions`). It threw at prepare time, the
+        // catch below swallowed it, and compaction never ran at all — the PR
+        // that existed to reclaim 1.4GB shipped with the reclaim switched off.
+        // The tests missed it because they matched source TEXT instead of
+        // executing the query.
+        const { accountsWithOpenPositions } = await import('./db.js')
+        const openAccts = accountsWithOpenPositions(db)
+        if (openAccts.length > 0) {
+          log(`housekeeping: compaction deferred — open position(s) on ${openAccts.length} account(s), a rebuild blocks the event loop`)
         } else {
           const c = runCompact(db)
           // The rebuild held the thread; the watchdog must not read that as a
@@ -4463,7 +4474,15 @@ async function runLoop(db) {
         }
       } catch (e) { log('Disposition sweep failed (non-fatal):', e.message) }
 
-      log(`Housekeeping: pruned ${changesOf(d1)} scans, ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows`
+      // Held-back scans are reported, not merely computed. If analyses
+      // retention ever breaks, this number climbs while "pruned N scans" still
+      // reads healthy — a diagnostic nobody prints is the exact defect this
+      // area keeps producing.
+      let heldScans = 0
+      try {
+        heldScans = (await import('./services/prune-scans.js')).heldByAnalyses(db, cutoff30d)
+      } catch { /* diagnostics must never break the pass they describe */ }
+      log(`Housekeeping: pruned ${changesOf(d1)} scans (${heldScans} held by analyses), ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows`
         + (pass.failed.length ? ` — ${pass.failed.length} step(s) FAILED: ${pass.failed.map(f => f.name).join(', ')}` : ''))
     } catch (err) {
       log('Housekeeping error:', err.message)
