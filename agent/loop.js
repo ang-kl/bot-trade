@@ -4213,7 +4213,18 @@ async function runLoop(db) {
       const cutoff90d = new Date(Date.now() - 90 * 86400_000).toISOString()
       const { runHousekeepingSteps, changesOf } = await import('./services/housekeeping-run.js')
       const pass = await runHousekeepingSteps([
-        { name: 'prune-scans', run: () => db.prepare('DELETE FROM scans WHERE scanned_at < ?').run(cutoff30d) },
+        // `analyses.scan_id REFERENCES scans(id)` and foreign_keys is ON, so a
+        // single old scan that an analysis still points at aborts the WHOLE
+        // delete. Production ran that way for months: the step reported
+        // "failed (non-fatal): FOREIGN KEY constraint failed" every pass and
+        // pruned NOTHING, while scans — the highest-churn table here — grew
+        // unbounded. The database reached 1,459MB that way. Excluding the
+        // referenced rows is the same shape retention.js already uses for
+        // analyses-vs-trades; it was simply never applied here.
+        {
+          name: 'prune-scans',
+          run: async () => (await import('./services/prune-scans.js')).pruneScans(db, cutoff30d),
+        },
         { name: 'prune-signals', run: () => db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d) },
         { name: 'prune-regimes', run: () => db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d) },
         { name: 'prune-risk-events', run: () => db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d) },
@@ -4254,12 +4265,45 @@ async function runLoop(db) {
       //
       // Runs LAST in the pass, after the deletes it is reclaiming, and refuses
       // itself unless the disk can hold a second copy — see db-compact.js.
+      //
+      // TWO THINGS MEASURED IN PRODUCTION ON 19-08-2026, both changing how
+      // this is called.
+      //
+      // FIRST, VACUUM IS NOT FREE AND better-sqlite3 IS SYNCHRONOUS. Rebuilding
+      // a 1,459MB database blocked the event loop long enough that the loop
+      // watchdog saw 23 minutes of no cycle activity, declared the loop hung
+      // and exited the process — "stuck in phase housekeeping". A cleanup that
+      // restarts the agent is worse than the bloat it removes, and worse still
+      // with positions open, because nothing monitors them while the thread is
+      // held. So: never while a position is open, and stamp the watchdog
+      // afterwards so the rebuild's own duration is not counted as a stall.
+      //
+      // SECOND, THE SILENCE WAS ITSELF A DEFECT. The old call logged only when
+      // it ran or was blocked, so a pass that simply decided "not worth it"
+      // looked identical to one that never happened — and after the watchdog
+      // killed that boot there was no way to tell which. It now says what it
+      // decided, every time.
       try {
         const { runCompact } = await import('./services/db-compact.js')
-        const c = runCompact(db)
-        if (c.ran) log(`housekeeping: compacted ${Math.round((c.freedBytes || 0) / 1e6)}MB from the database file`)
-        else if (c.blocked) console.warn(`[housekeeping] compaction BLOCKED — ${c.reason}`)
-      } catch { /* a cleanup must never take down the process it protects */ }
+        const openNow = db.prepare(
+          "SELECT COUNT(*) AS n FROM positions WHERE status = 'active'"
+        ).get()?.n ?? 0
+        if (openNow > 0) {
+          log(`housekeeping: compaction deferred — ${openNow} position(s) open, a rebuild blocks the event loop`)
+        } else {
+          const c = runCompact(db)
+          // The rebuild held the thread; the watchdog must not read that as a
+          // hang on the next tick.
+          lastLoopActivityAt = Date.now()
+          if (c.ran) log(`housekeeping: compacted ${Math.round((c.freedBytes || 0) / 1e6)}MB from the database file`)
+          else if (c.blocked) console.warn(`[housekeeping] compaction BLOCKED — ${c.reason}`)
+          else log(`housekeeping: compaction not needed — ${c.reason || 'nothing worth reclaiming'}`)
+        }
+      } catch (err) {
+        // A cleanup must never take down the process it protects — but it must
+        // not vanish either, which is how the last one went unexplained.
+        log(`housekeeping: compaction failed (non-fatal): ${err.message}`)
+      }
       // §70.8: settle the terminal disposition of every approval that can be
       // settled. Rides in housekeeping because it is a derivation over rows
       // that are already written — one indexed scan, no broker call — and
