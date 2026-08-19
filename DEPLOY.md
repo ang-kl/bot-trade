@@ -61,6 +61,31 @@ So the order out of a full disk is:
 `EMERGENCY_PURGE=1` forces the boot-time reclaim even when free space looks
 fine — for testing it, or for a volume whose free-space reporting is wrong.
 
+## When a deploy never starts
+
+Distinguish "the platform did not run it" from "our code failed", because the
+two look identical from outside — the domain returns 404 either way, and a
+404 is easy to read as a broken service.
+
+On 18/19-08-2026 four merges in a row reached `main` and none of them ran.
+Railway showed them QUEUED with Initialization/Build/Deploy all "Not started",
+and the tell was a second, unrelated project stalling the same way: nothing in
+one repo can stall another. Railway's status page confirmed a platform-wide
+build-queue incident.
+
+So, in order:
+
+1. `curl -D - .../health`. `x-railway-fallback: true` with "Application not
+    found" is the EDGE answering — no deployment is attached at all. A 502 is
+    different: the service exists and the container is not responding, which
+    is our problem to fix.
+2. Check https://status.railway.com before diagnosing anything else.
+3. Check whether another project is affected. One is our bug; two is theirs.
+
+And while a queue is stalled, do NOT push again or hit Redeploy: each new
+deployment REMOVES the queued one and restarts the wait. Two merges were lost
+that way before this was understood.
+
 ## Outside this repo
 
 - **Spotware** — the Railway origin must be registered as the cTrader app's
