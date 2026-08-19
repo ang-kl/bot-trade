@@ -573,10 +573,14 @@ app.get('/health', (req, res) => {
 
   const status = circuitBreaker ? 'circuit_breaker_tripped' : 'ok'
 
-  // Deploy indicator: the Docker build context is agent/, so APP_VERSION can't
-  // read the repo-root package.json (always 0.0.000). Railway injects the real
-  // commit as RAILWAY_GIT_COMMIT_SHA — compare it to `main`'s HEAD to confirm
-  // the deploy is current. `llmProvider` reveals whether OPENAI_API_KEY is
+  // Deploy indicator. This used to read "the Docker build context is agent/, so
+  // APP_VERSION can't read the repo-root package.json (always 0.0.000)" — true
+  // until the Dockerfile moved to the repo root, which is why it is corrected
+  // here rather than left as a stale explanation of a number that changed. The
+  // image now writes /app/package.json carrying the real version, so
+  // APP_VERSION reports it. Railway still injects the commit as
+  // RAILWAY_GIT_COMMIT_SHA — compare it to `main`'s HEAD to confirm the deploy
+  // is current, since a version alone cannot distinguish two builds of it. `llmProvider` reveals whether OPENAI_API_KEY is
   // actually live on this service (else the LLM monitor falls back to Anthropic
   // and errors on a dry credit balance).
   const commit = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || '').slice(0, 7) || null

@@ -89,9 +89,9 @@ test('the image can be started by `npm start`, not only by the CMD', () => {
   // Asserting on the CMD alone could never have caught this: the CMD was
   // correct throughout, and was never the thing being run.
   const df = code('Dockerfile')
-  assert.match(df, /> \/app\/package\.json/,
+  assert.match(df, /writeFileSync\('\/app\/package\.json'/,
     'the image must provide a start script at /app, since the platform may use npm start')
-  assert.match(df, /"start": "node agent\/index\.js"/)
+  assert.match(df, /start:\s*'node agent\/index\.js'/)
 
   // And it must not be the repo root package.json, which is the frontend's:
   // `npm start` against that would run vite, not the agent.
@@ -101,7 +101,32 @@ test('the image can be started by `npm start`, not only by the CMD', () => {
 })
 
 test('the generated start script is verified inside the build', () => {
-  // A printf that silently wrote the wrong thing would reproduce the same
+  // A generator that silently wrote the wrong thing would reproduce the same
   // crash, so the build checks its own output rather than assuming.
-  assert.match(code('Dockerfile'), /node -e .*scripts\.start.*process\.exit\(1\)/)
+  assert.match(code('Dockerfile'), /scripts\.start!==.node agent\/index\.js.*process\.exit\(1\)/)
+})
+
+test('the generated file carries the real version, not a versionless stub', () => {
+  // /app/package.json is ALSO what index.js reads as '../package.json' and
+  // telegram.js as '../../package.json'. Their fallbacks differ: index.js keeps
+  // 0.0.000, but telegram.js prints NO footer on a failed read — so a
+  // versionless file here would succeed and stamp `v0.0.000` on every message,
+  // asserting a build that never existed.
+  const df = code('Dockerfile')
+  assert.match(df, /COPY --from=frontend \/build\/package\.json/,
+    'the real version has to come from the build context, not be typed in')
+  assert.match(df, /version:\s*v/)
+  assert.match(df, /!p\.version\) process\.exit\(1\)/,
+    'a build that produced no version must fail rather than ship 0.0.000')
+  assert.ok(!/version["']?\s*:\s*["']\d/.test(df),
+    'a literal version would drift from package.json silently')
+
+  // And the source of truth actually has one.
+  assert.match(JSON.parse(read('package.json')).version, /^\d+\.\d+\.\d+$/)
+})
+
+test('the stale build-context comment is corrected, not left to mislead', () => {
+  const idx = read('agent/index.js')
+  assert.ok(!/the Docker build context is agent\/, so APP_VERSION can't/.test(idx),
+    'that explanation stopped being true when the Dockerfile moved to the repo root')
 })
