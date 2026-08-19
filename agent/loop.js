@@ -4297,10 +4297,20 @@ async function runLoop(db) {
         // that existed to reclaim 1.4GB shipped with the reclaim switched off.
         // The tests missed it because they matched source TEXT instead of
         // executing the query.
-        const { accountsWithOpenPositions } = await import('./db.js')
-        const openAccts = accountsWithOpenPositions(db)
-        if (openAccts.length > 0) {
-          log(`housekeeping: compaction deferred — open position(s) on ${openAccts.length} account(s), a rebuild blocks the event loop`)
+        // COUNT over monitored_positions, and NOT accountsWithOpenPositions().
+        // That helper answers "which ACCOUNTS have attributable exposure" — it
+        // excludes active rows whose account_id is NULL (real money the bot is
+        // managing but cannot attribute) and its internal catch returns [], so
+        // a failing query reads as "nothing is open". Both narrowings are right
+        // for the account switch it was written for and wrong here: this guard
+        // must fail CLOSED, because the thing it prevents is a multi-minute
+        // rebuild running while nothing monitors a live position. If this
+        // throws, the outer catch skips compaction — the safe side.
+        const openNow = db.prepare(
+          "SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active'"
+        ).get().n
+        if (openNow > 0) {
+          log(`housekeeping: compaction deferred — ${openNow} position(s) open, a rebuild blocks the event loop`)
         } else {
           const c = runCompact(db)
           // The rebuild held the thread; the watchdog must not read that as a
@@ -4478,11 +4488,19 @@ async function runLoop(db) {
       // retention ever breaks, this number climbs while "pruned N scans" still
       // reads healthy — a diagnostic nobody prints is the exact defect this
       // area keeps producing.
-      let heldScans = 0
+      let heldScans = null
       try {
         heldScans = (await import('./services/prune-scans.js')).heldByAnalyses(db, cutoff30d)
       } catch { /* diagnostics must never break the pass they describe */ }
-      log(`Housekeeping: pruned ${changesOf(d1)} scans (${heldScans} held by analyses), ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows`
+      // A FAILED MEASUREMENT IS NOT A ZERO. Printing `0 held` when the query
+      // threw is the same lie as printing free=0MB for unknown disk space.
+      const heldText = heldScans ?? '?'
+      // AND A CAPPED PASS MUST NOT READ AS A DRAINED ONE. `done: false` means
+      // old scans are still there and the next window is 8 hours away; without
+      // this the first pass over a backlog prints a million rows pruned and
+      // looks exactly like a table that is now clean.
+      const scanRemainder = d1?.done === false ? ' — BATCH CAP HIT, more remain' : ''
+      log(`Housekeeping: pruned ${changesOf(d1)} scans (${heldText} held by analyses)${scanRemainder}, ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows`
         + (pass.failed.length ? ` — ${pass.failed.length} step(s) FAILED: ${pass.failed.map(f => f.name).join(', ')}` : ''))
     } catch (err) {
       log('Housekeeping error:', err.message)

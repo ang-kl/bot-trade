@@ -40,6 +40,9 @@
 
 export const DEFAULT_BATCH = 20_000
 
+/** Wall clock, not row count: the thing that hurts is time on the thread. */
+export const DEFAULT_BUDGET_MS = 60_000
+
 /**
  * Delete scans older than `cutoffIso`, except those an analysis still points
  * at, in bounded batches.
@@ -52,10 +55,15 @@ export const DEFAULT_BATCH = 20_000
  *   `.changes` keep working. `done` is false when the cap stopped it early —
  *   the remainder is collected on the next pass rather than pretending.
  */
-export function pruneScans(db, cutoffIso, opts = {}) {
+export async function pruneScans(db, cutoffIso, opts = {}) {
   const batch = Number(opts.batch) > 0 ? Number(opts.batch) : DEFAULT_BATCH
   const maxBatches = Number(opts.maxBatches) > 0 ? Number(opts.maxBatches) : 50
+  const budgetMs = Number(opts.budgetMs) > 0 ? Number(opts.budgetMs) : DEFAULT_BUDGET_MS
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null
+  const now = typeof opts.now === 'function' ? opts.now : Date.now
+  const yieldTo = typeof opts.yieldTo === 'function'
+    ? opts.yieldTo
+    : () => new Promise((r) => setImmediate(r))
 
   // `id IN (SELECT … LIMIT ?)` rather than a bare LIMIT on the DELETE, which
   // SQLite only supports when compiled with SQLITE_ENABLE_UPDATE_DELETE_LIMIT.
@@ -69,18 +77,38 @@ export function pruneScans(db, cutoffIso, opts = {}) {
       )`
   )
 
+  const startedAt = now()
   let changes = 0
   let batches = 0
   for (; batches < maxBatches; batches += 1) {
     const n = stmt.run(cutoffIso, batch).changes
     changes += n
-    // The heartbeat goes BETWEEN batches, where the caller can actually be
-    // heard — a callback after the whole delete would be the stall it is
-    // meant to prevent.
     if (onProgress) onProgress(changes)
-    if (n < batch) return { changes, batches: batches + 1, done: true }
+    if (n < batch) return { changes, batches: batches + 1, done: true, ranMs: now() - startedAt }
+
+    // A REAL YIELD, and the reason this function is async at all.
+    //
+    // The first version of this batching stamped the watchdog between batches
+    // and never yielded. better-sqlite3 is synchronous, so the whole loop ran
+    // in one uninterrupted turn: nothing could observe the heartbeat, the
+    // watchdog's own setInterval could not fire during it, and by the time it
+    // did fire the final batch had just stamped `lastLoopActivityAt` — so a
+    // twenty-minute block would have read as perfectly healthy. That is worse
+    // than the bug: it removes the alarm without shortening the stall.
+    //
+    // It matters beyond the watchdog. fast-monitor is a setInterval on this
+    // same loop; trailing stops, break-even moves and the per-position loss
+    // cap are all frozen for as long as the thread is held. Yielding is what
+    // actually lets them run.
+    await yieldTo()
+
+    // Bounded by TIME, not rows. 50 × 20,000 caps a pass at a million rows,
+    // which says nothing about how long the thread was held.
+    if (now() - startedAt >= budgetMs) {
+      return { changes, batches: batches + 1, done: false, ranMs: now() - startedAt }
+    }
   }
-  return { changes, batches, done: false }
+  return { changes, batches, done: false, ranMs: now() - startedAt }
 }
 
 /**
