@@ -36,6 +36,36 @@ import { getState, setState } from '../db.js'
 
 export const LAST_COMPACT_KEY = 'db_last_compact_json'
 
+/**
+ * Deferrals are recorded, not merely logged.
+ *
+ * The compaction guard skips a rebuild whenever any position is open — and
+ * this bot's job is holding positions, on a window that comes round every 8
+ * hours. Stacked with the 24-hour interval, the 20% fraction and the 25MB
+ * floor, it is entirely possible for the reclaim never to fire again while
+ * the file keeps growing, with the only evidence a console line nobody reads.
+ * That is the protection-audit shape from CLAUDE.md: the controller runs, the
+ * record is stuck, and the panel looks healthy. A counter that survives a
+ * restart makes "deferred 47 passes in a row" answerable from state instead
+ * of from log archaeology.
+ */
+export const LAST_DEFER_KEY = 'db_compact_deferred_json'
+
+/** Record one deferral and return the running count. */
+export function recordDeferral(db, { reason, nowMs = Date.now() } = {}) {
+  let prev = null
+  try { prev = JSON.parse(getState(db, LAST_DEFER_KEY) || 'null') } catch { prev = null }
+  const consecutive = Number(prev?.consecutive || 0) + 1
+  const rec = { atMs: nowMs, at: new Date(nowMs).toISOString(), reason: reason ?? null, consecutive }
+  try { setState(db, LAST_DEFER_KEY, JSON.stringify(rec)) } catch { /* a counter must not break the pass */ }
+  return rec
+}
+
+/** Clear the streak once a rebuild actually happens. */
+export function clearDeferrals(db) {
+  try { setState(db, LAST_DEFER_KEY, JSON.stringify({ consecutive: 0 })) } catch { /* as above */ }
+}
+
 /** VACUUM needs a full second copy; this is the margin on top of that. */
 export const SPACE_HEADROOM = 1.15
 
@@ -161,6 +191,7 @@ export function runCompact(db, { dbPath, nowMs = Date.now(), dryRun = false, dep
     db.exec('VACUUM')
     const after = bloatOf(db)
     const freedBytes = (before.totalBytes ?? 0) - (after.totalBytes ?? 0)
+    clearDeferrals(db)
     setState(db, LAST_COMPACT_KEY, JSON.stringify({
       atMs: nowMs, at: new Date(nowMs).toISOString(),
       beforeBytes: before.totalBytes, afterBytes: after.totalBytes, freedBytes,

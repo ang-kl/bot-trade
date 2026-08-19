@@ -4213,7 +4213,23 @@ async function runLoop(db) {
       const cutoff90d = new Date(Date.now() - 90 * 86400_000).toISOString()
       const { runHousekeepingSteps, changesOf } = await import('./services/housekeeping-run.js')
       const pass = await runHousekeepingSteps([
-        { name: 'prune-scans', run: () => db.prepare('DELETE FROM scans WHERE scanned_at < ?').run(cutoff30d) },
+        // `analyses.scan_id REFERENCES scans(id)` and foreign_keys is ON, so a
+        // single old scan that an analysis still points at aborts the WHOLE
+        // delete. Production ran that way for months: the step reported
+        // "failed (non-fatal): FOREIGN KEY constraint failed" every pass and
+        // pruned NOTHING, while scans — the highest-churn table here — grew
+        // unbounded. The database reached 1,459MB that way. Excluding the
+        // referenced rows is the same shape retention.js already uses for
+        // analyses-vs-trades; it was simply never applied here.
+        {
+          // Batched with a heartbeat: fixing the FK makes months of backlog
+          // deletable in ONE pass, and a single synchronous statement that
+          // overruns the 12-minute watchdog would be killed, roll back, delete
+          // nothing, and repeat every 8 hours.
+          name: 'prune-scans',
+          run: async () => (await import('./services/prune-scans.js'))
+            .pruneScans(db, cutoff30d, { onProgress: () => { lastLoopActivityAt = Date.now() } }),
+        },
         { name: 'prune-signals', run: () => db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d) },
         { name: 'prune-regimes', run: () => db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d) },
         { name: 'prune-risk-events', run: () => db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d) },
@@ -4254,12 +4270,76 @@ async function runLoop(db) {
       //
       // Runs LAST in the pass, after the deletes it is reclaiming, and refuses
       // itself unless the disk can hold a second copy — see db-compact.js.
+      //
+      // TWO THINGS ABOUT HOW THIS IS CALLED, both from the 19-08-2026 pass.
+      //
+      // FIRST, VACUUM IS NOT FREE AND better-sqlite3 IS SYNCHRONOUS. Rebuilding
+      // a 1,459MB database holds the event loop for minutes. Nothing monitors
+      // open positions while the thread is held — no trailing stop, no
+      // break-even move, no per-position loss cap — and if the block outruns
+      // the 12-minute watchdog the process is killed mid-rebuild.
+      //
+      // THAT IS THE HAZARD, NOT THE CAUSE OF THE 23-MINUTE STALL ON THAT BOOT,
+      // and the distinction is the whole reason this paragraph was rewritten.
+      // The first version of it recorded the stall as a measured VACUUM, which
+      // was wrong: the logs put `loopLag=953014ms` ending at the prune-scans
+      // FK failure, with the file the same size afterwards, so compaction
+      // almost certainly never ran. A comment outlives a pull request, and a
+      // retracted cause left in the code sends the next reader to VACUUM for a
+      // stall that came from an unindexed foreign-key check.
+      //
+      // So: never while a position is open, and stamp the watchdog afterwards
+      // so the rebuild's own duration is not counted as a stall.
+      //
+      // SECOND, THE SILENCE WAS ITSELF A DEFECT. The old call logged only when
+      // it ran or was blocked, so a pass that simply decided "not worth it"
+      // looked identical to one that never happened — which is exactly why the
+      // question above had to be settled from loopLag rather than from any
+      // line this code wrote. It now says what it decided, every time.
       try {
-        const { runCompact } = await import('./services/db-compact.js')
-        const c = runCompact(db)
-        if (c.ran) log(`housekeeping: compacted ${Math.round((c.freedBytes || 0) / 1e6)}MB from the database file`)
-        else if (c.blocked) console.warn(`[housekeeping] compaction BLOCKED — ${c.reason}`)
-      } catch { /* a cleanup must never take down the process it protects */ }
+        const { runCompact, recordDeferral } = await import('./services/db-compact.js')
+        // COUNT over monitored_positions, and NOT accountsWithOpenPositions().
+        //
+        // Two earlier versions of this line were wrong, in opposite directions.
+        // The first read `FROM positions`, which is not a table in this schema:
+        // it threw at prepare time, the catch below swallowed it, and
+        // compaction never ran at all — the change that existed to reclaim
+        // 1.4GB shipped with the reclaim switched off, because the tests
+        // matched source TEXT instead of executing the query.
+        //
+        // The second used accountsWithOpenPositions(), which answers a
+        // different question: "which ACCOUNTS have attributable exposure". It
+        // excludes active rows whose account_id is NULL (real money the bot is
+        // managing but cannot attribute) and its internal catch returns [], so
+        // a failing query reads as "nothing is open". Both narrowings are right
+        // for the account switch it was written for and wrong here: this guard
+        // must fail CLOSED, because the thing it prevents is a multi-minute
+        // rebuild running while nothing monitors a live position. If this
+        // throws, the outer catch skips compaction — the safe side.
+        const openNow = db.prepare(
+          "SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active'"
+        ).get().n
+        if (openNow > 0) {
+          // Recorded, not just logged: a bot whose job is holding positions
+          // could defer for ever, and a console line is not something anyone
+          // can query later. The streak is the number that would show it.
+          const d = recordDeferral(db, { reason: `${openNow} position(s) open` })
+          const streak = d.consecutive > 1 ? ` (${d.consecutive} passes in a row)` : ''
+          log(`housekeeping: compaction deferred — ${openNow} position(s) open, a rebuild blocks the event loop${streak}`)
+        } else {
+          const c = runCompact(db)
+          // The rebuild held the thread; the watchdog must not read that as a
+          // hang on the next tick.
+          lastLoopActivityAt = Date.now()
+          if (c.ran) log(`housekeeping: compacted ${Math.round((c.freedBytes || 0) / 1e6)}MB from the database file`)
+          else if (c.blocked) console.warn(`[housekeeping] compaction BLOCKED — ${c.reason}`)
+          else log(`housekeeping: compaction not needed — ${c.reason || 'nothing worth reclaiming'}`)
+        }
+      } catch (err) {
+        // A cleanup must never take down the process it protects — but it must
+        // not vanish either, which is how the last one went unexplained.
+        log(`housekeeping: compaction failed (non-fatal): ${err.message}`)
+      }
       // §70.8: settle the terminal disposition of every approval that can be
       // settled. Rides in housekeeping because it is a derivation over rows
       // that are already written — one indexed scan, no broker call — and
@@ -4419,7 +4499,23 @@ async function runLoop(db) {
         }
       } catch (e) { log('Disposition sweep failed (non-fatal):', e.message) }
 
-      log(`Housekeeping: pruned ${changesOf(d1)} scans, ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows`
+      // Held-back scans are reported, not merely computed. If analyses
+      // retention ever breaks, this number climbs while "pruned N scans" still
+      // reads healthy — a diagnostic nobody prints is the exact defect this
+      // area keeps producing.
+      let heldScans = null
+      try {
+        heldScans = (await import('./services/prune-scans.js')).heldByAnalyses(db, cutoff30d)
+      } catch { /* diagnostics must never break the pass they describe */ }
+      // A FAILED MEASUREMENT IS NOT A ZERO. Printing `0 held` when the query
+      // threw is the same lie as printing free=0MB for unknown disk space.
+      const heldText = heldScans ?? '?'
+      // AND A CAPPED PASS MUST NOT READ AS A DRAINED ONE. `done: false` means
+      // old scans are still there and the next window is 8 hours away; without
+      // this the first pass over a backlog prints a million rows pruned and
+      // looks exactly like a table that is now clean.
+      const scanRemainder = d1?.done === false ? ' — BATCH CAP HIT, more remain' : ''
+      log(`Housekeeping: pruned ${changesOf(d1)} scans (${heldText} held by analyses)${scanRemainder}, ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows`
         + (pass.failed.length ? ` — ${pass.failed.length} step(s) FAILED: ${pass.failed.map(f => f.name).join(', ')}` : ''))
     } catch (err) {
       log('Housekeeping error:', err.message)

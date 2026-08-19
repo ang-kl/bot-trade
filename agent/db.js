@@ -493,6 +493,13 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_position_events_at     ON position_events(at);
   CREATE INDEX IF NOT EXISTS idx_scans_symbol_at        ON scans   (symbol, scanned_at);
   CREATE INDEX IF NOT EXISTS idx_analyses_symbol_at     ON analyses(symbol, analyzed_at);
+  -- The FK child key. Deleting a PARENT row (a scan) with foreign_keys ON
+  -- makes SQLite prove no child references it; without this index that is a
+  -- full scan of the analyses table PER DELETED SCAN, and the cost never
+  -- appears in EXPLAIN QUERY PLAN. With months of scans becoming deletable at
+  -- once, that is the difference between a prune that finishes and one that
+  -- overruns the watchdog.
+  CREATE INDEX IF NOT EXISTS idx_analyses_scan_id       ON analyses(scan_id);
   CREATE INDEX IF NOT EXISTS idx_signals_symbol_at      ON signals (symbol, recorded_at);
   CREATE INDEX IF NOT EXISTS idx_regimes_symbol_at      ON regimes (symbol, computed_at);
   CREATE INDEX IF NOT EXISTS idx_trades_symbol_opened    ON trades  (symbol, opened_at);
