@@ -210,7 +210,10 @@ test('loop.js guards on the count, fails closed, and stamps the watchdog', async
   assert.match(src, /BATCH CAP HIT/, 'a capped pass must not read as a drained one')
   assert.match(src, /heldScans \?\? '\?'/, 'a failed measurement must not print as a measured zero')
 
-  const start = src.indexOf('const { runCompact }')
+  // Anchored on the CALL, not the import: the import line gained a second
+  // named export and this indexOf silently became -1, failing the test for a
+  // reason unrelated to what it checks.
+  const start = src.indexOf('const c = runCompact(db)')
   const end = src.indexOf('compaction failed (non-fatal)')
   assert.ok(start > 0 && end > start)
   assert.match(src.slice(start, end), /lastLoopActivityAt = Date\.now\(\)/)
@@ -218,4 +221,52 @@ test('loop.js guards on the count, fails closed, and stamps the watchdog', async
 
 test('the default batch is large enough to be useful and small enough to yield', async () => {
   assert.ok(DEFAULT_BATCH >= 1000 && DEFAULT_BATCH <= 100_000)
+})
+
+test('a full final batch does not report a cap hit against a drained table', async () => {
+  // `done: false` used to mean "did not observe a short batch", so a table
+  // that drained on exactly the last batch printed "BATCH CAP HIT, more
+  // remain" against nothing at all. It now asks.
+  const { db, cleanup } = realDb()
+  const ins = db.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)')
+  const many = db.transaction(() => { for (let i = 0; i < 10; i += 1) ins.run('EURUSD', OLD) })
+  many()
+  const r = await pruneScans(db, CUT, { batch: 5, maxBatches: 2 })
+  assert.equal(r.changes, 10)
+  assert.equal(r.done, true, 'the table is empty — that is not a cap hit')
+  cleanup()
+})
+
+test('rows genuinely left over still report as not done', async () => {
+  const { db, cleanup } = realDb()
+  const ins = db.prepare('INSERT INTO scans (symbol, scanned_at) VALUES (?, ?)')
+  const many = db.transaction(() => { for (let i = 0; i < 12; i += 1) ins.run('EURUSD', OLD) })
+  many()
+  const r = await pruneScans(db, CUT, { batch: 5, maxBatches: 2 })
+  assert.equal(r.done, false)
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM scans').get().c, 2)
+  cleanup()
+})
+
+test('deferrals are counted in state, so a permanent skip is answerable', async () => {
+  const { db, cleanup } = realDb()
+  const { recordDeferral, clearDeferrals, LAST_DEFER_KEY } = await import('./db-compact.js')
+  const { getState } = await import('../db.js')
+
+  assert.equal(recordDeferral(db, { reason: '1 position(s) open' }).consecutive, 1)
+  assert.equal(recordDeferral(db, { reason: '2 position(s) open' }).consecutive, 2)
+  assert.equal(recordDeferral(db, { reason: '2 position(s) open' }).consecutive, 3)
+  assert.equal(JSON.parse(getState(db, LAST_DEFER_KEY)).consecutive, 3,
+    'the streak survives a restart — a console line does not')
+
+  clearDeferrals(db)
+  assert.equal(JSON.parse(getState(db, LAST_DEFER_KEY)).consecutive, 0,
+    'a rebuild that actually happens resets the streak')
+  cleanup()
+})
+
+test('loop.js records the deferral rather than only logging it', async () => {
+  const src = fs.readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+    .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+  assert.match(src, /recordDeferral\(db/)
 })

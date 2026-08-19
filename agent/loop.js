@@ -4271,34 +4271,44 @@ async function runLoop(db) {
       // Runs LAST in the pass, after the deletes it is reclaiming, and refuses
       // itself unless the disk can hold a second copy — see db-compact.js.
       //
-      // TWO THINGS MEASURED IN PRODUCTION ON 19-08-2026, both changing how
-      // this is called.
+      // TWO THINGS ABOUT HOW THIS IS CALLED, both from the 19-08-2026 pass.
       //
       // FIRST, VACUUM IS NOT FREE AND better-sqlite3 IS SYNCHRONOUS. Rebuilding
-      // a 1,459MB database blocked the event loop long enough that the loop
-      // watchdog saw 23 minutes of no cycle activity, declared the loop hung
-      // and exited the process — "stuck in phase housekeeping". A cleanup that
-      // restarts the agent is worse than the bloat it removes, and worse still
-      // with positions open, because nothing monitors them while the thread is
-      // held. So: never while a position is open, and stamp the watchdog
-      // afterwards so the rebuild's own duration is not counted as a stall.
+      // a 1,459MB database holds the event loop for minutes. Nothing monitors
+      // open positions while the thread is held — no trailing stop, no
+      // break-even move, no per-position loss cap — and if the block outruns
+      // the 12-minute watchdog the process is killed mid-rebuild.
+      //
+      // THAT IS THE HAZARD, NOT THE CAUSE OF THE 23-MINUTE STALL ON THAT BOOT,
+      // and the distinction is the whole reason this paragraph was rewritten.
+      // The first version of it recorded the stall as a measured VACUUM, which
+      // was wrong: the logs put `loopLag=953014ms` ending at the prune-scans
+      // FK failure, with the file the same size afterwards, so compaction
+      // almost certainly never ran. A comment outlives a pull request, and a
+      // retracted cause left in the code sends the next reader to VACUUM for a
+      // stall that came from an unindexed foreign-key check.
+      //
+      // So: never while a position is open, and stamp the watchdog afterwards
+      // so the rebuild's own duration is not counted as a stall.
       //
       // SECOND, THE SILENCE WAS ITSELF A DEFECT. The old call logged only when
       // it ran or was blocked, so a pass that simply decided "not worth it"
-      // looked identical to one that never happened — and after the watchdog
-      // killed that boot there was no way to tell which. It now says what it
-      // decided, every time.
+      // looked identical to one that never happened — which is exactly why the
+      // question above had to be settled from loopLag rather than from any
+      // line this code wrote. It now says what it decided, every time.
       try {
-        const { runCompact } = await import('./services/db-compact.js')
-        // `accountsWithOpenPositions` and not a hand-written query: the first
-        // version of this read `FROM positions`, which is not a table in this
-        // schema (it is `monitored_positions`). It threw at prepare time, the
-        // catch below swallowed it, and compaction never ran at all — the PR
-        // that existed to reclaim 1.4GB shipped with the reclaim switched off.
-        // The tests missed it because they matched source TEXT instead of
-        // executing the query.
+        const { runCompact, recordDeferral } = await import('./services/db-compact.js')
         // COUNT over monitored_positions, and NOT accountsWithOpenPositions().
-        // That helper answers "which ACCOUNTS have attributable exposure" — it
+        //
+        // Two earlier versions of this line were wrong, in opposite directions.
+        // The first read `FROM positions`, which is not a table in this schema:
+        // it threw at prepare time, the catch below swallowed it, and
+        // compaction never ran at all — the change that existed to reclaim
+        // 1.4GB shipped with the reclaim switched off, because the tests
+        // matched source TEXT instead of executing the query.
+        //
+        // The second used accountsWithOpenPositions(), which answers a
+        // different question: "which ACCOUNTS have attributable exposure". It
         // excludes active rows whose account_id is NULL (real money the bot is
         // managing but cannot attribute) and its internal catch returns [], so
         // a failing query reads as "nothing is open". Both narrowings are right
@@ -4310,7 +4320,12 @@ async function runLoop(db) {
           "SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active'"
         ).get().n
         if (openNow > 0) {
-          log(`housekeeping: compaction deferred — ${openNow} position(s) open, a rebuild blocks the event loop`)
+          // Recorded, not just logged: a bot whose job is holding positions
+          // could defer for ever, and a console line is not something anyone
+          // can query later. The streak is the number that would show it.
+          const d = recordDeferral(db, { reason: `${openNow} position(s) open` })
+          const streak = d.consecutive > 1 ? ` (${d.consecutive} passes in a row)` : ''
+          log(`housekeeping: compaction deferred — ${openNow} position(s) open, a rebuild blocks the event loop${streak}`)
         } else {
           const c = runCompact(db)
           // The rebuild held the thread; the watchdog must not read that as a

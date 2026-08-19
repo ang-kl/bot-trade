@@ -85,6 +85,9 @@ export async function pruneScans(db, cutoffIso, opts = {}) {
     changes += n
     if (onProgress) onProgress(changes)
     if (n < batch) return { changes, batches: batches + 1, done: true, ranMs: now() - startedAt }
+    // NOTE: a short batch proves the work is finished. A FULL batch does not
+    // prove the opposite — the table may have drained on exactly the last
+    // one — so the cap and budget paths below ask instead of assuming.
 
     // A REAL YIELD, and the reason this function is async at all.
     //
@@ -105,10 +108,25 @@ export async function pruneScans(db, cutoffIso, opts = {}) {
     // Bounded by TIME, not rows. 50 × 20,000 caps a pass at a million rows,
     // which says nothing about how long the thread was held.
     if (now() - startedAt >= budgetMs) {
-      return { changes, batches: batches + 1, done: false, ranMs: now() - startedAt }
+      return { changes, batches: batches + 1, done: !anyRemaining(db, cutoffIso), ranMs: now() - startedAt }
     }
   }
-  return { changes, batches, done: false, ranMs: now() - startedAt }
+  return { changes, batches, done: !anyRemaining(db, cutoffIso), ranMs: now() - startedAt }
+}
+
+/**
+ * Is there anything left for a later pass? One indexed EXISTS, asked only on
+ * the cap and budget paths — so "BATCH CAP HIT, more remain" means rows
+ * actually remain, rather than "we stopped without seeing a short batch".
+ */
+export function anyRemaining(db, cutoffIso) {
+  return db.prepare(
+    `SELECT EXISTS(
+       SELECT 1 FROM scans
+        WHERE scanned_at < ?
+          AND id NOT IN (SELECT scan_id FROM analyses WHERE scan_id IS NOT NULL)
+     ) AS more`
+  ).get(cutoffIso)?.more === 1
 }
 
 /**
