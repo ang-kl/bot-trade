@@ -800,6 +800,29 @@ async function start() {
     const llm = llmProviderInfo();
     const llmKeyOk = llm.provider === 'openai' ? !!process.env.OPENAI_API_KEY : !!CLAUDE_API_KEY;
     console.log(`[agent] LLM provider: ${llm.provider} (${llm.model}) — key ${llmKeyOk ? 'set' : 'MISSING (monitor LLM fallback disabled; deterministic trading still runs)'}`);
+    // WHETHER THE SWITCH IS ON, which the line above does not answer.
+    //
+    // That line reports the KEY. The kill switch (lib/llm-switch.js) is
+    // enforced at the call sites, so until now a deliberately disabled agent
+    // booted saying "key set" and nothing else — indistinguishable, from the
+    // log alone, from one that was about to spend money on every monitor pass.
+    // Owner set LLM_DISABLED=1 on 20-08-2026 and the boot said nothing about
+    // it; that is what this line is for.
+    //
+    // Reported through the same functions the call sites use, so the boot can
+    // never claim a state the guards do not act on, and it names WHERE the
+    // switch was set — the env var and the state key behave differently
+    // (one needs a redeploy, one does not) and an operator turning it back on
+    // needs to know which one is holding it.
+    try {
+      const { llmDisabled, llmDisabledReason } = await import('./lib/llm-switch.js');
+      if (llmDisabled(db, getState)) {
+        console.log(`[agent] LLM: DISABLED by ${llmDisabledReason(db, getState)} — no LLM calls will be attempted (position monitor, weekend watch, cockpit explain, screener search). Deterministic trading is unaffected; API keys are untouched.`);
+      }
+    } catch (err) {
+      // A boot banner must never be the thing that stops a boot.
+      console.warn(`[agent] LLM switch state unreadable: ${err.message}`);
+    }
     console.log(`[agent] cTrader access token: ${envAccessToken || getState(db, 'ctrader_access_token') ? 'set' : 'not set'}`);
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });
