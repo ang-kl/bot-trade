@@ -62,6 +62,26 @@ export function llmDisabled(db, getState, env = process.env) {
   return llmDisabledFrom(raw, env)
 }
 
+/**
+ * The boot line, as a value rather than a side effect.
+ *
+ * Extracted so it can be TESTED BY CALLING IT. The first version of this lived
+ * inline in index.js and its tests matched the source text — and an unanchored
+ * substring match survives `if (cond && false)`, so a banner that could never
+ * print would have kept the suite green. CLAUDE.md #1 and #2 in one line of
+ * code.
+ *
+ * Returns null when the LLM is enabled: an enabled agent must print nothing,
+ * or the banner becomes noise and stops being read.
+ */
+export function llmBootBannerLine(db, getState, env = process.env) {
+  const why = llmDisabledReason(db, getState, env)
+  if (!why) return null
+  return `[agent] LLM: DISABLED by ${why} — no LLM calls will be attempted `
+    + '(position monitor, weekend watch, cockpit explain, screener search, Re-Risk). '
+    + 'Deterministic trading is unaffected; API keys are untouched.'
+}
+
 /** Where the switch was set, for the health panel. null when enabled. */
 export function llmDisabledReason(db, getState, env = process.env) {
   const norm = (v) => TRUTHY.has(String(v ?? '').trim().toLowerCase())

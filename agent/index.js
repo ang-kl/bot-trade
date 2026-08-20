@@ -815,10 +815,9 @@ async function start() {
     // (one needs a redeploy, one does not) and an operator turning it back on
     // needs to know which one is holding it.
     try {
-      const { llmDisabled, llmDisabledReason } = await import('./lib/llm-switch.js');
-      if (llmDisabled(db, getState)) {
-        console.log(`[agent] LLM: DISABLED by ${llmDisabledReason(db, getState)} — no LLM calls will be attempted (position monitor, weekend watch, cockpit explain, screener search). Deterministic trading is unaffected; API keys are untouched.`);
-      }
+      const { llmBootBannerLine } = await import('./lib/llm-switch.js');
+      const line = llmBootBannerLine(db, getState);
+      if (line) console.log(line);
     } catch (err) {
       // A boot banner must never be the thing that stops a boot.
       console.warn(`[agent] LLM switch state unreadable: ${err.message}`);
