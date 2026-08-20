@@ -799,7 +799,15 @@ async function start() {
     const { llmProviderInfo } = await import('./lib/llm-provider.js');
     const llm = llmProviderInfo();
     const llmKeyOk = llm.provider === 'openai' ? !!process.env.OPENAI_API_KEY : !!CLAUDE_API_KEY;
-    console.log(`[agent] LLM provider: ${llm.provider} (${llm.model}) — key ${llmKeyOk ? 'set' : 'MISSING (monitor LLM fallback disabled; deterministic trading still runs)'}`);
+    const { llmPaused } = await import('./lib/llm-provider.js');
+    if (llmPaused()) {
+      // Said plainly at boot, because a paused subsystem that says nothing is
+      // indistinguishable from a broken one — and this file has paid for that
+      // distinction more than once today.
+      console.log('[agent] LLM: PAUSED by LLM_PAUSED — no LLM calls will be made. Deterministic trading is unaffected. Unset LLM_PAUSED to resume; API keys are untouched.');
+    } else {
+      console.log(`[agent] LLM provider: ${llm.provider} (${llm.model}) — key ${llmKeyOk ? 'set' : 'MISSING (monitor LLM fallback disabled; deterministic trading still runs)'}`);
+    }
     console.log(`[agent] cTrader access token: ${envAccessToken || getState(db, 'ctrader_access_token') ? 'set' : 'not set'}`);
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });

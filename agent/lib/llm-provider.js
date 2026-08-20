@@ -186,6 +186,12 @@ function openaiClient(apiKey, model, fetchImpl = fetch, timeoutMs = LLM_TIMEOUT_
 export function createLLMClientFor(provider, model, env = process.env, deps = {}) {
   const id = String(model || '').trim()
   if (!id) throw new Error('a model name is required')
+  // The single choke point. Every LLM caller in the agent builds its client
+  // here, so one refusal covers all of them — and it refuses the same way a
+  // missing key does, which is a path the callers already handle.
+  if (llmPaused(env)) {
+    throw new Error('LLM_PAUSED is set on the agent — LLM calls are paused (unset it to resume; keys are untouched)')
+  }
   if (provider === 'openai') {
     if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the agent — cannot use OpenAI')
     return openaiClient(env.OPENAI_API_KEY, id, deps.fetch, deps.timeoutMs)
@@ -201,11 +207,37 @@ export function createLLMClientFor(provider, model, env = process.env, deps = {}
   throw new Error(`unknown provider '${provider}' — expected 'openai' or 'anthropic'`)
 }
 
+/**
+ * A kill switch for the agent's own LLM spend.
+ *
+ * Owner, 19-08-2026: "pause the LLM use in this project … keep the token for
+ * better use." The obvious way to do that is to delete OPENAI_API_KEY and
+ * CLAUDE_API_KEY from Railway — but a deleted key is not recoverable by anyone
+ * who cannot already read it, so pausing that way risks losing the credential
+ * to un-pause with. A flag leaves both keys exactly where they are.
+ *
+ * PAUSING IS DELIBERATELY IDENTICAL TO HAVING NO KEY, and that matters more
+ * than it looks: the no-key path is not theoretical here. Production ran with
+ * the Anthropic key absent and logged "monitor LLM fallback disabled;
+ * deterministic trading still runs". Reusing a path the system already
+ * survives is safer than inventing a second way to be switched off.
+ *
+ * What actually stops: the position-monitor fallback, the weekend watch,
+ * risk-reassess and cockpit explanations. What does NOT stop: entries, the
+ * risk gate, sizing, stops, targets and reconciliation — all deterministic,
+ * none of them ask an LLM anything.
+ */
+export function llmPaused(env = process.env) {
+  return /^(1|true|yes|on)$/i.test(String(env.LLM_PAUSED ?? '').trim())
+}
+
 /** Which providers this agent actually has a key for. Pure; no secrets leak. */
 export function availableProviders(env = process.env) {
+  if (llmPaused(env)) return { openai: false, anthropic: false, paused: true }
   return {
     openai: !!env.OPENAI_API_KEY,
     anthropic: !!(env.CLAUDE_API_KEY || env.ANTHROPIC_API_KEY),
+    paused: false,
   }
 }
 
