@@ -809,18 +809,28 @@ async function start() {
     // Owner set LLM_DISABLED=1 on 20-08-2026 and the boot said nothing about
     // it; that is what this line is for.
     //
-    // Reported through the same functions the call sites use, so the boot can
-    // never claim a state the guards do not act on, and it names WHERE the
-    // switch was set — the env var and the state key behave differently
-    // (one needs a redeploy, one does not) and an operator turning it back on
-    // needs to know which one is holding it.
+    // CONTAINMENT, NOT IDENTITY, and the distinction is what makes it safe.
+    // The banner reads llmDisabledReason — the SWITCH only. The call sites gate
+    // on llmBlocked, which is the switch OR the daily spend cap. So what the
+    // banner claims is blocked is always a subset of what actually is: it can
+    // under-claim, never over-claim. That direction is deliberate. Do not
+    // "fix" this by swapping in llmBlocked — the cap resets at midnight UTC,
+    // so a boot line about it would be stale within hours, and a stale
+    // diagnostic is the thing this line exists to stop.
+    //
+    // It also names WHERE the switch was set: the env var and the state key
+    // behave differently (one needs a redeploy, one does not) and whoever
+    // turns it back on needs to know which is holding it.
     try {
       const { llmBootBannerLine } = await import('./lib/llm-switch.js');
       const line = llmBootBannerLine(db, getState);
       if (line) console.log(line);
     } catch (err) {
-      // A boot banner must never be the thing that stops a boot.
-      console.warn(`[agent] LLM switch state unreadable: ${err.message}`);
+      // A boot banner must never be the thing that stops a boot. Note what can
+      // actually reach here: llmDisabledReason already swallows a throwing
+      // getState, so this catches a failed module load, not an unreadable
+      // state — worth keeping, worth not mis-naming.
+      console.warn(`[agent] LLM switch banner failed: ${err.message}`);
     }
     console.log(`[agent] cTrader access token: ${envAccessToken || getState(db, 'ctrader_access_token') ? 'set' : 'not set'}`);
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);

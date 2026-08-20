@@ -83,3 +83,43 @@ test('truthy spellings agree with the shared parser', () => {
     assert.equal(llmDisabledFrom(null, { LLM_DISABLED: v }), false)
   }
 })
+
+test('no LLM consumer exists that the banner does not know about', () => {
+  // THE ONE REPORT HERE THAT HAD NO WAY TO FAIL. The consumer-list test above
+  // asserts the banner against a copy of its own string: it goes red only when
+  // someone edits that string, which is the case where the edit was deliberate.
+  // So a SIXTH consumer could land ungated while the line kept promising "no
+  // LLM calls will be attempted" and the suite stayed green — CLAUDE.md #3,
+  // aimed at this PR's own artefact.
+  //
+  // This discovers the call sites instead of trusting the sentence. It matches
+  // BOTH call forms: weekend-watch uses `.messages.stream(`, not `.create(`,
+  // so a create-only pattern would have silently dropped it and encoded a set
+  // of four as though it were the whole truth.
+  const root = new URL('./', import.meta.url)
+  const found = new Set()
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name.startsWith('.')) continue
+      const p = new URL(`${e.name}${e.isDirectory() ? '/' : ''}`, dir)
+      if (e.isDirectory()) { walk(p); continue }
+      if (!e.name.endsWith('.js') || e.name.endsWith('.test.js')) continue
+      const rel = decodeURIComponent(p.pathname).slice(decodeURIComponent(root.pathname).length)
+      if (rel === 'lib/llm-provider.js') continue      // the factory, not a caller
+      if (/\.messages\.(create|stream)\(/.test(fs.readFileSync(p, 'utf8'))) found.add(rel)
+    }
+  }
+  walk(root)
+
+  const KNOWN = [
+    'services/cockpit-explain.js',
+    'services/monitor-svc.js',
+    'services/risk-reassess.js',
+    'services/screener-search.js',
+    'services/weekend-watch.js',
+  ]
+  assert.deepEqual([...found].sort(), KNOWN,
+    'A module calls a model that this list does not name. Gate it with llmBlocked '
+    + 'BEFORE the call, add it to llmBootBannerLine, and add it here — otherwise the '
+    + 'boot banner promises something the code no longer delivers.')
+})
