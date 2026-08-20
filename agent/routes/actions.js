@@ -4392,6 +4392,25 @@ export default function actionsRouter(db) {
       if (!String(model || '').trim()) {
         return res.status(400).json({ error: 'model is required — type the model name' })
       }
+      // THE FIFTH LLM CONSUMER, and until now the only ungated one. Every
+      // other messages.create in the tree sits behind llmBlocked — the monitor,
+      // the weekend watch, cockpit explain, screener search — so with the
+      // switch on, this button was the one path that still called out and
+      // still spent. One manual press rather than ~1,900 passes a day, so the
+      // money was small; the problem was that the boot banner announced "no
+      // LLM calls will be attempted" over the top of it. A report more
+      // reassuring than the code it describes is the defect this file keeps
+      // producing, and an absolute claim with a known exception is the worst
+      // version of it.
+      //
+      // 503 and the reason, matching /screener-search: nothing failed, the
+      // capability is switched off, and the caller should be told which
+      // switch is holding it rather than shown a model error.
+      const { llmBlocked } = await import('../lib/llm-switch.js')
+      const gate = await llmBlocked(db, getState)
+      if (gate.blocked) {
+        return res.status(503).json({ error: `LLM layer unavailable — ${gate.reason}` })
+      }
       const { runReassessment } = await import('../services/risk-reassess.js')
       const accountId = getState(db, 'ctrader_account_id') || null
       const result = await runReassessment(db, {

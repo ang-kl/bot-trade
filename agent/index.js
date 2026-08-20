@@ -800,6 +800,38 @@ async function start() {
     const llm = llmProviderInfo();
     const llmKeyOk = llm.provider === 'openai' ? !!process.env.OPENAI_API_KEY : !!CLAUDE_API_KEY;
     console.log(`[agent] LLM provider: ${llm.provider} (${llm.model}) — key ${llmKeyOk ? 'set' : 'MISSING (monitor LLM fallback disabled; deterministic trading still runs)'}`);
+    // WHETHER THE SWITCH IS ON, which the line above does not answer.
+    //
+    // That line reports the KEY. The kill switch (lib/llm-switch.js) is
+    // enforced at the call sites, so until now a deliberately disabled agent
+    // booted saying "key set" and nothing else — indistinguishable, from the
+    // log alone, from one that was about to spend money on every monitor pass.
+    // Owner set LLM_DISABLED=1 on 20-08-2026 and the boot said nothing about
+    // it; that is what this line is for.
+    //
+    // CONTAINMENT, NOT IDENTITY, and the distinction is what makes it safe.
+    // The banner reads llmDisabledReason — the SWITCH only. The call sites gate
+    // on llmBlocked, which is the switch OR the daily spend cap. So what the
+    // banner claims is blocked is always a subset of what actually is: it can
+    // under-claim, never over-claim. That direction is deliberate. Do not
+    // "fix" this by swapping in llmBlocked — the cap resets at midnight UTC,
+    // so a boot line about it would be stale within hours, and a stale
+    // diagnostic is the thing this line exists to stop.
+    //
+    // It also names WHERE the switch was set: the env var and the state key
+    // behave differently (one needs a redeploy, one does not) and whoever
+    // turns it back on needs to know which is holding it.
+    try {
+      const { llmBootBannerLine } = await import('./lib/llm-switch.js');
+      const line = llmBootBannerLine(db, getState);
+      if (line) console.log(line);
+    } catch (err) {
+      // A boot banner must never be the thing that stops a boot. Note what can
+      // actually reach here: llmDisabledReason already swallows a throwing
+      // getState, so this catches a failed module load, not an unreadable
+      // state — worth keeping, worth not mis-naming.
+      console.warn(`[agent] LLM switch banner failed: ${err.message}`);
+    }
     console.log(`[agent] cTrader access token: ${envAccessToken || getState(db, 'ctrader_access_token') ? 'set' : 'not set'}`);
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });
