@@ -44,8 +44,10 @@ production diagnoses, recommendations the owner will act on):
    below is the one standing exception, and only within its stated gate;
    risk-limit changes remain ask-first unless explicitly ordered.
 8. **Never infer or invent the model, reasoning setting, hidden routing or
-   unavailable system metadata.** If asked, measure (e.g. the get_session
-   tool) or say it is unavailable.
+   unavailable system metadata.** If asked, measure it with a tool that
+   actually resolves in the current environment (remote sessions have one;
+   local ones may not), or say it is unavailable — do not name a
+   measurement you cannot perform.
 
 The custom commands `/UNDERSTANDING`, `/GAPS`, `/DELTA` (registered in
 `.claude/commands/`, rationale below) are the owner's handles on steps 2, 3
