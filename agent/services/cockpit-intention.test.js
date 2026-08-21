@@ -104,7 +104,8 @@ test('review-writer prefixes map to their sources and to managing/exiting states
 
 test('nextAction is the NEAREST measurable trigger — hand arithmetic', () => {
   // Long from 100, risk 2, price 101. FX rules: BE at +0.7R → 101.4 (0.4 away),
-  // partial at +1.5R → 103 (2 away), bank at +4R → 108 (7), broker TP 106 (5),
+  // partial at +1.0R → 102 (1 away; re-based from 1.5R by owner order
+  // 2026-08-22, audit item 4), bank at +4R → 108 (7), broker TP 106 (5),
   // time cap has no distance. Nearest = break-even at 101.4.
   const out = buildIntention(ctx.db, fetchRow(ctx.db, ctx.idA), LIVE, LIVE_AT, 'r', NOW)
   assert.equal(out.manager, 'position_manager')
@@ -116,7 +117,7 @@ test('nextAction is the NEAREST measurable trigger — hand arithmetic', () => {
   const kinds = out.armedActions.map(a => a.kind)
   for (const k of ['time_cap_exit', 'scale_out', 'bank_exit', 'tp_exit']) assert.ok(kinds.includes(k), k)
   const partial = out.armedActions.find(a => a.kind === 'scale_out')
-  assert.ok(Math.abs(partial.triggerPrice - 103) < 1e-9)
+  assert.ok(Math.abs(partial.triggerPrice - 102) < 1e-9)
 })
 
 test('no live price: distances/ETA/R are null and the explanation says so', () => {

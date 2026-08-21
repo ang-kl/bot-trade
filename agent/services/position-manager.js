@@ -18,7 +18,14 @@
 
 export const DEFAULT_RULES = Object.freeze({
   beTriggerR: 0.7,         // move SL to breakeven at +0.7R MFE
-  partialTriggerR: 1.5,    // close half at +1.5R
+  // 1.5 → 1.0, owner order 2026-08-22 (audit item 4). The partial pipeline
+  // was wired end-to-end and NEVER FIRED on account 46130058: winners were
+  // closed at the broker or scratched before reaching +1.5R (NAS100 banked
+  // 18% of plan, closed manually), so the trigger sat above the excursions
+  // this book actually produces. "A TP1 partial at ~1R would have turned
+  // several of this week's scratches into keeps." Class-level values in
+  // asset-controllers.js moved with it and stay owner-overridable.
+  partialTriggerR: 1.0,    // close half at +1.0R
   partialFraction: 0.5,    // close 50%
   partialTrailR: 0.5,      // trail SL 0.5R behind current price after partial
   runnerTriggerR: 2.5,     // begin runner trail at +2.5R

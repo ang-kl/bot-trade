@@ -36,6 +36,8 @@ import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 import { accountEconomics } from './config-controller.js'
+// Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
+import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
 
 /**
  * THE EXPECTANCY FLOOR. Owner-set 13-08-2026, and not overridable from the
@@ -807,6 +809,37 @@ export function strategyPerfStats(db, strategyKey, windowDays = 30) {
 // Without an injectable now, those assertions invert for the first hour after
 // every 21:00 UTC day open — a red CI window that repeats daily and has
 // nothing to do with the change under test. Production never passes it.
+/**
+ * OWNER ORDER, 2026-08-22 audit item 1: "disarm NatGas". Measured basis: 15
+ * NatGas deals for −$1,929 on the 46130058 statement, including 21 Aug —
+ * three longs stopped out in 10–30 minutes on 0.4–0.6% stops against an
+ * instrument moving 2–4%/day, then a flipped short that filled 3.7× planned
+ * risk beyond its stop (−$550).
+ *
+ * Pinned in CODE, not in DEFAULT_RISK_CONFIG, on the HARD_MIN_RR precedent:
+ * loadRiskConfig spreads stored risk_config_json OVER the defaults, so a
+ * default `blockedSymbols: ['NATGAS']` would be silently erased by any
+ * blockedSymbols array the owner had already saved. A standing order must
+ * not be maskable by an older config write.
+ */
+export const OWNER_DISARMED_SYMBOLS = Object.freeze(['NATGAS'])
+
+/**
+ * Case- and punctuation-insensitive blocklist match ("NatGas" ≡ "NATGAS").
+ * Returns the matching list entry, or null. Exported for tests.
+ */
+export function blocklistedSymbol(list, symbol) {
+  if (!Array.isArray(list) || list.length === 0) return null
+  const norm = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+  const target = norm(symbol)
+  if (!target) return null
+  for (const entry of list) {
+    const e = norm(entry)
+    if (e && e === target) return String(entry)
+  }
+  return null
+}
+
 export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // M1 scoped reads: every per-account query below filters to the account
   // this proposal is FOR (proposal.accountId when a worker passes one, else
@@ -1034,8 +1067,29 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
          AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
     )
     .get(dayStartSql, acct, acct)
-  const todayPnl = todayRow?.pnl || 0
+  // OWNER ORDER, 2026-08-22 audit item 2. SUM skips NULLs, and a broker-side
+  // stop-out sits at NULL net_pnl until the backfill lands — so on exactly the
+  // day this cap exists for, it read the losses as absent (21 Aug: an AUTO
+  // entry approved with the day already −4.4% against a 3% cap). NULL rows
+  // that look like stop-outs now count at PLANNED risk (|entry−sl| × volume ×
+  // usdLossPerLot) until their real P&L arrives; a row is only ever in one of
+  // the two figures, so the backfill replaces the estimate rather than adding
+  // to it. See services/stopout-estimate.js.
+  const stopoutEst = estimateStopoutLossUsd(db, {
+    sinceSql: dayStartSql,
+    accountId: acct,
+    scope: acct == null ? 'all' : 'scoped',
+    rates: scanRates(db),
+  })
+  const todayPnl = (todayRow?.pnl || 0) - stopoutEst.estUsd
   checks.daily_pnl = todayPnl
+  if (stopoutEst.counted || stopoutEst.unpriceable) {
+    checks.daily_pnl_estimated_stopout_usd = Number(stopoutEst.estUsd.toFixed(2))
+    checks.daily_pnl_estimated_stopouts = stopoutEst.counted
+    // Counted but worth $0 in the sum — the unresolved-pnl block is the only
+    // cover these rows have, and the checks row says so out loud.
+    checks.daily_pnl_unpriceable_stopouts = stopoutEst.unpriceable
+  }
   // The allowance may be PACED across the FX day (dailyLossPctMax set) or
   // flat (it isn't). pacedDailyCap collapses to the old arithmetic in the
   // flat case, so this is one code path rather than two.
@@ -1257,29 +1311,45 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // refused neither, however broadly it was scoped. Breadth was never what was
   // wrong with it.
   if (config.symbolCooldownMinutes > 0) {
-    const lastLoss = db
+    // OWNER ORDER, 2026-08-22 audit item 3. This gate used to require
+    // `net_pnl IS NOT NULL AND net_pnl < 0`, on the reasoning that unknown
+    // P&L belonged to the unresolved-pnl guard. That reasoning had a hole the
+    // exact width of the failure it existed to stop: a broker-side STOP-OUT
+    // closes with net_pnl NULL, so the one close that most needs a cooldown
+    // was the one that never armed it — 21 Aug, three NatGas stop-outs
+    // re-entered inside 10–30 minutes, all NULL at the time. And the
+    // unresolved-pnl guard ages out, so it did not hold the line either.
+    //
+    // A NULL-pnl close now arms the cooldown UNLESS it is clearly TP-shaped
+    // (countsAsStopout — same classification the daily-gauge estimate uses),
+    // which keeps the 2026-08-06 loss-only doctrine intact: winners still
+    // don't lock, known losses still do, and an unreadable close is treated
+    // as the stop-out it usually is. Ten recent candidates, newest first —
+    // the newest ARMING close is the one that sets the clock.
+    const recentClosed = db
       .prepare(
-        `SELECT closed_at, net_pnl FROM trades
+        `SELECT closed_at, net_pnl, close_reason, exit_price, sl_price, tp_price
+         FROM trades
          WHERE status = 'closed' AND symbol = ? AND closed_at IS NOT NULL
-           AND net_pnl IS NOT NULL AND net_pnl < 0
+           AND (net_pnl < 0 OR net_pnl IS NULL)
            AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
-         ORDER BY closed_at DESC LIMIT 1`
+         ORDER BY closed_at DESC LIMIT 10`
       )
-      .get(proposal.symbol, acct, acct)
-    // A close whose realised P&L has not arrived yet is UNKNOWN, not a win.
-    // `unknown_daily_pnl` is the guard that owns that condition and it blocks
-    // account-wide; duplicating the judgement here would either double-block or
-    // silently disagree with it. `net_pnl IS NOT NULL` keeps this gate to the
-    // question it can answer.
-    const lastClosed = lastLoss
+      .all(proposal.symbol, acct, acct)
+    const lastClosed = recentClosed.find(r => Number(r.net_pnl) < 0 || countsAsStopout(r))
     if (lastClosed?.closed_at) {
       const unlockAt = new Date(lastClosed.closed_at).getTime() + config.symbolCooldownMinutes * 60_000
       if (unlockAt > Date.now()) {
         const mins = Math.ceil((unlockAt - Date.now()) / 60_000)
         checks.symbol_cooldown_wait = mins
         checks.symbol_cooldown_last_loss = lastClosed.net_pnl
+        // A NULL-pnl arming close is a stop-out whose money has not landed
+        // yet — say so instead of printing NaN.
+        const after = lastClosed.net_pnl == null
+          ? 'unknown (broker-side stop-out, P&L pending)'
+          : Number(lastClosed.net_pnl).toFixed(2)
         return veto(
-          `symbol_cooldown wait=${mins}m after=${Number(lastClosed.net_pnl).toFixed(2)} account=${acct ?? 'all'}`,
+          `symbol_cooldown wait=${mins}m after=${after} account=${acct ?? 'all'}`,
           checks, proposal,
         )
       }
@@ -1302,12 +1372,28 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     }
   }
 
-  // ---- 5. Blocked-symbol gate (opt-in per-config) -------------------------
-  // No hardcoded instrument universe — you get whatever your balance supports
-  // on 0.01 lot (enforced by the `insufficient_equity` check below). The tier
-  // label is still attached for dashboard context.
+  // ---- 5. Blocked-symbol gate -------------------------------------------
+  // Two lists, one gate. `config.blockedSymbols` is the owner's editable
+  // list (Risk page / order-ledger "block" action) and stays opt-in per
+  // config. OWNER_DISARMED_SYMBOLS is a standing order pinned in code — same
+  // contract as HARD_MIN_RR: not overridable from the database or an account
+  // overlay, because a stored `blockedSymbols` array REPLACES the default on
+  // merge, so a config-level default could be silently masked by any list
+  // the owner had saved before the order existed. Re-arming a disarmed
+  // symbol is therefore a code change, reviewed like this one was.
+  // No hardcoded instrument universe beyond that — you get whatever your
+  // balance supports on 0.01 lot (enforced by the `insufficient_equity`
+  // check below). The tier label is still attached for dashboard context.
   if (balance != null) {
     checks.tier = tierForBalance(balance).name
+  }
+  const disarmed = blocklistedSymbol(OWNER_DISARMED_SYMBOLS, proposal.symbol)
+  if (disarmed) {
+    checks.symbol_disarmed = disarmed
+    return veto(
+      `symbol_blocked ${proposal.symbol} — disarmed by owner order (2026-08-22 audit item 1); re-arming requires removing it from OWNER_DISARMED_SYMBOLS`,
+      checks, proposal,
+    )
   }
   const blocked = Array.isArray(config.blockedSymbols) ? config.blockedSymbols : []
   if (blocked.some(s => String(s).toUpperCase() === proposal.symbol.toUpperCase())) {

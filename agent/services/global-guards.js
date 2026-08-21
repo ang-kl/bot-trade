@@ -20,7 +20,8 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
-import { fxDayStartSql } from './risk.js'
+import { fxDayStartSql, scanRates } from './risk.js'
+import { estimateStopoutLossUsd } from './stopout-estimate.js'
 import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN, DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS } from './unresolved-pnl.js'
 
 export const DEFAULT_GLOBAL_GUARDS = {
@@ -80,7 +81,19 @@ export function evaluateGlobalGuards(db, guards = null) {
       `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
        WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?`
     ).get(dayStartSql)
-    checks.portfolio_daily_pnl = row?.pnl || 0
+    // Audit item 2 (owner order 2026-08-22): NULL-pnl stop-outs count at
+    // planned risk immediately instead of vanishing from the SUM until the
+    // backfill lands. Same estimator, same no-double-count property as the
+    // per-account gauge — see services/stopout-estimate.js.
+    const stopoutEst = estimateStopoutLossUsd(db, {
+      sinceSql: dayStartSql, accountId: null, scope: 'all', rates: scanRates(db),
+    })
+    checks.portfolio_daily_pnl = (row?.pnl || 0) - stopoutEst.estUsd
+    if (stopoutEst.counted || stopoutEst.unpriceable) {
+      checks.portfolio_estimated_stopout_usd = Number(stopoutEst.estUsd.toFixed(2))
+      checks.portfolio_estimated_stopouts = stopoutEst.counted
+      checks.portfolio_unpriceable_stopouts = stopoutEst.unpriceable
+    }
     checks.portfolio_daily_cap_usd = lossCap
 
     // P1 / AUDIT F-L6-06: SUM skips NULL net_pnl and COALESCE turns an

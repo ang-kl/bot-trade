@@ -221,13 +221,22 @@ test("ANOTHER account's loss no longer locks this account's symbol", async () =>
   assert.ok(!/symbol_cooldown/.test(v.veto_reason || ''), v.veto_reason || '(approved)')
 })
 
-test('a close with NO realised P&L yet is unknown, not a win — and does not lock', async () => {
-  // `unknown_daily_pnl` owns that condition and blocks account-wide; judging it
-  // again here would either double-block or silently disagree with it.
+test('a close with NO realised P&L yet LOCKS — reversed by owner order 2026-08-22', async () => {
+  // This test used to assert the opposite: unknown P&L was left to the
+  // unknown_daily_pnl guard, so it did not arm the cooldown. That reasoning
+  // had a hole the exact width of the failure the gate exists for: a
+  // broker-side STOP-OUT closes with net_pnl NULL, so the close that most
+  // needs a cooldown was the one that never armed it (21 Aug 2026 — three
+  // NatGas stop-outs re-entered inside 10–30 minutes, all NULL at the time,
+  // and unknown_daily_pnl had aged out). A NULL-pnl close now arms the
+  // cooldown unless it is clearly TP-shaped — see stopout-guards.test.js for
+  // the TP exemption and the filled-loss regression cases.
   const { evaluateTrade } = await import('../services/risk.js')
   const db = dbWithClosedTrade({ closedAt: new Date(Date.now() - 2 * 60_000).toISOString(), netPnl: null })
   const v = evaluateTrade(db, { symbol: 'JPN225', bias: 'short', entry: 40000, sl: 40400, tp1: 39400, accountId: '43097342' })
-  assert.ok(!/symbol_cooldown/.test(v.veto_reason || ''), v.veto_reason || '(approved)')
+  assert.equal(v.approved, false)
+  assert.match(v.veto_reason || '', /symbol_cooldown/)
+  assert.match(v.veto_reason || '', /unknown \(broker-side stop-out/)
 })
 
 test('AT 60 MINUTES the two JPN225 re-entries that cost -$10,487.68 are refused', async () => {
