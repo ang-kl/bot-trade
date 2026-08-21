@@ -24,24 +24,26 @@ assumption or an invariant that was asserted but never measured.
 ## Protocol for important or consequential work (owner, 2026-08-22)
 
 For any consequential deliverable (audits, risk changes, money-touching code,
-production diagnoses, recommendations the owner will act on):
+production diagnoses, recommendations the owner will act on) — protocol
+points P1–P8, labelled so that a bare "#N" elsewhere in this file keeps
+pointing only at the numbered "Recurring failure modes" list below:
 
-1. **Lead with the final answer or recommendation.** Supporting detail after.
-2. **Identify the authoritative sources used** and distinguish verified facts
+P1. **Lead with the final answer or recommendation.** Supporting detail after.
+P2. **Identify the authoritative sources used** and distinguish verified facts
    from inference. (Precedent: the panel-vs-heartbeat correction — say which
    source was believed and why.)
-3. **State the material invariants** and report each as **Passed**, **Failed**
+P3. **State the material invariants** and report each as **Passed**, **Failed**
    or **Not Verifiable**. Never present Not Verifiable as Passed.
-4. **Disclose any material search, retrieval, calculation or external tool
+P4. **Disclose any material search, retrieval, calculation or external tool
    used.** If that information is unavailable, say so rather than guessing.
-5. **Use deterministic tools for exact calculations** where available — a
+P5. **Use deterministic tools for exact calculations** where available — a
    script or SQL over the real data, not mental arithmetic. Two live
    precedents: the serial count (`scripts/count-interactions.js`) and the
    statement footer audit (`agent/services/statement-import.test.js`, which
    asserts the parsed deals sum to the export's own footer total).
-6. **Flag missing evidence, conflicting sources, and assumptions requiring
+P6. **Flag missing evidence, conflicting sources, and assumptions requiring
    confirmation** — explicitly, not buried.
-7. **Ask for approval before any external, destructive, financial, legal,
+P7. **Ask for approval before any external, destructive, financial, legal,
    personnel-related or otherwise consequential action.** The PR merge policy
    below is the one standing exception, and only within its stated gate;
    risk-limit changes remain ask-first unless explicitly ordered.
@@ -52,16 +54,16 @@ production diagnoses, recommendations the owner will act on):
    "external" is for. "External" catches the outward-facing and
    hard-to-retract: deploys, live-account operations, messages to third
    parties, publishing anything beyond this repo.
-8. **Never infer or invent the model, reasoning setting, hidden routing or
+P8. **Never infer or invent the model, reasoning setting, hidden routing or
    unavailable system metadata.** If asked, measure it with a tool that
    actually resolves in the current environment (remote sessions have one;
    local ones may not), or say it is unavailable — do not name a
    measurement you cannot perform.
 
 The custom commands `/UNDERSTANDING`, `/GAPS`, `/DELTA` (registered in
-`.claude/commands/`, rationale below) are the owner's handles on steps 2 and
-6 — questions about the *reasoning*, answered from the current conversation
-state, not re-derived from files. Step 3 has no command handle yet; if the
+`.claude/commands/`, rationale below) are the owner's handles on P2 and
+P6 — questions about the *reasoning*, answered from the current conversation
+state, not re-derived from files. P3 has no command handle yet; if the
 owner wants one, that is a new command (e.g. `/INVARIANTS`) to register, not
 a coverage claim to make early.
 
