@@ -45,10 +45,10 @@ production diagnoses, recommendations the owner will act on):
    risk-limit changes remain ask-first unless explicitly ordered.
    Scope note (not a softening of the owner's words): ordinary repo traffic
    in service of an ordered task — branch pushes, opening PRs, PR comments
-   and review replies — is durably authorized by the merge policy below and
-   by long practice, and is not what "external" is for. "External" catches
-   the outward-facing and hard-to-retract: deploys, live-account operations,
-   messages to third parties, publishing anything beyond this repo.
+   and review replies — is settled practice in this repo and is not what
+   "external" is for. "External" catches the outward-facing and
+   hard-to-retract: deploys, live-account operations, messages to third
+   parties, publishing anything beyond this repo.
 8. **Never infer or invent the model, reasoning setting, hidden routing or
    unavailable system metadata.** If asked, measure it with a tool that
    actually resolves in the current environment (remote sessions have one;
