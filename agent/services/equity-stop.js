@@ -53,6 +53,8 @@
 import { getState, setState } from '../db.js'
 import { acctPhaseKey } from './account-phases.js'
 import { setAccountArmed } from './account-arming.js'
+// Leaf module — prices NULL-pnl stop-outs at planned risk (audit item 2).
+import { estimateStopoutLossUsd } from './stopout-estimate.js'
 
 /** Per-account trip marker, so one account tripping cannot silence another. */
 export const trippedKey = (accountId) => `acct:${accountId}:equity_stop_tripped_at`
@@ -68,12 +70,18 @@ export const trippedKey = (accountId) => `acct:${accountId}:equity_stop_tripped_
  * account simultaneously, so one unattributed loss could trip the stop on all
  * seven at once — the exact failure mode this module exists to remove.
  *
- * Returns `{ pnl, unknownCount }`. `unknownCount` is closed trades whose
- * net_pnl is NULL: those are not worth zero, they are UNKNOWN, and the caller
- * must not read a sum containing them as a trustworthy total. See
- * services/unresolved-pnl.js for the veto that acts on the same fact.
+ * Returns `{ pnl, unknownCount, estimatedStopoutUsd }`. `unknownCount` is
+ * closed trades whose net_pnl is NULL: those are not worth zero, they are
+ * UNKNOWN. Audit item 2 (owner order 2026-08-22): the NULL rows that look
+ * like stop-outs are now COUNTED into `pnl` at planned risk (`|entry−sl| ×
+ * volume × usdLossPerLot`) instead of waiting for the backfill — this is the
+ * circuit that flattens open exposure, and a run of broker-side stop-outs is
+ * precisely the day it must not read as flat. `rates` (from risk.js
+ * scanRates) prices cross-currency rows; without it those rows stay
+ * unpriceable and contribute $0. See services/stopout-estimate.js and
+ * services/unresolved-pnl.js for the veto acting on the same fact.
  */
-export function accountPnlToday(db, accountId, dayStartSql) {
+export function accountPnlToday(db, accountId, dayStartSql, rates = null) {
   const row = db.prepare(`
     SELECT COALESCE(SUM(net_pnl), 0) AS pnl,
            SUM(CASE WHEN net_pnl IS NULL THEN 1 ELSE 0 END) AS unknowns
@@ -82,7 +90,16 @@ export function accountPnlToday(db, accountId, dayStartSql) {
        AND account_id = ?
        AND REPLACE(closed_at, 'T', ' ') >= ?
   `).get(String(accountId), dayStartSql)
-  return { pnl: Number(row?.pnl) || 0, unknownCount: Number(row?.unknowns) || 0 }
+  // Attributed scope, same as the SUM above: a NULL-account row must not
+  // charge every account at once — the exact failure this module removed.
+  const est = estimateStopoutLossUsd(db, {
+    sinceSql: dayStartSql, accountId, scope: 'attributed', rates,
+  })
+  return {
+    pnl: (Number(row?.pnl) || 0) - est.estUsd,
+    unknownCount: Number(row?.unknowns) || 0,
+    estimatedStopoutUsd: est.estUsd,
+  }
 }
 
 /**

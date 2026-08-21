@@ -27,15 +27,20 @@ import { DEFAULT_RULES } from './position-manager.js'
 // runnerTriggerR / runnerTrailR — how far to let a runner go, how tight to trail
 // bankTriggerR — full exit at this R: recycle margin out of big winners
 // instead of trailing them forever (clean trenders get more room).
+// partialTriggerR re-based around ~1R, owner order 2026-08-22 (audit item 4):
+// the old 1.2–1.6 band sat above the excursions this book actually produces,
+// so the partial pipeline — wired end-to-end — never fired on 46130058. The
+// per-class SPREAD is kept (whippy classes bank earlier than clean trenders),
+// only the level moved; every value stays owner-overridable below.
 export const CLASS_RULE_DEFAULTS = {
-  fx:        { beTriggerR: 0.7, partialTriggerR: 1.5, runnerTriggerR: 2.5, runnerTrailR: 1.0, bankTriggerR: 4 },
-  metal:     { beTriggerR: 0.8, partialTriggerR: 1.6, runnerTriggerR: 3.0, runnerTrailR: 1.2, bankTriggerR: 5 }, // gold trends — give runners room
-  index:     { beTriggerR: 0.8, partialTriggerR: 1.6, runnerTriggerR: 3.0, runnerTrailR: 1.2, bankTriggerR: 5 }, // indices trend clean
-  crypto:    { beTriggerR: 0.5, partialTriggerR: 1.2, runnerTriggerR: 2.5, runnerTrailR: 0.8, bankTriggerR: 3 }, // violent — protect early
-  commodity: { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 }, // energy whipsaws
-  soft:      { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 }, // thin, gappy
-  grain:     { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 },
-  stock:     { beTriggerR: 0.7, partialTriggerR: 1.5, runnerTriggerR: 2.5, runnerTrailR: 1.0, bankTriggerR: 4 },
+  fx:        { beTriggerR: 0.7, partialTriggerR: 1.0, runnerTriggerR: 2.5, runnerTrailR: 1.0, bankTriggerR: 4 },
+  metal:     { beTriggerR: 0.8, partialTriggerR: 1.1, runnerTriggerR: 3.0, runnerTrailR: 1.2, bankTriggerR: 5 }, // gold trends — give runners room
+  index:     { beTriggerR: 0.8, partialTriggerR: 1.1, runnerTriggerR: 3.0, runnerTrailR: 1.2, bankTriggerR: 5 }, // indices trend clean
+  crypto:    { beTriggerR: 0.5, partialTriggerR: 0.8, runnerTriggerR: 2.5, runnerTrailR: 0.8, bankTriggerR: 3 }, // violent — protect early
+  commodity: { beTriggerR: 0.6, partialTriggerR: 0.9, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 }, // energy whipsaws
+  soft:      { beTriggerR: 0.6, partialTriggerR: 0.9, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 }, // thin, gappy
+  grain:     { beTriggerR: 0.6, partialTriggerR: 0.9, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 },
+  stock:     { beTriggerR: 0.7, partialTriggerR: 1.0, runnerTriggerR: 2.5, runnerTrailR: 1.0, bankTriggerR: 4 },
 }
 
 export const MANAGED_KEYS = ['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR', 'bankTriggerR']

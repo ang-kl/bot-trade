@@ -3897,10 +3897,13 @@ async function runLoop(db) {
         phase('equity stop')
         const riskCfg = loadRiskConfig(db)
         const stopPct = riskCfg.equityStopPct ?? riskCfg.dailyLossPct
-        const { fxDayStartSql, fxDayOpenMs } = await import('./services/risk.js')
+        const { fxDayStartSql, fxDayOpenMs, scanRates } = await import('./services/risk.js')
         const es = await import('./services/equity-stop.js')
         const dayStart = fxDayStartSql()
         const dayOpen = fxDayOpenMs()
+        // Prices cross-currency stop-out estimates in accountPnlToday
+        // (audit item 2) — computed once, not per account.
+        const stopoutRates = scanRates(db)
         // Every position this bot owns, grouped by the account it belongs to.
         // `source !== 'external'` keeps hands off positions the bot did not open.
         const byAccount = new Map()
@@ -3922,7 +3925,7 @@ async function runLoop(db) {
           }
           if (es.alreadyTrippedToday(db, acctId, dayOpen)) continue
 
-          const { pnl, unknownCount } = es.accountPnlToday(db, acctId, dayStart)
+          const { pnl, unknownCount } = es.accountPnlToday(db, acctId, dayStart, stopoutRates)
           const verdict = es.evaluateAccount({
             pnl,
             balance: getAccountBalance(db, acctId),
