@@ -43,7 +43,8 @@ production diagnoses, recommendations the owner will act on):
    personnel-related or otherwise consequential action.** The PR merge policy
    below is the one standing exception, and only within its stated gate;
    risk-limit changes remain ask-first unless explicitly ordered.
-   Scope note (not a softening of the owner's words): ordinary repo traffic
+   Scope note (Claude's reading, 2026-08-22, flagged to the owner in-session
+   and standing unless the owner vetoes it): ordinary repo traffic
    in service of an ordered task — branch pushes, opening PRs, PR comments
    and review replies — is settled practice in this repo and is not what
    "external" is for. "External" catches the outward-facing and
