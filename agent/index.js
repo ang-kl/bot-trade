@@ -117,6 +117,20 @@ if (!DB_PATH) {
 }
 const db = initDB(resolvedDbPath);
 
+// Seed broker statements (owner, 21-08-2026: "load these into the agent's
+// database as the authoritative history"). Fire-and-forget and AFTER initDB:
+// the import is an idempotent upsert over a few hundred rows, and a seed must
+// never be the thing that stops a boot. Each file resolves its trader login
+// against the accounts table and is refused loudly when it cannot — see
+// services/statement-import.js for why refusal beats a NULL account.
+import('./services/statement-import.js')
+  .then(({ importSeedStatements }) =>
+    importSeedStatements(db, resolve(dirname(new URL(import.meta.url).pathname), 'seed-statements')))
+  .then((r) => {
+    if (r.files.length) console.log(`[statements] seed pass done: ${r.imported} deal(s) across ${r.files.length} file(s), ${r.skipped} file(s) refused`)
+  })
+  .catch((err) => console.warn(`[statements] seed import failed (non-fatal): ${err.message}`))
+
 // Quote-currency overrides, BEFORE anything can size a position. A wrong entry
 // in contracts.js mis-sizes every trade on that symbol by an FX rate, and
 // until now correcting one took a code change and a deploy — which is exactly
