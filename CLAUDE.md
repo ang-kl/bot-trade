@@ -35,8 +35,10 @@ production diagnoses, recommendations the owner will act on):
 4. **Disclose any material search, retrieval, calculation or external tool
    used.** If that information is unavailable, say so rather than guessing.
 5. **Use deterministic tools for exact calculations** where available — a
-   script or SQL over the real data, not mental arithmetic (this is already
-   how the serial count and the statement footer audits work).
+   script or SQL over the real data, not mental arithmetic. Two live
+   precedents: the serial count (`scripts/count-interactions.js`) and the
+   statement footer audit (`agent/services/statement-import.test.js`, which
+   asserts the parsed deals sum to the export's own footer total).
 6. **Flag missing evidence, conflicting sources, and assumptions requiring
    confirmation** — explicitly, not buried.
 7. **Ask for approval before any external, destructive, financial, legal,
