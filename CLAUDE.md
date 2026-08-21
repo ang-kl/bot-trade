@@ -50,9 +50,11 @@ production diagnoses, recommendations the owner will act on):
    measurement you cannot perform.
 
 The custom commands `/UNDERSTANDING`, `/GAPS`, `/DELTA` (registered in
-`.claude/commands/`, rationale below) are the owner's handles on steps 2, 3
-and 6 — questions about the *reasoning*, answered from the current
-conversation state, not re-derived from files.
+`.claude/commands/`, rationale below) are the owner's handles on steps 2 and
+6 — questions about the *reasoning*, answered from the current conversation
+state, not re-derived from files. Step 3 has no command handle yet; if the
+owner wants one, that is a new command (e.g. `/INVARIANTS`) to register, not
+a coverage claim to make early.
 
 ## PR merge policy (owner, 2026-07-22)
 
