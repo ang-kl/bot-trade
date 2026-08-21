@@ -41,7 +41,7 @@ production diagnoses, recommendations the owner will act on):
    confirmation** — explicitly, not buried.
 7. **Ask for approval before any external, destructive, financial, legal,
    personnel-related or otherwise consequential action.** The PR merge policy
-   above is the one standing exception, and only within its stated gate;
+   below is the one standing exception, and only within its stated gate;
    risk-limit changes remain ask-first unless explicitly ordered.
 8. **Never infer or invent the model, reasoning setting, hidden routing or
    unavailable system metadata.** If asked, measure (e.g. the get_session
