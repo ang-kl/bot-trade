@@ -1,5 +1,57 @@
 # Instructions for Claude — bot-trade
 
+## Working mental model (owner, 2026-08-22)
+
+Build everything in this project through this chain, in order:
+
+**Intent → Interpretation → Assumptions → Invariants → Execution → Evidence**
+
+- *Intent*: what the owner is actually trying to achieve, not the literal words.
+- *Interpretation*: the reading chosen — surfaced, not silent (`/UNDERSTANDING`).
+- *Assumptions*: what is being treated as given; each one is a place the work
+  can be wrong without any code being wrong (`/GAPS`).
+- *Invariants*: the properties that must hold for the work to be correct —
+  stated up front, so they can be checked rather than hoped.
+- *Execution*: the change itself, smallest thing that satisfies the invariants.
+- *Evidence*: measurement that the invariants hold — tests that can fail,
+  mutation checks, production log lines. A claim without evidence is a guess
+  (`/DELTA` records when evidence overturns an earlier understanding).
+
+This is the same shape the "Recurring failure modes" section below was written
+from: every defect there was a break in this chain — usually an unexamined
+assumption or an invariant that was asserted but never measured.
+
+## Protocol for important or consequential work (owner, 2026-08-22)
+
+For any consequential deliverable (audits, risk changes, money-touching code,
+production diagnoses, recommendations the owner will act on):
+
+1. **Lead with the final answer or recommendation.** Supporting detail after.
+2. **Identify the authoritative sources used** and distinguish verified facts
+   from inference. (Precedent: the panel-vs-heartbeat correction — say which
+   source was believed and why.)
+3. **State the material invariants** and report each as **Passed**, **Failed**
+   or **Not Verifiable**. Never present Not Verifiable as Passed.
+4. **Disclose any material search, retrieval, calculation or external tool
+   used.** If that information is unavailable, say so rather than guessing.
+5. **Use deterministic tools for exact calculations** where available — a
+   script or SQL over the real data, not mental arithmetic (this is already
+   how the serial count and the statement footer audits work).
+6. **Flag missing evidence, conflicting sources, and assumptions requiring
+   confirmation** — explicitly, not buried.
+7. **Ask for approval before any external, destructive, financial, legal,
+   personnel-related or otherwise consequential action.** The PR merge policy
+   above is the one standing exception, and only within its stated gate;
+   risk-limit changes remain ask-first unless explicitly ordered.
+8. **Never infer or invent the model, reasoning setting, hidden routing or
+   unavailable system metadata.** If asked, measure (e.g. the get_session
+   tool) or say it is unavailable.
+
+The custom commands `/UNDERSTANDING`, `/GAPS`, `/DELTA` (registered in
+`.claude/commands/`, rationale below) are the owner's handles on steps 2, 3
+and 6 — questions about the *reasoning*, answered from the current
+conversation state, not re-derived from files.
+
 ## PR merge policy (owner, 2026-07-22)
 
 Auto-merge is standing approval, not a one-off: once a PR's full gate is
