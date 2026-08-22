@@ -56,6 +56,10 @@ export const DEFAULT_BURN_IN = {
   startedAt: null,     // stamped by POST /actions/burn-in on arming
 }
 
+/** Margin above the effective R:R floor so the gate's 2-dp rounding can never
+ *  land a burn-in target exactly ON the floor and lose the coin-flip. */
+export const RR_HEADROOM = 0.05
+
 export function loadBurnInConfig(db) {
   try {
     const parsed = JSON.parse(getState(db, 'burn_in_json') || 'null')
@@ -251,9 +255,21 @@ export async function runBurnIn(db, creds, deps = {}) {
   }
 
   let minSlPct = 0.0015
+  // ASK THE GATE WHAT IT WILL DEMAND, do not remember it. The previous target
+  // was a constant: `tp1 = entry + dir * slDist * 1.6 // RR 1.6 clears the
+  // minRR 1.5 gate`. By 22-08-2026 the gate was HARD_MIN_RR 3.0 plus a
+  // dynamic expectancy clause asking ~3.4-3.6 at the measured win rate, so a
+  // freshly-armed burn-in would have had 100% of its orders vetoed as bad_rr
+  // — a sample generator that generates vetoes. effectiveRrFloor is computed
+  // by risk.js from the SAME functions the gate runs, so the two cannot
+  // drift apart again; the headroom keeps 2-dp rounding on the gate's side.
+  let rrMult = 3 + RR_HEADROOM // hard floor + headroom if risk.js is unreachable
   try {
-    const { loadRiskConfig } = deps.risk ?? await import('./risk.js')
-    minSlPct = Number(loadRiskConfig(db).minSLDistancePct) || minSlPct
+    const riskMod = deps.risk ?? await import('./risk.js')
+    minSlPct = Number(riskMod.loadRiskConfig(db).minSLDistancePct) || minSlPct
+    if (typeof riskMod.effectiveRrFloor === 'function') {
+      rrMult = riskMod.effectiveRrFloor(db, creds?.accountId ?? null, 'burnin') + RR_HEADROOM
+    }
   } catch { /* default floor */ }
 
   let attempted = 0
@@ -298,7 +314,7 @@ export async function runBurnIn(db, creds, deps = {}) {
         consensus_bias: bias,
         entry,
         sl: entry - dir * slDist,
-        tp1: entry + dir * slDist * 1.6, // RR 1.6 clears the minRR 1.5 gate
+        tp1: entry + dir * slDist * rrMult, // floor-aware — see rrMult above
         strategy: 'burnin',
         overall_conviction: 8,
         timeframe: plan.tf,

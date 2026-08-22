@@ -201,7 +201,14 @@ test('places trades on the PLAN timeframe with the plan time cap', async () => {
     assert.equal(p.synth.time_cap_minutes, 30)
     assert.equal(p.synth.consensus_bias, 'long') // rising fixture
     const rr = Math.abs(p.synth.tp1 - p.synth.entry) / Math.abs(p.synth.entry - p.synth.sl)
-    assert.ok(Math.abs(rr - 1.6) < 1e-9)
+    // THIS ASSERTION USED TO PIN 1.6 — the exact constant that had every
+    // burn-in order vetoed once the risk gate moved to HARD_MIN_RR 3.0. A
+    // test that certifies the proposer against a number the gate abandoned is
+    // a test shaped to the claim: it stayed green while the feature it
+    // guarded could not place a single order. The pin is now the RULE — the
+    // target must clear the hard floor — and the exact value is asserted in
+    // burn-in-rr-floor.test.js against effectiveRrFloor itself.
+    assert.ok(rr >= 3, `burn-in target ${rr} would be vetoed by the 3.0 floor`)
   }
 })
 
