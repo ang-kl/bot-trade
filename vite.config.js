@@ -37,6 +37,11 @@ export default defineConfig({
       'src/**/*.test.{js,jsx}',
       'api/**/*.test.js',
       'server/**/*.test.js',
+      // scripts/ had no tests at all until count-interactions.js grew two new
+      // output modes; the flags it gained fail SILENTLY when mis-wired, so
+      // they need executable evidence rather than a manual run someone
+      // remembers to do.
+      'scripts/**/*.test.js',
     ],
   },
 })

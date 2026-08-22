@@ -23,6 +23,10 @@
  *   node scripts/count-interactions.js --agents             # subagent spawns
  *   node scripts/count-interactions.js --tokens            # token usage
  *
+ *   --agents and --tokens report PER-SESSION figures, never per-turn. There is
+ *   no per-turn accounting in this script, which is why CLAUDE-protocol.md §6
+ *   keeps the per-reply footer switched off.
+ *
  * DEFAULT LOG LOCATION
  *   macOS / Linux : ~/.claude/projects/**\/*.jsonl
  *   (one JSONL file per session, nested under a per-project folder; this walks
@@ -59,6 +63,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * Every mode flag this CLI accepts. EXPORTED because the bug that made this
+ * list necessary was invisible: an unlisted flag falls through to the
+ * directory argument, prints "No .jsonl files found under: --agents" and
+ * exits 0 — a silent no-op that reads as a measurement. A test that iterates
+ * this array covers flag four automatically; a test that hardcodes three
+ * strings does not.
+ */
+export const MODE_FLAGS = ['--serial', '--agents', '--tokens'];
 
 function findJsonlFiles(dir) {
   let results = [];
@@ -158,6 +173,7 @@ function analyzeFile(filePath) {
       inTok: 0,
       outTok: 0,
       cacheTok: 0,
+      creationTok: 0,
       usageEntries: 0,
       usageMissing: 0,
       badLines: 0,
@@ -201,6 +217,12 @@ function analyzeFile(filePath) {
           out.inTok += u.input_tokens || 0;
           out.outTok += u.output_tokens || 0;
           out.cacheTok += u.cache_read_input_tokens || 0;
+          // Cache WRITES are input tokens too. Reading input_tokens alone and
+          // calling it "tokens in" hands the reader a confident wrong number
+          // on any cached session — the bulk of the input sits in the two
+          // cache fields. Same rule as the missing-usage case one line up:
+          // a field we do not read is not a zero, it is a hole.
+          out.creationTok += u.cache_creation_input_tokens || 0;
         } else {
           out.usageMissing++;
         }
@@ -226,12 +248,21 @@ async function main() {
   const serialOnly = args.includes('--serial');
   const agentsOnly = args.includes('--agents');
   const tokensOnly = args.includes('--tokens');
-  const FLAGS = new Set(['--serial', '--agents', '--tokens']);
+  const FLAGS = new Set(MODE_FLAGS);
   // Every known flag has to come out of `rest`, or it is read as a directory
   // path: `--agents` used to reach findJsonlFiles as a folder name, print
   // "No .jsonl files found under: --agents" and exit 0 — a silent no-op that
   // looked like a measurement.
   const rest = args.filter(a => !FLAGS.has(a));
+  // --serial used to short-circuit before the others, so `--serial --tokens`
+  // printed the serial and silently dropped the request for tokens. Refuse
+  // instead of picking one: a flag that is accepted and ignored is the same
+  // class of lie as a flag read as a directory name.
+  const modes = args.filter(a => FLAGS.has(a));
+  if (modes.length > 1) {
+    console.error(`Pick one mode at a time — got ${modes.join(' ')}. These flags are mutually exclusive.`);
+    process.exit(1);
+  }
 
   let targetFiles = [];
   if (rest[0] === '--file' && rest[1]) {
@@ -257,33 +288,51 @@ async function main() {
     return;
   }
 
+  // THE LATEST SESSION IS THE ONE THAT ENDED LAST, and it must have actually
+  // ended. `results` is sorted by FIRST timestamp, so the tail is the session
+  // that STARTED last — a long-lived session still running loses to one opened
+  // this morning and closed after two turns. Worse, `analyzeFile` leaves
+  // firstTs null when a file has no parseable timestamps, `String(null)` is
+  // "null", and localeCompare sorts a leading 'n' after a leading '2' — so an
+  // empty or truncated transcript became "latest" and its all-zero counts got
+  // printed as measurements. Absent is not zero: with no timestamped session
+  // at all, `latest` is null and the callers print "unavailable".
+  const timed = results.filter(r => r.lastTs);
+  const latest = timed.length
+    ? timed.reduce((a, b) => (String(a.lastTs) >= String(b.lastTs) ? a : b))
+    : null;
+
   if (agentsOnly) {
     const byType = {};
     for (const r of results) {
       for (const [t, c] of Object.entries(r.agentsByType)) byType[t] = (byType[t] || 0) + c;
     }
-    const latest = results[results.length - 1];
     console.log(`agents_total: ${sum('agents')}`);
     for (const [t, c] of Object.entries(byType).sort((a, b) => b[1] - a[1])) {
       console.log(`  ${t}: ${c}`);
     }
-    console.log(`agents_latest_session: ${latest ? latest.agents : 0}`);
+    console.log(`agents_latest_session: ${latest ? latest.agents : 'unavailable (no timestamped session)'}`);
     return;
   }
 
   if (tokensOnly) {
-    const latest = results[results.length - 1];
     const missing = sum('usageMissing');
     if (sum('usageEntries') === 0) {
       console.log('tokens: unavailable (no usage blocks in these transcripts)');
       return;
     }
-    console.log(`tokens_in: ${sum('inTok')}`);
-    console.log(`tokens_out: ${sum('outTok')}`);
+    // Three input lines that visibly reconcile, so nobody reads the uncached
+    // remainder as the whole input bill.
+    console.log(`tokens_in_uncached: ${sum('inTok')}`);
     console.log(`tokens_cache_read: ${sum('cacheTok')}`);
+    console.log(`tokens_cache_creation: ${sum('creationTok')}`);
+    console.log(`tokens_in_total: ${sum('inTok') + sum('cacheTok') + sum('creationTok')}`);
+    console.log(`tokens_out: ${sum('outTok')}`);
     if (latest) {
-      console.log(`latest_session_in: ${latest.inTok}`);
+      console.log(`latest_session_in_total: ${latest.inTok + latest.cacheTok + latest.creationTok}`);
       console.log(`latest_session_out: ${latest.outTok}`);
+    } else {
+      console.log('latest_session: unavailable (no timestamped session)');
     }
     // Never fold a missing usage block into the total silently.
     if (missing) console.log(`assistant_entries_without_usage: ${missing} (excluded, not counted as 0)`);
@@ -320,4 +369,6 @@ async function main() {
   console.log('');
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+const runDirectly = process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (runDirectly) main().catch(err => { console.error(err); process.exit(1); });
