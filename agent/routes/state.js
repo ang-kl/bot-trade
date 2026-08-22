@@ -3851,12 +3851,25 @@ export default function stateRouter(db) {
   // its test are what pin them together.
   router.get('/ctrader-env', async (_req, res) => {
     try {
-      const { ctraderEnvStatus } = await import('../lib/ctrader-env.js')
-      const slots = ctraderEnvStatus({ stored: (k) => getState(db, k) })
+      const { ctraderEnvStatusWithShape } = await import('../lib/ctrader-env.js')
+      const slots = ctraderEnvStatusWithShape({ stored: (k) => getState(db, k) })
+      // MALFORMED, not merely wrong. On 2026-08-22 Spotware answered the
+      // refresh with "Malformed client_id parameter" while every WebSocket
+      // auth returned CH_CLIENT_AUTH_FAILURE — 758 lines of it in twenty
+      // minutes, zero successful authentications. "Malformed" is a statement
+      // about the SHAPE of the value, which names alone cannot show, so each
+      // slot now carries a non-disclosing description of its value too.
+      const malformed = slots.filter(s => s.shape && (
+        s.shape.edgeWhitespace || s.shape.quoted || s.shape.controlChars ||
+        s.shape.looksLikeAppId === false
+      )).map(s => s.kind)
       res.json({
         slots,
         conflicts: slots.filter(s => s.conflict).map(s => s.kind),
         ignored: slots.filter(s => s.envIgnored).map(s => s.kind),
+        // Heuristic — see ctraderEnvShape. A slot listed here is very likely
+        // a bad paste; a slot ABSENT from it is not thereby correct.
+        suspectShape: malformed,
       })
     } catch (err) {
       res.status(500).json({ error: err.message })

@@ -151,3 +151,67 @@ export function ctraderEnvStatus({ env = process.env, stored = () => undefined }
     }
   })
 }
+
+// ---------------------------------------------------------------------------
+// WHY A SHAPE CHECK (2026-08-22, from the deploy log the owner pasted).
+//
+// The log is unambiguous and it disproved both standing theories. Across
+// 03:02-03:22 UTC: 758 lines of `CH_CLIENT_AUTH_FAILURE - clientId or
+// clientSecret is incorrect`, zero successful authentications, and six of
+// `token refresh rejected: Malformed client_id parameter`.
+//
+// MALFORMED, not rejected. Spotware is not saying "this client is unknown"
+// or "this secret is wrong" - it is saying the client_id parameter does not
+// parse as a client_id at all. That is a value SHAPE problem: a trailing
+// newline, a wrapping pair of quotes copied out of a config file, the whole
+// `id:secret` pair pasted into one variable, or a truncated paste.
+//
+// None of that is visible through ctraderEnvReport(), which reports names.
+// So this describes the value WITHOUT disclosing it: how long it is, whether
+// it has edge whitespace, quotes or control characters, and whether it looks
+// like a cTrader application id at all. Every field is a count or a boolean.
+// ---------------------------------------------------------------------------
+
+/**
+ * cTrader application ids are `<numeric app id>_<long alphanumeric hash>`.
+ * HEURISTIC, and labelled as one everywhere it surfaces: a value failing
+ * this is strong evidence of a malformed paste, but a value passing it is
+ * NOT evidence the credential is correct - only that it is shaped right.
+ */
+const CTRADER_APP_ID = /^[0-9]+_[A-Za-z0-9]+$/
+
+/** Control characters, the invisible half of a bad paste. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/
+
+/**
+ * Non-disclosing description of a resolved value.
+ *
+ * @returns {null|{length:number, edgeWhitespace:boolean, quoted:boolean,
+ *   controlChars:boolean, looksLikeAppId:boolean|null}}
+ */
+export function ctraderEnvShape(kind, env = process.env) {
+  const raw = ctraderEnv(kind, env)
+  if (raw == null) return null
+  const s = String(raw)
+  return {
+    length: s.length,
+    // A trailing newline is the classic one: it survives a copy-paste into a
+    // host's variable editor and is invisible in every UI that shows it.
+    edgeWhitespace: s !== s.trim(),
+    quoted: /^(["']).*\1$/s.test(s.trim()),
+    controlChars: CONTROL_CHARS.test(s),
+    looksLikeAppId: kind === 'clientId' ? CTRADER_APP_ID.test(s.trim()) : null,
+  }
+}
+
+
+/**
+ * ctraderEnvStatus() with the non-disclosing shape of each resolved value
+ * attached. Separate from the plain status so the shape check can be added
+ * to the diagnostic route without changing what the boot report computes.
+ */
+export function ctraderEnvStatusWithShape(opts = {}) {
+  const env = opts.env ?? process.env
+  return ctraderEnvStatus(opts).map(s => ({ ...s, shape: ctraderEnvShape(s.kind, env) }))
+}
