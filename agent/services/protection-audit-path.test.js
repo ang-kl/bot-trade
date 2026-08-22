@@ -21,7 +21,7 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { runProtectionAuditAllAccounts } from './naked-position-guard.js'
+import { runProtectionAuditAllAccounts, lastProtectionAudit } from './naked-position-guard.js'
 
 let db
 const A = '43097342'
@@ -304,4 +304,48 @@ test('and a reached ROSTER account still clears blind', async () => {
   }
   const out = await runProtectionAuditAllAccounts(db, { ...creds, accountId: SELECTED }, { exec })
   assert.equal(out.blind, false, 'B is enabled and was audited')
+})
+
+test('a GENUINE failure stamps the record — lastAttemptAt moves every pass', async () => {
+  // The defect this pins (measured 2026-08-16): a reachable account failing on
+  // a 502 every ~50s for 20,492 passes while /state/protection-audit presented
+  // a six-day-old lastAttemptAt as current. The unauditable branch stamped the
+  // per-account record; the GENUINE failure — the worse one — never did, so
+  // the panel said the controller had stopped when only its record had.
+  seedPosition(A, 'EURUSD', '111', 1.05)
+  const T0 = Date.parse('2026-08-22T04:00:00Z')
+  const exec = { reconcile: async () => { throw new Error('sidecar 502 Bad Gateway') } }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec, auditOpts: { nowMs: T0 } })
+  assert.equal(out.errors.length, 2, 'still a real audit failure for both accounts')
+
+  const rec = lastProtectionAudit(db, { accountId: A, nowMs: T0 })
+  assert.equal(rec.lastAttemptAt, new Date(T0).toISOString(),
+    'the failing pass is on the record, not just in the return value')
+  assert.match(String(rec.lastAttemptError), /502/)
+
+  // And the NEXT failing pass moves it — the stamp is per-pass, not one-shot.
+  await runProtectionAuditAllAccounts(db, creds, { exec, auditOpts: { nowMs: T0 + 50_000 } })
+  const rec2 = lastProtectionAudit(db, { accountId: A, nowMs: T0 + 50_000 })
+  assert.equal(rec2.lastAttemptAt, new Date(T0 + 50_000).toISOString())
+})
+
+test('the genuine-failure stamp PRESERVES the last successful reading', async () => {
+  // recordAuditUnavailable's contract: the last success is the only thing
+  // worth reporting during an outage, and the failure must not destroy it.
+  // The stamp added for genuine failures has to honour the same contract.
+  seedPosition(A, 'EURUSD', '111', 1.05)
+  const T0 = Date.parse('2026-08-22T04:00:00Z')
+  const okExec = {
+    reconcile: async () => ({ position: [{ positionId: '111', stopLoss: 1.05, takeProfit: 1.09 }] }),
+  }
+  await runProtectionAuditAllAccounts(db, creds, { exec: okExec, auditOpts: { nowMs: T0 } })
+  const before = lastProtectionAudit(db, { accountId: A, nowMs: T0 })
+  assert.equal(before.ok, true)
+
+  const badExec = { reconcile: async () => { throw new Error('sidecar 502 Bad Gateway') } }
+  await runProtectionAuditAllAccounts(db, creds, { exec: badExec, auditOpts: { nowMs: T0 + 50_000 } })
+  const after = lastProtectionAudit(db, { accountId: A, nowMs: T0 + 50_000 })
+  assert.equal(after.at, before.at, 'the successful reading survives the failure')
+  assert.equal(after.lastAttemptOk, false)
+  assert.equal(after.lastAttemptAt, new Date(T0 + 50_000).toISOString())
 })

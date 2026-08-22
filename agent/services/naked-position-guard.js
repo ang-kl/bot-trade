@@ -695,7 +695,21 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
         // successful reading rather than overwriting it. So the beat stays green
         // and the panel still says which account went unverified.
         recordAuditUnavailable(db, msg, { accountId: id, ...(deps.auditOpts?.nowMs ? { nowMs: deps.auditOpts.nowMs } : {}) })
-      } else out.errors.push(`${id}: ${msg}`)
+      } else {
+        out.errors.push(`${id}: ${msg}`)
+        // THE GENUINE FAILURE MUST STAMP THE RECORD TOO (2026-08-22). This
+        // branch — the WORSE failure, "a reachable account we could not
+        // check" — was the only outcome that never wrote the per-account
+        // record. Measured 2026-08-16: the sweep failed on a 502 every ~50s,
+        // 20,492 runs, while /state/protection-audit presented a lastAttemptAt
+        // six days old as the current state — the panel said the controller
+        // had stopped when in fact only its RECORD had. The heartbeat and the
+        // record disagreed, and the one that updates every pass is the one to
+        // believe; this makes the record that one. Last success is preserved
+        // (recordAuditUnavailable never overwrites `at`/`ok`), so this only
+        // moves lastAttemptAt/lastAttemptError — which is the truth.
+        recordAuditUnavailable(db, msg, { accountId: id, ...(deps.auditOpts?.nowMs ? { nowMs: deps.auditOpts.nowMs } : {}) })
+      }
     }
   }
   // AN AUDIT THAT REACHED NOTHING IS NOT A CLEAN AUDIT, and this is the price
