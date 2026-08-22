@@ -86,6 +86,41 @@ describe('--agents', () => {
     expect(out).toMatch(/Plan: 1/)
   })
 
+  it('counts the tool under BOTH its names — Task (old CLI) and Agent (new)', () => {
+    // The matcher used to require name === 'Task'. This CLI build emits
+    // 'Agent', so agents_total read a confident 0 on a corpus that really
+    // contained subagent calls: a matcher out of reach of what it counts.
+    // Fixing it moved this repo's own corpus from 0 to 2.
+    const file = transcript('agent.jsonl', [
+      assistant({
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', name: 'Agent', input: { subagent_type: 'general-purpose' } }],
+        },
+      }),
+      assistant({
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', name: 'Task', input: { subagent_type: 'Explore' } }],
+        },
+      }),
+    ])
+    const out = run(['--file', file, '--agents'])
+    expect(out).toMatch(/agents_total: 2/)
+    expect(out).toMatch(/general-purpose: 1/)
+    expect(out).toMatch(/Explore: 1/)
+  })
+
+  it('prints the tool_use total, so 0-of-0 is distinguishable from 0-of-many', () => {
+    const file = transcript('nonagent.jsonl', [
+      assistant({ message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }] } }),
+      assistant({ message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Read', input: {} }] } }),
+    ])
+    const out = run(['--file', file, '--agents'])
+    expect(out).toMatch(/agents_total: 0/)
+    expect(out).toMatch(/tool_use_blocks_seen: 2/)
+  })
+
   it('a Task block with no subagent_type is counted, not dropped', () => {
     const file = transcript('b.jsonl', [
       assistant({ message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Task', input: {} }] } }),
@@ -126,6 +161,40 @@ describe('--tokens', () => {
     // The three input lines must visibly reconcile, so the uncached remainder
     // can never be mistaken for the whole input bill.
     expect(out).toMatch(/tokens_in_total: 1110/)
+  })
+
+  it('counts usage ONCE per message.id, not once per JSONL line', () => {
+    // The transcript writes one line per content block and repeats the
+    // identical usage object on each. Summing per entry inflated every token
+    // figure by blocks-per-message — measured at 1.91x on this repo's corpus,
+    // and tokens_out fell 2,923,555 -> 1,521,106 when this was fixed.
+    const usage = { input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    const line = (content) => ({
+      type: 'assistant',
+      timestamp: '2026-08-22T00:00:00Z',
+      message: { id: 'msg_SAME', role: 'assistant', content, usage },
+    })
+    const file = transcript('dupe.jsonl', [
+      line([{ type: 'text', text: 'hi' }]),
+      line([{ type: 'tool_use', name: 'Bash', input: {} }]),
+      line([{ type: 'tool_use', name: 'Read', input: {} }]),
+    ])
+    const out = run(['--file', file, '--tokens'])
+    expect(out).toMatch(/tokens_out: 100/)          // not 300
+    expect(out).toMatch(/tokens_in_total: 10/)      // not 30
+    expect(out).toMatch(/duplicate_usage_lines_skipped: 2/)
+  })
+
+  it('distinct message ids are each counted', () => {
+    const mk = (id, out_) => ({
+      type: 'assistant',
+      timestamp: '2026-08-22T00:00:00Z',
+      message: { id, role: 'assistant', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 1, output_tokens: out_ } },
+    })
+    const file = transcript('distinct.jsonl', [mk('msg_A', 10), mk('msg_B', 20)])
+    const out = run(['--file', file, '--tokens'])
+    expect(out).toMatch(/tokens_out: 30/)
+    expect(out).not.toMatch(/duplicate_usage_lines_skipped/)
   })
 
   it('an assistant entry missing usage is disclosed, not folded in as zero', () => {

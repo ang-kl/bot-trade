@@ -7,7 +7,9 @@
 // (lowercase, separators stripped) and match against known aliases.
 //
 // Dependency-free on purpose: imported by both the agent and the Vercel
-// serverless proxy (api/ctrader.js), which must not pull in better-sqlite3.
+// serverless proxy (api/ctrader.js, retired 2026-08-22), which must not pull
+// in better-sqlite3. The constraint outlives the file: this module is still
+// imported by browser-facing code paths.
 // ---------------------------------------------------------------------------
 
 const ALIASES = {

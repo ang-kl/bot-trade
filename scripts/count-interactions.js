@@ -66,6 +66,15 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 /**
+ * The subagent tool is named `Task` on older CLI builds and `Agent` on newer
+ * ones. Matching only one means a corpus full of subagent calls reports a
+ * confident 0 — a matcher out of reach of what it counts, which is
+ * indistinguishable from "no agents ran" unless the total tool_use count is
+ * printed beside it. That is why --agents reports both.
+ */
+export const AGENT_TOOLS = new Set(['Task', 'Agent']);
+
+/**
  * Every mode flag this CLI accepts. EXPORTED because the bug that made this
  * list necessary was invisible: an unlisted flag falls through to the
  * directory argument, prints "No .jsonl files found under: --agents" and
@@ -176,6 +185,9 @@ function analyzeFile(filePath) {
       creationTok: 0,
       usageEntries: 0,
       usageMissing: 0,
+      usageDuplicateLines: 0,
+      seenMsgIds: new Set(),
+      toolUseBlocks: 0,
       badLines: 0,
       firstTs: null,
       lastTs: null,
@@ -201,7 +213,8 @@ function analyzeFile(filePath) {
         // subagent_type so the breakdown says WHICH kind of agent ran, not
         // just how many.
         for (const b of blocks(obj)) {
-          if (b.type === 'tool_use' && b.name === 'Task') {
+          if (b.type === 'tool_use') out.toolUseBlocks++;
+          if (b.type === 'tool_use' && AGENT_TOOLS.has(b.name)) {
             out.agents++;
             const t = b.input?.subagent_type || 'unspecified';
             out.agentsByType[t] = (out.agentsByType[t] || 0) + 1;
@@ -213,6 +226,18 @@ function analyzeFile(filePath) {
         // script exists to prevent. Count the misses and report them.
         const u = obj?.message?.usage || obj?.usage;
         if (u && typeof u === 'object') {
+          // USAGE IS PER MESSAGE, NOT PER ENTRY. The transcript writes one
+          // JSONL line per content block and repeats the IDENTICAL usage
+          // object on each, so summing per entry counts one API response once
+          // per block it emitted. Measured on this repo's own corpus: 3,919
+          // usage-bearing entries across 2,426 distinct message ids — a 1.91x
+          // inflation of every token figure. Comparing entries against
+          // messages is the unit mismatch this codebase keeps paying for.
+          const mid = obj?.message?.id || null;
+          if (mid && out.seenMsgIds.has(mid)) {
+            out.usageDuplicateLines++;
+          } else {
+          if (mid) out.seenMsgIds.add(mid);
           out.usageEntries++;
           out.inTok += u.input_tokens || 0;
           out.outTok += u.output_tokens || 0;
@@ -223,6 +248,7 @@ function analyzeFile(filePath) {
           // cache fields. Same rule as the missing-usage case one line up:
           // a field we do not read is not a zero, it is a hole.
           out.creationTok += u.cache_creation_input_tokens || 0;
+          }
         } else {
           out.usageMissing++;
         }
@@ -250,9 +276,11 @@ async function main() {
   const tokensOnly = args.includes('--tokens');
   const FLAGS = new Set(MODE_FLAGS);
   // Every known flag has to come out of `rest`, or it is read as a directory
-  // path: `--agents` used to reach findJsonlFiles as a folder name, print
-  // "No .jsonl files found under: --agents" and exit 0 — a silent no-op that
-  // looked like a measurement.
+  // path: `--agents` used to reach findJsonlFiles as a folder name, fail with
+  // "No .jsonl files found under: --agents" on stderr and exit 1 — the flag
+  // never ran. (An earlier version of this comment said "exit 0, a silent
+  // no-op". That was wrong, and wrong because the exit code was read from a
+  // shell pipeline, which reports the LAST command's status, not node's.)
   const rest = args.filter(a => !FLAGS.has(a));
   // --serial used to short-circuit before the others, so `--serial --tokens`
   // printed the serial and silently dropped the request for tokens. Refuse
@@ -312,6 +340,9 @@ async function main() {
       console.log(`  ${t}: ${c}`);
     }
     console.log(`agents_latest_session: ${latest ? latest.agents : 'unavailable (no timestamped session)'}`);
+    // 0 of 0 tool calls and 0 of 4,812 are different facts. Without this line
+    // a zero cannot be told apart from a matcher that never fires.
+    console.log(`tool_use_blocks_seen: ${sum('toolUseBlocks')}`);
     return;
   }
 
@@ -319,6 +350,7 @@ async function main() {
     const missing = sum('usageMissing');
     if (sum('usageEntries') === 0) {
       console.log('tokens: unavailable (no usage blocks in these transcripts)');
+      if (missing) console.log(`assistant_entries_without_usage: ${missing}`);
       return;
     }
     // Three input lines that visibly reconcile, so nobody reads the uncached
@@ -336,6 +368,8 @@ async function main() {
     }
     // Never fold a missing usage block into the total silently.
     if (missing) console.log(`assistant_entries_without_usage: ${missing} (excluded, not counted as 0)`);
+    const dupes = sum('usageDuplicateLines');
+    if (dupes) console.log(`duplicate_usage_lines_skipped: ${dupes} (same message.id, counted once)`);
     return;
   }
 

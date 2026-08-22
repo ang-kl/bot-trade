@@ -768,7 +768,9 @@ async function mountRoutes() {
 }
 
 // ---------------------------------------------------------------------------
-// SPA FALLBACK — mirrors vercel.json's rewrite: /((?!api/).*) → /index.html
+// SPA FALLBACK — this IS the rewrite now. vercel.json carried it as
+// /((?!api/).*) → /index.html until the project was decommissioned
+// (2026-08-22); the rule lives here and nowhere else.
 //
 // Registered HERE, after every API router, and that ordering is the whole
 // correctness argument. Mounted earlier it would answer /state and /actions

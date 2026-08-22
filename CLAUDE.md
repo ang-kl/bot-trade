@@ -7,7 +7,35 @@ paragraph numbering, agent/token counts, the mental model, the custom
 commands, and protocol points P1–P8). It is the same file in every repo;
 everything below is bot-trade-specific and does not exist in the neutral
 copy. Where this file and the protocol touch the same subject, the local
-text is the one carrying the measured history and wins on specifics.
+text is the one carrying the measured history and wins on specifics — see
+"P7 — local scope" below, and note that §10 of the protocol only NAMES the
+three commands; the rationale for why prose alone is insufficient is local.
+
+## P7 — local scope (owner-confirmed, 2026-08-22)
+
+The imported protocol's P7 is the generic rule: ask before any external,
+destructive, financial, legal, personnel-related or otherwise consequential
+action. THIS is what P7 means in bot-trade, and it does not live in the
+neutral file because it names this repo's merge policy and this repo's risk
+limits:
+
+- The PR merge policy below is the one standing exception to P7, and only
+  within its stated gate.
+- Risk-limit changes remain ask-first unless explicitly ordered.
+- Scope note (Claude's reading, CONFIRMED by the owner 2026-08-22 — asked as
+  a plain yes/no after #739 merged, answered "yes"): ordinary repo traffic in
+  service of an ordered task — branch pushes, opening PRs, PR comments and
+  review replies — is settled practice in this repo and is not what
+  "external" is for; force-pushes are covered only in the approved
+  branch-restart pattern (re-basing the working branch on main after a
+  squash-merge), anything beyond that stays ask-first. "External" catches the
+  outward-facing and hard-to-retract: deploys, live-account operations,
+  messages to third parties, publishing anything beyond this repo.
+
+This section exists because the de-duplication that introduced the import
+DELETED it — one commit after the owner confirmed it — on the false claim
+that the import supplied what was removed. It did not: the neutral P7 is the
+bare rule. Owner-confirmed text is the last thing a tidying pass may drop.
 
 ## PR merge policy (owner, 2026-07-22)
 
@@ -129,6 +157,16 @@ also registered as a project command in `.claude/commands/` — `understanding.m
 `gaps.md`, `delta.md`. The prose below is the rationale; those three files are
 what makes typing the command do anything.
 
+FILENAMES ARE LOWERCASE, INVOCATIONS ARE WRITTEN UPPERCASE, and a command's
+name is its filename stem — so if the client's lookup is case-SENSITIVE,
+`/UNDERSTANDING` resolves to nothing while `/understanding` works. Whether it
+is case-sensitive has NOT been verified: it cannot be tested from inside a
+session, only by the owner typing it. Lowercase filenames are what the
+owner's own deployment instruction specified and what `gia` already uses, so
+they stay. Until the owner confirms, **either case may be typed** — if the
+uppercase form comes back as an unknown command, use the lowercase one and
+say so, and the filenames get renamed to match.
+
 **`/UNDERSTANDING`** — What do you think I mean, including what you are
 treating as given?
 
@@ -146,6 +184,13 @@ would be built differently under each. If there are none, say so plainly
 rather than manufacturing a list.
 
 **`/DELTA`** — What has changed from your earlier understanding?
+
+**`/INVARIANTS`** — What must hold for this to be correct, and does it?
+
+Added 2026-08-22 at the owner's request. Each material invariant reported as
+Passed, Failed or **Not Verifiable** — the third is a first-class result and
+the reason the command exists: this repo's recurring defect is something
+reporting healthy because the thing it measures never reached it.
 
 Corrections, not a progress report. What was believed, what is now believed,
 and what caused the change — a measurement, a failing test, a contradiction

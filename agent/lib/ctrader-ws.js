@@ -18,7 +18,8 @@
 // `alreadyClosed: true` marker and can update local state without scaring
 // the operator.
 //
-// The WS JSON shapes are documented in api/ctrader.js (handler). That file
+// The WS JSON shapes were documented in api/ctrader.js, the Vercel handler,
+// removed 2026-08-22 with the Vercel decommission. That file
 // runs on Vercel for browser-side cockpit calls; this module is the same
 // protocol for the server-side keeper.
 // ---------------------------------------------------------------------------
@@ -567,7 +568,8 @@ export function wsSymbolsByIds(host, clientId, clientSecret, accessToken, accoun
 
 // cTrader stores trendbar OHLC in raw points where 1 point = 10^-5 of the
 // quoted price, for every symbol regardless of its digits — same fixed scale
-// api/ctrader.js uses (POINTS_PER_PRICE). Do NOT scale by symbol digits.
+// the retired api/ctrader.js used (POINTS_PER_PRICE). Do NOT scale by symbol
+// digits.
 const POINTS_PER_PRICE = 100_000
 
 /**
