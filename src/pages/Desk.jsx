@@ -1082,7 +1082,15 @@ export default function Desk() {
                   <span className="font-semibold shrink-0">{c.label}</span>
                   {(c.status === 'stalled' || c.status === 'error' || c.consecutive_failures > 0) && (
                     <span className="text-[var(--color-down)] truncate">
-                      {c.status.toUpperCase()}{c.consecutive_failures > 0 ? ` · ${c.consecutive_failures} failing` : ''}{c.last_error ? ` · ${c.last_error}` : ''}
+                      {/* `error_is_current === false` means the controller has
+                          since run clean and last_error is history. Printing it
+                          bare put `CH_CLIENT_AUTH_FAILURE — clientId or
+                          clientSecret is incorrect` (a 03:02 UTC fault, long
+                          resolved) beside a live stall on 22-08, which sent the
+                          diagnosis at the wrong credential for an hour.
+                          AgentHealthPanel.jsx has honoured this flag since
+                          04-08; these two readers never got the fix. */}
+                      {c.status.toUpperCase()}{c.consecutive_failures > 0 ? ` · ${c.consecutive_failures} failing` : ''}{c.last_error ? (c.error_is_current === false ? ` · last error (resolved): ${c.last_error}` : ` · ${c.last_error}`) : ''}
                     </span>
                   )}
                   {/* Owner: "I need to know you are active ... not a feature or

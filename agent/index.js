@@ -526,8 +526,19 @@ app.post('/auth/telegram/request', async (_req, res) => {
     setState(db, 'login_code_expires', String(Date.now() + 5 * 60_000))
     lastCodeRequestAt = Date.now()
     verifyFailures = 0
-    const { sendMessage } = await import('./services/telegram.js')
-    await sendMessage(`🔑 bot-trade login code: *${code}*\n\nValid 5 minutes. If you didn't request this, ignore it.`)
+    // sendMessageRaw, NOT sendMessage. THIS IS THE WHOLE FIX (2026-08-22,
+    // owner: "i ask for Telegram code but is suppress by the notification
+    // off" / "it use to work until we have /status /notify /digest").
+    //
+    // sendMessage routes through the notify gate, which queues into the hourly
+    // digest under master-mute or quiet hours. A login code queued for up to an
+    // hour is a login code that has expired — this one dies in five minutes —
+    // and the route still answered `{ ok: true, sentVia: 'telegram' }` with a
+    // 200, so the button reported success while nothing was sent. The digest
+    // was built for the 03:00 buzz; a code the owner is standing there waiting
+    // for is not a notification, it is the reply to a button press.
+    const { sendMessageRaw } = await import('./services/telegram.js')
+    await sendMessageRaw(`🔑 bot-trade login code: *${code}*\n\nValid 5 minutes. If you didn't request this, ignore it.`)
     res.json({ ok: true, sentVia: 'telegram' })
   } catch (err) {
     res.status(502).json({ error: `Could not send Telegram code: ${err.message}` })
@@ -547,8 +558,12 @@ app.post('/auth/telegram/verify', (req, res) => {
   const token = addSession()
   // Confirm on Telegram (fire-and-forget) — an unexpected one of these
   // means someone else has your code: revoke by rotating AGENT_SECRET.
+  // Raw for the same reason as the code above: the gate queues even `urgent`
+  // when notify is off (telegram-digest.js:139), so a break-in alert saying
+  // "act now" would surface in a digest up to an hour later, or not at all.
+  // Authentication messages do not go through the notification gate.
   import('./services/telegram.js')
-    .then(({ sendMessage }) => sendMessage('✅ bot-trade: a new device just logged in with your code (valid 90 days). If this was not you, act now.'))
+    .then(({ sendMessageRaw }) => sendMessageRaw('✅ bot-trade: a new device just logged in with your code (valid 90 days). If this was not you, act now.'))
     .catch(() => { /* alert is best-effort */ })
   res.json({ ok: true, token })
 })
