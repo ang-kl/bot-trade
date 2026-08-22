@@ -6,8 +6,10 @@
 // defects this file pins were shipped and invisible:
 //
 //   1. `--agents` was not in the flag list, so it fell through to the directory
-//      argument, printed "No .jsonl files found under: --agents" and exited 0.
-//      A silent no-op that reads exactly like a measurement.
+//      argument and failed with "No .jsonl files found under: --agents" —
+//      exit 1, so the flag never ran. (The genuinely silent variant was
+//      `--file <path> --agents`: --file was consumed positionally, --agents
+//      was ignored, and the full per-session breakdown printed with exit 0.)
 //   2. `cache_creation_input_tokens` was never read, so a cached session's
 //      input bill was reported as the small uncached remainder — a confident
 //      wrong number, which is worse than "unavailable".

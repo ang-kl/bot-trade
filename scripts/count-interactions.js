@@ -78,7 +78,8 @@ export const AGENT_TOOLS = new Set(['Task', 'Agent']);
  * Every mode flag this CLI accepts. EXPORTED because the bug that made this
  * list necessary was invisible: an unlisted flag falls through to the
  * directory argument, prints "No .jsonl files found under: --agents" and
- * exits 0 — a silent no-op that reads as a measurement. A test that iterates
+ * exits 1 with a confusing message about a directory that was never a
+ * directory. A test that iterates
  * this array covers flag four automatically; a test that hardcodes three
  * strings does not.
  */
