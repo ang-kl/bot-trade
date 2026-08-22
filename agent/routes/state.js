@@ -3833,5 +3833,35 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/ctrader-env — which variable filled each credential slot, and
+  // whether the host's env value is being ignored in favour of the stored one.
+  //
+  // NAMES ONLY. No credential value is read into the response; `stored` and
+  // `envIgnored` are booleans computed inside lib/ctrader-env.js.
+  //
+  // This exists because the same facts were already being written to the boot
+  // log by #743 and could not be read: the Railway connector dropped the same
+  // day, and a diagnostic nobody can reach answers nothing.
+  //
+  // The slot/conflict half shares ctraderEnvReport() with the boot lines. The
+  // `envIgnored` half does NOT share a call site with index.js's seedOrExplain
+  // — that function seeds as well as explains, and folding it in here would
+  // mean a GET with a write in it. The two therefore restate the same rule in
+  // two places, which is a real (small) drift risk; ENV_SEEDED_STATE_KEYS and
+  // its test are what pin them together.
+  router.get('/ctrader-env', async (_req, res) => {
+    try {
+      const { ctraderEnvStatus } = await import('../lib/ctrader-env.js')
+      const slots = ctraderEnvStatus({ stored: (k) => getState(db, k) })
+      res.json({
+        slots,
+        conflicts: slots.filter(s => s.conflict).map(s => s.kind),
+        ignored: slots.filter(s => s.envIgnored).map(s => s.kind),
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   return router
 }

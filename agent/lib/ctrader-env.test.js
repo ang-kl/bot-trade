@@ -16,7 +16,10 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ctraderEnv, ctraderEnvReport, CTRADER_ENV_KINDS } from './ctrader-env.js'
+import {
+  ctraderEnv, ctraderEnvReport, CTRADER_ENV_KINDS,
+  ctraderEnvStatus, ENV_SEEDED_STATE_KEYS,
+} from './ctrader-env.js'
 
 // Spelling tolerance ------------------------------------------------------
 
@@ -121,4 +124,87 @@ test('the report agrees with the lookup — same variable, same choice', () => {
   const env = { CTRADER_CLIENT_SECRET: 'one', cTrader_Secret: 'two' }
   const chosenName = ctraderEnvReport(env).find(r => r.kind === 'clientSecret').chosen
   assert.equal(ctraderEnv('clientSecret', env), env[chosenName])
+})
+
+// Status — env vs the stored copy ------------------------------------------
+
+test('env holding a DIFFERENT value than the database is reported as ignored', () => {
+  // The live question on 2026-08-22: the owner refreshed CTRADER_REFRESH_TOKEN
+  // on the host and the agent kept failing with "Access denied" because env
+  // only ever SEEDS an empty database. This is the flag that says so.
+  const status = ctraderEnvStatus({
+    env: { CTRADER_REFRESH_TOKEN: 'fresh-from-host' },
+    stored: (k) => (k === 'ctrader_refresh_token' ? 'old-rotated-copy' : undefined),
+  })
+  const refresh = status.find(s => s.kind === 'refreshToken')
+  assert.equal(refresh.stored, true)
+  assert.equal(refresh.envIgnored, true)
+  assert.equal(refresh.stateKey, 'ctrader_refresh_token')
+})
+
+test('env holding the SAME value as the database is redundant, not ignored', () => {
+  // Crying wolf here would make the real case unreadable.
+  const status = ctraderEnvStatus({
+    env: { CTRADER_REFRESH_TOKEN: 'same' },
+    stored: () => 'same',
+  })
+  assert.equal(status.find(s => s.kind === 'refreshToken').envIgnored, false)
+})
+
+test('an EMPTY database is seeded, so nothing is ignored', () => {
+  const status = ctraderEnvStatus({
+    env: { CTRADER_REFRESH_TOKEN: 'fresh' },
+    stored: () => undefined,
+  })
+  const refresh = status.find(s => s.kind === 'refreshToken')
+  assert.equal(refresh.stored, false)
+  assert.equal(refresh.envIgnored, false)
+})
+
+test('slots the database never stores can never be "ignored"', () => {
+  // clientId/clientSecret/isLive are read from env on every use, so a stored
+  // copy does not exist to shadow them. Reporting one as ignored would send
+  // the operator to clear a state key that is not there.
+  const status = ctraderEnvStatus({
+    env: { CTRADER_CLIENT_ID: 'id', cTrader_Secret: 's', CTRADER_IS_LIVE: 'true' },
+    stored: () => 'anything-at-all',
+  })
+  for (const kind of ['clientId', 'clientSecret', 'isLive']) {
+    const slot = status.find(s => s.kind === kind)
+    assert.equal(slot.stateKey, null, kind)
+    assert.equal(slot.stored, null, kind)
+    assert.equal(slot.envIgnored, false, kind)
+  }
+})
+
+test('the seeded state keys are exactly the three index.js seeds', () => {
+  // Pins the wiring: if a fourth slot starts being seeded, or one of these is
+  // renamed, this map has to move with it or the route reports a slot as
+  // "env in use" while the database is quietly shadowing it.
+  assert.deepEqual(Object.keys(ENV_SEEDED_STATE_KEYS).sort(), ['accessToken', 'accountId', 'refreshToken'])
+  assert.deepEqual(
+    Object.values(ENV_SEEDED_STATE_KEYS).sort(),
+    ['ctrader_access_token', 'ctrader_account_id', 'ctrader_refresh_token'],
+  )
+})
+
+test('STATUS NEVER CARRIES A VALUE EITHER — it is served over HTTP', () => {
+  const env = {
+    CTRADER_CLIENT_ID: 'id-SECRET-VALUE',
+    cTrader_Secret: 'secret-SECRET-VALUE',
+    CTRADER_REFRESH_TOKEN: 'refresh-SECRET-VALUE',
+  }
+  const serialized = JSON.stringify(ctraderEnvStatus({ env, stored: () => 'stored-SECRET-VALUE' }))
+  for (const value of [...Object.values(env), 'stored-SECRET-VALUE']) {
+    assert.ok(!serialized.includes(value), `status leaked a credential: ${value}`)
+  }
+})
+
+test('the status agrees with the report on names and conflicts', () => {
+  const env = { CTRADER_CLIENT_SECRET: 'one', cTrader_Secret: 'two' }
+  const rep = ctraderEnvReport(env).find(r => r.kind === 'clientSecret')
+  const st = ctraderEnvStatus({ env }).find(s => s.kind === 'clientSecret')
+  assert.equal(st.chosen, rep.chosen)
+  assert.deepEqual(st.names, rep.names)
+  assert.equal(st.conflict, true)
 })
