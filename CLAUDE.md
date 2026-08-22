@@ -1,78 +1,13 @@
 # Instructions for Claude — bot-trade
 
-## Working mental model (owner, 2026-08-22)
+@CLAUDE-protocol.md
 
-Build everything in this project through this chain, in order:
-
-**Intent → Interpretation → Assumptions → Invariants → Execution → Evidence**
-
-- *Intent*: what the owner is actually trying to achieve, not the literal words.
-- *Interpretation*: the reading chosen — surfaced, not silent (`/UNDERSTANDING`).
-- *Assumptions*: what is being treated as given; each one is a place the work
-  can be wrong without any code being wrong (`/GAPS`).
-- *Invariants*: the properties that must hold for the work to be correct —
-  stated up front, so they can be checked rather than hoped.
-- *Execution*: the change itself, smallest thing that satisfies the invariants.
-- *Evidence*: measurement that the invariants hold — tests that can fail,
-  mutation checks, production log lines. A claim without evidence is a guess
-  (`/DELTA` records when evidence overturns an earlier understanding).
-
-This is the same shape the "Recurring failure modes" section below was written
-from: every defect there was a break in this chain — usually an unexamined
-assumption or an invariant that was asserted but never measured.
-
-## Protocol for important or consequential work (owner, 2026-08-22)
-
-For any consequential deliverable (audits, risk changes, money-touching code,
-production diagnoses, recommendations the owner will act on), follow protocol
-points P1–P8 below.
-
-They are lettered `P1`–`P8` rather than numbered so that a bare "#N" keeps
-pointing only at the numbered "Recurring failure modes" list further down —
-several tests cite it that way (`prune-scans.test.js`,
-`llm-boot-banner.test.js`). A bare "#N" *inside this file* means a PR number.
-
-P1. **Lead with the final answer or recommendation.** Supporting detail after.
-P2. **Identify the authoritative sources used** and distinguish verified facts
-   from inference. (Precedent: the panel-vs-heartbeat correction — say which
-   source was believed and why.)
-P3. **State the material invariants** and report each as **Passed**, **Failed**
-   or **Not Verifiable**. Never present Not Verifiable as Passed.
-P4. **Disclose any material search, retrieval, calculation or external tool
-   used.** If that information is unavailable, say so rather than guessing.
-P5. **Use deterministic tools for exact calculations** where available — a
-   script or SQL over the real data, not mental arithmetic. Two live
-   precedents: the serial count (`scripts/count-interactions.js`) and the
-   statement footer audit (`agent/services/statement-import.test.js`, which
-   asserts the parsed deals sum to the export's own footer total).
-P6. **Flag missing evidence, conflicting sources, and assumptions requiring
-   confirmation** — explicitly, not buried.
-P7. **Ask for approval before any external, destructive, financial, legal,
-   personnel-related or otherwise consequential action.** The PR merge policy
-   below is the one standing exception, and only within its stated gate;
-   risk-limit changes remain ask-first unless explicitly ordered.
-   Scope note (Claude's reading, CONFIRMED by the owner 2026-08-22 — asked
-   as a plain yes/no after #739 merged, answered "yes"): ordinary repo
-   traffic in service of an ordered task — branch pushes, opening PRs, PR
-   comments and review replies — is settled practice in this repo and is
-   not what "external" is for; force-pushes are covered only in the
-   approved branch-restart pattern (re-basing the working branch on main
-   after a squash-merge), anything beyond that stays ask-first. "External"
-   catches the outward-facing and hard-to-retract: deploys, live-account
-   operations, messages to third parties, publishing anything beyond this
-   repo.
-P8. **Never infer or invent the model, reasoning setting, hidden routing or
-   unavailable system metadata.** If asked, measure it with a tool that
-   actually resolves in the current environment (remote sessions have one;
-   local ones may not), or say it is unavailable — do not name a
-   measurement you cannot perform.
-
-The custom commands `/UNDERSTANDING`, `/GAPS`, `/DELTA` (registered in
-`.claude/commands/`, rationale below) are the owner's handles on P2 and
-P6 — questions about the *reasoning*, answered from the current conversation
-state, not re-derived from files. P3 has no command handle yet; if the
-owner wants one, that is a new command (e.g. `/INVARIANTS`) to register, not
-a coverage claim to make early.
+The line above imports the project-neutral reply protocol (serial, time,
+paragraph numbering, agent/token counts, the mental model, the custom
+commands, and protocol points P1–P8). It is the same file in every repo;
+everything below is bot-trade-specific and does not exist in the neutral
+copy. Where this file and the protocol touch the same subject, the local
+text is the one carrying the measured history and wins on specifics.
 
 ## PR merge policy (owner, 2026-07-22)
 
@@ -101,30 +36,13 @@ This section is the durable home for the reply protocol so it survives session
 end and is picked up identically on Claude Code desktop, web and iPhone. It is
 loaded automatically at session start for anyone working in this repo.
 
-**SERIAL.** Prefix every substantive reply with, on its own line:
-
-```
-№ N · DD-MM'YY HH:MM TZ
-```
-
-- `№` is U+2116.
-- `N` is a running count. Continue from the last serial seen in the
-  conversation; **never restart**. No leading zeros; comma thousands
-  (`№ 1,024`).
-- Date is day-month-year with an apostrophe before the year; time is 24h;
-  `TZ` is a short label — **default SGT** unless another timezone has been
-  detected or the owner states one.
-
-**TIME.** Before stamping, run `date -u` via Bash and convert to the active
-timezone. This is a real per-response clock, not a guess. Sanity-check the year
-against known context. If Bash is unavailable, derive from the newest timestamp
-in context — and if more than roughly an hour may have passed with no evidence,
-ask the owner rather than inventing a time.
-
-**SECTIONS / PARAGRAPHS.** Once a reply carries 2+ distinct points, letter the
-sections `§N·A`, `§N·B`, … where `N` is that reply's serial, and number
-paragraphs within each section `¶A·1`, `¶A·2`, … restarting at 1 per section.
-Skip the markers on short single-point replies.
+The serial format, the `date -u` time fetch and the `§N·A` / `¶A·1` markers
+now live in `CLAUDE-protocol.md` (§1–§3), imported at the top of this file.
+They are identical across repos, so they are not restated here. What is
+bot-trade-specific — and what the protocol deliberately does NOT carry — is
+the measured history below: this repo's rebases, what each one cost, and why
+the rule is "run the script first" rather than "run it when the number looks
+wrong".
 
 **Serial origin — MEASURED, not remembered (owner, 2026-07-26).** The serial is
 now derived from the session transcript on disk, which is the only durable
@@ -207,8 +125,8 @@ Documenting them here is necessary but NOT sufficient. A leading `/...` is
 resolved by the client against registered commands before any of this file is
 consulted, so a command that exists only as prose in `CLAUDE.md` comes back as
 an unknown command and never reaches the model at all. Each one is therefore
-also registered as a project command in `.claude/commands/` — `UNDERSTANDING.md`,
-`GAPS.md`, `DELTA.md`. The prose below is the rationale; those three files are
+also registered as a project command in `.claude/commands/` — `understanding.md`,
+`gaps.md`, `delta.md`. The prose below is the rationale; those three files are
 what makes typing the command do anything.
 
 **`/UNDERSTANDING`** — What do you think I mean, including what you are

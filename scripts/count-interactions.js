@@ -20,6 +20,8 @@
  *   node scripts/count-interactions.js /path/to/projects    # scan a custom dir
  *   node scripts/count-interactions.js --file session.jsonl # scan a single file
  *   node scripts/count-interactions.js --serial             # print just the serial
+ *   node scripts/count-interactions.js --agents             # subagent spawns
+ *   node scripts/count-interactions.js --tokens            # token usage
  *
  * DEFAULT LOG LOCATION
  *   macOS / Linux : ~/.claude/projects/**\/*.jsonl
@@ -151,6 +153,13 @@ function analyzeFile(filePath) {
       replyTurns: 0,
       sidechainAssistant: 0,
       compactEvents: 0,
+      agents: 0,
+      agentsByType: {},
+      inTok: 0,
+      outTok: 0,
+      cacheTok: 0,
+      usageEntries: 0,
+      usageMissing: 0,
       badLines: 0,
       firstTs: null,
       lastTs: null,
@@ -171,6 +180,32 @@ function analyzeFile(filePath) {
         if (obj.isSidechain) out.sidechainAssistant++;
       }
 
+      if (role === 'assistant') {
+        // A subagent is spawned per Task tool_use block. Grouped by
+        // subagent_type so the breakdown says WHICH kind of agent ran, not
+        // just how many.
+        for (const b of blocks(obj)) {
+          if (b.type === 'tool_use' && b.name === 'Task') {
+            out.agents++;
+            const t = b.input?.subagent_type || 'unspecified';
+            out.agentsByType[t] = (out.agentsByType[t] || 0) + 1;
+          }
+        }
+        // Token usage rides on the assistant entry. ABSENT IS NOT ZERO: a
+        // transcript written by a CLI version that did not record usage would
+        // otherwise report a confident 0, which is the failure this whole
+        // script exists to prevent. Count the misses and report them.
+        const u = obj?.message?.usage || obj?.usage;
+        if (u && typeof u === 'object') {
+          out.usageEntries++;
+          out.inTok += u.input_tokens || 0;
+          out.outTok += u.output_tokens || 0;
+          out.cacheTok += u.cache_read_input_tokens || 0;
+        } else {
+          out.usageMissing++;
+        }
+      }
+
       if (isReplyTurn(obj)) out.replyTurns++;
       if (isOwnerTurn(obj)) out.ownerTurns++;
       if (looksLikeCompactMarker(obj)) out.compactEvents++;
@@ -189,7 +224,14 @@ function analyzeFile(filePath) {
 async function main() {
   const args = process.argv.slice(2);
   const serialOnly = args.includes('--serial');
-  const rest = args.filter(a => a !== '--serial');
+  const agentsOnly = args.includes('--agents');
+  const tokensOnly = args.includes('--tokens');
+  const FLAGS = new Set(['--serial', '--agents', '--tokens']);
+  // Every known flag has to come out of `rest`, or it is read as a directory
+  // path: `--agents` used to reach findJsonlFiles as a folder name, print
+  // "No .jsonl files found under: --agents" and exit 0 — a silent no-op that
+  // looked like a measurement.
+  const rest = args.filter(a => !FLAGS.has(a));
 
   let targetFiles = [];
   if (rest[0] === '--file' && rest[1]) {
@@ -215,6 +257,39 @@ async function main() {
     return;
   }
 
+  if (agentsOnly) {
+    const byType = {};
+    for (const r of results) {
+      for (const [t, c] of Object.entries(r.agentsByType)) byType[t] = (byType[t] || 0) + c;
+    }
+    const latest = results[results.length - 1];
+    console.log(`agents_total: ${sum('agents')}`);
+    for (const [t, c] of Object.entries(byType).sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${t}: ${c}`);
+    }
+    console.log(`agents_latest_session: ${latest ? latest.agents : 0}`);
+    return;
+  }
+
+  if (tokensOnly) {
+    const latest = results[results.length - 1];
+    const missing = sum('usageMissing');
+    if (sum('usageEntries') === 0) {
+      console.log('tokens: unavailable (no usage blocks in these transcripts)');
+      return;
+    }
+    console.log(`tokens_in: ${sum('inTok')}`);
+    console.log(`tokens_out: ${sum('outTok')}`);
+    console.log(`tokens_cache_read: ${sum('cacheTok')}`);
+    if (latest) {
+      console.log(`latest_session_in: ${latest.inTok}`);
+      console.log(`latest_session_out: ${latest.outTok}`);
+    }
+    // Never fold a missing usage block into the total silently.
+    if (missing) console.log(`assistant_entries_without_usage: ${missing} (excluded, not counted as 0)`);
+    return;
+  }
+
   const n = x => x.toLocaleString('en-US');
 
   console.log('\nPER-SESSION BREAKDOWN\n' + '='.repeat(72));
@@ -225,6 +300,8 @@ async function main() {
     console.log(`  assistant turns (all)  : ${n(r.assistantTurns)}  (${n(r.sidechainAssistant)} sidechain)`);
     console.log(`  user turns (all)       : ${n(r.userTurns)}`);
     console.log(`  compact events         : ${n(r.compactEvents)}`);
+    console.log(`  subagents spawned      : ${n(r.agents)}`);
+    console.log(`  tokens in/out          : ${r.usageEntries ? `${n(r.inTok)}/${n(r.outTok)}` : 'unavailable'}`);
     console.log(`  size                   : ${(r.bytes / 1e6).toFixed(1)} MB${r.badLines ? `  (${r.badLines} unparseable lines)` : ''}`);
     if (r.firstTs) console.log(`  first timestamp        : ${r.firstTs}`);
     if (r.lastTs) console.log(`  last timestamp         : ${r.lastTs}`);
@@ -238,6 +315,8 @@ async function main() {
   console.log(`Assistant turns (all)  : ${n(sum('assistantTurns'))}`);
   console.log(`User turns (all)       : ${n(sum('userTurns'))}`);
   console.log(`Compact events seen    : ${n(sum('compactEvents'))}`);
+  console.log(`Subagents spawned      : ${n(sum('agents'))}`);
+  console.log(`Tokens in/out          : ${sum('usageEntries') ? `${n(sum('inTok'))}/${n(sum('outTok'))}` : 'unavailable'}`);
   console.log('');
 }
 
