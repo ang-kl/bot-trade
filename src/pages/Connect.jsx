@@ -94,7 +94,14 @@ export default function Connect() {
           body: JSON.stringify({ action: 'exchange-token', code, redirectUri }),
         }).then(r => r.json())
         if (ex.error) throw new Error(ex.error)
-        const r = await agentPost('/actions/ctrader-token', { accessToken: ex.accessToken })
+        // BOTH TOKENS, not just the access token. The exchange above returns
+        // a refresh token and this call used to drop it on the floor, which
+        // made re-linking unable to fix an expired refresh token — the one
+        // thing an operator would reach for. See actions.js /ctrader-token.
+        const r = await agentPost('/actions/ctrader-token', {
+          accessToken: ex.accessToken,
+          refreshToken: ex.refreshToken,
+        })
         setAccounts(r.accounts || [])
         flash('cTrader connected — now tap the account the bot should trade')
       } catch (e) {

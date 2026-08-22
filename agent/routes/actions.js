@@ -64,8 +64,15 @@ export function pickBacktestSymbols(body, watchlistJson) {
  * @param {import('better-sqlite3').Database} db
  * @returns {import('express').Router}
  */
-export default function actionsRouter(db) {
+export default function actionsRouter(db, deps = {}) {
   const router = Router()
+
+  // `deps` is a TEST SEAM, not a feature. The broker calls below open real
+  // WebSocket sessions to Spotware, so the store-the-token logic could not be
+  // exercised at all — and that is precisely the logic that was wrong: the
+  // refresh token was dropped here and nothing could have caught it. An
+  // injectable account lister makes the write testable without a broker.
+  const listAccountsImpl = deps.listCtraderAccounts ?? null
 
   // Every successful write makes the /state/* read cache stale. Without this
   // the UI saves, re-reads, and paints the PRE-SAVE answer back over the new
@@ -3130,6 +3137,7 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   // List every trading account an access token can operate, with balances.
   async function listCtraderAccounts(accessToken) {
+    if (listAccountsImpl) return listAccountsImpl(accessToken)
     const { ctraderEnv } = await import('../lib/ctrader-env.js')
     const clientId = ctraderEnv('clientId')
     const clientSecret = ctraderEnv('clientSecret')
@@ -3572,14 +3580,34 @@ export default function actionsRouter(db) {
   // trading account it can operate (no account id needed from the user).
   // Body: { accessToken }
   // -----------------------------------------------------------------------
+  // STORE THE REFRESH TOKEN TOO (2026-08-22). This route took only the access
+  // token, and /link-up handed it only the access token — while the OAuth
+  // exchange it had just completed returned BOTH. The refresh token was
+  // discarded at the browser and never reached the database.
+  //
+  // That left `ctrader_refresh_token` with exactly two writers: boot, which
+  // only seeds an EMPTY database, and a SUCCESSFUL refresh. So once a stored
+  // refresh token went stale there was no way back — updating it required a
+  // successful refresh, and a successful refresh required a valid one. Re-
+  // linking through the browser looked like the remedy and could not be:
+  // it never touched the field. Measured 2026-08-22: the owner re-linked AND
+  // changed the host variable twice, and every pass still failed with
+  // "Access denied".
   router.post('/ctrader-token', async (req, res) => {
     try {
-      const { accessToken } = req.body || {}
+      const { accessToken, refreshToken } = req.body || {}
       if (!accessToken) return res.status(400).json({ error: 'accessToken is required' })
       const accounts = await listCtraderAccounts(accessToken)
       setState(db, 'ctrader_access_token', accessToken)
+      // Optional on purpose: the account-picker re-post and any older client
+      // send no refresh token, and blanking a good one because this call did
+      // not carry it would be the same defect pointed the other way.
+      if (refreshToken) {
+        setState(db, 'ctrader_refresh_token', refreshToken)
+        console.log('[actions] ctrader refresh token stored — automatic renewal is now possible')
+      }
       console.log(`[actions] ctrader token stored — ${accounts.length} account(s) available`)
-      res.json({ ok: true, accounts })
+      res.json({ ok: true, accounts, refreshStored: !!refreshToken })
     } catch (err) {
       console.error('[actions/ctrader-token] error:', err.message)
       res.status(502).json({ error: err.message })
