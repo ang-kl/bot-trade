@@ -230,7 +230,12 @@ export function startMinuteReview(db, deps = {}) {
   const t = setInterval(async () => {
     if (reviewRunning) {
       skipped++
-      if (skipped === 1 || skipped % 20 === 0) console.warn(`[minute-review] previous pass still running — skipped ${skipped} tick(s)`)
+      // console.LOG, not warn (2026-08-22). Overlap protection working is not
+      // an error: this is the ticker declining to start a second pass while
+      // the first is still going, which is the guard doing its job. At `warn`
+      // it was the single most frequent line in production and it drowned the
+      // real errors around it — a log nobody can scan is a log nobody reads.
+      if (skipped === 1 || skipped % 20 === 0) console.log(`[minute-review] previous pass still running — skipped ${skipped} tick(s)`)
       return
     }
     reviewRunning = true

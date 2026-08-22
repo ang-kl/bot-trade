@@ -415,3 +415,38 @@ test('a failing restore does NOT take down the audit that found the fault', asyn
   assert.equal(out.targetsRestored, 0)
   assert.match(out.errors.join(' '), /target restore/)
 })
+
+test('the sweep CORRECTS a stop disagreement, not just reports it', async () => {
+  // stop-adopt.js is pure and all of its own tests would stay green if the
+  // sweep never called it (failure mode #4).
+  const t = db.prepare(
+    "INSERT INTO trades (symbol,side,status,account_id,ctrader_position_id) VALUES ('EURUSD','long','open',?,'555')"
+  ).run(A)
+  db.prepare(
+    "INSERT INTO monitored_positions (trade_id,symbol,status,account_id,current_sl,current_tp,side,entry_price,source) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).run(t.lastInsertRowid, 'EURUSD', 'active', A, 1.09, 1.15, 'long', 1.10, 'bot')
+
+  // The broker holds a TIGHTER stop than the book — adoptable.
+  const exec = { reconcile: async () => ({ position: [{ positionId: '555', stopLoss: 1.095, takeProfit: 1.15 }] }) }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.phantom, 1, 'the disagreement is still reported')
+  assert.equal(out.stopsAdopted, 1, 'and the book was corrected')
+  const after = db.prepare('SELECT current_sl FROM monitored_positions WHERE trade_id = ?').get(t.lastInsertRowid)
+  assert.equal(after.current_sl, 1.095)
+})
+
+test('the sweep does NOT adopt a wider broker stop — the alert must survive', async () => {
+  const t = db.prepare(
+    "INSERT INTO trades (symbol,side,status,account_id,ctrader_position_id) VALUES ('EURUSD','long','open',?,'556')"
+  ).run(A)
+  db.prepare(
+    "INSERT INTO monitored_positions (trade_id,symbol,status,account_id,current_sl,current_tp,side,entry_price,source) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).run(t.lastInsertRowid, 'EURUSD', 'active', A, 1.09, 1.15, 'long', 1.10, 'bot')
+
+  const exec = { reconcile: async () => ({ position: [{ positionId: '556', stopLoss: 1.085, takeProfit: 1.15 }] }) }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.phantom, 1)
+  assert.equal(out.stopsAdopted, 0, 'a wider stop is real unresolved exposure — it stays reported')
+  const after = db.prepare('SELECT current_sl FROM monitored_positions WHERE trade_id = ?').get(t.lastInsertRowid)
+  assert.equal(after.current_sl, 1.09, 'the book must keep disagreeing')
+})

@@ -395,7 +395,12 @@ export function startFastMonitor(db, getCreds, deps = {}) {
         const hb = deps.heartbeat ?? await import('./heartbeat.js')
         hb.beat(db, 'fast_monitor', { ok: true, error: null, detail: { busy: true, skipped } })
       } catch { /* heartbeat is best-effort */ }
-      if (skipped === 1 || skipped % 20 === 0) console.warn(`[fast-monitor] previous pass still running — skipped ${skipped} tick(s)`)
+      // console.LOG, not warn (2026-08-22). Overlap protection working is not
+      // an error: this is the ticker declining to start a second pass while
+      // the first is still going, which is the guard doing its job. At `warn`
+      // it was the single most frequent line in production and it drowned the
+      // real errors around it — a log nobody can scan is a log nobody reads.
+      if (skipped === 1 || skipped % 20 === 0) console.log(`[fast-monitor] previous pass still running — skipped ${skipped} tick(s)`)
       return
     }
     tickRunning = true
