@@ -24,11 +24,13 @@ assumption or an invariant that was asserted but never measured.
 ## Protocol for important or consequential work (owner, 2026-08-22)
 
 For any consequential deliverable (audits, risk changes, money-touching code,
-production diagnoses, recommendations the owner will act on) — protocol
-points P1–P8, so that a bare "#N" keeps pointing only at the numbered
-"Recurring failure modes" list below — several tests cite it that way
-(`prune-scans.test.js`, `llm-boot-banner.test.js`; note that bare "#N"
-*inside this file* means a PR number):
+production diagnoses, recommendations the owner will act on), follow protocol
+points P1–P8 below.
+
+They are lettered `P1`–`P8` rather than numbered so that a bare "#N" keeps
+pointing only at the numbered "Recurring failure modes" list further down —
+several tests cite it that way (`prune-scans.test.js`,
+`llm-boot-banner.test.js`). A bare "#N" *inside this file* means a PR number.
 
 P1. **Lead with the final answer or recommendation.** Supporting detail after.
 P2. **Identify the authoritative sources used** and distinguish verified facts
