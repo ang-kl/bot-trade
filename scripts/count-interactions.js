@@ -24,7 +24,7 @@
  *   node scripts/count-interactions.js --tokens            # token usage
  *
  *   --agents and --tokens report PER-SESSION figures, never per-turn. There is
- *   no per-turn accounting in this script, which is why CLAUDE-protocol.md §6
+ *   no per-turn accounting in this script, which is why CLAUDE.md §6
  *   keeps the per-reply footer switched off.
  *
  * DEFAULT LOG LOCATION

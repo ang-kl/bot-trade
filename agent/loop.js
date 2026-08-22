@@ -3480,7 +3480,20 @@ async function runLoop(db) {
               getSpot: (sid) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, sid),
             })
             if (r.fetched.length) log(`FX legs refreshed: ${r.fetched.join(', ')}${r.failed.length ? ` (failed: ${r.failed.join(', ')})` : ''}`)
-            else if (r.failed.length) log(`FX legs: ${r.failed.length} leg(s) could not be priced — ${r.failed.join(', ')}`)
+            else if (r.failed.length) {
+              // Grouped BY REASON, not by symbol: "6 no usable quote (market
+              // closed?)" is actionable on a Saturday and a bare symbol list
+              // is not. See services/fx-legs.js.
+              const byReason = new Map()
+              for (const f of (r.failedWhy || [])) {
+                if (!byReason.has(f.reason)) byReason.set(f.reason, [])
+                byReason.get(f.reason).push(f.symbol)
+              }
+              const detail = byReason.size
+                ? [...byReason].map(([why, syms]) => `${why}: ${syms.join(', ')}`).join(' · ')
+                : r.failed.join(', ')
+              log(`FX legs: ${r.failed.length} leg(s) could not be priced — ${detail}`)
+            }
           }
         }
       } catch (err) {

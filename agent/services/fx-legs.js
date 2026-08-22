@@ -158,9 +158,19 @@ export async function refreshFxLegs(db, {
   const stale = staleLegs(readFxTable(db), unique, { now, refreshAfterMs, demand })
   const fetched = []
   const failed = []
+  // WHY A REASON AND NOT JUST A NAME (2026-08-22). The loop logged
+  // `8 leg(s) could not be priced — USDCLP, ..., AUDUSD, GBPUSD` on every
+  // cycle for hours, and the list is a dead end: four different faults collapse
+  // into one bare symbol. A leg missing from the symbol map is a permanent
+  // config fault someone must fix; a leg the broker returned no quote for over
+  // the weekend fixes itself on Monday; a thrown request is transient. AUDUSD
+  // and GBPUSD sitting in that list is either alarming or entirely normal
+  // depending on which — and the message could not say.
+  const failedWhy = []
+  const fail = (symbol, reason) => { failed.push(symbol); failedWhy.push({ symbol, reason }) }
   for (const s of stale.slice(0, limit)) {
     const symbolId = symbolMap?.[s.symbol]
-    if (symbolId == null) { failed.push(s.symbol); continue }
+    if (symbolId == null) { fail(s.symbol, 'not in the symbol map'); continue }
     try {
       const q = await getSpot(symbolId)
       // The MID. A conversion rate is not a tradeable price — using bid or
@@ -171,16 +181,16 @@ export async function refreshFxLegs(db, {
       const mid = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0
         ? (bid + ask) / 2
         : Number(q?.price ?? q?.mid ?? bid ?? ask)
-      if (!Number.isFinite(mid) || mid <= 0) { failed.push(s.symbol); continue }
+      if (!Number.isFinite(mid) || mid <= 0) { fail(s.symbol, 'no usable quote (market closed?)'); continue }
       if (recordFxRate(db, s.symbol, mid, now)) fetched.push(s.symbol)
-      else failed.push(s.symbol)
-    } catch {
+      else fail(s.symbol, 'rate rejected on write')
+    } catch (err) {
       // One dead symbol must not cost the rest of the sweep — the next
       // cycle retries it, and it is still inside the 26-hour window.
-      failed.push(s.symbol)
+      fail(s.symbol, `request failed: ${String(err?.message || err).slice(0, 80)}`)
     }
   }
-  return { checked: unique.length, stale: stale.length, fetched, failed, currencies }
+  return { checked: unique.length, stale: stale.length, fetched, failed, failedWhy, currencies }
 }
 
 /**

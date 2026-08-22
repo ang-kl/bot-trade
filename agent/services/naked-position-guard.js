@@ -595,7 +595,7 @@ const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
  *            errors:string[], unauditable:string[]}}
  */
 export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, targetsRestored: 0, errors: [], unauditable: [], blind: false }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, targetsRestored: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -668,6 +668,22 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       out.naked += prot.naked.length
       out.targetless += prot.targetless.length
       out.phantom += prot.phantom.length
+
+      // MAKE THE BOOK STOP LYING. A phantom is our record disagreeing with the
+      // broker's, and this module already calls that the more dangerous state
+      // — while doing nothing about it. Local write only; nothing is sent to
+      // the broker. One-directional on purpose: see services/stop-adopt.js for
+      // why adopting a WIDER broker stop would cure the guard by deleting it.
+      try {
+        const { adoptBrokerStops } = deps.stopAdopt ?? await import('./stop-adopt.js')
+        const rowsForStops = new Map(openRows.map(r => [String(r.ctrader_position_id), r]))
+        const ad = adoptBrokerStops(db, prot.phantom, rowsForStops)
+        out.stopsAdopted += ad.adopted
+        if (ad.adopted) console.log(`[protection] ${id}: book corrected to broker truth on ${ad.adopted} stop(s)`)
+        for (const sk of ad.skipped) console.log(`[protection] ${id}: stop NOT adopted — ${sk}`)
+      } catch (err) {
+        out.errors.push(`${id}: stop adopt failed — ${err?.message || err}`)
+      }
 
       // PUT BACK WHAT WAS LOST. #748 stopped targets being deleted; positions
       // stripped before it deployed stay stripped until something acts. The

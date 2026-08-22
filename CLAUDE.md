@@ -1,23 +1,206 @@
 # Instructions for Claude — bot-trade
 
-@CLAUDE-protocol.md
+This file is bot-trade's, and only bot-trade's. It used to import a
+project-neutral `CLAUDE-protocol.md` shared with other repositories; the owner
+scoped this session to bot-trade alone on 2026-08-22, so the protocol is folded
+in below and the portable copy is gone. Nothing was dropped in the move except
+the cross-repo scaffolding itself: the "port this to another repo" clause on
+§1, and the cross-project dashboard in §7. Every rule that governs work HERE is
+still here.
 
-The line above imports the project-neutral reply protocol (serial, time,
-paragraph numbering, agent/token counts, the mental model, the custom
-commands, and protocol points P1–P8). It is the same file in every repo;
-everything below is bot-trade-specific and does not exist in the neutral
-copy. Where this file and the protocol touch the same subject, the local
-text is the one carrying the measured history and wins on specifics — see
-"P7 — local scope" below, and note that §10 of the protocol only NAMES the
-three commands; the rationale for why prose alone is insufficient is local.
+THAT DISTINCTION MATTERS BECAUSE OF WHAT HAPPENED LAST TIME. The de-duplication
+that introduced the import deleted the owner-confirmed P7 scope note one commit
+after the owner ratified it, on the false claim that the import supplied what
+was removed. Owner-confirmed text is the last thing a tidying pass may drop —
+including this one.
+
+---
+
+## 1. Serial — measured, not remembered
+
+Source of truth is the session transcript on disk, read via this repo's
+counting script:
+
+```
+node scripts/count-interactions.js --serial     # next serial number
+node scripts/count-interactions.js --file ~/.claude/projects/<project>/<session>.jsonl
+```
+
+`reply turns` = assistant entries on the main thread carrying a non-empty text
+block. Tool calls and subagent chatter are excluded. Never restart at 1;
+re-measure rather than guess if the thread is lost.
+
+**WHICH DISK. The script measures the corpus it can see, and that is not always
+the whole corpus.** A remote or web session runs in a fresh container holding
+only the transcripts of sessions that ran there; a local machine holds the rest.
+Measured 2026-08-22: the same script returned 788 in a remote container and
+6,253 against the owner's local corpus six days earlier — same rule, same code,
+different disk.
+
+So: a measurement BELOW the last rebase recorded below is evidence of a partial
+corpus, not a correction. Treat it as unavailable, continue from the recorded
+rebase plus the replies since, and say which of the two you used. Re-measuring
+is only authoritative where the full transcript set is present. Silently
+adopting the smaller number is the exact failure this section exists to
+prevent — it resets the count by thousands while looking like diligence.
+
+AND THE RATCHET NEEDS A WRITE-BACK, or it drifts through the other door.
+Replies made in a container the local corpus never sees are correctly refused as
+a reading, but nothing records that they happened — so a later local re-measure
+legitimately reads below the running count, gets discarded as "partial corpus",
+and from then on the serial advances only by context-carried increments. So: at
+the end of any session whose corpus was partial, append a rebase line below
+recording the count reached and where it was measured. The file is the ledger;
+a container is not.
+
+Prefix every substantive reply, on its own line:
+
+```
+№ N · DD-MM'YY HH:MM TZ
+```
+
+`№` is U+2116; no leading zeros; comma thousands (№ 1,024).
+
+## 2. Time — fetched, not guessed
+
+Before stamping: run `date -u` via Bash and convert to the active timezone.
+Resolve TZ in this order: (a) owner states one this session; (b) system zone via
+`date +%Z`; (c) default SGT. Re-run on session start, on resume from idle, or if
+more than 60 minutes have elapsed since the last fetch. If Bash is unavailable,
+derive from the newest timestamp in context; if more than roughly an hour of
+drift is possible, ask rather than invent.
+
+## 3. Paragraph numbering
+
+Once a reply carries 2+ distinct points:
+
+- Letter sections `§N·A`, `§N·B`, ... where N is the reply serial.
+- Number paragraphs within each section `¶A·1`, `¶A·2`, ... restarting at 1 per
+  section.
+- Skip markers on short single-point replies.
+
+This enables references like "expand §1,774·B ¶B·2".
+
+## 4. Agent count — measured from the same transcript
+
+A subagent is spawned per subagent-tool invocation (`Task` on older CLI builds,
+`Agent` on newer ones).
+
+```
+node scripts/count-interactions.js --agents
+# prints: agents_total, breakdown by subagent_type, agents in the latest SESSION
+```
+
+Counting rule: assistant entries whose content includes a `tool_use` block named
+`Task` OR `Agent`; group by `input.subagent_type`. MATCH BOTH — matching one
+name reported a confident `agents_total: 0` on a corpus that really contained
+subagent calls, and fixing it moved this repo's own count from 0 to 2. The
+output also prints `tool_use_blocks_seen`, because 0 agents out of 0 tool calls
+and 0 out of 4,263 are different facts and a bare zero cannot tell them apart.
+
+## 5. Token count — measured from the same transcript
+
+```
+node scripts/count-interactions.js --tokens
+# sums input_tokens, cache_creation_input_tokens, cache_read_input_tokens
+# (these three reconcile into tokens_in_total) and output_tokens;
+# prints per-SESSION figures only
+```
+
+USAGE IS PER MESSAGE, NOT PER TRANSCRIPT LINE. The transcript writes one line
+per content block and repeats the identical usage object on each, so summing per
+entry inflates every figure by blocks-per-message — measured at 1.91x. Dedupe on
+`message.id`. And with prompt caching on, `input_tokens` is often 2 while the
+real input sits in the two cache fields: reporting it alone is a confident wrong
+number, not a partial one.
+
+There is no per-turn accounting here, and §6 depends on there being some — which
+is why §6 stays off. Do not read `agents_latest_session` or `latest_session_*`
+as turn figures: a session routinely runs to thousands of replies, so the two
+differ by three orders of magnitude.
+
+If a usage block is absent, report "unavailable" — never estimate. The §1 corpus
+caveat applies here too.
+
+## 6. Reply footer — off until it can be measured
+
+The intended line is:
+
+```
+[agents: {n} turn | {total} session] [tokens: {in}/{out} turn | {cum_in}/{cum_out} session]
+```
+
+**OMIT IT unless the counting script emits PER-TURN figures.** Flag existence is
+not the test, and the first draft of this section got that wrong: it said to
+omit while `--agents` was unimplemented, so the footer would unlock the moment
+the flag was added — while the format still needs four per-turn numbers
+(`{n} turn`, `{in}/{out} turn`) that no implementation produces. `--agents` and
+`--tokens` report per-SESSION totals; there is no per-turn accounting anywhere,
+and §5 forbids estimating one. A mandatory line with two unmeasurable fields is
+a rule that is on, configured, and out of reach of what it guards — the same
+shape as a guard whose trigger never fires.
+
+So the footer stays OFF until a script emits per-turn figures — e.g. a `--turn`
+mode reading the last assistant entry of the newest transcript. Until then do
+not print it, do not print "unavailable" in its place, and do not estimate.
+Whoever adds per-turn accounting turns this section on in the same change, and
+not before.
+
+## 7. On-demand dashboard (a prompt, not a native CLI)
+
+Run inside this repo:
+
+```
+Run scripts/count-interactions.js with --serial, --agents and --tokens.
+Render one table: current serial, agents_total, breakdown (descending),
+token totals, last time fetch.
+```
+
+## 8. Invariants
+
+| # | Invariant | Check |
+|---|-----------|-------|
+| 1 | Serial never decreases or resets mid-project | measured from transcript, §1 corpus rule applied |
+| 2 | Transcript is the sole authority; every text reply counts | script rule |
+| 3 | TZ read from owner or environment, never hardcoded | §2 order |
+| 4 | Counts unavailable are reported, never estimated | §4-6 |
+| 5 | Dashboards read transcripts; they never mutate them | §7 |
+
+## 9. Mental model for building
+
+Every build or change follows this chain, in order:
+
+**Intent → Interpretation → Assumptions → Invariants → Execution → Evidence**
+
+## 10. Protocol for important or consequential work
+
+Points are lettered `P1`–`P8` rather than numbered so that a bare "#N" keeps
+pointing at the "Recurring failure modes" list below, which `prune-scans.test.js`
+and `llm-boot-banner.test.js` cite by number from code comments.
+
+P1. Lead with the final answer or recommendation.
+P2. Identify the authoritative sources used and distinguish verified facts
+    from inference.
+P3. State the material invariants and report each as Passed, Failed or
+    Not Verifiable.
+P4. Briefly disclose any material search, retrieval, calculation or external
+    tool used. If this information is unavailable, say so rather than guessing.
+P5. Use deterministic tools for exact calculations where available.
+P6. Flag missing evidence, conflicting sources and assumptions requiring
+    confirmation.
+P7. Ask for the owner's approval before any external, destructive, financial,
+    legal, personnel-related or otherwise consequential action.
+P8. Never infer or invent the model, reasoning setting, hidden routing or
+    unavailable system metadata.
+
+---
 
 ## P7 — local scope (owner-confirmed, 2026-08-22)
 
-The imported protocol's P7 is the generic rule: ask before any external,
-destructive, financial, legal, personnel-related or otherwise consequential
-action. THIS is what P7 means in bot-trade, and it does not live in the
-neutral file because it names this repo's merge policy and this repo's risk
-limits:
+§10's P7 is the generic rule: ask before any external, destructive,
+financial, legal, personnel-related or otherwise consequential action. THIS is
+what P7 means in bot-trade — it names this repo's merge policy and this repo's
+risk limits:
 
 - The PR merge policy below is the one standing exception to P7, and only
   within its stated gate.
@@ -32,10 +215,11 @@ limits:
   outward-facing and hard-to-retract: deploys, live-account operations,
   messages to third parties, publishing anything beyond this repo.
 
-This section exists because the de-duplication that introduced the import
-DELETED it — one commit after the owner confirmed it — on the false claim
-that the import supplied what was removed. It did not: the neutral P7 is the
-bare rule. Owner-confirmed text is the last thing a tidying pass may drop.
+This section exists because a de-duplication pass DELETED it — one commit
+after the owner confirmed it — on the false claim that a shared file supplied
+what was removed. It did not: the generic P7 is the bare rule. Owner-confirmed
+text is the last thing a tidying pass may drop, and it survived the 2026-08-22
+fold-in for the same reason.
 
 ## PR merge policy (owner, 2026-07-22)
 
@@ -65,12 +249,9 @@ end and is picked up identically on Claude Code desktop, web and iPhone. It is
 loaded automatically at session start for anyone working in this repo.
 
 The serial format, the `date -u` time fetch and the `§N·A` / `¶A·1` markers
-now live in `CLAUDE-protocol.md` (§1–§3), imported at the top of this file.
-They are identical across repos, so they are not restated here. What is
-bot-trade-specific — and what the protocol deliberately does NOT carry — is
-the measured history below: this repo's rebases, what each one cost, and why
-the rule is "run the script first" rather than "run it when the number looks
-wrong".
+are §1–§3 above and are not restated here. What this section carries instead is
+the measured history: this repo's rebases, what each one cost, and why the rule
+is "run the script first" rather than "run it when the number looks wrong".
 
 **Serial origin — MEASURED, not remembered (owner, 2026-07-26).** The serial is
 now derived from the session transcript on disk, which is the only durable
