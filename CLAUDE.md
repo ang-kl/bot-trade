@@ -51,13 +51,16 @@ P7. **Ask for approval before any external, destructive, financial, legal,
    personnel-related or otherwise consequential action.** The PR merge policy
    below is the one standing exception, and only within its stated gate;
    risk-limit changes remain ask-first unless explicitly ordered.
-   Scope note (Claude's reading, 2026-08-22, flagged to the owner in-session
-   and standing unless the owner vetoes it): ordinary repo traffic
-   in service of an ordered task — branch pushes, opening PRs, PR comments
-   and review replies — is settled practice in this repo and is not what
-   "external" is for. "External" catches the outward-facing and
-   hard-to-retract: deploys, live-account operations, messages to third
-   parties, publishing anything beyond this repo.
+   Scope note (Claude's reading, CONFIRMED by the owner 2026-08-22 — asked
+   as a plain yes/no after #739 merged, answered "yes"): ordinary repo
+   traffic in service of an ordered task — branch pushes, opening PRs, PR
+   comments and review replies — is settled practice in this repo and is
+   not what "external" is for; force-pushes are covered only in the
+   approved branch-restart pattern (re-basing the working branch on main
+   after a squash-merge), anything beyond that stays ask-first. "External"
+   catches the outward-facing and hard-to-retract: deploys, live-account
+   operations, messages to third parties, publishing anything beyond this
+   repo.
 P8. **Never infer or invent the model, reasoning setting, hidden routing or
    unavailable system metadata.** If asked, measure it with a tool that
    actually resolves in the current environment (remote sessions have one;
