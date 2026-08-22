@@ -180,24 +180,76 @@ try {
 // This lets Railway hold the secrets so the agent starts trading immediately
 // after deploy — no UI push required. Any capitalization/underscore spelling
 // of the variable names is accepted (see lib/ctrader-env.js).
-const { ctraderEnv } = await import('./lib/ctrader-env.js')
+const { ctraderEnv, ctraderEnvReport } = await import('./lib/ctrader-env.js')
+
+// WHICH VARIABLE FILLED WHICH SLOT — names only, never values.
+//
+// Owner, 2026-08-22: "i have so many ctrader variables. which one is actual".
+// Nothing could answer that: the lookup accepts any spelling, silently picked
+// one, and named nothing. Two accepted spellings exist for the client secret
+// alone. A credential resolver that cannot say what it resolved turns a wrong
+// value into an unattributable "Access denied" from the broker.
+try {
+  for (const r of ctraderEnvReport()) {
+    if (!r.names.length) continue
+    const extra = r.names.length > 1 ? ` (also matched: ${r.names.slice(1).join(', ')})` : ''
+    console.log(`[boot] cTrader ${r.kind}: using ${r.chosen}${extra}`)
+    // A slot whose candidates DISAGREE is a configuration error, not a
+    // preference. Loud, because the alternative is a coin-flip between two
+    // secrets and a broker error that names neither.
+    if (r.conflict) {
+      console.error(
+        `[boot] cTrader ${r.kind}: CONFLICT — ${r.names.join(' and ')} hold DIFFERENT values. ` +
+        `Using ${r.chosen} (first by name). Delete the ones you do not want.`
+      )
+    }
+  }
+} catch (err) { console.error('[boot] cTrader env report failed:', err.message) }
+
 const envAccessToken = ctraderEnv('accessToken')
 const envAccountId = ctraderEnv('accountId')
 const envRefreshToken = ctraderEnv('refreshToken')
 const envIsLive = ctraderEnv('isLive') ?? CTRADER_IS_LIVE
-if (envAccessToken && !getState(db, 'ctrader_access_token')) {
-  setState(db, 'ctrader_access_token', envAccessToken)
-  console.log('[boot] cTrader access token seeded from env')
+
+// ENV SEEDS AN EMPTY DATABASE. IT DOES NOT UPDATE A FULL ONE.
+//
+// Each seed below is guarded on the stored value being ABSENT, which is
+// correct — Spotware rotates the refresh token on every use, so the database
+// holds the current one and env holds the original. Overwriting from env each
+// boot would replace a live token with a spent one.
+//
+// But it means editing the env var on the host does NOTHING once the database
+// has a value, and until now that was invisible: the operator updates
+// CTRADER_REFRESH_TOKEN, redeploys, sees no complaint, and the agent keeps
+// using the old copy. Measured 2026-08-22 — the refresh failed with "Access
+// denied" across a re-link and a redeploy while the env var held a fresh
+// token nothing read. So say it.
+const seedOrExplain = (envValue, stateKey, label, onSeed) => {
+  if (!envValue) return
+  const stored = getState(db, stateKey)
+  if (!stored) {
+    onSeed()
+    console.log(`[boot] cTrader ${label} seeded from env`)
+    return
+  }
+  if (stored !== envValue) {
+    console.log(
+      `[boot] cTrader ${label}: env value IGNORED — the database copy is in use ` +
+      `(agent_state.${stateKey}). Env only seeds an empty database; the stored ` +
+      `token rotates on every refresh. To adopt the env value, clear ${stateKey}.`
+    )
+  }
 }
-if (envRefreshToken && !getState(db, 'ctrader_refresh_token')) {
-  setState(db, 'ctrader_refresh_token', envRefreshToken)
-  console.log('[boot] cTrader refresh token seeded from env')
-}
-if (envAccountId && !getState(db, 'ctrader_account_id')) {
-  setState(db, 'ctrader_account_id', String(envAccountId))
-  setState(db, 'ctrader_is_live', envIsLive === 'true' ? 'true' : 'false')
-  console.log('[boot] cTrader account ID seeded from env')
-}
+
+seedOrExplain(envAccessToken, 'ctrader_access_token', 'access token',
+  () => setState(db, 'ctrader_access_token', envAccessToken))
+seedOrExplain(envRefreshToken, 'ctrader_refresh_token', 'refresh token',
+  () => setState(db, 'ctrader_refresh_token', envRefreshToken))
+seedOrExplain(envAccountId == null ? undefined : String(envAccountId), 'ctrader_account_id', 'account ID',
+  () => {
+    setState(db, 'ctrader_account_id', String(envAccountId))
+    setState(db, 'ctrader_is_live', envIsLive === 'true' ? 'true' : 'false')
+  })
 
 // Account Registry bootstrap (multi-account plan, M0 shim): make sure the
 // currently-selected account exists in the registry and is the single
