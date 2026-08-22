@@ -655,8 +655,53 @@ export async function setExecGuard(creds, cfg) {
   return sidecar(execBaseFor(creds), 'POST', '/config', cfg)
 }
 
+/**
+ * AMEND REPLACES PROTECTION — SO A STOP-ONLY AMEND MUST SAY WHAT IT MEANS.
+ *
+ * ProtoOAAmendPositionSLTPReq sets protection to exactly what the payload
+ * carries: an absent takeProfit is "no take profit", not "leave it alone".
+ * ctrader-ws.js has documented that since the 4 Aug audit and warned on every
+ * stop-only amend — and the warning did not stop it happening, because the
+ * rule lived in prose while four separate call sites each had to remember it:
+ *
+ *   services/profit-keeper.js  SL ratchet
+ *   services/loss-guardian.js  protective stop on a naked position
+ *   services/trade-guard.js    break-even / trailing move
+ *   loop.js (runner leg)       SL move after a scale-out
+ *
+ * Only loop.js's MOVE_SL path re-sent the target. Measured 2026-08-22: a live
+ * position read `1 targetless` on every audit pass, hours after the TP1
+ * partial made the runner-leg path fire far more often.
+ *
+ * So the requirement moves from prose into the call signature. A stop-only
+ * amend must pass `takeProfit` — a number to keep, or null/undefined-with-
+ * `clearTakeProfit` to say the clearing is deliberate. Forgetting the key is
+ * now a loud throw at the call site instead of a target that silently
+ * disappears at the broker. A new call site cannot repeat this by omission.
+ */
+export function assertAmendIntent(args) {
+  const sendingSl = Number(args?.stopLoss) > 0
+  const consideredTp = Object.prototype.hasOwnProperty.call(args ?? {}, 'takeProfit')
+  const clearing = args?.clearTakeProfit === true
+  if (sendingSl && !consideredTp && !clearing) {
+    throw new Error(
+      'amendPosition: a stop-only amend CLEARS the take profit at the broker. ' +
+      'Pass takeProfit (the value to keep, or null if the position has none), ' +
+      'or clearTakeProfit: true if dropping the target is intended.'
+    )
+  }
+  const out = { ...(args ?? {}) }
+  // Never reaches the broker: an assertion of intent, not a protocol field.
+  delete out.clearTakeProfit
+  // `takeProfit: null` means "the caller looked and there is no target".
+  // wsAmendPosition already treats a non-positive value as absent, so this
+  // only has to stop a stated null being mistaken for forgetfulness.
+  if (out.takeProfit == null) delete out.takeProfit
+  return out
+}
+
 export async function amendPosition(creds, args) {
-  args = withNumericIds(withAccount(creds, args))
+  args = withNumericIds(withAccount(creds, assertAmendIntent(args)))
   if (execEngineMode() === 'cpp') {
     return withFallback('amend',
       async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/amend', args) },

@@ -209,7 +209,9 @@ test('FIXED: amendPosition stamps too — a stop-loss move aimed at B is applied
     await plantOn(B, { stopLoss: 1.0 })
     const [pidOnB] = broker.positionIds(B)
     // profit-keeper.js:355 / loss-guardian.js:203 / trade-guard.js:155, unchanged.
-    await amendPosition(creds(B), { positionId: pidOnB, stopLoss: 1.5 })
+    // takeProfit: null — these cases are about ACCOUNT ROUTING, not targets,
+    // but a stop-only amend must still state its take-profit intent.
+    await amendPosition(creds(B), { positionId: pidOnB, stopLoss: 1.5, takeProfit: null })
     assert.equal(broker.lastCall('amend').account, B)
     assert.equal(broker.positions(B)[0].stopLoss, 1.5, 'the protective stop moved, on the right account')
   })
@@ -245,7 +247,7 @@ test('FIXED: a contradictory account is refused rather than resolved one way or 
     for (const call of [
       () => placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B) === parseInt(A) ? 1 : parseInt(B) }),
       () => closePosition(creds(A), { positionId: 1, volume: 1, ctidTraderAccountId: parseInt(B) }),
-      () => amendPosition(creds(A), { positionId: 1, stopLoss: 1, ctidTraderAccountId: parseInt(B) }),
+      () => amendPosition(creds(A), { positionId: 1, stopLoss: 1, takeProfit: null, ctidTraderAccountId: parseInt(B) }),
     ]) {
       await assert.rejects(call(), (err) => {
         assert.match(err.message, /guard_account_mismatch/)
@@ -370,7 +372,7 @@ test('FIXED: NOTHING reaching the broker resolves by primary any more — the sw
     broker.reset()                // …and is dropped from the log, so only B's ops are judged
     await placeOrder(creds(B), { ...ENTRY })                       // entry, no explicit id in the payload
     const [pid] = broker.positionIds(B)
-    await amendPosition(creds(B), { positionId: pid, stopLoss: 1.5 })
+    await amendPosition(creds(B), { positionId: pid, stopLoss: 1.5, takeProfit: null })
     await cancelOrder(creds(B), { orderId: 77 })
     await reconcile(creds(B))
     await closePosition(creds(B), { positionId: pid, volume: 100_000 })

@@ -130,7 +130,7 @@ async function lossGuardianPass(db, creds, deps = {}) {
       return cfgCache.get(k)
     }
     const allRows = db.prepare(
-      `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl,
+      `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
               mp.time_cap_at, mp.source AS source,
               t.ctrader_position_id AS position_id, t.account_id AS account_id
        FROM monitored_positions mp
@@ -256,6 +256,8 @@ async function lossGuardianPass(db, creds, deps = {}) {
           await exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
             ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
+            // Putting a stop on a naked position must not cost it its target.
+            takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
           })
           updAct.run(decision.action.sl, 'loss_guardian_stop', r.id)
           summary.stops++

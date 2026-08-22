@@ -376,7 +376,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
       ? "mp.source IS NULL OR mp.source IN ('autopilot', 'external', 'manual')"
       : "mp.source IN ('external', 'manual')"
     const rows = db.prepare(
-      `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.peak_profit_usd,
+      `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd,
               mp.scaled_out, mp.trade_id, mp.account_id, t.ctrader_position_id AS position_id,
               t.sl_price AS original_sl, mp.early_trimmed
        FROM monitored_positions mp
@@ -617,7 +617,13 @@ async function profitKeeperPass(db, creds, deps = {}) {
       }
       if (decision.action.sl != null) {
         try {
-          await exec.amendPosition(creds, { positionId: parseInt(r.position_id), stopLoss: decision.action.sl })
+          // The broker's own target, re-sent: a stop-only amend deletes it.
+          // bp is this pass's broker snapshot, so this is what the broker
+          // holds right now, not what the book believes it holds.
+          await exec.amendPosition(creds, {
+            positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
+            takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
+          })
           updAct.run(decision.action.sl, 'profit_keeper_lock', r.id)
           summary.slMoves++
           notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${decision.action.sl}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}${decision.action.spike ? ' — spike detected, trail tightened' : ''}${decision.action.structure ? ' — trailing the last swing' : ''}`)
