@@ -474,6 +474,40 @@ export function loadRiskConfig(db, accountId = null) {
 }
 
 /**
+ * The R:R a proposal must actually clear on this account, all three layers
+ * combined: the static HARD_MIN_RR, the account/strategy `minRR`, and the
+ * dynamic expectancy requirement derived from the account's measured win
+ * rate (`need` — see expectancyVerdict).
+ *
+ * WHY THIS IS EXPORTED (22-08-2026). Burn-in was armed to manufacture a
+ * clean sample and built its targets at 1.6×SL — "clears the minRR 1.5
+ * gate", said the comment, years after the gate had moved to 3.0 and grown
+ * the expectancy clause on top. Every order it could ever place was vetoed
+ * before it placed one: a generator wired to a wall, failure mode #3 wearing
+ * a switch. The fix is not to exempt burn-in from the gate (the whole point
+ * of burn-in is that its trades pass the REAL gate); it is to let the
+ * proposer ask the gate what it will demand, from the same functions the
+ * gate itself uses, so the two can never diverge again.
+ *
+ * Conservative by construction: every layer only ever RAISES the answer.
+ * A thin sample (expectancyVerdict fails open) leaves the static floor.
+ */
+export function effectiveRrFloor(db, accountId = null, strategy = null) {
+  const config = loadRiskConfig(db, accountId)
+  const requested = Number(minRrFor(strategy, config.minRR))
+  let floor = Math.max(HARD_MIN_RR, Number.isFinite(requested) ? requested : 0)
+  if (config.minExpectancyR != null && Number.isFinite(Number(config.minExpectancyR))) {
+    try {
+      const stats = accountEconomics(db, accountId, { days: 30 })
+      const ev = expectancyVerdict(stats, floor, { minE: Number(config.minExpectancyR) })
+      // `need` is what the measured win rate demands; rr-independent.
+      if (ev.need != null && ev.need > floor) floor = ev.need
+    } catch { /* the static floor stands */ }
+  }
+  return floor
+}
+
+/**
  * Read the configured account balance (USD) from agent_state, or null when
  * unset. Any non-positive or malformed value is treated as unset.
  */
