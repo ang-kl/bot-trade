@@ -49,6 +49,7 @@
 
 import { atr } from './fib-strategy.js'
 import { volumeStructure, inLowVolumeNode } from '../lib/volume-structure.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 const MIN_BARS = 60            // needs at least two sessions of bars in practice
 const ATR_PERIOD = 14
@@ -56,7 +57,9 @@ const CONFIRM_LOOKBACK = 12    // how far back the confirming close may sit
 const PULLBACK_TOL_ATR = 0.35  // "at the level" for the pullback entry
 const SL_ATR_BUFFER = 0.5
 const SL_MAX_ATR = 2.5         // stop distance cap — a huge VA must not size a huge stop
-const MIN_RR = 1.5
+// One definition, in strategies.js — see STRATEGY_PREFILTER_RR there for why
+// a local copy of this number is a bug and not a convenience.
+const MIN_RR = STRATEGY_PREFILTER_RR
 
 const round2 = (v) => Math.round(v * 100) / 100
 

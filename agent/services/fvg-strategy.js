@@ -33,6 +33,7 @@
 
 import { atr } from './fib-strategy.js'
 import { findFvgZones } from '../lib/indicators.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 const MIN_BARS = 60
 const ATR_PERIOD = 14
@@ -52,7 +53,9 @@ const MAX_AGE_BARS = Number(process.env.FVG_MAX_AGE_BARS) || 40
 const MIN_AGE_BARS = 2
 
 const SL_ATR_BUFFER = 0.5
-const MIN_RR = 1.5
+// One definition, in strategies.js — see STRATEGY_PREFILTER_RR there for why
+// a local copy of this number is a bug and not a convenience.
+const MIN_RR = STRATEGY_PREFILTER_RR
 
 const round5 = (v) => Math.round(v * 1e5) / 1e5
 

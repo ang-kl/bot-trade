@@ -36,6 +36,7 @@
 // ---------------------------------------------------------------------------
 
 import { atr, vwap } from './fib-strategy.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 const MIN_BARS = 210            // SMA200 + headroom
 const CUP_MIN = 15              // cup length bounds (bars) — absolute floor/ceiling regardless of the dynamic ratio below
@@ -52,7 +53,9 @@ const HANDLE_RETRACE_MAX = 0.5      // handle may retrace at most this fraction 
 const HANDLE_LENGTH_MIN_RATIO = 0.10 // handle duration >= this fraction of the cup's OWN duration
 const HANDLE_LENGTH_MAX_RATIO = 0.30 // handle duration <= this fraction of the cup's OWN duration — the handle is a brief pause, not a second cup
 const BREAKOUT_VOL_X = 1.3      // breakout volume vs handle average
-const MIN_RR = 1.5
+// One definition, in strategies.js — see STRATEGY_PREFILTER_RR there for why
+// a local copy of this number is a bug and not a convenience.
+const MIN_RR = STRATEGY_PREFILTER_RR
 
 export function sma(bars, period, endIdx = bars.length - 1) {
   if (endIdx + 1 < period) return null

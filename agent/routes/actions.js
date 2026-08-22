@@ -3629,6 +3629,36 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/backfill-trade-origin — give historical trades an origin.
+  // Body: { apply?: boolean, rollback?: boolean }.  DRY RUN BY DEFAULT.
+  //
+  // The derivation and the reversibility are scripts/backfill-trade-origin.mjs's,
+  // unchanged. This route exists because that script needs a shell on the
+  // Railway container, so it has never been run — leaving `origin` null on 93%
+  // of trades and `GET /state/exit-counterfactual` starved at 5 eligible rows
+  // out of 81 (`not_clean_origin: 76`). See services/origin-backfill.js.
+  //
+  // NOTHING IS WRITTEN WITHOUT `apply: true`. The default response is the plan
+  // — how many rows, and what each would become — so the operator can read the
+  // derivation's verdict before authorising a write across every historical
+  // trade. `{ rollback: true, apply: true }` undoes it, and clears only rows
+  // this wrote.
+  // -----------------------------------------------------------------------
+  router.post('/backfill-trade-origin', async (req, res) => {
+    try {
+      const apply = req.body?.apply === true
+      const rollback = req.body?.rollback === true
+      const { runOriginBackfill } = await import('../services/origin-backfill.js')
+      const out = runOriginBackfill(db, { apply, rollback })
+      console.log(`[actions] trade-origin backfill ${out.mode}${out.dryRun ? ' (dry run — nothing written)' : ` — ${out.written ?? out.cleared} row(s)`}`)
+      res.json({ ok: true, ...out })
+    } catch (err) {
+      console.error('[actions/backfill-trade-origin] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/ctrader-accounts — re-list accounts from the token the
   // agent already has stored (so the UI picker survives page reloads).
   // -----------------------------------------------------------------------

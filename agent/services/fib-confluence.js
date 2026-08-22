@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { atr, findSwings } from './fib-strategy.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 const RATIOS = [0.382, 0.5, 0.618, 0.786]
 const MIN_BARS = 40
@@ -30,7 +31,9 @@ const MAX_SWINGS = 4        // recent swings per side used to build grids
 const BAND_ATR = 0.5        // confluence band half-width, in ATR
 const MIN_CONFLUENCE = 3    // distinct levels stacking to call it a zone
 const SL_ATR_BUFFER = 0.5
-const MIN_RR = 1.5
+// One definition, in strategies.js — see STRATEGY_PREFILTER_RR there for why
+// a local copy of this number is a bug and not a convenience.
+const MIN_RR = STRATEGY_PREFILTER_RR
 
 const round = (v) => Math.round(v * 100) / 100
 

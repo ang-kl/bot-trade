@@ -8,6 +8,26 @@ describe('humanVeto', () => {
     expect(humanVeto('max_positions=6/6')).toBe('Position cap reached (6/6)')
     expect(humanVeto('loss_streak_cooldown streak=3 wait=42m')).toBe('Cooling off after 3 straight losses — 42m left')
     expect(humanVeto('bad_rr 1.20<1.5')).toBe('Reward:risk 1.20 below the 1.5 floor')
+
+    // THE TAIL, added 22-08-2026. The raw veto carries `(requested 1.6, raised
+    // to the 3 expectancy floor)` and this dropped it, so the Order log showed
+    // a 3 that appears nowhere in the account's settings while the Risk page
+    // showed 1.6 — two numbers that read as a contradiction rather than as a
+    // rule and its override. 14,841 vetoes a day carried the truncated line,
+    // and reading it produced a confident, wrong statement about which floor
+    // the account was configured at.
+    expect(humanVeto('bad_rr 1.50<3 (requested 1.6, raised to the 3 expectancy floor)'))
+      .toBe('Reward:risk 1.50 below the 3 floor — your setting is 1.6, raised to 3 by the expectancy floor')
+
+    // No tail when the setting already IS the floor — saying "raised to 3 from
+    // 3" is noise, and a message that explains a non-event teaches the reader
+    // to skim.
+    expect(humanVeto('bad_rr 2.90<3 (requested 3, raised to the 3 expectancy floor)'))
+      .toBe('Reward:risk 2.90 below the 3 floor')
+
+    // The old short form still renders exactly as it did.
+    expect(humanVeto('bad_rr 2.00<3')).toBe('Reward:risk 2.00 below the 3 floor')
+    expect(humanVeto('bad_rr')).toBe('Reward:risk below the floor')
     expect(humanVeto('market_closed: forex session closed')).toBe('Market closed')
   })
   it('duplicate_symbol shows the actual blocking position when the risk gate provides it', () => {

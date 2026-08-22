@@ -198,7 +198,11 @@ export function pacedDailyCap({
   // and names no flat ceiling, so honouring both would be obeying an
   // instruction they did not give. `dailyLossLimit` remains fully in force
   // whenever the tier rule is off.
-  const both = [pctCapUsd, ...(tierPct != null ? [] : [usdCapUsd])].filter(v => v != null)
+  // The flat cap is out of force entirely when the tier rule is on. Keep that
+  // fact in ONE place — `binding` below used to re-derive it from the raw
+  // `usdCapUsd` and got a different answer (see the comment on `binding`).
+  const usdInForce = tierPct != null ? null : usdCapUsd
+  const both = [pctCapUsd, ...(usdInForce != null ? [usdInForce] : [])].filter(v => v != null)
   const minCapUsd = both.length ? Math.min(...both) : null
   // THE FLOOR IS APPLIED LAST, and only to a cap that already exists. Lifting
   // a null (both checks off) to the floor would INVENT a limit where the owner
@@ -210,10 +214,28 @@ export function pacedDailyCap({
   // When the floor lifted the cap, the floor IS what is binding — reporting
   // 'pct' there would name a number the operator can see is not the one in
   // force, which is the class of quiet lie this file already refuses.
+  //
+  // MEASURED IN PRODUCTION, 22-08-2026. This compared against `usdCapUsd`
+  // rather than `usdInForce`, so on a tiered account it named a cap the line
+  // above had deliberately excluded. Account 46130058, balance $33,952:
+  //
+  //   pctCapUsd 1358.09 (4% large tier) · usdCapUsd 150 · tier rule ON
+  //   → capUsd 1358.09 (correct)  but  binding 'usd'  (wrong)
+  //   → "daily_loss_limit_hit pnl=-2281.09 limit=1358.09
+  //      — flat $ cap binds ($150.00, tighter than $1358.09 from %)"
+  //
+  // The line reports one number and then blames a different one. 5,173 vetoes
+  // a day carried it, and reading it cost a real recommendation: the $150 was
+  // read as a shutdown-tight cap on a small balance and put up for raising,
+  // when it was not in force at all and the cap actually holding was $1,358.
+  // `capUsd` was right the whole time; only the explanation lied.
+  //
+  // It also suppressed pacing: `paced` is gated on `binding !== 'usd'`, so a
+  // tiered account with a ramp reported no ramp.
   const binding = capUsd == null ? null
     : floorBinding ? 'floor'
-      : pctCapUsd != null && usdCapUsd != null
-        ? (pctCapUsd === usdCapUsd ? 'both' : (pctCapUsd < usdCapUsd ? 'pct' : 'usd'))
+      : pctCapUsd != null && usdInForce != null
+        ? (pctCapUsd === usdInForce ? 'both' : (pctCapUsd < usdInForce ? 'pct' : 'usd'))
         : (pctCapUsd != null ? 'pct' : 'usd')
 
   const remainingUsd = capUsd == null ? null : Math.max(0, capUsd - spentUsd)
@@ -224,6 +246,10 @@ export function pacedDailyCap({
     binding,
     pctCapUsd,
     usdCapUsd,
+    // The flat cap AS APPLIED: null whenever the tier rule has taken it out of
+    // force. `usdCapUsd` stays as configured so the Risk page can still show
+    // what is set; readers deciding what BINDS must use this one.
+    usdInForce,
     pct,
     // Pacing describes the percentage check, so it is only true when that
     // check is the one actually holding the line. A ramp the flat USD cap sits
@@ -268,9 +294,14 @@ export function describeBinding(p) {
       : `flat $ cap ${usd(p.usdCapUsd)} — % check off`
   }
   if (p.binding === 'pct') {
-    return p.usdCapUsd != null
-      ? `% cap binds (${usd(p.pctCapUsd)}, tighter than the ${usd(p.usdCapUsd)} flat cap)`
-      : `% cap ${usd(p.pctCapUsd)} — flat $ check off`
+    // `usdInForce`, not `usdCapUsd`: on a tiered account the flat cap is set
+    // but not applied, and "tighter than the $150 flat cap" would invite the
+    // operator to go and change a field that is doing nothing.
+    return p.usdInForce != null
+      ? `% cap binds (${usd(p.pctCapUsd)}, tighter than the ${usd(p.usdInForce)} flat cap)`
+      : p.usdCapUsd != null
+        ? `% cap ${usd(p.pctCapUsd)} — the ${usd(p.usdCapUsd)} flat cap is out of force while the balance tier rule is on`
+        : `% cap ${usd(p.pctCapUsd)} — flat $ check off`
   }
   return `both caps agree at ${usd(p.capUsd)}`
 }

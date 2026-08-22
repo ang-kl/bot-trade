@@ -12,6 +12,7 @@
 import { atr } from './fib-strategy.js'
 import { vwapAnchored } from '../lib/indicators.js'
 import { tfMs } from '../lib/timeframes.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 const DAY_MS = 86_400_000, WEEK_MS = 604_800_000, MONTH_MS = 2_592_000_000
 
@@ -31,7 +32,9 @@ const ATR_PERIOD = 14
 const SL_ATR_BUFFER = 0.5
 const MAX_PULLBACK_ATR = 1.5   // a pullback deeper than this isn't a pullback
 const SLOPE_LOOKBACK = 10       // VWAP must be sloping with the trend
-const MIN_RR = 1.5
+// One definition, in strategies.js — see STRATEGY_PREFILTER_RR there for why
+// a local copy of this number is a bug and not a convenience.
+const MIN_RR = STRATEGY_PREFILTER_RR
 
 const round2 = (v) => Math.round(v * 100) / 100
 

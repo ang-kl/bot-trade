@@ -71,7 +71,29 @@ const RULES = [
   },
   { re: /^missing_entry_or_sl/, out: () => 'Signal missing entry or stop' },
   { re: /^sl_at_entry/, out: () => 'Stop equals entry — no risk distance' },
-  { re: /^bad_rr(?:\s+([\d.]+)<([\d.]+))?/, out: (m) => m[1] ? `Reward:risk ${m[1]} below the ${m[2]} floor` : 'Reward:risk below the floor' },
+  // THE TAIL IS THE HALF THAT SAYS WHAT TO CHANGE (22-08-2026). The raw veto
+  // is `bad_rr 1.50<3 (requested 1.6, raised to the 3 expectancy floor)`; this
+  // matched only the prefix and rendered "Reward:risk 1.50 below the 3 floor",
+  // dropping the parenthetical entirely. An operator reading the Order log then
+  // sees a 3 that appears nowhere in their settings, goes to the Risk page,
+  // finds minRR 1.6, and has no way to connect them — the two numbers look
+  // like a contradiction rather than a rule and its override.
+  //
+  // Measured cost: 14,841 vetoes a day carried this line, and reading it is
+  // what produced a confident, wrong statement about which floor the account
+  // was configured at. The full string had the answer in it all along.
+  {
+    re: /^bad_rr(?:\s+([\d.]+)<([\d.]+))?(?:\s+\(requested\s+([\d.]+),\s+raised to the\s+([\d.]+)[^)]*\))?/,
+    out: (m) => {
+      if (!m[1]) return 'Reward:risk below the floor'
+      const head = `Reward:risk ${m[1]} below the ${m[2]} floor`
+      // Only worth saying when the two differ — on an account already set at
+      // or above the hard floor the tail is noise.
+      return m[3] && m[3] !== m[4]
+        ? `${head} — your setting is ${m[3]}, raised to ${m[4]} by the expectancy floor`
+        : head
+    },
+  },
   { re: /^overexposed_(\w+)/, out: (m) => `Currency exposure cap hit (${m[1]})` },
   {
     // Live-computed matrix: correlated_live=N thr=0.7 with=SYM@0.82|SYM2@0.75
