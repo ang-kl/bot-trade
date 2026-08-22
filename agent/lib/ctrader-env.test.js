@@ -18,7 +18,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   ctraderEnv, ctraderEnvReport, CTRADER_ENV_KINDS,
-  ctraderEnvStatus, ENV_SEEDED_STATE_KEYS,
+  ctraderEnvStatus, ENV_SEEDED_STATE_KEYS, ctraderEnvShape,
 } from './ctrader-env.js'
 
 // Spelling tolerance ------------------------------------------------------
@@ -207,4 +207,60 @@ test('the status agrees with the report on names and conflicts', () => {
   assert.equal(st.chosen, rep.chosen)
   assert.deepEqual(st.names, rep.names)
   assert.equal(st.conflict, true)
+})
+
+// Shape — the "Malformed client_id" case ----------------------------------
+
+test('a well-formed application id is not flagged', () => {
+  const shape = ctraderEnvShape('clientId', { CTRADER_CLIENT_ID: '12345_aBcDeF0123' })
+  assert.equal(shape.looksLikeAppId, true)
+  assert.equal(shape.edgeWhitespace, false)
+  assert.equal(shape.quoted, false)
+  assert.equal(shape.controlChars, false)
+  assert.equal(shape.length, 16)
+})
+
+test('a TRAILING NEWLINE is caught — the invisible bad paste', () => {
+  // Survives a copy-paste into a host variable editor and shows up nowhere.
+  const shape = ctraderEnvShape('clientId', { CTRADER_CLIENT_ID: '12345_aBcDeF\n' })
+  assert.equal(shape.edgeWhitespace, true)
+  assert.equal(shape.controlChars, true)
+})
+
+test('a value wrapped in quotes is caught', () => {
+  const shape = ctraderEnvShape('clientId', { CTRADER_CLIENT_ID: '"12345_aBcDeF"' })
+  assert.equal(shape.quoted, true)
+  assert.equal(shape.looksLikeAppId, false)
+})
+
+test('an id:secret pair pasted into one variable is caught', () => {
+  const shape = ctraderEnvShape('clientId', { CTRADER_CLIENT_ID: '12345_aBc:thesecret' })
+  assert.equal(shape.looksLikeAppId, false)
+})
+
+test('looksLikeAppId is null for every slot that is not the client id', () => {
+  // The pattern describes cTrader APPLICATION ids. Applying it to a token or
+  // a secret would report a perfectly good credential as malformed.
+  for (const kind of CTRADER_ENV_KINDS) {
+    if (kind === 'clientId') continue
+    const shape = ctraderEnvShape(kind, {
+      CTRADER_CLIENT_SECRET: 'x', CTRADER_ACCESS_TOKEN: 'x',
+      CTRADER_REFRESH_TOKEN: 'x', CTRADER_ACCOUNT_ID: '1', CTRADER_IS_LIVE: 'true',
+    })
+    assert.equal(shape.looksLikeAppId, null, kind)
+  }
+})
+
+test('an absent slot has no shape at all, rather than a zero-length one', () => {
+  // length 0 would read as "the value is empty", which is a different fact
+  // from "no variable is set" and sends the operator somewhere else.
+  assert.equal(ctraderEnvShape('clientId', {}), null)
+})
+
+test('THE SHAPE NEVER CARRIES THE VALUE — it is served over HTTP', () => {
+  const shape = ctraderEnvShape('clientId', { CTRADER_CLIENT_ID: 'SECRET-APP-IDENTIFIER' })
+  assert.ok(!JSON.stringify(shape).includes('SECRET-APP-IDENTIFIER'))
+  // ...and it did describe something, so the assertion above is not passing
+  // on an empty object.
+  assert.equal(shape.length, 21)
 })

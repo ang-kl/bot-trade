@@ -78,3 +78,40 @@ test('THE RESPONSE BODY CONTAINS NO CREDENTIAL — asserted on the wire', async 
     delete process.env.CTRADER_CLIENT_SECRET
   }
 })
+
+test('the route flags a malformed client id, and still leaks nothing', async () => {
+  // The live case: Spotware answered "Malformed client_id parameter" while
+  // every WebSocket auth returned CH_CLIENT_AUTH_FAILURE. A trailing newline
+  // produces exactly that and is invisible in the host's variable editor.
+  const db = initDB(':memory:')
+  process.env.CTRADER_CLIENT_ID = '12345_aBcDeF\n'
+  const { server, base } = serve(db)
+  try {
+    const raw = await (await fetch(`${base}/state/ctrader-env`)).text()
+    const body = JSON.parse(raw)
+    assert.deepEqual(body.suspectShape, ['clientId'])
+    const slot = body.slots.find(s => s.kind === 'clientId')
+    assert.equal(slot.shape.edgeWhitespace, true)
+    assert.equal(slot.shape.controlChars, true)
+    assert.ok(!raw.includes('aBcDeF'), 'the endpoint leaked the client id')
+  } finally {
+    server.close()
+    delete process.env.CTRADER_CLIENT_ID
+  }
+})
+
+test('a clean config reports an empty suspectShape', async () => {
+  // If this cried wolf on a good value, the real finding would be unreadable.
+  const db = initDB(':memory:')
+  process.env.CTRADER_CLIENT_ID = '12345_aBcDeF0123'
+  process.env.CTRADER_CLIENT_SECRET = 'aBcDeF0123456789'
+  const { server, base } = serve(db)
+  try {
+    const body = await get(base)
+    assert.deepEqual(body.suspectShape, [])
+  } finally {
+    server.close()
+    delete process.env.CTRADER_CLIENT_ID
+    delete process.env.CTRADER_CLIENT_SECRET
+  }
+})
