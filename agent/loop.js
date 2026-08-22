@@ -1605,9 +1605,14 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 
       // Move SL for the runner leg (skip if newSL is null / same as current).
       if (eval_.newSL != null && eval_.newSL !== pos.current_sl) {
+        // THE RUNNER LEG KEEPS ITS TARGET. The MOVE_SL path above re-sends
+        // current_tp; this one did not, and it fires immediately after every
+        // partial — which the TP1-at-1R change (#738) made far more frequent.
+        const runnerTp = Number(pos.current_tp) > 0 ? Number(pos.current_tp) : null
         const amendRes = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
           positionId: ctx.positionId,
           stopLoss: eval_.newSL,
+          takeProfit: runnerTp,
         })
         setState(db, 'api_ctrader_last_ok', new Date().toISOString())
         if (!amendRes.alreadyClosed) {
