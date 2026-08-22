@@ -14,12 +14,15 @@
 import { atr } from './fib-strategy.js'
 import { volumeProfile } from '../lib/indicators.js'
 import { volumeStructure, inLowVolumeNode } from '../lib/volume-structure.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 const MIN_BARS = 40
 const ATR_PERIOD = 14
 const EDGE_TOLERANCE_ATR = 0.5  // "at" the edge = within this many ATR
 const SL_ATR_BUFFER = 0.5
-const MIN_RR = 1.5
+// One definition, in strategies.js — see STRATEGY_PREFILTER_RR there for why
+// a local copy of this number is a bug and not a convenience.
+const MIN_RR = STRATEGY_PREFILTER_RR
 
 const round2 = (v) => Math.round(v * 100) / 100
 

@@ -14,6 +14,7 @@
 import { computeFibSignal } from './fib-strategy.js'
 import { computeCupHandleSignal, computeInvCupHandleSignal } from './cup-handle.js'
 import { computeFvgSignal } from './fvg-strategy.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 // The three newer strategy modules are loaded defensively: if a module is
 // missing or broken the registry still builds, with a compute that simply
@@ -106,6 +107,29 @@ export function windowFor(fn, floor = 150) {
 }
 
 export const STRATEGY_KEYS = STRATEGY_REGISTRY.map(s => s.key)
+
+// THE SHARED PRE-FILTER, AND IT IS NOT THE GATE (22-08-2026).
+//
+// Nine files each carried `const MIN_RR = 1.5`, one of them commented "shared
+// floor across all strategies" — while being a private copy. Nothing was
+// shared: the real gate moved to risk.js's HARD_MIN_RR = 3.0 and these nine
+// stayed where they were. Every strategy therefore self-approved a 2R setup
+// against an abandoned number and handed it to a gate that refused it, 14,841
+// times a day.
+//
+// This export changes NOTHING about what trades — the value is the same 1.5,
+// and the binding decision was always risk.js's. What it changes is that the
+// number now has ONE definition, so the next time the real floor moves the
+// divergence is a one-line edit rather than nine files quietly disagreeing.
+// `strategy-prefilter-rr.test.js` fails if a copy reappears.
+//
+// It is deliberately not named MIN_RR: it is a cheap local pre-filter that
+// drops obviously unpayable setups before the expensive path, and calling it a
+// minimum invited exactly the reading that a strategy passing it would trade.
+// Re-exported so `strategies.js` remains the place you look for it; the value
+// itself lives in lib/strategy-prefilter-rr.js to keep this module out of an
+// import cycle with the strategies it registers.
+export { STRATEGY_PREFILTER_RR }
 
 // Per-strategy R:R floor overrides. Most strategies inherit the global risk
 // floor (1.5). A HIGH-WIN-RATE mean-reversion strategy deliberately runs a

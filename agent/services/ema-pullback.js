@@ -48,6 +48,7 @@
 // ---------------------------------------------------------------------------
 
 import { atr, rsi } from './fib-strategy.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 const MIN_BARS = 450          // see the EMA200 seed-decay note above
 const ATR_PERIOD = 14
@@ -55,7 +56,9 @@ const MAX_PULLBACK_ATR = 2    // pullback deeper than 2*ATR = broken leg
 const SL_ATR_BUFFER = 0.25    // stop sits a quarter-ATR beyond structure
 const MIN_SL_ATR = 0.8        // floor: a sub-noise stop is widened to here
 const MAX_SL_ATR = 3.0        // ceiling: wider than this -> no trade
-const MIN_RR = 1.5            // shared floor across all strategies
+// One definition, in strategies.js — see STRATEGY_PREFILTER_RR there for why
+// a local copy of this number is a bug and not a convenience.
+const MIN_RR = STRATEGY_PREFILTER_RR
 const TREND_EMA_PERIOD = 200  // regime filter; EMA20 > EMA50 > EMA200 = stacked
 const SLOPE_LOOKBACK = 5
 const SWING_LOOKBACK = 10     // bars of swing extreme used by pendingSetup
