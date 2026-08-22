@@ -138,7 +138,7 @@ export function toText({ health, controllers, deploy, loop, atr }) {
     `loop: ${loop.state} — ${loop.text}`,
     `uptime ${health?.uptime != null ? dur(health.uptime) : '—'} · last cycle ${health?.lastLoopMs ? `${Math.round(health.lastLoopMs / 1000)}s` : '—'}`,
     `controllers: ${ctl.total} total — ${Object.entries(ctl.counts).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`,
-    ...ctl.bad.map(c => `    ${c.status}: ${c.label || c.name} · last run ${c.age_sec != null ? dur(c.age_sec) : '—'} ago, expected every ${dur(c.expected_sec)}${c.last_error ? ` · ${c.last_error}` : ''}`),
+    ...ctl.bad.map(c => `    ${c.status}: ${c.label || c.name} · last run ${c.age_sec != null ? dur(c.age_sec) : '—'} ago, expected every ${dur(c.expected_sec)}${c.last_error ? (c.error_is_current === false ? ` · last error (resolved): ${c.last_error}` : ` · ${c.last_error}`) : ''}`),
     atr ? `atr refresh: ${JSON.stringify(atr)}` : 'atr refresh: no record',
     health?.errorsToday ? `errors today: ${health.errorsToday}` : 'errors today: 0',
     health?.lastError ? `last error: ${health.lastError}` : '',

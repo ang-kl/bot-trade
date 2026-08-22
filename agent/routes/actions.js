@@ -3607,7 +3607,21 @@ export default function actionsRouter(db, deps = {}) {
         console.log('[actions] ctrader refresh token stored — automatic renewal is now possible')
       }
       console.log(`[actions] ctrader token stored — ${accounts.length} account(s) available`)
-      res.json({ ok: true, accounts, refreshStored: !!refreshToken })
+      // A COUNT IS THE WRONG SHAPE OF ANSWER. `2 account(s) available` reads
+      // fine unless you remember the previous link said 7. Say which enabled
+      // accounts this token cannot operate, by name, or say nothing.
+      let coverage = null
+      try {
+        const { tokenCoverage, describeCoverage } = await import('../lib/token-coverage.js')
+        const enabled = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1').all()
+        coverage = tokenCoverage(accounts, enabled)
+        const warning = describeCoverage(coverage)
+        if (warning) console.warn(`[actions] ctrader token coverage — ${warning}`)
+      } catch (err) {
+        // Reporting must never cost the caller a token that stored fine.
+        console.log(`[actions] ctrader token coverage check unavailable: ${err.message}`)
+      }
+      res.json({ ok: true, accounts, refreshStored: !!refreshToken, coverage })
     } catch (err) {
       console.error('[actions/ctrader-token] error:', err.message)
       res.status(502).json({ error: err.message })
