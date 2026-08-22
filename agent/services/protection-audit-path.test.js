@@ -349,3 +349,69 @@ test('the genuine-failure stamp PRESERVES the last successful reading', async ()
   assert.equal(after.lastAttemptOk, false)
   assert.equal(after.lastAttemptAt, new Date(T0 + 50_000).toISOString())
 })
+
+test('the sweep RESTORES a lost target, not just reports it', async () => {
+  // services/target-restore.js is pure and every one of its own tests would
+  // stay green if the sweep never called it — failure mode #4, the shape that
+  // left reconcileTradePricesToBroker reachable only from a route nobody runs.
+  // This exercises the real sweep and asserts the amend actually went out.
+  const t = db.prepare(
+    "INSERT INTO trades (symbol,side,status,account_id,ctrader_position_id) VALUES ('EURUSD','long','open',?,'777')"
+  ).run(A)
+  db.prepare(
+    "INSERT INTO monitored_positions (trade_id,symbol,status,account_id,current_sl,current_tp,side,entry_price,source) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).run(t.lastInsertRowid, 'EURUSD', 'active', A, 1.09, 1.15, 'long', 1.10, 'bot')
+
+  const amends = []
+  const exec = {
+    // A stop, no target — exactly what the four amend paths used to leave.
+    reconcile: async () => ({ position: [{ positionId: '777', stopLoss: 1.09, takeProfit: null }] }),
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, {
+    exec,
+    restoreOpts: { amend: async (_c, args) => { amends.push(args); return { executionType: 'OK' } } },
+  })
+  assert.equal(out.targetless, 1, 'the fault is still reported')
+  assert.equal(out.targetsRestored, 1, 'and it was actually repaired')
+  assert.equal(amends.length, 1)
+  assert.equal(amends[0].takeProfit, 1.15)
+  assert.equal(amends[0].stopLoss, 1.09, 'the stop must be re-sent or the repair creates a naked position')
+})
+
+test('a targetless position with NO recorded target is reported and left alone', async () => {
+  // The suggester owns that case under its own rules. This must not guess.
+  const t = db.prepare(
+    "INSERT INTO trades (symbol,side,status,account_id,ctrader_position_id) VALUES ('GBPUSD','long','open',?,'888')"
+  ).run(A)
+  db.prepare(
+    "INSERT INTO monitored_positions (trade_id,symbol,status,account_id,current_sl,current_tp,side,entry_price,source) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).run(t.lastInsertRowid, 'GBPUSD', 'active', A, 1.29, null, 'long', 1.30, 'external')
+
+  const amends = []
+  const exec = { reconcile: async () => ({ position: [{ positionId: '888', stopLoss: 1.29, takeProfit: null }] }) }
+  const out = await runProtectionAuditAllAccounts(db, creds, {
+    exec,
+    restoreOpts: { amend: async (_c, args) => { amends.push(args); return { executionType: 'OK' } } },
+  })
+  assert.equal(out.targetless, 1)
+  assert.equal(out.targetsRestored, 0)
+  assert.equal(amends.length, 0, 'nothing on record means nothing sent')
+})
+
+test('a failing restore does NOT take down the audit that found the fault', async () => {
+  const t = db.prepare(
+    "INSERT INTO trades (symbol,side,status,account_id,ctrader_position_id) VALUES ('EURUSD','long','open',?,'999')"
+  ).run(A)
+  db.prepare(
+    "INSERT INTO monitored_positions (trade_id,symbol,status,account_id,current_sl,current_tp,side,entry_price,source) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).run(t.lastInsertRowid, 'EURUSD', 'active', A, 1.09, 1.15, 'long', 1.10, 'bot')
+
+  const exec = { reconcile: async () => ({ position: [{ positionId: '999', stopLoss: 1.09, takeProfit: null }] }) }
+  const out = await runProtectionAuditAllAccounts(db, creds, {
+    exec,
+    restoreOpts: { amend: async () => { throw new Error('broker said no') } },
+  })
+  assert.equal(out.targetless, 1, 'the audit still reported')
+  assert.equal(out.targetsRestored, 0)
+  assert.match(out.errors.join(' '), /target restore/)
+})
