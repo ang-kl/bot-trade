@@ -595,7 +595,7 @@ const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
  *            errors:string[], unauditable:string[]}}
  */
 export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, errors: [], unauditable: [], blind: false }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, targetsRestored: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -626,7 +626,13 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
   let reachedObliged = 0
 
   const stmt = db.prepare(
-    `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.account_id, mp.source,
+    // current_tp / side / entry_price are read by services/target-restore.js:
+    // the recorded target it may put back, and the two fields that prove the
+    // target is the right side of the entry. Without them the restore plan
+    // skips every position for want of data it was never given — a repair
+    // out of reach of what it repairs.
+    `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.current_tp, mp.side,
+            mp.entry_price, mp.account_id, mp.source,
             t.ctrader_position_id
        FROM monitored_positions mp
        LEFT JOIN trades t ON t.id = mp.trade_id
@@ -662,6 +668,28 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       out.naked += prot.naked.length
       out.targetless += prot.targetless.length
       out.phantom += prot.phantom.length
+
+      // PUT BACK WHAT WAS LOST. #748 stopped targets being deleted; positions
+      // stripped before it deployed stay stripped until something acts. The
+      // audit is where the fact is already known, so it is where the repair
+      // belongs — reporting it forever while holding the position id, the
+      // broker's stop and the recorded target would be the shape this repo
+      // keeps paying for.
+      try {
+        const { restoreMissingTargets } = deps.targetRestore ?? await import('./target-restore.js')
+        const rowsById = new Map(openRows.map(r => [String(r.ctrader_position_id), r]))
+        const fix = await restoreMissingTargets(db, creds, prot.targetless, rowsById, {
+          ...(deps.restoreOpts || {}),
+          notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
+        })
+        out.targetsRestored += fix.restored
+        for (const e of fix.errors) out.errors.push(`${id}: target restore — ${e}`)
+        if (fix.restored) console.log(`[protection] ${id}: restored ${fix.restored} take profit(s) from the book`)
+        for (const sk of fix.skipped) console.log(`[protection] ${id}: target NOT restored — ${sk}`)
+      } catch (err) {
+        // A failed repair must never take down the audit that found the fault.
+        out.errors.push(`${id}: target restore failed — ${err?.message || err}`)
+      }
     } catch (err) {
       const msg = String(err?.message || err)
       // UNAUDITABLE IS NOT UNPROTECTED, and the difference decides whether
