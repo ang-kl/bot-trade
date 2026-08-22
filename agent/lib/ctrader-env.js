@@ -95,3 +95,59 @@ export function ctraderEnvReport(env = process.env) {
     }
   })
 }
+
+// ---------------------------------------------------------------------------
+// WHY THERE IS A STATUS FUNCTION AS WELL AS A REPORT (2026-08-22).
+//
+// The report above is written to the BOOT LOG, and a boot log is only a
+// diagnostic for whoever can read it. Measured the same day: the Railway
+// connector dropped, #743 deployed and ran, and the lines it prints —
+// the ones that answer "which variable is actual" and "is the env value
+// being ignored" — were unreadable from here. A diagnostic out of reach of
+// the person asking the question is failure mode #3 wearing a different hat.
+//
+// So the same facts are computed once, here, and served over HTTP as well.
+// Still names only: `stored`/`envIgnored` are booleans derived from values
+// that never leave this function.
+// ---------------------------------------------------------------------------
+
+/**
+ * The three slots env only ever SEEDS: once agent_state holds a value, the
+ * stored copy wins and the env var is inert. Kept beside the resolver so the
+ * two cannot drift — index.js seeds exactly these keys.
+ */
+export const ENV_SEEDED_STATE_KEYS = Object.freeze({
+  accessToken: 'ctrader_access_token',
+  refreshToken: 'ctrader_refresh_token',
+  accountId: 'ctrader_account_id',
+})
+
+/**
+ * Per-slot resolution status, including whether the env value is being
+ * ignored in favour of a stored one.
+ *
+ * @param {object} opts
+ * @param {object} [opts.env] process.env by default
+ * @param {(key:string)=>string|undefined|null} [opts.stored] agent_state reader
+ * @returns {Array<{kind:string, chosen:string|null, names:string[],
+ *   conflict:boolean, stateKey:string|null, stored:boolean|null,
+ *   envIgnored:boolean}>}
+ */
+export function ctraderEnvStatus({ env = process.env, stored = () => undefined } = {}) {
+  return ctraderEnvReport(env).map(r => {
+    const stateKey = ENV_SEEDED_STATE_KEYS[r.kind] ?? null
+    if (!stateKey) return { ...r, stateKey: null, stored: null, envIgnored: false }
+    const storedValue = stored(stateKey)
+    const has = Boolean(storedValue)
+    const envValue = ctraderEnv(r.kind, env)
+    // IGNORED means specifically: env holds something, the database holds
+    // something ELSE, and the database copy is the one in use. Env holding
+    // the same value is not being ignored — it is simply redundant.
+    return {
+      ...r,
+      stateKey,
+      stored: has,
+      envIgnored: Boolean(envValue) && has && String(storedValue) !== String(envValue),
+    }
+  })
+}
