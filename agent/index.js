@@ -181,8 +181,6 @@ try {
 // after deploy — no UI push required. Any capitalization/underscore spelling
 // of the variable names is accepted (see lib/ctrader-env.js).
 const { ctraderEnv, ctraderEnvReport } = await import('./lib/ctrader-env.js')
-const { adoptionEnabled, adoptionVerdict, fingerprint, adoptedKeyFor } =
-  await import('./lib/ctrader-env-adopt.js')
 
 // WHICH VARIABLE FILLED WHICH SLOT — names only, never values.
 //
@@ -226,44 +224,21 @@ const envIsLive = ctraderEnv('isLive') ?? CTRADER_IS_LIVE
 // using the old copy. Measured 2026-08-22 — the refresh failed with "Access
 // denied" across a re-link and a redeploy while the env var held a fresh
 // token nothing read. So say it.
-// AND SINCE 2026-08-22, THERE IS A WAY TO ACT ON IT. Saying "your edit was
-// ignored" is only half a diagnostic if the operator has no reachable way to
-// make it stop being ignored — hand-editing the database is not one from a
-// browser. CTRADER_ADOPT_ENV_TOKENS=true makes boot adopt a NEW env value
-// over the stored one, ONCE per distinct value. See lib/ctrader-env-adopt.js
-// for why it is keyed to the value rather than to the flag: a flag that
-// re-adopts on every restart would reinstate a spent token for ever.
-const adoptEnv = adoptionEnabled()
 const seedOrExplain = (envValue, stateKey, label, onSeed) => {
+  if (!envValue) return
   const stored = getState(db, stateKey)
-  const verdict = adoptionVerdict({
-    envValue, stored, adoptedFp: getState(db, adoptedKeyFor(stateKey)),
-    enabled: adoptEnv, stateKey,
-  })
-  if (verdict.action === 'none') return
-  if (verdict.action === 'seed') {
+  if (!stored) {
     onSeed()
     console.log(`[boot] cTrader ${label} seeded from env`)
     return
   }
-  if (verdict.action === 'adopt') {
-    onSeed()
-    // Recorded BEFORE anything can rotate it, so a crash between the two
-    // leaves the flag able to re-adopt rather than silently skipping.
-    setState(db, adoptedKeyFor(stateKey), fingerprint(stateKey, envValue))
+  if (stored !== envValue) {
     console.log(
-      `[boot] cTrader ${label}: ADOPTED from env, replacing the database copy ` +
-      `(CTRADER_ADOPT_ENV_TOKENS is on). This value will not be adopted again — ` +
-      `set a new one on the host if you need to replace it once more.`
+      `[boot] cTrader ${label}: env value IGNORED — the database copy is in use ` +
+      `(agent_state.${stateKey}). Env only seeds an empty database; the stored ` +
+      `token rotates on every refresh. To adopt the env value, clear ${stateKey}.`
     )
-    return
   }
-  console.log(
-    `[boot] cTrader ${label}: env value IGNORED — the database copy is in use ` +
-    `(agent_state.${stateKey}). ${verdict.reason}. Env only seeds an empty ` +
-    `database; the stored token rotates on every refresh. To adopt the env ` +
-    `value, set CTRADER_ADOPT_ENV_TOKENS=true and redeploy.`
-  )
 }
 
 seedOrExplain(envAccessToken, 'ctrader_access_token', 'access token',
