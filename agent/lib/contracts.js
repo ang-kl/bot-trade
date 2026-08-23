@@ -319,9 +319,16 @@ export function usdRate(currency, rates) {
  * USD majors (GBP via GBPUSD, JPY via USDJPY …). Returns NaN only when no
  * conversion path exists, so the risk manager vetoes instead of mis-sizing.
  */
-export function usdLossPerLot(symbol, priceDistance, price, rates = null) {
+export function usdLossPerLot(symbol, priceDistance, price, rates = null, perLot = null) {
   const quote = fxQuoteCurrency(symbol)
-  const lossInQuote = Math.abs(priceDistance) * contractSize(symbol)
+  // `perLot` lets a caller holding BROKER truth outrank this file's table.
+  // Proven necessary 23-08-2026 with real fills: DOGEUSD closed at its stop
+  // for -$0.03 on 0.01 lots — exactly move × 1000 (the broker's lot) × 0.01,
+  // while this table says 1. A DOGEUSD entry sized off the table would risk
+  // 1000× its budget, and the notional guard below reads the same table so
+  // it could not object. Callers without broker knowledge change nothing.
+  const per = Number.isFinite(Number(perLot)) && Number(perLot) > 0 ? Number(perLot) : contractSize(symbol)
+  const lossInQuote = Math.abs(priceDistance) * per
   if (quote == null || quote === 'USD') return lossInQuote
   const base = symbol.toUpperCase().slice(0, 3)
   if (base === 'USD' && Number.isFinite(price) && price > 0) {
@@ -343,22 +350,23 @@ export function usdLossPerLot(symbol, priceDistance, price, rates = null) {
  * Crosses (no USD leg) fall back to quote-currency notional, which is only
  * an approximation for the margin headroom check.
  */
-export function notionalUsd(symbol, volumeLots, price, rates = null) {
+export function notionalUsd(symbol, volumeLots, price, rates = null, perLot = null) {
   const quote = fxQuoteCurrency(symbol)
+  const csize = Number.isFinite(Number(perLot)) && Number(perLot) > 0 ? Number(perLot) : null
   if (quote != null && quote !== 'USD') {
     const base = symbol.toUpperCase().slice(0, 3)
     // 1 lot of USDXXX = contractSize USD of notional, no price term needed.
-    if (base === 'USD') return Math.abs(volumeLots) * contractSize(symbol)
+    if (base === 'USD') return Math.abs(volumeLots) * (csize ?? contractSize(symbol))
     // Cross: the price term yields QUOTE-currency notional (GBPJPY → JPY);
     // convert to USD via the live rates or the margin gate overstates a
     // JPY-quoted position ~150× and falsely vetoes on margin.
     const rate = usdRate(quote, rates)
     if (Number.isFinite(rate)) {
-      return Math.abs(volumeLots) * contractSize(symbol) * Math.abs(price) * rate
+      return Math.abs(volumeLots) * (csize ?? contractSize(symbol)) * Math.abs(price) * rate
     }
     // No rate — fall through to the quote-notional approximation (legacy).
   }
-  return Math.abs(volumeLots) * contractSize(symbol) * Math.abs(price)
+  return Math.abs(volumeLots) * (csize ?? contractSize(symbol)) * Math.abs(price)
 }
 
 // ---------------------------------------------------------------------------

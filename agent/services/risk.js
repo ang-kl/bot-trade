@@ -36,6 +36,7 @@ import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 import { accountEconomics } from './config-controller.js'
+import { unitsPerLot as unitsPerLotFromRegistry } from '../lib/lot-size-registry.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
 import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
 
@@ -562,8 +563,8 @@ export function getAccountLeverage(db, config, accountId = null) {
  * Compute margin required for a proposed position (in the account's deposit
  * currency, approximated as USD). Returns { notional, marginRequired }.
  */
-export function requiredMargin(symbol, volumeLots, price, leverage, rates = null) {
-  const notional = notionalUsd(symbol, volumeLots, price, rates)
+export function requiredMargin(symbol, volumeLots, price, leverage, rates = null, perLot = null) {
+  const notional = notionalUsd(symbol, volumeLots, price, rates, perLot)
   const marginRequired = notional / Math.max(1, leverage)
   return { notional, marginRequired }
 }
@@ -674,9 +675,9 @@ export function netExposure(positions, proposal) {
  * Returns { volume, usdRisk, note }. `volume` is rounded down to 2dp; callers
  * should veto if it falls below the minimum lot size.
  */
-export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct, entryPrice, rates = null) {
+export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct, entryPrice, rates = null, perLot = null) {
   const budget = balance * riskPct
-  const usdPerLot = usdLossPerLot(symbol, slDistance, entryPrice, rates)
+  const usdPerLot = usdLossPerLot(symbol, slDistance, entryPrice, rates, perLot)
   if (!Number.isFinite(usdPerLot) || usdPerLot <= 0) {
     return { volume: 0, usdRisk: 0, note: 'usd_per_lot_unknown' }
   }
@@ -1444,6 +1445,19 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     return veto('missing_entry_or_sl', checks, proposal)
   }
   const slDistance = Math.abs(entry - sl)
+  // BROKER TRUTH FOR "ONE LOT", when the order path has recorded it.
+  // contracts.js's table is the fallback and is measurably wrong on 9
+  // symbols (100× ADAUSD/XRPUSD, 1000× DOGEUSD — confirmed against real
+  // fills 23-08-2026). The order is SENT in the broker's convention, so
+  // sizing and the notional/margin guards must price in that convention
+  // too, or a crypto entry risks orders of magnitude past its budget with
+  // every guard reading the same wrong table and unable to object.
+  let brokerPerLot = null
+  try {
+    const reg = unitsPerLotFromRegistry(db, proposal.symbol)
+    if (reg.source === 'broker') brokerPerLot = reg.unitsPerLot
+    checks.units_per_lot = { value: reg.unitsPerLot, source: reg.source }
+  } catch { /* table pricing stands */ }
   checks.sl_distance = slDistance
   if (slDistance === 0) {
     return veto('sl_at_entry', checks, proposal)
@@ -1557,7 +1571,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     const ddFactor = drawdownDeriskFactor(db, balance, config)
     const budget = riskBudgetUsd(balance, config, ddFactor)
     const effRiskPct = budget / balance
-    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, effRiskPct, entry, scanRates(db))
+    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, effRiskPct, entry, scanRates(db), brokerPerLot)
     checks.risk_budget = Number(budget.toFixed(2))
     checks.risk_pct_effective = Number(effRiskPct.toFixed(4))
     if (ddFactor < 1) checks.derisked = { factor: ddFactor, window_h: config.deriskWindowHours }
@@ -1621,7 +1635,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   if (balance != null) {
     const rates = scanRates(db)
     let { notional, marginRequired } = requiredMargin(
-      proposal.symbol, volume, entry, leverage, rates,
+      proposal.symbol, volume, entry, leverage, rates, brokerPerLot,
     )
     // Margin already committed — broker truth when the snapshot is fresh,
     // the per-row estimate otherwise (see portfolioMarginStatus).
@@ -1658,7 +1672,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       }
       const before = volume
       volume = shrunk
-      ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates))
+      ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates, brokerPerLot))
       checks.margin_shrink = { from: before, to: volume, reason: 'margin_headroom' }
       sizingNote = sizingNote ? `${sizingNote} · shrunk_for_margin=${before}->${volume}` : `shrunk_for_margin=${before}->${volume}`
     }
