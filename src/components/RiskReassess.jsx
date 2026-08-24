@@ -191,8 +191,12 @@ export default function RiskReassess({ onChanged, onApplied }) {
 
     return (
 
-      <Card title="Re-Risk (AI)">
-
+      {/* Same anchor as the live branch: nav-tree.js registers sec-rerisk and
+          the section FAB must land somewhere whether the AI layer is on or
+          off. Card has no `title` prop — an earlier draft passed one and it
+          fell through to a hover tooltip, leaving an unlabelled panel. */}
+      <Card id="sec-rerisk" copyTitle="Re-Risk (AI)" className="space-y-2">
+        <h3 className="font-semibold text-(length:--fs-body)">Re-Risk (AI)</h3>
         <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">{llmOffNote(llmOff)}</p>
 
       </Card>

@@ -62,3 +62,31 @@ describe('LlmSwitch first render (react-dom/server — no effects)', () => {
     expect(html).not.toMatch(/— off/)
   })
 })
+
+describe('the consumers read the endpoint that carries the flag', () => {
+  // The review on #755 caught both new consumers fetching the public /health,
+  // which has no llmDisabled field — so their gates read false on every
+  // possible response and the collapse branches were unreachable, while this
+  // file's invariants stayed green (CLAUDE.md #3/#4: the guard's trigger was
+  // out of reach of what it guarded). Effects do not run under
+  // react-dom/server, so the wiring is pinned at the source, comments
+  // stripped (#2 — this very comment names both paths).
+  it('RiskReassess and ScreenerChat fetch /state/health, never the bare /health', async () => {
+    const { readFileSync } = await import('node:fs')
+    for (const f of ['../components/RiskReassess.jsx', '../components/ScreenerChat.jsx']) {
+      const code = readFileSync(new URL(f, import.meta.url), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+        .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, '')
+      expect(code).toContain("agentGet('/state/health')")
+      expect(code).not.toMatch(/agentGet\('\/health'\)/)
+    }
+  })
+
+  it('the off-branch keeps the sec-rerisk anchor the nav FAB scrolls to', async () => {
+    const { readFileSync } = await import('node:fs')
+    const code = readFileSync(new URL('../components/RiskReassess.jsx', import.meta.url), 'utf8')
+    const offBranch = code.slice(code.indexOf('llmOff?.disabled'), code.indexOf('llmOff?.disabled') + 900)
+    expect(offBranch).toContain('id="sec-rerisk"')
+  })
+})
