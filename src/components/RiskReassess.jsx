@@ -23,6 +23,7 @@ import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { proposalStatus } from '../lib/risk-proposal-status.js'
+import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 import Collapse from './common/Collapse.jsx'
 
 const PROVIDERS = [
@@ -71,6 +72,9 @@ function show(key, v, proposable) {
 }
 
 export default function RiskReassess({ onChanged, onApplied }) {
+  // Off is a stated position: with the AI layer disabled every button in this
+  // card ends in a refusal, so the card says so once instead (llm-ui.js).
+  const [llmOff, setLlmOff] = useState(null)
   const [data, setData] = useState(null)      // { last, providers, proposable }
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -85,6 +89,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
 
   const load = useCallback(() => {
     if (!agentConfigured()) return
+    agentGet('/health').then(h => setLlmOff(llmUiState(h))).catch(() => { /* absent evidence renders the card */ })
     agentGet('/state/risk-reassess')
       .then(d => setData(d))
       .catch(e => setError(e.message))
@@ -181,6 +186,21 @@ export default function RiskReassess({ onChanged, onApplied }) {
     if (n.has(key)) n.delete(key); else n.add(key)
     return n
   })
+
+  if (llmOff?.disabled) {
+
+    return (
+
+      <Card title="Re-Risk (AI)">
+
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">{llmOffNote(llmOff)}</p>
+
+      </Card>
+
+    )
+
+  }
+
 
   return (
     <Card id="sec-rerisk" className="space-y-2">

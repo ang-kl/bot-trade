@@ -21,6 +21,8 @@ import AccountEngineering from '../components/AccountEngineering.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
+import LlmSwitch from '../components/LlmSwitch.jsx'
+import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
@@ -1124,11 +1126,19 @@ export default function Desk() {
       <Section
         id="llmspend"
         title="LLM spend"
-        summary={llmSpend ? `today $${(llmSpend.today?.cost_usd ?? 0).toFixed(2)} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null}
+        summary={llmUiState(health).disabled ? 'AI off — no calls attempted' : (llmSpend ? `today $${(llmSpend.today?.cost_usd ?? 0).toFixed(2)} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null)}
         defaultOpen={false}
       >
-        {!llmSpend && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
-        {llmSpend && (
+        {/* The switch itself always renders — it is the way back on. The
+            spend tables collapse behind it when the layer is off (owner,
+            24-08-2026): a spend dashboard for calls that are never attempted
+            is a card describing a world that is not running. */}
+        <div className="mb-2"><LlmSwitch health={health} onChanged={load} /></div>
+        {llmUiState(health).disabled && (
+          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">{llmOffNote(llmUiState(health))}</p>
+        )}
+        {!llmUiState(health).disabled && !llmSpend && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
+        {!llmUiState(health).disabled && llmSpend && (
           <>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-(length:--fs-body) tabular-nums mb-2">
               <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
