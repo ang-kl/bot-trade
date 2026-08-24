@@ -22,7 +22,7 @@ export default function ScreenerChat({ open, onClose, onApply }) {
   const [llmOff, setLlmOff] = useState(null)
   useEffect(() => {
     if (!open) return
-    agentGet('/health').then(h => setLlmOff(llmUiState(h))).catch(() => { /* absent evidence renders the chat */ })
+    agentGet('/state/health').then(h => setLlmOff(llmUiState(h))).catch(() => { /* absent evidence renders the chat */ })
   }, [open])
   const [turns, setTurns] = useState([]) // [{role, content}]
   const [draft, setDraft] = useState('')

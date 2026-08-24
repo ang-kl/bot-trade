@@ -89,7 +89,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
 
   const load = useCallback(() => {
     if (!agentConfigured()) return
-    agentGet('/health').then(h => setLlmOff(llmUiState(h))).catch(() => { /* absent evidence renders the card */ })
+    agentGet('/state/health').then(h => setLlmOff(llmUiState(h))).catch(() => { /* absent evidence renders the card */ })
     agentGet('/state/risk-reassess')
       .then(d => setData(d))
       .catch(e => setError(e.message))
