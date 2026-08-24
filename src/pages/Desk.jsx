@@ -1132,8 +1132,11 @@ export default function Desk() {
           // off must not erase it. "AI off — no calls attempted" on a day
           // that cost $12 before noon asserts a false zero; both facts stay.
           const off = llmUiState(health).disabled
-          const spent = llmSpend ? `today $${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}` : null
-          if (off) return spent ? `AI off — ${spent} before it was off` : 'AI off'
+          const todayUsd = llmSpend?.today?.cost_usd ?? 0
+          const spent = llmSpend ? `today $${todayUsd.toFixed(2)}` : null
+          // "$0.00 before it was off" asserts an ordering that never happened
+          // on a no-spend day — the qualifier is only true when money moved.
+          if (off) return spent && todayUsd > 0 ? `AI off — ${spent} before it was off` : 'AI off'
           return llmSpend ? `${spent} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null
         })()}
         defaultOpen={false}
