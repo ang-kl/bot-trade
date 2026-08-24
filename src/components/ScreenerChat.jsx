@@ -12,9 +12,18 @@
 // dropped — says so plainly instead of hiding it.
 import { useState, useRef, useEffect } from 'react'
 import Button from './common/Button.jsx'
-import { agentPost } from '../lib/agent-api.js'
+import { agentGet, agentPost } from '../lib/agent-api.js'
+import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 
 export default function ScreenerChat({ open, onClose, onApply }) {
+  // The search behind this modal is an LLM call; with the layer off it can
+  // only refuse. Checked when the modal opens, not on mount — the flag can
+  // change while Tune stays open.
+  const [llmOff, setLlmOff] = useState(null)
+  useEffect(() => {
+    if (!open) return
+    agentGet('/state/health').then(h => setLlmOff(llmUiState(h))).catch(() => { /* absent evidence renders the chat */ })
+  }, [open])
   const [turns, setTurns] = useState([]) // [{role, content}]
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -70,7 +79,10 @@ export default function ScreenerChat({ open, onClose, onApply }) {
           <button type="button" className="text-[var(--color-text-sub)] cursor-pointer" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-2 text-(length:--fs-body)">
-          {turns.length === 0 && (
+          {llmOff?.disabled && (
+            <p className="text-[var(--color-text-sub)]">{llmOffNote(llmOff)}</p>
+          )}
+          {!llmOff?.disabled && turns.length === 0 && (
             <p className="text-[var(--color-text-sub)]">
               Try "AI stocks", "network layer stocks", "P/E &gt; 30", or a company name. Only
               symbols your broker actually offers can come back — anything else gets flagged, not
@@ -95,9 +107,9 @@ export default function ScreenerChat({ open, onClose, onApply }) {
             onKeyDown={e => { if (e.key === 'Enter') send() }}
             placeholder="e.g. semiconductor stocks"
             className="glass-inset rounded-[7px] px-2 py-1.5 text-(length:--fs-body) min-h-[32px] flex-1"
-            disabled={busy}
+            disabled={busy || llmOff?.disabled === true}
           />
-          <Button size="sm" onClick={send} disabled={busy || !draft.trim()}>Send</Button>
+          <Button size="sm" onClick={send} disabled={busy || !draft.trim() || llmOff?.disabled === true}>Send</Button>
           {lastSymbols?.length > 0 && (
             <Button size="sm" variant="subtle" onClick={() => onApply?.(lastSymbols)}>
               Use these {lastSymbols.length}

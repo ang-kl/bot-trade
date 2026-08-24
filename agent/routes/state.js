@@ -271,7 +271,20 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/llm-monitor-health', async (_req, res) => {
     const { getLlmMonitorHealth } = await import('../services/llm-monitor-health.js')
-    res.json(getLlmMonitorHealth(db))
+    const health = getLlmMonitorHealth(db)
+    // WITH THE LAYER OFF, DEGRADED IS FROZEN HISTORY, NOT A STATE (#755
+    // review). llmBlocked returns before recordLlmMonitorResult ever runs,
+    // and ok:true is the only thing that resets failStreak — so a streak
+    // that was >= 3 at the moment the switch flipped stays >= 3 forever,
+    // and the nav badge says "unavailable" about a decision the owner made
+    // on purpose, with no path in the UI to clear it. That is llm-switch.js's
+    // own opening argument (#694) reproduced by the feature built to prevent
+    // it. Read here rather than reset on the route: this way the env brake,
+    // which never passes through POST /llm-switch, gets the same treatment.
+    if (llmDisabledFlag(db, getState)) {
+      return res.json({ ...health, degraded: false, off: true, offBy: llmDisabledWhy(db, getState) })
+    }
+    res.json(health)
   })
 
   // -----------------------------------------------------------------------

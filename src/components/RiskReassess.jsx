@@ -23,6 +23,7 @@ import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { proposalStatus } from '../lib/risk-proposal-status.js'
+import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 import Collapse from './common/Collapse.jsx'
 
 const PROVIDERS = [
@@ -70,7 +71,14 @@ function show(key, v, proposable) {
   return String(v)
 }
 
-export default function RiskReassess({ onChanged, onApplied }) {
+export default function RiskReassess({ onChanged, onApplied, initialLlmOff = null }) {
+  // Off is a stated position: with the AI layer disabled every button in this
+  // card ends in a refusal, so the card says so once instead (llm-ui.js).
+  // `initialLlmOff` exists for the tests: effects do not run under
+  // react-dom/server, so without a seam the collapsed branch is the one
+  // rendered path no test can reach — which is where the <Card title=> bug
+  // lived (review on #755, CLAUDE.md #4).
+  const [llmOff, setLlmOff] = useState(initialLlmOff)
   const [data, setData] = useState(null)      // { last, providers, proposable }
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -85,6 +93,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
 
   const load = useCallback(() => {
     if (!agentConfigured()) return
+    agentGet('/state/health').then(h => setLlmOff(llmUiState(h))).catch(() => { /* absent evidence renders the card */ })
     agentGet('/state/risk-reassess')
       .then(d => setData(d))
       .catch(e => setError(e.message))
@@ -182,29 +191,43 @@ export default function RiskReassess({ onChanged, onApplied }) {
     return n
   })
 
+
+
   return (
     <Card id="sec-rerisk" className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <Button onClick={reset} disabled={!!busy} title="Discard every override and go back to the built-in defaults">
           {busy === 'reset' ? 'Resetting…' : 'Reset'}
         </Button>
-        <Button
-          onClick={() => { setAsk({ includeWatchlist: false }); setError(''); if (!model && suggested) setModel(suggested) }}
-          disabled={!!busy}
-          title="Ask an LLM to re-derive the limits from the account balance and its closed-trade record. Instruments are NOT considered."
-        >
-          Re-Risk
-        </Button>
-        <Button
-          onClick={() => { setAsk({ includeWatchlist: true }); setError(''); if (!model && suggested) setModel(suggested) }}
-          disabled={!!busy}
-          title="Same, but the account's watchlist is part of the assessment — how many instruments, how correlated, which asset classes."
-        >
-          Re-Risk + Watchlist
-        </Button>
-        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-          Re-Risk <strong>proposes</strong> — nothing changes until you apply it
-        </span>
+        {/* Review on #755: an early return here hid the whole card — but only
+            these RUN buttons involve a model. Reset is a plain server POST,
+            and the stored assessment, its comparison table and the per-key
+            Apply replay a record already on disk — the same side of the line
+            as Trade lessons. So the AI switch collapses the run pipeline
+            alone, and everything deterministic stays reachable. */}
+        {llmOff?.disabled ? (
+          <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{llmOffNote(llmOff)}</span>
+        ) : (
+          <>
+            <Button
+              onClick={() => { setAsk({ includeWatchlist: false }); setError(''); if (!model && suggested) setModel(suggested) }}
+              disabled={!!busy}
+              title="Ask an LLM to re-derive the limits from the account balance and its closed-trade record. Instruments are NOT considered."
+            >
+              Re-Risk
+            </Button>
+            <Button
+              onClick={() => { setAsk({ includeWatchlist: true }); setError(''); if (!model && suggested) setModel(suggested) }}
+              disabled={!!busy}
+              title="Same, but the account's watchlist is part of the assessment — how many instruments, how correlated, which asset classes."
+            >
+              Re-Risk + Watchlist
+            </Button>
+            <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+              Re-Risk <strong>proposes</strong> — nothing changes until you apply it
+            </span>
+          </>
+        )}
       </div>
 
       {/* ---- the provider/model prompt: ONE dense row --------------------
@@ -213,7 +236,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
           the OpenAI list is this agent's OWN three configured tiers (served by
           /state/risk-reassess from the model router) rather than a hardcoded
           list that would drift from what is set on Railway. */}
-      {ask && (
+      {ask && !llmOff?.disabled && (
         <div className="flex flex-wrap items-center gap-1.5 rounded-[6px] border
                         border-[var(--color-border)] px-2 py-1">
           <span className="text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">

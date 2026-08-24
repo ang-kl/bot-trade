@@ -21,6 +21,8 @@ import AccountEngineering from '../components/AccountEngineering.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
+import LlmSwitch from '../components/LlmSwitch.jsx'
+import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
@@ -1124,17 +1126,46 @@ export default function Desk() {
       <Section
         id="llmspend"
         title="LLM spend"
-        summary={llmSpend ? `today $${(llmSpend.today?.cost_usd ?? 0).toFixed(2)} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null}
+        summary={(() => {
+          // Review on #755: the spend ledger is money ALREADY SPENT — the
+          // invoice for the world that was running — so switching the layer
+          // off must not erase it. "AI off — no calls attempted" on a day
+          // that cost $12 before noon asserts a false zero; both facts stay.
+          const off = llmUiState(health).disabled
+          const todayUsd = llmSpend?.today?.cost_usd ?? 0
+          const spent = llmSpend ? `today $${todayUsd.toFixed(2)}` : null
+          // "$0.00 before it was off" asserts an ordering that never happened
+          // on a no-spend day — the qualifier is only true when money moved.
+          if (off) return spent && todayUsd > 0 ? `AI off — ${spent} before it was off` : 'AI off'
+          return llmSpend ? `${spent} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null
+        })()}
         defaultOpen={false}
       >
-        {!llmSpend && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
+        {/* The switch always renders — it is the way back on. What collapses
+            behind it is only the FORWARD-LOOKING per-call detail; the headline
+            totals are records of money already spent (same side of the line
+            as Trade lessons), and the daily cost-alert cap is a deterministic
+            Telegram threshold that must stay editable while the layer is off. */}
+        <div className="mb-2"><LlmSwitch health={health} onChanged={load} /></div>
+        {llmUiState(health).disabled && (
+          <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">{llmOffNote(llmUiState(health))}</p>
+        )}
+        {!llmSpend && !llmUiState(health).disabled && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
         {llmSpend && (
           <>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-(length:--fs-body) tabular-nums mb-2">
               <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
               <span>7 days <span className="font-semibold">${(llmSpend.last7d?.cost_usd ?? 0).toFixed(2)}</span></span>
               <span>30 days <span className="font-semibold">${(llmSpend.last30d?.cost_usd ?? 0).toFixed(2)}</span></span>
-              <span>Projected month <span className="font-semibold">${(llmSpend.projected_month_usd ?? 0).toFixed(2)}</span></span>
+              {/* The one genuinely forward-looking number on the card — a
+                  forecast of spend that cannot happen while the layer is off,
+                  so it is the figure that hides. Review on #755: the first
+                  cut of this gate was inverted — it hid the historical
+                  by-purpose ledger ("where did the $2,314 go") and kept this
+                  forecast. History always renders; the forecast is gated. */}
+              {!llmUiState(health).disabled && (
+                <span>Projected month <span className="font-semibold">${(llmSpend.projected_month_usd ?? 0).toFixed(2)}</span></span>
+              )}
             </div>
             {(llmSpend.by_purpose?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
