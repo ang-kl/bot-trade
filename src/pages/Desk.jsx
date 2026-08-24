@@ -1157,9 +1157,17 @@ export default function Desk() {
               <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
               <span>7 days <span className="font-semibold">${(llmSpend.last7d?.cost_usd ?? 0).toFixed(2)}</span></span>
               <span>30 days <span className="font-semibold">${(llmSpend.last30d?.cost_usd ?? 0).toFixed(2)}</span></span>
-              <span>Projected month <span className="font-semibold">${(llmSpend.projected_month_usd ?? 0).toFixed(2)}</span></span>
+              {/* The one genuinely forward-looking number on the card — a
+                  forecast of spend that cannot happen while the layer is off,
+                  so it is the figure that hides. Review on #755: the first
+                  cut of this gate was inverted — it hid the historical
+                  by-purpose ledger ("where did the $2,314 go") and kept this
+                  forecast. History always renders; the forecast is gated. */}
+              {!llmUiState(health).disabled && (
+                <span>Projected month <span className="font-semibold">${(llmSpend.projected_month_usd ?? 0).toFixed(2)}</span></span>
+              )}
             </div>
-            {!llmUiState(health).disabled && (llmSpend.by_purpose?.length ?? 0) > 0 && (
+            {(llmSpend.by_purpose?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
                 <Collapse id="Desk_957" label="Spend by Purpose Rows">
                 <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
