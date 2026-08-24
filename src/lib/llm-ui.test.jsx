@@ -31,7 +31,7 @@ describe('llmUiState', () => {
   it('the off-note says who holds the switch, and is null when on', () => {
     expect(llmOffNote(llmUiState(ENV_OFF))).toMatch(/LLM_DISABLED env variable/)
     expect(llmOffNote(llmUiState(ENV_OFF))).toMatch(/redeploy/)
-    expect(llmOffNote(llmUiState(KEY_OFF))).toMatch(/checkbox on the Desk/)
+    expect(llmOffNote(llmUiState(KEY_OFF))).toMatch(/Desk → LLM spend/)
     expect(llmOffNote(llmUiState({}))).toBe(null)
   })
 
@@ -121,6 +121,18 @@ describe('Re-Risk with the AI layer off — rendered, not described', () => {
 })
 
 describe('the env-lock is textual — pin the text on both sides', () => {
+  it('envHeld tracks the string the PRODUCER actually sends, not a local copy', async () => {
+    // The sharper version of the pin below (#755 review): feed llmUiState the
+    // real output of llmDisabledReason, so a reword on the agent side turns
+    // THIS red instead of silently making the checkbox operable against the
+    // env brake while both test files stay green on their own private copies.
+    const { llmDisabledReason } = await import('../../agent/lib/llm-switch.js')
+    const envBy = llmDisabledReason({}, () => null, { LLM_DISABLED: '1' })
+    const keyBy = llmDisabledReason({}, () => '1', {})
+    expect(llmUiState({ llmDisabled: true, llmDisabledBy: envBy }).canToggle).toBe(false)
+    expect(llmUiState({ llmDisabled: true, llmDisabledBy: keyBy }).canToggle).toBe(true)
+  })
+
   it("the agent's reason strings still say what /env/i distinguishes", async () => {
     // llmUiState locks the checkbox on /env/i against a human-readable
     // sentence. If llm-switch.js ever rewords 'LLM_DISABLED env var', the

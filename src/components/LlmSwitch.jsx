@@ -15,7 +15,17 @@ import { llmUiState } from '../lib/llm-ui.js'
 export default function LlmSwitch({ health, onChanged }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  // The route's own answer, held until the parent's refetch lands. Without
+  // it the box re-enabled still showing the OLD state (checked follows the
+  // health prop, and Desk's load() is a Promise.all over many endpoints), so
+  // a successful untick read as "that didn't take" — and the natural second
+  // click POSTed enabled:true, re-enabling the layer the owner had just
+  // switched off (#755 review). effectiveEnabled already accounts for the
+  // env override, which also keeps the display honest when a POST succeeds
+  // but the env brake means nothing changed.
+  const [settled, setSettled] = useState(null) // null = follow health
   const s = llmUiState(health)
+  const disabled = settled == null ? s.disabled : !settled
 
   // A checkbox is not a card: it does not merely render, it ASSERTS a state.
   // Before /state/health resolves (or if it never does) a ticked, operable
@@ -34,8 +44,10 @@ export default function LlmSwitch({ health, onChanged }) {
   const flip = async () => {
     setBusy(true); setErr(null)
     try {
-      await agentPost('/actions/llm-switch', { enabled: s.disabled })
-      onChanged?.()
+      const r = await agentPost('/actions/llm-switch', { enabled: disabled })
+      if (typeof r?.effectiveEnabled === 'boolean') setSettled(r.effectiveEnabled)
+      await onChanged?.()
+      setSettled(null) // parent is fresh — follow it again
     } catch (e) { setErr(e?.message || String(e)) }
     setBusy(false)
   }
@@ -45,7 +57,7 @@ export default function LlmSwitch({ health, onChanged }) {
       <label className={`flex items-center gap-1.5 ${s.canToggle ? 'cursor-pointer' : 'opacity-60'}`}>
         <input
           type="checkbox"
-          checked={!s.disabled}
+          checked={!disabled}
           disabled={busy || !s.canToggle}
           onChange={flip}
         />
@@ -54,7 +66,7 @@ export default function LlmSwitch({ health, onChanged }) {
       <span className="text-[var(--color-text-sub)]">
         position monitor · weekend watch · Re-Risk · screener · explain
       </span>
-      {s.disabled && (
+      {disabled && (
         <span className="text-[var(--color-text-sub)]">
           — off{s.envHeld ? ' (held by LLM_DISABLED env var; the box cannot release it)' : ''}
         </span>

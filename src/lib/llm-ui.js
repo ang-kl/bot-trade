@@ -39,5 +39,5 @@ export function llmOffNote(state) {
   if (!state?.disabled) return null
   return state.envHeld
     ? 'AI features are switched off by the LLM_DISABLED env variable — no calls are attempted. Trading is deterministic and unaffected. Releasing it needs the variable removed and a redeploy.'
-    : 'AI features are switched off — no calls are attempted. Trading is deterministic and unaffected. Re-enable with the AI features checkbox on the Desk.'
+    : 'AI features are switched off — no calls are attempted. Trading is deterministic and unaffected. Re-enable with the AI features checkbox (Desk → LLM spend).'
 }
