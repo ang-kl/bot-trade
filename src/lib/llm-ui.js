@@ -18,7 +18,10 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Pure reading of /health's llmDisabled + llmDisabledBy.
+ * Pure reading of /state/health's llmDisabled + llmDisabledBy — NOT the
+ * public top-level /health, which is a different handler that has never
+ * carried these fields; fetching that one is exactly how the gates shipped
+ * unreachable the first time.
  *
  * `disabled` only on an explicit true — a missing field (old agent build,
  * failed fetch) must render the cards, not blank them: hiding working

@@ -92,25 +92,31 @@ describe('the consumers read the endpoint that carries the flag', () => {
     }
   })
 
-  it('the off-branch keeps the sec-rerisk anchor the nav FAB scrolls to', async () => {
-    const { readFileSync } = await import('node:fs')
-    const code = readFileSync(new URL('../components/RiskReassess.jsx', import.meta.url), 'utf8')
-    const offBranch = code.slice(code.indexOf('llmOff?.disabled'), code.indexOf('llmOff?.disabled') + 900)
-    expect(offBranch).toContain('id="sec-rerisk"')
-  })
 })
 
-describe('the collapsed Re-Risk branch actually renders what it claims', () => {
-  it('keeps the sec-rerisk anchor, a real heading, and the off-note', async () => {
-    // renderToStaticMarkup on the REAL component with the off state seeded —
-    // the <Card title=> defect lived precisely in the rendered branch no test
-    // reached. The source-scan above pins the endpoint; this pins the markup.
+describe('Re-Risk with the AI layer off — rendered, not described', () => {
+  // renderToStaticMarkup on the REAL component, off state seeded via the
+  // test seam. This IMPORTS the module, so a file that does not parse fails
+  // here — the gap that let a SyntaxError ship behind source-text tests.
+  it('collapses ONLY the run pipeline; Reset and the anchor stay', async () => {
     const { default: RiskReassess } = await import('../components/RiskReassess.jsx')
     const off = llmUiState({ llmDisabled: true, llmDisabledBy: 'LLM_DISABLED env var' })
     const html = renderToStaticMarkup(<RiskReassess initialLlmOff={off} />)
     expect(html).toContain('id="sec-rerisk"')
-    expect(html).toMatch(/<h3[^>]*>Re-Risk \(AI\)<\/h3>/)
+    // The deterministic half survives: Reset is a plain server POST and the
+    // section's nav label promises it ("Reset / Re-Risk").
+    expect(html).toMatch(/>Reset</)
+    // The model half is gone, replaced by the note.
+    expect(html).not.toMatch(/>Re-Risk</)
+    expect(html).not.toMatch(/Re-Risk \+ Watchlist/)
     expect(html).toMatch(/Trading is deterministic and unaffected/)
+  })
+
+  it('with the layer ON the run buttons render and the note does not', async () => {
+    const { default: RiskReassess } = await import('../components/RiskReassess.jsx')
+    const html = renderToStaticMarkup(<RiskReassess initialLlmOff={llmUiState({ llmDisabled: false })} />)
+    expect(html).toMatch(/Re-Risk \+ Watchlist/)
+    expect(html).not.toMatch(/Trading is deterministic and unaffected/)
   })
 })
 
