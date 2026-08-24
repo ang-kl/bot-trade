@@ -488,7 +488,23 @@ app.use('/api/ctrader', ctraderOauthRouter());
 const DIST_DIR = resolve(dirname(new URL(import.meta.url).pathname), '../dist');
 const HAS_DIST = (() => { try { return fs.existsSync(resolve(DIST_DIR, 'index.html')); } catch { return false; } })();
 if (HAS_DIST) {
-  app.use(express.static(DIST_DIR, { index: 'index.html', maxAge: '1h' }));
+  // Cache split, and the split is the point (2026-08-24, owner: "i still
+  // cannot load connect page" — three times, across two deploys):
+  //
+  // - files under /assets carry a content hash in their name. A given URL
+  //   can never change meaning, so cache them hard: a year, immutable.
+  //   (No bare slash-star token may appear in these comments — two source-scan
+  //   tests strip block comments naively and would swallow the file from here.)
+  // - EVERYTHING ELSE — index.html above all — must be `no-cache`
+  //   (revalidate every load). The previous blanket `maxAge: '1h'` let a
+  //   browser keep the OLD shell for up to an hour after a deploy, and the
+  //   old shell asks for chunk names the new deploy no longer ships. That
+  //   is how one deploy stranded a tab for an hour and a refresh did not
+  //   cure it: the refresh re-read the cached shell.
+  app.use(express.static(DIST_DIR, { index: 'index.html', setHeaders: (res, filePath) => {
+    if (/[/\\]assets[/\\]/.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+    else res.setHeader('Cache-Control', 'no-cache')
+  } }));
   console.log(`[http] serving frontend from ${DIST_DIR}`);
 } else {
   console.warn('[http] no dist/index.html — frontend not served (API unaffected)');
@@ -865,14 +881,25 @@ async function mountRoutes() {
 // parse with a message that points nowhere near the real problem.
 // ---------------------------------------------------------------------------
 export function isSpaPath(path) {
-  return !/^\/(api|state|actions|auth|health|icon\.png)(\/|$)/.test(path)
+  // /assets and /fonts are in the exclusion list for the same reason the API
+  // prefixes are: a fallback answer there is a lie with a 200 on it. After a
+  // deploy, a tab holding the previous shell asks for the previous build's
+  // hashed chunk; express.static has no such file, so the request fell
+  // through to here and got index.html — as JavaScript. The browser reports
+  // "Importing a module script failed" (measured live: GET
+  // /assets/index-DxZOs8tm.js → 200 serving HTML, 2026-08-24), caches the
+  // 200, and no amount of reloading recovers. A missing asset must be a real
+  // 404 so the client sees the truth and vite:preloadError can act on it.
+  return !/^\/(api|state|actions|auth|health|assets|fonts|icon\.png)(\/|$)/.test(path)
 }
 
 function mountSpaFallback() {
   if (!HAS_DIST) return
   app.get(/.*/, (req, res, next) => {
     if (!isSpaPath(req.path)) return next()
-    res.sendFile(resolve(DIST_DIR, 'index.html'))
+    // no-cache, same argument as the static index.html: the shell must be
+    // revalidated every load or a deploy strands every open tab on old chunks.
+    res.sendFile(resolve(DIST_DIR, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } })
   })
   console.log('[http] SPA fallback mounted for non-API GETs')
 }
