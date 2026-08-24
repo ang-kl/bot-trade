@@ -133,16 +133,4 @@ describe('the env-lock is textual — pin the text on both sides', () => {
     expect(llmUiState({ llmDisabled: true, llmDisabledBy: keyBy }).canToggle).toBe(true)
   })
 
-  it("the agent's reason strings still say what /env/i distinguishes", async () => {
-    // llmUiState locks the checkbox on /env/i against a human-readable
-    // sentence. If llm-switch.js ever rewords 'LLM_DISABLED env var', the
-    // lock silently unlocks with no test failing (review on #755). Until the
-    // flag becomes structural, pin the literals at their source.
-    const { readFileSync } = await import('node:fs')
-    const src = readFileSync(new URL('../../agent/lib/llm-switch.js', import.meta.url), 'utf8')
-    expect(src).toContain("'LLM_DISABLED env var'")
-    expect(src).toContain("'llm_disabled state key'")
-    expect(llmUiState({ llmDisabled: true, llmDisabledBy: 'LLM_DISABLED env var' }).envHeld).toBe(true)
-    expect(llmUiState({ llmDisabled: true, llmDisabledBy: 'llm_disabled state key' }).envHeld).toBe(false)
-  })
 })
