@@ -17,6 +17,20 @@ export default function LlmSwitch({ health, onChanged }) {
   const [err, setErr] = useState(null)
   const s = llmUiState(health)
 
+  // A checkbox is not a card: it does not merely render, it ASSERTS a state.
+  // Before /state/health resolves (or if it never does) a ticked, operable
+  // box would claim "AI is on" on no evidence — and a click in that window
+  // would POST disable. The fail-open rule is right for the CARDS, whose
+  // absence hides working features; here the honest render is no control at
+  // all until the state is known.
+  if (health == null) {
+    return (
+      <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+        <span className="font-semibold">AI features</span> — state unknown (waiting for /state/health)
+      </div>
+    )
+  }
+
   const flip = async () => {
     setBusy(true); setErr(null)
     try {

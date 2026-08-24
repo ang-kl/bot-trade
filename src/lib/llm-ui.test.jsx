@@ -56,6 +56,15 @@ describe('LlmSwitch first render (react-dom/server — no effects)', () => {
     expect(html).not.toContain('checked')
   })
 
+  it('UNKNOWN health renders NO checkbox — a control must not assert on no evidence', () => {
+    // Review on #755: with health still null a ticked, operable box claims
+    // "AI is on", and a click POSTs disable. Cards fail open; a checkbox is
+    // an assertion, so it waits for the state instead.
+    const html = renderToStaticMarkup(<LlmSwitch health={null} />)
+    expect(html).not.toContain('<input')
+    expect(html).toMatch(/state unknown/)
+  })
+
   it('enabled renders ticked and operable, with no off annotation', () => {
     const html = renderToStaticMarkup(<LlmSwitch health={{ llmDisabled: false }} />)
     expect(html).toContain('checked')

@@ -1126,19 +1126,29 @@ export default function Desk() {
       <Section
         id="llmspend"
         title="LLM spend"
-        summary={llmUiState(health).disabled ? 'AI off — no calls attempted' : (llmSpend ? `today $${(llmSpend.today?.cost_usd ?? 0).toFixed(2)} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null)}
+        summary={(() => {
+          // Review on #755: the spend ledger is money ALREADY SPENT — the
+          // invoice for the world that was running — so switching the layer
+          // off must not erase it. "AI off — no calls attempted" on a day
+          // that cost $12 before noon asserts a false zero; both facts stay.
+          const off = llmUiState(health).disabled
+          const spent = llmSpend ? `today $${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}` : null
+          if (off) return spent ? `AI off — ${spent} before it was off` : 'AI off'
+          return llmSpend ? `${spent} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null
+        })()}
         defaultOpen={false}
       >
-        {/* The switch itself always renders — it is the way back on. The
-            spend tables collapse behind it when the layer is off (owner,
-            24-08-2026): a spend dashboard for calls that are never attempted
-            is a card describing a world that is not running. */}
+        {/* The switch always renders — it is the way back on. What collapses
+            behind it is only the FORWARD-LOOKING per-call detail; the headline
+            totals are records of money already spent (same side of the line
+            as Trade lessons), and the daily cost-alert cap is a deterministic
+            Telegram threshold that must stay editable while the layer is off. */}
         <div className="mb-2"><LlmSwitch health={health} onChanged={load} /></div>
         {llmUiState(health).disabled && (
-          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">{llmOffNote(llmUiState(health))}</p>
+          <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">{llmOffNote(llmUiState(health))}</p>
         )}
-        {!llmUiState(health).disabled && !llmSpend && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
-        {!llmUiState(health).disabled && llmSpend && (
+        {!llmSpend && !llmUiState(health).disabled && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
+        {llmSpend && (
           <>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-(length:--fs-body) tabular-nums mb-2">
               <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
@@ -1146,7 +1156,7 @@ export default function Desk() {
               <span>30 days <span className="font-semibold">${(llmSpend.last30d?.cost_usd ?? 0).toFixed(2)}</span></span>
               <span>Projected month <span className="font-semibold">${(llmSpend.projected_month_usd ?? 0).toFixed(2)}</span></span>
             </div>
-            {(llmSpend.by_purpose?.length ?? 0) > 0 && (
+            {!llmUiState(health).disabled && (llmSpend.by_purpose?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
                 <Collapse id="Desk_957" label="Spend by Purpose Rows">
                 <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
