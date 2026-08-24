@@ -189,6 +189,38 @@ test('static serving resolves / to index.html', () => {
     'static must map / to index.html')
 })
 
+test('the fallback never impersonates a build asset', () => {
+  // 2026-08-24, owner: "i still cannot load connect page" — three times. The
+  // mechanism, measured live: after a deploy the old shell asked for
+  // /assets/index-DxZOs8tm.js (previous build's hash), express.static had no
+  // such file, the SPA fallback served index.html with a 200, and the browser
+  // failed the import with "Importing a module script failed" — then CACHED
+  // the 200, so reloading never recovered. A missing asset must be a real 404.
+  //
+  // Same source-scan justification as above: index.js cannot be imported here
+  // (it starts a listening server), so the exclusion list is asserted from
+  // source — the regex IS the contract.
+  for (const prefix of ['assets', 'fonts']) {
+    assert.match(code, new RegExp(`isSpaPath[\\s\\S]{0,900}\\b${prefix}\\b`),
+      `the exclusion list must name ${prefix}, or stale chunk requests get HTML with a 200`)
+  }
+})
+
+test('the shell is never cached; hashed assets are cached hard', () => {
+  // The other half of the same incident: express.static's blanket
+  // `maxAge: '1h'` applied to index.html itself, so a browser kept the OLD
+  // shell for up to an hour after a deploy — and the old shell is what asks
+  // for the dead chunks. Hashed /assets names can never change meaning
+  // (cache them a year, immutable); the shell must revalidate every load.
+  assert.doesNotMatch(code, /maxAge: '1h'/, 'a blanket maxAge caches the shell across deploys')
+  assert.match(code, /immutable/, 'hashed assets should be cached as immutable')
+  assert.match(code, /no-cache/, 'the shell must be served no-cache')
+  // And the fallback's own sendFile must carry the same header — it serves
+  // the identical shell through a second door.
+  assert.match(code, /sendFile\(resolve\(DIST_DIR, 'index\.html'\), \{ headers: \{ 'Cache-Control': 'no-cache' \} \}\)/,
+    'the SPA fallback must send the shell no-cache')
+})
+
 test('a missing dist/ does not break the API', () => {
   // A dev container that never built, or a deploy that skipped it: the agent's
   // job is trading and it must boot without a frontend.
