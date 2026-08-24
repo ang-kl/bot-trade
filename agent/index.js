@@ -251,6 +251,19 @@ seedOrExplain(envAccountId == null ? undefined : String(envAccountId), 'ctrader_
     setState(db, 'ctrader_is_live', envIsLive === 'true' ? 'true' : 'false')
   })
 
+// Rotating AGENT_SECRET must revoke every device session, or the owner's
+// panic button is decoration — see lib/secret-rotation.js for the measured
+// failure (14 sessions surviving a rotation made over a suspected exposure).
+try {
+  const { secretRotationSweep } = await import('./lib/secret-rotation.js')
+  const sweep = secretRotationSweep(db, AGENT_SECRET, { getState, setState })
+  if (sweep.rotated) {
+    console.log(`[boot] AGENT_SECRET rotation detected — ${sweep.cleared} device session(s) revoked; every device logs in again with the new secret or a Telegram code`)
+  }
+} catch (err) {
+  console.error(`[boot] secret-rotation sweep failed (sessions NOT cleared): ${err.message}`)
+}
+
 // Account Registry bootstrap (multi-account plan, M0 shim): make sure the
 // currently-selected account exists in the registry and is the single
 // enabled row — behaviour-identical to the pre-registry boot.
@@ -557,7 +570,8 @@ app.post('/auth/telegram/verify', (req, res) => {
   setState(db, 'login_code', '')   // single use
   const token = addSession()
   // Confirm on Telegram (fire-and-forget) — an unexpected one of these
-  // means someone else has your code: revoke by rotating AGENT_SECRET.
+  // means someone else has your code: rotate AGENT_SECRET, which (since the
+  // 24-08 secret-rotation sweep) clears every device session at next boot.
   // Raw for the same reason as the code above: the gate queues even `urgent`
   // when notify is off (telegram-digest.js:139), so a break-in alert saying
   // "act now" would surface in a digest up to an hour later, or not at all.
