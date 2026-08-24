@@ -71,10 +71,14 @@ function show(key, v, proposable) {
   return String(v)
 }
 
-export default function RiskReassess({ onChanged, onApplied }) {
+export default function RiskReassess({ onChanged, onApplied, initialLlmOff = null }) {
   // Off is a stated position: with the AI layer disabled every button in this
   // card ends in a refusal, so the card says so once instead (llm-ui.js).
-  const [llmOff, setLlmOff] = useState(null)
+  // `initialLlmOff` exists for the tests: effects do not run under
+  // react-dom/server, so without a seam the collapsed branch is the one
+  // rendered path no test can reach — which is where the <Card title=> bug
+  // lived (review on #755, CLAUDE.md #4).
+  const [llmOff, setLlmOff] = useState(initialLlmOff)
   const [data, setData] = useState(null)      // { last, providers, proposable }
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
