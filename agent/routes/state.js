@@ -1536,6 +1536,22 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/aftermath-extend-preview — the DRY RUN for topping up stored
+  // postmortem replay windows to REPLAY_AFTERMATH_BARS. Pure read: no broker
+  // fetch, no row touched. It reports how many rows an apply would extend and
+  // what it would cost, so the owner can approve the write knowing the count
+  // first (owner, 25-08-2026: "go, dry-run only"). A GET on /state on purpose:
+  // the read tier can run the preview; only the (future, separately approved)
+  // apply will be a POST action.
+  router.get('/aftermath-extend-preview', async (_req, res) => {
+    try {
+      const { previewAftermathExtension } = await import('../services/aftermath-extend.js')
+      res.json(previewAftermathExtension(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/lot-size-parity — where the broker's definition of a lot and our
   // hardcoded contractSize() table disagree, and by how much.
   //

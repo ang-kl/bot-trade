@@ -32,6 +32,15 @@ import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { isSymbolMarketOpen } from '../lib/sessions.js'
 
 export const AFTERMATH_BARS = 12   // how many post-exit bars the verdict may use
+// The STORED replay window is a different question from the verdict window,
+// and coupling them was the exit-counterfactual's binding constraint: with 12
+// bars stored, 210-245 of 251 replayable trades truncated before rules like
+// cap_120m or trail_1R could resolve (measured 25-08-2026), so 6 of 8 rules
+// never reached the 30-trade floor. 96 bars of aftermath (24h on a 15m chart)
+// is enough for every rule in DEFAULT_RULES. The verdict window stays 12 ON
+// PURPOSE: raising it would silently re-judge stop_hunt/chop over an 8x longer
+// horizon, changing classifications the owner has already read and ratified.
+export const REPLAY_AFTERMATH_BARS = 96
 export const MIN_AFTER_BARS = 5    // fewer than this → wait (or inconclusive)
 // Owner: "some symbol traded SL so earlier or very close to entry, you need
 // to be honest" — a stop hit within this many bars of entry barely gave the
@@ -475,7 +484,7 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     const openedMs = sqliteMs(t.opened_at)
     // Anchor the fetch at close + aftermath (never in the future) so history
     // back-fills correctly; size the window from entry-context to that end.
-    const endTime = Math.min(now, closedMs + (AFTERMATH_BARS + 3) * ms)
+    const endTime = Math.min(now, closedMs + (REPLAY_AFTERMATH_BARS + 3) * ms)
     const spanMs = endTime - (((openedMs || closedMs)) - 20 * ms)
     const count = Math.min(400, Math.max(60, Math.ceil(spanMs / ms) + 5))
     let bars = []
@@ -514,9 +523,11 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     const rMult = riskDist > 0 && t.exit_price != null && t.entry_price != null
       ? (isWin ? 1 : -1) * (Math.abs(t.entry_price - t.exit_price) / riskDist)
       : null
-    // Replay window: 20 bars before entry → aftermath end (compact for the UI).
+    // Replay window: 20 bars before entry → aftermath end (compact for the UI,
+    // long enough for the exit-counterfactual's slowest rule — see
+    // REPLAY_AFTERMATH_BARS above; the verdict window stays AFTERMATH_BARS).
     const fromMs = (openedMs || closedMs) - 20 * ms
-    const toMs = closedMs + (AFTERMATH_BARS + 2) * ms
+    const toMs = closedMs + (REPLAY_AFTERMATH_BARS + 2) * ms
     const replay = bars.filter(b => b.t >= fromMs && b.t <= toMs)
     // Flat controller-consumable lesson fields (owner spec). Decay is read
     // over the PRIOR same-key history, before this row lands.
