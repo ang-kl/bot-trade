@@ -48,11 +48,11 @@ threshold it has never once achieved.**
 
 | Account | Effective `minRR` | Global default | Ratio | Side |
 |---|---|---|---|---|
-| 43097342 | **6.16** | 1.5 | 4.1× | demo |
-| 46130058 | **6.00** | 1.5 | 4.0× | demo |
-| 46979908 | **5.00** | 1.5 | 3.3× | demo |
-| 47790949 | **4.68** | 1.5 | 3.1× | demo |
-| 42993489 | **4.50** | 1.5 | 3.0× | **LIVE** |
+| ACCT-DEMO-1 | **6.16** | 1.5 | 4.1× | demo |
+| ACCT-DEMO-2 | **6.00** | 1.5 | 4.0× | demo |
+| ACCT-DEMO-3 | **5.00** | 1.5 | 3.3× | demo |
+| ACCT-DEMO-4 | **4.68** | 1.5 | 3.1× | demo |
+| ACCT-LIVE-1 | **4.50** | 1.5 | 3.0× | **LIVE** |
 
 Each value sits in that account's own overlay: `risk.overlayKeys` contains `minRR` and
 `risk.overridden` lists it, scoped to the account. The global `risk_config_json` still
@@ -89,7 +89,7 @@ config is returned. That is how a per-account risk limit stayed invisible.
 
 **Only 311 of 11,211 — 2.8% — were judged against the documented 1.5 floor.**
 
-A 100-row sample of `risk_events` for 47790949 shows 93 of the last 100 proposals
+A 100-row sample of `risk_events` for ACCT-DEMO-4 shows 93 of the last 100 proposals
 vetoed as `bad_rr`, every one against 4.68, spread across seven different strategies
 (`fib_618_fade`, `burnin`, `vp_value`, `fib_confluence`, `va_breakout`,
 `donchian_breakout`, `vwap_trend`). Rejected R:R values: 1.48, 1.50, 1.54, 1.59, 1.60,
@@ -98,7 +98,7 @@ proposing ordinary trades into a gate calibrated for extraordinary ones.
 
 ### The finding that makes it a defect rather than a preference
 
-`GET /state/postmortems` for 47790949 — 30 closed trades with `r_multiple`:
+`GET /state/postmortems` for ACCT-DEMO-4 — 30 closed trades with `r_multiple`:
 
 ```
 n=26 with an R multiple   mean +0.03R   median -0.01R   range -0.11R … +0.91R
@@ -149,7 +149,7 @@ carrying the `acct:<id>:risk_config_json` write.
 
 ## 2. F-SIZE-01 — a single trade spent more than the whole day's risk budget (DANGER)
 
-From `GET /state/config-proposals`, account 46130058, severity `danger`, raised by the
+From `GET /state/config-proposals`, account ACCT-DEMO-2, severity `danger`, raised by the
 system's own controller and still open:
 
 > *"A single trade lost 9,171.76 against a daily cap of 8,293.13. One trade spent more
@@ -213,7 +213,7 @@ default, throughout — and expired normally.
 `fib_confluence` accounts for 45 of 50 pending orders and 1 opened position, which is
 a fill rate worth understanding but is not a bug in the lifecycle.
 
-`GET /state/pending-orders`, account 47790949, 50 rows:
+`GET /state/pending-orders`, account ACCT-DEMO-4, 50 rows:
 
 | Status | Count |
 |---|---|
@@ -247,7 +247,7 @@ established, and no rate computed from these rows should be treated as portfolio
 ## 3b. F-LIVE-01 — four armed strategies produced 22,966 signals and opened nothing
 
 Re-reading `GET /state/strategy-liveness` to check §3's correction turned up a stronger
-result than §3 itself. Seven days, decisions and opens scoped to 47790949, signals
+result than §3 itself. Seven days, decisions and opens scoped to ACCT-DEMO-4, signals
 across all accounts (scans are market observations):
 
 | Strategy | Armed | Signals | Opened | System's own verdict |
@@ -388,7 +388,7 @@ opportunities in a day is not starvation. They are starved of *approvals*.
 
 ## 5. §12 — trade management and profit retention, previously blocked
 
-`GET /state/postmortems`, account 47790949, 30 closed trades.
+`GET /state/postmortems`, account ACCT-DEMO-4, 30 closed trades.
 
 **Classification** (what the system says happened):
 

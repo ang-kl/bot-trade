@@ -15,8 +15,8 @@
 
 One runtime observation is carried in from earlier the same day and is labelled as
 such wherever used: `/state/account-phases` at **2026-08-05 12:26 UTC** reported
-`connectivity: disconnected` for 43097342, 46130058, 46979908 and 47790949, and
-`active` only for 42993489. That is a different vantage point from this frozen
+`connectivity: disconnected` for ACCT-DEMO-1, ACCT-DEMO-2, ACCT-DEMO-3 and ACCT-DEMO-4, and
+`active` only for ACCT-LIVE-1. That is a different vantage point from this frozen
 checkout and is flagged in F-CONN-01 rather than folded into the static evidence.
 
 Every section depending on the absent sources is marked

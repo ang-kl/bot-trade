@@ -1,7 +1,7 @@
 # 04 — Effective risk configuration: make the route truthful
 
 Phase 4 of the Verified Defect Repair prompt. **No threshold was changed.**
-`minRR` remains 3.0 on the four demo accounts and 4.5 on live `42993489`,
+`minRR` remains 3.0 on the four demo accounts and 4.5 on live `ACCT-LIVE-1`,
 exactly as the owner set them.
 
 ---
@@ -24,8 +24,8 @@ The route read exactly one thing:
 const acct = req.query?.account ? String(req.query.account) : null
 ```
 
-Every other parameter was discarded without comment. So `?accountId=47790949`,
-`?acct=47790949`, or any typo, returned **HTTP 200 with the global
+Every other parameter was discarded without comment. So `?accountId=ACCT-DEMO-4`,
+`?acct=ACCT-DEMO-4`, or any typo, returned **HTTP 200 with the global
 configuration** — presented in the same shape as an answer about that account.
 
 #### Causal chain
@@ -45,7 +45,7 @@ UI path is affected.
 
 #### Regression proof
 
-`agent/routes/risk-account-routes.test.js` — `?accountId=47790949` must be a
+`agent/routes/risk-account-routes.test.js` — `?accountId=ACCT-DEMO-4` must be a
 400 with `unsupported: ['accountId']`. It returned 200 before this change.
 
 ---
@@ -101,7 +101,7 @@ X at Y*. The audit asked for exactly that row.
   "overlayValue": 4.68,
   "effectiveValue": 4.68,
   "scope": "account",
-  "accountId": "47790949",
+  "accountId": "ACCT-DEMO-4",
   "source": "manual",
   "writtenAt": "2026-08-06T06:16:00.000Z",
   "writtenBy": "manual",
