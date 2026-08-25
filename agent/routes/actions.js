@@ -1541,6 +1541,36 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // POST /actions/extend-aftermath — the approved APPLY of the aftermath
+  // top-up (owner 25-08-2026 "go for both", after the dry-run at
+  // GET /state/aftermath-extend-preview reported 897 extendable rows).
+  // Body: { batch?: number } (default 100, max 300 — each row costs one
+  // candle fetch, throttled inside the service). Resumable: re-POST until
+  // `remaining` is 0; the candidate predicate is the progress tracker.
+  // Writes bars_json ONLY — classifications stay as judged.
+  router.post('/extend-aftermath', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const batch = Math.min(300, Math.max(1, Number(req.body?.batch) || 100))
+      const map = await ensureSymbolMap(db, creds)
+      const { applyAftermathExtension } = await import('../services/aftermath-extend-apply.js')
+      const { wsGetTrendbarsBatch } = await import('../lib/ctrader-ws.js')
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const fetchBars = async (sym, tf, count, endTimeMs) => {
+        const sid = map[String(sym).toUpperCase()]
+        if (!sid) throw new Error(`symbolId unknown for ${sym}`)
+        const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, sid, [tf], count, 20_000, endTimeMs || 0)
+        return byTf[tf] || []
+      }
+      const out = await applyAftermathExtension(db, fetchBars, { maxRows: batch })
+      console.log(`[aftermath] extend applied: updated=${out.updated} barsAdded=${out.barsAdded} errors=${out.errors} remaining=${out.remaining}`)
+      res.json({ ok: true, ...out })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   // POST /actions/backfill-label-strategy — owner: "every trade must have a
   // purpose for the edge" (edge-health's Manual/external bucket). Recovers
   // label_strategy on autopilot trades whose broker label lost attribution
