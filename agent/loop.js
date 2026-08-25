@@ -2228,8 +2228,16 @@ async function runLoop(db) {
   // Keep the OAuth access token alive (daily proactive refresh; no-op if no
   // refresh token or refreshed recently — never blocks or throws).
   try {
-    const { maybeRefreshCtraderToken } = await import('./lib/ctrader-auth.js')
+    const { maybeRefreshCtraderToken, refreshCtraderToken } = await import('./lib/ctrader-auth.js')
     await maybeRefreshCtraderToken(db, log)
+    // Reactive half (26-08-2026): the proactive call above runs once per
+    // PROCESS, so a token Spotware invalidates mid-flight — measured: fresh
+    // at 09:25Z, dead ~14h later — stalled every controller until a human
+    // noticed. Every broker call funnels through withRetry; this hook lets
+    // an auth error there trigger one cooldown-limited refresh, and the next
+    // controller pass re-reads the healed token from state.
+    const { setAuthErrorHook } = await import('./lib/ctrader-ws.js')
+    setAuthErrorHook(() => refreshCtraderToken(db))
   } catch { /* auth module optional */ }
 
   // Reset daily error counter at midnight UTC
