@@ -41,16 +41,26 @@ export function targetAfterBars(barMs) {
 export async function applyAftermathExtension(db, fetchBars, {
   now = Date.now(),
   maxRows = 100,
+  maxErrors = 25,
   throttleMs = 150,
   sleep = (ms) => new Promise(r => setTimeout(r, ms)),
 } = {}) {
+  // NEWEST FIRST, and an error budget — both learned from the first live
+  // sweep (25-08-2026). Oldest-first put the permanently-unfetchable rows
+  // (candles beyond broker retention, dead symbol names) at the FRONT of
+  // every call: each pass re-attempted the same ~300 doomed fetches before
+  // reaching a viable row, until the whole request outlived Railway's edge
+  // timeout and returned nothing at all. Newest-first does the viable work
+  // immediately, and maxErrors stops a call from burning its wall-clock on
+  // rows that will fail again next pass too — they stay discoverable by the
+  // same predicate, they just cannot crowd out progress.
   const rows = db.prepare(`
     SELECT pm.id AS pmId, pm.trade_id AS tradeId, pm.symbol, pm.timeframe, pm.bars_json,
            t.closed_at
       FROM trade_postmortems pm
       JOIN trades t ON t.id = pm.trade_id
      WHERE t.status = 'closed' AND t.closed_at IS NOT NULL
-     ORDER BY t.closed_at ASC
+     ORDER BY t.closed_at DESC
   `).all()
 
   const out = { examined: rows.length, updated: 0, barsAdded: 0, alreadyFull: 0, historyStillForming: 0, noBars: 0, errors: 0, remaining: 0 }
@@ -70,7 +80,7 @@ export async function applyAftermathExtension(db, fetchBars, {
     if (afterBars >= target) { out.alreadyFull++; continue }
     if (now < closedMs + (target + 2) * ms) { out.historyStillForming++; continue }
 
-    if (out.updated >= maxRows) { out.remaining++; continue }
+    if (out.updated >= maxRows || out.errors >= maxErrors) { out.remaining++; continue }
 
     const endMs = closedMs + (target + 2) * ms
     const lastT = bars.reduce((m, b) => Math.max(m, Number(b?.[0]) || 0), 0)
