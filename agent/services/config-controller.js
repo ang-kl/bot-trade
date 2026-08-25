@@ -68,7 +68,7 @@ export const MIN_LOSING_TRADES_PER_DAY = 5
  * floor sample first"). Burn-in places pinned 0.01-lot trades at whatever
  * target the gate currently demands — that is its job — and this query fed
  * their outcomes straight back into the win rate the expectancy floor is
- * computed from. Measured on account 43097342: 80 of the 164 sampled trades
+ * computed from. Measured on account ACCT-DEMO-1: 80 of the 164 sampled trades
  * were burn-in at a 12.8% win rate against near-unreachable ~5R targets,
  * dragging the sample to 17.1% and the floor's demand to R:R ≥ 5.74; without
  * them the same sample sits ~21% and demands ~4.4. The experiment was
@@ -106,7 +106,7 @@ export function accountEconomics(db, accountId, { days = 30 } = {}) {
     // THE WORST SINGLE LOSS, not just the average one. A daily cap sized off
     // the average is blind to the trade that spends the whole day's budget by
     // itself — 04-08-2026, JPN225 lost $2,681.29 against a $1,382 daily cap on
-    // 46130058. The average said the cap was seven losses wide; one trade
+    // ACCT-DEMO-2. The average said the cap was seven losses wide; one trade
     // proved it was not even one.
     maxLoss: losses.length ? Math.max(...losses) : null,
     // Both null-safe: an account with no losses yet has no payoff ratio, and
@@ -221,7 +221,7 @@ export const RULES = Object.freeze([
     /**
      * A cap below the size of a single average loss stops the account for the
      * day on its first ordinary trade. Measured, not assumed: 4,717 vetoes in
-     * one week from a $16.16 cap on 43097342.
+     * one week from a $16.16 cap on ACCT-DEMO-1.
      */
     evaluate({ econ, config, balance }) {
       const pct = Number(config.dailyLossPct)
@@ -375,7 +375,7 @@ export function configProposals(db, { days = 30, minSample = MIN_SAMPLE, include
 // MEASURED 05-08-2026. C-1 shipped in #632 and has been correct ever since,
 // and nothing was listening. Its live output right now:
 //
-//   43097342  minRR 1.5, win rate 21.4% over 70 trades  → severity DANGER
+//   ACCT-DEMO-1  minRR 1.5, win rate 21.4% over 70 trades  → severity DANGER
 //             "a trade must average 3.67x its risk just to break even… That
 //              is BELOW breakeven: the gate is approving trades that lose
 //              money in expectation."

@@ -213,7 +213,7 @@ export default function stateRouter(db) {
       broker: {
         linked: !!getState(db, 'ctrader_account_id'),
         accountId: getState(db, 'ctrader_account_id') || null,
-        // Human account number (e.g. 5306502) — accountId is cTrader's
+        // Human account number (e.g. LOGIN-5) — accountId is cTrader's
         // internal id; the UI shows traderLogin when available.
         traderLogin: getState(db, 'ctrader_trader_login') || null,
         isLive: getState(db, 'ctrader_is_live') === 'true',
@@ -519,7 +519,7 @@ export default function stateRouter(db) {
     // selected when the monitor last ran — so every row belonging to any other
     // account matched nothing and rendered "—" for P&L, price and the daily
     // bar. Measured on production the same day: of 21 open positions, only the
-    // 6 on account 47790949 carried numbers.
+    // 6 on account ACCT-DEMO-4 carried numbers.
     //
     // Each account now caches its own snapshot (actions.js), and a row is
     // enriched from ITS account's cache. The global key stays as the fallback
@@ -3186,7 +3186,7 @@ export default function stateRouter(db) {
       const { DEFAULT_RISK_CONFIG, loadRiskConfig, getAccountBalance, getAccountLeverage, accountRiskOverlay } = await import('../services/risk.js')
       const { accountKnown, effectiveRiskEntries, unknownQueryParams } = await import('../services/risk-effective.js')
       // STRICT PARAMETERS. This route used to read `?account=` and ignore
-      // everything else, so `?accountId=47790949` returned the GLOBAL config
+      // everything else, so `?accountId=ACCT-DEMO-4` returned the GLOBAL config
       // presented as an answer about that account — which is how the audit
       // came to report `minRR 1.5` for accounts gated at 4.5–6.16. A
       // parameter this route does not understand is now a 400, because
@@ -3351,8 +3351,8 @@ export default function stateRouter(db) {
           const { loadProfitRatchetConfig, DEFAULT_PROFIT_RATCHET, loadRatchetState } = await import('../services/profit-ratchet.js')
           // WHOSE LADDER (owner 04-08-2026, three screenshots): switching the
           // account on the Risk page did not change the Live staircase —
-          // baseline and high-water mark read identically for 5203012, 5306502
-          // and 5268549, because this loaded the SELECTED account's ladder and
+          // baseline and high-water mark read identically for LOGIN-3, LOGIN-5
+          // and LOGIN-4, because this loaded the SELECTED account's ladder and
           // ignored ?account= entirely. Same defect as the balance with no
           // owner: a number rendered under a name it does not belong to.
           // The queried account wins; the selected one is only the fallback

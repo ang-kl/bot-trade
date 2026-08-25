@@ -20,8 +20,8 @@
 // land on the same broker_deals row instead of beside it.
 //
 // THE ACCOUNT IS RESOLVED, NEVER TRUSTED FROM THE FILE NAME ALONE. Filenames
-// carry the human trader login (Acct_5306502__...); the database keys accounts
-// by ctidTraderAccountId (accounts.account_id, e.g. 46130058). The importer
+// carry the human trader login (Acct_LOGIN-5__...); the database keys accounts
+// by ctidTraderAccountId (accounts.account_id, e.g. ACCT-DEMO-2). The importer
 // looks the login up in the accounts table and REFUSES the whole file when it
 // cannot: a deal filed under a wrong or unmapped account never heals, and
 // NULL-account rows are second-class everywhere else in this codebase.
@@ -112,7 +112,7 @@ export function parseStatement(text) {
   return rows
 }
 
-/** Acct_5306502__statement10_28_21.08.2026.csv → '5306502'. */
+/** Acct_LOGIN-5__statement10_28_21.08.2026.csv → 'LOGIN-5'. */
 export function loginFromFilename(name) {
   const m = String(name ?? '').match(/Acct_(\d+)__/)
   return m ? m[1] : null

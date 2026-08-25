@@ -648,7 +648,7 @@ export default function Trade() {
           {/* ONE IDENTITY, ONE SENTENCE (owner 04-08-2026, with a screenshot:
               "conflicting account numbers … cause the user distrust the page
               information"). This line used to read
-                    Account: DEMO 5306502    $1,370.44
+                    Account: DEMO LOGIN-5    $1,370.44
               where the NAME came from health.broker — the broker session —
               and the BALANCE from an unscoped /state/risk-config, which
               returned whichever account last refreshed the legacy balance key.

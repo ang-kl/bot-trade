@@ -278,7 +278,7 @@ export default function App() {
             <LlmMonitorStatus />
           </div>
           {/* Which account am I looking at? (owner 2026-07-29: "above the
-              OVERVIEW state the Account · {DEMO 5203012} I am viewing now").
+              OVERVIEW state the Account · {DEMO LOGIN-3} I am viewing now").
               It sits ABOVE the first nav group because every number on every
               page below belongs to this account — reading Performance without
               knowing whose Performance it is has bitten before. */}

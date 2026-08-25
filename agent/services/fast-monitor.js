@@ -567,7 +567,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
           // path could run perfectly while the panel still read "stalled".
           //
           // An UNAUDITABLE account does not fail the beat — see
-          // runProtectionAuditAllAccounts. 5268549's token does not cover it,
+          // runProtectionAuditAllAccounts. LOGIN-4's token does not cover it,
           // and letting that hold the controller red forever would train the
           // operator to ignore the one light that says their positions are
           // being checked.

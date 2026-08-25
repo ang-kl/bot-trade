@@ -322,7 +322,7 @@ export default function WatchlistCompare() {
 
   // Name an account the way the operator sees it everywhere else — by broker
   // login — with the internal id in brackets. A confirmation that said only
-  // "account 46130058" is not a confirmation anyone can check.
+  // "account ACCT-DEMO-2" is not a confirmation anyone can check.
   const nameOf = (id) => {
     const a = accounts.find(x => String(x.accountId) === String(id))
     if (!a) return `account ${id}`

@@ -645,7 +645,7 @@ export default function actionsRouter(db, deps = {}) {
   // [Re-arm] button (telegram-control.js). The one HTTP path that touched a
   // halt was POST /actions/profit-ratchet with { resetState: true }, which
   // walks the whole registry and clears EVERY account's staircase and hold —
-  // so "unblock 5203012" meant also silently discarding the other account's
+  // so "unblock LOGIN-3" meant also silently discarding the other account's
   // banked floor. A per-account gesture needs a per-account route.
   //
   // This is a money-moving route by consequence, not by mechanism: it does not
@@ -3839,7 +3839,7 @@ export default function actionsRouter(db, deps = {}) {
           { accountId, isLive: !!isLive, autopilot: true },
         ]))
       }
-      // The human-facing account number (traderLogin, e.g. 5306502) — the
+      // The human-facing account number (traderLogin, e.g. LOGIN-5) — the
       // ctidTraderAccountId above is cTrader's internal id and confused the
       // owner when the health strip showed it. Stored best-effort at select
       // time; resolved from the account list when the UI didn't send it.

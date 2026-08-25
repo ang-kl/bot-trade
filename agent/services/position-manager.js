@@ -19,7 +19,7 @@
 export const DEFAULT_RULES = Object.freeze({
   beTriggerR: 0.7,         // move SL to breakeven at +0.7R MFE
   // 1.5 → 1.0, owner order 2026-08-22 (audit item 4). The partial pipeline
-  // was wired end-to-end and NEVER FIRED on account 46130058: winners were
+  // was wired end-to-end and NEVER FIRED on account ACCT-DEMO-2: winners were
   // closed at the broker or scratched before reaching +1.5R (NAS100 banked
   // 18% of plan, closed manually), so the trigger sat above the excursions
   // this book actually produces. "A TP1 partial at ~1R would have turned
@@ -151,7 +151,7 @@ export function evaluatePosition(pos, ctx) {
   // whose price OR entry price could not be read never had its cap evaluated
   // at all — it just returned HOLD, every pass, forever.
   //
-  // Production, 2026-08-03: seven burn-in positions on account 43097342, each
+  // Production, 2026-08-03: seven burn-in positions on account ACCT-DEMO-1, each
   // carrying the thesis "closes in ≤12m", still open 5h18m to 8h31m after
   // their caps expired, holding −$52.91. Every one had `entry_price: null`
   // and logged "Price data unavailable" — so `currentR` returned null and the

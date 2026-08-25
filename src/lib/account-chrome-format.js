@@ -8,7 +8,7 @@
 // operator will act on.
 // ---------------------------------------------------------------------------
 
-/** `5203012 · 46130058` — the login the broker shows, then the id we key on. */
+/** `LOGIN-3 · ACCT-DEMO-2` — the login the broker shows, then the id we key on. */
 export function accountLabel(row) {
   const login = row?.login ? String(row.login) : null
   const id = row?.accountId ? String(row.accountId) : null

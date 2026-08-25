@@ -133,10 +133,10 @@ function AccountRow({ row }) {
 
             Both ids are now on the card, because they are different ids for
             the same thing and the owner uses the first one: the cTrader LOGIN
-            (5067353) is what the broker app shows, and the ctidTraderAccountId
-            (43097342) is what this system's tables, logs and ?account= use.
+            (LOGIN-6) is what the broker app shows, and the ctidTraderAccountId
+            (ACCT-DEMO-1) is what this system's tables, logs and ?account= use.
             Showing only one leaves a translation step the operator has to do
-            in their head — which is the step that made "why is DEMO 5203012
+            in their head — which is the step that made "why is DEMO LOGIN-3
             ratchet" unanswerable from a screenshot. */}
         <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, color: ACC }}>
           {row.login ? `#${row.login}` : (row.label || row.accountId)}

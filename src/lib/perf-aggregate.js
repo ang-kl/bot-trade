@@ -32,8 +32,8 @@
 // ===========================================================================
 // WHY EVERY TOTAL IS PER CURRENCY
 // ===========================================================================
-// This cTrader ID holds SGD accounts (live 1251247 at 33.45 SGD) and USD
-// accounts (demo 5203012) at the same time. `SGD 33.45 + USD 51,531.56` is not
+// This cTrader ID holds SGD accounts (live LOGIN-1 at 33.45 SGD) and USD
+// accounts (demo LOGIN-3) at the same time. `SGD 33.45 + USD 51,531.56` is not
 // a number — it is two numbers with a plus sign between them. There is no FX
 // rate on this payload, and inventing one to produce a single impressive total
 // would be the worst possible lie on a capital-safety panel.

@@ -580,7 +580,7 @@ const UNAUTHORISED_CODES = [
   'NOT_AUTHENTICATED', 'CH_CLIENT_AUTH_FAILURE',
   // ADDED 08-08-2026. `CANT_ROUTE_REQUEST` is the broker refusing to route to
   // an account this session was never authorised for — the disabled LIVE
-  // account 42993489, which is still swept because `manage_only` accounts hold
+  // account ACCT-LIVE-1, which is still swept because `manage_only` accounts hold
   // open positions and dropping them from the audit would stop checking whether
   // those positions have stops. So it belongs in the same class as the token
   // codes above: a fact about ACCESS, not about exposure. Left out of the list,
@@ -711,7 +711,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       // UNAUDITABLE IS NOT UNPROTECTED, and the difference decides whether
       // this controller is worth reading.
       //
-      // Demo 5268549's token does not cover it, so every pass returned
+      // Demo LOGIN-4's token does not cover it, so every pass returned
       // CH_ACCESS_TOKEN_INVALID and the first deploy of this path parked
       // protection_audit permanently in `error` — a controller that is always
       // red is a controller nobody reads, which is the same defect fixed in

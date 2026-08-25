@@ -12,8 +12,8 @@
 //
 // The cost is not cosmetic. `getAccountBalance(db, id)` falls through to the
 // unowned global when an account has nothing stamped, and that global holds
-// whichever account refreshed it last. Measured 2026-08-15: accounts 43002148
-// and 43069009 both reported 35,319.80 — the selected account's balance.
+// whichever account refreshed it last. Measured 2026-08-15: accounts ACCT-LIVE-2
+// and ACCT-DEMO-5 both reported 35,319.80 — the selected account's balance.
 // Worse than the wrong number on a panel, a percentage-based loss cap computed
 // off it is priced against equity the account does not have: 3% of 35,319.80
 // instead of 3% of 688.17 is ~51x too permissive, so the cap can never bind.

@@ -223,12 +223,12 @@ export const DEFAULT_RISK_CONFIG = {
   // cap, unchanged. See services/daily-loss-pacing.js.
   dailyLossPctMax: null,
   // ⚠️ OWNER DECISION, 2026-08-07 — A RISK LIMIT INCREASE, verbatim:
-  // "Change immediately dailyLossPct for 43097342 to $200 min. or 3% for
+  // "Change immediately dailyLossPct for ACCT-DEMO-1 to $200 min. or 3% for
   //  accounts < $10000. 4% for account > $10000."
   //
   //   cap = max(dailyLossFloorUsd, balance × (balance < tierAt ? small : large))
   //
-  // On 43097342 the cap had collapsed to USD 16.16 and logged 4,717
+  // On ACCT-DEMO-1 the cap had collapsed to USD 16.16 and logged 4,717
   // `daily_loss_limit_hit` vetoes in a week: a percentage of a shrunken
   // balance is a shutdown, not a limit. The floor is what stops that.
   //
@@ -266,7 +266,7 @@ export const DEFAULT_RISK_CONFIG = {
   // NULL-EXIT FLOOR (owner 2026-08-04, "this account has penny profit, took
   // profits too early"). A discretionary close inside this many R of the
   // entry banks nothing and pays the spread — measured, 26 of 31 explicit
-  // closes on 47790949 were inside 0.1R and cost -$3,348 between them.
+  // closes on ACCT-DEMO-4 were inside 0.1R and cost -$3,348 between them.
   // Protection writers are never blocked; see null-exit-guard.js. 0 = off.
   nullExitMinR: DEFAULT_NULL_EXIT_MIN_R,
   // Per-trade risk (owner: "push default risk to 5% or absolute amount").
@@ -520,8 +520,8 @@ export function getAccountBalance(db, accountId = null) {
   // RESOLVE, don't fall through to an unowned number (owner 04-08-2026, with
   // a screenshot: "conflicting account numbers … cause the user distrust the
   // page information"). The Trade header printed
-  //     Account: DEMO 5306502   $1,370.44
-  // where the balance was 5067353's — because with no accountId this read the
+  //     Account: DEMO LOGIN-5   $1,370.44
+  // where the balance was LOGIN-6's — because with no accountId this read the
   // LEGACY GLOBAL key, which is whatever account refreshed it last. A balance
   // with no owner will be wrong the moment there is more than one account, and
   // it is worse than missing: it is printed next to somebody else's name.
@@ -846,7 +846,7 @@ export function strategyPerfStats(db, strategyKey, windowDays = 30) {
 // nothing to do with the change under test. Production never passes it.
 /**
  * OWNER ORDER, 2026-08-22 audit item 1: "disarm NatGas". Measured basis: 15
- * NatGas deals for −$1,929 on the 46130058 statement, including 21 Aug —
+ * NatGas deals for −$1,929 on the ACCT-DEMO-2 statement, including 21 Aug —
  * three longs stopped out in 10–30 minutes on 0.4–0.6% stops against an
  * instrument moving 2–4%/day, then a flipped short that filled 3.7× planned
  * risk beyond its stop (−$550).
@@ -891,7 +891,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // is placed with its own creds — so the duplicate-symbol check at step 4
   // reads account A's open positions and the fill lands on account B. A
   // re-scan next cycle finds A still clean and approves again. Six 0005.HK
-  // fills on 43097342 while every risk_events row that day said 47790949,
+  // fills on ACCT-DEMO-1 while every risk_events row that day said ACCT-DEMO-4,
   // and the day before, nine 0066.HK the same way.
   //
   // The seam was always here; nothing filled it in. `account_source` below
@@ -1298,7 +1298,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
 
   // ---- 4a. HARD CEILING on positions per symbol ---------------------------
   //
-  // Owner, 05-08-2026, after 17 × DOW.US SELL landed on 46130058 inside 89
+  // Owner, 05-08-2026, after 17 × DOW.US SELL landed on ACCT-DEMO-2 inside 89
   // milliseconds: "maximum 2 positions hard cap".
   //
   // This does NOT relax the duplicate_symbol gate directly above — that still
@@ -1334,7 +1334,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   //   locking winners was unpaid-for restriction.
   //
   //   ACCOUNT-SCOPED. It used to have no account_id clause at all, so a close
-  //   on 43097342 locked the same symbol on 46130058 and on the live account.
+  //   on ACCT-DEMO-1 locked the same symbol on ACCT-DEMO-2 and on the live account.
   //   The consecutive-loss breaker directly above (step 2) has always been
   //   scoped; this was the outlier, and across five enabled accounts the
   //   difference is large. Same clause shape as step 2 and the reconciler:

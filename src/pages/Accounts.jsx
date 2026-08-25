@@ -153,7 +153,7 @@ export default function Accounts() {
     }).catch(() => {})
   }, [])
 
-  // Account SWITCH (owner 2026-07-29: "I change account - DEMO 5268549 - why
+  // Account SWITCH (owner 2026-07-29: "I change account - DEMO LOGIN-4 - why
   // the Accounts page, is the loading slow"). Measured on staging:
   // /state/broker-cache 0.73s, /actions/broker-positions {selectedOnly} 5.1s.
   // The cold-load instant paint above is guarded by `prev ?? …`, so after a

@@ -65,7 +65,7 @@ function levelMoney(symbol, side, lots, entry, level, ref, rates) {
   // `Number.isFinite(e)` as zero, and `l - e` became the WHOLE PRICE LEVEL
   // instead of the distance from entry. Every bracket figure was then
   // `level × contractSize × lots`: the notional value at the stop, not the
-  // risk. Owner screenshot, 2026-08-03, account 46130058 — seven positions,
+  // risk. Owner screenshot, 2026-08-03, account ACCT-DEMO-2 — seven positions,
   // entry column all "—", reporting a +$651,869 stop-loss and a +$715,251
   // take-profit against a real floating P&L of −$60.53.
   //

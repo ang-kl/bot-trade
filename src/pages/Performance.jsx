@@ -1468,7 +1468,7 @@ export default function Performance() {
         id: a.account_id,
         dormantButHeld,
         // Carried as a FIELD, not inferred from the name string: the ALL-accounts
-        // summary counts live vs demo, and parsing "Demo · 5203012" to find that
+        // summary counts live vs demo, and parsing "Demo · LOGIN-3" to find that
         // out would break the first time the label changed. (It shipped reading
         // 0 live · 0 demo for exactly this reason.)
         isLive: a.is_live === 1,

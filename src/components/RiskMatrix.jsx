@@ -6,7 +6,7 @@
 // triangle."
 //
 // The page could show ONE account's effective settings — whichever was
-// selected — so "does 5203012 run tighter than 46130058, and where?" could
+// selected — so "does LOGIN-3 run tighter than ACCT-DEMO-2, and where?" could
 // only be answered by switching accounts and remembering. Overlays make that
 // worse rather than better: an overlay is a PARTIAL config merged over the
 // global one, so the same number can be an override on one account and an

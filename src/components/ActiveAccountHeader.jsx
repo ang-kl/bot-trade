@@ -2,7 +2,7 @@
 // whether it is actually working.
 //
 // Owner (2026-07-29): "At the side Bar, above the OVERVIEW state the
-// Account · {DEMO 5203012} I am viewing now. Account # in Blue text if
+// Account · {DEMO LOGIN-3} I am viewing now. Account # in Blue text if
 // trading now, Bright Grey is stop trading. Below the Account # is the
 // Balance: USD/SGD/EUR ###,###.## now."
 //

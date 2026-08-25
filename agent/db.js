@@ -355,7 +355,7 @@ const TABLES = `
   -- M0). Single source of truth for which cTrader accounts exist and which
   -- may trade. account_id is cTrader's INTERNAL ctidTraderAccountId (the
   -- one every API call takes); trader_login is the human-facing number the
-  -- cTrader app shows (e.g. 1251247, 5306502). In M0 exactly ONE row is
+  -- cTrader app shows (e.g. LOGIN-1, LOGIN-5). In M0 exactly ONE row is
   -- enabled at a time, mirroring today's single-account behaviour; later
   -- milestones lift that. Managed by services/account-registry.js — no
   -- other writer.
