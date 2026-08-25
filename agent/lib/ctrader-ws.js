@@ -341,6 +341,55 @@ export function backoffMs(attempt, err, rand = Math.random) {
   return Math.round(exp * (0.5 + rand() * 0.5))              // full-ish jitter, never below half
 }
 
+// ---------------------------------------------------------------------------
+// Reactive auth recovery (26-08-2026, "controllers have been down").
+//
+// ctrader-auth.js's header promised "reactively (callers may invoke
+// refreshCtraderToken() after an auth error)" — and NO CALLER EVER DID:
+// failure mode #4, a repair nothing calls. Measured live: the access token
+// was refreshed at 09:25Z and Spotware invalidated it ~14h later (revocation,
+// not expiry — likely another holder of the same OAuth grant rotating it);
+// every wsGetLastCloses then burned its full retry budget on
+// CH_ACCESS_TOKEN_INVALID, loops stretched past the phase-audit's ~1m
+// expectation, and the owner's Telegram filled with CONTROLLER STALLED.
+//
+// The hook lives HERE because withRetry is the one choke point every broker
+// call already passes through. The loop installs it at startup
+// (setAuthErrorHook → refreshCtraderToken); this module stays db-free.
+// Cooldown-limited so a broken refresh token cannot turn every retry into a
+// refresh storm. NOTE the recovery lands on the NEXT call, not this one: the
+// in-flight fn() closed over the old token string, so this attempt's retries
+// may still fail — the next controller pass re-reads creds from state and
+// heals. Worst case one extra loop (~1m), against the alternative of stalling
+// until someone notices.
+// ---------------------------------------------------------------------------
+let authErrorHook = null
+let lastAuthRecoveryAt = 0
+export const AUTH_RECOVERY_COOLDOWN_MS = 60_000
+
+export function setAuthErrorHook(fn) { authErrorHook = fn }
+
+export function isAuthTokenError(err) {
+  return /CH_ACCESS_TOKEN_(INVALID|EXPIRED)/.test(err?.message || '')
+}
+
+async function maybeRecoverAuth(err, now = Date.now()) {
+  if (!authErrorHook || !isAuthTokenError(err)) return
+  if (now - lastAuthRecoveryAt < AUTH_RECOVERY_COOLDOWN_MS) return
+  lastAuthRecoveryAt = now
+  try {
+    await authErrorHook()
+    console.log('[auth] cTrader access token refreshed reactively after auth error')
+  } catch (e) {
+    // The ORIGINAL error stays the one the caller sees — a failed refresh is
+    // logged, never thrown, or it would mask what actually went wrong.
+    console.log(`[auth] reactive cTrader token refresh failed: ${e.message}`)
+  }
+}
+
+/** TEST SEAM: reset the cooldown so tests need not wait a minute. */
+export function _resetAuthRecoveryForTests() { lastAuthRecoveryAt = 0 }
+
 export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null) {
   let lastErr
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -349,6 +398,7 @@ export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null
     } catch (err) {
       lastErr = err
       const msg = err.message || ''
+      await maybeRecoverAuth(err)
       if (msg.includes('order rejected') || msg.includes('POSITION_NOT_FOUND')) throw err
       if (noRetry && noRetry(err)) throw err
       if (attempt < maxRetries) {

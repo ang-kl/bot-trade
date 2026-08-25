@@ -1541,6 +1541,28 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // POST /actions/ctrader-token-refresh — on-demand OAuth refresh.
+  //
+  // Born 26-08-2026 ("controllers have been down"): the access token was
+  // invalidated mid-flight, the proactive refresh only runs at process start,
+  // and the reactive path existed in ctrader-auth.js with zero callers.
+  // The withRetry hook now self-heals, but the owner (or Claude, with a
+  // device session) also needs a direct lever that doesn't wait for the next
+  // broker error. Exchanges the STORED refresh token; never accepts one from
+  // the request body — a caller who can POST here must not be able to swap
+  // the grant.
+  router.post('/ctrader-token-refresh', async (_req, res) => {
+    try {
+      const { refreshCtraderToken } = await import('../lib/ctrader-auth.js')
+      await refreshCtraderToken(db)
+      const at = getState(db, 'ctrader_token_refreshed_at') || null
+      console.log(`[actions] cTrader access token refreshed on demand (${at})`)
+      res.json({ ok: true, refreshedAt: at })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   // POST /actions/extend-aftermath — the approved APPLY of the aftermath
   // top-up (owner 25-08-2026 "go for both", after the dry-run at
   // GET /state/aftermath-extend-preview reported 897 extendable rows).
