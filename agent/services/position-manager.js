@@ -35,6 +35,13 @@ export const DEFAULT_RULES = Object.freeze({
   // big winners (LLY sat at +17R) held ALL the margin hostage and armed
   // strategies couldn't get a fill (owner chose: cap + bank). 0/null disables.
   bankTriggerR: 4,
+  // Managed-exit trail (owner "c1", 25-08-2026): trail the stop this many R
+  // behind the PEAK favorable excursion, active from entry, tighten-only —
+  // the trail_1R rule the gated-entry counterfactual measured at PF 1.82
+  // (+0.38R) against the actual exits' 0.44 (-0.53R). null = off; the caller
+  // (monitorOnePosition) sets it per-account through managed-exit.js so it
+  // reaches DEMO accounts only until the forward sample confirms.
+  alwaysTrailR: null,
   // NOTE (2026-08-14): there is deliberately no `defaultTimeCapMinutes` here.
   // One was defined for months and never read by anything — evaluatePosition
   // only ever consults `pos.time_cap_at`, which is written at fill time from
@@ -240,6 +247,26 @@ export function evaluatePosition(pos, ctx) {
       return {
         action: 'MOVE_SL',
         reason: `runner_trail @ ${trailR.toFixed(2)}R behind current`,
+        newSL: trailSL,
+        exitFraction: null,
+        updates,
+        metrics: { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade },
+      }
+    }
+  }
+
+  // --- 4.5 Managed trail (from entry, behind the PEAK) --------------------
+  // Peak-based on purpose: trailing behind current price would loosen on a
+  // pullback; behind MFE, the stop only ever ratchets — identical to the
+  // trail_1R replay the evidence came from. At entry, peak−trailR equals the
+  // original stop, so the rule is a no-op until the trade shows profit.
+  if (rules.alwaysTrailR > 0) {
+    const peakR = Math.max(newMfe ?? 0, r)
+    const trailSL = priceAtR(pos, peakR - rules.alwaysTrailR)
+    if (isTighter(pos.side, pos.current_sl, trailSL)) {
+      return {
+        action: 'MOVE_SL',
+        reason: `managed_trail @ ${(peakR - rules.alwaysTrailR).toFixed(2)}R (peak ${peakR.toFixed(2)}R − ${rules.alwaysTrailR}R)`,
         newSL: trailSL,
         exitFraction: null,
         updates,

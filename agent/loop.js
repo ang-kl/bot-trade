@@ -9,6 +9,7 @@ import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTrade
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
+import { loadManagedExit, managedExitApplies, managedCapAt } from './services/managed-exit.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
@@ -713,6 +714,14 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     let timeCap = null
     if (synth.time_cap_minutes && Number.isFinite(synth.time_cap_minutes)) {
       timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
+    } else if (managedExitApplies(db, accountId)) {
+      // Managed-exit policy (owner "c1", 25-08-2026): a setup that declares
+      // no cap gets capBars bars OF ITS OWN TIMEFRAME — timeframe-scaled,
+      // demo-only, from the gated-entry counterfactual's verdict that deep
+      // holds turn these entries' +0.2R into -0.53R. Signal-declared caps
+      // above always win; this is the default for the silence.
+      const mePolicy = loadManagedExit(db)
+      timeCap = managedCapAt(Date.now(), parsedLabel.timeframe || synth.timeframe || '1h', mePolicy.capBars)
     }
 
     // Atomic DB write: promote the intent row to 'open' and create its
@@ -1645,7 +1654,13 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 // passed in, no closure over runLoop state) so it's unit-testable in
 // isolation, same as evaluatePosition/executeBrokerAction.
 export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
-  const eval_ = evaluatePosition(pos, { currentPrice, rules: rulesForSymbol(db, pos.symbol) })
+  let rules = rulesForSymbol(db, pos.symbol)
+  // Managed-exit trail (owner "c1", 25-08-2026): peak-based 1R trail from
+  // entry on demo accounts — see managed-exit.js for the evidence and scope.
+  if (managedExitApplies(db, pos.account_id)) {
+    rules = { ...rules, alwaysTrailR: loadManagedExit(db).trailR }
+  }
+  const eval_ = evaluatePosition(pos, { currentPrice, rules })
 
   // Persist MFE/MAE and any flag flips every loop, regardless of action.
   s.updatePositionMetrics.run(
