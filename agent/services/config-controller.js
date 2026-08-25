@@ -36,6 +36,7 @@
 // ---------------------------------------------------------------------------
 
 import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance } from './risk.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
 /** Trades required before this controller will say anything about an account. */
 export const MIN_SAMPLE = 30
@@ -62,6 +63,18 @@ export const MIN_LOSING_TRADES_PER_DAY = 5
  * counting it as a zero-value loss would drag the win rate down and the payoff
  * with it. Same rule as everywhere else in this codebase; here it matters more
  * than usual because the output is a recommendation about real money.
+ *
+ * EXPERIMENT TRADES ARE EXCLUDED (owner, 25-08-2026: "go for both, fix the
+ * floor sample first"). Burn-in places pinned 0.01-lot trades at whatever
+ * target the gate currently demands — that is its job — and this query fed
+ * their outcomes straight back into the win rate the expectancy floor is
+ * computed from. Measured on account 43097342: 80 of the 164 sampled trades
+ * were burn-in at a 12.8% win rate against near-unreachable ~5R targets,
+ * dragging the sample to 17.1% and the floor's demand to R:R ≥ 5.74; without
+ * them the same sample sits ~21% and demands ~4.4. The experiment was
+ * polluting its own control variable — failure mode #3, one WHERE clause.
+ * Both callers are risk decisions about real money (the expectancy floor and
+ * the Re-Risk proposals), and 0.01-lot probes distort both the same way.
  */
 export function accountEconomics(db, accountId, { days = 30 } = {}) {
   let rows = []
@@ -71,6 +84,7 @@ export function accountEconomics(db, accountId, { days = 30 } = {}) {
        WHERE status = 'closed' AND net_pnl IS NOT NULL
          AND (account_id = ? OR account_id IS NULL)
          AND closed_at >= datetime('now', ?)
+         AND COALESCE(${strategyAttrSql()}, '') != 'burnin'
     `).all(String(accountId), `-${Math.max(1, Math.round(days))} days`)
   } catch { return null }
 

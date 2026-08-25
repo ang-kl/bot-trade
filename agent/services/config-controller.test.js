@@ -70,6 +70,27 @@ test('economics ignore trades with unknown P&L rather than counting them as zero
   assert.equal(e.winRate, 0.5, 'counting it as a zero-value loss would read as 33%')
 })
 
+test('experiment trades never reach the economics the floor is computed from', () => {
+  // The 5.74 deadlock, reproduced in miniature: burn-in probes at pinned 0.01
+  // lots lose by design against near-unreachable targets, and until 25-08-2026
+  // their outcomes fed the very win rate that sets the R:R the gate demands —
+  // the experiment tightening the gate it exists to test. Owner: "go for both,
+  // fix the floor sample first."
+  const db = fresh()
+  seed(db, { wins: 1, losses: 1 }) // real trading: 50%
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, net_pnl, opened_at, closed_at, account_id, strategy, label_strategy)
+                          VALUES ('ADAUSD','BUY','closed',1.1,?,datetime('now','-2 days'),datetime('now','-1 days'),'46130058','burnin','burnin')`)
+  for (let i = 0; i < 8; i++) ins.run(-0.2) // 8 burn-in losses at probe size
+  const e = accountEconomics(db, '46130058')
+  assert.equal(e.trades, 2, 'burn-in probes are not economics data points')
+  assert.equal(e.winRate, 0.5, 'counting them would read 10% and demand an unreachable R:R')
+
+  // A burnin row stamped only on `strategy` (older writes) is excluded too.
+  db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, net_pnl, opened_at, closed_at, account_id, strategy)
+              VALUES ('ADAUSD','BUY','closed',1.1,-0.2,datetime('now','-2 days'),datetime('now','-1 days'),'46130058','burnin')`).run()
+  assert.equal(accountEconomics(db, '46130058').trades, 2)
+})
+
 test('an account without losses reports a null payoff rather than Infinity', () => {
   const db = fresh()
   seed(db, { wins: 5, losses: 0 })
