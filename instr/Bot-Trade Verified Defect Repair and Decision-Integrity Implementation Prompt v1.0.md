@@ -93,7 +93,7 @@ Never disguise a policy change as a bug fix.
 
 #### A. F-SIZE-01 — risk or sizing containment failure
 
-The audit records a trade on account `46130058` that lost more than the account’s entire configured daily allowance.
+The audit records a trade on account `ACCT-DEMO-2` that lost more than the account’s entire configured daily allowance.
 
 Do not raise the daily cap.
 
@@ -269,7 +269,7 @@ Rules:
 
 ## 4. Phase 1 — reconstruct the oversized-loss event
 
-Locate the exact account `46130058` trade represented by the danger proposal.
+Locate the exact account `ACCT-DEMO-2` trade represented by the danger proposal.
 
 Produce an immutable lineage containing:
 
@@ -458,7 +458,7 @@ Return:
   "overlayValue": 4.68,
   "effectiveValue": 4.68,
   "scope": "account",
-  "accountId": "47790949",
+  "accountId": "ACCT-DEMO-4",
   "source": "manual|controller|migration|unknown",
   "sourceId": null,
   "writtenAt": null,

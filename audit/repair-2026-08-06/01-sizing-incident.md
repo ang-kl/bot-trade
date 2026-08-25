@@ -14,8 +14,8 @@ The **same** `0003.HK` position — 5,000 units, entry 6.91, stop 6.678, target
 
 | Account | Login | Balance | Risk to stop | Own 1% budget | Multiple |
 |---|---|---|---|---|---|
-| 46130058 | 5203012 | USD 46,072.92 | USD 149 | USD 460.73 | 0.32× |
-| **43097342** | **5067353** | **USD 1,983.52** | **USD 149** | **USD 19.84** | **7.50×** |
+| ACCT-DEMO-2 | LOGIN-3 | USD 46,072.92 | USD 149 | USD 460.73 | 0.32× |
+| **ACCT-DEMO-1** | **LOGIN-6** | **USD 1,983.52** | **USD 149** | **USD 19.84** | **7.50×** |
 
 Notional on the small account: 5,000 × 6.91 HKD ≈ **USD 4,429 against USD 1,984
 of equity** — 2.2× the account.
@@ -180,7 +180,7 @@ tested in `sizing-balance.test.js`.
 ## Also outstanding, and not silent
 
 - The **six-way `0005.HK` cluster** is the duplicate mechanism recurring — nine
-  0066.HK (#179), six 0005.HK (#184), four GD.US on 46130058 today. It was
+  0066.HK (#179), six 0005.HK (#184), four GD.US on ACCT-DEMO-2 today. It was
   declared fixed in #573 and demonstrably is not.
 - Trimming or closing any of these needs a full-tier credential. This session
   holds read-only by design and has changed nothing at the broker.

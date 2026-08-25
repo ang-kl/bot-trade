@@ -106,8 +106,8 @@ returns for a LIVE account:
 ```
 creds has own isLive field?  false
 !!creds.isLive           =  false
-sameSideAccountIds(LIVE creds) = [ '42993489', '43097342', '46130058' ]
-EXPECTED for a live account   = [ 42993489, 99999999 ]
+sameSideAccountIds(LIVE creds) = [ 'ACCT-LIVE-1', 'ACCT-DEMO-1', 'ACCT-DEMO-2' ]
+EXPECTED for a live account   = [ ACCT-LIVE-1, 99999999 ]
 ```
 
 Two demo accounts are selected for a sweep carrying LIVE credentials, and a second
@@ -149,10 +149,10 @@ Fails at this SHA, passes after.
 **Scope:** `cpp-exec/src/engine.cpp:106-115`, `cpp-exec/src/main.cpp:144`, `agent/services/heartbeat.js` `rosterDrift`, `agent/lib/ctrader-creds.js:42`, gate at `agent/loop.js:1173`
 **Hypotheses:** H06, H18 — **CONFIRMED**
 
-**Observation.** Four demo accounts (43097342, 46130058, 46979908, 47790949) are
+**Observation.** Four demo accounts (ACCT-DEMO-1, ACCT-DEMO-2, ACCT-DEMO-3, ACCT-DEMO-4) are
 `enabled = 1` and absent from the exec sidecar's authorised roster. Measured live:
 `/state/account-phases` reported `connectivity: disconnected` for all four and
-`active` only for 42993489. Consequence: 965 `account_probe` skips in 24h and **zero
+`active` only for ACCT-LIVE-1. Consequence: 965 `account_probe` skips in 24h and **zero
 trades opened in twelve hours**, against 87 the day before.
 
 **Reachable trigger.** Three facts compose into a deadlock, each verified in source:
@@ -164,7 +164,7 @@ trades opened in twelve hours**, against 87 the day before.
    against `getCtraderCreds(db).accountIds`, which is filtered
    `WHERE enabled = 1 AND is_live = ?` off the single global `ctrader_is_live` flag
    (`ctrader-creds.js:42`). That flag says LIVE, so the comparison set is
-   `{42993489}` — which matches. **Drift is structurally undetectable**: the demo
+   `{ACCT-LIVE-1}` — which matches. **Drift is structurally undetectable**: the demo
    accounts were never in the comparison.
 3. The only other thing that would push demo credentials is an order attempt, and the
    connectivity gate (`loop.js:1173`) skips the account before one is built.
@@ -402,7 +402,7 @@ Each of these is labelled per §2. None was changed.
 
 | # | Decision | Current state | Why it is policy |
 |---|---|---|---|
-| 1 | `dailyLossPct 0.03` → USD 16.16 cap on 43097342 | active | a risk limit |
+| 1 | `dailyLossPct 0.03` → USD 16.16 cap on ACCT-DEMO-1 | active | a risk limit |
 | 2 | `risk_budget = $0.33` vs `usd_per_lot = $52.97` | blocks every entry on that account | min lot costs more than the whole budget: either raise risk or reduce lot |
 | 3 | `fib_confluence` OFF (1,039 vetoes) | disabled | arming a strategy |
 | 4 | `minRR 1.5` vs measured breakeven payoff (task #185) | active | a threshold |

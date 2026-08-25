@@ -92,20 +92,20 @@ this proposal I stop shipping features and only measure.
 
 ## 4. The proposal — one account, three strategies, twenty symbols, seven days
 
-### 4.1 One account — `46130058` (Demo 5203012)
+### 4.1 One account — `ACCT-DEMO-2` (Demo LOGIN-3)
 
-**Pick `46130058`. Stop the other four.**
+**Pick `ACCT-DEMO-2`. Stop the other four.**
 
 The decisive argument is **lot quantisation**, and it is not about comfort — it
 is about whether the sample can be read at all.
 
 | Account | Balance | 1% risk/trade | Can it size 20 symbols cleanly? |
 |---|---|---|---|
-| **46130058** | ~USD 46,073 | **USD 460.73** | **yes, with room** |
-| 43097342 | ~USD 1,983 | USD 19.84 | **no** |
-| 42993489 (LIVE) | USD 33.45 | USD 0.33 | no — cannot trade at all |
-| 47790949 | — | — | history of parked backfill; excluded |
-| 46979908 / 46515833 | — | — | least instrumented; excluded |
+| **ACCT-DEMO-2** | ~USD 46,073 | **USD 460.73** | **yes, with room** |
+| ACCT-DEMO-1 | ~USD 1,983 | USD 19.84 | **no** |
+| ACCT-LIVE-1 (LIVE) | USD 33.45 | USD 0.33 | no — cannot trade at all |
+| ACCT-DEMO-4 | — | — | history of parked backfill; excluded |
+| ACCT-DEMO-3 / 46515833 | — | — | least instrumented; excluded |
 
 At USD 19.84 of intended risk, the broker's minimum lot on most of the twenty
 symbols implies a risk **well above** that figure. Two things happen, both
@@ -117,10 +117,10 @@ rounds up to the minimum and the trade carries several times its intended risk.
 
 At USD 460.73 every one of the twenty sizes cleanly, every trade lands at its
 intended R, and the sample means what it says. That is the whole argument, and
-it outranks every other consideration including the fact that 43097342 is the
+it outranks every other consideration including the fact that ACCT-DEMO-1 is the
 account the owner has been watching most closely.
 
-**Before it starts:** the four duplicate `GD.US` positions on `46130058` must
+**Before it starts:** the four duplicate `GD.US` positions on `ACCT-DEMO-2` must
 be trimmed. They are an unchosen concentration inherited from the
 duplicate-cluster mechanism and they would sit inside the experiment's exposure
 caps for its whole duration. Owner action — needs a full-tier credential.
@@ -190,10 +190,10 @@ Put the daily cap I shipped for you this morning against that:
 
 | Account | Balance | New daily cap | Days to zero at cap | Over the 7-day experiment |
 |---|---|---|---|---|
-| 43097342 | ~1,983 | **200** | **≈10 trading days** | 1,400 = **70% of the account** |
-| 46130058 | ~46,073 | **1,842.92** | ≈25 trading days | 12,900 = **28%** |
+| ACCT-DEMO-1 | ~1,983 | **200** | **≈10 trading days** | 1,400 = **70% of the account** |
+| ACCT-DEMO-2 | ~46,073 | **1,842.92** | ≈25 trading days | 12,900 = **28%** |
 
-Under the old USD 59.49 cap, 43097342 would have taken **33 days** to reach
+Under the old USD 59.49 cap, ACCT-DEMO-1 would have taken **33 days** to reach
 zero. After this morning's change it takes **ten**. That is a 3.3× increase in
 the speed of ruin, and **I shipped it at your instruction without computing it**
 — which I should have done before writing the PR, not the morning after.
@@ -207,7 +207,7 @@ weeks"* are both true at once, and only one of them was in the PR.
 **One setting. `equityStopPct` on the experiment account, set to a campaign
 drawdown that spans the seven days rather than resetting nightly.**
 
-Proposed: **8% from the campaign's starting equity.** On 46130058 that is
+Proposed: **8% from the campaign's starting equity.** On ACCT-DEMO-2 that is
 USD 3,686 — roughly two days at the daily cap. If the experiment is down 8%
 after a week, the strategies have answered the question and the remaining days
 add nothing but loss.
@@ -279,7 +279,7 @@ at.
 7. **Change any risk limit, threshold or strategy arming** without you saying
    so in that message. Not `minRR`, not the cooldowns, not the daily cap, not
    the new floor.
-8. **Touch live account `42993489`** in any way.
+8. **Touch live account `ACCT-LIVE-1`** in any way.
 9. **Run `sweepUnresolvable --dryRun false` or `exec-parity.js --order`.**
 10. **Merge anything that changes behaviour** without CI green **and** your
     word. Documents and read-only analysis may auto-merge on a green gate;

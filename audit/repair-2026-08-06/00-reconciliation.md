@@ -44,7 +44,7 @@ related to any finding below.
 
 | Finding | Original evidence | Current HEAD | Reproduced? | Classification | Action |
 |---|---|---|---|---|---|
-| **F-SIZE-01** — loss exceeded the account's whole daily allowance (`46130058`) | Part 1 danger proposal | Sizing still converts through `contracts.js`, whose index contract sizes are *assumed* (`US30: 1, … JPN225: 1`, comment: "cTrader typically gives") and whose broker symbol fetch discards `lotSize` (`ctrader-creds.js:104` keeps only `symbolName→symbolId`) | **Not yet** — the specific trade has not been reconstructed | `BLOCKED — EVIDENCE REQUIRED`, with one `CORRECTNESS FIX` candidate already visible (guessed contract size does not fail closed) | Phase 1: reconstruct the trade's lineage from production read routes; then fixture + fail-closed tests |
+| **F-SIZE-01** — loss exceeded the account's whole daily allowance (`ACCT-DEMO-2`) | Part 1 danger proposal | Sizing still converts through `contracts.js`, whose index contract sizes are *assumed* (`US30: 1, … JPN225: 1`, comment: "cTrader typically gives") and whose broker symbol fetch discards `lotSize` (`ctrader-creds.js:104` keeps only `symbolName→symbolId`) | **Not yet** — the specific trade has not been reconstructed | `BLOCKED — EVIDENCE REQUIRED`, with one `CORRECTNESS FIX` candidate already visible (guessed contract size does not fail closed) | Phase 1: reconstruct the trade's lineage from production read routes; then fixture + fail-closed tests |
 | **F-RISK-01** — live/demo side contamination | Part 1 SHA: `getCtraderCreds` computed but did not return `isLive`; `sameSideAccountIds` read `undefined` | **FIXED.** `ctrader-creds.js` returns `isLive`; `acting-layer.js` now decides side from the **broker host** first (`credsAreLive`), falling back to the flag | Disproved at HEAD | `NOT A DEFECT` (already repaired) | Do not rewrite. Document the fixing commit; add only the missing regression cases named in Phase 2 |
 | **Approval → order leak** | Part 2 funnel 1,802 → 18 → 10 → 7 | Funnel now (7d, read 07:41 UTC): **2,105 → 34 → 24 → 19** (70.6% of approvals ordered). But `/state/dispositions?days=7` returns `counts {}` with **`pendingNow: 55,417`** — after #668 deployed | **Partly.** The leak narrowed; the *terminal-state ledger is still empty in production* | `CORRECTNESS FIX` + `OBSERVABILITY FIX` | Phase 3: find why the sweep writes nothing in production, then reason attribution + a no-terminal-state alert |
 | **Effective risk config truthfulness** | Part 2: `minRR` 4.5–6.16 per account vs global 1.5 | `GET /state/risk-full` reads only `req.query.account`; **any other parameter name is silently ignored** and the global config is returned. Unknown account ids resolve to global values with no signal. Overlays live in `acct:<id>:risk_config_json` (`risk.js:307`) written by `actions.js:3995‑4026` and `:4132` with **no actor, time, reason or previous value** | Reproduced at HEAD | `OBSERVABILITY FIX` (route) + `CORRECTNESS FIX` (silent parameter) — thresholds themselves are `OWNER POLICY DECISION` | Phase 4: strict parameters (400), `global`/`overlay`/`effective` with provenance, append-only overlay history. **No value changes.** |
@@ -86,8 +86,8 @@ related to any finding below.
 **Phase 1 (sizing)** — `agent/lib/contracts.js`, `agent/services/risk.js`
 (sizing at ~`:443`), `agent/lib/ctrader-creds.js:104` (`ensureSymbolMap`
 discards `lotSize`/`pipPosition`), `agent/services/vpo-feeder.js`.
-Routes: `/state/trades?account=46130058`, `/state/perf-ledger`,
-`/state/veto-breakdown`, `/state/risk-full?account=46130058`.
+Routes: `/state/trades?account=ACCT-DEMO-2`, `/state/perf-ledger`,
+`/state/veto-breakdown`, `/state/risk-full?account=ACCT-DEMO-2`.
 
 **Phase 2 (side isolation)** — `agent/lib/ctrader-creds.js`,
 `agent/services/acting-layer.js`, `agent/services/loss-cap.js`,
@@ -130,7 +130,7 @@ changes how real position size is computed, so it stops for the owner.
 
 ## Owner-policy decisions that will remain untouched
 
-`minRR` (currently 3.0 on the four demo accounts and 4.5 on live `42993489`),
+`minRR` (currently 3.0 on the four demo accounts and 4.5 on live `ACCT-LIVE-1`),
 `perTradeRiskPct`, `maxRiskCapPct`, `dailyLossPct` / `dailyLossLimit`, equity
 stops, exposure and position limits, strategy arming, profit-keeper and ratchet
 policy, time caps, C++ trail policy, and the deployment of a second sidecar.

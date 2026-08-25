@@ -29,11 +29,11 @@ The veto fires only when a **named or selected** account falls back to the
 shared `account_balance_usd` key, and only when more than one account is
 enabled. If it is lifted, the symptom to watch for is the original one: the
 same position size on two accounts with very different balances. The figure
-that exposes it is `riskBudgetMultiple` — 7.50× on 43097342 against 0.32× on
-46130058 for the same 0003.HK position.
+that exposes it is `riskBudgetMultiple` — 7.50× on ACCT-DEMO-1 against 0.32× on
+ACCT-DEMO-2 for the same 0003.HK position.
 
 ## Not part of any rollback
 
 - No risk limit was raised, so none needs restoring.
 - No broker state was changed, so there is nothing to unwind at the broker.
-- Live account `42993489` was never touched.
+- Live account `ACCT-LIVE-1` was never touched.

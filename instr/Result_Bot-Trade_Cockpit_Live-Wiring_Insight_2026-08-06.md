@@ -230,6 +230,6 @@ every other cockpit service. The whole remedy is a data-source swap inside one
 ## Boundaries observed
 
 Audit-only. No code, config, broker state or live setting was changed. Live
-account `42993489` untouched. Read-tier credential only. No production trading
+account `ACCT-LIVE-1` untouched. Read-tier credential only. No production trading
 action. No layout, token, label or geometry was altered or proposed for
 alteration.

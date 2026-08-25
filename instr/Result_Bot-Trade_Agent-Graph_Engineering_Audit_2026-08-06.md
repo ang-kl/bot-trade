@@ -7,7 +7,7 @@ Executed: 2026-08-06 20:20–20:50 UTC (2026-08-07 04:20–04:50 SGT), market cl
 |---|---|
 | Frozen SHA | `cf2dbf9e01e3ede657a8d3c0b1c6d0d0f1849784` (`main` = `origin/main`) |
 | Evidence tier | **source trace only** — see "The two limits" below |
-| Live trading actions | **none**. Live account `42993489` untouched |
+| Live trading actions | **none**. Live account `ACCT-LIVE-1` untouched |
 | Credential tier | read-only |
 
 ---
@@ -405,7 +405,7 @@ In priority order. Each is a read; none changes anything.
 ## Owner-policy decisions — untouched
 
 - `minRR` effective 4.5–6.16 against a configured 1.5.
-- `dailyLossPct` on 43097342 (USD 16.16 daily cap), parked 2026-08-05.
+- `dailyLossPct` on ACCT-DEMO-1 (USD 16.16 daily cap), parked 2026-08-05.
 - Whether `autoDisarm` stays off. Recorded as owner-decided, twice; not
   reopened here.
 - Any change to a bar in `edge-bars.js`. AG-08's remedy deliberately changes
@@ -416,6 +416,6 @@ In priority order. Each is a read; none changes anything.
 ## Boundaries observed
 
 Audit-only. No code, config, broker state or live setting was changed. Live
-account `42993489` untouched. `sweepUnresolvable` was never run with
+account `ACCT-LIVE-1` untouched. `sweepUnresolvable` was never run with
 `dryRun: false`; `exec-parity.js` was never run with `--order`. Read-tier
 credential only. No production trading action of any kind.

@@ -37,7 +37,7 @@ one.
 Two accounts, 234 closed deals, taken from the broker's own statements rather
 than from our database:
 
-| | 19_02 | 19_03 (46130058) |
+| | 19_02 | 19_03 (ACCT-DEMO-2) |
 |---|---|---|
 | deals | 69 | 165 |
 | win rate | 27.5% | 29.7% |
@@ -223,7 +223,7 @@ All threshold changes are labelled as the prompt requires. None has been applied
    target is reachable, or lower the target to what 30 minutes can deliver.
    Holding both is the drift. Do not simply remove the cap — that converts
    time-capped small losses into stop-sized ones.
-4. **Live account 42993489 holds USD 33.45.** It cannot meaningfully trade; decide
+4. **Live account ACCT-LIVE-1 holds USD 33.45.** It cannot meaningfully trade; decide
    whether it is funded or disabled.
 
 ### 5.2 Correctness work, no policy content

@@ -40,7 +40,7 @@ not protection; broker-side protection was not verifiable, because
 
 ## OWNER POLICY DECISION — NOT A CORRECTNESS FIX
 
-- `dailyLossPct 0.03` → a USD 16.16 daily cap on 43097342
+- `dailyLossPct 0.03` → a USD 16.16 daily cap on ACCT-DEMO-1
 - `risk_budget = $0.33` against `usd_per_lot = $52.97` — the minimum lot costs more
   than the entire budget, so every entry on that account is refused for insufficient
   equity

@@ -234,10 +234,10 @@ Against the prompt's own gate list:
 
 3. **`minRR` is 4.5–6.16 per account against a configured 1.5.** A risk
    threshold; not changed, not proposed here.
-4. **`dailyLossPct` on 43097342** yields a USD 16.16 daily cap. Parked by the
+4. **`dailyLossPct` on ACCT-DEMO-1** yields a USD 16.16 daily cap. Parked by the
    owner 2026-08-05.
-5. **The duplicate clusters persist** — six 0005.HK on 43097342 and four GD.US
-   on 46130058, after nine 0066.HK earlier. Declared fixed in #573 and
+5. **The duplicate clusters persist** — six 0005.HK on ACCT-DEMO-1 and four GD.US
+   on ACCT-DEMO-2, after nine 0066.HK earlier. Declared fixed in #573 and
    demonstrably not. Trimming needs a full-tier credential; this session holds
    read-only by design and has changed nothing at the broker.
 
@@ -252,7 +252,7 @@ the whole of what this programme has to say on the subject.
 
 ## Boundaries observed
 
-- No live trading action. Live account `42993489` was never touched.
+- No live trading action. Live account `ACCT-LIVE-1` was never touched.
 - `sweepUnresolvable` was never run with `dryRun: false`; `exec-parity.js` was
   never run with `--order`.
 - Read-tier credential only.
