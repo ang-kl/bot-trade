@@ -19,6 +19,7 @@
 // ---------------------------------------------------------------------------
 
 import { cleanBotOrigin } from '../lib/trade-origin.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { parseBars, replayExit, summariseReplay, DEFAULT_RULES } from '../lib/exit-replay.js'
 
 /**
@@ -43,18 +44,30 @@ const ms = (s) => {
  * A trade qualifies only with: a stored bar window, an entry, a stop, and —
  * unless `cleanOnly` is off — a clean bot origin.
  */
-export function replayablePopulation(db, { days = 30, cleanOnly = true, accountId = null } = {}) {
+export function replayablePopulation(db, { days = 30, cleanOnly = true, accountId = null, strategy = null, excludeStrategy = null } = {}) {
   const since = new Date(Date.now() - days * 86_400_000).toISOString()
+  // Strategy filtering (owner, 25-08-2026, choosing option A): the 30d
+  // population is majority burn-in probes — entries taken ON PACE to generate
+  // exit data, so a verdict over the unfiltered sample answers "do random
+  // entries have edge" (no, by construction) rather than "do the GATED
+  // strategies' entries have edge under a better exit", which is the question
+  // the owner is paying for. Attribution goes through strategyAttrSql — the
+  // repo's one true reading — so a probe stamped only in the legacy column
+  // cannot leak back in.
+  const attr = strategyAttrSql('t.label_strategy', 't.strategy')
   const rows = db.prepare(`
     SELECT t.id, t.symbol, t.side, t.entry_price, t.sl_price, t.tp_price,
            t.opened_at, t.closed_at, t.net_pnl, t.origin, t.account_id,
+           ${attr} AS strategy_attr,
            pm.bars_json, pm.r_multiple AS actual_r, pm.classification
       FROM trades t
       JOIN trade_postmortems pm ON pm.trade_id = t.id
      WHERE t.status = 'closed' AND t.closed_at IS NOT NULL AND t.closed_at >= ?
        AND (? IS NULL OR t.account_id = ?)
+       AND (? IS NULL OR ${attr} = ?)
+       AND (? IS NULL OR COALESCE(${attr}, '') != ?)
      ORDER BY t.closed_at DESC
-  `).all(since, accountId, accountId)
+  `).all(since, accountId, accountId, strategy, strategy, excludeStrategy, excludeStrategy)
 
   const skipped = { not_clean_origin: 0, no_bars: 0, no_levels: 0 }
   const eligible = []
@@ -80,8 +93,9 @@ export function replayablePopulation(db, { days = 30, cleanOnly = true, accountI
  */
 export function exitCounterfactual(db, {
   days = 30, rules = DEFAULT_RULES, cleanOnly = true, accountId = null, minSample = MIN_SAMPLE,
+  strategy = null, excludeStrategy = null,
 } = {}) {
-  const pop = replayablePopulation(db, { days, cleanOnly, accountId })
+  const pop = replayablePopulation(db, { days, cleanOnly, accountId, strategy, excludeStrategy })
 
   const perRule = (Array.isArray(rules) ? rules : []).map((rule) => {
     const results = pop.eligible.map(({ row, bars }) => replayExit(bars, {
@@ -111,6 +125,8 @@ export function exitCounterfactual(db, {
     verdict,
     days,
     cleanOnly,
+    strategy,
+    excludeStrategy,
     minSample,
     considered: pop.considered,
     eligible: pop.eligible.length,

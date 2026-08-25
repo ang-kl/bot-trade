@@ -153,3 +153,32 @@ test('it writes nothing', () => {
   assert.equal(db.prepare('SELECT COUNT(*) n FROM trade_postmortems').get().n, pmBefore)
   assert.equal(db.prepare("SELECT COUNT(*) n FROM trades WHERE origin != 'bot_market_dispatch'").get().n, 0)
 })
+
+test('the strategy filter separates probe entries from gated ones', () => {
+  // Owner, 25-08-2026 (option A): the 30d population is majority burn-in
+  // probes — paced, unfiltered entries whose whole purpose was exit data.
+  // A verdict over the mixed sample answers "do random entries have edge"
+  // (no, by construction) instead of the question being paid for. The filter
+  // must honour the repo's one true attribution: a probe stamped only in the
+  // legacy `strategy` column is still a probe.
+  const db = fresh()
+  seed(db, { n: 6 })                                    // gated entries
+  seed(db, { n: 4 })                                    // will become probes
+  const ids = db.prepare('SELECT id FROM trades ORDER BY id DESC LIMIT 4').all()
+  db.prepare(`UPDATE trades SET label_strategy = 'burnin' WHERE id IN (${ids.map(() => '?').join(',')})`)
+    .run(...ids.map(r => r.id))
+  // One legacy-stamped probe: strategy only, no label.
+  const legacy = db.prepare('SELECT id FROM trades ORDER BY id ASC LIMIT 1').get()
+  db.prepare(`UPDATE trades SET strategy = 'burnin' WHERE id = ?`).run(legacy.id)
+
+  const all = replayablePopulation(db)
+  const gated = replayablePopulation(db, { excludeStrategy: 'burnin' })
+  const probes = replayablePopulation(db, { strategy: 'burnin' })
+  assert.equal(all.eligible.length, 10)
+  assert.equal(gated.eligible.length, 5, 'labelled AND legacy-stamped probes are both out')
+  assert.equal(probes.eligible.length, 5, 'strategy= selects exactly the probes')
+
+  const report = exitCounterfactual(db, { excludeStrategy: 'burnin', minSample: 1 })
+  assert.equal(report.excludeStrategy, 'burnin', 'the report names its own filter')
+  assert.equal(report.eligible, 5)
+})

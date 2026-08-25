@@ -1530,6 +1530,10 @@ export default function stateRouter(db) {
         days, minSample,
         cleanOnly: String(req.query.allOrigins || '') !== '1',
         accountId: scope.all ? null : (scope.accountId ?? null),
+        // ?strategy=fib_confluence for one strategy's entries;
+        // ?excludeStrategy=burnin for every gated entry with the probes out.
+        strategy: req.query.strategy ? String(req.query.strategy) : null,
+        excludeStrategy: req.query.excludeStrategy ? String(req.query.excludeStrategy) : null,
       }))
     } catch (err) {
       res.status(500).json({ error: err.message })
