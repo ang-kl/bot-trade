@@ -29,7 +29,7 @@ import { DEFAULT_RULES } from './position-manager.js'
 // instead of trailing them forever (clean trenders get more room).
 // partialTriggerR re-based around ~1R, owner order 2026-08-22 (audit item 4):
 // the old 1.2–1.6 band sat above the excursions this book actually produces,
-// so the partial pipeline — wired end-to-end — never fired on 46130058. The
+// so the partial pipeline — wired end-to-end — never fired on ACCT-DEMO-2. The
 // per-class SPREAD is kept (whippy classes bank earlier than clean trenders),
 // only the level moved; every value stays owner-overridable below.
 export const CLASS_RULE_DEFAULTS = {

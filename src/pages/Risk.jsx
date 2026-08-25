@@ -697,7 +697,7 @@ export default function Risk() {
               </span>
             </div>
             {/* HALTED — the state the owner had no way to see or lift.
-                On 02-08 22:24 UTC account 46130058 halted, and the only paths
+                On 02-08 22:24 UTC account ACCT-DEMO-2 halted, and the only paths
                 out were a Telegram button on a message that had scrolled away
                 and "Reset staircase", which wipes EVERY account's banked
                 floor. A halt has to be visible where the ladder is, and
@@ -862,7 +862,7 @@ export default function Risk() {
             {/* ⚠️ OWNER DECISION 07-08-2026, a RISK LIMIT INCREASE:
                 "$200 min. or 3% for accounts < $10000. 4% for account >
                 $10000." The floor is what stops a shrunken balance turning
-                the daily cap into a shutdown — 43097342 had fallen to $16.16.
+                the daily cap into a shutdown — ACCT-DEMO-1 had fallen to $16.16.
                 While the tier rule is on it REPLACES the % above and the flat
                 fallback stops clamping; clear any tier field to restore the
                 previous arithmetic exactly. */}
@@ -980,7 +980,7 @@ export default function Risk() {
               <Field label={`Null-exit floor${mark('nullExitMinR')}`} anchor="nullExitMinR" unit="R" value={risk.nullExitMinR} onChange={v => setRisk(r => ({ ...r, nullExitMinR: v }))}
                 placeholder="off"
                 hint="A discretionary close this close to the entry banks nothing and pays the spread, so it is refused. Protection writers — equity stop, loss cap, loss guardian, weekend bank, ratchet — are never blocked, and neither is a close whose reason names one (invalidation, time cap, margin). 0 or empty = off."
-                recommend="0.1R. Measured on 47790949: 26 of 31 discretionary closes landed inside 0.1R and cost -$3,348 between them, while 15 managed stops made +$1,510." />
+                recommend="0.1R. Measured on ACCT-DEMO-4: 26 of 31 discretionary closes landed inside 0.1R and cost -$3,348 between them, while 15 managed stops made +$1,510." />
               <Toggle id="risk-newsGateEnabled" label={`News gate${mark('newsGateEnabled')}`}
                 on={!!risk.newsGateEnabled} onClick={() => setRisk(r => ({ ...r, newsGateEnabled: !r.newsGateEnabled }))}
                 title="Refuse entries in the window around a high-impact release." />

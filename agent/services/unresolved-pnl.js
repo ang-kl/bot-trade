@@ -70,7 +70,7 @@ export const DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN = 360
 //
 // The age-out fixed "blocks forever". It did not fix "blocks for six hours a
 // day, every day", which is what production actually looks like. Measured
-// 04-08 08:31 UTC on account 46130058:
+// 04-08 08:31 UTC on account ACCT-DEMO-2:
 //
 //   id 700  0066.HK  closed 05:26:32  pnl_attempts 8  ← blocking, 3h to run
 //   id 649  GBPJPY   closed 21:06:24  pnl_attempts 8

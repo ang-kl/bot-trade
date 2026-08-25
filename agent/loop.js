@@ -1433,7 +1433,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // the take profit at the broker.
       //
       // Measured 17-08-2026: the 4 Aug protection audit found 8 of 12
-      // positions with no take profit, and the two on 42993489 that had been
+      // positions with no take profit, and the two on ACCT-LIVE-1 that had been
       // trailed (be_moved=1) both read tp=None while their trade rows carried
       // one. The NatGas breakout was placed with a target of 2.595 and held
       // none minutes later. One cause, not several.
@@ -1489,7 +1489,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // §5490 NULL-EXIT GUARD. Two questions before any close reaches the
       // broker: may this writer close at all, and does closing HERE do
       // anything. Both were answered "yes, always" until now, which is how 31
-      // explicit closes on 47790949 turned -$3,348 while 15 managed stops
+      // explicit closes on ACCT-DEMO-4 turned -$3,348 while 15 managed stops
       // turned +$1,510. Placed at this seam on purpose — every close-side
       // writer funnels through executeBrokerAction, so one check covers all
       // of them rather than each learning the rule separately.
@@ -1844,7 +1844,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
     // POSITIVE R, on the reasoning that "cutting a loser early on a broken
     // thesis is exactly the case an LLM read should be allowed to act on."
     // Fourteen days of production disagreed with that reasoning, measured on
-    // account 47790949: 12 llm_monitor exits, 2 of them positive, -$2,229.85,
+    // account ACCT-DEMO-4: 12 llm_monitor exits, 2 of them positive, -$2,229.85,
     // and not one stop moved. The worst were NAS100 -$826 and USDZAR -$592 at
     // a realised 0.000R — closes AT the entry price, where the entire loss is
     // cost. Those are precisely the exits the old `r > 0` test waved through,
@@ -2135,7 +2135,7 @@ async function runLoop(db) {
   // often." Safe to honour, and this is why rather than on preference alone:
   // the LLM monitor has no hands. evaluatePosition runs first and RETURNS on
   // any action, so the model is only consulted about positions the
-  // deterministic rules already decided to hold; and since the 47790949
+  // deterministic rules already decided to hold; and since the ACCT-DEMO-4
   // measurement (12 llm_monitor exits, -$2,229.85, not one stop moved) it has
   // been absent from CLOSE_AUTHORITY and this file no longer calls the
   // executor for it at all — see the note above the LLM EXIT advisory log.
@@ -2355,7 +2355,7 @@ async function runLoop(db) {
             // `accountId` alone, so auditing every account's rows against it
             // marks all the others `unmatched` — checked but never verified.
             // Staging showed exactly that on 2026-07-29: 4 open positions on
-            // 46130058 audited against 43097342's snapshot, 4 unmatched, and
+            // ACCT-DEMO-2 audited against ACCT-DEMO-1's snapshot, 4 unmatched, and
             // the panel said "all protected". Other accounts are audited in
             // the per-account reconcile pass below, against their own truth.
             const openRows = db.prepare(
@@ -2483,7 +2483,7 @@ async function runLoop(db) {
             // reconcile runs ONCE for the SELECTED account (see the single
             // reconcilePositions call above) — so a position closing on any
             // other account never reaches it. Measured on the M4 soak: Cocoa
-            // closed 12:14:30Z on 46130058 while 43097342 was selected, and
+            // closed 12:14:30Z on ACCT-DEMO-2 while ACCT-DEMO-1 was selected, and
             // none of the eight closed trades gained a net_pnl. Fixing the
             // fetch (#494) was not enough while the trigger above it was
             // still single-account.
@@ -2507,7 +2507,7 @@ async function runLoop(db) {
               // This ran single-account until 2026-07-29: it counted the gap
               // across all accounts, then asked ONE account's deal history to
               // fill it. On the M4 soak that meant seven closed trades on
-              // 46130058 while the selected account was 43097342 — nothing
+              // ACCT-DEMO-2 while the selected account was ACCT-DEMO-1 — nothing
               // matched, and the log blamed "deal-history coverage" every
               // cycle when the coverage was fine.
               //
@@ -2537,8 +2537,8 @@ async function runLoop(db) {
               // not involved at all.
               //
               // Measured on production 2026-07-31: "P&L backfill: skipping 1
-              // account(s) not in the sidecar's authorized roster [47790949]
-              // … trying 1/1 account(s) [46130058] — 93 closed trade(s)
+              // account(s) not in the sidecar's authorized roster [ACCT-DEMO-4]
+              // … trying 1/1 account(s) [ACCT-DEMO-2] — 93 closed trade(s)
               // still missing net_pnl". Rows on the skipped accounts could
               // NEVER fill, so the unknown-P&L veto held the desk for three
               // days straight. The roster gates on DISPATCH and RECONCILE
@@ -2820,8 +2820,8 @@ async function runLoop(db) {
                 // nothing stamped, getAccountBalance falls through to the
                 // unowned global — whichever account refreshed it last — so a
                 // percentage loss cap on those accounts was priced against
-                // somebody else's equity (measured 2026-08-15: 43002148 and
-                // 43069009 both reporting the selected account's 35,319.80,
+                // somebody else's equity (measured 2026-08-15: ACCT-LIVE-2 and
+                // ACCT-DEMO-5 both reporting the selected account's 35,319.80,
                 // making a 3% cap ~51x too permissive to ever bind).
                 try {
                   const { stampAccountEquity } = await import('./services/account-equity.js')
@@ -2882,8 +2882,8 @@ async function runLoop(db) {
           // The sweep above is deliberately one-sided: a demo session must
           // never manage live positions. But an account whose balance is
           // never read answers out of the unowned global — measured
-          // 2026-08-16 with the session on demo, the live accounts 43002148
-          // and 43069009 reported the selected DEMO account's 35,319.80
+          // 2026-08-16 with the session on demo, the live accounts ACCT-LIVE-2
+          // and ACCT-DEMO-5 reported the selected DEMO account's 35,319.80
           // through /state/profit-ratchet while /state/account-engineering
           // showed `None` for the same two. Two endpoints, same accounts,
           // different answers.
@@ -4480,7 +4480,7 @@ async function runLoop(db) {
       // C-1 SPEAKS. The controller has been correct since #632 and nothing
       // was listening: configProposals was wired to a read route and to
       // nothing else, so the module built to catch a minRR regression caught
-      // one on 43097342 and had no way to say so. Danger severity only, and
+      // one on ACCT-DEMO-1 and had no way to say so. Danger severity only, and
       // deduped on the proposal's identity, so a standing condition alerts
       // once rather than every cycle. It PROPOSES — nothing is written.
       try {

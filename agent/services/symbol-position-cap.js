@@ -3,7 +3,7 @@
 // one symbol may hold on one account, obeyed by every submitter.
 //
 // WHAT HAPPENED (measured from the broker statement and the ledger, 04-08-2026,
-// account 46130058 / login 5203012):
+// account ACCT-DEMO-2 / login LOGIN-3):
 //
 //   17 × DOW.US SELL, 250 lots each, broker order ids 353071385–353071402,
 //   submitted inside 89 MILLISECONDS, every one stopped out at SL 30.18.
@@ -11,7 +11,7 @@
 //
 // The size was not the problem — 250 lots is the correct risk-based size for
 // that balance, and the same signal placed ONE correctly-sized 59.7-lot
-// position on 43097342. One signal produced seventeen full-risk positions on
+// position on ACCT-DEMO-1. One signal produced seventeen full-risk positions on
 // one symbol.
 //
 // WHY EVERY EXISTING GUARD MISSED IT. All seventeen local rows carry

@@ -13,10 +13,10 @@
 // The arithmetic that made this urgent, computed 07-08 against the daily floor
 // shipped the same morning:
 //
-//   43097342   balance ~1,983   cap  200/day   ~10 trading days to ZERO
-//   46130058   balance ~46,073  cap 1,842/day  ~25 trading days to ZERO
+//   ACCT-DEMO-1   balance ~1,983   cap  200/day   ~10 trading days to ZERO
+//   ACCT-DEMO-2   balance ~46,073  cap 1,842/day  ~25 trading days to ZERO
 //
-// Before the floor, 43097342 would have taken 33 days. After it, ten. The floor
+// Before the floor, ACCT-DEMO-1 would have taken 33 days. After it, ten. The floor
 // was still the right change — a USD 16.16 cap is a shutdown, not a limit — but
 // "the cap was too tight" and "the account can be gone in two working weeks"
 // are both true at once, and only one of them was in that PR.

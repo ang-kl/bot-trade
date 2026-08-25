@@ -300,7 +300,7 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
       // THE NUMBER THE OWNER READS. `broker_label` is 'Pepperstone' on every
       // row, so four cards headed by it are four identical headings — owner,
       // 2026-08-03: "Which account? I don't see the Account # label". The
-      // cTrader login (5067353, 5203012 …) is the id they recognise, it has
+      // cTrader login (LOGIN-6, LOGIN-3 …) is the id they recognise, it has
       // been in the registry since M0, and nothing returned it.
       login: reg?.trader_login || null,
       // LIVE BALANCE, PER ACCOUNT (owner 04-08-2026: "Include Account Balance

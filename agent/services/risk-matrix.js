@@ -8,8 +8,8 @@
 //
 // The Risk page could show ONE account's effective settings at a time — the
 // selected one — and the Account card showed balance, leverage and an id. So
-// the question an operator actually has, "does 5203012 run tighter than
-// 46130058, and where?", could only be answered by switching accounts and
+// the question an operator actually has, "does LOGIN-3 run tighter than
+// ACCT-DEMO-2, and where?", could only be answered by switching accounts and
 // remembering. Overlays make that worse rather than better: a per-account
 // overlay is a PARTIAL config merged over the global one, so the same field
 // can be an override on one account and a default on the next, and nothing
@@ -158,7 +158,7 @@ export function buildRiskMatrix(db) {
   })
 
   // Retired keys somebody is still storing. Reported per writer, because
-  // "kellyFraction is set globally" and "kellyFraction is set on 5203012" are
+  // "kellyFraction is set globally" and "kellyFraction is set on LOGIN-3" are
   // different things to go and clean up.
   const retired = []
   for (const [key, why] of Object.entries(RETIRED_KEYS)) {

@@ -8,7 +8,7 @@
 //   09:24:40  [actions] ctrader token stored — 2 account(s) available
 //
 // The second overwrote the first. From 09:25 onward every call against
-// 43097342, 46979908, 42993489, 43002148 and 43069009 returned
+// ACCT-DEMO-1, ACCT-DEMO-3, ACCT-LIVE-1, ACCT-LIVE-2 and ACCT-DEMO-5 returned
 // CH_ACCESS_TOKEN_INVALID, and `cpp roster drift corrected` re-ran every two
 // minutes without ever sticking — the sidecar kept being told to authorise
 // accounts the stored token has no grant for.

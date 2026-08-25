@@ -22,8 +22,8 @@
 // reader who cannot tell those apart cannot trust the labels that ARE there.
 //
 // WHY A SHARED FORMATTER. Six call sites were building this string, in five
-// different formats — `Live · 7353`, `Live 5067353`, `Live ·353`,
-// `Live · 5067353 · OFF`. On one page that reads as different KINDS of thing
+// different formats — `Live · 7353`, `Live LOGIN-6`, `Live ·353`,
+// `Live · LOGIN-6 · OFF`. On one page that reads as different KINDS of thing
 // rather than the same thing said differently, which is part of what made the
 // page hard to read in the first place.
 
@@ -39,7 +39,7 @@
 // So the label carries both, in the order the one surface that already got
 // this right (AccountChrome) established:
 //
-//     DEMO 5203012 · 46130058
+//     DEMO LOGIN-3 · ACCT-DEMO-2
 //     ^^^^ ^^^^^^^   ^^^^^^^^
 //     side  login    account id
 //
@@ -51,7 +51,7 @@
 // not tidying — it is deleting the content.
 
 /**
- * "Demo 5067353 · 43097342". Degrades to whichever number exists when one is
+ * "Demo LOGIN-6 · ACCT-DEMO-1". Degrades to whichever number exists when one is
  * missing, and returns null only when there is nothing to name at all.
  */
 export function accountLabel(account) {
@@ -67,7 +67,7 @@ export function accountLabel(account) {
 }
 
 /**
- * "5067353 · 43097342" — the two numbers WITHOUT the Live/Demo word, for the
+ * "LOGIN-6 · ACCT-DEMO-1" — the two numbers WITHOUT the Live/Demo word, for the
  * many sites that already render a LIVE/DEMO badge beside the name and would
  * otherwise say it twice. Same both-numbers rule, same no-truncation rule.
  */

@@ -1,6 +1,6 @@
 // FAIR-SHARE ANALYZE SLOTS — why five armed strategies never got a turn.
 //
-// THE MEASUREMENT (production, 7 days, account 46130058):
+// THE MEASUREMENT (production, 7 days, account ACCT-DEMO-2):
 //
 //   32,290 signals →  741 decisions → 36 opened   fib_confluence
 //   20,393 signals →  510 decisions → 16 opened   vwap_trend

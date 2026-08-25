@@ -111,7 +111,7 @@ export function contractSize(symbol) {
 // Quote currency for instruments that are NOT six-letter FX pairs.
 //
 // Owner, 2026-08-03: "The TP and SL is in hundreds of thousands when I dont
-// have such balance." Measured on the live book of account 46130058, every
+// have such balance." Measured on the live book of account ACCT-DEMO-2, every
 // one of eleven positions had been sized to a stop loss of ≈3,900 IN ITS OWN
 // QUOTE CURRENCY — US30 3,886 (USD, right), 0003.HK 3,620 (HKD, ≈$464),
 // 0016.HK 3,896 (HKD, ≈$500), GER40 3,707 (EUR, ≈$4,278). The uniform 3,900

@@ -4,7 +4,7 @@
 // The protection audit reports a `phantom`: our book says the stop is at X,
 // the broker is holding Y. naked-position-guard.js calls that "arguably the
 // more dangerous state, because the UI shows a stop that will not fire" — and
-// then does nothing about it. Account 43097342 has carried `1 stop
+// then does nothing about it. Account ACCT-DEMO-1 has carried `1 stop
 // disagreement` on every pass, for days, with the UI lying the whole time.
 //
 // The broker is the authority on what will actually fire, so the repair is to

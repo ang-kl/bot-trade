@@ -9,7 +9,7 @@
 // the profit ratchet and the Loss Guardian, it lives here:
 //
 //     global key          <base>                 e.g. loss_cap_json
-//     per-account key     acct:<id>:<base>       e.g. acct:5203012:loss_cap_json
+//     per-account key     acct:<id>:<base>       e.g. acct:LOGIN-3:loss_cap_json
 //
 // THE OVERLAY IS PARTIAL, and that is the whole point. Only the fields an
 // account actually saved are in it; everything else keeps following the global

@@ -2,13 +2,13 @@
 // agent/services/daily-loss-pacing.js — a daily loss budget that is SPENT
 // OVER THE DAY rather than available all at once.
 //
-// Owner, 03-08-2026, on account 5203012's daily cap: "Raise the overlay to
+// Owner, 03-08-2026, on account LOGIN-3's daily cap: "Raise the overlay to
 // 8.8% and dynamic-intelligent adjusted down from 18.8% to ensure how many
 // can be trade by timeframe for longevity to trade."
 //
 // The problem a flat cap has. A single percentage is a cliff: the account may
 // lose that much, and once it does, it is finished for the day no matter how
-// early. On 03-08 account 46130058 spent its entire 5% (2,419) across 67
+// early. On 03-08 account ACCT-DEMO-2 spent its entire 5% (2,419) across 67
 // trades and hit the wall at 10:37 UTC — thirteen hours before the FX day
 // rolled, with London and New York still to come. Raising the number to 8.8%
 // buys a bigger cliff, not a better one; at the same trade rate it would have
@@ -48,10 +48,10 @@ export const FX_DAY_MS = 24 * 60 * 60 * 1000
 // ---------------------------------------------------------------------------
 // THE TIERED FLOOR — OWNER DECISION, 2026-08-07, verbatim:
 //
-//   "Change immediately dailyLossPct for 43097342 to $200 min. or 3% for
+//   "Change immediately dailyLossPct for ACCT-DEMO-1 to $200 min. or 3% for
 //    accounts < $10000. 4% for account > $10000."
 //
-// WHAT WAS WRONG. On 43097342 the cap had collapsed to USD 16.16 — 3% of a
+// WHAT WAS WRONG. On ACCT-DEMO-1 the cap had collapsed to USD 16.16 — 3% of a
 // balance that had shrunk — and `daily_loss_limit_hit pnl=-912.72 limit=16.16`
 // logged 4,717 vetoes in seven days. A percentage of a small balance is not a
 // risk limit, it is a shutdown: any single ordinary loss ends the day, so the
@@ -217,7 +217,7 @@ export function pacedDailyCap({
   //
   // MEASURED IN PRODUCTION, 22-08-2026. This compared against `usdCapUsd`
   // rather than `usdInForce`, so on a tiered account it named a cap the line
-  // above had deliberately excluded. Account 46130058, balance $33,952:
+  // above had deliberately excluded. Account ACCT-DEMO-2, balance $33,952:
   //
   //   pctCapUsd 1358.09 (4% large tier) · usdCapUsd 150 · tier rule ON
   //   → capUsd 1358.09 (correct)  but  binding 'usd'  (wrong)

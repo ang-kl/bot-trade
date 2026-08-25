@@ -2,7 +2,7 @@
 // agent/services/null-exit-guard.js — who may close a position, and whether
 // closing it there accomplishes anything.
 //
-// WHY (owner, 2026-08-04, on demo 5306502 / ctid 47790949): "this account has
+// WHY (owner, 2026-08-04, on demo LOGIN-5 / ctid ACCT-DEMO-4): "this account has
 // penny profit, took profits too early."
 //
 // Measured over the prior 14 days on that account, 46 exits with an

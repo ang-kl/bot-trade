@@ -12,7 +12,7 @@
 import { useEffect, useState } from 'react'
 import { agentGet } from '../../lib/agent-api.js'
 // Same formatter the ScopeChip uses. Six call sites were building this string
-// in five different formats — `Live · 7353`, `Live 5067353`, `Live ·353` — so
+// in five different formats — `Live · 7353`, `Live LOGIN-6`, `Live ·353` — so
 // on one page the same idea read as several different kinds of thing.
 import { accountLabel } from '../../lib/scope-label.js'
 

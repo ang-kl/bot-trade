@@ -5,8 +5,8 @@
 // position — 5,000 units, entry 6.91, stop 6.678, target 7.373 — sits on TWO
 // accounts at once:
 //
-//   46130058   balance USD 46,073   risk to stop USD 149   1% budget USD 461
-//   43097342   balance USD  1,984   risk to stop USD 149   1% budget USD 19.84
+//   ACCT-DEMO-2   balance USD 46,073   risk to stop USD 149   1% budget USD 461
+//   ACCT-DEMO-1   balance USD  1,984   risk to stop USD 149   1% budget USD 19.84
 //
 // Identical size on accounts whose balances differ 23×. On the small one that
 // is 7.5× its own per-trade budget, and USD 4,429 of notional against USD

@@ -392,7 +392,7 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
 /**
  * Does the sidecar's authorised-account roster still match the registry's?
  *
- * WHY THIS EXISTS (2026-07-30). The owner disabled account 46979908 in the
+ * WHY THIS EXISTS (2026-07-30). The owner disabled account ACCT-DEMO-3 in the
  * registry. Node correctly stopped dispatching to it — and the sidecar went on
  * reporting it as authorised, through two full loop cycles. Neither half was
  * broken:

@@ -47,7 +47,7 @@ export const DEFAULT_UNRESOLVABLE_HORIZON_DAYS = 7
  * erased by every restart — on a service that redeploys with each push to main
  * it was almost always empty, so this planner reported "nothing qualifies" no
  * matter how stuck the ledger was. Production, 04-08-2026: three rows on
- * account 46130058 sitting at `pnl_attempts = 8`, and the plan route still
+ * account ACCT-DEMO-2 sitting at `pnl_attempts = 8`, and the plan route still
  * said the backfill "has not exhausted its retries on any account".
  *
  * `pnl_attempts` is per ROW and survives deploys. An account holding a row the

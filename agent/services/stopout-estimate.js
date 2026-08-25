@@ -9,7 +9,7 @@
 // net_pnl NULL until the backfill fills it in. Every daily gauge is a
 // `SUM(net_pnl)` — and SUM skips NULLs — so on exactly the kind of day the
 // gauges exist for (a run of fast stop-outs) they read the day as flat.
-// 21 Aug 2026, account 46130058: three NatGas stop-outs and a flipped short,
+// 21 Aug 2026, account ACCT-DEMO-2: three NatGas stop-outs and a flipped short,
 // all NULL at the time, and an AUTO entry was approved at 16:09 SGT with the
 // day already 4.4% down against a 3% cap. unresolved-pnl.js blocks entries on
 // the same fact, but it AGES OUT (unknownPnlMaxAgeMin / unknownPnlMinAttempts)

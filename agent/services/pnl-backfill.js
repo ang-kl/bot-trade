@@ -66,7 +66,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // ACCOUNT SCOPE (2026-07-29). This used to count the gap across EVERY
   // account while fetching deal history for exactly ONE — whichever account
   // happened to be selected. On the M4 soak that meant seven closed trades on
-  // 46130058 were counted as a gap, the deal list was requested for 43097342,
+  // ACCT-DEMO-2 were counted as a gap, the deal list was requested for ACCT-DEMO-1,
   // nothing matched, and the loop logged "deal history had no matching close
   // (check broker deal-history coverage)" every cycle. The coverage was fine.
   // It was asking the wrong account.
@@ -181,14 +181,14 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // under the 6-attempt cap. They were blocking simply because their P&L had
   // not arrived yet, for over an hour.
   //
-  // WHY IT HAD NOT ARRIVED: three rows on 46130058 (GBPJPY, GBPCNH and
+  // WHY IT HAD NOT ARRIVED: three rows on ACCT-DEMO-2 (GBPJPY, GBPCNH and
   // 0066.HK — the same three named in unresolved-pnl.js) sit at 42 failed
   // attempts and will never fill. `noteBackfillAttempt` calls a pass "stuck"
   // when `gap > 0 && backfilled === 0`, and `gap` counted those three. So on
   // any pass that happened to fill nothing new, three dead rows ratcheted the
   // account one rung up a [0, 5m, 15m, 1h, 6h] ladder — and, since they can
   // never fill, nothing ever reset it. /state/unresolvable-plan reports
-  // 46130058 and 47790949 both at the TOP rung.
+  // ACCT-DEMO-2 and ACCT-DEMO-4 both at the TOP rung.
   //
   // The consequence is the veto: an account parked on the 6-hour rung does
   // not fetch deal history, so every trade that closes waits up to six hours
@@ -534,7 +534,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
 // close (shouldRunPnlBackfill). That trigger cannot see most closes: the
 // reconcile that feeds it runs once, for the SELECTED account (loop.js), so a
 // position closing on any other account never sets it. Measured on the M4
-// soak — Cocoa closed at 12:14:30Z on 46130058 while 43097342 was selected,
+// soak — Cocoa closed at 12:14:30Z on ACCT-DEMO-2 while ACCT-DEMO-1 was selected,
 // and not one of the eight closed trades gained a net_pnl.
 //
 // So the gate is inverted: attempt whenever a GAP EXISTS, which is a question
