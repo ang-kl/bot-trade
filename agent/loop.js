@@ -1444,20 +1444,43 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // when there genuinely is no target, which leaves the payload exactly as
       // it was — this cannot invent a TP that was never set.
       const keepTp = Number(pos.current_tp) > 0 ? Number(pos.current_tp) : undefined
+      // ROUND TO THE SYMBOL'S DIGITS. The trail computes newSL as raw price
+      // arithmetic (price − 1R etc), and the broker rejects prices with more
+      // decimals than the symbol allows — production 2026-08-26, every pass:
+      // `PM US2000: MOVE_SL FAILED — Order price = 3101.801785714286 has more
+      // digits than allowed (INVALID_REQUEST)`, so the stop never moved at
+      // all. The keeper and loss-guardian already round; this executor is the
+      // one price-bearing path that did not. Digits come from the cached
+      // symbol record; if the lookup fails the raw value goes through as
+      // before — a possible rejection beats inventing a precision.
+      let sendSL = eval_.newSL
+      let sendTp = keepTp
+      try {
+        const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+        const symbolId = symbolMap[(pos.symbol || '').toUpperCase()]
+        if (symbolId) {
+          const { getVolumeMeta } = await import('./lib/lot-sizing.js')
+          const { roundToDigits } = await import('./services/trade-guard.js')
+          const meta = await getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
+          sendSL = roundToDigits(sendSL, meta.digits)
+          if (sendTp !== undefined) sendTp = roundToDigits(sendTp, meta.digits)
+        }
+      } catch { /* digits unavailable — send unrounded rather than guess */ }
       const res = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
-        stopLoss: eval_.newSL,
-        ...(keepTp !== undefined ? { takeProfit: keepTp } : {}),
+        stopLoss: sendSL,
+        ...(sendTp !== undefined ? { takeProfit: sendTp } : {}),
       })
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
-      s.updatePositionSl.run(eval_.newSL, pos.id)
+      // Record what was SENT, not the unrounded intent — the broker holds sendSL.
+      s.updatePositionSl.run(sendSL, pos.id)
       recordPositionEvent(db, {
         accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
-        kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: eval_.newSL,
+        kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: sendSL,
         reason: eval_.reason, source,
       })
-      return { summary: `SL → ${Number(eval_.newSL).toFixed(5)}` }
+      return { summary: `SL → ${Number(sendSL).toFixed(5)}` }
     }
 
     // Per-symbol volume math — lotSize varies by asset class; a hardcoded

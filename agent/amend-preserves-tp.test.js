@@ -76,3 +76,32 @@ test('the clearing semantics are recorded where the payload is built', () => {
   assert.match(wsCode, /console\.warn\([^)]*CLEARS any take profit/,
     'the stop-only clear must WARN at runtime, not only in a comment')
 })
+
+test('MOVE_SL rounds the prices it sends to the symbol digits', () => {
+  // Production 2026-08-26, every pass for ~43 minutes of log: `PM US2000:
+  // MOVE_SL FAILED — Order price = 3101.801785714286 has more digits than
+  // allowed (INVALID_REQUEST)`. The trail computes newSL as raw arithmetic;
+  // the keeper and loss-guardian round via roundToDigits but this executor
+  // sent the raw value — so the stop never moved at all, silently, forever.
+  const branch = moveSlBranch()
+  assert.match(branch, /roundToDigits/,
+    'the executor must round SL/TP to the symbol digits before the amend')
+  assert.match(branch, /stopLoss: sendSL/,
+    'the amend payload must carry the ROUNDED stop, not the raw eval value')
+  assert.doesNotMatch(branch, /stopLoss: eval_\.newSL/,
+    'the raw unrounded stop must no longer reach the payload')
+})
+
+test('MOVE_SL records the value it sent, not the unrounded intent', () => {
+  // The DB row is read back as "the stop the broker holds" (protection audit,
+  // keeper trail-vs-current comparisons). Recording the unrounded intent
+  // while the broker holds the rounded price re-opens a permanent tiny
+  // disagreement between the two readings.
+  const start = loop.indexOf("if (action === 'MOVE_SL')")
+  const end = loop.indexOf('const volumeMeta', start)
+  const wide = loop.slice(start, end).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(wide, /updatePositionSl\.run\(sendSL/,
+    'the DB must store what was sent to the broker')
+  assert.match(wide, /toValue: sendSL/,
+    'the position event must record what was sent to the broker')
+})
