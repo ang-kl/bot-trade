@@ -286,6 +286,47 @@ test('a Telegram failure leaves the hour pending instead of swallowing it', asyn
   assert.equal(getState(db, LAST_FLUSH_KEY), null, 'clock not advanced on a failed send')
 })
 
+test('the digest is sent PLAIN — Markdown parse failures were the 26-08 outage', async () => {
+  // Digest text stitches first-lines of arbitrary alerts; one unmatched `_`
+  // (time_cap_expired, bad_rr, …) under parse_mode Markdown 400s the whole
+  // message, the batch stays pending, and every hourly retry fails the same
+  // way — "digest off since 11 AM", 500 queued, nothing delivered.
+  const db = freshDB()
+  saveNotifyConfig(db, { mode: 'hourly' })
+  q(db, 'close_reason time_cap_expired on label_strategy rsi_meanrev')
+  const opts = []
+  const res = await flushDigest(db, { nowMs: AT_1400, send: async (t, o) => opts.push(o) })
+  assert.equal(res.sent, true)
+  assert.equal(opts.length, 1)
+  assert.equal(opts[0]?.plain, true, 'the sender must be told to skip parse_mode entirely')
+})
+
+test('a failing flush records WHY where /digest status can show it; success clears it', async () => {
+  const db = freshDB()
+  saveNotifyConfig(db, { mode: 'hourly' })
+  q(db, 'poison')
+  const bad = await flushDigest(db, {
+    nowMs: AT_1400,
+    send: async () => { throw new Error("can't parse entities: Can't find end of the entity") },
+  })
+  assert.equal(bad.sent, false)
+  assert.match(getState(db, 'tg_digest_last_error') || '', /parse entities/,
+    'the outage was invisible because the reason lived only in a swallowed return value')
+  const ok = await flushDigest(db, { nowMs: AT_1400 + HOUR_MS, send: async () => {} })
+  assert.equal(ok.sent, true)
+  assert.equal(getState(db, 'tg_digest_last_error'), '', 'a stale error on a healthy digest is failure mode #3')
+})
+
+test('summarise leaves footer headroom — a digest at exactly 4096 was rejected, not trimmed', () => {
+  const rows = Array.from({ length: 400 }, (_, i) => ({
+    id: i, kind: 'alert', priority: 'normal',
+    text: `line ${i} ${'x'.repeat(80)}`,
+  }))
+  const text = summarise(rows, { nowMs: AT_1400 })
+  assert.ok(text.length <= TG_TEXT_MAX - 64,
+    `the sender appends a ~20-char version footer AFTER this cap; got ${text.length}`)
+})
+
 test('markSent is idempotent and only touches the ids given', () => {
   const db = freshDB()
   q(db, 'a'); q(db, 'b')

@@ -32,6 +32,7 @@ import { getState, setState } from '../db.js'
 
 export const CONFIG_KEY = 'telegram_notify_json'
 export const LAST_FLUSH_KEY = 'tg_digest_last_flush_ms'
+export const LAST_ERROR_KEY = 'tg_digest_last_error'
 const DEFAULT_TZ = 'Asia/Singapore'
 
 /** Untouched behaviour until the owner asks for something else. */
@@ -213,7 +214,12 @@ export function summarise(rows, { nowMs, tz = DEFAULT_TZ, label = 'past hour' } 
   }
 
   let text = lines.join('\n').trimEnd()
-  if (text.length > TG_TEXT_MAX) text = `${text.slice(0, TG_TEXT_MAX - 3)}...`
+  // 64 characters of headroom: the sender appends a version footer AFTER this
+  // trim, and Telegram rejects (not truncates) anything past 4096 — a digest
+  // trimmed to exactly the cap still lost the whole hour once the footer
+  // landed on top.
+  const cap = TG_TEXT_MAX - 64
+  if (text.length > cap) text = `${text.slice(0, cap - 3)}...`
   return text
 }
 
@@ -282,14 +288,25 @@ export async function flushDigest(db, { nowMs = Date.now(), send, force = false 
     if (!text) return { sent: false, reason: 'empty', count: 0 }
 
     const sender = send ?? (await import('./telegram.js')).sendMessageRaw
-    await sender(text)
+    // PLAIN, deliberately. The digest stitches first-lines of arbitrary alert
+    // texts; under parse_mode Markdown one unmatched underscore anywhere in
+    // 500 queued lines 400s the WHOLE message, the rows stay pending, and the
+    // next pass retries the same unparseable batch forever — the 26-08-2026
+    // "digest off since 11 AM" outage.
+    await sender(text, { plain: true })
     // Marked ONLY after the send resolves — a Telegram outage must leave the
     // hour pending for the next pass, not swallow it.
     markSent(db, d.rows.map(r => r.id))
     setState(db, LAST_FLUSH_KEY, String(nowMs))
+    try { setState(db, LAST_ERROR_KEY, '') } catch { /* status only */ }
     return { sent: true, reason: d.reason, count: d.rows.length }
   } catch (err) {
-    return { sent: false, reason: `error: ${err?.message ?? err}`, count: 0 }
+    const reason = `error: ${err?.message ?? err}`
+    // Record the failure where /digest can show it. A flush that fails every
+    // hour while the status line reads only "queued: 500" is a guard whose
+    // record is stuck — the owner had no way to see WHY nothing arrived.
+    try { setState(db, LAST_ERROR_KEY, `${new Date(nowMs).toISOString()} ${reason}`) } catch { /* status only */ }
+    return { sent: false, reason, count: 0 }
   }
 }
 

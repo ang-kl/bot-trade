@@ -142,7 +142,7 @@ export async function sendTradeAlert(trade) {
  */
 // Footer stamped onto every message — which build sent it, at a glance.
 let _version = null
-function versionFooter() {
+function versionFooter(plain = false) {
   if (_version === null) {
     try {
       const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
@@ -150,7 +150,11 @@ function versionFooter() {
       _version = `${maj}.${min}.${String(patch).padStart(3, '0')}`
     } catch { _version = '' }
   }
-  return _version ? `\n\n_bot-trade v${_version}_` : ''
+  if (!_version) return ''
+  // The italic underscores are Markdown entities — a plain-mode message must
+  // not carry them, or the footer reintroduces the parse risk plain mode
+  // exists to remove.
+  return plain ? `\n\nbot-trade v${_version}` : `\n\n_bot-trade v${_version}_`
 }
 
 // THE CHOKE POINT. Quiet hours / master mute / hourly digest are enforced HERE
@@ -184,8 +188,15 @@ export async function sendMessageRaw(text, opts = {}) {
   const chatId = getChatId()
   const msg = await tgPost(botToken, 'sendMessage', {
     chat_id: chatId,
-    text: text + versionFooter(),
-    parse_mode: 'Markdown',
+    text: text + versionFooter(opts.plain === true),
+    // opts.plain: no parse_mode at all. Markdown-v1 rejects the WHOLE message
+    // on one unmatched `_`/`*`/backtick, and text assembled from arbitrary
+    // sources (the hourly digest stitches first-lines of ~500 queued alerts,
+    // underscores everywhere: time_cap_expired, bad_rr, …) cannot promise
+    // balanced entities. The 26-08-2026 digest outage was exactly this: every
+    // flush 400'd on parse, the batch stayed pending, and the retry re-sent
+    // the same unparseable text forever.
+    ...(opts.plain === true ? {} : { parse_mode: 'Markdown' }),
     disable_web_page_preview: true,
     // Inline keyboard (owner 2026-07-24: one-tap Chart/Arm/TradingView on
     // signal alerts). Shape: [[{text, url|callback_data}, …], …].

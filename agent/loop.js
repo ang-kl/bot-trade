@@ -2087,7 +2087,11 @@ async function runLoop(db) {
     const digest = await import('./services/telegram-digest.js')
     digest.attachNotifyDb(db)
     const { sendMessageRaw } = await import('./services/telegram.js')
-    await digest.flushDigest(db, { send: sendMessageRaw })
+    const flushed = await digest.flushDigest(db, { send: sendMessageRaw })
+    // A flush that fails hourly with its error swallowed is how the digest
+    // sat "off since 11 AM" with 500 queued and no line in any log saying
+    // why. The failure stays non-fatal; it just stops being invisible.
+    if (!flushed.sent && flushed.reason.startsWith('error:')) log(`[digest] flush failed: ${flushed.reason}`)
   } catch { /* a held summary is not worth stalling the loop for */ }
   // ---- Mutex: prevent overlapping iterations ----
   if (loopRunning) {
