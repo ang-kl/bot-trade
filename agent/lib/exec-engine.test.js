@@ -73,6 +73,10 @@ test('cpp placeOrder: pushes /connect once, then POST /order with bearer auth', 
   assert.deepEqual(JSON.parse(requests[0].body), {
     host: CREDS.host, clientId: CREDS.clientId, clientSecret: CREDS.clientSecret,
     accessToken: CREDS.accessToken, accountId: CREDS.accountId,
+    // Roster-less creds still push a one-entry roster — the sidecar treats it
+    // exactly like the legacy single-account push, and the set-memo needs the
+    // account recorded so later callers naming it are recognised as served.
+    accountIds: [String(CREDS.accountId)],
   })
   assert.equal(requests[1].method, 'POST')
   assert.equal(requests[1].url, '/order')
