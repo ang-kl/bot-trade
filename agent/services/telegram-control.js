@@ -298,7 +298,13 @@ export function handleNotifyCommand(db, cmd, argsText, nowMs = Date.now()) {
     }
     const cfg = d.loadNotifyConfig(db)
     const pend = d.pendingMessages(db).length
-    return `🗞 Mode: ${cfg.mode === 'hourly' ? 'hourly digest' : 'live'} · queued: ${pend}\nUse: /digest on | off | now`
+    // The 26-08-2026 outage: flushes failed every hour while this line read
+    // only "queued: 500". The WHY belongs on the status the owner actually
+    // checks, not in a swallowed return value.
+    const lastErr = getState(db, d.LAST_ERROR_KEY) || ''
+    return `🗞 Mode: ${cfg.mode === 'hourly' ? 'hourly digest' : 'live'} · queued: ${pend}`
+      + (lastErr ? `\n⚠️ last flush failed: ${lastErr}` : '')
+      + '\nUse: /digest on | off | now'
   }
   return null
 }
