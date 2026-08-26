@@ -565,6 +565,36 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
 }
 
 /**
+ * Decode ONE raw broker order into honest fields WITHOUT the entry-order
+ * filter above. Exists because the filtered snapshot can read empty while
+ * the broker holds orders (measured 2026-08-26: RECONCILE_RES carried 4
+ * resting orders on one account while broker_pending_orders_json stored []),
+ * and cancelling an order needs its id — so there must be one read that
+ * reports what the broker actually returned, identity fields included, and
+ * filters nothing. Pure decode: no db, no state writes.
+ */
+export function decodeRawBrokerOrder(o) {
+  const SIDE_STR = (v) => (v === 1 || v === 'BUY') ? 'BUY' : (v === 2 || v === 'SELL') ? 'SELL' : null
+  const TYPE_STR = (v) => ({ 1: 'MARKET', 2: 'LIMIT', 3: 'STOP', 4: 'STOP_LIMIT', 5: 'MARKET_RANGE' })[v] || (typeof v === 'string' ? v : 'ORDER')
+  const td = o?.tradeData || {}
+  return {
+    orderId: o?.orderId ?? td.orderId ?? null,
+    positionId: o?.positionId ?? null,
+    closingOrder: o?.closingOrder ?? null,
+    symbolId: td.symbolId ?? o?.symbolId ?? null,
+    side: SIDE_STR(td.tradeSide),
+    orderType: TYPE_STR(o?.orderType),
+    limitPrice: o?.limitPrice ?? null,
+    stopPrice: o?.stopPrice ?? null,
+    volumeUnits: td.volume != null ? td.volume / 100 : null,
+    label: td.label ?? o?.label ?? '',
+    comment: td.comment ?? o?.comment ?? '',
+    expiresAt: o?.expirationTimestamp ? new Date(Number(o.expirationTimestamp)).toISOString() : null,
+    updatedAt: o?.utcLastUpdateTimestamp ? new Date(Number(o.utcLastUpdateTimestamp)).toISOString() : null,
+  }
+}
+
+/**
  * CLOSE-CAUSE RECLASSIFICATION (owner: "Pipeline integrity = 0% —
  * investigate", 2026-07-27). At detection time a broker-side close is a
  * mystery — the reconciler can only stamp the generic "closed at the broker

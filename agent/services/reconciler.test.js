@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState } from '../db.js'
-import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -891,4 +891,42 @@ test('reconcile NEVER overwrites an entry price it already has', () => {
 
   const mp = db.prepare('SELECT entry_price FROM monitored_positions WHERE trade_id = ?').get(tradeId)
   assert.equal(mp.entry_price, 1.08, 'a recorded entry is never rewritten')
+})
+
+// ---------------------------------------------------------------------------
+// decodeRawBrokerOrder — the UNFILTERED read behind /state/broker-orders?fresh=1.
+// The filtered snapshot dropped every order carrying a broker-assigned
+// positionId (measured 2026-08-26: broker held 4, snapshot []); this decode
+// must keep such orders AND surface the fields the filter judged them by.
+// ---------------------------------------------------------------------------
+
+test('decodeRawBrokerOrder keeps a positionId-bearing entry order and surfaces identity fields', () => {
+  const out = decodeRawBrokerOrder({
+    orderId: 356653559,
+    positionId: 238000001,
+    orderType: 2,
+    limitPrice: 363.02,
+    tradeData: { symbolId: 42, tradeSide: 2, volume: 8158, label: 'PRE|v1|RSI', comment: 'pending-closed' },
+    expirationTimestamp: 1756227642000,
+  })
+  assert.equal(out.orderId, 356653559)
+  assert.equal(out.positionId, 238000001, 'the field the snapshot filter judged by must be visible, not fatal')
+  assert.equal(out.side, 'SELL')
+  assert.equal(out.orderType, 'LIMIT')
+  assert.equal(out.limitPrice, 363.02)
+  assert.equal(out.volumeUnits, 81.58)
+  assert.equal(out.label, 'PRE|v1|RSI')
+  assert.equal(out.comment, 'pending-closed')
+  assert.equal(out.expiresAt, new Date(1756227642000).toISOString())
+})
+
+test('decodeRawBrokerOrder tolerates a bare STOP order with no tradeData', () => {
+  const out = decodeRawBrokerOrder({ orderId: '7', orderType: 3, stopPrice: 38.5 })
+  assert.equal(out.orderId, '7')
+  assert.equal(out.orderType, 'STOP')
+  assert.equal(out.stopPrice, 38.5)
+  assert.equal(out.limitPrice, null)
+  assert.equal(out.side, null)
+  assert.equal(out.volumeUnits, null)
+  assert.equal(out.label, '')
 })

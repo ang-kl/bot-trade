@@ -3828,12 +3828,42 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/broker-orders — external positions + pending orders from last reconciliation
   // -----------------------------------------------------------------------
-  router.get('/broker-orders', (req, res) => {
+  router.get('/broker-orders', async (req, res) => {
     // S1 batch 3. externalPositions is a scoped read; pendingOrders is NOT —
     // it is a broker snapshot blob in agent_state with no account column, so
     // it stays portfolio-wide and says so rather than being filtered on a
     // field it does not have.
     const scope = requestedAccount(db, req)
+
+    // ?fresh=1 — ask the broker NOW and report its resting orders UNFILTERED,
+    // for the account in ?account= (default: the selected account). The
+    // stored snapshot above passes through the reconciler's entry-order
+    // filter, which can leave it empty while the broker holds orders
+    // (measured 2026-08-26: 4 resting orders, snapshot []); cancelling one
+    // needs its orderId, so this read reports exactly what RECONCILE_RES
+    // carried — identity fields included — and filters nothing.
+    if (req.query.fresh === '1') {
+      try {
+        const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
+        const { reconcile } = await import('../lib/exec-engine.js')
+        const { decodeRawBrokerOrder } = await import('../services/reconciler.js')
+        const acctId = (!scope.all && scope.accountId) ? String(scope.accountId) : null
+        let override = null
+        if (acctId) {
+          const row = db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(acctId)
+          if (!row) return res.status(404).json({ error: `account ${acctId} not in the registry — cannot resolve live/demo side` })
+          override = { accountId: acctId, isLive: row.is_live === 1 }
+        }
+        const creds = getCtraderCreds(db, override)
+        if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+        const rec = await reconcile(creds)
+        const rawOrders = (rec?.order || []).map(decodeRawBrokerOrder)
+        return res.json({ fresh: true, accountId: String(creds.accountId), rawOrders, rawCount: rawOrders.length })
+      } catch (e) {
+        return res.status(502).json({ error: e.message })
+      }
+    }
+
     const acct = accountWhere(scope, 'mp.account_id')
     try {
       const pendingJson = getState(db, 'broker_pending_orders_json')
