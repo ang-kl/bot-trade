@@ -163,6 +163,13 @@ long long ExecEngine::lastReconcileAtMs(long long accountId) {
 void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
   int type = static_cast<int>(msg.get("payloadType").asNumber(-1));
   if (type == pt::HEARTBEAT) return;
+  // SYMBOL_CHANGED_EVENT is the broker announcing a spec update (spreads,
+  // swaps, session windows) — routine around rollover, one copy per
+  // authorized account, and nothing here consumes symbol specs (Node fetches
+  // them fresh per request). Logging it painted the owner's log with error
+  // lines in threes every 30s while carrying no information a reader could
+  // act on.
+  if (type == pt::SYMBOL_CHANGED_EVENT) return;
   // Execution events arriving outside a pending request (e.g. SL hit) are
   // logged; the Node keeper owns state reconstruction via /positions.
   logLine("unsolicited payloadType=" + std::to_string(type));
