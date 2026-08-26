@@ -130,7 +130,7 @@ async function sidecar(base, method, path, body) {
 // sidecar's check — the demo process would then serve orders having never been
 // sent any credentials at all. With one base configured this map holds exactly
 // one entry and behaves as the scalar did.
-const lastPushedKey = new Map()
+const sessionBelief = new Map() // base → { host, token, accounts: Set<string> }
 
 // M4 finding (2026-07-24): when the SIDECAR alone restarts (env change,
 // crash, Railway redeploy of just that service) it loses its credentials,
@@ -142,7 +142,7 @@ const lastPushedKey = new Map()
 // sidecar session" — a partial clear would leave exactly the stale belief they
 // are trying to discard.
 export function invalidateSidecarSession() {
-  lastPushedKey.clear()
+  sessionBelief.clear()
 }
 
 // Explicit re-push for the probe path: invalidate + ensure in one call.
@@ -155,41 +155,52 @@ export async function pushSidecarSession(creds) {
 }
 async function ensureSidecarSession(creds) {
   // M2: the sidecar multiplexes many ctidTraderAccountIds on ONE session
-  // (same host+token). Re-pushing /connect for another account under the
-  // same token is an incremental AccountAuth server-side — no reconnect —
-  // so the memo key only needs to cover the (host, token, account) triple.
-  // creds.accountIds (optional) pre-authorizes a whole roster in one push.
+  // (same host+token). creds.accountIds (optional) pre-authorizes a whole
+  // roster in one push; a roster-less creds object names just its own account.
   //
-  // THE ROSTER IS NO LONGER SORTED HERE. It used to be, and that discarded the
-  // one piece of information the order carries: ctrader-creds.js:46 builds
-  // `[primary, ...others]` on purpose, and engine.cpp resolves an unstamped
-  // operation to accountIds_.front(). Sorting made `[A,B]` and `[B,A]` hash
-  // identically, so the memo asserted two sessions with DIFFERENT primaries
-  // were the same session.
+  // THE MEMO IS A SET, NOT A KEY (26-08-2026, the /connect storm). The
+  // previous key was host|roster|token with the roster ORDER preserved, and
+  // ctrader-creds.js deliberately leads the roster with the caller's primary —
+  // so every caller running under a different account (fast monitor per
+  // position, per-account reconciles, the closed-market limit path's
+  // roster-less creds) produced a DIFFERENT key for the SAME broker session,
+  // and the dedupe fired a fresh /connect many times a minute. engine.cpp's
+  // sameSession branch made each push individually cheap, but the aggregate
+  // was an AccountAuth storm: every push re-requested any account whose auth
+  // was flapping, the broker answered the hammering with auth-family errors,
+  // and one such error on the primary path tears the whole session down
+  // ("closing session for reauth" — the churn the owner read in the logs).
   //
-  // Be clear about what this line does and does not fix. It does not fix
-  // routing — withAccount() below does that, by making the sidecar's default
-  // unreachable from Node. What it fixes is the memo telling us something
-  // untrue about the session we hold. The cost is an extra /connect when the
-  // primary changes; engine.cpp takes its sameSession branch for that push, so
-  // it is one cheap HTTP call and no reconnect.
-  const roster = Array.isArray(creds.accountIds) && creds.accountIds.length
-    ? creds.accountIds.join(',')
-    : String(creds.accountId)
+  // What makes a SET sufficient now is the same fact the old comment cited:
+  // withAccount() stamps ctidTraderAccountId on every operation and reconcile
+  // posts its account explicitly, so the session's elected primary
+  // (accountIds_.front(), frozen until reconnect) routes nothing from Node.
+  // Same host+token and every requested account already pushed → the session
+  // we hold already serves this caller; pushing again buys nothing.
+  //
+  // A genuinely new account pushes the UNION (requested first, then the rest)
+  // so an incremental auth never drops the accounts already trading. A new
+  // token or host replaces the belief wholesale — that push MUST happen; it is
+  // the rotation re-push the 22-hour-outage fix exists for.
+  const requested = (Array.isArray(creds.accountIds) && creds.accountIds.length
+    ? creds.accountIds
+    : [creds.accountId]).map(String)
   const base = execBaseFor(creds)
-  const key = `${creds.host}|${roster}|${creds.accessToken}`
-  if (key === lastPushedKey.get(base)) return
+  const prev = sessionBelief.get(base)
+  const sameSession = prev && prev.host === creds.host && prev.token === creds.accessToken
+  if (sameSession && requested.every(id => prev.accounts.has(id))) return
+  const union = sameSession
+    ? [...new Set([...requested, ...prev.accounts])]
+    : requested
   await sidecar(base, 'POST', '/connect', {
     host: creds.host,
     clientId: creds.clientId,
     clientSecret: creds.clientSecret,
     accessToken: creds.accessToken,
     accountId: creds.accountId,
-    ...(Array.isArray(creds.accountIds) && creds.accountIds.length
-      ? { accountIds: creds.accountIds }
-      : {}),
+    accountIds: union,
   })
-  lastPushedKey.set(base, key)
+  sessionBelief.set(base, { host: creds.host, token: creds.accessToken, accounts: new Set(union) })
 }
 
 // Option 4: hand the profit keeper's trail specs to the sidecar's

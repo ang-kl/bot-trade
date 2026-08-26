@@ -288,18 +288,25 @@ test('FIXED: resolveOrderAccount\'s verdicts, as a pure function', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 3. THE SESSION MEMO — it used to SORT the roster, which erased the ordering
-//    that decides the primary. Now it does not. Note what this does and does not
-//    buy: §2's stamping is what fixes routing; this only stops the memo asserting
-//    that two sessions with different primaries are the same session.
+// 3. THE SESSION MEMO — a SET of served accounts per (host, token), not a key.
+//    History, because this flip-flopped once already: the memo first SORTED
+//    the roster (erasing the primary's position), then kept roster ORDER so a
+//    primary change re-pushed — and that order-keeping turned out to be the
+//    26-08-2026 /connect storm: every caller under a different account
+//    produced a different key for the SAME broker session, dozens of pushes a
+//    minute, an AccountAuth storm the broker answered with auth-family errors,
+//    and a session kill per error. What made order-keeping pointless is what
+//    §2 proved: withAccount() stamps every operation, so the session's frozen
+//    primary routes NOTHING from Node. Same host+token+accounts = same
+//    session, whatever the order.
 // ---------------------------------------------------------------------------
 
-test('FIXED: the memo key keeps roster ORDER, so a change of primary re-pushes /connect', async () => {
+test('FIXED: a change of primary within the same account set is NOT a session change — no re-push', async () => {
   await withBroker(async (broker) => {
-    // ctrader-creds.js:46 deliberately leads the roster with the primary:
+    // ctrader-creds.js deliberately leads the roster with the primary:
     //   accountIds = [primary, ...rows.filter(id => id !== primary)]
-    // ensureSidecarSession used to key on [...accountIds].sort(), so [A,B] and
-    // [B,A] produced the SAME key and the second push never happened.
+    // so per-account callers alternate [A,B] and [B,A] constantly. Both name
+    // the same served set on the same host+token: one session, one push.
     assert.deepEqual(creds(A).accountIds, [A, B])
     assert.deepEqual(creds(B).accountIds, [B, A])
 
@@ -308,12 +315,35 @@ test('FIXED: the memo key keeps roster ORDER, so a change of primary re-pushes /
     assert.equal(broker.primary, A)
 
     await reconcile(creds(B))
-    assert.equal(broker.connectCount, 2, 'the key differs now, so the session change is not swallowed')
-    // The primary STILL does not move, because engine.cpp takes its sameSession
-    // branch — see the next test. That is exactly why the stamping in §2, not
-    // this, is the fix.
+    assert.equal(broker.connectCount, 1, 'same host+token+set — a second /connect is the storm, not a fix')
+    // Routing is unaffected: §2's stamping carries the account on every
+    // operation, so the frozen primary decides nothing.
     assert.equal(broker.primary, A)
     assert.deepEqual(broker.roster, [A, B])
+  })
+})
+
+test('a NEW token still re-pushes — rotation must never be swallowed by the set-memo', async () => {
+  await withBroker(async (broker) => {
+    await reconcile(creds(A))
+    assert.equal(broker.connectCount, 1)
+    await reconcile({ ...creds(A), accessToken: 'rotated-token' })
+    assert.equal(broker.connectCount, 2, 'the 22-hour outage was a rotation nothing pushed; the set-memo must not recreate it')
+  })
+})
+
+test('FIXED: roster-less creds for an already-served account push NOTHING — the storm shape', async () => {
+  // loop.js hand-builds {host, clientId, clientSecret, accessToken, accountId}
+  // at nine call sites (orders, amends, closes, reconciles, closed-market
+  // limits) with a per-position account and no roster. Under the key-memo each
+  // of those flipped the key and fired /connect; under the set-memo the
+  // account is already served, so the ensure is silent.
+  await withBroker(async (broker) => {
+    await reconcile(creds(A)) // heartbeat-style full-roster push establishes the set
+    assert.equal(broker.connectCount, 1)
+    await reconcile(credsNoRoster(B))
+    await reconcile(credsNoRoster(A))
+    assert.equal(broker.connectCount, 1, 'both accounts are in the served set — any /connect here is the storm')
   })
 })
 
