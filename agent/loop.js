@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { createLLMClient } from './lib/llm-provider.js'
+import { disarmReason } from './lib/env-disarm.js'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
 import { enabledStrategies } from './services/strategies.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows } from './services/stage-matrix.js'
@@ -4626,6 +4627,17 @@ function startLoopWatchdog(db) {
 }
 
 export function startLoop(db) {
+  // Staging shares production's cTrader grant — an armed staging agent
+  // invalidates production's token on every refresh (the 26-08-2026 token
+  // war). Everything that trades or touches the broker roots here (loop,
+  // fast monitor, per-minute review), so refusing here disarms all of it.
+  {
+    const reason = disarmReason()
+    if (reason) {
+      console.error(`[disarm] agent NOT starting: ${reason}`)
+      return
+    }
+  }
   log('Agent loop starting...')
   setTimeout(() => runLoop(db), 5000) // 5s delay on startup
   startLoopWatchdog(db)

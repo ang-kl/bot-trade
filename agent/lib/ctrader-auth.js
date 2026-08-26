@@ -9,6 +9,7 @@
 
 import { getState, setState } from '../db.js'
 import { ctraderEnv } from './ctrader-env.js'
+import { disarmReason } from './env-disarm.js'
 
 const CTRADER_API = 'https://openapi.ctrader.com'
 const REFRESH_EVERY_MS = 24 * 3600_000
@@ -18,6 +19,11 @@ const REFRESH_EVERY_MS = 24 * 3600_000
  * both. Throws on failure. Returns the new access token.
  */
 export async function refreshCtraderToken(db) {
+  // A disarmed environment (staging) shares production's grant: refreshing
+  // from here invalidates production's access token. Blocking at this choke
+  // point kills every refresh path — proactive, reactive hook, manual route.
+  const disarmed = disarmReason()
+  if (disarmed) throw new Error(`token refresh disabled: ${disarmed}`)
   const refreshToken = getState(db, 'ctrader_refresh_token') || ctraderEnv('refreshToken')
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
