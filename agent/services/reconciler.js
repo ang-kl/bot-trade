@@ -509,8 +509,18 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // Closing orders (closingOrder flag / bound positionId) are a live
   // position's extra TP/SL levels, not standalone pending entries — cTrader
   // stores the app's TP2/TP3 this way. Keep only true entry orders here.
+  //
+  // positionId ALONE is not that signal. The broker pre-assigns a positionId
+  // to resting ENTRY orders too, and the cpp sidecar dumps RECONCILE_RES
+  // verbatim — so on the cpp path every entry order arrived as
+  // { positionId: >0, closingOrder: false } and this filter blanked the
+  // snapshot, the broker_orders ledger and the UI's order sheet while the
+  // broker held orders (measured 2026-08-26: 4 resting orders, snapshot []).
+  // The ws path omits unset protobuf fields, which is the only reason
+  // positionId ever worked as a proxy there: closingOrder is authoritative
+  // when present; positionId is the fallback proxy only when it is not.
   const pendingOrders = (brokerOrders || [])
-    .filter(o => !(o.closingOrder === true || Number(o.positionId) > 0))
+    .filter(o => !(o.closingOrder === true || (o.closingOrder == null && Number(o.positionId) > 0)))
     .map(o => {
       const side = SIDE_STR(o.tradeData?.tradeSide)
       const px = o.limitPrice ?? o.stopPrice ?? null

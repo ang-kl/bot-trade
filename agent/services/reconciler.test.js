@@ -930,3 +930,34 @@ test('decodeRawBrokerOrder tolerates a bare STOP order with no tradeData', () =>
   assert.equal(out.volumeUnits, null)
   assert.equal(out.label, '')
 })
+
+// ---------------------------------------------------------------------------
+// The snapshot's entry-order filter vs the cpp sidecar's verbatim dump.
+// Measured 2026-08-26: the broker pre-assigns positionId to resting ENTRY
+// orders, and the cpp path dumps that field where the ws path omitted it —
+// so filtering on positionId alone blanked the snapshot while the broker
+// held 4 orders. closingOrder is authoritative when present; positionId is
+// the proxy only when it is not.
+// ---------------------------------------------------------------------------
+
+test('snapshot keeps a cpp-path entry order (positionId set, closingOrder false)', () => {
+  const db = mkDb()
+  reconcilePositions(db, [], [
+    makeBrokerOrder({ orderId: '801', symbolName: 'JPM.US', positionId: 238000001, closingOrder: false }),
+  ], mkSetState(db))
+  const stored = JSON.parse(getState(db, 'broker_pending_orders_json'))
+  assert.equal(stored.length, 1, 'an entry order with a broker-assigned positionId must survive the filter')
+  assert.equal(String(stored[0].orderId), '801')
+})
+
+test('snapshot still drops closing orders on both paths', () => {
+  const db = mkDb()
+  reconcilePositions(db, [], [
+    // cpp path: closingOrder present and true
+    makeBrokerOrder({ orderId: '802', symbolName: 'JPM.US', positionId: 238000002, closingOrder: true }),
+    // ws path: closingOrder omitted, bound positionId is the only signal
+    makeBrokerOrder({ orderId: '803', symbolName: 'JPM.US', positionId: 238000003 }),
+  ], mkSetState(db))
+  const stored = JSON.parse(getState(db, 'broker_pending_orders_json'))
+  assert.equal(stored.length, 0, 'closing orders must not appear as pending entries')
+})
