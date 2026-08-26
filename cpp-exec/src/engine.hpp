@@ -68,6 +68,7 @@ constexpr int NEW_ORDER_REQ           = 2106;
 constexpr int CANCEL_ORDER_REQ        = 2108;
 constexpr int AMEND_POSITION_SLTP_REQ = 2110;
 constexpr int CLOSE_POSITION_REQ      = 2111;
+constexpr int SYMBOL_CHANGED_EVENT    = 2120;
 constexpr int RECONCILE_REQ           = 2124;
 constexpr int RECONCILE_RES           = 2125;
 constexpr int EXECUTION_EVENT         = 2126;
