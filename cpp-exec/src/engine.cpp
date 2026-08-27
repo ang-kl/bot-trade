@@ -170,8 +170,14 @@ void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
   // lines in threes every 30s while carrying no information a reader could
   // act on.
   if (type == pt::SYMBOL_CHANGED_EVENT) return;
-  // Execution events arriving outside a pending request (e.g. SL hit) are
-  // logged; the Node keeper owns state reconstruction via /positions.
+  // Unsolicited EXECUTION_EVENTs (an order expiring, a broker-side SL/TP
+  // fill, another account's activity) are real events but nothing here acts
+  // on them — the Node reconcile pass owns state reconstruction via
+  // /positions and picks every one of them up on its next sweep. Logging
+  // them only painted the owner's log with bare "payloadType=2126" lines
+  // that carried no symbol, account or reason a reader could act on
+  // (owner 2026-08-27: "silence the 2126 log noise", same call as 2120).
+  if (type == pt::EXECUTION_EVENT) return;
   logLine("unsolicited payloadType=" + std::to_string(type));
 }
 
