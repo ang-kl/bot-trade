@@ -2934,8 +2934,19 @@ async function runLoop(db) {
             const x = await sweepCrossSideEquity(db, { clientId, clientSecret, accessToken }, { isLive })
             crossSideEquitySeeded = true
             if (x.swept > 0) {
+              // A failure can be SILENT: stampAccountEquity returns
+              // { balance: null, error: null } when the broker answered but
+              // the balance decoded to 0/NaN (an unfunded account, by the
+              // `> 0` stamp gate). Filtering on r.error alone printed
+              // "1/3 stamped — " with nothing after the dash — a line that
+              // reports failure and cannot say why (measured 2026-08-27:
+              // ACCT-LIVE-2/3, both zero-balance). Name both kinds.
+              const why = x.results
+                .filter(r => r.error != null || r.balance == null)
+                .map(r => `${r.accountId}: ${r.error ?? 'broker answered, balance 0/unusable — not stamped'}`)
+                .join(' · ')
               log(`Cross-side equity: ${x.stamped}/${x.swept} ${isLive ? 'demo' : 'live'} account(s) stamped`
-                + (x.failed ? ` — ${x.results.filter(r => r.error).map(r => `${r.accountId}: ${r.error}`).join(' · ')}` : ''))
+                + (x.failed ? ` — ${why}` : ''))
             }
           } catch { /* equity is best-effort; never break the cycle */ }
         } else {
