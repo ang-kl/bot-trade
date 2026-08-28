@@ -4346,6 +4346,24 @@ async function runLoop(db) {
         // Owner-approved 01-08 ("approve retention") — the three tables that
         // grew production's DB to 526MB, cup_handle_diagnostics alone 40%.
         { name: 'prune-operational', run: async () => (await import('./services/retention.js')).pruneOperationalTables(db) },
+        // Owner 29-08 ("I don't think I need old data") — the two growers
+        // housekeeping never touched: the backtest-results folder (measured
+        // 4.7GB of autopilot HTML reports, ~40 new/day, never deleted) and
+        // SENT telegram_outbox rows (99MB; pending rows are the digest
+        // queue and are never touched).
+        {
+          name: 'prune-reports',
+          run: async () => {
+            const { loadRetentionConfig } = await import('./services/retention.js')
+            return (await import('./services/report-retention.js')).pruneReports(loadRetentionConfig(db))
+          },
+        },
+        {
+          name: 'prune-outbox',
+          run: () => db.prepare(
+            `DELETE FROM telegram_outbox WHERE sent_at IS NOT NULL AND queued_at < ?`
+          ).run(new Date(Date.now() - 14 * 86_400_000).toISOString()),
+        },
       ], { log })
       const d1 = pass.results['prune-scans']
       const d2 = pass.results['prune-signals']

@@ -2153,6 +2153,63 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/storage-purge — reclaim volume space, measured before and
+  // after (owner 2026-08-29: "bot-trade-vol is at 75% capacity. Can you
+  // purge" / "I don't think I need old data").
+  //
+  // What it does, in order, each step reported by name:
+  //   1. optionally persists retention overrides from body.retention into
+  //      retention_json (the owner's knob — merged, not replaced);
+  //   2. prunes the backtest-results folder (report-retention.js — the
+  //      measured 4.7GB: 2,551 HTML reports nothing ever deleted);
+  //   3. prunes the operational tables (retention.js) and SENT
+  //      telegram_outbox rows older than 14 days (pending rows are the
+  //      digest queue and are never touched);
+  //   4. wal_checkpoint(TRUNCATE), then the GUARDED compact (db-compact.js)
+  //      — the open-positions guard stands: a blocked compact is reported
+  //      as blocked, never forced from here.
+  // -----------------------------------------------------------------------
+  router.post('/storage-purge', async (req, res) => {
+    try {
+      const { storageReport } = await import('../services/storage-report.js')
+      const before = storageReport(db)
+
+      const steps = {}
+      const overrides = req.body?.retention
+      if (overrides && typeof overrides === 'object' && !Array.isArray(overrides)) {
+        let saved = {}
+        try { saved = JSON.parse(getState(db, 'retention_json') || '{}') || {} } catch { saved = {} }
+        const merged = { ...saved, ...overrides }
+        setState(db, 'retention_json', JSON.stringify(merged))
+        steps.retentionSaved = merged
+      }
+
+      const { loadRetentionConfig, pruneOperationalTables, pruneTradeHistory } = await import('../services/retention.js')
+      const cfg = loadRetentionConfig(db)
+      const { pruneReports } = await import('../services/report-retention.js')
+      steps.reports = pruneReports(cfg)
+      steps.operational = pruneOperationalTables(db, cfg)
+      steps.tradeHistory = pruneTradeHistory(db, cfg)
+      try {
+        steps.outbox = db.prepare(
+          `DELETE FROM telegram_outbox WHERE sent_at IS NOT NULL AND queued_at < ?`
+        ).run(new Date(Date.now() - 14 * 86_400_000).toISOString()).changes
+      } catch { steps.outbox = 0 }
+
+      try { db.pragma('wal_checkpoint(TRUNCATE)'); steps.walCheckpoint = true } catch { steps.walCheckpoint = false }
+      const { runCompact } = await import('../services/db-compact.js')
+      steps.compact = runCompact(db, { dbPath: process.env.DB_PATH })
+
+      const after = storageReport(db)
+      console.log(`[actions] storage-purge: reports −${steps.reports.deleted} files (${(steps.reports.freedBytes / 1e6).toFixed(0)}MB), `
+        + `cupHandle −${steps.operational.cupHandle} rows, outbox −${steps.outbox}, compact ${steps.compact?.ran ? 'ran' : `skipped (${steps.compact?.reason})`}`)
+      res.json({ ok: true, before, steps, after })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/validation-fill — supervised end-to-end proof of the REAL
   // auto-trade path. Body: { symbol, side?: 'long'|'short' }.
   //
