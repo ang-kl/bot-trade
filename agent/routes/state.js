@@ -1522,12 +1522,17 @@ export default function stateRouter(db) {
   // ?days=30 &minSample=30 &allOrigins=1 (the last is NOT evidence of edge).
   router.get('/exit-counterfactual', async (req, res) => {
     try {
-      const { exitCounterfactual } = await import('../services/exit-counterfactual.js')
+      const { exitCounterfactual, parseTrailSweep } = await import('../services/exit-counterfactual.js')
+      const { DEFAULT_RULES } = await import('../lib/exit-replay.js')
       const days = Math.min(365, Math.max(1, Number(req.query.days) || 30))
       const minSample = Math.max(1, Number(req.query.minSample) || undefined || 30)
       const scope = requestedAccount(db, req)
+      // ?trailR=0.5,0.75,1.5,2 — sweep extra trail distances over the same
+      // population (bounded, validated; see parseTrailSweep).
+      const sweep = parseTrailSweep(req.query.trailR ? String(req.query.trailR) : '')
       res.json(exitCounterfactual(db, {
         days, minSample,
+        ...(sweep.length ? { rules: [...DEFAULT_RULES, ...sweep] } : {}),
         cleanOnly: String(req.query.allOrigins || '') !== '1',
         accountId: scope.all ? null : (scope.accountId ?? null),
         // ?strategy=fib_confluence for one strategy's entries;

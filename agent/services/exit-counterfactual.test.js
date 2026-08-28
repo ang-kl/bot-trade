@@ -7,7 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { exitCounterfactual, replayablePopulation, MIN_SAMPLE } from './exit-counterfactual.js'
+import { exitCounterfactual, replayablePopulation, MIN_SAMPLE, parseTrailSweep } from './exit-counterfactual.js'
 
 const MIN = 60_000
 // Anchored to NOW, not to a literal date: the service filters on a rolling
@@ -181,4 +181,23 @@ test('the strategy filter separates probe entries from gated ones', () => {
   const report = exitCounterfactual(db, { excludeStrategy: 'burnin', minSample: 1 })
   assert.equal(report.excludeStrategy, 'burnin', 'the report names its own filter')
   assert.equal(report.eligible, 5)
+})
+
+// ---------------------------------------------------------------------------
+// parseTrailSweep — the ?trailR= sweep parser. Strict on garbage: a sweep is
+// a bounded read, not a way to make the endpoint replay hundreds of rules.
+// ---------------------------------------------------------------------------
+
+test('parseTrailSweep builds bounded, deduped trail rules', () => {
+  const rules = parseTrailSweep('0.5, 0.75, 1, 1.5, 2, 0.5, junk, -1, 0, 11')
+  assert.deepEqual(rules.map(r => r.name), ['trail_0.5R', 'trail_0.75R', 'trail_1.5R', 'trail_2R'],
+    'garbage, out-of-range, duplicates and the built-in 1R must all be dropped')
+  assert.deepEqual(rules.map(r => r.trailR), [0.5, 0.75, 1.5, 2])
+})
+
+test('parseTrailSweep caps the sweep at 8 rules and tolerates empty input', () => {
+  const many = parseTrailSweep(Array.from({ length: 20 }, (_, i) => (i + 2) / 4).join(','))
+  assert.equal(many.length, 8, 'at most 8 extra rules per request')
+  assert.deepEqual(parseTrailSweep(''), [])
+  assert.deepEqual(parseTrailSweep(undefined), [])
 })
