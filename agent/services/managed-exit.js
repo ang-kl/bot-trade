@@ -38,9 +38,13 @@ import { tfMs } from '../lib/timeframes.js'
 // 1R measured 1.82 / 50%). capBars moved to 0: the sweep's trail figures
 // were measured WITHOUT a cap, and every cap variant scored below the
 // trail alone. Both remain one state write away in managed_exit_json.
+// demoOnly false (owner 28-08-2026: "why only demo? i stressed it should be
+// regardless of account") — the trail governs every REGISTERED account,
+// live included. The registry check below still fails closed for accounts
+// it cannot identify.
 export const MANAGED_EXIT_DEFAULTS = Object.freeze({
   on: true,
-  demoOnly: true,
+  demoOnly: false,
   capBars: 0,
   trailR: 0.5,
 })
@@ -69,11 +73,17 @@ export function loadManagedExit(db) {
 export function managedExitApplies(db, accountId, cfg = null) {
   const c = cfg || loadManagedExit(db)
   if (!c.on) return false
-  if (!c.demoOnly) return true
   if (accountId == null) return false
   try {
     const row = db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(String(accountId))
-    return !!row && Number(row.is_live) === 0
+    // The registry check is UNCONDITIONAL: with demoOnly off the policy
+    // reaches live accounts, but never an account it cannot identify.
+    // (`!c.demoOnly → return true` used to sit above the null/registry
+    // checks, so widening the scope would also have widened it to
+    // unattributable rows — fail-closed must not depend on which scope is
+    // configured.)
+    if (!row) return false
+    return c.demoOnly ? Number(row.is_live) === 0 : true
   } catch { return false }
 }
 
