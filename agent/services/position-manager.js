@@ -260,8 +260,15 @@ export function evaluatePosition(pos, ctx) {
   // pullback; behind MFE, the stop only ever ratchets — identical to the
   // trail_1R replay the evidence came from. At entry, peak−trailR equals the
   // original stop, so the rule is a no-op until the trade shows profit.
-  if (rules.alwaysTrailR > 0) {
-    const peakR = Math.max(newMfe ?? 0, r)
+  // ACTIVATION GATE, same as the replay (`peakR > rule.trailR`): the trail
+  // arms only once the trade has moved a full trail-distance in profit.
+  // Invisible while trailR was 1.0 — peak−1R below +1R sits behind a 1R
+  // initial stop anyway — but at 0.5R the ungated version tightens the
+  // stop on the FIRST favourable tick (peak 0.1R → stop −0.4R), which is
+  // not the rule the 44-trade evidence was scored on.
+  const managedPeakR = Math.max(newMfe ?? 0, r)
+  if (rules.alwaysTrailR > 0 && managedPeakR > rules.alwaysTrailR) {
+    const peakR = managedPeakR
     const trailSL = priceAtR(pos, peakR - rules.alwaysTrailR)
     if (isTighter(pos.side, pos.current_sl, trailSL)) {
       return {
