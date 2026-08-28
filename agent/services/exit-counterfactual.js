@@ -39,6 +39,36 @@ const ms = (s) => {
 }
 
 /**
+ * Parse a `?trailR=0.5,0.75,1.5,2` sweep request into extra trail rules.
+ *
+ * Owner question 2026-08-28: "is 1R the best way" — 1R was only the best
+ * AMONG THE RULES TESTED, and nothing had ever swept the trail distance
+ * itself. This turns a comma list into `{ name: 'trail_<v>R', trailR: v }`
+ * rules so the sweep runs over the same replay population as everything
+ * else, instead of being estimated.
+ *
+ * Strict on garbage rather than forgiving: a value that is not a finite
+ * number in (0, 10] is dropped, duplicates (including of the built-in 1.0)
+ * are dropped, and at most 8 survive — a sweep request is a bounded read,
+ * not a way to make the endpoint replay hundreds of rule variants.
+ */
+export function parseTrailSweep(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return []
+  const seen = new Set([1]) // trail_1R is already in DEFAULT_RULES
+  const out = []
+  for (const part of raw.split(',')) {
+    const v = Number(part.trim())
+    if (!Number.isFinite(v) || v <= 0 || v > 10) continue
+    const r = Math.round(v * 100) / 100
+    if (seen.has(r)) continue
+    seen.add(r)
+    out.push({ name: `trail_${r}R`, trailR: r })
+    if (out.length >= 8) break
+  }
+  return out
+}
+
+/**
  * Load the replayable population.
  *
  * A trade qualifies only with: a stored bar window, an entry, a stop, and —
