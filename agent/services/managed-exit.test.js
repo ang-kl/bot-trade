@@ -87,3 +87,66 @@ test('loop.js actually consults the policy at BOTH wiring points', () => {
   assert.match(src, /managedExitApplies\(db, pos\.account_id\)/, 'monitor-time trail gate missing')
   assert.match(src, /alwaysTrailR: loadManagedExit\(db\)\.trailR/, 'trail knob not passed to the evaluator')
 })
+
+// ---------------------------------------------------------------------------
+// One Simple System (owner 28-08-2026, win-rate goal > 69%): trail 0.5R is
+// the sole exit-timing rule on managed accounts; the policy cap defaults OFF
+// and 0 is a VALUE, not junk to be "repaired" back to a cap.
+// ---------------------------------------------------------------------------
+
+test('defaults are the swept values: trailR 0.5, capBars 0', () => {
+  assert.equal(MANAGED_EXIT_DEFAULTS.trailR, 0.5)
+  assert.equal(MANAGED_EXIT_DEFAULTS.capBars, 0)
+})
+
+test('capBars 0 stored is honoured as NO CAP, not repaired to a default', () => {
+  const db = initDB(':memory:')
+  setState(db, 'managed_exit_json', JSON.stringify({ capBars: 0, trailR: 0.5 }))
+  const cfg = loadManagedExit(db)
+  assert.equal(cfg.capBars, 0, 'a cap you can configure but never turn off is the guard-out-of-reach shape')
+  // Junk still degrades to the default, and an explicit positive cap still works.
+  setState(db, 'managed_exit_json', JSON.stringify({ capBars: 'junk' }))
+  assert.equal(loadManagedExit(db).capBars, MANAGED_EXIT_DEFAULTS.capBars)
+  setState(db, 'managed_exit_json', JSON.stringify({ capBars: 8 }))
+  assert.equal(loadManagedExit(db).capBars, 8)
+})
+
+test('the managed ruleset silences the legacy ladder and the trail alone fires', () => {
+  // The exact rule values loop.js merges for managed accounts.
+  const managedRules = {
+    ...DEFAULT_RULES,
+    alwaysTrailR: 0.5,
+    bankTriggerR: 0,
+    partialTriggerR: Infinity,
+    runnerTriggerR: Infinity,
+    beTriggerR: Infinity,
+  }
+  const pos = {
+    id: 1, symbol: 'TEST', side: 'long', entry_price: 100, current_sl: 99,
+    current_tp: null, initial_risk: 1, mfe_r: 0, mae_r: 0, be_moved: 0,
+    scaled_out: 0, invalidation_trigger: null, time_cap_at: null,
+    created_at: new Date().toISOString(),
+  }
+  // +6R would have hit bank_target_5R, the partial window and breakeven under
+  // the legacy ladder. Under the managed ruleset only the trail may answer.
+  const r = evaluatePosition(pos, { currentPrice: 106, rules: managedRules })
+  assert.equal(r.action, 'MOVE_SL')
+  assert.match(r.reason, /managed_trail/, 'the trail must be the rule that fires, not bank/partial/breakeven')
+  assert.equal(r.newSL, 105.5, 'peak 6R − 0.5R = +5.5R = 105.5')
+  // And below +0.5R the ruleset does nothing at all: stop stands, no exits.
+  const hold = evaluatePosition(pos, { currentPrice: 100.4, rules: managedRules })
+  assert.equal(hold.action, 'HOLD')
+})
+
+test('loop wiring pin: the managed branch sets the silencing values and gates the cap stamp', () => {
+  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+    .split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  const i = loop.indexOf('alwaysTrailR: loadManagedExit(db).trailR')
+  assert.ok(i > 0, 'managed rules merge not found — re-anchor this pin')
+  const slice = loop.slice(i, i + 400)
+  for (const want of ['bankTriggerR: 0', 'partialTriggerR: Infinity', 'runnerTriggerR: Infinity', 'beTriggerR: Infinity']) {
+    assert.ok(slice.includes(want), `managed ruleset must include ${want}`)
+  }
+  assert.match(loop, /if \(mePolicy\.capBars > 0\) \{/,
+    'the fill-path cap stamp must be gated on capBars > 0')
+})

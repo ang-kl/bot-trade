@@ -721,8 +721,15 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       // demo-only, from the gated-entry counterfactual's verdict that deep
       // holds turn these entries' +0.2R into -0.53R. Signal-declared caps
       // above always win; this is the default for the silence.
+      //
+      // capBars 0 = NO policy cap (One Simple System, 28-08-2026): the
+      // trail-distance sweep measured the trail alone above every cap
+      // variant, so the default cap is off — only signal-declared caps
+      // stamp. Set capBars > 0 in managed_exit_json to restore.
       const mePolicy = loadManagedExit(db)
-      timeCap = managedCapAt(Date.now(), parsedLabel.timeframe || synth.timeframe || '1h', mePolicy.capBars)
+      if (mePolicy.capBars > 0) {
+        timeCap = managedCapAt(Date.now(), parsedLabel.timeframe || synth.timeframe || '1h', mePolicy.capBars)
+      }
     }
 
     // Atomic DB write: promote the intent row to 'open' and create its
@@ -1679,10 +1686,25 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 // isolation, same as evaluatePosition/executeBrokerAction.
 export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
   let rules = rulesForSymbol(db, pos.symbol)
-  // Managed-exit trail (owner "c1", 25-08-2026): peak-based 1R trail from
-  // entry on demo accounts — see managed-exit.js for the evidence and scope.
+  // Managed-exit trail (owner "c1" 25-08-2026; ONE SIMPLE SYSTEM 28-08-2026:
+  // "proceed as plan", win-rate goal > 69%): on managed (demo) accounts the
+  // peak-based trail is the ONLY exit-timing rule. The trail-distance sweep
+  // over the same 44-trade population measured trail_0.5R at PF 2.41 /
+  // WR 69.2% vs bank/partial/breakeven variants at 1.0–1.6, so the legacy
+  // ladder (bank target, partial, runner, breakeven) is silenced here BY
+  // RULE VALUES, not deleted — non-managed accounts keep the full ladder,
+  // and flipping managed_exit_json off restores it everywhere. Signal-owned
+  // theses (time_cap_at already stamped, invalidation triggers) still fire:
+  // they are the trade's own thesis, not exit timing.
   if (managedExitApplies(db, pos.account_id)) {
-    rules = { ...rules, alwaysTrailR: loadManagedExit(db).trailR }
+    rules = {
+      ...rules,
+      alwaysTrailR: loadManagedExit(db).trailR,
+      bankTriggerR: 0,
+      partialTriggerR: Infinity,
+      runnerTriggerR: Infinity,
+      beTriggerR: Infinity,
+    }
   }
   const eval_ = evaluatePosition(pos, { currentPrice, rules })
 

@@ -31,11 +31,18 @@
 import { getState } from '../db.js'
 import { tfMs } from '../lib/timeframes.js'
 
+// One Simple System (owner 28-08-2026, "proceed as plan", win-rate goal
+// > 69%): the trail-distance sweep over the same 44-trade population put
+// trail_0.5R at PF 2.41 / expectancy +0.387R / WR 69.2% — the highest win
+// rate and PF of every distance tested (0.75R won expectancy at +0.478R;
+// 1R measured 1.82 / 50%). capBars moved to 0: the sweep's trail figures
+// were measured WITHOUT a cap, and every cap variant scored below the
+// trail alone. Both remain one state write away in managed_exit_json.
 export const MANAGED_EXIT_DEFAULTS = Object.freeze({
   on: true,
   demoOnly: true,
-  capBars: 8,
-  trailR: 1.0,
+  capBars: 0,
+  trailR: 0.5,
 })
 
 /** Stored overrides ← defaults. Junk in state degrades to the defaults. */
@@ -43,10 +50,14 @@ export function loadManagedExit(db) {
   let stored = {}
   try { stored = JSON.parse(getState(db, 'managed_exit_json') || '{}') || {} } catch { stored = {} }
   const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
+  // capBars is the one knob where 0 is a VALUE (no policy cap), not junk —
+  // `num()` treating 0 as invalid was exactly the guard-out-of-reach shape:
+  // a cap you could configure but never turn off.
+  const capBars = Number(stored.capBars)
   return {
     on: stored.on !== undefined ? stored.on === true : MANAGED_EXIT_DEFAULTS.on,
     demoOnly: stored.demoOnly !== undefined ? stored.demoOnly !== false : MANAGED_EXIT_DEFAULTS.demoOnly,
-    capBars: num(stored.capBars, MANAGED_EXIT_DEFAULTS.capBars),
+    capBars: Number.isFinite(capBars) && capBars >= 0 ? capBars : MANAGED_EXIT_DEFAULTS.capBars,
     trailR: num(stored.trailR, MANAGED_EXIT_DEFAULTS.trailR),
   }
 }
