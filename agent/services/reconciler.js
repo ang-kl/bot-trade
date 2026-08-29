@@ -561,6 +561,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // backfilled — cheap, idempotent, pure DB (see reclassifyBrokerCloses).
   const reclassified = reclassifyBrokerCloses(db)
 
+  // Ours-labelled rows stuck as observe-only external (the pre-open label
+  // gap) get their real source back — see repairMisfiledOwnPositions.
+  const sourcesRepaired = repairMisfiledOwnPositions(db)
+
   // Drop watch entries for positions this pass no longer knows about — closed,
   // or belonging to an account this scoped pass did not cover (those keep
   // their own entries, which their own pass maintains).
@@ -571,7 +575,39 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   }
   try { setState(RESYNC_WATCH_KEY, JSON.stringify(resyncWatch)) } catch { /* non-fatal */ }
 
-  return { newExternal, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified }
+  return { newExternal, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified, sourcesRepaired }
+}
+
+/**
+ * Upgrade OPEN positions misfiled as `external` whose label says they are
+ * OURS. The 09-08-2026 label split gave pre-open fills their own source
+ * (PRE) for P&L attribution, but isOurs() was only taught it on 29-08 — so
+ * every pre-open fill imported in between sits as observe-only external:
+ * no trail, no caps, no management (measured: a bot 0016.HK fill at +2.35R
+ * peak, stop untouched). Idempotent: once upgraded, rows no longer match.
+ * Genuinely manual (MAN-labelled) and unlabelled positions never match —
+ * isOurs is the single authority on what "ours" means.
+ *
+ * @returns {number} rows upgraded
+ */
+export function repairMisfiledOwnPositions(db) {
+  let upgraded = 0
+  try {
+    const rows = db.prepare(
+      `SELECT id, trade_id, label_raw FROM monitored_positions
+       WHERE status = 'active' AND source = 'external' AND label_raw IS NOT NULL`
+    ).all()
+    for (const r of rows) {
+      if (!isOurs(r.label_raw)) continue
+      const src = parseLabel(r.label_raw).source || 'autopilot'
+      db.prepare('UPDATE monitored_positions SET source = ? WHERE id = ?').run(src, r.id)
+      if (r.trade_id != null) {
+        try { db.prepare(`UPDATE trades SET source = ? WHERE id = ? AND source = 'external'`).run(src, r.trade_id) } catch { /* trades row optional */ }
+      }
+      upgraded++
+    }
+  } catch { /* repair is best-effort; the next pass retries */ }
+  return upgraded
 }
 
 /**

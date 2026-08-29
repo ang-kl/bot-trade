@@ -293,12 +293,21 @@ export function describeLabel(label) {
 }
 
 /**
- * Is this label one of ours (i.e. placed via autopilot or copilot)?
- * Returns true when the source field parses to a known value.
+ * Is this label one of ours (i.e. placed by this system)?
+ *
+ * `preopen` is ours: closed-market-limits.js stamps it on the bot's own
+ * pre-open resting orders. The 09-08-2026 label split separated PRE from AP
+ * so their P&L could be measured apart — but this predicate was never
+ * updated, so every pre-open FILL was imported as `external` and became
+ * observe-only: no trail, no caps, no management at all (measured
+ * 2026-08-29: a bot-placed 0016.HK fill at +2.35R peak with its stop still
+ * at the original level, invisible to the managed exit). Measurement
+ * separation lives in the SOURCE FIELD the adopter stores, not in
+ * pretending the position belongs to someone else.
  */
 export function isOurs(label) {
   const p = parseLabel(label)
-  return p.source === 'autopilot' || p.source === 'copilot'
+  return p.source === 'autopilot' || p.source === 'copilot' || p.source === 'preopen'
 }
 
 /**
