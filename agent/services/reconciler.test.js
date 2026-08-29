@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState } from '../db.js'
-import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -960,4 +960,47 @@ test('snapshot still drops closing orders on both paths', () => {
   ], mkSetState(db))
   const stored = JSON.parse(getState(db, 'broker_pending_orders_json'))
   assert.equal(stored.length, 0, 'closing orders must not appear as pending entries')
+})
+
+// ---------------------------------------------------------------------------
+// The pre-open adoption gap (owner "go adoption fix", 29-08-2026): PRE labels
+// are OURS — a bot pre-open fill must be adopted and managed, and rows the
+// gap already misfiled as external get their real source back.
+// ---------------------------------------------------------------------------
+
+test('a PRE-labelled broker orphan is ADOPTED with source preopen, not imported external', () => {
+  const db = mkDb()
+  const result = reconcilePositions(db, [makeBrokerPosition({
+    positionId: '910', symbolName: '0016.HK', tradeSide: 'SELL', openPrice: 125.01,
+    label: 'PRE|v1|VP|HI|LDN|4h|-', volume: 2000,
+  })], [], mkSetState(db))
+  assert.equal(result.newExternal.length, 1)
+  assert.equal(result.newExternal[0].adopted, true, 'PRE is placed by this system — adoption, not observation')
+  const mp = db.prepare(`SELECT source FROM monitored_positions WHERE symbol = '0016.HK'`).get()
+  assert.equal(mp.source, 'preopen', 'the P&L attribution split survives: source stays preopen, not autopilot')
+})
+
+test('repairMisfiledOwnPositions upgrades PRE rows stuck as external and leaves manual alone', () => {
+  const db = mkDb()
+  const seed = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES (?, 'BUY', 100, 1, ?, 'external', 'open', datetime('now'))`)
+  const mon = db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
+      thesis, initial_risk, source, status, label_raw)
+     VALUES (?, ?, 'long', 100, 99, 110, 't', 1, 'external', 'active', ?)`)
+  const t1 = seed.run('AAA', '1001').lastInsertRowid
+  mon.run('AAA', t1, 'PRE|v1|VP|HI|LDN|4h|-')
+  const t2 = seed.run('BBB', '1002').lastInsertRowid
+  mon.run('BBB', t2, 'MAN|v1|-|MD|LDN|1h|-')
+  const t3 = seed.run('CCC', '1003').lastInsertRowid
+  mon.run('CCC', t3, null)
+
+  const n = repairMisfiledOwnPositions(db)
+  assert.equal(n, 1, 'exactly the PRE row upgrades')
+  assert.equal(db.prepare(`SELECT source FROM monitored_positions WHERE symbol='AAA'`).get().source, 'preopen')
+  assert.equal(db.prepare(`SELECT source FROM trades WHERE id=?`).get(t1).source, 'preopen')
+  assert.equal(db.prepare(`SELECT source FROM monitored_positions WHERE symbol='BBB'`).get().source, 'external', 'MAN stays external/observe-only')
+  assert.equal(db.prepare(`SELECT source FROM monitored_positions WHERE symbol='CCC'`).get().source, 'external', 'no label, no claim')
+  assert.equal(repairMisfiledOwnPositions(db), 0, 'idempotent — a second pass finds nothing')
 })
