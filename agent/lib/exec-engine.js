@@ -281,6 +281,7 @@ export async function pingSidecar({ timeoutMs = 5_000, base = execBaseFor() } = 
       trail: body?.trail ?? null,
       vpo: body?.vpo ?? null,
       guard: body?.guard ?? null,
+      peer: body?.peer ?? null,
       decisionsSeq: body?.decisionsSeq ?? null,
       bootId: body?.bootId ?? null,
       ...(res.ok ? {} : { error: `health ${res.status}` }),
