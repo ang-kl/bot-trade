@@ -18,6 +18,7 @@
 #include "backtest.hpp"
 #include "decision_ring.hpp"
 #include "engine.hpp"
+#include "peer_probe.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
 #include "spot_feed.hpp"
@@ -203,6 +204,14 @@ int main(int argc, char** argv) {
   // spot feed starts even without VPO strategies (empty symbol list — the
   // trail engine's /trail-config pushes deliver symbols dynamically).
   const bool trailTickEnabled = envOr("TRAIL_TICK_ENABLED", "false") == "true";
+  // Mutual liveness (PR-B): probe the OTHER instance of this binary over
+  // Railway private networking. Liveness-only — peer state never changes
+  // behaviour here; it is recorded (ring) and reported (/health) so the
+  // keeper can triangulate "my path broke" vs "the sidecar died", and so
+  // evidence accumulates even while the keeper itself is down.
+  PeerProbe peerProbe;
+  peerProbe.start(envOr("PEER_URL", ""), &decisionRing);
+
   TrailEngine trailEngine;
   trailEngine.setDecisionRing(&decisionRing);
   if (trailTickEnabled) {
@@ -289,7 +298,7 @@ int main(int argc, char** argv) {
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -396,6 +405,18 @@ int main(int argc, char** argv) {
     v.set("decisionsSeq", static_cast<double>(decisionRing.latestSeq()));
     v.set("bootId", decisionRing.bootId());
     v.set("startedAtMs", static_cast<double>(startedAtMs));
+    if (peerProbe.enabled()) {
+      jsn::Value pj{jsn::Object{}};
+      pj.set("ok", peerProbe.peerOk());
+      long long at = peerProbe.lastOkAtMs();
+      pj.set("lastOkAtMs", at > 0 ? jsn::Value(at) : jsn::Value(nullptr));
+      pj.set("consecutiveFails", static_cast<double>(peerProbe.consecutiveFails()));
+      const std::string e = peerProbe.lastError();
+      pj.set("lastError", e.empty() ? jsn::Value(nullptr) : jsn::Value(e));
+      v.set("peer", std::move(pj));
+    } else {
+      v.set("peer", jsn::Value(nullptr));
+    }
     return {200, jsn::dump(v)};
   });
 
@@ -784,7 +805,8 @@ int main(int argc, char** argv) {
   }
   // The trail worker was left running on this path (audit #12) — a joinable
   // std::thread member reaching its destructor is the same std::terminate
-  // the spot-feed block above exists to avoid.
+  // the spot-feed block above exists to avoid. Same rule for the peer probe.
   trailEngine.stop();
+  peerProbe.stop();
   return served ? 0 : 1;
 }

@@ -149,3 +149,17 @@ The pattern list mirrors `.github/workflows/cpp-exec.yml`, which had the
 path filter right all along — CI knew which changes were ours; the deploy
 did not. Keep the two in step: if the CI filter gains a path, this list
 needs it too, or a change that CI tests will not be deployed.
+
+## Peer liveness (PR-B, 2026-08-31)
+
+Set `PEER_URL` on each sidecar to the OTHER instance's private address:
+
+- on cpp-exec:  `PEER_URL=http://cpp-acct.railway.internal:8080`
+- on cpp-acct:  `PEER_URL=http://cpp-exec.railway.internal:8080`
+
+Plain HTTP over Railway private networking — no TLS client exists in this
+binary by design. Each instance GETs its peer's `/health` every 60s,
+records up/down transitions (down only after 3 consecutive failures) in
+the decision ring, and reports `peer {ok, lastOkAtMs, consecutiveFails,
+lastError}` on its own `/health`. Liveness-only: peer state never changes
+this process's behaviour. Unset = off = the pre-PR-B binary.

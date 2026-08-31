@@ -877,6 +877,10 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       trail: r.trail ?? null,
       vpo: r.vpo ?? null,
       guard: r.guard ?? null,
+      // Peer triangulation (PR-B): probe failed but the PEER reports this
+      // sidecar ok → suspect the Node→sidecar path, not the sidecar. The
+      // inspector reads this from the snapshot; no verdict is rendered here.
+      peer: r.peer ?? null,
       bootId: r.bootId ?? null,
       ok,
       error: error || null,
