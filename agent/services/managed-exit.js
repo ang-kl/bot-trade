@@ -42,6 +42,33 @@ import { tfMs } from '../lib/timeframes.js'
 // regardless of account") — the trail governs every REGISTERED account,
 // live included. The registry check below still fails closed for accounts
 // it cannot identify.
+/**
+ * The managed ruleset, applied wherever a position of a governed account is
+ * evaluated. On managed accounts the peak-based trail is the ONLY
+ * exit-timing rule: the legacy ladder (bank target, partial, runner,
+ * breakeven) is silenced BY RULE VALUES, not deleted — non-managed accounts
+ * keep the full ladder, and flipping managed_exit_json off restores it
+ * everywhere. Signal-owned theses (time caps, invalidation) still fire.
+ *
+ * ONE helper for EVERY evaluator, extracted 2026-08-31 after the 0016.HK
+ * close: the merge lived inline in loop.js's monitorOnePosition only, while
+ * fast-monitor.js evaluated the same positions every 30s with the raw
+ * per-symbol rules — so bank_target_4R took the exit one minute after HK
+ * open and the managed trail never got to answer. A rule silenced at one of
+ * two call sites is failure mode #3 wearing #4's clothes.
+ */
+export function applyManagedRules(db, accountId, rules) {
+  if (!managedExitApplies(db, accountId)) return rules
+  return {
+    ...rules,
+    alwaysTrailR: loadManagedExit(db).trailR,
+    bankTriggerR: 0,
+    partialTriggerR: Infinity,
+    runnerTriggerR: Infinity,
+    beTriggerR: Infinity,
+  }
+}
+
 export const MANAGED_EXIT_DEFAULTS = Object.freeze({
   on: true,
   demoOnly: false,
