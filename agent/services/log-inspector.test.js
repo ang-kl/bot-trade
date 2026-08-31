@@ -107,7 +107,7 @@ test('applyPrinciple bounds: timing allowlist enforced; only disarms auto-apply'
   // Non-whitelisted timing key → proposed, no write.
   const t1 = applyPrinciple(db, { principle_kind: 'timing_change', principle_params: { key: 'perTradeRiskPct', value: 99 } }, cfg)
   assert.equal(t1.applied, false)
-  assert.equal(getState(db, 'perTradeRiskPct'), undefined ?? getState(db, 'perTradeRiskPct'))
+  assert.equal(getState(db, 'perTradeRiskPct') ?? null, null, 'refused key must never be written')
   // Whitelisted timing key applies and carries revert_to.
   setState(db, 'monitor_interval_min', '1')
   const t2 = applyPrinciple(db, { principle_kind: 'timing_change', principle_params: { key: 'monitor_interval_min', value: 2, revert_to: '1' } }, cfg)
