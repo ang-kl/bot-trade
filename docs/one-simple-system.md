@@ -101,6 +101,33 @@ paths are disabled by configuration, not deleted, until the forward sample
 - **Live accounts.** Nothing here touches live. The forward test has touched
   zero live positions since it began (verified daily).
 
+## P5a — Entry-floor re-derivation (PR-C), owner-ordered 31-08
+
+The "re-derivation needed" item above is now delivered, in the staged form
+the owner approved ("go PR-C", 31-08, after the disarm leak was closed in
+\#789 so the measurement starts clean):
+
+- **Mechanism** (`agent/services/earned-floor.js`): a proposal below the 3R
+  floor is admitted only when its strategy's OWN rolling win rate (last 30
+  closes, minimum sample 15) yields E = W×rr − (1−W) > 0.15R at the proposed
+  ratio, and the ratio still clears the strategy's declared minimum (1.5, or
+  its own override). This is the dynamic expectancy test the HARD_MIN_RR
+  comment has always named as the honest fix — earned by measurement, never
+  by declaration.
+- **Stage 1 limits**: demo accounts only (registry-checked, fail-closed on
+  unknown accounts) and HALF the per-trade risk budget. Live scope is a
+  separate decision, taken only after the checkpoint below.
+- **Pre-registered verdict**, fixed before the first admitted trade: after
+  **30 closed trades** of the admitted cohort (lineage:
+  trades.risk_event_id → risk_events rows stamped `earned_floor`),
+  **PF ≥ 1.5 keeps the gate**; under it, `earned_floor_json.on=false` and the
+  blanket floor resumes. Read it at `GET /state/earned-floor` — the
+  checkpoint is a number, not a promise.
+- **Honest caveat, restated from the outcome answer (№ 7,079)**: the 44-trade
+  trail evidence measured trades that PASSED the old gate; this admits trades
+  that FAILED it. +0.387R/trade does not transfer by assumption — that is
+  exactly what the 30-close cohort exists to measure.
+
 ## P6 — Validation, continuing
 
 The forward sample keeps accumulating (~5 gated closes since 25-08; slow

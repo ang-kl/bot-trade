@@ -2350,6 +2350,20 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/earned-floor — PR-C's pre-registered checkpoint (owner "go
+  // PR-C", 2026-08-31): config, admitted-cohort stats and the 30-close
+  // verdict against its FIXED target. Exists so the staged rollout's
+  // checkpoint is a number anyone can read, not a promise in a chat log.
+  router.get('/earned-floor', async (req, res) => {
+    try {
+      const { earnedFloorReport } = await import('../services/earned-floor.js')
+      res.json(earnedFloorReport(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/strategy-liveness', async (req, res) => {
     try {
       const { strategyLiveness } = await import('../services/strategy-liveness.js')

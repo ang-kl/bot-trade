@@ -21,6 +21,8 @@ import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
+import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { earnedFloorVerdict } from './earned-floor.js'
 import { campaignConfig, campaignStopVerdict } from './campaign-stop.js'
 import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN, DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
@@ -72,6 +74,12 @@ import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
  * long-term fix is the plan's own dynamic expectancy test
  * (E = W x rr - (1 - W)), gated on a per-strategy rolling win rate; until that
  * exists, a blanket floor is the safe direction to be wrong in.
+ *
+ * THAT FIX NOW EXISTS (owner "go PR-C", 2026-08-31): earned-floor.js runs
+ * exactly the test described above — demo-only and at half risk while staged
+ * — and the R:R gate consults it before this floor's veto. The 3.0 constant
+ * still governs every strategy that has not measurably earned its way under
+ * it, which is why it stays.
  */
 export const HARD_MIN_RR = 3.0
 
@@ -1436,6 +1444,10 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   }
 
   // ---- 6. R:R floor -------------------------------------------------------
+  // PR-C earned-floor admit (set inside the gate below): non-null when this
+  // proposal trades below HARD_MIN_RR on measured evidence; sizing then
+  // scales the per-trade risk budget by its riskScale.
+  let earnedFloor = null
   if (proposal.entry == null || proposal.sl == null) {
     return veto('missing_entry_or_sl', checks, proposal)
   }
@@ -1480,16 +1492,45 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
         checks.rr_floor_raised = { requested, enforced: rrFloor }
       }
       if (rr < rrFloor) {
-        const why = requested < rrFloor
-          ? ` (requested ${requested}, raised to the ${HARD_MIN_RR} expectancy floor)`
-          : ''
-        return veto(`bad_rr ${rr.toFixed(2)}<${rrFloor}${why}`, checks, proposal)
+        // PR-C (owner "go PR-C", 2026-08-31): a strategy may trade below
+        // HARD_MIN_RR only when its OWN measured rolling win rate pays at
+        // this ratio — the dynamic expectancy test HARD_MIN_RR's comment has
+        // always named as the honest fix. The proposal must still clear the
+        // strategy's DECLARED minimum (its STRATEGY_MIN_RR override, else the
+        // shared 1.5 pre-filter — deliberately not `requested`, whose
+        // config.minRR default is 3.0 and would make this branch unreachable):
+        // the earned floor lowers the blanket 3.0, never the strategy's own
+        // minimum. Everything the verdict refuses (off, live scope while
+        // staged, unknown account, thin sample, unpaying win rate) vetoes
+        // exactly as before, with the denial recorded so the veto says what
+        // would have to be true.
+        if (rr >= minRrFor(proposal.strategy, STRATEGY_PREFILTER_RR)) {
+          const ef = earnedFloorVerdict(db, { strategy: proposal.strategy, rr, accountId: acct })
+          if (ef.ok) {
+            earnedFloor = ef
+            checks.earned_floor = {
+              rr, winRate: ef.winRate, trades: ef.trades, e: ef.e, riskScale: ef.riskScale,
+            }
+          } else {
+            checks.earned_floor_denied = ef.reason
+          }
+        }
+        if (!earnedFloor) {
+          const why = requested < rrFloor
+            ? ` (requested ${requested}, raised to the ${HARD_MIN_RR} expectancy floor)`
+            : ''
+          return veto(`bad_rr ${rr.toFixed(2)}<${rrFloor}${why}`, checks, proposal)
+        }
       }
 
       // Invariant 2, second clause. The static floor above is a constant; this
       // asks whether THIS ratio actually pays at the win rate the account is
       // measurably achieving. See expectancyVerdict — thin samples pass.
-      if (config.minExpectancyR != null && Number.isFinite(Number(config.minExpectancyR))) {
+      // An earned-floor admit SKIPS it on purpose: the account-level win rate
+      // aggregates every strategy ever traded here (burn-in included), and the
+      // per-strategy rolling measurement above is the more specific evidence —
+      // re-vetoing on the blended number would silently undo every admit.
+      if (!earnedFloor && config.minExpectancyR != null && Number.isFinite(Number(config.minExpectancyR))) {
         const stats = accountEconomics(db, acct, { days: 30 })
         const ev = expectancyVerdict(stats, rr, { minE: Number(config.minExpectancyR) })
         if (ev.e != null) {
@@ -1570,7 +1611,12 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     // Algo-capped, drawdown-aware budget → effective risk fraction for sizing.
     const ddFactor = drawdownDeriskFactor(db, balance, config)
     const budget = riskBudgetUsd(balance, config, ddFactor)
-    const effRiskPct = budget / balance
+    // Earned-floor admits run at a fraction of the normal budget (PR-C stage
+    // 1: 0.5) — the admitted population is unproven BY CONSTRUCTION (it is
+    // the trades the old gate refused), so it pays reduced risk until the
+    // pre-registered 30-close verdict says otherwise.
+    const efScale = earnedFloor?.riskScale ?? 1
+    const effRiskPct = (budget / balance) * efScale
     const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, effRiskPct, entry, scanRates(db), brokerPerLot)
     checks.risk_budget = Number(budget.toFixed(2))
     checks.risk_pct_effective = Number(effRiskPct.toFixed(4))
