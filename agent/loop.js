@@ -650,6 +650,20 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       recordSubmitted(db, riskEventId)
     } catch { /* provenance never blocks a submission */ }
 
+    // Invariant 1 (owner, 31-08): decision_log used to record ONLY the
+    // negative — no 'proceed' writer existed anywhere, so every denominator
+    // computed from it (refusal-at-scale, the audit's `considered`) had to
+    // infer admits from the trades table instead of reading them. One row
+    // per dispatched order; naturally rate-bounded by the gates above it.
+    try {
+      const { recordDecision } = await import('./services/decision-log.js')
+      recordDecision(db, {
+        accountId: String(accountId), symbol, timeframe: synth.timeframe, strategy: synth.strategy,
+        stage: 'dispatch', decision: 'proceed',
+        reason: `order dispatched: ${side} ${volLots} lots (risk event ${riskEventId ?? 'n/a'})`,
+      })
+    } catch { /* provenance never blocks a submission */ }
+
     const submitT0 = Date.now()
     let exec
     try {
