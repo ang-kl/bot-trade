@@ -159,3 +159,42 @@ test('gate still vetoes: live account, thin record, and below the strategy\'s ow
   assert.match(under.veto_reason, /bad_rr/)
   assert.equal(under.checks.earned_floor_denied, undefined)
 })
+
+// ---------------------------------------------------------------------------
+// Stage 2 (owner "go PR-C stage 2", 31-08 evening): live scope + full risk +
+// relaxed thresholds, all via config the new route writes. The behavioural
+// pin is the exact delta the order bought: a LIVE account with a measured
+// record admits under the stage-2 config and is refused under stage-1
+// defaults; unknown accounts fail closed under BOTH scopes (existing test
+// pins the demoOnly side of that).
+// ---------------------------------------------------------------------------
+test('stage-2 config: a measured LIVE account admits at full risk; stage-1 defaults refuse it', () => {
+  const db = withAccounts(initDB(':memory:'))
+  seedRecord(db, 'vwap_trend', 12, 60) // 12 closes at 60% W — under stage-1's 15 sample
+  armBalance(db, LIVE, 10_000)
+
+  // Stage-1 defaults: refused twice over (live scope, thin sample).
+  const s1 = evaluateTrade(db, lowRrProposal(LIVE))
+  assert.equal(s1.approved, false)
+  assert.equal(s1.checks.earned_floor_denied, 'live_scope')
+
+  // Stage-2 config: demoOnly off, sample 10, minE 0.10, full risk.
+  setState(db, 'earned_floor_json', JSON.stringify({ demoOnly: false, riskScale: 1.0, minSample: 10, minE: 0.10 }))
+  const s2 = evaluateTrade(db, lowRrProposal(LIVE))
+  // 60% W at rr 1.6 → E = 0.96 − 0.40 = 0.56R > 0.10R → admitted.
+  assert.equal(s2.approved, true, `expected stage-2 admit, got: ${s2.veto_reason}`)
+  assert.equal(s2.checks.earned_floor.riskScale, 1.0, 'full risk on admits')
+
+  // Unknown account STILL fails closed with demoOnly off (the registry check
+  // is unconditional — the scope widening must not widen it to nobody-knows).
+  const ghost = evaluateTrade(db, { ...lowRrProposal('999'), accountId: '999' })
+  assert.equal(ghost.approved, false)
+  assert.equal(ghost.checks.earned_floor_denied, 'unattributable_account')
+})
+
+test('wiring pin: the owner has a route to the earned-floor dials', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8')
+  assert.ok(src.includes("router.post('/earned-floor'"), 'POST /actions/earned-floor route missing')
+  assert.ok(src.includes("setState(db, 'earned_floor_json'"), 'route must write earned_floor_json')
+})

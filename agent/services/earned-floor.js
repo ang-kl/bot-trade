@@ -74,17 +74,18 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
   if (!strategy) return no('unlabelled_proposal')
   if (!Number.isFinite(Number(rr)) || Number(rr) <= 0) return no('no_rr')
 
-  if (cfg.demoOnly) {
-    // Registry check, unconditional and fail-closed (managed-exit precedent).
-    let row = null
-    try {
-      row = accountId != null
-        ? db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(String(accountId))
-        : null
-    } catch { row = null }
-    if (!row) return no('unattributable_account')
-    if (Number(row.is_live) !== 0) return no('live_scope')
-  }
+  // Registry check UNCONDITIONAL, fail-closed (managed-exit precedent — and
+  // the same hole it closed there: the first draft put this inside the
+  // demoOnly branch, so widening the scope to live would have widened it to
+  // accounts nobody can name. Caught by the stage-2 test before it shipped.)
+  let row = null
+  try {
+    row = accountId != null
+      ? db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(String(accountId))
+      : null
+  } catch { row = null }
+  if (!row) return no('unattributable_account')
+  if (cfg.demoOnly && Number(row.is_live) !== 0) return no('live_scope')
 
   const edge = strategyRollingEdge(db, strategy, cfg.window)
   if (edge.trades < cfg.minSample) {
