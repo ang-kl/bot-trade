@@ -138,7 +138,7 @@ async function lossGuardianPass(db, creds, deps = {}) {
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
          AND (mp.keeper_opt_out IS NULL OR mp.keeper_opt_out != 1)
          AND t.ctrader_position_id IS NOT NULL
-         AND (mp.source IS NULL OR mp.source IN ('autopilot', 'external', 'manual'))
+         AND (mp.source IS NULL OR mp.source IN ('autopilot', 'preopen', 'external', 'manual'))
          AND ${accountFilterSql('t.account_id')}`
     ).all(accountId)
     const rows = allRows.filter(r => {
