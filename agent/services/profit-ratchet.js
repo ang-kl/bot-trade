@@ -48,6 +48,15 @@ export const DEFAULT_PROFIT_RATCHET = {
   confirmReads: 3,        // consecutive breaching reads before the hard action
   autoRearm: true,        // clear the halt automatically on sustained recovery
   rearmHoldMin: 15,       // minutes equity must hold above the recovery line
+  // TIME BACKSTOP (owner 31-08-2026: "send a message to telegram and re-arm
+  // after 2 days"). The recovery-line re-arm can sit permanently out of
+  // reach — measured twice that same day: DEMO-3 halted 4 days with equity
+  // oscillating around a knife-edge line (the 15-min hold reset on every
+  // dip), LIVE-1 halted 26 days on a $33 account whose line was
+  // arithmetically unreachable. A halt older than this many days re-arms
+  // itself with a Telegram notice. keepOff (the owner's explicit "stay
+  // halted") always outranks the timer. 0/null disables the backstop.
+  rearmAfterDays: 2,
 }
 
 export const PROFIT_RATCHET_KEY = 'profit_ratchet_json'
@@ -238,9 +247,23 @@ async function ratchetOneAccount(db, creds, accountId, cfg, { exec, ws, notify, 
   // ------------------------------------------------------------------ HALTED
   if (st.halt) {
     res.stage = 'halt'
+    // TIME BACKSTOP first (owner 31-08): a halt older than rearmAfterDays
+    // re-arms with a Telegram notice, whatever the recovery line says —
+    // unless the owner explicitly kept it off. This is the fix for the
+    // guard-out-of-reach shape above; the recovery-line path below stays
+    // the FAST way back when equity genuinely recovers.
+    const haltAgeMs = Date.parse(st.haltAt || '') ? nowMs - Date.parse(st.haltAt) : 0
+    const backstopMs = Number(cfg.rearmAfterDays) > 0 ? Number(cfg.rearmAfterDays) * 86_400_000 : Infinity
+    if (!st.keepOff && haltAgeMs >= backstopMs) {
+      st.halt = false; st.rearmSince = null
+      setState(db, haltKey(accountId), 'false')
+      setState(db, softKey(accountId), 'false')
+      res.rearmed = true; res.stage = null
+      await notify(`🪜⏰ Profit ratchet TIMED re-arm on ${who}: halted since ${st.haltAt} (${Math.round(haltAgeMs / 86_400_000 * 10) / 10} days > ${cfg.rearmAfterDays}d backstop) without reaching the recovery line. Entries resume; the staircase continues. [Keep off] from the Desk if this halt should stand.`)
+    }
     // Auto re-arm (¶A·4): sustained recovery above haltFloor + softBand.
     const recoveryLine = (st.haltFloor ?? st.baseline) + softBand
-    if (cfg.autoRearm && !st.keepOff && Number.isFinite(recoveryLine) && equity >= recoveryLine) {
+    if (st.halt && cfg.autoRearm && !st.keepOff && Number.isFinite(recoveryLine) && equity >= recoveryLine) {
       if (!st.rearmSince) st.rearmSince = nowMs
       if (nowMs - st.rearmSince >= cfg.rearmHoldMin * 60_000) {
         st.halt = false; st.rearmSince = null

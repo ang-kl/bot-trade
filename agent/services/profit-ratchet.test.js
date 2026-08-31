@@ -155,8 +155,10 @@ test('AUTO RE-ARM: sustained recovery clears the halt; [Keep off] disables it', 
   assert.equal(getState(db, haltKey(ACCT)), 'true')
 
   // Recovery: haltFloor 48000 + 250 = 48250 → floating +300 = 48300. First
-  // sighting starts the clock; 15 min later it re-arms.
-  const t0 = 2_000_000_000
+  // sighting starts the clock; 15 min later it re-arms. t0 sits ONE MINUTE
+  // after the halt so this leg exercises the recovery-line path, not the
+  // 2-day timed backstop (which has its own test below).
+  const t0 = 1_000_000_000 + 60_000
   await runProfitRatchet(db, CREDS, fakeDeps({ floating: 300, now: t0 }))
   assert.equal(getState(db, haltKey(ACCT)), 'true', 'not yet — must HOLD')
   const d = fakeDeps({ floating: 300, now: t0 + 16 * 60_000 })
@@ -209,4 +211,53 @@ test('off / no balance → skipped', async () => {
   const db2 = initDB(':memory:')
   const r = await runProfitRatchet(db2, CREDS, fakeDeps())
   assert.equal(acct(r).skipped, 'no_balance')
+})
+
+// ---------------------------------------------------------------------------
+// TIMED BACKSTOP (owner 31-08-2026: "send a message to telegram and re-arm
+// after 2 days"). Measured need: DEMO-3 halted 4 days with equity oscillating
+// around a knife-edge recovery line; LIVE-1 halted 26 days on a line its $33
+// equity could never reach. autoRearm existed and could not fire — the
+// guard-out-of-reach shape.
+// ---------------------------------------------------------------------------
+test('a halt older than rearmAfterDays re-arms itself with a Telegram notice', async () => {
+  const db = freshDB(48000)
+  setState(db, 'profit_ratchet_json', JSON.stringify({ stepUsd: 500 }))
+  await bankAStep(db)
+  await breach(db, 3)
+  assert.equal(getState(db, haltKey(ACCT)), 'true')
+
+  // Equity stays BELOW the recovery line the whole time — only the clock moves.
+  const haltMs = 1_000_000_000
+  const d1 = fakeDeps({ floating: -100, now: haltMs + 1 * 86_400_000 })
+  await runProfitRatchet(db, CREDS, d1)
+  assert.equal(getState(db, haltKey(ACCT)), 'true', 'one day is not two')
+
+  const d2 = fakeDeps({ floating: -100, now: haltMs + 2 * 86_400_000 + 60_000 })
+  const r = acct(await runProfitRatchet(db, CREDS, d2))
+  assert.equal(r.rearmed, true)
+  assert.equal(getState(db, haltKey(ACCT)), 'false')
+  assert.equal(getState(db, softKey(ACCT)), 'false')
+  assert.match(d2.notes[0].t, /TIMED re-arm/)
+  assert.match(d2.notes[0].t, /2d backstop/)
+})
+
+test('the timed backstop honours [Keep off] and a disabled (0) setting', async () => {
+  const db = freshDB(48000)
+  setState(db, 'profit_ratchet_json', JSON.stringify({ stepUsd: 500 }))
+  await bankAStep(db)
+  await breach(db, 3)
+  keepRatchetOff(db, ACCT)
+  const d = fakeDeps({ floating: -100, now: 1_000_000_000 + 10 * 86_400_000 })
+  await runProfitRatchet(db, CREDS, d)
+  assert.equal(getState(db, haltKey(ACCT)), 'true', 'keepOff outranks the timer, always')
+  assert.equal(d.notes.length, 0)
+
+  const db2 = freshDB(48000)
+  setState(db2, 'profit_ratchet_json', JSON.stringify({ stepUsd: 500, rearmAfterDays: 0 }))
+  await bankAStep(db2)
+  await breach(db2, 3)
+  const d2 = fakeDeps({ floating: -100, now: 1_000_000_000 + 30 * 86_400_000 })
+  await runProfitRatchet(db2, CREDS, d2)
+  assert.equal(getState(db2, haltKey(ACCT)), 'true', 'rearmAfterDays 0 disables the backstop')
 })
