@@ -104,3 +104,42 @@ test('off switch fully disables enforcement', () => {
   assert.equal(r.skipped, 'off')
   assert.equal(isArmed(db, 'rsi_meanrev'), true)
 })
+
+// ---------------------------------------------------------------------------
+// Owner "go auto-disarm" (31-08-2026): rolling PF < 1.0 over the window
+// disarms. At pfFloor 1.0 the two-clause guard (expectancy<0 AND pf<floor)
+// degenerates to exactly that single rule, because PF<1 ⟺ net<0. This pins
+// the DELTA the order bought: a strategy grinding at PF 0.98 is spared at
+// the default floor and disarmed at the owner's.
+// ---------------------------------------------------------------------------
+test('pfFloor 1.0 disarms a PF-0.98 grinder that the 0.95 default spares', () => {
+  // 8 wins of +10, 8 losses of -10.2 → PF ≈ 0.98, expectancy -0.1.
+  const seedPnls = [...Array(8).fill(10), ...Array(8).fill(-10.2)]
+
+  const db1 = initDB(':memory:')
+  arm(db1, ['rsi_meanrev'])
+  seed(db1, 'rsi_meanrev', seedPnls)
+  assert.equal(runEdgeWatchdog(db1, {}).actions.length, 0, 'default floor 0.95 spares PF 0.98')
+  assert.equal(isArmed(db1, 'rsi_meanrev'), true)
+
+  const db2 = initDB(':memory:')
+  arm(db2, ['rsi_meanrev'])
+  setState(db2, 'edge_watchdog_json', JSON.stringify({ pfFloor: 1.0 }))
+  seed(db2, 'rsi_meanrev', seedPnls)
+  const r = runEdgeWatchdog(db2, {})
+  assert.equal(r.actions.length, 1, 'owner floor 1.0 disarms the same record')
+  assert.equal(isArmed(db2, 'rsi_meanrev'), false)
+  // And a genuinely profitable record still survives the owner floor.
+  const db3 = initDB(':memory:')
+  arm(db3, ['rsi_meanrev'])
+  setState(db3, 'edge_watchdog_json', JSON.stringify({ pfFloor: 1.0 }))
+  seed(db3, 'rsi_meanrev', [...Array(8).fill(10), ...Array(8).fill(-9.8)]) // PF ≈ 1.02
+  assert.equal(runEdgeWatchdog(db3, {}).actions.length, 0)
+})
+
+test('wiring pin: the owner has a route to the dials', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8')
+  assert.ok(src.includes("router.post('/edge-watchdog'"), 'POST /actions/edge-watchdog route missing')
+  assert.ok(src.includes("setState(db, 'edge_watchdog_json'"), 'route must write edge_watchdog_json')
+})

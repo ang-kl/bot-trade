@@ -458,6 +458,37 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/edge-watchdog — { on?, window?, minTrades?, pfFloor? }.
+  // The per-strategy auto-disarm's dials (owner "go auto-disarm",
+  // 31-08-2026: rolling PF < 1.0 over the last 20 closes disarms; re-arm is
+  // owner-only from Tune — the watchdog never arms). pfFloor 1.0 makes
+  // "clearly losing" exactly PF < 1.0: at that floor the expectancy<0
+  // clause is the same condition (PF<1 ⟺ net<0), so the two-clause guard
+  // degenerates to the owner's single rule by arithmetic, not by edit.
+  // Values are clamped by loadEdgeWatchdogConfig; the response echoes what
+  // actually stands.
+  // -----------------------------------------------------------------------
+  router.post('/edge-watchdog', async (req, res) => {
+    try {
+      const { loadEdgeWatchdogConfig } = await import('../services/edge-watchdog.js')
+      const current = loadEdgeWatchdogConfig(db)
+      const next = {
+        ...current,
+        ...(typeof req.body?.on === 'boolean' ? { on: req.body.on } : {}),
+        ...(req.body?.window != null ? { window: Number(req.body.window) } : {}),
+        ...(req.body?.minTrades != null ? { minTrades: Number(req.body.minTrades) } : {}),
+        ...(req.body?.pfFloor != null ? { pfFloor: Number(req.body.pfFloor) } : {}),
+      }
+      setState(db, 'edge_watchdog_json', JSON.stringify(next))
+      const clamped = loadEdgeWatchdogConfig(db)
+      console.log(`[actions] edge watchdog ${clamped.on ? 'ON' : 'off'} window=${clamped.window} minTrades=${clamped.minTrades} pfFloor=${clamped.pfFloor}`)
+      res.json({ ok: true, config: clamped })
+    } catch (e) {
+      res.status(400).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/autotrade-scope — { scope: 'all' | 'armed' }. 'all'
   // (default) lets every enabled watchlist symbol trade on any scanned
   // timeframe (armed combos stay as micro-tuning); 'armed' restores the
