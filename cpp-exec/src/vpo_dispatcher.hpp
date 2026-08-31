@@ -103,6 +103,12 @@ public:
   Outcomes outcomes() const;
   std::string statusJson() const;
 
+  // Optional decision ring (invariant 1, 2026-08-31): a VPO refusal that never
+  // reaches placeOrder (no sizing, no account) is a decision only this tier
+  // can record. Fired orders are already ringed by the engine's order path.
+  // Non-owning; null = disabled. Set before start().
+  void setDecisionRing(class DecisionRing* r) { ring_ = r; }
+
 private:
   void recomputeLoop(int intervalMs);
   // Attempts to fire one ARMED strategy whose trigger the tick crossed.
@@ -141,6 +147,7 @@ private:
   mutable std::mutex outcomesMtx_;
   Outcomes outcomes_;
   void recordOutcome(const StrategyModule& s, const char* verdict, const std::string& detail);
+  class DecisionRing* ring_ = nullptr;
 };
 
 } // namespace vpo

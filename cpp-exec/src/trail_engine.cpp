@@ -188,6 +188,8 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
         if (it->second.pendingSl == snap.pendingSl) it->second.pendingSl = 0;
       }
       logLine("SL ratcheted pos=" + std::to_string(posId) + " -> " + std::to_string(snap.pendingSl));
+      if (ring_) ring_->log("trail", "amend_ok", snap.accountId, snap.symbolId, "",
+                            "pos=" + std::to_string(posId) + " sl=" + std::to_string(snap.pendingSl));
     } else {
       amendsFailed_.fetch_add(1);
       // Drop the pending target — the next tick recomputes from live state,
@@ -195,6 +197,8 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
       if (it != byPosition_.end() && it->second.pendingSl == snap.pendingSl) it->second.pendingSl = 0;
       logLine("SL amend FAILED pos=" + std::to_string(posId) + ": " +
               r.body.get("errorCode").asString() + " " + r.body.get("description").asString());
+      if (ring_) ring_->log("trail", "amend_fail", snap.accountId, snap.symbolId,
+                            r.body.get("errorCode").asString(), "pos=" + std::to_string(posId));
     }
   }
 }

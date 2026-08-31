@@ -3,6 +3,7 @@
 // Sidecar entrypoint: one engine thread (connect + auth + heartbeat + 30s
 // reconcile poll) and the HTTP server on the main thread. All env-driven —
 // no config files, matching how the Node keeper is configured on Railway.
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "backtest.hpp"
+#include "decision_ring.hpp"
 #include "engine.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
@@ -141,8 +143,19 @@ int main(int argc, char** argv) {
     logLine("TELEMETRY_PATH not set — order telemetry disabled");
   }
 
+  // The decision ring (owner invariant 1, 2026-08-31): every decision this
+  // binary takes lands as a structured record the Node keeper pulls via
+  // POST /decisions and persists. Always on — unlike telemetry it needs no
+  // volume, costs a few KB of memory, and a supervision channel that can be
+  // configured off is a guard whose trigger is out of reach.
+  DecisionRing decisionRing;
+  const long long startedAtMs = static_cast<long long>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+
   ExecEngine engine;
   if (telemetry) engine.setTelemetry(telemetry.get());
+  engine.setDecisionRing(&decisionRing);
   // THE PIN. Set CTRADER_HOST and this process serves that broker host and only
   // that one, for its whole life — /connect refuses anything else. Unset (the
   // default, and today's deployment) leaves the sidecar unpinned and every
@@ -191,6 +204,7 @@ int main(int argc, char** argv) {
   // trail engine's /trail-config pushes deliver symbols dynamically).
   const bool trailTickEnabled = envOr("TRAIL_TICK_ENABLED", "false") == "true";
   TrailEngine trailEngine;
+  trailEngine.setDecisionRing(&decisionRing);
   if (trailTickEnabled) {
     trailEngine.start(engine);
     logLine("tick-level trail engine started (TRAIL_TICK_ENABLED)");
@@ -218,6 +232,7 @@ int main(int argc, char** argv) {
       return vpoStore.getVolume(s.key() + ":" + s.order().symbol);
     };
     vpoDispatcher = std::make_unique<vpo::VpoDispatcher>(engine, barProvider, volumeResolver, vpoMacroTf, vpoMicroTf);
+    vpoDispatcher->setDecisionRing(&decisionRing);
 
     // "SYMBOL:SYMBOLID:STRATEGYKEY[:DIGITS],..." — DIGITS (the symbol's
     // decimal price precision, e.g. 5 for EURUSD, 3 for USDJPY) is optional
@@ -274,7 +289,7 @@ int main(int argc, char** argv) {
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -309,13 +324,93 @@ int main(int argc, char** argv) {
     // OOM-leak telemetry (2026-07-24 silent-SIGKILL incident): total depth
     // book entries — watch this across uptime; unbounded growth names the
     // leak. Null when the spot feed isn't running.
+    //
+    // FEED TRUTH (2026-08-31 supervision plan): before these fields a wedged
+    // SpotFeed silently froze the tick trail AND VPO firing with nothing
+    // outside the process able to see it — /health said ok as long as the
+    // HTTP thread answered. Facts only; Node (which knows market hours)
+    // renders the staleness verdict. spotFeed: null means the feed OBJECT
+    // does not exist (both consumers off, or no /connect yet) — Node must
+    // distinguish "not running" from "running and silent".
     {
       std::lock_guard<std::mutex> lk(vpoMtx);
       v.set("depthBookEntries", spotFeed
           ? jsn::Value(static_cast<double>(spotFeed->depthEntriesTotal()))
           : jsn::Value(nullptr));
+      if (spotFeed) {
+        jsn::Value f{jsn::Object{}};
+        f.set("connected", spotFeed->isConnected());
+        long long lt = spotFeed->lastTickAtMs();
+        f.set("lastTickAtMs", lt > 0 ? jsn::Value(lt) : jsn::Value(nullptr));
+        f.set("tickCount", static_cast<double>(spotFeed->tickCount()));
+        f.set("reconnects", static_cast<double>(spotFeed->reconnects()));
+        // Per-symbol detail is bearer-gated like `accounts` above: symbol ids
+        // identify what is traded, and /health answers unauthenticated.
+        if (trusted) {
+          jsn::Array syms;
+          for (const auto& [id, at] : spotFeed->lastTickBySymbol()) {
+            jsn::Value s{jsn::Object{}};
+            s.set("id", static_cast<double>(id));
+            s.set("lastTickAtMs", static_cast<double>(at));
+            syms.push_back(std::move(s));
+          }
+          f.set("symbols", jsn::Value(std::move(syms)));
+        }
+        v.set("spotFeed", std::move(f));
+      } else {
+        v.set("spotFeed", jsn::Value(nullptr));
+      }
     }
+    if (trailTickEnabled) {
+      jsn::Value t{jsn::Object{}};
+      t.set("tracked", static_cast<double>(trailEngine.tracked()));
+      t.set("amendsOk", static_cast<double>(trailEngine.amendsOk()));
+      t.set("amendsFailed", static_cast<double>(trailEngine.amendsFailed()));
+      v.set("trail", std::move(t));
+    } else {
+      v.set("trail", jsn::Value(nullptr));
+    }
+    if (vpoDispatcher) {
+      const vpo::VpoDispatcher::Outcomes o = vpoDispatcher->outcomes();
+      jsn::Value w{jsn::Object{}};
+      w.set("triggered", static_cast<double>(o.triggered));
+      w.set("placed", static_cast<double>(o.placed));
+      w.set("rejected", static_cast<double>(o.rejected));
+      w.set("failed", static_cast<double>(o.failed));
+      w.set("noSizing", static_cast<double>(o.noSizing));
+      w.set("noAccount", static_cast<double>(o.noAccount));
+      v.set("vpo", std::move(w));
+    } else {
+      v.set("vpo", jsn::Value(nullptr));
+    }
+    {
+      const GuardSnapshot g = engine.guard().snapshot();
+      jsn::Value gj{jsn::Object{}};
+      gj.set("halt", g.halt);
+      gj.set("requireBracket", g.requireBracket);
+      gj.set("requireTarget", g.requireTarget);
+      gj.set("maxOrderVolume", g.maxOrderVolume);
+      gj.set("haltAccountCount", static_cast<double>(g.haltAccounts.size()));
+      v.set("guard", std::move(gj));
+    }
+    v.set("decisionsSeq", static_cast<double>(decisionRing.latestSeq()));
+    v.set("bootId", decisionRing.bootId());
+    v.set("startedAtMs", static_cast<double>(startedAtMs));
     return {200, jsn::dump(v)};
+  });
+
+  // The decision ring pull (invariant 1's transport). POST because the route
+  // table is exact-match with no query strings (same reason /depth is a
+  // POST). Body: {after?, bootId?} — entries newer than `after` when the
+  // caller's bootId matches this boot, the whole retained ring otherwise.
+  server.route("POST", "/decisions", [&decisionRing](const HttpRequest& req) -> HttpResponse {
+    long long after = 0;
+    std::string callerBootId;
+    if (auto parsed = jsn::parse(req.body); parsed && parsed->isObject()) {
+      after = static_cast<long long>(parsed->get("after").asNumber(0));
+      callerBootId = parsed->get("bootId").asString();
+    }
+    return {200, decisionRing.dumpJson(after, callerBootId)};
   });
 
   server.route("GET", "/positions", [&engine](const HttpRequest&) -> HttpResponse {
@@ -343,7 +438,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -426,6 +521,7 @@ int main(int argc, char** argv) {
             if (trailPtr) trailPtr->onTick(symbolId, bid, ask);
           },
           depthFeedEnabled);
+      spotFeed->setDecisionRing(&decisionRing);
       if (trailPtr) spotFeed->ensureSymbols(trailEngine.symbolIds());
       SpotFeed* feedPtr = spotFeed.get();
       spotFeedThread = std::thread([feedPtr] { feedPtr->runLoop(); });
@@ -604,22 +700,51 @@ int main(int argc, char** argv) {
   // guard live — halt (kill switch), require-bracket, max order volume —
   // without pausing or locking the order path. Each field is optional; only
   // the ones present are changed. Reads on the order path are lock-free.
-  server.route("POST", "/config", [&engine](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/config", [&engine, &decisionRing](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
     const jsn::Value& v = *parsed;
+    const GuardSnapshot before = engine.guard().snapshot();
     if (v.get("halt").isBool()) engine.guard().setHalt(v.get("halt").asBool());
     if (v.get("requireBracket").isBool()) engine.guard().setRequireBracket(v.get("requireBracket").asBool());
     if (v.get("requireTarget").isBool()) engine.guard().setRequireTarget(v.get("requireTarget").asBool());
     if (v.get("maxOrderVolume").isNumber()) engine.guard().setMaxOrderVolume(v.get("maxOrderVolume").asNumber());
+    // Per-account halts (2026-08-31 supervision plan): FULL REPLACE, because
+    // Node's guard sync derives the whole desired set declaratively on every
+    // push — an incremental protocol would leave un-halts to be remembered,
+    // which is how the FX-day rollover would get forgotten. A manual UI push
+    // racing the sync is last-writer-wins; the sync re-converges within ~2min.
+    if (v.get("haltAccounts").isArray()) {
+      std::set<long long> ids;
+      for (const auto& e : v.get("haltAccounts").asArray()) {
+        long long id = e.isNumber() ? (long long)e.asNumber()
+                                    : std::strtoll(e.asString().c_str(), nullptr, 10);
+        if (id > 0) ids.insert(id);
+      }
+      engine.guard().setHaltAccounts(std::move(ids));
+    }
     const GuardSnapshot g = engine.guard().snapshot();
+    // A guard change is a declaration worth remembering — the ring is how the
+    // keeper's inspector later asks "who changed the guard, and did it bind".
+    if (before.halt != g.halt || before.haltAccounts != g.haltAccounts ||
+        before.requireBracket != g.requireBracket || before.requireTarget != g.requireTarget ||
+        before.maxOrderVolume != g.maxOrderVolume) {
+      decisionRing.log("guard", "config_changed", 0, 0, "",
+                       std::string("halt=") + (g.halt ? "1" : "0") +
+                       " haltAccounts=" + std::to_string(g.haltAccounts.size()) +
+                       " bracket=" + (g.requireBracket ? "1" : "0") +
+                       " target=" + (g.requireTarget ? "1" : "0"));
+    }
     jsn::Value out{jsn::Object{}};
     out.set("ok", true);
     out.set("halt", g.halt);
     out.set("requireBracket", g.requireBracket);
     out.set("requireTarget", g.requireTarget);
     out.set("maxOrderVolume", g.maxOrderVolume);
+    jsn::Array ha;
+    for (long long id : g.haltAccounts) ha.push_back(jsn::Value(id));
+    out.set("haltAccounts", jsn::Value(std::move(ha)));
     return {200, jsn::dump(out)};
   });
 

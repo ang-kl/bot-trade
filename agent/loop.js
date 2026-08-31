@@ -4061,6 +4061,16 @@ async function runLoop(db) {
           // for the per-account feed, Telegram for the push, all naming the
           // account.
           es.recordDisarm(db, { accountId: acctId, reason: verdict.reason, pnl: verdict.pnl, cap: verdict.cap, positionsClosed: closed })
+          // Push the trip into the C++ guard NOW rather than waiting up to a
+          // probe interval (~2 min) for convergence — the halt should bind on
+          // the broker path the moment the stop fires. Best-effort: a failed
+          // push converges on the next heartbeat probe anyway (the sync is
+          // declarative, derived from the same trippedKey this just wrote).
+          try {
+            const { syncExecGuard } = await import('./services/exec-guard-sync.js')
+            const exec2 = await import('./lib/exec-engine.js')
+            await syncExecGuard(db, exec2, { isLive: null, name: 'exec' }, { creds: getCtraderCreds(db) })
+          } catch { /* probe convergence covers it */ }
           try {
             // Imported here, not at module scope — decision-log is loaded
             // lazily at every other call site in this file for the same reason
@@ -4335,6 +4345,10 @@ async function runLoop(db) {
         { name: 'prune-risk-events', run: () => db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d) },
         { name: 'prune-decision-log', run: async () => (await import('./services/decision-log.js')).pruneDecisionLog(db) },
         { name: 'prune-position-events', run: async () => (await import('./services/position-events.js')).prunePositionEvents(db) },
+        // cpp_decisions rides the same 90d window as the other decision sinks.
+        // datetime() on both sides: at is sqlite's 'YYYY-MM-DD HH:MM:SS' while
+        // the cutoff is ISO — a bare string compare would misjudge the boundary.
+        { name: 'prune-cpp-decisions', run: () => db.prepare('DELETE FROM cpp_decisions WHERE datetime(at) < datetime(?)').run(cutoff90d) },
         // Long-horizon ledger retention (hardening 6c): closed trades +
         // postmortems past ~2 years (retention_json overrides; null disables).
         { name: 'prune-trade-history', run: async () => (await import('./services/retention.js')).pruneTradeHistory(db) },

@@ -682,7 +682,47 @@ async function repushRotatedToken(db, exec, side) {
   } catch { return false }
 }
 
-async function probeOneSidecar(db, exec, side, deps = {}) {
+// Pull the sidecar's decision ring into cpp_decisions (2026-08-31 plan,
+// invariant 1). Cursor {bootId, lastSeq} per side in agent_state; INSERT OR
+// IGNORE + the UNIQUE(side, boot_id, seq) index make the pull idempotent. A
+// bootId change is itself recorded as a synthetic `node/sidecar_restart` row
+// — a restart zeroes every in-memory counter, which the inspector must know.
+const CPP_DECISIONS_CURSOR_KEY = 'cpp_decisions_cursor_json'
+async function pullDecisionsIntoDb(db, exec, side, health) {
+  let cursors = {}
+  try { cursors = JSON.parse(getState(db, CPP_DECISIONS_CURSOR_KEY) || '{}') } catch { cursors = {} }
+  const cur = cursors[side.name] || { bootId: '', lastSeq: 0 }
+  const pulled = await exec.pullSidecarDecisions({
+    after: cur.bootId === health.bootId ? cur.lastSeq : 0,
+    bootId: cur.bootId,
+    ...(side.base ? { base: side.base } : {}),
+  })
+  if (!pulled) return
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO cpp_decisions
+       (side, boot_id, seq, ts_ms, component, kind, account_id, symbol_id, code, detail)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  if (cur.bootId && pulled.bootId !== cur.bootId) {
+    ins.run(side.name, pulled.bootId, 0, Date.now(), 'node', 'sidecar_restart',
+            null, null, '', `previous boot ${cur.bootId} — in-memory counters zeroed`)
+  }
+  for (const e of pulled.entries) {
+    if (!e || !Number.isFinite(Number(e.seq))) continue
+    ins.run(side.name, pulled.bootId, Number(e.seq), Number(e.tsMs) || null,
+            String(e.component || 'unknown'), String(e.kind || 'unknown'),
+            e.accountId != null ? String(e.accountId) : null,
+            Number.isFinite(Number(e.symbolId)) ? Number(e.symbolId) : null,
+            e.code != null ? String(e.code).slice(0, 300) : null,
+            e.detail != null ? String(e.detail).slice(0, 500) : null)
+  }
+  cursors[side.name] = { bootId: pulled.bootId, lastSeq: pulled.latestSeq }
+  setState(db, CPP_DECISIONS_CURSOR_KEY, JSON.stringify(cursors))
+}
+
+// Exported for tests: the probe's verdicts (feed staleness, trail-no-feed)
+// and the ring pull are pinned against fake exec objects, no sockets.
+export async function probeOneSidecar(db, exec, side, deps = {}) {
   const r = await exec.pingSidecar(side.base ? { base: side.base } : {})
   // The sidecar's GET /health says ok:true whenever its HTTP server answers
   // — even while the broker WS behind it has never connected or completed a
@@ -760,7 +800,60 @@ async function probeOneSidecar(db, exec, side, deps = {}) {
     ok = false
     error = `last reconcile ${Math.round((nowMs - Number(r.lastReconcileAt)) / 60_000)}m ago — engine loop looks stalled`
   }
+  // FEED-STALENESS VERDICT (2026-08-31 supervision plan). The sidecar
+  // reports feed FACTS (it has no notion of market hours); this side, which
+  // does, renders the verdict. A wedged SpotFeed silently freezes the tick
+  // trail AND VPO firing — before these checks it was invisible: /health
+  // said ok as long as the HTTP thread answered. Both checks are gated on
+  // the fields existing, so an older sidecar changes nothing.
+  if (ok && r.spotFeed && typeof r.spotFeed === 'object') {
+    const FEED_STALE_MS = Math.max(1, Number(process.env.FEED_STALE_MIN) || 10) * 60_000
+    let marketOpen = true
+    try {
+      const { weekendQuietNow } = await import('../lib/quiet-hours.js')
+      marketOpen = !weekendQuietNow(nowMs)
+    } catch { /* unknown → assume open; a false alarm beats a silent freeze */ }
+    const lastTick = Number(r.spotFeed.lastTickAtMs)
+    if (marketOpen && Number.isFinite(lastTick) && lastTick > 0 && nowMs - lastTick > FEED_STALE_MS) {
+      ok = false
+      error = `spot feed silent for ${Math.round((nowMs - lastTick) / 60_000)}m with the market open — tick-trail and VPO are frozen`
+    } else if (marketOpen && r.spotFeed.connected === false) {
+      ok = false
+      error = 'spot feed disconnected with the market open — tick-trail and VPO are frozen'
+    }
+  } else if (ok && r.spotFeed === null && r.trail && Number(r.trail.tracked) > 0) {
+    // Trail engine armed with NO feed object at all: the wedge that stays
+    // invisible from inside the process — the ratchet's input simply never
+    // arrives, and amendsFailed never even increments.
+    ok = false
+    error = `trail engine tracks ${r.trail.tracked} position(s) but the spot feed is not running`
+  }
   beat(db, side.name, { ok, error, ...(deps.now ? { now: deps.now } : {}) })
+  // DECISION-RING PULL (invariant 1's transport): persist the sidecar's
+  // decisions durably. Its own try — a failed pull must never fail the beat
+  // (it degrades to a stale cursor retried next probe). Older sidecar → the
+  // pull returns null and nothing happens.
+  try {
+    if (r.bootId && exec.pullSidecarDecisions) {
+      await pullDecisionsIntoDb(db, exec, side, r)
+    }
+  } catch { /* next probe retries from the stored cursor */ }
+  // GUARD SYNC (declarative convergence): only against a CONNECTED sidecar
+  // that reported its guard — pushing at an older sidecar (guard:null) would
+  // push blind on every probe forever.
+  try {
+    if (r.connected === true && r.guard && typeof r.guard === 'object') {
+      const { syncExecGuard } = await import('./exec-guard-sync.js')
+      const sync = await syncExecGuard(db, exec, side, {
+        reportedGuard: r.guard,
+        creds: await sideCreds(db, side),
+        now: nowMs,
+      })
+      if (sync.pushed) {
+        console.warn(`[heartbeat] ${side.name}: exec guard converged — halt=${sync.desired.halt} haltAccounts=[${sync.desired.haltAccounts.join(', ')}]`)
+      }
+    }
+  } catch { /* guard convergence retries next probe */ }
   // Persist what the probe learned so a READ route never has to call the
   // sidecar itself. This probe already runs every ~2 minutes; making
   // /state/account-engineering re-fetch /health on every page load would put an
@@ -773,6 +866,14 @@ async function probeOneSidecar(db, exec, side, deps = {}) {
       connected: r.connected ?? null,
       hasCredentials: r.hasCredentials ?? null,
       lastReconcileAt: r.lastReconcileAt ?? null,
+      // Feed/guard truth (2026-08-31): persisted so read routes and the log
+      // inspector see what the probe saw without an HTTP hop. null = the
+      // sidecar did not report it (older build), never a verdict.
+      spotFeed: r.spotFeed ?? null,
+      trail: r.trail ?? null,
+      vpo: r.vpo ?? null,
+      guard: r.guard ?? null,
+      bootId: r.bootId ?? null,
       ok,
       error: error || null,
       // Which side this snapshot describes. null = one sidecar serving whatever

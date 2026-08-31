@@ -20,6 +20,8 @@
 //   from tryFire's own call site) ever clears it back to IDLE.
 #include "vpo_dispatcher.hpp"
 
+#include "decision_ring.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -155,6 +157,8 @@ void VpoDispatcher::fireNow(StrategyModule& s) {
       outcomes_.noSizing++;
     }
     recordOutcome(s, "no_sizing", "volumeResolver returned nothing usable");
+    if (ring_) ring_->log("vpo", "refused", 0, static_cast<long long>(o.symbolId),
+                          "no_sizing", s.key());
     s.resetAfterFire();
     return;
   }
@@ -172,6 +176,8 @@ void VpoDispatcher::fireNow(StrategyModule& s) {
       outcomes_.noAccount++;
     }
     recordOutcome(s, "no_account", "no ctidTraderAccountId configured — POST /vpo-config must name one");
+    if (ring_) ring_->log("vpo", "refused", 0, static_cast<long long>(o.symbolId),
+                          "no_account", s.key());
     s.resetAfterFire();
     return;
   }

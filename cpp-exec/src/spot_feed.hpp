@@ -76,6 +76,23 @@ public:
   // is outrunning deletes). Thread-safe.
   size_t depthEntriesTotal();
 
+  // Feed truth for GET /health (2026-08-31 supervision plan): a wedged feed
+  // silently freezes both the tick trail and VPO firing, and until these
+  // existed nothing outside this object could see it. Facts only — the
+  // STALENESS verdict is Node's, which knows market hours; this side cannot.
+  bool isConnected() const { return connected_.load(std::memory_order_relaxed); }
+  long long lastTickAtMs() const { return lastTickAtMs_.load(std::memory_order_relaxed); }
+  long long tickCount() const { return tickCount_.load(std::memory_order_relaxed); }
+  long long reconnects() const { return reconnects_.load(std::memory_order_relaxed); }
+  // (symbolId, lastTickAtMs) pairs — bearer-gated in /health (symbol ids
+  // identify what is traded, same reasoning as the accounts redaction).
+  std::vector<std::pair<long long, long long>> lastTickBySymbol();
+
+  // Optional decision ring (invariant 1): connect/drop transitions are
+  // decisions worth persisting. Non-owning; null = disabled. Set before the
+  // feed thread starts.
+  void setDecisionRing(class DecisionRing* r) { ring_ = r; }
+
 private:
   // One connect+auth+subscribe+read cycle. Returns when the connection
   // drops or stop() fires; the caller (runLoop) decides whether to retry.
@@ -107,4 +124,15 @@ private:
   std::mutex symMtx_;
   std::vector<long long> pendingSubs_;
   void drainPendingSubs(); // feed thread only
+
+  // Feed truth (see accessors above). tickMtx_ guards only the per-symbol
+  // map; the scalars are atomics stamped on the tick path — two relaxed
+  // stores per tick, no lock.
+  std::atomic<bool> connected_{false};
+  std::atomic<long long> lastTickAtMs_{0};
+  std::atomic<long long> tickCount_{0};
+  std::atomic<long long> reconnects_{0};
+  std::mutex tickMtx_;
+  std::map<long long, long long> lastTickBySymbol_;
+  class DecisionRing* ring_ = nullptr;
 };

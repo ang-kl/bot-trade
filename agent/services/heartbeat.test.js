@@ -1238,3 +1238,105 @@ test('the selected-account check resolves like getCtraderCreds — state key OR 
     else process.env.CTRADER_ACCOUNT_ID = prev
   }
 })
+
+// ---------------------------------------------------------------------------
+// 2026-08-31 supervision plan: feed-staleness verdict + decision-ring pull.
+// probeOneSidecar is exercised against a fake exec — no sockets.
+// ---------------------------------------------------------------------------
+
+const FRIDAY = new Date('2026-07-17T12:00:00Z')   // market open
+const SATURDAY = new Date('2026-07-18T12:00:00Z') // weekend quiet
+
+function healthyPing(nowMs, extra = {}) {
+  return {
+    ok: true, mode: 'cpp', connected: true, hasCredentials: true,
+    lastReconcileAt: nowMs - 10_000, accounts: null,
+    spotFeed: null, trail: null, vpo: null, guard: null,
+    decisionsSeq: 0, bootId: null,
+    ...extra,
+  }
+}
+
+test('probe: a silent spot feed FAILS the beat with the market open, passes on the weekend', async () => {
+  const { probeOneSidecar } = await import('./heartbeat.js')
+  const staleFeed = (nowMs) => ({ connected: true, lastTickAtMs: nowMs - 20 * 60_000, tickCount: 5, reconnects: 0 })
+
+  const db1 = initDB(':memory:')
+  const r1 = await probeOneSidecar(db1,
+    { pingSidecar: async () => healthyPing(FRIDAY.getTime(), { spotFeed: staleFeed(FRIDAY.getTime()) }) },
+    { name: 'cpp_exec', isLive: null }, { now: FRIDAY })
+  assert.equal(r1.ok, false)
+  assert.match(r1.error, /spot feed silent .*market open/)
+  assert.equal(db1.prepare(`SELECT consecutive_failures FROM controller_heartbeats WHERE name='cpp_exec'`).get().consecutive_failures, 1)
+
+  // Same silence on a SATURDAY: not a freeze — no false alarm.
+  const db2 = initDB(':memory:')
+  const r2 = await probeOneSidecar(db2,
+    { pingSidecar: async () => healthyPing(SATURDAY.getTime(), { spotFeed: staleFeed(SATURDAY.getTime()) }) },
+    { name: 'cpp_exec', isLive: null }, { now: SATURDAY })
+  assert.equal(r2.ok, true, `weekend quiet must not alarm: ${r2.error}`)
+})
+
+test('probe: trail engine armed with NO feed object fails the beat', async () => {
+  const { probeOneSidecar } = await import('./heartbeat.js')
+  const db = initDB(':memory:')
+  const r = await probeOneSidecar(db,
+    { pingSidecar: async () => healthyPing(FRIDAY.getTime(), { trail: { tracked: 2, amendsOk: 0, amendsFailed: 0 } }) },
+    { name: 'cpp_exec', isLive: null }, { now: FRIDAY })
+  assert.equal(r.ok, false)
+  assert.match(r.error, /trail engine tracks 2 .*spot feed is not running/)
+})
+
+test('probe: pulls the decision ring into cpp_decisions, idempotent, restart detected', async () => {
+  const { probeOneSidecar } = await import('./heartbeat.js')
+  const db = initDB(':memory:')
+  const entries = [
+    { seq: 1, tsMs: 1, component: 'order_guard', kind: 'refused', accountId: 111, code: 'guard_halt' },
+    { seq: 2, tsMs: 2, component: 'engine', kind: 'connected' },
+  ]
+  const exec = {
+    pingSidecar: async () => healthyPing(FRIDAY.getTime(), { bootId: 'boot-a', decisionsSeq: 2 }),
+    pullSidecarDecisions: async ({ after }) => ({ bootId: 'boot-a', latestSeq: 2, entries: entries.filter(e => e.seq > after) }),
+  }
+  await probeOneSidecar(db, exec, { name: 'cpp_exec', isLive: null }, { now: FRIDAY })
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM cpp_decisions').get().n, 2)
+  const cur = JSON.parse(getState(db, 'cpp_decisions_cursor_json'))
+  assert.deepEqual(cur.cpp_exec, { bootId: 'boot-a', lastSeq: 2 })
+
+  // Second probe, nothing new: no duplicate rows (cursor + INSERT OR IGNORE).
+  await probeOneSidecar(db, exec, { name: 'cpp_exec', isLive: null }, { now: FRIDAY })
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM cpp_decisions').get().n, 2)
+
+  // Restart: new bootId → full ring re-pulled once, plus a synthetic
+  // sidecar_restart marker (in-memory counters were zeroed).
+  const exec2 = {
+    pingSidecar: async () => healthyPing(FRIDAY.getTime(), { bootId: 'boot-b', decisionsSeq: 1 }),
+    pullSidecarDecisions: async () => ({ bootId: 'boot-b', latestSeq: 1, entries: [{ seq: 1, tsMs: 9, component: 'engine', kind: 'connected' }] }),
+  }
+  await probeOneSidecar(db, exec2, { name: 'cpp_exec', isLive: null }, { now: FRIDAY })
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM cpp_decisions WHERE kind = 'sidecar_restart'`).get().n, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM cpp_decisions').get().n, 4)
+})
+
+test('probe: a FAILED ring pull never fails the beat', async () => {
+  const { probeOneSidecar } = await import('./heartbeat.js')
+  const db = initDB(':memory:')
+  const r = await probeOneSidecar(db,
+    {
+      pingSidecar: async () => healthyPing(FRIDAY.getTime(), { bootId: 'boot-a' }),
+      pullSidecarDecisions: async () => { throw new Error('pull blew up') },
+    },
+    { name: 'cpp_exec', isLive: null }, { now: FRIDAY })
+  assert.equal(r.ok, true, 'ring pull is telemetry, not health')
+})
+
+test('wiring pins: the probe actually pulls the ring and converges the guard', async () => {
+  // "A guard whose trigger can't fire is decoration" — the pull and the sync
+  // must live INSIDE probeOneSidecar, or a refactor drops supervision in
+  // silence (the disarm-leak lesson, applied to the supervisor itself).
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('./heartbeat.js', import.meta.url), 'utf8')
+  const probeBody = src.slice(src.indexOf('export async function probeOneSidecar'))
+  assert.ok(probeBody.includes('pullDecisionsIntoDb(db, exec, side, r)'), 'ring pull not wired into the probe')
+  assert.ok(probeBody.includes('syncExecGuard(db, exec, side'), 'guard sync not wired into the probe')
+})
