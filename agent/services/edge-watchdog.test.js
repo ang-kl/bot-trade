@@ -3,6 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
 import { runEdgeWatchdog, strategyRollingEdge } from './edge-watchdog.js'
+import { setStage, armedTradeKeys } from './stage-matrix.js'
 
 // Insert n closed trades for a strategy with the given per-trade pnls.
 function seed(db, strategy, pnls) {
@@ -77,6 +78,21 @@ test('acts once per newest trade (no re-disarm every cycle)', () => {
   assert.equal(first.actions.length, 1)
   const second = runEdgeWatchdog(db, {})
   assert.equal(second.actions.length, 0, 'deduped on newest trade id')
+})
+
+test('reaches a strategy armed ONLY by a per-account pin, and disarms the pin', () => {
+  // 2026-08-31: globally-disarmed strategies kept proposing for days from
+  // accounts whose overlay pins held them armed — and the watchdog never even
+  // evaluated them, because its candidate set was the global list.
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
+  arm(db, ['vwap_trend']) // rsi_meanrev globally OFF
+  setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111' }, { getState, setState })
+  seed(db, 'rsi_meanrev', Array.from({ length: 16 }, () => -5))
+  const r = runEdgeWatchdog(db, {})
+  assert.equal(r.actions.length, 1, 'pin-armed strategy must be a candidate')
+  assert.deepEqual(r.actions[0].scopes, ['111'])
+  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), false, 'account pin disarmed')
 })
 
 test('off switch fully disables enforcement', () => {

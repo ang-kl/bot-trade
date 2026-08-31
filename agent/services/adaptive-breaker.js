@@ -30,7 +30,7 @@
 
 import { getState, setState } from '../db.js'
 import { STRATEGY_KEYS } from './strategies.js'
-import { loadStageMatrix, setStage, FILTER_DEFS } from './stage-matrix.js'
+import { loadStageMatrix, setStage, armedTradeKeys, disarmStrategyEverywhere, FILTER_DEFS } from './stage-matrix.js'
 
 export const DEFAULT_ADAPTIVE_BREAKER = { on: true, streak: 3 }
 
@@ -83,13 +83,28 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
 
       const matrix = loadStageMatrix(db, getState)
       const me = matrix.strategies.find(s => s.key === key)
-      if (!me || !me.stages.trade) continue // not live-armed — nothing to adapt
+      // Live-armed ANYWHERE — the global trade cell, or any account's overlay
+      // pin. The global-only check skipped a strategy that was off globally
+      // but still trading on pinned accounts (2026-08-31), which is exactly
+      // the state the breaker most needs to reach.
+      let pinArmed = false
+      if (!me?.stages.trade) {
+        try {
+          pinArmed = db.prepare('SELECT account_id FROM accounts').all()
+            .some(r => armedTradeKeys(db, getState, String(r.account_id)).has(key))
+        } catch { /* no accounts table — global answer stands */ }
+      }
+      if (!me?.stages.trade && !pinArmed) continue // not live-armed — nothing to adapt
 
       const othersOn = matrix.strategies.some(s => s.key !== key && s.stages.trade)
       let action
       if (othersOn) {
-        setStage(db, { kind: 'strategy', key, stage: 'trade', on: false }, io)
-        action = { strategy: key, streak, did: 'disarmed_strategy' }
+        // Everywhere, not just the global list — this breaker's 28-08
+        // donchian_breakout disarm was silently outvoted for days by
+        // per-account trade pins (2026-08-31). The helper holds the strategy
+        // wherever it is the last one armed, same never-go-dark rule as below.
+        const scopes = disarmStrategyEverywhere(db, io, key)
+        action = { strategy: key, streak, did: 'disarmed_strategy', scopes }
       } else {
         // LAST armed strategy — NEVER disarm to zero (the account would go dark
         // and, on live, the autopilot can't re-arm it). Tighten entries with

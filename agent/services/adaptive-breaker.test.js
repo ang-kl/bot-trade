@@ -8,7 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import { runAdaptiveBreaker, strategyLossStreak, loadAdaptiveBreakerConfig, DEFAULT_ADAPTIVE_BREAKER } from './adaptive-breaker.js'
-import { loadStageMatrix, setStage, FILTER_DEFS } from './stage-matrix.js'
+import { loadStageMatrix, setStage, armedTradeKeys, FILTER_DEFS } from './stage-matrix.js'
 
 function closeTrade(db, strategy, pnl, minutesAgo = 0) {
   db.prepare(
@@ -41,7 +41,7 @@ test('streak on a strategy with OTHERS armed → that strategy is disarmed', () 
   for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
   const notes = []
   const out = runAdaptiveBreaker(db, { notify: (t) => notes.push(t) })
-  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'disarmed_strategy' }])
+  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'disarmed_strategy', scopes: ['global'] }])
   const m = loadStageMatrix(db, getState)
   assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, false)
   assert.equal(m.strategies.find(s => s.key === 'ema_pullback').stages.trade, true)
@@ -80,6 +80,45 @@ test('acts ONCE per streak; a new loss re-triggers (filter ladder)', () => {
   closeTrade(db, 'fib_618_fade', -1, 0)                      // 4th loss = new information
   const out = runAdaptiveBreaker(db, {})
   assert.deepEqual(out.actions[0], { strategy: 'fib_618_fade', streak: 4, did: 'armed_filter', filter: 'fvg' })
+})
+
+test('a disarm reaches per-account trade pins, not just the global list', () => {
+  // 2026-08-31: the breaker disarmed donchian_breakout globally while three
+  // accounts kept it armed via overlay pins and proposed it for days. The
+  // disarm must land wherever the strategy is armed — except a scope where it
+  // is the LAST armed strategy, which holds (never-go-dark, per scope).
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('222','2',0,1,'active')`).run()
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade', 'ema_pullback']))
+  const io = { getState, setState }
+  // 111 pins fib armed alongside another; 222 pins fib as its ONLY armed strategy.
+  setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true, accountId: '111' }, io)
+  setStage(db, { kind: 'strategy', key: 'ema_pullback', stage: 'trade', on: true, accountId: '111' }, io)
+  setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true, accountId: '222' }, io)
+  setStage(db, { kind: 'strategy', key: 'ema_pullback', stage: 'trade', on: false, accountId: '222' }, io)
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: false, accountId: '222' }, io)
+  setStage(db, { kind: 'strategy', key: 'rsi2_reversion', stage: 'trade', on: false, accountId: '222' }, io)
+  for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
+  const out = runAdaptiveBreaker(db, {})
+  assert.equal(out.actions[0].did, 'disarmed_strategy')
+  assert.deepEqual(out.actions[0].scopes.sort(), ['111', 'global'])
+  assert.equal(armedTradeKeys(db, getState, null).has('fib_618_fade'), false, 'global disarmed')
+  assert.equal(armedTradeKeys(db, getState, '111').has('fib_618_fade'), false, 'pinned account disarmed')
+  assert.equal(armedTradeKeys(db, getState, '222').has('fib_618_fade'), true, 'last-armed scope holds — never to zero')
+})
+
+test('a streak on a strategy armed ONLY by an account pin still triggers the breaker', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
+  setState(db, 'enabled_strategies_json', JSON.stringify(['ema_pullback'])) // fib globally OFF
+  const io = { getState, setState }
+  setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true, accountId: '111' }, io)
+  for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
+  const out = runAdaptiveBreaker(db, {})
+  assert.equal(out.actions.length, 1, 'globally-off but pin-armed must not be invisible to the breaker')
+  assert.deepEqual(out.actions[0].scopes, ['111'])
+  assert.equal(armedTradeKeys(db, getState, '111').has('fib_618_fade'), false)
 })
 
 test('off → no actions even with a streak', () => {
