@@ -325,6 +325,45 @@ function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag
   setState(db, target, JSON.stringify(stored))
 }
 
+/**
+ * Disarm one strategy's trade cell EVERYWHERE it is armed: the global list,
+ * and every registered account whose overlay pin (or legacy wholesale list)
+ * keeps it armed independently of the global.
+ *
+ * Why this exists (measured 2026-08-31): the owner's 28-08 global disarm and
+ * the adaptive-breaker's own donchian_breakout disarm both wrote ONLY
+ * enabled_strategies_json — while five of seven accounts carried per-account
+ * trade pins from the 04-08 overlay migration. Those accounts kept proposing
+ * fib_618_fade et al. into the risk gate (363 of the last 400 risk events were
+ * vetoed proposals from globally-disarmed strategies). A disarm that a pin can
+ * silently outvote is failure mode #3: a guard whose trigger is out of reach
+ * of what it guards.
+ *
+ * `neverZero` (default true) honours the adaptive-breaker's never-go-dark
+ * invariant PER SCOPE: a scope (global, or one account) is only disarmed if
+ * at least one other strategy stays trade-armed there. The edge watchdog
+ * passes false — its owner mandate ("no alpha decay") has always allowed it
+ * to retire the last strategy standing, and its existing tests pin that.
+ *
+ * @returns {string[]} scopes changed: 'global' and/or account ids.
+ */
+export function disarmStrategyEverywhere(db, io, key, { neverZero = true } = {}) {
+  const { getState } = io
+  const changed = []
+  const scopes = [null]
+  try {
+    for (const r of db.prepare('SELECT account_id FROM accounts').all()) scopes.push(String(r.account_id))
+  } catch { /* no accounts table — global only */ }
+  for (const scope of scopes) {
+    const armed = armedTradeKeys(db, getState, scope)
+    if (!armed.has(key)) continue
+    if (neverZero && ![...armed].some(k => k !== key)) continue // last armed here — hold
+    setStage(db, { kind: 'strategy', key, stage: 'trade', on: false, accountId: scope }, io)
+    changed.push(scope == null ? 'global' : scope)
+  }
+  return changed
+}
+
 /** Registry entries the SCAN column arms (wide by default — all strategies). */
 export function scanStageStrategies(db, getState) {
   const { strategies } = loadStageMatrix(db, getState)

@@ -27,7 +27,7 @@
 
 import { getState, setState } from '../db.js'
 import { enabledStrategies } from './strategies.js'
-import { loadStageMatrix, setStage } from './stage-matrix.js'
+import { armedTradeKeys, disarmStrategyEverywhere } from './stage-matrix.js'
 
 export const DEFAULT_EDGE_WATCHDOG = {
   on: true,          // enforcement armed by default (owner: "no alpha decay")
@@ -90,12 +90,17 @@ export function runEdgeWatchdog(db, { notify } = {}) {
   const io = { getState, setState }
   const actions = []
   const evaluated = []
-  let matrix
-  try { matrix = loadStageMatrix(db, getState) } catch { matrix = { strategies: [] } }
 
-  // Only armed strategies are candidates — disarming an already-off strategy
-  // is a no-op, and arming is never the watchdog's job.
-  const armed = enabledStrategies(db, getState).map(s => s.key)
+  // Candidates are strategies armed ANYWHERE — the global list, or any
+  // account's overlay pin. Global-only candidates left a pin-armed strategy
+  // invisible to the watchdog entirely (the same hole its disarm had):
+  // globally off, still trading on pinned accounts, never evaluated.
+  const armed = new Set(enabledStrategies(db, getState).map(s => s.key))
+  try {
+    for (const r of db.prepare('SELECT account_id FROM accounts').all()) {
+      for (const k of armedTradeKeys(db, getState, String(r.account_id))) armed.add(k)
+    }
+  } catch { /* no accounts table — global candidates only */ }
   for (const key of armed) {
     try {
       const e = strategyRollingEdge(db, key, cfg.window)
@@ -113,12 +118,16 @@ export function runEdgeWatchdog(db, { notify } = {}) {
       const seenKey = `edge_watchdog_acted_${key}`
       if (String(getState(db, seenKey)) === String(e.newestId)) continue
 
-      const me = matrix.strategies.find(s => s.key === key)
-      if (!me || !me.stages.trade) continue // not actually armed — skip
-
+      // Everywhere, not just the global list — a per-account trade pin kept
+      // globally-disarmed strategies proposing for days (2026-08-31). The
+      // helper no-ops per scope where the strategy is not armed or is the
+      // last one armed, so no separate "actually armed" pre-check is needed —
+      // but only a disarm that CHANGED something is an action worth stamping,
+      // logging or waking the owner for.
+      const scopes = disarmStrategyEverywhere(db, io, key, { neverZero: false })
+      if (scopes.length === 0) continue
       setState(db, seenKey, String(e.newestId))
-      setStage(db, { kind: 'strategy', key, stage: 'trade', on: false }, io)
-      const action = { strategy: key, did: 'disarmed_no_edge', expectancy: e.expectancy, profitFactor: pf, winRate: e.winRate, trades: e.trades, net: e.net }
+      const action = { strategy: key, did: 'disarmed_no_edge', scopes, expectancy: e.expectancy, profitFactor: pf, winRate: e.winRate, trades: e.trades, net: e.net }
       actions.push(action)
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
