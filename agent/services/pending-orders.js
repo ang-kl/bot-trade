@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { recordDecision } from './decision-log.js'
 import { readTradableUnion } from './watchlists.js'
 import { tradePrice } from './alert-format.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
@@ -34,6 +35,35 @@ const BROKER_LABEL_MAX = 100
 function log(...args) {
   console.log('[pending]', ...args)
 }
+
+// Transition-gated decision rows (owner invariant 1, 31-08-2026). Skips
+// that never reach the risk gate — the strategy gate, the pause refusal,
+// the resting-order caps — used to exist only in the returned summary,
+// which nothing persists. One decision_log row per state CHANGE of each
+// subject (not per pass: this runs every loop cycle and a row per pass is
+// the 32k-identical-rows shape). In-memory; a restart re-announces once.
+const pendingDecisionState = new Map() // subject key → stable state string
+// `state` is the STABLE identity compared for transitions (null = clear);
+// `reason` is the human line, free to carry counts that change per pass —
+// comparing on the reason would re-fire a "row per pass" the moment a
+// number in it moved, which is the noise this gate exists to prevent.
+function notePendingDecision(db, accountId, key, state, reason, extra = {}) {
+  const prev = pendingDecisionState.get(key)
+  const next = state ?? 'clear'
+  if (prev === next) return
+  pendingDecisionState.set(key, next)
+  if (prev === undefined && next === 'clear') return
+  // recordDecision never throws (its own contract) — no wrapper needed.
+  recordDecision(db, {
+    accountId: accountId != null ? String(accountId) : undefined,
+    stage: 'pending_orders',
+    decision: next === 'clear' ? 'proceed' : 'skip',
+    reason: next === 'clear' ? `cleared (was: ${prev})` : reason,
+    ...extra,
+  })
+}
+// Exported for tests: transitions are process-memory; a test needs a clean slate.
+export function _resetPendingDecisionStateForTests() { pendingDecisionState.clear() }
 
 async function defaultDeps(deps) {
   return {
@@ -381,8 +411,10 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     const arm = mayArmPending(db, creds?.accountId)
     if (!arm.ok) {
       summary.skipped.push(arm.reason)
+      notePendingDecision(db, creds?.accountId, `arm:${creds?.accountId ?? 'global'}`, 'paused', arm.reason)
       return summary
     }
+    notePendingDecision(db, creds?.accountId, `arm:${creds?.accountId ?? 'global'}`, null)
   }
 
   // THE STRATEGY GATE, which this path never had. strategies.js has said
@@ -399,19 +431,24 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     const { armedTradeKeys } = await import('./stage-matrix.js')
     const acctScope = creds?.accountId != null ? String(creds.accountId) : null
     if (!armedTradeKeys(db, getState, acctScope).has('fib_618_fade')) {
-      summary.skipped.push(`fib_618_fade not trade-armed for ${acctScope ?? 'the global scope'} — no new pending setups`)
+      const reason = `fib_618_fade not trade-armed for ${acctScope ?? 'the global scope'} — no new pending setups`
+      summary.skipped.push(reason)
+      notePendingDecision(db, creds?.accountId, `fib_gate:${acctScope ?? 'global'}`, 'fib_disarmed', reason, { strategy: 'fib_618_fade' })
       return summary
     }
+    notePendingDecision(db, creds?.accountId, `fib_gate:${acctScope ?? 'global'}`, null, undefined, { strategy: 'fib_618_fade' })
   }
 
   const symbolsWithWorking = new Set(afterDisposition.map(r => r.symbol))
   const riskCfg = risk.loadRiskConfig(db, creds?.accountId ?? null)
   const maxTotal = Math.max(1, Number(process.env.PENDING_MAX_TOTAL || 20))
   let totalWorking = db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE status = 'working'`).get()?.n || 0
+  if (totalWorking < maxTotal) notePendingDecision(db, creds?.accountId, 'cap', null)
 
   for (const { symbol, timeframe, signal } of setups) {
     if (totalWorking >= maxTotal) {
       summary.skipped.push(`${symbol}: pending cap — ${totalWorking}/${maxTotal} resting orders already working`)
+      notePendingDecision(db, creds?.accountId, 'cap', 'pending_cap', `pending cap ${totalWorking}/${maxTotal} — new setups refused until the book drains`)
       continue
     }
     if (symbolsWithWorking.has(symbol)) {

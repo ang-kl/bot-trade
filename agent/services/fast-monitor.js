@@ -23,6 +23,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
@@ -143,6 +144,39 @@ export function fastMonitorMapStats() {
   return [lastCheckAt, lastPriceAt, spikeUntil, volCache, quoteFreeze].map(m => m.stats())
 }
 
+// ---------------------------------------------------------------------------
+// TRANSITION-GATED DECISION ROWS (owner invariant 1, 31-08-2026).
+//
+// This monitor runs every 30s over every open position and, until now, its
+// skip decisions — "manage stage off for this strategy", "symbol not in the
+// map", "no quote" — left NO durable trace: a position could be silently
+// unmonitored for a whole session and the decision log would not know. The
+// fix is NOT a row per tick (that is 2,880 rows/day/position of noise); it
+// is a row per state CHANGE: entering a skip state writes one 'skip' row,
+// returning to normal writes one 'proceed' row. In-memory keyed by position
+// id; a restart re-announces current skip states once, which is honest.
+// ---------------------------------------------------------------------------
+const decisionState = new BoundedMap(POS_MAP_MAX, { name: 'fast_monitor.decisionState' }) // position id → state string
+export function noteFastDecision(db, pos, state, reason) {
+  const prev = decisionState.get(pos.id)
+  if (prev === state) return
+  decisionState.set(pos.id, state)
+  // First sight in the normal state is not a decision worth a row — only
+  // entering a skip state, or RECOVERING from one, changes what is true.
+  if (prev === undefined && state === 'active') return
+  // recordDecision never throws (its own contract).
+  recordDecision(db, {
+    accountId: pos.account_id != null ? String(pos.account_id) : undefined,
+    symbol: pos.symbol, strategy: pos.strategy || null,
+    stage: 'fast_monitor',
+    decision: state === 'active' ? 'proceed' : 'skip',
+    reason: state === 'active' ? `monitoring resumed (was: ${prev})` : reason,
+    detail: { positionId: pos.id, state, prev: prev ?? null },
+  })
+}
+// Exported for tests: transitions are process-memory; a test needs a clean slate.
+export function _resetFastDecisionStateForTests() { decisionState.clear() }
+
 let running = false
 
 /** One tick. Deps injectable for tests: { ws, exec: {executeBrokerAction, prepareStatements}, now }. */
@@ -170,9 +204,15 @@ export async function runFastMonitor(db, creds, deps = {}) {
     for (const pos of positions) {
       try {
         if (pos.source === 'external') continue            // observe-only
-        if (!manageStageAllows(db, getState, pos.strategy)) continue
+        if (!manageStageAllows(db, getState, pos.strategy)) {
+          noteFastDecision(db, pos, 'manage_off', `Live Tweak & Close is OFF for strategy '${pos.strategy}' — position unmonitored by this pass`)
+          continue
+        }
         const symbolId = symbolMap[String(pos.symbol).toUpperCase()]
-        if (!symbolId) continue
+        if (!symbolId) {
+          noteFastDecision(db, pos, 'symbol_unmapped', `${pos.symbol} not in symbol_id_map — no quote, no checks`)
+          continue
+        }
 
         // Cadence: owner per-symbol override wins; otherwise volume-aware
         // (relVol cached per symbol for 5 minutes — skipped entirely when an
@@ -208,7 +248,11 @@ export async function runFastMonitor(db, creds, deps = {}) {
 
         const q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
         const mid = q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null
-        if (mid == null) continue // market closed / no feed — main loop's problem
+        if (mid == null) {
+          noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
+          continue
+        }
+        noteFastDecision(db, pos, 'active')
 
         // Frozen-quote watch (FROZEN_QUOTE_MIN, minutes; 0 disables). Only
         // while the market is open — a flat weekend quote is normal, not a
