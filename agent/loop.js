@@ -2029,11 +2029,19 @@ export function prepareStatements(db) {
     // Autopilot monitors its own positions + external positions (observe-only).
     // Legacy rows (pre-migration) have NULL source and are treated as autopilot.
     // Copilot/manual trades are excluded — the human owns those decisions.
+    //
+    // 'preopen' is in the list because it is OURS (closed-market fills).
+    // Measured 2026-08-31: upgrading misfiled preopen rows out of 'external'
+    // (#787) silently removed them from THIS whitelist — last_check_at froze
+    // for two days while every other position was checked minutes before.
+    // The 09-08 label split touched every consumer that names sources, and
+    // each one needed the lesson separately: isOurs (#787), and now the four
+    // monitoring/guard whitelists.
     selectActivePositions: db.prepare(
       `SELECT * FROM monitored_positions
        WHERE status = ?
          AND COALESCE(paused, 0) = 0
-         AND (source IS NULL OR source IN ('autopilot', 'external'))`
+         AND (source IS NULL OR source IN ('autopilot', 'preopen', 'external'))`
     ),
 
     updatePositionCheck: db.prepare(`

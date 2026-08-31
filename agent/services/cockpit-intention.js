@@ -75,7 +75,7 @@ export function buildIntention(db, row, live, liveAt, revision, nowMs = Date.now
   const keeperCfg = loadProfitKeeperConfig(db)
   const keeperApplies = keeperCfg.on && !guard && row.keeper_opt_out !== 1 &&
     (keeperCfg.scope === 'all'
-      ? (row.source == null || ['autopilot', 'external', 'manual'].includes(row.source))
+      ? (row.source == null || ['autopilot', 'preopen', 'external', 'manual'].includes(row.source))
       : ['external', 'manual'].includes(row.source))
   if (keeperApplies) ev('state:profit_keeper_json', 'agent_state.profit_keeper_json', null, { mode: keeperCfg.mode, scope: keeperCfg.scope })
 

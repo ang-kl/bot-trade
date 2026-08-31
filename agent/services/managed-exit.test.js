@@ -156,3 +156,23 @@ test('loop wiring pin: the managed branch sets the silencing values and gates th
   assert.match(loop, /if \(mePolicy\.capBars > 0\) \{/,
     'the fill-path cap stamp must be gated on capBars > 0')
 })
+
+test('every source whitelist that names ours includes preopen', () => {
+  // 2026-08-31: #787 upgraded misfiled preopen rows out of 'external' — and
+  // straight out of the monitor's whitelist, freezing their checks for two
+  // days. The 09-08 label split touched every consumer that names sources;
+  // this pin makes the NEXT new source fail loudly in four places at once.
+  const files = [
+    '../loop.js', './profit-keeper.js', './loss-guardian.js', './cockpit-intention.js',
+  ]
+  for (const f of files) {
+    const src = readFileSync(new URL(f, import.meta.url), 'utf8')
+      .split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    const lists = src.match(/\(?['"[]autopilot['"].{0,80}/g) || []
+    const withList = lists.filter(s => s.includes('external'))
+    assert.ok(withList.length > 0, `${f}: source whitelist not found — re-anchor this pin`)
+    for (const s of withList) {
+      assert.ok(s.includes('preopen'), `${f}: a source whitelist omits 'preopen': ${s}`)
+    }
+  }
+})

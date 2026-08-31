@@ -373,7 +373,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
 
     const accountId = authorisedAccountId(creds)
     const scopeSql = cfg.scope === 'all'
-      ? "mp.source IS NULL OR mp.source IN ('autopilot', 'external', 'manual')"
+      ? "mp.source IS NULL OR mp.source IN ('autopilot', 'preopen', 'external', 'manual')"
       : "mp.source IN ('external', 'manual')"
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd,
