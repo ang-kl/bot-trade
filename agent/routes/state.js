@@ -2351,6 +2351,22 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/inspector — the speech-act log inspector (owner invariants
+  // 2-4, 31-08): live findings (each with its speech-act, principlised
+  // action and falsifier), terminal tallies, the last run, and the decision
+  // audit's verdict history. This is the surface the owner's assistant
+  // audits at its scheduled reads — the inspector inspects the logs, the
+  // reads inspect the inspector.
+  router.get('/inspector', async (req, res) => {
+    try {
+      const { inspectorView } = await import('../services/log-inspector.js')
+      res.json(inspectorView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/earned-floor — PR-C's pre-registered checkpoint (owner "go
   // PR-C", 2026-08-31): config, admitted-cohort stats and the 30-close
   // verdict against its FIXED target. Exists so the staged rollout's

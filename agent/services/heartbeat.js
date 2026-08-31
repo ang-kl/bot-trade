@@ -72,6 +72,10 @@ export const CONTROLLERS = {
   // The faster path sets the expectation — fixed, not loop-derived, for the
   // same reason as above.
   protection_audit: { label: 'Position protection audit', expectedSec: 60, factor: 4 },
+  // The speech-act log inspector (owner invariants 2-4, 31-08-2026): reads
+  // every decision sink and emits falsifiable findings. On the fast monitor's
+  // band so it keeps inspecting when the loop is the broken thing.
+  log_inspector:    { label: 'Log inspector (speech-act)', expectedSec: 300, factor: 4 },
   // NEVER REGISTERED UNTIL 2026-08-04. loss-guardian.js has been amending stops
   // and closing positions since it shipped, and beat `loss_guardian` on every
   // loop cycle — a name absent from this registry, so heartbeatView skipped it

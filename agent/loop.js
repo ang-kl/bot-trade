@@ -3838,6 +3838,24 @@ async function runLoop(db) {
         const marketOpen = !weekendQuietNow()
         const audit = auditDecisions(db, { marketOpen })
         setState(db, 'decision_audit_last_json', JSON.stringify(audit))
+        // Verdict HISTORY (invariant 2's series, 31-08): the single state key
+        // above is overwritten every cycle, so "how often was the pipeline
+        // blocked last week" was unanswerable. One row per verdict change or
+        // per hour, 90d prune — cheap enough to keep forever-ish, useful the
+        // first time a trend question is asked.
+        try {
+          const last = db.prepare(
+            `SELECT verdict, (julianday('now') - julianday(at)) * 86400 AS age_s
+               FROM decision_audit_history ORDER BY id DESC LIMIT 1`
+          ).get()
+          if (!last || last.verdict !== audit.verdict || Number(last.age_s) > 3600) {
+            db.prepare(
+              `INSERT INTO decision_audit_history (verdict, because, considered, approved, vetoed, landed, silent_drops, top_block)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            ).run(audit.verdict, audit.because ?? null, audit.considered ?? null, audit.approved ?? null,
+                  audit.vetoed ?? null, audit.landed ?? null, audit.silentDrops ?? null, audit.topBlock ?? null)
+          }
+        } catch { /* history is telemetry — never blocks the audit */ }
         const alert = shouldAlert(audit, { marketOpen })
         if (alert) {
           log(`DECISION AUDIT [${alert.level}]: ${alert.text}`)
@@ -4363,6 +4381,11 @@ async function runLoop(db) {
         // datetime() on both sides: at is sqlite's 'YYYY-MM-DD HH:MM:SS' while
         // the cutoff is ISO — a bare string compare would misjudge the boundary.
         { name: 'prune-cpp-decisions', run: () => db.prepare('DELETE FROM cpp_decisions WHERE datetime(at) < datetime(?)').run(cutoff90d) },
+        // Inspection findings: TERMINAL rows only — live findings never age
+        // out (a proposal does not expire because the owner was busy; it
+        // resolves only through its falsifier). Audit history same window.
+        { name: 'prune-inspection-findings', run: () => db.prepare(`DELETE FROM inspection_findings WHERE status IN ('confirmed','falsified','expired') AND datetime(at) < datetime(?)`).run(cutoff90d) },
+        { name: 'prune-audit-history', run: () => db.prepare('DELETE FROM decision_audit_history WHERE datetime(at) < datetime(?)').run(cutoff90d) },
         // Long-horizon ledger retention (hardening 6c): closed trades +
         // postmortems past ~2 years (retention_json overrides; null disables).
         { name: 'prune-trade-history', run: async () => (await import('./services/retention.js')).pruneTradeHistory(db) },
