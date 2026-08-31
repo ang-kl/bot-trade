@@ -521,6 +521,31 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/log-watch — { on?, errorBurstN?, errorBurstWindowMin?,
+  // cooldownMin? }. Dials for the in-process log matcher (log-watch.js).
+  // Same partial-update-then-echo contract as /actions/earned-floor.
+  // -----------------------------------------------------------------------
+  router.post('/log-watch', async (req, res) => {
+    try {
+      const { loadLogWatch } = await import('../services/log-watch.js')
+      const current = loadLogWatch(db)
+      const next = {
+        ...current,
+        ...(typeof req.body?.on === 'boolean' ? { on: req.body.on } : {}),
+        ...(req.body?.errorBurstN != null ? { errorBurstN: Number(req.body.errorBurstN) } : {}),
+        ...(req.body?.errorBurstWindowMin != null ? { errorBurstWindowMin: Number(req.body.errorBurstWindowMin) } : {}),
+        ...(req.body?.cooldownMin != null ? { cooldownMin: Number(req.body.cooldownMin) } : {}),
+      }
+      setState(db, 'log_watch_json', JSON.stringify(next))
+      const clamped = loadLogWatch(db)
+      console.log(`[actions] log watch ${clamped.on ? 'ON' : 'off'} errorBurstN=${clamped.errorBurstN} window=${clamped.errorBurstWindowMin}m cooldown=${clamped.cooldownMin}m`)
+      res.json({ ok: true, config: clamped })
+    } catch (e) {
+      res.status(400).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/autotrade-scope — { scope: 'all' | 'armed' }. 'all'
   // (default) lets every enabled watchlist symbol trade on any scanned
   // timeframe (armed combos stay as micro-tuning); 'armed' restores the

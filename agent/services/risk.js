@@ -1511,6 +1511,14 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
             checks.earned_floor = {
               rr, winRate: ef.winRate, trades: ef.trades, e: ef.e, riskScale: ef.riskScale,
             }
+            // One console line per admit, deliberately: an admitted below-floor
+            // entry is the rare event the whole PR-C experiment exists to
+            // produce, and log-watch.js matches this exact prefix to push it
+            // to Telegram in real time (rule 'earned_floor_admit').
+            console.log(
+              `[risk] earned_floor admit: ${proposal.strategy} ${proposal.symbol ?? '?'} rr=${rr.toFixed(2)} ` +
+              `W=${ef.winRate}% over ${ef.trades} closes e=${ef.e}R riskScale=${ef.riskScale}`,
+            )
           } else {
             checks.earned_floor_denied = ef.reason
           }

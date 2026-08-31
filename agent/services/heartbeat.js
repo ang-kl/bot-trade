@@ -710,6 +710,8 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
   if (cur.bootId && pulled.bootId !== cur.bootId) {
     ins.run(side.name, pulled.bootId, 0, Date.now(), 'node', 'sidecar_restart',
             null, null, '', `previous boot ${cur.bootId} — in-memory counters zeroed`)
+    // log-watch.js matches this exact prefix (rule 'sidecar_restart').
+    console.log(`[heartbeat] sidecar_restart: ${side.name} — previous boot ${cur.bootId}, new boot ${pulled.bootId}`)
   }
   for (const e of pulled.entries) {
     if (!e || !Number.isFinite(Number(e.seq))) continue
