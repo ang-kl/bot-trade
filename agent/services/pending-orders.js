@@ -385,6 +385,25 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     }
   }
 
+  // THE STRATEGY GATE, which this path never had. strategies.js has said
+  // since fib went default-off that "pending-order mode needs fib armed
+  // explicitly … enforced where pending setups are scanned" — but no such
+  // check existed here or in scanPendingSetups, so with fib_618_fade
+  // disarmed globally AND on every account (2026-08-31) this pass kept
+  // proposing fib setups into the risk gate at ~5/minute, every one vetoed.
+  // Every pending setup IS a fib_618_fade entry; if this account may not
+  // open fib trades, there is nothing to propose. Existing resting orders
+  // above are still reconciled/invalidated/expired — managing the standing
+  // book is not opening new entries.
+  {
+    const { armedTradeKeys } = await import('./stage-matrix.js')
+    const acctScope = creds?.accountId != null ? String(creds.accountId) : null
+    if (!armedTradeKeys(db, getState, acctScope).has('fib_618_fade')) {
+      summary.skipped.push(`fib_618_fade not trade-armed for ${acctScope ?? 'the global scope'} — no new pending setups`)
+      return summary
+    }
+  }
+
   const symbolsWithWorking = new Set(afterDisposition.map(r => r.symbol))
   const riskCfg = risk.loadRiskConfig(db, creds?.accountId ?? null)
   const maxTotal = Math.max(1, Number(process.env.PENDING_MAX_TOTAL || 20))

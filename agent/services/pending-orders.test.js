@@ -15,6 +15,9 @@ function freshDb(matrix = { EURUSD: ['4h'] }) {
   const db = initDB(':memory:')
   if (matrix) setState(db, 'pending_matrix_json', JSON.stringify(matrix))
   setState(db, 'pending_mode_enabled', 'true')
+  // Every pending setup is a fib_618_fade entry, and fib is default-OFF in
+  // the registry — new setups require it trade-armed (2026-08-31 gate).
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade']))
   return db
 }
 
@@ -91,6 +94,32 @@ test('places a LIMIT order on a new setup and records the db row + audit trail',
 
   // evaluateTrade result + placement confirmation both audited
   assert.ok(calls.riskEvents.some(e => e.result.approved && e.result.checks?.pending_order_placed))
+})
+
+test('fib disarmed → NO new setups proposed, no risk event; existing book still managed', async () => {
+  // 2026-08-31: with fib_618_fade disarmed globally and on every account,
+  // this pass kept proposing fib setups into the risk gate (~5/minute, all
+  // vetoed bad_rr). New entries need fib trade-armed; the standing book
+  // (invalidation below) is still managed.
+  const db = freshDb()
+  setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend'])) // fib OFF
+  const { deps, calls } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  const res = await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(calls.placed.length, 0, 'no order placed')
+  assert.equal(calls.riskEvents.length, 0, 'no proposal even reaches the risk gate')
+  assert.ok(res.skipped.some(s => /fib_618_fade not trade-armed/.test(s)), `expected the gate skip, got: ${res.skipped}`)
+})
+
+test('fib armed for THIS account by an overlay pin unlocks new setups even when globally off', async () => {
+  const db = freshDb()
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('123','1',0,1,'active')`).run()
+  setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend'])) // fib OFF globally
+  const { getState: gs } = await import('../db.js')
+  const { setStage } = await import('./stage-matrix.js')
+  setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true, accountId: '123' }, { getState: gs, setState })
+  const { deps, calls } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(calls.placed.length, 1, 'account-armed fib places')
 })
 
 test('risk veto blocks placement', async () => {
