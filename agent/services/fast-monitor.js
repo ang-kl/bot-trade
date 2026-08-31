@@ -645,6 +645,26 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       const hb = deps.heartbeat ?? await import('./heartbeat.js')
       hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null })
       if (due('cpp_probe', 120, nowMs)) await hb.probeCppExec(db)
+      // The log inspector (owner invariants 2-4, 31-08) runs HERE, not in
+      // loop.js, deliberately: it must keep inspecting when the 5-minute
+      // loop is the broken thing — the same reasoning that moved the
+      // protection audit onto this band.
+      if (due('log_inspector', 300, nowMs)) {
+        try {
+          const { runLogInspector } = await import('./log-inspector.js')
+          const { disarmStrategyEverywhere } = await import('./stage-matrix.js')
+          const { getState: gs, setState: ss } = await import('../db.js')
+          const notify = (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {})
+          const out = runLogInspector(db, { now: nowMs, notify, io: { disarmStrategyEverywhere, getState: gs, setState: ss } })
+          hb.beat(db, 'log_inspector', { ok: !out.errors?.length, error: out.errors?.length ? out.errors.join(' · ').slice(0, 300) : null })
+          if (out.inserted || out.falsified) {
+            console.log(`[fast-monitor] log inspector: +${out.inserted} finding(s), ${out.autoApplied} auto, ${out.confirmed}/${out.falsified}/${out.expired} confirmed/falsified/expired`)
+          }
+        } catch (err) {
+          console.error('[fast-monitor] log inspector failed:', err.message)
+          try { hb.beat(db, 'log_inspector', { ok: false, error: err.message }) } catch { /* best effort */ }
+        }
+      }
       if (due('watchdog', 60, nowMs)) {
         const notify = (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {})
         hb.checkHeartbeats(db, { notify })

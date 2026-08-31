@@ -462,6 +462,44 @@ const TABLES = `
   CREATE INDEX IF NOT EXISTS idx_cpp_decisions_at ON cpp_decisions(at);
   CREATE INDEX IF NOT EXISTS idx_cpp_decisions_kind ON cpp_decisions(component, kind);
 
+  -- Speech-act inspection findings (owner invariants 2-4, 31-08-2026): what
+  -- each log SAID vs what it was DOING, the principlised next action, and a
+  -- falsifier with a deadline. The PARTIAL UNIQUE index is the anti-noise
+  -- mechanism — one LIVE finding per subject, structurally (the
+  -- 32,115-identical-alerts lesson applied to the inspector itself).
+  -- Terminal rows (confirmed/falsified/expired) prune at 90d; live rows
+  -- never age out — a proposal does not expire because the owner was busy.
+  CREATE TABLE IF NOT EXISTS inspection_findings (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    at               TEXT NOT NULL DEFAULT (datetime('now')),
+    source           TEXT NOT NULL,
+    subject_key      TEXT NOT NULL,
+    speech_act       TEXT NOT NULL,   -- assertion|directive|commissive|declaration|refusal
+    said             TEXT NOT NULL,
+    doing            TEXT NOT NULL,
+    finding          TEXT NOT NULL,
+    principle_kind   TEXT NOT NULL,   -- code_change|strategy_tweak|timing_change|none
+    principle_params TEXT,
+    falsifier        TEXT NOT NULL,   -- JSON {prediction, metric, deadlineMs}
+    status           TEXT NOT NULL DEFAULT 'open', -- open|auto_applied|proposed|confirmed|falsified|expired
+    resolved_at      TEXT,
+    resolution       TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_live
+    ON inspection_findings(subject_key) WHERE status IN ('open','auto_applied','proposed');
+
+  -- The decision audit's verdict SERIES (it kept only one overwritten state
+  -- key, so "how often was the pipeline blocked last week" was unanswerable).
+  -- One row per verdict change or per hour; 90d prune.
+  CREATE TABLE IF NOT EXISTS decision_audit_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    at           TEXT NOT NULL DEFAULT (datetime('now')),
+    verdict      TEXT NOT NULL,
+    because      TEXT,
+    considered   INTEGER, approved INTEGER, vetoed INTEGER, landed INTEGER,
+    silent_drops INTEGER, top_block TEXT
+  );
+
   -- Durable backtest history (owner 2026-07-28: "backtest history per
   -- symbol"). One row per symbol×timeframe per run — the HTML reports live
   -- on ephemeral disk and vanish on redeploy, so this table is the record

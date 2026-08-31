@@ -9,7 +9,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { initDB, getState, setState } from '../db.js'
+import { initDB, setState } from '../db.js'
 import { noteFastDecision, _resetFastDecisionStateForTests } from './fast-monitor.js'
 import { managePendingOrders, _resetPendingDecisionStateForTests } from './pending-orders.js'
 
