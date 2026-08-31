@@ -9,7 +9,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, setState } from '../db.js'
-import { loadManagedExit, managedExitApplies, managedCapAt, MANAGED_EXIT_DEFAULTS } from './managed-exit.js'
+import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules, MANAGED_EXIT_DEFAULTS } from './managed-exit.js'
 import { evaluatePosition, DEFAULT_RULES } from './position-manager.js'
 
 function withAccounts(db) {
@@ -86,12 +86,17 @@ test('the managed trail ratchets behind the PEAK and never loosens; off by defau
 // asserted from source, same justification as vercel-decomm.test.js.
 // ---------------------------------------------------------------------------
 
-test('loop.js actually consults the policy at BOTH wiring points', () => {
-  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
-  assert.match(src, /managedExitApplies\(db, accountId\)/, 'fill-time cap gate missing')
-  assert.match(src, /managedCapAt\(Date\.now\(\)/, 'fill-time cap stamp missing')
-  assert.match(src, /managedExitApplies\(db, pos\.account_id\)/, 'monitor-time trail gate missing')
-  assert.match(src, /alwaysTrailR: loadManagedExit\(db\)\.trailR/, 'trail knob not passed to the evaluator')
+test('the policy is wired at the fill-time cap and at EVERY position evaluator', () => {
+  // 2026-08-31, 0016.HK: the managed merge lived only in loop.js's monitor,
+  // so fast-monitor (30s cadence) ran the raw ladder and bank_target_4R took
+  // the exit one minute after HK open. Every evaluator pins here now — the
+  // next one added without the merge fails this test by name.
+  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  assert.match(loop, /managedExitApplies\(db, accountId\)/, 'fill-time cap gate missing')
+  assert.match(loop, /managedCapAt\(Date\.now\(\)/, 'fill-time cap stamp missing')
+  assert.match(loop, /applyManagedRules\(db, pos\.account_id, rulesForSymbol/, 'loop monitor must evaluate through applyManagedRules')
+  const fast = readFileSync(new URL('./fast-monitor.js', import.meta.url), 'utf8')
+  assert.match(fast, /applyManagedRules\(db, pos\.account_id, rulesForSymbol/, 'fast-monitor must evaluate through applyManagedRules')
 })
 
 // ---------------------------------------------------------------------------
@@ -144,15 +149,25 @@ test('the managed ruleset silences the legacy ladder and the trail alone fires',
   assert.equal(hold.action, 'HOLD')
 })
 
-test('loop wiring pin: the managed branch sets the silencing values and gates the cap stamp', () => {
+test('applyManagedRules sets the silencing values for governed accounts and passes others through', () => {
+  const db = withAccounts(initDB(':memory:'))
+  const base = { ...DEFAULT_RULES, bankTriggerR: 4 }
+  const managed = applyManagedRules(db, '43097342', base)
+  assert.equal(managed.alwaysTrailR, MANAGED_EXIT_DEFAULTS.trailR)
+  assert.equal(managed.bankTriggerR, 0)
+  assert.equal(managed.partialTriggerR, Infinity)
+  assert.equal(managed.runnerTriggerR, Infinity)
+  assert.equal(managed.beTriggerR, Infinity)
+  // Ungoverned scopes get the base rules BY REFERENCE-EQUAL VALUES: the
+  // ladder survives untouched for unknown accounts and with the policy off.
+  assert.deepEqual(applyManagedRules(db, '99999999', base), base)
+  setState(db, 'managed_exit_json', JSON.stringify({ on: false }))
+  assert.deepEqual(applyManagedRules(db, '43097342', base), base)
+})
+
+test('loop wiring pin: the fill-path cap stamp is gated on capBars > 0', () => {
   const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
     .split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-  const i = loop.indexOf('alwaysTrailR: loadManagedExit(db).trailR')
-  assert.ok(i > 0, 'managed rules merge not found — re-anchor this pin')
-  const slice = loop.slice(i, i + 400)
-  for (const want of ['bankTriggerR: 0', 'partialTriggerR: Infinity', 'runnerTriggerR: Infinity', 'beTriggerR: Infinity']) {
-    assert.ok(slice.includes(want), `managed ruleset must include ${want}`)
-  }
   assert.match(loop, /if \(mePolicy\.capBars > 0\) \{/,
     'the fill-path cap stamp must be gated on capBars > 0')
 })

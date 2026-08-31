@@ -10,7 +10,7 @@ import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTrade
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
-import { loadManagedExit, managedExitApplies, managedCapAt } from './services/managed-exit.js'
+import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
@@ -1685,27 +1685,14 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 // passed in, no closure over runLoop state) so it's unit-testable in
 // isolation, same as evaluatePosition/executeBrokerAction.
 export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
-  let rules = rulesForSymbol(db, pos.symbol)
   // Managed-exit trail (owner "c1" 25-08-2026; ONE SIMPLE SYSTEM 28-08-2026:
-  // "proceed as plan", win-rate goal > 69%): on managed (demo) accounts the
-  // peak-based trail is the ONLY exit-timing rule. The trail-distance sweep
-  // over the same 44-trade population measured trail_0.5R at PF 2.41 /
-  // WR 69.2% vs bank/partial/breakeven variants at 1.0–1.6, so the legacy
-  // ladder (bank target, partial, runner, breakeven) is silenced here BY
-  // RULE VALUES, not deleted — non-managed accounts keep the full ladder,
-  // and flipping managed_exit_json off restores it everywhere. Signal-owned
-  // theses (time_cap_at already stamped, invalidation triggers) still fire:
-  // they are the trade's own thesis, not exit timing.
-  if (managedExitApplies(db, pos.account_id)) {
-    rules = {
-      ...rules,
-      alwaysTrailR: loadManagedExit(db).trailR,
-      bankTriggerR: 0,
-      partialTriggerR: Infinity,
-      runnerTriggerR: Infinity,
-      beTriggerR: Infinity,
-    }
-  }
+  // "proceed as plan", win-rate goal > 69%): on managed accounts the
+  // peak-based trail is the ONLY exit-timing rule — the sweep measured
+  // trail_0.5R at PF 2.41 / WR 69.2% vs the ladder variants at 1.0–1.6.
+  // The merge lives in applyManagedRules so EVERY evaluator (this monitor
+  // and fast-monitor.js) silences the same ladder — it silenced only here
+  // until 0016.HK's bank_target_4R close, 2026-08-31.
+  const rules = applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol))
   const eval_ = evaluatePosition(pos, { currentPrice, rules })
 
   // Persist MFE/MAE and any flag flips every loop, regardless of action.

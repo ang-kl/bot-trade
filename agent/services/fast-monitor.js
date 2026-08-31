@@ -25,6 +25,7 @@
 import { getState } from '../db.js'
 import { evaluatePosition } from './position-manager.js'
 import { rulesForSymbol } from './asset-controllers.js'
+import { applyManagedRules } from './managed-exit.js'
 import { manageStageAllows } from './stage-matrix.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import { BoundedMap } from '../lib/bounded-map.js'
@@ -241,7 +242,11 @@ export async function runFastMonitor(db, creds, deps = {}) {
         lastPriceAt.set(pos.id, { mid, at: now() })
 
         checked++
-        const eval_ = evaluatePosition(pos, { currentPrice: mid, rules: rulesForSymbol(db, pos.symbol) })
+        // applyManagedRules, same as the slow monitor: this evaluator ran the
+        // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
+        // 0016.HK one minute after HK open — beating the managed trail the
+        // slow loop would have applied 30s later. One ruleset, every evaluator.
+        const eval_ = evaluatePosition(pos, { currentPrice: mid, rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol)) })
         s.updatePositionMetrics.run(
           eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
           eval_.updates.mae_r ?? pos.mae_r ?? 0,
