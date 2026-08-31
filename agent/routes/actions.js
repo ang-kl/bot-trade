@@ -489,6 +489,38 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/earned-floor — { on?, demoOnly?, riskScale?, window?,
+  // minSample?, minE? }. PR-C's dials (owner "go PR-C stage 2",
+  // 31-08-2026: live scope + full risk on admits + relaxed thresholds).
+  // Until this route, earned_floor_json had NO writer — the staged limits
+  // were code constants, which is right for stage 1 and wrong the moment
+  // the owner orders stage 2. Values are clamped by loadEarnedFloor; the
+  // response echoes what actually stands. The 30-close cohort verdict at
+  // /state/earned-floor keeps measuring regardless of these dials.
+  // -----------------------------------------------------------------------
+  router.post('/earned-floor', async (req, res) => {
+    try {
+      const { loadEarnedFloor } = await import('../services/earned-floor.js')
+      const current = loadEarnedFloor(db)
+      const next = {
+        ...current,
+        ...(typeof req.body?.on === 'boolean' ? { on: req.body.on } : {}),
+        ...(typeof req.body?.demoOnly === 'boolean' ? { demoOnly: req.body.demoOnly } : {}),
+        ...(req.body?.riskScale != null ? { riskScale: Number(req.body.riskScale) } : {}),
+        ...(req.body?.window != null ? { window: Number(req.body.window) } : {}),
+        ...(req.body?.minSample != null ? { minSample: Number(req.body.minSample) } : {}),
+        ...(req.body?.minE != null ? { minE: Number(req.body.minE) } : {}),
+      }
+      setState(db, 'earned_floor_json', JSON.stringify(next))
+      const clamped = loadEarnedFloor(db)
+      console.log(`[actions] earned floor ${clamped.on ? 'ON' : 'off'} demoOnly=${clamped.demoOnly} riskScale=${clamped.riskScale} window=${clamped.window} minSample=${clamped.minSample} minE=${clamped.minE}`)
+      res.json({ ok: true, config: clamped })
+    } catch (e) {
+      res.status(400).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/autotrade-scope — { scope: 'all' | 'armed' }. 'all'
   // (default) lets every enabled watchlist symbol trade on any scanned
   // timeframe (armed combos stay as micro-tuning); 'armed' restores the

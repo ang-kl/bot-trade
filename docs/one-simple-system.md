@@ -128,6 +128,33 @@ the owner approved ("go PR-C", 31-08, after the disarm leak was closed in
   that FAILED it. +0.387R/trade does not transfer by assumption — that is
   exactly what the 30-close cohort exists to measure.
 
+### Stage 2 (owner-ordered "go PR-C stage 2", 31-08, evening)
+
+Chosen by the owner from four offered levers, with the checkpoint warning in
+view (the bootstrap-sampler option was offered and NOT chosen):
+
+- **Live scope** (`demoOnly: false`). OWNER-CONFIRMED OVERRIDE of the
+  stage-1 rule above that live waits for the 30-close verdict — the option
+  text carried that warning verbatim and the owner selected it knowingly, at
+  0/30 closes. Recorded here because owner-confirmed text is the last thing
+  a tidying pass may drop. The registry check stays: unknown accounts still
+  fail closed under either scope.
+- **Full risk on admits** (`riskScale: 1.0`).
+- **Relaxed thresholds** (`minSample: 15 → 10`, `minE: 0.15R → 0.10R`) —
+  a response to the measured bootstrap deadlock (the floor needs closes,
+  closes need admits; ~75 plans/hour were dying at the 3R floor with zero
+  dispatches on 31-08).
+- **The 30-close verdict KEEPS running, unchanged** (PF ≥ 1.5). Its
+  consequence now covers live too: a failing verdict sets
+  `earned_floor_json.on = false` outright.
+- Honest projection at order time: with measured records as they stood,
+  vwap_trend admits only at rr > ~2.33 and rsi2_reversion was one close
+  short of the relaxed sample — admits may stay rare; zero admits over 24h
+  is a finding to report, not a reason to silently loosen further.
+- Dials applied via `POST /actions/earned-floor` (added with this stage;
+  `earned_floor_json` previously had no writer — stage-1 limits were code
+  constants, correct then, wrong once stage 2 was ordered).
+
 ## P6 — Validation, continuing
 
 The forward sample keeps accumulating (~5 gated closes since 25-08; slow
