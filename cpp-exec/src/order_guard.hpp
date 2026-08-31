@@ -18,6 +18,8 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
+#include <set>
 #include <string>
 
 #include "json.hpp"
@@ -27,6 +29,12 @@ struct GuardSnapshot {
   bool requireBracket;       // reject market orders with no stop attached
   bool requireTarget;        // reject market orders with no take-profit attached
   double maxOrderVolume;     // reject orders above this volume (0 = no cap)
+  // Per-ACCOUNT halts (2026-08-31 supervision plan). Node's equity stop is
+  // deliberately per-account (owner 30-07: a global disarm on one account's
+  // trip is the defect that module removed) — so its cpp mirror must be
+  // scoped the same way, or halting one tripped account would halt every
+  // healthy account sharing this sidecar. Empty = nobody halted.
+  std::set<long long> haltAccounts;
 };
 
 class OrderGuard {
@@ -38,12 +46,24 @@ public:
   void setRequireBracket(bool v) { requireBracket_.store(v, std::memory_order_relaxed); }
   void setRequireTarget(bool v) { requireTarget_.store(v, std::memory_order_relaxed); }
   void setMaxOrderVolume(double v) { maxOrderVolume_.store(v, std::memory_order_relaxed); }
+  // Full replace (Node's guard sync derives the whole set declaratively each
+  // push). A brief mutex here is a DELIBERATE deviation from the all-atomics
+  // doctrine above: the set has no atomic representation, orders are a
+  // handful per minute, and the lock is never held across I/O.
+  void setHaltAccounts(std::set<long long> ids) {
+    std::lock_guard<std::mutex> lk(haltAccountsMtx_);
+    haltAccounts_ = std::move(ids);
+  }
 
   GuardSnapshot snapshot() const {
-    return { halt_.load(std::memory_order_relaxed),
-             requireBracket_.load(std::memory_order_relaxed),
-             requireTarget_.load(std::memory_order_relaxed),
-             maxOrderVolume_.load(std::memory_order_relaxed) };
+    GuardSnapshot g{ halt_.load(std::memory_order_relaxed),
+                     requireBracket_.load(std::memory_order_relaxed),
+                     requireTarget_.load(std::memory_order_relaxed),
+                     maxOrderVolume_.load(std::memory_order_relaxed),
+                     {} };
+    std::lock_guard<std::mutex> lk(haltAccountsMtx_);
+    g.haltAccounts = haltAccounts_;
+    return g;
   }
 
 private:
@@ -51,6 +71,8 @@ private:
   std::atomic<bool>   requireBracket_{true};
   std::atomic<bool>   requireTarget_{true};
   std::atomic<double> maxOrderVolume_{0.0};
+  mutable std::mutex  haltAccountsMtx_;
+  std::set<long long> haltAccounts_;
 };
 
 struct OrderVerdict {

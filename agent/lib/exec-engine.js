@@ -274,10 +274,56 @@ export async function pingSidecar({ timeoutMs = 5_000, base = execBaseFor() } = 
       // null means "the sidecar did not tell us", which is NOT the same as
       // "the sidecar has no accounts" — rosterDrift now honours that difference.
       accounts: Array.isArray(body?.accounts) ? body.accounts : null,
+      // Feed/guard/ring truth (2026-08-31 supervision plan). All nullable:
+      // an older sidecar simply doesn't report them, and the probe treats
+      // null as "not told", never as a verdict.
+      spotFeed: body?.spotFeed ?? null,
+      trail: body?.trail ?? null,
+      vpo: body?.vpo ?? null,
+      guard: body?.guard ?? null,
+      decisionsSeq: body?.decisionsSeq ?? null,
+      bootId: body?.bootId ?? null,
       ...(res.ok ? {} : { error: `health ${res.status}` }),
     }
   } catch (e) {
     return { ok: false, mode: 'cpp', error: String(e?.message || e) }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/**
+ * Pull the sidecar's decision ring (2026-08-31 supervision plan, invariant 1:
+ * every decision the binary takes becomes a durable, inspectable record).
+ * POST because the sidecar's route table is exact-match with no query
+ * strings. Returns {bootId, latestSeq, entries} or null when unreachable /
+ * older sidecar (404) — callers must treat null as "not told", never as
+ * "no decisions".
+ */
+export async function pullSidecarDecisions({ after = 0, bootId = '', timeoutMs = 5_000, base = execBaseFor() } = {}) {
+  if (execEngineMode() !== 'cpp') return null
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(base + '/decisions', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        authorization: `Bearer ${process.env.EXEC_SECRET || ''}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ after, bootId }),
+    })
+    if (!res.ok) return null // 404 = pre-ring sidecar; anything else = blip
+    const body = await res.json().catch(() => null)
+    if (!body || typeof body.bootId !== 'string') return null
+    return {
+      bootId: body.bootId,
+      latestSeq: Number(body.latestSeq) || 0,
+      entries: Array.isArray(body.entries) ? body.entries : [],
+    }
+  } catch {
+    return null
   } finally {
     clearTimeout(t)
   }

@@ -8,6 +8,7 @@
 #include <optional>
 #include <thread>
 
+#include "decision_ring.hpp"
 #include "json.hpp"
 
 using namespace std::chrono;
@@ -229,6 +230,9 @@ bool SpotFeed::connectAuthSubscribe() {
 
 void SpotFeed::runOnce() {
   if (!connectAuthSubscribe()) return;
+  connected_.store(true, std::memory_order_relaxed);
+  if (ring_) ring_->log("spot_feed", "connected", accountId_, 0, "",
+                        std::to_string(symbolIds_.size()) + " symbol(s)");
 
   // A SPOT_EVENT may carry only bid or only ask — the missing side is kept
   // at its last known value (mirrors wsStreamSpots' callers), and a side
@@ -273,6 +277,15 @@ void SpotFeed::runOnce() {
     const auto& p = msg->get("payload");
     long long symbolId = static_cast<long long>(p.get("symbolId").asNumber(0));
     if (symbolId == 0) continue;
+    // Feed truth: two relaxed stores + one short-held map write per tick.
+    {
+      const long long tickMs = duration_cast<milliseconds>(
+          system_clock::now().time_since_epoch()).count();
+      lastTickAtMs_.store(tickMs, std::memory_order_relaxed);
+      tickCount_.fetch_add(1, std::memory_order_relaxed);
+      std::lock_guard<std::mutex> lk(tickMtx_);
+      lastTickBySymbol_[symbolId] = tickMs;
+    }
     Quote& q = lastQuote[symbolId];
     const jsn::Value& bidV = p.get("bid");
     const jsn::Value& askV = p.get("ask");
@@ -282,12 +295,23 @@ void SpotFeed::runOnce() {
   }
 }
 
+std::vector<std::pair<long long, long long>> SpotFeed::lastTickBySymbol() {
+  std::lock_guard<std::mutex> lk(tickMtx_);
+  return { lastTickBySymbol_.begin(), lastTickBySymbol_.end() };
+}
+
 void SpotFeed::runLoop() {
   int backoffMs = 1000;
   constexpr int kBackoffCapMs = 60000;
   while (!stopped_.load(std::memory_order_relaxed)) {
     const auto startedAt = steady_clock::now();
     runOnce();
+    if (connected_.load(std::memory_order_relaxed)) {
+      connected_.store(false, std::memory_order_relaxed);
+      reconnects_.fetch_add(1, std::memory_order_relaxed);
+      if (ring_ && !stopped_.load(std::memory_order_relaxed))
+        ring_->log("spot_feed", "dropped", accountId_);
+    }
     ws_.close();
     // A session that survived well past the handshake proves the path is
     // healthy — reset the ladder so the NEXT unrelated drop reconnects in 1s,

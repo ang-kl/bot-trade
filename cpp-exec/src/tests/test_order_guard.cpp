@@ -166,7 +166,30 @@ static void test_require_target_toggle() {
   assert(validateOrder(marketOrder(true, 100, false), g.snapshot()).ok);
 }
 
+// Per-account halts (2026-08-31 supervision plan). The set must bind ONLY the
+// listed account — halting one tripped account on a shared sidecar must not
+// touch its neighbours (owner 30-07: per-account is the whole point of the
+// equity stop) — and an EMPTY set must leave behaviour byte-identical to the
+// pre-haltAccounts guard.
+static void test_halt_accounts_scoped() {
+  OrderGuard g;
+  // Empty set: today's behaviour, untouched.
+  assert(validateOrder(marketOrder(true), g.snapshot()).ok);
+  g.setHaltAccounts({4002});
+  OrderVerdict v = validateOrder(marketOrder(true), g.snapshot()); // account 4002
+  assert(!v.ok);
+  assert(v.reason.find("account_halted") != std::string::npos);
+  // A different account on the same process still trades.
+  jsn::Value other = marketOrder(true);
+  other.set("ctidTraderAccountId", 4003.0);
+  assert(validateOrder(other, g.snapshot()).ok);
+  // Full replace clears it — the declarative sync's un-halt path.
+  g.setHaltAccounts({});
+  assert(validateOrder(marketOrder(true), g.snapshot()).ok);
+}
+
 int main() {
+  test_halt_accounts_scoped();
   test_naked_market_rejected();
   test_no_target_rejected();
   test_allow_naked_override();

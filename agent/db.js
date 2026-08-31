@@ -436,6 +436,32 @@ const TABLES = `
   -- local row by position id when one exists, and read only by callers that
   -- ask for it. deal_id is the broker's own primary key, so re-importing an
   -- overlapping window is a no-op.
+  -- The C++ sidecar's decisions, pulled from its in-memory ring on every
+  -- health probe and made durable HERE (2026-08-31 supervision plan,
+  -- invariant 1). The sidecar keeps no DB — it holds the newest ~256
+  -- records in memory and Node owns memory. Typed columns rather than
+  -- action_log's schemaless bag because the log inspector needs cheap SQL
+  -- predicates over component/kind/code. UNIQUE(side, boot_id, seq) makes
+  -- the pull idempotent (INSERT OR IGNORE); a boot_id change marks a
+  -- sidecar restart. Pruned at 90 days with the other decision sinks.
+  CREATE TABLE IF NOT EXISTS cpp_decisions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         TEXT NOT NULL DEFAULT (datetime('now')),
+    side       TEXT NOT NULL,           -- 'cpp_exec' | 'cpp_exec_demo' | single-sidecar name
+    boot_id    TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    ts_ms      INTEGER,                 -- the sidecar's own clock at the decision
+    component  TEXT NOT NULL,           -- order_guard | engine | trail | spot_feed | vpo | guard | node
+    kind       TEXT NOT NULL,           -- refused | order_submit | order_result | amend_fail | ...
+    account_id TEXT,
+    symbol_id  INTEGER,
+    code       TEXT,
+    detail     TEXT,
+    UNIQUE(side, boot_id, seq)
+  );
+  CREATE INDEX IF NOT EXISTS idx_cpp_decisions_at ON cpp_decisions(at);
+  CREATE INDEX IF NOT EXISTS idx_cpp_decisions_kind ON cpp_decisions(component, kind);
+
   -- Durable backtest history (owner 2026-07-28: "backtest history per
   -- symbol"). One row per symbol×timeframe per run — the HTML reports live
   -- on ephemeral disk and vanish on redeploy, so this table is the record

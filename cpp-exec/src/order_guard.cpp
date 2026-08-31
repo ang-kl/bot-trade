@@ -46,6 +46,12 @@ OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g) {
     return { false, "guard_no_account: order does not name a ctidTraderAccountId — refusing to choose an account on the caller's behalf" };
   }
 
+  // Per-account halt (Node's equity-stop mirror, 2026-08-31). Scoped to THIS
+  // account only — see GuardSnapshot.haltAccounts for why it is not a global.
+  if (g.haltAccounts.count(static_cast<long long>(acct.asNumber(0))) > 0) {
+    return { false, "account_halted: this ctidTraderAccountId is halted by the keeper's guard sync (equity stop or owner halt)" };
+  }
+
   // Order type: default MARKET when unspecified (matches the app's market path).
   const jsn::Value& ot = payload.get("orderType");
   const std::string type = ot.isString() ? ot.asString() : "MARKET";

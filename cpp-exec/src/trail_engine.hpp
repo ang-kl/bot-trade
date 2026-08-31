@@ -64,6 +64,15 @@ public:
   size_t tracked();
   std::string statusJson();
 
+  // Counter facts for GET /health (2026-08-31 supervision plan) — the
+  // statusJson above is a full position dump; /health wants three numbers.
+  long long amendsOk() const { return amendsOk_.load(std::memory_order_relaxed); }
+  long long amendsFailed() const { return amendsFailed_.load(std::memory_order_relaxed); }
+
+  // Optional decision ring (invariant 1): a ratchet executed or refused at
+  // the broker is a decision. Non-owning; null = disabled. Set before start().
+  void setDecisionRing(class DecisionRing* r) { ring_ = r; }
+
   // Worker lifecycle. start() is idempotent; stop() joins.
   void start(ExecEngine& engine);
   void stop();
@@ -79,4 +88,5 @@ private:
   std::atomic<long long> amendsFailed_{0};
   // Specs the last configure() refused for naming no account — see configure().
   std::atomic<long long> specsDroppedNoAccount_{0};
+  class DecisionRing* ring_ = nullptr;
 };

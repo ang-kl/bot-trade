@@ -272,9 +272,11 @@ void ExecEngine::noteBrokerErrorLocked(const std::string& errorCode) {
   if (act == AuthErrorAction::SkipAccount) {
     logLine("auth-family error '" + errorCode +
             "' while authorizing an EXTRA account — session kept, that account skipped");
+    if (ring_) ring_->log("engine", "auth_error", 0, 0, errorCode, "skip_account: session kept");
     return;
   }
   logLine("auth-family broker error '" + errorCode + "' — closing session for reauth");
+  if (ring_) ring_->log("engine", "auth_error", 0, 0, errorCode, "kill_session: closing for reauth");
   ws_.close();
   authed_ = false;
 }
@@ -468,6 +470,8 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
   // refused here — the last line of defence, independent of anything the
   // Node strategy tier did or failed to do. Read is lock-free (snapshot of
   // atomics), so the HTTP thread can retune the guard without blocking this.
+  const long long ringAcct = payload.isObject()
+      ? static_cast<long long>(payload.get("ctidTraderAccountId").asNumber(0)) : 0;
   const OrderVerdict v = validateOrder(payload, guard_.snapshot());
   if (!v.ok) {
     logLine("order REJECTED by guard: " + v.reason);
@@ -475,6 +479,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
       telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
                        volume, price, 0, classifyReasonCode(v.reason)});
     }
+    if (ring_) ring_->log("order_guard", "refused", ringAcct, symbolId, v.reason);
     return errResult(v.reason, v.reason, false);
   }
   std::lock_guard lk(mtx_);
@@ -485,6 +490,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
     telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_SUBMIT, symbolId,
                      volume, price, 1, 0});
   }
+  if (ring_) ring_->log("engine", "order_submit", ringAcct, symbolId);
   // The account is NOT filled in — validateOrder above has already refused a
   // payload that does not name one (guard_no_account).
   EngineResult r = request(pt::NEW_ORDER_REQ, payload, pt::EXECUTION_EVENT);
@@ -492,6 +498,10 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
     const std::string reason = r.ok ? "" : r.body.get("errorCode").asString();
     telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_RESULT, symbolId,
                      volume, price, r.ok ? 1 : 0, classifyReasonCode(reason)});
+  }
+  if (ring_) {
+    ring_->log("engine", r.ok ? "order_result" : "order_reject", ringAcct, symbolId,
+               r.ok ? "" : r.body.get("errorCode").asString());
   }
   return r;
 }
@@ -503,10 +513,21 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   // is new risk, so it is refused (audit #7). The trail engine's tighten-only
   // amends failing during a halt is visible (amendsFailed) and acceptable.
   if (guard_.snapshot().halt) {
+    if (ring_) ring_->log("order_guard", "refused",
+                          static_cast<long long>(payload.get("ctidTraderAccountId").asNumber(0)),
+                          static_cast<long long>(payload.get("symbolId").asNumber(0)),
+                          "guard_halt", "amend refused during halt");
     return errResult("guard_halt", "execution halted by kill switch — amends refused (closes still allowed)", false);
   }
   std::lock_guard lk(mtx_);
-  return request(pt::AMEND_POSITION_SLTP_REQ, payload, pt::EXECUTION_EVENT, 15000);
+  EngineResult r = request(pt::AMEND_POSITION_SLTP_REQ, payload, pt::EXECUTION_EVENT, 15000);
+  // Amends never had telemetry (it covers placeOrder only, a measured gap) —
+  // the ring is where amend outcomes become inspectable.
+  if (ring_) ring_->log("engine", r.ok ? "amend_result" : "amend_reject",
+                        static_cast<long long>(payload.get("ctidTraderAccountId").asNumber(0)),
+                        static_cast<long long>(payload.get("symbolId").asNumber(0)),
+                        r.ok ? "" : r.body.get("errorCode").asString());
+  return r;
 }
 
 EngineResult ExecEngine::closePosition(const jsn::Value& payload) {
@@ -576,9 +597,11 @@ void ExecEngine::runLoop() {
     }
     if (!isConnected()) {
       if (connectAndAuth()) {
+        if (ring_) ring_->log("engine", "connected", 0, 0, "", std::to_string(accountIds().size()) + " account(s)");
         backoffMs = 1000;
       } else {
         logLine("reconnect in " + std::to_string(backoffMs) + "ms");
+        if (ring_) ring_->log("engine", "backoff", 0, 0, "", "reconnect in " + std::to_string(backoffMs) + "ms");
         std::this_thread::sleep_for(milliseconds(backoffMs));
         backoffMs = backoffMs * 2 > kBackoffCapMs ? kBackoffCapMs : backoffMs * 2;
         continue;

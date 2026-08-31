@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "decision_ring.hpp"
 #include "json.hpp"
 #include "ws_client.hpp"
 #include "order_guard.hpp"
@@ -138,6 +139,13 @@ public:
   void setTelemetry(Telemetry* t) { telemetry_ = t; }
   Telemetry* telemetry() const { return telemetry_; }
 
+  // Optional decision ring (owner invariant 1, 2026-08-31): every decision
+  // this engine takes — guard refusal, order result, reconnect, auth-error
+  // classification — lands as a structured record the Node keeper pulls and
+  // persists. Same plumbing contract as telemetry: non-owning, null =
+  // disabled, every call site null-checks.
+  void setDecisionRing(DecisionRing* r) { ring_ = r; }
+
   // Blocking loop: connect/auth with capped exponential backoff, reconcile
   // every 30s, heartbeat every 25s of idle. Runs until process exit.
   void runLoop();
@@ -202,4 +210,5 @@ private:
 
   OrderGuard guard_; // atomic knobs read on the order hot path
   Telemetry* telemetry_ = nullptr; // non-owning; null = disabled
+  DecisionRing* ring_ = nullptr;   // non-owning; null = disabled
 };
