@@ -23,16 +23,17 @@
 // ---------------------------------------------------------------------------
 
 import { readTradableUnion } from './watchlists.js'
-import { tfMs } from '../lib/timeframes.js'
 
-// Queue horizon scales with the signal's own timeframe — a 1w/1mo fade is
-// still a live thesis after a few closed days; a 15m scalp isn't worth
-// re-checking a week later. Floored at 3 days (a Friday-evening FX/metal
-// signal needs to survive the full weekend close), capped at 21 (don't
-// queue a stale idea forever just because its timeframe is huge).
-export function expiryMsFor(timeframe) {
-  const bar = tfMs(timeframe) || 3_600_000
-  return Math.min(Math.max(bar * 8, 3 * 86_400_000), 21 * 86_400_000)
+// FIXED queue horizon (owner, 01-09-2026): "15m/1h/4h look BACK at
+// historical bars — they are not a future interval. Correct that." The old
+// rule scaled expiry with the signal's bar size (8 bars, floored 3d, capped
+// 21d), which projected a lookback parameter into a forward hold — a 1w
+// signal queued for three weeks on nothing but its chart resolution. The
+// horizon is now one wall-clock number: 3 days, the old floor, kept because
+// a Friday-evening FX/metal signal must survive the full weekend close.
+export const PENDING_SIGNAL_EXPIRY_MS = 3 * 86_400_000
+export function expiryMsFor() {
+  return PENDING_SIGNAL_EXPIRY_MS
 }
 
 /**
@@ -43,7 +44,7 @@ export function expiryMsFor(timeframe) {
 export function queuePendingSignal(db, symbol, synth, marketReason, now = Date.now()) {
   if (!synth?.consensus_bias || synth.consensus_bias === 'skip') return
   const timeframe = synth.timeframe || null
-  const expiresAt = new Date(now + expiryMsFor(timeframe)).toISOString()
+  const expiresAt = new Date(now + expiryMsFor()).toISOString()
   db.prepare(`DELETE FROM pending_signals WHERE symbol = ? AND status = 'pending'`).run(symbol)
   db.prepare(`
     INSERT INTO pending_signals (symbol, bias, conviction, strategy, timeframe, market_reason, expires_at)

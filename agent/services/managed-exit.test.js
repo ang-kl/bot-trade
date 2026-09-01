@@ -41,11 +41,25 @@ test('every REGISTERED account is governed; unknown still fails closed', () => {
   assert.equal(managedExitApplies(db, '43097342'), false, 'off means off, even for demo')
 })
 
-test('the cap is 8 bars of the SIGNAL timeframe, not a wall-clock constant', () => {
+test('the cap is WALL-CLOCK minutes — a timeframe never becomes a hold deadline', () => {
+  // Reversal of the 25-08 timeframe-scaled cap (owner, 01-09-2026: a
+  // timeframe is the bar size a signal looked BACK on, not a future
+  // interval). One number, minutes from fill, timeframe-blind.
   const t0 = Date.parse('2026-08-25T00:00:00Z')
-  assert.equal(managedCapAt(t0, '15m', 8), new Date(t0 + 8 * 15 * 60_000).toISOString(), '2h on a 15m chart')
-  assert.equal(managedCapAt(t0, '1h', 8), new Date(t0 + 8 * 3_600_000).toISOString(), '8h on a 1h chart')
-  assert.equal(managedCapAt(t0, 'nonsense', 8), new Date(t0 + 8 * 3_600_000).toISOString(), 'unknown timeframe falls back to 1h bars')
+  assert.equal(managedCapAt(t0, 120), new Date(t0 + 120 * 60_000).toISOString())
+  assert.equal(managedCapAt(t0, 480), new Date(t0 + 480 * 60_000).toISOString())
+  assert.equal(MANAGED_EXIT_DEFAULTS.capMinutes, 0, 'no policy cap by default')
+})
+
+test('legacy stored capBars is ignored; capMinutes is the only cap knob', () => {
+  const db = initDB(':memory:')
+  setState(db, 'managed_exit_json', JSON.stringify({ capBars: 8 }))
+  assert.equal(loadManagedExit(db).capMinutes, 0, 'capBars must not resurrect a cap')
+  assert.equal(loadManagedExit(db).capBars, undefined, 'capBars is gone from the config shape')
+  setState(db, 'managed_exit_json', JSON.stringify({ capMinutes: 90 }))
+  assert.equal(loadManagedExit(db).capMinutes, 90)
+  setState(db, 'managed_exit_json', JSON.stringify({ capMinutes: 0 }))
+  assert.equal(loadManagedExit(db).capMinutes, 0, '0 is a VALUE (cap off), not junk')
 })
 
 // ---------------------------------------------------------------------------
@@ -105,21 +119,21 @@ test('the policy is wired at the fill-time cap and at EVERY position evaluator',
 // and 0 is a VALUE, not junk to be "repaired" back to a cap.
 // ---------------------------------------------------------------------------
 
-test('defaults are the swept values: trailR 0.5, capBars 0', () => {
+test('defaults are the swept values: trailR 0.5, capMinutes 0', () => {
   assert.equal(MANAGED_EXIT_DEFAULTS.trailR, 0.5)
-  assert.equal(MANAGED_EXIT_DEFAULTS.capBars, 0)
+  assert.equal(MANAGED_EXIT_DEFAULTS.capMinutes, 0)
 })
 
-test('capBars 0 stored is honoured as NO CAP, not repaired to a default', () => {
+test('capMinutes 0 stored is honoured as NO CAP, not repaired to a default', () => {
   const db = initDB(':memory:')
-  setState(db, 'managed_exit_json', JSON.stringify({ capBars: 0, trailR: 0.5 }))
+  setState(db, 'managed_exit_json', JSON.stringify({ capMinutes: 0, trailR: 0.5 }))
   const cfg = loadManagedExit(db)
-  assert.equal(cfg.capBars, 0, 'a cap you can configure but never turn off is the guard-out-of-reach shape')
+  assert.equal(cfg.capMinutes, 0, 'a cap you can configure but never turn off is the guard-out-of-reach shape')
   // Junk still degrades to the default, and an explicit positive cap still works.
-  setState(db, 'managed_exit_json', JSON.stringify({ capBars: 'junk' }))
-  assert.equal(loadManagedExit(db).capBars, MANAGED_EXIT_DEFAULTS.capBars)
-  setState(db, 'managed_exit_json', JSON.stringify({ capBars: 8 }))
-  assert.equal(loadManagedExit(db).capBars, 8)
+  setState(db, 'managed_exit_json', JSON.stringify({ capMinutes: 'junk' }))
+  assert.equal(loadManagedExit(db).capMinutes, MANAGED_EXIT_DEFAULTS.capMinutes)
+  setState(db, 'managed_exit_json', JSON.stringify({ capMinutes: 480 }))
+  assert.equal(loadManagedExit(db).capMinutes, 480)
 })
 
 test('the managed ruleset silences the legacy ladder and the trail alone fires', () => {
@@ -165,11 +179,13 @@ test('applyManagedRules sets the silencing values for governed accounts and pass
   assert.deepEqual(applyManagedRules(db, '43097342', base), base)
 })
 
-test('loop wiring pin: the fill-path cap stamp is gated on capBars > 0', () => {
+test('loop wiring pin: the fill-path cap stamp is gated on capMinutes > 0 and takes NO timeframe', () => {
   const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
     .split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-  assert.match(loop, /if \(mePolicy\.capBars > 0\) \{/,
-    'the fill-path cap stamp must be gated on capBars > 0')
+  assert.match(loop, /if \(mePolicy\.capMinutes > 0\) \{/,
+    'the fill-path cap stamp must be gated on capMinutes > 0')
+  assert.match(loop, /managedCapAt\(Date\.now\(\), mePolicy\.capMinutes\)/,
+    'the cap stamp must be wall-clock only — no timeframe argument')
 })
 
 test('every source whitelist that names ours includes preopen', () => {

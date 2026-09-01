@@ -730,19 +730,19 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     if (synth.time_cap_minutes && Number.isFinite(synth.time_cap_minutes)) {
       timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
     } else if (managedExitApplies(db, accountId)) {
-      // Managed-exit policy (owner "c1", 25-08-2026): a setup that declares
-      // no cap gets capBars bars OF ITS OWN TIMEFRAME — timeframe-scaled,
-      // demo-only, from the gated-entry counterfactual's verdict that deep
-      // holds turn these entries' +0.2R into -0.53R. Signal-declared caps
-      // above always win; this is the default for the silence.
+      // Managed-exit policy cap, WALL-CLOCK (owner, 01-09-2026: a timeframe
+      // describes the bars a signal was computed on, never how long the
+      // position may live — the old capBars × timeframe form projected a
+      // lookback parameter into a forward hold). Signal-declared caps above
+      // always win; this is the default for the silence.
       //
-      // capBars 0 = NO policy cap (One Simple System, 28-08-2026): the
+      // capMinutes 0 = NO policy cap (One Simple System, 28-08-2026): the
       // trail-distance sweep measured the trail alone above every cap
       // variant, so the default cap is off — only signal-declared caps
-      // stamp. Set capBars > 0 in managed_exit_json to restore.
+      // stamp. Set capMinutes > 0 in managed_exit_json to restore.
       const mePolicy = loadManagedExit(db)
-      if (mePolicy.capBars > 0) {
-        timeCap = managedCapAt(Date.now(), parsedLabel.timeframe || synth.timeframe || '1h', mePolicy.capBars)
+      if (mePolicy.capMinutes > 0) {
+        timeCap = managedCapAt(Date.now(), mePolicy.capMinutes)
       }
     }
 
