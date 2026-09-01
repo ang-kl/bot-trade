@@ -287,7 +287,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     timeframe: synth.timeframe || null,
     regime: null,
   })
-  const expiresAtMs = nowMs + expiryMsFor(synth.timeframe)
+  const expiresAtMs = nowMs + expiryMsFor()
   const payload = buildLimitPayload({
     accountId: creds.accountId, symbolId, side, volume: sized.volume,
     entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,

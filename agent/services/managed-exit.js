@@ -8,10 +8,11 @@
 // -0.53R). The entries carry the edge; the deep holds were destroying it.
 //
 // The policy is two numbers, stated in one sentence each:
-//   - a TIME CAP of `capBars` bars OF THE ENTRY TIMEFRAME (8 bars = 2h on a
-//     15m chart, matching the cap_120m evidence) stamped at fill when the
-//     signal declares no cap of its own — timeframe-scaled, not wall-clock,
-//     which is the owner's "different timeframe for different positions";
+//   - a TIME CAP of `capMinutes` WALL-CLOCK minutes stamped at fill when the
+//     signal declares no cap of its own (originally capBars × the entry
+//     timeframe; re-based to wall-clock 01-09-2026 — the owner ruled that a
+//     timeframe describes the bars a signal looked BACK on and must never
+//     become a forward hold horizon);
 //   - a TRAIL of `trailR` R behind the peak favorable excursion, active from
 //     entry, tighten-only (matching the trail_1R replay).
 //
@@ -29,7 +30,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getState } from '../db.js'
-import { tfMs } from '../lib/timeframes.js'
 
 // One Simple System (owner 28-08-2026, "proceed as plan", win-rate goal
 // > 69%): the trail-distance sweep over the same 44-trade population put
@@ -69,10 +69,19 @@ export function applyManagedRules(db, accountId, rules) {
   }
 }
 
+// capMinutes replaced capBars on 01-09-2026 (owner: "15m/1h/4h look BACK at
+// historical bars — they are not a future interval. Correct that"). The old
+// knob multiplied a bar count by the SIGNAL'S TIMEFRAME, so the policy's
+// hold deadline was derived from a lookback parameter — the exact semantic
+// the owner ordered out. The cap is now one wall-clock number, minutes from
+// fill, timeframe-blind. 0 = no policy cap (the shipped default since the
+// trail-distance sweep measured every cap variant below the trail alone).
+// A legacy stored capBars is IGNORED, loudly: converting it would need a
+// timeframe, which is the dependency being removed.
 export const MANAGED_EXIT_DEFAULTS = Object.freeze({
   on: true,
   demoOnly: false,
-  capBars: 0,
+  capMinutes: 0,
   trailR: 0.5,
 })
 
@@ -81,14 +90,17 @@ export function loadManagedExit(db) {
   let stored = {}
   try { stored = JSON.parse(getState(db, 'managed_exit_json') || '{}') || {} } catch { stored = {} }
   const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
-  // capBars is the one knob where 0 is a VALUE (no policy cap), not junk —
+  // capMinutes is the one knob where 0 is a VALUE (no policy cap), not junk —
   // `num()` treating 0 as invalid was exactly the guard-out-of-reach shape:
   // a cap you could configure but never turn off.
-  const capBars = Number(stored.capBars)
+  const capMinutes = Number(stored.capMinutes)
+  if (stored.capBars != null && Number(stored.capBars) > 0 && !(capMinutes > 0)) {
+    console.warn('[managed-exit] stored capBars is retired and IGNORED — set capMinutes (wall-clock) in managed_exit_json instead')
+  }
   return {
     on: stored.on !== undefined ? stored.on === true : MANAGED_EXIT_DEFAULTS.on,
     demoOnly: stored.demoOnly !== undefined ? stored.demoOnly !== false : MANAGED_EXIT_DEFAULTS.demoOnly,
-    capBars: Number.isFinite(capBars) && capBars >= 0 ? capBars : MANAGED_EXIT_DEFAULTS.capBars,
+    capMinutes: Number.isFinite(capMinutes) && capMinutes >= 0 ? capMinutes : MANAGED_EXIT_DEFAULTS.capMinutes,
     trailR: num(stored.trailR, MANAGED_EXIT_DEFAULTS.trailR),
   }
 }
@@ -115,10 +127,10 @@ export function managedExitApplies(db, accountId, cfg = null) {
 }
 
 /**
- * The cap timestamp for a fill at `nowMs` on a signal of `timeframe`.
- * Unknown timeframe falls back to 1h bars — a cap too long is still a cap.
+ * The cap timestamp for a fill at `nowMs`: wall-clock minutes, no timeframe
+ * input at all — a timeframe describes the bars a signal was computed on,
+ * never how long the position may live (owner, 01-09-2026).
  */
-export function managedCapAt(nowMs, timeframe, capBars) {
-  const ms = tfMs(timeframe) || 3_600_000
-  return new Date(nowMs + capBars * ms).toISOString()
+export function managedCapAt(nowMs, capMinutes) {
+  return new Date(nowMs + Number(capMinutes) * 60_000).toISOString()
 }

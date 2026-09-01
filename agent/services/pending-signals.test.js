@@ -21,10 +21,14 @@ function mkDb() {
 
 const SYNTH = { consensus_bias: 'long', overall_conviction: 8, strategy: 'fib_618_fade', timeframe: '15m' }
 
-test('expiryMsFor: scales with timeframe, floored at 3 days, capped at 21', () => {
+test('expiryMsFor: FIXED wall-clock horizon — never scaled by the timeframe', () => {
+  // Owner, 01-09-2026: a timeframe is the bar size a signal looked BACK on,
+  // not a future interval. The queue horizon is one number for every signal
+  // (3 days — a Friday-evening signal must survive the weekend close).
   assert.equal(expiryMsFor('15m'), 3 * 86_400_000)
-  assert.equal(expiryMsFor('1w'), 21 * 86_400_000)
-  assert.equal(expiryMsFor('1d'), 8 * 86_400_000)
+  assert.equal(expiryMsFor('1w'), 3 * 86_400_000)
+  assert.equal(expiryMsFor('1d'), 3 * 86_400_000)
+  assert.equal(expiryMsFor(), 3 * 86_400_000)
 })
 
 test('queuePendingSignal: skip/no-bias synth is not queued', () => {
@@ -52,7 +56,7 @@ test('runPendingSignals: past its TTL is expired regardless of market state', as
   const db = mkDb()
   queuePendingSignal(db, 'NVDAUS', SYNTH, 'closed', 1_000)
   const out = await runPendingSignals(db, CREDS, {
-    now: () => 1_000 + expiryMsFor('15m') + 1,
+    now: () => 1_000 + expiryMsFor() + 1,
     isSymbolMarketOpen: () => ({ open: false }),
   })
   assert.deepEqual(out, { checked: 1, expired: 1, fired: 0 })
