@@ -262,7 +262,7 @@ test('loop.js autopilot call site is detached, overlap-guarded, and still beats'
 // evidence, disarms close the row and name their strategy, and each sweep
 // persists a BOUNDED verdict history.
 // ---------------------------------------------------------------------------
-import { recordComboArms, persistVerdictHistory, clearsArmBar } from './strategy-autopilot.js'
+import { recordComboArms, persistVerdictHistory, clearsArmBar, backfillComboArmsFromActionLog, parseApplyLine } from './strategy-autopilot.js'
 
 test('recordComboArms: an arm snapshots its verdict + bar; a disarm closes the row; strategy arms carry no combo evidence', () => {
   const db = initDB(':memory:')
@@ -304,4 +304,35 @@ test('persistVerdictHistory keeps only bar-clearing or currently-armed verdicts,
   const rows = db.prepare('SELECT strategy, armable FROM autopilot_verdicts ORDER BY strategy').all()
   assert.deepEqual(rows, [{ strategy: 'a', armable: 1 }, { strategy: 'b', armable: 0 }])
   assert.equal(clearsArmBar(verdicts[0], bar), true)
+})
+
+test('backfill: combo_arms is rebuilt once from the action log, then never touched', () => {
+  const db = initDB(':memory:')
+  const log = db.prepare(`INSERT INTO action_log (at, method, path, body) VALUES (?, 'AUTOPILOT', '/apply', ?)`)
+  log.run('2026-09-01 06:41:05', JSON.stringify(['+ armed pending SEKJPY 4h (fib_618_fade)', '+ armed SEKJPY 1d (rsi2_reversion)', '+ armed strategy donchian_breakout']))
+  log.run('2026-09-01 08:11:44', JSON.stringify(['− disarmed GBPUSD 1h', '+ armed SAPD.DE 1d (rsi2_reversion)']))
+  log.run('2026-09-01 10:13:00', JSON.stringify(['− disarmed SEKJPY 1d (rsi2_reversion)']))
+  const r = backfillComboArmsFromActionLog(db)
+  assert.equal(r.arms, 4); assert.equal(r.disarms, 2)
+  const rows = db.prepare('SELECT * FROM combo_arms ORDER BY id').all()
+  assert.equal(rows.length, 4)
+  const sek = rows.find(x => x.symbol === 'SEKJPY' && x.timeframe === '1d')
+  assert.equal(sek.armed_at, '2026-09-01 06:41:05', 'armed_at must be the log time, not now')
+  assert.equal(sek.strategy, 'rsi2_reversion')
+  assert.equal(sek.bt_pf, null, 'retroactive evidence is unknowable — stays NULL')
+  assert.equal(sek.disarmed_at, '2026-09-01 10:13:00')
+  assert.equal(sek.disarm_reason, 'backfill_nogo')
+  assert.equal(rows.find(x => x.kind === 'pending').entry_mode, 'touch')
+  assert.equal(rows.find(x => x.kind === 'strategy').strategy, 'donchian_breakout')
+  // Idempotent.
+  assert.equal(backfillComboArmsFromActionLog(db).skipped, 'already populated')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM combo_arms').get().n, 4)
+})
+
+test('parseApplyLine covers every shape describe() writes, and rejects the rest', () => {
+  assert.deepEqual(parseApplyLine('+ armed strategy ema_pullback'), { action: 'arm', kind: 'strategy', strategy: 'ema_pullback' })
+  assert.deepEqual(parseApplyLine('+ armed US500 1d (rsi2_reversion)'), { action: 'arm', kind: 'matrix', symbol: 'US500', timeframe: '1d', strategy: 'rsi2_reversion' })
+  assert.deepEqual(parseApplyLine('+ armed pending NXPI.US 4h (fib_618_fade)'), { action: 'arm', kind: 'pending', symbol: 'NXPI.US', timeframe: '4h', strategy: 'fib_618_fade' })
+  assert.deepEqual(parseApplyLine('− disarmed pending NZDCAD 30m'), { action: 'disarm', kind: 'pending', symbol: 'NZDCAD', timeframe: '30m' })
+  assert.equal(parseApplyLine('no changes — everything armed matches the evidence'), null)
 })

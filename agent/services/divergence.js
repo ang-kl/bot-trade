@@ -120,20 +120,34 @@ export function divergenceReport(db, opts = {}) {
     ).all(cutoff)
     trades = db.prepare(
       `SELECT t.id, t.symbol, t.side, t.opened_at, t.closed_at, t.net_pnl, t.realised_rr,
-              t.entry_price, t.sl_price, t.slippage_price, t.spread_at_entry,
+              t.entry_price, t.exit_price, t.sl_price, t.slippage_price, t.spread_at_entry,
               t.label_timeframe, t.pnl_price_mismatch, t.exit_price_suspect, t.account_id,
               ${strategyAttrSql('t.label_strategy', 't.strategy')} AS strat,
               (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk
          FROM trades t
-        WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL AND t.source = 'autotrade'
+        WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL
+          AND (t.origin = 'bot_market_dispatch' OR t.source IN ('autotrade', 'autopilot'))
           AND REPLACE(COALESCE(t.closed_at, ''), 'T', ' ') >= ?`
     ).all(cutoff)
   } catch { /* first boot: tables absent — empty report stands */ }
+  // Bot-dispatched only. Measured 02-09-2026 on the first production read:
+  // the dispatch writes source 'autotrade', then the label pass restamps it
+  // 'autopilot' — a filter on 'autotrade' alone counted ZERO of 12 bot
+  // closes. `origin` is the dispatch's own stamp and the honest key; the
+  // source list covers rows from before origin existed.
 
   for (const t of trades) {
     const e = num(t.entry_price), s = num(t.sl_price), ir = num(t.initial_risk)
     t.riskDist = Number.isFinite(e) && Number.isFinite(s) && Math.abs(e - s) > 0 ? Math.abs(e - s) : (ir > 0 ? ir : null)
-    t.r = Number.isFinite(num(t.realised_rr)) ? num(t.realised_rr) : null
+    // realised_rr is NULL on most broker-side closes (10 of 12 measured
+    // 02-09) — the close path stamps it only when it has an exit price in
+    // hand, and the later P&L repair does not always re-stamp. Derive it
+    // from the prices when they are present, same arithmetic as
+    // trade-consistency.js realisedRR; null stays null.
+    const x = num(t.exit_price)
+    const move = Number.isFinite(e) && Number.isFinite(x) ? (String(t.side || '').toUpperCase() === 'SELL' ? e - x : x - e) : NaN
+    t.r = Number.isFinite(num(t.realised_rr)) ? num(t.realised_rr)
+      : (Number.isFinite(move) && t.riskDist > 0 ? r2(move / t.riskDist) : null)
     t.flagged = t.pnl_price_mismatch === 1 || t.exit_price_suspect === 1
     t.symbolU = String(t.symbol || '').toUpperCase()
   }

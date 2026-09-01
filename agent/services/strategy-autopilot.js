@@ -355,7 +355,7 @@ export function clearsArmBar(v, bar) {
  * verdict, so its bt_* stay NULL — which is the finding the tracker exists to
  * surface, not a gap to paper over. A DISARM stamps the open row.
  */
-export function recordComboArms(db, changes, { verdicts = [], armBar = null, reason = 'autopilot' } = {}) {
+export function recordComboArms(db, changes, { verdicts = [], armBar = null, reason = 'autopilot', at = null } = {}) {
   const findVerdict = (c) => verdicts.find(v =>
     v.strategy === c.strategy && v.symbol === c.symbol && v.timeframe === c.timeframe
     && (c.kind === 'pending' ? v.entryMode === 'touch' : v.entryMode !== 'touch'))
@@ -365,28 +365,79 @@ export function recordComboArms(db, changes, { verdicts = [], armBar = null, rea
         AND COALESCE(symbol,'') = COALESCE(?,'') AND COALESCE(timeframe,'') = COALESCE(?,'')
       ORDER BY id DESC LIMIT 1`)
   const ins = db.prepare(
-    `INSERT INTO combo_arms (kind, strategy, symbol, timeframe, entry_mode,
+    `INSERT INTO combo_arms (armed_at, kind, strategy, symbol, timeframe, entry_mode,
        bt_pf, bt_win_rate_pct, bt_trades, bt_wf_positive, bt_wf_active,
        bar_min_pf, bar_min_win, bar_min_trades)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     VALUES (COALESCE(?, datetime('now')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   for (const c of changes?.arm || []) {
     if (openRow.get(c.kind, c.strategy ?? null, c.symbol ?? null, c.timeframe ?? null)) continue
     const v = c.kind === 'strategy' ? null : findVerdict(c)
     ins.run(
-      c.kind, c.strategy ?? null, c.symbol ?? null, c.timeframe ?? null,
+      at, c.kind, c.strategy ?? null, c.symbol ?? null, c.timeframe ?? null,
       c.kind === 'pending' ? 'touch' : (c.kind === 'matrix' ? 'close' : null),
       v?.pf ?? null, v?.winRate ?? null, v?.trades ?? null, v?.wfPositive ?? null, v?.wfActive ?? null,
       armBar?.minPf ?? null, armBar?.minWin ?? null, armBar?.minTrades ?? null,
     )
   }
   const close = db.prepare(
-    `UPDATE combo_arms SET disarmed_at = datetime('now'), disarm_reason = ?
+    `UPDATE combo_arms SET disarmed_at = COALESCE(?, datetime('now')), disarm_reason = ?
       WHERE disarmed_at IS NULL AND kind = ?
         AND COALESCE(symbol,'') = COALESCE(?,'') AND COALESCE(timeframe,'') = COALESCE(?,'')
         AND (? IS NULL OR strategy IS NULL OR strategy = ?)`)
   for (const c of changes?.disarm || []) {
-    close.run(`${reason}_nogo`, c.kind, c.symbol ?? null, c.timeframe ?? null, c.strategy ?? null, c.strategy ?? null)
+    close.run(at, `${reason}_nogo`, c.kind, c.symbol ?? null, c.timeframe ?? null, c.strategy ?? null, c.strategy ?? null)
   }
+}
+
+// The exact line shapes describe() has always written to the action log —
+// the backfill below parses them, so the two must stay in lockstep.
+const APPLY_LINE = /^([+−-])\s+(armed|disarmed)\s+(?:strategy\s+(\S+)|(pending\s+)?(\S+)\s+(\S+)(?:\s+\((\S+)\))?)$/
+
+/** One action-log line → a decideChanges-shaped entry, or null. */
+export function parseApplyLine(line) {
+  const m = APPLY_LINE.exec(String(line || '').trim())
+  if (!m) return null
+  const action = m[2] === 'armed' ? 'arm' : 'disarm'
+  if (m[3]) return { action, kind: 'strategy', strategy: m[3] }
+  return { action, kind: m[4] ? 'pending' : 'matrix', symbol: m[5], timeframe: m[6], ...(m[7] ? { strategy: m[7] } : {}) }
+}
+
+/**
+ * ONE-TIME BACKFILL of combo_arms from the action log (02-09-2026). The
+ * table was added a day after autopilot began arming at the eased bar, so
+ * every combo in force had no row — and would have had none until it was
+ * disarmed and re-armed. The log carries every arm/disarm line since the
+ * first (105 arms / 28 disarms measured), so the history is complete;
+ * evidence (bt_*) is unknowable retroactively and stays NULL — those rows
+ * read as unevidenced, which is the truth. Idempotent: a populated table is
+ * never touched.
+ */
+export function backfillComboArmsFromActionLog(db) {
+  const have = db.prepare('SELECT COUNT(*) AS n FROM combo_arms').get()?.n || 0
+  if (have > 0) return { skipped: 'already populated', rows: have }
+  const rows = db.prepare(
+    `SELECT at, body FROM action_log WHERE method = 'AUTOPILOT' AND path = '/apply' ORDER BY id`
+  ).all()
+  let arms = 0, disarms = 0
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      let lines = []
+      try { lines = JSON.parse(r.body) } catch { continue }
+      if (!Array.isArray(lines)) continue
+      const changes = { arm: [], disarm: [] }
+      for (const l of lines) {
+        const e = parseApplyLine(l)
+        if (!e) continue
+        const { action, ...entry } = e
+        changes[action].push(entry)
+      }
+      arms += changes.arm.length
+      disarms += changes.disarm.length
+      recordComboArms(db, changes, { at: r.at, reason: 'backfill' })
+    }
+  })
+  tx()
+  return { skipped: null, arms, disarms, rows: rows.length }
 }
 
 /**
