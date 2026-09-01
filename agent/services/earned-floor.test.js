@@ -198,3 +198,23 @@ test('wiring pin: the owner has a route to the earned-floor dials', async () => 
   assert.ok(src.includes("router.post('/earned-floor'"), 'POST /actions/earned-floor route missing')
   assert.ok(src.includes("setState(db, 'earned_floor_json'"), 'route must write earned_floor_json')
 })
+
+test('admittedApprovals counts DISTINCT opportunities; admitEvents keeps the raw approval count', () => {
+  // Measured 01-09-2026 evening: the spread gate's retry loop re-approved
+  // the same XPTUSD/NAS100 setups every cycle and a raw COUNT(*) climbed
+  // 23 → 39 while the distinct setups barely moved. opportunity_key is the
+  // dedupe primitive persistRiskEvent already stamps.
+  const db = withAccounts(initDB(':memory:'))
+  const ev = db.prepare(`INSERT INTO risk_events (symbol, side, approved, checks_json, opportunity_key) VALUES ('XPTUSD','BUY',1,?,?)`)
+  const stamp = JSON.stringify({ earned_floor: { rr: 1.4 } })
+  ev.run(stamp, 'A|XPTUSD|BUY|DONCHIAN@1')   // one setup, re-approved three times
+  ev.run(stamp, 'A|XPTUSD|BUY|DONCHIAN@1')
+  ev.run(stamp, 'A|XPTUSD|BUY|DONCHIAN@1')
+  ev.run(stamp, 'A|XPTUSD|BUY|DONCHIAN@2')   // a second, distinct opportunity
+  ev.run(stamp, null)                          // unkeyed (pre-migration) row counts one-per-row
+  // A non-admit approval must not count in either unit.
+  db.prepare(`INSERT INTO risk_events (symbol, side, approved, checks_json, opportunity_key) VALUES ('EURUSD','BUY',1,'{}','B|EURUSD|BUY|X@1')`).run()
+  const r = earnedFloorReport(db)
+  assert.equal(r.admitEvents, 5, 'raw approval events')
+  assert.equal(r.admittedApprovals, 3, 'distinct opportunities: shared-key group + distinct key + unkeyed row')
+})

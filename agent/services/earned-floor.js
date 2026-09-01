@@ -123,12 +123,25 @@ export const EARNED_FLOOR_VERDICT_TARGET = { closes: 30, minPf: 1.5 }
 export function earnedFloorReport(db) {
   const config = loadEarnedFloor(db)
   let admitted = 0
+  let admitEvents = 0
   let closed = { trades: 0, wins: 0, winRate: null, profitFactor: null, net: 0 }
   try {
-    admitted = db.prepare(
-      `SELECT COUNT(*) AS n FROM risk_events
+    // DISTINCT OPPORTUNITIES, not approval events. The scanner re-evaluates
+    // the same setup every cycle and the spread gate's retry loop re-approves
+    // it each time — measured 01-09-2026 evening: XPTUSD/NAS100 retries
+    // inflated a raw COUNT(*) from 23 to 39 in ~2 hours while the distinct
+    // setups barely moved (the exact unit error opportunity-identity.js was
+    // built to fix). COALESCE keeps unkeyed pre-migration rows counted
+    // one-per-row rather than collapsed into one. The raw event count stays
+    // beside it under its own name so neither unit is silently the other.
+    const counts = db.prepare(
+      `SELECT COUNT(DISTINCT COALESCE(opportunity_key, 'row:' || id)) AS distinct_n,
+              COUNT(*) AS events
+         FROM risk_events
         WHERE approved = 1 AND checks_json LIKE '%"earned_floor"%'`
-    ).get()?.n || 0
+    ).get() || {}
+    admitted = counts.distinct_n || 0
+    admitEvents = counts.events || 0
     const rows = db.prepare(
       `SELECT t.net_pnl FROM trades t
          JOIN risk_events r ON r.id = t.risk_event_id
@@ -152,6 +165,7 @@ export function earnedFloorReport(db) {
     config,
     target: { ...EARNED_FLOOR_VERDICT_TARGET },
     admittedApprovals: admitted,
+    admitEvents,
     closedCohort: closed,
     verdict: closed.trades >= EARNED_FLOOR_VERDICT_TARGET.closes
       ? (closed.profitFactor === null || closed.profitFactor >= EARNED_FLOOR_VERDICT_TARGET.minPf ? 'pass' : 'fail')
