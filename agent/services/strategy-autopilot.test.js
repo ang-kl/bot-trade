@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { decideChanges, isBusyWindow, applyChanges, evaluateAll } from './strategy-autopilot.js'
+import { decideChanges, isBusyWindow, applyChanges, evaluateAll, loadArmBar } from './strategy-autopilot.js'
 import { initDB, getState, setState } from '../db.js'
 import { explainVerdict, equitySvg, renderAutopilotReport } from '../lib/autopilot-report.js'
 
@@ -142,6 +142,46 @@ test('the mode always MIRRORS the matrix — the two can never disagree', () => 
     const mode = getState(db, 'pending_mode_enabled') === 'true'
     assert.equal(mode, matrix != null, `mode ${mode} disagrees with matrix ${matrix}`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// The ARM BAR is a dialable config (owner "go with C", 01-09-2026).
+// decideChanges always accepted overrides; nothing wired them — a knob with
+// no writer. loadArmBar + the /actions/autopilot armBar field are the writer;
+// these tests pin both halves and the clamps.
+// ---------------------------------------------------------------------------
+
+test('loadArmBar: defaults are ARM_BAR; stored values override; junk clamps, never loosens to zero', () => {
+  const db = initDB(':memory:')
+  assert.deepEqual(loadArmBar(db), { minPf: 1.7, minWin: 60, minTrades: 25 })
+  setState(db, 'autopilot_arm_bar_json', JSON.stringify({ minPf: 1.5, minWin: 55, minTrades: 20 }))
+  assert.deepEqual(loadArmBar(db), { minPf: 1.5, minWin: 55, minTrades: 20 })
+  setState(db, 'autopilot_arm_bar_json', JSON.stringify({ minPf: 0, minWin: -5, minTrades: 'junk' }))
+  const clamped = loadArmBar(db)
+  assert.equal(clamped.minPf, 1, 'minPf floors at 1 — a bar below breakeven is not a bar')
+  assert.equal(clamped.minWin, 10)
+  assert.equal(clamped.minTrades, 25, 'junk degrades to the default, not to zero')
+  setState(db, 'autopilot_arm_bar_json', 'not json')
+  assert.deepEqual(loadArmBar(db), { minPf: 1.7, minWin: 60, minTrades: 25 })
+})
+
+test('a lowered bar arms the combo the default bar refuses', () => {
+  const verdicts = [{ strategy: 'ema_pullback', symbol: 'EURUSD', timeframe: '4h', entryMode: 'close', state: 'go', pf: 1.55, winRate: 56, trades: 22 }]
+  const current = { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }
+  const strict = decideChanges(verdicts, current, {})
+  assert.equal(strict.arm.length, 0, 'below the default 1.7/60/25 bar nothing arms')
+  const eased = decideChanges(verdicts, current, { armMinPf: 1.5, armMinWin: 55, armMinTrades: 20 })
+  assert.ok(eased.arm.length >= 1, 'the eased bar must arm it')
+})
+
+test('wiring: the production call site passes the configured bar (no orphaned knob)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('./strategy-autopilot.js', import.meta.url), 'utf8')
+  assert.ok(src.includes('const armBar = loadArmBar(db)'), 'maybeRunAutopilot must load the configured bar')
+  assert.ok(src.includes('armMinPf: armBar.minPf'), 'decideChanges must receive the configured bar')
+  assert.ok(!/v\.pf \?\? 0\) >= 1\.7/.test(src), 'no hardcoded 1.7 armable headline — it must use armBar')
+  const route = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8')
+  assert.ok(route.includes("autopilot_arm_bar_json"), '/actions/autopilot must be the writer for the bar')
 })
 
 // ---------------------------------------------------------------------------
