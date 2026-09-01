@@ -83,6 +83,17 @@ import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
  */
 export const HARD_MIN_RR = 3.0
 
+// The line between "shrink the size to the notional ceiling" and "distrust
+// the valuation entirely" (owner "go size-down-to-fit", 01-09-2026). The
+// measured blow-up class this gate exists for — USDX 25.6x, EURX 76.7x,
+// JPN225 78.8x on the 28 Jul-13 Aug statement — all sat at 20x balance and
+// above; legitimate tight-stop sizing artifacts measured 6.9-7.7x. Below
+// this line a breach shrinks to fit; at or above it the veto stands and a
+// human checks the contract table. An ABSOLUTE multiple, not a factor of
+// maxNotionalXBalance: at the default 10x cap a relative factor would have
+// waved the 25.6x USDX blow-up through the shrink path.
+export const NOTIONAL_VALUATION_FAILURE_X = 20
+
 /**
  * INVARIANT 2, SECOND CLAUSE — the dynamic expectancy gate.
  * (bot_trade_remediation_plan_aligned.md §2.4.2 and §2.5.2.2)
@@ -1740,21 +1751,48 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     // check here that does not read the contract table through a stop
     // distance — and a wrong contract table is what defeated all the others.
     //
-    // It does NOT shrink the position. Every other gate above shrinks,
-    // because "too big for the margin left" is a sizing problem with a
-    // smaller answer. Notional 20-79x balance is not a sizing problem; it is
-    // the symptom of a valuation the system cannot be trusted to have got
-    // right, and quietly trading a smaller slice of a number we do not
-    // believe is how the EURX position came to exist at all. Refuse, name the
-    // multiple, and let a human look at the symbol.
+    // TWO ZONES since 01-09-2026 (owner: "go size-down-to-fit"). A MODEST
+    // breach is a sizing artifact with a smaller answer: rsi2_reversion's
+    // tight stops sized AUDUSD to 6.9-7.7x against a 4x ceiling on 01-09,
+    // and the valuation was CORRECT — the veto's own text blamed "a
+    // contract-valuation failure" that wasn't there. Those now shrink to the
+    // ceiling, same contract as the margin shrink above. The REFUSE path
+    // remains for the class this gate was built against: the measured
+    // blow-ups (USDX 25.6x, EURX 76.7x, JPN225 78.8x) all sat at 20x and
+    // above, so 20x is the line between "shrink the size" and "distrust the
+    // number" — quietly trading a smaller slice of a number we do not
+    // believe is how the EURX position came to exist at all.
     const xCap = Number(config.maxNotionalXBalance)
     if (Number.isFinite(xCap) && xCap > 0 && Number.isFinite(notional) && notional > 0) {
       const x = notional / balance
       checks.notional_x_balance = Number(x.toFixed(2))
-      if (x > xCap) {
+      if (x > xCap && x < NOTIONAL_VALUATION_FAILURE_X) {
+        const before = volume
+        const shrunk = Math.floor(volume * (xCap / x) * 100) / 100
+        if (shrunk < config.minLotSize) {
+          return veto(
+            `notional_exposure_exceeded: ${proposal.symbol} ${volume} lots = $${notional.toFixed(0)} notional, ` +
+            `${x.toFixed(1)}x the $${balance.toFixed(0)} balance (ceiling ${xCap}x) · shrunk_to=${shrunk} below min_lot=${config.minLotSize}`,
+            checks, proposal,
+          )
+        }
+        volume = shrunk
+        ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates, brokerPerLot))
+        checks.notional_fit = {
+          from: before, to: volume,
+          xFrom: Number(x.toFixed(2)), xTo: Number((notional / balance).toFixed(2)),
+        }
+        checks.notional_usd = Number(notional.toFixed(2))
+        checks.notional_x_balance = Number((notional / balance).toFixed(2))
+        checks.margin_required_usd = Number(marginRequired.toFixed(2))
+        checks.margin_total_usd = Number((usedMargin + marginRequired).toFixed(2))
+        sizingNote = sizingNote
+          ? `${sizingNote} · shrunk_for_notional=${before}->${volume}`
+          : `shrunk_for_notional=${before}->${volume}`
+      } else if (x > xCap) {
         return veto(
           `notional_exposure_exceeded: ${proposal.symbol} ${volume} lots = $${notional.toFixed(0)} notional, ` +
-          `${x.toFixed(1)}x the $${balance.toFixed(0)} balance (ceiling ${xCap}x). ` +
+          `${x.toFixed(1)}x the $${balance.toFixed(0)} balance (ceiling ${xCap}x, valuation-failure line ${NOTIONAL_VALUATION_FAILURE_X}x). ` +
           'Normal trading on this account runs ~0.8x with a 90th percentile of 3.4x, so this is a contract-valuation ' +
           'failure rather than a large trade — check the symbol\'s contract size and quote currency before re-arming it.',
           checks, proposal,
