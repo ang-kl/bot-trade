@@ -80,6 +80,30 @@ export function autopilotIntervalMs(db, opts = {}) {
  * @returns {{arm:Array, disarm:Array, suggestions:Array}}
  *   arm/disarm entries: {kind:'strategy'|'matrix'|'pending', strategy, symbol?, timeframe?}
  */
+/**
+ * The ARM BAR, from config (owner "go with C", 01-09-2026). decideChanges has
+ * accepted armMinPf/armMinWin/armMinTrades overrides since it was written,
+ * but the production call site never passed them — a knob with no writer,
+ * the same shape earned_floor_json had before stage 2. This loader is the
+ * writer's other half: `autopilot_arm_bar_json` over the ARM_BAR defaults,
+ * clamped so junk can never loosen the bar to zero. Dials via
+ * POST /actions/autopilot { armBar: { minPf?, minWin?, minTrades? } }.
+ */
+export function loadArmBar(db) {
+  const num = (v, dflt, lo, hi) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt
+  }
+  let p = null
+  try { p = JSON.parse(getState(db, 'autopilot_arm_bar_json') || 'null') } catch { p = null }
+  const src = p && typeof p === 'object' ? p : {}
+  return {
+    minPf: num(src.minPf, ARM_BAR.profitFactor, 1, 10),
+    minWin: num(src.minWin, ARM_BAR.winRatePct, 10, 95),
+    minTrades: Math.round(num(src.minTrades, ARM_BAR.minTrades, 5, 500)),
+  }
+}
+
 export function decideChanges(verdicts, current, opts = {}) {
   const maxChanges = opts.maxChanges ?? 4
   // Strict ARMING bar (owner): a backtest "GO" (PF≥1.1) is too loose to put
@@ -344,7 +368,10 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
     pendingMatrix: (() => { try { return JSON.parse(getState(db, 'pending_matrix_json') || '{}') || {} } catch { return {} } })(),
   }
   const maxChanges = Number(getState(db, 'autopilot_max_changes')) || 4
-  const changes = decideChanges(verdicts, current, { maxChanges })
+  const armBar = loadArmBar(db)
+  const changes = decideChanges(verdicts, current, {
+    maxChanges, armMinPf: armBar.minPf, armMinWin: armBar.minWin, armMinTrades: armBar.minTrades,
+  })
 
   const isLive = getState(db, 'ctrader_is_live') === 'true'
   // Owner opted into full-auto on live (autopilot_allow_live). Without it, auto
@@ -353,11 +380,11 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   const goCount = verdicts.filter(v => v.state === 'go').length
   // "GO" is the loose backtest bar (PF≥1.1) — it protects an existing arm from
   // being churned, but it is NOT the bar to be NEWLY armed. Report the ARMABLE
-  // count (the strict PF≥1.7 / 60% win / 25-trade bar decideChanges enforces)
-  // alongside it so the headline never overstates what the bot will actually
-  // trade. Same thresholds as decideChanges' armGrade defaults.
-  const armable = verdicts.filter(v => v.state === 'go' && (v.pf ?? 0) >= 1.7 && (v.winRate ?? 0) >= 60 && (v.trades ?? 0) >= 25).length
-  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable (${goCount} GO at the loose bar)${errors.length ? `, ${errors.length} errors` : ''}.${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
+  // count at the SAME configured bar decideChanges just enforced (a headline
+  // computed at hardcoded thresholds would drift the moment the owner dials
+  // autopilot_arm_bar_json) so it never overstates what the bot will trade.
+  const armable = verdicts.filter(v => v.state === 'go' && (v.pf ?? 0) >= armBar.minPf && (v.winRate ?? 0) >= armBar.minWin && (v.trades ?? 0) >= armBar.minTrades).length
+  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable at PF≥${armBar.minPf}/W≥${armBar.minWin}%/n≥${armBar.minTrades} (${goCount} GO at the loose bar)${errors.length ? `, ${errors.length} errors` : ''}.${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
 
   if (mode === 'suggest' || (isLive && !allowLive)) {
     const all = [...changes.disarm.map(c => `disarm ${describe(c)}`), ...changes.arm.map(c => `arm ${describe(c)}`), ...changes.suggestions.map(c => `${c.action} ${describe(c)}`)]

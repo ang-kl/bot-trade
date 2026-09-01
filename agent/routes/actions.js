@@ -2413,7 +2413,7 @@ export default function actionsRouter(db, deps = {}) {
   // The strategy autopilot's master switch. allowLive=true lets 'auto' arm a
   // LIVE account; intervalMs overrides the session-adaptive cadence.
   // -----------------------------------------------------------------------
-  router.post('/autopilot', (req, res) => {
+  router.post('/autopilot', async (req, res) => {
     const mode = ['off', 'suggest', 'auto'].includes(req.body?.mode) ? req.body.mode : null
     if (!mode) return res.status(400).json({ error: "mode must be 'off', 'suggest' or 'auto'" })
     setState(db, 'autopilot_mode', mode)
@@ -2427,11 +2427,29 @@ export default function actionsRouter(db, deps = {}) {
       // 0/null clears the override → back to the session-adaptive cadence.
       setState(db, 'autopilot_interval_ms', Number.isFinite(n) && n >= 300_000 ? String(Math.round(n)) : null)
     }
+    // Arm-bar dials (owner "go with C", 01-09-2026): partial update over the
+    // stored bar, clamped by loadArmBar. The bar decideChanges enforces and
+    // the headline's "armable" count both read this — one number, no drift.
+    if (req.body?.armBar && typeof req.body.armBar === 'object') {
+      let current = {}
+      try { current = JSON.parse(getState(db, 'autopilot_arm_bar_json') || '{}') || {} } catch { current = {} }
+      const next = {
+        ...current,
+        ...(req.body.armBar.minPf != null ? { minPf: Number(req.body.armBar.minPf) } : {}),
+        ...(req.body.armBar.minWin != null ? { minWin: Number(req.body.armBar.minWin) } : {}),
+        ...(req.body.armBar.minTrades != null ? { minTrades: Number(req.body.armBar.minTrades) } : {}),
+      }
+      setState(db, 'autopilot_arm_bar_json', JSON.stringify(next))
+    }
     if (req.body?.runNow) setState(db, 'autopilot_last_run_ms', '0') // next loop cycle evaluates
+    const { loadArmBar } = await import('../services/strategy-autopilot.js')
+    const armBar = loadArmBar(db)
+    console.log(`[actions] autopilot mode=${mode} armBar PF>=${armBar.minPf} W>=${armBar.minWin}% n>=${armBar.minTrades}`)
     res.json({
       ok: true, mode,
       maxChanges: Number(getState(db, 'autopilot_max_changes')) || 4,
       allowLive: getState(db, 'autopilot_allow_live') === 'true',
+      armBar,
     })
   })
 
