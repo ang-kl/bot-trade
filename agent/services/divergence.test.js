@@ -83,6 +83,8 @@ test('divergenceReport joins arm evidence to live closes, buckets evidence level
   trade(db, { symbol: 'GER40', strategy: 'donchian_breakout', tf: '15m', net: 999, openedMin: 43, flagged: 1 })
   // not bot-dispatched: ignored entirely
   trade(db, { symbol: 'GER40', strategy: 'donchian_breakout', tf: '15m', net: 999, openedMin: 44, source: 'external' })
+  // production stamps bot trades source 'autopilot' (label pass) — must count
+  trade(db, { symbol: 'GER40', strategy: 'donchian_breakout', tf: '15m', net: -20, r: -1, openedMin: 45, source: 'autopilot' })
 
   const r = divergenceReport(db, { days: 30 })
   assert.equal(r.combos.length, 1)
@@ -90,20 +92,20 @@ test('divergenceReport joins arm evidence to live closes, buckets evidence level
   assert.equal(c.strategy, 'donchian_breakout')
   assert.equal(c.backtest.profitFactor, 1.6)
   assert.equal(c.backtest.wf, '3/4')
-  assert.equal(c.live.trades, 12, 'flagged and non-bot rows must not join the combo')
-  assert.equal(c.live.winRatePct, 58.33)
-  assert.equal(c.live.expectancyR, r2(((7 * 1.5) + (5 * -1)) / 12))
-  assert.equal(c.delta.winRatePct, r2(58.33 - 58))
+  assert.equal(c.live.trades, 13, 'flagged and non-bot rows must not join the combo; source autopilot must')
+  assert.equal(c.live.winRatePct, 53.85)
+  assert.equal(c.live.expectancyR, r2(((7 * 1.5) + (6 * -1)) / 13))
+  assert.equal(c.delta.winRatePct, r2(53.85 - 58))
   assert.equal(c.execution.slippageR, 0.1)
   assert.equal(c.status, 'holding')
   assert.deepEqual(r.unevidencedArms.map(a => a.kind).sort(), ['manual', 'strategy'])
-  assert.equal(r.evidenceLevels.combo.trades, 12)
+  assert.equal(r.evidenceLevels.combo.trades, 13)
   assert.equal(r.evidenceLevels.symbol_tf.trades, 1)
   assert.equal(r.evidenceLevels.strategy_only.trades, 1)
   assert.equal(r.evidenceLevels.none.trades, 1)
   assert.equal(r.integrity.flaggedExcluded, 1)
   assert.equal(r.optimism.combos, 1)
-  assert.equal(r.optimism.winRatePts, r2(58 - 58.33))
+  assert.equal(r.optimism.winRatePts, r2(58 - 53.85))
 })
 
 test('divergenceReport: insufficient below minLive; empty DB yields an empty, well-shaped report', () => {

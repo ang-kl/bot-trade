@@ -131,6 +131,17 @@ import('./services/statement-import.js')
   })
   .catch((err) => console.warn(`[statements] seed import failed (non-fatal): ${err.message}`))
 
+// Divergence tracker backfill (02-09-2026): combo_arms starts empty on a DB
+// whose autopilot has been arming for a day; the action log holds every
+// arm/disarm line, so the table is rebuilt from it once, at boot, and never
+// touched again once populated. Fire-and-forget, never the reason a boot fails.
+import('./services/strategy-autopilot.js')
+  .then(({ backfillComboArmsFromActionLog }) => {
+    const r = backfillComboArmsFromActionLog(db)
+    if (!r.skipped) console.log(`[boot] combo_arms backfilled from action_log: ${r.arms} arm(s), ${r.disarms} disarm(s) over ${r.rows} apply row(s)`)
+  })
+  .catch((err) => console.warn(`[boot] combo_arms backfill failed (non-fatal): ${err.message}`))
+
 // Quote-currency overrides, BEFORE anything can size a position. A wrong entry
 // in contracts.js mis-sizes every trade on that symbol by an FX rate, and
 // until now correcting one took a code change and a deploy — which is exactly

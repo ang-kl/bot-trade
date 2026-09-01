@@ -6,9 +6,10 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import {
-  priceMove, realisedRR, checkTradeConsistency,
+  priceMove, realisedRR, checkTradeConsistency, stampRealisedAudit,
   inconsistentTrades, consistencySummary, inconsistencyLine,
 } from './trade-consistency.js'
 
@@ -235,4 +236,41 @@ test('an unknowable realised R is stored as NULL, not as a guess', async () => {
   const r = db.prepare(`SELECT realised_rr, pnl_price_mismatch FROM trades WHERE id = ?`).get(id)
   assert.equal(r.realised_rr, null, 'no stop and no exit means no R — not zero R')
   assert.equal(r.pnl_price_mismatch, 0, 'undecidable is not a contradiction')
+})
+
+// ---------------------------------------------------------------------------
+// 02-09-2026. One helper for every writer that changes a closed row's prices
+// or money, so the R and the verdict are re-stamped by construction.
+// ---------------------------------------------------------------------------
+
+test('stampRealisedAudit re-derives R and the verdict from the row as it stands now', () => {
+  const db = initDB(':memory:')
+  // A broker-side close as closeTradeRow leaves it: no exit yet, so no R.
+  const id = closed(db, { symbol: 'NATGAS', side: 'BUY', entry: 2.933, exit: null, sl: 2.9144642857142857, net: -498.4 })
+  assert.deepEqual(stampRealisedAudit(db, id), { realisedRR: null, mismatch: 0 }, 'no exit → undecidable, R null')
+  // The exit lands from the broker ledger; the stamp must follow the write.
+  db.prepare(`UPDATE trades SET exit_price = 2.919 WHERE id = ?`).run(id)
+  const s = stampRealisedAudit(db, id)
+  assert.ok(s.realisedRR < 0 && s.mismatch === 0)
+  const row = db.prepare(`SELECT realised_rr, pnl_price_mismatch FROM trades WHERE id = ?`).get(id)
+  assert.equal(row.realised_rr, s.realisedRR)
+  assert.equal(row.pnl_price_mismatch, 0)
+  // A contradiction is flagged the same way, and an absent row is null, not a throw.
+  db.prepare(`UPDATE trades SET net_pnl = 50 WHERE id = ?`).run(id)
+  assert.equal(stampRealisedAudit(db, id).mismatch, 1, 'a loss-shaped move with positive money is a mismatch')
+  assert.equal(stampRealisedAudit(db, 999999), null)
+})
+
+test('every writer that changes a closed row\'s prices or money calls the shared stamp', () => {
+  // Wiring pin (failure mode #4). The 02-09 defect was ONE writer skipping
+  // the stamp; the fix is that no writer carries its own copy to forget.
+  const src = (p) => readFileSync(new URL(p, import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+  assert.match(src('../db.js'), /stampRealisedAudit\(db, tradeId\)/, 'closeTradeRow')
+  assert.match(src('./broker-history-import.js'), /stampRealisedAudit\(db, tid\)/, 'reconcileTradePricesToBroker')
+  const backfill = src('./pnl-backfill.js')
+  assert.match(backfill, /stampRealisedAudit\(db, id\)/, 'pnl-backfill restamp helper')
+  assert.match(backfill, /if \(moneyLanded\) restampPosition\(positionId\)/, 'money fill must re-stamp')
+  for (const p of ['../db.js', './broker-history-import.js', './pnl-backfill.js']) {
+    assert.doesNotMatch(src(p), /SET realised_rr = \?/, `${p} must not carry its own copy of the stamp`)
+  }
 })

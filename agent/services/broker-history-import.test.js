@@ -277,6 +277,41 @@ test('running twice changes nothing the second time', () => {
   assert.equal(second.unchanged, 1)
 })
 
+test('filling a broker-side close\'s exit price stamps its realised R and consistency verdict', () => {
+  // The production shape, measured 02-09-2026 on trade 1418 (NATGAS): the
+  // reconciler closed the row with NO exit price (a broker-side close), so
+  // closeTradeRow stamped realised_rr NULL — correctly. The money arrived,
+  // then THIS step filled exit_price from the broker deal and stamped
+  // nothing, so the row held entry, exit, stop and money and no R, for life.
+  // Ten of twelve bot closes looked exactly like this; each one's exit_price
+  // equalled the deal's close_price to the digit.
+  const db = initDB(':memory:')
+  db.prepare(
+    `INSERT INTO trades (id, symbol, side, entry_price, exit_price, sl_price, net_pnl, status, realised_rr, pnl_price_mismatch)
+     VALUES (1418, 'NATGAS', 'BUY', 2.933, NULL, 2.9144642857142857, -498.4, 'closed', NULL, 0)`,
+  ).run()
+  deal(db, { dealId: 239675091, tid: 1418, entry: 2.933, close: 2.919 })
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.corrected, 1)
+  const row = db.prepare('SELECT exit_price, realised_rr, pnl_price_mismatch FROM trades WHERE id = 1418').get()
+  assert.equal(row.exit_price, 2.919)
+  assert.ok(Number.isFinite(row.realised_rr) && row.realised_rr < 0, `R must be stamped from the filled price, got ${row.realised_rr}`)
+  assert.equal(Math.round(row.realised_rr * 1000) / 1000, Math.round(((2.919 - 2.933) / (2.933 - 2.9144642857142857)) * 1000) / 1000)
+  assert.equal(row.pnl_price_mismatch, 0, 'a loss on a losing move agrees with itself')
+
+  // And a correction that flips the sign of the move re-judges the verdict:
+  // the EURX case with money present now lands as consistent, not flagged.
+  db.prepare(
+    `INSERT INTO trades (id, symbol, side, entry_price, exit_price, sl_price, net_pnl, status, pnl_price_mismatch)
+     VALUES (1233, 'EURX', 'BUY', 1076.3, 1076.4, 1070, -2535.41, 'closed', 1)`,
+  ).run()
+  deal(db, { dealId: 236717915, tid: 1233, entry: 1077.4, close: 1076.4 })
+  reconcileTradePricesToBroker(db)
+  const fixed = db.prepare('SELECT realised_rr, pnl_price_mismatch FROM trades WHERE id = 1233').get()
+  assert.equal(fixed.pnl_price_mismatch, 0, 'once the entry is the broker\'s, money and prices agree')
+  assert.ok(fixed.realised_rr < 0)
+})
+
 test('a matched deal pointing at no trade row is ignored, not an error', () => {
   const db = initDB(':memory:')
   deal(db, { dealId: 90, tid: 4242, entry: 1, close: 2 })

@@ -28,6 +28,8 @@
 // opening deal falls outside the requested window).
 // ---------------------------------------------------------------------------
 
+import { stampRealisedAudit } from './trade-consistency.js'
+
 const WEEK = 7 * 24 * 3_600_000
 const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
 
@@ -263,6 +265,13 @@ export function reconcileTradePricesToBroker(db) {
       if (same(entry, t.entry_price) && same(exit, t.exit_price)) { out.unchanged++; continue }
       write.run(entry, exit, tid)
       out.corrected++
+      // The prices just changed, so the R and the self-consistency verdict
+      // computed from them are stale — or, for a row that had no exit until
+      // this write, were never computed at all. This writer used to skip the
+      // stamp, and because it runs every cycle it usually beat pnl-backfill
+      // to a broker-side close's exit price: the row got its price and never
+      // its R (10 of 12 bot closes, measured 02-09-2026).
+      stampRealisedAudit(db, tid)
     }
   })
   try { run() } catch { /* a repair pass must never take the import down */ }

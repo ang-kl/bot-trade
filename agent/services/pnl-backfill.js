@@ -26,7 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import { normPosId } from '../lib/pos-id.js'
-import { checkTradeConsistency, realisedRR } from './trade-consistency.js'
+import { stampRealisedAudit } from './trade-consistency.js'
 import { DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
 
 const WEEK_MS = 7 * 24 * 3_600_000
@@ -462,6 +462,16 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   let attributed = 0
   let exitsRepaired = 0
   let exitsFilled = 0
+  // Re-stamp realised R and the consistency verdict on every closed row of a
+  // position after any write above changed its money or its prices. One
+  // helper shared with closeTradeRow and the loop's price-reconcile step, so
+  // the three writers cannot disagree about what the columns mean.
+  const closedIds = db.prepare(
+    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'`
+  )
+  const restampPosition = (positionId) => {
+    try { for (const { id } of closedIds.all(positionId)) stampRealisedAudit(db, id) } catch { /* audit columns never fail a backfill */ }
+  }
   const tx = db.transaction((entries) => {
     for (const [positionId, agg] of entries) {
       const money = [
@@ -474,11 +484,20 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       backfilled += r.changes
       // Only when the scoped update did not already take the row — the
       // selected-account pass covers NULL rows itself via includeNull.
+      let moneyLanded = r.changes
       if (acct != null && r.changes === 0) {
         const c = claim.run(String(acct), ...money, positionId)
         attributed += c.changes
         backfilled += c.changes
+        moneyLanded += c.changes
       }
+      // Money just landed on a row that had none: the self-consistency
+      // verdict (money vs prices) was undecidable at close and is decidable
+      // now, so re-stamp it — and the R, in case the prices arrived first
+      // through the loop's price-reconcile step (02-09-2026: that step did
+      // not stamp R, and the exit-fill below never ran for those rows
+      // because the exit was no longer NULL).
+      if (moneyLanded) restampPosition(positionId)
       // Volume-weighted exit, only for rows already flagged as contradicting
       // themselves. Re-stamp realised R and clear the flag from the repaired
       // row rather than assuming the repair worked — if the deal price still
@@ -493,17 +512,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
         exitsFilled += fil.changes
         if (rep.changes || fil.changes) {
           exitsRepaired += rep.changes
-          try {
-            const rows = db.prepare(
-              `SELECT id, side, entry_price, exit_price, sl_price, net_pnl FROM trades
-                WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'`
-            ).all(positionId)
-            for (const row of rows) {
-              const c2 = checkTradeConsistency(row)
-              db.prepare(`UPDATE trades SET realised_rr = ?, pnl_price_mismatch = ? WHERE id = ?`)
-                .run(realisedRR(row), c2.decidable && !c2.ok ? 1 : 0, row.id)
-            }
-          } catch { /* the audit columns must never fail a backfill */ }
+          restampPosition(positionId)
         }
       }
     }
