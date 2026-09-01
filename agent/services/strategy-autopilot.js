@@ -146,19 +146,23 @@ export function decideChanges(verdicts, current, opts = {}) {
 
   // DISARM: armed combos whose latest verdict is NO-GO. (Thin/GO keep their
   // arms — absence of evidence is not evidence of decay.)
+  // Disarm entries carry the strategy of the NO-GO verdict that condemned
+  // them (divergence tracker, 02-09-2026): without it the action log could
+  // not name which strategy's evidence failed, and combo_arms could not be
+  // closed against the row it opened.
   for (const [sym, tfs] of Object.entries(current.autoMatrix || {})) {
     for (const tf of tfs) {
-      if (nogos.some(v => v.entryMode !== 'touch' && v.symbol === sym && v.timeframe === tf)
-        && !gos.some(v => v.entryMode !== 'touch' && v.symbol === sym && v.timeframe === tf)) {
-        disarm.push({ kind: 'matrix', symbol: sym, timeframe: tf })
+      const condemned = nogos.find(v => v.entryMode !== 'touch' && v.symbol === sym && v.timeframe === tf)
+      if (condemned && !gos.some(v => v.entryMode !== 'touch' && v.symbol === sym && v.timeframe === tf)) {
+        disarm.push({ kind: 'matrix', strategy: condemned.strategy, symbol: sym, timeframe: tf })
       }
     }
   }
   for (const [sym, tfs] of Object.entries(current.pendingMatrix || {})) {
     for (const tf of tfs) {
-      if (nogos.some(v => v.entryMode === 'touch' && v.symbol === sym && v.timeframe === tf)
-        && !gos.some(v => v.entryMode === 'touch' && v.symbol === sym && v.timeframe === tf)) {
-        disarm.push({ kind: 'pending', symbol: sym, timeframe: tf })
+      const condemned = nogos.find(v => v.entryMode === 'touch' && v.symbol === sym && v.timeframe === tf)
+      if (condemned && !gos.some(v => v.entryMode === 'touch' && v.symbol === sym && v.timeframe === tf)) {
+        disarm.push({ kind: 'pending', strategy: condemned.strategy, symbol: sym, timeframe: tf })
       }
     }
   }
@@ -298,7 +302,11 @@ export async function evaluateAll(db, creds, deps) {
  * pending-mode mirror — the set-only bug lived here and nothing above this
  * function could observe it.
  */
-export function applyChanges(db, changes) {
+export function applyChanges(db, changes, opts = {}) {
+  // DIVERGENCE TRACKER (owner "plan #1", 02-09-2026): snapshot the evidence
+  // each arm was granted on, close the row on disarm. Never blocks the state
+  // writes below — a bookkeeping failure must not stop an arm/disarm.
+  try { recordComboArms(db, changes, opts) } catch { /* bookkeeping only */ }
   const readJson = (k, dflt) => { try { return JSON.parse(getState(db, k) || 'null') ?? dflt } catch { return dflt } }
   const enabled = new Set(readJson('enabled_strategies_json', ['fib_618_fade']))
   const autoM = readJson('autotrade_matrix_json', {})
@@ -333,6 +341,76 @@ export function applyChanges(db, changes) {
   // matrix, so the mode that matrix implies is the one it may write — and a
   // matrix it has emptied must be able to turn the mode off again.
   setState(db, 'pending_mode_enabled', Object.keys(pendM).length ? 'true' : 'false')
+}
+
+/** Does a verdict clear the arm bar? The single definition decideChanges and the history writer share. */
+export function clearsArmBar(v, bar) {
+  return (v?.pf ?? 0) >= bar.minPf && (v?.winRate ?? 0) >= bar.minWin && (v?.trades ?? 0) >= bar.minTrades
+}
+
+/**
+ * combo_arms writer. An ARM inserts one row carrying the verdict that
+ * justified it (looked up from `opts.verdicts` by strategy×symbol×timeframe
+ * ×entryMode) and the bar in force; a strategy-level arm has no single combo
+ * verdict, so its bt_* stay NULL — which is the finding the tracker exists to
+ * surface, not a gap to paper over. A DISARM stamps the open row.
+ */
+export function recordComboArms(db, changes, { verdicts = [], armBar = null, reason = 'autopilot' } = {}) {
+  const findVerdict = (c) => verdicts.find(v =>
+    v.strategy === c.strategy && v.symbol === c.symbol && v.timeframe === c.timeframe
+    && (c.kind === 'pending' ? v.entryMode === 'touch' : v.entryMode !== 'touch'))
+  const openRow = db.prepare(
+    `SELECT id FROM combo_arms
+      WHERE disarmed_at IS NULL AND kind = ? AND COALESCE(strategy,'') = COALESCE(?,'')
+        AND COALESCE(symbol,'') = COALESCE(?,'') AND COALESCE(timeframe,'') = COALESCE(?,'')
+      ORDER BY id DESC LIMIT 1`)
+  const ins = db.prepare(
+    `INSERT INTO combo_arms (kind, strategy, symbol, timeframe, entry_mode,
+       bt_pf, bt_win_rate_pct, bt_trades, bt_wf_positive, bt_wf_active,
+       bar_min_pf, bar_min_win, bar_min_trades)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  for (const c of changes?.arm || []) {
+    if (openRow.get(c.kind, c.strategy ?? null, c.symbol ?? null, c.timeframe ?? null)) continue
+    const v = c.kind === 'strategy' ? null : findVerdict(c)
+    ins.run(
+      c.kind, c.strategy ?? null, c.symbol ?? null, c.timeframe ?? null,
+      c.kind === 'pending' ? 'touch' : (c.kind === 'matrix' ? 'close' : null),
+      v?.pf ?? null, v?.winRate ?? null, v?.trades ?? null, v?.wfPositive ?? null, v?.wfActive ?? null,
+      armBar?.minPf ?? null, armBar?.minWin ?? null, armBar?.minTrades ?? null,
+    )
+  }
+  const close = db.prepare(
+    `UPDATE combo_arms SET disarmed_at = datetime('now'), disarm_reason = ?
+      WHERE disarmed_at IS NULL AND kind = ?
+        AND COALESCE(symbol,'') = COALESCE(?,'') AND COALESCE(timeframe,'') = COALESCE(?,'')
+        AND (? IS NULL OR strategy IS NULL OR strategy = ?)`)
+  for (const c of changes?.disarm || []) {
+    close.run(`${reason}_nogo`, c.kind, c.symbol ?? null, c.timeframe ?? null, c.strategy ?? null, c.strategy ?? null)
+  }
+}
+
+/**
+ * Bounded verdict history: per sweep, only verdicts that clear the bar or
+ * concern a currently-armed combo (see autopilot_verdicts in db.js).
+ */
+export function persistVerdictHistory(db, verdicts, current, armBar) {
+  const armedTf = (m, sym, tf) => Array.isArray(m?.[sym]) && m[sym].includes(tf)
+  const keep = (Array.isArray(verdicts) ? verdicts : []).filter(v =>
+    clearsArmBar(v, armBar)
+    || (v.entryMode === 'touch' ? armedTf(current?.pendingMatrix, v.symbol, v.timeframe) : armedTf(current?.autoMatrix, v.symbol, v.timeframe)))
+  if (!keep.length) return 0
+  const ins = db.prepare(
+    `INSERT INTO autopilot_verdicts (strategy, symbol, timeframe, entry_mode, state, trades, pf, win_rate_pct, wf_positive, wf_active, armable)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  const tx = db.transaction((rows) => {
+    for (const v of rows) {
+      ins.run(v.strategy, v.symbol, v.timeframe, v.entryMode ?? null, v.state ?? null,
+        v.trades ?? null, Number.isFinite(v.pf) ? v.pf : null, v.winRate ?? null,
+        v.wfPositive ?? null, v.wfActive ?? null, clearsArmBar(v, armBar) ? 1 : 0)
+    }
+  })
+  tx(keep)
+  return keep.length
 }
 
 const describe = (c) =>
@@ -372,6 +450,9 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   const changes = decideChanges(verdicts, current, {
     maxChanges, armMinPf: armBar.minPf, armMinWin: armBar.minWin, armMinTrades: armBar.minTrades,
   })
+  // Divergence tracker: bounded history of the verdicts that matter, every
+  // sweep, whatever mode we are in — suggest-mode owners get the record too.
+  try { persistVerdictHistory(db, verdicts, current, armBar) } catch (err) { errors.push(`verdict history: ${err.message}`) }
 
   const isLive = getState(db, 'ctrader_is_live') === 'true'
   // Owner opted into full-auto on live (autopilot_allow_live). Without it, auto
@@ -393,7 +474,7 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   }
 
   // auto: apply within the cap, announce everything
-  applyChanges(db, changes)
+  applyChanges(db, changes, { verdicts, armBar })
   const did = [...changes.disarm.map(c => `− disarmed ${describe(c)}`), ...changes.arm.map(c => `+ armed ${describe(c)}`)]
   db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
     .run('AUTOPILOT', '/apply', JSON.stringify(did).slice(0, 2000))

@@ -2371,6 +2371,21 @@ export default function stateRouter(db) {
   // PR-C", 2026-08-31): config, admitted-cohort stats and the 30-close
   // verdict against its FIXED target. Exists so the staged rollout's
   // checkpoint is a number anyone can read, not a promise in a chat log.
+  // GET /state/divergence?days=30 — backtest→live divergence per armed combo
+  // (owner "plan #1", 02-09-2026): the evidence each combo was armed on vs
+  // what it has done live since, an evidence-level breakdown of every live
+  // trade (combo / symbol_tf / strategy_only / none), execution cost per
+  // combo, and the aggregate "backtest optimism" that calibrates the arm bar.
+  router.get('/divergence', async (req, res) => {
+    try {
+      const { divergenceReport } = await import('../services/divergence.js')
+      const days = Math.max(1, Math.min(365, Number(req.query.days) || 30))
+      res.json(divergenceReport(db, { days }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/earned-floor', async (req, res) => {
     try {
       const { earnedFloorReport } = await import('../services/earned-floor.js')
