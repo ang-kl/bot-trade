@@ -97,16 +97,21 @@ function insertStopout(db, { symbol = 'EURUSD', entry = 1.1000, sl = 1.0970, vol
 // Item 1 — symbol blocklist
 // ---------------------------------------------------------------------------
 
-test('disarm — NATGAS is on the code-pinned OWNER_DISARMED_SYMBOLS list', () => {
-  assert.ok(OWNER_DISARMED_SYMBOLS.includes('NATGAS'))
+test('re-arm (owner, 01-09-2026) — the code-pinned disarm list is EMPTY', () => {
+  // NATGAS was disarmed 22-08 (audit item 1) and re-armed by owner order
+  // 01-09 with the original finding restated at decision time. The list
+  // stays as the standing-order mechanism; membership is the order itself.
+  assert.deepEqual([...OWNER_DISARMED_SYMBOLS], [])
 })
 
-test('disarm — a NATGAS proposal is vetoed, naming the owner order', () => {
+test('re-arm — a NATGAS proposal is no longer refused as symbol_blocked', () => {
   const db = freshDB()
   const res = evaluateTrade(db, goodProposal({ symbol: 'NATGAS', entry: 2.700, sl: 2.680, tp1: 2.770 }))
-  assert.equal(res.approved, false)
-  assert.match(res.veto_reason, /symbol_blocked NATGAS/)
-  assert.match(res.veto_reason, /disarmed by owner order/)
+  // Other gates may still veto it (R:R, exposure, regime) — the pin here is
+  // only that the OWNER disarm no longer fires and stamps.
+  assert.ok(!/symbol_blocked NATGAS — disarmed by owner order/.test(res.veto_reason || ''),
+    `owner-disarm veto still fires: ${res.veto_reason}`)
+  assert.equal(res.checks?.symbol_disarmed, undefined)
 })
 
 test('disarm — matching is case/punctuation-insensitive ("NatGas", "nat-gas")', () => {
@@ -117,22 +122,17 @@ test('disarm — matching is case/punctuation-insensitive ("NatGas", "nat-gas")'
   assert.equal(blocklistedSymbol(null, 'NATGAS'), null)
 })
 
-test('disarm — the broker spelling "NatGas" is refused too', () => {
+test('disarm mechanism — a hypothetical listed symbol would still be refused (config cannot mask)', () => {
+  // The list is empty by owner order, but the MECHANISM must stay sound for
+  // the next standing order: blocklistedSymbol is the matcher the veto path
+  // uses, and a stored blockedSymbols config has no way to reach past it.
+  assert.equal(blocklistedSymbol(['SOMESYM'], 'Some-Sym'), 'SOMESYM')
   const db = freshDB()
-  const res = evaluateTrade(db, goodProposal({ symbol: 'NatGas', entry: 2.700, sl: 2.680, tp1: 2.770 }))
-  assert.equal(res.approved, false)
-  assert.match(res.veto_reason, /disarmed by owner order/)
-})
-
-test('disarm — a stored blockedSymbols config CANNOT mask the standing order', () => {
-  const db = freshDB()
-  // The exact masking hazard: loadRiskConfig spreads stored config over the
-  // defaults, so a saved blockedSymbols array replaces any default. The
-  // code-pinned list must hold regardless.
-  const cfg = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['BTCUSD'], symbolCooldownMinutes: 0 }
+  const cfg = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['NATGAS'], symbolCooldownMinutes: 0 }
   const res = evaluateTrade(db, goodProposal({ symbol: 'NATGAS', entry: 2.700, sl: 2.680, tp1: 2.770 }), cfg)
+  // The CONFIG blocklist still works for symbols the owner blocks via config.
   assert.equal(res.approved, false)
-  assert.match(res.veto_reason, /disarmed by owner order/)
+  assert.match(res.veto_reason, /symbol_blocked NATGAS/)
 })
 
 test('disarm — the config-level blockedSymbols gate still works beside it (regression)', () => {

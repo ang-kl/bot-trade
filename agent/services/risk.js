@@ -864,19 +864,25 @@ export function strategyPerfStats(db, strategyKey, windowDays = 30) {
 // every 21:00 UTC day open — a red CI window that repeats daily and has
 // nothing to do with the change under test. Production never passes it.
 /**
- * OWNER ORDER, 2026-08-22 audit item 1: "disarm NatGas". Measured basis: 15
- * NatGas deals for −$1,929 on the ACCT-DEMO-2 statement, including 21 Aug —
- * three longs stopped out in 10–30 minutes on 0.4–0.6% stops against an
- * instrument moving 2–4%/day, then a flipped short that filled 3.7× planned
- * risk beyond its stop (−$550).
+ * Code-pinned owner disarm list (empty since 01-09-2026).
  *
- * Pinned in CODE, not in DEFAULT_RISK_CONFIG, on the HARD_MIN_RR precedent:
- * loadRiskConfig spreads stored risk_config_json OVER the defaults, so a
- * default `blockedSymbols: ['NATGAS']` would be silently erased by any
- * blockedSymbols array the owner had already saved. A standing order must
- * not be maskable by an older config write.
+ * NATGAS lived here from the 2026-08-22 audit (item 1: "disarm NatGas" —
+ * measured basis: 15 deals for −$1,929, 0.4–0.6% stops against an instrument
+ * moving 2–4%/day, one fill 3.7× planned risk beyond its stop) until the
+ * owner ordered "Re-arm NATGAS" on 01-09-2026, with the context of the
+ * original finding restated at decision time. The exit mechanics that
+ * produced that ledger have since changed (managed trail_0.5R as the sole
+ * stop-mover, notional size-down-to-fit), which is the re-test rationale.
+ *
+ * The MECHANISM stays: pinned in CODE, not in DEFAULT_RISK_CONFIG, on the
+ * HARD_MIN_RR precedent — loadRiskConfig spreads stored risk_config_json
+ * OVER the defaults, so a default blockedSymbols entry would be silently
+ * erased by any array the owner had already saved. A standing order must
+ * not be maskable by an older config write. With the list empty the veto
+ * path below cannot fire — that is the ORDER, not a dead guard; the
+ * matcher itself stays covered by the blocklistedSymbol unit tests.
  */
-export const OWNER_DISARMED_SYMBOLS = Object.freeze(['NATGAS'])
+export const OWNER_DISARMED_SYMBOLS = Object.freeze([])
 
 /**
  * Case- and punctuation-insensitive blocklist match ("NatGas" ≡ "NATGAS").
