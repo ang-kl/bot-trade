@@ -115,6 +115,40 @@ export function checkTradeConsistency(trade, { epsilon = 1e-9 } = {}) {
 }
 
 /**
+ * Re-stamp the two audit columns — `realised_rr` and `pnl_price_mismatch` —
+ * from whatever the row holds NOW. Call after any write that changes a closed
+ * trade's entry price, exit price, stop or net P&L.
+ *
+ * WHY THIS EXISTS (measured 02-09-2026). `realised_rr` was NULL on 10 of 12
+ * bot closes although every one of them carried entry, exit, stop and money.
+ * The close path stamps R at close time, when a broker-side close has no exit
+ * price yet (reconciler.js closes with none), so it stamps NULL — correctly.
+ * The exit then arrives from the broker ledger by one of TWO writers racing
+ * on the loop: pnl-backfill's fillMissingExit, which re-stamps, and
+ * reconcileTradePricesToBroker, which did not. Whichever got there first
+ * decided whether the row ever gained an R — and the reconcile step runs
+ * every cycle, so it usually won. Every NULL row's exit_price equalled the
+ * broker deal's close_price to the digit, which is that writer's signature.
+ *
+ * One helper, every writer, so the next writer cannot forget. Best-effort:
+ * an audit column must never fail the write that triggered it. Returns the
+ * stamped pair, or null when the row is absent or the write failed.
+ */
+export function stampRealisedAudit(db, tradeId) {
+  try {
+    const row = db.prepare(
+      `SELECT side, entry_price, exit_price, sl_price, net_pnl FROM trades WHERE id = ?`
+    ).get(tradeId)
+    if (!row) return null
+    const rr = realisedRR(row)
+    const check = checkTradeConsistency(row)
+    const mismatch = check.decidable && !check.ok ? 1 : 0
+    db.prepare(`UPDATE trades SET realised_rr = ?, pnl_price_mismatch = ? WHERE id = ?`).run(rr, mismatch, tradeId)
+    return { realisedRR: rr, mismatch }
+  } catch { return null }
+}
+
+/**
  * Every closed row that disagrees with itself, worst first.
  *
  * Fails OPEN on a schema gap, like symbol-position-cap: an audit that threw

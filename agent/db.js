@@ -3,7 +3,7 @@ import { openJournal } from './lib/wal-open.js';
 import { maybeEmergencyReclaim } from './services/emergency-reclaim.js';
 // Leaf module — imports nothing, takes `db` as a parameter — so this cannot
 // cycle back into db.js. See closeTradeRow for why the stamp lives here.
-import { realisedRR, checkTradeConsistency } from './services/trade-consistency.js';
+import { stampRealisedAudit } from './services/trade-consistency.js';
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -1542,20 +1542,13 @@ export function closeTradeRow(db, tradeId, {
   // each caller because there are five of them and only one ever supplied an
   // exit price — the other four would have gone on writing rows nobody
   // checked. Best-effort: a bookkeeping column must never fail a close.
-  if (info.changes > 0) {
-    try {
-      const row = db.prepare(
-        `SELECT side, entry_price, exit_price, sl_price, net_pnl FROM trades WHERE id = ?`
-      ).get(tradeId);
-      if (row) {
-        const rr = realisedRR(row);
-        const check = checkTradeConsistency(row);
-        db.prepare(
-          `UPDATE trades SET realised_rr = ?, pnl_price_mismatch = ? WHERE id = ?`
-        ).run(rr, check.decidable && !check.ok ? 1 : 0, tradeId);
-      }
-    } catch { /* never let a close fail over an audit column */ }
-  }
+  //
+  // A broker-side close arrives here WITHOUT an exit price, so this stamp is
+  // NULL for it — honestly. The price lands later from the broker ledger, and
+  // every writer that lands it re-stamps through the same helper
+  // (trade-consistency.js stampRealisedAudit); until 02-09-2026 one of them
+  // did not, and 10 of 12 bot closes carried no R for life.
+  if (info.changes > 0) stampRealisedAudit(db, tradeId);
   return { changed: info.changes > 0, holdDurationMs };
 }
 

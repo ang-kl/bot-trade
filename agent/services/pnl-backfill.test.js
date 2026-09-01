@@ -611,6 +611,27 @@ test('an ABSENT exit price is filled from broker truth, counted apart from a rep
   assert.equal(db.prepare(`SELECT exit_price FROM trades WHERE ctrader_position_id='9102'`).get().exit_price, 97.5)
 })
 
+test('money landing on a row whose exit arrived first still stamps realised R', async () => {
+  // THE RACE (02-09-2026). Two writers land a broker-side close's exit price:
+  // this service's fill, which re-stamped R, and the loop's price-reconcile
+  // step, which did not — and runs every cycle, so it usually won. When it
+  // did, the row reached this pass with exit PRESENT and money NULL; the
+  // money filled, the exit-fill found nothing to do, and the only re-stamp
+  // sat behind it. Ten of twelve bot closes carried no R for exactly this.
+  const db = initDB(':memory:')
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, entry_price, exit_price, sl_price, volume, net_pnl, realised_rr, pnl_price_mismatch, closed_at)
+     VALUES ('NATGAS','BUY','closed','239675091', 2.933, 2.919, 2.9144642857142857, 1, NULL, NULL, 0, datetime('now','-1 day'))`
+  ).run()
+  const r = await backfillClosedPnl(db, {}, { getDeals: dealsApi([pricedDeal(239675091, -49840, 2.919, 1)]), now: NOW })
+  assert.equal(r.backfilled, 1)
+  assert.equal(r.exitsFilled, 0, 'the exit was already there — nothing to fill')
+  const row = db.prepare(`SELECT net_pnl, realised_rr, pnl_price_mismatch FROM trades WHERE ctrader_position_id='239675091'`).get()
+  assert.equal(row.net_pnl, -498.4)
+  assert.ok(Number.isFinite(row.realised_rr) && row.realised_rr < 0, `R must be stamped once the money lands, got ${row.realised_rr}`)
+  assert.equal(row.pnl_price_mismatch, 0)
+})
+
 test('a PRESENT and unflagged exit price is never overwritten', async () => {
   const db = initDB(':memory:')
   db.prepare(
