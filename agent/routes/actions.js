@@ -2389,12 +2389,25 @@ export default function actionsRouter(db, deps = {}) {
   // 'manage', on: boolean }. Trade-stage writes route through the legacy keys
   // (enabled_strategies_json / fib_*_filter) so every older reader agrees.
   // -----------------------------------------------------------------------
-  router.post('/stage-matrix', (req, res) => {
+  router.post('/stage-matrix', async (req, res) => {
     const { kind, key, stage, on, accountId = null } = req.body || {}
     try {
       // accountId writes THAT account's overlay and nothing else; absent, the
       // global matrix — byte-identical to the behaviour before overlays.
       const matrix = setStage(db, { kind, key, stage, on: on === true, accountId }, { getState, setState })
+      // Divergence tracker (02-09-2026): a hand-arm of a strategy's trade
+      // stage is an arm WITHOUT evidence — recorded as such (NULL bt_*), so
+      // the report shows it rather than omitting it. Global writes only; an
+      // account overlay is a scope, not new evidence. Bookkeeping never
+      // blocks the write.
+      if (kind === 'strategy' && stage === 'trade' && accountId == null) {
+        try {
+          const { recordComboArms } = await import('../services/strategy-autopilot.js')
+          recordComboArms(db, on === true
+            ? { arm: [{ kind: 'manual', strategy: String(key) }], disarm: [] }
+            : { arm: [], disarm: [{ kind: 'manual', strategy: String(key) }] }, { reason: 'manual' })
+        } catch { /* bookkeeping only */ }
+      }
       console.log(`[actions] stage-matrix${accountId ? ` (account ${accountId})` : ''}: ${kind} ${key} × ${stage} → ${on === true ? 'on' : 'off'}`)
       // THE TALLIES COME BACK WITH THE WRITE (review, #609). Without them the
       // page merged only strategies/filters, so the tick the operator had just

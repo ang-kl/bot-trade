@@ -500,6 +500,54 @@ const TABLES = `
     silent_drops INTEGER, top_block TEXT
   );
 
+  -- Backtest→live divergence tracker (owner "plan #1", 02-09-2026).
+  -- combo_arms: the EVIDENCE a combo was armed on, snapshotted at arm time —
+  -- the arm decision used to record nothing about which verdict justified
+  -- it, so "armed on evidence X, traded like Y" was unanswerable. Manual
+  -- arms get a row with NULL bt_* (armed without evidence — shown, not hidden).
+  CREATE TABLE IF NOT EXISTS combo_arms (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    armed_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    kind            TEXT NOT NULL,      -- strategy | matrix | pending | manual
+    strategy        TEXT,
+    symbol          TEXT,
+    timeframe       TEXT,
+    entry_mode      TEXT,
+    bt_pf           REAL,
+    bt_win_rate_pct REAL,
+    bt_trades       INTEGER,
+    bt_wf_positive  INTEGER,
+    bt_wf_active    INTEGER,
+    bar_min_pf      REAL,
+    bar_min_win     REAL,
+    bar_min_trades  INTEGER,
+    disarmed_at     TEXT,
+    disarm_reason   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_combo_arms_open ON combo_arms(strategy, symbol, timeframe, disarmed_at);
+
+  -- autopilot_verdicts: a BOUNDED verdict history. Only the last sweep used
+  -- to survive (autopilot_last_verdicts_json, overwritten every 10-30 min),
+  -- and backtest_runs is pruned to 2,000 rows on every manual write — so a
+  -- full sweep (~1,900 verdicts) cannot live there. Per sweep this keeps
+  -- only the verdicts that clear the arm bar or concern an armed combo.
+  CREATE TABLE IF NOT EXISTS autopilot_verdicts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ran_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    strategy     TEXT NOT NULL,
+    symbol       TEXT NOT NULL,
+    timeframe    TEXT NOT NULL,
+    entry_mode   TEXT,
+    state        TEXT,
+    trades       INTEGER,
+    pf           REAL,
+    win_rate_pct REAL,
+    wf_positive  INTEGER,
+    wf_active    INTEGER,
+    armable      INTEGER               -- 1 = cleared the arm bar in force at that sweep
+  );
+  CREATE INDEX IF NOT EXISTS idx_autopilot_verdicts_combo ON autopilot_verdicts(strategy, symbol, timeframe, ran_at);
+
   -- Durable backtest history (owner 2026-07-28: "backtest history per
   -- symbol"). One row per symbol×timeframe per run — the HTML reports live
   -- on ephemeral disk and vanish on redeploy, so this table is the record

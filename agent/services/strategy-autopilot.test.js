@@ -256,3 +256,52 @@ test('loop.js autopilot call site is detached, overlap-guarded, and still beats'
   assert.ok(/for \(const entryMode of modes\) \{\s*\n(\s*\/\/[^\n]*\n)*\s*await new Promise\(\(resolve\) => setImmediate\(resolve\)\)/.test(apSrc),
     'the per-combo setImmediate yield left evaluateAll')
 })
+
+// ---------------------------------------------------------------------------
+// Divergence tracker (owner "plan #1", 02-09-2026): arms snapshot their
+// evidence, disarms close the row and name their strategy, and each sweep
+// persists a BOUNDED verdict history.
+// ---------------------------------------------------------------------------
+import { recordComboArms, persistVerdictHistory, clearsArmBar } from './strategy-autopilot.js'
+
+test('recordComboArms: an arm snapshots its verdict + bar; a disarm closes the row; strategy arms carry no combo evidence', () => {
+  const db = initDB(':memory:')
+  const verdicts = [
+    { strategy: 'ema_pullback', symbol: 'GBPUSD', timeframe: '12h', entryMode: 'close', state: 'go', pf: 1.8, winRate: 65, trades: 25, wfPositive: 3, wfActive: 4 },
+  ]
+  const changes = decideChanges(verdicts, EMPTY)
+  recordComboArms(db, changes, { verdicts, armBar: { minPf: 1.7, minWin: 60, minTrades: 25 } })
+  const rows = db.prepare('SELECT * FROM combo_arms ORDER BY id').all()
+  assert.deepEqual(rows.map(r => r.kind).sort(), ['matrix', 'strategy'])
+  const m = rows.find(r => r.kind === 'matrix')
+  assert.equal(m.bt_pf, 1.8); assert.equal(m.bt_win_rate_pct, 65); assert.equal(m.bt_trades, 25); assert.equal(m.bt_wf_active, 4)
+  assert.equal(m.bar_min_pf, 1.7)
+  const s = rows.find(r => r.kind === 'strategy')
+  assert.equal(s.bt_pf, null, 'a strategy-level arm has no single combo verdict — recorded as such')
+  // Re-applying the same arm must not duplicate the open row.
+  recordComboArms(db, changes, { verdicts })
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM combo_arms').get().n, 2)
+  // Disarm closes it, naming the strategy.
+  const nogo = [{ strategy: 'ema_pullback', symbol: 'GBPUSD', timeframe: '12h', entryMode: 'close', state: 'no-go', pf: 0.7, trades: 20 }]
+  const d = decideChanges(nogo, { enabledStrategies: ['ema_pullback'], autoMatrix: { GBPUSD: ['12h'] }, pendingMatrix: {} })
+  assert.equal(d.disarm[0].strategy, 'ema_pullback', 'disarm entries must carry the condemning strategy')
+  recordComboArms(db, d, {})
+  const closed = db.prepare(`SELECT * FROM combo_arms WHERE kind = 'matrix'`).get()
+  assert.ok(closed.disarmed_at, 'the open matrix row must be closed')
+  assert.equal(closed.disarm_reason, 'autopilot_nogo')
+})
+
+test('persistVerdictHistory keeps only bar-clearing or currently-armed verdicts, stamped armable', () => {
+  const db = initDB(':memory:')
+  const bar = { minPf: 1.5, minWin: 55, minTrades: 20 }
+  const verdicts = [
+    { strategy: 'a', symbol: 'X', timeframe: '1h', entryMode: 'close', state: 'go', pf: 1.6, winRate: 58, trades: 22 },   // clears
+    { strategy: 'b', symbol: 'Y', timeframe: '4h', entryMode: 'close', state: 'no-go', pf: 0.8, winRate: 30, trades: 30 }, // armed combo → kept
+    { strategy: 'c', symbol: 'Z', timeframe: '1d', entryMode: 'close', state: 'thin', pf: null, winRate: null, trades: 3 }, // neither → dropped
+  ]
+  const n = persistVerdictHistory(db, verdicts, { autoMatrix: { Y: ['4h'] }, pendingMatrix: {} }, bar)
+  assert.equal(n, 2)
+  const rows = db.prepare('SELECT strategy, armable FROM autopilot_verdicts ORDER BY strategy').all()
+  assert.deepEqual(rows, [{ strategy: 'a', armable: 1 }, { strategy: 'b', armable: 0 }])
+  assert.equal(clearsArmBar(verdicts[0], bar), true)
+})

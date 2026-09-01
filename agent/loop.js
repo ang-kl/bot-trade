@@ -4407,6 +4407,11 @@ async function runLoop(db) {
         // datetime() on both sides: at is sqlite's 'YYYY-MM-DD HH:MM:SS' while
         // the cutoff is ISO — a bare string compare would misjudge the boundary.
         { name: 'prune-cpp-decisions', run: () => db.prepare('DELETE FROM cpp_decisions WHERE datetime(at) < datetime(?)').run(cutoff90d) },
+        // Divergence tracker (02-09-2026): verdict history is bounded per
+        // sweep AND in time; closed arm rows age out, open arms never do —
+        // an armed combo's evidence must outlive any prune while it trades.
+        { name: 'prune-autopilot-verdicts', run: () => db.prepare(`DELETE FROM autopilot_verdicts WHERE datetime(ran_at) < datetime('now', '-30 days')`).run() },
+        { name: 'prune-combo-arms', run: () => db.prepare('DELETE FROM combo_arms WHERE disarmed_at IS NOT NULL AND datetime(disarmed_at) < datetime(?)').run(cutoff90d) },
         // Inspection findings: TERMINAL rows only — live findings never age
         // out (a proposal does not expire because the owner was busy; it
         // resolves only through its falsifier). Audit history same window.
