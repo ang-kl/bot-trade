@@ -361,7 +361,7 @@ export function runProfitKeeper(db, creds, deps = {}) {
 }
 
 async function profitKeeperPass(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, errors: [] }
+  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, managedSkipped: 0, errors: [] }
   try {
     const cfg = loadProfitKeeperConfig(db)
     if (!cfg.on) return summary
@@ -386,7 +386,31 @@ async function profitKeeperPass(db, creds, deps = {}) {
          AND t.ctrader_position_id IS NOT NULL AND (${scopeSql})
          AND ${accountFilterSql('mp.account_id')}`
     ).all(accountId)
-    if (rows.length === 0) return summary
+
+    // MANAGED-EXIT FENCE (owner "Go", 01-09-2026). On accounts the managed
+    // policy governs, the trail is the ONLY exit-timing rule — one-simple-
+    // system P4 classes this keeper's spike/structure/arm knobs as
+    // "replace", and until this fence nobody had wired that: the keeper kept
+    // pushing chandelier trail specs to the sidecar's tick ratchet for every
+    // position, a THIRD stop authority beating the managed trail. Measured
+    // 01-09: the first four earned-floor cohort closes peaked +0.77R and all
+    // exited at the keeper's chandelier for small losses, where the managed
+    // trail_0.5R stop would have banked +0.27R each. Same failure class as
+    // the 0016.HK two-evaluator hole, at a third evaluator. Filtering HERE
+    // removes managed positions from every downstream path in one place —
+    // decisions, closes, scale-outs AND the /trail-config push (full-replace,
+    // pushed even when empty, so stale sidecar specs for these positions
+    // clear on the next pass).
+    const { managedExitApplies } = deps.managedExit ?? await import('./managed-exit.js')
+    const managedByAcct = new Map()
+    const kept = []
+    for (const r of rows) {
+      const k = String(r.account_id ?? '')
+      if (!managedByAcct.has(k)) managedByAcct.set(k, managedExitApplies(db, r.account_id))
+      if (managedByAcct.get(k)) summary.managedSkipped += 1
+      else kept.push(r)
+    }
+    if (kept.length === 0) return summary
 
     const exec = deps.exec ?? await import('../lib/exec-engine.js')
     const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
@@ -405,7 +429,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
       if (p.positionId != null) live.set(String(p.positionId), p)
     }
 
-    const scoped = scopeToAccount(rows, { accountId, live })
+    const scoped = scopeToAccount(kept, { accountId, live })
     summary.refused = scoped.foreign.length
     if (scoped.foreign.length) {
       summary.errors.push(`${scoped.foreign.length} position(s) belong to another account and were not touched`)
