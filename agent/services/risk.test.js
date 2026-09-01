@@ -1594,6 +1594,52 @@ test('2.6.1 — under the CURRENT risk cap the ceiling sits exactly on the bound
 })
 
 // ---------------------------------------------------------------------------
+// Size-down-to-fit at the notional ceiling (owner, 01-09-2026). A breach in
+// the shrink zone (cap < x < NOTIONAL_VALUATION_FAILURE_X) shrinks to the
+// ceiling; the valuation-failure class (>= 20x) keeps the hard refuse above.
+// ---------------------------------------------------------------------------
+
+test('a modest notional breach shrinks to the ceiling instead of dying', () => {
+  // riskPct / slPct = 2% / 0.15% = 13.3x — over the 10x cap, under the 20x
+  // valuation-failure line. The measured 01-09 case was rsi2's tight stops
+  // sizing AUDUSD to 6.9-7.7x against a 4x cap; same shape, default cap.
+  const db = freshDB()
+  setBalance(db, 55_100)
+  setLeverage(db, 500)
+  seedRate(db, 'USDJPY', 150)
+  const res = evaluateTrade(db, {
+    symbol: 'JPN225', side: 'long', entry: 38_000, sl: 37_943, tp1: 38_199.5,
+    requestedVolume: null, strategy: 'trend', conviction: 8,
+  }, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.02, maxRiskCapPct: 0.02 })
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.ok(res.checks.notional_fit, 'shrink must be stamped in checks.notional_fit')
+  assert.ok(res.checks.notional_fit.xFrom > 13 && res.checks.notional_fit.xFrom < 14,
+    `expected ~13.3x before, got ${res.checks.notional_fit.xFrom}x`)
+  assert.ok(res.checks.notional_x_balance <= 10.01,
+    `after the shrink the ceiling must hold, got ${res.checks.notional_x_balance}x`)
+  assert.ok(res.adjusted_volume < res.checks.risk_based_volume,
+    'the shipped volume must be smaller than the risk-based size')
+  assert.match(res.sizing_note, /shrunk_for_notional/)
+})
+
+test('the valuation-failure class (>= 20x) still refuses outright', () => {
+  // The 33x JPN225 reconstruction from 2.6.1 — the shrink zone must not
+  // swallow the class the gate was built against.
+  const db = freshDB()
+  setBalance(db, 55_100)
+  setLeverage(db, 500)
+  seedRate(db, 'USDJPY', 150)
+  const res = evaluateTrade(db, {
+    symbol: 'JPN225', side: 'long', entry: 38_000, sl: 37_943, tp1: 38_199.5,
+    requestedVolume: null, strategy: 'trend', conviction: 8,
+  }, LOOSE_RISK)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /notional_exposure_exceeded/)
+  assert.match(res.veto_reason, /valuation-failure line 20x/)
+  assert.equal(res.checks.notional_fit, undefined, 'no shrink stamp on the refuse path')
+})
+
+// ---------------------------------------------------------------------------
 // ACCEPTANCE 2.6.2, first clause — a minRR of 1.2 is raised to the floor.
 // (The second clause, the dynamic expectancy gate, is covered further above.)
 // ---------------------------------------------------------------------------
