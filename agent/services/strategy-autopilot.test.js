@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { decideChanges, isBusyWindow, applyChanges } from './strategy-autopilot.js'
+import { decideChanges, isBusyWindow, applyChanges, evaluateAll } from './strategy-autopilot.js'
 import { initDB, getState, setState } from '../db.js'
 import { explainVerdict, equitySvg, renderAutopilotReport } from '../lib/autopilot-report.js'
 
@@ -142,4 +142,77 @@ test('the mode always MIRRORS the matrix — the two can never disagree', () => 
     const mode = getState(db, 'pending_mode_enabled') === 'true'
     assert.equal(mode, matrix != null, `mode ${mode} disagrees with matrix ${matrix}`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// The sweep must SHARE the event loop (owner-approved fix, 01-09-2026).
+// Measured before it: evaluateAll ran ~3 unbroken CPU-bound minutes on the
+// main thread (loopPhaseLag.autopilot worstStallCpuRatio 0.99), starving
+// fast-monitor ticks and heartbeats every ~10-min firing. The contract now is
+// one setImmediate yield per combo — pinned here by counting macrotask turns
+// that manage to run WHILE the sweep is in progress: zero turns would mean
+// the block is back.
+// ---------------------------------------------------------------------------
+test('evaluateAll yields the event loop at least once per combo', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'autopilot_symbols_json', JSON.stringify([{ symbol: 'EURUSD', enabled: true }]))
+
+  // A concurrent setImmediate pump: each turn it gets is proof the sweep
+  // released the loop. FIFO ordering guarantees it runs at every combo yield.
+  let turns = 0
+  let stopped = false
+  const pump = () => { if (stopped) return; turns++; setImmediate(pump) }
+  setImmediate(pump)
+
+  let combos = 0
+  const bars = Array.from({ length: 400 }, (_, i) => ({ ts: i * 60_000, o: 1, h: 1, l: 1, c: 1, v: 1 }))
+  const deps = {
+    ws: {
+      wsGetTrendbarsBatch: async (_h, _ci, _cs, _t, _a, _sid, tfs) =>
+        Object.fromEntries(tfs.map((tf) => [tf, bars])),
+    },
+    bt: {
+      runBacktest: () => { combos++; return { stats: { trades: 0 }, trades: [] } },
+      walkForward: () => ({ active: 0, positive: 0, worstMddPct: 0 }),
+    },
+    credsLib: { getSymbolMap: () => ({ EURUSD: 1 }) },
+    remote: async () => null, // force fib down the JS path too
+  }
+  const before = turns
+  let verdicts, errors
+  try {
+    ({ verdicts, errors } = await evaluateAll(
+      db,
+      { host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '1' },
+      deps,
+    ))
+  } finally {
+    stopped = true // a failure must not leave the pump chain keeping the process alive
+  }
+  assert.ok(combos > 0, `no combos ran (verdicts ${verdicts.length}, errors: ${errors.join('; ')}) — a yield test over zero combos proves nothing`)
+  assert.ok(
+    turns - before >= combos,
+    `event loop advanced only ${turns - before} turn(s) across ${combos} combos — the sweep is blocking again`,
+  )
+})
+
+// Wiring pin: the loop must LAUNCH the sweep, never await it. The awaited
+// form (even budgeted — the budget only abandons the wait) held every later
+// phase behind ~3 minutes of backtests. Both heartbeat paths must survive the
+// detachment or a dying sweep becomes silence instead of a failing controller.
+test('loop.js autopilot call site is detached, overlap-guarded, and still beats', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  assert.ok(!src.includes("runBudgetedSubPhase(db, 'autopilot'"),
+    'autopilot is awaited via runBudgetedSubPhase again — the 3-minute cycle stall returns')
+  assert.ok(src.includes("subPhaseInFlight.set('autopilot', true)"),
+    'detached launch lost its overlap guard — two concurrent sweeps must be impossible')
+  assert.ok(src.includes("subPhaseInFlight.get('autopilot')"),
+    'nothing checks the in-flight flag before relaunching')
+  const autopilotBeats = (src.match(/hbeat\(db, 'autopilot'/g) || []).length
+  assert.ok(autopilotBeats >= 3,
+    `expected the per-cycle beat plus the detached ok/fail beats (>=3 call sites), found ${autopilotBeats}`)
+  const apSrc = readFileSync(new URL('./strategy-autopilot.js', import.meta.url), 'utf8')
+  assert.ok(/for \(const entryMode of modes\) \{\s*\n(\s*\/\/[^\n]*\n)*\s*await new Promise\(\(resolve\) => setImmediate\(resolve\)\)/.test(apSrc),
+    'the per-combo setImmediate yield left evaluateAll')
 })
