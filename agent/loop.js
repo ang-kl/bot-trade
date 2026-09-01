@@ -3884,14 +3884,40 @@ async function runLoop(db) {
         await hbeat(db, 'decision_audit', false, err.message)
       }
 
-      // Strategy Autopilot — nightly evidence loop (mode-gated inside;
-      // failures must never touch the trading phases).
+      // Strategy Autopilot — session-adaptive evidence sweep (10 min busy /
+      // 30 min calm, autopilotIntervalMs; the old "nightly" label predated
+      // that cadence). DETACHED on purpose (2026-09-01): the sweep backtests
+      // a 24-symbol window × timeframes × strategies on this thread for ~3
+      // minutes, and AWAITING it (even budgeted — the budget only abandons
+      // the wait) held every later phase hostage. Measured before the fix:
+      // loopPhaseMs.autopilot 176,635ms, six controllers stalled on each
+      // ~10-min firing. The launch is recorded by phase(); the run itself is
+      // fire-and-forget behind the same subPhaseInFlight overlap guard the
+      // budgeted path used, plus the module's own autopilot_last_run_ms
+      // stamp — a doubled run stays impossible. Heartbeat semantics: the
+      // scheduling beat stays per-cycle (below), and the detached
+      // continuation beats again with the run's real outcome, so a sweep
+      // that starts dying shows up as a failing controller, not silence.
+      // Failures must never touch the trading phases.
       try {
         if (!cycleOverBudget()) {
           phase('autopilot')
-          const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
-          const r = await runBudgetedSubPhase(db, 'autopilot', () => maybeRunAutopilot(db, getCtraderCreds(db)), SUB_PHASE_BUDGET_MS * 2)
-          if (r && !r.skipped && !r.skippedOverlap && !r.timedOut) log(`Autopilot: ${JSON.stringify(r)}`)
+          if (subPhaseInFlight.get('autopilot')) {
+            log('autopilot from a previous cycle still in flight — not relaunched (no overlap)')
+          } else {
+            const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
+            subPhaseInFlight.set('autopilot', true)
+            maybeRunAutopilot(db, getCtraderCreds(db))
+              .then((r) => {
+                if (r && !r.skipped && !r.skippedOverlap) log(`Autopilot: ${JSON.stringify(r)}`)
+                return hbeat(db, 'autopilot')
+              })
+              .catch((err) => {
+                log(`Autopilot failed (non-fatal): ${err.message}`)
+                return hbeat(db, 'autopilot', false, err.message).catch(() => {})
+              })
+              .finally(() => subPhaseInFlight.set('autopilot', false))
+          }
         }
         await hbeat(db, 'autopilot')
       } catch (err) {

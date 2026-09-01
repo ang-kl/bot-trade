@@ -182,7 +182,11 @@ async function tryRemoteFibBacktest(bars, tf, entryMode, remote) {
   } catch { return null }
 }
 
-async function evaluateAll(db, creds, deps) {
+// Exported for the yield test: the sweep's event-loop behaviour (one
+// setImmediate per combo, below) can only be pinned by driving this function
+// with stubbed deps — nothing observable survives to maybeRunAutopilot's
+// return value.
+export async function evaluateAll(db, creds, deps) {
   const { wsGetTrendbarsBatch } = deps.ws ?? await import('../lib/ctrader-ws.js')
   const { runBacktest, walkForward } = deps.bt ?? await import('../scripts/backtest-fib.js')
   const { getSymbolMap } = deps.credsLib ?? await import('../lib/ctrader-creds.js')
@@ -223,6 +227,13 @@ async function evaluateAll(db, creds, deps) {
       for (const strat of strategiesToTest) {
         const modes = strat.pendingCapable ? ['close', 'touch'] : ['close']
         for (const entryMode of modes) {
+          // Yield the event loop before every combo. The sweep is ~3 minutes
+          // of synchronous backtest CPU; without this it ran as ONE unbroken
+          // block (measured 01-09-2026: loopPhaseLag.autopilot maxMs 1864,
+          // worstStallCpuRatio 0.99) and starved fast-monitor ticks, HTTP
+          // reads and heartbeats. One yield per combo caps any single stall
+          // at one backtest.
+          await new Promise((resolve) => setImmediate(resolve))
           try {
             const opts = { timeframe: tf, strategy: strat.key, entryMode, symbol }
             // Fib fast-path: the C++ sidecar runs the identical arithmetic
