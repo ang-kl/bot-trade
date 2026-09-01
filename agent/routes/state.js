@@ -2380,6 +2380,20 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/log-watch — the in-process log matcher (owner "yes build the
+  // log-watch hook", 01-09): config, whether the console wrap is installed,
+  // the rule list, and — the part that matters per failure mode #3 — which
+  // rules have EVER fired. A watch that never fires is readable here as a
+  // fact, not assumed healthy.
+  router.get('/log-watch', async (req, res) => {
+    try {
+      const { logWatchView } = await import('../services/log-watch.js')
+      res.json(logWatchView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/strategy-liveness', async (req, res) => {
     try {
       const { strategyLiveness } = await import('../services/strategy-liveness.js')

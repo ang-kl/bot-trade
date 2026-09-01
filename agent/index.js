@@ -158,6 +158,22 @@ installProcessDiagnostics({
   version: APP_VERSION,
   commit: (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || '?').slice(0, 7),
 });
+
+// Real-time push on named log conditions (earned-floor admit, controller
+// stall, sidecar restart, error burst) → Telegram. In-process by design:
+// the owner's three external candidates (dashboard / GraphQL skill / Loki
+// drain stack) all added services or credentials to reach lines this
+// process already emits. Installed after diagnostics so crash logging is
+// never behind the wrap; notify goes through the gated sender so quiet
+// hours and the digest apply to these alerts like any other.
+import('./services/log-watch.js')
+  .then(({ installLogWatch }) => installLogWatch(db, {
+    notify: async (text) => {
+      const { sendMessage } = await import('./services/telegram.js')
+      return sendMessage(text, { plain: true })
+    },
+  }))
+  .catch((err) => console.warn('[boot] log-watch not installed (non-fatal):', err.message));
 startHeartbeatLog(() => ({
   loopCount: Number(getState(db, 'loop_count') || 0),
   lastLoopMs: Number(getState(db, 'last_loop_ms') || 0),
