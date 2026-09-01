@@ -307,6 +307,44 @@ test('without opt-out, the same position IS considered (sanity check the fixture
   assert.equal(out.checked, 1)
 })
 
+// ---------------------------------------------------------------------------
+// Managed-exit fence (owner "Go", 01-09-2026). On a managed account the
+// trail is the ONLY exit-timing rule (one-simple-system P4 marks the
+// keeper's knobs "replace") — measured 01-09: the first four earned-floor
+// cohort closes peaked +0.77R and exited at the keeper's chandelier for
+// losses where trail_0.5R would have banked +0.27R each.
+// ---------------------------------------------------------------------------
+
+function mkManagedKeeperDb({ managedOn = true } = {}) {
+  const db = initDB(':memory:')
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'fixed', armProfitUsd: 50, givebackPct: 40 }))
+  if (!managedOn) setState(db, 'managed_exit_json', JSON.stringify({ on: false }))
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('777', '1', 0, 1, 'active')`).run()
+  db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status, account_id) VALUES ('NATGAS', 'SELL', '9001', 'open', '777')`).run()
+  const tradeId = db.prepare(`SELECT id FROM trades WHERE ctrader_position_id = '9001'`).get().id
+  db.prepare(`
+    INSERT INTO monitored_positions
+      (symbol, side, entry_price, current_sl, status, source, trade_id, account_id)
+    VALUES ('NATGAS', 'short', 2.8795, 2.918, 'active', 'external', ?, '777')
+  `).run(tradeId)
+  return db
+}
+
+test('a position on a MANAGED account never reaches the keeper decision step', async () => {
+  const db = mkManagedKeeperDb({ managedOn: true }) // managed-exit defaults ON, demoOnly false
+  const out = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, keeperDeps())
+  assert.equal(out.managedSkipped, 1, 'the managed fence must count the skip')
+  assert.equal(out.checked, 0, 'the keeper must not evaluate a managed position')
+  assert.equal(out.slMoves, 0)
+})
+
+test('with managed-exit OFF the same position IS the keeper\'s to manage again', async () => {
+  const db = mkManagedKeeperDb({ managedOn: false })
+  const out = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, keeperDeps())
+  assert.equal(out.managedSkipped, 0)
+  assert.equal(out.checked, 1, 'flipping managed_exit_json off must restore the keeper (replaced, not deleted)')
+})
+
 test('on by default; explicit off still wins; config merges saved values', () => {
   const db = initDB(':memory:')
   assert.deepEqual(loadProfitKeeperConfig(db), DEFAULT_PROFIT_KEEPER)
