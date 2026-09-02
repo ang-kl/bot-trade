@@ -112,6 +112,14 @@ export const CONTROLLERS = {
   // no longer trust — the "silence is not health" shape this repo has now hit
   // four times. Loop-tied because it runs in the reconcile phase.
   pnl_reconcile: { label: 'P&L reconciliation', tiedToLoop: true, factor: 3 },
+  // The weekend LLM watch is a budgeted sub-phase, and runBudgetedSubPhase
+  // beats a sub-phase's name FAILED when it overruns its budget. This name
+  // was never registered, so that failed beat landed on a row the panel
+  // never rendered (blueprint audit, 02-09-2026 — the loss_guardian shape
+  // above, again). It only runs when closed-market positions exist and the
+  // LLM is available, so its expectation is a week rather than a cadence:
+  // absence is normal, a FAILED beat is the thing to see.
+  weekend_watch: { label: 'Weekend watch (LLM)', expectedSec: 7 * 86_400, factor: 2 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

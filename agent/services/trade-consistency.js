@@ -73,7 +73,11 @@ export function realisedRR(trade) {
   const move = priceMove(trade)
   if (move == null) return null
   const entry = num(trade?.entry_price)
-  const sl = num(trade?.sl_price)
+  // The stop the BROKER first held, when on record, is the risk that
+  // actually existed; sl_price is the proposal's stop, which the broker
+  // re-anchors to the fill (02-09-2026: up to 2R apart on day-one trades).
+  const brokerSl = num(trade?.broker_sl_initial)
+  const sl = Number.isFinite(brokerSl) && brokerSl > 0 ? brokerSl : num(trade?.sl_price)
   if (!Number.isFinite(sl)) return null
   const risk = Math.abs(entry - sl)
   if (!(risk > 0)) return null
@@ -137,7 +141,7 @@ export function checkTradeConsistency(trade, { epsilon = 1e-9 } = {}) {
 export function stampRealisedAudit(db, tradeId) {
   try {
     const row = db.prepare(
-      `SELECT side, entry_price, exit_price, sl_price, net_pnl FROM trades WHERE id = ?`
+      `SELECT side, entry_price, exit_price, sl_price, broker_sl_initial, net_pnl FROM trades WHERE id = ?`
     ).get(tradeId)
     if (!row) return null
     const rr = realisedRR(row)

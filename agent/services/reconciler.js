@@ -69,8 +69,8 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   const mpScope = scope('mp.account_id')
   const knownRows = db.prepare(
     `SELECT mp.id, mp.symbol, mp.source, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
-            mp.broker_volume_units, mp.broker_sl, mp.broker_tp, mp.trade_id,
-            t.ctrader_position_id, t.volume AS tradeVolume
+            mp.broker_volume_units, mp.broker_sl, mp.broker_tp, mp.trade_id, mp.be_moved,
+            t.ctrader_position_id, t.volume AS tradeVolume, t.broker_sl_initial
      FROM monitored_positions mp
      LEFT JOIN trades t ON t.id = mp.trade_id
      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL ${mpScope.sql}`
@@ -246,6 +246,17 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
         bVol, bSl, bTp,
         row.id,
       )
+
+      // THE STOP AS THE BROKER FIRST HELD IT (02-09-2026). sl_price is the
+      // proposal's stop; the broker re-anchors to the fill, so the stop that
+      // actually existed differed on 5 of 5 day-one trades and realised R
+      // read up to 2R off. Stamped ONCE, and only before any break-even move
+      // — a trailed stop is not the risk taken at entry.
+      if (row.trade_id && row.broker_sl_initial == null && Number(bSl) > 0 && !row.be_moved) {
+        try {
+          db.prepare(`UPDATE trades SET broker_sl_initial = ? WHERE id = ? AND broker_sl_initial IS NULL`).run(Number(bSl), row.trade_id)
+        } catch { /* a forensics column must never fail the reconcile */ }
+      }
 
       // SELF-HEAL the legacy units-in-lots-column bug: earlier adoptions wrote
       // broker UNITS into trades.volume (a lots column), so the aggregate margin
@@ -657,8 +668,11 @@ export function decodeRawBrokerOrder(o) {
  * generic sentence, which is now an honest residual instead of a catch-all.
  */
 export function reclassifyBrokerCloses(db) {
+  // The stop the broker actually held wins over the proposal's stop when it
+  // is on record (02-09-2026) — the reclassifier judges against the level
+  // that could have filled, not the one that was asked for.
   const rows = db.prepare(
-    `SELECT id, side, exit_price, sl_price, tp_price FROM trades
+    `SELECT id, side, exit_price, COALESCE(broker_sl_initial, sl_price) AS sl_price, tp_price FROM trades
      WHERE status = 'closed' AND exit_price IS NOT NULL
        AND (
          close_reason LIKE 'closed at the broker%'

@@ -1004,3 +1004,36 @@ test('repairMisfiledOwnPositions upgrades PRE rows stuck as external and leaves 
   assert.equal(db.prepare(`SELECT source FROM monitored_positions WHERE symbol='CCC'`).get().source, 'external', 'no label, no claim')
   assert.equal(repairMisfiledOwnPositions(db), 0, 'idempotent — a second pass finds nothing')
 })
+
+test('the first broker stop observed is stamped on the trade once, and never after a break-even move (02-09-2026)', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = seedKnownPosition(db, { symbol: 'XAUUSD', positionId: '42' })
+  // First pass: the broker holds the stop re-anchored to the fill (98.7, not our 99).
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', stopLoss: 98.7, takeProfit: 110 })], [], setState)
+  const sl = () => db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(tradeId).broker_sl_initial
+  assert.equal(sl(), 98.7)
+  // The stop trails; the initial record does not follow it.
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', stopLoss: 100.5, takeProfit: 110 })], [], setState)
+  assert.equal(sl(), 98.7)
+
+  // A position whose break-even already moved before the first pass gets NO
+  // initial stop — a trailed stop is not the risk taken at entry.
+  const t2 = seedKnownPosition(db, { symbol: 'EURUSD', positionId: '43' })
+  db.prepare('UPDATE monitored_positions SET be_moved = 1 WHERE trade_id = ?').run(t2)
+  reconcilePositions(db, [
+    makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', stopLoss: 100.5 }),
+    makeBrokerPosition({ positionId: '43', symbolName: 'EURUSD', stopLoss: 100.2 }),
+  ], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(t2).broker_sl_initial, null)
+})
+
+test('reclassifyBrokerCloses judges against the broker stop when it is on record', () => {
+  const db = mkDb()
+  // Proposal stop 29172.77 — an exit at 29253.1 is "beyond the SL" against
+  // it, but the broker's stop was 29253.3: an ordinary stop fill.
+  db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, exit_price, sl_price, broker_sl_initial, tp_price, close_reason)
+    VALUES ('NAS100','SELL','closed', 29135.8, 29253.1, 29172.77142857143, 29253.3, 28000, 'closed at the broker (manual close or broker-side SL/TP fill)')`).run()
+  assert.equal(reclassifyBrokerCloses(db), 1)
+  assert.match(db.prepare('SELECT close_reason FROM trades').get().close_reason, /^stop loss hit/)
+})

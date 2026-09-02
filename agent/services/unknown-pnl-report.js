@@ -62,7 +62,14 @@ export function unknownPnlReport(db, {
   exhaustedAccounts = [],
   nowMs = null,
 } = {}) {
-  const clock = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now()
+  // `Number(null)` is 0 and `Number.isFinite(0)` is true, so the default
+  // `nowMs = null` used to resolve to the epoch: the "day" became
+  // 1969-12-31 22:00 → 23:45, no row could ever fall inside it, and the route
+  // answered "nothing is blocking — the daily-loss total is complete"
+  // unconditionally (consistency audit, 02-09-2026). The same trap is
+  // documented at trade-consistency.js's `num` and loss-postmortem.js:192;
+  // it was guarded there and missed here.
+  const clock = nowMs != null && nowMs !== '' && Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now()
   const grace = Number.isFinite(Number(graceMin)) && Number(graceMin) >= 0 ? Number(graceMin) : DEFAULT_UNKNOWN_PNL_GRACE_MIN
   const enabled = new Set((enabledAccounts || []).map(String))
   const exhausted = new Set((exhaustedAccounts || []).map(String))

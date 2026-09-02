@@ -337,11 +337,27 @@ export function reconcileTradePricesToBroker(db) {
   }
 
   const read = db.prepare(
-    `SELECT id, entry_price, exit_price, status FROM trades WHERE id = ?`,
+    `SELECT id, side, entry_price, exit_price, status, slippage_price, proposal_entry_price FROM trades WHERE id = ?`,
   )
   const write = db.prepare(
     `UPDATE trades SET entry_price = ?, exit_price = ? WHERE id = ?`,
   )
+  // SLIPPAGE, AFTER THE FACT (02-09-2026). The dispatch stamps slippage only
+  // when the ACK carries an executionPrice, which the sidecar rarely returns
+  // — NULL on 100 of 100 rows — while the intended entry now survives in
+  // proposal_entry_price and the true fill arrives here. Signed
+  // adverse-positive, the dispatch's own convention. Fills only a NULL.
+  const writeSlip = db.prepare(
+    `UPDATE trades SET slippage_price = ? WHERE id = ? AND slippage_price IS NULL`,
+  )
+  const slipOf = (t, fill) => {
+    const p = Number(t.proposal_entry_price)
+    if (!(usablePrice(p) && usablePrice(fill))) return null
+    const side = String(t.side || '').toUpperCase()
+    if (side !== 'BUY' && side !== 'SELL') return null
+    return side === 'BUY' ? fill - p : p - fill
+  }
+  out.slippageFilled = 0
 
   const run = db.transaction(() => {
     for (const [tid, group] of byTrade) {
@@ -355,6 +371,13 @@ export function reconcileTradePricesToBroker(db) {
       // a NULL from a narrower import window must never blank a real fill.
       const entry = usablePrice(d.entry_price) ? d.entry_price : t.entry_price
       const exit = usablePrice(d.close_price) ? d.close_price : t.exit_price
+      // Slippage is computable whenever the broker's fill is known, whether
+      // or not the prices themselves need correcting — a row corrected before
+      // this existed still gains its number.
+      if (t.slippage_price == null && usablePrice(d.entry_price)) {
+        const s = slipOf(t, d.entry_price)
+        if (s != null) { writeSlip.run(s, tid); out.slippageFilled++ }
+      }
       const same = (a, b) =>
         (a == null && b == null) ||
         (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= Math.max(1e-9, Math.abs(a) * 1e-6))

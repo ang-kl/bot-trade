@@ -108,7 +108,7 @@ test('a clean ledger reads as zero unresolved, not as an error', () => {
   const db = initDB(':memory:')
   closed(db, { pnl: 12 })
   assert.deepEqual(pnlReconciliationState(db), {
-    unresolved: 0, oldestClosedAt: null, maxAttempts: 0, neverTried: 0,
+    unresolved: 0, oldestClosedAt: null, maxAttempts: 0, neverTried: 0, neverTriedOverdue: 0,
   })
 })
 
