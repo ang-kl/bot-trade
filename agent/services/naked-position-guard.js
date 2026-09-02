@@ -455,7 +455,12 @@ function mergeAccountAudits(db, { nowMs = Date.now(), expectedSec = 900, staleFa
     try { const v = JSON.parse(r.value || '{}'); if (v && typeof v === 'object') parsed.push(v) } catch { /* skip junk */ }
   }
   if (!parsed.length) return {}
-  const ran = parsed.filter(p => p.ok === true && p.at)
+  // The GLOBAL key's success record predates per-account records (M2);
+  // once any account has its own, the global one is a fossil — it would
+  // otherwise be listed as a stale account called "?" for ever. It still
+  // carries failures (the loop writes them there), which are judged below.
+  const perAccount = parsed.filter(p => p.ok === true && p.at && p.accountId != null)
+  const ran = perAccount.length ? perAccount : parsed.filter(p => p.ok === true && p.at)
   if (!ran.length) {
     // Nothing has completed anywhere — surface the most recent failure so the
     // reason is visible rather than a bare "never run".
