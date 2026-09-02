@@ -396,3 +396,24 @@ test('judgeTradesAgainstDeals rejects only in-flight rows, reports an unmatched 
   assert.equal(row(3).status, 'open', 'a missing deal is a gap in the fetch, not proof of no position')
   assert.equal(out.details.find(d => d.id === 3).result, 'unmatched_open')
 })
+
+test('reconcileTradePricesToBroker fills slippage from the proposal and the broker fill, adverse-positive, NULL only', () => {
+  const db = initDB(':memory:')
+  const ins = (id, side, proposal, entry, slip) => db.prepare(
+    `INSERT INTO trades (id, symbol, side, entry_price, exit_price, status, proposal_entry_price, slippage_price)
+     VALUES (?, 'NATGAS', ?, ?, 2.919, 'closed', ?, ?)`,
+  ).run(id, side, entry, proposal, slip)
+  ins(1, 'BUY', 2.927, 2.933, null)   // already corrected before this existed — prices unchanged, slippage still fills
+  ins(2, 'SELL', 2.927, null, null)   // entry NULL, proposal present
+  ins(3, 'BUY', 2.927, 2.933, 0.001)  // stamped at dispatch — never overwritten
+  ins(4, 'BUY', null, 2.933, null)    // no proposal on record (pre-column row) — stays NULL
+  for (const [id, entry] of [[1, 2.933], [2, 2.920], [3, 2.933], [4, 2.933]]) deal(db, { dealId: 100 + id, tid: id, entry, close: 2.919 })
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.slippageFilled, 2)
+  const slip = (id) => db.prepare('SELECT slippage_price FROM trades WHERE id = ?').get(id).slippage_price
+  assert.equal(Math.round(slip(1) * 1e6) / 1e6, 0.006, 'BUY filled above the proposal — adverse, positive')
+  assert.equal(Math.round(slip(2) * 1e6) / 1e6, 0.007, 'SELL filled below the proposal — adverse, positive')
+  assert.equal(slip(3), 0.001)
+  assert.equal(slip(4), null)
+  assert.equal(reconcileTradePricesToBroker(db).slippageFilled, 0, 'idempotent')
+})

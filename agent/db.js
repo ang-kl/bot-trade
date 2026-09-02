@@ -1176,6 +1176,22 @@ export function initDB(dbPath) {
     // derives each symbol's money-per-point from the trades themselves and
     // needs no contract table to do it.
     if (!cols.has('exit_price_suspect')) db.exec(`ALTER TABLE trades ADD COLUMN exit_price_suspect INTEGER`);
+    // 02-09-2026 (predict-vs-actual audit). Two facts the ledger threw away:
+    //
+    // `proposal_entry_price` — the price the signal INTENDED. entry_price
+    // held it only until the broker fill was reconciled over it, so once
+    // the fill arrived the proposal was gone and `slippage_price` — which
+    // keys off an executionPrice the sidecar rarely returns — stayed NULL on
+    // 100 of 100 rows although the two numbers it needs both existed at
+    // different times. Kept, so slippage is computable after the fact.
+    //
+    // `broker_sl_initial` — the stop as the BROKER first held it. sl_price is
+    // the proposal's stop; the broker re-anchors the stop to the fill, so on
+    // 5 of 5 day-one trades the stop that actually existed differed from the
+    // stored one and realised R read up to 2R off. Stamped once from the
+    // fill ACK or the first reconcile pass before any break-even move.
+    if (!cols.has('proposal_entry_price')) db.exec(`ALTER TABLE trades ADD COLUMN proposal_entry_price REAL`);
+    if (!cols.has('broker_sl_initial')) db.exec(`ALTER TABLE trades ADD COLUMN broker_sl_initial REAL`);
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_trades_risk_event ON trades(risk_event_id);
            CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);`);

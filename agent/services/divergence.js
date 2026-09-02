@@ -120,7 +120,8 @@ export function divergenceReport(db, opts = {}) {
     ).all(cutoff)
     trades = db.prepare(
       `SELECT t.id, t.symbol, t.side, t.opened_at, t.closed_at, t.net_pnl, t.realised_rr,
-              t.entry_price, t.exit_price, t.sl_price, t.slippage_price, t.spread_at_entry,
+              t.entry_price, t.exit_price, COALESCE(t.broker_sl_initial, t.sl_price) AS sl_price,
+              t.slippage_price, t.spread_at_entry,
               t.label_timeframe, t.pnl_price_mismatch, t.exit_price_suspect, t.account_id,
               ${strategyAttrSql('t.label_strategy', 't.strategy')} AS strat,
               (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk

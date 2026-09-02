@@ -636,15 +636,22 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // process dies between these two statements. A stranded 'submitting' row
     // is itself a finding — the reconciler resolves it against broker truth,
     // and the post-decision auditor counts it.
+    // proposal_entry_price and analysis_id (02-09-2026): the intended entry
+    // survives the fill being reconciled over entry_price, so slippage can be
+    // computed later; and the analysis row that produced this order is
+    // linked, so a scan bias can be scored against its outcome — 3,935
+    // auto-trade predictions in 25 h had no outcome link before this.
     const intentId = db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
                           opened_at, status, strategy, account_id, source, risk_event_id,
-                          origin, origin_source)
+                          origin, origin_source, proposal_entry_price, analysis_id)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade', ?,
-              'bot_market_dispatch', 'write')
+              'bot_market_dispatch', 'write', ?, ?)
     `).run(
       symbol, side, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
       volLots, synth.strategy || null, String(accountId), riskEventId ?? null,
+      Number.isFinite(Number(synth.entry)) ? Number(synth.entry) : null,
+      Number.isFinite(Number(synth.analysisId)) ? Number(synth.analysisId) : null,
     ).lastInsertRowid
 
     // §70.8: stamp the moment the order LEAVES, so verdict -> submit is
@@ -770,7 +777,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           label_raw = ?, source = ?, label_version = ?, label_strategy = ?,
           label_conviction = ?, label_session = ?, label_timeframe = ?,
           label_regime = ?, confluence_count = ?, account_id = ?,
-          slippage_price = ?, spread_at_entry = ?, entry_latency_ms = ?
+          slippage_price = ?, spread_at_entry = ?, entry_latency_ms = ?,
+          broker_sl_initial = COALESCE(?, broker_sl_initial)
         WHERE id = ?
       `).run(
         entryP, slP, synth.tp1 ?? null, volLots,
@@ -781,6 +789,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         synth.confluenceCount ?? null,
         String(accountId),
         slippagePrice, entrySpread, entryLatencyMs,
+        // The stop as the broker holds it at the fill, when the ACK carries
+        // it; otherwise the reconciler stamps the first stop it observes.
+        Number(exec?.position?.stopLoss) > 0 ? Number(exec.position.stopLoss) : null,
         intentId,
       )
       const tradeId = intentId
@@ -913,7 +924,7 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
   const scanId = latestScan ? latestScan.id : null
 
   const synth = result.synthesis || {}
-  s.insertAnalysis.run({
+  const analysisIns = s.insertAnalysis.run({
     symbol: result.symbol,
     consensus_bias: synth.consensus_bias || null,
     overall_conviction: synth.overall_conviction ?? null,
@@ -932,6 +943,9 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     analyzed_at: new Date().toISOString(),
     scan_id: scanId,
   })
+  // Carried on the synthesis so the dispatch can link the trade row to the
+  // prediction that produced it (trades.analysis_id, 02-09-2026).
+  try { synth.analysisId = Number(analysisIns?.lastInsertRowid) || null } catch { /* provenance never blocks */ }
 
   log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10) rr=${synth.risk_note || ''}`)
 

@@ -318,3 +318,18 @@ test('the two HTTP money/price writers go through the shared stamp too (codebase
   assert.match(index, /restampClosedTrades\(db\)/, 'the one-shot re-stamp must run at boot')
   assert.match(index, /trade_audit_restamp_version/, 'and be version-keyed')
 })
+
+test('realised R uses the stop the BROKER first held when it is on record (02-09-2026)', () => {
+  // NAS100 1h day-one trade: proposal stop 29172.77, broker re-anchored to
+  // the fill at 29253.3, exit 29253.1 — a −1.0R stop-out that read as −3.17R
+  // against the proposal's stop.
+  const t = { side: 'SELL', entry_price: 29135.8, exit_price: 29253.1, sl_price: 29172.77142857143, broker_sl_initial: 29253.3 }
+  assert.equal(Math.round(realisedRR(t) * 100) / 100, -1)
+  assert.equal(Math.round(realisedRR({ ...t, broker_sl_initial: null }) * 100) / 100, -3.17, 'without the broker stop, the proposal stop still applies')
+  assert.equal(realisedRR({ ...t, broker_sl_initial: 0 }), realisedRR({ ...t, broker_sl_initial: null }), 'zero is "no answer", not a stop at zero')
+  // And the stamp reads the column.
+  const db = initDB(':memory:')
+  const id = closed(db, { symbol: 'NAS100', side: 'SELL', entry: 29135.8, exit: 29253.1, sl: 29172.77142857143, net: -445.74 })
+  db.prepare(`UPDATE trades SET broker_sl_initial = 29253.3 WHERE id = ?`).run(id)
+  assert.equal(Math.round(stampRealisedAudit(db, id).realisedRR * 100) / 100, -1)
+})
