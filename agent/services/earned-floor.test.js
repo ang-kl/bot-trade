@@ -10,7 +10,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { loadEarnedFloor, earnedFloorVerdict, earnedFloorReport, EARNED_FLOOR_DEFAULTS, EARNED_FLOOR_RR_BAND } from './earned-floor.js'
-import { evaluateTrade, HARD_MIN_RR } from './risk.js'
+import { evaluateTrade, HARD_MIN_RR, persistRiskEvent } from './risk.js'
 
 const DEMO = '111'
 const LIVE = '222'
@@ -354,4 +354,82 @@ test('prior report: reads the sweep\'s per-strategy aggregate first — the verd
   assert.equal(p.source, 'autopilot_strategy_prior_json')
   assert.deepEqual(p.strategies.rsi2_reversion.backtest, { winRatePct: 60, trades: 47500, combos: 1900 })
   assert.equal(p.strategies.rsi2_reversion.pooled.shrunkWinRatePct, 60)
+})
+
+// ---------------------------------------------------------------------------
+// THE PRIOR AS AN ACTUATOR (owner order 02-09-2026 18:50 SGT: "let the prior
+// admit on demo at half risk"). Thin live sample + sweep prior → admitted on
+// a demo account at half risk, stamped via:'prior'. Never on live, never over
+// a measured sample, never without a prior.
+// ---------------------------------------------------------------------------
+const PRIOR_60 = JSON.stringify({ rsi2_reversion: { winRatePct: 60, trades: 2690, combos: 72 } })
+
+test('prior admit: 7 live closes at 29% shrunk toward a 60% backtest reads 52%, +0.56R at 2R → admitted on demo at half risk', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'autopilot_strategy_prior_json', PRIOR_60)
+  seedRecord(db, 'rsi2_reversion', 7, 28.6)
+  const v = earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO })
+  assert.equal(v.ok, true)
+  assert.equal(v.via, 'prior')
+  assert.equal(v.winRate, 52)
+  assert.equal(v.trades, 7)
+  assert.equal(v.e, 0.559)
+  assert.equal(v.riskScale, 0.5, 'half risk, whatever riskScale the measured path uses')
+  assert.deepEqual(v.prior, { winRatePct: 60, trades: 2690, k: 20, liveWinRatePct: 29, liveTrades: 7 })
+  // No live record at all: the prior alone.
+  const bare = earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO2 })
+  assert.equal(bare.ok, true); assert.equal(bare.winRate, 60); assert.equal(bare.trades, 0)
+  // riskScale never exceeds the measured path's own scale.
+  setState(db, 'earned_floor_json', JSON.stringify({ riskScale: 0.25, demoOnly: false }))
+  assert.equal(earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO }).riskScale, 0.25)
+})
+
+test('prior admit: never on a live account (even with demoOnly off), never without a prior, never over a measured sample, switchable off', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'autopilot_strategy_prior_json', PRIOR_60)
+  setState(db, 'earned_floor_json', JSON.stringify({ demoOnly: false, riskScale: 1 }))
+  seedRecord(db, 'rsi2_reversion', 7, 28.6, { accountId: LIVE })
+  const live = earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: LIVE })
+  assert.equal(live.ok, false)
+  assert.match(live.reason, /^thin_sample 7</, 'live stays on the measured path')
+  const noPrior = earnedFloorVerdict(db, { strategy: 'donchian_breakout', rr: 2, accountId: DEMO })
+  assert.match(noPrior.reason, /^thin_sample/)
+  // A measured sample at minSample is judged as before — the prior does not override it.
+  seedRecord(db, 'rsi2_reversion', 15, 20)
+  const measured = earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO })
+  assert.equal(measured.ok, false)
+  assert.match(measured.reason, /^expectancy .* at measured 20%/)
+  assert.equal(measured.via, undefined)
+  // Switch.
+  setState(db, 'earned_floor_json', JSON.stringify({ priorAdmit: false }))
+  assert.match(earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO2 }).reason, /^thin_sample/)
+})
+
+test('prior admit: a weak backtest is refused with the prior figures in the reason', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ donchian_breakout: { winRatePct: 24.4, trades: 2556, combos: 144 } }))
+  seedRecord(db, 'donchian_breakout', 8, 25)
+  const v = earnedFloorVerdict(db, { strategy: 'donchian_breakout', rr: 2, accountId: DEMO })
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /^prior expectancy -0\.26\dR at shrunk 24\.\d% \(8 live closes toward backtest 24\.4%\)/)
+  assert.equal(v.via, 'prior')
+})
+
+test('gate: a prior admit approves a sub-3R demo proposal at half risk and stamps via:prior; the report splits it out', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ vwap_trend: { winRatePct: 60, trades: 5855, combos: 144 } }))
+  armBalance(db, DEMO, 10_000)
+  armBalance(db, LIVE, 10_000)
+  const demo = evaluateTrade(db, lowRrProposal(DEMO))
+  persistRiskEvent(db, lowRrProposal(DEMO), demo) // the gate's caller persists; the report reads the ledger
+  assert.equal(demo.approved, true, demo.veto_reason)
+  assert.equal(demo.checks.earned_floor.via, 'prior')
+  assert.equal(demo.checks.earned_floor.riskScale, 0.5)
+  assert.equal(demo.checks.earned_floor.prior.winRatePct, 60)
+  const live = evaluateTrade(db, lowRrProposal(LIVE))
+  assert.equal(live.approved, false)
+  assert.match(live.checks.earned_floor_denied, /live_scope|thin_sample/)
+  const rep = earnedFloorReport(db)
+  assert.equal(rep.viaPrior.admittedApprovals, 1)
+  assert.equal(rep.admittedApprovals, 1, 'prior admits are part of the pre-registered cohort')
 })
