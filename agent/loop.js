@@ -522,23 +522,42 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // distance, the R:R this signal was approved on no longer exists (rollover /
   // off-hours spread blowouts). Best-effort — a failed quote fails OPEN.
   let entrySpread = null // forensics: captured by the spread gate when it runs
-  if (slDistance && riskCfg.maxSpreadFracOfSL > 0) {
+  const driftGateOn = slDistance && Number(riskCfg.maxEntryDriftFracOfSL) > 0
+  if (slDistance && (riskCfg.maxSpreadFracOfSL > 0 || driftGateOn)) {
     try {
       const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
       const q = await wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId)
       if (q) {
         const spread = q.ask - q.bid
         entrySpread = spread
-        if (spread > riskCfg.maxSpreadFracOfSL * slDistance) {
+        if (riskCfg.maxSpreadFracOfSL > 0 && spread > riskCfg.maxSpreadFracOfSL * slDistance) {
           const reason = `spread_too_wide: ${spread.toFixed(5)} > ${(riskCfg.maxSpreadFracOfSL * 100).toFixed(0)}% of SL distance ${slDistance.toFixed(5)}`
           persistPostApprovalVeto(db, proposal, reason)
           log(`RISK VETO ${symbol} ${side}: ${reason}`)
           await alertVetoOnce(db, symbol, side, reason, `spread too wide (${spread.toFixed(5)} vs SL ${slDistance.toFixed(5)}). Likely off-hours/rollover — the signal stays; it can fire next loop when the spread normalises.`)
           return null
         }
+        // ENTRY-DRIFT GATE (owner "do both", 03-09-2026). The proposal was
+        // approved at ITS entry; a market order fills at the live quote. When
+        // the quote has already moved past the entry by more than
+        // maxEntryDriftFracOfSL of the stop distance, the trade that would
+        // fill is not the trade the gate approved (NATGAS rsi2, 02-09: 0.64R
+        // of drift turned a 1.2R plan into a 0.34R trade). The signal is not
+        // lost — it can fire next loop if price comes back.
+        if (driftGateOn) {
+          const { entryDrift, entryDriftVeto } = await import('./lib/fill-anchor.js')
+          const drift = entryDrift({ side, proposalEntry: synth.entry, quote: q, slDistance })
+          const reason = entryDriftVeto(riskCfg, drift, { symbolDigits })
+          if (reason) {
+            persistPostApprovalVeto(db, proposal, reason)
+            log(`RISK VETO ${symbol} ${side}: ${reason}`)
+            await alertVetoOnce(db, symbol, side, reason, `price ran ${(drift.fracOfSL * 100).toFixed(0)}% of the stop distance past the proposal entry before dispatch — the approved R:R no longer exists at this price. The signal stays; it can fire next loop if price comes back.`)
+            return null
+          }
+        }
       }
     } catch (e) {
-      log(`Spread gate skipped (fail-open): ${e.message}`)
+      log(`Spread/drift gate skipped (fail-open): ${e.message}`)
     }
   }
 
@@ -737,7 +756,18 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // costs a null column instead of an untracked live position.
     let rvolOpen = null, vwapSideOpen = null
     let depthJson = null, depthImb = null
-    const slP = synth.sl ?? null
+    // THE BRACKET THE TRADE ACTUALLY HAS (owner "do both", 03-09-2026). The
+    // order carried the stop and target as DISTANCES, so the broker anchored
+    // them to the fill; the ledger used to keep the proposal's absolute
+    // prices, and every later re-assert pushed the proposal-anchored target
+    // back onto the fill-anchored position (NATGAS rsi2: 1.2R plan, 0.34R
+    // trade). Stored here as the planned distances from the fill — the
+    // geometry the gate admitted, at the price the trade exists at. With no
+    // confirmed fill the proposal's prices stand, as before.
+    const { anchorBracketToFill } = await import('./lib/fill-anchor.js')
+    const anchored = anchorBracketToFill({ side, proposalEntry: synth.entry, fill: executionPrice, sl: synth.sl, tp1: synth.tp1, tp2: synth.tp2 })
+    const slP = anchored.sl ?? null
+    const tpP = anchored.tp1 ?? null
     const initialRisk = (entryP && slP) ? Math.abs(entryP - slP) : null
 
     let timeCap = null
@@ -783,7 +813,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           broker_sl_initial = COALESCE(?, broker_sl_initial)
         WHERE id = ?
       `).run(
-        entryP, slP, synth.tp1 ?? null, volLots,
+        entryP, slP, tpP, volLots,
         positionId, synth.strategy || null, synth.overall_conviction ?? null,
         parsedLabel.raw, parsedLabel.source, parsedLabel.version,
         parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
@@ -807,7 +837,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         side === 'BUY' ? 'long' : 'short',
         entryP,
         slP,
-        synth.tp1 ?? null,
+        tpP,
         synth.synthesis || '',
         initialRisk,
         synth.invalidation_trigger || null,
@@ -822,7 +852,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     })
 
     const tradeId = persistTrade()
-    log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId} tradeId=${tradeId}`)
+    log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId} tradeId=${tradeId}${anchored.anchored ? ` bracket anchored to fill (shift ${anchored.shift >= 0 ? '+' : ''}${Number(anchored.shift).toFixed(symbolDigits)}, sl ${slP} tp ${tpP})` : ''}`)
 
     // (c) Collect-forward analytics, AFTER the position is fully recorded.
     // Every failure here leaves a NULL column and nothing else — the trade is
