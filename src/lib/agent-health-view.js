@@ -129,9 +129,34 @@ export function loopReading(health, nowMs = Date.now()) {
   return { state: 'ok', text: `Cycle ${health.loopCount ?? '—'} · phase "${phase}".` }
 }
 
+/**
+ * The roster invariant, read rather than assumed. /state/heartbeats reports
+ * every account whose capabilities claim MANAGE while no amend or close can
+ * reach it (accounts.enabled = 0 with a non-archived mode). The backend has
+ * emitted this since the 14-08 repair-to-report change; until 02-09-2026
+ * nothing in the UI read it, so a broken account rendered exactly like a
+ * healthy one — this repo's recurring shape (CLAUDE.md failure mode #3).
+ *
+ * `unknown` when the field is absent (older agent, or the heartbeats fetch
+ * failed): absence of the reading is not evidence of health.
+ */
+export function rosterReading(rosterInvariant) {
+  if (!Array.isArray(rosterInvariant)) {
+    return { state: 'unknown', rows: [], text: 'Roster invariant not reported — cannot confirm every managed account is reachable.' }
+  }
+  if (rosterInvariant.length === 0) return { state: 'ok', rows: [], text: 'Roster invariant holds: every account claiming MANAGE is reachable.' }
+  const names = rosterInvariant.map(r => `${r.accountId}${r.isLive ? ' (LIVE)' : ''}${r.mode ? ` · ${r.mode}` : ''}`)
+  return {
+    state: 'error',
+    rows: rosterInvariant,
+    text: `ROSTER INVARIANT BROKEN: ${rosterInvariant.length} account${rosterInvariant.length === 1 ? '' : 's'} claim${rosterInvariant.length === 1 ? 's' : ''} MANAGE but no amend or close can reach ${rosterInvariant.length === 1 ? 'it' : 'them'} — ${names.join(', ')}. Something wrote accounts.enabled = 0 directly; re-enable on Connect.`,
+  }
+}
+
 /** Copy-to-clipboard form. */
-export function toText({ health, controllers, deploy, loop, atr }) {
+export function toText({ health, controllers, deploy, loop, atr, roster }) {
   const ctl = controllerReading(controllers)
+  const ros = roster || rosterReading(undefined)
   return [
     'Agent health',
     `deploy: ${deploy.state} — ${deploy.text}`,
@@ -139,6 +164,7 @@ export function toText({ health, controllers, deploy, loop, atr }) {
     `uptime ${health?.uptime != null ? dur(health.uptime) : '—'} · last cycle ${health?.lastLoopMs ? `${Math.round(health.lastLoopMs / 1000)}s` : '—'}`,
     `controllers: ${ctl.total} total — ${Object.entries(ctl.counts).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`,
     ...ctl.bad.map(c => `    ${c.status}: ${c.label || c.name} · last run ${c.age_sec != null ? dur(c.age_sec) : '—'} ago, expected every ${dur(c.expected_sec)}${c.last_error ? (c.error_is_current === false ? ` · last error (resolved): ${c.last_error}` : ` · ${c.last_error}`) : ''}`),
+    `roster: ${ros.state} — ${ros.text}`,
     atr ? `atr refresh: ${JSON.stringify(atr)}` : 'atr refresh: no record',
     health?.errorsToday ? `errors today: ${health.errorsToday}` : 'errors today: 0',
     health?.lastError ? `last error: ${health.lastError}` : '',

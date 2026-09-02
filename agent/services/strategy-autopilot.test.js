@@ -3,6 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { decideChanges, isBusyWindow, applyChanges, evaluateAll, loadArmBar } from './strategy-autopilot.js'
 import { initDB, getState, setState } from '../db.js'
 import { explainVerdict, equitySvg, renderAutopilotReport } from '../lib/autopilot-report.js'
@@ -391,4 +392,15 @@ test('boot reconcile squares combo_arms with the live matrices: stale rows close
   recordComboArms(db2, { arm: [{ kind: 'matrix', strategy: 'x', symbol: 'A', timeframe: '1h' }], disarm: [] }, {})
   assert.equal(reconcileComboArmsWithMatrix(db2).auto.skipped, 'no matrix on record')
   assert.equal(db2.prepare('SELECT disarmed_at FROM combo_arms').get().disarmed_at, null)
+})
+
+test('wiring: /state/config emits the autopilot dials the action enforces (UI audit 02-09-2026)', () => {
+  // The Tune page reads config.autopilot to describe the bar/cap/allowLive;
+  // a route that stopped emitting it would silently return the copy to
+  // "not reported". Comments stripped so the pin cannot pass on prose.
+  const src = readFileSync(new URL('../routes/state.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+  assert.match(src, /autopilot: \{\s*arm_bar: loadArmBar\(db\),\s*max_changes: Number\(getState\(db, 'autopilot_max_changes'\)\) \|\| 4,\s*allow_live: getState\(db, 'autopilot_allow_live'\) === 'true',\s*\}/)
+  const tune = readFileSync(new URL('../../src/pages/Tune.jsx', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\{\/\*[\s\S]*?\*\/\}/g, '')
+  assert.match(tune, /config\?\.autopilot\?\.arm_bar/)
+  assert.doesNotMatch(tune, /arms GO combos|never on LIVE accounts|4-change cap/, 'the stale gate description must be gone')
 })

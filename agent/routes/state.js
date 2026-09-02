@@ -26,6 +26,7 @@ import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { loadPulse, pulseFor, PULSE_STATES } from '../services/market-pulse.js'
 import { assetControllersView } from '../services/asset-controllers.js'
+import { loadArmBar } from '../services/strategy-autopilot.js'
 import { stageMatrixView, loadStageMatrix, stageOverlayKeys, accountStageTallies } from '../services/stage-matrix.js'
 // Aliased: this handler already has a local `overlayKeys` for the RISK
 // overlay, and the shadow made the call below resolve to that array.
@@ -2836,6 +2837,15 @@ export default function stateRouter(db) {
       loop_interval_min: Number(getState(db, 'loop_interval_min')) || 5,
       autopilot_mode: (() => { const m = getState(db, 'autopilot_mode'); return m === 'auto' || m === 'suggest' ? m : 'off' })(),
       autopilot_last_run_ms: Number(getState(db, 'autopilot_last_run_ms')) || null,
+      // The dials POST /actions/autopilot accepts, read back from the same
+      // stored keys it writes (UI audit 02-09-2026: the page described a
+      // "4-change cap, never on LIVE" it could not see, while the bar the
+      // owner set in #804 had no reader outside the action's own reply).
+      autopilot: {
+        arm_bar: loadArmBar(db),
+        max_changes: Number(getState(db, 'autopilot_max_changes')) || 4,
+        allow_live: getState(db, 'autopilot_allow_live') === 'true',
+      },
       selected_account_id: getState(db, 'ctrader_account_id') || null,
       analyze_enabled: getState(db, 'analyze_enabled') !== 'false',
       autotrade_enabled: getState(db, 'autotrade_enabled') === 'true',

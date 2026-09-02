@@ -317,8 +317,16 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
           No accounts in the registry yet — pick them on Connect first.
         </div>
       )}
-      <AccountTrafficLights>{({ byId, alarms, globalHalt, globalHaltReason }) => (
+      <AccountTrafficLights>{({ byId, alarms, globalHalt, globalHaltReason, fetchError }) => (
       <>
+      {/* The lights could not be read. Said out loud, because the alternative
+          — rows with no dots and no banner — is indistinguishable from every
+          account being fine. */}
+      {fetchError && (
+        <div className="text-(length:--fs-body) text-[var(--color-warning-text)] border border-[var(--color-warning-border)] rounded-[6px] px-1.5 py-1 mb-1">
+          Traffic lights not verifiable — the lights route failed ({fetchError}). The rows below carry no reading; an unmanaged-exposure alarm would NOT show here until it recovers.
+        </div>
+      )}
       {/* A4. A red Manage light is not a status — it means open exposure with
           nothing watching it, which the API refuses to create. If it shows up,
           something wrote accounts.mode directly, and a small dot is not

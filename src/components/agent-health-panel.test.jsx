@@ -252,3 +252,46 @@ describe('components', () => {
     expect(renderToStaticMarkup(<Line state="error">boom</Line>)).toContain('boom')
   })
 })
+
+// ---------------------------------------------------------------------------
+// 02-09-2026 (UI audit). /state/heartbeats has reported the roster invariant
+// since the 14-08 repair-to-report change and nothing read it: an account
+// claiming MANAGE that no amend or close can reach rendered exactly like a
+// healthy one. The reading exists now, and absence is not health.
+// ---------------------------------------------------------------------------
+import { rosterReading } from '../lib/agent-health-view.js'
+
+describe('rosterReading', () => {
+  it('is ok only on an EMPTY list — empty is the healthy answer', () => {
+    const r = rosterReading([])
+    expect(r.state).toBe('ok')
+    expect(r.rows).toEqual([])
+  })
+
+  it('is an error naming every unreachable account, LIVE marked', () => {
+    const r = rosterReading([
+      { accountId: 'ACCT-LIVE-1', mode: 'active', isLive: true },
+      { accountId: 'ACCT-DEMO-2', mode: 'paused', isLive: false },
+    ])
+    expect(r.state).toBe('error')
+    expect(r.text).toMatch(/2 accounts claim MANAGE/)
+    expect(r.text).toMatch(/ACCT-LIVE-1 \(LIVE\) · active/)
+    expect(r.text).toMatch(/ACCT-DEMO-2 · paused/)
+    expect(r.text).toMatch(/re-enable on Connect/)
+  })
+
+  it('is unknown — not ok — when the field is absent or the fetch failed', () => {
+    expect(rosterReading(undefined).state).toBe('unknown')
+    expect(rosterReading(null).state).toBe('unknown')
+    expect(rosterReading(undefined).text).toMatch(/cannot confirm/)
+  })
+
+  it('folds into the copy text and into the overall dot', () => {
+    const deploy = { state: 'ok', text: 'same' }
+    const loop = { state: 'ok', text: 'fine' }
+    const txt = toText({ health: null, controllers: [], deploy, loop, atr: null, roster: rosterReading([{ accountId: 'ACCT-DEMO-1', mode: 'active', isLive: false }]) })
+    expect(txt).toMatch(/roster: error — ROSTER INVARIANT BROKEN/)
+    expect(toText({ health: null, controllers: [], deploy, loop, atr: null })).toMatch(/roster: unknown/)
+    expect(worst('ok', rosterReading([{ accountId: 'x' }]).state)).toBe('error')
+  })
+})

@@ -67,13 +67,19 @@ export function LightRow({ row }) {
  */
 export default function AccountTrafficLights({ children }) {
   const [data, setData] = useState(null)
+  // A failed fetch used to be swallowed, so a 500 from the lights route
+  // rendered as "no alarms" — the red-manage banner VANISHED on exactly the
+  // kind of failure it exists to survive (UI audit, 02-09-2026). The error is
+  // now handed to the caller as a reading of its own: not healthy, not
+  // alarmed, not verifiable.
+  const [fetchError, setFetchError] = useState(null)
 
   useEffect(() => {
     let alive = true
     const poll = () => {
       agentGet('/state/account-traffic-lights')
-        .then(d => { if (alive) setData(d) })
-        .catch(() => { /* the row simply renders without lights */ })
+        .then(d => { if (alive) { setData(d); setFetchError(null) } })
+        .catch(e => { if (alive) setFetchError(e?.message || String(e)) })
     }
     poll()
     const id = setInterval(() => { if (!pageAsleep()) poll() }, POLL_MS)
@@ -83,5 +89,5 @@ export default function AccountTrafficLights({ children }) {
   const byId = new Map((data?.accounts || []).map(r => [String(r.accountId), r]))
   const alarms = (data?.accounts || []).filter(r => r.lights?.manage?.state === 'red')
 
-  return children({ byId, alarms, globalHalt: data?.globalHalt, globalHaltReason: data?.globalHaltReason })
+  return children({ byId, alarms, globalHalt: data?.globalHalt, globalHaltReason: data?.globalHaltReason, fetchError })
 }
