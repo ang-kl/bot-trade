@@ -192,11 +192,35 @@ export function divergenceReport(db, opts = {}) {
   // 3. Optimism, over combos with a measurable live sample and real evidence.
   const measured = combos.filter(c => c.live.trades >= cfg.minLive && c.backtest.winRatePct != null)
   const mean = (a) => (a.length ? r2(a.reduce((s, v) => s + v, 0) / a.length) : null)
+  // POOLED (owner plan, 02-09-2026). The per-combo figure needs minLive
+  // closes on EACH combo, months away at the observed rate. Pooling every
+  // combo that has backtest evidence and at least one live close — live
+  // wins over live trades against the trade-weighted backtest WR — gives a
+  // single calibration number that reaches ±5 pts at roughly 100–200 closes
+  // across the book, and the same per strategy.
+  const pooledOf = (rows) => {
+    const withBt = rows.filter(c => c.backtest.winRatePct != null && c.live.trades > 0)
+    const trades = withBt.reduce((s, c) => s + c.live.trades, 0)
+    if (!trades) return { combos: withBt.length, trades: 0, winRatePts: null, profitFactor: null }
+    const wins = withBt.reduce((s, c) => s + c.live.wins, 0)
+    const btWr = withBt.reduce((s, c) => s + c.backtest.winRatePct * c.live.trades, 0) / trades
+    const pfRows = withBt.filter(c => c.backtest.profitFactor != null && c.live.profitFactor != null)
+    const pfTrades = pfRows.reduce((s, c) => s + c.live.trades, 0)
+    return {
+      combos: withBt.length, trades,
+      winRatePts: r2(btWr - (wins / trades) * 100),
+      profitFactor: pfTrades ? r2(pfRows.reduce((s, c) => s + (c.backtest.profitFactor - c.live.profitFactor) * c.live.trades, 0) / pfTrades) : null,
+    }
+  }
+  const byStrategy = {}
+  for (const c of combos) (byStrategy[c.strategy] ||= []).push(c)
   const optimism = {
     combos: measured.length,
     winRatePts: mean(measured.map(c => c.backtest.winRatePct - (c.live.winRatePct ?? 0))),
     profitFactor: mean(measured.filter(c => c.backtest.profitFactor != null && c.live.profitFactor != null)
       .map(c => c.backtest.profitFactor - c.live.profitFactor)),
+    pooled: pooledOf(combos),
+    byStrategy: Object.fromEntries(Object.entries(byStrategy).map(([k, rows]) => [k, pooledOf(rows)])),
   }
 
   return {

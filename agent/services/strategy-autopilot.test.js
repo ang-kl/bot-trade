@@ -463,3 +463,42 @@ test('the bar compares UNROUNDED figures: PF 1.495 does not arm at 1.5', async (
   assert.equal(exact.arm.length, 0, '1.495 is below 1.5 — rounding to 1.5 must not arm it')
   assert.equal(decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.5, 55, 20)], EMPTY2, BAR).arm.length, 2)
 })
+
+// ---------------------------------------------------------------------------
+// Shrinkage prior (owner plan, 02-09-2026; ML audit): a combo's PF/WR are
+// pulled toward the sweep mean with k phantom trades before the bar applies,
+// so a 20-trade fluke in a 1,872-combo sweep does not arm.
+// ---------------------------------------------------------------------------
+import { sweepShrinkPrior, shrinkVerdict, SHRINK_PRIOR_TRADES } from './strategy-autopilot.js'
+
+test('shrinkVerdict: 20 trades at 60% in a 45% sweep reads 52.5; 100 trades reads 57.5; no prior is identity', () => {
+  const prior = { k: 20, wrMean: 45, pfMean: 1.0 }
+  assert.equal(shrinkVerdict({ pf: 2, winRate: 60, trades: 20 }, prior).winRate, 52.5)
+  assert.equal(shrinkVerdict({ pf: 2, winRate: 60, trades: 20 }, prior).pf, 1.5)
+  assert.equal(shrinkVerdict({ pf: 2, winRate: 60, trades: 100 }, prior).winRate, 57.5)
+  assert.deepEqual(shrinkVerdict({ pf: 2, winRate: 60, trades: 20 }, null), { pf: 2, winRate: 60 })
+  assert.equal(shrinkVerdict({ pf: null, winRate: 60, trades: 20 }, prior).pf, null, 'a null PF stays null rather than becoming the prior')
+})
+
+test('decideChanges with the prior: the 20-trade fluke is refused, the 100-trade edge arms', () => {
+  const shrink = { k: 20, wrMean: 45, pfMean: 1.0 }
+  const fluke = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 2.0, 60, 20)], EMPTY2, { ...BAR, shrink })
+  assert.equal(fluke.arm.length, 0, 'WR 52.5 after shrinkage is below the 55 bar')
+  assert.deepEqual(fluke.shrink, { k: 20, wrMean: 45, pfMean: 1 })
+  const proven = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 2.0, 60, 100)], EMPTY2, { ...BAR, shrink })
+  assert.equal(proven.arm.length, 2, 'WR 57.5 / PF 1.83 arms strategy + matrix')
+  assert.equal(decideChanges([V('ema_pullback', 'GBPUSD', '1h', 2.0, 60, 20)], EMPTY2, BAR).arm.length, 2, 'without a prior the same verdict arms as before')
+})
+
+test('sweepShrinkPrior: null under 30 verdicts; PF capped at 5 so a lossless combo cannot lift the prior over the bar', () => {
+  const thin = Array.from({ length: 29 }, (_, i) => V('s', `SYM${i}`, '1h', 1.2, 50, 10))
+  assert.equal(sweepShrinkPrior(thin), null)
+  const wide = Array.from({ length: 30 }, (_, i) => V('s', `SYM${i}`, '1h', i === 0 ? 900 : 1.0, i === 0 ? 100 : 40, 10))
+  const p = sweepShrinkPrior(wide)
+  assert.equal(p.k, SHRINK_PRIOR_TRADES)
+  assert.equal(p.verdicts, 30)
+  assert.equal(p.wrMean, 42)
+  assert.equal(Math.round(p.pfMean * 1000) / 1000, Math.round(((5 + 29) / 30) * 1000) / 1000)
+  // Verdicts without trades are not part of the sweep's picture of a combo.
+  assert.equal(sweepShrinkPrior([...wide, ...Array.from({ length: 50 }, (_, i) => V('s', `Z${i}`, '1h', 9, 99, 0))]).verdicts, 30)
+})

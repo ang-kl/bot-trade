@@ -119,7 +119,18 @@ export function decideChanges(verdicts, current, opts = {}) {
   const armMinPf = opts.armMinPf ?? ARM_BAR.profitFactor
   const armMinWin = opts.armMinWin ?? ARM_BAR.winRatePct
   const armMinTrades = opts.armMinTrades ?? ARM_BAR.minTrades
-  const armGrade = (v) => (v.pf ?? 0) >= armMinPf && (v.winRate ?? 0) >= armMinWin && (v.trades ?? 0) >= armMinTrades
+  // SHRINKAGE PRIOR (owner plan, 02-09-2026; ML audit). ~3.9% of zero-edge
+  // combos clear 1.5/55/20 at n=20 on luck alone, and the sweep tests ~1,872
+  // of them. Each combo's PF and WR are shrunk toward the SWEEP-WIDE mean
+  // with the weight of `k` phantom trades before the bar is applied — a
+  // combo with 20 trades and a 60% win rate in a sweep averaging 45% reads
+  // (20·60 + 20·45)/40 = 52.5, below a 55 bar; the same edge on 100 trades
+  // reads 57.5 and arms. Evidence has to outweigh the prior to count.
+  // `opts.shrink` = { k, wrMean, pfMean } computed by the caller from ALL
+  // verdicts of the sweep; absent → no shrinkage (tests, manual routes).
+  const shrink = opts.shrink && Number.isFinite(opts.shrink.k) && opts.shrink.k > 0 ? opts.shrink : null
+  const shrunk = (v) => shrinkVerdict(v, shrink)
+  const armGrade = (v) => { const s = shrunk(v); return (s.pf ?? 0) >= armMinPf && (s.winRate ?? 0) >= armMinWin && (v.trades ?? 0) >= armMinTrades }
   // DISARM FLOOR (02-09-2026, ML audit). Disarm used to trigger only on
   // NO-GO — PF below 1.1 — while arming needed 1.5: a 0.4-PF hysteresis that
   // kept a false arm in place through dozens of re-judgements of the same
@@ -145,12 +156,12 @@ export function decideChanges(verdicts, current, opts = {}) {
   const cooledOff = []
   const has = (m, sym, tf) => Array.isArray(m?.[sym]) && m[sym].includes(tf)
 
-  const gos = verdicts.filter(v => v.state === 'go' && (v.pf ?? 0) >= disarmMinPf) // a GO above the floor protects an existing arm
-  const armGos = verdicts.filter(v => v.state === 'go' && armGrade(v))                 // only these clear the bar to be NEWLY armed
-  // Condemned: NO-GO, or a GO whose PF fell below the disarm floor. A THIN
-  // verdict (edge on too few trades) stays neutral either way — absence of
-  // evidence is not evidence of decay.
-  const nogos = verdicts.filter(v => v.state === 'no-go' || (v.state === 'go' && Number.isFinite(v.pf) && v.pf < disarmMinPf))
+  const gos = verdicts.filter(v => v.state === 'go' && (shrunk(v).pf ?? 0) >= disarmMinPf) // a GO above the floor protects an existing arm
+  const armGos = verdicts.filter(v => v.state === 'go' && armGrade(v))                       // only these clear the bar to be NEWLY armed
+  // Condemned: NO-GO, or a GO whose (shrunk) PF fell below the disarm floor.
+  // A THIN verdict (edge on too few trades) stays neutral either way —
+  // absence of evidence is not evidence of decay.
+  const nogos = verdicts.filter(v => v.state === 'no-go' || (v.state === 'go' && Number.isFinite(v.pf) && shrunk(v).pf < disarmMinPf))
 
   // ARM: only combos that CLEAR THE BAR. close-confirm → strategy enable +
   // per-instrument matrix entry; touch (fib only) → pending matrix entry.
@@ -209,7 +220,48 @@ export function decideChanges(verdicts, current, opts = {}) {
     suggestions: overflow, // keeps `action` — the suggestion text needs it
     cooledOff,             // strategies the live evaluators disarmed — not re-armed this sweep
     disarmMinPf,
+    shrink: shrink ? { k: shrink.k, wrMean: r2s(shrink.wrMean), pfMean: r2s(shrink.pfMean) } : null,
   }
+}
+
+const r2s = (x) => (Number.isFinite(Number(x)) ? Math.round(Number(x) * 100) / 100 : null)
+
+/** Phantom trades the sweep-wide prior is worth against one combo's evidence. */
+export const SHRINK_PRIOR_TRADES = 20
+
+/**
+ * One verdict's PF and WR pulled toward the sweep prior with the weight of
+ * `shrink.k` phantom trades: w = n/(n+k), x' = w·x + (1−w)·mean. No prior
+ * (null) returns the figures untouched, so callers without a sweep behave
+ * exactly as before. Shared by decideChanges and the evaluation headline so
+ * the two can never disagree on what "armable" means.
+ */
+export function shrinkVerdict(v, shrink) {
+  if (!shrink || !Number.isFinite(Number(shrink.k)) || Number(shrink.k) <= 0) return { pf: v.pf, winRate: v.winRate }
+  const n = Math.max(0, Number(v.trades) || 0)
+  const w = n / (n + Number(shrink.k))
+  // `x == null` is checked explicitly: Number(null) is 0, which would shrink
+  // a "no losses yet" PF of null toward half the prior instead of leaving it.
+  const sh = (x, mean) => (x != null && mean != null && Number.isFinite(Number(x)) && Number.isFinite(Number(mean)) ? w * Number(x) + (1 - w) * Number(mean) : x)
+  return { pf: sh(v.pf, shrink.pfMean), winRate: sh(v.winRate, shrink.wrMean) }
+}
+
+/**
+ * The sweep-wide prior for decideChanges: mean WR and mean PF over every
+ * verdict that has trades, so a combo's own figures are weighed against what
+ * the whole sweep says a combo looks like. Null when the sweep is too thin to
+ * say anything (fewer than 30 verdicts with trades).
+ */
+export function sweepShrinkPrior(verdicts, { k = SHRINK_PRIOR_TRADES, minVerdicts = 30 } = {}) {
+  const rows = (Array.isArray(verdicts) ? verdicts : []).filter(v => (Number(v.trades) || 0) > 0 && Number.isFinite(Number(v.winRate)))
+  if (rows.length < minVerdicts) return null
+  const wrMean = rows.reduce((s, v) => s + Number(v.winRate), 0) / rows.length
+  const pfRows = rows.filter(v => Number.isFinite(Number(v.pf)))
+  // A combo with no losses has PF null; the prior must not read that as
+  // infinite. Cap each PF at 5 for the mean — the bar is at 1.5, and a prior
+  // above the bar would arm everything.
+  const pfMean = pfRows.length ? pfRows.reduce((s, v) => s + Math.min(5, Number(v.pf)), 0) / pfRows.length : null
+  return { k, wrMean, pfMean, verdicts: rows.length }
 }
 
 const LIVE_DISARMS_KEY = 'autopilot_live_disarms_json'
@@ -644,9 +696,11 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   }
   const maxChanges = Number(getState(db, 'autopilot_max_changes')) || 4
   const armBar = loadArmBar(db)
+  const shrink = sweepShrinkPrior(verdicts)
   const changes = decideChanges(verdicts, current, {
     maxChanges, armMinPf: armBar.minPf, armMinWin: armBar.minWin, armMinTrades: armBar.minTrades,
     liveDisarms: loadLiveDisarms(db),
+    shrink,
   })
   // Divergence tracker: bounded history of the verdicts that matter, every
   // sweep, whatever mode we are in — suggest-mode owners get the record too.
@@ -662,11 +716,19 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   // count at the SAME configured bar decideChanges just enforced (a headline
   // computed at hardcoded thresholds would drift the moment the owner dials
   // autopilot_arm_bar_json) so it never overstates what the bot will trade.
-  const armable = verdicts.filter(v => v.state === 'go' && (v.pf ?? 0) >= armBar.minPf && (v.winRate ?? 0) >= armBar.minWin && (v.trades ?? 0) >= armBar.minTrades).length
+  // Shrunk with the same prior decideChanges used: a headline that counted
+  // raw figures would announce combos the bar just refused.
+  const armable = verdicts.filter((v) => {
+    const s = shrinkVerdict(v, shrink)
+    return v.state === 'go' && (s.pf ?? 0) >= armBar.minPf && (s.winRate ?? 0) >= armBar.minWin && (v.trades ?? 0) >= armBar.minTrades
+  }).length
   const cooled = changes.cooledOff?.length
     ? ` ${changes.cooledOff.length} strategy(ies) held off — disarmed live, cooling until ${changes.cooledOff.map(c => `${c.strategy} ${c.until.slice(11, 16)}Z`).join(', ')}.`
     : ''
-  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable at PF≥${armBar.minPf}/W≥${armBar.minWin}%/n≥${armBar.minTrades} (${goCount} GO at the loose bar; disarm floor PF<${changes.disarmMinPf.toFixed(2)})${errors.length ? `, ${errors.length} errors` : ''}.${cooled}${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
+  const prior = changes.shrink
+    ? ` Shrinkage prior: sweep mean WR ${changes.shrink.wrMean}% / PF ${changes.shrink.pfMean}, weight ${changes.shrink.k} trades.`
+    : ''
+  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable at PF≥${armBar.minPf}/W≥${armBar.minWin}%/n≥${armBar.minTrades} (${goCount} GO at the loose bar; disarm floor PF<${changes.disarmMinPf.toFixed(2)})${errors.length ? `, ${errors.length} errors` : ''}.${prior}${cooled}${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
 
   if (mode === 'suggest' || (isLive && !allowLive)) {
     const all = [...changes.disarm.map(c => `disarm ${describe(c)}`), ...changes.arm.map(c => `arm ${describe(c)}`), ...changes.suggestions.map(c => `${c.action} ${describe(c)}`)]
