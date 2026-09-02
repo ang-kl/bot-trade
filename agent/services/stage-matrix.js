@@ -391,20 +391,36 @@ function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag
  *
  * @returns {string[]} scopes changed: 'global' and/or account ids.
  */
-export function disarmStrategyEverywhere(db, io, key, { neverZero = true } = {}) {
+export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinnedDemo = false } = {}) {
   const { getState } = io
   const changed = []
+  const held = []
   const scopes = [null]
+  const isLive = {}
   try {
-    for (const r of db.prepare('SELECT account_id FROM accounts').all()) scopes.push(String(r.account_id))
+    for (const r of db.prepare('SELECT account_id, is_live FROM accounts').all()) {
+      scopes.push(String(r.account_id)); isLive[String(r.account_id)] = Number(r.is_live) !== 0
+    }
   } catch { /* no accounts table — global only */ }
   for (const scope of scopes) {
     const armed = armedTradeKeys(db, getState, scope)
     if (!armed.has(key)) continue
     if (neverZero && ![...armed].some(k => k !== key)) continue // last armed here — hold
+    // HAND-PINNED DEMO ARMS ARE EXEMPT (owner, 03-09-2026 00:50 SGT). A demo
+    // account whose overlay carries an explicit trade:true for this strategy
+    // was armed on purpose to be MEASURED — the split's point is to record
+    // the loss, not to prevent it. Only routes and the owner's overlay
+    // migration write a true cell (the autopilot writes the global list, the
+    // breaker writes false), so an explicit true on a demo scope is the
+    // owner's word. Live scopes are never exempt.
+    if (exemptHandPinnedDemo && scope != null && !isLive[scope]) {
+      const cell = readJson(db, getState, acctMatrixKey(scope))?.strategy?.[key]?.trade
+      if (cell === true) { held.push(scope); continue }
+    }
     setStage(db, { kind: 'strategy', key, stage: 'trade', on: false, accountId: scope }, io)
     changed.push(scope == null ? 'global' : scope)
   }
+  if (exemptHandPinnedDemo) changed.held = held
   return changed
 }
 

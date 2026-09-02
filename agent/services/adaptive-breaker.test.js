@@ -8,7 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import { runAdaptiveBreaker, strategyLossStreak, loadAdaptiveBreakerConfig, DEFAULT_ADAPTIVE_BREAKER } from './adaptive-breaker.js'
-import { loadStageMatrix, setStage, armedTradeKeys, FILTER_DEFS } from './stage-matrix.js'
+import { loadStageMatrix, setStage, armedTradeKeys, FILTER_DEFS, disarmStrategyEverywhere } from './stage-matrix.js'
 
 function closeTrade(db, strategy, pnl, minutesAgo = 0) {
   db.prepare(
@@ -41,7 +41,7 @@ test('streak on a strategy with OTHERS armed → that strategy is disarmed', () 
   for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
   const notes = []
   const out = runAdaptiveBreaker(db, { notify: (t) => notes.push(t) })
-  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'disarmed_strategy', scopes: ['global'] }])
+  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'disarmed_strategy', scopes: ['global'], heldPinnedDemo: [] }])
   const m = loadStageMatrix(db, getState)
   assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, false)
   assert.equal(m.strategies.find(s => s.key === 'ema_pullback').stages.trade, true)
@@ -88,8 +88,10 @@ test('a disarm reaches per-account trade pins, not just the global list', () => 
   // disarm must land wherever the strategy is armed — except a scope where it
   // is the LAST armed strategy, which holds (never-go-dark, per scope).
   const db = initDB(':memory:')
-  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
-  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('222','2',0,1,'active')`).run()
+  // LIVE accounts: a live pin is always reached. (A hand-pinned DEMO arm is
+  // held since 03-09-2026 — that case has its own test below.)
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',1,1,'active')`).run()
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('222','2',1,1,'active')`).run()
   setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade', 'ema_pullback']))
   const io = { getState, setState }
   // 111 pins fib armed alongside another; 222 pins fib as its ONLY armed strategy.
@@ -108,9 +110,40 @@ test('a disarm reaches per-account trade pins, not just the global list', () => 
   assert.equal(armedTradeKeys(db, getState, '222').has('fib_618_fade'), true, 'last-armed scope holds — never to zero')
 })
 
-test('a streak on a strategy armed ONLY by an account pin still triggers the breaker', () => {
+test('a HAND-PINNED DEMO arm is held by the breaker; the global list and a live pin are still disarmed (owner, 03-09-2026)', () => {
+  // 21:11 SGT 02-09: two minutes after the demo split pinned rsi2 on
+  // ACCT-DEMO-4 to measure it, the breaker disarmed it there. The split's
+  // point is to record the loss, so a demo scope with an explicit trade:true
+  // cell holds; the disarm still reaches the global list and live scopes.
   const db = initDB(':memory:')
-  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run() // demo, pinned
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('333','3',1,1,'active')`).run() // LIVE, pinned
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('444','4',0,1,'active')`).run() // demo, inherits global
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade', 'ema_pullback']))
+  const io = { getState, setState }
+  for (const a of ['111', '333']) {
+    setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true, accountId: a }, io)
+    setStage(db, { kind: 'strategy', key: 'ema_pullback', stage: 'trade', on: true, accountId: a }, io)
+  }
+  for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
+  const out = runAdaptiveBreaker(db, {})
+  assert.equal(out.actions[0].did, 'disarmed_strategy')
+  assert.deepEqual(out.actions[0].scopes.sort(), ['333', 'global'])
+  assert.deepEqual(out.actions[0].heldPinnedDemo, ['111'])
+  assert.equal(armedTradeKeys(db, getState, null).has('fib_618_fade'), false, 'global disarmed')
+  assert.equal(armedTradeKeys(db, getState, '333').has('fib_618_fade'), false, 'a LIVE pin is never exempt')
+  assert.equal(armedTradeKeys(db, getState, '111').has('fib_618_fade'), true, 'the hand-pinned demo arm holds')
+  assert.equal(armedTradeKeys(db, getState, '444').has('fib_618_fade'), false, 'a demo scope inheriting the global list follows the global disarm')
+  // The exemption is a breaker choice, not the helper's default.
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade', 'ema_pullback']))
+  setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true, accountId: '111' }, io)
+  const plain = disarmStrategyEverywhere(db, io, 'fib_618_fade')
+  assert.ok(plain.includes('111'), 'without the flag the pin is disarmed as before')
+})
+
+test('a streak on a strategy armed ONLY by a LIVE account pin still triggers the breaker', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',1,1,'active')`).run()
   setState(db, 'enabled_strategies_json', JSON.stringify(['ema_pullback'])) // fib globally OFF
   const io = { getState, setState }
   setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true, accountId: '111' }, io)
