@@ -64,6 +64,10 @@ test('evidenceLevelOf: exact combo > strategy-blind matrix row > strategy-level 
   assert.equal(evidenceLevelOf({ strat: 'rsi2_reversion', symbol: 'EURUSD', label_timeframe: '1h', opened_at: at(5) }, arms), 'strategy_only')
   assert.equal(evidenceLevelOf({ strat: 'rsi2_reversion', symbol: 'EURUSD', label_timeframe: '1h', opened_at: at(120) }, arms), 'none', 'a disarmed strategy gives no evidence after its disarm')
   assert.equal(evidenceLevelOf({ strat: 'donchian_breakout', symbol: 'GER40', label_timeframe: '15m', opened_at: '2026-09-01 09:00:00' }, arms), 'none', 'before the arm there was no evidence')
+  // A live pair the boot reconcile recorded with NO evidence gives none — it
+  // is armed, but nothing on record says why (owner, 02-09-2026).
+  const unev = [{ kind: 'unevidenced', strategy: null, symbol: 'US30', timeframe: '1d', entry_mode: 'close', armed_at: T0, disarmed_at: null }]
+  assert.equal(evidenceLevelOf({ strat: 'vp_value', symbol: 'US30', label_timeframe: '1d', opened_at: at(5) }, unev), 'none')
 })
 
 test('divergenceReport joins arm evidence to live closes, buckets evidence levels, excludes flagged rows', () => {
@@ -71,6 +75,9 @@ test('divergenceReport joins arm evidence to live closes, buckets evidence level
   arm(db, { kind: 'matrix', strategy: 'donchian_breakout', symbol: 'GER40', timeframe: '15m', bt_pf: 1.6, bt_win: 58, bt_trades: 22, wfp: 3, wfa: 4 })
   arm(db, { kind: 'strategy', strategy: 'rsi2_reversion' })
   arm(db, { kind: 'manual', strategy: 'vp_value' })
+  arm(db, { kind: 'unevidenced', symbol: 'US30', timeframe: '1d' })
+  // a trade on the unevidenced live pair → none, and the pair is listed as an arm without evidence
+  trade(db, { symbol: 'US30', strategy: 'vp_value', tf: '1d', net: 333.9, openedMin: 46 })
   // 12 combo trades, 7 wins, all carrying R
   for (let i = 0; i < 12; i++) trade(db, { symbol: 'GER40', strategy: 'donchian_breakout', tf: '15m', net: i < 7 ? 30 : -20, r: i < 7 ? 1.5 : -1, openedMin: 5 + i, slip: 0.1, spread: 0.05 })
   // a donchian trade on an UN-armed timeframe → strategy_only? no: no strategy-level donchian arm → none
@@ -98,10 +105,13 @@ test('divergenceReport joins arm evidence to live closes, buckets evidence level
   assert.equal(c.delta.winRatePct, r2(53.85 - 58))
   assert.equal(c.execution.slippageR, 0.1)
   assert.equal(c.status, 'holding')
-  assert.deepEqual(r.unevidencedArms.map(a => a.kind).sort(), ['manual', 'strategy'])
+  assert.deepEqual(r.unevidencedArms.map(a => a.kind).sort(), ['manual', 'strategy', 'unevidenced'])
+  assert.deepEqual(r.unevidencedArms.find(a => a.kind === 'unevidenced'), { kind: 'unevidenced', strategy: null, symbol: 'US30', timeframe: '1d', armedAt: T0, disarmedAt: null })
   assert.equal(r.evidenceLevels.combo.trades, 13)
   assert.equal(r.evidenceLevels.symbol_tf.trades, 1)
-  assert.equal(r.evidenceLevels.strategy_only.trades, 1)
+  // The US30 trade sits on an unevidenced pair, which contributes nothing —
+  // it reads strategy_only purely through the manual vp_value arm above.
+  assert.equal(r.evidenceLevels.strategy_only.trades, 2)
   assert.equal(r.evidenceLevels.none.trades, 1)
   assert.equal(r.integrity.flaggedExcluded, 1)
   assert.equal(r.optimism.combos, 1)

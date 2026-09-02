@@ -262,7 +262,7 @@ test('loop.js autopilot call site is detached, overlap-guarded, and still beats'
 // evidence, disarms close the row and name their strategy, and each sweep
 // persists a BOUNDED verdict history.
 // ---------------------------------------------------------------------------
-import { recordComboArms, persistVerdictHistory, clearsArmBar, backfillComboArmsFromActionLog, parseApplyLine } from './strategy-autopilot.js'
+import { recordComboArms, persistVerdictHistory, clearsArmBar, backfillComboArmsFromActionLog, parseApplyLine, reconcileComboArmsWithMatrix } from './strategy-autopilot.js'
 
 test('recordComboArms: an arm snapshots its verdict + bar; a disarm closes the row; strategy arms carry no combo evidence', () => {
   const db = initDB(':memory:')
@@ -335,4 +335,60 @@ test('parseApplyLine covers every shape describe() writes, and rejects the rest'
   assert.deepEqual(parseApplyLine('+ armed pending NXPI.US 4h (fib_618_fade)'), { action: 'arm', kind: 'pending', symbol: 'NXPI.US', timeframe: '4h', strategy: 'fib_618_fade' })
   assert.deepEqual(parseApplyLine('− disarmed pending NZDCAD 30m'), { action: 'disarm', kind: 'pending', symbol: 'NZDCAD', timeframe: '30m' })
   assert.equal(parseApplyLine('no changes — everything armed matches the evidence'), null)
+})
+
+test('boot reconcile squares combo_arms with the live matrices: stale rows closed, live pairs without a row recorded as unevidenced', () => {
+  // Measured after the backfill deployed (02-09-2026): 74 open rows the live
+  // matrix no longer carried, 49 live pairs with no row. Owner: "record them
+  // with no evidence, build the reconcile step".
+  const db = initDB(':memory:')
+  const T = '2026-09-02 00:50:00'
+  // Live: auto matrix arms US30 1d and NAS100 1h; pending matrix arms SEKJPY 4h.
+  setState(db, 'autotrade_matrix_json', JSON.stringify({ US30: ['1d'], NAS100: ['1h'] }))
+  setState(db, 'pending_matrix_json', JSON.stringify({ SEKJPY: ['4h'] }))
+  // Recorded: NAS100 1h on a verdict (live — keep), GBPUSD 10m (stale — close),
+  // a pending NXPI.US 4h (stale — close), a strategy arm (never touched).
+  recordComboArms(db, {
+    arm: [
+      { kind: 'matrix', strategy: 'rsi2_reversion', symbol: 'NAS100', timeframe: '1h' },
+      { kind: 'matrix', strategy: 'vwap_trend', symbol: 'GBPUSD', timeframe: '10m' },
+      { kind: 'pending', strategy: 'fib_618_fade', symbol: 'NXPI.US', timeframe: '4h' },
+      { kind: 'strategy', strategy: 'donchian_breakout' },
+    ], disarm: [],
+  }, { at: '2026-09-01 06:41:05', reason: 'backfill' })
+
+  const r = reconcileComboArmsWithMatrix(db, { at: T })
+  assert.deepEqual(r, { auto: { stale: 1, added: 1, skipped: null }, pending: { stale: 1, added: 1, skipped: null } })
+  const rows = db.prepare('SELECT * FROM combo_arms ORDER BY id').all()
+  const by = (sym, tf) => rows.find(x => x.symbol === sym && x.timeframe === tf)
+  assert.equal(by('NAS100', '1h').disarmed_at, null, 'a live, recorded pair is untouched')
+  assert.equal(by('GBPUSD', '10m').disarmed_at, T)
+  assert.equal(by('GBPUSD', '10m').disarm_reason, 'boot_reconcile: not armed live')
+  assert.equal(by('NXPI.US', '4h').disarmed_at, T, 'pending rows are squared against the PENDING matrix')
+  assert.equal(rows.find(x => x.kind === 'strategy').disarmed_at, null, 'strategy arms have no matrix to square against')
+  const us30 = by('US30', '1d'), sek = by('SEKJPY', '4h')
+  assert.equal(us30.kind, 'unevidenced'); assert.equal(us30.strategy, null); assert.equal(us30.bt_pf, null)
+  assert.equal(us30.entry_mode, 'close'); assert.equal(us30.armed_at, T)
+  assert.equal(sek.kind, 'unevidenced'); assert.equal(sek.entry_mode, 'touch')
+
+  // Idempotent: a second run finds nothing to do.
+  assert.deepEqual(reconcileComboArmsWithMatrix(db, { at: T }), { auto: { stale: 0, added: 0, skipped: null }, pending: { stale: 0, added: 0, skipped: null } })
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM combo_arms').get().n, 6)
+
+  // A verdict arm on US30 1d SUPERSEDES the unevidenced row; a disarm of a
+  // pair closes its unevidenced row too.
+  recordComboArms(db, { arm: [{ kind: 'matrix', strategy: 'vp_value', symbol: 'US30', timeframe: '1d' }], disarm: [] },
+    { verdicts: [{ strategy: 'vp_value', symbol: 'US30', timeframe: '1d', entryMode: 'close', pf: 1.7, winRate: 60, trades: 25 }], armBar: { minPf: 1.5, minWin: 55, minTrades: 20 }, at: '2026-09-02 01:00:00' })
+  const us30Rows = rows.length && db.prepare(`SELECT * FROM combo_arms WHERE symbol='US30' ORDER BY id`).all()
+  assert.equal(us30Rows.length, 2)
+  assert.equal(us30Rows[0].disarm_reason, 'superseded_by_verdict_arm')
+  assert.equal(us30Rows[1].kind, 'matrix'); assert.equal(us30Rows[1].bt_pf, 1.7)
+  recordComboArms(db, { arm: [], disarm: [{ kind: 'pending', symbol: 'SEKJPY', timeframe: '4h' }] }, { at: '2026-09-02 01:10:00' })
+  assert.equal(db.prepare(`SELECT disarmed_at FROM combo_arms WHERE symbol='SEKJPY'`).get().disarmed_at, '2026-09-02 01:10:00')
+
+  // An ABSENT matrix key is not an empty matrix: nothing is touched.
+  const db2 = initDB(':memory:')
+  recordComboArms(db2, { arm: [{ kind: 'matrix', strategy: 'x', symbol: 'A', timeframe: '1h' }], disarm: [] }, {})
+  assert.equal(reconcileComboArmsWithMatrix(db2).auto.skipped, 'no matrix on record')
+  assert.equal(db2.prepare('SELECT disarmed_at FROM combo_arms').get().disarmed_at, null)
 })

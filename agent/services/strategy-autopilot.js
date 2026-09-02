@@ -369,8 +369,16 @@ export function recordComboArms(db, changes, { verdicts = [], armBar = null, rea
        bt_pf, bt_win_rate_pct, bt_trades, bt_wf_positive, bt_wf_active,
        bar_min_pf, bar_min_win, bar_min_trades)
      VALUES (COALESCE(?, datetime('now')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  // A verdict arm on a pair the boot reconcile had recorded as UNEVIDENCED
+  // supersedes that row: the pair now has evidence, and the evidence-less row
+  // must not stay open beside it.
+  const supersede = db.prepare(
+    `UPDATE combo_arms SET disarmed_at = COALESCE(?, datetime('now')), disarm_reason = 'superseded_by_verdict_arm'
+      WHERE disarmed_at IS NULL AND kind = 'unevidenced' AND entry_mode = ?
+        AND COALESCE(symbol,'') = COALESCE(?,'') AND COALESCE(timeframe,'') = COALESCE(?,'')`)
   for (const c of changes?.arm || []) {
     if (openRow.get(c.kind, c.strategy ?? null, c.symbol ?? null, c.timeframe ?? null)) continue
+    if (c.kind === 'matrix' || c.kind === 'pending') supersede.run(at, c.kind === 'pending' ? 'touch' : 'close', c.symbol ?? null, c.timeframe ?? null)
     const v = c.kind === 'strategy' ? null : findVerdict(c)
     ins.run(
       at, c.kind, c.strategy ?? null, c.symbol ?? null, c.timeframe ?? null,
@@ -384,8 +392,15 @@ export function recordComboArms(db, changes, { verdicts = [], armBar = null, rea
       WHERE disarmed_at IS NULL AND kind = ?
         AND COALESCE(symbol,'') = COALESCE(?,'') AND COALESCE(timeframe,'') = COALESCE(?,'')
         AND (? IS NULL OR strategy IS NULL OR strategy = ?)`)
+  // A disarm also closes any evidence-less row the boot reconcile opened for
+  // the same pair — otherwise it would outlive the arm it stood in for.
+  const closeUnevidenced = db.prepare(
+    `UPDATE combo_arms SET disarmed_at = COALESCE(?, datetime('now')), disarm_reason = ?
+      WHERE disarmed_at IS NULL AND kind = 'unevidenced' AND entry_mode = ?
+        AND COALESCE(symbol,'') = COALESCE(?,'') AND COALESCE(timeframe,'') = COALESCE(?,'')`)
   for (const c of changes?.disarm || []) {
     close.run(at, `${reason}_nogo`, c.kind, c.symbol ?? null, c.timeframe ?? null, c.strategy ?? null, c.strategy ?? null)
+    if (c.kind === 'matrix' || c.kind === 'pending') closeUnevidenced.run(at, `${reason}_nogo`, c.kind === 'pending' ? 'touch' : 'close', c.symbol ?? null, c.timeframe ?? null)
   }
 }
 
@@ -438,6 +453,74 @@ export function backfillComboArmsFromActionLog(db) {
   })
   tx()
   return { skipped: null, arms, disarms, rows: rows.length }
+}
+
+/**
+ * BOOT RECONCILE of combo_arms against the LIVE matrices (owner, 02-09-2026:
+ * "record them with no evidence, build the reconcile step").
+ *
+ * Measured after the backfill deployed: the table held 186 open pairs, the
+ * live auto matrix 161 — 74 open rows the matrix no longer carried (disarmed
+ * by a path that writes no AUTOPILOT apply line: the edge watchdog, a manual
+ * timeframe change, or a disarm older than the log's retention) and 49 live
+ * pairs with no row at all (armed before the retained log began). Trades on
+ * the 49 would classify as evidence-less for ever while the bot traded them
+ * as armed; the 74 could label a future trade symbol_tf on a phantom.
+ *
+ * So, every boot, idempotent: an open matrix/pending/unevidenced row whose
+ * pair is not in its live matrix is stamped disarmed (reason names the
+ * boot); a live pair with no open row of its entry mode gets one of kind
+ * 'unevidenced' — no strategy, no bt_*, because there is no verdict on
+ * record for it and the report must not credit one. A later verdict arm on
+ * the pair supersedes that row (see recordComboArms). A matrix key that is
+ * ABSENT is not an empty matrix: nothing is touched for that mode.
+ */
+export function reconcileComboArmsWithMatrix(db, { at = null } = {}) {
+  const readMatrix = (key) => {
+    const raw = getState(db, key)
+    if (raw == null || raw === '') return null
+    try { const m = JSON.parse(raw); return m && typeof m === 'object' ? m : null } catch { return null }
+  }
+  const pairsOf = (m) => {
+    const s = new Set()
+    for (const [sym, tfs] of Object.entries(m || {})) for (const tf of Array.isArray(tfs) ? tfs : []) s.add(`${String(sym).toUpperCase()}|${tf}`)
+    return s
+  }
+  const out = { auto: { stale: 0, added: 0, skipped: null }, pending: { stale: 0, added: 0, skipped: null } }
+  const modes = [
+    { name: 'auto', key: 'autotrade_matrix_json', kinds: ['matrix', 'unevidenced'], entryMode: 'close' },
+    { name: 'pending', key: 'pending_matrix_json', kinds: ['pending', 'unevidenced'], entryMode: 'touch' },
+  ]
+  const openRows = db.prepare(
+    `SELECT id, kind, symbol, timeframe FROM combo_arms
+      WHERE disarmed_at IS NULL AND kind IN (?, ?) AND entry_mode = ?`)
+  const stamp = db.prepare(
+    `UPDATE combo_arms SET disarmed_at = COALESCE(?, datetime('now')), disarm_reason = 'boot_reconcile: not armed live' WHERE id = ?`)
+  const ins = db.prepare(
+    `INSERT INTO combo_arms (armed_at, kind, strategy, symbol, timeframe, entry_mode)
+     VALUES (COALESCE(?, datetime('now')), 'unevidenced', NULL, ?, ?, ?)`)
+  const tx = db.transaction(() => {
+    for (const mode of modes) {
+      const m = readMatrix(mode.key)
+      if (!m) { out[mode.name].skipped = 'no matrix on record'; continue }
+      const live = pairsOf(m)
+      const recorded = new Set()
+      for (const r of openRows.all(mode.kinds[0], mode.kinds[1], mode.entryMode)) {
+        const p = `${String(r.symbol || '').toUpperCase()}|${r.timeframe}`
+        if (live.has(p)) { recorded.add(p); continue }
+        stamp.run(at, r.id)
+        out[mode.name].stale++
+      }
+      for (const p of live) {
+        if (recorded.has(p)) continue
+        const [sym, tf] = p.split('|')
+        ins.run(at, sym, tf, mode.entryMode)
+        out[mode.name].added++
+      }
+    }
+  })
+  tx()
+  return out
 }
 
 /**
