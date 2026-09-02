@@ -414,8 +414,34 @@ export function recordAuditUnavailable(db, reason, { nowMs = Date.now(), account
   } catch { /* non-fatal */ }
 }
 
-/** Sum every per-account audit record into one whole-book view. */
-function mergeAccountAudits(db) {
+/**
+ * Sum every per-account audit record into one whole-book view.
+ *
+ * REWRITTEN 02-09-2026 (consistency audit). The panel read "as of 41,315 min
+ * ago — NOT CONFIRMED SINCE 22-08" while the heartbeat beat every 60 s and
+ * the action log showed successful audits that morning. Three merge rules
+ * produced that, each reasonable alone:
+ *   - `at` was the OLDEST record of any age, so one account nobody can audit
+ *     any more (a live account while demo credentials are selected) pinned
+ *     the whole book at 04-08 for ever;
+ *   - counts were summed across fresh and stale records, so a month-old
+ *     `targetless: 6` sat beside today's `phantom: 2`;
+ *   - the failure surfaced was the FIRST record with lastAttemptOk=false in
+ *     rowid order — the GLOBAL key the loop writes on a blocked reconcile,
+ *     which no per-account success ever overwrites.
+ *
+ * Now: records are partitioned by the same freshness the reader applies.
+ * `at` is the oldest FRESH record (the stalest-account rule still holds
+ * among accounts that are actually being audited); counts are summed over
+ * fresh records only; accounts whose record is stale are LISTED, with their
+ * own age, so a healthy account cannot mask them — they are named, not
+ * averaged in. With nothing fresh the old behaviour stands. A failure counts
+ * only while it is newer than the success that would have superseded it:
+ * per-account records are overwritten by their own success, so theirs
+ * always counts; the global key's counts only if it is newer than every
+ * success on the book.
+ */
+function mergeAccountAudits(db, { nowMs = Date.now(), expectedSec = 900, staleFactor = 3 } = {}) {
   let rows = []
   try {
     rows = db.prepare(
@@ -436,12 +462,36 @@ function mergeAccountAudits(db) {
     const failed = parsed.filter(p => p.lastAttemptAt).sort((a, b) => String(b.lastAttemptAt).localeCompare(String(a.lastAttemptAt)))
     return failed[0] || parsed[0]
   }
-  const sum = (k) => ran.reduce((n, p) => n + (Number(p[k]) || 0), 0)
-  const oldest = ran.map(p => p.at).sort()[0]
-  const stillFailing = parsed.find(p => p.lastAttemptOk === false)
+  const maxAgeMs = expectedSec * staleFactor * 1000
+  const ageOf = (p) => nowMs - Date.parse(p.at)
+  const fresh = ran.filter(p => Number.isFinite(ageOf(p)) && ageOf(p) <= maxAgeMs)
+  const use = fresh.length ? fresh : ran
+  const staleAccounts = fresh.length
+    ? ran.filter(p => !fresh.includes(p)).map(p => ({
+      accountId: p.accountId ?? null, at: p.at, ageSec: Math.max(0, Math.round(ageOf(p) / 1000)),
+      checked: Number(p.checked) || 0, naked: Number(p.naked) || 0, targetless: Number(p.targetless) || 0, phantom: Number(p.phantom) || 0,
+    })).sort((a, b) => b.ageSec - a.ageSec)
+    : []
+  const sum = (k) => use.reduce((n, p) => n + (Number(p[k]) || 0), 0)
+  const oldest = use.map(p => p.at).sort()[0]
+  const newestSuccessMs = Math.max(...ran.map(p => Date.parse(p.at)).filter(Number.isFinite))
+  const failing = parsed
+    .filter(p => p.lastAttemptOk === false && p.lastAttemptAt)
+    .filter(p => {
+      const t = Date.parse(p.lastAttemptAt)
+      if (!Number.isFinite(t)) return false
+      // Per-account: its own success would have overwritten it, so still failing.
+      if (p.accountId != null) return true
+      // Global key: superseded by any later success anywhere on the book.
+      return t > newestSuccessMs
+    })
+    .sort((a, b) => String(b.lastAttemptAt).localeCompare(String(a.lastAttemptAt)))
+  const stillFailing = failing[0]
   return {
     at: oldest, ok: true,
-    accounts: ran.length,
+    accounts: use.length,
+    accountsStale: staleAccounts.length,
+    staleAccounts,
     checked: sum('checked'), unmatched: sum('unmatched'),
     naked: sum('naked'), targetless: sum('targetless'), phantom: sum('phantom'),
     ...(stillFailing ? {
@@ -465,10 +515,12 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
     try { last = JSON.parse(getState(db, auditKeyFor(accountId)) || '{}') } catch { last = {} }
   } else {
     // No account asked for: report the WHOLE book by summing every account's
-    // record. Age is taken from the OLDEST of them, because a portfolio is
-    // only as freshly verified as its stalest account — reporting the newest
-    // would let one healthy account mask five unchecked ones.
-    last = mergeAccountAudits(db)
+    // record. Age is taken from the OLDEST of the FRESH ones, because a
+    // portfolio is only as freshly verified as its stalest audited account —
+    // and accounts whose record has gone stale are named in `staleAccounts`
+    // rather than pinning the age, so a healthy account cannot mask them and
+    // an unauditable one cannot mask the healthy ones (02-09-2026).
+    last = mergeAccountAudits(db, { nowMs, expectedSec, staleFactor })
   }
 
   const at = Date.parse(last.at || '')
@@ -519,6 +571,13 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
       // confirmed, in one line, rather than showing nothing.
       ? `${body} (as of ${age}) — NOT CONFIRMED SINCE: ${last.lastAttemptError}`
       : `${body} (${age})`
+    // Accounts the audit has not reached within the freshness window are
+    // named, not averaged into the age above.
+    const staleAccts = Array.isArray(last.staleAccounts) ? last.staleAccounts : []
+    if (staleAccts.length) {
+      const worst = Math.round(staleAccts[0].ageSec / 60)
+      summary += ` — ${staleAccts.length} account(s) NOT audited for up to ${worst} min: ${staleAccts.map(a => a.accountId ?? '?').join(', ')}`
+    }
   }
 
   return {
@@ -526,6 +585,8 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
     ok: last.ok === true,
     // How many accounts this figure covers, when it is a whole-book read.
     accounts: last.accounts ?? null,
+    accountsStale: last.accountsStale ?? null,
+    staleAccounts: Array.isArray(last.staleAccounts) ? last.staleAccounts : [],
     at: hasRun ? last.at : null,
     ageSec,
     stale,

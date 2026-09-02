@@ -1490,14 +1490,19 @@ export default function stateRouter(db) {
   // system is degraded is worse than one that was never built, because the
   // silence reads as reassurance. This route never blanks: it reports the last
   // completed audit, how old it is, and whether it is still being confirmed.
-  router.get('/protection-audit', async (_req, res) => {
+  router.get('/protection-audit', async (req, res) => {
     try {
       const { lastProtectionAudit } = await import('../services/naked-position-guard.js')
       const { protectionFreshness, maxAgeSecFrom } = await import('../services/protection-freshness.js')
       // Reconcile — and so the audit — runs every 3rd loop.
       const loopMin = Number(getState(db, 'loop_interval_min'))
       const expectedSec = (Number.isFinite(loopMin) && loopMin >= 1 ? loopMin : 5) * 60 * 3
-      const last = lastProtectionAudit(db, { expectedSec })
+      // ?account=<id> reads that account's own record; absent or 'all' is the
+      // whole book. Until 02-09-2026 the parameter was ignored, so seven
+      // per-account reads returned the same merged answer.
+      const acctQ = req.query?.account != null ? String(req.query.account) : ''
+      const accountId = acctQ && acctQ !== 'all' ? acctQ : null
+      const last = lastProtectionAudit(db, { expectedSec, accountId })
       // `freshness` is the SAME verdict the heartbeat panel now shows, computed
       // from the same function — so this route and /state/heartbeats can no
       // longer disagree about whether the audit's answer is current. They did,
