@@ -109,3 +109,93 @@ export async function ensureSymbolMap(db, creds) {
   }
   return map
 }
+
+// ---------------------------------------------------------------------------
+// PER-ACCOUNT SYMBOL IDS (03-09-2026). `symbol_id_map` is built once from the
+// primary account and was applied to every account. cTrader symbol ids are
+// per environment: measured 03-09 07:24 SGT, the momentum book read LLY.US at
+// 6.56 and GD.US at 11.52 on ACCT-LIVE-1 (the demos: 1,159.32 and 363.69) —
+// the ids the map held for those names belong to other instruments on the
+// live account — and placed a live buy limit at 6.56. Every dispatch path now
+// resolves the id from the ACCOUNT's own symbol list, fetched from that
+// account and cached under `symbol_id_map:<accountId>`. The global map is
+// only ever used for the account it was built from (or when no primary is
+// recorded, which is the test fixture case). An id that cannot be verified
+// for the account is a refusal, never a fallback: a wrong instrument is worse
+// than no order.
+// ---------------------------------------------------------------------------
+
+export const ACCOUNT_SYMBOL_MAP_TTL_MS = 24 * 3600_000
+
+export function accountSymbolMapKey(accountId) { return `symbol_id_map:${String(accountId)}` }
+
+/** The stored per-account map: { map, builtAt } or null when absent/corrupt. */
+export function getAccountSymbolMap(db, accountId) {
+  if (accountId == null) return null
+  const json = getState(db, accountSymbolMapKey(accountId))
+  if (!json) return null
+  try {
+    const parsed = JSON.parse(json)
+    if (!parsed || typeof parsed.map !== 'object' || parsed.map == null) return null
+    return { map: parsed.map, builtAt: parsed.builtAt || null }
+  } catch { return null }
+}
+
+/** Fetch the account's own symbol list and persist it. Throws on a failed fetch. */
+export async function fetchAccountSymbolMap(db, creds, deps = {}) {
+  const list = deps.wsGetSymbolsList ?? (await import('./ctrader-ws.js')).wsGetSymbolsList
+  const { host, clientId, clientSecret, accessToken, accountId } = creds
+  const data = await list(host, clientId, clientSecret, accessToken, accountId)
+  const map = {}
+  for (const s of (data?.symbol || [])) {
+    if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
+  }
+  if (Object.keys(map).length > 0) {
+    const { setState } = await import('../db.js')
+    setState(db, accountSymbolMapKey(accountId), JSON.stringify({ builtAt: new Date().toISOString(), map }))
+  }
+  return map
+}
+
+/**
+ * The broker symbol id for `symbol` ON THIS ACCOUNT.
+ * @returns {Promise<{id:number|null, source:'account'|'account-stale'|'global'|'unverified'|'none', reason?:string}>}
+ */
+export async function resolveSymbolId(db, creds, symbol, deps = {}) {
+  const key = String(symbol || '').toUpperCase()
+  if (!key) return { id: null, source: 'none', reason: 'no symbol' }
+  const acct = creds?.accountId != null ? String(creds.accountId) : null
+  const short = acct ? `…${acct.slice(-4)}` : 'n/a'
+  const notListed = (source) => ({ id: null, source, reason: `symbol_not_on_account: ${symbol} is not in ${short}'s symbol list` })
+  let fetchErr = null
+  if (acct) {
+    const own = getAccountSymbolMap(db, acct)
+    const now = deps.now ?? Date.now()
+    const fresh = own && own.builtAt && (now - Date.parse(own.builtAt)) < ACCOUNT_SYMBOL_MAP_TTL_MS
+    if (fresh) return own.map[key] != null ? { id: own.map[key], source: 'account' } : notListed('account')
+    // A fetch needs a broker link: credentials on the creds AND a primary
+    // account recorded (no primary = no linked broker = a test fixture; the
+    // fixtures hand-build creds and must never reach the network).
+    const canFetch = creds.ready !== false && creds.clientId && creds.accessToken && creds.host && getState(db, 'ctrader_account_id') != null
+    if (canFetch) {
+      try {
+        const m = await fetchAccountSymbolMap(db, creds, deps)
+        if (Object.keys(m).length > 0) return m[key] != null ? { id: m[key], source: 'account' } : notListed('account')
+        fetchErr = 'empty symbol list'
+      } catch (e) { fetchErr = e?.message || String(e) }
+    }
+    if (own) return own.map[key] != null ? { id: own.map[key], source: 'account-stale' } : notListed('account-stale')
+  }
+  // The global map belongs to the account it was built from.
+  const primary = getState(db, 'ctrader_account_id')
+  if (acct == null || primary == null || String(primary) === acct) {
+    const g = getSymbolMap(db)
+    return g[key] != null
+      ? { id: g[key], source: 'global' }
+      : { id: null, source: 'global', reason: `symbol_id_unknown: ${symbol} is not in symbol_id_map — call POST /actions/symbol-map to register it` }
+  }
+  return {
+    id: null, source: 'unverified',
+    reason: `symbol_map_unverified: no symbol list for ${short}${fetchErr ? ` (${fetchErr})` : ''} and the global map belongs to …${String(primary).slice(-4)}`,
+  }
+}

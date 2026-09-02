@@ -210,3 +210,56 @@ test('wiring pins: the loop runs the book after the shadow with the real autoTra
   assert.ok(block.includes('phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade'))
   assert.ok(src.includes("synth.marketOnly !== true && !fresh"), 'a marketOnly synth never rests as a limit')
 })
+
+// ---------------------------------------------------------------------------
+// 03-09-2026: the first production pass read LLY.US at 6.56 on ACCT-LIVE-1
+// (1,159.32 on the demos) because one shared symbol map was applied to every
+// account, and could not enter an open market at all because the no-target
+// bracket tripped guard_no_target. Both are pinned here.
+// ---------------------------------------------------------------------------
+
+test('the symbol id is resolved PER ACCOUNT through symbolIdFor(creds, symbol); a null resolution skips the entry with the account named', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  const io = { getState, setState }
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, io)
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: LIVE }, io)
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', rank: 0.95, conviction: 9 })
+  const f = fakes()
+  const asked = []
+  const seenIds = []
+  f.deps.symbolIdFor = async (creds, symbol) => { asked.push([creds.accountId, symbol]); return creds.accountId === LIVE ? null : 77 }
+  f.deps.bars = async (_c, id) => { seenIds.push(id); return f.bars }
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_000_000 })
+  assert.deepEqual(asked.slice(0, 2), [[DEMO, 'BTCUSD'], [LIVE, 'BTCUSD']], 'each account resolves with ITS OWN creds (the trail pass asks again for the open row)')
+  assert.ok(seenIds.length >= 1 && seenIds.every(id => id === 77), `bars (entry and trail) are fetched with the account-resolved id, never the shared map's 1: ${JSON.stringify(seenIds)}`)
+  assert.equal(r.entries, 1)
+  assert.ok(r.skipped.some(s => s.startsWith(`${LIVE} BTCUSD: not in this account's symbol list`)), JSON.stringify(r.skipped))
+  assert.equal(f.calls.autoTrade.length, 1)
+  assert.equal(f.calls.autoTrade[0].synth.noTarget, true, 'the no-target bracket is STATED on the synth')
+})
+
+test('an open tsmom_long trade with no book row (a resting limit that filled later) is adopted once, keeper paused; an exited row is not re-adopted', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  const tid = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES ('NATGAS','BUY','open',3.0,2.7,NULL,?,?,?,'bot_market_dispatch','pos-late',datetime('now'))`)
+    .run(TSMOM_STRATEGY, TSMOM_STRATEGY, DEMO).lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, account_id, status, source) VALUES ('NATGAS', ?, 'long', 3.0, 2.7, ?, 'active', 'autopilot')`).run(tid, DEMO)
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_000_000 })
+  assert.equal(r.adopted, 1)
+  const row = db.prepare(`SELECT * FROM momentum_book WHERE trade_id = ?`).get(tid)
+  assert.ok(row && row.status === 'open' && row.position_id === 'pos-late' && row.stop >= 2.7, JSON.stringify(row))
+  assert.equal(db.prepare(`SELECT paused FROM monitored_positions WHERE trade_id = ?`).get(tid).paused, 1)
+  // second pass: nothing new to adopt
+  const r2 = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_100_000 })
+  assert.equal(r2.adopted, 0)
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM momentum_book`).get().n, 1)
+  // rank exit → exit_sent; the trade row is still 'open' until the reconciler closes it — must NOT be adopted again
+  shadowRow(db, { symbol: 'NATGAS', action: 'exit' })
+  const r3 = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_200_000 })
+  assert.equal(r3.exits, 1)
+  assert.equal(r3.adopted, 0)
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM momentum_book`).get().n, 1)
+})

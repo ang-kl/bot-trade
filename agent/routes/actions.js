@@ -28,6 +28,17 @@ import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
 import { clearErrorLog } from '../services/error-log.js'
+// Credentials for ONE account by id (03-09-2026): the accounts registry says
+// which side (live/demo) it sits on. Null or unknown id → the primary, as
+// every caller behaved before.
+export function credsForAccountId(db, accountId) {
+  if (accountId == null || accountId === '') return getCtraderCreds(db)
+  const id = String(accountId)
+  let row = null
+  try { row = db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(id) } catch { row = null }
+  if (!row) return getCtraderCreds(db)
+  return getCtraderCreds(db, { accountId: id, isLive: Number(row.is_live) === 1 })
+}
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -1636,7 +1647,8 @@ export default function actionsRouter(db, deps = {}) {
       const row = db.prepare(`SELECT * FROM pending_orders WHERE id = ? AND status = 'working'`).get(id)
       if (!row) return res.json({ ok: true, cancelled: false, note: 'already gone' })
       if (row.order_id) {
-        const creds = getCtraderCreds(db)
+        // The ROW's account (03-09-2026), not the primary's credentials.
+        const creds = credsForAccountId(db, row.account_id)
         if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected — cannot cancel the broker leg' })
         const { cancelOrder } = await import('../lib/exec-engine.js')
         await cancelOrder(creds, { orderId: row.order_id })
@@ -1835,7 +1847,14 @@ export default function actionsRouter(db, deps = {}) {
     try {
       const orderId = req.body?.orderId
       if (!orderId) return res.status(400).json({ error: 'orderId required' })
-      const creds = getCtraderCreds(db)
+      // THE ORDER'S ACCOUNT (03-09-2026): `account` in the body, else the
+      // pending_orders row that holds this order id, else the primary. Until
+      // now a cancel always went out with the primary account's credentials,
+      // so a resting order on any other account could not be cancelled from
+      // here at all — the mis-priced ACCT-LIVE-1 limit had to be cancelled by
+      // hand in cTrader.
+      const ledgerRow = db.prepare(`SELECT account_id FROM pending_orders WHERE order_id = ? ORDER BY id DESC LIMIT 1`).get(String(orderId))
+      const creds = credsForAccountId(db, req.body?.account ?? ledgerRow?.account_id ?? null)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { cancelOrder } = await import('../lib/exec-engine.js')
       const r = await cancelOrder(creds, { orderId })

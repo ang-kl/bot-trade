@@ -447,7 +447,10 @@ export function validateOrderBracket(p) {
     if (!orderHasBracket(p)) {
       return { ok: false, reason: 'guard_naked_order: market order has no stop loss attached (set allowNaked to override)' }
     }
-    if (!orderHasTarget(p)) {
+    // allowNoTarget (03-09-2026): a STATED no-target bracket — the momentum
+    // book trails a stop and never holds a target, and said so on the synth.
+    // The stop guard above still applies; only the target check is waived.
+    if (!orderHasTarget(p) && p?.allowNoTarget !== true) {
       return { ok: false, reason: 'guard_no_target: market order has no take profit attached (set allowNaked to override)' }
     }
   }
