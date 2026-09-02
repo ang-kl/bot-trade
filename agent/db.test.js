@@ -336,3 +336,42 @@ test('backtest_runs table exists with per-symbol history + retention query shape
   // retention: the DELETE the actions route runs must be valid SQL on this schema
   assert.doesNotThrow(() => db.prepare('DELETE FROM backtest_runs WHERE id NOT IN (SELECT id FROM backtest_runs ORDER BY id DESC LIMIT 2000)').run())
 })
+
+// ---------------------------------------------------------------------------
+// STOP BEYOND ENTRY ⇒ be_moved (02-09-2026, US30 trade 1415). Every writer
+// of current_sl goes through the same latch, and open rows are backfilled.
+// ---------------------------------------------------------------------------
+import { initDB as initDbForLatch } from './db.js'
+import test2 from 'node:test'
+import assert2 from 'node:assert/strict'
+
+test2('a stop written at or beyond entry latches be_moved for every writer; never clears; backfills open rows', () => {
+  const db = initDbForLatch(':memory:')
+  const ins = db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, status) VALUES (?, ?, ?, ?, 'active')`)
+  const be = (id) => db.prepare('SELECT be_moved FROM monitored_positions WHERE id = ?').get(id).be_moved
+  const setSl = db.prepare('UPDATE monitored_positions SET current_sl = ? WHERE id = ?')
+  const s = ins.run('US30', 'short', 53005.7, 53958).lastInsertRowid
+  setSl.run(53132.6, s); assert2.equal(be(s), 0, 'a tighter stop still above entry on a short is not break-even')
+  setSl.run(53005.7, s); assert2.equal(be(s), 1, 'the stop reached entry')
+  setSl.run(53100, s);   assert2.equal(be(s), 1, 'a later loosening never clears the latch')
+  const l = ins.run('EURUSD', 'BUY', 1.1000, 1.0950).lastInsertRowid
+  setSl.run(1.0990, l); assert2.equal(be(l), 0)
+  setSl.run(1.1010, l); assert2.equal(be(l), 1, 'broker-style side names count too')
+  const u = ins.run('XAUUSD', null, 2400, 2390).lastInsertRowid
+  setSl.run(2410, u); assert2.equal(be(u), 0, 'no side → no judgement, never a guess')
+  // Backfill at boot squares rows written before the trigger existed.
+  db.exec('DROP TRIGGER trg_mp_be_moved_latch')
+  const old = ins.run('NAS100', 'long', 20000, 20050).lastInsertRowid
+  const closed = db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, status) VALUES ('GER40','long',26000,26100,'closed')`).run().lastInsertRowid
+  assert2.equal(be(old), 0)
+  const again = initDbForLatch(':memory:') // proves the migration is idempotent on a fresh DB…
+  assert2.ok(again)
+  // …and that the backfill statement squares an existing DB when run again:
+  db.exec(`UPDATE monitored_positions SET be_moved = 1
+            WHERE COALESCE(be_moved, 0) = 0 AND status = 'active'
+              AND entry_price IS NOT NULL AND current_sl IS NOT NULL
+              AND ((UPPER(COALESCE(side,'')) IN ('LONG','BUY') AND current_sl >= entry_price)
+                OR (UPPER(COALESCE(side,'')) IN ('SHORT','SELL') AND current_sl <= entry_price))`)
+  assert2.equal(be(old), 1)
+  assert2.equal(be(closed), 0, 'closed rows are history, left alone')
+})
