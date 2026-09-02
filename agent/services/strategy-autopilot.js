@@ -503,11 +503,19 @@ export function recordComboArms(db, changes, { verdicts = [], armBar = null, rea
       armBar?.minPf ?? null, armBar?.minWin ?? null, armBar?.minTrades ?? null,
     )
   }
+  // A matrix or pending row is STRATEGY-BLIND: the pair leaves the matrix
+  // as a whole, and decideChanges only condemns it once no GO of any strategy
+  // remains on it. So the strategy on the disarm entry (the verdict that
+  // condemned the pair) must not gate the close — measured 02-09-2026, first
+  // shrunk sweep: EURHUF 1d and EURCZK 1d were armed on rsi2_reversion's
+  // verdict, condemned by fib_618_fade's, and their rows stayed open because
+  // this predicate demanded the same strategy on both. Strategy arms keep
+  // the strategy match, because that IS the row's identity.
   const close = db.prepare(
     `UPDATE combo_arms SET disarmed_at = COALESCE(?, datetime('now')), disarm_reason = ?
       WHERE disarmed_at IS NULL AND kind = ?
         AND COALESCE(symbol,'') = COALESCE(?,'') AND COALESCE(timeframe,'') = COALESCE(?,'')
-        AND (? IS NULL OR strategy IS NULL OR strategy = ?)`)
+        AND (kind IN ('matrix','pending') OR ? IS NULL OR strategy IS NULL OR strategy = ?)`)
   // A disarm also closes any evidence-less row the boot reconcile opened for
   // the same pair — otherwise it would outlive the arm it stood in for.
   const closeUnevidenced = db.prepare(

@@ -502,3 +502,27 @@ test('sweepShrinkPrior: null under 30 verdicts; PF capped at 5 so a lossless com
   // Verdicts without trades are not part of the sweep's picture of a combo.
   assert.equal(sweepShrinkPrior([...wide, ...Array.from({ length: 50 }, (_, i) => V('s', `Z${i}`, '1h', 9, 99, 0))]).verdicts, 30)
 })
+
+test('recordComboArms: a matrix row is strategy-blind — a disarm condemned by ANOTHER strategy still closes it (02-09-2026 EURHUF/EURCZK 1d)', () => {
+  const db = initDB(':memory:')
+  // Armed on rsi2_reversion's verdict…
+  const armV = [{ strategy: 'rsi2_reversion', symbol: 'EURHUF', timeframe: '1d', entryMode: 'close', state: 'go', pf: 1.8, winRate: 65, trades: 25 }]
+  recordComboArms(db, decideChanges(armV, EMPTY), { verdicts: armV })
+  const open = db.prepare(`SELECT * FROM combo_arms WHERE kind = 'matrix'`).get()
+  assert.equal(open.strategy, 'rsi2_reversion')
+  // …condemned by fib_618_fade's, with no GO of any strategy left on the pair.
+  const nogo = [
+    { strategy: 'fib_618_fade', symbol: 'EURHUF', timeframe: '1d', entryMode: 'close', state: 'no-go', pf: 0.6, trades: 30 },
+    { strategy: 'rsi2_reversion', symbol: 'EURHUF', timeframe: '1d', entryMode: 'close', state: 'thin', pf: null, trades: 4 },
+  ]
+  const d = decideChanges(nogo, { enabledStrategies: ['rsi2_reversion'], autoMatrix: { EURHUF: ['1d'] }, pendingMatrix: {} })
+  assert.deepEqual(d.disarm, [{ kind: 'matrix', strategy: 'fib_618_fade', symbol: 'EURHUF', timeframe: '1d' }])
+  recordComboArms(db, d, {})
+  const closed = db.prepare(`SELECT * FROM combo_arms WHERE kind = 'matrix'`).get()
+  assert.ok(closed.disarmed_at, 'the pair left the matrix, so the row armed under a different strategy must close too')
+  assert.equal(closed.disarm_reason, 'autopilot_nogo')
+  // A STRATEGY arm keeps its strategy identity: a disarm naming another strategy leaves it open.
+  db.prepare(`INSERT INTO combo_arms (armed_at, kind, strategy) VALUES ('2026-09-01 00:00:00', 'strategy', 'rsi2_reversion')`).run()
+  recordComboArms(db, { disarm: [{ kind: 'strategy', strategy: 'fib_618_fade' }] }, {})
+  assert.equal(db.prepare(`SELECT disarmed_at FROM combo_arms WHERE kind = 'strategy'`).get().disarmed_at, null)
+})
