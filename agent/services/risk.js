@@ -1546,7 +1546,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
             // to Telegram in real time (rule 'earned_floor_admit').
             console.log(
               `[risk] earned_floor admit: ${proposal.strategy} ${proposal.symbol ?? '?'} rr=${rr.toFixed(2)} ` +
-              `W=${ef.winRate}% over ${ef.trades} closes e=${ef.e}R riskScale=${ef.riskScale}`,
+              `W=${ef.winRate}% over ${ef.trades} closes e=${ef.e}R riskScale=${ef.riskScale} via=${ef.via ?? 'measured'} acct=${acct ?? '?'}`,
             )
           } else {
             checks.earned_floor_denied = ef.reason

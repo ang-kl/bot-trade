@@ -510,10 +510,14 @@ export default function actionsRouter(db, deps = {}) {
         ...(req.body?.window != null ? { window: Number(req.body.window) } : {}),
         ...(req.body?.minSample != null ? { minSample: Number(req.body.minSample) } : {}),
         ...(req.body?.minE != null ? { minE: Number(req.body.minE) } : {}),
+        // Prior admission (#826): the switch and its risk scale must be
+        // reachable here, not only by a DB write (02-09-2026 plan, part 1).
+        ...(typeof req.body?.priorAdmit === 'boolean' ? { priorAdmit: req.body.priorAdmit } : {}),
+        ...(req.body?.priorRiskScale != null ? { priorRiskScale: Number(req.body.priorRiskScale) } : {}),
       }
       setState(db, 'earned_floor_json', JSON.stringify(next))
       const clamped = loadEarnedFloor(db)
-      console.log(`[actions] earned floor ${clamped.on ? 'ON' : 'off'} demoOnly=${clamped.demoOnly} riskScale=${clamped.riskScale} window=${clamped.window} minSample=${clamped.minSample} minE=${clamped.minE}`)
+      console.log(`[actions] earned floor ${clamped.on ? 'ON' : 'off'} demoOnly=${clamped.demoOnly} riskScale=${clamped.riskScale} window=${clamped.window} minSample=${clamped.minSample} minE=${clamped.minE} priorAdmit=${clamped.priorAdmit} priorRiskScale=${clamped.priorRiskScale}`)
       res.json({ ok: true, config: clamped })
     } catch (e) {
       res.status(400).json({ error: e.message })

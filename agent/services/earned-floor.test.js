@@ -8,6 +8,7 @@
 // where it matters, not on the helper alone.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { initDB, setState } from '../db.js'
 import { loadEarnedFloor, earnedFloorVerdict, earnedFloorReport, EARNED_FLOOR_DEFAULTS, EARNED_FLOOR_RR_BAND } from './earned-floor.js'
 import { evaluateTrade, HARD_MIN_RR, persistRiskEvent } from './risk.js'
@@ -432,4 +433,44 @@ test('gate: a prior admit approves a sub-3R demo proposal at half risk and stamp
   const rep = earnedFloorReport(db)
   assert.equal(rep.viaPrior.admittedApprovals, 1)
   assert.equal(rep.admittedApprovals, 1, 'prior admits are part of the pre-registered cohort')
+})
+
+// ---------------------------------------------------------------------------
+// Prior cohort watch (02-09-2026 plan, part 1): the route reaches the prior
+// switch, the report splits the prior population and the accounts.
+// ---------------------------------------------------------------------------
+test('POST /actions/earned-floor reaches priorAdmit and priorRiskScale (source pin) and loadEarnedFloor clamps them', () => {
+  const src = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  const route = src.slice(src.indexOf("router.post('/earned-floor'"), src.indexOf("router.post('/earned-floor'") + 2200)
+  assert.match(route, /priorAdmit: req\.body\.priorAdmit/)
+  assert.match(route, /priorRiskScale: Number\(req\.body\.priorRiskScale\)/)
+  assert.match(route, /priorAdmit=\$\{clamped\.priorAdmit\}/)
+  const db = initDB(':memory:')
+  setState(db, 'earned_floor_json', JSON.stringify({ priorAdmit: false, priorRiskScale: 7 }))
+  const cfg = loadEarnedFloor(db)
+  assert.equal(cfg.priorAdmit, false)
+  assert.equal(cfg.priorRiskScale, 1, 'clamped to the same range as riskScale')
+})
+
+test('earnedFloorReport splits the prior population (with PF) and the accounts, keeping legacy rows as unscoped', () => {
+  const db = withAccounts(initDB(':memory:'))
+  const ev = db.prepare(`INSERT INTO risk_events (symbol, side, approved, checks_json, account_id) VALUES ('EURUSD','BUY',1,?,?)`)
+  const tr = db.prepare(`INSERT INTO trades (symbol, side, status, net_pnl, closed_at, risk_event_id, account_id) VALUES ('EURUSD','BUY','closed',?,datetime('now'),?,?)`)
+  const measured = (acct) => ev.run(JSON.stringify({ earned_floor: { rr: 1.6, via: 'measured' } }), acct).lastInsertRowid
+  const prior = (acct) => ev.run(JSON.stringify({ earned_floor: { rr: 2, via: 'prior' } }), acct).lastInsertRowid
+  tr.run(60, measured(DEMO), DEMO)
+  tr.run(-20, measured(DEMO), DEMO)
+  tr.run(30, prior(DEMO), DEMO)
+  tr.run(-10, prior(DEMO2), DEMO2)
+  tr.run(15, measured(null), null) // legacy: no account on either side
+  const r = earnedFloorReport(db)
+  assert.equal(r.closedCohort.trades, 5, 'the pooled, pre-registered cohort is unchanged in meaning')
+  assert.deepEqual(r.viaPrior, { admittedApprovals: 2, closed: 2, wins: 1, winRate: 50, profitFactor: 3, net: 20 })
+  assert.deepEqual(Object.keys(r.byAccount).sort(), [DEMO, DEMO2, 'unscoped'].sort())
+  assert.equal(r.byAccount[DEMO].closed, 3)
+  assert.equal(r.byAccount[DEMO].profitFactor, 4.5)
+  assert.deepEqual(r.byAccount[DEMO].viaPrior, { closed: 1, wins: 1, winRate: 100, profitFactor: null, net: 30 })
+  assert.deepEqual(r.byAccount[DEMO2].viaPrior, { closed: 1, wins: 0, winRate: 0, profitFactor: 0, net: -10 })
+  assert.equal(r.byAccount.unscoped.closed, 1, 'legacy rows are counted, never dropped')
+  assert.equal(r.byAccount.unscoped.viaPrior.closed, 0)
 })

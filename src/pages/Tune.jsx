@@ -7,6 +7,7 @@ import { Fragment, useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import StrategyLivenessCard from '../components/StrategyLivenessCard.jsx'
 import DivergenceCard from '../components/DivergenceCard.jsx'
+import EvidenceRows from '../components/EvidenceRows.jsx'
 import CupHandleFunnelCard from '../components/CupHandleFunnelCard.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -1834,6 +1835,7 @@ export default function Tune() {
                 whole book, not per account. */}
             <Card id="sec-pipe-divergence" className="w3-hover-shadow" scope="global">
               <DivergenceCard />
+              <EvidenceRows />
             </Card>
             {/* Liveness sits directly under "What May Trade": that card is
                 where a strategy gets armed, and this is the only surface that
