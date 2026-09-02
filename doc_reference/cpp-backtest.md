@@ -47,6 +47,14 @@ line by line.
 - A parity harness feeds the same bars to both engines and compares.
   It is enforced in CI whenever the compiled binary exists on the
   runner; if the binary is absent the check is skipped, never faked.
+- Touch mode resolves a resting order against a bar in a fixed order,
+  identical in both engines (`backtest-fib.js resolvePending`,
+  `backtest.cpp`): **expiry → fill → stop-close cancel**. A bar whose
+  range touches the level fills, and the same-bar exit check then takes
+  the stop; the stop-close cancel applies only to a bar that never
+  touched. Until 02-09-2026 the cancel was tested first, which read the
+  bar's close — information the order did not have at the touch — and
+  booked as a costless cancel exactly the trades the strategy loses.
 
 ## Fallback story
 

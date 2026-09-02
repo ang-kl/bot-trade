@@ -357,7 +357,8 @@ export function sessionsView(db, { currentToken = null, presence = null, isMaste
       // FULL IP. The brief said "masked unless operationally necessary"; the
       // owner ruled it necessary (2026-07-31: "I need IP Address and location
       // for past window"). This panel is behind authentication and shows the
-      // owner their own devices. maskIp stays exported for anything public.
+      // owner their own devices. (A maskIp helper existed for anything public;
+      // nothing called it and it was deleted 02-09-2026, #815.)
       ip: s.ip || null,
     }
   })

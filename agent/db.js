@@ -552,8 +552,10 @@ const TABLES = `
   -- ALL verdicts — autopilot_verdicts keeps only bar-clearing or armed ones,
   -- so no base rate existed for a shrinkage prior. Bins are fixed (see
   -- divergence.js SWEEP_HIST_BINS); counts are stored as JSON arrays in bin
-  -- order. Pruned to 90 days by loop.js housekeeping. Shrinkage itself is
-  -- NOT implemented here — this is the measurement it will need.
+  -- order. Pruned to 90 days by loop.js housekeeping. The shrinkage prior
+  -- (strategy-autopilot.js sweepShrinkPrior, #816) is computed from the
+  -- sweep's own verdicts in memory, not read back from this table — this
+  -- table is the base rate the report shows, not the prior's input.
   CREATE TABLE IF NOT EXISTS autopilot_sweep_hist (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     sweep_at  TEXT NOT NULL DEFAULT (datetime('now')),

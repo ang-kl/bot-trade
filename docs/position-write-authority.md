@@ -221,10 +221,31 @@ concurrency change, not just a scope change:
 - **Cross-process arbitration.** The C++ TrailEngine and the Node keepers can
   both amend the same position's stop within the same second. Nothing detects
   it; `position_events` would record two writes and no conflict.
-- **Wiring the writers to the arbiter.** §70.3 defined the state machine and
-  §41's hierarchy in code (`management-state.js`), and §70.4's review now
-  *consults* it — but no writer does. Each of the fourteen still acts on its own
-  filter and asks nobody. That is the larger and riskier half, and it remains
-  undone on purpose.
+- **Wiring the writers to the arbiter.** §41's hierarchy is in code
+  (`management-state.js`: `WRITER_AUTHORITY`, `EVENT_SOURCE_AUTHORITY`,
+  `RULE_TRIGGER`), and §70.4's review *consults* it — but no writer does. Each
+  of the fourteen still acts on its own filter and asks nobody. That is the
+  larger and riskier half, and it remains undone on purpose. The §70.3 state
+  machine that used to sit beside it (`canTransition`, `arbitrate`,
+  `deriveState`) had no caller and was deleted 02-09-2026 (#815); the
+  lifecycle now lives in the journal itself — `MANAGEMENT_STATES` /
+  `nextManagementState` in `position-events.js`, stamped on every row as
+  `state_from` / `state_to` (§6).
 
 Those are the next items on §70, and this document is their input.
+
+## 6. Writers to the RECORD, not the position (02-09-2026)
+
+None of these amends or closes anything at the broker. They are listed because
+each one writes a row that a reader above trusts, and a record writer that
+nothing else knows about is how the protection-audit panel came to show a
+week-old attempt as the current state.
+
+| Writer | Writes | When |
+|---|---|---|
+| `minute-review.js` | `position_events` row, kind `authority_override` | a lower-authority source moved a hand-placed stop; the row is also the dedupe |
+| every `recordPositionEvent` caller | `state_from` / `state_to` on its own row | each event — the state is derived from the journal, never carried in memory |
+| protection audit (`naked-position-guard.js`) | `acct:<id>:protection_audit_last_json`, one per account | every sweep; the reader merges them by freshness and names stale accounts in `staleAccounts` instead of averaging them in. The pre-per-account global key still receives the loop's blocked-reconcile failures and is otherwise a fossil |
+| `stampRealisedAudit` (`trade-consistency.js`) | `trades.realised_rr`, `trades.pnl_price_mismatch` | after every price or money write — `closeTradeRow`, P&L backfill, broker-history import, broker-price reconcile |
+| `restampClosedTrades` (`index.js` at boot) | the same two columns on every closed row with both prices | once per `trade_audit_restamp_version` |
+| dispatch (`loop.js`) and the reconciler | `trades.proposal_entry_price`, `trades.analysis_id` at insert; `trades.broker_sl_initial` from the fill ACK or the first reconcile before any break-even move | per order |

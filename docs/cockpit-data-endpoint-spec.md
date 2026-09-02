@@ -138,6 +138,35 @@ socket **before** the new instrument's animations begin (BUILD-ORDER §7).
 
 ## 4. The one schema change this needs: `position_events`
 
+**Status (02-09-2026): built, and it differs from the draft below in three
+ways.** The live table is in `agent/db.js` and the writer is
+`recordPositionEvent` in `agent/services/position-events.js`:
+
+- `kind` also takes `close`, `loss_cap_close`, `position_reversed` and
+  `authority_override` (an observation minute-review writes when a
+  lower-authority writer moved a hand-placed stop — see
+  `position-write-authority.md` §3a); the column is `source`, not `actor`,
+  and there are `reason` and `detail_json` columns.
+- Every row carries the management state: `state_from` / `state_to`.
+  States advance in one direction only — `opened → be_moved → scaled_out →
+  trail_armed → trail_tightened` (`MANAGEMENT_STATES`; `nextManagementState`
+  never moves a position back, and an `sl_moved` counts as `be_moved` only
+  when the new stop sits at or beyond entry in the trade's favour). The three
+  terminal kinds end at `closed:<kind>`, so an exit's cause rides on the row.
+  `currentManagementState` reads a position's state from its own journal;
+  `lastStateBeforeExit` returns the last non-terminal state and the R at
+  that transition.
+- `GET /state/exit-counterfactual` reports `byState` beside the replay: the
+  as-traded outcome (n, wins, win rate, expectancy, total R) split by the
+  last state before the exit, with `meanRAtTransition` — the raw material of
+  a state-conditioned exit model, reported and never acted on.
+
+Write sites today: profit-keeper, loss-guardian, loss-cap, position-protect,
+stop-adopt, target-restore, minute-review, `loop.js` and `routes/actions.js`.
+Retention is 90 days (`POSITION_EVENTS_RETENTION_DAYS`).
+
+The original draft follows.
+
 The tweak journal is the only panel with **no recoverable source**.
 `monitored_positions` keeps current flags (`be_moved`, `scaled_out`) and the
 *latest* review (`last_check_at/action/reasoning`) — not a timeline.
