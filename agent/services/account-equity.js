@@ -68,31 +68,6 @@ export async function stampAccountEquity(db, creds, accountId, deps = {}) {
   return out
 }
 
-/**
- * Which enabled accounts still have no balance of their own — i.e. which ones
- * `getAccountBalance` would answer for out of the unowned global.
- *
- * Reporting, not repair: it names the gap so coverage can be asserted and
- * shown, rather than discovered again from three panels agreeing suspiciously.
- *
- * @returns {Array<{accountId:string, isLive:boolean}>}
- */
-export function accountsMissingEquity(db, getState) {
-  try {
-    const rows = db.prepare(
-      `SELECT account_id, is_live FROM accounts WHERE enabled = 1 ORDER BY account_id`,
-    ).all()
-    return rows
-      .filter((r) => {
-        const v = Number(getState(db, `acct:${String(r.account_id)}:account_balance_usd`))
-        return !(Number.isFinite(v) && v > 0)
-      })
-      .map(r => ({ accountId: String(r.account_id), isLive: r.is_live === 1 }))
-  } catch {
-    return []
-  }
-}
-
 /** cTrader's two hosts. An account is only ever reachable on its own side. */
 export const hostForSide = (isLive) => (isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')
 

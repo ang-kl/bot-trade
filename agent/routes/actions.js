@@ -64,6 +64,14 @@ export function pickBacktestSymbols(body, watchlistJson) {
  * @param {import('better-sqlite3').Database} db
  * @returns {import('express').Router}
  */
+/** The raw stored config object for a state key — {} when absent or corrupt. */
+function storedObject(db, key) {
+  try {
+    const parsed = JSON.parse(getState(db, key) || 'null')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch { return {} }
+}
+
 export default function actionsRouter(db, deps = {}) {
   const router = Router()
 
@@ -1063,10 +1071,16 @@ export default function actionsRouter(db, deps = {}) {
   // session-open breakeven lock (owner: "when markets open, XAUUSD went
   // from profit to loss" → "build the session-open guard").
   // -----------------------------------------------------------------------
+  // START FROM WHAT IS STORED, THEN PATCH (CLAUDE.md failure mode #5). This
+  // and /performance-breaker below rebuilt `next` from a fixed field list,
+  // so any stored key the list did not name was dropped by the next
+  // unrelated POST — the profit-keeper defect, two more times.
   router.post('/session-open-guard', (req, res) => {
     const cur = loadSessionOpenGuardConfig(db)
     const b = req.body || {}
     const next = {
+      ...storedObject(db, 'session_open_guard_json'),
+      ...cur,
       on: b.on !== undefined ? b.on !== false : cur.on,
       windowMin: b.windowMin !== undefined ? Math.min(120, Math.max(5, Math.round(Number(b.windowMin) || cur.windowMin))) : cur.windowMin,
       minR: b.minR !== undefined ? Math.min(0.69, Math.max(0.05, Number(b.minR) || cur.minR)) : cur.minR,
@@ -1086,6 +1100,8 @@ export default function actionsRouter(db, deps = {}) {
     const cur = loadPerformanceBreakerConfig(db)
     const b = req.body || {}
     const next = {
+      ...storedObject(db, 'performance_breaker_json'),
+      ...cur,
       on: b.on !== undefined ? b.on !== false : cur.on,
       window: b.window !== undefined ? Math.min(200, Math.max(5, Math.round(Number(b.window) || cur.window))) : cur.window,
       minTrades: b.minTrades !== undefined ? Math.min(200, Math.max(5, Math.round(Number(b.minTrades) || cur.minTrades))) : cur.minTrades,

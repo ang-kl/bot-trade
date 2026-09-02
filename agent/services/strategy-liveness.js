@@ -255,7 +255,3 @@ export function strategyLiveness(db, opts = {}) {
   }
 }
 
-/** The one-line answer: which armed strategies produced nothing at all. */
-export function silentStrategies(db, opts = {}) {
-  return strategyLiveness(db, opts).strategies.filter(s => s.verdict === 'silent')
-}

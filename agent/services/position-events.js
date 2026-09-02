@@ -67,16 +67,6 @@ export function recordPositionEvent(db, {
   } catch { /* the journal must never block trading */ }
 }
 
-/** Recent position events, newest first, optional filters. */
-export function recentPositionEvents(db, { positionId = null, symbol = null, limit = 100 } = {}) {
-  const n = Math.min(Math.max(1, Number(limit) || 100), 1000)
-  return db.prepare(`
-    SELECT * FROM position_events
-    WHERE (? IS NULL OR position_id = ?) AND (? IS NULL OR symbol = ?)
-    ORDER BY id DESC LIMIT ?
-  `).all(positionId, positionId, symbol, symbol, n)
-}
-
 /** Retention sweep — call from the loop's housekeeping, never fatal. */
 export function prunePositionEvents(db, retentionDays = POSITION_EVENTS_RETENTION_DAYS) {
   try {

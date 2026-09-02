@@ -4,7 +4,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper, clearAtrCache, readAtrCache, writeAtrCache, swingTrailLevel } from './profit-keeper.js'
-import { recentPositionEvents } from './position-events.js'
+
+const eventsFor = (db, positionId) => db.prepare('SELECT * FROM position_events WHERE position_id = ? ORDER BY id DESC').all(String(positionId))
 
 const CFG = { on: true, scope: 'external', armProfitUsd: 50, givebackPct: 40, takeProfitUsd: null }
 
@@ -465,7 +466,7 @@ test('runProfitKeeper journals a NEW trail-status SL as a position_event, and on
     positions: [{ positionId: 9001, symbolId: 1, lastSl: 2.7 }],
   })
   await runProfitKeeper(db, CREDS, deps)
-  const rows = recentPositionEvents(db, { positionId: '9001' })
+  const rows = eventsFor(db, '9001')
   const trailRows = rows.filter(r => r.kind === 'trail_tightened')
   assert.equal(trailRows.length, 1)
   assert.equal(trailRows[0].to_value, 2.7)
@@ -473,7 +474,7 @@ test('runProfitKeeper journals a NEW trail-status SL as a position_event, and on
 
   // Second pass with the SAME lastSl — no new event (the diff must be a no-op).
   await runProfitKeeper(db, CREDS, deps)
-  const rows2 = recentPositionEvents(db, { positionId: '9001' })
+  const rows2 = eventsFor(db, '9001')
   assert.equal(rows2.filter(r => r.kind === 'trail_tightened').length, 1)
 })
 
@@ -488,7 +489,7 @@ test('runProfitKeeper never throws when getTrailStatus is unavailable or disable
   deps.exec.getTrailStatus = async () => ({ enabled: false })
   const out2 = await runProfitKeeper(db, CREDS, deps)
   assert.equal(out2.errors.length, 0)
-  assert.equal(recentPositionEvents(db, { positionId: '9001' }).filter(r => r.kind === 'trail_tightened').length, 0)
+  assert.equal(eventsFor(db, '9001').filter(r => r.kind === 'trail_tightened').length, 0)
 })
 
 // ---------------------------------------------------------------------------

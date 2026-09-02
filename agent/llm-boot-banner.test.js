@@ -65,13 +65,20 @@ test('Re-Risk is actually gated, so the absolute claim is now true', () => {
   const src = fs.readFileSync(new URL('./routes/actions.js', import.meta.url), 'utf8')
   const start = src.indexOf("router.post('/risk-reassess'")
   assert.ok(start > 0, 'the route exists')
-  const body = src.slice(start, start + 2500)
-  assert.match(body, /llmBlocked/, 'the reassess route must consult the switch')
-  assert.match(body, /gate\.blocked/)
-  assert.match(body, /503/, '503 not 502: nothing failed, the capability is off')
-  // The gate has to come BEFORE the call, which is the whole point.
-  assert.ok(body.indexOf('gate.blocked') < body.indexOf('runReassessment(db'),
-    'a gate after the call is not a gate')
+  // COMMENTS STRIPPED (CLAUDE.md #2). The comment above the gate names
+  // `llmBlocked` and `503`, so the raw slice matched its own prose.
+  const body = src.slice(start, start + 2500).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(body, /const gate = await llmBlocked\(db, getState\)/, 'the reassess route must consult the switch')
+  assert.match(body, /if \(gate\.blocked\)/)
+  assert.match(body, /status\(503\)/, '503 not 502: nothing failed, the capability is off')
+  // The gate has to come BEFORE the call, which is the whole point. Both
+  // indexes are asserted found first: with the gate absent, indexOf returns
+  // -1 and `-1 < anything` used to pass vacuously.
+  const gateAt = body.indexOf('if (gate.blocked)')
+  const callAt = body.indexOf('runReassessment(db')
+  assert.ok(gateAt >= 0, 'the gate must exist in code, not in a comment')
+  assert.ok(callAt >= 0, 'the call must exist — re-anchor if it was renamed')
+  assert.ok(gateAt < callAt, 'a gate after the call is not a gate')
 })
 
 test('truthy spellings agree with the shared parser', () => {

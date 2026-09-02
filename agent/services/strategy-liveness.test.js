@@ -13,7 +13,9 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { initDB, setState } from '../db.js'
-import { strategyLiveness, silentStrategies, MIN_SCANS_FOR_VERDICT } from './strategy-liveness.js'
+import { strategyLiveness, MIN_SCANS_FOR_VERDICT } from './strategy-liveness.js'
+
+const silent = (db, opts) => strategyLiveness(db, opts).strategies.filter(s => s.verdict === 'silent')
 
 const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'live-')), 'agent.db'))
 
@@ -60,7 +62,7 @@ test('silence is NOT reported before enough scanning has happened', () => {
   const { verdictable, strategies } = strategyLiveness(db, { nowMs })
   assert.equal(verdictable, false)
   assert.equal(strategies.find(s => s.key === 'cup_handle').verdict, 'unknown')
-  assert.deepEqual(silentStrategies(db, { nowMs }), [], 'a fresh deploy must not alarm on every strategy')
+  assert.deepEqual(silent(db, { nowMs }), [], 'a fresh deploy must not alarm on every strategy')
 })
 
 test('an unarmed strategy producing nothing is not a finding', () => {
@@ -71,7 +73,7 @@ test('an unarmed strategy producing nothing is not a finding', () => {
   const cup = strategyLiveness(db, { nowMs }).strategies.find(s => s.key === 'cup_handle')
   assert.equal(cup.armed, false)
   assert.equal(cup.verdict, 'idle_unarmed')
-  assert.ok(!silentStrategies(db, { nowMs }).some(s => s.key === 'cup_handle'))
+  assert.ok(!silent(db, { nowMs }).some(s => s.key === 'cup_handle'))
 })
 
 test('signalling but never trading is its own verdict, distinct from silence', () => {

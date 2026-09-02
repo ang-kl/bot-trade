@@ -220,7 +220,3 @@ export function spendCapState(db, { now = new Date() } = {}) {
   return { cap, spent, exceeded: spent >= cap, day }
 }
 
-/** True when a hard cap is configured AND today's spend has reached it. */
-export function spendCapExceeded(db, opts = {}) {
-  return spendCapState(db, opts).exceeded === true
-}

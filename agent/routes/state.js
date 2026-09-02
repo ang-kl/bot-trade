@@ -982,9 +982,12 @@ export default function stateRouter(db) {
   //
   // #513 shipped the machinery and told the owner to "see the dry-run plan
   // against your own rows first" — then gave them a JS call they have no way to
-  // make: nothing invokes sweepUnresolvable, there is no route, and there is no
+  // make: nothing invoked sweepUnresolvable, there was no route, and there is no
   // Node REPL against production. The safety step the whole design rested on was
-  // not performable. That gap was mine.
+  // not performable. That gap was mine. Since 02-09-2026 the loop's housekeeping
+  // pass calls the writing half (step `write-off-unresolvable` in loop.js, pinned
+  // by housekeeping-wiring.test.js) with the same two evidence sources this
+  // route unions below; this route stays the read-only preview of that pass.
   //
   // THIS ROUTE CANNOT WRITE, structurally rather than by promise. It calls
   // findUnresolvableCandidates, which is a bare SELECT — NOT sweepUnresolvable
@@ -2593,17 +2596,25 @@ export default function stateRouter(db) {
     } catch (err) { res.status(500).json({ error: err.message }) }
   })
 
-  // GET /state/trades — trade journal (last 100 closed)
+  // GET /state/trades?limit=&offset= — trade journal (closed + rejected).
+  // `limit` defaults to 100 and is capped at 1000; `offset` pages. Until
+  // 02-09-2026 the LIMIT was a literal 100 and `?limit=` was silently
+  // ignored — a 183-trade week could not be read through the API at all
+  // (see the note above /strategy-asset).
   // -----------------------------------------------------------------------
   router.get('/trades', (req, res) => {
     const scope = requestedAccount(db, req)
     const acct = accountWhere(scope, 'account_id')
+    const limitRaw = Number(req.query?.limit)
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(1000, Math.floor(limitRaw)) : 100
+    const offsetRaw = Number(req.query?.offset)
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0
     const rows = db
       .prepare(
         `SELECT * FROM trades WHERE status IN ('closed', 'rejected')${acct.active ? ` AND ${acct.where}` : ''}
-         ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT 100`
+         ORDER BY COALESCE(closed_at, opened_at) DESC, id DESC LIMIT ? OFFSET ?`
       )
-      .all(...acct.params)
+      .all(...acct.params, limit, offset)
 
     // ¶D·3 — decode the label here so every reader gets the same words.
     // The owner, on a NAS100 short that lost $1,013.08: "I don't know was
@@ -3733,7 +3744,12 @@ export default function stateRouter(db) {
         const { rosterInvariantViolations } = await import('../services/account-capabilities.js')
         rosterInvariant = rosterInvariantViolations(db)
       } catch { rosterInvariant = [] }
-      res.json({ controllers: heartbeatView(db), atrRefresh, rosterInvariant })
+      // The exec-guard sync's last failure, {at, side, error} or null. Stamped
+      // by the heartbeat probe and the equity-stop push, cleared on success —
+      // a halt the sidecar refused is otherwise invisible from the panel.
+      let execGuardSync = null
+      try { execGuardSync = JSON.parse(getState(db, 'exec_guard_sync_last_error_json') || 'null') } catch { execGuardSync = null }
+      res.json({ controllers: heartbeatView(db), atrRefresh, rosterInvariant, execGuardSync })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }

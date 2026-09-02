@@ -11,7 +11,7 @@
 // of bars, both paths, one verdict.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cupHandleParity, parityScan, UNTRACED_GATES } from './cup-handle-parity.js'
+import { cupHandleParity, UNTRACED_GATES } from './cup-handle-parity.js'
 
 const HOUR = 3_600_000
 const bar = (i, o, h, l, c, v) => ({ t: i * HOUR, o, h, l, c, v })
@@ -59,6 +59,18 @@ function walk(seed, n = 260, start = 100) {
 // ---------------------------------------------------------------------------
 // Positive controls — both directions, through the complete production path
 // ---------------------------------------------------------------------------
+
+/** Every series through both paths; the disagreements kept, not counted. */
+function scanAll(series) {
+  const rows = series.map(s => ({ name: s.name ?? null, ...cupHandleParity(s.bars, '1d') }))
+  return {
+    n: rows.length,
+    fired: rows.filter(r => r.productionSignal).length,
+    twinWouldFire: rows.filter(r => r.diagnosticWouldFire).length,
+    disagreements: rows.filter(r => !r.agree),
+    blockedAt: new Set(rows.map(r => r.blockedAt).filter(Boolean)),
+  }
+}
 
 test('the textbook cup & handle fires in production AND the twin agrees', () => {
   const r = cupHandleParity(cupHandleBars(), '1d')
@@ -131,7 +143,7 @@ test('production and the twin agree across 500 structured variants — the measu
             bars: variant({ declineStep, handleBars, breakoutVol, bottomBars }),
           })
 
-  const scan = parityScan(series)
+  const scan = scanAll(series)
   assert.equal(scan.n, 500)
   assert.deepEqual(
     scan.disagreements.map(d => `${d.name}:${d.firstDivergence}`), [],
@@ -141,21 +153,19 @@ test('production and the twin agree across 500 structured variants — the measu
   // fires and nothing reaches a late gate would pass while proving nothing.
   assert.ok(scan.fired > 100, `only ${scan.fired} of 500 fired — too few to compare`)
   assert.equal(scan.twinWouldFire, scan.fired)
-  assert.ok(scan.byGate.breakout_volume > 0, 'variants must reach a LATE gate, not just the first')
+  assert.ok(scan.blockedAt.has('breakout_volume'), 'variants must reach a LATE gate, not just the first')
 })
 
 test('production and the twin agree across 200 deterministic series', () => {
   const series = Array.from({ length: 200 }, (_, i) => ({ name: `walk-${i}`, bars: walk(i * 7919 + 13) }))
-  const scan = parityScan(series)
+  const scan = scanAll(series)
 
   assert.equal(scan.n, 200)
   assert.deepEqual(
     scan.disagreements.map(d => `${d.name}:${d.firstDivergence}`), [],
     'any entry here is a real divergence between the detector and its diagnostic twin',
   )
-  // The funnel is reported in gate order, so a small count cannot be misread
-  // as "this gate rarely blocks" when it means "almost nothing reaches it".
-  assert.ok(Object.keys(scan.byGate).length > 0, 'the scan must say WHERE candidates stopped')
+  assert.ok(scan.blockedAt.size > 0, 'the scan must say WHERE candidates stopped')
 })
 
 test('the same series, run twice, produces the same verdict', () => {
@@ -184,9 +194,3 @@ test('the VWAP filter is invisible to the twin, and the harness says so', () => 
   }
 })
 
-test('parityScan discloses what it did not compare', () => {
-  const scan = parityScan([{ bars: cupHandleBars() }])
-  assert.deepEqual(scan.untracedGates, UNTRACED_GATES)
-  assert.equal(scan.fired, 1)
-  assert.equal(scan.twinWouldFire, 1)
-})

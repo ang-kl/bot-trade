@@ -28,7 +28,6 @@
 import {
   computeCupHandleSignal, computeInvCupHandleSignal,
   traceCupHandleSearch, traceInvCupHandleSearch,
-  GATE_ORDER,
 } from './cup-handle.js'
 
 /** The gates production applies that the diagnostic twin does NOT model. */
@@ -95,37 +94,3 @@ export function cupHandleParity(bars, timeframe = '1d', { dir = 1, opts = {} } =
   }
 }
 
-/**
- * Parity over many series, with the disagreements kept rather than counted.
- *
- * `byGate` is ordered by GATE_ORDER so it reads as the funnel it is: each gate
- * is only reached by what survived the one above, and an unordered histogram
- * of the same numbers would invite the "this gate rarely blocks" misreading
- * when the truth is "almost nothing reaches it".
- *
- * @param {Array<{name?: string, bars: Array, timeframe?: string, dir?: 1|-1, opts?: object}>} series
- */
-export function parityScan(series, { timeframe = '1d' } = {}) {
-  const rows = []
-  for (const s of Array.isArray(series) ? series : []) {
-    const r = cupHandleParity(s.bars, s.timeframe || timeframe, { dir: s.dir ?? 1, opts: s.opts })
-    rows.push({ name: s.name ?? null, ...r })
-  }
-  const disagreements = rows.filter(r => !r.agree)
-  const byGate = {}
-  for (const g of [...GATE_ORDER, 'trend_context']) {
-    const n = rows.filter(r => r.blockedAt === g).length
-    if (n) byGate[g] = n
-  }
-  return {
-    n: rows.length,
-    fired: rows.filter(r => r.productionSignal).length,
-    twinWouldFire: rows.filter(r => r.diagnosticWouldFire).length,
-    agreements: rows.length - disagreements.length,
-    disagreements,
-    byGate,
-    // Say what was NOT compared. A parity report that omits its own blind
-    // spots is the same species of claim as the summary that started all this.
-    untracedGates: UNTRACED_GATES,
-  }
-}

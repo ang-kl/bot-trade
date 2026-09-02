@@ -58,18 +58,6 @@ function formatScanAlert(scans, deskNote, session) {
   return lines.join('\n')
 }
 
-function formatTradeAlert(trade) {
-  const arrow = trade.side === 'long' || trade.side === 'BUY' ? '\u25B2' : '\u25BC'
-  const lines = []
-  lines.push(`${arrow} *${trade.action || 'TRADE'}* ${trade.symbol}`)
-  if (trade.entry) lines.push(`Entry: ${trade.entry}`)
-  if (trade.stopLoss) lines.push(`SL: ${trade.stopLoss}`)
-  if (trade.takeProfit) lines.push(`TP: ${trade.takeProfit}`)
-  if (trade.message) lines.push(`_${trade.message}_`)
-  lines.push(`_${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Singapore' })} SGT_`)
-  return lines.join('\n')
-}
-
 function getToken() {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN env var not set')
@@ -109,27 +97,6 @@ export async function sendScanAlert(scans, deskNote, session, opts = {}) {
     disable_web_page_preview: true,
     // Owner 01-08: one TradingView button per recommended symbol.
     ...(opts.buttons?.length ? { reply_markup: { inline_keyboard: opts.buttons } } : {}),
-  })
-  return { ok: true, messageId: msg.message_id }
-}
-
-/**
- * Send a formatted trade alert to Telegram.
- *
- * @param {{ symbol: string, side: string, action?: string, entry?: number, stopLoss?: number, takeProfit?: number, message?: string }} trade
- * @returns {Promise<{ ok: true, messageId: number }>}
- */
-export async function sendTradeAlert(trade) {
-  const botToken = getToken()
-  const chatId = getChatId()
-  const text = formatTradeAlert(trade)
-  const routed = await gate(text, { kind: 'trade' })
-  if (!routed.send) return { ok: true, queued: true, reason: routed.reason, messageId: null }
-  const msg = await tgPost(botToken, 'sendMessage', {
-    chat_id: chatId,
-    text,
-    parse_mode: 'Markdown',
-    disable_web_page_preview: true,
   })
   return { ok: true, messageId: msg.message_id }
 }

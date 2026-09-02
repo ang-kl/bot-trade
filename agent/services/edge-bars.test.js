@@ -1,7 +1,7 @@
 // node --test agent/services/edge-bars.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { GO_LIVE_BAR, ARM_BAR, BREAKER_BAR, SEED_BAR, edgeBarSummary } from './edge-bars.js'
+import { GO_LIVE_BAR, ARM_BAR, BREAKER_BAR, SEED_BAR } from './edge-bars.js'
 import { DEFAULT_GOAL } from './goal-tracker.js'
 import { DEFAULT_PERFORMANCE_BREAKER } from './performance-breaker.js'
 import { GO_PF } from './rsi2-seed.js'
@@ -17,9 +17,10 @@ test('every consumer takes its bar from the register, not a literal', () => {
 })
 
 test('the bars are ORDERED breaker < seed < arm <= goLive', () => {
-  const s = edgeBarSummary()
-  assert.equal(s.ordered, true, s.violations.join(' · '))
-  assert.deepEqual(s.violations, [])
+  assert.ok(BREAKER_BAR.profitFactor < SEED_BAR.profitFactor, 'breaker must shout below the seed floor')
+  assert.ok(SEED_BAR.profitFactor < ARM_BAR.profitFactor, 'seed must sit below the arming bar')
+  // <= with a 0.05 tolerance: arm 1.7 and goLive 1.68 are near-equal by design.
+  assert.ok(GO_LIVE_BAR.profitFactor >= ARM_BAR.profitFactor - 0.05, 'go-live must not sit below the arming bar')
 })
 
 test('an inverted ordering is REPORTED, not silently accepted', () => {

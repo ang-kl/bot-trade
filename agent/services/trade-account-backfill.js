@@ -86,30 +86,3 @@ export function backfillTradeAccounts(db, { limit = 500 } = {}) {
   return out
 }
 
-/**
- * How much of the ledger can actually answer "which account?".
- *
- * Exposed so the gate card can say "these numbers cover N% of closed trades"
- * instead of presenting a pooled figure under a per-account heading — the
- * exact failure this module exists to end. A coverage number that is low is
- * information; a per-account panel that quietly is not per-account is not.
- */
-export function accountStampCoverage(db) {
-  try {
-    const row = db.prepare(`
-      SELECT COUNT(*) AS total,
-             SUM(CASE WHEN account_id IS NOT NULL THEN 1 ELSE 0 END) AS stamped
-        FROM trades WHERE status = 'closed'
-    `).get()
-    const total = Number(row?.total || 0)
-    const stamped = Number(row?.stamped || 0)
-    return {
-      total,
-      stamped,
-      unstamped: total - stamped,
-      pct: total > 0 ? Math.round((stamped / total) * 1000) / 10 : null,
-    }
-  } catch {
-    return { total: 0, stamped: 0, unstamped: 0, pct: null }
-  }
-}

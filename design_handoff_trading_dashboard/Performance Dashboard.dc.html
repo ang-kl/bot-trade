@@ -801,7 +801,7 @@ class Component extends DCLogic {
       const rows = qsum[q].map(p => { const i = openPos.indexOf(p); return { sym: p.sym, sd: p.side + ' ' + p.lots, pnl: p.pnl, col: p.pnlCol, acct: ['·902', '·907', '·118'][PACC[i]] } })
       const tot = rows.reduce((s2, r, ri) => s2 + parseFloat(qsum[q][ri].pnl.replace(/[−+$,]/g, '')) * (qsum[q][ri].pnl[0] === '−' ? -1 : 1), 0)
       const a2 = Math.min(1, Math.abs(tot) / 120)
-      // ring palette: teal center → amber → red outer (matches the chart)
+      // ring palette: amber center → amber → red outer (matches the chart)
       const Q = { q1: ['rgba(255,196,102,', 'rgba(255,196,102,.55)'], q2: ['rgba(255,77,109,', 'rgba(255,77,109,.5)'], q3: ['rgba(199,92,60,', 'rgba(199,92,60,.55)'], q4: ['rgba(255,140,90,', 'rgba(255,140,90,.5)'] }[q]
       return { id: q, title: QTXT[q][0], txt: QTXT[q][1], rows, tot: this.m(tot, 2), totCol: this.c(tot),
         bg: Q[0] + (.1 + .28 * a2).toFixed(2) + ')', bd: Q[1], none: rows.length === 0 }

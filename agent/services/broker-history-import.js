@@ -312,23 +312,32 @@ export function judgeTradesAgainstDeals(db, { rows, deals, symbolMap = {} }) {
  * Runs over ALL matched deals, not just the ones in this import window, so a
  * single run repairs the existing record rather than only new rows.
  *
- * @returns {{examined:number, corrected:number, skippedMultiDeal:number, unchanged:number}}
+ * `error` is set (and the counts left at what landed — nothing, since the
+ * write is one transaction) when the pass threw. Before this a thrown
+ * transaction returned `{corrected: 0}` identical to a clean pass over a
+ * record that already agreed — CLAUDE.md failure mode #3, a guard whose
+ * failure reads as health.
+ *
+ * @returns {{examined:number, corrected:number, skippedMultiDeal:number, mergedMultiDeal:number, unchanged:number, error?:string}}
  */
 export function reconcileTradePricesToBroker(db) {
-  const out = { examined: 0, corrected: 0, skippedMultiDeal: 0, unchanged: 0 }
+  const out = { examined: 0, corrected: 0, skippedMultiDeal: 0, mergedMultiDeal: 0, unchanged: 0 }
   let deals = []
   try {
     deals = db.prepare(
-      `SELECT matched_trade_id AS tid, entry_price, close_price
+      `SELECT matched_trade_id AS tid, lots, entry_price, close_price
          FROM broker_deals
         WHERE matched_trade_id IS NOT NULL`,
     ).all()
-  } catch { return out }
+  } catch (e) { out.error = e.message; return out }
 
   // A trade matched to SEVERAL deals is a partial fill or a scale-out, where
-  // "the" fill price is a volume-weighted question this function does not have
-  // the volumes to answer. Counted and skipped rather than guessed at — a
-  // wrong average would be the same class of defect as the one being fixed.
+  // "the" fill price is a volume-weighted question. Where every deal in the
+  // group carries `lots`, the answer is computable and written (a
+  // lots-weighted entry, and a lots-weighted exit when every deal has one).
+  // Where any deal lacks lots the group is counted and skipped rather than
+  // guessed at — a plain average would be the same class of defect as the
+  // one being fixed.
   const byTrade = new Map()
   for (const d of deals) {
     const k = Number(d.tid)
@@ -359,14 +368,38 @@ export function reconcileTradePricesToBroker(db) {
   }
   out.slippageFilled = 0
 
+  // Lots-weighted entry (and exit) across a multi-deal group, or null when
+  // any deal lacks lots or an entry price — the caller then skips the group.
+  const weightedFill = (group) => {
+    let lotsSum = 0, entryAcc = 0, exitAcc = 0, exitLots = 0
+    for (const d of group) {
+      const lots = Number(d.lots)
+      if (!(Number.isFinite(lots) && lots > 0) || !usablePrice(d.entry_price)) return null
+      lotsSum += lots
+      entryAcc += d.entry_price * lots
+      if (usablePrice(d.close_price)) { exitAcc += d.close_price * lots; exitLots += lots }
+    }
+    if (!(lotsSum > 0)) return null
+    return {
+      entry_price: entryAcc / lotsSum,
+      // Every deal must have closed for the exit to be a whole-position number;
+      // otherwise leave it null and the existing fallback keeps the row's own.
+      close_price: exitLots === lotsSum ? exitAcc / lotsSum : null,
+    }
+  }
+
   const run = db.transaction(() => {
     for (const [tid, group] of byTrade) {
       const t = read.get(tid)
       if (!t) continue
       if (t.status !== 'closed' && t.status !== 'rejected') continue // open rows: see header
       out.examined++
-      if (group.length > 1) { out.skippedMultiDeal++; continue }
-      const d = group[0]
+      let d = group[0]
+      if (group.length > 1) {
+        d = weightedFill(group)
+        if (!d) { out.skippedMultiDeal++; continue }
+        out.mergedMultiDeal++
+      }
       // Keep whatever we already have when the broker gives no usable price —
       // a NULL from a narrower import window must never blank a real fill.
       const entry = usablePrice(d.entry_price) ? d.entry_price : t.entry_price
@@ -393,7 +426,10 @@ export function reconcileTradePricesToBroker(db) {
       stampRealisedAudit(db, tid)
     }
   })
-  try { run() } catch { /* a repair pass must never take the import down */ }
+  // A repair pass must never take the import down — but it must SAY it
+  // failed. The transaction rolled back, so every count above is what did
+  // not land; `error` is what distinguishes that from a clean pass.
+  try { run() } catch (e) { out.error = e.message }
   return out
 }
 

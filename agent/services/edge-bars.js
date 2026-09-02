@@ -70,39 +70,3 @@ export const SEED_BAR = {
   question: 'may rsi2_reversion auto-arm a combo from its own backtest?',
 }
 
-/**
- * The ordering these bars are meant to satisfy, and whether they still do.
- *
- * BREAKER < SEED < ARM <= GO_LIVE. Each step is a stricter claim than the one
- * below it: shout well before the target, arm only above it, gate go-live at
- * or above the arming bar. A future edit that inverts any step — e.g. dropping
- * the go-live PF to 1.2 while the arming bar stays at 1.7 — would mean the
- * system refuses to arm strategies that already clear the gate it is being
- * held to. That is the drift the audit was pointing at, and this is where it
- * becomes visible instead of silent.
- *
- * Reporting only. Nothing consumes this to block anything.
- */
-export function edgeBarSummary() {
-  const steps = [
-    { name: 'breaker', pf: BREAKER_BAR.profitFactor },
-    { name: 'seed', pf: SEED_BAR.profitFactor },
-    { name: 'arm', pf: ARM_BAR.profitFactor },
-    { name: 'goLive', pf: GO_LIVE_BAR.profitFactor },
-  ]
-  const violations = []
-  for (let i = 1; i < steps.length; i++) {
-    const lo = steps[i - 1]
-    const hi = steps[i]
-    // The last step is <=, not <: arm 1.7 and goLive 1.68 are near-equal by
-    // design, and calling that a violation would cry wolf on the current,
-    // owner-chosen configuration.
-    const ok = i === steps.length - 1 ? hi.pf >= lo.pf - 0.05 : hi.pf > lo.pf
-    if (!ok) violations.push(`${lo.name} (${lo.pf}) should sit below ${hi.name} (${hi.pf})`)
-  }
-  return {
-    bars: { goLive: GO_LIVE_BAR, arm: ARM_BAR, breaker: BREAKER_BAR, seed: SEED_BAR },
-    ordered: violations.length === 0,
-    violations,
-  }
-}

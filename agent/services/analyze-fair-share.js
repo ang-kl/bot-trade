@@ -148,30 +148,6 @@ export function markAnalyzed(lastAnalyzed, strategies, nowIso = new Date().toISO
   return out
 }
 
-/**
- * Armed strategies that have not had an analyze slot in `staleMin` minutes —
- * the starvation alarm. A strategy that has NEVER had one is included with
- * `waitedMin: null`, because that is the loudest case and an alarm that could
- * only fire on a stale timestamp would never fire for it at all.
- */
-export function starvedStrategies(lastAnalyzed, armedKeys, { staleMin = 240, now = Date.now() } = {}) {
-  const out = []
-  for (const key of armedKeys || []) {
-    const la = lastAt(lastAnalyzed, key)
-    if (la === 0) { out.push({ strategy: key, waitedMin: null, never: true }); continue }
-    const mins = Math.round((now - la) / 60_000)
-    if (mins >= staleMin) out.push({ strategy: key, waitedMin: mins, never: false })
-  }
-  return out.sort((a, b) => {
-    if (a.never !== b.never) return a.never ? -1 : 1
-    // Two never-cases have no wait to compare, and leaving them in armedKeys
-    // order would make the alarm's output depend on registry order — the same
-    // arbitrary tie-break this module exists to remove. Name-ordered instead.
-    if (a.never) return String(a.strategy).localeCompare(String(b.strategy))
-    return (b.waitedMin || 0) - (a.waitedMin || 0)
-  })
-}
-
 /** One line for the loop log. */
 export function fairShareLine(res) {
   if (!res?.byStrategy?.length) return null

@@ -788,7 +788,7 @@ export default function Desk() {
         id="pulse"
         title="Market pulse — trend, herd, or a level being held"
         summary={pulse?.builtAt
-          ? `${Object.keys(pulse.readings || {}).length} symbols · ${(pulse.sharp || []).length} sharp · ${(pulse.defended || []).length} held · ${(pulse.divergences || []).length} divergence(s)`
+          ? `${Object.keys(pulse.readings || {}).length} symbols · ${(pulse.sharp || []).length} sharp · ${(pulse.defended || []).length} held · ${(pulse.divergences || []).length} pair divergence(s)`
           : null}
         defaultOpen={false}
       >

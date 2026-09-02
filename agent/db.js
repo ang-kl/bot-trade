@@ -902,6 +902,14 @@ export function initDB(dbPath) {
     }
   }
 
+  // controller_heartbeats: the controller's own account of its last run
+  // (heartbeat.js beat() `detail`), for pre-existing DBs created before the
+  // column existed. Guarded like the migrations above.
+  const hbColNames = new Set(db.prepare("PRAGMA table_info(controller_heartbeats)").all().map(c => c.name));
+  if (!hbColNames.has('last_detail_json')) {
+    db.exec('ALTER TABLE controller_heartbeats ADD COLUMN last_detail_json TEXT');
+  }
+
   // Repair float-formatted broker position ids (2026-08-02). Some open paths
   // stored ctrader_position_id as "234698574.0" while the broker/deal-history
   // side uses "234698574" — so the P&L backfill never matched (52 closed

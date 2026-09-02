@@ -1037,3 +1037,47 @@ test('reclassifyBrokerCloses judges against the broker stop when it is on record
   assert.equal(reclassifyBrokerCloses(db), 1)
   assert.match(db.prepare('SELECT close_reason FROM trades').get().close_reason, /^stop loss hit/)
 })
+
+// ---------------------------------------------------------------------------
+// The dedup sweep and the duplicate-P&L repair were `catch { /* best-effort */ }`
+// — a failing sweep returned the same empty `dupsClosed` as a clean one. The
+// throw is forced with a trigger so the real transaction is what fails.
+// ---------------------------------------------------------------------------
+const REJECT_TRIGGER = `CREATE TRIGGER boom BEFORE UPDATE OF status ON trades
+  WHEN NEW.status = 'rejected' BEGIN SELECT RAISE(ABORT, 'simulated reject failure'); END`
+
+test('a dedup sweep that throws reports dedupError instead of an empty success', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  for (let i = 0; i < 2; i++) {
+    db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status, opened_at) VALUES ('GBPUSD','BUY','700','open', datetime('now'))`).run()
+  }
+  db.exec(REJECT_TRIGGER)
+  const result = reconcilePositions(db, [makeBrokerPosition({ positionId: '700', symbolName: 'GBPUSD' })], [], setState)
+  assert.equal(result.dupsClosed.length, 0, 'nothing was rejected — the transaction rolled back')
+  assert.match(String(result.dedupError), /simulated reject failure/)
+  assert.equal(result.dupPnlError, undefined, 'the other block had nothing to do and must not report')
+})
+
+test('a duplicate-P&L repair that throws reports dupPnlError', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  for (let i = 0; i < 2; i++) {
+    db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status, net_pnl, opened_at, closed_at)
+                VALUES ('GBPUSD','BUY','701','closed', -42.5, datetime('now'), datetime('now'))`).run()
+  }
+  db.exec(REJECT_TRIGGER)
+  const result = reconcilePositions(db, [], [], setState)
+  assert.match(String(result.dupPnlError), /simulated reject failure/)
+  assert.equal(db.prepare(`SELECT COUNT(*) c FROM trades WHERE status = 'closed' AND ctrader_position_id = '701'`).get().c, 2)
+})
+
+test('the loop logs a reconciler block error when the field is present', async () => {
+  const { readFileSync } = await import('node:fs')
+  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  const start = loop.indexOf('result.dupsClosed')
+  assert.ok(start > 0)
+  const slice = loop.slice(start - 200, start + 1500).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(slice, /result\.dedupError/)
+  assert.match(slice, /result\.dupPnlError/)
+})
