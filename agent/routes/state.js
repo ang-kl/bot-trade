@@ -2421,6 +2421,24 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/exit-chain — the Markov-chain exit scaffold (02-09-2026 plan,
+  // part 2): per strategy family, transition counts/probabilities over the
+  // position journal's management states and the outcome by last state
+  // before exit. Read-only; a family under the close floor is returned with
+  // status 'insufficient' and its numbers are not advice.
+  // ?days=90 (capped at journal retention) &account=<id|all> &minCloses=100
+  router.get('/exit-chain', async (req, res) => {
+    try {
+      const { exitChainReport } = await import('../services/exit-chain.js')
+      const days = Math.max(1, Number(req.query.days) || 90)
+      const minClosesPerFamily = Math.max(1, Number(req.query.minCloses) || 100)
+      const scope = requestedAccount(db, req)
+      res.json(exitChainReport(db, { days, minClosesPerFamily, accountId: scope.all ? null : (scope.accountId ?? null) }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/log-watch — the in-process log matcher (owner "yes build the
   // log-watch hook", 01-09): config, whether the console wrap is installed,
   // the rule list, and — the part that matters per failure mode #3 — which

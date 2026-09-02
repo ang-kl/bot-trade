@@ -1229,7 +1229,8 @@ export function initDB(dbPath) {
     if (!cols.has('state_to')) db.exec(`ALTER TABLE position_events ADD COLUMN state_to TEXT`);
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_trades_risk_event ON trades(risk_event_id);
-           CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);`);
+           CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);
+           CREATE INDEX IF NOT EXISTS idx_position_events_trade ON position_events(trade_id, id);`);
 
   // §70.8 / §69.4.3 TERMINAL DISPOSITION. The lineage above answers "which row
   // did this approval produce" when there IS one. What it could not answer is

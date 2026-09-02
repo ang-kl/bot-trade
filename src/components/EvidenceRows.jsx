@@ -110,9 +110,46 @@ export function TargetReviewRow({ data, error }) {
   )
 }
 
+/**
+ * Exit chain: the pure row. `data` is GET /state/exit-chain — per family the
+ * stamped-close count against the floor and, only when fitted, the outcome by
+ * last state before exit. An insufficient family shows its count, never a
+ * probability.
+ */
+export function ExitChainRow({ data, error }) {
+  if (error) return <NotVerifiable what="Exit chain" error={error} />
+  if (!data) return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading…</p>
+  const fams = Object.entries(data.families || {})
+  return (
+    <div className="flex flex-col gap-0.5 text-(length:--fs-body)">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="font-semibold">Exit chain</span>
+        <span className="text-[var(--color-text-sub)]">
+          {data.days}d · {data.stamped ?? 0} stamped of {data.n ?? 0} closes · floor {data.minCloses} per family · {String(data.verdict || '').toLowerCase()} · scaffold, not advice
+        </span>
+      </div>
+      {fams.length === 0 && <div className="text-[var(--color-text-sub)]">no families</div>}
+      {fams.map(([f, c]) => (
+        <div key={f} className="tabular-nums">
+          <span className="font-semibold">{f}:</span>{' '}
+          {c.status === 'fitted'
+            ? <>fitted on {c.stamped} · {Object.entries(c.byState || {}).map(([st, b], i) => (
+                <span key={st}>{i > 0 ? ' · ' : ''}{st} n={b.n} E {fmt(b.expectancyR)}R ({pct(b.winRate)})</span>
+              ))}</>
+            : `insufficient ${c.stamped ?? 0}/${c.minCloses ?? data.minCloses} stamped closes`}
+        </div>
+      ))}
+      {Array.isArray(data.biases) && data.biases.length > 0 && (
+        <div className="text-[var(--color-text-sub)]">journal biases: {data.biases.length} recorded (see /state/exit-chain)</div>
+      )}
+    </div>
+  )
+}
+
 export default function EvidenceRows() {
   const [floor, setFloor] = useState({ data: null, error: null })
   const [review, setReview] = useState({ data: null, error: null })
+  const [chain, setChain] = useState({ data: null, error: null })
 
   useEffect(() => {
     let alive = true
@@ -122,6 +159,9 @@ export default function EvidenceRows() {
     agentGet('/state/target-review')
       .then(d => { if (alive) setReview({ data: d?.error ? null : d, error: d?.error || null }) })
       .catch(e => { if (alive) setReview({ data: null, error: e?.message || String(e) }) })
+    agentGet('/state/exit-chain')
+      .then(d => { if (alive) setChain({ data: d?.error ? null : d, error: d?.error || null }) })
+      .catch(e => { if (alive) setChain({ data: null, error: e?.message || String(e) }) })
     return () => { alive = false }
   }, [])
 
@@ -129,6 +169,7 @@ export default function EvidenceRows() {
     <div className="mt-2 pt-1.5 border-t border-[var(--color-border)] flex flex-col gap-1.5">
       <PriorCohortRow data={floor.data} error={floor.error} />
       <TargetReviewRow data={review.data} error={review.error} />
+      <ExitChainRow data={chain.data} error={chain.error} />
     </div>
   )
 }
