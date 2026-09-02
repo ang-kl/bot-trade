@@ -62,20 +62,73 @@ export function PriorCohortRow({ data, error }) {
   )
 }
 
+/**
+ * Target review: the pure row. `data` is GET /state/target-review — one line
+ * per strategy, numbers only past the sample gates, otherwise the count
+ * against the gate so an empty reading is visibly "not enough" rather than a
+ * quiet zero.
+ */
+export function TargetReviewRow({ data, error }) {
+  if (error) return <NotVerifiable what="Target review" error={error} />
+  if (!data) return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading…</p>
+  const gates = data.gates || { minProposals: 20, minCloses: 30 }
+  const rows = Object.entries(data.strategies || {})
+  const rr = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : `${Number(v).toFixed(2)}R`)
+  const w = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : `${Number(v).toFixed(1)}%`)
+  return (
+    <div className="flex flex-col gap-0.5 text-(length:--fs-body)">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="font-semibold">Target review</span>
+        <span className="text-[var(--color-text-sub)]">
+          {data.days}d · hard floor {fmt(data.hardMinRr)}R · prior k={data.k ?? '—'} · recommendations only, nothing enforced
+        </span>
+      </div>
+      {rows.length === 0 && <div className="text-[var(--color-text-sub)]">no strategies</div>}
+      {rows.map(([key, s]) => {
+        const p = s.proposals || {}
+        const pr = s.prior
+        const re = s.realised || {}
+        return (
+          <div key={key} className="tabular-nums">
+            <span className="font-semibold">{key}:</span>{' '}
+            declared {rr(s.declaredTarget?.rr)} · own floor {rr(s.ownFloor)} ·{' '}
+            {p.insufficient
+              ? `proposals ${p.withRr ?? 0}/${p.need ?? gates.minProposals}`
+              : `median ${rr(p.medianRr)} (${pct(p.shareBelowHard == null ? null : p.shareBelowHard * 100)} below hard)`}
+            {' · '}
+            {pr
+              ? `W′ ${w(pr.shrunkWinRatePct)} E@declared ${fmt(pr.expectancyR?.declared)} break-even ${rr(pr.breakEvenRr)}`
+              : 'no prior'}
+            {' · '}
+            {re.insufficient
+              ? `closes ${re.closes ?? 0}/${re.need ?? gates.minCloses}`
+              : `realised E ${fmt(re.actual?.expectancyR)}R over ${re.closes} (PF ${pf(re.actual?.profitFactor, re.closes)})`}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function EvidenceRows() {
   const [floor, setFloor] = useState({ data: null, error: null })
+  const [review, setReview] = useState({ data: null, error: null })
 
   useEffect(() => {
     let alive = true
     agentGet('/state/earned-floor')
       .then(d => { if (alive) setFloor({ data: d?.error ? null : d, error: d?.error || null }) })
       .catch(e => { if (alive) setFloor({ data: null, error: e?.message || String(e) }) })
+    agentGet('/state/target-review')
+      .then(d => { if (alive) setReview({ data: d?.error ? null : d, error: d?.error || null }) })
+      .catch(e => { if (alive) setReview({ data: null, error: e?.message || String(e) }) })
     return () => { alive = false }
   }, [])
 
   return (
-    <div className="mt-2 pt-1.5 border-t border-[var(--color-border)]">
+    <div className="mt-2 pt-1.5 border-t border-[var(--color-border)] flex flex-col gap-1.5">
       <PriorCohortRow data={floor.data} error={floor.error} />
+      <TargetReviewRow data={review.data} error={review.error} />
     </div>
   )
 }
