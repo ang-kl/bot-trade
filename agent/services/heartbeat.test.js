@@ -1340,3 +1340,19 @@ test('wiring pins: the probe actually pulls the ring and converges the guard', a
   assert.ok(probeBody.includes('pullDecisionsIntoDb(db, exec, side, r)'), 'ring pull not wired into the probe')
   assert.ok(probeBody.includes('syncExecGuard(db, exec, side'), 'guard sync not wired into the probe')
 })
+
+// 02-09-2026 (blueprint audit). runBudgetedSubPhase beats a sub-phase's name
+// FAILED when it overruns; a name absent from CONTROLLERS lands that beat on a
+// row the panel never renders — the loss_guardian shape, again.
+test('every budgeted sub-phase name in the loop is a registered controller, and weekend_watch can clear its own failure', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+  const names = [...src.matchAll(/runBudgetedSubPhase\(db, '([a-z_]+)'/g)].map(m => m[1])
+  assert.ok(names.includes('weekend_watch'), 'fixture check: the weekend watch is a budgeted sub-phase')
+  for (const n of names) assert.ok(CONTROLLERS[n], `sub-phase '${n}' beats a name the registry does not know`)
+  assert.equal(CONTROLLERS.weekend_watch.expectedSec, 7 * 86_400, 'absence is normal for a week — only a FAILED beat should show')
+  // The watch does not beat for itself, so its FAILED beat would stand for
+  // ever without the success beat runBudgetedSubPhase now offers.
+  assert.match(src, /runBudgetedSubPhase\(db, 'weekend_watch', [^\n]*\{ beatOk: true \}\)/)
+  assert.match(src, /if \(beatOk\) await hbeat\(db, name, true\)/)
+})

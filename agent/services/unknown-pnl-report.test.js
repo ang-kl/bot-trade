@@ -94,3 +94,18 @@ test('an empty registry does not turn every row into account_not_enabled', () =>
   const out = unknownPnlReport(db, { enabledAccounts: [], exhaustedAccounts: [], nowMs: NOW })
   assert.equal(out.rows[0].reason, 'backfill_pending')
 })
+
+test('the DEFAULT clock is now, not the epoch (consistency audit 02-09-2026)', () => {
+  // `Number(null)` is 0 and isFinite(0) is true, so the default `nowMs =
+  // null` resolved to 1969-12-31 — a day no row can fall inside, so the
+  // route said "nothing is blocking" unconditionally. Clock-safe assertion:
+  // the reported day start must be TODAY's FX day, whatever the hour.
+  const db = initDB(':memory:')
+  const out = unknownPnlReport(db, {})
+  assert.equal(out.dayStart, fxDayStartSql(Date.now()))
+  assert.ok(!String(out.dayStart).startsWith('1969'), `day start ${out.dayStart} is the epoch`)
+  assert.equal(unknownPnlReport(db, { nowMs: null }).dayStart, fxDayStartSql(Date.now()))
+  assert.equal(unknownPnlReport(db, { nowMs: '' }).dayStart, fxDayStartSql(Date.now()))
+  // An explicit clock is still honoured (the test-fixture path).
+  assert.equal(unknownPnlReport(db, { nowMs: 0 }).dayStart, fxDayStartSql(0))
+})

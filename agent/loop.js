@@ -131,7 +131,7 @@ const DEDUPE_WINDOW_SQL = `-${DEDUPE_WINDOW_MIN} minutes`
  * work's own result, `{ skippedOverlap: true }`, or `{ timedOut: true }`.
  * Failures REJECT so each call site's existing non-fatal catch handles them.
  */
-async function runBudgetedSubPhase(db, name, startWork, budgetMs = SUB_PHASE_BUDGET_MS) {
+async function runBudgetedSubPhase(db, name, startWork, budgetMs = SUB_PHASE_BUDGET_MS, { beatOk = false } = {}) {
   if (subPhaseInFlight.get(name)) {
     log(`${name} from a previous cycle still in flight — skipping this cycle (no overlap)`)
     return { skippedOverlap: true }
@@ -151,6 +151,11 @@ async function runBudgetedSubPhase(db, name, startWork, budgetMs = SUB_PHASE_BUD
     await hbeat(db, name, false, `budget ${Math.round(budgetMs / 1000)}s exceeded`)
     return { timedOut: true }
   }
+  // Only a sub-phase that does not beat for itself asks for this: its
+  // FAILED beat above would otherwise stand until the next overrun, with no
+  // success ever clearing it. Phases that beat inside their own work must
+  // not be overwritten here — that would mask a failure they reported.
+  if (beatOk) await hbeat(db, name, true)
   return r
 }
 
@@ -2613,6 +2618,15 @@ async function runLoop(db) {
 
               let filled = 0
               let skipped = 0
+              // The exit-price MAGNITUDE flag (`exit_price_suspect`) is what
+              // makes the backfill re-fetch and repair a row whose recorded
+              // exit is off by a factor rather than a sign. Until 02-09-2026
+              // its only writer was GET /state/exit-price-suspects?sweep=1 —
+              // a repair whose trigger arrived only when a human asked for
+              // it (codebase audit). Pure local work; runs before the fetch
+              // so this pass sees the flags it just wrote.
+              let sweepSuspects = null
+              try { ({ sweepExitPriceSuspects: sweepSuspects } = await import('./services/exit-price-suspects.js')) } catch { sweepSuspects = null }
               for (const acct of targets) {
                 // Pacing only ever delays an account whose gap did NOT fill
                 // last time — a permanently unfillable row (closing deal
@@ -2620,6 +2634,10 @@ async function runLoop(db) {
                 // broker fetch per account every cycle, forever.
                 if (!closeSeen && !dueForBackfill(acct)) { skipped++; continue }
                 try {
+                  if (sweepSuspects) {
+                    const sw = sweepSuspects(db, { accountId: acct })
+                    if (sw.flagged || sw.cleared) log(`Exit-price suspects [${acct}]: ${sw.flagged} flagged, ${sw.cleared} cleared of ${sw.scanned} scanned`)
+                  }
                   const creds = { host, clientId, clientSecret, accessToken, accountId: acct }
                   const bf = await backfillClosedPnl(db, creds, { accountId: acct })
                   noteBackfillAttempt(acct, bf)
@@ -2637,15 +2655,27 @@ async function runLoop(db) {
               // the veto it causes. `ok` is false only when the ledger has
               // rows the repair has never even reached — a gap it cannot fill
               // is a broker fact, a gap it never tried is our own.
+              //
+              // CORRECTED 02-09-2026 (codebase audit): `ok` was
+              // `st.unresolved >= 0`, a count compared to zero — true unless
+              // the SQL threw — so the failure this comment describes could
+              // never be reported: the error text was computed and dropped,
+              // consecutive_failures never moved, CONTROLLER FAILING could
+              // not fire. It now keys on rows never attempted for longer than
+              // the repair's own cadence (a row closed seconds ago is not a
+              // failure, the paced pass may not have reached it yet).
               try {
                 const { pnlReconciliationState } = await import('./services/pnl-backfill.js')
                 const st = pnlReconciliationState(db)
                 const hb = await import('./services/heartbeat.js')
+                const unreached = st.unresolved >= 0 && st.neverTriedOverdue > 0
                 hb.beat(db, 'pnl_reconcile', {
-                  ok: st.unresolved >= 0,
-                  error: st.unresolved > 0 && st.neverTried > 0
-                    ? `${st.neverTried} closed trade(s) with no realised P&L have never been attempted`
-                    : null,
+                  ok: st.unresolved >= 0 && !unreached,
+                  error: st.unresolved < 0
+                    ? 'pnl reconciliation state could not be read'
+                    : unreached
+                      ? `${st.neverTriedOverdue} closed trade(s) with no realised P&L have never been attempted (15+ min after close)`
+                      : null,
                   detail: st,
                 })
               } catch { /* observability only */ }
@@ -3948,7 +3978,7 @@ async function runLoop(db) {
         // Its own tiered client: weekend_watch and position_monitor both sit on
         // the DEFAULT tier today, but sharing one client would silently pin
         // this phase to the monitor's model if either task were ever re-tiered.
-        await runBudgetedSubPhase(db, 'weekend_watch', () => runWeekendWatchPhase(db, s, weekendPositions, getAnthropicClient('weekend_watch')), SUB_PHASE_BUDGET_MS * 2)
+        await runBudgetedSubPhase(db, 'weekend_watch', () => runWeekendWatchPhase(db, s, weekendPositions, getAnthropicClient('weekend_watch')), SUB_PHASE_BUDGET_MS * 2, { beatOk: true })
       }
 
       // ---------------------------------------------------------------------

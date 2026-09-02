@@ -166,3 +166,17 @@ test('the sweep stamps the flag, clears it on repair, and writes no prices', asy
   assert.equal(r3.cleared, 1)
   assert.equal(db.prepare('SELECT exit_price_suspect FROM trades WHERE id = ?').get(badId).exit_price_suspect, 0)
 })
+
+// 02-09-2026 (codebase audit). The magnitude flag is what makes pnl-backfill
+// re-fetch and repair a row; its only writer was a GET route with ?sweep=1 —
+// a repair whose trigger arrived only by hand. Pin the loop wiring, before the
+// backfill so the pass sees the flags it just wrote.
+test('the suspect sweep runs on the loop, per account, before the P&L backfill (wiring pin)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+  const sweep = src.indexOf('sweepSuspects(db, { accountId: acct })')
+  const backfill = src.indexOf('backfillClosedPnl(db, creds, { accountId: acct })')
+  assert.ok(sweep > 0, 'the loop must call the sweep')
+  assert.ok(backfill > sweep, 'and call it BEFORE the backfill fetch')
+  assert.match(src, /import\('\.\/services\/exit-price-suspects\.js'\)/)
+})

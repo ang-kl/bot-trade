@@ -708,7 +708,7 @@ export function exhaustedTradeIds(db, { minAttempts = 6, accountId = null, limit
  * visible as a stalled controller rather than only as a daily-loss veto
  * firing hours later — the same "silence is not health" lesson as §43.
  */
-export function pnlReconciliationState(db, { accountId = null } = {}) {
+export function pnlReconciliationState(db, { accountId = null, overdueMin = 15 } = {}) {
   try {
     const scope = accountId == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
     const args = accountId == null ? [] : [String(accountId)]
@@ -716,11 +716,15 @@ export function pnlReconciliationState(db, { accountId = null } = {}) {
       SELECT COUNT(*) AS unresolved,
              MIN(closed_at) AS oldest,
              MAX(COALESCE(pnl_attempts, 0)) AS maxAttempts,
-             SUM(CASE WHEN COALESCE(pnl_attempts, 0) = 0 THEN 1 ELSE 0 END) AS neverTried
+             SUM(CASE WHEN COALESCE(pnl_attempts, 0) = 0 THEN 1 ELSE 0 END) AS neverTried,
+             SUM(CASE WHEN COALESCE(pnl_attempts, 0) = 0
+                       AND closed_at IS NOT NULL
+                       AND datetime(REPLACE(closed_at, 'T', ' ')) < datetime('now', ?)
+                      THEN 1 ELSE 0 END) AS neverTriedOverdue
         FROM trades
        WHERE status = 'closed' AND net_pnl IS NULL
          AND COALESCE(pnl_unresolvable, 0) = 0 ${scope}
-    `).get(...args) || {}
+    `).get(`-${Math.max(0, Number(overdueMin) || 0)} minutes`, ...args) || {}
     return {
       unresolved: Number(row.unresolved) || 0,
       oldestClosedAt: row.oldest || null,
@@ -731,8 +735,13 @@ export function pnlReconciliationState(db, { accountId = null } = {}) {
       // the earlier "deal history had no matching close" log blamed coverage
       // for what was an account-scoping bug.
       neverTried: Number(row.neverTried) || 0,
+      // …and a row nobody has tried for longer than the repair's own cadence
+      // is the failure the heartbeat exists to show. A row closed seconds ago
+      // is not (the paced pass may simply not have reached it yet), which is
+      // why the heartbeat keys on THIS count and not on `neverTried`.
+      neverTriedOverdue: Number(row.neverTriedOverdue) || 0,
     }
   } catch {
-    return { unresolved: -1, oldestClosedAt: null, maxAttempts: 0, neverTried: 0, error: true }
+    return { unresolved: -1, oldestClosedAt: null, maxAttempts: 0, neverTried: 0, neverTriedOverdue: 0, error: true }
   }
 }
