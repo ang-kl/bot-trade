@@ -28,6 +28,7 @@
 import { getState, setState } from '../db.js'
 import { enabledStrategies } from './strategies.js'
 import { armedTradeKeys, disarmStrategyEverywhere } from './stage-matrix.js'
+import { noteLiveDisarm } from './strategy-autopilot.js'
 
 export const DEFAULT_EDGE_WATCHDOG = {
   on: true,          // enforcement armed by default (owner: "no alpha decay")
@@ -127,6 +128,9 @@ export function runEdgeWatchdog(db, { notify } = {}) {
       const scopes = disarmStrategyEverywhere(db, io, key, { neverZero: false })
       if (scopes.length === 0) continue
       setState(db, seenKey, String(e.newestId))
+      // Tell the autopilot: a live disarm holds for the cool-off, and the
+      // divergence tracker sees who ended the arm (02-09-2026).
+      try { noteLiveDisarm(db, key, 'watchdog') } catch { /* never undoes the disarm */ }
       const action = { strategy: key, did: 'disarmed_no_edge', scopes, expectancy: e.expectancy, profitFactor: pf, winRate: e.winRate, trades: e.trades, net: e.net }
       actions.push(action)
       try {

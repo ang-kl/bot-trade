@@ -450,3 +450,25 @@ test('the sweep does NOT adopt a wider broker stop — the alert must survive', 
   const after = db.prepare('SELECT current_sl FROM monitored_positions WHERE trade_id = ?').get(t.lastInsertRowid)
   assert.equal(after.current_sl, 1.09, 'the book must keep disagreeing')
 })
+
+test('a CLEAN account (nothing open, nothing at the broker) still gets its per-account record (02-09-2026)', async () => {
+  // The clean branch used to `continue` without writing the record, so once
+  // the whole-book merge began naming stale accounts, an account with nothing
+  // open read as "NOT audited for 12h" — production showed exactly that for
+  // ACCT-DEMO-2 and ACCT-DEMO-3 while their sweeps ran every minute.
+  seedPosition(A, 'EURUSD', '111', 1.05)
+  const exec = {
+    reconcile: async (c) => (String(c.accountId) === A
+      ? { position: [{ positionId: '111', stopLoss: 1.05, takeProfit: 1.09 }] }
+      : { position: [] }),
+  }
+  const T = Date.parse('2026-09-02T02:00:00Z')
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec, nowMs: T })
+  assert.equal(out.accounts, 2)
+  const recB = lastProtectionAudit(db, { accountId: B, nowMs: T + 60_000 })
+  assert.equal(recB.hasRun, true, 'the clean account was audited and must say so')
+  assert.equal(recB.checked, 0)
+  assert.equal(recB.ageSec, 60)
+  const all = lastProtectionAudit(db, { nowMs: T + 60_000 })
+  assert.equal(all.accountsStale, 0, 'a clean account is not a stale account')
+})

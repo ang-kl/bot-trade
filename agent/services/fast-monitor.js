@@ -652,10 +652,11 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       if (due('log_inspector', 300, nowMs)) {
         try {
           const { runLogInspector } = await import('./log-inspector.js')
-          const { disarmStrategyEverywhere } = await import('./stage-matrix.js')
           const { getState: gs, setState: ss } = await import('../db.js')
           const notify = (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {})
-          const out = runLogInspector(db, { now: nowMs, notify, io: { disarmStrategyEverywhere, getState: gs, setState: ss } })
+          // No disarm actuator is handed in (02-09-2026): the inspector
+          // reports, the live evaluators act.
+          const out = runLogInspector(db, { now: nowMs, notify, io: { getState: gs, setState: ss } })
           hb.beat(db, 'log_inspector', { ok: !out.errors?.length, error: out.errors?.length ? out.errors.join(' · ').slice(0, 300) : null })
           if (out.inserted || out.falsified) {
             console.log(`[fast-monitor] log inspector: +${out.inserted} finding(s), ${out.autoApplied} auto, ${out.confirmed}/${out.falsified}/${out.expired} confirmed/falsified/expired`)

@@ -37,7 +37,6 @@ export const INSPECTOR_DEFAULTS = {
   directiveRepeatMin: 3,    // identical directives in the window = unheeded
   effectLagMin: 120,        // beat-ok vs effect-record lag that flags
   autoApplyTiming: true,    // owner scope decision: bounded auto ON
-  autoApplyToggles: true,
 }
 
 export function loadInspectorConfig(db) {
@@ -53,7 +52,6 @@ export function loadInspectorConfig(db) {
         directiveRepeatMin: num(p.directiveRepeatMin, INSPECTOR_DEFAULTS.directiveRepeatMin),
         effectLagMin: num(p.effectLagMin, INSPECTOR_DEFAULTS.effectLagMin),
         autoApplyTiming: p.autoApplyTiming !== false,
-        autoApplyToggles: p.autoApplyToggles !== false,
       }
     }
   } catch { /* corrupt — defaults */ }
@@ -397,7 +395,7 @@ const TIMING_KEY_ALLOWLIST = new Set([
   'monitor_interval_min', // fast-monitor base cadence — the one timing knob today
 ])
 
-export function applyPrinciple(db, finding, cfg, io = {}) {
+export function applyPrinciple(db, finding, cfg) {
   const kind = finding.principle_kind
   if (kind === 'timing_change' && cfg.autoApplyTiming) {
     const { key, value, revert_to } = finding.principle_params || {}
@@ -405,22 +403,13 @@ export function applyPrinciple(db, finding, cfg, io = {}) {
     setState(db, key, String(value))
     return { applied: true, status: 'auto_applied', revert_to }
   }
-  if (kind === 'strategy_tweak' && cfg.autoApplyToggles) {
-    const { strategy, action } = finding.principle_params || {}
-    if (action !== 'disarm' || !strategy) {
-      // Arming is NEVER the inspector's job — same rule as every breaker.
-      return { applied: false, status: 'proposed', why: 'only disarms auto-apply' }
-    }
-    try {
-      const fn = io.disarmStrategyEverywhere
-      if (!fn) return { applied: false, status: 'proposed', why: 'no actuator wired' }
-      const scopes = fn(db, io, strategy)
-      return { applied: scopes.length > 0, status: scopes.length > 0 ? 'auto_applied' : 'proposed', scopes }
-    } catch {
-      return { applied: false, status: 'proposed', why: 'actuator failed' }
-    }
-  }
-  return { applied: false, status: 'proposed' }
+  // strategy_tweak auto-apply REMOVED 02-09-2026 (blueprint audit; owner:
+  // "one system"). It was a third strategy-disarm actuator beside the edge
+  // watchdog and the adaptive breaker, listed in no design document, and no
+  // producer ever emitted `principle_kind: 'strategy_tweak'` — an actuator
+  // that was armed, configured and unreachable. The inspector REPORTS; the
+  // two live evaluators act, and the autopilot now honours their disarms.
+  return { applied: false, status: 'proposed', ...(kind === 'strategy_tweak' ? { why: 'strategy toggles are never the inspector\'s to apply' } : {}) }
 }
 
 // ---------------------------------------------------------------------------

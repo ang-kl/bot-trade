@@ -104,30 +104,61 @@ export function loadArmBar(db) {
   }
 }
 
+/** Disarm floor as a fraction of the arm bar's PF — see decideChanges. */
+export const DISARM_PF_FRACTION = 0.85
+/** How long a strategy the LIVE evaluators disarmed stays off the autopilot's arm list. */
+export const LIVE_DISARM_COOL_OFF_MS = 24 * 3_600_000
+
 export function decideChanges(verdicts, current, opts = {}) {
   const maxChanges = opts.maxChanges ?? 4
   // Strict ARMING bar (owner): a backtest "GO" (PF≥1.1) is too loose to put
   // real money on — it armed coin-flip combos like AUDUSD·4h (PF 1.50) that
-  // lose. Only a PROVEN combo gets armed. Disarm still triggers on NO-GO, so a
-  // GO-below-bar armed combo is kept, not churned (live results / the Edge
-  // Watchdog handle decay). Thresholds are configurable.
+  // lose. Only a PROVEN combo gets armed. Thresholds are configurable.
   // Defaults from edge-bars.js — see that file for why this bar deliberately
   // differs from the go-live gate and the breaker floor.
   const armMinPf = opts.armMinPf ?? ARM_BAR.profitFactor
   const armMinWin = opts.armMinWin ?? ARM_BAR.winRatePct
   const armMinTrades = opts.armMinTrades ?? ARM_BAR.minTrades
   const armGrade = (v) => (v.pf ?? 0) >= armMinPf && (v.winRate ?? 0) >= armMinWin && (v.trades ?? 0) >= armMinTrades
+  // DISARM FLOOR (02-09-2026, ML audit). Disarm used to trigger only on
+  // NO-GO — PF below 1.1 — while arming needed 1.5: a 0.4-PF hysteresis that
+  // kept a false arm in place through dozens of re-judgements of the same
+  // window (~3.9% of zero-edge combos clear the bar at n=20; the sweep
+  // re-runs every 10–30 min). The floor now sits at 85% of the arm bar, so
+  // an arm that stops clearing anything near its own evidence is dropped.
+  const disarmMinPf = opts.disarmMinPf ?? Math.max(1, armMinPf * DISARM_PF_FRACTION)
+  // LIVE DISARM COOL-OFF (02-09-2026, consistency + ML audits). The adaptive
+  // breaker disarmed rsi2_reversion twice on 01-09 and this function re-armed
+  // it 56 and 24 minutes later on an unchanged backtest: two evaluators
+  // overriding each other on the same signal. A strategy the live evaluators
+  // disarmed stays off THIS list for the cool-off; the backtest cannot vote
+  // against live money for a day.
+  const liveDisarms = opts.liveDisarms && typeof opts.liveDisarms === 'object' ? opts.liveDisarms : {}
+  const coolOffMs = opts.coolOffMs ?? LIVE_DISARM_COOL_OFF_MS
+  const nowMs = opts.nowMs ?? Date.now()
+  const coolingOff = (strategy) => {
+    const t = Date.parse(liveDisarms[strategy] || '')
+    return Number.isFinite(t) && nowMs - t < coolOffMs
+  }
   const arm = []
   const disarm = []
+  const cooledOff = []
   const has = (m, sym, tf) => Array.isArray(m?.[sym]) && m[sym].includes(tf)
 
-  const gos = verdicts.filter(v => v.state === 'go')       // any GO protects an existing arm from disarm
-  const armGos = gos.filter(armGrade)                       // only these clear the bar to be NEWLY armed
-  const nogos = verdicts.filter(v => v.state === 'no-go')
+  const gos = verdicts.filter(v => v.state === 'go' && (v.pf ?? 0) >= disarmMinPf) // a GO above the floor protects an existing arm
+  const armGos = verdicts.filter(v => v.state === 'go' && armGrade(v))                 // only these clear the bar to be NEWLY armed
+  // Condemned: NO-GO, or a GO whose PF fell below the disarm floor. A THIN
+  // verdict (edge on too few trades) stays neutral either way — absence of
+  // evidence is not evidence of decay.
+  const nogos = verdicts.filter(v => v.state === 'no-go' || (v.state === 'go' && Number.isFinite(v.pf) && v.pf < disarmMinPf))
 
   // ARM: only combos that CLEAR THE BAR. close-confirm → strategy enable +
   // per-instrument matrix entry; touch (fib only) → pending matrix entry.
   for (const v of armGos) {
+    if (coolingOff(v.strategy)) {
+      if (!cooledOff.some(c => c.strategy === v.strategy)) cooledOff.push({ strategy: v.strategy, until: new Date(Date.parse(liveDisarms[v.strategy]) + coolOffMs).toISOString() })
+      continue
+    }
     if (v.entryMode === 'touch') {
       if (!has(current.pendingMatrix, v.symbol, v.timeframe)) {
         arm.push({ kind: 'pending', strategy: v.strategy, symbol: v.symbol, timeframe: v.timeframe })
@@ -176,7 +207,36 @@ export function decideChanges(verdicts, current, opts = {}) {
     arm: applied.filter(c => c.action === 'arm').map(strip),
     disarm: applied.filter(c => c.action === 'disarm').map(strip),
     suggestions: overflow, // keeps `action` — the suggestion text needs it
+    cooledOff,             // strategies the live evaluators disarmed — not re-armed this sweep
+    disarmMinPf,
   }
+}
+
+const LIVE_DISARMS_KEY = 'autopilot_live_disarms_json'
+
+/** {strategy: ISO time of the last live disarm} — read by decideChanges via maybeRunAutopilot. */
+export function loadLiveDisarms(db) {
+  try {
+    const p = JSON.parse(getState(db, LIVE_DISARMS_KEY) || '{}')
+    return p && typeof p === 'object' ? p : {}
+  } catch { return {} }
+}
+
+/**
+ * A LIVE evaluator (edge watchdog, adaptive breaker) disarmed a strategy.
+ * Two records, one call: the cool-off stamp decideChanges honours, and the
+ * combo_arms close so the divergence tracker can see that the live half —
+ * not a backtest — ended the arm.
+ */
+export function noteLiveDisarm(db, strategy, reason, { nowMs = Date.now() } = {}) {
+  if (!strategy) return
+  try {
+    const prev = loadLiveDisarms(db)
+    setState(db, LIVE_DISARMS_KEY, JSON.stringify({ ...prev, [strategy]: new Date(nowMs).toISOString() }))
+  } catch { /* a bookkeeping failure must never undo a disarm */ }
+  try {
+    recordComboArms(db, { arm: [], disarm: [{ kind: 'strategy', strategy }] }, { reason: String(reason || 'live'), at: new Date(nowMs).toISOString().slice(0, 19).replace('T', ' ') })
+  } catch { /* same */ }
 }
 
 // Replica of fib-strategy.js timeCapFor (not exported there): fixed table for
@@ -277,8 +337,11 @@ export async function evaluateAll(db, creds, deps) {
             verdicts.push({
               strategy: strat.key, symbol, timeframe: tf, entryMode,
               state: v ? v.state : 'no-go',
-              trades: stats.trades || 0, pf: stats.profitFactor ?? null,
-              winRate: stats.winRatePct ?? null, total: stats.totalProfitPct ?? 0,
+              // Unrounded where the engine offers it (JS); the C++ fast path
+              // returns rounded figures — parity there is by the same
+              // rounding, and a 0.005 bar miss on fib is the accepted cost.
+              trades: stats.trades || 0, pf: stats.profitFactorRaw ?? stats.profitFactor ?? null,
+              winRate: stats.winRatePctRaw ?? stats.winRatePct ?? null, total: stats.totalProfitPct ?? 0,
               wf: `${wf.positive}/${wf.active}`, wfActive: wf.active, wfPositive: wf.positive,
               wfWorstMddPct: wf.worstMddPct, maxDrawdownPct: stats.maxDrawdownPct ?? null,
               losses: stats.losses ?? null,
@@ -583,6 +646,7 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   const armBar = loadArmBar(db)
   const changes = decideChanges(verdicts, current, {
     maxChanges, armMinPf: armBar.minPf, armMinWin: armBar.minWin, armMinTrades: armBar.minTrades,
+    liveDisarms: loadLiveDisarms(db),
   })
   // Divergence tracker: bounded history of the verdicts that matter, every
   // sweep, whatever mode we are in — suggest-mode owners get the record too.
@@ -599,7 +663,10 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   // computed at hardcoded thresholds would drift the moment the owner dials
   // autopilot_arm_bar_json) so it never overstates what the bot will trade.
   const armable = verdicts.filter(v => v.state === 'go' && (v.pf ?? 0) >= armBar.minPf && (v.winRate ?? 0) >= armBar.minWin && (v.trades ?? 0) >= armBar.minTrades).length
-  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable at PF≥${armBar.minPf}/W≥${armBar.minWin}%/n≥${armBar.minTrades} (${goCount} GO at the loose bar)${errors.length ? `, ${errors.length} errors` : ''}.${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
+  const cooled = changes.cooledOff?.length
+    ? ` ${changes.cooledOff.length} strategy(ies) held off — disarmed live, cooling until ${changes.cooledOff.map(c => `${c.strategy} ${c.until.slice(11, 16)}Z`).join(', ')}.`
+    : ''
+  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable at PF≥${armBar.minPf}/W≥${armBar.minWin}%/n≥${armBar.minTrades} (${goCount} GO at the loose bar; disarm floor PF<${changes.disarmMinPf.toFixed(2)})${errors.length ? `, ${errors.length} errors` : ''}.${cooled}${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
 
   if (mode === 'suggest' || (isLive && !allowLive)) {
     const all = [...changes.disarm.map(c => `disarm ${describe(c)}`), ...changes.arm.map(c => `arm ${describe(c)}`), ...changes.suggestions.map(c => `${c.action} ${describe(c)}`)]

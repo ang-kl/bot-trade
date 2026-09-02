@@ -716,7 +716,22 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       // No local rows AND no broker positions is a genuinely clean account —
       // but a broker position with no local row is exactly what the audit is
       // for, so an empty openRows does not skip the pass.
-      if (!openRows.length && !positions.length) { out.accounts++; if (obliged.has(String(id))) reachedObliged++; continue }
+      if (!openRows.length && !positions.length) {
+        out.accounts++
+        if (obliged.has(String(id))) reachedObliged++
+        // RECORD THE CLEAN PASS (02-09-2026). This branch used to skip the
+        // per-account record, so an account with nothing open read as "NOT
+        // audited for 12h" the moment the whole-book merge started naming
+        // stale accounts — a false alarm minted by the fix that removed the
+        // false reassurance. Nothing open, verified nothing open, said so.
+        try {
+          setState(db, auditKeyFor(id), JSON.stringify({
+            at: new Date(deps.nowMs ?? Date.now()).toISOString(), ok: true, accountId: String(id),
+            checked: 0, unmatched: 0, naked: 0, targetless: 0, phantom: 0,
+          }))
+        } catch { /* non-fatal */ }
+        continue
+      }
       const brokerSl = positions.map(p => ({
         positionId: p.positionId,
         stopLoss: p.stopLoss ?? null,

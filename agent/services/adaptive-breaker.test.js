@@ -127,3 +127,23 @@ test('off → no actions even with a streak', () => {
   for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
   assert.equal(runAdaptiveBreaker(db, {}).skipped, 'off')
 })
+
+test('a broker-side close with net_pnl still NULL does not END the streak (02-09-2026)', () => {
+  // The freshest stop-out lands with NULL money until the paced backfill
+  // fills it. `(null ?? 0) < 0` read that as "not a loss" and stopped the
+  // count at the exact trade that should have extended it.
+  const db = initDB(':memory:')
+  const ins = (net, minsAgo) => db.prepare(
+    `INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at) VALUES ('X','BUY','closed','fib_618_fade',?, datetime('now', ?))`
+  ).run(net, `-${minsAgo} minutes`)
+  ins(null, 1)   // newest: broker-side, money not yet filled
+  ins(-5, 10)
+  ins(-7, 20)
+  ins(-9, 30)
+  ins(4, 40)
+  const s = strategyLossStreak(db, 'fib_618_fade')
+  assert.equal(s.streak, 3, 'unknown money is skipped, not counted as a win')
+  // A known win still ends it.
+  ins(3, 0)
+  assert.equal(strategyLossStreak(db, 'fib_618_fade').streak, 0)
+})

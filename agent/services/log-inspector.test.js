@@ -113,12 +113,16 @@ test('applyPrinciple bounds: timing allowlist enforced; only disarms auto-apply'
   const t2 = applyPrinciple(db, { principle_kind: 'timing_change', principle_params: { key: 'monitor_interval_min', value: 2, revert_to: '1' } }, cfg)
   assert.equal(t2.applied, true)
   assert.equal(getState(db, 'monitor_interval_min'), '2')
-  // strategy_tweak: arm is refused, disarm goes through the injected actuator.
+  // strategy_tweak NEVER applies (02-09-2026): the inspector reports, the
+  // live evaluators act. Even with an actuator handed in, nothing is called.
   const calls = []
   const io = { disarmStrategyEverywhere: (_db, _io, key) => { calls.push(key); return ['global'] }, getState, setState }
   assert.equal(applyPrinciple(db, { principle_kind: 'strategy_tweak', principle_params: { strategy: 'x', action: 'arm' } }, cfg, io).applied, false)
-  assert.equal(applyPrinciple(db, { principle_kind: 'strategy_tweak', principle_params: { strategy: 'x', action: 'disarm' } }, cfg, io).applied, true)
-  assert.deepEqual(calls, ['x'])
+  const dis = applyPrinciple(db, { principle_kind: 'strategy_tweak', principle_params: { strategy: 'x', action: 'disarm' } }, cfg, io)
+  assert.equal(dis.applied, false)
+  assert.equal(dis.status, 'proposed')
+  assert.deepEqual(calls, [], 'no actuator reachable from the inspector')
+  assert.equal('autoApplyToggles' in INSPECTOR_DEFAULTS, false, 'the dial is gone with the branch')
 })
 
 test('falsifier pass: confirmed, falsified, and expired-on-absent-evidence', () => {

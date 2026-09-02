@@ -2070,9 +2070,18 @@ export function prepareStatements(db) {
       WHERE id = ?
     `),
 
+    // be_moved / scaled_out are one-way latches, written as MAX on purpose
+    // (02-09-2026, codebase audit): the loop writes them from a snapshot
+    // taken BEFORE scan/analyze, and the fast monitor's trade guards set
+    // them in between (trade-guard.js updGuard/updSl). A plain `= ?` wrote
+    // the stale 0 back over the guard's 1, and `decideGuardActions` could
+    // re-arm break-even on a position whose stop had already moved. Nothing
+    // in the system ever resets either flag on purpose, so MAX loses nothing.
     updatePositionMetrics: db.prepare(`
       UPDATE monitored_positions
-      SET mfe_r = ?, mae_r = ?, be_moved = ?, scaled_out = ?
+      SET mfe_r = ?, mae_r = ?,
+          be_moved = MAX(COALESCE(be_moved, 0), COALESCE(?, 0)),
+          scaled_out = MAX(COALESCE(scaled_out, 0), COALESCE(?, 0))
       WHERE id = ?
     `),
 
