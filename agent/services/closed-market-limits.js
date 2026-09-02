@@ -210,10 +210,14 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   ).run(new Date(nowMs).toISOString())
 
   const side = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
-  const symbolMapJson = getState(db, 'symbol_id_map')
-  const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
-  const symbolId = symbolMap[symbol.toUpperCase()]
-  if (!symbolId) return { skipped: 'symbol_unknown' }
+  // THE ACCOUNT'S OWN id (03-09-2026): the global map belongs to the account
+  // it was built from; on ACCT-LIVE-1 its ids for LLY.US and GD.US were other
+  // instruments and a live limit went out at 6.56. An id that cannot be
+  // verified for this account is a refusal with a reason, never a guess.
+  const { resolveSymbolId } = await import('../lib/ctrader-creds.js')
+  const resolved = await resolveSymbolId(db, creds, symbol, opts.symbolDeps || {})
+  const symbolId = resolved.id
+  if (!symbolId) return { skipped: 'symbol_unknown', reason: resolved.reason || null, source: resolved.source }
 
   // Idempotency FIRST (before any WS call): if a limit already rests at
   // essentially this entry, leave it — this runs every loop while the market

@@ -337,3 +337,26 @@ test('a pending row with no approval id leaves the trade alone', () => {
   assert.equal(r.filled, 1)
   assert.equal(db.prepare(`SELECT risk_event_id FROM trades WHERE id = ?`).get(tradeId).risk_event_id, null)
 })
+
+test("03-09-2026: the id is THIS ACCOUNT's — a non-primary account whose symbol list cannot be read is refused, never served the shared map", async () => {
+  // Measured on ACCT-LIVE-1: the shared map's ids for LLY.US and GD.US were
+  // other instruments there, and a live buy limit went out at 6.56.
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_account_id', '42')
+  setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+  const f = fakes()
+  const symbolDeps = { wsGetSymbolsList: async () => { throw new Error('timeout') } }
+  const other = await placeClosedMarketLimit(db, { ...CREDS, accountId: '43' }, 'US30', SYNTH, { ...f, symbolDeps })
+  assert.equal(other.skipped, 'symbol_unknown')
+  assert.match(other.reason, /^symbol_map_unverified: no symbol list for …43 \(timeout\) and the global map belongs to …42/)
+  assert.equal(f.placed.length, 0, 'nothing reached the broker')
+  // with the account's own list the order goes out on the account's id
+  const own = { wsGetSymbolsList: async () => ({ symbol: [{ symbolName: 'US30', symbolId: 9007 }] }) }
+  const ok = await placeClosedMarketLimit(db, { ...CREDS, accountId: '43' }, 'US30', SYNTH, { ...f, symbolDeps: own })
+  assert.equal(ok.placed, true)
+  assert.equal(f.placed[0].symbolId, 9007, 'the account-resolved id, not the shared map\'s 7')
+  // the primary keeps working from the shared map when its own fetch fails
+  const primary = await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, { ...f, symbolDeps })
+  assert.equal(primary.placed, true)
+  assert.equal(f.placed[1].symbolId, 7)
+})

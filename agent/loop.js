@@ -496,16 +496,24 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     log(`Risk sizing: ${symbol} ${requestedVol} → ${volLots} (${riskResult.sizing_note})`)
   }
 
-  // We need symbolId — look it up from previously stored symbol map, or skip
-  const symbolMapJson = getState(db, 'symbol_id_map')
-  const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
-  const symbolId = symbolMap[symbol.toUpperCase()]
+  // We need symbolId — THIS ACCOUNT's id (03-09-2026). The global
+  // symbol_id_map belongs to the account it was built from; on ACCT-LIVE-1
+  // its ids for LLY.US and GD.US were other instruments (read at 6.56 and
+  // 11.52 against 1,159 and 364 on the demos) and a live limit went out at
+  // 6.56. resolveSymbolId reads the account's own symbol list and refuses
+  // with a reason when it cannot verify the id — a wrong instrument is worse
+  // than no order.
+  const { resolveSymbolId } = await import('./lib/ctrader-creds.js')
+  const resolvedSymbol = await resolveSymbolId(db, {
+    host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId, ready: true,
+  }, symbol)
+  const symbolId = resolvedSymbol.id
   if (!symbolId) {
     // §70.8: THE ONLY GENUINELY SILENT DROP ON THIS PATH. The gate approved,
     // and this returned with nothing but a console line — no risk_events row,
     // no decision_log row. Whoever later asked "why didn't it trade?" could
     // only be told the count did not add up. Now it says so in the ledger.
-    const reason = `symbol_id_unknown: ${symbol} is not in symbol_id_map — call POST /actions/symbol-map to register it`
+    const reason = resolvedSymbol.reason || `symbol_id_unknown: ${symbol} is not in symbol_id_map — call POST /actions/symbol-map to register it`
     persistPostApprovalVeto(db, proposal, reason)
     log(`RISK VETO ${symbol} ${side}: ${reason}`)
     return null
@@ -576,6 +584,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // 2-3 digit symbols allow and the broker rejects it (INVALID_REQUEST).
     ...(slDistance ? { relativeStopLoss: relativePoints(slDistance, symbolDigits) } : {}),
     ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, symbolDigits) } : {}),
+    // A STATED no-target bracket (momentum book: trailing stop, no target)
+    // waives only the target guard in exec-engine; the stop guard still holds.
+    ...(synth.noTarget === true && !tpDistance ? { allowNoTarget: true } : {}),
     // Spike protection: broker-side stop trigger method (config-gated no-op
     // when unset — see lib/order-protection.js).
     ...(await import('./lib/order-protection.js')).stopTriggerField(riskCfg),
@@ -1583,8 +1594,8 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       let sendSL = eval_.newSL
       let sendTp = keepTp
       try {
-        const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
-        const symbolId = symbolMap[(pos.symbol || '').toUpperCase()]
+        const { resolveSymbolId } = await import('./lib/ctrader-creds.js')
+        const symbolId = (await resolveSymbolId(db, { host, clientId, clientSecret, accessToken, accountId, ready: true }, pos.symbol || '')).id
         if (symbolId) {
           const { getVolumeMeta } = await import('./lib/lot-sizing.js')
           const { roundToDigits } = await import('./services/trade-guard.js')
@@ -1613,9 +1624,10 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
     // Per-symbol volume math — lotSize varies by asset class; a hardcoded
     // constant here was the TRADING_BAD_VOLUME bug (see lib/lot-sizing.js).
     const volumeMeta = async () => {
-      const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
-      const symbolId = symbolMap[(pos.symbol || '').toUpperCase()]
-      if (!symbolId) throw new Error(`symbolId unknown for ${pos.symbol}`)
+      const { resolveSymbolId } = await import('./lib/ctrader-creds.js')
+      const resolved = await resolveSymbolId(db, { host, clientId, clientSecret, accessToken, accountId, ready: true }, pos.symbol || '')
+      const symbolId = resolved.id
+      if (!symbolId) throw new Error(resolved.reason || `symbolId unknown for ${pos.symbol}`)
       const { getVolumeMeta } = await import('./lib/lot-sizing.js')
       return getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
     }
@@ -3392,6 +3404,9 @@ async function runLoop(db) {
           deps: {
             autoTrade,
             symbolMap,
+            // THIS ACCOUNT's id for the symbol (03-09-2026) — the global map
+            // gave ACCT-LIVE-1 other instruments for LLY.US and GD.US.
+            symbolIdFor: async (creds, symbol) => (await (await import('./lib/ctrader-creds.js')).resolveSymbolId(db, creds, symbol)).id,
             bars: async (creds, symbolId) => (await getRegimeBars(creds, symbolId, { preferredTfs: [bookCfg.timeframe], fallbackTf: bookCfg.timeframe, count: bookCfg.atrPeriod + 10 })).bars,
             spot: (creds, symbolId) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId).catch(() => null),
             // The book never holds a target: takeProfit null is the stated

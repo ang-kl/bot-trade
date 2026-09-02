@@ -104,6 +104,9 @@ export function buildEntrySynth({ symbol, price, atr, cfg, conviction = null, ra
     overall_conviction: Number.isFinite(Number(conviction)) ? Number(conviction) : cfg.conviction,
     auto_trade: true,
     marketOnly: true,
+    // Stated intent, not an omission: the book trails a stop and never holds a
+    // target. autoTrade turns this into allowNoTarget on the market payload.
+    noTarget: true,
     time_cap_minutes: null,
     source: 'momentum_book',
     synthesis: `TS momentum long — ${symbol} ranked ${rankPct != null ? Math.round(Number(rankPct) * 100) + 'th pct' : 'top band'} by trailing return; stop ${cfg.stopAtr}×ATR(${cfg.atrPeriod}) = ${sl.toFixed(5)}, trailing, no target. Exit when the name leaves the top band or the stop is hit.`,
@@ -151,6 +154,8 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   const insBook = db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note)
                               VALUES (?, ?, ?, ?, 'long', ?, ?, ?, ?, ?, 'open', ?)`)
   const tradeRowFor = db.prepare(`SELECT id, ctrader_position_id, entry_price, sl_price FROM trades WHERE symbol = ? AND account_id = ? AND label_strategy = ? AND status = 'open' ORDER BY id DESC LIMIT 1`)
+  const openTsmomTrades = db.prepare(`SELECT id, symbol, ctrader_position_id, entry_price, sl_price FROM trades WHERE account_id = ? AND label_strategy = ? AND status = 'open' AND id NOT IN (SELECT trade_id FROM momentum_book WHERE trade_id IS NOT NULL) ORDER BY id ASC`)
+  summary.adopted = 0
 
   for (const acct of accounts) {
     const accountId = String(acct.accountId)
@@ -174,14 +179,36 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       } catch (err) { summary.skipped.push(`${accountId} ${symbol}: close failed — ${err.message}`) }
     }
 
+    // ADOPT FILLS the book did not see land: a closed-market limit placed
+    // through autoTrade returns nothing at dispatch and fills hours later as
+    // an ordinary tsmom_long trade — which the keeper would then manage with
+    // its partial-at-1R and bank-at-4R. Measured 03-09 07:24 SGT: the first
+    // pass placed 14 resting limits and the book held 0 rows. Every open
+    // tsmom_long trade on this account without a book row is adopted here,
+    // the keeper paused, the ATR filled in by the trail pass below.
+    for (const t of openTsmomTrades.all(accountId, TSMOM_STRATEGY)) {
+      if (openRow.get(accountId, t.symbol)) continue
+      insBook.run(t.id, accountId, t.symbol, t.ctrader_position_id != null ? String(t.ctrader_position_id) : null,
+        t.entry_price, t.sl_price, null, null, new Date(now).toISOString(), `adopted filled order (trade ${t.id})`)
+      db.prepare(`UPDATE monitored_positions SET paused = 1 WHERE trade_id = ?`).run(t.id)
+      summary.adopted++
+      log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price})`)
+    }
+
     // ENTRIES: one per symbol per account, capped, sized by the gate.
     for (const [symbol, r] of enters) {
       if (openRow.get(accountId, symbol)) continue
       if ((openCount.get(accountId)?.n || 0) >= cfg.maxPositionsPerAccount) { summary.skipped.push(`${accountId}: at maxPositionsPerAccount`); break }
       const may = deps.mayTrade ? deps.mayTrade(accountId, symbol) : { ok: true, item: null }
       if (!may.ok) { summary.skipped.push(`${accountId} ${symbol}: ${may.reason}`); continue }
-      const symbolId = deps.symbolMap?.[String(symbol).toUpperCase()]
-      if (symbolId == null) { summary.skipped.push(`${symbol}: not in symbol map`); continue }
+      // THIS ACCOUNT's id (03-09-2026): `symbolIdFor(creds, symbol)` reads the
+      // account's own symbol list; the shared map is the fallback only for
+      // callers that inject no resolver (tests). The first pass with the
+      // shared map read LLY.US at 6.56 on ACCT-LIVE-1 and ordered it.
+      const symbolId = deps.symbolIdFor
+        ? await deps.symbolIdFor(creds, symbol)
+        : deps.symbolMap?.[String(symbol).toUpperCase()]
+      if (symbolId == null) { summary.skipped.push(`${accountId} ${symbol}: not in this account's symbol list`); continue }
       try {
         const bars = deps.bars ? await deps.bars(creds, symbolId) : []
         const atr = atrOf(bars, cfg.atrPeriod)
@@ -205,7 +232,9 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   for (const row of db.prepare(`SELECT * FROM momentum_book WHERE status = 'open'`).all()) {
     const acct = accounts.find(a => String(a.accountId) === String(row.account_id))
     const creds = acct ? credsFor(acct) : null
-    const symbolId = deps.symbolMap?.[String(row.symbol).toUpperCase()]
+    const symbolId = creds && deps.symbolIdFor
+      ? await deps.symbolIdFor(creds, row.symbol)
+      : deps.symbolMap?.[String(row.symbol).toUpperCase()]
     // A closed trade closes the book row; the reconciler is the authority on the close.
     const t = row.trade_id != null ? db.prepare(`SELECT status FROM trades WHERE id = ?`).get(row.trade_id) : null
     if (t && t.status === 'closed') {
