@@ -366,6 +366,14 @@ export const DEFAULT_RISK_CONFIG = {
                                    // fiction — veto (doc_reference/
                                    // microstructure-frequent-trading-notes.md).
                                    // 0 disables the check.
+  maxEntryDriftFracOfSL: 0.25,     // Entry-drift gate (owner "do both",
+                                   // 03-09-2026): the live quote vs the
+                                   // proposal's entry, adverse-positive, as a
+                                   // fraction of the SL distance. Past it the
+                                   // trade that would fill is not the one the
+                                   // gate approved (NATGAS rsi2 filled 0.64R
+                                   // past its entry: a 1.2R plan, a 0.34R
+                                   // trade). 0 disables the check.
   maxCurrencyExposure: 2,          // Net long/short exposure to any one ccy.
   maxClusterExposure: 2,           // Net directional exposure to any one
                                    // correlation cluster (gold/USD, US
