@@ -1613,6 +1613,15 @@ export default function Tune() {
     : {}
   const pendingGoCount = Object.values(pendingGoMatrix).reduce((n, tfs) => n + tfs.length, 0)
   const pendingGoSummary = Object.entries(pendingGoMatrix).map(([s, tfs]) => `${s} (${tfs.join(', ')})`).join(' · ')
+  // Autopilot dials as the action enforces them (/state/config `autopilot`).
+  // An older agent that does not emit the block yields "not reported", never
+  // an invented default — the copy must not claim a bar it cannot see.
+  const autopilotBar = config?.autopilot?.arm_bar
+  const autopilotBarText = autopilotBar
+    ? `PF ≥ ${autopilotBar.minPf} · WR ≥ ${autopilotBar.minWin}% · n ≥ ${autopilotBar.minTrades}`
+    : 'arm bar not reported by this agent'
+  const autopilotMaxChanges = config?.autopilot?.max_changes ?? '—'
+  const autopilotAllowLive = config?.autopilot?.allow_live === true
   const pendingArmed = config?.pending_mode_enabled === true || config?.pending_mode_enabled === 'true'
   const pendingMatrixSummary = config?.pending_matrix && typeof config.pending_matrix === 'object'
     ? Object.entries(config.pending_matrix).map(([s, tfs]) => `${s} (${(tfs || []).join(', ')})`).join(' · ')
@@ -1800,14 +1809,20 @@ export default function Tune() {
               <Segmented label="Strategy Autopilot mode" value={config?.autopilot_mode || 'off'}
                 options={['off', 'suggest', 'auto'].map(m => ({ value: m, label: m }))}
                 onChange={m => {
-                  if (m === 'auto' && !window.confirm('AUTO mode: every ~24h the bot backtests all strategies and arms GO combos / disarms decayed ones by itself (max 4 changes per run, announced on Telegram, never on LIVE accounts). You stay in charge via /pause, Disarm and these buttons. Enable?')) return
+                  // The confirm and the caption read the SAME dials the action
+                  // enforces (config.autopilot from /state/config), so the page
+                  // cannot describe a gate the code no longer applies. Until
+                  // 02-09-2026 this said "arms GO combos … max 4 … never on
+                  // LIVE": the autopilot arms only combos clearing the arm bar,
+                  // the cap is configurable, and LIVE is a flag.
+                  if (m === 'auto' && !window.confirm(`AUTO mode: the bot re-backtests every strategy × symbol × timeframe on a session-adaptive cadence and arms combos clearing the arm bar (${autopilotBarText}) / disarms decayed ones by itself — at most ${autopilotMaxChanges} changes per run, announced on Telegram, ${autopilotAllowLive ? 'LIVE accounts INCLUDED (allowLive is on)' : 'demo accounts only (allowLive is off)'}. You stay in charge via /pause, Disarm and these buttons. Enable?`)) return
                   run(async () => {
                     await agentPost('/actions/autopilot', { mode: m })
                     setConfig(c => ({ ...c, autopilot_mode: m }))
                   }, `Autopilot: ${m}`)
                 }} />
               <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-                nightly evidence loop — every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies within a 4-change cap
+                evidence loop on a session-adaptive cadence — arms combos clearing <span className="font-semibold tabular-nums">{autopilotBarText}</span>, max {autopilotMaxChanges} changes per run, {autopilotAllowLive ? 'LIVE accounts included' : 'demo accounts only'}; every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies
               </span>
             </div>
             </Card>

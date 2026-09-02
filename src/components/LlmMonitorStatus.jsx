@@ -38,18 +38,37 @@ function hhmmUtc(iso) {
 export default function LlmMonitorStatus() {
   const [health, setHealth] = useState(null)
   const [open, setOpen] = useState(false)
+  // 02-09-2026 (UI audit): a failed fetch used to leave `health` null, and
+  // null rendered NOTHING — an unreachable health route was indistinguishable
+  // from "LLM fine". Absence of the reading is not evidence of health, so a
+  // failure now shows as its own small badge, muted rather than amber: it is
+  // not a monitor failure, it is a failure to find out.
+  const [fetchError, setFetchError] = useState(null)
 
   useEffect(() => {
     let alive = true
     const poll = () => {
       agentGet('/state/llm-monitor-health')
-        .then(h => { if (alive) setHealth(h) })
-        .catch(() => { /* best effort — absence is not itself alarming */ })
+        .then(h => { if (alive) { setHealth(h); setFetchError(null) } })
+        .catch(e => { if (alive) setFetchError(e?.message || String(e)) })
     }
     poll()
     const t = setInterval(() => { if (!pageAsleep()) poll() }, POLL_MS)
     return () => { alive = false; clearInterval(t) }
   }, [])
+
+  if (fetchError && !health?.degraded) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)]"
+        title={`LLM monitor health could not be read — ${fetchError}. This is not a monitor failure; it is a failure to find out.`}
+      >
+        <span aria-hidden="true">○</span>
+        <span className="hidden truncate lg:inline">AI monitor: not verifiable</span>
+        <span className="sr-only">LLM monitor health not verifiable: {fetchError}</span>
+      </span>
+    )
+  }
 
   if (!health?.degraded) return null
 

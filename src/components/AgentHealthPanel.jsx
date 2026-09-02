@@ -27,7 +27,7 @@ import { createPortal } from 'react-dom'
 import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { useAnchoredPopover } from '../lib/use-anchored-popover.js'
 import {
-  deployReading, controllerReading, loopReading, overdue, dur, toText,
+  deployReading, controllerReading, loopReading, rosterReading, overdue, dur, toText,
   CONTROLLER_TONE, worst,
 } from '../lib/agent-health-view.js'
 import Badge from './common/Badge.jsx'
@@ -183,7 +183,10 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
   })
   const loop = loopReading(health)
   const ctl = controllerReading(beats?.controllers)
-  const overall = err ? 'error' : worst(worst(deploy.state, loop.state), ctl.state)
+  // The roster invariant folds into the dot: an account claiming MANAGE that
+  // nothing can reach is an error, whatever the controllers say.
+  const roster = rosterReading(beats?.rosterInvariant)
+  const overall = err ? 'error' : worst(worst(worst(deploy.state, loop.state), ctl.state), roster.state)
 
   return (
     <>
@@ -228,7 +231,7 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
                 // this panel IS a popover, and opening a second one over it
                 // would land outside the first and dismiss it on the way.
                 navigator.clipboard?.writeText(
-                  toText({ health, controllers: beats?.controllers, deploy, loop, atr: beats?.atrRefresh }),
+                  toText({ health, controllers: beats?.controllers, deploy, loop, atr: beats?.atrRefresh, roster }),
                 ).catch(() => { /* denied — the text is selectable by hand */ })
               }}
               className="ml-auto glass-inset rounded-[var(--radius-control)] px-2 py-0.5 cursor-pointer"
@@ -261,6 +264,12 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
                   </>}
             </Line>
             <ControllerRows bad={ctl.bad} />
+
+            {/* The roster invariant. Rendered only when it is NOT ok: a
+                holding invariant is the normal case and a line saying so on
+                every open would be noise, but a broken one — or an absent
+                reading — must never look like health. */}
+            {roster.state !== 'ok' && <Line state={roster.state}>{roster.text}</Line>}
 
             {/* #170: the ATR sweep's own account of itself. A heartbeat can
                 only say ok/failed; this says how many symbols it had, how many

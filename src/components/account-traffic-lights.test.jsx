@@ -76,3 +76,26 @@ describe('AccountTrafficLights', () => {
     expect(seen.alarms).toEqual([])
   })
 })
+
+// 02-09-2026 (UI audit): a failed fetch used to be swallowed into "no alarms".
+// The render-prop now carries a fetchError reading, null until a fetch fails.
+describe('AccountTrafficLights fetch failure', () => {
+  it('hands the caller a fetchError slot, null before any fetch', () => {
+    let seen = null
+    renderToStaticMarkup(
+      <AccountTrafficLights>{(v) => { seen = v; return <span>ok</span> }}</AccountTrafficLights>,
+    )
+    expect('fetchError' in seen).toBe(true)
+    expect(seen.fetchError).toBe(null)
+  })
+
+  it('the consumer says NOT VERIFIABLE on a fetch error rather than rendering clean rows (source pin)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('./AccountPhaseSwitches.jsx', import.meta.url), 'utf8').replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    expect(src).toMatch(/fetchError && \(/)
+    expect(src).toMatch(/Traffic lights not verifiable/)
+    const lights = readFileSync(new URL('./AccountTrafficLights.jsx', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+    expect(lights).toMatch(/\.catch\(e => \{ if \(alive\) setFetchError/)
+    expect(lights).not.toMatch(/\.catch\(\(\) => \{\s*\}\)/)
+  })
+})
