@@ -110,8 +110,14 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
         // donchian_breakout disarm was silently outvoted for days by
         // per-account trade pins (2026-08-31). The helper holds the strategy
         // wherever it is the last one armed, same never-go-dark rule as below.
-        const scopes = disarmStrategyEverywhere(db, io, key)
-        action = { strategy: key, streak, did: 'disarmed_strategy', scopes }
+        // Hand-pinned DEMO arms are held (owner, 03-09-2026): the demo split
+        // exists to measure a strategy's losses, and the breaker disarming
+        // rsi2 on ACCT-DEMO-4 two minutes after the split (21:11 SGT) ended
+        // the measurement it was set up for. The disarm still lands on the
+        // global list and on live scopes, and the held scopes are recorded.
+        const scopes = disarmStrategyEverywhere(db, io, key, { exemptHandPinnedDemo: true })
+        const heldPinnedDemo = [...(scopes.held || [])]
+        action = { strategy: key, streak, did: 'disarmed_strategy', scopes: [...scopes], heldPinnedDemo }
         // The autopilot honours a cool-off after a live disarm (02-09-2026):
         // it re-armed this breaker's rsi2 disarm twice in one morning.
         if (scopes.length) { try { noteLiveDisarm(db, key, 'breaker') } catch { /* never undoes the disarm */ } }
