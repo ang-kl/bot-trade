@@ -302,11 +302,26 @@ export function earnedFloorPriorReport(db, { k = EARNED_FLOOR_PRIOR_TRADES } = {
  * trades.risk_event_id, so the cohort is exactly the population the gate
  * admitted below HARD_MIN_RR, nothing inferred.
  */
+/** Closes → {closed, wins, winRate, profitFactor, net}; profitFactor null = no losses yet, 0 = nothing won. */
+function cohortStats(rows) {
+  const wins = rows.filter(r => Number(r.net_pnl) > 0)
+  const grossWin = wins.reduce((s, r) => s + Number(r.net_pnl), 0)
+  const grossLoss = Math.abs(rows.filter(r => Number(r.net_pnl) < 0).reduce((s, r) => s + Number(r.net_pnl), 0))
+  return {
+    closed: rows.length,
+    wins: wins.length,
+    winRate: rows.length ? Math.round((wins.length / rows.length) * 1000) / 10 : null,
+    profitFactor: grossLoss > 0 ? Math.round((grossWin / grossLoss) * 100) / 100 : (grossWin > 0 ? null : 0),
+    net: Math.round(rows.reduce((s, r) => s + Number(r.net_pnl), 0) * 100) / 100,
+  }
+}
+
 export function earnedFloorReport(db) {
   const config = loadEarnedFloor(db)
   let admitted = 0
   let admitEvents = 0
-  let viaPrior = { admittedApprovals: 0, closed: 0, wins: 0, net: 0 }
+  let viaPrior = { admittedApprovals: 0, closed: 0, wins: 0, winRate: null, profitFactor: null, net: 0 }
+  let byAccount = {}
   let closed = { trades: 0, wins: 0, winRate: null, profitFactor: null, net: 0 }
   try {
     // DISTINCT OPPORTUNITIES, not approval events. The scanner re-evaluates
@@ -337,12 +352,25 @@ export function earnedFloorReport(db) {
         `SELECT t.net_pnl FROM trades t JOIN risk_events r ON r.id = t.risk_event_id
           WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL AND r.approved = 1 AND r.checks_json LIKE '%"via":"prior"%'`
       ).all()
-      viaPrior = {
-        admittedApprovals: pc.distinct_n || 0,
-        closed: prows.length,
-        wins: prows.filter(r => Number(r.net_pnl) > 0).length,
-        net: Math.round(prows.reduce((s, r) => s + Number(r.net_pnl), 0) * 100) / 100,
+      viaPrior = { admittedApprovals: pc.distinct_n || 0, ...cohortStats(prows) }
+    } catch { /* leave the split empty */ }
+    // PER ACCOUNT (02-09-2026 plan, part 1). The pooled cohort above is the
+    // pre-registered verdict; the widening decision is read per demo account,
+    // so the same join is grouped by trades.account_id. Legacy rows with a
+    // NULL account land in 'unscoped' — counted, never silently dropped.
+    try {
+      const arows = db.prepare(
+        `SELECT t.net_pnl, t.account_id, (r.checks_json LIKE '%"via":"prior"%') AS via_prior
+           FROM trades t JOIN risk_events r ON r.id = t.risk_event_id
+          WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL AND r.approved = 1 AND r.checks_json LIKE '%"earned_floor"%'`
+      ).all()
+      const groups = {}
+      for (const r of arows) {
+        const k = r.account_id == null || r.account_id === '' ? 'unscoped' : String(r.account_id)
+        const g = groups[k] || (groups[k] = { all: [], prior: [] })
+        g.all.push(r); if (r.via_prior) g.prior.push(r)
       }
+      byAccount = Object.fromEntries(Object.entries(groups).map(([k, g]) => [k, { ...cohortStats(g.all), viaPrior: cohortStats(g.prior) }]))
     } catch { /* leave the split empty */ }
     const rows = db.prepare(
       `SELECT t.net_pnl FROM trades t
@@ -369,6 +397,7 @@ export function earnedFloorReport(db) {
     admittedApprovals: admitted,
     admitEvents,
     viaPrior,
+    byAccount,
     closedCohort: closed,
     verdict: closed.trades >= EARNED_FLOOR_VERDICT_TARGET.closes
       ? (closed.profitFactor === null || closed.profitFactor >= EARNED_FLOOR_VERDICT_TARGET.minPf ? 'pass' : 'fail')
