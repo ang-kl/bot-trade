@@ -44,6 +44,15 @@ export const EARNED_FLOOR_DEFAULTS = {
   window: 30,      // rolling closed-trade window the win rate is measured on
   minSample: 15,   // never earn a floor on a handful of trades
   minE: 0.15,      // expectancy in R the measured W must clear at the rr
+  // PRIOR ADMISSION (owner order 02-09-2026 18:50 SGT: "let the prior admit
+  // on demo at half risk"). When the live sub-floor sample is under
+  // minSample, the strategy's live W is shrunk toward its last-sweep
+  // backtest W with k phantom trades and the same expectancy test is applied
+  // to W'. DEMO ACCOUNTS ONLY, whatever demoOnly says, at priorRiskScale of
+  // the per-trade budget. A measured sample at or above minSample is judged
+  // as before; the prior never overrides a measured verdict.
+  priorAdmit: true,
+  priorRiskScale: 0.5,
 }
 
 /** Load config from agent_state 'earned_floor_json'; junk degrades to defaults. */
@@ -62,6 +71,8 @@ export function loadEarnedFloor(db) {
         window: Math.round(num(p.window, EARNED_FLOOR_DEFAULTS.window, 5, 200)),
         minSample: Math.round(num(p.minSample, EARNED_FLOOR_DEFAULTS.minSample, 5, 200)),
         minE: num(p.minE, EARNED_FLOOR_DEFAULTS.minE, 0, 2),
+        priorAdmit: p.priorAdmit !== false,
+        priorRiskScale: num(p.priorRiskScale, EARNED_FLOOR_DEFAULTS.priorRiskScale, 0.05, 1),
       }
     }
   } catch { /* corrupt — defaults */ }
@@ -104,6 +115,37 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
     accountId: String(accountId), rrBand: { below: EARNED_FLOOR_RR_BAND },
   })
   if (edge.trades < cfg.minSample) {
+    // THE PRIOR PATH (owner order 02-09-2026). The measured path needs
+    // minSample closes under 3R that the gate itself refuses to produce —
+    // 7 of 30 in two days, measured that morning. With a thin sample the
+    // verdict is taken on W' = (n·W_live + k·W_bt)/(n + k), demo accounts
+    // only, at priorRiskScale. Every admit is stamped `via: 'prior'` so the
+    // cohort report can split the two populations. No sweep prior for the
+    // strategy → the thin-sample refusal exactly as before.
+    if (cfg.priorAdmit && Number(row.is_live) === 0) {
+      const prior = strategyPriorFor(db, strategy)
+      if (prior) {
+        const n = edge.trades
+        const wLive = n > 0 && Number.isFinite(Number(edge.winRate)) ? Number(edge.winRate) : null
+        const shrunk = wLive != null ? (n * wLive + EARNED_FLOOR_PRIOR_TRADES * prior.winRatePct) / (n + EARNED_FLOOR_PRIOR_TRADES) : prior.winRatePct
+        const Wp = shrunk / 100
+        if (Number.isFinite(Wp) && Wp > 0 && Wp < 1) {
+          const ep = Math.round((Wp * rr - (1 - Wp)) * 1000) / 1000
+          const winRatePct = Math.round(shrunk * 10) / 10
+          const detail = { via: 'prior', prior: { winRatePct: prior.winRatePct, trades: prior.trades, k: EARNED_FLOOR_PRIOR_TRADES, liveWinRatePct: wLive, liveTrades: n } }
+          if (ep <= cfg.minE) {
+            return no(
+              `prior expectancy ${ep}R at shrunk ${winRatePct}% (${n} live closes toward backtest ${prior.winRatePct}%) ≤ ${cfg.minE}R`,
+              { winRate: winRatePct, trades: n, e: ep, ...detail },
+            )
+          }
+          return {
+            ok: true, reason: null, winRate: winRatePct, trades: n, e: ep,
+            riskScale: Math.min(cfg.riskScale, cfg.priorRiskScale), ...detail,
+          }
+        }
+      }
+    }
     return no(`thin_sample ${edge.trades}<${cfg.minSample}`, { trades: edge.trades })
   }
   const W = Number(edge.winRate) / 100
@@ -117,7 +159,18 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
       { winRate: edge.winRate, trades: edge.trades, e },
     )
   }
-  return { ok: true, reason: null, winRate: edge.winRate, trades: edge.trades, e, riskScale: cfg.riskScale }
+  return { ok: true, reason: null, winRate: edge.winRate, trades: edge.trades, e, riskScale: cfg.riskScale, via: 'measured' }
+}
+
+/** One strategy's last-sweep backtest prior, from the aggregate the sweep writes (#821). Null when absent. */
+function strategyPriorFor(db, strategy) {
+  try {
+    const p = JSON.parse(getState(db, 'autopilot_strategy_prior_json') || 'null')
+    const v = p && typeof p === 'object' ? p[strategy] : null
+    const trades = Number(v?.trades) || 0
+    const wr = v?.winRatePct == null ? NaN : Number(v.winRatePct)
+    return trades > 0 && Number.isFinite(wr) ? { winRatePct: wr, trades, combos: Number(v?.combos) || 0 } : null
+  } catch { return null }
 }
 
 // The PRE-REGISTERED VERDICT, fixed before the first admitted trade so the
@@ -253,6 +306,7 @@ export function earnedFloorReport(db) {
   const config = loadEarnedFloor(db)
   let admitted = 0
   let admitEvents = 0
+  let viaPrior = { admittedApprovals: 0, closed: 0, wins: 0, net: 0 }
   let closed = { trades: 0, wins: 0, winRate: null, profitFactor: null, net: 0 }
   try {
     // DISTINCT OPPORTUNITIES, not approval events. The scanner re-evaluates
@@ -271,6 +325,25 @@ export function earnedFloorReport(db) {
     ).get() || {}
     admitted = counts.distinct_n || 0
     admitEvents = counts.events || 0
+    // The prior population, split out (owner order 02-09-2026): how many of
+    // the admits were judged on the shrunk prior rather than a measured
+    // sample, and how those have closed so far.
+    try {
+      const pc = db.prepare(
+        `SELECT COUNT(DISTINCT COALESCE(opportunity_key, 'row:' || id)) AS distinct_n
+           FROM risk_events WHERE approved = 1 AND checks_json LIKE '%"via":"prior"%'`
+      ).get() || {}
+      const prows = db.prepare(
+        `SELECT t.net_pnl FROM trades t JOIN risk_events r ON r.id = t.risk_event_id
+          WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL AND r.approved = 1 AND r.checks_json LIKE '%"via":"prior"%'`
+      ).all()
+      viaPrior = {
+        admittedApprovals: pc.distinct_n || 0,
+        closed: prows.length,
+        wins: prows.filter(r => Number(r.net_pnl) > 0).length,
+        net: Math.round(prows.reduce((s, r) => s + Number(r.net_pnl), 0) * 100) / 100,
+      }
+    } catch { /* leave the split empty */ }
     const rows = db.prepare(
       `SELECT t.net_pnl FROM trades t
          JOIN risk_events r ON r.id = t.risk_event_id
@@ -295,6 +368,7 @@ export function earnedFloorReport(db) {
     target: { ...EARNED_FLOOR_VERDICT_TARGET },
     admittedApprovals: admitted,
     admitEvents,
+    viaPrior,
     closedCohort: closed,
     verdict: closed.trades >= EARNED_FLOOR_VERDICT_TARGET.closes
       ? (closed.profitFactor === null || closed.profitFactor >= EARNED_FLOOR_VERDICT_TARGET.minPf ? 'pass' : 'fail')

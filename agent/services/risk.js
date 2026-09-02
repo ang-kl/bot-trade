@@ -1534,6 +1534,11 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
             earnedFloor = ef
             checks.earned_floor = {
               rr, winRate: ef.winRate, trades: ef.trades, e: ef.e, riskScale: ef.riskScale,
+              // 'measured' or 'prior' (owner order 02-09-2026): the cohort
+              // report splits the two, and a prior admit carries the backtest
+              // figures it was judged on.
+              via: ef.via ?? 'measured',
+              ...(ef.prior ? { prior: ef.prior } : {}),
             }
             // One console line per admit, deliberately: an admitted below-floor
             // entry is the rare event the whole PR-C experiment exists to
