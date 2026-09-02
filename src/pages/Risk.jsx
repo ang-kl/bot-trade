@@ -1097,6 +1097,9 @@ export default function Risk() {
                     hint="Veto when the live spread exceeds this fraction of the SL distance." recommend="25% of the SL distance." />
                   <Field label={`Max entry drift / SL${mark('maxEntryDriftFracOfSL')}`} anchor="maxEntryDriftFracOfSL" pct value={risk.maxEntryDriftFracOfSL} onChange={v => setRisk(r => ({ ...r, maxEntryDriftFracOfSL: v }))}
                     hint="Veto at dispatch when the live quote has already moved past the proposal's entry by more than this fraction of the SL distance — the R:R that was approved no longer exists at that price. 0 disables." recommend="25% of the SL distance." />
+                  <Field label={`Limit dispatch from${mark('limitDispatchMinTf')}`} anchor="limitDispatchMinTf" value={risk.limitDispatchMinTf} onChange={v => setRisk(r => ({ ...r, limitDispatchMinTf: v }))}
+                    placeholder="off"
+                    hint="A signal on a bar this long or longer is priced at the last CLOSED bar's close, which a market order reaches up to a bar late. Such signals rest as a LIMIT at the approved entry and expire when the bar closes. Timeframe label (4h, 1d); blank or off = market order with the drift gate." recommend="4h." />
                 </div>
                 <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-1">
                   Dollar loss floors per position (the GOOGL case) live in <a href="#sec-protection" className="underline">Position protection</a> above — this group only shapes where SL/TP are PLACED at entry.
@@ -1158,7 +1161,7 @@ export default function Risk() {
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
-                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'maxOpenPositions', 'maxPositionsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
+                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'maxOpenPositions', 'maxPositionsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
               }}>Save bot risk</Button></span>
             </div>

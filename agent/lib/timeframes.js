@@ -148,6 +148,29 @@ export function tfMs(label) {
 }
 
 /**
+ * The instant the bar that is FORMING at `nowMs` closes, for a timeframe —
+ * the natural expiry of an order placed off that bar (owner, 03-09-2026:
+ * a ≥4h signal dispatches as a resting limit at the closed bar's close and
+ * dies when the next bar closes). Epoch-aligned for intraday and daily
+ * bars (UTC day boundaries); '1w' closes at Saturday 00:00 UTC, after the
+ * Friday session; '1mo' at the first of the next month 00:00 UTC. Null for
+ * an unknown timeframe — a caller must not invent an expiry.
+ */
+export function nextBarCloseMs(label, nowMs = Date.now()) {
+  if (!Number.isFinite(nowMs)) return null
+  const d = new Date(nowMs)
+  if (label === '1w') {
+    const dow = d.getUTCDay() // 0 Sunday … 6 Saturday
+    const daysToSat = (6 - dow + 7) % 7 || 7
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + daysToSat)
+  }
+  if (label === '1mo') return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)
+  const ms = tfMs(label)
+  if (!(ms > 0)) return null
+  return (Math.floor(nowMs / ms) + 1) * ms
+}
+
+/**
  * Pick the fetch source for a custom duration: the LARGEST native period
  * that divides it evenly. 1.5h → 3 × 30m; 6h → 6 × 1h; 2mo → 2 × 1mo.
  * Whole-minute durations always divide by '1m', so this never fails for
