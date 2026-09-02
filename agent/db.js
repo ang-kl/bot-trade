@@ -351,6 +351,30 @@ const TABLES = `
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Momentum SHADOW (owner "do ¶A·5", 02-09-2026): the cross-sectional
+  -- ranking's would-be entries, exits and refusals. applied is 0 on every
+  -- row by construction — nothing here is proposed to the gate or traded.
+  CREATE TABLE IF NOT EXISTS momentum_shadow (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol       TEXT NOT NULL,
+    action       TEXT NOT NULL,   -- 'enter' | 'exit' | 'refused'
+    side         TEXT,            -- 'long' | 'short'
+    rank_pct     REAL,            -- 0 weakest … 1 strongest, at this pass
+    conviction   INTEGER,         -- 0–10 from rank strength on the side
+    price        REAL,            -- last close at this pass
+    entry_price  REAL,            -- exit rows: the shadow entry's close
+    ret_pct      REAL,            -- exit rows: signed return, fraction
+    hold_ms      INTEGER,         -- exit rows
+    reason       TEXT,            -- exit band crossed / refusal reason
+    timeframe    TEXT,
+    universe     INTEGER,         -- names ranked this pass
+    applied      INTEGER NOT NULL DEFAULT 0,
+    loop_id      INTEGER,
+    at           TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_momentum_shadow_at ON momentum_shadow(at);
+
   -- Account Registry (multi-account migration plan, Phase 1 R1 / milestone
   -- M0). Single source of truth for which cTrader accounts exist and which
   -- may trade. account_id is cTrader's INTERNAL ctidTraderAccountId (the

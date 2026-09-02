@@ -3258,6 +3258,21 @@ async function runLoop(db) {
       }
     }
 
+    // Momentum SHADOW (owner "do ¶A·5", 02-09-2026): rank the same universe
+    // by trailing return and log would-be entries/exits/refusals to
+    // momentum_shadow. Off until the owner enables it, throttled to its own
+    // interval, and it proposes nothing — see momentum-shadow.js. A failure
+    // here is logged and the cycle moves on.
+    if (ctraderCreds.ready) {
+      try {
+        const { runMomentumShadow } = await import('./services/momentum-shadow.js')
+        const ms = await runMomentumShadow(db, { symbols, symbolMap, creds: ctraderCreds, loopId: loopCount })
+        if (ms.ran) log(`momentum shadow: ranked ${ms.ranked}/${ms.universe}, ${ms.rows} row(s), ${ms.holdings ?? 0} shadow holding(s)${ms.why ? ` — ${ms.why}` : ''}`)
+      } catch (err) {
+        log(`momentum shadow failed: ${err.message}`)
+      }
+    }
+
     if (!ctraderCreds.ready) {
       const missing = [
         !ctraderCreds.clientId && 'clientId',
