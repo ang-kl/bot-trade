@@ -1378,6 +1378,35 @@ export function initDB(dbPath) {
   END;
   `);
 
+  // STOP BEYOND ENTRY ⇒ be_moved (02-09-2026). be_moved was set only by the
+  // explicit break-even step (position-manager rule 5, trade-guard's BE) —
+  // a TRAIL that carried the stop through entry left the flag at 0. Measured
+  // on US30 short trade 1415: seven stop moves, the stop 41 points in
+  // profit, be_moved 0 to the close. Readers that took the flag as "has the
+  // stop been amended" (reconciler's broker_sl_initial stamp, the
+  // session-open guard, the cockpit's "BE pending") were reading a lie.
+  // The latch is a trigger so EVERY writer of current_sl — position manager,
+  // fast monitor, guard, protect, stop-adopt, restrategize, and whatever
+  // comes next — sets it, and a one-shot backfill squares the open rows.
+  // One-way: the trigger only ever sets 1, never clears.
+  db.exec(`
+  CREATE TRIGGER IF NOT EXISTS trg_mp_be_moved_latch AFTER UPDATE OF current_sl ON monitored_positions
+  WHEN COALESCE(NEW.be_moved, 0) = 0
+   AND NEW.entry_price IS NOT NULL AND NEW.current_sl IS NOT NULL
+   AND ((UPPER(COALESCE(NEW.side,'')) IN ('LONG','BUY')   AND NEW.current_sl >= NEW.entry_price)
+     OR (UPPER(COALESCE(NEW.side,'')) IN ('SHORT','SELL') AND NEW.current_sl <= NEW.entry_price))
+  BEGIN
+    UPDATE monitored_positions SET be_moved = 1 WHERE id = NEW.id;
+  END;
+  `);
+  db.exec(`
+  UPDATE monitored_positions SET be_moved = 1
+   WHERE COALESCE(be_moved, 0) = 0 AND status = 'active'
+     AND entry_price IS NOT NULL AND current_sl IS NOT NULL
+     AND ((UPPER(COALESCE(side,'')) IN ('LONG','BUY')   AND current_sl >= entry_price)
+       OR (UPPER(COALESCE(side,'')) IN ('SHORT','SELL') AND current_sl <= entry_price));
+  `);
+
   // Seed agent_state defaults (skip keys that already exist)
   const upsert = db.prepare(
     'INSERT OR IGNORE INTO agent_state (key, value) VALUES (?, ?)',
