@@ -127,9 +127,10 @@ const CANONICAL_NAMES = {
   fib_confluence: 'Fibonacci Confluence',
   va_breakout: 'Value-Area Breakout',
   fvg_retrace: 'FVG Retrace',
+  tsmom_long: 'TS Momentum Long',
 }
 
-test('STRATEGY_REGISTRY carries the full 12-strategy roster', () => {
+test('STRATEGY_REGISTRY carries the full 13-strategy roster', () => {
   const keys = STRATEGY_REGISTRY.map(s => s.key).sort()
   assert.deepEqual(keys, Object.keys(CANONICAL_NAMES).sort())
 })

@@ -917,6 +917,64 @@ export default function actionsRouter(db, deps = {}) {
   // to defaults, so the response echoes the EFFECTIVE config. There is no
   // act path to switch on: the shadow proposes nothing and trades nothing.
   // -----------------------------------------------------------------------
+  // GET/POST /actions/momentum-book — the long-only TS momentum book's
+  // switches (owner order 03-09-2026). enabled turns the book on; the arm
+  // per account is the stage matrix (tsmom_long, trade cell), and the
+  // evidence gate still applies — the book trades where it is hand-pinned.
+  router.get('/momentum-book', async (_req, res) => {
+    try {
+      const { loadMomentumBook } = await import('../services/momentum-book.js')
+      res.json({ ok: true, effective: loadMomentumBook(db), writes: 'momentum_book rows + real orders through autoTrade on accounts where tsmom_long is trade-armed' })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  router.post('/momentum-book', async (req, res) => {
+    try {
+      const { momentumBookConfig, loadMomentumBook, MOMENTUM_BOOK_CONFIG_KEY } = await import('../services/momentum-book.js')
+      const body = req.body || {}
+      const merged = { ...loadMomentumBook(db) }
+      for (const k of ['enabled', 'timeframe', 'atrPeriod', 'stopAtr', 'maxPositionsPerAccount', 'conviction']) {
+        if (k in body) merged[k] = body[k]
+      }
+      const cfg = momentumBookConfig(merged)
+      setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(cfg))
+      console.log(`[actions] momentum-book → enabled=${cfg.enabled} tf=${cfg.timeframe} atr=${cfg.atrPeriod} stopAtr=${cfg.stopAtr} maxPos=${cfg.maxPositionsPerAccount}`)
+      res.json({ ok: true, effective: cfg })
+    } catch (err) {
+      console.error('[actions/momentum-book] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET/POST /actions/evidence-gate — the strategy-level evidence gate's
+  // bar (on, minCloses, minPf, windowDays). Default on at the pre-registered
+  // 30 closes / PF 1.5.
+  router.get('/evidence-gate', async (_req, res) => {
+    try {
+      const { loadEvidenceGate } = await import('../services/evidence-gate.js')
+      res.json({ ok: true, effective: loadEvidenceGate(db) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  router.post('/evidence-gate', async (req, res) => {
+    try {
+      const { evidenceGateConfig, loadEvidenceGate, EVIDENCE_GATE_KEY } = await import('../services/evidence-gate.js')
+      const body = req.body || {}
+      const merged = { ...loadEvidenceGate(db) }
+      for (const k of ['on', 'minCloses', 'minPf', 'windowDays']) if (k in body) merged[k] = body[k]
+      const cfg = evidenceGateConfig(merged)
+      setState(db, EVIDENCE_GATE_KEY, JSON.stringify(cfg))
+      console.log(`[actions] evidence-gate → on=${cfg.on} minCloses=${cfg.minCloses} minPf=${cfg.minPf} windowDays=${cfg.windowDays}`)
+      res.json({ ok: true, effective: cfg })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/momentum-shadow', async (_req, res) => {
     try {
       const { loadMomentumShadow, shortMinConviction } = await import('../services/momentum-shadow.js')

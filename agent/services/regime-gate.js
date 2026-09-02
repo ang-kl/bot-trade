@@ -63,6 +63,10 @@ export const STRATEGY_KIND = {
   // noise and fill with no follow-through, which is exactly what 'trend'
   // keeps it out of.
   fvg_retrace: 'trend',
+  // The long-only momentum book holds what has already been going up; a
+  // quiet regime is where its entries are noise, the same reading as the
+  // pullback strategies. Kind 'trend'.
+  tsmom_long: 'trend',
 }
 
 export function loadRegimeGateConfig(db) {

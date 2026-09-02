@@ -72,6 +72,7 @@ export const STRATEGIES = {
   // permanent loss of attribution at the broker.
   va_breakout: 'VAB',
   fvg_retrace: 'FVG',
+  tsmom_long: 'TSM',   // the long-only TS momentum book (03-09-2026)
   burnin:     'BURN',
   other:      'OTH',
 }
@@ -205,6 +206,7 @@ export const STRATEGY_DISPLAY = {
   fib_confluence: 'Fibonacci Confluence',
   va_breakout: 'Value-Area Breakout',
   fvg_retrace: 'FVG Retrace',
+  tsmom_long: 'TS Momentum Long',
   // Not a registry strategy — the burn-in sampling harness places its own
   // orders through the same dispatcher and deserves its own bucket rather
   // than polluting "other".

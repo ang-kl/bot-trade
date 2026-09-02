@@ -18,6 +18,7 @@ export const STRAT_SHORT = {
   // build rather than letting the next one slip through the same way.
   va_breakout: 'VAB',
   fvg_retrace: 'FVG',
+  tsmom_long: 'TSM',
 }
 
 // key → short code, falling back to the raw key (never blank for a real
@@ -54,6 +55,7 @@ export const STRATEGY_KEYS = [
   'fib_618_fade', 'cup_handle', 'inv_cup_handle', 'ema_pullback',
   'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value',
   'rsi2_reversion', 'fib_confluence', 'va_breakout', 'fvg_retrace',
+  'tsmom_long',
 ]
 
 export const STRAT_NAME = {
@@ -69,6 +71,7 @@ export const STRAT_NAME = {
   fib_confluence: 'Fibonacci Confluence',
   va_breakout: 'Value-Area Breakout',
   fvg_retrace: 'FVG Retrace',
+  tsmom_long: 'TS Momentum Long',
 }
 
 // Buckets the API emits that are NOT strategies, kept out of STRAT_NAME so the

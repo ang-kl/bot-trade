@@ -2430,6 +2430,29 @@ export default function stateRouter(db) {
   // GET /state/momentum-shadow?days=30 — the cross-sectional momentum
   // SHADOW's book and what its closed shadow trades returned per side, with
   // the short rule's effective floor. Report only; applied=0 on every row.
+  // GET /state/evidence-gate — per strategy × enabled account: hand-pinned,
+  // live record against the pre-registered bar, the verdict, and the shadow
+  // refusals of the last 7 days (owner "build it", 03-09-2026).
+  router.get('/evidence-gate', async (_req, res) => {
+    try {
+      const { evidenceGateReport } = await import('../services/evidence-gate.js')
+      res.json(evidenceGateReport(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /state/momentum-book — the long-only TS momentum book: config, open
+  // positions with their trailing stops, and the closed record.
+  router.get('/momentum-book', async (_req, res) => {
+    try {
+      const { momentumBookReport } = await import('../services/momentum-book.js')
+      res.json(momentumBookReport(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/momentum-shadow', async (req, res) => {
     try {
       const { momentumShadowReport } = await import('../services/momentum-shadow.js')

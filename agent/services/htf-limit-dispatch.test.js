@@ -94,7 +94,7 @@ test('wiring pins: loop.js branches ≥threshold signals into the limit path bef
   const branch = src.indexOf("limitDispatchMinTf")
   assert.ok(branch > 0)
   const block = src.slice(branch, branch + 2500)
-  assert.ok(block.includes("if (minMs > 0 && sigMs >= minMs) {"))
+  assert.ok(block.includes("if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {"))
   assert.ok(block.includes("const expiresAtMs = nextBarCloseMs(synth.timeframe)"))
   assert.ok(block.includes("reason: 'htf', expiresAtMs,"))
   assert.ok(block.includes("placeClosedMarketLimit("))
@@ -105,4 +105,22 @@ test('wiring pins: loop.js branches ≥threshold signals into the limit path bef
   assert.ok(branch < src.indexOf('execPlaceOrder('))
   // 'off' or '' disables: the branch reads the config, not a literal.
   assert.ok(block.includes("minTf !== 'off' ? tfMs(minTf) : 0"))
+})
+
+test('backtest-parity window: inside htfFreshnessMin after the bar close the branch falls through to market; marketOnly synths never rest', () => {
+  assert.equal(DEFAULT_RISK_CONFIG.htfFreshnessMin, 120)
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+  const branch = src.indexOf('limitDispatchMinTf')
+  const block = src.slice(branch, branch + 3000)
+  assert.ok(block.includes("const freshMin = Number(loadRiskConfig(db, accountId)?.htfFreshnessMin) || 0"))
+  assert.ok(block.includes("const lastBarCloseMs = sigMs > 0 ? (nextBarCloseMs(synth.timeframe) ?? 0) - sigMs : 0"))
+  assert.ok(block.includes("const fresh = freshMin > 0 && lastBarCloseMs > 0 && (Date.now() - lastBarCloseMs) <= freshMin * 60_000"))
+  assert.ok(block.includes("if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {"))
+  // The arithmetic: 22:19 UTC on a 4h bar → the bar closed at 20:00, 139 min ago → NOT fresh at 120; at 21:30 it is.
+  const tf = tfMs('4h')
+  const at = (h, m) => Date.UTC(2026, 8, 2, h, m)
+  const lastClose = (now) => nextBarCloseMs('4h', now) - tf
+  assert.equal(lastClose(at(22, 19)), Date.UTC(2026, 8, 2, 20, 0))
+  assert.ok((at(22, 19) - lastClose(at(22, 19))) > 120 * 60_000)
+  assert.ok((at(21, 30) - lastClose(at(21, 30))) <= 120 * 60_000)
 })
