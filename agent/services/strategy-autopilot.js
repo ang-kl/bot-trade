@@ -230,6 +230,29 @@ const r2s = (x) => (Number.isFinite(Number(x)) ? Math.round(Number(x) * 100) / 1
 /** Phantom trades the sweep-wide prior is worth against one combo's evidence. */
 export const SHRINK_PRIOR_TRADES = 20
 
+/** agent_state key: per-strategy backtest aggregate of the last sweep (see strategyPriorOf). */
+export const STRATEGY_PRIOR_KEY = 'autopilot_strategy_prior_json'
+
+/**
+ * Per-strategy aggregate of one sweep's verdicts: trade-weighted win rate,
+ * total trades and combo count over verdicts WITH trades and a finite win
+ * rate. A few hundred bytes for the whole registry — the earned-floor prior
+ * report reads this instead of re-parsing the (truncated) verdict list.
+ */
+export function strategyPriorOf(verdicts) {
+  const out = {}
+  for (const v of Array.isArray(verdicts) ? verdicts : []) {
+    const n = Number(v?.trades) || 0
+    const wr = v?.winRate == null ? NaN : Number(v.winRate) // Number(null) is 0, not "unknown"
+    if (!v?.strategy || n <= 0 || !Number.isFinite(wr)) continue
+    const b = out[v.strategy] || (out[v.strategy] = { trades: 0, wrWeighted: 0, combos: 0 })
+    b.trades += n; b.wrWeighted += wr * n; b.combos++
+  }
+  return Object.fromEntries(Object.entries(out).map(([k, b]) => [k, {
+    winRatePct: Math.round((b.wrWeighted / b.trades) * 10) / 10, trades: b.trades, combos: b.combos,
+  }]))
+}
+
 /**
  * One verdict's PF and WR pulled toward the sweep prior with the weight of
  * `shrink.k` phantom trades: w = n/(n+k), x' = w·x + (1−w)·mean. No prior
@@ -697,6 +720,13 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
     reportName = saveAutopilotReport(verdicts, { errors, ranAt: new Date().toISOString() }).filename
   } catch (err) { errors.push(`report: ${err.message}`) }
   setState(db, 'autopilot_last_verdicts_json', JSON.stringify(verdicts).slice(0, 200_000))
+  // PER-STRATEGY PRIOR (02-09-2026, found on the first deployed read of the
+  // earned-floor prior report). The slice above cuts 1,872 verdicts at
+  // 200,000 characters, which leaves BROKEN JSON: every reader that parses
+  // the key gets nothing, and the prior report answered "no backtest side"
+  // for every strategy. The compact per-strategy aggregate the report needs
+  // is a few hundred bytes, so it is written whole beside the verdicts.
+  try { setState(db, STRATEGY_PRIOR_KEY, JSON.stringify(strategyPriorOf(verdicts))) } catch { /* diagnostic only */ }
 
   const current = {
     enabledStrategies: (() => { try { return JSON.parse(getState(db, 'enabled_strategies_json') || '["fib_618_fade"]') } catch { return ['fib_618_fade'] } })(),
