@@ -1356,3 +1356,85 @@ test('every budgeted sub-phase name in the loop is a registered controller, and 
   assert.match(src, /runBudgetedSubPhase\(db, 'weekend_watch', [^\n]*\{ beatOk: true \}\)/)
   assert.match(src, /if \(beatOk\) await hbeat\(db, name, true\)/)
 })
+
+// ---------------------------------------------------------------------------
+// beat() used to DROP `detail`. loop.js passes `detail: st` for pnl_reconcile
+// and the panel could never show it — a field written to nowhere.
+// ---------------------------------------------------------------------------
+test('beat persists detail and heartbeatView returns it', () => {
+  const db = initDB(':memory:')
+  const detail = { unresolved: 3, neverTriedOverdue: 0 }
+  beat(db, 'pnl_reconcile', { now: T0, detail })
+  const row = db.prepare(`SELECT last_detail_json FROM controller_heartbeats WHERE name = 'pnl_reconcile'`).get()
+  assert.deepEqual(JSON.parse(row.last_detail_json), detail)
+  const v = heartbeatView(db, { now: plus(10), loopSec: 300 }).find(r => r.name === 'pnl_reconcile')
+  assert.deepEqual(v.detail, detail)
+  // A beat WITHOUT detail describes a run that carried none — it must not
+  // present a previous run's detail as this run's.
+  beat(db, 'pnl_reconcile', { now: plus(20) })
+  assert.equal(heartbeatView(db, { now: plus(30), loopSec: 300 }).find(r => r.name === 'pnl_reconcile').detail, null)
+})
+
+// ---------------------------------------------------------------------------
+// The equity stop and the performance breaker close positions and disarm
+// accounts, and neither had a controller row: a phase that threw every cycle
+// was a log line, not a status. Registry + loop wiring, both pinned.
+// ---------------------------------------------------------------------------
+test('equity_stop and performance_breaker are registered, loop-tied controllers', () => {
+  for (const name of ['equity_stop', 'performance_breaker']) {
+    assert.ok(CONTROLLERS[name], `${name} must be in the registry — an unregistered beat is invisible`)
+    assert.equal(CONTROLLERS[name].tiedToLoop, true)
+    assert.equal(CONTROLLERS[name].factor, 3)
+  }
+})
+
+test('the loop beats equity_stop and performance_breaker at the end of their phases', async () => {
+  const { readFileSync } = await import('node:fs')
+  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  const strip = (s) => s.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  const es0 = loop.indexOf("phase('equity stop')")
+  const pb0 = loop.indexOf("phase('performance breaker')")
+  const q0 = loop.indexOf("phase('quant')")
+  assert.ok(es0 > 0 && pb0 > es0 && q0 > pb0, 'phase anchors not found — re-anchor this test')
+  const es = strip(loop.slice(es0, pb0))
+  const pb = strip(loop.slice(pb0, q0))
+  assert.match(es, /hbeat\(db, 'equity_stop'\)/, 'success beat')
+  assert.match(es, /hbeat\(db, 'equity_stop', false, err\.message\)/, 'failure beat carries the error')
+  assert.match(pb, /hbeat\(db, 'performance_breaker'\)/, 'success beat')
+  assert.match(pb, /hbeat\(db, 'performance_breaker', false, err\.message\)/, 'failure beat carries the error')
+})
+
+// ---------------------------------------------------------------------------
+// The exec-guard sync swallowed every failure: a sidecar that refused the
+// halt push forever looked exactly like one that had converged.
+// ---------------------------------------------------------------------------
+function guardProbeExec(setExecGuard) {
+  return {
+    execEngineMode: () => 'cpp',
+    pingSidecar: async () => ({
+      ok: true, mode: 'cpp', connected: true, hasCredentials: true,
+      lastReconcileAt: T0.getTime() - 30_000,
+      guard: { halt: true, haltAccountCount: 0 },   // desired is halt:false → differs → push
+    }),
+    setExecGuard,
+  }
+}
+
+test('probeCppExec stamps exec_guard_sync_last_error_json when the push fails, clears it on success', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_access_token', 'tok')
+  setState(db, 'ctrader_account_id', '46130058')
+  const KEY = 'exec_guard_sync_last_error_json'
+
+  await probeCppExec(db, { exec: guardProbeExec(async () => { throw new Error('sidecar 502') }), now: T0 })
+  const stamped = JSON.parse(getState(db, KEY) || 'null')
+  assert.ok(stamped, 'a failed push must leave a record')
+  assert.match(stamped.error, /sidecar 502/)
+  assert.equal(stamped.at, T0.toISOString())
+
+  await probeCppExec(db, { exec: guardProbeExec(async () => ({ ok: false, error: 'guard rejected' })), now: plus(120) })
+  assert.match(JSON.parse(getState(db, KEY)).error, /guard rejected/, 'an ok:false reply is a failure too')
+
+  await probeCppExec(db, { exec: guardProbeExec(async () => ({ ok: true })), now: plus(240) })
+  assert.equal(getState(db, KEY), null, 'a successful push clears the stale error')
+})

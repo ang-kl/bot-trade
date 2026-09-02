@@ -120,9 +120,23 @@ export const CONTROLLERS = {
   // LLM is available, so its expectation is a week rather than a cadence:
   // absence is normal, a FAILED beat is the thing to see.
   weekend_watch: { label: 'Weekend watch (LLM)', expectedSec: 7 * 86_400, factor: 2 },
+  // The two phases that CLOSE positions and DISARM accounts on their own
+  // authority had no row at all (blueprint audit, 02-09-2026). Each is a
+  // try/catch in loop.js whose failure was a log line per cycle — a phase
+  // throwing every cycle for a week was indistinguishable from one that
+  // found nothing to do. Loop-tied: both run inside the per-cycle risk
+  // block, and both are beaten at the END of their phase so a throw is a
+  // FAILED beat, not silence.
+  equity_stop:         { label: 'Equity stop (daily drawdown)', tiedToLoop: true, factor: 3 },
+  performance_breaker: { label: 'Performance breaker',          tiedToLoop: true, factor: 3 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
+
+// Last exec-guard sync failure, {at, side, error}; null once a push succeeds.
+// Written by the probe below and by loop.js's equity-stop push; read by
+// GET /state/heartbeats as `execGuardSync`.
+export const EXEC_GUARD_SYNC_ERROR_KEY = 'exec_guard_sync_last_error_json'
 
 // The two sidecar-probe controllers. Only these can be DORMANT — see
 // sideIsDormant — so only these pay for the dormancy lookup in heartbeatView.
@@ -190,23 +204,45 @@ function expectedSecFor(def, loopSec) {
   return def.tiedToLoop ? loopSec * (def.loopMultiplier || 1) : def.expectedSec
 }
 
-/** Record one controller run. ok=false increments the failure streak. */
-export function beat(db, name, { ok = true, error = null, now = new Date() } = {}) {
+/**
+ * Record one controller run. ok=false increments the failure streak.
+ *
+ * `detail` — the controller's own account of THIS run (pnl_reconcile passes
+ * its reconciliation state) — is persisted as `last_detail_json` and shown
+ * by heartbeatView. It was accepted and dropped until 02-09-2026: loop.js
+ * had been passing it for weeks to a function whose signature did not name
+ * it. Written verbatim per beat, null when a run carries none, so a stale
+ * detail is never presented as the current run's.
+ */
+export function beat(db, name, { ok = true, error = null, detail = null, now = new Date() } = {}) {
   const ts = now.toISOString()
   const okInt = ok ? 1 : 0
   const errText = ok ? null : String(error || 'unknown error').slice(0, 500)
+  let detailJson = null
+  if (detail != null) {
+    try {
+      const s = JSON.stringify(detail)
+      detailJson = s.length > 4000 ? JSON.stringify({ truncated: true, bytes: s.length }) : s
+    } catch { detailJson = JSON.stringify({ unserialisable: true }) }
+  }
   db.prepare(
     `INSERT INTO controller_heartbeats
-       (name, last_run_at, last_ok_at, last_error, consecutive_failures, runs, updated_at)
-     VALUES (?, ?, ?, ?, ?, 1, ?)
+       (name, last_run_at, last_ok_at, last_error, consecutive_failures, runs, updated_at, last_detail_json)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?)
      ON CONFLICT(name) DO UPDATE SET
        last_run_at = excluded.last_run_at,
        last_ok_at = CASE WHEN ? = 1 THEN excluded.last_run_at ELSE last_ok_at END,
        last_error = CASE WHEN ? = 1 THEN last_error ELSE excluded.last_error END,
        consecutive_failures = CASE WHEN ? = 1 THEN 0 ELSE consecutive_failures + 1 END,
        runs = runs + 1,
-       updated_at = excluded.updated_at`
-  ).run(name, ts, ok ? ts : null, errText, ok ? 0 : 1, ts, okInt, okInt, okInt)
+       updated_at = excluded.updated_at,
+       last_detail_json = excluded.last_detail_json`
+  ).run(name, ts, ok ? ts : null, errText, ok ? 0 : 1, ts, detailJson, okInt, okInt, okInt)
+}
+
+function parseDetail(row) {
+  if (row?.last_detail_json == null) return null
+  try { return JSON.parse(row.last_detail_json) } catch { return null }
 }
 
 /**
@@ -397,6 +433,7 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
       error_is_current: row.consecutive_failures > 0,
       consecutive_failures: row.consecutive_failures,
       runs: row.runs,
+      detail: parseDetail(row),
     }
   })
 }
@@ -855,6 +892,17 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
   // GUARD SYNC (declarative convergence): only against a CONNECTED sidecar
   // that reported its guard — pushing at an older sidecar (guard:null) would
   // push blind on every probe forever.
+  // A FAILED push is stamped, a clean pass clears it. syncExecGuard never
+  // throws, so until 02-09-2026 a sidecar refusing the halt push on every
+  // probe looked exactly like one that had converged — the guard "on", the
+  // halt not bound, nothing anywhere saying so. /state/heartbeats reads it.
+  const stampGuardSync = (error) => {
+    try {
+      setState(db, EXEC_GUARD_SYNC_ERROR_KEY, error == null
+        ? null
+        : JSON.stringify({ at: new Date(nowMs).toISOString(), side: side.name, error: String(error).slice(0, 500) }))
+    } catch { /* state unwritable — the probe still beats */ }
+  }
   try {
     if (r.connected === true && r.guard && typeof r.guard === 'object') {
       const { syncExecGuard } = await import('./exec-guard-sync.js')
@@ -866,8 +914,13 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       if (sync.pushed) {
         console.warn(`[heartbeat] ${side.name}: exec guard converged — halt=${sync.desired.halt} haltAccounts=[${sync.desired.haltAccounts.join(', ')}]`)
       }
+      if (sync.error) console.warn(`[heartbeat] ${side.name}: exec guard push FAILED — ${sync.error}`)
+      stampGuardSync(sync.error ?? null)
     }
-  } catch { /* guard convergence retries next probe */ }
+  } catch (err) {
+    // Guard convergence retries next probe — and the failure is on record.
+    stampGuardSync(err?.message || String(err))
+  }
   // Persist what the probe learned so a READ route never has to call the
   // sidecar itself. This probe already runs every ~2 minutes; making
   // /state/account-engineering re-fetch /health on every page load would put an

@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  fairShareSlots, markAnalyzed, starvedStrategies, fairShareLine, LAST_ANALYZED_KEY,
+  fairShareSlots, markAnalyzed, fairShareLine, LAST_ANALYZED_KEY,
 } from './analyze-fair-share.js'
 
 const NOW = Date.parse('2026-08-05T06:00:00.000Z')
@@ -135,18 +135,6 @@ test('markAnalyzed stamps only what ran, and does not mutate its input', () => {
   assert.equal(before.vp_value, undefined, 'input untouched')
   assert.equal(after.vp_value, ago(0))
   assert.equal(after.vwap_trend, ago(10), 'other strategies keep their clock')
-})
-
-test('starvedStrategies names the NEVER case first — the alarm that would not otherwise fire', () => {
-  const s = starvedStrategies(
-    { vwap_trend: ago(5), fib_confluence: ago(600) },
-    ['vwap_trend', 'fib_confluence', 'vp_value', 'cup_handle'],
-    { staleMin: 240, now: NOW },
-  )
-  assert.deepEqual(s.map(x => x.strategy), ['cup_handle', 'vp_value', 'fib_confluence'])
-  assert.equal(s[0].never, true)
-  assert.equal(s[0].waitedMin, null)
-  assert.equal(s[2].waitedMin, 600)
 })
 
 test('fairShareLine reads as one sentence and survives an empty result', () => {

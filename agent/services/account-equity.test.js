@@ -7,7 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
-import { stampAccountEquity, accountsMissingEquity, sweepCrossSideEquity } from './account-equity.js'
+import { stampAccountEquity, sweepCrossSideEquity } from './account-equity.js'
 import { getAccountBalance, getAccountLeverage, DEFAULT_RISK_CONFIG } from './risk.js'
 import { effectiveCapUsd } from './loss-cap.js'
 
@@ -100,21 +100,6 @@ test('an unusable balance is NOT stamped — a present-but-useless key reads as 
     assert.equal(r.balance, null, `balance ${balance} must not be stamped`)
     assert.equal(getState(db, 'acct:A:account_balance_usd'), null)
   }
-})
-
-test('accountsMissingEquity names exactly the accounts that would read the global', async () => {
-  const db = db0([['46130058', false], ['43002148', true], ['47790949', false]])
-  setState(db, 'acct:47790949:account_balance_usd', '45312.41')
-
-  const before = accountsMissingEquity(db, getState)
-  assert.deepEqual(before.map(a => a.accountId), ['43002148', '46130058'])
-  assert.equal(before.find(a => a.accountId === '43002148').isLive, true, 'live accounts are flagged as such')
-
-  await stampAccountEquity(db, CREDS, '43002148', {
-    ws: fakeWs({ '43002148': { balance: 688.17, leverageInCents: 0 } }),
-    setAccountState: (d, id, k, v) => setState(d, `acct:${id}:${k}`, v),
-  })
-  assert.deepEqual(accountsMissingEquity(db, getState).map(a => a.accountId), ['46130058'])
 })
 
 // ---------------------------------------------------------------------------

@@ -298,12 +298,19 @@ export function BalanceInOut({ inModal = false }) {
             render={() => <BalanceInOut inModal />} />
         )}
       </div>
-      <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '120px 150px 110px 130px 1fr 110px 70px', gap: 8, borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
-        <span>Date</span><span>Time (UTC · AEST)</span><span>Type</span><span>Account</span><span>Counterparty / note</span><span style={{ textAlign: 'right' }}>Amount · ccy</span><span style={{ textAlign: 'right' }}>Status</span>
+      {/* The header's fixed columns sum to ~740px with gaps. Below that the
+          grid used to push the DOCUMENT wider (measured 02-09-2026: 74px of
+          horizontal overflow at 700, 34 at 740, 5 at 768 — a band no audited
+          width sampled). Same scroll container Performance's matrix uses:
+          the table scrolls inside its own box, the page never does. */}
+      <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
+        <div className="t-gridhead" style={{ minWidth: 760, display: 'grid', gridTemplateColumns: '120px 150px 110px 130px 1fr 110px 70px', gap: 8, borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
+          <span>Date</span><span>Time (UTC · AEST)</span><span>Type</span><span>Account</span><span>Counterparty / note</span><span style={{ textAlign: 'right' }}>Amount · ccy</span><span style={{ textAlign: 'right' }}>Status</span>
+        </div>
+        <span style={{ display: 'block', fontSize: 'var(--fs-body)', color: MU, padding: '4px 0' }}>
+          No transfers recorded — the agent does not ingest broker cash-flow events yet. Rows appear collect-forward once deposit/withdrawal tracking is built; nothing here is ever reconstructed by guesswork.
+        </span>
       </div>
-      <span style={{ fontSize: 'var(--fs-body)', color: MU, padding: '4px 0' }}>
-        No transfers recorded — the agent does not ingest broker cash-flow events yet. Rows appear collect-forward once deposit/withdrawal tracking is built; nothing here is ever reconstructed by guesswork.
-      </span>
     </div>
   )
 }

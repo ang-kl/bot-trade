@@ -57,7 +57,12 @@ for (const r of ROUTES) {
   // stack was `hidden min-[700px]:flex`, so on that phone it had never been
   // painted — and no audited width was narrow enough to be the one where a
   // FAB going missing would have shown up as a difference.
-  for (const w of [1024, 820, 390, 375]) {
+  // 768 and 740 (02-09-2026): the Performance balance-in/out header is a
+  // fixed-column grid ~740px wide. It overflowed the document at every width
+  // between ~700 and ~790 and NO audited width fell in that band — 820 was
+  // wide enough, 390 narrow enough for other things to dominate. A defect
+  // that lives between two sampled widths is invisible to a sampled audit.
+  for (const w of [1024, 820, 768, 740, 390, 375]) {
     const p = await ctx.newPage()
     const errs = []
     p.on('pageerror', e => errs.push(String(e.message).slice(0, 110)))

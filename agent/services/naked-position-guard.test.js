@@ -75,7 +75,7 @@ test('a position absent at the broker is NOT called unprotected', () => {
 
 test('empty inputs are a clean no-op', () => {
   const a = auditProtection([], [])
-  assert.deepEqual(a, { naked: [], targetless: [], phantom: [], checked: 0, unmatched: 0 })
+  assert.deepEqual(a, { naked: [], targetless: [], phantom: [], tpDrift: [], checked: 0, unmatched: 0 })
 })
 
 // ---------------------------------------------------------------------------
@@ -129,17 +129,50 @@ test('a take profit the broker holds but we never recorded is NOT a fault', () =
   assert.equal(a.targetless.length, 0, 'the broker holds a target — that is what closes the trade')
 })
 
-test('a MOVED take profit is deliberately not reported', () => {
+test('a MOVED take profit is reported as tpDrift — never as phantom, never alerted', () => {
   // The profit keeper ratchets targets and partial ladders move them, so a
-  // "we show X, broker holds Y" check on the target would fire during normal
-  // operation. A check that cries wolf in normal operation gets ignored,
-  // which is the same outcome as not having it. Missing is unambiguous.
+  // "we show X, broker holds Y" check on the target would cry wolf if it
+  // ALERTED. It stays out of the siren and out of the phantom list — but it is
+  // no longer invisible: the book and the broker disagreeing on the target is
+  // a fact the audit record now carries, report-only.
   const a = auditProtection(
     [row({ current_sl: 1700, current_tp: 1600 })],
     [{ positionId: '555', stopLoss: 1700, takeProfit: 1450 }],
   )
   assert.equal(a.targetless.length, 0)
-  assert.equal(a.phantom.length, 0, 'target disagreement is not in scope — see the module header')
+  assert.equal(a.phantom.length, 0, 'target disagreement is not a stop disagreement')
+  assert.equal(a.tpDrift.length, 1)
+  assert.equal(a.tpDrift[0].ourTp, 1600)
+  assert.equal(a.tpDrift[0].brokerTp, 1450)
+  assert.equal(a.tpDrift[0].positionId, '555')
+})
+
+test('tpDrift needs BOTH targets present and a gap beyond 0.1% of price', () => {
+  const both = (ourTp, brokerTp) => auditProtection(
+    [row({ current_sl: 1700, current_tp: ourTp })],
+    [{ positionId: '555', stopLoss: 1700, takeProfit: brokerTp }],
+  ).tpDrift.length
+  assert.equal(both(1600, 1600.5), 0, 'within 0.1% — rounding, not drift')
+  assert.equal(both(1600, 1598), 1, 'beyond 0.1% — drift')
+  assert.equal(both(null, 1450), 0, 'no book target: that is the "never recorded" case, not drift')
+  assert.equal(both(1600, null), 0, 'no broker target: that is targetless, already reported')
+  assert.equal(both(1600, 0), 0, 'a zero broker target is absent, not a drift to zero')
+})
+
+test('runProtectionAudit counts tpDrift in the record and does not alert or log it', async () => {
+  const db = tmpDb()
+  const sent = []
+  const r = await runProtectionAudit(db,
+    [row({ current_sl: 1700, current_tp: 1600 })],
+    [{ positionId: '555', stopLoss: 1700, takeProfit: 1450 }],
+    { sendMessage: async (t) => sent.push(t), nowMs: Date.now() },
+  )
+  assert.equal(r.tpDrift.length, 1)
+  assert.equal(sent.length, 0, 'report only — no Telegram')
+  assert.equal(db.prepare(`SELECT COUNT(*) c FROM action_log WHERE path = '/protection-audit'`).get().c, 0, 'report only — no action_log row')
+  const rec = JSON.parse(getState(db, 'protection_audit_last_json'))
+  assert.equal(rec.tpDrift, 1, 'the audit record carries the count alongside phantom')
+  assert.equal(rec.phantom, 0)
 })
 
 test('the targetless alert is separate, quieter, and separately muted', async () => {

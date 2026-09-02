@@ -88,8 +88,10 @@ test('the real agent installs this middleware before its routes', async () => {
     'agent/index.js must vary on Authorization',
   )
   // It has to run BEFORE the routers, or routes mounted earlier escape it.
+  // The router mount is asserted FOUND, not merely used if found: the old
+  // `if (routerIdx > 0)` skipped the ordering check entirely when the mount
+  // string changed, and a skipped check reads exactly like a passed one.
   const routerIdx = src.indexOf("app.use('/state'")
-  if (routerIdx > 0) {
-    assert.ok(ccIdx < routerIdx, 'the no-store middleware must be installed before the /state router')
-  }
+  assert.ok(routerIdx > 0, "agent/index.js must mount app.use('/state', …) — re-anchor this test if the mount moved")
+  assert.ok(ccIdx < routerIdx, 'the no-store middleware must be installed before the /state router')
 })

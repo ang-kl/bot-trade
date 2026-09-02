@@ -113,7 +113,11 @@ export function guardDiffers(desired, reported) {
  * so convergence (including after a sidecar restart) is bounded by the probe
  * cadence. Never throws.
  *
- * @returns {{pushed: boolean, desired: object}}
+ * Never throws — but a push that FAILED (the sidecar threw, or answered
+ * ok:false) is reported as `error`, because `pushed:false` alone is also the
+ * healthy "nothing differed" answer and the two must not read the same.
+ *
+ * @returns {{pushed: boolean, desired: object, error?: string}}
  */
 export async function syncExecGuard(db, exec, side, { reportedGuard = null, creds = null, now = null } = {}) {
   const desired = desiredGuardFor(db, side, now ?? Date.now())
@@ -127,9 +131,10 @@ export async function syncExecGuard(db, exec, side, { reportedGuard = null, cred
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
           .run('GUARD_SYNC', `/exec-guard/${side?.name || 'exec'}`, JSON.stringify(desired).slice(0, 2000))
       } catch { /* audit best-effort */ }
+      return { pushed, desired }
     }
-    return { pushed, desired }
-  } catch {
-    return { pushed: false, desired }
+    return { pushed, desired, error: String(r?.error || 'sidecar refused the guard push') }
+  } catch (err) {
+    return { pushed: false, desired, error: err?.message || String(err) }
   }
 }

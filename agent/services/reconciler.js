@@ -420,6 +420,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // trades sharing one broker positionId. Keep the newest per posId, close the
   // rest — the orphan sweep can't (their posId is still live at the broker).
   const dupsClosed = []
+  let dedupError, dupPnlError
   try {
     const dups = db.prepare(
       `SELECT id, symbol, ctrader_position_id FROM trades
@@ -450,7 +451,13 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       }
     })
     tx()
-  } catch { /* dedup best-effort */ }
+  } catch (err) {
+    // Best-effort still — but a sweep that threw must not return the same
+    // empty `dupsClosed` as a sweep that found nothing. Reported once here
+    // and surfaced by the loop's reconcile log.
+    dedupError = err?.message || String(err)
+    console.warn(`[reconciler] dedup sweep FAILED — ${dedupError}`)
+  }
 
   // REPAIR historical duplicate-P&L garbage (idempotent): before the
   // 'rejected' change above, duplicate rows ended up status='closed' and
@@ -493,7 +500,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     if (dupPnlRepaired.length > 0) {
       console.log(`[reconciler] repaired ${dupPnlRepaired.length} duplicate-P&L trade row(s): ${dupPnlRepaired.map(r => `${r.symbol}#${r.ctrader_position_id}`).join(', ')}`)
     }
-  } catch { /* repair best-effort */ }
+  } catch (err) {
+    dupPnlError = err?.message || String(err)
+    console.warn(`[reconciler] duplicate-P&L repair FAILED — ${dupPnlError}`)
+  }
 
   const orphansClosed = []
   const tScope = scope('account_id')
@@ -586,7 +596,11 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   }
   try { setState(RESYNC_WATCH_KEY, JSON.stringify(resyncWatch)) } catch { /* non-fatal */ }
 
-  return { newExternal, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified, sourcesRepaired }
+  return {
+    newExternal, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified, sourcesRepaired,
+    ...(dedupError ? { dedupError } : {}),
+    ...(dupPnlError ? { dupPnlError } : {}),
+  }
 }
 
 /**

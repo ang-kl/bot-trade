@@ -375,6 +375,11 @@ export function computeStats(trades) {
     wins: wins.length,
     losses: losses.length,
     winRatePct: round2((wins.length / n) * 100),
+    // Unrounded twins for the ARM BAR compare (02-09-2026, ML audit): the
+    // rounded figures above are for display, and a `>=` against them let
+    // PF 1.495 arm at a 1.5 bar. Decisions read these; reports read the rest.
+    winRatePctRaw: (wins.length / n) * 100,
+    profitFactorRaw: grossLoss > 0 ? grossWin / grossLoss : null,
     avgProfitPct: round2(mean),
     // expectancy = average % per trade after costs — the "is there an edge" number
     expectancyPct: round2(mean),

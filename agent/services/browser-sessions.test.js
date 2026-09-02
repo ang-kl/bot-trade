@@ -10,7 +10,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import {
-  publicSessionId, maskSessionId, maskIp, parseUserAgent, describeSession, recordHeartbeat,
+  publicSessionId, maskSessionId, parseUserAgent, describeSession, recordHeartbeat,
   connectionState, sessionsView, revokeSession, touchSession, pruneSessions,
   THRESHOLDS,
 } from './browser-sessions.js'
@@ -287,13 +287,6 @@ test('touchSession creates a row for pre-existing tokens and flags the estimate'
   touchSession(db, TOKEN_A, { nowMs: Date.now() + 10_000 })
   const again = sessionsView(db, { currentToken: TOKEN_A }).sessions.find(s => s.id === id)
   assert.equal(again.browserFamily, 'Chrome')
-})
-
-test('maskIp keeps IPv4 and IPv6 recognisable without publishing them', () => {
-  assert.equal(maskIp('203.0.113.7'), '203.0.113.x')
-  assert.equal(maskIp('2001:db8:85a3:8d3:1319:8a2e:370:7348'), '2001:db8:85a3:…')
-  assert.equal(maskIp(''), null)
-  assert.equal(maskIp(null), null)
 })
 
 test('pruneSessions drops long-dead rows but keeps recent revocations', () => {

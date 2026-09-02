@@ -404,3 +404,62 @@ test('wiring: /state/config emits the autopilot dials the action enforces (UI au
   assert.match(tune, /config\?\.autopilot\?\.arm_bar/)
   assert.doesNotMatch(tune, /arms GO combos|never on LIVE accounts|4-change cap/, 'the stale gate description must be gone')
 })
+
+// ---------------------------------------------------------------------------
+// ONE EVALUATOR (02-09-2026). The backtest sweep and the live breakers used to
+// override each other; the disarm floor sat 0.4 PF below the arm bar; and the
+// bar compared rounded figures.
+// ---------------------------------------------------------------------------
+import { loadLiveDisarms, noteLiveDisarm, DISARM_PF_FRACTION, LIVE_DISARM_COOL_OFF_MS } from './strategy-autopilot.js'
+
+const V = (strategy, symbol, timeframe, pf, winRate = 60, trades = 30, state = 'go', entryMode = 'close') =>
+  ({ strategy, symbol, timeframe, entryMode, state, pf, winRate, trades })
+const EMPTY2 = { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }
+const BAR = { armMinPf: 1.5, armMinWin: 55, armMinTrades: 20 }
+
+test('a strategy the live evaluators disarmed is NOT re-armed inside the cool-off, and is afterwards', () => {
+  const now = Date.parse('2026-09-01T06:25:00Z')
+  const liveDisarms = { rsi2_reversion: '2026-09-01T06:01:25Z' } // the breaker's second disarm that morning
+  const v = [V('rsi2_reversion', 'US2000', '4h', 2.0)]
+  const held = decideChanges(v, EMPTY2, { ...BAR, liveDisarms, nowMs: now })
+  assert.equal(held.arm.length, 0, 'the backtest must not vote against live money for a day')
+  assert.equal(held.cooledOff.length, 1)
+  assert.equal(held.cooledOff[0].strategy, 'rsi2_reversion')
+  const later = decideChanges(v, EMPTY2, { ...BAR, liveDisarms, nowMs: now + LIVE_DISARM_COOL_OFF_MS })
+  assert.equal(later.arm.length, 2, 'strategy + matrix arm once the cool-off has passed')
+})
+
+test('noteLiveDisarm stamps the cool-off AND closes the strategy\'s arm row with the live reason', () => {
+  const db = initDB(':memory:')
+  recordComboArms(db, { arm: [{ kind: 'strategy', strategy: 'rsi2_reversion' }], disarm: [] }, { at: '2026-09-01 04:54:25' })
+  noteLiveDisarm(db, 'rsi2_reversion', 'breaker', { nowMs: Date.parse('2026-09-01T06:01:25Z') })
+  assert.equal(loadLiveDisarms(db).rsi2_reversion, '2026-09-01T06:01:25.000Z')
+  const row = db.prepare(`SELECT disarmed_at, disarm_reason FROM combo_arms WHERE kind='strategy' AND strategy='rsi2_reversion'`).get()
+  assert.equal(row.disarmed_at, '2026-09-01 06:01:25')
+  assert.equal(row.disarm_reason, 'breaker_nogo')
+})
+
+test('the disarm floor sits at 85% of the arm bar, not at the loose GO bar', () => {
+  const cur = { enabledStrategies: ['ema_pullback'], autoMatrix: { GBPUSD: ['1h'] }, pendingMatrix: {} }
+  // PF 1.2 is still GO at the loose bar (≥1.1) but below 1.5 × 0.85 = 1.275 → disarm.
+  const weak = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.2)], cur, BAR)
+  assert.equal(weak.disarmMinPf, 1.5 * DISARM_PF_FRACTION)
+  assert.deepEqual(weak.disarm, [{ kind: 'matrix', strategy: 'ema_pullback', symbol: 'GBPUSD', timeframe: '1h' }])
+  // PF 1.3 is above the floor → kept (absence of a strong verdict is not decay).
+  assert.equal(decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.3)], cur, BAR).disarm.length, 0)
+  // A weak GO no longer PROTECTS a row another strategy condemned.
+  const both = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.2), V('vwap_trend', 'GBPUSD', '1h', 0.8, 30, 30, 'no-go')], cur, BAR)
+  assert.equal(both.disarm.length, 1)
+})
+
+test('the bar compares UNROUNDED figures: PF 1.495 does not arm at 1.5', async () => {
+  const { runBacktest } = await import('../scripts/backtest-fib.js')
+  // The engine now returns raw twins; evaluateAll prefers them. Pin both.
+  const src = (await import('node:fs')).readFileSync(new URL('./strategy-autopilot.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+  assert.match(src, /pf: stats\.profitFactorRaw \?\? stats\.profitFactor \?\? null/)
+  assert.match(src, /winRate: stats\.winRatePctRaw \?\? stats\.winRatePct \?\? null/)
+  assert.equal(typeof runBacktest, 'function')
+  const exact = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.495, 55, 20)], EMPTY2, BAR)
+  assert.equal(exact.arm.length, 0, '1.495 is below 1.5 — rounding to 1.5 must not arm it')
+  assert.equal(decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.5, 55, 20)], EMPTY2, BAR).arm.length, 2)
+})

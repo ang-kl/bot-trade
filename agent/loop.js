@@ -2070,9 +2070,18 @@ export function prepareStatements(db) {
       WHERE id = ?
     `),
 
+    // be_moved / scaled_out are one-way latches, written as MAX on purpose
+    // (02-09-2026, codebase audit): the loop writes them from a snapshot
+    // taken BEFORE scan/analyze, and the fast monitor's trade guards set
+    // them in between (trade-guard.js updGuard/updSl). A plain `= ?` wrote
+    // the stale 0 back over the guard's 1, and `decideGuardActions` could
+    // re-arm break-even on a position whose stop had already moved. Nothing
+    // in the system ever resets either flag on purpose, so MAX loses nothing.
     updatePositionMetrics: db.prepare(`
       UPDATE monitored_positions
-      SET mfe_r = ?, mae_r = ?, be_moved = ?, scaled_out = ?
+      SET mfe_r = ?, mae_r = ?,
+          be_moved = MAX(COALESCE(be_moved, 0), COALESCE(?, 0)),
+          scaled_out = MAX(COALESCE(scaled_out, 0), COALESCE(?, 0))
       WHERE id = ?
     `),
 
@@ -2154,7 +2163,22 @@ async function runLoop(db) {
     const { reconcileTradePricesToBroker } = await import('./services/broker-history-import.js')
     const fix = reconcileTradePricesToBroker(db)
     if (fix.corrected) log(`corrected ${fix.corrected} fill price(s) from the broker ledger`)
-  } catch { /* a repair pass must never stall trading */ }
+    // STAMPED, NOT SWALLOWED. A thrown transaction used to come back as
+    // `corrected: 0`, the same reading as "the record already agrees". The
+    // error is logged and kept in state (cleared on the next clean pass) so
+    // a repair that has been failing for a week is a fact, not a silence.
+    if (fix.error) {
+      log(`price reconcile FAILED: ${fix.error}`)
+      setState(db, 'price_reconcile_last_error_json', JSON.stringify({ at: new Date().toISOString(), error: String(fix.error).slice(0, 500) }))
+    } else {
+      setState(db, 'price_reconcile_last_error_json', null)
+    }
+  } catch (err) {
+    // The import or the state write itself failed — still a repair pass that
+    // must never stall trading, and still a failure to record.
+    log(`price reconcile FAILED: ${err.message}`)
+    try { setState(db, 'price_reconcile_last_error_json', JSON.stringify({ at: new Date().toISOString(), error: String(err.message).slice(0, 500) })) } catch { /* state unwritable */ }
+  }
 
   try {
     const digest = await import('./services/telegram-digest.js')
@@ -2473,8 +2497,8 @@ async function runLoop(db) {
               suggestTarget: makeTargetSuggester(db, protCreds, positions),
               applyTarget: makeTargetApplier(db, protCreds),
             })
-            if (prot.naked.length || prot.phantom.length || prot.targetless.length) {
-              log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.targetless.length} with NO take profit, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
+            if (prot.naked.length || prot.phantom.length || prot.targetless.length || (prot.tpDrift || []).length) {
+              log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.targetless.length} with NO take profit, ${prot.phantom.length} stop disagreement(s), ${(prot.tpDrift || []).length} target drift(s) (report only) — see action_log /protection-audit`)
             }
             // #144 DUPLICATE WATCH. findOpenDuplicates was already correct and
             // already detected both real incidents — nine 0066.HK, six
@@ -2515,6 +2539,10 @@ async function runLoop(db) {
           if ((result.dupsClosed || []).length > 0) {
             log(`Reconcile: closed ${result.dupsClosed.length} DUPLICATE open trade(s) sharing a broker position (re-adoption leak cleanup)`)
           }
+          // The two best-effort blocks used to fail into an empty result —
+          // a broken dedup sweep and a clean one both printed nothing.
+          if (result.dedupError) log(`Reconcile: dedup sweep FAILED — ${result.dedupError}`)
+          if (result.dupPnlError) log(`Reconcile: duplicate-P&L repair FAILED — ${result.dupPnlError}`)
           if ((result.relinked || []).length > 0) {
             log(`Reconcile: re-linked ${result.relinked.length} position(s) to their existing trade instead of duplicating (leak prevented)`)
           }
@@ -2976,8 +3004,8 @@ async function runLoop(db) {
                       suggestTarget: mkSuggest2(db, creds2, pos2),
                       applyTarget: mkApply2(db, creds2),
                     })
-                    if (p2.naked.length || p2.targetless.length || p2.phantom.length) {
-                      log(`PROTECTION AUDIT[${acc.account_id}]: ${p2.naked.length} with NO stop, ${p2.targetless.length} with no take profit, ${p2.phantom.length} disagreement(s)`)
+                    if (p2.naked.length || p2.targetless.length || p2.phantom.length || (p2.tpDrift || []).length) {
+                      log(`PROTECTION AUDIT[${acc.account_id}]: ${p2.naked.length} with NO stop, ${p2.targetless.length} with no take profit, ${p2.phantom.length} disagreement(s), ${(p2.tpDrift || []).length} target drift(s)`)
                     }
                   }
                 } catch (e2) {
@@ -4171,8 +4199,19 @@ async function runLoop(db) {
           try {
             const { syncExecGuard } = await import('./services/exec-guard-sync.js')
             const exec2 = await import('./lib/exec-engine.js')
-            await syncExecGuard(db, exec2, { isLive: null, name: 'exec' }, { creds: getCtraderCreds(db) })
-          } catch { /* probe convergence covers it */ }
+            const sync = await syncExecGuard(db, exec2, { isLive: null, name: 'exec' }, { creds: getCtraderCreds(db) })
+            // Same stamp the heartbeat probe writes: a push the sidecar
+            // refused is a halt that did not bind, and must not read as one.
+            if (sync.error) {
+              log(`equity stop: exec guard push FAILED — ${sync.error}`)
+              setState(db, 'exec_guard_sync_last_error_json', JSON.stringify({ at: new Date().toISOString(), error: String(sync.error).slice(0, 500) }))
+            } else {
+              setState(db, 'exec_guard_sync_last_error_json', null)
+            }
+          } catch (err) {
+            // Probe convergence covers the push; the failure is still recorded.
+            try { setState(db, 'exec_guard_sync_last_error_json', JSON.stringify({ at: new Date().toISOString(), error: String(err.message).slice(0, 500) })) } catch { /* state unwritable */ }
+          }
           try {
             // Imported here, not at module scope — decision-log is loaded
             // lazily at every other call site in this file for the same reason
@@ -4193,8 +4232,14 @@ async function runLoop(db) {
             } catch { /* non-fatal */ }
           }
         }
+        // A controller row for a phase that closes positions and disarms
+        // accounts: a throw here used to be one log line per cycle, never a
+        // status. Beaten at the END so a phase that keeps throwing shows as
+        // failing, not resting.
+        await hbeat(db, 'equity_stop')
       } catch (err) {
         log('Equity stop check failed:', err.message)
+        await hbeat(db, 'equity_stop', false, err.message)
       }
 
       // ---------------------------------------------------------------------
@@ -4212,8 +4257,10 @@ async function runLoop(db) {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
         })
         if (pb.triggered) log(`Performance breaker: PF ${pb.stats.profitFactor} over ${pb.stats.trades} trades${pb.autoDisarmed ? ' — autotrade disarmed' : ''}`)
+        await hbeat(db, 'performance_breaker')
       } catch (err) {
         log('Performance breaker failed (non-fatal):', err.message)
+        await hbeat(db, 'performance_breaker', false, err.message)
       }
     } // end symbolsJson
 
@@ -4485,7 +4532,79 @@ async function runLoop(db) {
             `DELETE FROM telegram_outbox WHERE sent_at IS NOT NULL AND queued_at < ?`
           ).run(new Date(Date.now() - 14 * 86_400_000).toISOString()),
         },
+        // Owner 01-09-2026 ("every stale, triggerless or dead piece goes: wire
+        // it so it fires, or delete it"). The three steps below existed as
+        // exported, tested, uncalled functions — each a pruner or a repair
+        // with no trigger, which is failure mode #4 (a repair nothing calls).
+        //
+        // Two JSON blobs in agent_state that only ever grew: browser-session
+        // metadata (30-day retention on dead and revoked rows, the module's
+        // own default — revocations inside the window are the security
+        // record and are kept) and the per-key risk-config change history,
+        // global and per account, pruned to the keys DEFAULT_RISK_CONFIG
+        // still declares. A retired key's history is what that module calls
+        // "a setting removed from the schema"; the stored SETTING is untouched.
+        { name: 'prune-browser-sessions', run: async () => (await import('./services/browser-sessions.js')).pruneSessions(db) },
+        {
+          name: 'prune-risk-config-history',
+          run: async () => {
+            const { pruneRiskConfigChanges } = await import('./services/risk-config-history.js')
+            const { DEFAULT_RISK_CONFIG } = await import('./services/risk.js')
+            const valid = Object.keys(DEFAULT_RISK_CONFIG)
+            let dropped = pruneRiskConfigChanges(db, valid, { accountId: null })
+            const scoped = db.prepare(`SELECT key FROM agent_state WHERE key LIKE 'acct:%:risk_config_changed_json'`).all()
+            for (const { key } of scoped) {
+              const accountId = String(key).slice('acct:'.length, -':risk_config_changed_json'.length)
+              if (accountId) dropped += pruneRiskConfigChanges(db, valid, { accountId })
+            }
+            return dropped
+          },
+        },
+        // UNKNOWN-P&L WRITE-OFF — owner 2026-07-30, "option 2": a closed trade
+        // whose P&L is UNKNOWN keeps blocking (the backfill may still repair
+        // it); one that is UNKNOWABLE stops blocking, loudly, with net_pnl
+        // left NULL. mark-unresolvable.js shipped in #513 and nothing ever
+        // called its writing half: the plan route could list the rows that
+        // qualified, and no row was ever marked. Production 01-09-2026 held a
+        // row at 4,690 attempts over 13 days — still unresolved, still
+        // re-attempted every backfill pass, still counted by the reconciliation
+        // heartbeat.
+        //
+        // BOTH HALVES of the module's evidence rule are supplied and NEITHER
+        // is loosened. AGE is the module's own horizon (default 7 days).
+        // EXHAUSTION is the durable per-row attempt counter — exhaustedTradeIds
+        // at the backfill's own LIVE_GAP_MAX_ATTEMPTS — unioned with the
+        // in-memory backoff ladder, the same two sources /state/unresolvable-plan
+        // reads. A row on an account the backfill has never given up on is
+        // never touched, however old. Every marking is audited by the module
+        // itself (action_log PNL_UNRESOLVABLE), and nothing is computed.
+        {
+          name: 'write-off-unresolvable',
+          run: async () => {
+            const { sweepUnresolvable } = await import('./services/mark-unresolvable.js')
+            const { exhaustedTradeIds, exhaustedAccounts, LIVE_GAP_MAX_ATTEMPTS } = await import('./services/pnl-backfill.js')
+            const exhaustedRows = exhaustedTradeIds(db, { minAttempts: LIVE_GAP_MAX_ATTEMPTS, limit: 1000 })
+            const accounts = [...new Set([
+              ...exhaustedRows.map(r => r.account_id).filter(a => a != null).map(String),
+              ...exhaustedAccounts(),
+            ])]
+            const out = sweepUnresolvable(db, { exhaustedAccounts: accounts, dryRun: false })
+            return { ...out, exhaustedRows: exhaustedRows.length, exhaustedAccounts: accounts, minAttempts: LIVE_GAP_MAX_ATTEMPTS }
+          },
+        },
       ], { log })
+      // SAY WHAT WAS WRITTEN OFF, row by row. This is the one place the
+      // system stops waiting for money data, so it must never be something
+      // discovered later from a total that quietly started adding up.
+      const writeOff = pass.results['write-off-unresolvable'] ?? null
+      if (writeOff?.marked > 0) {
+        for (const r of writeOff.rows) {
+          log(`UNKNOWN P&L WRITTEN OFF: trade ${r.id} ${r.symbol} on ${r.accountId}, closed ${r.closedAt} — older than the ${writeOff.horizonDays}-day deal-history horizon and the backfill exhausted its retries; net_pnl stays NULL, this row no longer blocks`)
+        }
+        log(`Unknown-P&L write-off: marked ${writeOff.marked} of ${writeOff.found} candidate(s) across ${writeOff.exhaustedAccounts.length} exhausted account(s) — see action_log PNL_UNRESOLVABLE`)
+      } else if (writeOff && writeOff.exhaustedRows > 0) {
+        log(`Unknown-P&L write-off: ${writeOff.exhaustedRows} row(s) exhausted (≥${writeOff.minAttempts} attempts) but none older than the ${writeOff.horizonDays}-day horizon on an exhausted account — still UNKNOWN, nothing written off`)
+      }
       const d1 = pass.results['prune-scans']
       const d2 = pass.results['prune-signals']
       const d3 = pass.results['prune-regimes']
@@ -4736,6 +4855,9 @@ async function runLoop(db) {
           ran: pass.ran,
           failed: pass.failed,
           dispositions: { written: sw.written, batches: sw.batches, drained: sw.drained, pending: sw.pending },
+          unresolvableWriteOff: writeOff
+            ? { found: writeOff.found, marked: writeOff.marked, exhaustedRows: writeOff.exhaustedRows, exhaustedAccounts: writeOff.exhaustedAccounts, ids: (writeOff.rows || []).map(r => r.id) }
+            : null,
         }))
         if (sw.counts.dropped > 0) {
           // The §70.8 finding itself: the gate said yes and nothing acted.
@@ -4759,7 +4881,7 @@ async function runLoop(db) {
       // this the first pass over a backlog prints a million rows pruned and
       // looks exactly like a table that is now clean.
       const scanRemainder = d1?.done === false ? ' — BATCH CAP HIT, more remain' : ''
-      log(`Housekeeping: pruned ${changesOf(d1)} scans (${heldText} held by analyses)${scanRemainder}, ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows`
+      log(`Housekeeping: pruned ${changesOf(d1)} scans (${heldText} held by analyses)${scanRemainder}, ${changesOf(d2)} signals, ${changesOf(d3)} regimes, ${changesOf(d4)} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades ?? 0} old trades, ${(d7.postmortems ?? 0) + (d7.orphanPostmortems ?? 0)} postmortems, ${d8.cupHandle ?? 0} cup-handle diags, ${d8.analyses ?? 0} analyses, ${d8.actionLog ?? 0} action-log rows, ${pass.results['prune-browser-sessions'] ?? 0} browser sessions, ${pass.results['prune-risk-config-history'] ?? 0} risk-config history keys, ${writeOff?.marked ?? 0} unknown-P&L write-offs`
         + (pass.failed.length ? ` — ${pass.failed.length} step(s) FAILED: ${pass.failed.map(f => f.name).join(', ')}` : ''))
     } catch (err) {
       log('Housekeeping error:', err.message)

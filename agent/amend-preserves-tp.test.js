@@ -61,8 +61,15 @@ test('MOVE_SL does not invent a target where none existed', () => {
   const branch = moveSlBranch()
   assert.match(branch, /Number\(pos\.current_tp\) > 0/,
     'only a real, positive target may be re-sent')
-  assert.match(branch, /undefined/,
-    'no target means the payload is left exactly as it was')
+  // EXACT, not `/undefined/`. The first version matched any `undefined` in
+  // the branch — and `sendTp !== undefined` two lines down is one — so the
+  // mutation `: undefined` → `: null` (which sends `takeProfit: null`, a
+  // different broker instruction: "amend to no target") kept the test green.
+  assert.match(branch, /const keepTp = Number\(pos\.current_tp\) > 0 \? Number\(pos\.current_tp\) : undefined/,
+    'no target means keepTp is undefined — NOT null, which would be sent')
+  assert.match(branch, /\.\.\.\(sendTp !== undefined \? \{ takeProfit: sendTp \} : \{\}\)/,
+    'the payload must OMIT takeProfit when there is none, not carry it as null')
+  assert.doesNotMatch(branch, /takeProfit: null/, 'a null target is an instruction, not an omission')
 })
 
 test('the clearing semantics are recorded where the payload is built', () => {

@@ -6,6 +6,7 @@ import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import StrategyLivenessCard from '../components/StrategyLivenessCard.jsx'
+import DivergenceCard from '../components/DivergenceCard.jsx'
 import CupHandleFunnelCard from '../components/CupHandleFunnelCard.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -1825,6 +1826,14 @@ export default function Tune() {
                 evidence loop on a session-adaptive cadence — arms combos clearing <span className="font-semibold tabular-nums">{autopilotBarText}</span>, max {autopilotMaxChanges} changes per run, {autopilotAllowLive ? 'LIVE accounts included' : 'demo accounts only'}; every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies
               </span>
             </div>
+            </Card>
+            {/* Backtest vs live sits directly under the Strategy Autopilot
+                control: the autopilot arms combos on backtest evidence, and
+                this is the only surface that says whether the evidence held
+                live. GLOBAL: combo_arms and the closes are read across the
+                whole book, not per account. */}
+            <Card id="sec-pipe-divergence" className="w3-hover-shadow" scope="global">
+              <DivergenceCard />
             </Card>
             {/* Liveness sits directly under "What May Trade": that card is
                 where a strategy gets armed, and this is the only surface that

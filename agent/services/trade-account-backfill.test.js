@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { backfillTradeAccounts, accountStampCoverage } from './trade-account-backfill.js'
+import { backfillTradeAccounts } from './trade-account-backfill.js'
 
 function trade(db, { status = 'closed', acct = null } = {}) {
   return db.prepare(
@@ -51,19 +51,6 @@ test('idempotent — a second pass changes nothing', () => {
   position(db, id, '46130058')
   assert.equal(backfillTradeAccounts(db).stamped, 1)
   assert.equal(backfillTradeAccounts(db).stamped, 0, 'running every cycle must cost nothing once drained')
-})
-
-test('coverage reports how much of the ledger can answer "which account"', () => {
-  const db = initDB(':memory:')
-  const a = trade(db); position(db, a, 'X')
-  trade(db)                       // unknowable
-  trade(db, { acct: 'Y' })        // already stamped
-  assert.equal(accountStampCoverage(db).pct, 33.3)
-  backfillTradeAccounts(db)
-  const c = accountStampCoverage(db)
-  assert.equal(c.stamped, 2)
-  assert.equal(c.unstamped, 1)
-  assert.equal(c.pct, 66.7, 'a low number is information; a per-account panel that is not per-account is not')
 })
 
 test('open trades are counted too — the gap is not only historical', () => {

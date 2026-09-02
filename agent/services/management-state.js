@@ -60,8 +60,6 @@ export const EXCEPTIONS = Object.freeze([
   'broker_closed_locally_open',  // the broker says flat, our books do not
 ])
 
-const ORDER = new Map(STATES.map((s, i) => [s, i]))
-
 /** §41, highest authority first. Lower index wins a conflict. */
 export const AUTHORITIES = Object.freeze([
   'broker_native',          // 1 — the broker's own SL/TP
@@ -73,8 +71,6 @@ export const AUTHORITIES = Object.freeze([
   'human_owner',            // 7 — /actions/*, Telegram
   'reconciliation',         // 8 — the reconciler correcting the record
 ])
-
-const RANK = new Map(AUTHORITIES.map((a, i) => [a, i]))
 
 /** Which authority each known writer holds. Mirrors docs/position-write-authority.md. */
 export const WRITER_AUTHORITY = Object.freeze({
@@ -223,8 +219,9 @@ export function isOwnerSource(source) {
  *
  * This is the ONE place §41.1's numbered list and §41.2's prose agree: capital
  * safety overrides the owner. Everything else that outranks `human_owner` does
- * so only because the numbered list says so — see the arbitrate() note — and
- * that distinction is what the minute review reports on.
+ * so only because the numbered list says so — the §41.1-vs-§41.2 tension is
+ * recorded in docs/position-write-authority.md — and that distinction is what
+ * the minute review reports on.
  */
 export function isCapitalSafetySource(source) {
   const a = authorityForSource(source)
@@ -234,77 +231,3 @@ export function isCapitalSafetySource(source) {
 /** True when `state` is one of §40's exception states rather than a happy-path one. */
 export const isException = (state) => EXCEPTIONS.includes(state)
 
-/**
- * May a position in `state` advance to `next`?
- *
- * The rules, and why each exists:
- *  · forward-only along STATES — a position cannot un-take a partial profit,
- *  · any state may enter an EXCEPTION — that is what exceptions are for,
- *  · an exception may return ONLY to the state that can be verified, never
- *    silently to the one it left: a `naked` position becomes `protected`
- *    again by having a stop confirmed, not by the alarm being dismissed,
- *  · `reconciled` is terminal.
- */
-export function canTransition(state, next) {
-  if (state === next) return true                       // idempotent re-assert
-  if (state === 'reconciled') return false              // terminal
-  if (isException(next)) return true                    // always reportable
-  if (isException(state)) {
-    // Leaving an exception requires landing on a state that is CHECKED, not
-    // assumed. These are the only exits, and each corresponds to an actual
-    // verification: a broker stop read back, a broker close confirmed, or the
-    // reconciler settling the record.
-    return ['protected', 'actively_managed', 'broker_closed', 'reconciled'].includes(next)
-  }
-  const a = ORDER.get(state), b = ORDER.get(next)
-  if (a == null || b == null) return false              // unknown state
-  return b > a                                          // forward only
-}
-
-/**
- * Who wins when two writers want the same position at the same moment?
- *
- * §41.2: "Human owner actions should normally be respected and audited rather
- * than automatically reversed, unless they violate a non-negotiable
- * capital-safety rule." So the human sits at level 7 for ORDINARY precedence —
- * a fast manager may not quietly undo an owner's stop — but levels 1 and 2,
- * the capital-safety layers, still override, which is exactly what that
- * sentence carves out.
- *
- * @returns {{winner: string, reason: string}}
- */
-export function arbitrate(writerA, writerB) {
-  const ra = RANK.get(WRITER_AUTHORITY[writerA] ?? writerA)
-  const rb = RANK.get(WRITER_AUTHORITY[writerB] ?? writerB)
-  if (ra == null || rb == null) {
-    // An unknown writer loses to a known one, and two unknowns are a
-    // conflict rather than a coin toss. Never guess about who may move money.
-    if (ra == null && rb == null) return { winner: null, reason: 'both writers unknown' }
-    return ra == null
-      ? { winner: writerB, reason: `${writerA} is not in the authority registry` }
-      : { winner: writerA, reason: `${writerB} is not in the authority registry` }
-  }
-  if (ra === rb) return { winner: null, reason: 'equal authority — needs an explicit rule' }
-  return ra < rb
-    ? { winner: writerA, reason: `${WRITER_AUTHORITY[writerA] ?? writerA} outranks ${WRITER_AUTHORITY[writerB] ?? writerB}` }
-    : { winner: writerB, reason: `${WRITER_AUTHORITY[writerB] ?? writerB} outranks ${WRITER_AUTHORITY[writerA] ?? writerA}` }
-}
-
-/**
- * The management state implied by what we can observe, for a position whose
- * stored state is missing or stale.
- *
- * Every existing row predates this module, so `null` must produce a sane
- * answer rather than an error — a migration that leaves 12 live positions in
- * an unknown state would be worse than no migration.
- */
-export function deriveState({ brokerOpen, hasBrokerStop, beMoved, scaledOut, localOpen } = {}) {
-  if (brokerOpen === false && localOpen === true) return 'broker_closed_locally_open'
-  if (brokerOpen === true && localOpen === false) return 'locally_closed_broker_open'
-  if (brokerOpen === false) return 'broker_closed'
-  if (hasBrokerStop === false) return 'naked'
-  if (scaledOut) return 'runner_managed'
-  if (beMoved) return 'risk_reduced'
-  if (hasBrokerStop === true) return 'protected'
-  return 'filled'
-}

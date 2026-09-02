@@ -49,7 +49,16 @@ const POLL_OPEN_MS = 10_000
 // closed one must not slow it down) and pushes the same snapshot to everyone.
 // ---------------------------------------------------------------------------
 const subs = new Set()
-let snapshot = { health: null, beats: null, err: null }
+let snapshot = {
+  health: null, beats: null, err: null,
+  // Two more readers (02-09-2026), each carrying ITS OWN error so a failed
+  // read renders as "not verifiable" rather than as the empty/healthy shape.
+  // /state/log-watch: which log rules fired and when. /state/protection-
+  // audit: the whole-book summary and the accounts the audit has not reached.
+  logWatch: null, logWatchErr: null,
+  protAudit: null, protAuditErr: null,
+  at: null, // when this snapshot landed — the clock the readers age against
+}
 let timer = null
 let currentMs = null
 
@@ -58,13 +67,22 @@ function publish(next) {
   for (const fn of subs) { try { fn(snapshot) } catch { /* one bad subscriber must not stop the rest */ } }
 }
 
+const errText = (e) => e?.message || String(e)
+
 function pollOnce() {
   return Promise.all([
-    agentGet('/health').catch(e => ({ __err: e?.message || String(e) })),
+    agentGet('/health').catch(e => ({ __err: errText(e) })),
     agentGet('/state/heartbeats').catch(() => null),
-  ]).then(([h, b]) => {
-    if (h?.__err) publish({ ...snapshot, err: h.__err })
-    else publish({ health: h, beats: b, err: null })
+    agentGet('/state/log-watch').then(v => ({ v })).catch(e => ({ e: errText(e) })),
+    agentGet('/state/protection-audit').then(v => ({ v })).catch(e => ({ e: errText(e) })),
+  ]).then(([h, b, lw, pa]) => {
+    const extra = {
+      logWatch: lw.v ?? null, logWatchErr: lw.e ?? lw.v?.error ?? null,
+      protAudit: pa.v ?? null, protAuditErr: pa.e ?? pa.v?.error ?? null,
+      at: Date.now(),
+    }
+    if (h?.__err) publish({ ...snapshot, ...extra, err: h.__err })
+    else publish({ health: h, beats: b, err: null, ...extra })
   })
 }
 
@@ -112,7 +130,85 @@ export function Line({ state, children }) {
   )
 }
 
-export function ControllerRows({ bad }) {
+/**
+ * /state/log-watch → one line: which rules fired in the last 24 h, with the
+ * time, or "no log-watch alerts in 24 h". `view.fired` is a map of rule key →
+ * ISO time of the LAST fire (agent/services/log-watch.js logWatchView). A
+ * failed read is its own state: an unreachable watch is not a quiet one.
+ */
+export function LogWatchLine({ view, error, nowMs }) {
+  if (error) return <Line state="warn">Log watch: not verifiable — {String(error)}</Line>
+  if (!view) return null
+  const fired = view.fired && typeof view.fired === 'object' ? view.fired : {}
+  // `nowMs` is the snapshot's own clock (stamped when the poll landed, not
+  // during render — react-hooks/purity). Without it nothing can be aged, so
+  // nothing is filtered out rather than everything: a missing clock must not
+  // read as "nothing fired".
+  const recent = Object.entries(fired)
+    .map(([rule, iso]) => ({ rule, iso, t: Date.parse(iso || '') }))
+    .filter(f => Number.isFinite(f.t) && (!Number.isFinite(nowMs) || nowMs - f.t <= 24 * 3600 * 1000))
+    .sort((a, b) => b.t - a.t)
+  const hhmm = (t) => {
+    const d = new Date(t)
+    return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`
+  }
+  if (!recent.length) {
+    return (
+      <Line state={view.installed === false ? 'warn' : 'ok'}>
+        no log-watch alerts in 24 h{view.installed === false ? ' — and the watch is NOT installed, so silence proves nothing' : ''}
+      </Line>
+    )
+  }
+  return (
+    <Line state="warn">
+      log-watch fired in 24 h:{' '}
+      {recent.map((f, i) => (
+        <span key={f.rule}>{i > 0 && ' · '}<span className="font-semibold">{f.rule}</span> {hhmm(f.t)}</span>
+      ))}
+    </Line>
+  )
+}
+
+/**
+ * /state/protection-audit → the one-line `summary` the route already
+ * composes, plus every account named in `staleAccounts` with its age. The
+ * summary is the route's own sentence (never blanked — see the route comment);
+ * this only adds the per-account list so a stale account is a row, not a
+ * clause. Rendered UNDER the protection_audit controller row when that row is
+ * shown, else on its own.
+ */
+export function ProtectionAuditBlock({ audit, error }) {
+  if (error) return <Line state="warn">Position protection audit: not verifiable — {String(error)}</Line>
+  if (!audit) return null
+  const stale = Array.isArray(audit.staleAccounts) ? audit.staleAccounts : []
+  const state = audit.hasRun === false ? 'error' : (audit.stale || stale.length || audit.lastAttemptOk === false || audit.naked || audit.targetless || audit.phantom) ? 'warn' : 'ok'
+  return (
+    <div className="flex flex-col gap-0.5">
+      <Line state={state}>
+        <span className="font-semibold">Position protection audit</span>
+        {audit.accounts != null && <span style={{ color: 'var(--color-text-sub)' }}> · {audit.accounts} account{audit.accounts === 1 ? '' : 's'}</span>}
+        {': '}{audit.summary || '(no summary in the reading)'}
+      </Line>
+      {stale.length > 0 && (
+        <ul className="ml-4 list-disc" style={{ color: 'var(--color-text-sub)' }}>
+          {stale.map(a => (
+            <li key={String(a.accountId ?? '?')}>
+              <span className="font-semibold" style={{ color: 'var(--color-warning-text)' }}>account {a.accountId ?? '?'}</span>
+              {' '}not audited for {dur(a.ageSec)}{a.checked != null ? ` · ${a.checked} position(s) at last check` : ''}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+/**
+ * @param {{bad: Array, under?: Record<string, import('react').ReactNode>}} props
+ *   under — extra content rendered inside a named controller's row (the
+ *   protection audit's detail goes under `protection_audit`).
+ */
+export function ControllerRows({ bad, under = {} }) {
   if (!bad.length) return null
   return (
     <ul className="mt-1">
@@ -143,6 +239,7 @@ export function ControllerRows({ bad }) {
               {c.error_is_current === false ? 'last error (resolved): ' : ''}{c.last_error}
             </span>
           )}
+          {under[c.name] && <div className="basis-full pl-2">{under[c.name]}</div>}
         </li>
       ))}
     </ul>
@@ -157,7 +254,7 @@ export function ControllerRows({ bad }) {
  */
 export default function AgentHealthPanel({ appVersion, buildSha, compact = false }) {
   const [open, setOpen] = useState(false)
-  const [{ health, beats, err }, setSnap] = useState(snapshot)
+  const [{ health, beats, err, logWatch, logWatchErr, protAudit, protAuditErr, at }, setSnap] = useState(snapshot)
   const popoverId = useId()
 
   useEffect(() => subscribe(setSnap, open ? POLL_OPEN_MS : POLL_CLOSED_MS), [open])
@@ -263,7 +360,23 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
                     ))}
                   </>}
             </Line>
-            <ControllerRows bad={ctl.bad} />
+            {/* The protection audit's detail goes UNDER its controller row
+                when that row is listed (only unhappy controllers are), else
+                stands on its own — either way it is always rendered, because
+                its summary is the answer to "is every open position
+                protected?" and a missing answer must not look like "yes". */}
+            {(() => {
+              const prot = <ProtectionAuditBlock audit={protAudit} error={protAuditErr} />
+              const listed = ctl.bad.some(c => c.name === 'protection_audit')
+              return (
+                <>
+                  <ControllerRows bad={ctl.bad} under={listed ? { protection_audit: prot } : {}} />
+                  {!listed && prot}
+                </>
+              )
+            })()}
+
+            <LogWatchLine view={logWatch} error={logWatchErr} nowMs={at} />
 
             {/* The roster invariant. Rendered only when it is NOT ok: a
                 holding invariant is the normal case and a line saying so on

@@ -417,3 +417,70 @@ test('reconcileTradePricesToBroker fills slippage from the proposal and the brok
   assert.equal(slip(4), null)
   assert.equal(reconcileTradePricesToBroker(db).slippageFilled, 0, 'idempotent')
 })
+
+// ---------------------------------------------------------------------------
+// SILENT FAILURE, STAMPED (CLAUDE.md failure mode #3: a repair that reports
+// `corrected: 0` because its transaction threw is indistinguishable from one
+// that found nothing to fix). The throw is forced with a trigger so the test
+// exercises the real transaction path, not a mocked one.
+// ---------------------------------------------------------------------------
+test('a thrown transaction is REPORTED in the result, not swallowed as corrected:0', () => {
+  const db = initDB(':memory:')
+  seed(db, { id: 1300, entry: 1076.3, exit: 1076.4 })
+  deal(db, { dealId: 3001, tid: 1300, entry: 1077.4, close: 1076.4 })
+  db.exec(`CREATE TRIGGER boom BEFORE UPDATE OF entry_price ON trades
+           BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END`)
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.corrected, 0, 'the write did not land')
+  assert.match(String(out.error), /simulated write failure/,
+    'a result with corrected:0 and no error field reads as "nothing to fix" — it must carry the error')
+})
+
+test('the loop stamps the reconcile error durably and clears it on success', () => {
+  // Source pin, comments stripped: the call site is the only place that can
+  // turn `error` into a durable, visible record.
+  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  const start = loop.indexOf('reconcileTradePricesToBroker(db)')
+  assert.ok(start > 0)
+  const slice = loop.slice(start, start + 1500).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(slice, /fix\.error/, 'the loop must read the error field the repair now returns')
+  assert.match(slice, /setState\(db, 'price_reconcile_last_error_json'/, 'the error must be stamped where a route can read it')
+  assert.match(slice, /setState\(db, 'price_reconcile_last_error_json', null\)/, 'a success must clear a stale error')
+})
+
+test('multi-deal entry: a lots-weighted entry and exit are written when every deal carries lots', () => {
+  // Partial fill: 0.1 lot at 5.1 and 0.3 lot at 5.3 → entry 5.25; closes
+  // 0.1 at 5.5 and 0.3 at 5.7 → exit 5.65. Weighted, not averaged: a plain
+  // mean (5.2 / 5.6) would be wrong by the size asymmetry.
+  const db = initDB(':memory:')
+  seed(db, { id: 800, entry: 5.0, exit: 5.5 })
+  const ins = db.prepare(
+    `INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, net_pnl, matched_trade_id)
+     VALUES (?, ?, 'EURX', 'BUY', ?, ?, ?, 1, 800)`,
+  )
+  ins.run('11', '11', 0.1, 5.1, 5.5)
+  ins.run('12', '12', 0.3, 5.3, 5.7)
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.skippedMultiDeal, 0, 'lots are present, so nothing is skipped')
+  assert.equal(out.mergedMultiDeal, 1)
+  assert.equal(out.corrected, 1)
+  const t = db.prepare('SELECT entry_price, exit_price FROM trades WHERE id = 800').get()
+  assert.ok(Math.abs(t.entry_price - 5.25) < 1e-9, `entry ${t.entry_price} should be the lots-weighted 5.25`)
+  assert.ok(Math.abs(t.exit_price - 5.65) < 1e-9, `exit ${t.exit_price} should be the lots-weighted 5.65`)
+})
+
+test('multi-deal entry: ONE deal without lots keeps the whole trade skipped', () => {
+  const db = initDB(':memory:')
+  seed(db, { id: 801, entry: 5.0, exit: 5.5 })
+  const ins = db.prepare(
+    `INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, net_pnl, matched_trade_id)
+     VALUES (?, ?, 'EURX', 'BUY', ?, ?, ?, 1, 801)`,
+  )
+  ins.run('21', '21', 0.1, 5.1, 5.5)
+  ins.run('22', '22', null, 5.3, 5.7)
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.skippedMultiDeal, 1)
+  assert.equal(out.mergedMultiDeal, 0)
+  assert.equal(out.corrected, 0)
+  assert.equal(db.prepare('SELECT entry_price FROM trades WHERE id = 801').get().entry_price, 5.0)
+})

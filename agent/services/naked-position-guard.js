@@ -65,12 +65,16 @@
 //   · inventing a target when the suggester returns nothing. No target is
 //     better than an unsupported one — that half of the original reasoning
 //     stands unchanged.
-//   · report a take-profit DISAGREEMENT the way it reports a stop
+//   · ALERT on a take-profit DISAGREEMENT the way it alerts on a stop
 //     disagreement. Targets are amended constantly in normal operation — the
 //     profit keeper ratchets them, partial ladders move them — so a mismatch
-//     check would fire during ordinary work. A check that cries wolf during
+//     alert would fire during ordinary work. A check that cries wolf during
 //     normal operation trains the owner to ignore it, which is the same
 //     outcome as not having it. MISSING is unambiguous; different is not.
+//     Since 02-09-2026 the disagreement IS measured — `tpDrift`, counted in
+//     the audit record and nowhere else — because "not alerted" had quietly
+//     become "not looked at", and a book that disagrees with the broker on
+//     the exit is a fact worth having on record even when it is not a fault.
 // ─────────────────────────────────────────────────────────────────────────────
 import { getState, setState } from '../db.js'
 
@@ -89,10 +93,17 @@ const num = (v) => (v == null ? null : (Number.isFinite(Number(v)) ? Number(v) :
  *
  * @param {Array} openRows   rows with { id, symbol, trade_id, ctrader_position_id, current_sl, account_id, source }
  * @param {Array} brokerPositions  [{ positionId, stopLoss, takeProfit }]
- * @returns {{naked:Array, targetless:Array, phantom:Array, checked:number, unmatched:number}}
+ * @returns {{naked:Array, targetless:Array, phantom:Array, tpDrift:Array, checked:number, unmatched:number}}
  *   naked      — no stop at the broker: real, live, unprotected exposure
  *   targetless — stop present, no take profit: the order-time rule, unmet
  *   phantom    — we show a stop the broker is not holding: the UI is lying
+ *   tpDrift    — both hold a target and they differ by more than 0.1% of
+ *                price. REPORT ONLY: counted in the audit record, never
+ *                alerted and never written to action_log, because the
+ *                keeper's ratchet and partial ladders move targets in
+ *                normal operation and a siren that fires then gets ignored.
+ *                Until 02-09-2026 the target was not compared at all, so a
+ *                book/broker disagreement on the exit was invisible.
  */
 export function auditProtection(openRows = [], brokerPositions = []) {
   const byId = new Map()
@@ -103,6 +114,7 @@ export function auditProtection(openRows = [], brokerPositions = []) {
   const naked = []
   const targetless = []
   const phantom = []
+  const tpDrift = []
   let unmatched = 0
 
   for (const row of openRows) {
@@ -155,10 +167,23 @@ export function auditProtection(openRows = [], brokerPositions = []) {
             ? `no take profit at the broker (opened outside the bot) — stop at ${brokerSl}, no target`
             : `no take profit at the broker — an order placed through the bot could not have been submitted this way (guard_no_target); this one was adopted, so the guard never saw it`,
         })
+      } else {
+        // Both sides hold a target: compare them. Same 0.1%-of-price band
+        // as the stop check above; a book target that was never recorded is
+        // the "never recorded" case, not drift.
+        const ourTp = num(row.current_tp)
+        if (ourTp != null && ourTp !== 0 && Math.abs(brokerTp - ourTp) > Math.abs(brokerTp) * 0.001) {
+          tpDrift.push({
+            monitoredId: row.id, tradeId: row.trade_id ?? null, symbol: row.symbol,
+            positionId: pid, accountId: row.account_id ?? null,
+            ourTp, brokerTp,
+            detail: `target disagreement — we show ${ourTp}, the broker holds ${brokerTp} (report only)`,
+          })
+        }
       }
     }
   }
-  return { naked, targetless, phantom, checked: openRows.length, unmatched }
+  return { naked, targetless, phantom, tpDrift, checked: openRows.length, unmatched }
 }
 
 /** Which findings are due an alert, given the mute window. Pure — testable. */
@@ -364,13 +389,14 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
         naked: audit.naked.length,
         targetless: audit.targetless.length,
         phantom: audit.phantom.length,
+        tpDrift: audit.tpDrift.length,
       }))
     } catch { /* non-fatal */ }
 
     return { ...audit, alerted: due.length, targetAlerted: targetDue.length }
   } catch (err) {
     return {
-      naked: [], targetless: [], phantom: [], checked: 0, unmatched: 0,
+      naked: [], targetless: [], phantom: [], tpDrift: [], checked: 0, unmatched: 0,
       alerted: 0, targetAlerted: 0, error: err.message,
     }
   }
@@ -661,7 +687,7 @@ const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
  *            errors:string[], unauditable:string[]}}
  */
 export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, targetsRestored: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -716,7 +742,22 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       // No local rows AND no broker positions is a genuinely clean account —
       // but a broker position with no local row is exactly what the audit is
       // for, so an empty openRows does not skip the pass.
-      if (!openRows.length && !positions.length) { out.accounts++; if (obliged.has(String(id))) reachedObliged++; continue }
+      if (!openRows.length && !positions.length) {
+        out.accounts++
+        if (obliged.has(String(id))) reachedObliged++
+        // RECORD THE CLEAN PASS (02-09-2026). This branch used to skip the
+        // per-account record, so an account with nothing open read as "NOT
+        // audited for 12h" the moment the whole-book merge started naming
+        // stale accounts — a false alarm minted by the fix that removed the
+        // false reassurance. Nothing open, verified nothing open, said so.
+        try {
+          setState(db, auditKeyFor(id), JSON.stringify({
+            at: new Date(deps.nowMs ?? Date.now()).toISOString(), ok: true, accountId: String(id),
+            checked: 0, unmatched: 0, naked: 0, targetless: 0, phantom: 0,
+          }))
+        } catch { /* non-fatal */ }
+        continue
+      }
       const brokerSl = positions.map(p => ({
         positionId: p.positionId,
         stopLoss: p.stopLoss ?? null,
@@ -734,6 +775,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       out.naked += prot.naked.length
       out.targetless += prot.targetless.length
       out.phantom += prot.phantom.length
+      out.tpDrift += (prot.tpDrift || []).length
 
       // MAKE THE BOOK STOP LYING. A phantom is our record disagreeing with the
       // broker's, and this module already calls that the more dangerous state

@@ -31,6 +31,7 @@
 import { getState, setState } from '../db.js'
 import { STRATEGY_KEYS } from './strategies.js'
 import { loadStageMatrix, setStage, armedTradeKeys, disarmStrategyEverywhere, FILTER_DEFS } from './stage-matrix.js'
+import { noteLiveDisarm } from './strategy-autopilot.js'
 
 export const DEFAULT_ADAPTIVE_BREAKER = { on: true, streak: 3 }
 
@@ -56,7 +57,13 @@ export function strategyLossStreak(db, strategyKey, limit = 12) {
   ).all(strategyKey, limit)
   let streak = 0
   for (const r of rows) {
-    if ((r.net_pnl ?? 0) < 0) streak++
+    // A broker-side close lands with net_pnl NULL until the paced backfill
+    // fills it (every 3rd cycle). `(null ?? 0) < 0` read that as "not a
+    // loss" and TERMINATED the streak — so the freshest stop-out was exactly
+    // the trade that stopped the breaker seeing the streak (codebase audit,
+    // 02-09-2026). Unknown money is skipped, not counted either way.
+    if (r.net_pnl == null) continue
+    if (Number(r.net_pnl) < 0) streak++
     else break
   }
   return { streak, newestId: rows[0]?.id ?? null }
@@ -105,6 +112,9 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
         // wherever it is the last one armed, same never-go-dark rule as below.
         const scopes = disarmStrategyEverywhere(db, io, key)
         action = { strategy: key, streak, did: 'disarmed_strategy', scopes }
+        // The autopilot honours a cool-off after a live disarm (02-09-2026):
+        // it re-armed this breaker's rsi2 disarm twice in one morning.
+        if (scopes.length) { try { noteLiveDisarm(db, key, 'breaker') } catch { /* never undoes the disarm */ } }
       } else {
         // LAST armed strategy — NEVER disarm to zero (the account would go dark
         // and, on live, the autopilot can't re-arm it). Tighten entries with

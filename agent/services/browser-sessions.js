@@ -414,18 +414,6 @@ export function sessionsView(db, { currentToken = null, presence = null, isMaste
   }
 }
 
-/** 203.0.113.7 → 203.0.113.x ; IPv6 → first three groups. */
-export function maskIp(ip) {
-  const s = String(ip || '')
-  if (!s) return null
-  if (s.includes(':')) {
-    const parts = s.split(':').filter(Boolean)
-    return parts.length > 3 ? `${parts.slice(0, 3).join(':')}:…` : s
-  }
-  const parts = s.split('.')
-  return parts.length === 4 ? `${parts.slice(0, 3).join('.')}.x` : s
-}
-
 /**
  * Revoke ONE other session. Returns a result object rather than throwing, so
  * the route can map it to a status code without string-matching an Error.

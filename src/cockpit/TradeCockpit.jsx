@@ -419,7 +419,12 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
         <span style={{ fontSize: fs(12.5), fontWeight: 600, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--vio)', whiteSpace: 'nowrap' }}>MFD — nav</span>
         <Info fs={fs} big tip="Moving map (nav): your flown price path, planned path to TP, and support/resistance as terrain. TCAS traffic: nearby aircraft = correlated symbols — heading shows if they're trending with or against you." />
-        <span title="EMA 9 (teal solid) · EMA 20 (violet dashed) · EMA 50 (grey dotted) · VWAP (amber dash)" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 7, fontSize: fs(10.5), fontWeight: 600, whiteSpace: 'nowrap', cursor: 'help' }}><span style={{ color: '#14b8a6' }}>━9</span><span style={{ color: '#a855f7' }}>┅20</span><span style={{ color: '#8b8578' }}>┈50</span><span style={{ color: 'var(--wrn)' }}>╌VWAP</span></span>
+        {/* EMA 9 is the app's ORANGE accent. It was a blue-green hex for a
+            month, outside the nine tokens check-no-green.sh caught — and
+            blue-green is the one hue family the owner cannot separate from
+            green. The four lines still differ by STROKE (solid / dashed /
+            dotted / dash+glow), so hue is never the only carrier. */}
+        <span title="EMA 9 (orange solid) · EMA 20 (violet dashed) · EMA 50 (grey dotted) · VWAP (amber dash)" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 7, fontSize: fs(10.5), fontWeight: 600, whiteSpace: 'nowrap', cursor: 'help' }}><span style={{ color: 'var(--color-accent)' }}>━9</span><span style={{ color: '#a855f7' }}>┅20</span><span style={{ color: '#8b8578' }}>┈50</span><span style={{ color: 'var(--wrn)' }}>╌VWAP</span></span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 5 }}>
         {(v?.legs ?? [1, 2, 3].map(() => null)).map((l, i) => l ? (
@@ -463,7 +468,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             </>}
             <path d={v.ema50Path} fill="none" stroke="#8b8578" strokeWidth="1.2" strokeDasharray="1 3" />
             <path d={v.ema20Path} fill="none" stroke="#a855f7" strokeWidth="1.2" strokeDasharray="7 3" />
-            <path d={v.ema9Path} fill="none" stroke="#14b8a6" strokeWidth="1.4" />
+            <path d={v.ema9Path} fill="none" stroke="var(--color-accent)" strokeWidth="1.4" />
             <path id="mfd-vwap" d={v.vwapPath} fill="none" stroke="var(--wrn)" strokeWidth="1.8" strokeDasharray="5 3" filter="url(#glo)" />
             <path id="mfd-flown" d={v.flownPath} fill="none" stroke="var(--acc)" strokeWidth="2" strokeLinejoin="round" filter="url(#glo)" />
             {!review && <path id="mfd-plan" d={v.planPath} fill="none" stroke="var(--sb)" strokeWidth="2" strokeDasharray="6 5" />}
