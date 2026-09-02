@@ -295,9 +295,12 @@ Measurement history — each line is a real run of the script, not a claim:
   the 6,253 rebase, so it was refused as a reading and the count was carried
   from context across the whole session. Replies made here that the local
   corpus never sees: the session ran from `№ 7,184` to **`№ 7,222`** as the
-  last reply; the next reply is `№ 7,223`. Recorded so a later local
-  re-measure that reads below this line is known to be missing these, not
-  correcting them.
+  last reply at 10:13 UTC, and continued in the same container to
+  **`№ 7,231`** by 12:40 UTC (#827–#829 merged in between); the next reply
+  is `№ 7,232`. Recorded so a later local re-measure that reads below this
+  line is known to be missing these, not correcting them. If the session
+  runs on past this write-back, the later replies are added here the same
+  way, not remembered.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
