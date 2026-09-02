@@ -145,3 +145,26 @@ test('wiring: route declared once, housekeeping prunes both tables, applyChanges
 })
 
 function r2(x) { return Math.round(x * 100) / 100 }
+
+test('optimism.pooled weighs backtest WR by live trades across every evidenced combo, and byStrategy splits it', () => {
+  const db = initDB(':memory:')
+  // Two combos, neither reaching minLive (10): the per-combo aggregate stays
+  // empty, the pooled one does not. Backtest WR 60 on 4 live (2 wins),
+  // WR 40 on 6 live (1 win) → pooled bt WR (60·4+40·6)/10 = 48, live 30%.
+  arm(db, { kind: 'matrix', strategy: 'ema_pullback', symbol: 'COTTON', timeframe: '1h', bt_pf: 2.0, bt_win: 60, bt_trades: 25 })
+  arm(db, { kind: 'matrix', strategy: 'donchian_breakout', symbol: 'US30', timeframe: '4h', bt_pf: 1.6, bt_win: 40, bt_trades: 30 })
+  for (let i = 0; i < 4; i++) trade(db, { symbol: 'COTTON', strategy: 'ema_pullback', tf: '1h', net: i < 2 ? 20 : -10, r: i < 2 ? 2 : -1, openedMin: 5 + i })
+  for (let i = 0; i < 6; i++) trade(db, { symbol: 'US30', strategy: 'donchian_breakout', tf: '4h', net: i < 1 ? 15 : -10, r: i < 1 ? 1.5 : -1, openedMin: 5 + i })
+  const r = divergenceReport(db, { days: 30 })
+  assert.equal(r.optimism.combos, 0, 'no combo reached minLive')
+  assert.equal(r.optimism.pooled.combos, 2)
+  assert.equal(r.optimism.pooled.trades, 10)
+  assert.equal(r.optimism.pooled.winRatePts, 18)
+  assert.equal(typeof r.optimism.pooled.profitFactor, 'number')
+  assert.equal(r.optimism.byStrategy.ema_pullback.trades, 4)
+  assert.equal(r.optimism.byStrategy.ema_pullback.winRatePts, 10)
+  assert.equal(r.optimism.byStrategy.donchian_breakout.trades, 6)
+  assert.equal(r.optimism.byStrategy.donchian_breakout.winRatePts, r2(40 - 100 / 6))
+  const empty = divergenceReport(initDB(':memory:'))
+  assert.deepEqual(empty.optimism.pooled, { combos: 0, trades: 0, winRatePts: null, profitFactor: null })
+})

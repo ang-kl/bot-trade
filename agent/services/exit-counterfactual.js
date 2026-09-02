@@ -21,6 +21,7 @@
 import { cleanBotOrigin } from '../lib/trade-origin.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { parseBars, replayExit, summariseReplay, DEFAULT_RULES } from '../lib/exit-replay.js'
+import { lastStateBeforeExit } from './position-events.js'
 
 /**
  * Below this many usable trades PER RULE, no comparison is reported.
@@ -149,6 +150,29 @@ export function exitCounterfactual(db, {
     ? summariseReplay(actualRs.map(r => ({ ok: true, rMultiple: r, reason: 'as_recorded' })))
     : null
 
+  // BY MANAGEMENT STATE (owner plan, 02-09-2026). The as-traded outcome split
+  // by the last state the journal recorded before the exit, with the mean R
+  // at that transition — the raw material of a state-conditioned exit model,
+  // reported here beside the replay so the two can be compared on the same
+  // population when there are enough closes to compare. Report only.
+  const byState = {}
+  for (const { row } of pop.eligible) {
+    const r = Number(row.actual_r)
+    if (!Number.isFinite(r)) continue
+    const { state, rAtTransition } = lastStateBeforeExit(db, row.id)
+    const b = byState[state] || (byState[state] = { n: 0, wins: 0, totalR: 0, rAtTransitionSum: 0, rAtTransitionN: 0 })
+    b.n++; if (r > 0) b.wins++; b.totalR += r
+    // Number(null) is 0 — an unstamped R must not average in as zero.
+    if (rAtTransition != null && Number.isFinite(Number(rAtTransition))) { b.rAtTransitionSum += Number(rAtTransition); b.rAtTransitionN++ }
+  }
+  for (const b of Object.values(byState)) {
+    b.expectancyR = Math.round((b.totalR / b.n) * 1000) / 1000
+    b.winRate = Math.round((b.wins / b.n) * 1000) / 10
+    b.meanRAtTransition = b.rAtTransitionN ? Math.round((b.rAtTransitionSum / b.rAtTransitionN) * 1000) / 1000 : null
+    delete b.rAtTransitionSum; delete b.rAtTransitionN
+    b.totalR = Math.round(b.totalR * 1000) / 1000
+  }
+
   const best = perRule.filter(r => r.usable >= minSample).length
   const verdict = best > 0 ? 'OK' : 'INSUFFICIENT'
   return {
@@ -162,6 +186,7 @@ export function exitCounterfactual(db, {
     eligible: pop.eligible.length,
     skipped: pop.skipped,
     actual,
+    byState,
     rules: perRule,
     note: verdict === 'OK'
       ? `${pop.eligible.length} replayable trade(s) over ${days}d; ${best} of ${perRule.length} rule(s) reached the ${minSample}-trade floor. Ambiguous and truncated trades are excluded from every figure and counted beside it.`

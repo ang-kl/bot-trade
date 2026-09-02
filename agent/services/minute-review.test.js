@@ -7,7 +7,7 @@
 // the cursor and the dedupe — and neither can be tested without the table.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import Database from 'better-sqlite3'
+import { initDB } from '../db.js'
 import {
   detectOwnerStopOverrides, overrideMessage, runMinuteReview, CURSOR_KEY, BATCH,
 } from './minute-review.js'
@@ -174,18 +174,10 @@ test('the message names the position, both stops, and who moved it', () => {
 // ---------------------------------------------------------------------------
 
 function freshDb() {
-  const db = new Database(':memory:')
-  db.exec(`
-    CREATE TABLE agent_state (key TEXT PRIMARY KEY, value TEXT);
-    CREATE TABLE position_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      at TEXT DEFAULT CURRENT_TIMESTAMP,
-      account_id TEXT, position_id TEXT, trade_id INTEGER, symbol TEXT,
-      kind TEXT, from_value REAL, to_value REAL, r_at REAL, price_at REAL,
-      reason TEXT, source TEXT, detail_json TEXT
-    );
-  `)
-  return db
+  // The REAL schema, not a hand-rolled copy: a copy silently lagged the
+  // 02-09-2026 state_from/state_to columns and every journal write in this
+  // file failed inside recordPositionEvent's never-throw guard.
+  return initDB(':memory:')
 }
 const insert = (db, { positionId = 'P1', symbol = 'EURUSD', kind = 'sl_moved', from = null, to = null, source }) =>
   db.prepare(

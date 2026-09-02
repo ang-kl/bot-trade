@@ -1201,6 +1201,16 @@ export function initDB(dbPath) {
     if (!cols.has('proposal_entry_price')) db.exec(`ALTER TABLE trades ADD COLUMN proposal_entry_price REAL`);
     if (!cols.has('broker_sl_initial')) db.exec(`ALTER TABLE trades ADD COLUMN broker_sl_initial REAL`);
   }
+  // 02-09-2026 (owner plan): the position-event journal carries the
+  // MANAGEMENT STATE explicitly — the state the position was in before the
+  // event and the state the event moved it to — so the lifecycle sequence
+  // (opened → be_moved → scaled_out → trail_* → exit) is a query, not a
+  // reconstruction, when a state-conditioned model is worth fitting.
+  {
+    const cols = new Set(db.prepare(`PRAGMA table_info(position_events)`).all().map(c => c.name));
+    if (!cols.has('state_from')) db.exec(`ALTER TABLE position_events ADD COLUMN state_from TEXT`);
+    if (!cols.has('state_to')) db.exec(`ALTER TABLE position_events ADD COLUMN state_to TEXT`);
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_trades_risk_event ON trades(risk_event_id);
            CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);`);
 

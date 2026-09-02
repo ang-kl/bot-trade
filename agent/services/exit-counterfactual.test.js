@@ -201,3 +201,27 @@ test('parseTrailSweep caps the sweep at 8 rules and tolerates empty input', () =
   assert.deepEqual(parseTrailSweep(''), [])
   assert.deepEqual(parseTrailSweep(undefined), [])
 })
+
+// ---------------------------------------------------------------------------
+// byState (owner plan, 02-09-2026): the as-traded outcome split by the last
+// management state before exit, with the mean R at that transition.
+// ---------------------------------------------------------------------------
+import { recordPositionEvent } from './position-events.js'
+
+test('byState splits the as-recorded outcome by the last journal state before exit and carries R at the transition', () => {
+  const db = fresh()
+  seed(db, { n: 3, actualR: -1 })                       // never managed → opened
+  seed(db, { n: 2, actualR: 1.2, bars: DRIFTED })       // managed to be_moved, then trailed
+  const ids = db.prepare('SELECT id, entry_price FROM trades ORDER BY id').all()
+  for (const t of ids.slice(3)) {
+    db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price) VALUES ('JPN225', ?, 'long', ?)`).run(t.id, t.entry_price)
+    recordPositionEvent(db, { tradeId: t.id, symbol: 'JPN225', kind: 'sl_moved', toValue: 100, rAt: 0.8 })
+    recordPositionEvent(db, { tradeId: t.id, symbol: 'JPN225', kind: 'trail_armed', rAt: 1.0 })
+    recordPositionEvent(db, { tradeId: t.id, symbol: 'JPN225', kind: 'close', rAt: 1.2 })
+  }
+  const r = exitCounterfactual(db)
+  assert.equal(r.verdict, 'INSUFFICIENT', 'five trades never reach the floor; byState is reported regardless')
+  assert.deepEqual(r.byState.opened, { n: 3, wins: 0, totalR: -3, expectancyR: -1, winRate: 0, meanRAtTransition: null })
+  assert.deepEqual(r.byState.trail_armed, { n: 2, wins: 2, totalR: 2.4, expectancyR: 1.2, winRate: 100, meanRAtTransition: 1 })
+  assert.equal(r.byState['closed:close'], undefined, 'terminal rows are the exit, not the state before it')
+})
