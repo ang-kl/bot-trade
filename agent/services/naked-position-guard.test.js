@@ -484,12 +484,60 @@ test('the whole-book age comes from the STALEST account, not the freshest', asyn
     { nowMs: T0, accountId: 'A', sendMessage: async () => {} })
   await runProtectionAudit(db, [row({ id: 2, ctrader_position_id: '222', current_sl: 1.5 })],
     [{ positionId: '222', stopLoss: 1.5, takeProfit: 1.4 }],
-    { nowMs: T0 + 3600_000, accountId: 'B', sendMessage: async () => {} })
+    { nowMs: T0 + 20 * 60_000, accountId: 'B', sendMessage: async () => {} })
 
   // A portfolio is only as freshly verified as its stalest account. Reporting
-  // the newest would let one healthy account mask five unchecked ones.
-  const all = lastProtectionAudit(db, { nowMs: T0 + 3600_000 })
-  assert.equal(all.ageSec, 3600, 'age must come from account A, the older check')
+  // the newest would let one healthy account mask five unchecked ones. (Both
+  // records are inside the freshness window here — default 900 s × 3.)
+  const all = lastProtectionAudit(db, { nowMs: T0 + 20 * 60_000 })
+  assert.equal(all.ageSec, 1200, 'age must come from account A, the older check')
+  assert.equal(all.accountsStale, 0)
+})
+
+test('THE PINNED PANEL (02-09-2026): a month-old record on an account nobody can audit any more is NAMED, not averaged in', async () => {
+  // Production shape: four demo accounts audited every 60 s, two live accounts
+  // last audited 04-08 (demo credentials cannot reach them), and the loop's
+  // GLOBAL failure key from a 22-08 reconcile error that no per-account
+  // success ever overwrites. The merge read "as of 41,315 min ago — NOT
+  // CONFIRMED SINCE 22-08" while the heartbeat beat every minute.
+  const db = tmpDb()
+  const DAY = 86_400_000
+  const now = T0 + 30 * DAY
+  const good = (acct, at, extra = {}) => runProtectionAudit(db, [row({ id: 1, ctrader_position_id: '111', current_sl: 1.5, account_id: acct })],
+    [{ positionId: '111', stopLoss: 1.5, takeProfit: 1.4 }], { nowMs: at, accountId: acct, sendMessage: async () => {}, ...extra })
+  await good('LIVE-A', now - 28 * DAY)                          // stale: 28 days
+  await good('DEMO-A', now - 60_000)
+  await good('DEMO-B', now - 45_000)
+  recordAuditUnavailable(db, 'reconcile failed: CH_CLIENT_AUTH_FAILURE', { nowMs: now - 10 * DAY }) // global key
+  await good('DEMO-C', now - 30_000)
+
+  const all = lastProtectionAudit(db, { nowMs: now })
+  assert.equal(all.ageSec, 60, 'age is the stalest FRESH account, not the unauditable one')
+  assert.equal(all.stale, false)
+  assert.equal(all.accounts, 3)
+  assert.equal(all.accountsStale, 1)
+  assert.equal(all.staleAccounts[0].accountId, 'LIVE-A')
+  assert.equal(all.staleAccounts[0].ageSec, 28 * 86_400)
+  assert.equal(all.checked, 3, 'counts come from the fresh records only')
+  assert.equal(all.lastAttemptOk, null, 'a global failure older than a later success is superseded')
+  assert.doesNotMatch(all.summary, /NOT CONFIRMED SINCE/)
+  assert.match(all.summary, /1 account\(s\) NOT audited for up to 40320 min: LIVE-A/)
+
+  // A per-account failure is still a failure — its own success is the only
+  // thing that clears it — and a global failure NEWER than every success counts.
+  recordAuditUnavailable(db, 'broker unreachable for DEMO-C', { nowMs: now, accountId: 'DEMO-C' })
+  const withFail = lastProtectionAudit(db, { nowMs: now })
+  assert.equal(withFail.lastAttemptOk, false)
+  assert.match(withFail.lastAttemptError, /DEMO-C/)
+  recordAuditUnavailable(db, 'reconcile failed: fresh outage', { nowMs: now + 1000 })
+  assert.match(lastProtectionAudit(db, { nowMs: now + 1000 }).lastAttemptError, /fresh outage/)
+
+  // With NOTHING fresh the old rule stands: stalest of all, so the panel
+  // never reads younger than the book really is.
+  const later = lastProtectionAudit(db, { nowMs: now + 3 * DAY })
+  assert.equal(later.stale, true)
+  assert.equal(later.accountsStale, 0)
+  assert.equal(later.ageSec, 31 * 86_400)
 })
 
 test('with every account failing, the whole-book read surfaces a real reason', () => {
