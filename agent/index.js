@@ -131,6 +131,21 @@ import('./services/statement-import.js')
   })
   .catch((err) => console.warn(`[statements] seed import failed (non-fatal): ${err.message}`))
 
+// One-shot re-stamp of realised R and the consistency verdict on every
+// closed row with both prices (02-09-2026). The per-writer stamp is
+// forward-only; rows corrected before it existed never get another write.
+// Version-keyed so it runs once per version, and can be re-run by bumping.
+const RESTAMP_VERSION = '1'
+if (getState(db, 'trade_audit_restamp_version') !== RESTAMP_VERSION) {
+  import('./services/trade-consistency.js')
+    .then(({ restampClosedTrades }) => {
+      const r = restampClosedTrades(db)
+      setState(db, 'trade_audit_restamp_version', RESTAMP_VERSION)
+      console.log(`[boot] trade audit re-stamped: ${r.examined} closed row(s) examined, ${r.changed} changed, ${r.nulled} still without R`)
+    })
+    .catch((err) => console.warn(`[boot] trade audit re-stamp failed (non-fatal): ${err.message}`))
+}
+
 // Divergence tracker backfill (02-09-2026): combo_arms starts empty on a DB
 // whose autopilot has been arming for a day; the action log holds every
 // arm/disarm line, so the table is rebuilt from it once, at boot, and never

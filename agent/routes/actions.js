@@ -390,10 +390,17 @@ export default function actionsRouter(db, deps = {}) {
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { host, clientId, clientSecret, accessToken, accountId } = creds
+      // THIS account's rows only (or rows with no account stamp). The deals
+      // fetched below are the selected account's; judging another account's
+      // trades against them rejected rows that account had really filled
+      // (codebase audit 02-09-2026).
       const rows = db.prepare(
-        "SELECT * FROM trades WHERE opened_at >= datetime('now', '-30 days') ORDER BY opened_at ASC"
-      ).all()
-      if (rows.length === 0) return res.json({ checked: 0, confirmed: 0, repaired: 0, rejected: 0, details: [] })
+        `SELECT * FROM trades
+          WHERE opened_at >= datetime('now', '-30 days')
+            AND (account_id = ? OR account_id IS NULL)
+          ORDER BY opened_at ASC`
+      ).all(String(accountId))
+      if (rows.length === 0) return res.json({ checked: 0, confirmed: 0, repaired: 0, rejected: 0, unmatchedOpen: 0, details: [] })
 
       const { wsGetDeals } = await import('../lib/ctrader-ws.js')
       const toMs = (v) => Date.parse(String(v).includes('T') ? v : String(v).replace(' ', 'T') + 'Z')
@@ -406,29 +413,14 @@ export default function actionsRouter(db, deps = {}) {
       }
 
       const map = await ensureSymbolMap(db, creds)
-      const details = []
-      let confirmed = 0; let repaired = 0; let rejected = 0
-      const upEntry = db.prepare('UPDATE trades SET entry_price = ? WHERE id = ?')
-      // trades schema calls it close_reason — exit_reason crashed the whole
-      // reconcile ("no such column"), leaving fills stuck UNCONFIRMED.
-      const upStatus = db.prepare("UPDATE trades SET status = 'rejected', close_reason = 'no broker fill (reconciled)' WHERE id = ?")
-      for (const r of rows) {
-        const symbolId = map[String(r.symbol).toUpperCase()]
-        const t = toMs(r.opened_at)
-        const match = deals.find(d =>
-          (r.ctrader_position_id && String(d.positionId) === String(r.ctrader_position_id)) ||
-          (String(d.symbolId) === String(symbolId) && Math.abs((d.executionTimestamp || 0) - t) < 15 * 60_000))
-        if (match) {
-          const px = match.executionPrice ?? null
-          const wasNull = r.entry_price == null
-          if (wasNull && px != null) { upEntry.run(px, r.id); repaired++ } else confirmed++
-          details.push({ id: r.id, symbol: r.symbol, result: wasNull ? 'repaired' : 'confirmed', dealId: match.dealId ?? null, positionId: match.positionId ?? null, executionPrice: px })
-        } else if (r.status !== 'rejected') {
-          upStatus.run(r.id); rejected++
-          details.push({ id: r.id, symbol: r.symbol, result: 'rejected', note: 'no matching deal at the broker' })
-        }
-      }
-      res.json({ checked: rows.length, confirmed, repaired, rejected, dealsSeen: deals.length, details, ranAt: new Date().toISOString() })
+      // The judgement lives in broker-history-import.js so it can be tested
+      // without a broker: only in-flight rows are ever rejected, an open row
+      // with no deal is reported rather than rewritten, and a filled entry
+      // re-stamps R. (trades schema calls it close_reason — exit_reason once
+      // crashed the whole reconcile, leaving fills stuck UNCONFIRMED.)
+      const { judgeTradesAgainstDeals } = await import('../services/broker-history-import.js')
+      const out = judgeTradesAgainstDeals(db, { rows, deals, symbolMap: map })
+      res.json({ checked: rows.length, ...out, dealsSeen: deals.length, ranAt: new Date().toISOString() })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
@@ -1428,27 +1420,11 @@ export default function actionsRouter(db, deps = {}) {
         if ((r.closedAt || 0) >= (agg.last.closedAt || 0)) agg.last = r
         byPosition.set(r.positionId, agg)
       }
-      // CAST both sides — same reason as pnl-backfill.js: rows written before
-      // the pos-id repair migration can carry "234698574.0", which plain
-      // equality against the broker's "234698574" never matched.
-      const upd = db.prepare(
-        `UPDATE trades
-         SET net_pnl = ?, gross_pnl = ?,
-             exit_price = COALESCE(exit_price, ?),
-             closed_at = COALESCE(closed_at, ?)
-         WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'`
-      )
-      let backfilled = 0
-      for (const [positionId, agg] of byPosition) {
-        const r = upd.run(
-          Math.round(agg.net * 100) / 100,
-          Math.round(agg.gross * 100) / 100,
-          agg.last.closePrice,
-          agg.last.closedAt ? new Date(agg.last.closedAt).toISOString() : null,
-          positionId,
-        )
-        backfilled += r.changes
-      }
+      // NULL-only, account-scoped, re-stamped — see applyBrokerHistoryMoney.
+      // This route used to overwrite every closed row's money on every Desk
+      // load with no audit stamp (codebase audit 02-09-2026).
+      const { applyBrokerHistoryMoney } = await import('../services/broker-history-import.js')
+      const { backfilled } = applyBrokerHistoryMoney(db, byPosition, { accountId })
 
       const realized = Math.round(rows.reduce((s, r) => s + (r.netPnl || 0), 0) * 100) / 100
       const payload = { ok: true, days, rows, realized, backfilled, fetchedAt: new Date().toISOString() }

@@ -211,6 +211,102 @@ export function persistDeals(db, rows) {
 const usablePrice = (v) => Number.isFinite(v) && v > 0
 
 /**
+ * The money write behind POST /actions/broker-history, pulled out of the
+ * route so it can be exercised without a broker (codebase audit 02-09-2026).
+ *
+ * Until now the route OVERWROTE net_pnl/gross_pnl on every closed row of the
+ * position, with no account scope and no re-stamp — the Desk fires it on
+ * every load, so it was the busiest money writer in the system and the only
+ * one outside the shared audit stamp. Three corrections, each the rule the
+ * loop's pnl-backfill already follows:
+ *   - fill ONLY a NULL net_pnl (a value the bot stamped is already broker-
+ *     true, and an aggregate over partials could double-count);
+ *   - scope to the account whose deals these are (or rows with no account,
+ *     which this write then claims — same attribute-on-match as the loop);
+ *   - re-stamp realised R and the consistency verdict on every row touched.
+ *
+ * `byPosition`: Map<positionId, {net, gross, last:{closePrice, closedAt}}>.
+ */
+export function applyBrokerHistoryMoney(db, byPosition, { accountId = null } = {}) {
+  const acct = accountId != null ? String(accountId) : null
+  const upd = db.prepare(
+    `UPDATE trades
+        SET net_pnl = ?, gross_pnl = COALESCE(gross_pnl, ?),
+            exit_price = COALESCE(exit_price, ?),
+            closed_at = COALESCE(closed_at, ?),
+            account_id = COALESCE(account_id, ?)
+      WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
+        AND status = 'closed' AND net_pnl IS NULL
+        AND (? IS NULL OR account_id = ? OR account_id IS NULL)`,
+  )
+  const ids = db.prepare(
+    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'`,
+  )
+  let backfilled = 0
+  let restamped = 0
+  const tx = db.transaction(() => {
+    for (const [positionId, agg] of byPosition) {
+      const r = upd.run(
+        Math.round((agg.net || 0) * 100) / 100,
+        Math.round((agg.gross || 0) * 100) / 100,
+        usablePrice(agg.last?.closePrice) ? agg.last.closePrice : null,
+        agg.last?.closedAt ? new Date(agg.last.closedAt).toISOString() : null,
+        acct,
+        positionId, acct, acct,
+      )
+      backfilled += r.changes
+      if (r.changes) for (const { id } of ids.all(positionId)) { if (stampRealisedAudit(db, id)) restamped++ }
+    }
+  })
+  tx()
+  return { backfilled, restamped }
+}
+
+/**
+ * The judgement behind POST /actions/reconcile-trades, pulled out of the
+ * route for the same reason. Rules (codebase audit 02-09-2026):
+ *   - `rows` must already be scoped to the account whose `deals` these are —
+ *     the route used to select every account's trades and then reject any
+ *     row the SELECTED account's deals could not vouch for, which is how an
+ *     open trade on another account could be marked rejected;
+ *   - only an IN-FLIGHT row ('submitting'/'unconfirmed') with no deal is
+ *     rejected. An 'open' row with no deal in the window is REPORTED as
+ *     unmatched, never rewritten: a missing deal is a gap in the fetch, not
+ *     proof there is no position;
+ *   - an entry price filled from the deal re-stamps R and the verdict.
+ */
+export function judgeTradesAgainstDeals(db, { rows, deals, symbolMap = {} }) {
+  const toMs = (v) => Date.parse(String(v).includes('T') ? v : String(v).replace(' ', 'T') + 'Z')
+  const upEntry = db.prepare('UPDATE trades SET entry_price = ? WHERE id = ?')
+  const upStatus = db.prepare(
+    `UPDATE trades SET status = 'rejected', close_reason = 'no broker fill (reconciled)'
+      WHERE id = ? AND status IN ('submitting', 'unconfirmed')`,
+  )
+  const details = []
+  let confirmed = 0, repaired = 0, rejected = 0, unmatchedOpen = 0
+  for (const r of rows) {
+    const symbolId = symbolMap[String(r.symbol).toUpperCase()]
+    const t = toMs(r.opened_at)
+    const match = (deals || []).find(d =>
+      (r.ctrader_position_id && String(d.positionId) === String(r.ctrader_position_id)) ||
+      (String(d.symbolId) === String(symbolId) && Math.abs((d.executionTimestamp || 0) - t) < 15 * 60_000))
+    if (match) {
+      const px = match.executionPrice ?? null
+      const wasNull = r.entry_price == null
+      if (wasNull && px != null) { upEntry.run(px, r.id); stampRealisedAudit(db, r.id); repaired++ } else confirmed++
+      details.push({ id: r.id, symbol: r.symbol, result: wasNull ? 'repaired' : 'confirmed', dealId: match.dealId ?? null, positionId: match.positionId ?? null, executionPrice: px })
+    } else if (r.status === 'submitting' || r.status === 'unconfirmed') {
+      const c = upStatus.run(r.id)
+      if (c.changes) { rejected++; details.push({ id: r.id, symbol: r.symbol, result: 'rejected', note: 'no matching deal at the broker' }) }
+    } else if (r.status === 'open') {
+      unmatchedOpen++
+      details.push({ id: r.id, symbol: r.symbol, result: 'unmatched_open', note: 'open row with no deal in the fetched window — left as is; check the broker before writing it off' })
+    }
+  }
+  return { confirmed, repaired, rejected, unmatchedOpen, details }
+}
+
+/**
  * Correct closed trades' fill prices from the matched broker deals.
  *
  * Runs over ALL matched deals, not just the ones in this import window, so a
