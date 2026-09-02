@@ -225,3 +225,17 @@ test('checkHeartbeats emits the product event alongside its ticker events', () =
   assert.equal(ev.ageSec, 174_000)
   assert.ok(said.some(t => /PROTECTION AUDIT NOT CURRENT/.test(t)))
 })
+
+test('the freshness read is the WHOLE-BOOK merge, not the raw global key (02-09-2026)', async () => {
+  // The heartbeat panel's work_product read `protection_audit_last_json`
+  // directly and said "LAST VERIFIED 689h AGO" beside a route that had just
+  // been fixed to read minutes. Same merge on both now.
+  const { runProtectionAudit } = await import('./naked-position-guard.js')
+  const db = initDB(':memory:')
+  setState(db, 'protection_audit_last_json', JSON.stringify({ at: '2026-08-04T08:55:00Z', ok: true, checked: 15 }))
+  await runProtectionAudit(db, [{ id: 1, trade_id: 1, symbol: 'X', ctrader_position_id: '1', current_sl: 1.5, current_tp: 1.4, side: 'long', entry_price: 1.45, account_id: 'DEMO-A' }],
+    [{ positionId: '1', stopLoss: 1.5, takeProfit: 1.4 }], { nowMs: NOW - 60_000, accountId: 'DEMO-A', sendMessage: async () => {} })
+  const f = protectionFreshnessFrom(db, { nowMs: NOW, maxAgeSec: 900 })
+  assert.equal(f.fresh, true, `fresh per-account record must win over the fossil: ${f.summary}`)
+  assert.equal(f.ageSec, 60)
+})

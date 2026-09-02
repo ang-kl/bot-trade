@@ -794,3 +794,24 @@ test('with no applyTarget wired the behaviour is exactly what it was', async () 
   assert.match(sent[0], /suggested TP 5\.4/)
   assert.ok(!/SET AUTOMATICALLY/.test(sent[0]))
 })
+
+test('the pre-per-account GLOBAL success record is a fossil once any account has its own — not a stale account called "?"', async () => {
+  // Production 02-09-2026 after #812: staleAccounts listed "null@29d" — the
+  // 04-08 global record from before the M2 per-account split.
+  const db = tmpDb()
+  const DAY = 86_400_000
+  const now = T0 + 30 * DAY
+  await runProtectionAudit(db, [row({ id: 1, ctrader_position_id: '111', current_sl: 1.5 })],
+    [{ positionId: '111', stopLoss: 1.5, takeProfit: 1.4 }], { nowMs: now - 29 * DAY, sendMessage: async () => {} }) // global key, no accountId
+  await runProtectionAudit(db, [row({ id: 1, ctrader_position_id: '111', current_sl: 1.5, account_id: 'DEMO-A' })],
+    [{ positionId: '111', stopLoss: 1.5, takeProfit: 1.4 }], { nowMs: now - 60_000, accountId: 'DEMO-A', sendMessage: async () => {} })
+  const all = lastProtectionAudit(db, { nowMs: now })
+  assert.equal(all.accounts, 1)
+  assert.equal(all.accountsStale, 0, 'the global fossil is not an account')
+  assert.equal(all.ageSec, 60)
+  // With ONLY the global record (a pre-M2 database) it still reads as the book.
+  const db2 = tmpDb()
+  await runProtectionAudit(db2, [row({ id: 1, ctrader_position_id: '111', current_sl: 1.5 })],
+    [{ positionId: '111', stopLoss: 1.5, takeProfit: 1.4 }], { nowMs: now - 60_000, sendMessage: async () => {} })
+  assert.equal(lastProtectionAudit(db2, { nowMs: now }).ageSec, 60)
+})

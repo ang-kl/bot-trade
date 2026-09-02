@@ -37,6 +37,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { lastProtectionAudit } from './naked-position-guard.js'
 
 /**
  * How old a verified reading may be before it stops counting as an answer.
@@ -151,8 +152,16 @@ export function protectionFreshnessFrom(db, { nowMs = Date.now(), maxAgeSec = nu
   const limit = maxAgeSec != null ? maxAgeSec : maxAgeSecFrom(db)
   let rec = lastAudit
   if (rec == null) {
+    // The WHOLE-BOOK merge, not the raw global key. Until 02-09-2026 this
+    // read `protection_audit_last_json` directly — the pre-per-account key,
+    // which no per-account success has written since the M2 split — so the
+    // heartbeat panel's work_product said "LAST VERIFIED 689h AGO" beside
+    // a route that had just been fixed to read minutes. Same merge, same
+    // window (limit = expectedSec × the merge's staleFactor of 3), so the
+    // panel and /state/protection-audit cannot disagree again.
     try {
-      rec = JSON.parse(getState(db, 'protection_audit_last_json') || '{}')
+      const merged = lastProtectionAudit(db, { nowMs, expectedSec: Math.max(1, limit / 3), staleFactor: 3 })
+      rec = { at: merged.at, lastAttemptAt: merged.lastAttemptAt, lastAttemptError: merged.lastAttemptError }
     } catch { rec = {} }
   }
   return protectionFreshness({
