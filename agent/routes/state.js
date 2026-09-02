@@ -2404,6 +2404,23 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/target-review — each strategy's FIXED target read against what
+  // it proposed, what the shrunk prior says the ratio is worth, and what the
+  // trades returned (02-09-2026 plan, part 3). Read-only and recommendation-
+  // only: no floor, target or manager trigger is read from or changed by it.
+  // ?days=30 &account=<id|all>. Below its sample gates a row says
+  // `insufficient` with the count it has.
+  router.get('/target-review', async (req, res) => {
+    try {
+      const { targetReview } = await import('../services/target-review.js')
+      const days = Math.min(365, Math.max(1, Number(req.query.days) || 30))
+      const scope = requestedAccount(db, req)
+      res.json(targetReview(db, { days, accountId: scope.all ? null : (scope.accountId ?? null) }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/log-watch — the in-process log matcher (owner "yes build the
   // log-watch hook", 01-09): config, whether the console wrap is installed,
   // the rule list, and — the part that matters per failure mode #3 — which

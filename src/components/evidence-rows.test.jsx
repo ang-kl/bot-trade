@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { readFileSync } from 'node:fs'
-import EvidenceRows, { PriorCohortRow } from './EvidenceRows.jsx'
+import EvidenceRows, { PriorCohortRow, TargetReviewRow } from './EvidenceRows.jsx'
 
 const report = (over = {}) => ({
   config: { on: true, demoOnly: false, riskScale: 1, priorAdmit: true, priorRiskScale: 0.5 },
@@ -60,11 +60,55 @@ describe('PriorCohortRow', () => {
   })
 })
 
+const review = () => ({
+  reportOnly: true, days: 30, hardMinRr: 3, prefilterRr: 1.5, minE: 0.1, k: 20,
+  gates: { minProposals: 20, minCloses: 30 },
+  strategies: {
+    rsi2_reversion: {
+      declaredTarget: { rr: 1.2, basis: 'fixed' }, ownFloor: 1,
+      proposals: { n: 40, withRr: 38, medianRr: 1.2, shareBelowHard: 1, badRrVetoes: 30 },
+      prior: { shrunkWinRatePct: 52.5, expectancyR: { declared: 0.155, median: 0.155, hard: 1.1 }, breakEvenRr: 0.905, rrForMinE: 1.095, wouldAdmit: { declared: true, median: true } },
+      realised: { closes: 4, insufficient: true, need: 30 },
+    },
+    ema_pullback: {
+      declaredTarget: { rr: 2, basis: 'fixed' }, ownFloor: 1.5,
+      proposals: { n: 3, withRr: 3, insufficient: true, need: 20 },
+      prior: null,
+      realised: { closes: 31, actual: { expectancyR: -0.21, profitFactor: 0.8, winRate: 30 }, rules: {} },
+    },
+  },
+})
+
+describe('TargetReviewRow', () => {
+  it('renders one line per strategy with numbers only past the gates', () => {
+    const html = renderToStaticMarkup(<TargetReviewRow data={review()} error={null} />)
+    expect(html).toContain('Target review')
+    expect(html).toContain('nothing enforced')
+    expect(html).toContain('rsi2_reversion:')
+    expect(html).toContain('declared 1.20R')
+    expect(html).toContain('median 1.20R')
+    expect(html).toContain('W′ 52.5%')
+    expect(html).toContain('break-even 0.91R')
+    expect(html).toContain('closes 4/30')
+    expect(html).toContain('ema_pullback:')
+    expect(html).toContain('proposals 3/20')
+    expect(html).toContain('no prior')
+    expect(html).toContain('realised E -0.21R over 31')
+  })
+  it('a failed read renders not verifiable', () => {
+    const html = renderToStaticMarkup(<TargetReviewRow data={null} error="500" />)
+    expect(html).toContain('not verifiable')
+    expect(html).not.toContain('Target review</span>')
+  })
+})
+
 describe('fetch wiring (source pin, comments stripped)', () => {
   it('reads /state/earned-floor and routes the failure into its own error state', () => {
     const src = readFileSync(new URL('./EvidenceRows.jsx', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
     expect(src).toContain("agentGet('/state/earned-floor')")
     expect((src.match(/\.catch\(e => \{ if \(alive\) setFloor\(\{ data: null, error: e\?\.message \|\| String\(e\) \}\) \}\)/g) || []).length).toBe(1)
+    expect(src).toContain("agentGet('/state/target-review')")
+    expect((src.match(/\.catch\(e => \{ if \(alive\) setReview\(\{ data: null, error: e\?\.message \|\| String\(e\) \}\) \}\)/g) || []).length).toBe(1)
     expect(src).not.toMatch(/\.catch\(\(\) => \{\s*\}\)/)
   })
   it('is rendered on Tune beside DivergenceCard', () => {
