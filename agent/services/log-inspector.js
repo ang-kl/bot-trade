@@ -143,18 +143,43 @@ export const SPEECH_ACTS = [
 // measured offender (the protection audit's stuck record, 31-08 correction
 // note in CLAUDE.md); extend per controller as effects gain records.
 export const CONTROLLER_EFFECTS = [
-  { controller: 'protection_audit', effectKey: 'protection_audit_last_json' },
+  // The protection audit writes PER-ACCOUNT records (`acct:<id>:` prefix)
+  // since the 02-09-2026 correction batch; the bare key is the pre-per-account
+  // fossil that protection-freshness.js deliberately ignores. Reading the bare
+  // key here produced finding 2850 (02-09 13:00 SGT: "effect record 41,525m
+  // old") against an audit that runs every 50 seconds — the inspector's own
+  // failure mode #3. `effectAt` reads the NEWEST per-account record and falls
+  // back to the bare key only for a DB that predates the split.
+  { controller: 'protection_audit', effectKey: 'acct:*:protection_audit_last_json', effectAt: newestProtectionAuditAt },
 ]
+
+/** Newest `at` across the per-account protection-audit records, else the legacy key. NaN when none. */
+export function newestProtectionAuditAt(db) {
+  let best = NaN
+  try {
+    const rows = db.prepare(`SELECT value FROM agent_state WHERE key LIKE 'acct:%:protection_audit_last_json'`).all()
+    for (const r of rows) {
+      const t = Date.parse(JSON.parse(r.value || 'null')?.at || '')
+      if (Number.isFinite(t) && !(t <= best)) best = t
+    }
+  } catch { /* fall through */ }
+  if (Number.isFinite(best)) return best
+  try { return Date.parse(JSON.parse(getState(db, 'protection_audit_last_json') || 'null')?.at || '') } catch { return NaN }
+}
 
 function inspectAssertionVsEffect(db, cfg, nowMs) {
   const out = []
-  for (const { controller, effectKey } of CONTROLLER_EFFECTS) {
+  for (const { controller, effectKey, effectAt: readEffectAt } of CONTROLLER_EFFECTS) {
     let hb = null
     try { hb = db.prepare(`SELECT last_ok_at FROM controller_heartbeats WHERE name = ?`).get(controller) } catch { continue }
     const okAt = Date.parse(hb?.last_ok_at || '')
     if (!Number.isFinite(okAt) || nowMs - okAt > 10 * 60_000) continue // not asserting recently
     let effectAt = NaN
-    try { effectAt = Date.parse(JSON.parse(getState(db, effectKey) || 'null')?.at || '') } catch { /* unreadable */ }
+    try {
+      effectAt = typeof readEffectAt === 'function'
+        ? readEffectAt(db)
+        : Date.parse(JSON.parse(getState(db, effectKey) || 'null')?.at || '')
+    } catch { /* unreadable */ }
     const lagMin = Number.isFinite(effectAt) ? Math.round((nowMs - effectAt) / 60_000) : null
     if (lagMin !== null && lagMin < cfg.effectLagMin) continue
     out.push({
@@ -342,9 +367,22 @@ export function evalFalsifierMetric(db, metric) {
     const sinceIso = new Date(Number(metric.sinceMs) || 0).toISOString()
     switch (metric?.kind) {
       case 'state_advanced': {
-        const raw = getState(db, metric.key)
-        if (!raw) return null
-        const at = Date.parse(JSON.parse(raw)?.at || JSON.parse(raw)?.lastAttemptAt || '')
+        // A key with '*' is a family (the per-account protection-audit
+        // records): the newest `at` across the family is the effect time.
+        let at = NaN
+        if (String(metric.key).includes('*')) {
+          const rows = db.prepare(`SELECT value FROM agent_state WHERE key LIKE ?`).all(String(metric.key).replace(/\*/g, '%'))
+          if (!rows.length) return null
+          for (const r of rows) {
+            let t = NaN
+            try { const p = JSON.parse(r.value || 'null'); t = Date.parse(p?.at || p?.lastAttemptAt || '') } catch { t = NaN }
+            if (Number.isFinite(t) && !(t <= at)) at = t
+          }
+        } else {
+          const raw = getState(db, metric.key)
+          if (!raw) return null
+          at = Date.parse(JSON.parse(raw)?.at || JSON.parse(raw)?.lastAttemptAt || '')
+        }
         if (!Number.isFinite(at)) return null
         // Prediction was "it advances WITHOUT a code change" → advanced = the
         // stuck reading was wrong = the finding's interpretation FALSIFIED.

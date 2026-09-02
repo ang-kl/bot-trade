@@ -198,3 +198,53 @@ test('evalFalsifierMetric: state_advanced falsifies the stuck reading when the r
   assert.equal(evalFalsifierMetric(db, { kind: 'state_advanced', key: 'protection_audit_last_json', sinceMs: NOW }), true)
   assert.equal(evalFalsifierMetric(db, { kind: 'state_advanced', key: 'missing_key', sinceMs: NOW }), null)
 })
+
+// ---------------------------------------------------------------------------
+// assertion_vs_effect reads the PER-ACCOUNT protection-audit records
+// (02-09-2026, finding 2850): the bare key is a fossil the freshness merge
+// ignores, and reading it produced "41,525m old" against an audit running
+// every 50 seconds — the inspector's own failure mode #3.
+// ---------------------------------------------------------------------------
+import { newestProtectionAuditAt, CONTROLLER_EFFECTS } from './log-inspector.js'
+
+function heartbeatOk(db, name, atMs) {
+  db.prepare(`INSERT INTO controller_heartbeats (name, last_run_at, last_ok_at, runs) VALUES (?, ?, ?, 1)
+              ON CONFLICT(name) DO UPDATE SET last_run_at = excluded.last_run_at, last_ok_at = excluded.last_ok_at`)
+    .run(name, new Date(atMs).toISOString(), new Date(atMs).toISOString())
+}
+
+test('newestProtectionAuditAt: newest per-account record wins; the bare key is only a fallback', () => {
+  const db = initDB(':memory:')
+  assert.ok(Number.isNaN(newestProtectionAuditAt(db)), 'nothing recorded → NaN, never a guess')
+  setState(db, 'protection_audit_last_json', JSON.stringify({ at: new Date(NOW - 30 * 86_400_000).toISOString() }))
+  assert.equal(newestProtectionAuditAt(db), NOW - 30 * 86_400_000, 'fossil alone → fossil')
+  setState(db, 'acct:111:protection_audit_last_json', JSON.stringify({ at: new Date(NOW - 60_000).toISOString() }))
+  setState(db, 'acct:222:protection_audit_last_json', JSON.stringify({ at: new Date(NOW - 5 * 60_000).toISOString() }))
+  setState(db, 'acct:333:protection_audit_last_json', '{not json')
+  assert.equal(newestProtectionAuditAt(db), NOW - 60_000, 'newest per-account record, junk ignored, fossil ignored')
+  const effect = CONTROLLER_EFFECTS.find(e => e.controller === 'protection_audit')
+  assert.equal(effect.effectAt, newestProtectionAuditAt)
+  assert.match(effect.effectKey, /^acct:\*:/)
+})
+
+test('a fresh per-account audit record beside a month-old fossil raises NO assertion_vs_effect finding; a stale one does', () => {
+  const db = initDB(':memory:')
+  heartbeatOk(db, 'protection_audit', NOW - 50_000)
+  setState(db, 'protection_audit_last_json', JSON.stringify({ at: new Date(NOW - 30 * 86_400_000).toISOString() }))
+  setState(db, 'acct:111:protection_audit_last_json', JSON.stringify({ at: new Date(NOW - 45_000).toISOString() }))
+  runLogInspector(db, { now: NOW })
+  const found = (d) => d.prepare(`SELECT * FROM inspection_findings WHERE subject_key = 'assertion_vs_effect:protection_audit'`).all()
+  assert.equal(found(db).length, 0, 'the audit ran 45s ago on every account it can reach — the fossil must not condemn it')
+  const db2 = initDB(':memory:')
+  heartbeatOk(db2, 'protection_audit', NOW - 50_000)
+  setState(db2, 'acct:111:protection_audit_last_json', JSON.stringify({ at: new Date(NOW - 3 * 86_400_000).toISOString() }))
+  runLogInspector(db2, { now: NOW })
+  const f = found(db2)[0]
+  assert.ok(f, 'a per-account record three days behind a live beat is the real finding')
+  const metric = JSON.parse(f.falsifier).metric
+  assert.equal(metric.key, 'acct:*:protection_audit_last_json')
+  // The falsifier reads the same family: an advance on ANY account resolves it.
+  assert.equal(evalFalsifierMetric(db2, metric), true, 'not advanced yet → prediction still holds')
+  setState(db2, 'acct:222:protection_audit_last_json', JSON.stringify({ at: new Date(NOW + 60_000).toISOString() }))
+  assert.equal(evalFalsifierMetric(db2, metric), false, 'advanced on another account → falsified')
+})
