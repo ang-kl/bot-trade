@@ -125,17 +125,25 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
     if (cfg.priorAdmit && Number(row.is_live) === 0) {
       const prior = strategyPriorFor(db, strategy)
       if (prior) {
-        const n = edge.trades
-        const wLive = n > 0 && Number.isFinite(Number(edge.winRate)) ? Number(edge.winRate) : null
+        // THE LIVE SIDE OF THE SHRINK (owner order 02-09-2026 21:30 SGT:
+        // "let a scoped prior read pooled live closes"). A fresh scope has no
+        // closes of its own, so its prior was the bare backtest — and where
+        // that sits under minE the account can never earn the closes that
+        // would lift it (ACCT-DEMO-3's first vwap proposal, 21:14 SGT).
+        // Until the account has a close of its own, the live side is the
+        // book's pooled sub-floor record; the moment it has one, its own.
+        const live = priorLiveSide(db, strategy, cfg, String(accountId), edge)
+        const n = live.trades
+        const wLive = live.winRatePct
         const shrunk = wLive != null ? (n * wLive + EARNED_FLOOR_PRIOR_TRADES * prior.winRatePct) / (n + EARNED_FLOOR_PRIOR_TRADES) : prior.winRatePct
         const Wp = shrunk / 100
         if (Number.isFinite(Wp) && Wp > 0 && Wp < 1) {
           const ep = Math.round((Wp * rr - (1 - Wp)) * 1000) / 1000
           const winRatePct = Math.round(shrunk * 10) / 10
-          const detail = { via: 'prior', prior: { winRatePct: prior.winRatePct, trades: prior.trades, k: EARNED_FLOOR_PRIOR_TRADES, liveWinRatePct: wLive, liveTrades: n } }
+          const detail = { via: 'prior', prior: { winRatePct: prior.winRatePct, trades: prior.trades, k: EARNED_FLOOR_PRIOR_TRADES, liveWinRatePct: wLive, liveTrades: n, liveScope: live.scope } }
           if (ep <= cfg.minE) {
             return no(
-              `prior expectancy ${ep}R at shrunk ${winRatePct}% (${n} live closes toward backtest ${prior.winRatePct}%) ≤ ${cfg.minE}R`,
+              `prior expectancy ${ep}R at shrunk ${winRatePct}% (${n} ${live.scope} live closes toward backtest ${prior.winRatePct}%) ≤ ${cfg.minE}R`,
               { winRate: winRatePct, trades: n, e: ep, ...detail },
             )
           }
@@ -160,6 +168,27 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
     )
   }
   return { ok: true, reason: null, winRate: edge.winRate, trades: edge.trades, e, riskScale: cfg.riskScale, via: 'measured' }
+}
+
+/**
+ * The live side of the prior's shrink for one scope: the account's own
+ * sub-floor record when it has any closes, else the book's POOLED record
+ * (accountId null → every account plus unscoped legacy rows). `edge` may be
+ * passed when the caller already measured the account. Returns the scope
+ * used so a verdict or report can say which record it read.
+ */
+export function priorLiveSide(db, strategy, cfg, accountId, edge = null) {
+  const own = edge || strategyRollingEdge(db, strategy, cfg.window, { accountId, rrBand: { below: EARNED_FLOOR_RR_BAND } })
+  const sideOf = (e, scope) => ({
+    trades: e.trades,
+    winRatePct: e.trades > 0 && Number.isFinite(Number(e.winRate)) ? Number(e.winRate) : null,
+    scope,
+  })
+  if (accountId != null && own.trades === 0) {
+    const pooled = strategyRollingEdge(db, strategy, cfg.window, { accountId: null, rrBand: { below: EARNED_FLOOR_RR_BAND } })
+    if (pooled.trades > 0) return sideOf(pooled, 'pooled')
+  }
+  return sideOf(own, accountId != null ? 'account' : 'pooled')
 }
 
 /** One strategy's last-sweep backtest prior, from the aggregate the sweep writes (#821). Null when absent. */
@@ -260,9 +289,11 @@ export function earnedFloorPriorReport(db, { k = EARNED_FLOOR_PRIOR_TRADES } = {
     try { return db.prepare(`SELECT DISTINCT label_strategy s FROM trades WHERE label_strategy IS NOT NULL`).all().map(r => r.s) } catch { return [] }
   })()])].sort()
   const scopeOf = (strategy, accountId) => {
-    const edge = strategyRollingEdge(db, strategy, cfg.window, { accountId, rrBand: { below: EARNED_FLOOR_RR_BAND } })
-    const n = edge.trades
-    const wLive = Number.isFinite(Number(edge.winRate)) ? Number(edge.winRate) : null
+    // The same live side the gate reads (priorLiveSide): a scope with no
+    // closes of its own shrinks from the pooled record, and says so.
+    const live = priorLiveSide(db, strategy, cfg, accountId)
+    const n = live.trades
+    const wLive = live.winRatePct
     const b = bt[strategy]
     const wBt = b ? b.wrWeighted / b.trades : null
     let shrunk = null
@@ -273,7 +304,7 @@ export function earnedFloorPriorReport(db, { k = EARNED_FLOOR_PRIOR_TRADES } = {
       const ev = W != null ? W * rr - (1 - W) : null
       e[rr] = r3(ev); wouldAdmit[rr] = ev != null ? ev > cfg.minE : null
     }
-    return { live: { trades: n, winRatePct: r1(wLive) }, shrunkWinRatePct: r1(shrunk), expectancyR: e, wouldAdmit }
+    return { live: { trades: n, winRatePct: r1(wLive), scope: live.scope }, shrunkWinRatePct: r1(shrunk), expectancyR: e, wouldAdmit }
   }
   const rows = {}
   for (const s of strategies) {

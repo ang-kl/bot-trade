@@ -305,8 +305,13 @@ test('prior report: live sub-floor W shrunk toward the sweep backtest W with k p
   assert.equal(r.pooled.wouldAdmit[2], true)
   assert.equal(r.pooled.wouldAdmit[1.5], true)
   assert.equal(r.byAccount[DEMO].live.trades, 7)
-  assert.equal(r.byAccount[DEMO2].live.trades, 0, 'the other demo account has no record')
-  assert.equal(r.byAccount[DEMO2].shrunkWinRatePct, 60, 'no live record → the prior alone')
+  // The other demo account has no record of its own, so its live side is
+  // the POOLED record (owner, 02-09-2026 21:30 SGT) — the same 7 closes,
+  // and the report says which scope it read.
+  assert.equal(r.byAccount[DEMO].live.scope, 'account')
+  assert.equal(r.byAccount[DEMO2].live.trades, 7, 'no record of its own → the pooled record')
+  assert.equal(r.byAccount[DEMO2].live.scope, 'pooled')
+  assert.equal(r.byAccount[DEMO2].shrunkWinRatePct, 52)
   // fib: prior only, 50% → E(2) = 0.5, E(1.5) = 0.25 > minE 0.15
   const f = p.strategies.fib_618_fade
   assert.deepEqual(f.backtest, { winRatePct: 50, trades: 20, combos: 1 })
@@ -376,10 +381,12 @@ test('prior admit: 7 live closes at 29% shrunk toward a 60% backtest reads 52%, 
   assert.equal(v.trades, 7)
   assert.equal(v.e, 0.559)
   assert.equal(v.riskScale, 0.5, 'half risk, whatever riskScale the measured path uses')
-  assert.deepEqual(v.prior, { winRatePct: 60, trades: 2690, k: 20, liveWinRatePct: 29, liveTrades: 7 })
-  // No live record at all: the prior alone.
+  assert.deepEqual(v.prior, { winRatePct: 60, trades: 2690, k: 20, liveWinRatePct: 29, liveTrades: 7, liveScope: 'account' })
+  // No live record of its own: the pooled record stands in (the same 7
+  // closes here), and the stamp says so.
   const bare = earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO2 })
-  assert.equal(bare.ok, true); assert.equal(bare.winRate, 60); assert.equal(bare.trades, 0)
+  assert.equal(bare.ok, true); assert.equal(bare.winRate, 52); assert.equal(bare.trades, 7)
+  assert.equal(bare.prior.liveScope, 'pooled')
   // riskScale never exceeds the measured path's own scale.
   setState(db, 'earned_floor_json', JSON.stringify({ riskScale: 0.25, demoOnly: false }))
   assert.equal(earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO }).riskScale, 0.25)
@@ -412,8 +419,43 @@ test('prior admit: a weak backtest is refused with the prior figures in the reas
   seedRecord(db, 'donchian_breakout', 8, 25)
   const v = earnedFloorVerdict(db, { strategy: 'donchian_breakout', rr: 2, accountId: DEMO })
   assert.equal(v.ok, false)
-  assert.match(v.reason, /^prior expectancy -0\.26\dR at shrunk 24\.\d% \(8 live closes toward backtest 24\.4%\)/)
+  assert.match(v.reason, /^prior expectancy -0\.26\dR at shrunk 24\.\d% \(8 account live closes toward backtest 24\.4%\)/)
   assert.equal(v.via, 'prior')
+})
+
+test('prior admit: a FRESH scope shrinks from the pooled record until it has a close of its own (owner, 02-09-2026 21:30 SGT)', () => {
+  // The ACCT-DEMO-3 mechanism (21:14 SGT): vwap's backtest alone is 33%,
+  // E(2) = −0.01 ≤ minE, so a fresh account can never earn the closes that
+  // would lift it. The book's pooled record (other demo accounts' sub-floor
+  // closes) is what the fresh scope reads until it has its own.
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ vwap_trend: { winRatePct: 33, trades: 7000, combos: 200 } }))
+  // Nobody has a record yet: the prior alone, refused, and the reason says pooled (0 closes).
+  let v = earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 2, accountId: DEMO2 })
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /\(0 account live closes toward backtest 33%\)/, 'no pooled record either → the account scope, 0 closes')
+  // DEMO earns 12 sub-floor closes at 58%: pooled W = 58, shrunk (12·58 + 20·33)/32 = 42.4 → E(2) = 0.27
+  seedRecord(db, 'vwap_trend', 12, 58.3, { accountId: DEMO })
+  v = earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 2, accountId: DEMO2 })
+  assert.equal(v.ok, true, 'the fresh scope admits on the pooled record')
+  assert.equal(v.via, 'prior')
+  assert.equal(v.trades, 12)
+  assert.equal(v.prior.liveScope, 'pooled')
+  assert.equal(v.riskScale, 0.5)
+  // The moment DEMO2 has ONE close of its own, its own record is the live side — even when that is worse.
+  seedRecord(db, 'vwap_trend', 1, 0, { accountId: DEMO2 })
+  v = earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 2, accountId: DEMO2 })
+  assert.equal(v.prior.liveScope, 'account')
+  assert.equal(v.trades, 1)
+  assert.equal(v.prior.liveWinRatePct, 0)
+  // (1·0 + 20·33)/21 = 31.4 → E(2) = −0.06: refused on its own record
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /\(1 account live closes/)
+  // The report reads the same rule.
+  const rep = earnedFloorPriorReport(db).strategies.vwap_trend
+  assert.equal(rep.byAccount[DEMO2].live.scope, 'account')
+  assert.equal(rep.byAccount[DEMO].live.scope, 'account')
+  assert.equal(rep.pooled.live.trades, 13)
 })
 
 test('gate: a prior admit approves a sub-3R demo proposal at half risk and stamps via:prior; the report splits it out', () => {
