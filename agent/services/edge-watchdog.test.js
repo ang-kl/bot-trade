@@ -29,6 +29,53 @@ test('rollingEdge: honest expectancy/PF, excludes NULL net_pnl', () => {
   assert.equal(e.profitFactor, Math.round((14 / 5) * 100) / 100)
 })
 
+// ---------------------------------------------------------------------------
+// Scoping (owner order, 02-09-2026). The earned floor gates PER ACCOUNT but
+// consumed this pooled window; the watchdog keeps the pooled view on purpose.
+// ---------------------------------------------------------------------------
+
+function seedScoped(db, strategy, accountId, pnls, bracket = null) {
+  const ins = db.prepare(
+    `INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at, account_id, entry_price, sl_price, tp_price)
+     VALUES ('EURUSD','BUY','closed',?,?,?,?,?,?,?)`
+  )
+  pnls.forEach((p, i) => ins.run(strategy, p, `2026-07-11 ${String(i % 24).padStart(2, '0')}:00:00`, accountId,
+    bracket ? 100 : null, bracket ? 99 : null, bracket ? 100 + bracket : null))
+}
+
+test('rollingEdge accountId: a string scopes to that account plus unscoped legacy rows; null pools every account', () => {
+  const db = initDB(':memory:')
+  seedScoped(db, 'rsi_meanrev', 'A', [10, -5])
+  seedScoped(db, 'rsi_meanrev', 'B', [-20, -20, -20])
+  seedScoped(db, 'rsi_meanrev', null, [4])
+  assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: 'A' }).trades, 3, 'A + legacy NULL rows')
+  assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: 'A' }).net, 9)
+  assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: 'B' }).trades, 4)
+  assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: null }).trades, 6, 'pooled')
+  assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20).trades, 6, 'no option = pooled (unchanged default)')
+  assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: 'C' }).trades, 1, 'unknown account sees only legacy rows')
+})
+
+test('rollingEdge rrBand: only closes whose PLANNED bracket was under the band count; no bracket = not in the band', () => {
+  const db = initDB(':memory:')
+  seedScoped(db, 'vwap_trend', 'A', [30, 30, 30], 3.5)   // ≥3R — outside the band
+  seedScoped(db, 'vwap_trend', 'A', [30], 3.0)           // exactly 3.0 — not below
+  seedScoped(db, 'vwap_trend', 'A', [30, -10], 1.6)      // the admitted band
+  seedScoped(db, 'vwap_trend', 'A', [30])                // no bracket — unknowable
+  const band = strategyRollingEdge(db, 'vwap_trend', 20, { accountId: 'A', rrBand: { below: 3 } })
+  assert.equal(band.trades, 2)
+  assert.equal(band.winRate, 50)
+  assert.equal(strategyRollingEdge(db, 'vwap_trend', 20, { accountId: 'A' }).trades, 7, 'no band = every close')
+  assert.equal(strategyRollingEdge(db, 'vwap_trend', 20, { rrBand: { below: 'junk' } }).trades, 7, 'an unreadable band is no band')
+})
+
+test('the watchdog itself stays POOLED — its disarm is global (source pin, comments stripped)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('./edge-watchdog.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '')
+  assert.ok(src.includes('strategyRollingEdge(db, key, cfg.window, { accountId: null })'), 'the pooled intent must be written at the call')
+})
+
 test('disarms an armed strategy with clearly-negative edge over a full window', () => {
   const db = initDB(':memory:')
   arm(db, ['rsi_meanrev'])

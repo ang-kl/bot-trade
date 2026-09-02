@@ -127,13 +127,16 @@ Signal computeFibSignal(const std::vector<Bar>& bars, size_t n,
   return sig;
 }
 
-// backtest-fib.js:46-51
+// backtest-fib.js resolvePending — FILL BEFORE CANCEL (02-09-2026): a bar
+// that touches the level fills, and the caller's same-bar resolveExit then
+// takes the stop; the stop-close cancel only applies to a bar that never
+// touched. Order must stay identical to the JS or parity breaks.
 int resolvePending(const Pending& pending, const Bar& bar) {
-  if (bar.t >= pending.expireT) return -1;                          // js:47 cancel
-  if (pending.dir > 0 ? bar.c <= pending.sl : bar.c >= pending.sl)  // js:48
+  if (bar.t >= pending.expireT) return -1;                          // cancel
+  if (bar.l <= pending.level && pending.level <= bar.h) return 1;   // fill
+  if (pending.dir > 0 ? bar.c <= pending.sl : bar.c >= pending.sl)  // cancel
     return -1;
-  if (bar.l <= pending.level && pending.level <= bar.h) return 1;   // js:49 fill
-  return 0;                                                         // js:50
+  return 0;
 }
 
 // backtest-fib.js:53-65

@@ -9,29 +9,77 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { loadEarnedFloor, earnedFloorVerdict, earnedFloorReport, EARNED_FLOOR_DEFAULTS } from './earned-floor.js'
-import { evaluateTrade } from './risk.js'
+import { loadEarnedFloor, earnedFloorVerdict, earnedFloorReport, EARNED_FLOOR_DEFAULTS, EARNED_FLOOR_RR_BAND } from './earned-floor.js'
+import { evaluateTrade, HARD_MIN_RR } from './risk.js'
 
 const DEMO = '111'
 const LIVE = '222'
+const DEMO2 = '333'
 
 function withAccounts(db) {
   db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('${DEMO}','1',0,1,'active')`).run()
   db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('${LIVE}','2',1,1,'active')`).run()
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('${DEMO2}','3',0,1,'active')`).run()
   return db
 }
 
-/** n closed trades for a strategy: winRatePct% wins of +$30, rest -$10. */
-function seedRecord(db, strategy, n, winRatePct) {
+/**
+ * n closed trades for a strategy: winRatePct% wins of +$30, rest -$10.
+ * Per-account, sub-floor band (02-09-2026): the record is stamped with the
+ * account it belongs to and a PLANNED bracket under HARD_MIN_RR (entry 100,
+ * sl 99, tp 101.6 → 1.6R) — the population the verdict admits. `rr` and
+ * `accountId` let a test seed the OTHER populations that must NOT count.
+ */
+function seedRecord(db, strategy, n, winRatePct, { accountId = DEMO, rr = 1.6 } = {}) {
   const wins = Math.round(n * winRatePct / 100)
   const ins = db.prepare(
-    `INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at)
-     VALUES ('GBPUSD','BUY','closed',?,?,?)`  // not the proposal's symbol — a loss on it would arm the symbol cooldown
+    `INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at, account_id, entry_price, sl_price, tp_price)
+     VALUES ('GBPUSD','BUY','closed',?,?,?,?,100,99,?)`  // not the proposal's symbol — a loss on it would arm the symbol cooldown
   )
   for (let i = 0; i < n; i++) {
-    ins.run(strategy, i < wins ? 30 : -10, new Date(Date.now() - (i + 1) * 60_000).toISOString())
+    ins.run(strategy, i < wins ? 30 : -10, new Date(Date.now() - (i + 1) * 60_000).toISOString(), accountId, 100 + rr)
   }
 }
+
+test('the measured band is HARD_MIN_RR itself — pinned, since risk.js cannot be imported here without a cycle', () => {
+  assert.equal(EARNED_FLOOR_RR_BAND, HARD_MIN_RR)
+})
+
+test('the record is PER ACCOUNT: another demo account\'s closes cannot earn this one\'s floor (02-09-2026)', () => {
+  const db = withAccounts(initDB(':memory:'))
+  seedRecord(db, 'vwap_trend', 20, 70, { accountId: DEMO2 }) // a record that WOULD earn — on the other account
+  const other = earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 1.6, accountId: DEMO })
+  assert.equal(other.ok, false)
+  assert.match(other.reason, /thin_sample 0<15/)
+  // The account that owns the record earns on it; unscoped legacy rows
+  // (account_id NULL) count for every account.
+  assert.equal(earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 1.6, accountId: DEMO2 }).ok, true)
+  seedRecord(db, 'ema_pullback', 20, 70, { accountId: null })
+  assert.equal(earnedFloorVerdict(db, { strategy: 'ema_pullback', rr: 1.6, accountId: DEMO }).ok, true)
+})
+
+test('W is measured over the ADMITTED band only: closes planned at ≥3R do not count, nor closes with no bracket', () => {
+  const db = withAccounts(initDB(':memory:'))
+  // 20 wins at 3.5R — the pre-existing measurement, taken under the blanket
+  // floor, that used to justify sub-3R entries. Not the band.
+  seedRecord(db, 'vwap_trend', 20, 100, { rr: 3.5 })
+  const above = earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 1.6, accountId: DEMO })
+  assert.equal(above.ok, false)
+  assert.match(above.reason, /thin_sample 0<15/)
+  // Exactly 3.0R is NOT below the floor either.
+  seedRecord(db, 'vwap_trend', 5, 100, { rr: 3.0 })
+  assert.match(earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 1.6, accountId: DEMO }).reason, /thin_sample 0<15/)
+  // Rows with no planned bracket are unknowable, hence outside the band.
+  db.prepare(`INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at, account_id) VALUES ('GBPUSD','BUY','closed','vwap_trend',30,datetime('now'),?)`).run(DEMO)
+  assert.match(earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 1.6, accountId: DEMO }).reason, /thin_sample 0<15/)
+  // 15 sub-floor closes at 40% W: measured (not thin) and, at rr 1.6, unpaying
+  // — the 20 richer wins above are not blended in to rescue it.
+  seedRecord(db, 'vwap_trend', 15, 40, { rr: 1.6 })
+  const banded = earnedFloorVerdict(db, { strategy: 'vwap_trend', rr: 1.6, accountId: DEMO })
+  assert.equal(banded.trades, 15)
+  assert.equal(banded.winRate, 40)
+  assert.match(banded.reason, /expectancy 0\.04R/)
+})
 
 test('defaults: on, demo-only, half risk, 30-window/15-sample/0.15R — junk degrades to them', () => {
   const db = initDB(':memory:')
@@ -170,7 +218,7 @@ test('gate still vetoes: live account, thin record, and below the strategy\'s ow
 // ---------------------------------------------------------------------------
 test('stage-2 config: a measured LIVE account admits at full risk; stage-1 defaults refuse it', () => {
   const db = withAccounts(initDB(':memory:'))
-  seedRecord(db, 'vwap_trend', 12, 60) // 12 closes at 60% W — under stage-1's 15 sample
+  seedRecord(db, 'vwap_trend', 12, 60, { accountId: LIVE }) // 12 closes at 60% W on the LIVE account — under stage-1's 15 sample
   armBalance(db, LIVE, 10_000)
 
   // Stage-1 defaults: refused twice over (live scope, thin sample).

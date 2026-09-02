@@ -27,24 +27,41 @@ export const STOP_HUNT_MIN = 6         // ≥N of them stop_hunt → widen
 export const SL_WIDEN_FACTOR = 1.3
 
 /**
+ * Account scope for the tuner (owner order, 02-09-2026): the widen factors
+ * read trade_postmortems UNSCOPED while computeDecayKeys below was scoped —
+ * a demo account's stop hunts widened live stops (and vice versa). Same
+ * contract as computeDecayKeys: an explicit account, else the selected one;
+ * NULL account rows are legacy single-account history and count everywhere.
+ */
+const resolveAccount = (db, accountId) =>
+  accountId != null ? String(accountId) : (getState(db, 'ctrader_account_id') || null)
+
+/** agent_state key the factors live under — one per account, legacy key when none is known. */
+export const lessonTuningKey = (acct) => acct ? `lesson_sl_widen_json:${acct}` : 'lesson_sl_widen_json'
+
+/**
  * Recompute per-strategy SL-widen factors from postmortem evidence. Pure
  * read; returns { [strategy]: { factor, evidence } } for strategies whose
  * recent losses are dominated by stop hunts.
  */
-export function computeSlWidenFactors(db) {
+export function computeSlWidenFactors(db, accountId = null) {
   const out = {}
+  const acct = resolveAccount(db, accountId)
   let strategies = []
   try {
     strategies = db.prepare(
-      `SELECT DISTINCT strategy FROM trade_postmortems WHERE strategy IS NOT NULL`
-    ).all().map(r => r.strategy)
+      `SELECT DISTINCT strategy FROM trade_postmortems
+        WHERE strategy IS NOT NULL
+          AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+    ).all(acct, acct).map(r => r.strategy)
   } catch { return out }
   for (const s of strategies) {
     const recent = db.prepare(
       `SELECT classification FROM trade_postmortems
        WHERE strategy = ? AND classification IN ('stop_hunt','thesis_wrong','chop')
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
        ORDER BY id DESC LIMIT ?`
-    ).all(s, STOP_HUNT_LOOKBACK)
+    ).all(s, acct, acct, STOP_HUNT_LOOKBACK)
     if (recent.length < STOP_HUNT_LOOKBACK) continue // not enough evidence yet
     const hunts = recent.filter(r => r.classification === 'stop_hunt').length
     if (hunts >= STOP_HUNT_MIN) {
@@ -57,16 +74,30 @@ export function computeSlWidenFactors(db) {
   return out
 }
 
-/** Persist the current factors (called from the loop after each postmortem sweep). */
-export function refreshLessonTuning(db) {
-  const factors = computeSlWidenFactors(db)
-  setState(db, 'lesson_sl_widen_json', JSON.stringify(factors))
+/**
+ * Persist the current factors for one account (called from the loop after
+ * each postmortem sweep, with the account in play).
+ */
+export function refreshLessonTuning(db, accountId = null) {
+  const acct = resolveAccount(db, accountId)
+  const factors = computeSlWidenFactors(db, acct)
+  setState(db, lessonTuningKey(acct), JSON.stringify(factors))
   return factors
 }
 
-/** Load the active factors. */
-export function loadLessonTuning(db) {
-  try { return JSON.parse(getState(db, 'lesson_sl_widen_json') || '{}') || {} } catch { return {} }
+/**
+ * Load the active factors for one account. An account whose key has never
+ * been refreshed (the sweep refreshes the account it ran for) is computed
+ * live rather than served another account's — or nobody's — factors: a
+ * per-account guard that silently reads a pooled key is failure mode #3.
+ */
+export function loadLessonTuning(db, accountId = null) {
+  const acct = resolveAccount(db, accountId)
+  const stored = getState(db, lessonTuningKey(acct))
+  if (stored == null) {
+    try { return computeSlWidenFactors(db, acct) } catch { return {} }
+  }
+  try { return JSON.parse(stored || '{}') || {} } catch { return {} }
 }
 
 /**

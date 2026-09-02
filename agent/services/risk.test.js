@@ -3,6 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import fs from 'node:fs'
 import { effectiveCapUsd } from './loss-cap.js'
 import {
   DEFAULT_RISK_CONFIG,
@@ -1723,6 +1724,25 @@ test('strategyPerfStats: still scoped to the requested strategy — no cross-con
   assert.equal(strategyPerfStats(db, 'rsi2_reversion').total_trades, 0,
     'a strategy with no rows must not match the other two')
   assert.equal(strategyPerfStats(db, null), null, 'no strategyKey at all fails closed')
+})
+
+test('strategyPerfStats: scoped to the account being evaluated (02-09-2026) — pooled only when no account is known', () => {
+  const db = freshDB()
+  const now = new Date().toISOString()
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, status, strategy, label_strategy, net_pnl, closed_at, account_id) VALUES ('EURUSD','BUY','closed','va_breakout','va_breakout',?,?,?)`)
+  for (let i = 0; i < 25; i++) ins.run(-100, now, 'DEMO-1')   // a losing record on DEMO-1
+  for (let i = 0; i < 25; i++) ins.run(20, now, 'LIVE-1')     // a winning one on LIVE-1
+  for (let i = 0; i < 5; i++) ins.run(20, now, null)          // legacy unscoped rows
+  assert.equal(strategyPerfStats(db, 'va_breakout', 30, { accountId: 'LIVE-1' }).total_trades, 30, 'LIVE-1 + legacy')
+  assert.equal(strategyPerfStats(db, 'va_breakout', 30, { accountId: 'LIVE-1' }).win_rate, 1)
+  assert.equal(strategyPerfStats(db, 'va_breakout', 30, { accountId: 'DEMO-1' }).total_trades, 30)
+  assert.ok(strategyPerfStats(db, 'va_breakout', 30, { accountId: 'DEMO-1' }).win_rate < 0.2)
+  assert.equal(strategyPerfStats(db, 'va_breakout').total_trades, 55, 'no account = pooled, unchanged')
+  assert.equal(strategyPerfStats(db, 'va_breakout', 30, { accountId: null }).total_trades, 55)
+  // The gate's call site passes the account it is sizing for.
+  const src = fs.readFileSync(new URL('./risk.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '')
+  assert.ok(src.includes('strategyPerfStats(db, proposal.strategy, 30, { accountId: acct })'), 'kelly gate must scope to acct')
 })
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ import { armedTimeframes } from '../lib/timeframes.js'
 import { backtestStageStrategies } from './stage-matrix.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { ARM_BAR } from './edge-bars.js'
+import { persistSweepHistogram } from './divergence.js'
 
 const RUN_EVERY_MS = 22 * 3600_000 // legacy default (fallback only)
 const BUSY_MS = 10 * 60_000        // US session — the action window
@@ -705,6 +706,9 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   // Divergence tracker: bounded history of the verdicts that matter, every
   // sweep, whatever mode we are in — suggest-mode owners get the record too.
   try { persistVerdictHistory(db, verdicts, current, armBar) } catch (err) { errors.push(`verdict history: ${err.message}`) }
+  // Per-sweep PF/WR/n histogram over ALL verdicts (02-09-2026): the base
+  // rate the bounded history above cannot supply. Measurement only.
+  try { persistSweepHistogram(db, verdicts) } catch (err) { errors.push(`sweep histogram: ${err.message}`) }
 
   const isLive = getState(db, 'ctrader_is_live') === 'true'
   // Owner opted into full-auto on live (autopilot_allow_live). Without it, auto

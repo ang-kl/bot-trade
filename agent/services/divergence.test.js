@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import {
   divergenceReport, liveEdgeOf, executionCostOf, evidenceLevelOf, statusOf, DIVERGENCE_DEFAULTS,
+  sweepHistogramOf, sweepBinIndex, persistSweepHistogram, latestSweepHistogram, SWEEP_HIST_BINS,
 } from './divergence.js'
 
 const T0 = '2026-09-01 10:00:00'
@@ -131,15 +132,79 @@ test('divergenceReport: insufficient below minLive; empty DB yields an empty, we
   assert.equal(r.optimism.combos, 0, 'an insufficient combo never feeds the optimism aggregate')
 })
 
+// ---------------------------------------------------------------------------
+// Per-sweep histogram (owner order, 02-09-2026): the base rate for a
+// shrinkage prior, from ALL verdicts, once per sweep. No shrinkage here.
+// ---------------------------------------------------------------------------
+
+test('sweepBinIndex: [lo, hi) bins, last open-ended, edges land in the upper bin', () => {
+  const e = SWEEP_HIST_BINS.pf.edges
+  assert.equal(sweepBinIndex(e, 0.1), 0)
+  assert.equal(sweepBinIndex(e, 0.8), 1)
+  assert.equal(sweepBinIndex(e, 0.99), 1)
+  assert.equal(sweepBinIndex(e, 1.0), 2)
+  assert.equal(sweepBinIndex(e, 1.49), 4)
+  assert.equal(sweepBinIndex(e, 2.0), 6)
+  assert.equal(sweepBinIndex(e, 9), 6)
+  assert.equal(SWEEP_HIST_BINS.pf.labels.length, e.length + 1)
+  assert.equal(SWEEP_HIST_BINS.wr.labels.length, SWEEP_HIST_BINS.wr.edges.length + 1)
+  assert.equal(SWEEP_HIST_BINS.n.labels.length, SWEEP_HIST_BINS.n.edges.length + 1)
+})
+
+const SWEEP = [
+  { pf: 0.5, winRate: 30, trades: 5, state: 'no-go' },
+  { pf: 1.05, winRate: 45, trades: 12, state: 'no-go' },
+  { pf: 1.2, winRate: 52, trades: 25, state: 'go' },
+  { pf: 1.4, winRate: 57, trades: 40, state: 'go' },
+  { pf: 1.7, winRate: 65, trades: 30, state: 'go' },
+  { pf: 2.5, winRate: 80, trades: 20, state: 'go' },
+  { pf: null, winRate: 100, trades: 3, state: 'thin' },   // no losses: PF ∞ → not PF-binned; WR and n still are
+  { pf: undefined, winRate: null, trades: 0, state: 'thin' },
+]
+
+test('sweepHistogramOf bins EVERY verdict, not just the bar-clearing ones', () => {
+  const h = sweepHistogramOf(SWEEP)
+  assert.equal(h.combos, 8)
+  assert.deepEqual(h.pf, [1, 0, 1, 1, 1, 1, 1])
+  assert.deepEqual(h.wr, [1, 1, 1, 1, 1, 2])
+  assert.deepEqual(h.n, [3, 1, 2, 2])
+  assert.deepEqual(sweepHistogramOf([]), { combos: 0, pf: [0, 0, 0, 0, 0, 0, 0], wr: [0, 0, 0, 0, 0, 0], n: [0, 0, 0, 0] })
+})
+
+test('persistSweepHistogram writes one row per sweep; latestSweepHistogram serves the newest; the report exposes it', () => {
+  const db = initDB(':memory:')
+  assert.equal(latestSweepHistogram(db), null, 'nothing recorded yet')
+  assert.equal(divergenceReport(db).histogram, null)
+  assert.equal(persistSweepHistogram(db, []), null, 'an empty sweep writes nothing')
+  persistSweepHistogram(db, SWEEP.slice(0, 2), { at: '2026-09-01 03:00:00' })
+  persistSweepHistogram(db, SWEEP, { at: '2026-09-02 03:00:00' })
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM autopilot_sweep_hist').get().n, 2)
+  const h = latestSweepHistogram(db)
+  assert.equal(h.sweepAt, '2026-09-02 03:00:00')
+  assert.equal(h.combos, 8)
+  assert.deepEqual(h.pf.counts, [1, 0, 1, 1, 1, 1, 1])
+  assert.deepEqual(h.pf.labels, ['<0.8', '0.8–1.0', '1.0–1.1', '1.1–1.3', '1.3–1.5', '1.5–2.0', '≥2.0'])
+  assert.deepEqual(h.winRate.labels, ['<40', '40–50', '50–55', '55–60', '60–70', '≥70'])
+  assert.deepEqual(h.trades.labels, ['<10', '10–20', '20–30', '≥30'])
+  assert.deepEqual(divergenceReport(db).histogram, h, 'GET /state/divergence carries the last sweep')
+  // The 90-day prune, run as loop.js housekeeping runs it.
+  persistSweepHistogram(db, SWEEP, { at: '2026-05-01 03:00:00' })
+  db.prepare(`DELETE FROM autopilot_sweep_hist WHERE datetime(sweep_at) < datetime('now', '-90 days')`).run()
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM autopilot_sweep_hist').get().n, 2)
+})
+
 // Wiring pins — a report nothing serves, or a prune nothing runs, is failure mode #4.
 test('wiring: route declared once, housekeeping prunes both tables, applyChanges snapshots arms', () => {
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '')
   const state = readFileSync(new URL('../routes/state.js', import.meta.url), 'utf8')
   assert.equal((state.match(/router\.get\('\/divergence'/g) || []).length, 1)
-  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   assert.ok(loop.includes("'prune-autopilot-verdicts'") && loop.includes("'prune-combo-arms'"))
-  const ap = readFileSync(new URL('./strategy-autopilot.js', import.meta.url), 'utf8')
+  assert.ok(loop.includes("'prune-autopilot-sweep-hist'") && loop.includes("DELETE FROM autopilot_sweep_hist WHERE datetime(sweep_at) < datetime('now', '-90 days')"), 'the histogram must be pruned to 90 days')
+  const ap = strip(readFileSync(new URL('./strategy-autopilot.js', import.meta.url), 'utf8'))
   assert.ok(ap.includes('recordComboArms(db, changes, opts)'), 'applyChanges must snapshot arms')
   assert.ok(ap.includes('persistVerdictHistory(db, verdicts, current, armBar)'), 'every sweep must persist its verdict history')
+  assert.ok(ap.includes('persistSweepHistogram(db, verdicts)'), 'every sweep must write its histogram from ALL verdicts')
   const actions = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8')
   assert.ok(actions.includes("kind: 'manual'"), 'a hand-arm must be recorded as evidence-less')
 })

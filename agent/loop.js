@@ -33,7 +33,7 @@ import { recordError } from './services/error-log.js'
 import { startLagMonitor, sampleLag } from './services/event-loop-lag.js'
 import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
-import { armedTimeframes } from './lib/timeframes.js'
+import { armedTimeframes, armedScopeGate } from './lib/timeframes.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
 import { llmBlocked } from './lib/llm-switch.js'
 // Housekeeping cadence. Wall-clock and persisted, because the loop-counter
@@ -379,7 +379,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // $ risk constant on the wider distance (fewer lots, same budget).
   try {
     const { loadLessonTuning, applySlWiden, isDecayed } = await import('./services/lessons-tuner.js')
-    const tuned = applySlWiden({ strategy: synth.strategy, entry: synth.entry, sl: synth.sl }, loadLessonTuning(db))
+    // Scoped to the account this order is for (02-09-2026): one account's
+    // stop hunts must not widen another's stops.
+    const tuned = applySlWiden({ strategy: synth.strategy, entry: synth.entry, sl: synth.sl }, loadLessonTuning(db, accountId))
     if (tuned.note) { synth.sl = tuned.signal.sl; log(`${symbol}: ${tuned.note}`) }
     // Alpha-decay cool-off — this EXACT Symbol+Strategy+Timeframe edge's last
     // postmortem said the edge is decaying. Skip the trade rather than just
@@ -983,33 +985,22 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
   // caps and equity stop still veto — scope decides what is
   // CONSIDERED, the gates decide what EXECUTES.
   if (synth.auto_trade && (getState(db, 'autotrade_scope') || 'all') === 'armed') {
-    // One shared reader and one shared default (lib/timeframes.js) — four
+    // MATRIX WINS OVER THE LIST (owner order, 02-09-2026). The list check
+    // used to run first, so 68 of 161 matrix-armed symbol×timeframe cells
+    // (3d/4d/12h/8h/1w) could never dispatch under scope 'armed': armed by
+    // the autopilot, vetoed by a list nobody had widened. The matrix is the
+    // arming authority — a symbol it names trades exactly the timeframes it
+    // armed for it, list or no list; the list still gates symbols the matrix
+    // does not name (and everything, when there is no matrix). One shared
+    // reader and one shared default for the list (lib/timeframes.js) — four
     // modules used to carry their own ['4h','1d'] literal.
     const allowedTfs = armedTimeframes(db, getState)
-    if (!allowedTfs.includes(synth.timeframe)) {
-      log(`Timeframe gate: ${sym} blocked — ${synth.timeframe} not in autotrade_timeframes [${allowedTfs.join(',')}]`)
+    let matrix = null
+    try { matrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { matrix = null /* corrupt — list gates */ }
+    const scope = armedScopeGate({ symbol: sym, timeframe: synth.timeframe, allowedTfs, matrix })
+    if (!scope.ok) {
+      log(`${scope.via === 'matrix' ? 'Matrix' : 'Timeframe'} gate: ${sym} blocked — ${scope.reason}`)
       synth.auto_trade = false
-    }
-
-    // Per-instrument arming (autotrade_matrix_json = {SYM: [tfs]}):
-    // when the matrix exists, a symbol only trades the timeframes the
-    // trader armed FOR THAT SYMBOL — "arm anyway" on NATGAS 2h must
-    // not arm 2h for the whole watchlist. Absent matrix = legacy
-    // TF-wide behaviour.
-    if (synth.auto_trade) {
-      const matrixJson = getState(db, 'autotrade_matrix_json')
-      if (matrixJson) {
-        try {
-          const matrix = JSON.parse(matrixJson)
-          if (matrix && typeof matrix === 'object' && Object.keys(matrix).length > 0) {
-            const armedForSym = matrix[sym.toUpperCase()] || []
-            if (!armedForSym.includes(synth.timeframe)) {
-              log(`Matrix gate: ${sym} blocked — ${synth.timeframe} not armed for this symbol (armed: ${armedForSym.join(',') || 'none'})`)
-              synth.auto_trade = false
-            }
-          }
-        } catch { /* corrupt matrix — fall back to TF-wide */ }
-      }
     }
   }
   if (synth.auto_trade) {
@@ -2757,7 +2748,16 @@ async function runLoop(db) {
               // factors whenever new lessons land (self-clearing when the
               // stop-hunt pattern stops).
               const { refreshLessonTuning } = await import('./services/lessons-tuner.js')
-              const factors = refreshLessonTuning(db)
+              // Per account (02-09-2026): the account in play first, then
+              // every other autopilot account — the sweep classifies closes
+              // from all of them, and a per-account key nobody refreshes
+              // would be a guard whose trigger never arrives.
+              const factors = refreshLessonTuning(db, accountId)
+              try {
+                for (const a of getAutopilotAccounts(db)) {
+                  if (String(a.accountId) !== String(accountId)) refreshLessonTuning(db, a.accountId)
+                }
+              } catch { /* best effort — the selected account is already refreshed */ }
               const keys = Object.keys(factors)
               if (keys.length) log(`Lesson tuner ACTIVE: ${keys.map(k => `${k} SL×${factors[k].factor} (${factors[k].evidence})`).join(' · ')}`)
             }
@@ -4502,6 +4502,9 @@ async function runLoop(db) {
         // sweep AND in time; closed arm rows age out, open arms never do —
         // an armed combo's evidence must outlive any prune while it trades.
         { name: 'prune-autopilot-verdicts', run: () => db.prepare(`DELETE FROM autopilot_verdicts WHERE datetime(ran_at) < datetime('now', '-30 days')`).run() },
+        // Per-sweep PF/WR/n histogram (02-09-2026): one small row per sweep,
+        // the base rate a shrinkage prior needs; 90 days is ~100 sweeps.
+        { name: 'prune-autopilot-sweep-hist', run: () => db.prepare(`DELETE FROM autopilot_sweep_hist WHERE datetime(sweep_at) < datetime('now', '-90 days')`).run() },
         { name: 'prune-combo-arms', run: () => db.prepare('DELETE FROM combo_arms WHERE disarmed_at IS NOT NULL AND datetime(disarmed_at) < datetime(?)').run(cutoff90d) },
         // Inspection findings: TERMINAL rows only — live findings never age
         // out (a proposal does not expire because the owner was busy; it
