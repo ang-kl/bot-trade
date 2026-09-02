@@ -526,3 +526,27 @@ test('recordComboArms: a matrix row is strategy-blind — a disarm condemned by 
   recordComboArms(db, { disarm: [{ kind: 'strategy', strategy: 'fib_618_fade' }] }, {})
   assert.equal(db.prepare(`SELECT disarmed_at FROM combo_arms WHERE kind = 'strategy'`).get().disarmed_at, null)
 })
+
+import { strategyPriorOf, STRATEGY_PRIOR_KEY } from './strategy-autopilot.js'
+
+test('strategyPriorOf: trade-weighted WR per strategy over verdicts with trades; zero-trade and NaN verdicts are not counted', () => {
+  const p = strategyPriorOf([
+    { strategy: 'rsi2_reversion', winRate: 60, trades: 30 },
+    { strategy: 'rsi2_reversion', winRate: 40, trades: 10 },
+    { strategy: 'fib_618_fade', winRate: 55, trades: 20 },
+    { strategy: 'fib_618_fade', winRate: 99, trades: 0 },
+    { strategy: 'ema_pullback', winRate: null, trades: 12 },
+    { winRate: 70, trades: 12 },
+  ])
+  assert.deepEqual(p, {
+    rsi2_reversion: { winRatePct: 55, trades: 40, combos: 2 },
+    fib_618_fade: { winRatePct: 55, trades: 20, combos: 1 },
+  })
+  assert.deepEqual(strategyPriorOf(null), {})
+  assert.equal(STRATEGY_PRIOR_KEY, 'autopilot_strategy_prior_json')
+})
+
+test('wiring: maybeRunAutopilot writes the per-strategy prior beside the verdict list', () => {
+  const src = readFileSync(new URL('./strategy-autopilot.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  assert.match(src, /setState\(db, STRATEGY_PRIOR_KEY, JSON\.stringify\(strategyPriorOf\(verdicts\)\)\)/)
+})

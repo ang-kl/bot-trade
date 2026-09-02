@@ -164,17 +164,38 @@ export function earnedFloorPriorReport(db, { k = EARNED_FLOOR_PRIOR_TRADES } = {
   const cfg = loadEarnedFloor(db)
   const r1 = (x) => (Number.isFinite(x) ? Math.round(x * 10) / 10 : null)
   const r3 = (x) => (Number.isFinite(x) ? Math.round(x * 1000) / 1000 : null)
-  let verdicts = []
-  try { verdicts = JSON.parse(getState(db, 'autopilot_last_verdicts_json') || '[]') } catch { verdicts = [] }
-  if (!Array.isArray(verdicts)) verdicts = []
   const sweepMs = Number(getState(db, 'autopilot_last_run_ms'))
-  const bt = {}
-  for (const v of verdicts) {
-    const n = Number(v?.trades) || 0
-    const wr = Number(v?.winRate)
-    if (!v?.strategy || n <= 0 || !Number.isFinite(wr)) continue
-    const b = bt[v.strategy] || (bt[v.strategy] = { trades: 0, wrWeighted: 0, combos: 0 })
-    b.trades += n; b.wrWeighted += wr * n; b.combos++
+  // Backtest side. FIRST the compact per-strategy aggregate the sweep writes
+  // (autopilot_strategy_prior_json, #821); the full verdict list is stored
+  // sliced at 200,000 characters and a 1,872-verdict sweep overruns it, so
+  // parsing it yields nothing — which is exactly what the first deployed read
+  // of this report returned (02-09-2026 12:49 SGT: verdicts 0, every strategy
+  // "no prior"). The verdict list stays as the fallback for a DB that has a
+  // sweep but predates the aggregate key.
+  let bt = {}
+  let source = null
+  try {
+    const p = JSON.parse(getState(db, 'autopilot_strategy_prior_json') || 'null')
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      for (const [k, v] of Object.entries(p)) {
+        const trades = Number(v?.trades) || 0, wr = Number(v?.winRatePct)
+        if (trades > 0 && Number.isFinite(wr)) bt[k] = { trades, wrWeighted: wr * trades, combos: Number(v?.combos) || 0 }
+      }
+      if (Object.keys(bt).length) source = 'autopilot_strategy_prior_json'
+    }
+  } catch { bt = {} }
+  let verdicts = []
+  if (!source) {
+    try { verdicts = JSON.parse(getState(db, 'autopilot_last_verdicts_json') || '[]') } catch { verdicts = [] }
+    if (!Array.isArray(verdicts)) verdicts = []
+    for (const v of verdicts) {
+      const n = Number(v?.trades) || 0
+      const wr = v?.winRate == null ? NaN : Number(v.winRate) // Number(null) is 0, not "unknown"
+      if (!v?.strategy || n <= 0 || !Number.isFinite(wr)) continue
+      const b = bt[v.strategy] || (bt[v.strategy] = { trades: 0, wrWeighted: 0, combos: 0 })
+      b.trades += n; b.wrWeighted += wr * n; b.combos++
+    }
+    if (Object.keys(bt).length) source = 'autopilot_last_verdicts_json'
   }
   let accounts = []
   try {
@@ -215,7 +236,8 @@ export function earnedFloorPriorReport(db, { k = EARNED_FLOOR_PRIOR_TRADES } = {
     minE: cfg.minE,
     rr: [...EARNED_FLOOR_PRIOR_RR],
     sweepAt: Number.isFinite(sweepMs) && sweepMs > 0 ? new Date(sweepMs).toISOString() : null,
-    verdicts: verdicts.length,
+    source,
+    strategiesWithPrior: Object.keys(bt).length,
     accounts,
     strategies: rows,
   }

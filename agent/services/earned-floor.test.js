@@ -291,7 +291,8 @@ test('prior report: live sub-floor W shrunk toward the sweep backtest W with k p
   assert.equal(p.reportOnly, true)
   assert.equal(p.k, 20)
   assert.equal(p.sweepAt, '2026-09-02T04:23:19.000Z')
-  assert.equal(p.verdicts, 4)
+  assert.equal(p.source, 'autopilot_last_verdicts_json', 'no aggregate key yet → the verdict list is the fallback')
+  assert.equal(p.strategiesWithPrior, 2)
   assert.deepEqual(p.accounts, [DEMO, DEMO2], 'demoOnly: live accounts are out of scope')
   const r = p.strategies.rsi2_reversion
   assert.deepEqual(r.backtest, { winRatePct: 60, trades: 40, combos: 2 })
@@ -334,9 +335,23 @@ test('prior report: a strategy with live closes but no sweep verdict has no prio
   assert.equal(rep.prior.strategies.rsi2_reversion.pooled.shrunkWinRatePct, 52)
   // Junk verdict state never breaks the report.
   setState(db, 'autopilot_last_verdicts_json', '{not json')
-  assert.equal(earnedFloorPriorReport(db).verdicts, 0)
+  assert.equal(earnedFloorPriorReport(db).strategiesWithPrior, 0)
 })
 
 test('prior report: k is the autopilot sweep prior, one number in two modules', () => {
   assert.equal(EARNED_FLOOR_PRIOR_TRADES, SHRINK_PRIOR_TRADES)
+})
+
+test('prior report: reads the sweep\'s per-strategy aggregate first — the verdict list is stored truncated and does not parse (02-09-2026 12:49)', () => {
+  const db = withAccounts(initDB(':memory:'))
+  // What production held: a 1,872-verdict list cut at 200,000 chars → broken JSON.
+  const big = JSON.stringify(Array.from({ length: 1900 }, (_, i) => ({ strategy: 'rsi2_reversion', symbol: `S${i}`, timeframe: '1h', winRate: 60, trades: 25, pf: 1.5, state: 'go', entryMode: 'close' })))
+  assert.ok(big.length > 200_000)
+  setState(db, 'autopilot_last_verdicts_json', big.slice(0, 200_000))
+  assert.equal(earnedFloorPriorReport(db).strategiesWithPrior, 0, 'the truncated list alone yields no prior — the defect')
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ rsi2_reversion: { winRatePct: 60, trades: 47500, combos: 1900 } }))
+  const p = earnedFloorPriorReport(db)
+  assert.equal(p.source, 'autopilot_strategy_prior_json')
+  assert.deepEqual(p.strategies.rsi2_reversion.backtest, { winRatePct: 60, trades: 47500, combos: 1900 })
+  assert.equal(p.strategies.rsi2_reversion.pooled.shrunkWinRatePct, 60)
 })
