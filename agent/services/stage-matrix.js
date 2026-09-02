@@ -131,6 +131,45 @@ export function stageOverlayKeys(db, getState, accountId) {
   return out
 }
 
+/**
+ * Clear ONE strategy's trade-stage pin on EVERY account, so the global
+ * setting governs it again. Two places a pin can live: the per-account
+ * overlay cell (`strategy.<key>.trade`) and the legacy wholesale list. Both
+ * are cleared. Accounts are found from the registry AND from any per-account
+ * state key, so an account the registry no longer lists cannot keep a pin
+ * the owner cannot see.
+ *
+ * @returns {string[]} account ids whose pin was actually removed
+ */
+export function unpinTradeStageEverywhere(db, { getState, setState }, key) {
+  const ids = new Set()
+  try { for (const r of db.prepare(`SELECT account_id FROM accounts`).all()) ids.add(String(r.account_id)) } catch { /* no registry */ }
+  try {
+    for (const r of db.prepare(`SELECT key FROM agent_state WHERE key LIKE 'acct:%:stage_matrix_json' OR key LIKE 'acct:%:enabled_strategies_json'`).all()) {
+      const m = /^acct:(.+):(stage_matrix_json|enabled_strategies_json)$/.exec(r.key)
+      if (m) ids.add(m[1])
+    }
+  } catch { /* no state table */ }
+  const touched = []
+  for (const acct of [...ids].sort()) {
+    let changed = false
+    const overlay = readJson(db, getState, acctMatrixKey(acct))
+    if (overlay?.strategy?.[key] && typeof overlay.strategy[key].trade === 'boolean') {
+      delete overlay.strategy[key].trade
+      if (!Object.keys(overlay.strategy[key]).length) delete overlay.strategy[key]
+      setState(db, acctMatrixKey(acct), JSON.stringify(overlay))
+      changed = true
+    }
+    const legacy = readJson(db, getState, acctEnabledKey(acct))
+    if (Array.isArray(legacy) && legacy.includes(key)) {
+      setState(db, acctEnabledKey(acct), JSON.stringify(legacy.filter(k => k !== key)))
+      changed = true
+    }
+    if (changed) touched.push(acct)
+  }
+  return touched
+}
+
 /** The trade-armed strategy keys FOR ONE ACCOUNT (its own list, or global). */
 /**
  * Which strategies are TRADE-armed for this account: its own overlay when it
@@ -275,6 +314,11 @@ export function setStage(db, { kind, key, stage, on, accountId = null }, { getSt
       const enabled = armedTradeKeys(db, getState, acct)
       if (flag) enabled.add(key); else enabled.delete(key)
       const keys = STRATEGY_KEYS.filter(k => enabled.has(k)) // registry order
+      // NOTE: a global OFF here does NOT clear per-account pins. The owner's
+      // kill switch (the /actions/strategies and /actions/stage-matrix
+      // routes) does that via unpinTradeStageEverywhere; the adaptive
+      // breaker also calls this function and applies its own never-go-dark
+      // rule per scope, which a blanket unpin would silently override.
       if (acct) {
         // ONE CELL, like every other column. The global list and the legacy
         // cup_handle_enabled flag stay exactly as they were — an account

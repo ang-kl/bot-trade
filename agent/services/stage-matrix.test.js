@@ -234,3 +234,67 @@ test('stageMatrixView bundles columns, matrix, stats and window', () => {
   assert.equal(typeof v.stats, 'object')
   assert.equal(v.windowDays, 30)
 })
+
+// ---------------------------------------------------------------------------
+// A GLOBAL OFF IS A KILL SWITCH (owner "go", 02-09-2026). Reproduces the
+// 12:36 → 12:50 case: global disarm, account pin still on, strategy trades.
+// ---------------------------------------------------------------------------
+import { unpinTradeStageEverywhere, armedTradeKeys, acctMatrixKey, acctEnabledKey } from './stage-matrix.js'
+import { readFileSync } from 'node:fs'
+
+function withAccounts(db, ids) {
+  for (const id of ids) db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id)
+  return db
+}
+
+test('global OFF clears the per-account trade pin and the legacy list; global ON leaves pins alone', () => {
+  const db = withAccounts(initDB(':memory:'), ['111', '222', '333'])
+  setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend', 'rsi2_reversion']))
+  // 111: overlay pin ON (the production shape); 222: legacy wholesale list;
+  // 333: no pin, follows global; 444: not in the registry but carries a pin.
+  setState(db, acctMatrixKey('111'), JSON.stringify({ strategy: { vwap_trend: { trade: true, scan: false } } }))
+  setState(db, acctEnabledKey('222'), JSON.stringify(['vwap_trend', 'ema_pullback']))
+  setState(db, acctMatrixKey('444'), JSON.stringify({ strategy: { vwap_trend: { trade: true } } }))
+  // THE DEFECT: the global switch alone changes nothing on a pinned account.
+  setState(db, 'enabled_strategies_json', JSON.stringify(['rsi2_reversion']))
+  assert.ok(armedTradeKeys(db, getState, '111').has('vwap_trend'), 'pinned account still armed after a bare global write')
+  assert.ok(armedTradeKeys(db, getState, '222').has('vwap_trend'))
+  assert.ok(armedTradeKeys(db, getState, '444').has('vwap_trend'))
+  assert.ok(!armedTradeKeys(db, getState, '333').has('vwap_trend'), 'the unpinned account followed the global')
+  // THE FIX.
+  const touched = unpinTradeStageEverywhere(db, io, 'vwap_trend')
+  assert.deepEqual(touched, ['111', '222', '444'], 'every pin found, registry or not; the unpinned account is not "touched"')
+  for (const a of ['111', '222', '333', '444']) assert.ok(!armedTradeKeys(db, getState, a).has('vwap_trend'), `${a} follows the global OFF`)
+  // Other cells and other strategies on the same account survive.
+  assert.deepEqual(JSON.parse(getState(db, acctMatrixKey('111'))), { strategy: { vwap_trend: { scan: false } } })
+  assert.deepEqual(JSON.parse(getState(db, acctEnabledKey('222'))), ['ema_pullback'])
+  assert.ok(armedTradeKeys(db, getState, '222').has('ema_pullback'), 'the legacy list keeps its other entries')
+  // Idempotent, and a global ON does not re-pin or un-pin anything.
+  assert.deepEqual(unpinTradeStageEverywhere(db, io, 'vwap_trend'), [])
+  setState(db, acctMatrixKey('333'), JSON.stringify({ strategy: { rsi2_reversion: { trade: false } } }))
+  setStage(db, { kind: 'strategy', key: 'rsi2_reversion', stage: 'trade', on: true }, io)
+  assert.ok(!armedTradeKeys(db, getState, '333').has('rsi2_reversion'), 'an account that opted OUT keeps its opt-out on a global ON')
+})
+
+test('the kill switch lives in the OWNER routes, not in setStage: the adaptive breaker keeps its never-go-dark rule', () => {
+  const db = withAccounts(initDB(':memory:'), ['111', '222'])
+  setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
+  setState(db, acctMatrixKey('111'), JSON.stringify({ strategy: { vwap_trend: { trade: true } } }))
+  setState(db, acctMatrixKey('222'), JSON.stringify({ strategy: { vwap_trend: { trade: true } } }))
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: false, accountId: '111' }, io)
+  assert.ok(!armedTradeKeys(db, getState, '111').has('vwap_trend'))
+  assert.ok(armedTradeKeys(db, getState, '222').has('vwap_trend'), 'a per-account OFF is scoped, as before')
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: false }, io)
+  assert.ok(armedTradeKeys(db, getState, '222').has('vwap_trend'), 'setStage alone leaves the pin — the breaker relies on that')
+  assert.ok(!armedTradeKeys(db, getState, null).has('vwap_trend'))
+  const src = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  const route = src.slice(src.indexOf("router.post('/stage-matrix'"), src.indexOf("router.post('/stage-matrix'") + 2500)
+  assert.match(route, /unpinTradeStageEverywhere\(db, \{ getState, setState \}, String\(key\)\)/, 'the matrix route is the owner\'s other kill switch')
+})
+
+test('wiring: POST /actions/strategies clears pins for every strategy it turns off and reports them', () => {
+  const src = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  const route = src.slice(src.indexOf("router.post('/strategies'"), src.indexOf("router.post('/storage-purge'"))
+  assert.match(route, /unpinTradeStageEverywhere\(db, \{ getState, setState \}, k\)/)
+  assert.match(route, /unpinned,/)
+})
