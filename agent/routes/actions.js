@@ -910,6 +910,45 @@ export default function actionsRouter(db, deps = {}) {
   //
   // Still log-only. There is no act path in early-trim.js to switch on.
   // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // GET/POST /actions/momentum-shadow — the cross-sectional momentum SHADOW's
+  // config (owner "do ¶A·5", 02-09-2026). Body keys are validated by
+  // momentumShadowConfig(), which forces mode to 'log' and repairs nonsense
+  // to defaults, so the response echoes the EFFECTIVE config. There is no
+  // act path to switch on: the shadow proposes nothing and trades nothing.
+  // -----------------------------------------------------------------------
+  router.get('/momentum-shadow', async (_req, res) => {
+    try {
+      const { loadMomentumShadow, shortMinConviction } = await import('../services/momentum-shadow.js')
+      const cfg = loadMomentumShadow(db)
+      res.json({ ok: true, effective: cfg, ...shortMinConviction(cfg), writes: 'momentum_shadow rows, applied=0 — decisions only, nothing is proposed or traded' })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  router.post('/momentum-shadow', async (req, res) => {
+    try {
+      const { momentumShadowConfig, loadMomentumShadow, MOMENTUM_SHADOW_CONFIG_KEY, shortMinConviction } = await import('../services/momentum-shadow.js')
+      const body = req.body || {}
+      const merged = { ...loadMomentumShadow(db) }
+      for (const k of ['enabled', 'timeframe', 'lookback', 'skip', 'enterPct', 'exitPct', 'longMinConviction', 'shortConvictionMult', 'minUniverse', 'maxSymbols', 'intervalMin']) {
+        if (k in body) merged[k] = body[k]
+      }
+      const cfg = momentumShadowConfig(merged)
+      setState(db, MOMENTUM_SHADOW_CONFIG_KEY, JSON.stringify(cfg))
+      const sm = shortMinConviction(cfg)
+      console.log(`[actions] momentum-shadow → enabled=${cfg.enabled} tf=${cfg.timeframe} lookback=${cfg.lookback} skip=${cfg.skip} enter=${cfg.enterPct} exit=${cfg.exitPct} longMin=${cfg.longMinConviction} shortMin=${sm.shortMin}`)
+      res.json({
+        ok: true, effective: cfg, ...sm,
+        warning: sm.shortRuleAboveScale ? `longMinConviction × shortConvictionMult = ${sm.raw} exceeds the 0–10 scale: every short is refused` : null,
+      })
+    } catch (err) {
+      console.error('[actions/momentum-shadow] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/early-trim-settings', async (_req, res) => {
     try {
       const { earlyTrimConfig } = await import('../services/early-trim.js')

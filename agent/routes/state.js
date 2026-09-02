@@ -2427,6 +2427,19 @@ export default function stateRouter(db) {
   // before exit. Read-only; a family under the close floor is returned with
   // status 'insufficient' and its numbers are not advice.
   // ?days=90 (capped at journal retention) &account=<id|all> &minCloses=100
+  // GET /state/momentum-shadow?days=30 — the cross-sectional momentum
+  // SHADOW's book and what its closed shadow trades returned per side, with
+  // the short rule's effective floor. Report only; applied=0 on every row.
+  router.get('/momentum-shadow', async (req, res) => {
+    try {
+      const { momentumShadowReport } = await import('../services/momentum-shadow.js')
+      const days = Math.min(365, Math.max(1, Number(req.query.days) || 30))
+      res.json(momentumShadowReport(db, { days }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/exit-chain', async (req, res) => {
     try {
       const { exitChainReport } = await import('../services/exit-chain.js')
