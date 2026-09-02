@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import {
-  priceMove, realisedRR, checkTradeConsistency, stampRealisedAudit,
+  priceMove, realisedRR, checkTradeConsistency, stampRealisedAudit, restampClosedTrades,
   inconsistentTrades, consistencySummary, inconsistencyLine,
 } from './trade-consistency.js'
 
@@ -273,4 +273,48 @@ test('every writer that changes a closed row\'s prices or money calls the shared
   for (const p of ['../db.js', './broker-history-import.js', './pnl-backfill.js']) {
     assert.doesNotMatch(src(p), /SET realised_rr = \?/, `${p} must not carry its own copy of the stamp`)
   }
+})
+
+test('restampClosedTrades corrects stale R, fills computable NULLs, and leaves open rows alone', () => {
+  const db = initDB(':memory:')
+  // Stale: stamped from the bot's exit estimate, prices since corrected.
+  const stale = closed(db, { symbol: 'NAS100', side: 'BUY', entry: 29053.4, exit: 29326.6, sl: 28964.92, net: 1200 })
+  db.prepare(`UPDATE trades SET realised_rr = 5.11 WHERE id = ?`).run(stale)
+  // NULL but computable — the reconcile step filled the exit before the stamp existed.
+  const nulled = closed(db, { symbol: 'NATGAS', side: 'BUY', entry: 2.933, exit: 2.919, sl: 2.9144642857142857, net: -498.4 })
+  // Undecidable stays NULL: no stop on record.
+  const noStop = closed(db, { symbol: 'EURUSD', side: 'BUY', entry: 1.1, exit: 1.11, sl: null, net: 50 })
+  // Open row: never touched, whatever it holds.
+  const open = db.prepare(`INSERT INTO trades (symbol, side, entry_price, sl_price, status, realised_rr) VALUES ('GBPUSD','BUY',1.3,1.29,'open',9)`).run().lastInsertRowid
+
+  const r = restampClosedTrades(db)
+  assert.equal(r.examined, 3, 'closed rows with both prices only')
+  assert.equal(r.changed, 2, 'the stale one and the NULL one')
+  assert.equal(r.nulled, 1, 'no stop → still no R, honestly')
+  const rr = (id) => db.prepare(`SELECT realised_rr FROM trades WHERE id = ?`).get(id).realised_rr
+  assert.equal(Math.round(rr(stale) * 100) / 100, Math.round(((29326.6 - 29053.4) / (29053.4 - 28964.92)) * 100) / 100)
+  assert.ok(rr(nulled) < 0)
+  assert.equal(rr(noStop), null)
+  assert.equal(rr(open), 9)
+  // Idempotent: a second pass changes nothing.
+  assert.equal(restampClosedTrades(db).changed, 0)
+})
+
+test('the two HTTP money/price writers go through the shared stamp too (codebase audit 02-09-2026)', () => {
+  const src = (p) => readFileSync(new URL(p, import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+  const actions = src('../routes/actions.js')
+  assert.doesNotMatch(actions, /SET net_pnl = \?, gross_pnl = \?,/, 'broker-history must not overwrite money in the route')
+  assert.doesNotMatch(actions, /UPDATE trades SET entry_price = \? WHERE id = \?/, 'reconcile-trades must not write prices in the route')
+  assert.match(actions, /applyBrokerHistoryMoney\(db, byPosition, \{ accountId \}\)/)
+  assert.match(actions, /judgeTradesAgainstDeals\(db, \{ rows, deals, symbolMap: map \}\)/)
+  const imp = src('./broker-history-import.js')
+  assert.match(imp, /AND status = 'closed' AND net_pnl IS NULL/, 'money fill is NULL-only')
+  assert.match(imp, /if \(r\.changes\) for \(const \{ id \} of ids\.all\(positionId\)\) \{ if \(stampRealisedAudit\(db, id\)\)/)
+  assert.match(imp, /upEntry\.run\(px, r\.id\); stampRealisedAudit\(db, r\.id\)/)
+  for (const p of ['../routes/actions.js', './broker-history-import.js']) {
+    assert.doesNotMatch(src(p), /SET realised_rr = \?/, `${p} must not carry its own copy of the stamp`)
+  }
+  const index = src('../index.js')
+  assert.match(index, /restampClosedTrades\(db\)/, 'the one-shot re-stamp must run at boot')
+  assert.match(index, /trade_audit_restamp_version/, 'and be version-keyed')
 })

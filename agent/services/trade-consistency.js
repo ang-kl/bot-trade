@@ -149,6 +149,44 @@ export function stampRealisedAudit(db, tradeId) {
 }
 
 /**
+ * Re-stamp EVERY closed row that has both prices. The 02-09-2026 fix made
+ * each writer re-stamp after its own write, but a row whose prices had
+ * already been corrected before the fix never sees another write — the
+ * reconcile step hits `unchanged` and moves on — so its stale or NULL R
+ * would have stood for life. Measured the same day: 116 of 191 stamped bot
+ * rows disagreed with recomputation and 94 more were NULL but computable.
+ *
+ * Pure over the db handle; the one-shot guard (a version key in agent_state)
+ * lives in the caller, because this module must not import db.js (db.js
+ * imports this one). Returns the counts so the boot line can say what moved.
+ */
+export function restampClosedTrades(db) {
+  const out = { examined: 0, changed: 0, nulled: 0 }
+  let rows = []
+  try {
+    rows = db.prepare(
+      `SELECT id, realised_rr, pnl_price_mismatch FROM trades
+        WHERE status = 'closed' AND entry_price IS NOT NULL AND exit_price IS NOT NULL`
+    ).all()
+  } catch { return out }
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      out.examined++
+      const s = stampRealisedAudit(db, r.id)
+      if (!s) continue
+      const before = r.realised_rr == null ? null : Number(r.realised_rr)
+      const after = s.realisedRR == null ? null : Number(s.realisedRR)
+      const same = (before == null && after == null)
+        || (before != null && after != null && Math.abs(before - after) <= 1e-12)
+      if (!same || (r.pnl_price_mismatch ?? 0) !== s.mismatch) out.changed++
+      if (after == null) out.nulled++
+    }
+  })
+  try { tx() } catch { /* a repair pass must never take the boot down */ }
+  return out
+}
+
+/**
  * Every closed row that disagrees with itself, worst first.
  *
  * Fails OPEN on a schema gap, like symbol-position-cap: an audit that threw
