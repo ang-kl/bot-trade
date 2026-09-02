@@ -136,9 +136,15 @@ import('./services/statement-import.js')
 // arm/disarm line, so the table is rebuilt from it once, at boot, and never
 // touched again once populated. Fire-and-forget, never the reason a boot fails.
 import('./services/strategy-autopilot.js')
-  .then(({ backfillComboArmsFromActionLog }) => {
+  .then(({ backfillComboArmsFromActionLog, reconcileComboArmsWithMatrix }) => {
     const r = backfillComboArmsFromActionLog(db)
     if (!r.skipped) console.log(`[boot] combo_arms backfilled from action_log: ${r.arms} arm(s), ${r.disarms} disarm(s) over ${r.rows} apply row(s)`)
+    // Then square the table with what is ACTUALLY armed (the log cannot see
+    // every disarm path, nor arms older than its retention). Every boot,
+    // idempotent; quiet when nothing needed squaring.
+    const c = reconcileComboArmsWithMatrix(db)
+    const touched = c.auto.stale + c.auto.added + c.pending.stale + c.pending.added
+    if (touched) console.log(`[boot] combo_arms reconciled with the live matrices: auto ${c.auto.stale} stale / ${c.auto.added} unevidenced added, pending ${c.pending.stale} stale / ${c.pending.added} unevidenced added`)
   })
   .catch((err) => console.warn(`[boot] combo_arms backfill failed (non-fatal): ${err.message}`))
 

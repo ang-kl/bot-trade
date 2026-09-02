@@ -201,8 +201,15 @@ export function divergenceReport(db, opts = {}) {
   return {
     window: { days: cfg.days, since: cutoff, minLive: cfg.minLive, wrGapPts: cfg.wrGapPts },
     combos,
-    unevidencedArms: arms.filter(a => a.kind === 'strategy' || a.kind === 'manual')
-      .map(a => ({ kind: a.kind, strategy: a.strategy, armedAt: a.armed_at, disarmedAt: a.disarmed_at ?? null })),
+    // 'unevidenced' rows are live pairs the boot reconcile found with no
+    // verdict on record (owner, 02-09-2026: "record them with no evidence").
+    // They are listed so the report's arm set matches the live matrix, and
+    // evidenceLevelOf ignores them, so a trade on one still reads `none`.
+    unevidencedArms: arms.filter(a => a.kind === 'strategy' || a.kind === 'manual' || a.kind === 'unevidenced')
+      .map(a => ({
+        kind: a.kind, strategy: a.strategy, symbol: a.symbol ?? null, timeframe: a.timeframe ?? null,
+        armedAt: a.armed_at, disarmedAt: a.disarmed_at ?? null,
+      })),
     evidenceLevels,
     optimism,
     integrity: { closes: trades.length, flaggedExcluded: trades.length - clean.length },
