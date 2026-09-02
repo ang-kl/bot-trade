@@ -266,3 +266,77 @@ test('admittedApprovals counts DISTINCT opportunities; admitEvents keeps the raw
   assert.equal(r.admitEvents, 5, 'raw approval events')
   assert.equal(r.admittedApprovals, 3, 'distinct opportunities: shared-key group + distinct key + unkeyed row')
 })
+
+// ---------------------------------------------------------------------------
+// The PRIOR REPORT (owner order, 02-09-2026: "build the earned floor prior as
+// report"). Report only: the gate's verdict must not move because of it.
+// ---------------------------------------------------------------------------
+import { earnedFloorPriorReport, EARNED_FLOOR_PRIOR_TRADES } from './earned-floor.js'
+import { SHRINK_PRIOR_TRADES } from './strategy-autopilot.js'
+
+test('prior report: live sub-floor W shrunk toward the sweep backtest W with k phantom trades, expectancy per rr, would-admit flags', () => {
+  const db = withAccounts(initDB(':memory:'))
+  // Sweep: rsi2_reversion at 60% over 30+10 trades (two combos, trade-weighted
+  // 60), fib at 50% over 20; a verdict with no trades must not count.
+  setState(db, 'autopilot_last_verdicts_json', JSON.stringify([
+    { strategy: 'rsi2_reversion', symbol: 'EURUSD', timeframe: '1h', winRate: 60, trades: 30, pf: 1.6 },
+    { strategy: 'rsi2_reversion', symbol: 'GBPUSD', timeframe: '4h', winRate: 60, trades: 10, pf: 1.4 },
+    { strategy: 'fib_618_fade', symbol: 'EURUSD', timeframe: '1h', winRate: 50, trades: 20, pf: 1.2 },
+    { strategy: 'fib_618_fade', symbol: 'XAUUSD', timeframe: '1d', winRate: 99, trades: 0, pf: null },
+  ]))
+  setState(db, 'autopilot_last_run_ms', String(Date.parse('2026-09-02T04:23:19Z')))
+  // Live: 7 sub-floor closes on DEMO, 2 wins (28.6%) — the production shape.
+  seedRecord(db, 'rsi2_reversion', 7, 28.6)
+  const p = earnedFloorPriorReport(db)
+  assert.equal(p.reportOnly, true)
+  assert.equal(p.k, 20)
+  assert.equal(p.sweepAt, '2026-09-02T04:23:19.000Z')
+  assert.equal(p.verdicts, 4)
+  assert.deepEqual(p.accounts, [DEMO, DEMO2], 'demoOnly: live accounts are out of scope')
+  const r = p.strategies.rsi2_reversion
+  assert.deepEqual(r.backtest, { winRatePct: 60, trades: 40, combos: 2 })
+  assert.equal(r.pooled.live.trades, 7)
+  assert.equal(r.pooled.live.winRatePct, 29, "the rolling edge rounds W, and the gate reads that same rounded figure")
+  // (7·29 + 20·60) / 27 = 51.96
+  assert.equal(r.pooled.shrunkWinRatePct, 52)
+  assert.equal(r.pooled.expectancyR[2], 0.559)
+  assert.equal(r.pooled.wouldAdmit[2], true)
+  assert.equal(r.pooled.wouldAdmit[1.5], true)
+  assert.equal(r.byAccount[DEMO].live.trades, 7)
+  assert.equal(r.byAccount[DEMO2].live.trades, 0, 'the other demo account has no record')
+  assert.equal(r.byAccount[DEMO2].shrunkWinRatePct, 60, 'no live record → the prior alone')
+  // fib: prior only, 50% → E(2) = 0.5, E(1.5) = 0.25 > minE 0.15
+  const f = p.strategies.fib_618_fade
+  assert.deepEqual(f.backtest, { winRatePct: 50, trades: 20, combos: 1 })
+  assert.equal(f.pooled.expectancyR[2], 0.5)
+  assert.equal(f.pooled.wouldAdmit[1.5], true)
+})
+
+test('prior report: a strategy with live closes but no sweep verdict has no prior, and the GATE is unchanged by the report', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'autopilot_last_verdicts_json', JSON.stringify([
+    { strategy: 'rsi2_reversion', symbol: 'EURUSD', timeframe: '1h', winRate: 60, trades: 40, pf: 1.6 },
+  ]))
+  seedRecord(db, 'vwap_trend', 5, 60)
+  seedRecord(db, 'rsi2_reversion', 7, 28.6)
+  const p = earnedFloorPriorReport(db)
+  assert.equal(p.strategies.vwap_trend.backtest, null)
+  assert.equal(p.strategies.vwap_trend.pooled.shrunkWinRatePct, null)
+  assert.deepEqual(p.strategies.vwap_trend.pooled.wouldAdmit, { 1.5: null, 2: null, 2.5: null })
+  // The report says rsi2 would admit at 2R; the gate still says thin sample.
+  assert.equal(p.strategies.rsi2_reversion.pooled.wouldAdmit[2], true)
+  const v = earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO })
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /^thin_sample 7</)
+  // And the checkpoint report carries the prior without changing its own fields.
+  const rep = earnedFloorReport(db)
+  assert.equal(rep.verdict, 'pending 0/30 closes')
+  assert.equal(rep.prior.strategies.rsi2_reversion.pooled.shrunkWinRatePct, 52)
+  // Junk verdict state never breaks the report.
+  setState(db, 'autopilot_last_verdicts_json', '{not json')
+  assert.equal(earnedFloorPriorReport(db).verdicts, 0)
+})
+
+test('prior report: k is the autopilot sweep prior, one number in two modules', () => {
+  assert.equal(EARNED_FLOOR_PRIOR_TRADES, SHRINK_PRIOR_TRADES)
+})

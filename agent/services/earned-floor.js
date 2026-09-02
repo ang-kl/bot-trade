@@ -130,6 +130,98 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
 export const EARNED_FLOOR_VERDICT_TARGET = { closes: 30, minPf: 1.5 }
 
 /**
+ * Phantom trades the backtest prior is worth against a strategy's live
+ * sub-floor record. Numerically equal to strategy-autopilot.js's
+ * SHRINK_PRIOR_TRADES and pinned to it by test; not imported, to keep this
+ * module's import graph (risk.js → here) free of the autopilot's.
+ */
+export const EARNED_FLOOR_PRIOR_TRADES = 20
+
+/** R:R ratios the prior's expectancy is reported at — the targets the registry strategies actually propose. */
+export const EARNED_FLOOR_PRIOR_RR = [1.5, 2, 2.5]
+
+/**
+ * REPORT ONLY (owner order, 02-09-2026: "build the earned floor prior as
+ * report"). The floor's verdict above waits for `minSample` live closes under
+ * 3R, but the gate refuses the trades that would produce them — measured
+ * 02-09: 500 gate decisions, 0 approvals, 7 of 30 cohort closes in two days.
+ * This reports what the verdict WOULD read if each strategy's live sub-floor
+ * win rate were shrunk toward its backtest win rate with the same k=20
+ * phantom trades the autopilot's arm bar now uses:
+ *
+ *   W' = (n·W_live + k·W_bt) / (n + k),   E(rr) = W'·rr − (1 − W')
+ *
+ * `wouldAdmit[rr]` is E(rr) > minE. NOTHING READS THIS: earnedFloorVerdict
+ * above is unchanged and the gate still needs a measured sample. Turning it
+ * into an actuator is a separate, owner-approved change.
+ *
+ * Backtest side: the last autopilot sweep's verdicts (agent_state
+ * `autopilot_last_verdicts_json`), trade-weighted per strategy over verdicts
+ * with trades. Live side: strategyRollingEdge over the admitted band, pooled
+ * and per in-scope account (demo accounts while demoOnly).
+ */
+export function earnedFloorPriorReport(db, { k = EARNED_FLOOR_PRIOR_TRADES } = {}) {
+  const cfg = loadEarnedFloor(db)
+  const r1 = (x) => (Number.isFinite(x) ? Math.round(x * 10) / 10 : null)
+  const r3 = (x) => (Number.isFinite(x) ? Math.round(x * 1000) / 1000 : null)
+  let verdicts = []
+  try { verdicts = JSON.parse(getState(db, 'autopilot_last_verdicts_json') || '[]') } catch { verdicts = [] }
+  if (!Array.isArray(verdicts)) verdicts = []
+  const sweepMs = Number(getState(db, 'autopilot_last_run_ms'))
+  const bt = {}
+  for (const v of verdicts) {
+    const n = Number(v?.trades) || 0
+    const wr = Number(v?.winRate)
+    if (!v?.strategy || n <= 0 || !Number.isFinite(wr)) continue
+    const b = bt[v.strategy] || (bt[v.strategy] = { trades: 0, wrWeighted: 0, combos: 0 })
+    b.trades += n; b.wrWeighted += wr * n; b.combos++
+  }
+  let accounts = []
+  try {
+    accounts = db.prepare(`SELECT account_id, is_live FROM accounts WHERE enabled = 1 ORDER BY account_id`).all()
+      .filter(a => !cfg.demoOnly || Number(a.is_live) === 0)
+      .map(a => String(a.account_id))
+  } catch { accounts = [] }
+  const strategies = [...new Set([...Object.keys(bt), ...(() => {
+    try { return db.prepare(`SELECT DISTINCT label_strategy s FROM trades WHERE label_strategy IS NOT NULL`).all().map(r => r.s) } catch { return [] }
+  })()])].sort()
+  const scopeOf = (strategy, accountId) => {
+    const edge = strategyRollingEdge(db, strategy, cfg.window, { accountId, rrBand: { below: EARNED_FLOOR_RR_BAND } })
+    const n = edge.trades
+    const wLive = Number.isFinite(Number(edge.winRate)) ? Number(edge.winRate) : null
+    const b = bt[strategy]
+    const wBt = b ? b.wrWeighted / b.trades : null
+    let shrunk = null
+    if (wBt != null) shrunk = n > 0 && wLive != null ? (n * wLive + k * wBt) / (n + k) : wBt
+    const W = shrunk != null ? shrunk / 100 : null
+    const e = {}, wouldAdmit = {}
+    for (const rr of EARNED_FLOOR_PRIOR_RR) {
+      const ev = W != null ? W * rr - (1 - W) : null
+      e[rr] = r3(ev); wouldAdmit[rr] = ev != null ? ev > cfg.minE : null
+    }
+    return { live: { trades: n, winRatePct: r1(wLive) }, shrunkWinRatePct: r1(shrunk), expectancyR: e, wouldAdmit }
+  }
+  const rows = {}
+  for (const s of strategies) {
+    rows[s] = {
+      backtest: bt[s] ? { winRatePct: r1(bt[s].wrWeighted / bt[s].trades), trades: bt[s].trades, combos: bt[s].combos } : null,
+      pooled: scopeOf(s, null),
+      byAccount: Object.fromEntries(accounts.map(a => [a, scopeOf(s, a)])),
+    }
+  }
+  return {
+    reportOnly: true,
+    k,
+    minE: cfg.minE,
+    rr: [...EARNED_FLOOR_PRIOR_RR],
+    sweepAt: Number.isFinite(sweepMs) && sweepMs > 0 ? new Date(sweepMs).toISOString() : null,
+    verdicts: verdicts.length,
+    accounts,
+    strategies: rows,
+  }
+}
+
+/**
  * The admitted cohort, measured. A trade belongs to the cohort iff its
  * approving risk event carries the earned_floor stamp — lineage via
  * trades.risk_event_id, so the cohort is exactly the population the gate
@@ -185,5 +277,7 @@ export function earnedFloorReport(db) {
     verdict: closed.trades >= EARNED_FLOOR_VERDICT_TARGET.closes
       ? (closed.profitFactor === null || closed.profitFactor >= EARNED_FLOOR_VERDICT_TARGET.minPf ? 'pass' : 'fail')
       : `pending ${closed.trades}/${EARNED_FLOOR_VERDICT_TARGET.closes} closes`,
+    // Report only — see earnedFloorPriorReport. Never fatal.
+    prior: (() => { try { return earnedFloorPriorReport(db) } catch { return null } })(),
   }
 }
