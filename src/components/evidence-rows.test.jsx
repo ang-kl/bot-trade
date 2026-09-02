@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { readFileSync } from 'node:fs'
-import EvidenceRows, { PriorCohortRow, TargetReviewRow } from './EvidenceRows.jsx'
+import EvidenceRows, { PriorCohortRow, TargetReviewRow, ExitChainRow } from './EvidenceRows.jsx'
 
 const report = (over = {}) => ({
   config: { on: true, demoOnly: false, riskScale: 1, priorAdmit: true, priorRiskScale: 0.5 },
@@ -102,12 +102,48 @@ describe('TargetReviewRow', () => {
   })
 })
 
+const chain = () => ({
+  reportOnly: true, verdict: 'INSUFFICIENT', days: 90, minCloses: 100, n: 7, stamped: 7,
+  families: {
+    mean_reversion: { n: 5, stamped: 5, minCloses: 100, status: 'insufficient', byState: { opened: { n: 5, expectancyR: 0.1, winRate: 40 } } },
+    breakout: { n: 2, stamped: 2, minCloses: 100, status: 'insufficient', byState: {} },
+    trend: { n: 0, stamped: 0, minCloses: 100, status: 'insufficient', byState: {} },
+  },
+  biases: ['a', 'b'],
+})
+
+describe('ExitChainRow', () => {
+  it('shows counts against the floor for insufficient families and numbers only when fitted', () => {
+    const html = renderToStaticMarkup(<ExitChainRow data={chain()} error={null} />)
+    expect(html).toContain('Exit chain')
+    expect(html).toContain('7 stamped of 7 closes')
+    expect(html).toContain('scaffold, not advice')
+    expect(html).toContain('mean_reversion:')
+    expect(html).toContain('insufficient 5/100 stamped closes')
+    expect(html).toContain('insufficient 0/100 stamped closes')
+    expect(html).not.toContain('E 0.10R')
+    const fitted = chain()
+    fitted.verdict = 'FITTED'
+    fitted.families.mean_reversion = { ...fitted.families.mean_reversion, status: 'fitted', stamped: 120, byState: { scaled_out: { n: 80, expectancyR: 0.85, winRate: 62.5 }, opened: { n: 40, expectancyR: -0.9, winRate: 5 } } }
+    const h2 = renderToStaticMarkup(<ExitChainRow data={fitted} error={null} />)
+    expect(h2).toContain('fitted on 120')
+    expect(h2).toContain('scaled_out n=80')
+    expect(h2).toContain('E 0.85R')
+    expect(html).toContain('journal biases: 2 recorded')
+  })
+  it('a failed read renders not verifiable', () => {
+    expect(renderToStaticMarkup(<ExitChainRow data={null} error="502" />)).toContain('not verifiable')
+  })
+})
+
 describe('fetch wiring (source pin, comments stripped)', () => {
   it('reads /state/earned-floor and routes the failure into its own error state', () => {
     const src = readFileSync(new URL('./EvidenceRows.jsx', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
     expect(src).toContain("agentGet('/state/earned-floor')")
     expect((src.match(/\.catch\(e => \{ if \(alive\) setFloor\(\{ data: null, error: e\?\.message \|\| String\(e\) \}\) \}\)/g) || []).length).toBe(1)
     expect(src).toContain("agentGet('/state/target-review')")
+    expect(src).toContain("agentGet('/state/exit-chain')")
+    expect((src.match(/\.catch\(e => \{ if \(alive\) setChain\(\{ data: null, error: e\?\.message \|\| String\(e\) \}\) \}\)/g) || []).length).toBe(1)
     expect((src.match(/\.catch\(e => \{ if \(alive\) setReview\(\{ data: null, error: e\?\.message \|\| String\(e\) \}\) \}\)/g) || []).length).toBe(1)
     expect(src).not.toMatch(/\.catch\(\(\) => \{\s*\}\)/)
   })
