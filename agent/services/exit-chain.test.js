@@ -52,8 +52,8 @@ function seedClose(db, { strategy = 'rsi2_reversion', r = -1, path = [], bars = 
 
 const fresh = () => initDB(':memory:')
 
-test('every registry key names a family, and the families are the three declared', () => {
-  assert.deepEqual([...STRATEGY_FAMILIES], ['mean_reversion', 'breakout', 'trend'])
+test('every registry key names a family, and the families are the four declared', () => {
+  assert.deepEqual([...STRATEGY_FAMILIES], ['mean_reversion', 'breakout', 'trend', 'momentum'])
   for (const s of STRATEGY_REGISTRY) {
     assert.ok(STRATEGY_FAMILIES.includes(s.family), `${s.key} has no family`)
     assert.equal(familyOf(s.key), s.family)
@@ -142,7 +142,7 @@ test('report: every declared family is present at n=0, verdict INSUFFICIENT unti
   const db = fresh()
   let r = exitChainReport(db)
   assert.equal(r.verdict, 'INSUFFICIENT')
-  assert.deepEqual(Object.keys(r.families).sort(), ['breakout', 'mean_reversion', 'trend'])
+  assert.deepEqual(Object.keys(r.families).sort(), ['breakout', 'mean_reversion', 'momentum', 'trend'])
   assert.equal(r.minCloses, EXIT_CHAIN_MIN_CLOSES)
   assert.equal(r.biases.length, 2)
   for (let i = 0; i < 5; i++) seedClose(db, { strategy: 'rsi2_reversion', r: i % 2 ? 1 : -1, path: ['sl_moved', 'close'] })

@@ -73,6 +73,13 @@ export const STRATEGY_REGISTRY = [
   // this one has none yet, and arming a brand-new strategy by default is how
   // an unproven edge reaches live capital without anyone deciding to let it.
   { key: 'fvg_retrace',       name: 'FVG Retrace',        compute: computeFvgSignal,       defaultOn: false, pendingCapable: false, minBars: 60, family: 'trend' },
+  // TIME-SERIES MOMENTUM, LONG ONLY (owner order 03-09-2026: "long-only
+  // momentum on demo & live"). Not a per-symbol scan strategy: compute is a
+  // no-op and the momentum BOOK (services/momentum-book.js) dispatches from
+  // the cross-sectional shadow's ranking. It is in the registry so the stage
+  // matrix can arm it per account, the evidence gate can name it, and every
+  // report that keys on strategies sees it. Ships DISARMED like fvg_retrace.
+  { key: 'tsmom_long',        name: 'TS Momentum Long',   compute: () => null,             defaultOn: false, pendingCapable: false, minBars: 0,   family: 'momentum' },
 ]
 
 /**
@@ -83,7 +90,7 @@ export const STRATEGY_REGISTRY = [
  * (strategies.test.js pins that every key has one). Report-only: nothing in
  * the scanner, the gate or the manager reads `family`.
  */
-export const STRATEGY_FAMILIES = Object.freeze(['mean_reversion', 'breakout', 'trend'])
+export const STRATEGY_FAMILIES = Object.freeze(['mean_reversion', 'breakout', 'trend', 'momentum'])
 export function familyOf(strategyKey) {
   const s = STRATEGY_REGISTRY.find(x => x.key === strategyKey)
   return s?.family ?? null

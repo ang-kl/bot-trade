@@ -48,6 +48,9 @@ const SOURCE_OF_TRUTH = {
   fib_confluence: { file: 'fib-confluence.js', const: 'MIN_BARS' },
   va_breakout: { file: 'va-breakout.js', const: 'MIN_BARS' },
   fvg_retrace: { file: 'fvg-strategy.js', const: 'MIN_BARS' },
+  // Not a scan strategy: the momentum book dispatches from the shadow's
+  // ranking, so there is no per-symbol bar guard to starve. Declared 0.
+  tsmom_long: { file: 'momentum-book.js', note: 'book, not a scan strategy — no bar guard', expect: 0 },
 }
 
 const readConst = (file, name) => {

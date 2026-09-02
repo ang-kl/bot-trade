@@ -367,6 +367,28 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   }
   setState(db, `mkt_closed_logged_${symbol}`, null) // market open again — re-arm the one-shot
 
+  // EVIDENCE GATE (owner "build it", 03-09-2026): a strategy trades live on
+  // this account only where the owner hand-pinned it or where its own live
+  // record clears the pre-registered bar; otherwise the proposal is refused
+  // and the refusal IS its shadow record (the risk event carries the full
+  // proposal). Runs before both dispatch paths. Fail-open on a read error —
+  // a gate that cannot be read must not become a silent disarm of everything.
+  try {
+    const { evidenceGate } = await import('./services/evidence-gate.js')
+    const eg = evidenceGate(db, { strategy: synth.strategy || null, accountId })
+    if (!eg.allowed) {
+      persistRiskEvent(db, {
+        symbol, side, entry: synth.entry ?? null, sl: synth.sl ?? null, tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
+        requestedVolume: requestedVol, strategy: synth.strategy || null, conviction: synth.overall_conviction ?? null,
+        source: synth.source || 'auto_signal', accountId,
+      }, { approved: false, veto_reason: `evidence_gate: ${eg.reason}`, checks: { evidence_gate: { via: eg.via, record: eg.record, bar: eg.bar } } })
+      log(`SHADOW ${symbol} ${side} ${synth.strategy || '?'} on ${accountId}: ${eg.reason}`)
+      return null
+    }
+  } catch (err) {
+    log(`Evidence gate skipped (fail-open): ${err.message}`)
+  }
+
   // HIGH-TIMEFRAME SIGNALS REST AS A LIMIT (owner-approved, 03-09-2026). A
   // strategy prices its entry at the last CLOSED bar's close and the scan
   // refreshes a series once per bar, so a market order on a 1d or 1w signal
@@ -381,7 +403,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const minTf = String(loadRiskConfig(db, accountId)?.limitDispatchMinTf ?? '').trim().toLowerCase()
     const minMs = minTf && minTf !== 'off' ? tfMs(minTf) : 0
     const sigMs = synth.timeframe ? tfMs(synth.timeframe) : 0
-    if (minMs > 0 && sigMs >= minMs) {
+    // BACKTEST-PARITY WINDOW (owner "build it", 03-09-2026): the backtester
+    // fills at the NEXT bar's open, so inside htfFreshnessMin after the
+    // signal bar closed a market order (with the drift gate) IS the
+    // backtested entry; the resting limit is the fallback for the rest of
+    // the bar. A synth that says marketOnly (the momentum book, priced at
+    // the live quote) never rests.
+    const freshMin = Number(loadRiskConfig(db, accountId)?.htfFreshnessMin) || 0
+    const lastBarCloseMs = sigMs > 0 ? (nextBarCloseMs(synth.timeframe) ?? 0) - sigMs : 0
+    const fresh = freshMin > 0 && lastBarCloseMs > 0 && (Date.now() - lastBarCloseMs) <= freshMin * 60_000
+    if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {
       const expiresAtMs = nextBarCloseMs(synth.timeframe)
       const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
       const r = await placeClosedMarketLimit(
@@ -3335,6 +3366,45 @@ async function runLoop(db) {
         if (ms.ran) log(`momentum shadow: ranked ${ms.ranked}/${ms.universe}, ${ms.rows} row(s), ${ms.holdings ?? 0} shadow holding(s)${ms.why ? ` — ${ms.why}` : ''}`)
       } catch (err) {
         log(`momentum shadow failed: ${err.message}`)
+      }
+    }
+
+    // MOMENTUM BOOK (owner order 03-09-2026: "long-only momentum on demo &
+    // live"): the shadow's long entries and exits become real positions on
+    // every account where tsmom_long is trade-armed, sized by the risk gate
+    // through autoTrade, managed by the book (trailing stop, rank exit) with
+    // the keeper paused. Off until enabled; a failure is logged and the
+    // cycle moves on.
+    if (ctraderCreds.ready) {
+      try {
+        const { runMomentumBook } = await import('./services/momentum-book.js')
+        const { getRegimeBars } = await import('./services/fib-strategy.js')
+        const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
+        const exec = await import('./lib/exec-engine.js')
+        const { effectivePhases } = await import('./services/account-phases.js')
+        const { accountMayTrade } = await import('./services/watchlists.js')
+        const bookCfg = (await import('./services/momentum-book.js')).loadMomentumBook(db)
+        const mb = await runMomentumBook(db, {
+          accounts: getAutopilotAccounts(db),
+          credsFor: (a) => getCtraderCreds(db, a),
+          now: Date.now(),
+          log,
+          deps: {
+            autoTrade,
+            symbolMap,
+            bars: async (creds, symbolId) => (await getRegimeBars(creds, symbolId, { preferredTfs: [bookCfg.timeframe], fallbackTf: bookCfg.timeframe, count: bookCfg.atrPeriod + 10 })).bars,
+            spot: (creds, symbolId) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId).catch(() => null),
+            // The book never holds a target: takeProfit null is the stated
+            // intent (a stop-only amend would clear one at the broker).
+            amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: null }),
+            close: (creds, args) => exec.closePosition(creds, args),
+            phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade,
+            mayTrade: (accountId, symbol) => accountMayTrade(db, accountId, symbol),
+          },
+        })
+        if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
+      } catch (err) {
+        log(`momentum book failed: ${err.message}`)
       }
     }
 

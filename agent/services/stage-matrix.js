@@ -230,6 +230,19 @@ export function armedTradeKeys(db, getState, accountId) {
  *
  * @returns {{migrated: boolean, accountId: string, pinned: number}}
  */
+/**
+ * Is this strategy's trade cell an EXPLICIT true on this account's overlay?
+ * Only the routes and the owner's overlay migration write a true cell (the
+ * autopilot writes the global list, the breaker writes false), so a true
+ * pin is the owner's word — the evidence gate and the breaker exemption
+ * both read it.
+ */
+export function isHandPinned(db, getState, accountId, key) {
+  if (accountId == null) return false
+  const cell = readJson(db, getState, acctMatrixKey(String(accountId)))?.strategy?.[key]?.trade
+  return cell === true
+}
+
 export function migrateTradeOverlay(db, { getState, setState }, accountId) {
   const acct = String(accountId)
   const legacy = readJson(db, getState, acctEnabledKey(acct))

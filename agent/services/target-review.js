@@ -57,6 +57,7 @@ export const DECLARED_TARGETS = Object.freeze({
   fvg_retrace:       { rr: null, basis: 'impulse extreme, ≥1.5R by filter' },
   cup_handle:        { rr: null, basis: 'measured move (cup depth)' },
   inv_cup_handle:    { rr: null, basis: 'measured move (cup depth)' },
+  tsmom_long:        { rr: null, basis: 'no target: trailing stop only (momentum book)' },
 })
 
 /** Below these the corresponding block reports `insufficient`. */

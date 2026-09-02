@@ -366,6 +366,13 @@ export const DEFAULT_RISK_CONFIG = {
                                    // fiction — veto (doc_reference/
                                    // microstructure-frequent-trading-notes.md).
                                    // 0 disables the check.
+  htfFreshnessMin: 120,            // Backtest-parity window (owner "build
+                                   // it", 03-09-2026): the backtester fills
+                                   // at the NEXT bar's open, so a ≥4h signal
+                                   // dispatches at MARKET (with the drift
+                                   // gate) inside this many minutes after its
+                                   // bar closed, and rests as a limit only
+                                   // after the window. 0 = always the limit.
   limitDispatchMinTf: '4h',        // Limit dispatch (owner, 03-09-2026): a
                                    // signal on a bar this long or longer is
                                    // priced at the last CLOSED bar's close,

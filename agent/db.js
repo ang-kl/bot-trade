@@ -375,6 +375,30 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_momentum_shadow_at ON momentum_shadow(at);
 
+  -- Momentum BOOK positions (owner order 03-09-2026): the long-only
+  -- time-series momentum positions the book opened from the shadow's
+  -- ranking and manages itself (trailing stop ratchet, exit on rank). The
+  -- manager is PAUSED on these rows (monitored_positions.paused = 1); the
+  -- broker always holds the stop.
+  CREATE TABLE IF NOT EXISTS momentum_book (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id     INTEGER,
+    account_id   TEXT NOT NULL,
+    symbol       TEXT NOT NULL,
+    position_id  TEXT,
+    side         TEXT NOT NULL DEFAULT 'long',
+    entry_price  REAL,
+    stop         REAL,
+    atr          REAL,
+    entry_rank   REAL,
+    entered_at   TEXT NOT NULL,
+    exited_at    TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'exit_sent' | 'closed'
+    note         TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_momentum_book_status ON momentum_book(status, account_id);
+
   -- Account Registry (multi-account migration plan, Phase 1 R1 / milestone
   -- M0). Single source of truth for which cTrader accounts exist and which
   -- may trade. account_id is cTrader's INTERNAL ctidTraderAccountId (the
