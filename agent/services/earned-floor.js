@@ -27,6 +27,16 @@
 import { getState } from '../db.js'
 import { strategyRollingEdge } from './edge-watchdog.js'
 
+/**
+ * The R:R band the floor is measured over (owner order, 02-09-2026). W used
+ * to be measured on the strategy's whole rolling window — trades taken at
+ * ≥3R under the blanket floor — and applied to justify <3R entries. It is
+ * now measured over the ADMITTED band only: closes whose planned bracket
+ * was under HARD_MIN_RR. Numerically equal to risk.js's HARD_MIN_RR and
+ * pinned to it by test; not imported because risk.js imports this module.
+ */
+export const EARNED_FLOOR_RR_BAND = 3.0
+
 export const EARNED_FLOOR_DEFAULTS = {
   on: true,        // owner order 31-08-2026: "go PR-C"
   demoOnly: true,  // stage 1 of the rollout — live only after the verdict
@@ -87,7 +97,12 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
   if (!row) return no('unattributable_account')
   if (cfg.demoOnly && Number(row.is_live) !== 0) return no('live_scope')
 
-  const edge = strategyRollingEdge(db, strategy, cfg.window)
+  // Per-account, sub-floor band: the gate acts on THIS account, so the record
+  // is this account's (plus unscoped legacy rows), and only its closes that
+  // were planned under the floor — the population the verdict admits.
+  const edge = strategyRollingEdge(db, strategy, cfg.window, {
+    accountId: String(accountId), rrBand: { below: EARNED_FLOOR_RR_BAND },
+  })
   if (edge.trades < cfg.minSample) {
     return no(`thin_sample ${edge.trades}<${cfg.minSample}`, { trades: edge.trades })
   }

@@ -828,8 +828,14 @@ export function kellyVolume(stats, defaultVolume, config) {
  * strategyAttrSql() treats 'other' as absent in both columns, same as
  * strategyOf() does for the go-live gate.
  */
-export function strategyPerfStats(db, strategyKey, windowDays = 30) {
+export function strategyPerfStats(db, strategyKey, windowDays = 30, { accountId = null } = {}) {
   if (!strategyKey) return null
+  // Account scope (owner order, 02-09-2026): the Kelly gate sizes ONE
+  // account's order, so it reads that account's record — accountEconomics
+  // already did; this pooled every account's closes into every account's
+  // veto. null = pooled (no account known). Pre-scoping NULL rows count
+  // everywhere, same contract as accountEconomics.
+  const acct = accountId != null ? String(accountId) : null
   try {
     return db.prepare(
       `SELECT COUNT(*) AS total_trades,
@@ -839,8 +845,9 @@ export function strategyPerfStats(db, strategyKey, windowDays = 30) {
        FROM trades
        WHERE status = 'closed' AND net_pnl IS NOT NULL
          AND ${strategyAttrSql()} = ?
+         AND (? IS NULL OR account_id = ? OR account_id IS NULL)
          AND closed_at >= datetime('now', ?)`
-    ).get(strategyKey, `-${Math.max(1, Math.round(windowDays))} days`)
+    ).get(strategyKey, acct, acct, `-${Math.max(1, Math.round(windowDays))} days`)
   } catch { return null }
 }
 
@@ -1669,7 +1676,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // vetoed everything). All the other gates (drawdown, exposure, min-RR,
   // min-SL, margin) still apply to unlabelled proposals.
   const latestStats = proposal.strategy
-    ? strategyPerfStats(db, proposal.strategy)
+    ? strategyPerfStats(db, proposal.strategy, 30, { accountId: acct })
     : null
   const { volume: kellyVol, note: kellyNote } = kellyVolume(
     latestStats,

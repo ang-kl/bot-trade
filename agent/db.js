@@ -548,6 +548,21 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_autopilot_verdicts_combo ON autopilot_verdicts(strategy, symbol, timeframe, ran_at);
 
+  -- autopilot_sweep_hist (02-09-2026): ONE small row per sweep, binned over
+  -- ALL verdicts — autopilot_verdicts keeps only bar-clearing or armed ones,
+  -- so no base rate existed for a shrinkage prior. Bins are fixed (see
+  -- divergence.js SWEEP_HIST_BINS); counts are stored as JSON arrays in bin
+  -- order. Pruned to 90 days by loop.js housekeeping. Shrinkage itself is
+  -- NOT implemented here — this is the measurement it will need.
+  CREATE TABLE IF NOT EXISTS autopilot_sweep_hist (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    sweep_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    combos    INTEGER NOT NULL,         -- verdicts in the sweep (all states)
+    pf_bins   TEXT NOT NULL,            -- JSON [n] per PF bin; verdicts with no finite PF are NOT binned
+    wr_bins   TEXT NOT NULL,            -- JSON [n] per win-rate bin
+    n_bins    TEXT NOT NULL             -- JSON [n] per trade-count bin
+  );
+
   -- Durable backtest history (owner 2026-07-28: "backtest history per
   -- symbol"). One row per symbol×timeframe per run — the HTML reports live
   -- on ephemeral disk and vanish on redeploy, so this table is the record

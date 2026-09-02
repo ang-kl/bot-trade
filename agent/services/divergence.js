@@ -29,6 +29,71 @@ import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
 export const DIVERGENCE_DEFAULTS = Object.freeze({ days: 30, minLive: 10, wrGapPts: 15 })
 
+// ---------------------------------------------------------------------------
+// Per-sweep histogram (owner order, 02-09-2026). persistVerdictHistory keeps
+// only bar-clearing or armed verdicts, so nothing on record said what the
+// WHOLE sweep looked like — the base rate a shrinkage prior needs. One row
+// per sweep, fixed bins, written from ALL verdicts. Measurement only: no
+// shrinkage is computed here.
+// ---------------------------------------------------------------------------
+
+/** Fixed bin edges; a bin is [lo, hi) with the last open-ended. Labels are for readers. */
+export const SWEEP_HIST_BINS = Object.freeze({
+  pf: Object.freeze({ edges: [0.8, 1.0, 1.1, 1.3, 1.5, 2.0], labels: ['<0.8', '0.8–1.0', '1.0–1.1', '1.1–1.3', '1.3–1.5', '1.5–2.0', '≥2.0'] }),
+  wr: Object.freeze({ edges: [40, 50, 55, 60, 70], labels: ['<40', '40–50', '50–55', '55–60', '60–70', '≥70'] }),
+  n: Object.freeze({ edges: [10, 20, 30], labels: ['<10', '10–20', '20–30', '≥30'] }),
+})
+
+/** Index of the bin `x` falls in: the count of edges ≤ x. */
+export function sweepBinIndex(edges, x) {
+  let i = 0
+  while (i < edges.length && x >= edges[i]) i++
+  return i
+}
+
+/**
+ * Bin every verdict of one sweep. Verdicts with no finite PF (no losses —
+ * ∞ — or no trades) are left out of the PF bins rather than forced into
+ * one; win rate and n bin every verdict that carries a number.
+ */
+export function sweepHistogramOf(verdicts) {
+  const zeros = (b) => new Array(b.edges.length + 1).fill(0)
+  const pf = zeros(SWEEP_HIST_BINS.pf), wr = zeros(SWEEP_HIST_BINS.wr), n = zeros(SWEEP_HIST_BINS.n)
+  const list = Array.isArray(verdicts) ? verdicts : []
+  for (const v of list) {
+    if (Number.isFinite(v?.pf)) pf[sweepBinIndex(SWEEP_HIST_BINS.pf.edges, Number(v.pf))]++
+    if (Number.isFinite(v?.winRate)) wr[sweepBinIndex(SWEEP_HIST_BINS.wr.edges, Number(v.winRate))]++
+    if (Number.isFinite(v?.trades)) n[sweepBinIndex(SWEEP_HIST_BINS.n.edges, Number(v.trades))]++
+  }
+  return { combos: list.length, pf, wr, n }
+}
+
+/** Write one histogram row for a sweep. Returns the row id, or null on an empty sweep. */
+export function persistSweepHistogram(db, verdicts, { at = null } = {}) {
+  const h = sweepHistogramOf(verdicts)
+  if (h.combos === 0) return null
+  const r = db.prepare(
+    `INSERT INTO autopilot_sweep_hist (sweep_at, combos, pf_bins, wr_bins, n_bins)
+     VALUES (COALESCE(?, datetime('now')), ?, ?, ?, ?)`
+  ).run(at, h.combos, JSON.stringify(h.pf), JSON.stringify(h.wr), JSON.stringify(h.n))
+  return Number(r.lastInsertRowid)
+}
+
+/** The newest sweep's histogram with its bin labels, or null when no sweep has been recorded. */
+export function latestSweepHistogram(db) {
+  let row = null
+  try { row = db.prepare('SELECT * FROM autopilot_sweep_hist ORDER BY id DESC LIMIT 1').get() } catch { return null }
+  if (!row) return null
+  const parse = (s) => { try { return JSON.parse(s) } catch { return null } }
+  return {
+    sweepAt: row.sweep_at,
+    combos: row.combos,
+    pf: { labels: [...SWEEP_HIST_BINS.pf.labels], counts: parse(row.pf_bins) },
+    winRate: { labels: [...SWEEP_HIST_BINS.wr.labels], counts: parse(row.wr_bins) },
+    trades: { labels: [...SWEEP_HIST_BINS.n.labels], counts: parse(row.n_bins) },
+  }
+}
+
 const r2 = (x) => (Number.isFinite(x) ? Math.round(x * 100) / 100 : null)
 const num = (v) => (v == null || v === '' ? NaN : Number(v))
 const ms = (s) => {
@@ -238,5 +303,9 @@ export function divergenceReport(db, opts = {}) {
     evidenceLevels,
     optimism,
     integrity: { closes: trades.length, flaggedExcluded: trades.length - clean.length },
+    // Last sweep's PF/WR/n histogram over ALL verdicts — the base rate for a
+    // shrinkage prior computed later. null until the first sweep after this
+    // shipped; the prior is not computed here.
+    histogram: latestSweepHistogram(db),
   }
 }

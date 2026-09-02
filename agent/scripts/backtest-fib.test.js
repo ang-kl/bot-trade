@@ -188,3 +188,79 @@ test("runBacktest: 'nearer-of' can only ever TIGHTEN the target, never widen it"
     assert.equal(nt.entry, bt.entry)
   }
 })
+
+// --- touch-mode look-ahead (owner order, 02-09-2026) ------------------------
+//
+// resolvePending used to test the bar's CLOSE against the stop BEFORE asking
+// whether the limit was touched, so a bar that filled the limit and then
+// stopped out was booked as a costless cancel. The order did not know the
+// close at the touch — that is a look-ahead, and it erased exactly the trades
+// the strategy loses. Fill first, then the same-bar stop.
+
+test('resolvePending: a bar that touches the level AND closes beyond the stop FILLS (then stops out), never cancels', () => {
+  const p = { dir: 1, level: 100, sl: 98, tp: 106, expireT: 10_000 }
+  const bar = { t: 1, o: 101, h: 101.2, l: 97, c: 97.5 }
+  assert.equal(resolvePending(p, bar), 'fill')
+  // …and the caller's same-bar exit books the stop at the stop (open 101 is
+  // above it, so no gap slippage): a filled-then-stopped trade, not a cancel.
+  const pos = { dir: 1, entry: p.level, sl: p.sl, tp: p.tp, entryT: bar.t, capMs: 0 }
+  assert.deepEqual(resolveExit(pos, bar), { price: 98, reason: 'sl' })
+  // Short mirror.
+  const s = { dir: -1, level: 100, sl: 102, tp: 94, expireT: 10_000 }
+  const sbar = { t: 1, o: 99, h: 103, l: 98.8, c: 102.5 }
+  assert.equal(resolvePending(s, sbar), 'fill')
+  assert.deepEqual(resolveExit({ dir: -1, entry: 100, sl: 102, tp: 94, entryT: 1, capMs: 0 }, sbar), { price: 102, reason: 'sl' })
+  // A bar that closes beyond the stop WITHOUT touching the level still cancels
+  // (setup invalidated before any fill), and expiry still wins over both.
+  assert.equal(resolvePending(p, { t: 1, o: 99.5, h: 99.8, l: 96, c: 97 }), 'cancel')
+  assert.equal(resolvePending(p, { t: 10_000, o: 101, h: 101.2, l: 97, c: 97.5 }), 'cancel')
+})
+
+test('runBacktest touch mode: the filled-then-stopped bar lands as an sl trade, not silence', async () => {
+  // Drive the engine with a probe strategy so the bar mechanics are the only
+  // thing under test: one pending long at 100 / SL 98 / TP 106 raised on the
+  // first post-warmup decision, then the look-ahead bar {o:101,h:101.2,l:97,c:97.5}.
+  const { STRATEGY_REGISTRY } = await import('../services/strategies.js')
+  // The engine decides on bars[0..i] and parks the order for bars[i+1]
+  // onward: the signal fires at i=30 (slice length 31), the resting order is
+  // first tested against bars[32] — the look-ahead bar — then bars[33].
+  const bars = []
+  for (let i = 0; i < 32; i++) bars.push({ t: i * 3_600_000, o: 100.5, h: 100.8, l: 100.2, c: 100.5, v: 1 })
+  bars.push({ t: 32 * 3_600_000, o: 101, h: 101.2, l: 97, c: 97.5, v: 1 })
+  bars.push({ t: 33 * 3_600_000, o: 97.5, h: 98, l: 97, c: 97.8, v: 1 })
+  const strat = {
+    key: '__touch_probe', name: 'probe', pendingCapable: true, minBars: 1,
+    compute: (slice) => slice.length === 31
+      ? { bias: 'long', entry: 100, sl: 98, tp1: 106, rr: 3, conviction: 9, time_cap_minutes: 600 }
+      : null,
+  }
+  STRATEGY_REGISTRY.push(strat)
+  try {
+    const r = runBacktest(bars, { timeframe: '1h', strategy: '__touch_probe', entryMode: 'touch', costPct: 0 })
+    assert.equal(r.trades.length, 1, 'the touched-then-stopped limit must book a trade')
+    assert.equal(r.trades[0].reason, 'sl')
+    assert.equal(r.trades[0].entry, 100)
+    assert.equal(r.trades[0].exit, 98)
+    assert.equal(r.trades[0].entryT, 32 * 3_600_000)
+  } finally {
+    STRATEGY_REGISTRY.splice(STRATEGY_REGISTRY.indexOf(strat), 1)
+  }
+})
+
+// The C++ port has no injection point for a bar-level probe outside the full
+// parity harness (which skips where the binary is not built), so the ORDER of
+// the two checks is pinned on the source with comments stripped — failure
+// mode #2: a comment naming the rule must not be what satisfies the test.
+test('backtest.cpp resolvePending: fill check precedes the stop-close cancel (comments stripped)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const raw = readFileSync(new URL('../../cpp-exec/src/backtest.cpp', import.meta.url), 'utf8')
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+  const start = src.indexOf('int resolvePending(')
+  assert.ok(start > 0, 'resolvePending must exist in backtest.cpp')
+  const body = src.slice(start, src.indexOf('\n}', start))
+  const fillAt = body.indexOf('bar.l <= pending.level && pending.level <= bar.h')
+  const cancelAt = body.indexOf('bar.c <= pending.sl : bar.c >= pending.sl')
+  assert.ok(fillAt > 0, 'fill test present')
+  assert.ok(cancelAt > 0, 'stop-close cancel test present')
+  assert.ok(fillAt < cancelAt, `fill (${fillAt}) must be evaluated before the stop-close cancel (${cancelAt})`)
+})

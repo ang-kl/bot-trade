@@ -44,20 +44,23 @@ import { meanAtr } from '../services/regime.js'
  */
 /**
  * Resolve a resting limit order against a bar (touch-fill mode):
- * 'cancel' when the bar CLOSES beyond the stop (setup invalidated before
- * fill) or the order expired; 'fill' when the bar's range touches the level.
- * Cancel is checked first — a bar that blows through the level to beyond
- * the stop would fill a real limit, but modelling it as a fill would book
- * an instant loss the close-confirmed rule never takes; counting it as a
- * cancel is the OPTIMISTIC branch, so the honest reading is a coin we
- * deliberately call AGAINST the strategy elsewhere (SL-first). Documented
- * trade-off, revisit with tick data.
+ * 'cancel' when the order expired or the bar CLOSES beyond the stop without
+ * ever touching the level; 'fill' when the bar's range touches the level.
+ *
+ * FILL BEFORE CANCEL (owner order, 02-09-2026). The stop-close test used to
+ * run first, so a bar that traded through the level AND closed beyond the
+ * stop was booked as a costless cancel — a real limit fills the moment the
+ * level prints, and the caller's same-bar resolveExit then takes the stop.
+ * Cancel-first read the bar's close, information the order did not have at
+ * the touch: a look-ahead that erased exactly the trades the strategy loses.
+ * With tick data the intrabar order of touch and stop would be known; on
+ * OHLC the honest coin falls AGAINST the strategy, same as SL-first.
  * @returns {'fill'|'cancel'|null}
  */
 export function resolvePending(pending, bar) {
   if (bar.t >= pending.expireT) return 'cancel'
-  if (pending.dir > 0 ? bar.c <= pending.sl : bar.c >= pending.sl) return 'cancel'
   if (bar.l <= pending.level && pending.level <= bar.h) return 'fill'
+  if (pending.dir > 0 ? bar.c <= pending.sl : bar.c >= pending.sl) return 'cancel'
   return null
 }
 

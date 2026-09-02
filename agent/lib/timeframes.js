@@ -56,6 +56,11 @@ const MAX_MS = 12 * UNIT_MS.mo // sanity ceiling: one year
  * Ten are native broker periods; `3d` synthesises from 1d×3 and `8h` from 4h×2
  * (exact integer factors, so no partial bars — see fetchPlan/aggregateBars).
  *
+ * `4d` added 02-09-2026 (owner order, with the matrix-wins-over-the-list
+ * change): the autotrade matrix carried 4d cells from data that this list
+ * lacked, so they could never dispatch under scope 'armed'. 1d×4, same
+ * exact-factor synthesis as 3d.
+ *
  * WHAT THIS ACTUALLY GATES, so the width is not mistaken for a loosened limit:
  * it is the allow-list consulted ONLY when `autotrade_scope === 'armed'`
  * (loop.js timeframe gate). The default scope is 'all', where every scanned
@@ -68,8 +73,34 @@ const MAX_MS = 12 * UNIT_MS.mo // sanity ceiling: one year
  * This is the one copy.
  */
 export const DEFAULT_AUTOTRADE_TIMEFRAMES = Object.freeze([
-  '1w', '3d', '1d', '12h', '8h', '4h', '1h', '30m', '15m', '10m', '5m', '2m',
+  '1w', '4d', '3d', '1d', '12h', '8h', '4h', '1h', '30m', '15m', '10m', '5m', '2m',
 ])
+
+/**
+ * Scope 'armed' dispatch verdict for one symbol×timeframe (owner order,
+ * 02-09-2026): THE MATRIX WINS OVER THE LIST. `autotrade_matrix_json`
+ * ({SYM: [tfs]}) is the arming authority — a symbol it names trades exactly
+ * the timeframes armed for it, whether or not the `autotrade_timeframes`
+ * list carries them; the list still gates symbols the matrix does not name,
+ * and everything when there is no usable matrix. Before this the list ran
+ * FIRST, so a matrix-armed cell on a timeframe the list lacked could never
+ * dispatch — 68 of 161 armed cells, measured.
+ *
+ * @param {{symbol: string, timeframe: string, allowedTfs: string[], matrix: any}} p
+ * @returns {{ok: boolean, via: 'matrix'|'list', reason: string|null}}
+ */
+export function armedScopeGate({ symbol, timeframe, allowedTfs, matrix }) {
+  const sym = String(symbol || '').toUpperCase()
+  const usable = matrix && typeof matrix === 'object' && !Array.isArray(matrix) && Object.keys(matrix).length > 0
+  const armedForSym = usable ? matrix[sym] : undefined
+  if (Array.isArray(armedForSym)) {
+    if (armedForSym.includes(timeframe)) return { ok: true, via: 'matrix', reason: null }
+    return { ok: false, via: 'matrix', reason: `${timeframe} not armed for this symbol (armed: ${armedForSym.join(',') || 'none'})` }
+  }
+  const list = Array.isArray(allowedTfs) ? allowedTfs : []
+  if (list.includes(timeframe)) return { ok: true, via: 'list', reason: null }
+  return { ok: false, via: 'list', reason: `${timeframe} not in autotrade_timeframes [${list.join(',')}]` }
+}
 
 /**
  * The stored list, or the default when nothing is stored / the value is junk.

@@ -56,13 +56,38 @@ export function loadEdgeWatchdogConfig(db) {
  * Rolling edge for one strategy over its last `window` closed trades. Only
  * trades with a realized P&L count (NULLs are un-backfilled broker closes —
  * excluding them keeps the maths honest rather than reading a loss as 0).
+ *
+ * Scoping (owner order, 02-09-2026):
+ *  · `accountId` — a string scopes the window to that account's closes
+ *    (`account_id = ? OR account_id IS NULL`: pre-scoping rows are legacy
+ *    single-account history and count everywhere, the same contract as
+ *    accountEconomics). null = the POOLED view across every account. The
+ *    watchdog pools on purpose (it disarms globally); the earned floor gates
+ *    per account and must measure per account — it used to consume the pooled
+ *    number, so one account's record could earn another account's floor.
+ *  · `rrBand` — `{ below: R }` restricts the window to trades whose PLANNED
+ *    bracket (trades.tp_price / sl_price / entry_price, written once at
+ *    dispatch and never trailed) had R:R under R. The earned floor measures W
+ *    on trades taken at ≥3R and applied it to justify <3R entries; the band
+ *    keeps the measurement on the population the verdict admits. Rows with
+ *    no planned bracket (tp or sl NULL, zero stop distance) are not IN the
+ *    band — they cannot be, their R:R is unknowable — so they are excluded,
+ *    not read as sub-floor.
  */
-export function strategyRollingEdge(db, strategyKey, window) {
+export function strategyRollingEdge(db, strategyKey, window, { accountId = null, rrBand = null } = {}) {
+  const acct = accountId != null ? String(accountId) : null
+  const below = Number(rrBand?.below)
+  const banded = Number.isFinite(below) && below > 0
   const rows = db.prepare(
     `SELECT id, net_pnl FROM trades
       WHERE status = 'closed' AND net_pnl IS NOT NULL AND label_strategy = ?
+        AND (? IS NULL OR account_id = ? OR account_id IS NULL)
+        AND (? = 0 OR (
+          tp_price IS NOT NULL AND sl_price IS NOT NULL AND entry_price IS NOT NULL
+          AND ABS(sl_price - entry_price) > 0
+          AND ABS(tp_price - entry_price) / ABS(sl_price - entry_price) < ?))
       ORDER BY closed_at DESC, id DESC LIMIT ?`
-  ).all(strategyKey, window)
+  ).all(strategyKey, acct, acct, banded ? 1 : 0, banded ? below : 0, window)
   const n = rows.length
   if (n === 0) return { trades: 0, expectancy: null, profitFactor: null, winRate: null, net: 0, newestId: null }
   const wins = rows.filter(r => Number(r.net_pnl) > 0)
@@ -104,7 +129,10 @@ export function runEdgeWatchdog(db, { notify } = {}) {
   } catch { /* no accounts table — global candidates only */ }
   for (const key of armed) {
     try {
-      const e = strategyRollingEdge(db, key, cfg.window)
+      // POOLED on purpose: the watchdog disarms a strategy everywhere, so it
+      // judges the strategy's whole book. accountId: null is that intent
+      // written down, not a default left unread.
+      const e = strategyRollingEdge(db, key, cfg.window, { accountId: null })
       evaluated.push({ strategy: key, ...e })
       if (e.trades < cfg.minTrades || e.newestId == null) continue
 
