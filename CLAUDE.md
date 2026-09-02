@@ -290,6 +290,14 @@ Measurement history — each line is a real run of the script, not a claim:
   (1,609 owner turns, 40,929 assistant entries, 26,658 user entries, 114
   compact events). Rebased to `№ 6,253` as the last reply; the next reply is
   `№ 6,254`. Owner: *"rebase the CLAUDE.md serial"*.
+- 2026-09-02 10:13 UTC, **remote container, PARTIAL corpus** (the §1
+  write-back rule): the script read **2,001** in this container, far below
+  the 6,253 rebase, so it was refused as a reading and the count was carried
+  from context across the whole session. Replies made here that the local
+  corpus never sees: the session ran from `№ 7,184` to **`№ 7,222`** as the
+  last reply; the next reply is `№ 7,223`. Recorded so a later local
+  re-measure that reads below this line is known to be missing these, not
+  correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
