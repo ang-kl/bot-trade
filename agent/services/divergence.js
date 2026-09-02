@@ -303,9 +303,10 @@ export function divergenceReport(db, opts = {}) {
     evidenceLevels,
     optimism,
     integrity: { closes: trades.length, flaggedExcluded: trades.length - clean.length },
-    // Last sweep's PF/WR/n histogram over ALL verdicts — the base rate for a
-    // shrinkage prior computed later. null until the first sweep after this
-    // shipped; the prior is not computed here.
+    // Last sweep's PF/WR/n histogram over ALL verdicts — the base rate shown
+    // beside the shrinkage prior. null until the first sweep after this
+    // shipped. The prior itself (strategy-autopilot.js sweepShrinkPrior) is
+    // computed from the sweep's verdicts in memory, not from this table.
     histogram: latestSweepHistogram(db),
   }
 }

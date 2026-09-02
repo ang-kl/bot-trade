@@ -24,9 +24,9 @@
 // relationship to it.
 //
 // So this module is a register, not a policy. Each bar keeps its own value and
-// its own owner; what changes is that they are now readable side by side, and
-// `edgeBarSummary()` states the ordering they are supposed to satisfy so a
-// future edit that breaks it is visible rather than silent.
+// its own owner; what changes is that they are now readable side by side.
+// (`edgeBarSummary()`, which stated the ordering they were supposed to satisfy,
+// had no caller and was deleted 02-09-2026, #815.)
 //
 // Each constant remains overridable at its own call site (options args,
 // agent_state config). Nothing here enforces anything at runtime.
