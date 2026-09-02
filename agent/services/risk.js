@@ -366,6 +366,14 @@ export const DEFAULT_RISK_CONFIG = {
                                    // fiction — veto (doc_reference/
                                    // microstructure-frequent-trading-notes.md).
                                    // 0 disables the check.
+  limitDispatchMinTf: '4h',        // Limit dispatch (owner, 03-09-2026): a
+                                   // signal on a bar this long or longer is
+                                   // priced at the last CLOSED bar's close,
+                                   // which a market order reaches up to a bar
+                                   // late (NAS100 1w: three days, 1.2%). Such
+                                   // signals rest as a LIMIT at the approved
+                                   // entry, expiring when the bar closes.
+                                   // '' or 'off' disables (market + drift gate).
   maxEntryDriftFracOfSL: 0.25,     // Entry-drift gate (owner "do both",
                                    // 03-09-2026): the live quote vs the
                                    // proposal's entry, adverse-positive, as a

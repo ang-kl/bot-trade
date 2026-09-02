@@ -189,6 +189,17 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   const exec = opts.exec ?? await import('../lib/exec-engine.js')
   const notify = opts.notify ?? (() => {})
   const nowMs = opts.now ?? Date.now()
+  // WHY this limit rests (03-09-2026): 'closed_market' (the original case —
+  // fills at the open) or 'htf' (owner-approved: a signal on a ≥4h bar is
+  // priced at that bar's close, which a market order reaches days late; it
+  // rests at the approved entry and dies when the bar that produced it
+  // closes). The row shape, gate, sizing, idempotency and adoption are the
+  // same; the reason rides on the risk event and the message so the record
+  // says which path placed the order.
+  const reason = opts.reason === 'htf' ? 'htf' : 'closed_market'
+  const expiresAtMs = Number.isFinite(Number(opts.expiresAtMs)) && Number(opts.expiresAtMs) > nowMs
+    ? Number(opts.expiresAtMs)
+    : nowMs + expiryMsFor()
 
   // Retire our own working rows whose broker expiry has passed, so idempotency
   // below doesn't wrongly treat an expired order as still resting.
@@ -240,7 +251,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     requestedVolume: opts.requestedVolume ?? null,
     strategy: synth.strategy || null,
     conviction: synth.overall_conviction ?? null,
-    source: 'closed_market_limit',
+    source: reason === 'htf' ? 'htf_limit' : 'closed_market_limit',
     // A resting limit can't bypass risk — and it can't be gated against a
     // different account than the one whose creds place it either.
     accountId: creds?.accountId ?? null,
@@ -287,7 +298,6 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     timeframe: synth.timeframe || null,
     regime: null,
   })
-  const expiresAtMs = nowMs + expiryMsFor()
   const payload = buildLimitPayload({
     accountId: creds.accountId, symbolId, side, volume: sized.volume,
     entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,
@@ -320,10 +330,15 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     } catch { /* provenance never blocks a placement */ }
     risk.persistRiskEvent(db, proposal, {
       approved: true, veto_reason: null,
-      checks: { closed_market_limit_placed: true, orderId, limitPrice: payload.limitPrice, expiresAt: new Date(expiresAtMs).toISOString() },
+      checks: {
+        ...(reason === 'htf' ? { htf_limit_placed: true } : { closed_market_limit_placed: true }),
+        limit_reason: reason, orderId, limitPrice: payload.limitPrice, expiresAt: new Date(expiresAtMs).toISOString(),
+      },
     })
-    notify(`⏳ Closed-market LIMIT placed: ${symbol} ${synth.timeframe || ''} ${side} @ ${payload.limitPrice}, SL ${synth.sl}, TP ${synth.tp1} — fills at open`)
-    return { placed: true, orderId, limitPrice: payload.limitPrice, expiresAt: new Date(expiresAtMs).toISOString() }
+    notify(reason === 'htf'
+      ? `⏳ ${synth.timeframe || 'HTF'} LIMIT resting: ${symbol} ${side} @ ${payload.limitPrice}, SL ${synth.sl}, TP ${synth.tp1} — at the bar's close, expires ${new Date(expiresAtMs).toISOString().slice(0, 16)}Z`
+      : `⏳ Closed-market LIMIT placed: ${symbol} ${synth.timeframe || ''} ${side} @ ${payload.limitPrice}, SL ${synth.sl}, TP ${synth.tp1} — fills at open`)
+    return { placed: true, orderId, limitPrice: payload.limitPrice, expiresAt: new Date(expiresAtMs).toISOString(), reason }
   } catch (err) {
     risk.persistPostApprovalVeto(db, proposal, `closed_market_limit_failed: ${err.message}`)
     return { skipped: 'place_failed', reason: err.message }

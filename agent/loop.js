@@ -367,6 +367,41 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   }
   setState(db, `mkt_closed_logged_${symbol}`, null) // market open again — re-arm the one-shot
 
+  // HIGH-TIMEFRAME SIGNALS REST AS A LIMIT (owner-approved, 03-09-2026). A
+  // strategy prices its entry at the last CLOSED bar's close and the scan
+  // refreshes a series once per bar, so a market order on a 1d or 1w signal
+  // reaches that price up to a bar late — NAS100 1w sat 1.2% from its
+  // Friday close for three days and the entry-drift gate refused every
+  // attempt. Such a signal now rests at the approved entry and expires when
+  // the bar that produced it closes; the same gate, sizing, idempotency and
+  // adoption as the closed-market path. Sub-threshold signals keep the
+  // market path and the drift gate below. '' / 'off' disables.
+  try {
+    const { tfMs, nextBarCloseMs } = await import('./lib/timeframes.js')
+    const minTf = String(loadRiskConfig(db, accountId)?.limitDispatchMinTf ?? '').trim().toLowerCase()
+    const minMs = minTf && minTf !== 'off' ? tfMs(minTf) : 0
+    const sigMs = synth.timeframe ? tfMs(synth.timeframe) : 0
+    if (minMs > 0 && sigMs >= minMs) {
+      const expiresAtMs = nextBarCloseMs(synth.timeframe)
+      const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
+      const r = await placeClosedMarketLimit(
+        db,
+        { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId },
+        symbol, synth,
+        {
+          requestedVolume: requestedVol, reason: 'htf', expiresAtMs,
+          notify: (t) => import('./services/telegram-control.js').then(m => m.notifyOwner(t)).catch(() => {}),
+        },
+      )
+      if (r.placed) log(`HTF ${synth.timeframe} signal — resting LIMIT for ${symbol} @ ${r.limitPrice} (expires at the bar's close, ${r.expiresAt})`)
+      else if (r.skipped !== 'already_working') log(`HTF limit for ${symbol} ${synth.timeframe}: ${r.skipped}${r.reason ? ` — ${r.reason}` : ''}`)
+      return null
+    }
+  } catch (err) {
+    log(`HTF limit dispatch failed for ${symbol} (non-fatal, no market order placed): ${err.message}`)
+    return null
+  }
+
   // -------------------------------------------------------------------------
   // Risk Manager pre-trade gate — deterministic veto + Kelly volume scaling.
   // Runs before cTrader WS open. No LLM calls. Every evaluation is persisted

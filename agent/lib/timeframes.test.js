@@ -3,7 +3,8 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseTimeframe, tfMs, fetchPlan, aggregateBars } from './timeframes.js'
+import {
+  nextBarCloseMs, parseTimeframe, tfMs, fetchPlan, aggregateBars } from './timeframes.js'
 
 test('native labels pass through unchanged', () => {
   assert.deepEqual(parseTimeframe('4h'), { label: '4h', ms: 14_400_000 })
@@ -60,4 +61,16 @@ test('aggregateBars: end-anchored chunks, OHLCV composed correctly', () => {
   assert.equal(first.l, 1.5)      // min low
   assert.equal(first.c, 4.2)      // close of last bar in chunk
   assert.equal(first.v, 30)       // summed volume
+})
+
+test('nextBarCloseMs: the forming bar\'s close — epoch-aligned intraday/daily, Saturday 00:00 UTC for 1w, first of next month for 1mo, null for junk', () => {
+  const wed = Date.UTC(2026, 8, 2, 22, 19, 47) // Wed 02-09-2026 22:19:47 UTC
+  assert.equal(nextBarCloseMs('4h', wed), Date.UTC(2026, 8, 3, 0, 0, 0))
+  assert.equal(nextBarCloseMs('1d', wed), Date.UTC(2026, 8, 3, 0, 0, 0))
+  assert.equal(nextBarCloseMs('1h', Date.UTC(2026, 8, 2, 22, 0, 0)), Date.UTC(2026, 8, 2, 23, 0, 0), 'exactly on a boundary → the NEXT boundary')
+  assert.equal(nextBarCloseMs('1w', wed), Date.UTC(2026, 8, 5, 0, 0, 0), 'Sat 05-09 00:00 UTC, after the Friday session')
+  assert.equal(nextBarCloseMs('1w', Date.UTC(2026, 8, 5, 0, 0, 0)), Date.UTC(2026, 8, 12, 0, 0, 0), 'on a Saturday → the following Saturday')
+  assert.equal(nextBarCloseMs('1mo', wed), Date.UTC(2026, 9, 1, 0, 0, 0))
+  assert.equal(nextBarCloseMs('junk', wed), null)
+  assert.equal(nextBarCloseMs('1d', NaN), null)
 })
