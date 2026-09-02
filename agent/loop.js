@@ -4838,7 +4838,7 @@ async function runLoop(db) {
       }
 
       try {
-        const { drainDispositions } = await import('./services/opportunity-disposition.js')
+        const { drainDispositions, revisitDropped } = await import('./services/opportunity-disposition.js')
         // DRAIN, not one batch. A single sweep settles at most 5,000 rows and
         // this pass runs every eight hours, so production's 55,443-row backlog
         // would have taken four days to become visible.
@@ -4846,6 +4846,13 @@ async function runLoop(db) {
         if (sw.written > 0) {
           log(`Dispositions: settled ${sw.written} of ${sw.scanned} in ${sw.batches} batch(es) (${JSON.stringify(sw.counts)}), ${sw.pending} still in flight`)
         }
+        // HEAL, bounded (02-09-2026): approvals marked 'dropped' in the last
+        // week are re-judged with sibling evidence — a post-approval refusal
+        // row or a landed re-keyed retry on the same account/symbol/side.
+        // JPM.US 19:53Z was counted as a silent gap while its retry was an
+        // open position. Idempotent; reported only when something changed.
+        const rv = revisitDropped(db, { days: 7 })
+        if (rv.written > 0) log(`Dispositions: re-judged ${rv.written} 'dropped' approval(s) with sibling evidence (${JSON.stringify(rv.counts)})`)
         if (!sw.drained) log(`Dispositions: batch cap reached — backlog NOT fully settled, another pass will continue`)
         // WRITE THE OUTCOME DOWN, on a read-only route. PR #670 could name the
         // mechanism (an unguarded step cancels the sweep) but not the step,

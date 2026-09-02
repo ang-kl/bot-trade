@@ -42,6 +42,9 @@ export const DISPOSITIONS = Object.freeze([
   'refused_post_approval',  // cleared the gate, refused downstream, with a reason.
   'receipt',                // not a decision — a placement confirmation row.
   'dropped',                // approved, nothing acted, grace elapsed. THE FINDING.
+  'superseded',             // approved, never landed itself, but a LATER approval for the
+                            // same account/symbol/side landed inside the grace window — the
+                            // retry loop re-keyed the setup and the sibling won.
 ])
 
 /** Minutes an approval is allowed to be in flight before it counts as dropped. */
@@ -60,11 +63,24 @@ const isPostApprovalRefusal = (checksJson) =>
  * approval that landed would double-count every successful placement, which
  * is the mistake decision-audit.js already had to unwind once.
  */
-export function dispositionFor({ approved, checksJson, landed = false, ageMin = 0, graceMin = DEFAULT_GRACE_MIN }) {
+export function dispositionFor({
+  approved, checksJson, landed = false, ageMin = 0, graceMin = DEFAULT_GRACE_MIN,
+  refusedAfter = false, supersededBy = false,
+}) {
   if (approved !== 1) return 'vetoed'
   if (isReceipt(checksJson)) return 'receipt'
   if (isPostApprovalRefusal(checksJson)) return 'refused_post_approval'
   if (landed) return 'ordered'
+  // SIBLING EVIDENCE (02-09-2026, JPM.US 19:53Z). The dispatch path writes a
+  // post-approval refusal as its OWN row, not as a stamp on the approval it
+  // refused, and the retry that follows re-keys the setup — so the approval
+  // that was actually attempted-and-refused, then superseded by a landed
+  // sibling nine milliseconds later, read as "dropped" and fed the
+  // inspector's silent-gap count. A refusal row on the same account, symbol
+  // and side inside the grace window after this approval is that approval's
+  // refusal; a landed later approval on the same tuple is its successor.
+  if (refusedAfter) return 'refused_post_approval'
+  if (supersededBy) return 'superseded'
   if (ageMin < graceMin) return null      // still in flight — not yet terminal
   return 'dropped'
 }
@@ -76,18 +92,43 @@ export function dispositionFor({ approved, checksJson, landed = false, ageMin = 
  * this every cycle costs one indexed scan and rewrites nothing. `redo` exists
  * for the backfill case where the derivation itself changed.
  */
-export function sweepDispositions(db, { graceMin = DEFAULT_GRACE_MIN, limit = 5000, redo = false, nowMs = Date.now() } = {}) {
+export function sweepDispositions(db, {
+  graceMin = DEFAULT_GRACE_MIN, limit = 5000, redo = false, nowMs = Date.now(),
+  // Re-judge rows already marked 'dropped' inside this many days, so the
+  // sibling evidence above heals history as well as new rows. OFF by default:
+  // the drain loop counts rows written per batch to know when it is done,
+  // and re-selecting settled rows would end it early. revisitDropped() below
+  // is the explicit, bounded pass housekeeping runs once per cycle.
+  revisitDroppedDays = 0,
+} = {}) {
   let rows = []
   try {
+    // Sibling evidence is matched on the ACCOUNT/SYMBOL/SIDE tuple inside
+    // the grace window after the approval, via julianday() so ISO 'Z'
+    // strings and SQLite datetime() strings compare on the same clock.
+    const graceDays = Math.max(0, Number(graceMin) || 0) / 1440
     rows = db.prepare(`
       SELECT r.id, r.approved, r.checks_json, r.created_at, r.disposition,
              (SELECT COUNT(*) FROM trades t WHERE t.risk_event_id = r.id)
-             + (SELECT COUNT(*) FROM pending_orders p WHERE p.risk_event_id = r.id) AS landed
+             + (SELECT COUNT(*) FROM pending_orders p WHERE p.risk_event_id = r.id) AS landed,
+             (SELECT COUNT(*) FROM risk_events x
+               WHERE x.id > r.id AND x.approved = 0
+                 AND x.checks_json LIKE '%"${POST_APPROVAL_FLAG}"%'
+                 AND UPPER(x.symbol) = UPPER(r.symbol) AND UPPER(COALESCE(x.side,'')) = UPPER(COALESCE(r.side,''))
+                 AND COALESCE(x.account_id,'') = COALESCE(r.account_id,'')
+                 AND julianday(x.created_at) <= julianday(r.created_at) + ?) AS refused_after,
+             (SELECT COUNT(*) FROM risk_events y
+               WHERE y.id > r.id AND y.approved = 1
+                 AND UPPER(y.symbol) = UPPER(r.symbol) AND UPPER(COALESCE(y.side,'')) = UPPER(COALESCE(r.side,''))
+                 AND COALESCE(y.account_id,'') = COALESCE(r.account_id,'')
+                 AND julianday(y.created_at) <= julianday(r.created_at) + ?
+                 AND (EXISTS (SELECT 1 FROM trades t2 WHERE t2.risk_event_id = y.id)
+                   OR EXISTS (SELECT 1 FROM pending_orders p2 WHERE p2.risk_event_id = y.id))) AS superseded_by
         FROM risk_events r
-       WHERE ${redo ? '1=1' : 'r.disposition IS NULL'}
+       WHERE ${redo ? '1=1' : `(r.disposition IS NULL OR (r.disposition = 'dropped' AND julianday(r.created_at) >= julianday(?) - ?))`}
        ORDER BY r.id DESC
        LIMIT ?
-    `).all(limit)
+    `).all(...(redo ? [graceDays, graceDays, limit] : [graceDays, graceDays, new Date(nowMs).toISOString(), Math.max(0, Number(revisitDroppedDays) || 0), limit]))
   } catch { return { scanned: 0, written: 0, counts: {}, pending: 0 } }
 
   const write = db.prepare('UPDATE risk_events SET disposition = ?, disposition_at = ? WHERE id = ?')
@@ -105,6 +146,8 @@ export function sweepDispositions(db, { graceMin = DEFAULT_GRACE_MIN, limit = 50
         landed: (r.landed || 0) > 0,
         ageMin: Number.isFinite(ageMin) ? ageMin : Number.POSITIVE_INFINITY,
         graceMin,
+        refusedAfter: (r.refused_after || 0) > 0,
+        supersededBy: (r.superseded_by || 0) > 0,
       })
       if (d == null) { pending++; continue }
       if (d === r.disposition) continue
@@ -134,6 +177,15 @@ export function sweepDispositions(db, { graceMin = DEFAULT_GRACE_MIN, limit = 50
  * done (`drained: true`) or because it hit the cap — a silent truncation would
  * read as "settled everything" when it settled a slice.
  */
+/**
+ * The explicit healing pass: re-judge approvals marked 'dropped' inside the
+ * last `days` with today's sibling evidence. One bounded call, idempotent,
+ * run from housekeeping after the drain. Returns the sweep's summary.
+ */
+export function revisitDropped(db, { days = 7, ...opts } = {}) {
+  return sweepDispositions(db, { ...opts, revisitDroppedDays: Math.max(0, Number(days) || 0) })
+}
+
 export function drainDispositions(db, { maxBatches = 40, ...opts } = {}) {
   const counts = {}
   let scanned = 0, written = 0, pending = 0, batches = 0

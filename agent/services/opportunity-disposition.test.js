@@ -9,9 +9,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
+import { readFileSync } from 'node:fs'
 import {
   DISPOSITIONS, DEFAULT_GRACE_MIN, dispositionFor,
-  sweepDispositions, drainDispositions, recordSubmitted, dispositionReport,
+  sweepDispositions, drainDispositions, recordSubmitted, dispositionReport, revisitDropped,
 } from './opportunity-disposition.js'
 
 const RECEIPT = JSON.stringify({ pending_order_placed: true, orderId: 352974283 })
@@ -273,4 +274,94 @@ test('the drain terminates when everything left is still in flight', () => {
   assert.equal(out.pending, 1)
   assert.equal(out.batches, 1, 'no repeated queries for the same answer')
   assert.equal(out.drained, true)
+})
+
+// ---------------------------------------------------------------------------
+// SIBLING EVIDENCE (02-09-2026). JPM.US at 19:53Z: approval 394092 was
+// attempted, refused post-approval as its OWN row (394093, SYMBOL_NOT_FOUND),
+// re-keyed and re-approved as 394094 which landed. The sweep read 394092 as
+// "dropped" and the inspector counted it as a silent gap.
+// ---------------------------------------------------------------------------
+const REFUSAL_ROW = JSON.stringify({ post_approval: true, adjusted_volume: 0 })
+function riskEventAt(db, { approved = 1, checks = PLAIN, secsAgo = 600, symbol = 'JPM.US', side = 'SELL', account = '46130058' } = {}) {
+  return db.prepare(`
+    INSERT INTO risk_events (symbol, side, approved, veto_reason, checks_json, proposal_json, account_id, created_at)
+    VALUES (?, ?, ?, NULL, ?, '{}', ?, datetime('now', ?))
+  `).run(symbol, side, approved, checks, account, `-${secsAgo} seconds`).lastInsertRowid
+}
+
+test('an attempted-and-refused approval reads refused_post_approval from its sibling refusal row, and its landed successor is not a drop', () => {
+  const db = fresh()
+  const first = riskEventAt(db, { secsAgo: 1200 })                                  // 394092
+  riskEventAt(db, { approved: 0, checks: REFUSAL_ROW, secsAgo: 1192 })              // 394093
+  const second = riskEventAt(db, { secsAgo: 1192 })                                 // 394094
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, status, opened_at, risk_event_id, account_id)
+              VALUES ('JPM.US','SELL',354.27,'open',datetime('now'),?,'46130058')`).run(second)
+  const out = sweepDispositions(db)
+  const get = (id) => db.prepare('SELECT disposition FROM risk_events WHERE id = ?').get(id).disposition
+  assert.equal(get(first), 'refused_post_approval', 'the refusal row is this approval\'s refusal')
+  assert.equal(get(second), 'ordered')
+  assert.equal(out.counts.dropped, undefined, 'nothing dropped: every approval has an end state')
+})
+
+test('a re-keyed retry that landed makes the earlier approval superseded, not dropped; beyond grace it is still dropped', () => {
+  const db = fresh()
+  const early = riskEventAt(db, { secsAgo: 1200 })
+  const later = riskEventAt(db, { secsAgo: 1195 })
+  db.prepare(`INSERT INTO pending_orders (symbol, dir, level, status, risk_event_id)
+              VALUES ('JPM.US',-1,354.27,'working',?)`).run(later)
+  // Same tuple but 40 minutes earlier: outside the 10-minute grace, its own drop.
+  const stale = riskEventAt(db, { secsAgo: 2400 + 1195 })
+  // A different account's approval is not this account's sibling.
+  const other = riskEventAt(db, { secsAgo: 1200, account: '111' })
+  sweepDispositions(db)
+  const get = (id) => db.prepare('SELECT disposition FROM risk_events WHERE id = ?').get(id).disposition
+  assert.equal(get(early), 'superseded')
+  assert.equal(get(later), 'ordered')
+  assert.equal(get(stale), 'dropped')
+  assert.equal(get(other), 'dropped')
+  assert.ok(DISPOSITIONS.includes('superseded'))
+})
+
+test('revisitDropped re-judges rows already marked dropped inside its window, and only those', () => {
+  const db = fresh()
+  const first = riskEventAt(db, { secsAgo: 1200 })
+  db.prepare(`UPDATE risk_events SET disposition = 'dropped', disposition_at = datetime('now') WHERE id = ?`).run(first)
+  const old = riskEventAt(db, { secsAgo: 30 * 86_400 })
+  db.prepare(`UPDATE risk_events SET disposition = 'dropped', disposition_at = datetime('now') WHERE id = ?`).run(old)
+  const oldLater = riskEventAt(db, { secsAgo: 30 * 86_400 - 5 })
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, status, opened_at, risk_event_id, account_id)
+              VALUES ('JPM.US','SELL',354.27,'closed',datetime('now'),?,'46130058')`).run(oldLater)
+  const second = riskEventAt(db, { secsAgo: 1195 })
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, status, opened_at, risk_event_id, account_id)
+              VALUES ('JPM.US','SELL',354.27,'open',datetime('now'),?,'46130058')`).run(second)
+  assert.equal(sweepDispositions(db).counts.superseded, undefined, 'the plain sweep leaves settled rows alone — the drain depends on that')
+  const out = revisitDropped(db, { days: 7 })
+  const get = (id) => db.prepare('SELECT disposition FROM risk_events WHERE id = ?').get(id).disposition
+  assert.equal(get(first), 'superseded', 'healed: the sibling landed')
+  assert.equal(get(old), 'dropped', 'outside the revisit window the old verdict stands, right or wrong')
+  assert.equal(out.counts.superseded, 1)
+  // Idempotent on the second pass.
+  assert.equal(revisitDropped(db, { days: 7 }).written, 0)
+})
+
+test('the closed set covers the sibling-evidence outcomes too', () => {
+  const produced = new Set()
+  for (const refusedAfter of [false, true]) {
+    for (const supersededBy of [false, true]) {
+      for (const ageMin of [0, 999]) {
+        const d = dispositionFor({ approved: 1, checksJson: PLAIN, landed: false, ageMin, refusedAfter, supersededBy })
+        if (d != null) produced.add(d)
+      }
+    }
+  }
+  assert.deepEqual([...produced].sort(), ['dropped', 'refused_post_approval', 'superseded'])
+  for (const d of produced) assert.ok(DISPOSITIONS.includes(d))
+})
+
+test('wiring: housekeeping runs the bounded revisit after the drain', () => {
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  const i = src.indexOf('drainDispositions(db)')
+  assert.ok(i > 0)
+  assert.match(src.slice(i, i + 1500), /revisitDropped\(db, \{ days: 7 \}\)/)
 })
