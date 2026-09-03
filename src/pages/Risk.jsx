@@ -1063,6 +1063,15 @@ export default function Risk() {
                   <Field label={`Exposure ceiling (× balance)${mark('maxNotionalXBalance')}`} anchor="maxNotionalXBalance" applied={appliedKeys.has('maxNotionalXBalance')} value={risk.maxNotionalXBalance} onChange={v => setRisk(r => ({ ...r, maxNotionalXBalance: v }))}
                     hint="Refuses any entry whose position VALUE exceeds this multiple of balance. Unlike the two above it is not computed from the stop distance, so it still catches a trade sized off a wrong contract spec — the failure that put $2.9M of JPN225 on a $37k account."
                     recommend="10× — measured: normal trading here runs 0.8× with a 90th percentile of 3.4×, while the blow-ups sat at 20–79×. Blank turns it off." />
+                  <Field label={`Margin rate — shares${mark('marginRateStock')}`} anchor="marginRateStock" applied={appliedKeys.has('marginRateStock')} pct value={risk.marginRateStock} onChange={v => setRisk(r => ({ ...r, marginRateStock: v }))}
+                    hint="Fraction of a share CFD's notional the broker holds as margin. The account leverage is an FX number; a 0005.HK short sized to 1% risk on a 0.2% stop was $134k of notional booked as $670 of margin at 1:200 while the broker took ~$27k — the next two orders came back NOT_ENOUGH_MONEY. Blank falls back to notional ÷ leverage."
+                    recommend="20% — Pepperstone share CFDs." />
+                  <Field label={`Margin rate — indices${mark('marginRateIndex')}`} anchor="marginRateIndex" applied={appliedKeys.has('marginRateIndex')} pct value={risk.marginRateIndex} onChange={v => setRisk(r => ({ ...r, marginRateIndex: v }))}
+                    hint="Same for index CFDs (US30, NAS100, HK50, GER40…)." recommend="5%." />
+                  <Field label={`Margin rate — commodities${mark('marginRateCommodity')}`} anchor="marginRateCommodity" applied={appliedKeys.has('marginRateCommodity')} pct value={risk.marginRateCommodity} onChange={v => setRisk(r => ({ ...r, marginRateCommodity: v }))}
+                    hint="Metals, energy and softs." recommend="5%." />
+                  <Field label={`Margin rate — crypto${mark('marginRateCrypto')}`} anchor="marginRateCrypto" applied={appliedKeys.has('marginRateCrypto')} pct value={risk.marginRateCrypto} onChange={v => setRisk(r => ({ ...r, marginRateCrypto: v }))}
+                    hint="Crypto CFDs." recommend="50%." />
                 </div>
                 {/* The two knobs above are the ones that get changed. These
                     five are real and reachable — they are simply not what
@@ -1163,7 +1172,7 @@ export default function Risk() {
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
-                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'htfFreshnessMin', 'maxOpenPositions', 'maxPositionsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
+                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'marginRateStock', 'marginRateIndex', 'marginRateCommodity', 'marginRateCrypto', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'htfFreshnessMin', 'maxOpenPositions', 'maxPositionsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
               }}>Save bot risk</Button></span>
             </div>

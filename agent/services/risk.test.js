@@ -17,6 +17,7 @@ import {
   getAccountBalance,
   getAccountLeverage,
   requiredMargin,
+  marginRateFor,
   portfolioMarginStatus,
   evaluateCommissionCost,
   evaluateSlippageDrift, fxDayOpenMs, HARD_MIN_RR, expectancyVerdict, strategyPerfStats
@@ -115,6 +116,11 @@ function setLeverage(db, leverage) {
 // cooldown; recent EURUSD closed trades would otherwise trip the 240m
 // symbol_cooldown veto instead of the gate under test.
 const NO_SYMBOL_COOLDOWN = { ...DEFAULT_RISK_CONFIG, symbolCooldownMinutes: 0 }
+// The per-class margin rates (03-09-2026) replace notional/leverage for
+// shares, indices, commodities and crypto. The older margin and notional
+// tests below pin the LEVERAGE arithmetic on XAUUSD/JPN225 on purpose, so
+// they opt out of the rates; the rate path has its own tests further down.
+const LEVERAGE_ONLY = { marginRateStock: null, marginRateIndex: null, marginRateCommodity: null, marginRateCrypto: null }
 
 // Currency legs -----------------------------------------------------------
 
@@ -745,7 +751,7 @@ test('margin gate — $500 @ 1:5 leverage vetoes XAUUSD 0.01 lot', () => {
   const res = evaluateTrade(db, goodProposal({
     symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2417.5,
     requestedVolume: 0.01,
-  }))
+  }), { ...DEFAULT_RISK_CONFIG, ...LEVERAGE_ONLY })
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /insufficient_margin/)
   assert.equal(res.checks.leverage, 5)
@@ -759,7 +765,7 @@ test('margin gate — $500 @ 1:500 leverage approves XAUUSD 0.01 lot', () => {
   const res = evaluateTrade(db, goodProposal({
     symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2417.5,
     requestedVolume: 0.01,
-  }))
+  }), { ...DEFAULT_RISK_CONFIG, ...LEVERAGE_ONLY })
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
   assert.equal(res.checks.margin_required_usd, 4.80)
   assert.equal(res.checks.leverage, 500)
@@ -827,7 +833,7 @@ test('margin gate — AGGREGATE: shrinks the new trade to fit remaining headroom
   // Requested EURUSD 0.25 lot → margin = 0.25×100000×1.1/100 = $275; 4800+275
   // > 5000, but $200 headroom remains → shrinks to 0.25×(200/275) ≈ 0.18 lot,
   // which DOES fit (4800 + 0.18×100000×1.1/100 = 4800+198 = 4998 ≤ 5000).
-  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), { ...NO_SYMBOL_COOLDOWN, ...LEVERAGE_ONLY })
   assert.equal(res.approved, true, `expected a shrunk approval, got veto: ${res.veto_reason}`)
   assert.equal(res.adjusted_volume, 0.18)
   assert.ok(res.checks.margin_used_usd >= 4800, `used margin summed: ${res.checks.margin_used_usd}`)
@@ -844,7 +850,7 @@ test('margin gate — AGGREGATE: still vetoes outright when even the shrunk volu
   // leaving only $10 headroom — nowhere near enough for even a 0.01-lot EURUSD
   // position ($275/0.25 lot ⇒ ~$11/0.01 lot).
   insertOpenPositionSized(db, { symbol: 'XAUUSD', side: 'short', volume: 2.0, entry: 2495 })
-  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), { ...NO_SYMBOL_COOLDOWN, ...LEVERAGE_ONLY })
   assert.equal(res.approved, false, `expected veto — no shrink helps here, got: ${JSON.stringify(res)}`)
   assert.match(res.veto_reason, /insufficient_margin/)
   assert.match(res.veto_reason, /used=4990/)
@@ -857,7 +863,7 @@ test('margin gate — AGGREGATE: no headroom left at all (existing positions alo
   // Open XAUUSD SHORT 3.0 lots @ 2400 → margin = 3.0×100×2400/100 = $7200,
   // already over the $5000 cap on its own.
   insertOpenPositionSized(db, { symbol: 'XAUUSD', side: 'short', volume: 3.0, entry: 2400 })
-  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), { ...NO_SYMBOL_COOLDOWN, ...LEVERAGE_ONLY })
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /insufficient_margin/)
   assert.match(res.veto_reason, /no headroom left to shrink into/)
@@ -1543,7 +1549,7 @@ test('2.6.1 — 72.5 lots of JPN225 is refused as a notional-exposure failure', 
   const res = evaluateTrade(db, {
     symbol: 'JPN225', side: 'long', entry: 38_000, sl: 37_943, tp1: 38_199.5,
     requestedVolume: null, strategy: 'trend', conviction: 8,
-  }, LOOSE_RISK)
+  }, { ...LOOSE_RISK, ...LEVERAGE_ONLY })
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /notional_exposure_exceeded/)
   assert.match(res.veto_reason, /72\.5 lots/)
@@ -1611,7 +1617,7 @@ test('a modest notional breach shrinks to the ceiling instead of dying', () => {
   const res = evaluateTrade(db, {
     symbol: 'JPN225', side: 'long', entry: 38_000, sl: 37_943, tp1: 38_199.5,
     requestedVolume: null, strategy: 'trend', conviction: 8,
-  }, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.02, maxRiskCapPct: 0.02 })
+  }, { ...NO_SYMBOL_COOLDOWN, ...LEVERAGE_ONLY, perTradeRiskPct: 0.02, maxRiskCapPct: 0.02 })
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
   assert.ok(res.checks.notional_fit, 'shrink must be stamped in checks.notional_fit')
   assert.ok(res.checks.notional_fit.xFrom > 13 && res.checks.notional_fit.xFrom < 14,
@@ -1633,7 +1639,7 @@ test('the valuation-failure class (>= 20x) still refuses outright', () => {
   const res = evaluateTrade(db, {
     symbol: 'JPN225', side: 'long', entry: 38_000, sl: 37_943, tp1: 38_199.5,
     requestedVolume: null, strategy: 'trend', conviction: 8,
-  }, LOOSE_RISK)
+  }, { ...LOOSE_RISK, ...LEVERAGE_ONLY })
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /notional_exposure_exceeded/)
   assert.match(res.veto_reason, /valuation-failure line 20x/)
@@ -1799,4 +1805,76 @@ test('CHARACTERISATION: an unstamped account inherits the global balance — a k
   const capOnGlobal = effectiveCapUsd({ maxLossPctOfBalance: 3 }, 35319.8)   // what it actually gets
   assert.ok(capOnGlobal > capOnTruth * 40,
     'the inherited cap is ~51x too permissive — it can never bind on a small account')
+})
+
+// ---------------------------------------------------------------------------
+// PER-CLASS MARGIN RATES (owner "build it", 03-09-2026). Measured on
+// ACCT-DEMO-2: a 0005.HK short sized to 1% risk on a 0.2% stop was 6,430 units
+// = HK$1.05M (US$134k) of notional, booked as $670 of margin at 1:200 while
+// the broker took ~20%; the next two orders came back NOT_ENOUGH_MONEY and
+// the insufficient_margin guard never fired.
+// ---------------------------------------------------------------------------
+
+test('marginRateFor: shares, indices, commodities and crypto get their class rate; FX and unknown get null (leverage)', () => {
+  const cfg = DEFAULT_RISK_CONFIG
+  assert.equal(marginRateFor(cfg, '0005.HK'), 0.2)
+  assert.equal(marginRateFor(cfg, 'AAPL.US'), 0.2)
+  assert.equal(marginRateFor(cfg, 'NAS100'), 0.05)
+  assert.equal(marginRateFor(cfg, 'HK50'), 0.05)
+  assert.equal(marginRateFor(cfg, 'XAUUSD'), 0.05)
+  assert.equal(marginRateFor(cfg, 'NATGAS'), 0.05)
+  assert.equal(marginRateFor(cfg, 'BTCUSD'), 0.5)
+  assert.equal(marginRateFor(cfg, 'EURUSD'), null)
+  assert.equal(marginRateFor(cfg, ''), null)
+  // a null/0 knob falls back to the leverage path; a rate over 1 is clamped to 1
+  assert.equal(marginRateFor({ ...cfg, marginRateStock: null }, '0005.HK'), null)
+  assert.equal(marginRateFor({ ...cfg, marginRateStock: 0 }, '0005.HK'), null)
+  assert.equal(marginRateFor({ ...cfg, marginRateStock: 3 }, '0005.HK'), 1)
+})
+
+test('requiredMargin: a rate is a fraction of notional and wins over leverage; without one leverage stands', () => {
+  const lev = requiredMargin('XAUUSD', 0.01, 2400, 200)
+  assert.equal(lev.marginRequired, 12)
+  const rated = requiredMargin('XAUUSD', 0.01, 2400, 200, null, null, 0.05)
+  assert.equal(rated.notional, lev.notional)
+  assert.equal(rated.marginRequired, 120)
+  assert.equal(requiredMargin('XAUUSD', 0.01, 2400, 200, null, null, 0).marginRequired, 12, '0 means no rate')
+})
+
+test('the HSBC case: at the class rate the margin guard shrinks the 0005.HK short to the cap instead of booking $670', () => {
+  const db = freshDB()
+  setBalance(db, 33_501.93)
+  setLeverage(db, 200)
+  seedRate(db, 'USDHKD', 7.8)
+  const proposal = {
+    symbol: '0005.HK', side: 'short', entry: 163.41, sl: 163.755, tp1: 162.19,
+    requestedVolume: null, strategy: 'donchian_breakout', conviction: 8,
+  }
+  // Leverage only — the reading production made: $134k of notional at 1:200
+  const before = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, ...LEVERAGE_ONLY, perTradeRiskPct: 0.01, maxRiskCapPct: 0.01 })
+  assert.equal(before.approved, true, `leverage-only run should approve: ${before.veto_reason}`)
+  assert.ok(before.checks.margin_required_usd < 1000, `1:200 booked ${before.checks.margin_required_usd}`)
+  assert.equal(before.checks.margin_rate, undefined)
+  // With the class rate the same trade needs ~20% of its notional…
+  const after = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01, maxRiskCapPct: 0.01 })
+  assert.equal(after.approved, true, `should shrink, not veto: ${after.veto_reason}`)
+  assert.equal(after.checks.margin_rate, 0.2)
+  // …which exceeds the 50% margin cap, so the size shrinks to fit it.
+  assert.ok(after.checks.margin_shrink, 'margin_shrink must be stamped')
+  assert.ok(after.adjusted_volume < before.adjusted_volume, `${after.adjusted_volume} < ${before.adjusted_volume}`)
+  assert.ok(after.checks.margin_total_usd <= after.checks.margin_cap_usd + 1e-6)
+  assert.ok(Math.abs(after.checks.margin_required_usd - after.checks.notional_usd * 0.2) < 1, 'margin = 20% of notional')
+})
+
+test('the portfolio estimate applies the class rate to open positions too', () => {
+  const db = freshDB()
+  setBalance(db, 10_000)
+  setLeverage(db, 100)
+  seedRate(db, 'USDHKD', 7.8)
+  // 1,000 units of 0005.HK @ 160 → HK$160k ≈ $20.5k notional → 20% = ~$4.1k
+  insertOpenPositionSized(db, { symbol: '0005.HK', side: 'short', volume: 1000, entry: 160 })
+  const rated = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 10_000, leverage: 100 })
+  const lev = portfolioMarginStatus(db, { ...DEFAULT_RISK_CONFIG, ...LEVERAGE_ONLY }, { balance: 10_000, leverage: 100 })
+  assert.equal(rated.source, 'estimate')
+  assert.ok(rated.usedMargin > lev.usedMargin * 15, `rated ${rated.usedMargin} vs leverage ${lev.usedMargin}`)
 })
