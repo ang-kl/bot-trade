@@ -302,6 +302,13 @@ Measurement history — each line is a real run of the script, not a claim:
   re-measure that reads below this line is known to be missing these, not
   correcting them. If the session runs on past this write-back, the later
   replies are added here the same way, not remembered.
+- 2026-09-03 04:06 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule again): the session continued from `№ 7,244` to
+  **`№ 7,262`** as the last reply at 03:21 UTC (#836–#839 merged: HTF limit
+  dispatch, evidence gate + momentum book, per-account symbol ids,
+  account-aware manual routes; the four-agent trading hour on ACCT-DEMO-2
+  scored at `№ 7,262`); the next reply is `№ 7,263`. Same reason as the
+  line above: a local re-measure that reads below this is missing these.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
