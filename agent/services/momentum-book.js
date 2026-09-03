@@ -26,8 +26,11 @@
 
 import { getState, setState } from '../db.js'
 import { armedTradeKeys } from './stage-matrix.js'
+import { loadShadowState } from './momentum-shadow.js'
 
 export const TSMOM_STRATEGY = 'tsmom_long'
+// A held name with no position is re-proposed at most this often per account.
+export const RECONCILE_EVERY_MS = 60 * 60_000
 export const MOMENTUM_BOOK_CONFIG_KEY = 'momentum_book_json'
 export const MOMENTUM_BOOK_STATE_KEY = 'momentum_book_state_json'
 
@@ -117,9 +120,15 @@ export function buildEntrySynth({ symbol, price, atr, cfg, conviction = null, ra
 export function loadBookState(db) {
   try {
     const s = JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY) || 'null')
-    if (s && typeof s === 'object') return { lastShadowRowId: Number(s.lastShadowRowId) || 0, lastRunMs: Number(s.lastRunMs) || 0 }
+    if (s && typeof s === 'object') {
+      return {
+        lastShadowRowId: Number(s.lastShadowRowId) || 0,
+        lastRunMs: Number(s.lastRunMs) || 0,
+        reconciledAt: s.reconciledAt && typeof s.reconciledAt === 'object' ? s.reconciledAt : {},
+      }
+    }
   } catch { /* fall through */ }
-  return { lastShadowRowId: 0, lastRunMs: 0 }
+  return { lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {} }
 }
 
 /**
@@ -155,7 +164,12 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
                               VALUES (?, ?, ?, ?, 'long', ?, ?, ?, ?, ?, 'open', ?)`)
   const tradeRowFor = db.prepare(`SELECT id, ctrader_position_id, entry_price, sl_price FROM trades WHERE symbol = ? AND account_id = ? AND label_strategy = ? AND status = 'open' ORDER BY id DESC LIMIT 1`)
   const openTsmomTrades = db.prepare(`SELECT id, symbol, ctrader_position_id, entry_price, sl_price FROM trades WHERE account_id = ? AND label_strategy = ? AND status = 'open' AND id NOT IN (SELECT trade_id FROM momentum_book WHERE trade_id IS NOT NULL) ORDER BY id ASC`)
+  // A resting tsmom limit on this account for the symbol: the reconcile
+  // pass must not stack a second order on top of one still waiting to fill.
+  const workingLimit = db.prepare(`SELECT id FROM pending_orders WHERE account_id = ? AND symbol = ? AND status = 'working' AND strategy = ? LIMIT 1`)
+  const workingLimitFor = { get: (accountId, symbol) => { try { return workingLimit.get(accountId, symbol, TSMOM_STRATEGY) } catch { return null } } }
   summary.adopted = 0
+  summary.reconciled = 0
 
   for (const acct of accounts) {
     const accountId = String(acct.accountId)
@@ -195,12 +209,13 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price})`)
     }
 
-    // ENTRIES: one per symbol per account, capped, sized by the gate.
-    for (const [symbol, r] of enters) {
-      if (openRow.get(accountId, symbol)) continue
-      if ((openCount.get(accountId)?.n || 0) >= cfg.maxPositionsPerAccount) { summary.skipped.push(`${accountId}: at maxPositionsPerAccount`); break }
+    // ONE ENTRY ATTEMPT, shared by the shadow's fresh `enter` rows and the
+    // reconcile pass below. Returns 'entered' | 'skipped' | 'capped'.
+    const tryEnter = async (symbol, { conviction = null, rankPct = null, note }) => {
+      if (openRow.get(accountId, symbol)) return 'skipped'
+      if ((openCount.get(accountId)?.n || 0) >= cfg.maxPositionsPerAccount) { summary.skipped.push(`${accountId}: at maxPositionsPerAccount`); return 'capped' }
       const may = deps.mayTrade ? deps.mayTrade(accountId, symbol) : { ok: true, item: null }
-      if (!may.ok) { summary.skipped.push(`${accountId} ${symbol}: ${may.reason}`); continue }
+      if (!may.ok) { summary.skipped.push(`${accountId} ${symbol}: ${may.reason}`); return 'skipped' }
       // THIS ACCOUNT's id (03-09-2026): `symbolIdFor(creds, symbol)` reads the
       // account's own symbol list; the shared map is the fallback only for
       // callers that inject no resolver (tests). The first pass with the
@@ -208,23 +223,56 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       const symbolId = deps.symbolIdFor
         ? await deps.symbolIdFor(creds, symbol)
         : deps.symbolMap?.[String(symbol).toUpperCase()]
-      if (symbolId == null) { summary.skipped.push(`${accountId} ${symbol}: not in this account's symbol list`); continue }
+      if (symbolId == null) { summary.skipped.push(`${accountId} ${symbol}: not in this account's symbol list`); return 'skipped' }
       try {
         const bars = deps.bars ? await deps.bars(creds, symbolId) : []
         const atr = atrOf(bars, cfg.atrPeriod)
         const q = deps.spot ? await deps.spot(creds, symbolId) : null
         const price = Number(q?.ask) > 0 ? Number(q.ask) : Number(bars[bars.length - 1]?.c)
-        const synth = buildEntrySynth({ symbol, price, atr, cfg, conviction: r.conviction, rankPct: r.rank_pct })
-        if (!synth) { summary.skipped.push(`${symbol}: no usable price/ATR`); continue }
+        const synth = buildEntrySynth({ symbol, price, atr, cfg, conviction, rankPct })
+        if (!synth) { summary.skipped.push(`${symbol}: no usable price/ATR`); return 'skipped' }
         const result = await deps.autoTrade(db, symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive })
-        if (!result) { summary.skipped.push(`${accountId} ${symbol}: not filled (gate or broker)`); continue }
+        if (!result) { summary.skipped.push(`${accountId} ${symbol}: not filled (gate or broker)`); return 'skipped' }
         const t = tradeRowFor.get(symbol, accountId, TSMOM_STRATEGY)
         insBook.run(t?.id ?? null, accountId, symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null,
-          t?.entry_price ?? synth.entry, t?.sl_price ?? synth.sl, atr, r.rank_pct, new Date(now).toISOString(), `entered on shadow row ${r.id}`)
+          t?.entry_price ?? synth.entry, t?.sl_price ?? synth.sl, atr, rankPct, new Date(now).toISOString(), note)
         if (t?.id != null) db.prepare(`UPDATE monitored_positions SET paused = 1 WHERE trade_id = ?`).run(t.id)
         summary.entries++
-        log(`momentum book: long ${symbol} on …${accountId.slice(-4)} @ ${synth.entry} stop ${synth.sl.toFixed(5)}`)
-      } catch (err) { summary.skipped.push(`${accountId} ${symbol}: ${err.message}`) }
+        log(`momentum book: long ${symbol} on …${accountId.slice(-4)} @ ${synth.entry} stop ${synth.sl.toFixed(5)} (${note})`)
+        return 'entered'
+      } catch (err) { summary.skipped.push(`${accountId} ${symbol}: ${err.message}`); return 'skipped' }
+    }
+
+    // ENTRIES: one per symbol per account, capped, sized by the gate.
+    let capped = false
+    for (const [symbol, r] of enters) {
+      const out = await tryEnter(symbol, { conviction: r.conviction, rankPct: r.rank_pct, note: `entered on shadow row ${r.id}` })
+      if (out === 'capped') { capped = true; break }
+    }
+
+    // RECONCILE (owner "build it", 03-09-2026, §7,272·B): the shadow emits an
+    // `enter` row only on the flat→long transition, so a name it keeps holding
+    // whose order never filled — a closed-market limit that expired, a gate
+    // refusal on the day — was never tried again. Every pass, each long the
+    // shadow holds on an armed account with no open book row and no working
+    // tsmom limit is re-proposed at the current price, at most once per
+    // symbol per account per RECONCILE_EVERY_MS so a standing refusal
+    // (duplicate_symbol on a bot-held name) is not re-logged every cycle.
+    if (!capped) {
+      let held = {}
+      try { held = loadShadowState(db).holdings || {} } catch { held = {} }
+      for (const [symbol, h] of Object.entries(held)) {
+        if (h?.side !== 'long' || enters.has(symbol)) continue
+        if (openRow.get(accountId, symbol)) continue
+        if (workingLimitFor.get(accountId, symbol)) continue
+        const key = `${accountId}|${symbol}`
+        const last = Number(state.reconciledAt?.[key]) || 0
+        if (now - last < RECONCILE_EVERY_MS) continue
+        state.reconciledAt = { ...(state.reconciledAt || {}), [key]: now }
+        summary.reconciled++
+        const out = await tryEnter(symbol, { conviction: h.entryConviction ?? null, rankPct: h.entryRank ?? null, note: `reconciled: shadow still holds ${symbol} long` })
+        if (out === 'capped') break
+      }
     }
   }
 
@@ -261,7 +309,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     } catch (err) { summary.skipped.push(`${row.symbol} trail: ${err.message}`) }
   }
 
-  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: maxId, lastRunMs: now }))
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: maxId, lastRunMs: now, reconciledAt: state.reconciledAt || {} }))
   return summary
 }
 

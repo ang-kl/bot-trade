@@ -14,8 +14,9 @@ import { initDB, getState, setState } from '../db.js'
 import { setStage } from './stage-matrix.js'
 import {
   atrOf, trailStop, buildEntrySynth, momentumBookConfig, runMomentumBook, momentumBookReport,
-  MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_STATE_KEY, TSMOM_STRATEGY, DEFAULT_MOMENTUM_BOOK,
+  MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_STATE_KEY, TSMOM_STRATEGY, DEFAULT_MOMENTUM_BOOK, RECONCILE_EVERY_MS,
 } from './momentum-book.js'
+import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 
 const DEMO = '111', LIVE = '222'
 const cfg = momentumBookConfig({ enabled: true })
@@ -262,4 +263,65 @@ test('an open tsmom_long trade with no book row (a resting limit that filled lat
   assert.equal(r3.exits, 1)
   assert.equal(r3.adopted, 0)
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM momentum_book`).get().n, 1)
+})
+
+// ---------------------------------------------------------------------------
+// RECONCILE (owner "build it", 03-09-2026, §7,272·B): the shadow emits `enter`
+// only on the flat→long transition, so a held name whose order never filled
+// (an expired closed-market limit, a gate refusal that day) was never tried
+// again. Every pass re-proposes each held long with no open row and no
+// working limit, at most once per symbol per account per RECONCILE_EVERY_MS.
+// ---------------------------------------------------------------------------
+
+test('reconcile: a long the shadow holds with no book row and no working limit is re-proposed; throttled per symbol/account; a working limit or an open row blocks it', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  // The shadow holds BTCUSD and NATGAS long; no new enter rows exist (they were consumed earlier).
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: {
+    BTCUSD: { side: 'long', entryPrice: 77000, enteredAt: 1, entryRank: 0.95, entryConviction: 9 },
+    NATGAS: { side: 'long', entryPrice: 2.9, enteredAt: 1, entryRank: 0.9, entryConviction: 8 },
+  }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  // NATGAS already has a resting tsmom limit on this account → must not be stacked.
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, strategy, account_id) VALUES ('NATGAS','1d','o1',1,2.9,2.7,NULL,1,datetime('now'),datetime('now','+1 day'),'working','pending-closed',?,?)`).run(TSMOM_STRATEGY, DEMO)
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_000_000 })
+  assert.equal(r.reconciled, 1, `only BTCUSD is reconciled: ${JSON.stringify(r.skipped)}`)
+  assert.equal(r.entries, 1)
+  assert.deepEqual(f.calls.autoTrade.map(c => c.symbol), ['BTCUSD'])
+  const row = db.prepare(`SELECT * FROM momentum_book WHERE symbol = 'BTCUSD' AND account_id = ?`).get(DEMO)
+  assert.ok(row && row.status === 'open' && /reconciled/.test(row.note), JSON.stringify(row))
+  assert.equal(row.entry_rank, 0.95, 'the held rank rides on the row')
+  // Same pass again within the hour: BTCUSD now has an open row, NATGAS still has its limit → nothing.
+  const r2 = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_000_000 + 60_000 })
+  assert.equal(r2.reconciled, 0)
+  assert.equal(f.calls.autoTrade.length, 1)
+  // Throttle: a held name whose attempt was refused is not retried inside RECONCILE_EVERY_MS.
+  db.prepare(`DELETE FROM pending_orders`).run()
+  const g = fakes({ fill: false })
+  const r3 = await runMomentumBook(db, { accounts, credsFor, deps: g.deps, now: 5_000_000 + 120_000 })
+  assert.equal(r3.reconciled, 1, 'NATGAS attempted once the limit is gone')
+  assert.equal(g.calls.autoTrade.length, 1)
+  const r4 = await runMomentumBook(db, { accounts, credsFor, deps: g.deps, now: 5_000_000 + 180_000 })
+  assert.equal(r4.reconciled, 0, 'not retried within the hour')
+  assert.equal(g.calls.autoTrade.length, 1)
+  const r5 = await runMomentumBook(db, { accounts, credsFor, deps: g.deps, now: 5_000_000 + 120_000 + RECONCILE_EVERY_MS + 1 })
+  assert.equal(r5.reconciled, 1, 'retried after the hour')
+  assert.ok(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).reconciledAt[`${DEMO}|NATGAS`] > 0, 'the throttle stamp persists')
+})
+
+test('reconcile never touches shorts or names with a fresh enter row this pass (those go through the normal entry)', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: {
+    NATGAS: { side: 'short', entryPrice: 2.9, enteredAt: 1, entryRank: 0.05, entryConviction: 9 },
+    BTCUSD: { side: 'long', entryPrice: 77000, enteredAt: 1, entryRank: 0.95, entryConviction: 9 },
+  }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', rank: 0.95, conviction: 9 })
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_000_000 })
+  assert.equal(r.entries, 1)
+  assert.equal(r.reconciled, 0, 'BTCUSD entered through its enter row; the short is never a candidate')
+  assert.deepEqual(f.calls.autoTrade.map(c => c.symbol), ['BTCUSD'])
 })

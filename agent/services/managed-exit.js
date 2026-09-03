@@ -59,10 +59,13 @@ import { getState } from '../db.js'
  */
 export function applyManagedRules(db, accountId, rules) {
   if (!managedExitApplies(db, accountId)) return rules
+  const policy = loadManagedExit(db)
   return {
     ...rules,
-    alwaysTrailR: loadManagedExit(db).trailR,
-    bankTriggerR: 0,
+    alwaysTrailR: policy.trailR,
+    // takeAtR rides the bank-target rule: FULL_EXIT once R reaches it, the
+    // trail answering below. 0 keeps the trail as the only exit.
+    bankTriggerR: policy.takeAtR > 0 ? policy.takeAtR : 0,
     partialTriggerR: Infinity,
     runnerTriggerR: Infinity,
     beTriggerR: Infinity,
@@ -83,6 +86,14 @@ export const MANAGED_EXIT_DEFAULTS = Object.freeze({
   demoOnly: false,
   capMinutes: 0,
   trailR: 0.5,
+  // TAKE THE WHOLE POSITION at this R (owner "do the different exit",
+  // 03-09-2026, §7,272·C). Measured on the 79 clean burn-in closes of the
+  // last 30 days: realised R quartiles −0.30 / −0.10 / −0.02, about 60% of
+  // trades touch +0.5R and about 40% touch +1R, and nothing reaches +1.5R or
+  // +2R often enough to measure — the trail alone gave those touches back.
+  // Rides the existing bank-target rule (FULL_EXIT at R ≥ bankTriggerR), so
+  // the trail still governs below it. 0 = off (trail only, as before).
+  takeAtR: 1.0,
 })
 
 /** Stored overrides ← defaults. Junk in state degrades to the defaults. */
@@ -102,6 +113,8 @@ export function loadManagedExit(db) {
     demoOnly: stored.demoOnly !== undefined ? stored.demoOnly !== false : MANAGED_EXIT_DEFAULTS.demoOnly,
     capMinutes: Number.isFinite(capMinutes) && capMinutes >= 0 ? capMinutes : MANAGED_EXIT_DEFAULTS.capMinutes,
     trailR: num(stored.trailR, MANAGED_EXIT_DEFAULTS.trailR),
+    // 0 is a VALUE here too (trail only); junk degrades to the default.
+    takeAtR: Number.isFinite(Number(stored.takeAtR)) && Number(stored.takeAtR) >= 0 ? Number(stored.takeAtR) : MANAGED_EXIT_DEFAULTS.takeAtR,
   }
 }
 
