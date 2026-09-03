@@ -18,6 +18,7 @@ import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { sizingBalance } from '../lib/sizing-balance.js'
 import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
+import { assetClassOf } from './strategy-asset-cross.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
@@ -400,6 +401,21 @@ export const DEFAULT_RISK_CONFIG = {
   // Override via POST /actions/balance { leverage: 500 }.
   leverage: 100,
   maxMarginUsagePct: 0.5,          // Max % of balance locked in margin.
+  // PER-CLASS MARGIN RATES (owner "build it", 03-09-2026). The account
+  // leverage above is an FX number. Brokers margin share CFDs, indices,
+  // commodities and crypto at their own rates whatever the account leverage
+  // says, and the margin guard used to divide every notional by the FX
+  // leverage: a 0005.HK short sized to 1% risk on a 0.2% stop was HK$1.05M
+  // (US$134k) of notional booked as $670 of margin at 1:200, while
+  // Pepperstone took ~20% (≈$27k of a $33.5k account). The next two orders
+  // on that account came back NOT_ENOUGH_MONEY from the broker and the
+  // insufficient_margin guard — on, configured — never fired (failure mode
+  // #3). Each rate is a FRACTION of notional; null/0 falls back to
+  // notional / leverage (FX stays on the account leverage).
+  marginRateStock: 0.2,            // share CFDs (.US .HK .DE .UK .AU)
+  marginRateIndex: 0.05,           // index CFDs
+  marginRateCommodity: 0.05,       // metals, energy, softs
+  marginRateCrypto: 0.5,           // crypto CFDs
   // Broker-side spike protection (owner 2026-07-24): stop trigger method for
   // entry orders' SL. null = broker default (TRADE — touch-triggered, spike-
   // sensitive). 'OPPOSITE' | 'DOUBLE_TRADE' | 'DOUBLE_OPPOSITE' make the
@@ -605,10 +621,35 @@ export function getAccountLeverage(db, config, accountId = null) {
  * Compute margin required for a proposed position (in the account's deposit
  * currency, approximated as USD). Returns { notional, marginRequired }.
  */
-export function requiredMargin(symbol, volumeLots, price, leverage, rates = null, perLot = null) {
+export function requiredMargin(symbol, volumeLots, price, leverage, rates = null, perLot = null, marginRate = null) {
   const notional = notionalUsd(symbol, volumeLots, price, rates, perLot)
-  const marginRequired = notional / Math.max(1, leverage)
+  // A per-class rate (see marginRateFor) is a fraction of notional and wins
+  // over the account leverage; without one the FX convention stands.
+  const rate = Number(marginRate)
+  const marginRequired = Number.isFinite(rate) && rate > 0
+    ? notional * rate
+    : notional / Math.max(1, leverage)
   return { notional, marginRequired }
+}
+
+/**
+ * The margin rate the broker applies to THIS symbol's class, from the
+ * per-class knobs (marginRateStock / Index / Commodity / Crypto). null for
+ * FX and anything unclassified, meaning "use the account leverage".
+ * Pure; the class comes from assetClassOf (strategy-asset-cross.js).
+ */
+export function marginRateFor(config, symbol) {
+  const cls = assetClassOf(symbol)
+  const pick = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.min(1, Number(v)) : null)
+  switch (cls) {
+    case 'stock': return pick(config?.marginRateStock)
+    case 'index': return pick(config?.marginRateIndex)
+    case 'metal':
+    case 'energy':
+    case 'soft': return pick(config?.marginRateCommodity)
+    case 'crypto': return pick(config?.marginRateCrypto)
+    default: return null
+  }
 }
 
 // Broker snapshot fresher than this still counts as truth; older falls back
@@ -658,7 +699,7 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
     for (const p of rows) {
       if (!(Number(p.volume) > 0) || !(Number(p.entry_price) > 0)) continue
       try {
-        usedMargin += requiredMargin(p.symbol, Number(p.volume), Number(p.entry_price), leverage, rates).marginRequired || 0
+        usedMargin += requiredMargin(p.symbol, Number(p.volume), Number(p.entry_price), leverage, rates, null, marginRateFor(config, p.symbol)).marginRequired || 0
       } catch { /* skip a row we can't price — never block sizing on one bad row */ }
     }
   }
@@ -1740,8 +1781,12 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   let volume = finalVolume
   if (balance != null) {
     const rates = scanRates(db)
+    // The class's own margin rate (share/index/commodity/crypto); FX stays
+    // on the account leverage. Recorded so a veto can be read back.
+    const marginRate = marginRateFor(config, proposal.symbol)
+    if (marginRate != null) checks.margin_rate = marginRate
     let { notional, marginRequired } = requiredMargin(
-      proposal.symbol, volume, entry, leverage, rates, brokerPerLot,
+      proposal.symbol, volume, entry, leverage, rates, brokerPerLot, marginRate,
     )
     // Margin already committed — broker truth when the snapshot is fresh,
     // the per-row estimate otherwise (see portfolioMarginStatus).
@@ -1778,7 +1823,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       }
       const before = volume
       volume = shrunk
-      ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates, brokerPerLot))
+      ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates, brokerPerLot, marginRate))
       checks.margin_shrink = { from: before, to: volume, reason: 'margin_headroom' }
       sizingNote = sizingNote ? `${sizingNote} · shrunk_for_margin=${before}->${volume}` : `shrunk_for_margin=${before}->${volume}`
     }
@@ -1818,7 +1863,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
           )
         }
         volume = shrunk
-        ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates, brokerPerLot))
+        ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates, brokerPerLot, marginRate))
         checks.notional_fit = {
           from: before, to: volume,
           xFrom: Number(x.toFixed(2)), xTo: Number((notional / balance).toFixed(2)),
