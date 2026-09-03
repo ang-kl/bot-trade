@@ -168,7 +168,7 @@ test('applyManagedRules sets the silencing values for governed accounts and pass
   const base = { ...DEFAULT_RULES, bankTriggerR: 4 }
   const managed = applyManagedRules(db, '43097342', base)
   assert.equal(managed.alwaysTrailR, MANAGED_EXIT_DEFAULTS.trailR)
-  assert.equal(managed.bankTriggerR, 0)
+  assert.equal(managed.bankTriggerR, MANAGED_EXIT_DEFAULTS.takeAtR, 'takeAtR rides the bank-target rule')
   assert.equal(managed.partialTriggerR, Infinity)
   assert.equal(managed.runnerTriggerR, Infinity)
   assert.equal(managed.beTriggerR, Infinity)
@@ -206,4 +206,47 @@ test('every source whitelist that names ours includes preopen', () => {
       assert.ok(s.includes('preopen'), `${f}: a source whitelist omits 'preopen': ${s}`)
     }
   }
+})
+
+// ---------------------------------------------------------------------------
+// takeAtR (owner "do the different exit", 03-09-2026): the whole position is
+// taken at +1R; the trail answers below it; 0 restores trail-only.
+// ---------------------------------------------------------------------------
+
+test('takeAtR: default 1.0, stored value honoured, 0 is a value (trail only), junk degrades to the default', () => {
+  const db = initDB(':memory:')
+  assert.equal(MANAGED_EXIT_DEFAULTS.takeAtR, 1.0)
+  assert.equal(loadManagedExit(db).takeAtR, 1.0)
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtR: 1.5 }))
+  assert.equal(loadManagedExit(db).takeAtR, 1.5)
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtR: 0 }))
+  assert.equal(loadManagedExit(db).takeAtR, 0)
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtR: 'junk' }))
+  assert.equal(loadManagedExit(db).takeAtR, 1.0)
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtR: -2 }))
+  assert.equal(loadManagedExit(db).takeAtR, 1.0)
+})
+
+test('under the managed ruleset +1R is a FULL_EXIT (bank_target_1R); +0.8R is still the trail; takeAtR 0 leaves the trail alone', () => {
+  const db = withAccounts(initDB(':memory:'))
+  const pos = {
+    id: 1, symbol: 'TEST', side: 'long', entry_price: 100, current_sl: 99,
+    current_tp: null, initial_risk: 1, mfe_r: 0, mae_r: 0, be_moved: 0,
+    scaled_out: 0, invalidation_trigger: null, time_cap_at: null,
+    created_at: new Date().toISOString(),
+  }
+  const managed = applyManagedRules(db, '43097342', { ...DEFAULT_RULES })
+  assert.equal(managed.bankTriggerR, 1.0)
+  const take = evaluatePosition(pos, { currentPrice: 101, rules: managed })
+  assert.equal(take.action, 'FULL_EXIT')
+  assert.match(take.reason, /bank_target_1R/)
+  assert.equal(take.exitFraction, 1)
+  const below = evaluatePosition(pos, { currentPrice: 100.8, rules: managed })
+  assert.equal(below.action, 'MOVE_SL', 'below +1R the 0.5R trail is the rule that answers')
+  assert.match(below.reason, /managed_trail/)
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtR: 0 }))
+  const trailOnly = applyManagedRules(db, '43097342', { ...DEFAULT_RULES })
+  assert.equal(trailOnly.bankTriggerR, 0)
+  const r = evaluatePosition(pos, { currentPrice: 106, rules: trailOnly })
+  assert.equal(r.action, 'MOVE_SL', 'with takeAtR 0 a +6R print is still only trailed')
 })
