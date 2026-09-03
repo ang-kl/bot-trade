@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 
 import {
   mayFallbackToJs, preSubmitFailure, sidecarAttestsNotSent,
-  isWriteOp, WRITE_OPS, fallbackNote,
+  isWriteOp, WRITE_OPS, fallbackNote, sidecarGuardRefused, isAmbiguousOrderOutcome,
 } from './exec-fallback.js'
 
 const netErr = (code, extra = {}) => Object.assign(new Error(`fetch failed`), { cause: { code }, ...extra })
@@ -157,4 +157,27 @@ test('every fallback produces a log line — switching engines is never silent',
 test('no arguments at all is a refusal, not a crash', () => {
   const v = mayFallbackToJs()
   assert.equal(v.fallback, false)
+})
+
+// ---------------------------------------------------------------------------
+// 03-09-2026: the sidecar's order guard runs BEFORE the socket (engine.cpp
+// placeOrder: validateOrder → errResult, then request). Two guard_no_target
+// refusals were recorded as order_ambiguous and then held BTCUSD under
+// duplicate_submission_ambiguous on two accounts — a refusal that provably
+// sent nothing, treated as a position that might exist.
+// ---------------------------------------------------------------------------
+
+test('a sidecar guard refusal is provable non-submission: NOT ambiguous', () => {
+  const err = new Error('{"errorCode":"guard_no_target","description":"guard_no_target: market order has no take profit attached (set allowNaked to override)"}')
+  assert.equal(sidecarGuardRefused(err), true)
+  assert.equal(isAmbiguousOrderOutcome(err), false)
+  for (const code of ['guard_naked_order', 'guard_volume_cap', 'guard_halt', 'guard_bad_payload', 'guard_no_account']) {
+    assert.equal(isAmbiguousOrderOutcome(new Error(`{"errorCode":"${code}","description":"x"}`)), false, code)
+  }
+})
+
+test('the guard match is on the JSON errorCode field, never a broker description that mentions a guard', () => {
+  assert.equal(sidecarGuardRefused(new Error('{"errorCode":"TRADING_BAD_VOLUME","description":"see guard_volume_cap docs"}')), false)
+  assert.equal(sidecarGuardRefused(new Error('guard_no_target: market order has no take profit attached')), false, 'Node\'s own plain-text guard is not the sidecar attestation')
+  assert.equal(isAmbiguousOrderOutcome(new Error('{"errorCode":"TRADING_BAD_VOLUME"}')), true, 'a broker error after the send stays ambiguous by default')
 })

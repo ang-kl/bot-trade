@@ -669,14 +669,13 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // entry costs an opportunity, resubmitting onto a live fill costs money. A
   // plain `order_failed` (broker REJECTED it — provably no position) is NOT
   // caught here, so ordinary rejections still retry next cycle as before.
-  const ambiguous = dupe ? null : db.prepare(`
-    SELECT id, created_at FROM risk_events
-    WHERE symbol = ? AND side = ? AND approved = 0
-      AND veto_reason LIKE 'order_ambiguous:%'
-      AND created_at >= datetime('now', ?)
-      AND (account_id = ? OR account_id IS NULL)
-    ORDER BY id DESC LIMIT 1
-  `).get(symbol, side, DEDUPE_WINDOW_SQL, String(accountId))
+  // The bound is built in the column's own ISO format (lib/submission-dedupe):
+  // comparing risk_events.created_at ("…T08:54:36.700Z") against
+  // datetime('now', '-20 minutes') ("… 09:35:00") sorted every same-day row
+  // ABOVE the bound, so the "20-minute" hold ran until midnight UTC —
+  // measured 03-09-2026 on BTCUSD, 61 minutes after the ambiguous row.
+  const { recentAmbiguousSubmission } = await import('./lib/submission-dedupe.js')
+  const ambiguous = dupe ? null : recentAmbiguousSubmission(db, { symbol, side, accountId, windowMin: DEDUPE_WINDOW_MIN })
 
   if (dupe || ambiguous) {
     const reason = dupe
