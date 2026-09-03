@@ -585,8 +585,13 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     ...(slDistance ? { relativeStopLoss: relativePoints(slDistance, symbolDigits) } : {}),
     ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, symbolDigits) } : {}),
     // A STATED no-target bracket (momentum book: trailing stop, no target)
-    // waives only the target guard in exec-engine; the stop guard still holds.
-    ...(synth.noTarget === true && !tpDistance ? { allowNoTarget: true } : {}),
+    // waives the target guard. Node's exec-engine reads allowNoTarget; the
+    // C++ sidecar's order_guard knows only allowNaked (cpp-exec/src/
+    // order_guard.cpp) and refused every book market order on 03-09-2026
+    // ("order_ambiguous: guard_no_target") after the Node-only flag shipped.
+    // allowNaked is sent ONLY when a stop is attached (slDistance > 0), so
+    // the naked-order check it also waives can never be the one that mattered.
+    ...(synth.noTarget === true && !tpDistance && slDistance > 0 ? { allowNoTarget: true, allowNaked: true } : {}),
     // Spike protection: broker-side stop trigger method (config-gated no-op
     // when unset — see lib/order-protection.js).
     ...(await import('./lib/order-protection.js')).stopTriggerField(riskCfg),

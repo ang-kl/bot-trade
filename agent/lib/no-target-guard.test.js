@@ -30,7 +30,10 @@ test('loop.js: autoTrade resolves the symbol id PER ACCOUNT and states allowNoTa
   assert.ok(start > 0 && end > start)
   assert.ok(body.includes('await resolveSymbolId(db, {'), 'autoTrade resolves through resolveSymbolId with this account\'s creds')
   assert.ok(!body.includes("getState(db, 'symbol_id_map')"), 'autoTrade never reads the shared map directly')
-  assert.ok(body.includes('synth.noTarget === true && !tpDistance ? { allowNoTarget: true }'), 'the stated no-target bracket becomes allowNoTarget on the market payload')
+  // Both flags, and only with a stop attached: Node's exec-engine reads
+  // allowNoTarget; the C++ sidecar's order_guard knows only allowNaked and
+  // refused every book market order on 03-09-2026 with the Node-only flag.
+  assert.ok(body.includes('synth.noTarget === true && !tpDistance && slDistance > 0 ? { allowNoTarget: true, allowNaked: true }'), 'the stated no-target bracket sets allowNoTarget AND allowNaked, gated on a stop being attached')
   assert.ok(src.includes('symbolIdFor: async (creds, symbol) =>'), 'the book is handed a per-account resolver')
 })
 
