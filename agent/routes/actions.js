@@ -1872,7 +1872,8 @@ export default function actionsRouter(db, deps = {}) {
   // Body: { positionId, lots? } (omit lots → full close).
   router.post('/position-close', async (req, res) => {
     try {
-      const creds = getCtraderCreds(db)
+      // `account` (03-09-2026): close on the NAMED account, else the primary.
+      const creds = credsForAccountId(db, req.body?.account)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { positionId, lots } = req.body || {}
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
@@ -5269,17 +5270,28 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/manual-order', async (req, res) => {
     try {
-      const { symbol: rawSymbol, side: rawSide, lots, sl, tp } = req.body || {}
+      const { symbol: rawSymbol, side: rawSide, lots, sl, tp, account } = req.body || {}
       const symbol = (rawSymbol || '').toUpperCase().trim()
       const side = String(rawSide || '').toUpperCase()
       if (!symbol) return res.status(400).json({ error: 'symbol required' })
       if (side !== 'BUY' && side !== 'SELL') return res.status(400).json({ error: "side must be 'BUY' or 'SELL'" })
       if (sl == null || !Number.isFinite(Number(sl))) return res.status(400).json({ error: 'sl (stop-loss price) required — no manual orders without a stop' })
 
-      const creds = getCtraderCreds(db)
+      // `account` (03-09-2026): the order goes to the NAMED account, else the
+      // primary as before. An unknown id is refused rather than silently
+      // routed to the primary — a manual order on the wrong account is the
+      // kind of mistake nobody notices until the statement.
+      if (account != null && account !== '' && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(String(account))) {
+        return res.status(400).json({ error: `account ${String(account)} is not in the registry` })
+      }
+      const creds = credsForAccountId(db, account)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader credentials not configured' })
-      const symbolId = (await ensureSymbolMap(db, creds))[symbol]
-      if (!symbolId) return res.status(400).json({ error: `Symbol ID unknown for ${symbol} — not offered by this broker account` })
+      // THIS ACCOUNT's id (03-09-2026): the shared map's ids were other
+      // instruments on ACCT-LIVE-1 for LLY.US and GD.US.
+      const { resolveSymbolId } = await import('../lib/ctrader-creds.js')
+      const resolvedSymbol = await resolveSymbolId(db, creds, symbol)
+      const symbolId = resolvedSymbol.id
+      if (!symbolId) return res.status(400).json({ error: resolvedSymbol.reason || `Symbol ID unknown for ${symbol} — not offered by this broker account` })
 
       // Entry estimate = freshest 1m close (includes the forming bar — this
       // is a price estimate for the risk gate, the order itself is MARKET).
@@ -5376,11 +5388,12 @@ export default function actionsRouter(db, deps = {}) {
         const tradeInsert = db.prepare(`
           INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
             ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status,
-            origin, origin_source)
+            origin, origin_source, account_id)
           VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open',
-                  'manual_broker', 'write')
+                  'manual_broker', 'write', ?)
         `).run(symbol, side, entryP, proposal.sl, proposal.tp1, volLots, positionId, structuredLabel,
-          parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session)
+          parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session,
+          creds.accountId != null ? String(creds.accountId) : null)
         db.prepare(`
           INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
             thesis, initial_risk, strategy, source, label_raw, account_id, status)
