@@ -151,10 +151,30 @@ export function sidecarAttestsNotSent(err) {
  * @param {Error|null} err
  * @returns {boolean} true when a position MAY exist at the broker
  */
+/**
+ * Did the sidecar's own order guard refuse THIS request before the socket?
+ *
+ * cpp-exec/src/engine.cpp placeOrder(): `validateOrder` runs BEFORE
+ * `request(NEW_ORDER_REQ, …)` and returns `errResult(v.reason, v.reason)` —
+ * a body whose errorCode is the guard reason (`guard_no_target`,
+ * `guard_naked_order`, `guard_volume_cap`, `guard_halt`, `guard_bad_payload`,
+ * `guard_no_account`). Nothing was written to the broker. Measured
+ * 03-09-2026: two guard_no_target refusals were recorded as order_ambiguous
+ * and then held the symbol under duplicate_submission_ambiguous — a refusal
+ * that provably sent nothing was treated as a position that might exist.
+ * Matched on the JSON field, not a bare substring, for the same reason as
+ * sidecarAttestsNotSent.
+ */
+export function sidecarGuardRefused(err) {
+  if (!err) return false
+  return /"errorCode"\s*:\s*"guard_[a-z_]+"/.test(String(err.message || ''))
+}
+
 export function isAmbiguousOrderOutcome(err) {
   if (!err) return false
-  // Provably nothing was submitted — the only two ways out.
+  // Provably nothing was submitted — the only three ways out.
   if (sidecarAttestsNotSent(err)) return false
+  if (sidecarGuardRefused(err)) return false
   if (preSubmitFailure(err)) return false
   return true
 }
