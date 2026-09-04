@@ -209,7 +209,49 @@ test('wiring pins: the loop runs the book after the shadow with the real autoTra
   assert.ok(block.includes('amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: null })'), 'the loop states the book holds no target on every amend')
   assert.ok(block.includes('close: (creds, args) => exec.closePosition(creds, args)'))
   assert.ok(block.includes('phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade'))
+  assert.ok(block.includes("digitsFor: async (creds, symbolId) => (await (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)).digits"), 'the loop hands the book the symbol digits the trailed stop is rounded to')
   assert.ok(src.includes("synth.marketOnly !== true && !fresh"), 'a marketOnly synth never rests as a limit')
+})
+
+// ---------------------------------------------------------------------------
+// 04-09-2026, Railway logs: every trail amend since adoption was refused —
+// "Order price = 1053.4199999999998 has more digits than allowed" (LLY.US),
+// "Order protection = 344.358 has more digits than symbol allows. Allowed 2
+// digits" (GD.US). The book's stop that "only rises" had never risen once.
+// ---------------------------------------------------------------------------
+
+test('the trailed stop is rounded to the symbol digits before the amend, and the rounded value is what the ledger stores', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  const askedDigits = []
+  f.deps.digitsFor = async (_c, symbolId) => { askedDigits.push(symbolId); return 2 }
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 1_000 })
+  // Bars shifted by a float-noisy amount: close − 3·ATR carries far more than two decimals.
+  f.deps.bars = async () => f.bars.map(b => ({ ...b, h: b.h + 10.123456789, l: b.l + 10.123456789, c: b.c + 10.123456789 }))
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(r.trailed, 1)
+  assert.equal(f.calls.amend.length, 1)
+  const sent = f.calls.amend[0].stopLoss
+  assert.equal(sent, Math.round(sent * 100) / 100, `the amend carries at most two decimals: ${sent}`)
+  assert.equal(db.prepare(`SELECT stop FROM momentum_book`).get().stop, sent, 'the book stores what the broker holds')
+  assert.equal(db.prepare(`SELECT sl_price FROM trades`).get().sl_price, sent)
+  assert.ok(askedDigits.length >= 1 && askedDigits.every(id => id === 1), `digits are asked for THIS symbol id on every pass: ${JSON.stringify(askedDigits)}`)
+})
+
+test('without a digits source the raw trailed stop still goes out (the fixture path) — the loop wiring pin above is what guarantees production rounds', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 1_000 })
+  f.deps.bars = async () => f.bars.map(b => ({ ...b, h: b.h + 10.123456789, l: b.l + 10.123456789, c: b.c + 10.123456789 }))
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(r.trailed, 1)
+  assert.notEqual(f.calls.amend[0].stopLoss, Math.round(f.calls.amend[0].stopLoss * 100) / 100, 'no rounding was applied — proves the digits path is what the first test exercised')
 })
 
 // ---------------------------------------------------------------------------
