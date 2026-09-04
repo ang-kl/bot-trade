@@ -809,9 +809,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // the stop 0.18 under the real fill and called it breakeven). The broker
     // holds the fill on the position; read it back, bounded, before any
     // ledger write. No position found → the proposal entry stands, as before.
+    // LIVE read, not the sidecar's cache (measured 04-09-2026 18:56 UTC,
+    // JPM.US on ACCT-DEMO-1): the first version read `execReconcile`, which
+    // on the cpp path serves the sidecar's own periodic reconcile snapshot —
+    // a position one second old is not in it, so all three attempts missed
+    // and the ledger kept 362.15 against a 358.67 fill. `wsReconcile` asks
+    // the broker directly; one authenticated round trip per fill.
     if (executionPrice == null && positionId) {
       const { confirmFill } = await import('./lib/fill-anchor.js')
-      const confirmed = await confirmFill(() => execReconcile({ host, clientId, clientSecret, accessToken, accountId }), positionId)
+      const { wsReconcile } = await import('./lib/ctrader-ws.js')
+      const confirmed = await confirmFill(() => wsReconcile(host, clientId, clientSecret, accessToken, accountId), positionId)
       if (confirmed != null) {
         executionPrice = confirmed
         log(`Fill confirmed from the position read: ${symbol} ${side} @ ${confirmed} (posId=${positionId})`)
