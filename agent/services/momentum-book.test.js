@@ -175,11 +175,21 @@ test('a shadow exit closes the position and marks the row; the trail ratchets th
   assert.equal(f.calls.amend[0].takeProfit, null, 'the book states it holds no target — a stop-only amend would clear one at the broker')
   assert.equal(db.prepare(`SELECT sl_price FROM trades`).get().sl_price, after, 'the ledger follows the ratchet')
   assert.equal(db.prepare(`SELECT current_sl FROM monitored_positions`).get().current_sl, after)
+  // A target left on the record (a row adopted before the clearing shipped) goes with the amend that clears it at the broker.
+  db.prepare(`UPDATE monitored_positions SET current_tp = 999`).run()
+  db.prepare(`UPDATE trades SET tp_price = 999`).run()
+  f.deps.bars = async () => f.bars.map(b => ({ ...b, h: b.h + 20, l: b.l + 20, c: b.c + 20 }))
+  r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 2_500 })
+  assert.equal(r.trailed, 1)
+  assert.equal(db.prepare(`SELECT current_tp FROM monitored_positions`).get().current_tp, null, 'the trail clears the recorded target with the broker amend')
+  assert.equal(db.prepare(`SELECT tp_price FROM trades`).get().tp_price, null)
+  const after2 = db.prepare(`SELECT stop FROM momentum_book`).get().stop
+  assert.ok(after2 > after)
   // Price falls back: the stop does NOT follow.
   f.deps.bars = async () => f.bars
   r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 3_000 })
   assert.equal(r.trailed, 0)
-  assert.equal(db.prepare(`SELECT stop FROM momentum_book`).get().stop, after)
+  assert.equal(db.prepare(`SELECT stop FROM momentum_book`).get().stop, after2)
   // Rank exit: the position is closed and the row says why.
   shadowRow(db, { symbol: 'BTCUSD', action: 'exit' })
   r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 4_000 })
@@ -286,15 +296,21 @@ test('an open tsmom_long trade with no book row (a resting limit that filled lat
   const db = fresh()
   setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
-  const tid = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES ('NATGAS','BUY','open',3.0,2.7,NULL,?,?,?,'bot_market_dispatch','pos-late',datetime('now'))`)
+  // The limit path stamps a 1.5R target (3.45) on both rows; the book must clear it at adoption.
+  const tid = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES ('NATGAS','BUY','open',3.0,2.7,3.45,?,?,?,'bot_market_dispatch','pos-late',datetime('now'))`)
     .run(TSMOM_STRATEGY, TSMOM_STRATEGY, DEMO).lastInsertRowid
-  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, account_id, status, source) VALUES ('NATGAS', ?, 'long', 3.0, 2.7, ?, 'active', 'autopilot')`).run(tid, DEMO)
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, account_id, status, source) VALUES ('NATGAS', ?, 'long', 3.0, 2.7, 3.45, ?, 'active', 'autopilot')`).run(tid, DEMO)
   const f = fakes()
   const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_000_000 })
   assert.equal(r.adopted, 1)
   const row = db.prepare(`SELECT * FROM momentum_book WHERE trade_id = ?`).get(tid)
   assert.ok(row && row.status === 'open' && row.position_id === 'pos-late' && row.stop >= 2.7, JSON.stringify(row))
-  assert.equal(db.prepare(`SELECT paused FROM monitored_positions WHERE trade_id = ?`).get(tid).paused, 1)
+  const mp = db.prepare(`SELECT paused, current_tp FROM monitored_positions WHERE trade_id = ?`).get(tid)
+  assert.equal(mp.paused, 1)
+  // 04-09-2026: the target-restore sweep reads current_tp and would put the
+  // limit's 1.5R target back at the broker after the book's amend cleared it.
+  assert.equal(mp.current_tp, null, 'the book holds no target — the record must say so, or the restore sweep re-caps the position')
+  assert.equal(db.prepare(`SELECT tp_price FROM trades WHERE id = ?`).get(tid).tp_price, null)
   // second pass: nothing new to adopt
   const r2 = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_100_000 })
   assert.equal(r2.adopted, 0)

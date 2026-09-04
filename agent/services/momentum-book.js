@@ -205,7 +205,16 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       if (openRow.get(accountId, t.symbol)) continue
       insBook.run(t.id, accountId, t.symbol, t.ctrader_position_id != null ? String(t.ctrader_position_id) : null,
         t.entry_price, t.sl_price, null, null, new Date(now).toISOString(), `adopted filled order (trade ${t.id})`)
-      db.prepare(`UPDATE monitored_positions SET paused = 1 WHERE trade_id = ?`).run(t.id)
+      // The book holds NO target, and the record must say so. A closed-market
+      // limit is placed with a 1.5R take profit, so the adopted row inherits
+      // `current_tp` / `tp_price`; the book's first trail amend clears the
+      // target at the broker, and the target-restore sweep (which reads
+      // `monitored_positions.current_tp`) then puts it straight back.
+      // Measured 04-09-2026: LLY.US on ACCT-DEMO-1 lost its target at the
+      // 08:46 SGT trail and held it again by the evening — a 1.5R cap on a
+      // trend position that is meant to run. Cleared here, once, at adoption.
+      db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(t.id)
+      db.prepare(`UPDATE trades SET tp_price = NULL WHERE id = ?`).run(t.id)
       summary.adopted++
       log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price})`)
     }
@@ -312,8 +321,11 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         if (row.position_id && deps.amend) await deps.amend(creds, { positionId: row.position_id, stopLoss: next, takeProfit: null })
         db.prepare(`UPDATE momentum_book SET stop = ?, atr = ? WHERE id = ?`).run(next, atr, row.id)
         if (row.trade_id != null) {
-          db.prepare(`UPDATE trades SET sl_price = ? WHERE id = ?`).run(next, row.trade_id)
-          db.prepare(`UPDATE monitored_positions SET current_sl = ? WHERE trade_id = ?`).run(next, row.trade_id)
+          // The amend above clears the target at the broker; the record clears
+          // with it, so the target-restore sweep has nothing to put back (rows
+          // adopted before 04-09-2026 still carry the limit's 1.5R target).
+          db.prepare(`UPDATE trades SET sl_price = ?, tp_price = NULL WHERE id = ?`).run(next, row.trade_id)
+          db.prepare(`UPDATE monitored_positions SET current_sl = ?, current_tp = NULL WHERE trade_id = ?`).run(next, row.trade_id)
         }
         summary.trailed++
       }
