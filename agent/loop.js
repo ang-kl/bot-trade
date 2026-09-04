@@ -797,11 +797,28 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     }
     const entryLatencyMs = Date.now() - submitT0
     setState(db, 'api_ctrader_last_ok', new Date().toISOString())
-    const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
+    let executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     // normPosId: one exec path returned float-formatted ids ("234698574.0")
     // which broke deal-history P&L matching and duplicate detection.
     const { normPosId } = await import('./lib/pos-id.js')
     const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
+    // THE FILL THE ANCHOR NEVER SAW (04-09-2026). The sidecar's order answer
+    // is ORDER_ACCEPTED — a position id and no deal — so on the cpp path the
+    // price above was null on every market fill and the fill anchoring below
+    // never fired (2020.HK: filled 76.21, ledger 75.79, the manager parked
+    // the stop 0.18 under the real fill and called it breakeven). The broker
+    // holds the fill on the position; read it back, bounded, before any
+    // ledger write. No position found → the proposal entry stands, as before.
+    if (executionPrice == null && positionId) {
+      const { confirmFill } = await import('./lib/fill-anchor.js')
+      const confirmed = await confirmFill(() => execReconcile({ host, clientId, clientSecret, accessToken, accountId }), positionId)
+      if (confirmed != null) {
+        executionPrice = confirmed
+        log(`Fill confirmed from the position read: ${symbol} ${side} @ ${confirmed} (posId=${positionId})`)
+      } else {
+        log(`Fill NOT confirmed for ${symbol} posId=${positionId} — the ledger keeps the proposal entry ${synth.entry}`)
+      }
+    }
 
     // THE PRICE EVERY LEDGER WRITE MUST USE. `executionPrice` is the broker's
     // confirmed fill and is frequently ABSENT — a market order's deal can land

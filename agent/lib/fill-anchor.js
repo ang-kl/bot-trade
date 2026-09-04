@@ -89,3 +89,70 @@ export function entryDriftVeto(cfg, { drift, fracOfSL, price }, { symbolDigits =
   const d = Math.max(0, Math.min(8, Math.round(symbolDigits)))
   return `entry_drift: live ${Number(price).toFixed(d)} is ${Number(drift).toFixed(d)} (${(fracOfSL * 100).toFixed(0)}% of SL distance) past the proposal entry — limit ${(frac * 100).toFixed(0)}%`
 }
+
+// ---------------------------------------------------------------------------
+// THE FILL THE ANCHOR NEVER SAW (04-09-2026). The C++ sidecar answers a
+// market order with the FIRST execution event echoing its clientMsgId —
+// ORDER_ACCEPTED — which carries the position id and no deal, so
+// `exec.deal.executionPrice` is absent on every cpp-path market fill and the
+// anchoring above ran with `anchored: false` since it shipped. Measured:
+// 2020.HK rsi2 on ACCT-DEMO-4, proposal 75.79, broker fill 76.21 (0.44R of
+// slippage on a 0.96 stop); the ledger kept 75.79, the position manager moved
+// the stop to "breakeven" at 76.03 — 0.18 UNDER the real fill — and the trade
+// closed at 76.19 for −$118 while the manager believed it had locked +0.25R.
+// The broker's own bracket was fill-anchored (stop 75.25), and the protection
+// audit reported the mismatch every minute without adopting it.
+//
+// The fill is on the position the broker already holds: the reconcile read
+// (`exec.reconcile(creds)` → `{ position: [...] }`) carries `price` (or
+// `tradeData.openPrice`) per positionId. So: when the order answer has no
+// price, read the position a bounded number of times and take its price.
+// A read that never finds it leaves the proposal entry standing, as before —
+// never a guess.
+// ---------------------------------------------------------------------------
+
+/**
+ * The open price of one position in a reconcile payload, or null.
+ * Ids are compared through their integer spelling (the sidecar has returned
+ * "234698574.0" before).
+ */
+export function fillFromReconcile(rec, positionId) {
+  const want = normId(positionId)
+  if (want == null) return null
+  const list = Array.isArray(rec?.position) ? rec.position : Array.isArray(rec) ? rec : []
+  for (const p of list) {
+    const id = normId(p?.positionId ?? p?.tradeData?.positionId)
+    if (id !== want) continue
+    const px = num(p?.price ?? p?.tradeData?.openPrice)
+    return fin(px) && px > 0 ? px : null
+  }
+  return null
+}
+
+function normId(v) {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? String(Math.trunc(n)) : String(v)
+}
+
+/**
+ * Confirm a fill price from the position read, retrying a few times because
+ * the position can land at the broker a moment after the ORDER_ACCEPTED
+ * answer. Returns the price or null; never throws (a failed read is a null).
+ *
+ * @param {() => Promise<any>} readPositions  e.g. () => exec.reconcile(creds)
+ * @param {string|number} positionId
+ * @param {{attempts?:number, delayMs?:number, sleep?:(ms:number)=>Promise<void>}} opts
+ */
+export async function confirmFill(readPositions, positionId, { attempts = 3, delayMs = 700, sleep = (ms) => new Promise(r => setTimeout(r, ms)) } = {}) {
+  if (normId(positionId) == null) return null
+  for (let i = 0; i < Math.max(1, attempts); i++) {
+    try {
+      const rec = await readPositions()
+      const px = fillFromReconcile(rec, positionId)
+      if (px != null) return px
+    } catch { /* a failed read is a null, retried below */ }
+    if (i < attempts - 1) await sleep(delayMs)
+  }
+  return null
+}
