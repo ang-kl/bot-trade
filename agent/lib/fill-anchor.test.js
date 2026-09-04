@@ -102,7 +102,11 @@ test('wiring pins: loop.js stores the anchored bracket and runs the drift gate b
   const confirm = src.indexOf('if (executionPrice == null && positionId) {')
   assert.ok(confirm > 0, 'a missing price triggers the position read')
   const block = src.slice(confirm, confirm + 700)
-  assert.ok(block.includes('confirmFill(() => execReconcile({ host, clientId, clientSecret, accessToken, accountId }), positionId)'))
+  // LIVE broker read (wsReconcile), never the sidecar's cached snapshot: the
+  // cached read missed a one-second-old position three times out of three
+  // (JPM.US, 04-09-2026 18:56 UTC) and the ledger kept the proposal entry.
+  assert.ok(block.includes('confirmFill(() => wsReconcile(host, clientId, clientSecret, accessToken, accountId), positionId)'))
+  assert.ok(!block.includes('confirmFill(() => execReconcile('), 'the sidecar snapshot is not a fill confirmation')
   assert.ok(block.includes('executionPrice = confirmed'))
   assert.ok(confirm < src.indexOf('const entryP = executionPrice ?? synth.entry ?? null'), 'the confirmed fill is what entryP reads')
   assert.ok(confirm < src.indexOf('anchorBracketToFill({ side, proposalEntry: synth.entry, fill: executionPrice'), 'the confirmed fill is what the anchor reads')
