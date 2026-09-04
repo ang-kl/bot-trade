@@ -10,7 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { anchorBracketToFill, entryDrift, entryDriftVeto } from './fill-anchor.js'
+import { anchorBracketToFill, entryDrift, entryDriftVeto, fillFromReconcile, confirmFill } from './fill-anchor.js'
 import { DEFAULT_RISK_CONFIG } from '../services/risk.js'
 
 const r = (x, d = 6) => Math.round(x * 10 ** d) / 10 ** d
@@ -96,4 +96,51 @@ test('wiring pins: loop.js stores the anchored bracket and runs the drift gate b
   assert.ok(gate.includes('return null'))
   // The drift gate sits BEFORE the order is placed.
   assert.ok(src.indexOf('if (driftGateOn) {') < src.indexOf('execPlaceOrder('), 'gate precedes the broker call')
+  // 04-09-2026: with no price in the order answer, the fill is confirmed from
+  // the position read BEFORE the anchoring and the ledger writes.
+  assert.ok(src.includes('let executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null'))
+  const confirm = src.indexOf('if (executionPrice == null && positionId) {')
+  assert.ok(confirm > 0, 'a missing price triggers the position read')
+  const block = src.slice(confirm, confirm + 700)
+  assert.ok(block.includes('confirmFill(() => execReconcile({ host, clientId, clientSecret, accessToken, accountId }), positionId)'))
+  assert.ok(block.includes('executionPrice = confirmed'))
+  assert.ok(confirm < src.indexOf('const entryP = executionPrice ?? synth.entry ?? null'), 'the confirmed fill is what entryP reads')
+  assert.ok(confirm < src.indexOf('anchorBracketToFill({ side, proposalEntry: synth.entry, fill: executionPrice'), 'the confirmed fill is what the anchor reads')
+})
+
+// ---------------------------------------------------------------------------
+// 04-09-2026: the sidecar answers a market order with ORDER_ACCEPTED (no
+// deal), so executionPrice was null on every cpp-path fill and the anchoring
+// never fired. 2020.HK: proposal 75.79, fill 76.21, manager "breakeven" at
+// 76.03 — under the real fill.
+// ---------------------------------------------------------------------------
+
+test('fillFromReconcile: the open price of THIS position, ids matched by integer spelling, openPrice as the fallback field', () => {
+  const rec = { position: [
+    { positionId: 240235374, price: 76.21, tradeData: { positionId: 240235374, openPrice: 76.21 } },
+    { positionId: '240088269.0', tradeData: { openPrice: 77710.4 } },
+  ] }
+  assert.equal(fillFromReconcile(rec, '240235374'), 76.21)
+  assert.equal(fillFromReconcile(rec, 240235374.0), 76.21)
+  assert.equal(fillFromReconcile(rec, 240088269), 77710.4, 'a float-formatted id and the tradeData.openPrice fallback')
+  assert.equal(fillFromReconcile(rec, 1), null, 'a position the broker does not hold is null, never a guess')
+  assert.equal(fillFromReconcile(rec, null), null)
+  assert.equal(fillFromReconcile(null, 240235374), null)
+  assert.equal(fillFromReconcile({ position: [{ positionId: 5, price: 0 }] }, 5), null, 'a zero price is not a fill')
+})
+
+test('confirmFill: retries the read until the position lands, then returns its price; a read that keeps failing or never finds it returns null', async () => {
+  const reads = []
+  let n = 0
+  const read = async () => { n++; reads.push(n); if (n < 3) return { position: [] }; return { position: [{ positionId: 9, price: 1.2345 }] } }
+  const slept = []
+  const px = await confirmFill(read, 9, { attempts: 3, delayMs: 50, sleep: async (ms) => { slept.push(ms) } })
+  assert.equal(px, 1.2345)
+  assert.deepEqual(reads, [1, 2, 3])
+  assert.deepEqual(slept, [50, 50], 'sleeps only between attempts')
+  const none = await confirmFill(async () => { throw new Error('502') }, 9, { attempts: 2, delayMs: 1, sleep: async () => {} })
+  assert.equal(none, null, 'a failing read is a null, never a throw')
+  const absent = await confirmFill(async () => ({ position: [{ positionId: 8, price: 3 }] }), 9, { attempts: 2, delayMs: 1, sleep: async () => {} })
+  assert.equal(absent, null)
+  assert.equal(await confirmFill(async () => ({ position: [] }), null, { attempts: 1 }), null, 'no position id → nothing to confirm')
 })
