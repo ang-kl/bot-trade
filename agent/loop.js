@@ -3416,6 +3416,10 @@ async function runLoop(db) {
             // The book never holds a target: takeProfit null is the stated
             // intent (a stop-only amend would clear one at the broker).
             amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: null }),
+            // Price precision for the trailed stop (04-09-2026): the amend is
+            // an absolute price and the broker rejects one with more decimals
+            // than the symbol allows. Cached per process in lot-sizing.
+            digitsFor: async (creds, symbolId) => (await (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)).digits,
             close: (creds, args) => exec.closePosition(creds, args),
             phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade,
             mayTrade: (accountId, symbol) => accountMayTrade(db, accountId, symbol),

@@ -27,6 +27,7 @@
 import { getState, setState } from '../db.js'
 import { armedTradeKeys } from './stage-matrix.js'
 import { loadShadowState } from './momentum-shadow.js'
+import { roundToDigits } from './trade-guard.js'
 
 export const TSMOM_STRATEGY = 'tsmom_long'
 // A held name with no position is re-proposed at most this often per account.
@@ -294,7 +295,17 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       const bars = await deps.bars(creds, symbolId)
       const atr = atrOf(bars, cfg.atrPeriod)
       const close = Number(bars[bars.length - 1]?.c)
-      const next = trailStop({ prevStop: row.stop, close, atr, stopAtr: cfg.stopAtr })
+      const raw = trailStop({ prevStop: row.stop, close, atr, stopAtr: cfg.stopAtr })
+      // Measured 04-09-2026 (Railway logs, every minute since adoption): the
+      // amend sent the raw float — 1053.4199999999998 on LLY.US, 344.358 on
+      // GD.US — and the broker refused each one ("more digits than symbol
+      // allows"), so the book's "stop that only rises" had never risen once.
+      // The entry path never hit this because it sends rounded RELATIVE
+      // distances; the amend sends an absolute price and must round it to the
+      // symbol's digits itself. digitsFor is the same cached symbol record the
+      // limit builder reads (lot-sizing.getVolumeMeta).
+      const digits = deps.digitsFor ? await deps.digitsFor(creds, symbolId) : null
+      const next = raw != null && digits != null ? roundToDigits(raw, digits) : raw
       if (next != null && Number.isFinite(Number(row.stop)) && next > Number(row.stop) * (1 + 1e-6)) {
         // A stop-only amend CLEARS the take profit at the broker; the book
         // never holds one, and says so (assertAmendIntent).
