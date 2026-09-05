@@ -309,6 +309,17 @@ Measurement history — each line is a real run of the script, not a claim:
   account-aware manual routes; the four-agent trading hour on ACCT-DEMO-2
   scored at `№ 7,262`); the next reply is `№ 7,263`. Same reason as the
   line above: a local re-measure that reads below this is missing these.
+- 2026-09-04 23:57 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule, third time): the script read **2,499** here, still far
+  below the 6,253 local rebase, so it was refused as a reading. The session
+  continued from `№ 7,263` to **`№ 7,355`** as the last reply at 23:56 UTC
+  (#840–#849 merged: ledger write-back, per-class margin rates, book
+  reconcile of held longs with the +1R managed exit, allowNaked on book
+  market orders, ambiguous-submission window, dependency bump, book trail
+  rounding, fill confirmation from the position read, adopted-row target
+  cleared, live-read fill confirmation); the next reply is `№ 7,356`. Same
+  reason as the two lines above: a local re-measure that reads below this
+  is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
