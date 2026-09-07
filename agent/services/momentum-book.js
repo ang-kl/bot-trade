@@ -160,6 +160,18 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     if (r.action === 'enter') { exits.delete(r.symbol); enters.set(r.symbol, r) }
     else { enters.delete(r.symbol); exits.set(r.symbol, r) }
   }
+  // SCOPE (07-09-2026, measured 18:34 SGT, minutes after #853 deployed): the
+  // shadow now ranks the momentum universe as well as the scan's symbols, and
+  // the row-cursor path below reads every shadow row — so every armed
+  // account, live included, was offered XRPUSD, MSFT.US, SOLUSD and V.US it
+  // had never scanned (live refused them on its watchlist; two demo accounts
+  // bought XRPUSD). The wider universe is the MOMENTUM ACCOUNT's. Accounts on
+  // this path keep the universe they had: when the loop passes the scan's
+  // symbols, rows and held names outside them are ignored here.
+  const scanScope = Array.isArray(deps.scanSymbols) && deps.scanSymbols.length
+    ? new Set(deps.scanSymbols.map(s => String(typeof s === 'string' ? s : s?.symbol || '').toUpperCase()).filter(Boolean))
+    : null
+  const inScanScope = (symbol) => !scanScope || scanScope.has(String(symbol).toUpperCase())
   const openRow = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ? AND symbol = ?`)
   const openCount = db.prepare(`SELECT COUNT(*) AS n FROM momentum_book WHERE status = 'open' AND account_id = ?`)
   const insBook = db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note)
@@ -275,6 +287,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     // ENTRIES: one per symbol per account, capped, sized by the gate.
     let capped = false
     for (const [symbol, r] of enters) {
+      if (!inScanScope(symbol)) { summary.skipped.push(`${accountId} ${symbol}: outside this account's scan universe (momentum-account name)`); continue }
       const out = await tryEnter(symbol, { conviction: r.conviction, rankPct: r.rank_pct, note: `entered on shadow row ${r.id}` })
       if (out === 'capped') { capped = true; break }
     }
@@ -292,6 +305,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       try { held = loadShadowState(db).holdings || {} } catch { held = {} }
       for (const [symbol, h] of Object.entries(held)) {
         if (h?.side !== 'long' || enters.has(symbol)) continue
+        if (!inScanScope(symbol)) continue
         if (openRow.get(accountId, symbol)) continue
         if (workingLimitFor.get(accountId, symbol)) continue
         const key = `${accountId}|${symbol}`

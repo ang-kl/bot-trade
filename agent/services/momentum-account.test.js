@@ -270,3 +270,33 @@ test('wiring pins (comments stripped): the size rides both dispatch paths, the g
   const book = strip(readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8'))
   assert.match(book, /if \(isMomentumAccount\(db, accountId\)\) \{[\s\S]*runMomentumAccountPass\(db, \{ acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log \}\)/, 'the book must route the momentum account to the daily pass')
 })
+
+test('scope: a shadow row for a momentum-universe name is NOT taken by a row-cursor account outside its scan universe; the momentum account still takes it', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  const io = { getState, setState }
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: MOM }, io)
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: OTHER }, io)
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD', 'NATGAS'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95 }, NATGAS: { side: 'long', entryRank: 0.9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  db.prepare(`INSERT INTO momentum_shadow (symbol, action, side, rank_pct, conviction, price, timeframe, universe, applied, at) VALUES ('BTCUSD','enter','long',0.95,9,77000,'1d',20,0,datetime('now'))`).run()
+  db.prepare(`INSERT INTO momentum_shadow (symbol, action, side, rank_pct, conviction, price, timeframe, universe, applied, at) VALUES ('NATGAS','enter','long',0.9,8,2.9,'1d',20,0,datetime('now'))`).run()
+  const f = fakes()
+  const accounts = [{ accountId: MOM, isLive: false }, { accountId: OTHER, isLive: false }]
+  // The scan only ever covered BTCUSD; NATGAS is a momentum-universe name.
+  const r = await runMomentumBook(db, { accounts, credsFor: (a) => ({ accountId: a.accountId }), deps: { ...f.deps, symbolMap: { BTCUSD: 1, NATGAS: 2 }, scanSymbols: ['BTCUSD'] }, now: DUE })
+  const got = f.calls.autoTrade.map(c => `${c.acct.accountId}:${c.symbol}`).sort()
+  assert.deepEqual(got, [`${MOM}:BTCUSD`, `${MOM}:NATGAS`, `${OTHER}:BTCUSD`].sort(), `skipped: ${JSON.stringify(r.skipped)}`)
+  assert.ok(r.skipped.some(s => s.includes(`${OTHER} NATGAS: outside this account's scan universe`)))
+  // No scan list passed (tests, legacy callers): nothing is filtered.
+  const f2 = fakes()
+  const db2 = fresh()
+  setState(db2, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db2, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: null }))
+  setStage(db2, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: OTHER }, io)
+  db2.prepare(`INSERT INTO momentum_shadow (symbol, action, side, rank_pct, conviction, price, timeframe, universe, applied, at) VALUES ('NATGAS','enter','long',0.9,8,2.9,'1d',20,0,datetime('now'))`).run()
+  await runMomentumBook(db2, { accounts: [{ accountId: OTHER, isLive: false }], credsFor: (a) => ({ accountId: a.accountId }), deps: { ...f2.deps, symbolMap: { NATGAS: 2 } }, now: DUE })
+  assert.deepEqual(f2.calls.autoTrade.map(c => c.symbol), ['NATGAS'])
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  assert.match(loop, /scanSymbols: symbols\.map\(/, 'the loop must hand the book the scan universe')
+})
