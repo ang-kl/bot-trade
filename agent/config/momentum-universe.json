@@ -1,0 +1,8 @@
+{
+  "_note": "The momentum universe as DATA (owner, 07-09-2026: breadth is the fuel). Symbol names are the broker's; a name the account cannot resolve is reported as unknown_symbol at universe build, never silently dropped. Override at runtime with agent_state momentum_universe_json ({\"symbols\":[...]} replaces this list).",
+  "index": ["US30", "NAS100", "SPX500", "US2000", "GER40", "UK100", "FRA40", "JPN225", "HK50", "AUS200"],
+  "fx": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD", "USDCHF", "EURJPY", "GBPJPY", "EURGBP"],
+  "commodity": ["XAUUSD", "XAGUSD", "XPTUSD", "USOIL", "UKOIL", "NatGas", "Copper", "Cocoa", "Coffee", "Sugar"],
+  "crypto": ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"],
+  "stock": ["AAPL.US", "MSFT.US", "NVDA.US", "AMZN.US", "META.US", "GOOGL.US", "AVGO.US", "LLY.US", "JPM.US", "GD.US", "TSLA.US", "NFLX.US", "COST.US", "V.US", "MA.US", "UNH.US", "XOM.US", "WMT.US", "ORCL.US", "0005.HK", "0700.HK", "2020.HK"]
+}

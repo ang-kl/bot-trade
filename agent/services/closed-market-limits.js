@@ -255,6 +255,10 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     requestedVolume: opts.requestedVolume ?? null,
     strategy: synth.strategy || null,
     conviction: synth.overall_conviction ?? null,
+    // Vol-target size from the momentum-account pass (§7,386·D1) rides the
+    // resting limit too — the gate decides whether it is honoured.
+    sizing: synth.sizing ?? null,
+    sizedVolume: synth.sizedVolume ?? null,
     source: reason === 'htf' ? 'htf_limit' : 'closed_market_limit',
     // A resting limit can't bypass risk — and it can't be gated against a
     // different account than the one whose creds place it either.

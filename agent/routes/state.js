@@ -2453,6 +2453,18 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/momentum-account — the momentum account: config, cadence,
+  // the universe build (tradable / untradable by reason), the last pass and
+  // the open rows on that account (§7,386·D1).
+  router.get('/momentum-account', async (_req, res) => {
+    try {
+      const { momentumAccountReport } = await import('../services/momentum-account.js')
+      res.json(momentumAccountReport(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/momentum-shadow', async (req, res) => {
     try {
       const { momentumShadowReport } = await import('../services/momentum-shadow.js')
