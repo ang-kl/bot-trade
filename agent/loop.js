@@ -2936,6 +2936,7 @@ async function runLoop(db) {
             const { runWeekendBank } = await import('./services/weekend-bank.js')
             const wb = await runWeekendBank(db, { host, clientId, clientSecret, accessToken, accountId }, positions)
             if (wb.banked?.length) log(`Weekend bank: closed ${wb.banked.map(b => `${b.symbol} +${b.movePct}%`).join(', ')} ahead of the long closure`)
+            if (wb.exempt?.length) log(`Weekend bank: left ${wb.exempt.map(e => `${e.symbol} (position ${e.positionId})`).join(', ')} to the momentum book's stop — book rows are exempt from the sweep`)
             await hbeat(db, 'weekend_bank', true)
           } catch (err) {
             log(`Weekend bank check failed: ${err.message}`)

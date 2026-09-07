@@ -57,6 +57,7 @@ test('nextCloseInfo: Friday pre-close reads closes_in + weekend closure length',
 // For listed symbols the sign test is dropped. For everything else it is not.
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from 'node:fs'
 import { initDB as initDB2, setState as setState2 } from '../db.js'
 import { isGapProne, loadGapProneConfig, DEFAULT_GAP_PRONE } from './weekend-bank.js'
 
@@ -121,4 +122,89 @@ test('turning the extension off restores the profit-only rule exactly', () => {
   const cfg = loadGapProneConfig(db)
   assert.equal(isGapProne('US30', cfg), false)
   assert.equal(shouldBank({ ...LOSER, gapProne: isGapProne('US30', cfg) }), false)
+})
+
+// ---------------------------------------------------------------------------
+// Momentum-book exemption (owner, 2026-09-07: "exempt the book from the
+// weekend bank, build it")
+//
+// The bank swept book rows every US pre-close (GD.US twice on 04-09, JPM.US
+// on 05-09 for +$3.76, re-bought 3.43 higher four minutes later). The book's
+// trailed stop is the exit, across closures too. A position an OPEN book row
+// points at is skipped; everything else banks exactly as before.
+// ---------------------------------------------------------------------------
+
+import { runWeekendBank, bookHeldPositionIds, bookExemptOn } from './weekend-bank.js'
+
+const FRI_2030 = new Date(Date.UTC(2026, 6, 17, 20, 30, 0)) // 30 min before an FX-style Friday close
+
+function bankDb() {
+  const db = initDB2(':memory:')
+  db.prepare(`INSERT INTO symbol_hours (symbol, schedule_json, tz) VALUES ('GD.US', ?, 'UTC')`)
+    .run(JSON.stringify([{ start: 21 * H, end: (5 * 24 + 21) * H }]))
+  return db
+}
+
+function bookRow(db, accountId, positionId, status = 'open') {
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status)
+              VALUES (NULL, ?, 'GD.US', ?, 'long', 362.43, 345.46, 5.6, 1, '2026-07-16T13:33:00Z', ?)`).run(String(accountId), String(positionId), status)
+}
+
+function fakeDeps(closed) {
+  return {
+    closePosition: async (_creds, { positionId }) => { closed.push(positionId) },
+    wsGetSpotOnce: async () => ({ bid: 370, ask: 370.1 }), // in profit vs entry 362.43
+  }
+}
+
+const POS = (positionId) => ({ positionId, symbolName: 'GD.US', price: 362.43, tradeData: { symbolId: 1, tradeSide: 1, volume: 100 } })
+const CREDS = { host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '43097342' }
+
+test('book exemption: a book-held winner is left alone, the same winner off the book is banked', async () => {
+  const db = bankDb()
+  bookRow(db, CREDS.accountId, 111)
+  const closed = []
+  const r = await runWeekendBank(db, CREDS, [POS(111), POS(222)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [222], 'only the non-book position is closed')
+  assert.deepEqual(r.exempt, [{ symbol: 'GD.US', positionId: 111 }], 'the skip is recorded with its reason')
+  assert.equal(r.banked.length, 1)
+  assert.equal(r.banked[0].positionId, 222)
+})
+
+test('book exemption: exit_sent counts as held; a CLOSED row does not', async () => {
+  const db = bankDb()
+  bookRow(db, CREDS.accountId, 333, 'exit_sent')
+  bookRow(db, CREDS.accountId, 444, 'closed')
+  const closed = []
+  await runWeekendBank(db, CREDS, [POS(333), POS(444)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [444], 'a row the book already released is bankable again')
+})
+
+test('book exemption is per account — another account\'s book row does not shield this position', async () => {
+  const db = bankDb()
+  bookRow(db, '46130058', 555)
+  const closed = []
+  await runWeekendBank(db, CREDS, [POS(555)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [555])
+  assert.equal(bookHeldPositionIds(db, '46130058').has('555'), true)
+  assert.equal(bookHeldPositionIds(db, CREDS.accountId).has('555'), false)
+})
+
+test('book exemption toggle off restores the sweep over book rows exactly', async () => {
+  const db = bankDb()
+  bookRow(db, CREDS.accountId, 666)
+  setState2(db, 'weekend_bank_book_exempt', 'false')
+  assert.equal(bookExemptOn(db), false)
+  const closed = []
+  const r = await runWeekendBank(db, CREDS, [POS(666)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [666])
+  assert.deepEqual(r.exempt, [])
+})
+
+test('book exemption: the loop says why a winner was not banked', () => {
+  // The line is the read-back: without it a book position in profit at the
+  // close looks like a bank that failed silently.
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  assert.match(src, /wb\.exempt\?\.length\) log\(/)
+  assert.match(src, /book rows are exempt from the sweep/)
 })
