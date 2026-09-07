@@ -206,7 +206,10 @@ test('source pin: no gate, dispatch, loop or strategy import; only the shadow ta
 test('wiring pins: the loop runs the shadow after the scan, the state route and the settings routes exist once', () => {
   const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
   assert.equal((loop.match(/import\('\.\/services\/momentum-shadow\.js'\)/g) || []).length, 1)
-  assert.ok(loop.includes('runMomentumShadow(db, { symbols, symbolMap, creds: ctraderCreds, loopId: loopCount })'))
+  // §7,386·D1: the shadow ranks the momentum universe AHEAD of the scan's own
+  // symbols (breadth is the fuel), so the call takes the unioned list.
+  assert.ok(loop.includes('runMomentumShadow(db, { symbols: shadowSymbols, symbolMap, creds: ctraderCreds, loopId: loopCount })'))
+  assert.match(loop, /const shadowSymbols = \[\.\.\.new Set\(\[\.\.\.momentumUniverseSymbols\(db\), /, 'the universe must come first in the union')
   const state = readFileSync(new URL('../routes/state.js', import.meta.url), 'utf8')
   assert.equal((state.match(/router\.get\('\/momentum-shadow'/g) || []).length, 1)
   const actions = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8')
