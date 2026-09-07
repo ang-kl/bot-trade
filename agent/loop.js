@@ -1852,7 +1852,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // The merge lives in applyManagedRules so EVERY evaluator (this monitor
   // and fast-monitor.js) silences the same ladder — it silenced only here
   // until 0016.HK's bank_target_4R close, 2026-08-31.
-  const rules = applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol))
+  const rules = applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy })
   const eval_ = evaluatePosition(pos, { currentPrice, rules })
 
   // Persist MFE/MAE and any flag flips every loop, regardless of action.

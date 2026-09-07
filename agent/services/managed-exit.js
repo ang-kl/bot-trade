@@ -30,6 +30,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getState } from '../db.js'
+import { familyOf } from './strategies.js'
 
 // One Simple System (owner 28-08-2026, "proceed as plan", win-rate goal
 // > 69%): the trail-distance sweep over the same 44-trade population put
@@ -57,19 +58,37 @@ import { getState } from '../db.js'
  * open and the managed trail never got to answer. A rule silenced at one of
  * two call sites is failure mode #3 wearing #4's clothes.
  */
-export function applyManagedRules(db, accountId, rules) {
+export function applyManagedRules(db, accountId, rules, { strategy = null } = {}) {
   if (!managedExitApplies(db, accountId)) return rules
   const policy = loadManagedExit(db)
   return {
     ...rules,
     alwaysTrailR: policy.trailR,
     // takeAtR rides the bank-target rule: FULL_EXIT once R reaches it, the
-    // trail answering below. 0 keeps the trail as the only exit.
-    bankTriggerR: policy.takeAtR > 0 ? policy.takeAtR : 0,
+    // trail answering below. 0 keeps the trail as the only exit. SCOPED BY
+    // FAMILY (owner 07-09-2026, "scope takeAtR to mean reversion"): the
+    // whole-position take exists because reversion setups measured ~40%
+    // touching +1R and nothing reaching +1.5R — a fact about REVERSION, not
+    // about trends. A trend or breakout entry taken whole at +1R is the
+    // momentum tail cut off at the root. So only positions whose strategy
+    // family is listed get the take; every other family, and a position
+    // with no strategy on record (manual, external), keeps the trail alone.
+    bankTriggerR: takeAtRFor(policy, strategy),
     partialTriggerR: Infinity,
     runnerTriggerR: Infinity,
     beTriggerR: Infinity,
   }
+}
+
+/**
+ * The R at which THIS position is taken whole, or 0 for trail-only. Pure:
+ * the policy's takeAtR applies only when the strategy's family is in
+ * takeAtRFamilies. Unknown strategy → no family → 0.
+ */
+export function takeAtRFor(policy, strategy) {
+  if (!(policy.takeAtR > 0)) return 0
+  const fam = strategy ? familyOf(strategy) : null
+  return fam && policy.takeAtRFamilies.includes(fam) ? policy.takeAtR : 0
 }
 
 // capMinutes replaced capBars on 01-09-2026 (owner: "15m/1h/4h look BACK at
@@ -94,6 +113,9 @@ export const MANAGED_EXIT_DEFAULTS = Object.freeze({
   // Rides the existing bank-target rule (FULL_EXIT at R ≥ bankTriggerR), so
   // the trail still governs below it. 0 = off (trail only, as before).
   takeAtR: 1.0,
+  // Families the take applies to. Measured basis above is reversion-only;
+  // trend, breakout and momentum entries keep the trail as their sole exit.
+  takeAtRFamilies: ['mean_reversion'],
 })
 
 /** Stored overrides ← defaults. Junk in state degrades to the defaults. */
@@ -115,6 +137,11 @@ export function loadManagedExit(db) {
     trailR: num(stored.trailR, MANAGED_EXIT_DEFAULTS.trailR),
     // 0 is a VALUE here too (trail only); junk degrades to the default.
     takeAtR: Number.isFinite(Number(stored.takeAtR)) && Number(stored.takeAtR) >= 0 ? Number(stored.takeAtR) : MANAGED_EXIT_DEFAULTS.takeAtR,
+    // An explicit array REPLACES the default (an empty array means the take
+    // reaches no family at all — a value, not junk); anything else degrades.
+    takeAtRFamilies: Array.isArray(stored.takeAtRFamilies)
+      ? stored.takeAtRFamilies.map(f => String(f))
+      : [...MANAGED_EXIT_DEFAULTS.takeAtRFamilies],
   }
 }
 
