@@ -290,7 +290,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
         // 0016.HK one minute after HK open — beating the managed trail the
         // slow loop would have applied 30s later. One ruleset, every evaluator.
-        const eval_ = evaluatePosition(pos, { currentPrice: mid, rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol)) })
+        const eval_ = evaluatePosition(pos, { currentPrice: mid, rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy }) })
         s.updatePositionMetrics.run(
           eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
           eval_.updates.mae_r ?? pos.mae_r ?? 0,

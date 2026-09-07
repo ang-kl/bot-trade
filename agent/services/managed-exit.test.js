@@ -9,7 +9,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, setState } from '../db.js'
-import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules, MANAGED_EXIT_DEFAULTS } from './managed-exit.js'
+import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules, takeAtRFor, MANAGED_EXIT_DEFAULTS } from './managed-exit.js'
 import { evaluatePosition, DEFAULT_RULES } from './position-manager.js'
 
 function withAccounts(db) {
@@ -108,9 +108,9 @@ test('the policy is wired at the fill-time cap and at EVERY position evaluator',
   const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
   assert.match(loop, /managedExitApplies\(db, accountId\)/, 'fill-time cap gate missing')
   assert.match(loop, /managedCapAt\(Date\.now\(\)/, 'fill-time cap stamp missing')
-  assert.match(loop, /applyManagedRules\(db, pos\.account_id, rulesForSymbol/, 'loop monitor must evaluate through applyManagedRules')
+  assert.match(loop, /applyManagedRules\(db, pos\.account_id, rulesForSymbol\(db, pos\.symbol\), \{ strategy: pos\.strategy \}\)/, 'loop monitor must evaluate through applyManagedRules WITH the position strategy')
   const fast = readFileSync(new URL('./fast-monitor.js', import.meta.url), 'utf8')
-  assert.match(fast, /applyManagedRules\(db, pos\.account_id, rulesForSymbol/, 'fast-monitor must evaluate through applyManagedRules')
+  assert.match(fast, /applyManagedRules\(db, pos\.account_id, rulesForSymbol\(db, pos\.symbol\), \{ strategy: pos\.strategy \}\)/, 'fast-monitor must evaluate through applyManagedRules WITH the position strategy')
 })
 
 // ---------------------------------------------------------------------------
@@ -166,9 +166,9 @@ test('the managed ruleset silences the legacy ladder and the trail alone fires',
 test('applyManagedRules sets the silencing values for governed accounts and passes others through', () => {
   const db = withAccounts(initDB(':memory:'))
   const base = { ...DEFAULT_RULES, bankTriggerR: 4 }
-  const managed = applyManagedRules(db, '43097342', base)
+  const managed = applyManagedRules(db, '43097342', base, { strategy: 'rsi2_reversion' })
   assert.equal(managed.alwaysTrailR, MANAGED_EXIT_DEFAULTS.trailR)
-  assert.equal(managed.bankTriggerR, MANAGED_EXIT_DEFAULTS.takeAtR, 'takeAtR rides the bank-target rule')
+  assert.equal(managed.bankTriggerR, MANAGED_EXIT_DEFAULTS.takeAtR, 'takeAtR rides the bank-target rule (reversion family)')
   assert.equal(managed.partialTriggerR, Infinity)
   assert.equal(managed.runnerTriggerR, Infinity)
   assert.equal(managed.beTriggerR, Infinity)
@@ -235,7 +235,7 @@ test('under the managed ruleset +1R is a FULL_EXIT (bank_target_1R); +0.8R is st
     scaled_out: 0, invalidation_trigger: null, time_cap_at: null,
     created_at: new Date().toISOString(),
   }
-  const managed = applyManagedRules(db, '43097342', { ...DEFAULT_RULES })
+  const managed = applyManagedRules(db, '43097342', { ...DEFAULT_RULES }, { strategy: 'rsi2_reversion' })
   assert.equal(managed.bankTriggerR, 1.0)
   const take = evaluatePosition(pos, { currentPrice: 101, rules: managed })
   assert.equal(take.action, 'FULL_EXIT')
@@ -245,8 +245,63 @@ test('under the managed ruleset +1R is a FULL_EXIT (bank_target_1R); +0.8R is st
   assert.equal(below.action, 'MOVE_SL', 'below +1R the 0.5R trail is the rule that answers')
   assert.match(below.reason, /managed_trail/)
   setState(db, 'managed_exit_json', JSON.stringify({ takeAtR: 0 }))
-  const trailOnly = applyManagedRules(db, '43097342', { ...DEFAULT_RULES })
+  const trailOnly = applyManagedRules(db, '43097342', { ...DEFAULT_RULES }, { strategy: 'rsi2_reversion' })
   assert.equal(trailOnly.bankTriggerR, 0)
   const r = evaluatePosition(pos, { currentPrice: 106, rules: trailOnly })
   assert.equal(r.action, 'MOVE_SL', 'with takeAtR 0 a +6R print is still only trailed')
+})
+
+// ---------------------------------------------------------------------------
+// takeAtR scoped by family (owner 07-09-2026: "scope takeAtR to mean
+// reversion"). The +1R whole-position take was measured on reversion closes
+// (~40% touch +1R, nothing reaches +1.5R); on a trend or breakout entry it
+// cuts the momentum tail at the root. Only the listed families get the take.
+// ---------------------------------------------------------------------------
+
+test('takeAtR reaches ONLY the mean_reversion family by default; trend, breakout, momentum and unknown keep the trail alone', () => {
+  const db = withAccounts(initDB(':memory:'))
+  assert.deepEqual(MANAGED_EXIT_DEFAULTS.takeAtRFamilies, ['mean_reversion'])
+  const base = { ...DEFAULT_RULES }
+  assert.equal(applyManagedRules(db, '43097342', base, { strategy: 'rsi2_reversion' }).bankTriggerR, 1.0)
+  assert.equal(applyManagedRules(db, '43097342', base, { strategy: 'vp_value' }).bankTriggerR, 1.0)
+  assert.equal(applyManagedRules(db, '43097342', base, { strategy: 'ema_pullback' }).bankTriggerR, 0, 'trend: trail only')
+  assert.equal(applyManagedRules(db, '43097342', base, { strategy: 'donchian_breakout' }).bankTriggerR, 0, 'breakout: trail only')
+  assert.equal(applyManagedRules(db, '43097342', base, { strategy: 'tsmom_long' }).bankTriggerR, 0, 'momentum: trail only')
+  assert.equal(applyManagedRules(db, '43097342', base, { strategy: null }).bankTriggerR, 0, 'no strategy on record: trail only')
+  assert.equal(applyManagedRules(db, '43097342', base).bankTriggerR, 0, 'caller that passes no strategy gets trail only, never a silent take')
+  // Ungoverned accounts still get the base ladder untouched, family or not.
+  assert.deepEqual(applyManagedRules(db, '99999999', base, { strategy: 'rsi2_reversion' }), base)
+})
+
+test('a trend position at +1R is TRAILED, not taken; the same print on a reversion position is taken whole', () => {
+  const db = withAccounts(initDB(':memory:'))
+  const pos = {
+    id: 1, symbol: 'TEST', side: 'long', entry_price: 100, current_sl: 99,
+    current_tp: null, initial_risk: 1, mfe_r: 0, mae_r: 0, be_moved: 0,
+    scaled_out: 0, invalidation_trigger: null, time_cap_at: null,
+    created_at: new Date().toISOString(),
+  }
+  const trend = evaluatePosition(pos, { currentPrice: 101, rules: applyManagedRules(db, '43097342', { ...DEFAULT_RULES }, { strategy: 'ema_pullback' }) })
+  assert.equal(trend.action, 'MOVE_SL', 'trend at +1R: the 0.5R trail answers')
+  assert.match(trend.reason, /managed_trail/)
+  const rev = evaluatePosition(pos, { currentPrice: 101, rules: applyManagedRules(db, '43097342', { ...DEFAULT_RULES }, { strategy: 'rsi2_reversion' }) })
+  assert.equal(rev.action, 'FULL_EXIT')
+  assert.match(rev.reason, /bank_target_1R/)
+})
+
+test('takeAtRFamilies: an explicit list REPLACES the default, an empty list reaches no family, junk degrades', () => {
+  const db = initDB(':memory:')
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtRFamilies: ['trend'] }))
+  let p = loadManagedExit(db)
+  assert.deepEqual(p.takeAtRFamilies, ['trend'])
+  assert.equal(takeAtRFor(p, 'ema_pullback'), 1.0)
+  assert.equal(takeAtRFor(p, 'rsi2_reversion'), 0, 'an explicit list replaces the default, it does not extend it')
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtRFamilies: [] }))
+  p = loadManagedExit(db)
+  assert.equal(takeAtRFor(p, 'rsi2_reversion'), 0, 'empty list is a value: the take reaches nobody')
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtRFamilies: 'mean_reversion' }))
+  p = loadManagedExit(db)
+  assert.deepEqual(p.takeAtRFamilies, ['mean_reversion'], 'a bare string is junk → default')
+  setState(db, 'managed_exit_json', JSON.stringify({ takeAtR: 0 }))
+  assert.equal(takeAtRFor(loadManagedExit(db), 'rsi2_reversion'), 0, 'takeAtR 0 is off for every family')
 })
