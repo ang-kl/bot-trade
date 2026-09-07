@@ -3459,6 +3459,9 @@ async function runLoop(db) {
             close: (creds, args) => exec.closePosition(creds, args),
             phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade,
             mayTrade: (accountId, symbol) => accountMayTrade(db, accountId, symbol),
+            // The scan's own symbols: the row-cursor accounts keep this
+            // universe; the momentum universe is the momentum account's.
+            scanSymbols: symbols.map(s => String(typeof s === 'string' ? s : s?.symbol || '').toUpperCase()).filter(Boolean),
             // The momentum account's universe build (§7,386·D1): lot meta for
             // affordability, this account's equity for the vol target, the
             // scan's rates for non-USD notional, the book's own ATR.
