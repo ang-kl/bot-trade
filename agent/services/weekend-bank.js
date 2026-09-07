@@ -44,6 +44,27 @@
 // call, taken so FX majors keep running through ordinary closures.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// MOMENTUM-BOOK EXEMPTION (owner, 2026-09-07: "exempt the book from the
+// weekend bank, build it")
+//
+// The book (momentum-book.js) holds daily-timeframe trend positions on
+// purpose across closures — its exit is the 3-ATR trailed stop, nothing
+// else. The bank was sweeping those rows every US pre-close: GD.US on
+// ACCT-DEMO-1 twice (03:17 and 03:47 SGT 04-09), JPM.US on ACCT-DEMO-1 at
+// 02:52 SGT 05-09 for +$3.76, re-bought by the hourly reconcile 4 minutes
+// later 3.43 higher. Each sweep pays the spread twice to end up in the same
+// position, and a share CFD "long closure" is every weeknight, so the book
+// could never hold a share through a single trading day.
+//
+// So a position that an OPEN book row points at (status 'open' or
+// 'exit_sent') is skipped — winner or loser, gap-prone or not. The book's own
+// stop is broker-side; if the gap jumps it, that is the book's measured cost,
+// not the bank's to prevent. Toggle: agent_state `weekend_bank_book_exempt`
+// ('true' default; 'false' restores the sweep over book rows). Everything
+// the book does not hold is banked exactly as before.
+// ---------------------------------------------------------------------------
+
 import { getState, setState } from '../db.js'
 import { nextCloseInfo } from './symbol-hours.js'
 
@@ -109,26 +130,58 @@ export function shouldBank({ open, closesInSec, closureSec, side, entry, price, 
   return movePct > minMovePct
 }
 
+/** Is the book exemption on? agent_state `weekend_bank_book_exempt`, default on. */
+export function bookExemptOn(db) {
+  return (getState(db, 'weekend_bank_book_exempt') || 'true') !== 'false'
+}
+
+/**
+ * Position ids (as strings) that an OPEN momentum-book row points at on this
+ * account. 'exit_sent' counts as held: the book has already decided that
+ * position's fate and a second close would race it.
+ */
+export function bookHeldPositionIds(db, accountId) {
+  const held = new Set()
+  try {
+    const rows = db.prepare(`SELECT position_id FROM momentum_book WHERE account_id = ? AND status IN ('open', 'exit_sent') AND position_id IS NOT NULL`)
+      .all(String(accountId))
+    for (const r of rows) held.add(String(r.position_id))
+  } catch { /* table absent on a fresh db — nothing held */ }
+  return held
+}
+
 /**
  * Sweep broker positions ahead of a long closure. `positions` are the raw
  * reconcile rows (with symbolName attached); prices come from live spot
  * quotes at the CLOSING side (BUY closes at bid, SELL at ask).
+ *
+ * `deps` and `now` exist for tests: production resolves the exec engine and
+ * the spot feed itself.
  */
-export async function runWeekendBank(db, creds, positions, { windowMin = 75, minClosureHrs = 12 } = {}) {
-  if ((getState(db, 'weekend_bank') || 'true') === 'false') return { skipped: 'off', banked: [] }
+export async function runWeekendBank(db, creds, positions, { windowMin = 75, minClosureHrs = 12, deps = null, now = null } = {}) {
+  if ((getState(db, 'weekend_bank') || 'true') === 'false') return { skipped: 'off', banked: [], exempt: [] }
   const banked = []
+  const exempt = []
   const gapCfg = loadGapProneConfig(db)
-  const { closePosition } = await import('../lib/exec-engine.js')
-  const { wsGetSpotOnce } = await import('../lib/ctrader-ws.js')
+  const closePosition = deps?.closePosition || (await import('../lib/exec-engine.js')).closePosition
+  const wsGetSpotOnce = deps?.wsGetSpotOnce || (await import('../lib/ctrader-ws.js')).wsGetSpotOnce
+  const held = bookExemptOn(db) ? bookHeldPositionIds(db, creds?.accountId) : new Set()
 
   for (const p of positions || []) {
     const td = p.tradeData || {}
     const symbol = String(p.symbolName || '').toUpperCase()
     if (!symbol || !td.symbolId || !p.positionId) continue
 
-    const info = nextCloseInfo(db, symbol)
+    const info = nextCloseInfo(db, symbol, now || undefined)
     if (info.open !== true || !Number.isFinite(info.closes_in_sec) || !Number.isFinite(info.closure_sec)) continue
     if (info.closes_in_sec > windowMin * 60 || info.closure_sec < minClosureHrs * 3600) continue
+
+    // Book-held: the book's trailed stop is the exit, across closures too.
+    // Recorded so the loop can say WHY a position in profit was not banked.
+    if (held.has(String(p.positionId))) {
+      exempt.push({ symbol, positionId: p.positionId })
+      continue
+    }
 
     // One-shot per position per closure — the marker clears once the market
     // has reopened (closure passed), so next weekend re-arms automatically.
@@ -169,5 +222,5 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
       } catch { /* non-fatal */ }
     }
   }
-  return { banked }
+  return { banked, exempt }
 }
