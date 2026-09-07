@@ -959,6 +959,37 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // GET/POST /actions/momentum-account — ONE account runs the momentum
+  // system (owner 07-09-2026, §7,386·D1): accountId, volTargetPct,
+  // maxPositions, dailyRunAfterUtc, cadence. volTargetPct is a risk limit:
+  // the owner set 10; changing it here is the owner's act.
+  router.get('/momentum-account', async (_req, res) => {
+    try {
+      const { loadMomentumAccount } = await import('../services/momentum-account.js')
+      res.json({ ok: true, effective: loadMomentumAccount(db), writes: 'momentum_book rows + real orders through autoTrade on the momentum account, sized by the vol target, once per day' })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  router.post('/momentum-account', async (req, res) => {
+    try {
+      const { momentumAccountConfig, loadMomentumAccount, MOMENTUM_ACCOUNT_KEY } = await import('../services/momentum-account.js')
+      const body = req.body || {}
+      const merged = { ...loadMomentumAccount(db) }
+      for (const k of ['accountId', 'volTargetPct', 'maxPositions', 'dailyRunAfterUtc', 'cadence']) {
+        if (k in body) merged[k] = body[k]
+      }
+      const cfg = momentumAccountConfig(merged)
+      setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify(cfg))
+      console.log(`[actions] momentum-account → account=…${String(cfg.accountId || '').slice(-4)} volTarget=${cfg.volTargetPct}% maxPositions=${cfg.maxPositions} after=${cfg.dailyRunAfterUtc}Z cadence=${cfg.cadence}`)
+      res.json({ ok: true, effective: cfg })
+    } catch (err) {
+      console.error('[actions/momentum-account] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET/POST /actions/evidence-gate — the strategy-level evidence gate's
   // bar (on, minCloses, minPf, windowDays). Default on at the pre-registered
   // 30 closes / PF 1.5.

@@ -28,6 +28,7 @@ import { getState, setState } from '../db.js'
 import { armedTradeKeys } from './stage-matrix.js'
 import { loadShadowState } from './momentum-shadow.js'
 import { roundToDigits } from './trade-guard.js'
+import { isMomentumAccount, runMomentumAccountPass } from './momentum-account.js'
 
 export const TSMOM_STRATEGY = 'tsmom_long'
 // A held name with no position is re-proposed at most this often per account.
@@ -181,6 +182,24 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     const creds = credsFor(acct)
     if (!creds) { summary.skipped.push(`${accountId}: no credentials`); continue }
     summary.accounts++
+
+    // THE MOMENTUM ACCOUNT (owner 07-09-2026, §7,386·D1): one account runs
+    // the momentum system on its own terms — target portfolio from the
+    // shadow's holdings ∩ the tradable universe, vol-target sizing, one
+    // decision per day after the daily close. The row-cursor path below is
+    // for the other accounts; the trail pass at the bottom still covers
+    // every open book row, this account's included.
+    if (isMomentumAccount(db, accountId)) {
+      try {
+        const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log })
+        if (ma.ran) {
+          summary.entries += ma.entries; summary.exits += ma.exits
+          summary.momentumAccount = { account: accountId, entries: ma.entries, exits: ma.exits, universe: ma.universe }
+          for (const s of ma.skipped) summary.skipped.push(`${accountId} ${s}`)
+        }
+      } catch (err) { summary.skipped.push(`${accountId}: momentum account pass failed — ${err.message}`) }
+      continue
+    }
 
     // EXITS first: the ranking says the name left the band.
     for (const [symbol] of exits) {

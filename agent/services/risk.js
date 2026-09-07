@@ -40,6 +40,7 @@ import { loadFxRates } from './fx-rates.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 import { accountEconomics } from './config-controller.js'
 import { unitsPerLot as unitsPerLotFromRegistry } from '../lib/lot-size-registry.js'
+import { isMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './momentum-account.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
 import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
 
@@ -1059,6 +1060,17 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   Object.assign(checks, gg.checks)
   if (!gg.ok) return veto(gg.reason, checks, proposal)
 
+  // ---- 0b. ONE SYSTEM PER ACCOUNT (owner 07-09-2026, §7,386·D1) ----------
+  // The momentum account trades the momentum system and nothing else: a
+  // proposal from any other strategy is refused here, by rule, so the
+  // account's record is the momentum system's record and no intraday setup
+  // can share its budget or its report.
+  const momentumAcct = isMomentumAccount(db, acct)
+  checks.momentum_account = momentumAcct
+  if (momentumAcct && proposal.strategy !== MOMENTUM_STRATEGY) {
+    return veto(`momentum_account_only: ${proposal.strategy || 'unlabelled'} may not dispatch on the momentum account (…${String(acct).slice(-4)} trades ${MOMENTUM_STRATEGY} only)`, checks, proposal)
+  }
+
   // ---- 0a. FAIL CLOSED ON A BALANCE THAT IS NOT THIS ACCOUNT'S ------------
   // Owner decision, 2026-08-06 ("D-1 proceed to risk gate veto"), on the
   // evidence in audit/repair-2026-08-06/01-sizing-incident.md: the same
@@ -1718,7 +1730,25 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     // pre-registered 30-close verdict says otherwise.
     const efScale = earnedFloor?.riskScale ?? 1
     const effRiskPct = (budget / balance) * efScale
-    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, effRiskPct, entry, scanRates(db), brokerPerLot)
+    // VOL-TARGET SIZING (owner 07-09-2026, §7,386·D1): on the momentum
+    // account a tsmom proposal carries its own size, computed by the
+    // momentum-account pass from equity × vol target ÷ asset vol. The
+    // per-trade risk budget is not the sizing model there. Honoured ONLY on
+    // the momentum account and only for its strategy — a self-declared size
+    // from anywhere else is recorded and ignored. Every guard below (min lot,
+    // margin, notional exposure, daily loss) still reads the sized volume.
+    const sizedRaw = Number(proposal.sizedVolume)
+    const volTargetSized = proposal.sizing === 'vol_target' && Number.isFinite(sizedRaw) && sizedRaw > 0
+    let risked
+    if (volTargetSized && momentumAcct && proposal.strategy === MOMENTUM_STRATEGY) {
+      const vol = Math.floor(sizedRaw * 100) / 100
+      const perLot = usdLossPerLot(proposal.symbol, slDistance, entry, scanRates(db), brokerPerLot)
+      risked = { volume: vol, usdRisk: Number.isFinite(perLot) ? Number((vol * perLot).toFixed(2)) : null, note: `vol_target lots=${vol} (momentum account; the risk budget is not the sizing model here)` }
+      checks.sizing = 'vol_target'
+    } else {
+      if (volTargetSized) checks.sizing_ignored = 'vol_target size declared outside the momentum account'
+      risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, effRiskPct, entry, scanRates(db), brokerPerLot)
+    }
     checks.risk_budget = Number(budget.toFixed(2))
     checks.risk_pct_effective = Number(effRiskPct.toFixed(4))
     if (ddFactor < 1) checks.derisked = { factor: ddFactor, window_h: config.deriskWindowHours }

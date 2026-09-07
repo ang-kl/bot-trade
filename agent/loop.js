@@ -474,6 +474,11 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     requestedVolume: requestedVol,
     strategy: synth.strategy || null,
     conviction: synth.overall_conviction ?? null,
+    // Vol-target size from the momentum-account pass (§7,386·D1). The gate
+    // honours it only on the momentum account for tsmom_long; elsewhere it
+    // is recorded and ignored.
+    sizing: synth.sizing ?? null,
+    sizedVolume: synth.sizedVolume ?? null,
     // Provenance for the order log: who fired this attempt (auto_signal |
     // validation_fill | …). Rides inside proposal_json — no schema change.
     source: synth.source || 'auto_signal',
@@ -3403,7 +3408,12 @@ async function runLoop(db) {
     if (ctraderCreds.ready) {
       try {
         const { runMomentumShadow } = await import('./services/momentum-shadow.js')
-        const ms = await runMomentumShadow(db, { symbols, symbolMap, creds: ctraderCreds, loopId: loopCount })
+        // BREADTH IS THE FUEL (§7,386·D1): the momentum universe (data,
+        // config/momentum-universe.json) is ranked ahead of the scan's own
+        // symbols, so the shadow's maxSymbols cap never trims the universe.
+        const { momentumUniverseSymbols } = await import('./services/momentum-account.js')
+        const shadowSymbols = [...new Set([...momentumUniverseSymbols(db), ...symbols.map(s => String(typeof s === 'string' ? s : s?.symbol || '').toUpperCase())])].filter(Boolean)
+        const ms = await runMomentumShadow(db, { symbols: shadowSymbols, symbolMap, creds: ctraderCreds, loopId: loopCount })
         if (ms.ran) log(`momentum shadow: ranked ${ms.ranked}/${ms.universe}, ${ms.rows} row(s), ${ms.holdings ?? 0} shadow holding(s)${ms.why ? ` — ${ms.why}` : ''}`)
       } catch (err) {
         log(`momentum shadow failed: ${err.message}`)
@@ -3418,7 +3428,8 @@ async function runLoop(db) {
     // cycle moves on.
     if (ctraderCreds.ready) {
       try {
-        const { runMomentumBook } = await import('./services/momentum-book.js')
+        const { runMomentumBook, atrOf } = await import('./services/momentum-book.js')
+        const { scanRates } = await import('./services/risk.js')
         const { getRegimeBars } = await import('./services/fib-strategy.js')
         const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
         const exec = await import('./lib/exec-engine.js')
@@ -3448,9 +3459,17 @@ async function runLoop(db) {
             close: (creds, args) => exec.closePosition(creds, args),
             phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade,
             mayTrade: (accountId, symbol) => accountMayTrade(db, accountId, symbol),
+            // The momentum account's universe build (§7,386·D1): lot meta for
+            // affordability, this account's equity for the vol target, the
+            // scan's rates for non-USD notional, the book's own ATR.
+            volumeMeta: async (creds, symbolId) => (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId),
+            equity: (accountId) => getAccountBalance(db, accountId),
+            rates: () => { try { return scanRates(db) } catch { return null } },
+            atrOf: (bars) => atrOf(bars, bookCfg.atrPeriod),
           },
         })
         if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
+        if (mb.momentumAccount) log(`momentum account …${String(mb.momentumAccount.account).slice(-4)}: daily pass — ${mb.momentumAccount.entries} entered, ${mb.momentumAccount.exits} exited; universe ${mb.momentumAccount.universe?.tradable}/${mb.momentumAccount.universe?.total} tradable${mb.momentumAccount.universe?.byReason ? ` (${Object.entries(mb.momentumAccount.universe.byReason).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`)
       } catch (err) {
         log(`momentum book failed: ${err.message}`)
       }
