@@ -45,7 +45,13 @@ const r2 = (v) => Math.round(v * 100) / 100
  *            minLotRiskUsd:number|null, minLotMarginUsd:number|null, neededRiskPct:number|null, lotsAtBudget:number|null}}
  */
 export function planFundability({ symbol, price, minLot, balance, riskBudgetUsd: budget, headroomUsd = null, atr = null, refStopPct = DEFAULT_REF_STOP_PCT, leverage = 100, rates = null, marginRate = null } = {}) {
-  const out = { ok: false, reason: null, minLot: num(minLot), price: num(price), stopDist: null, stopSource: 'none', minLotRiskUsd: null, minLotMarginUsd: null, neededRiskPct: null, lotsAtBudget: null }
+  // THREE VERDICTS, NOT TWO (measured 08-09-2026 19:01 SGT, the first live
+  // build): with US markets closed, 14 of ACCT-LIVE-1's 25 names had no
+  // quote, were written as `ok:false no_price`, and the gate then skipped
+  // AVGO.US on that account as "unfundable" — a name it had never judged.
+  // A missing price, lot meta or balance is UNKNOWN, and unknown never
+  // blocks; only a judged shortfall (risk_budget, margin) is `unfundable`.
+  const out = { ok: false, verdict: 'unknown', reason: null, minLot: num(minLot), price: num(price), stopDist: null, stopSource: 'none', minLotRiskUsd: null, minLotMarginUsd: null, neededRiskPct: null, lotsAtBudget: null }
   if (!(out.price > 0)) { out.reason = 'no_price'; return out }
   if (!(out.minLot > 0)) { out.reason = 'no_lot_meta'; return out }
   if (!(balance > 0)) { out.reason = 'no_balance'; return out }
@@ -62,14 +68,25 @@ export function planFundability({ symbol, price, minLot, balance, riskBudgetUsd:
   if (!(budget > 0) || out.minLotRiskUsd > budget) {
     out.neededRiskPct = r2((out.minLotRiskUsd / balance) * 100)
     out.reason = `risk_budget: min lot risks $${out.minLotRiskUsd} at ${out.stopSource} vs budget $${r2(budget || 0)} — needs per-trade risk ≥ ${out.neededRiskPct}%`
+    out.verdict = 'unfundable'
     return out
   }
   if (headroomUsd != null && out.minLotMarginUsd != null && out.minLotMarginUsd > headroomUsd) {
     out.reason = `margin: min lot locks $${out.minLotMarginUsd} vs headroom $${r2(headroomUsd)}`
+    out.verdict = 'unfundable'
     return out
   }
   out.ok = true
+  out.verdict = 'fundable'
   return out
+}
+
+/** The scan's last recorded price for a symbol, for a market that has no quote right now. */
+export function lastScanPrice(db, symbol) {
+  try {
+    const row = db.prepare(`SELECT price FROM scans WHERE symbol = ? AND price > 0 ORDER BY id DESC LIMIT 1`).get(String(symbol).toUpperCase())
+    return num(row?.price)
+  } catch { return null }
 }
 
 /** Latest ATR(14) on record for a symbol, from the quant phase's regime table. */
@@ -107,25 +124,36 @@ export async function buildFundableUniverse(db, { accountId, creds, deps = {}, n
     let row
     try {
       const sid = deps.symbolIdFor ? await deps.symbolIdFor(creds, symbol) : null
-      if (sid == null) { row = planFundability({ symbol, price: null }); row.reason = 'unknown_symbol' } else {
+      if (sid == null) { row = planFundability({ symbol, price: null }); row.reason = 'unknown_symbol'; row.verdict = 'unknown' } else {
         const meta = deps.volumeMeta ? await deps.volumeMeta(creds, sid) : null
         const minLot = meta && meta.lotSize > 0 && meta.minVolume > 0 ? meta.minVolume / meta.lotSize : (meta ? Number(cfg.minLotSize) || 0.01 : null)
         const q = deps.spot ? await deps.spot(creds, sid) : null
-        const price = Number(q?.ask) > 0 ? Number(q.ask) : (Number(q?.bid) > 0 ? Number(q.bid) : null)
+        let price = Number(q?.ask) > 0 ? Number(q.ask) : (Number(q?.bid) > 0 ? Number(q.bid) : null)
+        let priceSource = price > 0 ? 'spot' : null
+        // A closed market has no quote but the scan priced the name while it
+        // was open (the 19:01 SGT case: 14 US names unpriced after the close).
+        // The last scan price is a day-old reference at worst, and a judged
+        // row at a day-old price beats an unknown one.
+        if (!(price > 0)) {
+          const p = deps.lastScanPrice ? deps.lastScanPrice(symbol) : lastScanPrice(db, symbol)
+          if (p > 0) { price = p; priceSource = 'last_scan' }
+        }
         const atr = deps.atrOf ? deps.atrOf(symbol) : atrOnRecord(db, symbol)
         row = planFundability({ symbol, price, minLot, balance, riskBudgetUsd: budget, headroomUsd: headroom, atr, refStopPct: cfg.fundableRefStopPct ?? DEFAULT_REF_STOP_PCT, leverage, rates, marginRate: marginRateFor(cfg, symbol) })
+        row.priceSource = priceSource
       }
     } catch (err) {
-      row = { ok: false, reason: `error: ${String(err?.message || err).slice(0, 120)}` }
+      row = { ok: false, verdict: 'unknown', reason: `error: ${String(err?.message || err).slice(0, 120)}` }
     }
     rows[symbol] = row
     const key = row.ok ? 'fundable' : String(row.reason || 'unknown').split(':')[0]
     byReason[key] = (byReason[key] || 0) + 1
   }
+  const all = Object.values(rows)
   const record = {
     at: new Date(now).toISOString(), accountId: id, balance: balance > 0 ? balance : null, riskBudgetUsd: r2(budget), headroomUsd: headroom != null ? r2(headroom) : null,
     perTradeRiskPct: cfg.perTradeRiskPct ?? null, rows,
-    summary: { total: items.length, fundable: Object.values(rows).filter(r => r.ok).length, byReason },
+    summary: { total: items.length, fundable: all.filter(r => r.ok).length, unfundable: all.filter(r => r.verdict === 'unfundable').length, unknown: all.filter(r => r.verdict === 'unknown').length, byReason },
   }
   setState(db, FUNDABLE_KEY(id), JSON.stringify(record))
   let last = {}
@@ -161,6 +189,9 @@ export function isFundable(db, accountId, symbol, { now = Date.now() } = {}) {
   const row = rec.rows?.[String(symbol).toUpperCase()]
   if (!row) return { ok: true, known: false, reason: 'symbol not in the record' }
   if (row.ok) return { ok: true, known: true, reason: null }
+  // Only a JUDGED shortfall blocks. A row the build could not price or size
+  // (no_price with the market closed, no lot meta, an error) is unknown.
+  if (row.verdict !== 'unfundable') return { ok: true, known: false, reason: `not judged — ${row.reason}` }
   return { ok: false, known: true, reason: `unfundable at min lot — ${row.reason}`, row }
 }
 
@@ -171,12 +202,14 @@ export function fundableUniverseReport(db, accountIds = [], { now = Date.now() }
     const rec = loadFundableUniverse(db, id)
     if (!rec) { accounts.push({ accountId: String(id), record: null, due: true }); continue }
     const ageH = Math.round((now - Date.parse(rec.at)) / 360_000) / 10
-    const unfundable = Object.entries(rec.rows || {}).filter(([, r]) => !r.ok)
+    const entries = Object.entries(rec.rows || {})
+    const unfundable = entries.filter(([, r]) => r.verdict === 'unfundable')
       .map(([symbol, r]) => ({ symbol, reason: r.reason, minLotRiskUsd: r.minLotRiskUsd ?? null, neededRiskPct: r.neededRiskPct ?? null, minLotMarginUsd: r.minLotMarginUsd ?? null }))
       .sort((a, b) => (a.neededRiskPct ?? Infinity) - (b.neededRiskPct ?? Infinity))
+    const unknown = entries.filter(([, r]) => !r.ok && r.verdict !== 'unfundable').map(([symbol, r]) => ({ symbol, reason: r.reason }))
     accounts.push({
       accountId: String(id), at: rec.at, ageHours: ageH, due: fundableDue(db, id, now), balance: rec.balance, riskBudgetUsd: rec.riskBudgetUsd, headroomUsd: rec.headroomUsd,
-      summary: rec.summary, fundable: Object.keys(rec.rows || {}).filter(s => rec.rows[s].ok), unfundable,
+      summary: rec.summary, fundable: Object.keys(rec.rows || {}).filter(s => rec.rows[s].ok), unfundable, unknown,
     })
   }
   return {
