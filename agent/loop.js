@@ -11,6 +11,7 @@ import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
+import { recordTradePlan } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
@@ -473,6 +474,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     tp2: synth.tp2 ?? null,
     requestedVolume: requestedVol,
     strategy: synth.strategy || null,
+    // The bars the signal was computed on — rides into risk_events so a
+    // refused setup can be replayed at its own timeframe (§7,437·B·2).
+    timeframe: synth.timeframe ?? null,
     conviction: synth.overall_conviction ?? null,
     // Vol-target size from the momentum-account pass (§7,386·D1). The gate
     // honours it only on the momentum account for tsmom_long; elsewhere it
@@ -957,6 +961,17 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         parsedLabel.raw,
         accountId != null ? String(accountId) : null,
       )
+
+      // THE PLAN, AS PLANNED (§7,437·B·4): the proposal's own entry, stop and
+      // target — before the fill anchor moved them — the intended hold and
+      // the rule the position will live under, so the close can be scored
+      // against what was meant rather than against what the row says by then.
+      try {
+        recordTradePlan(db, tradeId, {
+          accountId, symbol, side, strategy: synth.strategy || null, timeframe: synth.timeframe ?? null,
+          entry: synth.entry, sl: synth.sl, tp: synth.tp1, timeCapAt: timeCap, source: synth.source || 'auto_signal',
+        })
+      } catch (err) { log(`Trade plan not recorded for trade ${tradeId} (non-fatal): ${err.message}`) }
 
       return tradeId
     })
@@ -2883,6 +2898,19 @@ async function runLoop(db) {
               return byTf[tf] || []
             }
             const pm = await runLossPostmortems(db, pmFetch)
+            // §7,437·B·2/B·4: score refused setups against the bars that
+            // followed (broker fetch, capped per cycle) and score closed
+            // plans against their execution (DB only). Both are records,
+            // neither touches a decision.
+            try {
+              const { scoreRefusedOpportunities } = await import('./services/refusal-ledger.js')
+              await scoreRefusedOpportunities(db, pmFetch, { maxPerCycle: 6, log })
+            } catch (err) { log(`Refusal ledger failed (non-fatal): ${err.message}`) }
+            try {
+              const { scoreClosedPlans } = await import('./services/trade-plans.js')
+              const sp = scoreClosedPlans(db)
+              if (sp.scored > 0) log(`Trade plans: scored ${sp.scored} close(s) against the plan written at entry`)
+            } catch (err) { log(`Trade plan scoring failed (non-fatal): ${err.message}`) }
             if (pm.classified > 0) {
               log(`Trade lessons: classified ${pm.classified} closed trade(s) — see the Desk Trade lessons`)
               // Close the learning loop: recompute the evidence-driven SL-widen
@@ -4721,6 +4749,8 @@ async function runLoop(db) {
         { name: 'prune-signals', run: () => db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d) },
         { name: 'prune-regimes', run: () => db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d) },
         { name: 'prune-risk-events', run: () => db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d) },
+        // Refusal scores outlive the risk_events they summarise (180 vs 90 days).
+        { name: 'prune-refusal-scores', run: () => db.prepare(`DELETE FROM refusal_scores WHERE datetime(scored_at) < datetime('now', '-180 days')`).run() },
         { name: 'prune-decision-log', run: async () => (await import('./services/decision-log.js')).pruneDecisionLog(db) },
         { name: 'prune-position-events', run: async () => (await import('./services/position-events.js')).prunePositionEvents(db) },
         // cpp_decisions rides the same 90d window as the other decision sinks.

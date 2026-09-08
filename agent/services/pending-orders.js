@@ -18,6 +18,7 @@ import { tradePrice } from './alert-format.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { normPosId } from '../lib/pos-id.js'
+import { recordTradePlan } from './trade-plans.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -209,6 +210,13 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       parsedLabel.raw,
       acct,
     )
+    // §7,437·B·4: the plan the limit was placed with, scored at close.
+    try {
+      recordTradePlan(db, tradeId, {
+        accountId: acct, symbol: row.symbol, side, strategy: 'fib_618_fade', timeframe: row.timeframe || null,
+        entry: row.level ?? executionPrice, sl: row.sl ?? null, tp: row.tp ?? null, timeCapAt, source: 'bot_pending_fill',
+      })
+    } catch (err) { log(`Trade plan not recorded for trade ${tradeId} (non-fatal): ${err.message}`) }
 
     return tradeId
   })

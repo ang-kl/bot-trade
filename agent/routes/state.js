@@ -2460,6 +2460,30 @@ export default function stateRouter(db) {
   // metric, target, horizon, current value and one of three verdicts. This
   // is the report surface the chat-side daily report never had — the
   // figures it used to gather by hand from four routes are read here.
+  // §7,437·B·4: plans written at entry, scored at close — coverage by origin
+  // and the scored population. ?days=30
+  router.get('/trade-plans', async (req, res) => {
+    try {
+      const { tradePlansReport } = await import('../services/trade-plans.js')
+      const days = Math.min(365, Math.max(1, Number(req.query.days) || 30))
+      res.json(tradePlansReport(db, { days }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // §7,437·B·2: what the refusals cost — R the refused setups would have
+  // reached, per reason, over the window. ?days=7
+  router.get('/refusal-cost', async (req, res) => {
+    try {
+      const { refusalCostReport } = await import('../services/refusal-ledger.js')
+      const days = Math.min(180, Math.max(1, Number(req.query.days) || 7))
+      res.json(refusalCostReport(db, { days }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/goal-table', async (_req, res) => {
     try {
       const { goalTable } = await import('../services/goal-table.js')

@@ -58,6 +58,16 @@ export const DEFAULT_GOAL_TARGETS = Object.freeze({
   // Momentum account: share of the configured universe that is tradable on
   // the account. Not measurable until the account is named.
   momentumTradableMinPct: 50,
+  // §7,437·B·4: share of the bot's own closes (last N days) that were
+  // scored against the plan written at entry.
+  plansScoredMinPct: 100,
+  plansDays: 30,
+  // §7,437·B·2: net R of the refused setups over the window. At or below
+  // zero the gate refused net losers; above it, it refused winners. Not
+  // measurable under the scored floor.
+  refusalNetRMax: 0,
+  refusalMinScored: 20,
+  refusalDays: 7,
 })
 
 export function goalTargets(raw) {
@@ -242,6 +252,38 @@ async function momentumGoal(db, targets) {
   })
 }
 
+async function plansGoal(db, targets, nowMs) {
+  const { tradePlansReport } = await import('./trade-plans.js')
+  const r = tradePlansReport(db, { days: targets.plansDays, now: nowMs })
+  const c = r.coverage
+  const share = pct(c.botScored, c.botClosed)
+  return goal('plans_scored', {
+    name: 'Closes scored against their plan', subsystem: 'trade plans',
+    metric: `bot closes scored against the plan written at entry / bot closes, last ${targets.plansDays}d`, target: `≥ ${targets.plansScoredMinPct}%`,
+    horizon: `${targets.plansDays}d`, current: share == null ? null : `${share}%`,
+    verdict: c.botClosed === 0 ? 'not_measurable' : share >= targets.plansScoredMinPct ? 'on_track' : 'off_track',
+    note: c.botClosed === 0 ? 'no bot close in the window yet'
+      : `${c.botScored}/${c.botClosed} scored (${c.botPlanned} carried a plan)` + (r.aggregate.n ? ` · mean slippage ${r.aggregate.meanSlippageR}R · mean realised ${r.aggregate.meanRealisedR}R · exits within rule ${r.aggregate.exitMatchedPct}%` : ''),
+    source: '/state/trade-plans',
+  })
+}
+
+async function refusalGoal(db, targets, nowMs) {
+  const { refusalCostReport } = await import('./refusal-ledger.js')
+  const r = refusalCostReport(db, { days: targets.refusalDays, now: nowMs })
+  const t = r.total
+  const measurable = t.scored >= targets.refusalMinScored
+  return goal('refusal_cost', {
+    name: 'Refusals avoid losers, not winners', subsystem: 'risk gate',
+    metric: `net R the refused setups would have reached, last ${targets.refusalDays}d`, target: `≤ ${targets.refusalNetRMax}R`,
+    horizon: `${targets.refusalDays}d`, current: measurable ? `${t.sumR}R over ${t.scored} scored` : null,
+    verdict: !measurable ? 'not_measurable' : t.sumR <= targets.refusalNetRMax ? 'on_track' : 'off_track',
+    note: !measurable ? `${t.scored} scored refusal(s) — below the ${targets.refusalMinScored} floor (${r.waiting} waiting on their horizon)`
+      : `${t.wouldHavePaid}/${t.scored} would have paid · ` + r.reasons.slice(0, 3).map(x => `${x.reason} ${x.sumR}R/${x.scored}`).join(' · '),
+    source: '/state/refusal-cost',
+  })
+}
+
 /**
  * The table. Every goal is attempted; one that throws reports not_measurable
  * with the error, so a broken reader is visible as a row rather than as a
@@ -259,6 +301,8 @@ export async function goalTable(db, { now = Date.now() } = {}) {
     ['earned_floor', () => earnedFloorGoal(db)],
     ['inspector_closes_findings', () => inspectorGoal(db, t, now)],
     ['momentum_universe_tradable', () => momentumGoal(db, t)],
+    ['plans_scored', () => plansGoal(db, t, now)],
+    ['refusal_cost', () => refusalGoal(db, t, now)],
   ]
   const goals = []
   for (const [id, read] of readers) {
