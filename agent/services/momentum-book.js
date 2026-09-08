@@ -185,7 +185,18 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   summary.adopted = 0
   summary.reconciled = 0
 
-  for (const acct of accounts) {
+  // RICHEST HEADROOM FIRST (owner § 7,453·B, 08-09-2026): the pool orders the
+  // accounts, and an exhausted one takes no ENTRIES this pass — its exits,
+  // adoption and trail still run, because they need no margin. Unknown
+  // headroom (no injected reader, no balance) is not exhausted.
+  // null stays null: Number(null) is 0, and 0 is "exhausted" — the first
+  // draft read every account with no reader as exhausted (caught by the
+  // existing book tests before it shipped).
+  const headroomOf = (a) => { try { const h = deps.marginHeadroom ? deps.marginHeadroom(String(a.accountId)) : null; return h == null || !Number.isFinite(Number(h)) ? null : Number(h) } catch { return null } }
+  const ordered = deps.marginHeadroom
+    ? [...accounts].map((a, i) => ({ a, i, h: headroomOf(a) })).sort((x, y) => ((y.h ?? 0) - (x.h ?? 0)) || (x.i - y.i)).map(x => x.a)
+    : accounts
+  for (const acct of ordered) {
     const accountId = String(acct.accountId)
     let armed = false
     try { armed = armedTradeKeys(db, getState, accountId).has(TSMOM_STRATEGY) } catch { armed = false }
@@ -194,6 +205,9 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     const creds = credsFor(acct)
     if (!creds) { summary.skipped.push(`${accountId}: no credentials`); continue }
     summary.accounts++
+    const headroom = headroomOf(acct)
+    const marginExhausted = headroom != null && headroom <= 0
+    if (marginExhausted) summary.skipped.push(`${accountId}: margin exhausted (headroom $${headroom.toFixed(2)}) — no entries this pass`)
 
     // THE MOMENTUM ACCOUNT (owner 07-09-2026, §7,386·D1): one account runs
     // the momentum system on its own terms — target portfolio from the
@@ -253,6 +267,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     // ONE ENTRY ATTEMPT, shared by the shadow's fresh `enter` rows and the
     // reconcile pass below. Returns 'entered' | 'skipped' | 'capped'.
     const tryEnter = async (symbol, { conviction = null, rankPct = null, note }) => {
+      if (marginExhausted) return 'capped'
       if (openRow.get(accountId, symbol)) return 'skipped'
       if ((openCount.get(accountId)?.n || 0) >= cfg.maxPositionsPerAccount) { summary.skipped.push(`${accountId}: at maxPositionsPerAccount`); return 'capped' }
       const may = deps.mayTrade ? deps.mayTrade(accountId, symbol) : { ok: true, item: null }

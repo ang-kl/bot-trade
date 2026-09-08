@@ -196,9 +196,14 @@ test('the guardian calls it on every HELD tick, before the move gate', () => {
 
 test('the 60-second pass is still wired — a tick trigger is an ADDITION', () => {
   // A price trigger that stops firing must degrade to slow, not to nothing.
+  // Since 08-09-2026 the 60s pass is the protection BAND on its own ticker
+  // (§ 7,453·C), not a `due('pnl_watch', 60)` gate inside the 3s tick.
   const src = readFileSync(new URL('./fast-monitor.js', import.meta.url), 'utf8')
-  assert.match(src, /runLossCapAllAccounts/)
-  assert.match(src, /due\('pnl_watch', 60/)
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const band = src.slice(src.indexOf('export async function runProtectionBand'), src.indexOf('export function startFastMonitor'))
+  assert.ok(band.length > 0, 'runProtectionBand exists ahead of startFastMonitor')
+  assert.match(band, /runLossCapAllAccounts/, 'the loss cap runs inside the band')
+  assert.match(src, /runBand\(creds, startedAt\)[\s\S]{0,1500}?\}, bandMs\)/, 'the band is scheduled on its own bandMs interval')
 })
 
 test('the classification and the wiring agree', () => {

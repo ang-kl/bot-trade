@@ -114,6 +114,7 @@ export async function restoreMissingTargets(db, creds, findings, rowsById, deps 
   const nowMs = deps.nowMs ?? Date.now()
   const attempts = readAttempts(db)
   let done = 0
+  const noTarget = []
 
   for (const f of findings) {
     if (done >= MAX_PER_SWEEP) {
@@ -130,7 +131,16 @@ export async function restoreMissingTargets(db, creds, findings, rowsById, deps 
     }
 
     const plan = planTargetRestore(row, { brokerSl: f.brokerSl })
-    if (plan.action !== 'restore') { out.skipped.push(`${f.symbol}: ${plan.reason}`); continue }
+    if (plan.action !== 'restore') {
+      // ONE LINE, NOT ONE PER ROW (measured 08-09-2026: the momentum book's
+      // ten no-target rows produced 299 of 1,001 log lines in 30 minutes —
+      // the same fact re-discovered ten times a minute, burying the audit
+      // lines around it). A position that holds no target on record is the
+      // book's stated intent, not a fault to report per pass; they are
+      // counted and named once per sweep.
+      if (/^no target on record/.test(plan.reason)) { noTarget.push(f.symbol); continue }
+      out.skipped.push(`${f.symbol}: ${plan.reason}`); continue
+    }
 
     attempts[String(f.positionId)] = nowMs
     try {
@@ -162,6 +172,7 @@ export async function restoreMissingTargets(db, creds, findings, rowsById, deps 
     }
   }
 
+  if (noTarget.length) out.skipped.push(`${noTarget.length} position(s) hold no target on record — nothing to restore (${noTarget.join(', ')})`)
   writeAttempts(db, attempts)
   return out
 }

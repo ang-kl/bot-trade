@@ -672,12 +672,19 @@ const BROKER_MARGIN_MAX_AGE_MS = 5 * 60_000
  * or null when balance is unknown (margin checks are skipped then, same
  * as the gate itself).
  */
-export function portfolioMarginStatus(db, config, { balance, leverage, openPositions = null, rates = null } = {}) {
+export function portfolioMarginStatus(db, config, { balance, leverage, openPositions = null, rates = null, accountId = null } = {}) {
   if (!(balance > 0)) return null
   let usedMargin = null
   let source = 'broker'
+  // WHOSE margin (owner § 7,453·A, 08-09-2026). With no accountId this is the
+  // selected account's status, as it always was. Named, it is THAT account's:
+  // the broker snapshot is the selected account's and is used only for it;
+  // every other account is estimated from its own rows.
+  const selected = getState(db, 'ctrader_account_id') || null
+  const scopedTo = accountId != null ? String(accountId) : selected
+  const snapshotApplies = accountId == null || (selected != null && String(accountId) === String(selected))
   try {
-    const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
+    const snap = snapshotApplies ? JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null') : null
     const bm = snap?.account?.health?.usedMargin
     const ageMs = snap?.fetchedAt ? Date.now() - Date.parse(snap.fetchedAt) : Infinity
     if (Number.isFinite(bm) && bm >= 0 && ageMs < BROKER_MARGIN_MAX_AGE_MS) usedMargin = bm
@@ -685,11 +692,10 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   if (usedMargin == null) {
     source = 'estimate'
     usedMargin = 0
-    // M1 scoping: margin is a per-account quantity. NOTE the broker-truth
-    // branch above reads the SELECTED account's snapshot — per-account
-    // snapshots arrive with M2's workers; until then callers evaluating a
-    // non-selected account get the estimate path via this filter.
-    const acct = getState(db, 'ctrader_account_id') || null
+    // M1 scoping: margin is a per-account quantity. The broker-truth branch
+    // above reads the SELECTED account's snapshot and applies only to it;
+    // any other account is estimated from its own rows via this filter.
+    const acct = scopedTo
     const rows = openPositions ?? db.prepare(`
       SELECT mp.symbol, mp.entry_price, t.volume AS volume
       FROM monitored_positions mp
@@ -706,6 +712,35 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   }
   const cap = balance * config.maxMarginUsagePct
   return { usedMargin, cap, headroom: cap - usedMargin, source }
+}
+
+/**
+ * The margin POOL: one status per account, richest headroom first.
+ *
+ * Owner (08-09-2026, § 7,453·A/B): "so that it can see the best use of the
+ * margins as a collective balance strength than just individual weakness."
+ * Until this existed the dispatch pre-gate read ONE account's status (the
+ * selected one) and, when that account was over its cap, returned before the
+ * per-account fan-out started — so four accounts with headroom were refused
+ * with the fifth's number (measured 08-09: 17 of 30 loops paused on
+ * ACCT-DEMO-4's $770 used vs $644 cap while bad_rr sat frozen at 146).
+ *
+ * An account with no balance on record has no status: unknown is NOT
+ * exhausted — it is dispatched and judged by the risk gate as before, and
+ * sorts after every account with known positive headroom.
+ */
+export function accountMarginPool(db, config, accountIds, { rates = null } = {}) {
+  const out = []
+  for (const id of accountIds || []) {
+    const accountId = String(id)
+    const balance = getAccountBalance(db, accountId)
+    const status = balance > 0
+      ? portfolioMarginStatus(db, config, { balance, leverage: getAccountLeverage(db, config, accountId), rates, accountId })
+      : null
+    out.push({ accountId, balance: balance > 0 ? balance : null, status, exhausted: !!(status && status.headroom <= 0) })
+  }
+  const key = (p) => p.status ? p.status.headroom : 0
+  return out.sort((a, b) => key(b) - key(a))
 }
 
 // ---------------------------------------------------------------------------

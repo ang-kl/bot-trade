@@ -13,7 +13,7 @@ import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
 import { recordTradePlan } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
-import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
+import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates } from './services/risk.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
@@ -1279,9 +1279,15 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     // 2026-07-24: 67 identical margin vetoes in a day — "waste all the
     // effort to strategise"). Skip the dispatch outright and record ONE
     // risk event per loop cycle instead of one per symbol. Broker-truth
-    // margin when the snapshot is fresh (see portfolioMarginStatus).
-    if (portfolioMarginExhausted(db)) return { fired: false, synth }
-    const apAccounts = getAutopilotAccounts(db)
+    // margin when the snapshot is fresh (see accountMarginPool in risk.js).
+    // PER ACCOUNT, RICHEST FIRST (owner § 7,453·A, 08-09-2026). This used to
+    // be `if (portfolioMarginExhausted(db)) return` — ONE account's status
+    // (the selected one) ending the dispatch for all five. Now the pool is
+    // read once per cycle, accounts are tried in descending headroom, and
+    // only an exhausted account is skipped, by name, inside the fan-out.
+    const pool = marginPoolForCycle(db)
+    if (pool.length && pool.every(p => p.exhausted)) return { fired: false, synth }
+    const apAccounts = pool.map(p => p.acct)
     const { accountMayTrade, symbolAllowsStrategy } = await import('./services/watchlists.js')
     const { enabledStrategies } = await import('./services/strategies.js')
     const globalArmed = enabledStrategies(db, getState).map(s => s.key)
@@ -1325,6 +1331,23 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
       // account cannot un-scan the symbol — but it must still stop the account
       // acting on a stage it is switched out of, otherwise "Scan off" on that
       // account would sit above a trade the account just took.
+      // MARGIN POOL GATE — this account's own headroom, not the selected
+      // account's. Cheapest check first: an account over its cap cannot fund
+      // any order this cycle, so nothing below is built for it. The candidate
+      // goes on to the next account in the pool instead of dying here.
+      const poolEntry = pool.find(p => String(p.accountId) === String(acct.accountId))
+      if (poolEntry?.exhausted) {
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: 'margin_pool', decision: 'skip',
+            reason: `margin exhausted on this account (used $${poolEntry.status.usedMargin.toFixed(2)} vs cap $${poolEntry.status.cap.toFixed(2)}, ${poolEntry.status.source})`,
+          })
+        } catch { /* provenance never blocks */ }
+        continue
+      }
       const phases = effectivePhases(db, acct.accountId)
       const offPhase = ['scan', 'analyze', 'autotrade'].find(p => !phases[p])
       if (offPhase) {
@@ -1475,37 +1498,54 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
   return { fired, synth }
 }
 
-// Per-cycle memo for the portfolio margin pre-gate: the aggregate is the
-// same for every symbol within one loop cycle, so compute it once and
-// journal the exhausted state once — not per dispatched symbol.
-let marginGateLoop = -1
-let marginGateExhausted = false
-function portfolioMarginExhausted(db) {
-  if (marginGateLoop === loopCount) return marginGateExhausted
-  marginGateLoop = loopCount
-  marginGateExhausted = false
+// Per-cycle memo for the margin POOL (owner § 7,453·A, 08-09-2026): one
+// status per autopilot account, computed once per loop cycle, logged once,
+// and the exhausted accounts journaled once each — not per dispatched
+// symbol. Replaces the single-account pre-gate that paused every account on
+// the selected account's number.
+//
+// Entries: { acct, accountId, status, exhausted }, richest headroom first.
+// `acct` is the registry row the fan-out needs (accountId, isLive, …).
+let marginPoolLoop = -1
+let marginPoolMemo = []
+function marginPoolForCycle(db) {
+  if (marginPoolLoop === loopCount) return marginPoolMemo
+  marginPoolLoop = loopCount
+  const accounts = getAutopilotAccounts(db)
+  const byId = new Map(accounts.map(a => [String(a.accountId), a]))
+  let pool = accounts.map(a => ({ acct: a, accountId: String(a.accountId), status: null, exhausted: false }))
   try {
     const config = loadRiskConfig(db)
-    const balance = getAccountBalance(db)
-    if (!(balance > 0)) return false
-    const pm = portfolioMarginStatus(db, config, { balance, leverage: getAccountLeverage(db, config) })
-    if (pm && pm.headroom <= 0) {
-      marginGateExhausted = true
-      log(`Autotrade dispatch paused this cycle: portfolio margin exhausted — ${pm.source} used $${pm.usedMargin.toFixed(2)} vs cap $${pm.cap.toFixed(2)} (maxMarginUsagePct=${config.maxMarginUsagePct}). No sizing attempted; close/shrink positions or raise the cap to resume.`)
+    let rates = null
+    try { rates = scanRates(db) } catch { rates = null }
+    pool = accountMarginPool(db, config, accounts.map(a => a.accountId), { rates })
+      .map(p => ({ ...p, acct: byId.get(p.accountId) }))
+      .filter(p => p.acct)
+    const said = pool.map(p => p.status
+      ? `${p.accountId}: ${p.exhausted ? 'EXHAUSTED' : `headroom $${p.status.headroom.toFixed(2)}`} (used $${p.status.usedMargin.toFixed(2)} / cap $${p.status.cap.toFixed(2)}, ${p.status.source})`
+      : `${p.accountId}: no balance on record — judged by the risk gate`)
+    if (pool.length) log(`Margin pool (maxMarginUsagePct=${config.maxMarginUsagePct}): ${said.join(' · ')}${pool.every(p => p.exhausted) ? ' — every account exhausted, dispatch paused this cycle' : ''}`)
+    for (const p of pool.filter(x => x.exhausted)) {
       try {
-        persistRiskEvent(db, { symbol: 'PORTFOLIO', side: '—' }, {
+        persistRiskEvent(db, { symbol: 'PORTFOLIO', side: '—', accountId: p.accountId }, {
           approved: false,
-          veto_reason: `portfolio_margin_exhausted used=${pm.usedMargin.toFixed(2)} cap=${pm.cap.toFixed(2)} source=${pm.source}`,
+          veto_reason: `portfolio_margin_exhausted used=${p.status.usedMargin.toFixed(2)} cap=${p.status.cap.toFixed(2)} source=${p.status.source}`,
           checks: {
-            margin_used_usd: Number(pm.usedMargin.toFixed(2)),
-            margin_cap_usd: Number(pm.cap.toFixed(2)),
-            margin_source: pm.source,
+            margin_used_usd: Number(p.status.usedMargin.toFixed(2)),
+            margin_cap_usd: Number(p.status.cap.toFixed(2)),
+            margin_source: p.status.source,
+            account_id: p.accountId,
           },
         })
       } catch { /* journaling is best-effort */ }
     }
-  } catch { /* the pre-gate must never break dispatch on its own error */ }
-  return marginGateExhausted
+  } catch (err) {
+    // The pool must never break dispatch on its own error: fall back to the
+    // plain roster, nobody exhausted, and say so once.
+    log(`Margin pool could not be read (${err.message}) — dispatching to every account, the risk gate decides`)
+  }
+  marginPoolMemo = pool
+  return pool
 }
 
 // ---------------------------------------------------------------------------
@@ -3501,6 +3541,10 @@ async function runLoop(db) {
             equity: (accountId) => getAccountBalance(db, accountId),
             rates: () => { try { return scanRates(db) } catch { return null } },
             atrOf: (bars) => atrOf(bars, bookCfg.atrPeriod),
+            // The same pool the dispatch draws on (owner § 7,453·B): an
+            // exhausted account takes no book entries this pass and the
+            // richest account is tried first. null = unknown, not exhausted.
+            marginHeadroom: (accountId) => marginPoolForCycle(db).find(p => p.accountId === String(accountId))?.status?.headroom ?? null,
           },
         })
         if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
