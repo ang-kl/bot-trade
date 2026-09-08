@@ -3617,8 +3617,12 @@ async function runLoop(db) {
               headroomOf: (accountId) => marginPoolForCycle(db).find(p => p.accountId === String(accountId))?.status?.headroom ?? null,
             },
           })
-          log(`Fundable universe …${String(due.accountId).slice(-4)}: ${rec.summary.fundable}/${rec.summary.total} fundable at min lot, ${rec.summary.unfundable} unfundable, ${rec.summary.unknown} not judged (${Object.entries(rec.summary.byReason).map(([k, v]) => `${k} ${v}`).join(', ') || 'empty watchlist'}) — budget $${rec.riskBudgetUsd}, headroom ${rec.headroomUsd != null ? `$${rec.headroomUsd}` : 'unknown'}`)
-          await hbeat(db, 'fundable_universe')
+          if (rec.complete) {
+            log(`Fundable universe …${String(due.accountId).slice(-4)}: complete — ${rec.summary.fundable}/${rec.summary.total} fundable at min lot, ${rec.summary.unfundable} unfundable, ${rec.summary.unknown} not judged (${Object.entries(rec.summary.byReason).map(([k, v]) => `${k} ${v}`).join(', ') || 'empty watchlist'}) — budget $${rec.riskBudgetUsd}, headroom ${rec.headroomUsd != null ? `$${rec.headroomUsd}` : 'unknown'}`)
+            await hbeat(db, 'fundable_universe')
+          } else {
+            log(`Fundable universe …${String(due.accountId).slice(-4)}: ${rec.judgedThisCall} judged this cycle, ${rec.remaining} of ${rec.summary.total} still pending — continues next cycle`)
+          }
         }
       } catch (err) {
         log(`Fundable universe build failed (non-fatal): ${err.message}`)

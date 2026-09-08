@@ -34,6 +34,9 @@ export const FUNDABLE_REBUILD_KEY = 'fundable_universe_rebuild_requested_ms'
 export const DEFAULT_REF_STOP_PCT = 1.0
 export const FUNDABLE_MAX_AGE_MS = 24 * 3600_000
 export const FUNDABLE_STALE_MS = 3 * FUNDABLE_MAX_AGE_MS
+export const FUNDABLE_BATCH = 40              // names judged per loop cycle
+export const FUNDABLE_BUDGET_MS = 45_000      // wall-clock per call, inside one loop cycle
+export const FUNDABLE_CALL_TIMEOUT_MS = 8_000 // one broker call
 
 const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null }
 const r2 = (v) => Math.round(v * 100) / 100
@@ -97,15 +100,39 @@ export function atrOnRecord(db, symbol) {
   } catch { return null }
 }
 
+// NOT unref'd (same reason as fast-monitor.js withBudget): an unref'd timer
+// cannot fire when it is the only thing left on the event loop, so a call
+// that never settles would hang the caller instead of timing out. Cleared on
+// settle, so a fast call leaves no timer behind.
+async function withTimeout(p, ms, label) {
+  let timer = null
+  try {
+    return await Promise.race([
+      Promise.resolve(p),
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms) }),
+    ])
+  } finally { if (timer) clearTimeout(timer) }
+}
+
 /**
- * Build this account's record over its watchlist. Broker calls: one symbol
- * lookup, one lot-meta read and one spot per enabled symbol, once a day.
+ * Build (or continue building) this account's record over its watchlist.
+ *
+ * BATCHED, NOT ONE-SHOT (measured 08-09-2026 19:14 SGT, the deploy after
+ * #859): the first build judged 25 names on ACCT-LIVE-1 in seconds, then
+ * the next due account's ~200-name watchlist held the main loop for over
+ * ten minutes on sequential broker calls — every other controller read
+ * stalled, and the 12-minute loop watchdog was minutes away. Now a build
+ * judges at most `maxSymbols` names per call inside `budgetMs`, keeps its
+ * `building.pending` list on the record, and resumes next cycle until the
+ * list is empty; `at` moves only when a build completes. Prices come from
+ * the scan's last recorded price first (no broker call); a spot quote is
+ * fetched only for names the scan never priced, each call timed out.
  *
  * deps: symbolIdFor(creds, symbol), volumeMeta(creds, symbolId) → {lotSize, minVolume},
  *       spot(creds, symbolId) → {bid, ask}, rates() → scan rates, headroomOf(accountId) → $|null,
- *       balanceOf(accountId) → $|null, atrOf(symbol) → ATR|null
+ *       balanceOf(accountId) → $|null, atrOf(symbol) → ATR|null, lastScanPrice(symbol) → price|null
  */
-export async function buildFundableUniverse(db, { accountId, creds, deps = {}, now = Date.now(), config = null } = {}) {
+export async function buildFundableUniverse(db, { accountId, creds, deps = {}, now = Date.now(), config = null, maxSymbols = FUNDABLE_BATCH, budgetMs = FUNDABLE_BUDGET_MS, callTimeoutMs = FUNDABLE_CALL_TIMEOUT_MS } = {}) {
   const id = String(accountId)
   const cfg = config || loadRiskConfig(db)
   const balance = deps.balanceOf ? deps.balanceOf(id) : getAccountBalance(db, id)
@@ -116,27 +143,32 @@ export async function buildFundableUniverse(db, { accountId, creds, deps = {}, n
     headroom = deps.headroomOf ? deps.headroomOf(id) : (accountMarginPool(db, cfg, [id], { rates: deps.rates ? deps.rates() : null })[0]?.status?.headroom ?? null)
   } catch { headroom = null }
   const rates = deps.rates ? deps.rates() : null
-  const rows = {}
-  const byReason = {}
   const items = readWatchlist(db, id).filter(i => i.enabled !== false)
-  for (const item of items) {
-    const symbol = String(item.symbol).toUpperCase()
+  const prev = loadFundableUniverse(db, id)
+  // Resume an in-progress build; otherwise start one over the whole list.
+  const resuming = prev?.building && Array.isArray(prev.building.pending) && prev.building.pending.length > 0
+    && Number.isFinite(Date.parse(prev.building.startedAt || '')) && now - Date.parse(prev.building.startedAt) < FUNDABLE_MAX_AGE_MS
+  const rows = resuming ? { ...(prev.rows || {}) } : {}
+  const pending = resuming ? [...prev.building.pending] : items.map(i => String(i.symbol).toUpperCase())
+  const startedAt = resuming ? prev.building.startedAt : new Date(now).toISOString()
+  const t0 = Date.now()
+  let judged = 0
+  while (pending.length && judged < maxSymbols && Date.now() - t0 < budgetMs) {
+    const symbol = pending.shift()
     let row
     try {
-      const sid = deps.symbolIdFor ? await deps.symbolIdFor(creds, symbol) : null
+      const sid = deps.symbolIdFor ? await withTimeout(deps.symbolIdFor(creds, symbol), callTimeoutMs, `${symbol} symbol id`) : null
       if (sid == null) { row = planFundability({ symbol, price: null }); row.reason = 'unknown_symbol'; row.verdict = 'unknown' } else {
-        const meta = deps.volumeMeta ? await deps.volumeMeta(creds, sid) : null
+        const meta = deps.volumeMeta ? await withTimeout(deps.volumeMeta(creds, sid), callTimeoutMs, `${symbol} lot meta`) : null
         const minLot = meta && meta.lotSize > 0 && meta.minVolume > 0 ? meta.minVolume / meta.lotSize : (meta ? Number(cfg.minLotSize) || 0.01 : null)
-        const q = deps.spot ? await deps.spot(creds, sid) : null
-        let price = Number(q?.ask) > 0 ? Number(q.ask) : (Number(q?.bid) > 0 ? Number(q.bid) : null)
-        let priceSource = price > 0 ? 'spot' : null
-        // A closed market has no quote but the scan priced the name while it
-        // was open (the 19:01 SGT case: 14 US names unpriced after the close).
-        // The last scan price is a day-old reference at worst, and a judged
-        // row at a day-old price beats an unknown one.
-        if (!(price > 0)) {
-          const p = deps.lastScanPrice ? deps.lastScanPrice(symbol) : lastScanPrice(db, symbol)
-          if (p > 0) { price = p; priceSource = 'last_scan' }
+        // The scan's last price first — no broker call — then a spot quote
+        // only for a name the scan never priced.
+        let price = deps.lastScanPrice ? deps.lastScanPrice(symbol) : lastScanPrice(db, symbol)
+        let priceSource = price > 0 ? 'last_scan' : null
+        if (!(price > 0) && deps.spot) {
+          const q = await withTimeout(deps.spot(creds, sid), callTimeoutMs, `${symbol} spot`).catch(() => null)
+          price = Number(q?.ask) > 0 ? Number(q.ask) : (Number(q?.bid) > 0 ? Number(q.bid) : null)
+          priceSource = price > 0 ? 'spot' : null
         }
         const atr = deps.atrOf ? deps.atrOf(symbol) : atrOnRecord(db, symbol)
         row = planFundability({ symbol, price, minLot, balance, riskBudgetUsd: budget, headroomUsd: headroom, atr, refStopPct: cfg.fundableRefStopPct ?? DEFAULT_REF_STOP_PCT, leverage, rates, marginRate: marginRateFor(cfg, symbol) })
@@ -146,22 +178,28 @@ export async function buildFundableUniverse(db, { accountId, creds, deps = {}, n
       row = { ok: false, verdict: 'unknown', reason: `error: ${String(err?.message || err).slice(0, 120)}` }
     }
     rows[symbol] = row
-    const key = row.ok ? 'fundable' : String(row.reason || 'unknown').split(':')[0]
-    byReason[key] = (byReason[key] || 0) + 1
+    judged++
   }
   const all = Object.values(rows)
+  const byReason = {}
+  for (const r of all) { const key = r.ok ? 'fundable' : String(r.reason || 'unknown').split(':')[0]; byReason[key] = (byReason[key] || 0) + 1 }
+  const complete = pending.length === 0
   const record = {
-    at: new Date(now).toISOString(), accountId: id, balance: balance > 0 ? balance : null, riskBudgetUsd: r2(budget), headroomUsd: headroom != null ? r2(headroom) : null,
+    at: complete ? new Date(now).toISOString() : (prev?.at ?? null), accountId: id, balance: balance > 0 ? balance : null, riskBudgetUsd: r2(budget), headroomUsd: headroom != null ? r2(headroom) : null,
     perTradeRiskPct: cfg.perTradeRiskPct ?? null, rows,
-    summary: { total: items.length, fundable: all.filter(r => r.ok).length, unfundable: all.filter(r => r.verdict === 'unfundable').length, unknown: all.filter(r => r.verdict === 'unknown').length, byReason },
+    summary: { total: items.length, judged: all.length, fundable: all.filter(r => r.ok).length, unfundable: all.filter(r => r.verdict === 'unfundable').length, unknown: all.filter(r => r.verdict === 'unknown').length, byReason },
+    ...(complete ? {} : { building: { startedAt, pending, judgedThisCall: judged } }),
   }
   setState(db, FUNDABLE_KEY(id), JSON.stringify(record))
-  let last = {}
-  try { last = JSON.parse(getState(db, FUNDABLE_LAST_KEY) || '{}') || {} } catch { last = {} }
-  const accounts = { ...(last.accounts || {}), [id]: { at: record.at, fundable: record.summary.fundable, total: record.summary.total } }
-  setState(db, FUNDABLE_LAST_KEY, JSON.stringify({ at: record.at, accounts }))
-  return record
+  if (complete) {
+    let last = {}
+    try { last = JSON.parse(getState(db, FUNDABLE_LAST_KEY) || '{}') || {} } catch { last = {} }
+    const accounts = { ...(last.accounts || {}), [id]: { at: record.at, fundable: record.summary.fundable, total: record.summary.total } }
+    setState(db, FUNDABLE_LAST_KEY, JSON.stringify({ at: record.at, accounts }))
+  }
+  return { ...record, complete, judgedThisCall: judged, remaining: pending.length }
 }
+
 
 export function loadFundableUniverse(db, accountId) {
   try { return JSON.parse(getState(db, FUNDABLE_KEY(String(accountId))) || 'null') } catch { return null }
@@ -170,6 +208,7 @@ export function loadFundableUniverse(db, accountId) {
 /** Is a rebuild due for this account: no record, a day old, or a rebuild requested since it was written. */
 export function fundableDue(db, accountId, now = Date.now()) {
   const rec = loadFundableUniverse(db, accountId)
+  if (rec?.building?.pending?.length) return true   // a build in progress continues next cycle
   const at = Date.parse(rec?.at || '')
   if (!Number.isFinite(at)) return true
   if (now - at >= FUNDABLE_MAX_AGE_MS) return true
@@ -183,7 +222,10 @@ export function fundableDue(db, accountId, now = Date.now()) {
  */
 export function isFundable(db, accountId, symbol, { now = Date.now() } = {}) {
   const rec = loadFundableUniverse(db, accountId)
-  const at = Date.parse(rec?.at || '')
+  // A build in progress: its judged rows are current (each judged this
+  // build), so they are read; names still pending are unknown.
+  const building = !!rec?.building?.pending?.length
+  const at = Date.parse((building ? rec.building.startedAt : rec?.at) || '')
   if (!rec || !Number.isFinite(at)) return { ok: true, known: false, reason: 'no fundable-universe record for this account' }
   if (now - at > FUNDABLE_STALE_MS) return { ok: true, known: false, stale: true, reason: `fundable-universe record ${Math.round((now - at) / 3600_000)}h old — not enforced` }
   const row = rec.rows?.[String(symbol).toUpperCase()]
@@ -201,7 +243,7 @@ export function fundableUniverseReport(db, accountIds = [], { now = Date.now() }
   for (const id of accountIds) {
     const rec = loadFundableUniverse(db, id)
     if (!rec) { accounts.push({ accountId: String(id), record: null, due: true }); continue }
-    const ageH = Math.round((now - Date.parse(rec.at)) / 360_000) / 10
+    const ageH = Number.isFinite(Date.parse(rec.at || '')) ? Math.round((now - Date.parse(rec.at)) / 360_000) / 10 : null
     const entries = Object.entries(rec.rows || {})
     const unfundable = entries.filter(([, r]) => r.verdict === 'unfundable')
       .map(([symbol, r]) => ({ symbol, reason: r.reason, minLotRiskUsd: r.minLotRiskUsd ?? null, neededRiskPct: r.neededRiskPct ?? null, minLotMarginUsd: r.minLotMarginUsd ?? null }))
@@ -210,6 +252,7 @@ export function fundableUniverseReport(db, accountIds = [], { now = Date.now() }
     accounts.push({
       accountId: String(id), at: rec.at, ageHours: ageH, due: fundableDue(db, id, now), balance: rec.balance, riskBudgetUsd: rec.riskBudgetUsd, headroomUsd: rec.headroomUsd,
       summary: rec.summary, fundable: Object.keys(rec.rows || {}).filter(s => rec.rows[s].ok), unfundable, unknown,
+      ...(rec.building ? { building: { startedAt: rec.building.startedAt, pending: rec.building.pending.length } } : {}),
     })
   }
   return {
