@@ -233,7 +233,12 @@ export function isFundable(db, accountId, symbol, { now = Date.now() } = {}) {
   if (row.ok) return { ok: true, known: true, reason: null }
   // Only a JUDGED shortfall blocks. A row the build could not price or size
   // (no_price with the market closed, no lot meta, an error) is unknown.
-  if (row.verdict !== 'unfundable') return { ok: true, known: false, reason: `not judged — ${row.reason}` }
+  // A record written before the verdict field existed (ACCT-LIVE-1's, built
+  // 19:01 SGT 08-09) is read by its reason: risk_budget / margin were the
+  // judged shortfalls then too, and reading them as unknown re-admitted the
+  // very names the planner had refused (measured 20:15 SGT).
+  const verdict = row.verdict ?? (/^(risk_budget|margin)/.test(String(row.reason || '')) ? 'unfundable' : 'unknown')
+  if (verdict !== 'unfundable') return { ok: true, known: false, reason: `not judged — ${row.reason}` }
   return { ok: false, known: true, reason: `unfundable at min lot — ${row.reason}`, row }
 }
 
