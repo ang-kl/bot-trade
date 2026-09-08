@@ -320,6 +320,20 @@ Measurement history — each line is a real run of the script, not a claim:
   cleared, live-read fill confirmation); the next reply is `№ 7,356`. Same
   reason as the two lines above: a local re-measure that reads below this
   is missing these, not correcting them.
+- 2026-09-08 02:00 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule, fourth time): the container restarted twice in between
+  (07-09 00:00 UTC and 08-09 01:50 UTC), so the script now reads **122**
+  here — a fresh transcript, not a corpus — and was refused as a reading.
+  The session continued from `№ 7,356` to **`№ 7,424`** as the last reply
+  at 01:40 UTC (#850–#854 merged: ledger write-back, weekend bank leaves
+  book rows to the book's stop, +1R take scoped to mean reversion, the
+  momentum account with vol-target sizing and a data universe, row-cursor
+  accounts keep their scan universe). One stamp was duplicated in that run:
+  `№ 7,422` was printed on two consecutive replies (08-09 01:07 and 01:17
+  UTC); the second is counted as `№ 7,423`, so the count is by replies, not
+  by stamps. The next reply is `№ 7,425`. Same reason as the lines above: a
+  local re-measure that reads below this is missing these, not correcting
+  them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
