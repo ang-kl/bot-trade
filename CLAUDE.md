@@ -334,6 +334,17 @@ Measurement history — each line is a real run of the script, not a claim:
   by stamps. The next reply is `№ 7,425`. Same reason as the lines above: a
   local re-measure that reads below this is missing these, not correcting
   them.
+- 2026-09-08 13:47 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule, fifth time; owner 08-09 20:40 SGT: "write back the ledger
+  with the next code PR"): the script reads **298** here and was refused as
+  a reading. The session continued from `№ 7,425` to **`№ 7,488`** as the
+  last reply at 13:47 UTC (#855–#864 merged: ledger write-back, staleness
+  verdicts + goal table, refusal ledger + plan-at-entry, margin pool +
+  protection band on its own ticker + reconcile expectations, fundable
+  universe + account horizon with its three same-day corrections, the
+  ACCT-DEMO-3 horizon and momentum switch-on declared from the repo). The
+  next reply is `№ 7,489`. Same reason as the lines above: a local
+  re-measure that reads below this is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

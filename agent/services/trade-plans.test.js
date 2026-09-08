@@ -99,6 +99,8 @@ test('wiring pin: every bot entry path writes a plan (loop autoTrade, pending fi
   assert.match(loop, /tp2: synth\.tp2 \?\? null,[\s\S]{0,400}?timeframe: synth\.timeframe \?\? null,[\s\S]{0,200}?conviction: synth\.overall_conviction/, 'the autoTrade proposal carries its timeframe')
   assert.match(pend, /recordTradePlan\(db, tradeId, \{[\s\S]*?source: 'bot_pending_fill'/, 'a pending fill records the plan')
   assert.match(act, /recordTradePlan\(db, tradeId, \{[\s\S]*?source: 'manual_broker'/, 'the manual route records the plan')
+  const cml = strip(readFileSync(new URL('./closed-market-limits.js', import.meta.url), 'utf8'))
+  assert.match(cml, /if \(!hasPlan\) \{\s+recordTradePlan\(db, adopted\.id, \{[\s\S]{0,500}?source: 'closed_market_limit_fill'/, 'a closed-market limit fill records the plan at adoption (08-09-2026 21:32 SGT gap)')
   assert.match(loop, /scoreClosedPlans\(db\)/, 'the loop scores closed plans')
   assert.equal(typeof setState, 'function')
 })

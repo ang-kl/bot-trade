@@ -22,6 +22,7 @@ import { tradePrice } from './alert-format.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { expiryMsFor } from './pending-signals.js'
 import { stopTriggerField } from '../lib/order-protection.js'
+import { recordTradePlan } from './trade-plans.js'
 
 export const DEFAULT_CLOSED_MARKET_LIMITS = {
   on: true, // owner: on by default — closed-market setups get locked in
@@ -152,6 +153,23 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
             ).run(row.risk_event_id, adopted.id)
           } catch { /* lineage is provenance, never a reason to fail the sweep */ }
         }
+        // THE PLAN, on the same moment (§7,437·B·4; measured 08-09-2026
+        // 21:32 SGT: four MSFT.US limits filled at the US open and the
+        // reconciler adopted them with no plan — the entry paths that write
+        // one are autoTrade, the fib pending fill and the manual route, and a
+        // closed-market limit is none of those). The pending row IS the plan:
+        // level, stop, target, strategy, timeframe. Written only when nothing
+        // more direct has written one already.
+        try {
+          const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(adopted.id)
+          if (!hasPlan) {
+            recordTradePlan(db, adopted.id, {
+              accountId: row.account_id ?? null, symbol: row.symbol, side: Number(row.dir) < 0 ? 'SELL' : 'BUY',
+              strategy: row.strategy || null, timeframe: row.timeframe || null,
+              entry: row.level, sl: row.sl, tp: row.tp, source: 'closed_market_limit_fill',
+            })
+          }
+        } catch { /* the plan is a record, never a reason to fail the sweep */ }
         filled++
       } else {
         markExpired.run('pending-closed: gone at broker, no fill adopted', row.id)
