@@ -36,6 +36,10 @@ export const DEFAULT_GOAL_TARGETS = Object.freeze({
   controllersOkPct: 100,
   // Share of controllers WITH a declared effect record whose record is fresh.
   recordsFreshPct: 100,
+  // §7,437·B·3/B·6: every enabled account carries a day-fresh fundable
+  // universe, and every enabled account has declared its horizon.
+  fundableFreshPct: 100,
+  horizonDeclaredPct: 100,
   // Of the FX-day's approvals, how many became a trade. Below the floor the
   // gate approves what execution cannot fill — sizing, hours, broker.
   pipelineConversionMin: 0.5,
@@ -284,6 +288,44 @@ async function refusalGoal(db, targets, nowMs) {
   })
 }
 
+function enabledAccountIds(db) {
+  try { return db.prepare(`SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id`).all().map(r => String(r.account_id)) } catch { return [] }
+}
+
+async function fundableGoal(db, targets, nowMs) {
+  const { fundableUniverseReport } = await import('./fundable-universe.js')
+  const ids = enabledAccountIds(db)
+  const r = fundableUniverseReport(db, ids, { now: nowMs })
+  const fresh = r.accounts.filter(a => a.record !== null && !a.due)
+  const current = pct(fresh.length, ids.length)
+  return goal('fundable_universe', {
+    name: 'Fundable universe current per account', subsystem: 'budget planner',
+    metric: 'enabled accounts with a fundable-universe record under a day old / enabled accounts', target: `≥ ${targets.fundableFreshPct}%`,
+    horizon: 'day', current: current == null ? null : `${current}%`,
+    verdict: ids.length === 0 ? 'not_measurable' : current >= targets.fundableFreshPct ? 'on_track' : 'off_track',
+    note: ids.length === 0 ? 'no enabled accounts'
+      : r.accounts.map(a => `…${a.accountId.slice(-4)}: ${a.record === null ? 'no record' : `${a.summary.fundable}/${a.summary.total} fundable${a.due ? ' (due)' : ''}`}`).join(' · '),
+    source: '/state/fundable-universe',
+  })
+}
+
+async function horizonGoal(db, targets) {
+  const { loadAccountHorizon } = await import('./account-horizon.js')
+  const ids = enabledAccountIds(db)
+  const decls = ids.map(id => ({ id, ...loadAccountHorizon(db, id) }))
+  const declared = decls.filter(d => d.horizon || d.families.length)
+  const current = pct(declared.length, ids.length)
+  return goal('account_horizon', {
+    name: 'One horizon per account', subsystem: 'account gates',
+    metric: 'enabled accounts with a declared horizon or family set / enabled accounts', target: `≥ ${targets.horizonDeclaredPct}%`,
+    horizon: 'now', current: current == null ? null : `${current}%`,
+    verdict: ids.length === 0 ? 'not_measurable' : current >= targets.horizonDeclaredPct ? 'on_track' : 'off_track',
+    note: ids.length === 0 ? 'no enabled accounts'
+      : decls.map(d => `…${d.id.slice(-4)}: ${d.horizon || 'any horizon'}${d.families.length ? ` [${d.families.join(', ')}]` : ''}`).join(' · '),
+    source: '/state/account-horizons',
+  })
+}
+
 /**
  * The table. Every goal is attempted; one that throws reports not_measurable
  * with the error, so a broken reader is visible as a row rather than as a
@@ -303,6 +345,8 @@ export async function goalTable(db, { now = Date.now() } = {}) {
     ['momentum_universe_tradable', () => momentumGoal(db, t)],
     ['plans_scored', () => plansGoal(db, t, now)],
     ['refusal_cost', () => refusalGoal(db, t, now)],
+    ['fundable_universe', () => fundableGoal(db, t, now)],
+    ['account_horizon', () => horizonGoal(db, t)],
   ]
   const goals = []
   for (const [id, read] of readers) {

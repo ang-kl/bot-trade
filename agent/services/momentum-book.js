@@ -269,6 +269,13 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     const tryEnter = async (symbol, { conviction = null, rankPct = null, note }) => {
       if (marginExhausted) return 'capped'
       if (openRow.get(accountId, symbol)) return 'skipped'
+      // The account's daily fundable universe (§7,437·B·3): a name whose
+      // minimum lot this account cannot fund is skipped by name, before any
+      // bars or quotes are fetched for it. Unknown is not a block.
+      if (deps.fundable) {
+        const fu = deps.fundable(accountId, symbol)
+        if (fu && fu.ok === false) { summary.skipped.push(`${accountId} ${symbol}: ${fu.reason}`); return 'skipped' }
+      }
       if ((openCount.get(accountId)?.n || 0) >= cfg.maxPositionsPerAccount) { summary.skipped.push(`${accountId}: at maxPositionsPerAccount`); return 'capped' }
       const may = deps.mayTrade ? deps.mayTrade(accountId, symbol) : { ok: true, item: null }
       if (!may.ok) { summary.skipped.push(`${accountId} ${symbol}: ${may.reason}`); return 'skipped' }

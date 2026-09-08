@@ -1002,6 +1002,50 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // ACCOUNT HORIZON (§7,437·B·6): GET reads every enabled account's
+  // declaration; POST {accountId, horizon?, families?} patches one under the
+  // start-from-stored merge rule. horizon null / families [] clears.
+  router.get('/account-horizon', async (_req, res) => {
+    try {
+      const { horizonsView } = await import('../services/account-horizon.js')
+      const ids = db.prepare(`SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id`).all().map(r => String(r.account_id))
+      res.json({ ok: true, ...horizonsView(db, ids), writes: 'nothing — declarations only; the gates read them' })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  router.post('/account-horizon', async (req, res) => {
+    try {
+      const { setAccountHorizon, HORIZONS } = await import('../services/account-horizon.js')
+      const body = req.body || {}
+      if (!body.accountId) return res.status(400).json({ error: 'accountId is required' })
+      if ('horizon' in body && body.horizon != null && !HORIZONS.includes(body.horizon)) return res.status(400).json({ error: `horizon must be one of ${HORIZONS.join(', ')} or null` })
+      const patch = {}
+      if ('horizon' in body) patch.horizon = body.horizon
+      if ('families' in body) patch.families = body.families
+      const next = setAccountHorizon(db, String(body.accountId), patch)
+      console.log(`[actions] account-horizon → …${String(body.accountId).slice(-4)} horizon=${next.horizon || 'any'} families=[${next.families.join(', ')}]`)
+      res.json({ ok: true, accountId: String(body.accountId), ...next })
+    } catch (err) {
+      console.error('[actions/account-horizon] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // FUNDABLE UNIVERSE REBUILD (§7,437·B·3): the loop builds one due account
+  // per cycle with broker credentials; this marks every record due now.
+  router.post('/fundable-universe', async (_req, res) => {
+    try {
+      const { FUNDABLE_REBUILD_KEY } = await import('../services/fundable-universe.js')
+      setState(db, FUNDABLE_REBUILD_KEY, String(Date.now()))
+      console.log('[actions] fundable-universe → rebuild requested for every account (one per loop cycle)')
+      res.json({ ok: true, queued: true, note: 'the loop rebuilds one due account per cycle; read /state/fundable-universe' })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.post('/momentum-account', async (req, res) => {
     try {
       const { momentumAccountConfig, loadMomentumAccount, MOMENTUM_ACCOUNT_KEY } = await import('../services/momentum-account.js')

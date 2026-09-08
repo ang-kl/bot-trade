@@ -19,7 +19,7 @@ function byId(table) { return Object.fromEntries(table.goals.map(g => [g.id, g])
 test('an empty db reports every goal, none of them as a number it did not earn', async () => {
   const db = initDB(':memory:')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 10)
+  assert.equal(t.goals.length, 12)
   const g = byId(t)
   assert.equal(g.controllers_ok.verdict, 'not_measurable', 'no controller has beaten')
   assert.equal(g.pipeline_conversion.verdict, 'not_measurable', 'no decision audit on record')
@@ -31,7 +31,7 @@ test('an empty db reports every goal, none of them as a number it did not earn',
     assert.ok(['on_track', 'off_track', 'not_measurable'].includes(goal.verdict), `${goal.id} has a verdict`)
     assert.ok(goal.metric && goal.target !== undefined && goal.horizon !== undefined, `${goal.id} names metric/target/horizon`)
   }
-  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 10)
+  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 12)
 })
 
 test('controllers_ok: reads the heartbeat verdicts, names the offenders', async () => {
@@ -105,7 +105,7 @@ test('a reader that throws becomes a not_measurable row, not a missing table', a
   // Break one reader's input: an unparseable momentum config must not take the table down.
   setState(db, 'momentum_account_json', '{not json')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 10)
+  assert.equal(t.goals.length, 12)
   assert.ok(t.goals.every(g => g.verdict))
 })
 

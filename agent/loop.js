@@ -1348,6 +1348,45 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
         } catch { /* provenance never blocks */ }
         continue
       }
+      // FUNDABLE UNIVERSE (§7,437·B·3): this account's daily budget planner
+      // already knows whether the minimum lot fits its risk budget and its
+      // pool headroom. An unfundable name is skipped by name here, before
+      // any order is built — not sized and refused an hour later again.
+      // Unknown (no record, stale record, symbol not in it) never blocks.
+      try {
+        const { isFundable } = await import('./services/fundable-universe.js')
+        const fu = isFundable(db, acct.accountId, sym)
+        if (!fu.ok) {
+          log(`Fundable universe: ${sym} skipped on ${acct.accountId} — ${fu.reason}`)
+          try {
+            const { recordDecision } = await import('./services/decision-log.js')
+            recordDecision(db, {
+              accountId: String(acct.accountId),
+              symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+              stage: 'fundable_universe', decision: 'skip', reason: fu.reason,
+            })
+          } catch { /* provenance never blocks */ }
+          continue
+        }
+      } catch { /* an unreadable record never blocks */ }
+      // ACCOUNT HORIZON (§7,437·B·6): the account's declared horizon and
+      // family set, judged per account. Nothing declared admits everything.
+      try {
+        const { loadAccountHorizon, horizonAdmits } = await import('./services/account-horizon.js')
+        const hz = horizonAdmits(loadAccountHorizon(db, acct.accountId), { timeframe: synth.timeframe, strategy: synth.strategy })
+        if (!hz.ok) {
+          log(`Horizon: ${sym} skipped on ${acct.accountId} — ${hz.reason}`)
+          try {
+            const { recordDecision } = await import('./services/decision-log.js')
+            recordDecision(db, {
+              accountId: String(acct.accountId),
+              symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+              stage: 'account_horizon', decision: 'skip', reason: hz.reason,
+            })
+          } catch { /* provenance never blocks */ }
+          continue
+        }
+      } catch { /* an unreadable declaration never blocks */ }
       const phases = effectivePhases(db, acct.accountId)
       const offPhase = ['scan', 'analyze', 'autotrade'].find(p => !phases[p])
       if (offPhase) {
@@ -3508,6 +3547,7 @@ async function runLoop(db) {
         const { effectivePhases } = await import('./services/account-phases.js')
         const { accountMayTrade } = await import('./services/watchlists.js')
         const bookCfg = (await import('./services/momentum-book.js')).loadMomentumBook(db)
+        const { isFundable } = await import('./services/fundable-universe.js')
         const mb = await runMomentumBook(db, {
           accounts: getAutopilotAccounts(db),
           credsFor: (a) => getCtraderCreds(db, a),
@@ -3545,12 +3585,44 @@ async function runLoop(db) {
             // exhausted account takes no book entries this pass and the
             // richest account is tried first. null = unknown, not exhausted.
             marginHeadroom: (accountId) => marginPoolForCycle(db).find(p => p.accountId === String(accountId))?.status?.headroom ?? null,
+            // The account's daily fundable universe (§7,437·B·3): an
+            // unfundable name is skipped by name, unknown dispatches as before.
+            fundable: (accountId, symbol) => isFundable(db, accountId, symbol),
           },
         })
         if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
         if (mb.momentumAccount) log(`momentum account …${String(mb.momentumAccount.account).slice(-4)}: daily pass — ${mb.momentumAccount.entries} entered, ${mb.momentumAccount.exits} exited; universe ${mb.momentumAccount.universe?.tradable}/${mb.momentumAccount.universe?.total} tradable${mb.momentumAccount.universe?.byReason ? ` (${Object.entries(mb.momentumAccount.universe.byReason).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`)
       } catch (err) {
         log(`momentum book failed: ${err.message}`)
+      }
+
+      // FUNDABLE UNIVERSE, daily per account (§7,437·B·3, 08-09-2026). ONE
+      // account per cycle, the first whose record is a day old (or was asked
+      // to rebuild), so the broker sees at most one watchlist's worth of
+      // lookups per loop. The record is what the fan-out and the book read.
+      try {
+        const { fundableDue, buildFundableUniverse } = await import('./services/fundable-universe.js')
+        const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
+        const due = getAutopilotAccounts(db).find(a => fundableDue(db, a.accountId))
+        if (due) {
+          const creds = getCtraderCreds(db, due)
+          if (!creds) throw new Error(`no credentials for …${String(due.accountId).slice(-4)}`)
+          const rec = await buildFundableUniverse(db, {
+            accountId: due.accountId, creds,
+            deps: {
+              symbolIdFor: async (c, symbol) => (await (await import('./lib/ctrader-creds.js')).resolveSymbolId(db, c, symbol)).id,
+              volumeMeta: async (c, symbolId) => (await import('./lib/lot-sizing.js')).getVolumeMeta(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, symbolId),
+              spot: (c, symbolId) => wsGetSpotOnce(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, symbolId).catch(() => null),
+              rates: () => { try { return scanRates(db) } catch { return null } },
+              headroomOf: (accountId) => marginPoolForCycle(db).find(p => p.accountId === String(accountId))?.status?.headroom ?? null,
+            },
+          })
+          log(`Fundable universe …${String(due.accountId).slice(-4)}: ${rec.summary.fundable}/${rec.summary.total} fundable at min lot (${Object.entries(rec.summary.byReason).map(([k, v]) => `${k} ${v}`).join(', ') || 'empty watchlist'}) — budget $${rec.riskBudgetUsd}, headroom ${rec.headroomUsd != null ? `$${rec.headroomUsd}` : 'unknown'}`)
+          await hbeat(db, 'fundable_universe')
+        }
+      } catch (err) {
+        log(`Fundable universe build failed (non-fatal): ${err.message}`)
+        hbeat(db, 'fundable_universe', false, err.message)
       }
     }
 
@@ -3734,7 +3806,54 @@ async function runLoop(db) {
       // least-recently-analysed first, then fills any remainder best-first as
       // before. The loud strategies still take most slots — they appear in
       // most batches — but no strategy can be starved indefinitely.
-      const pool = afterCluster.length ? afterCluster : ranked
+      // HORIZON GATE BEFORE ANALYSIS (§7,437·B·6, 08-09-2026). A candidate
+      // whose every scan row (strategy@timeframe) NO armed account's declared
+      // horizon admits is dropped here, before the analysis slots are
+      // handed out — the intraday stack was being analysed sixty times an
+      // hour for accounts that would never take it. Unlike the cluster rule
+      // above, an emptied list is the intended outcome: nobody can trade
+      // what remains, so nothing is analysed and the line says why. With no
+      // declarations anywhere this filter is the identity.
+      const beforeHorizon = afterCluster.length ? afterCluster : ranked
+      let afterHorizon = beforeHorizon
+      try {
+        const { anyAccountAdmits } = await import('./services/account-horizon.js')
+        const { effectivePhases: phasesOf } = await import('./services/account-phases.js')
+        const horizonAccounts = getAutopilotAccounts(db).map(a => String(a.accountId)).filter(id => { try { return !!phasesOf(db, id)?.autotrade } catch { return false } })
+        if (horizonAccounts.length) {
+          const bySym = new Map()
+          for (const sc of scanResult.scans || []) {
+            if (sc.bias === 'skip' || !sc.strategy) continue
+            if (!bySym.has(sc.symbol)) bySym.set(sc.symbol, [])
+            bySym.get(sc.symbol).push(sc)
+          }
+          const dropped = []
+          afterHorizon = beforeHorizon.filter(sym => {
+            const rows = bySym.get(sym) || []
+            if (!rows.length) return true
+            const admitted = rows.some(sc => anyAccountAdmits(db, horizonAccounts, { timeframe: sc.timeframe, strategy: sc.strategy }).ok)
+            if (!admitted) dropped.push({ sym, rows })
+            return admitted
+          })
+          if (dropped.length) {
+            log(`Horizon gate: ${dropped.length} candidate(s) skipped before analysis — no armed account trades that horizon: ${dropped.slice(0, 6).map(d => `${d.sym} (${d.rows.map(r => `${r.strategy}@${r.timeframe}`).join(',')})`).join(' · ')}`)
+            try {
+              const { recordDecision } = await import('./services/decision-log.js')
+              for (const d of dropped) {
+                recordDecision(db, {
+                  symbol: d.sym, timeframe: d.rows[0]?.timeframe ?? null, strategy: d.rows[0]?.strategy ?? null,
+                  stage: 'horizon', decision: 'skip',
+                  reason: `no armed account's horizon admits ${d.rows.map(r => `${r.strategy}@${r.timeframe}`).join(', ')}`,
+                })
+              }
+            } catch { /* provenance never blocks */ }
+          }
+        }
+      } catch (err) {
+        log(`Horizon gate failed (non-fatal, analysing the unfiltered list): ${err.message}`)
+        afterHorizon = beforeHorizon
+      }
+      const pool = afterHorizon
       let hotToAnalyze = pool.slice(0, 3)
       let fairShare = null
       try {
