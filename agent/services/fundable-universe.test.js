@@ -159,3 +159,19 @@ test('THE 19:14 SGT CASE: a long watchlist is judged in batches across cycles, n
   const r4 = await buildFundableUniverse(db2, { accountId: 'A', creds: {}, deps: slow, now: T0, config: cfg, callTimeoutMs: 20 })
   assert.equal(r4.rows.EURUSD.verdict, 'unknown'); assert.match(r4.rows.EURUSD.reason, /timed out/)
 })
+
+test('a record written before the verdict field existed is read by its reason: risk_budget and margin block, the rest admit', () => {
+  // ACCT-LIVE-1's 19:01 SGT record (first version): rows carried ok:false and
+  // a reason, no verdict. Read as unknown they re-admitted refused names.
+  const db = initDB(':memory:')
+  setState(db, FUNDABLE_KEY('A'), JSON.stringify({ at: new Date(T0).toISOString(), accountId: 'A', rows: {
+    'LLY.US': { ok: false, reason: 'risk_budget: min lot risks $0.99 at ref_1pct vs budget $0.55 — needs per-trade risk ≥ 1.8%' },
+    'GD.US': { ok: false, reason: 'margin: min lot locks $38.22 vs headroom $3.22' },
+    'AVGO.US': { ok: false, reason: 'no_price' },
+    EURUSD: { ok: true, reason: null },
+  } }))
+  assert.equal(isFundable(db, 'A', 'LLY.US', { now: T0 + 60_000 }).ok, false)
+  assert.equal(isFundable(db, 'A', 'GD.US', { now: T0 + 60_000 }).ok, false)
+  assert.equal(isFundable(db, 'A', 'AVGO.US', { now: T0 + 60_000 }).ok, true)
+  assert.equal(isFundable(db, 'A', 'EURUSD', { now: T0 + 60_000 }).ok, true)
+})
