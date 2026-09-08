@@ -1,0 +1,7 @@
+{
+  "_note": "Owner-declared momentum account (§7,386·D1 Phase 1, switched on 08-09-2026 19:52 SGT). Applied at boot: the file is the durable declaration; POST /actions/momentum-account changes it live until the next boot re-applies this file. accountId null = the momentum system runs nowhere.",
+  "accountId": "46979908",
+  "volTargetPct": 10,
+  "maxPositions": 8,
+  "declaredBy": "owner, 08-09-2026 19:52 SGT (ACCT-DEMO-3): \"switch on the momentum account for ACCT-DEMO-3\""
+}

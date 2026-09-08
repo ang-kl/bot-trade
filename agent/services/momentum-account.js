@@ -62,6 +62,34 @@ export function loadMomentumAccount(db) {
   try { return momentumAccountConfig(JSON.parse(getState(db, MOMENTUM_ACCOUNT_KEY) || 'null')) } catch { return momentumAccountConfig(null) }
 }
 
+/**
+ * Apply the owner's declaration from agent/config/momentum-account.json at
+ * boot (08-09-2026: the switching route needs the bearer token, lost on
+ * 07-09; the file is the durable declaration and survives a database
+ * reset). Only the keys the file names are applied, over what is stored;
+ * idempotent; a differing stored value is overwritten by the file.
+ * @returns {{applied:boolean, effective:object|null, error:string|null}}
+ */
+export function seedMomentumAccountFromConfig(db, { file = null, log = () => {} } = {}) {
+  let cfg = null
+  try {
+    cfg = JSON.parse(readFileSync(file || new URL('../config/momentum-account.json', import.meta.url), 'utf8'))
+  } catch (err) {
+    return { applied: false, effective: null, error: `momentum-account.json unreadable: ${err.message}` }
+  }
+  if (!cfg || typeof cfg !== 'object') return { applied: false, effective: null, error: 'momentum-account.json is not an object' }
+  const stored = loadMomentumAccount(db)
+  const patch = {}
+  for (const k of ['accountId', 'volTargetPct', 'maxPositions', 'dailyRunAfterUtc', 'cadence']) if (k in cfg) patch[k] = cfg[k]
+  const next = momentumAccountConfig({ ...stored, ...patch })
+  const same = JSON.stringify(next) === JSON.stringify(stored)
+  if (!same) {
+    setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify(next))
+    log(`[boot] momentum account …${String(next.accountId || '').slice(-4) || 'none'}: volTarget ${next.volTargetPct}% maxPositions ${next.maxPositions} after ${next.dailyRunAfterUtc}Z cadence ${next.cadence} (from config/momentum-account.json)`)
+  }
+  return { applied: !same, effective: next, error: null }
+}
+
 /** Is this the momentum account? Null/unknown → false. */
 export function isMomentumAccount(db, accountId) {
   if (accountId == null) return false

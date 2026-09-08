@@ -300,3 +300,32 @@ test('scope: a shadow row for a momentum-universe name is NOT taken by a row-cur
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   assert.match(loop, /scanSymbols: symbols\.map\(/, 'the loop must hand the book the scan universe')
 })
+
+test('the repo declaration switches the momentum account on at boot, idempotently, and overrides a differing stored value', async () => {
+  const { seedMomentumAccountFromConfig, loadMomentumAccount, MOMENTUM_ACCOUNT_KEY } = await import('./momentum-account.js')
+  const { initDB, setState } = await import('../db.js')
+  const { readFileSync, writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const db = initDB(':memory:')
+  const dir = mkdtempSync(join(tmpdir(), 'ma-'))
+  const file = join(dir, 'momentum-account.json')
+  writeFileSync(file, JSON.stringify({ _note: 'x', accountId: '46979908', volTargetPct: 10, maxPositions: 8 }))
+  const lines = []
+  const a = seedMomentumAccountFromConfig(db, { file, log: (m) => lines.push(m) })
+  assert.equal(a.applied, true); assert.equal(a.error, null)
+  assert.equal(loadMomentumAccount(db).accountId, '46979908'); assert.equal(loadMomentumAccount(db).maxPositions, 8)
+  assert.equal(loadMomentumAccount(db).cadence, 'daily', 'a key the file does not name keeps its stored/default value')
+  assert.match(lines[0], /…9908: volTarget 10% maxPositions 8/)
+  assert.equal(seedMomentumAccountFromConfig(db, { file }).applied, false, 'idempotent')
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: null }))
+  assert.equal(seedMomentumAccountFromConfig(db, { file }).applied, true, 'the file wins over a differing stored value at boot')
+  assert.equal(loadMomentumAccount(db).accountId, '46979908')
+  // the checked-in file itself names the owner's account
+  const real = seedMomentumAccountFromConfig(initDB(':memory:'))
+  assert.equal(real.error, null); assert.equal(real.effective.accountId, '46979908'); assert.equal(real.effective.volTargetPct, 10); assert.equal(real.effective.maxPositions, 8)
+  assert.ok(seedMomentumAccountFromConfig(db, { file: join(dir, 'missing.json') }).error?.startsWith('momentum-account.json unreadable'))
+  // wiring pin: index.js applies it at boot, after the horizons
+  const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /seedAccountHorizonsFromConfig\(db, \{ log[\s\S]{0,900}?seedMomentumAccountFromConfig\(db, \{ log/, 'the boot seed runs after the horizons seed')
+})
