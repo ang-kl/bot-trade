@@ -11,7 +11,7 @@ import {
   protectionFreshness, protectionFreshnessFrom, checkProtectionFreshness,
   maxAgeSecFrom, minutes, DEFAULT_MAX_AGE_SEC, MAX_AGE_STATE_KEY, ALERTED_STATE_KEY,
 } from './protection-freshness.js'
-import { heartbeatView, checkHeartbeats, beat } from './heartbeat.js'
+import { heartbeatView, checkHeartbeats, beat, CONTROLLERS } from './heartbeat.js'
 
 const NOW = Date.parse('2026-08-06T09:15:00Z')
 const ago = (sec) => new Date(NOW - sec * 1000).toISOString()
@@ -204,11 +204,17 @@ test('a genuine ticker stall still reports stalled, not downgraded to warn', () 
   assert.equal(row.status, 'stalled')
 })
 
-test('no other controller grows a work_product field', () => {
+test('only a controller with a DECLARED effect carries a work_product field', () => {
+  // Written 2026-08-06 as "no other controller grows a work_product" — the
+  // audit was the one controller whose product could be dated. §7,437·B·5
+  // (08-09-2026) generalised the record to every controller that declares
+  // an `effect` in the registry; the guard it keeps is the same one: a
+  // controller with nothing datable must not be handed a product to print.
   const db = dbWithAudit('2026-08-04T08:55:00Z')
   beat(db, 'main_loop', { now: new Date(NOW) })
   for (const row of heartbeatView(db, { now: new Date(NOW) })) {
-    if (row.name !== 'protection_audit') assert.equal(row.work_product, undefined, row.name)
+    if (CONTROLLERS[row.name].effect) assert.ok(row.work_product, `${row.name} declares an effect and carries its record`)
+    else assert.equal(row.work_product, undefined, row.name)
   }
 })
 

@@ -1438,3 +1438,69 @@ test('probeCppExec stamps exec_guard_sync_last_error_json when the push fails, c
   await probeCppExec(db, { exec: guardProbeExec(async () => ({ ok: true })), now: plus(240) })
   assert.equal(getState(db, KEY), null, 'a successful push clears the stale error')
 })
+
+// ---------------------------------------------------------------------------
+// §7,437·B·5 (owner, 08-09-2026): the record, not the runner. A controller
+// that beats beside a record it stopped writing must read record_stale, and
+// the verdict must be computed from the record's own timestamp at read time.
+// ---------------------------------------------------------------------------
+import { effectRecord, verdictOf } from './heartbeat.js'
+import { readFileSync } from 'node:fs'
+
+test('effectRecord: absent, fresh and stale records; the ms kind reads a millisecond string', () => {
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '5')
+  const nowMs = T0.getTime()
+  // atr_refresh: json record, limit = 86,400 × 2.
+  assert.equal(effectRecord(db, 'atr_refresh', { nowMs }).hasRecord, false)
+  assert.equal(effectRecord(db, 'atr_refresh', { nowMs }).fresh, false, 'never written is not fresh')
+  setState(db, 'atr_refresh_last_json', JSON.stringify({ at: new Date(nowMs - 3600_000).toISOString() }))
+  const fresh = effectRecord(db, 'atr_refresh', { nowMs })
+  assert.equal(fresh.fresh, true); assert.equal(fresh.ageSec, 3600); assert.equal(fresh.maxAgeSec, 86_400 * 2)
+  setState(db, 'atr_refresh_last_json', JSON.stringify({ at: new Date(nowMs - 3 * 86_400_000).toISOString() }))
+  const stale = effectRecord(db, 'atr_refresh', { nowMs })
+  assert.equal(stale.fresh, false); assert.match(stale.summary, /RECORD .* OLD/)
+  // autopilot: ms kind, loop-tied (300s × 3).
+  setState(db, 'autopilot_last_run_ms', String(nowMs - 60_000))
+  assert.equal(effectRecord(db, 'autopilot', { nowMs, loopSec: 300 }).fresh, true)
+  setState(db, 'autopilot_last_run_ms', String(nowMs - 3600_000))
+  assert.equal(effectRecord(db, 'autopilot', { nowMs, loopSec: 300 }).fresh, false)
+  // a controller without a declared effect has no record to judge
+  assert.equal(effectRecord(db, 'main_loop', { nowMs }), null)
+})
+
+test('heartbeatView: a beating runner with a stale record reads record_stale, not ok', () => {
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '5')
+  beat(db, 'atr_refresh', { now: T0 })
+  setState(db, 'atr_refresh_last_json', JSON.stringify({ at: new Date(T0.getTime() - 3 * 86_400_000).toISOString() }))
+  beat(db, 'decision_audit', { now: T0 })
+  setState(db, 'decision_audit_last_json', JSON.stringify({ at: T0.toISOString(), approved: 1 }))
+  const by = Object.fromEntries(heartbeatView(db, { now: plus(10), loopSec: 300 }).map(v => [v.name, v]))
+  assert.equal(by.atr_refresh.status, 'warn', 'the panel status downgrades')
+  assert.equal(by.atr_refresh.verdict, 'record_stale')
+  assert.equal(by.atr_refresh.work_product.fresh, false)
+  assert.equal(by.decision_audit.verdict, 'ok')
+  assert.equal(by.decision_audit.work_product.fresh, true)
+  assert.equal(by.main_loop.verdict, 'never_ran')
+  assert.equal(verdictOf('stalled', { fresh: false }), 'stalled', 'a stalled runner outranks its record')
+  assert.equal(verdictOf('ok', null), 'ok')
+})
+
+test('the three sweeps that ran without a record now beat where they run (wiring pin)', () => {
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  // Both paths, separately: the success beat and the failure beat. A pin
+  // that matched either would stay green with the success beat deleted,
+  // because the catch block's beat still matches (mutation-checked 08-09).
+  const success = {
+    closed_market_sweep: /hbeat\(db, 'closed_market_sweep'\)/,
+    fx_legs_refresh: /hbeat\(db, 'fx_legs_refresh'\)/,
+    cross_side_equity: /hbeat\(db, 'cross_side_equity', !\(x\.swept/,
+  }
+  for (const name of Object.keys(success)) {
+    assert.ok(CONTROLLERS[name], `${name} is registered`)
+    assert.ok(success[name].test(src), `loop.js beats ${name} on the success path`)
+    assert.ok(new RegExp(`hbeat\\(db, '${name}', false`).test(src), `loop.js beats ${name} on the failure path`)
+  }
+})

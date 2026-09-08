@@ -1,0 +1,272 @@
+// ---------------------------------------------------------------------------
+// agent/services/goal-table.js — the goal table (§7,437·B·1, owner 08-09-2026).
+//
+// Owner: "What must you recode to be efficacy-centric and goal-oriented,
+// achievable earlier than waiting to be edge." This is the first half of the
+// answer: every subsystem that can be judged is judged here, by ONE metric it
+// can move, against a target, on the horizon it works at, with one of three
+// verdicts — on_track, off_track, not_measurable. The third is a first-class
+// result, not a gap: a subsystem with fewer closes than its floor reports
+// "not measurable" with the shortfall named, exactly as exit-counterfactual
+// and earned-floor already do, rather than a number that would read as
+// authoritative as one that had earned it.
+//
+// Nothing here computes a new metric. Each goal reads an existing one
+// (heartbeatView, decision_audit_last_json, exitCounterfactual,
+// earnedFloorReport, findIncompleteCloses, inspectorView,
+// momentumAccountReport) and applies a target. The targets are data:
+// `goal_table_json.targets` in agent_state, defaults below, patched through
+// POST /actions/goal-table with the start-from-stored merge rule (CLAUDE.md
+// failure mode #5).
+//
+// Why this and not the edge: the edge answer arrives in months and most of
+// the machine cannot influence it. Whether the controllers' records are
+// fresh, whether approvals become fills, whether closes are recorded
+// complete — those are properties of the code, measurable today, and each
+// one confounds the edge answer if it is wrong.
+// ---------------------------------------------------------------------------
+
+import { getState } from '../db.js'
+
+export const GOAL_TABLE_KEY = 'goal_table_json'
+
+export const DEFAULT_GOAL_TARGETS = Object.freeze({
+  // Share of registered controllers that have beaten at least once and read
+  // `ok` (runner fresh AND product fresh where a record is declared).
+  controllersOkPct: 100,
+  // Share of controllers WITH a declared effect record whose record is fresh.
+  recordsFreshPct: 100,
+  // Of the FX-day's approvals, how many became a trade. Below the floor the
+  // gate approves what execution cannot fill — sizing, hours, broker.
+  pipelineConversionMin: 0.5,
+  pipelineMinApprovals: 5,
+  // Closed trades in the window still missing P&L or a postmortem.
+  incompleteClosesMax: 0,
+  incompleteCloseWindowHours: 48,
+  // The trail rule's counterfactual against the owner's 69% goal and a PF
+  // that at least does not lose. Measured over the counterfactual's own
+  // 30-trade floor; below it the goal is not measurable.
+  trailWinRatePct: 69,
+  trailMinPf: 1.0,
+  trailDays: 30,
+  // Earned-floor checkpoint: pre-registered in earned-floor.js as 30 closes
+  // and PF ≥ 1.5. Read from there, not restated, so the two cannot drift.
+  // Open inspector findings older than this many hours count against the
+  // inspector, whose job is to close what it opens.
+  inspectorOpenMaxHours: 24,
+  inspectorOpenMax: 0,
+  // Momentum account: share of the configured universe that is tradable on
+  // the account. Not measurable until the account is named.
+  momentumTradableMinPct: 50,
+})
+
+export function goalTargets(raw) {
+  const out = { ...DEFAULT_GOAL_TARGETS }
+  if (raw && typeof raw === 'object') {
+    for (const [k, v] of Object.entries(raw)) {
+      if (k in DEFAULT_GOAL_TARGETS) {
+        const n = Number(v)
+        if (Number.isFinite(n)) out[k] = n
+      } else {
+        out[k] = v // unknown keys survive — never rebuild from a fixed list
+      }
+    }
+  }
+  return out
+}
+
+export function loadGoalTable(db) {
+  let stored = null
+  try { stored = JSON.parse(getState(db, GOAL_TABLE_KEY) || 'null') } catch { stored = null }
+  return { ...(stored && typeof stored === 'object' ? stored : {}), targets: goalTargets(stored?.targets) }
+}
+
+const pct = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : null)
+
+function goal(id, fields) {
+  return { id, ...fields }
+}
+
+// ---------------------------------------------------------------------------
+// Individual goals. Each returns { name, subsystem, metric, target, horizon,
+// current, verdict, note, source }. A goal that cannot read its metric
+// returns not_measurable with the reason — it never throws, because a goal
+// table that can fail to report is the thing it is watching for.
+// ---------------------------------------------------------------------------
+
+async function controllersGoal(db, targets, nowMs) {
+  const { heartbeatView } = await import('./heartbeat.js')
+  const view = heartbeatView(db, { now: new Date(nowMs) })
+  const ran = view.filter(v => v.verdict !== 'never_ran' && !v.dormant)
+  const ok = ran.filter(v => v.verdict === 'ok')
+  const bad = ran.filter(v => v.verdict !== 'ok').map(v => `${v.name}:${v.verdict}`)
+  const current = pct(ok.length, ran.length)
+  return goal('controllers_ok', {
+    name: 'Controllers fresh', subsystem: 'heartbeat',
+    metric: 'controllers reading ok / controllers that have run', target: `≥ ${targets.controllersOkPct}%`,
+    horizon: 'now', current: current == null ? null : `${current}%`,
+    verdict: ran.length === 0 ? 'not_measurable' : current >= targets.controllersOkPct ? 'on_track' : 'off_track',
+    note: ran.length === 0 ? 'no controller has beaten yet' : bad.length ? `${ok.length}/${ran.length} ok — ${bad.join(', ')}` : `${ok.length}/${ran.length} ok`,
+    source: '/state/heartbeats',
+  })
+}
+
+async function recordsGoal(db, targets, nowMs) {
+  const { heartbeatView } = await import('./heartbeat.js')
+  const view = heartbeatView(db, { now: new Date(nowMs) })
+  // Only controllers that have RUN are judged on their record: a controller
+  // that never beat is the controllers_ok goal's finding, not this one's.
+  const withRecord = view.filter(v => v.work_product && v.verdict !== 'never_ran')
+  const fresh = withRecord.filter(v => v.work_product.fresh)
+  const stale = withRecord.filter(v => !v.work_product.fresh).map(v => `${v.name} (${v.work_product.summary})`)
+  const current = pct(fresh.length, withRecord.length)
+  return goal('records_fresh', {
+    name: 'Effect records fresh', subsystem: 'heartbeat',
+    metric: 'controllers whose product record is within its limit / controllers with a record', target: `≥ ${targets.recordsFreshPct}%`,
+    horizon: 'now', current: current == null ? null : `${current}%`,
+    verdict: withRecord.length === 0 ? 'not_measurable' : current >= targets.recordsFreshPct ? 'on_track' : 'off_track',
+    note: stale.length ? stale.join(' · ') : `${fresh.length}/${withRecord.length} fresh`,
+    source: '/state/heartbeats work_product',
+  })
+}
+
+function pipelineGoal(db, targets) {
+  let audit = null
+  try { audit = JSON.parse(getState(db, 'decision_audit_last_json') || 'null') } catch { audit = null }
+  const approved = Number(audit?.approved ?? NaN)
+  const trades = Number(audit?.tradesOpened ?? NaN)
+  const measurable = audit && Number.isFinite(approved) && Number.isFinite(trades) && approved >= targets.pipelineMinApprovals
+  const ratio = measurable ? Math.round((trades / approved) * 100) / 100 : null
+  return goal('pipeline_conversion', {
+    name: 'Approvals become trades', subsystem: 'decision audit',
+    metric: 'trades opened / proposals approved, this FX day', target: `≥ ${targets.pipelineConversionMin}`,
+    horizon: 'FX day', current: ratio,
+    verdict: !audit ? 'not_measurable' : !measurable ? 'not_measurable' : ratio >= targets.pipelineConversionMin ? 'on_track' : 'off_track',
+    note: !audit ? 'no decision audit on record'
+      : !measurable ? `${Number.isFinite(approved) ? approved : 0} approval(s) — below the ${targets.pipelineMinApprovals}-approval floor`
+        : `${trades} trade(s) from ${approved} approval(s)${audit.because ? ` — ${audit.because}` : ''}`,
+    source: 'decision_audit_last_json',
+  })
+}
+
+async function closesGoal(db, targets, nowMs) {
+  const { findIncompleteCloses } = await import('./close-completeness.js')
+  const rows = findIncompleteCloses(db, { windowHours: targets.incompleteCloseWindowHours, now: nowMs })
+  const pnl = rows.filter(r => r.missingPnl).length
+  const pm = rows.filter(r => r.missingPostmortem).length
+  return goal('close_completeness', {
+    name: 'Closes recorded complete', subsystem: 'record',
+    // The sweep's window is a GRACE period: a close is only incomplete once
+    // it has had `incompleteCloseWindowHours` to be backfilled and still has
+    // no P&L or postmortem.
+    metric: `closed trades older than ${targets.incompleteCloseWindowHours}h still missing P&L or a postmortem`, target: `≤ ${targets.incompleteClosesMax}`,
+    horizon: `${targets.incompleteCloseWindowHours}h grace`, current: rows.length,
+    verdict: rows.length <= targets.incompleteClosesMax ? 'on_track' : 'off_track',
+    note: rows.length ? `${pnl} missing P&L, ${pm} missing a postmortem` : 'every close in the window carries P&L and a postmortem',
+    source: 'close-completeness',
+  })
+}
+
+async function trailGoal(db, targets) {
+  const { exitCounterfactual } = await import('./exit-counterfactual.js')
+  const cf = exitCounterfactual(db, { days: targets.trailDays })
+  const trails = (cf.rules || []).filter(r => /^trail_/.test(r.rule))
+  const best = trails.sort((a, b) => (b.usable || 0) - (a.usable || 0))[0] || null
+  const floor = cf.rules?.length ? undefined : undefined
+  const measurable = cf.verdict === 'OK' && best && best.winRate != null && best.profitFactor != null
+  const ok = measurable && best.winRate >= targets.trailWinRatePct && best.profitFactor >= targets.trailMinPf
+  return goal('trail_rule', {
+    name: 'Trail rule reaches the win-rate goal', subsystem: 'managed exit',
+    metric: best ? `${best.rule} replay: win rate and profit factor` : 'trail rule replay: win rate and profit factor',
+    target: `WR ≥ ${targets.trailWinRatePct}% and PF ≥ ${targets.trailMinPf}`,
+    horizon: `${targets.trailDays}d`,
+    current: measurable ? `WR ${best.winRate}% · PF ${best.profitFactor} · n=${best.usable}` : null,
+    verdict: !measurable ? 'not_measurable' : ok ? 'on_track' : 'off_track',
+    note: !measurable ? (cf.note || 'insufficient replayable trades') : `${best.usable} replayable trade(s); ${cf.eligible} eligible of ${cf.considered} considered`,
+    source: '/state/exit-counterfactual',
+    ...(floor === undefined ? {} : {}),
+  })
+}
+
+async function earnedFloorGoal(db) {
+  const { earnedFloorReport, EARNED_FLOOR_VERDICT_TARGET } = await import('./earned-floor.js')
+  const r = earnedFloorReport(db)
+  const closes = Number(r?.closed?.trades ?? 0)
+  const pf = r?.closed?.profitFactor ?? null
+  const reached = closes >= EARNED_FLOOR_VERDICT_TARGET.closes
+  return goal('earned_floor', {
+    name: 'Earned floor keeps its gate', subsystem: 'evidence gate',
+    metric: 'profit factor of the admitted population at the pre-registered checkpoint',
+    target: `PF ≥ ${EARNED_FLOOR_VERDICT_TARGET.minPf} after ${EARNED_FLOOR_VERDICT_TARGET.closes} closes`,
+    horizon: `${EARNED_FLOOR_VERDICT_TARGET.closes} closes`,
+    current: `${closes}/${EARNED_FLOOR_VERDICT_TARGET.closes} closes · PF ${pf ?? 'n/a'} · net ${r?.closed?.net ?? 0}`,
+    verdict: !r?.config?.on ? 'not_measurable' : !reached ? 'not_measurable' : (pf != null && pf >= EARNED_FLOOR_VERDICT_TARGET.minPf) ? 'on_track' : 'off_track',
+    note: !r?.config?.on ? 'earned floor is off' : !reached ? `${EARNED_FLOOR_VERDICT_TARGET.closes - closes} close(s) short of the checkpoint (interim PF ${pf ?? 'n/a'})` : 'checkpoint reached',
+    source: '/state/earned-floor',
+  })
+}
+
+async function inspectorGoal(db, targets, nowMs) {
+  const { inspectorView } = await import('./log-inspector.js')
+  const v = inspectorView(db)
+  const open = Array.isArray(v?.findings) ? v.findings : (Array.isArray(v?.open) ? v.open : [])
+  const cutoff = nowMs - targets.inspectorOpenMaxHours * 3_600_000
+  const old = open.filter(f => { const t = Date.parse(f.at || ''); return Number.isFinite(t) && t < cutoff })
+  const t = v?.terminal || {}
+  return goal('inspector_closes_findings', {
+    name: 'Inspector closes what it opens', subsystem: 'log inspector',
+    metric: `open findings older than ${targets.inspectorOpenMaxHours}h`, target: `≤ ${targets.inspectorOpenMax}`,
+    horizon: `${targets.inspectorOpenMaxHours}h`, current: old.length,
+    verdict: !v?.lastRun && open.length === 0 && !(t.confirmed || t.falsified || t.expired) ? 'not_measurable' : old.length <= targets.inspectorOpenMax ? 'on_track' : 'off_track',
+    note: `${open.length} open · terminal ${t.confirmed || 0} confirmed / ${t.falsified || 0} falsified / ${t.expired || 0} expired`,
+    source: '/state/inspector',
+  })
+}
+
+async function momentumGoal(db, targets) {
+  const { momentumAccountReport } = await import('./momentum-account.js')
+  const r = momentumAccountReport(db)
+  const on = !!r?.config?.accountId
+  const built = Number(r?.universe?.built ?? 0)
+  const tradable = Number(r?.universe?.tradable ?? 0)
+  const share = pct(tradable, built)
+  return goal('momentum_universe_tradable', {
+    name: 'Momentum universe is fundable', subsystem: 'momentum account',
+    metric: 'tradable names / built universe on the momentum account', target: `≥ ${targets.momentumTradableMinPct}%`,
+    horizon: 'daily pass', current: share == null ? null : `${share}%`,
+    verdict: !on ? 'not_measurable' : built === 0 ? 'not_measurable' : share >= targets.momentumTradableMinPct ? 'on_track' : 'off_track',
+    note: !on ? 'momentum account not switched on (momentum_account_json.accountId is null)'
+      : built === 0 ? 'no universe built yet — first daily pass pending'
+        : `${tradable}/${built} tradable` + (r.universe?.byReason && Object.keys(r.universe.byReason).length ? ` — excluded: ${Object.entries(r.universe.byReason).map(([k, n]) => `${k} ${n}`).join(', ')}` : ''),
+    source: '/state/momentum-account',
+  })
+}
+
+/**
+ * The table. Every goal is attempted; one that throws reports not_measurable
+ * with the error, so a broken reader is visible as a row rather than as a
+ * 500 that hides the other rows.
+ */
+export async function goalTable(db, { now = Date.now() } = {}) {
+  const cfg = loadGoalTable(db)
+  const t = cfg.targets
+  const readers = [
+    ['controllers_ok', () => controllersGoal(db, t, now)],
+    ['records_fresh', () => recordsGoal(db, t, now)],
+    ['pipeline_conversion', () => pipelineGoal(db, t)],
+    ['close_completeness', () => closesGoal(db, t, now)],
+    ['trail_rule', () => trailGoal(db, t)],
+    ['earned_floor', () => earnedFloorGoal(db)],
+    ['inspector_closes_findings', () => inspectorGoal(db, t, now)],
+    ['momentum_universe_tradable', () => momentumGoal(db, t)],
+  ]
+  const goals = []
+  for (const [id, read] of readers) {
+    try { goals.push(await read()) } catch (err) {
+      goals.push(goal(id, { name: id, subsystem: 'goal table', metric: 'unreadable', target: null, horizon: null, current: null, verdict: 'not_measurable', note: `reader failed: ${err?.message || err}`, source: null }))
+    }
+  }
+  const summary = { on_track: 0, off_track: 0, not_measurable: 0 }
+  for (const g of goals) summary[g.verdict] = (summary[g.verdict] || 0) + 1
+  return { at: new Date(now).toISOString(), targets: t, goals, summary, note: 'Three verdicts. not_measurable is a result, not a gap: the metric exists and has not earned a number yet — the note says how far it is from doing so.' }
+}
