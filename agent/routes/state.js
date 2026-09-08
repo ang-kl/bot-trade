@@ -2456,6 +2456,19 @@ export default function stateRouter(db) {
   // GET /state/momentum-account — the momentum account: config, cadence,
   // the universe build (tradable / untradable by reason), the last pass and
   // the open rows on that account (§7,386·D1).
+  // THE GOAL TABLE (§7,437·B·1). One row per subsystem that can be judged:
+  // metric, target, horizon, current value and one of three verdicts. This
+  // is the report surface the chat-side daily report never had — the
+  // figures it used to gather by hand from four routes are read here.
+  router.get('/goal-table', async (_req, res) => {
+    try {
+      const { goalTable } = await import('../services/goal-table.js')
+      res.json(await goalTable(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/momentum-account', async (_req, res) => {
     try {
       const { momentumAccountReport } = await import('../services/momentum-account.js')

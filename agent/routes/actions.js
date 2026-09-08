@@ -972,6 +972,35 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // GOAL TABLE TARGETS (§7,437·B·1). The table itself is read at
+  // /state/goal-table; this pair reads and patches the targets it is judged
+  // against. Merge rule: start from what is stored, apply the patch, reply
+  // from what is stored — an unknown stored key survives a partial POST.
+  router.get('/goal-table', async (_req, res) => {
+    try {
+      const { loadGoalTable } = await import('../services/goal-table.js')
+      res.json({ ok: true, ...loadGoalTable(db), writes: 'nothing — targets only; every goal reads an existing metric' })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  router.post('/goal-table', async (req, res) => {
+    try {
+      const { loadGoalTable, goalTargets, GOAL_TABLE_KEY } = await import('../services/goal-table.js')
+      const body = req.body || {}
+      const stored = loadGoalTable(db)
+      const patch = body.targets && typeof body.targets === 'object' ? body.targets : body
+      const merged = { ...stored, targets: goalTargets({ ...stored.targets, ...patch }) }
+      setState(db, GOAL_TABLE_KEY, JSON.stringify(merged))
+      console.log(`[actions] goal-table → targets ${Object.keys(patch).join(', ') || '(none)'} patched`)
+      res.json({ ok: true, ...loadGoalTable(db) })
+    } catch (err) {
+      console.error('[actions/goal-table] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.post('/momentum-account', async (req, res) => {
     try {
       const { momentumAccountConfig, loadMomentumAccount, MOMENTUM_ACCOUNT_KEY } = await import('../services/momentum-account.js')

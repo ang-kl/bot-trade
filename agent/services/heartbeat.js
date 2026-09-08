@@ -51,7 +51,7 @@ export const CONTROLLERS = {
   trade_guards:     { label: 'Trade guards',           expectedSec: 60,   factor: 4 },
   profit_keeper:    { label: 'Profit keeper',          expectedSec: 60,   factor: 4 },
   adaptive_breaker: { label: 'Adaptive breaker',       tiedToLoop: true,  factor: 3 },
-  autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3 },
+  autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3, effect: { key: 'autopilot_last_run_ms', kind: 'ms' } },
   hours_refresh:    { label: 'Market-hours refresh',   expectedSec: 86_400, factor: 2 },
   weekend_bank:     { label: 'Weekend profit bank',    tiedToLoop: true, loopMultiplier: 3, factor: 4 },
   weekend_loss_flag: { label: 'Weekend loss flag',     tiedToLoop: true, loopMultiplier: 3, factor: 4 },
@@ -71,11 +71,11 @@ export const CONTROLLERS = {
   // only reads): the loop's reconcile phase AND the fast monitor's 60s band.
   // The faster path sets the expectation — fixed, not loop-derived, for the
   // same reason as above.
-  protection_audit: { label: 'Position protection audit', expectedSec: 60, factor: 4 },
+  protection_audit: { label: 'Position protection audit', expectedSec: 60, factor: 4, effect: { key: 'acct:*:protection_audit_last_json', kind: 'protection' } },
   // The speech-act log inspector (owner invariants 2-4, 31-08-2026): reads
   // every decision sink and emits falsifiable findings. On the fast monitor's
   // band so it keeps inspecting when the loop is the broken thing.
-  log_inspector:    { label: 'Log inspector (speech-act)', expectedSec: 300, factor: 4 },
+  log_inspector:    { label: 'Log inspector (speech-act)', expectedSec: 300, factor: 4, effect: { key: 'log_inspector_last_json' } },
   // NEVER REGISTERED UNTIL 2026-08-04. loss-guardian.js has been amending stops
   // and closing positions since it shipped, and beat `loss_guardian` on every
   // loop cycle — a name absent from this registry, so heartbeatView skipped it
@@ -89,17 +89,17 @@ export const CONTROLLERS = {
   // fresh scan, edge_watchdog watches strategy decay — so they are loop-tied
   // like their peers rather than moved.
   pending_signals:  { label: 'Pending-signal retry',   tiedToLoop: true,  factor: 3 },
-  edge_watchdog:    { label: 'Edge watchdog',          tiedToLoop: true,  factor: 3 },
+  edge_watchdog:    { label: 'Edge watchdog',          tiedToLoop: true,  factor: 3, effect: { key: 'edge_watchdog_last_json' } },
   // D6 — the daily ATR baseline the volatility gate reads. If this stops
   // running, atr_history goes stale and every symbol quietly reads as NORMAL
   // volatility: a verdict none of them earned, and indistinguishable from a
   // real one. Daily cadence, generous grace — it is once per ~288 loops.
-  atr_refresh: { label: 'ATR baseline refresh', expectedSec: 86_400, factor: 2 },
+  atr_refresh: { label: 'ATR baseline refresh', expectedSec: 86_400, factor: 2, effect: { key: 'atr_refresh_last_json' } },
   // The check AFTER the risk gate decides (owner 2026-08-03). Answers "why
   // didn't it trade" from the DB every cycle. It is itself a controller, so a
   // stalled auditor is visible rather than being mistaken for a clean day —
   // an auditor that silently stops is the exact bug it was built to detect.
-  decision_audit: { label: 'Post-decision audit', tiedToLoop: true, factor: 3 },
+  decision_audit: { label: 'Post-decision audit', tiedToLoop: true, factor: 3, effect: { key: 'decision_audit_last_json' } },
   // §41's level 5 — "per-minute management policy" — which until 2026-08-04 was
   // the one authority level with no code behind it at all. It reads the
   // position-event journal and reports when a lower-authority writer took a
@@ -129,6 +129,15 @@ export const CONTROLLERS = {
   // FAILED beat, not silence.
   equity_stop:         { label: 'Equity stop (daily drawdown)', tiedToLoop: true, factor: 3 },
   performance_breaker: { label: 'Performance breaker',          tiedToLoop: true, factor: 3 },
+  // THREE SWEEPS THAT RAN WITHOUT A RECORD (§7,437·B·5, 08-09-2026). The
+  // closed-market limit sweep, the FX-leg refresh and the cross-side equity
+  // read each ran every cycle and wrote nothing a reader could date, so a
+  // sweep that stopped would have looked identical to one that never had
+  // anything to do. Each now beats where it runs; the equity read sits inside
+  // the every-3rd-cycle reconcile block, hence its multiplier.
+  closed_market_sweep: { label: 'Closed-market limit sweep', tiedToLoop: true, factor: 3 },
+  fx_legs_refresh:     { label: 'FX-leg refresh',            tiedToLoop: true, factor: 3 },
+  cross_side_equity:   { label: 'Cross-side equity read',    tiedToLoop: true, loopMultiplier: 3, factor: 4 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
@@ -202,6 +211,75 @@ function effectiveLoopSec(db, loopSec) {
 
 function expectedSecFor(def, loopSec) {
   return def.tiedToLoop ? loopSec * (def.loopMultiplier || 1) : def.expectedSec
+}
+
+// ---------------------------------------------------------------------------
+// THE RECORD, NOT THE RUNNER (§7,437·B·5). A beat says the controller's code
+// executed; it says nothing about whether the thing the controller exists to
+// produce was produced. The protection audit was the measured case (CLAUDE.md
+// failure mode #3): a ticker beating every 50 seconds beside a record that
+// had not moved in a week. protection-freshness.js answered that for ONE
+// controller; this generalises it. A registry entry may name an `effect`:
+//   { key, kind?: 'json' | 'ms' | 'protection', maxAgeSec? }
+// `json` (default) reads `{at}` from the agent_state JSON at `key`; `ms`
+// reads a millisecond string; `protection` delegates to the per-account
+// merge in protection-freshness.js. The freshness limit defaults to the same
+// window the stall check uses (expected × factor) so "record stale" and
+// "runner stalled" cannot disagree about what "too old" means.
+//
+// The verdict is computed AT READ TIME from the record's own timestamp.
+// Nothing here is stamped by the writer, so a writer that stops cannot leave
+// a green flag behind — the reading ages on its own.
+// ---------------------------------------------------------------------------
+function effectAtMs(db, effect) {
+  if (!effect?.key) return NaN
+  try {
+    const raw = getState(db, effect.key)
+    if (raw == null || raw === '') return NaN
+    if (effect.kind === 'ms') return Number(raw)
+    return Date.parse(JSON.parse(raw)?.at || '')
+  } catch { return NaN }
+}
+
+/**
+ * Freshness of a controller's effect record. Same shape for every kind so the
+ * panel and the goal table read one field.
+ * @returns {{hasRecord:boolean, at:string|null, ageSec:number|null, maxAgeSec:number, fresh:boolean, key:string, summary:string}|null}
+ */
+export function effectRecord(db, name, { nowMs = Date.now(), loopSec = null, protection = null } = {}) {
+  const def = CONTROLLERS[name]
+  if (!def?.effect) return null
+  const expected = expectedSecFor(def, effectiveLoopSec(db, loopSec))
+  const maxAgeSec = Number.isFinite(def.effect.maxAgeSec) ? def.effect.maxAgeSec : expected * def.factor
+  if (def.effect.kind === 'protection') {
+    const p = protection || protectionFreshnessFrom(db, { nowMs })
+    return { hasRecord: p.hasReading, at: p.at, ageSec: p.ageSec, maxAgeSec: p.maxAgeSec, fresh: p.fresh, key: def.effect.key, summary: p.summary }
+  }
+  const t = effectAtMs(db, def.effect)
+  const hasRecord = Number.isFinite(t)
+  const ageSec = hasRecord ? Math.max(0, Math.round((nowMs - t) / 1000)) : null
+  const fresh = hasRecord && ageSec <= maxAgeSec
+  const summary = !hasRecord
+    ? `no record at ${def.effect.key} — the controller may beat, but nothing it produced can be dated`
+    : fresh
+      ? `record ${Math.round(ageSec / 60)}m old (limit ${Math.round(maxAgeSec / 60)}m)`
+      : `RECORD ${Math.round(ageSec / 60)}m OLD — past the ${Math.round(maxAgeSec / 60)}m limit; the runner may be beating, its product is not current`
+  return { hasRecord, at: hasRecord ? new Date(t).toISOString() : null, ageSec, maxAgeSec, fresh, key: def.effect.key, summary }
+}
+
+/**
+ * One word per controller for the goal table and the panel: the status
+ * ladder (idle/stalled/error/warn/ok) plus the record's own age.
+ *   never_ran     — no beat on record
+ *   stalled/error — the runner itself
+ *   record_stale  — the runner is fine, its product is past the limit (or absent)
+ *   warn/ok       — as status
+ */
+export function verdictOf(status, product) {
+  if (status === 'idle') return 'never_ran'
+  if (status === 'stalled' || status === 'error') return status
+  if (product && !product.fresh) return 'record_stale'
+  return status
 }
 
 /**
@@ -384,7 +462,9 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
   return Object.entries(CONTROLLERS).map(([name, def]) => {
     const row = byName[name]
     const expected = expectedSecFor(def, lsec)
-    const product = name === 'protection_audit' ? protection : null
+    // Every controller with a declared effect gets its record dated here —
+    // the protection audit's per-account merge is one kind among several.
+    const product = def.effect ? effectRecord(db, name, { nowMs: now.getTime(), loopSec: lsec, protection }) : null
     if (!row) {
       // IDLE, AND THE REASON WHY. Two very different things arrive here: a
       // controller that has never run (burn-in on a box that never armed it),
@@ -392,7 +472,7 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
       // used to arrive as ERROR with a climbing failure count; it must not now
       // arrive as a bare "idle" the operator has to interpret.
       const dormant = EXEC_SIDE_NAMES.has(name) ? dormancyOf(db, name, now.getTime()) : null
-      return { name, label: def.label, status: 'idle', expected_sec: expected, runs: 0,
+      return { name, label: def.label, status: 'idle', verdict: verdictOf('idle', product), expected_sec: expected, runs: 0,
         ...(dormant ? { dormant: true, last_error: dormant.reason, error_is_current: false } : {}),
         ...(product ? { work_product: product } : {}) }
     }
@@ -407,12 +487,16 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
     // gap sit in plain sight. `warn`, not `stalled`: the process genuinely is
     // running, and overstating it as a stall would misdirect whoever acts on
     // it. `work_product` carries the age so the panel can say WHY.
-    if (product && product.enabled && !product.fresh && status === 'ok') status = 'warn'
+    // Generalised 08-09-2026: any controller whose record is past its limit
+    // prints `warn`, not just the protection audit (`enabled` was the audit's
+    // own opt-out; a plain record has none).
+    if (product && product.enabled !== false && !product.fresh && status === 'ok') status = 'warn'
     return {
       ...(product ? { work_product: product } : {}),
       name,
       label: def.label,
       status,
+      verdict: verdictOf(status, product),
       expected_sec: expected,
       age_sec: Number.isFinite(age) ? Math.round(age) : null,
       last_run_at: row.last_run_at,

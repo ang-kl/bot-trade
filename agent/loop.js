@@ -3193,7 +3193,11 @@ async function runLoop(db) {
               log(`Cross-side equity: ${x.stamped}/${x.swept} ${isLive ? 'demo' : 'live'} account(s) stamped`
                 + (x.failed ? ` — ${why}` : ''))
             }
-          } catch { /* equity is best-effort; never break the cycle */ }
+            // A stamp that failed on every account is a failed run; one that
+            // stamped some is a run with a named gap, already logged above.
+            await hbeat(db, 'cross_side_equity', !(x.swept > 0 && x.stamped === 0),
+              x.swept > 0 && x.stamped === 0 ? `0/${x.swept} stamped` : null)
+          } catch (err) { await hbeat(db, 'cross_side_equity', false, err?.message) /* equity is best-effort; never break the cycle */ }
         } else {
           // No credentials — the audit cannot run, and saying nothing would
           // read on screen as "checked, all clear". ¶D·2.
@@ -3772,7 +3776,9 @@ async function runLoop(db) {
         const { reconcileStaleClosedMarketLimits } = await import('./services/closed-market-limits.js')
         const r = reconcileStaleClosedMarketLimits(db)
         if (r.filled || r.expired) log(`Closed-market limit sweep: ${r.filled} filled, ${r.expired} expired, ${r.stillWorking} still working`)
+        await hbeat(db, 'closed_market_sweep')
       } catch (err) {
+        await hbeat(db, 'closed_market_sweep', false, err.message)
         log(`Closed-market limit sweep failed (non-fatal): ${err.message}`)
       }
 
@@ -3881,7 +3887,10 @@ async function runLoop(db) {
             }
           }
         }
+        // Beaten whether or not there was work: the beat says the phase ran.
+        await hbeat(db, 'fx_legs_refresh')
       } catch (err) {
+        await hbeat(db, 'fx_legs_refresh', false, err.message)
         log(`FX leg refresh failed (non-fatal): ${err.message}`)
       }
 
