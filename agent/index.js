@@ -329,6 +329,16 @@ try {
   } catch (err) {
     console.error(`[boot] account horizons seed failed (non-fatal): ${err.message}`)
   }
+  // The owner-declared momentum account from the repo (§7,386·D1), same
+  // reason and same rule as the horizons above.
+  try {
+    const { seedMomentumAccountFromConfig } = await import('./services/momentum-account.js')
+    const ma = seedMomentumAccountFromConfig(db, { log: (m) => console.log(m) })
+    if (ma.error) console.error(`[boot] momentum account: ${ma.error}`)
+    else console.log(`[boot] momentum account: ${ma.applied ? 'applied' : 'unchanged'} — account …${String(ma.effective?.accountId || '').slice(-4) || 'none'} (config/momentum-account.json)`)
+  } catch (err) {
+    console.error(`[boot] momentum account seed failed (non-fatal): ${err.message}`)
+  }
   const bf = backfillAccountIds(db)
   if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
   // Fold the retired per-account autotrade flags into accounts.mode, so
