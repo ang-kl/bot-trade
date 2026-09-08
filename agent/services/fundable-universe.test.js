@@ -105,3 +105,32 @@ test('wiring pin: the fan-out skips an unfundable name by name, the book consult
   assert.match(loop, /fundable: \(accountId, symbol\) => isFundable\(db, accountId, symbol\)/, 'the book is handed the same reader')
   assert.match(book, /const fu = deps\.fundable\(accountId, symbol\)\s+if \(fu && fu\.ok === false\) \{ summary\.skipped\.push/, 'the book skips an unfundable name before fetching')
 })
+
+test('THE 19:01 SGT CASE: a name the build could not price is unknown, not unfundable — the gate lets it through', async () => {
+  // First live build, US market closed: 14 of 25 names had no quote and the
+  // gate skipped AVGO.US on ACCT-LIVE-1 as "unfundable — no_price".
+  const db = initDB(':memory:')
+  setState(db, 'acct:A:account_balance_usd', '1000')
+  writeWatchlist(db, 'A', [{ symbol: 'EURUSD' }, { symbol: 'AVGO.US' }])
+  const f = fakes({ prices: { EURUSD: 1.1, 'AVGO.US': 900 } })
+  f.spot = async (_c, sid) => (sid === 2 ? null : { bid: 1.1, ask: 1.1 })   // AVGO.US: market closed, no quote
+  const rec = await buildFundableUniverse(db, { accountId: 'A', creds: {}, deps: f, now: T0, config: { ...DEFAULT_RISK_CONFIG, perTradeRiskPct: 0.2 } })
+  assert.equal(rec.rows['AVGO.US'].verdict, 'unknown'); assert.equal(rec.rows['AVGO.US'].reason, 'no_price')
+  assert.deepEqual([rec.summary.fundable, rec.summary.unfundable, rec.summary.unknown], [1, 0, 1])
+  const g = isFundable(db, 'A', 'AVGO.US', { now: T0 + 60_000 })
+  assert.equal(g.ok, true, 'unknown never blocks'); assert.equal(g.known, false); assert.match(g.reason, /not judged — no_price/)
+  assert.equal(planFundability({ symbol: 'EURUSD', price: 1.1, minLot: 0.01, balance: 100, riskBudgetUsd: 1, refStopPct: 1 }).verdict, 'unfundable')
+  assert.equal(fundableUniverseReport(db, ['A'], { now: T0 + 60_000 }).accounts[0].unknown[0].symbol, 'AVGO.US')
+})
+
+test('a closed market with a scan price on record is judged at the last scan price, and says so', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'acct:A:account_balance_usd', '1000')
+  writeWatchlist(db, 'A', [{ symbol: 'XAUUSD' }])
+  db.prepare(`INSERT INTO scans (symbol, bias, confidence, thesis, timeframe, session_fit, trade_at, price, trade_grade, desk_note, strategy, scanned_at, loop_id) VALUES ('XAUUSD','skip',0,'x','1h','n/a','now',2400,'none','','', datetime('now'), 1)`).run()
+  const f = fakes({ prices: { XAUUSD: 2400 } })
+  f.spot = async () => null
+  const rec = await buildFundableUniverse(db, { accountId: 'A', creds: {}, deps: f, now: T0, config: { ...DEFAULT_RISK_CONFIG, perTradeRiskPct: 0.2 } })
+  assert.equal(rec.rows.XAUUSD.priceSource, 'last_scan'); assert.equal(rec.rows.XAUUSD.verdict, 'unfundable')
+  assert.equal(isFundable(db, 'A', 'XAUUSD', { now: T0 + 60_000 }).ok, false)
+})
