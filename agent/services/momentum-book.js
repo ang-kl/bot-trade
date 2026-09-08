@@ -209,6 +209,36 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     const marginExhausted = headroom != null && headroom <= 0
     if (marginExhausted) summary.skipped.push(`${accountId}: margin exhausted (headroom $${headroom.toFixed(2)}) — no entries this pass`)
 
+    // ADOPTION RUNS FOR EVERY ACCOUNT, the momentum account included
+    // (measured 08-09-2026 21:32 SGT: four MSFT.US limits filled at the US
+    // open; the three row-cursor accounts adopted theirs with the trailing
+    // stop, ACCT-DEMO-3 did not, because this block sat below the momentum
+    // account's `continue` and its fill stayed under the keeper).
+    // ADOPT FILLS the book did not see land: a closed-market limit placed
+    // through autoTrade returns nothing at dispatch and fills hours later as
+    // an ordinary tsmom_long trade — which the keeper would then manage with
+    // its partial-at-1R and bank-at-4R. Measured 03-09 07:24 SGT: the first
+    // pass placed 14 resting limits and the book held 0 rows. Every open
+    // tsmom_long trade on this account without a book row is adopted here,
+    // the keeper paused, the ATR filled in by the trail pass below.
+    for (const t of openTsmomTrades.all(accountId, TSMOM_STRATEGY)) {
+      if (openRow.get(accountId, t.symbol)) continue
+      insBook.run(t.id, accountId, t.symbol, t.ctrader_position_id != null ? String(t.ctrader_position_id) : null,
+        t.entry_price, t.sl_price, null, null, new Date(now).toISOString(), `adopted filled order (trade ${t.id})`)
+      // The book holds NO target, and the record must say so. A closed-market
+      // limit is placed with a 1.5R take profit, so the adopted row inherits
+      // `current_tp` / `tp_price`; the book's first trail amend clears the
+      // target at the broker, and the target-restore sweep (which reads
+      // `monitored_positions.current_tp`) then puts it straight back.
+      // Measured 04-09-2026: LLY.US on ACCT-DEMO-1 lost its target at the
+      // 08:46 SGT trail and held it again by the evening — a 1.5R cap on a
+      // trend position that is meant to run. Cleared here, once, at adoption.
+      db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(t.id)
+      db.prepare(`UPDATE trades SET tp_price = NULL WHERE id = ?`).run(t.id)
+      summary.adopted++
+      log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price})`)
+    }
+
     // THE MOMENTUM ACCOUNT (owner 07-09-2026, §7,386·D1): one account runs
     // the momentum system on its own terms — target portfolio from the
     // shadow's holdings ∩ the tradable universe, vol-target sizing, one
@@ -239,30 +269,6 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       } catch (err) { summary.skipped.push(`${accountId} ${symbol}: close failed — ${err.message}`) }
     }
 
-    // ADOPT FILLS the book did not see land: a closed-market limit placed
-    // through autoTrade returns nothing at dispatch and fills hours later as
-    // an ordinary tsmom_long trade — which the keeper would then manage with
-    // its partial-at-1R and bank-at-4R. Measured 03-09 07:24 SGT: the first
-    // pass placed 14 resting limits and the book held 0 rows. Every open
-    // tsmom_long trade on this account without a book row is adopted here,
-    // the keeper paused, the ATR filled in by the trail pass below.
-    for (const t of openTsmomTrades.all(accountId, TSMOM_STRATEGY)) {
-      if (openRow.get(accountId, t.symbol)) continue
-      insBook.run(t.id, accountId, t.symbol, t.ctrader_position_id != null ? String(t.ctrader_position_id) : null,
-        t.entry_price, t.sl_price, null, null, new Date(now).toISOString(), `adopted filled order (trade ${t.id})`)
-      // The book holds NO target, and the record must say so. A closed-market
-      // limit is placed with a 1.5R take profit, so the adopted row inherits
-      // `current_tp` / `tp_price`; the book's first trail amend clears the
-      // target at the broker, and the target-restore sweep (which reads
-      // `monitored_positions.current_tp`) then puts it straight back.
-      // Measured 04-09-2026: LLY.US on ACCT-DEMO-1 lost its target at the
-      // 08:46 SGT trail and held it again by the evening — a 1.5R cap on a
-      // trend position that is meant to run. Cleared here, once, at adoption.
-      db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(t.id)
-      db.prepare(`UPDATE trades SET tp_price = NULL WHERE id = ?`).run(t.id)
-      summary.adopted++
-      log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price})`)
-    }
 
     // ONE ENTRY ATTEMPT, shared by the shadow's fresh `enter` rows and the
     // reconcile pass below. Returns 'entered' | 'skipped' | 'capped'.

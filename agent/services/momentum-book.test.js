@@ -383,3 +383,20 @@ test('reconcile never touches shorts or names with a fresh enter row this pass (
   assert.equal(r.reconciled, 0, 'BTCUSD entered through its enter row; the short is never a candidate')
   assert.deepEqual(f.calls.autoTrade.map(c => c.symbol), ['BTCUSD'])
 })
+
+test('THE 21:32 SGT CASE: the momentum account adopts its filled tsmom_long trade too, before its daily branch', async () => {
+  const { MOMENTUM_ACCOUNT_KEY } = await import('./momentum-account.js')
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: DEMO, volTargetPct: 10, maxPositions: 8 }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  const tid = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES ('MSFT.US','BUY','open',500.44,463.47,510,?,?,?,'reconciler_adopted','pos-msft',datetime('now'))`)
+    .run(TSMOM_STRATEGY, TSMOM_STRATEGY, DEMO).lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, account_id, status, source) VALUES ('MSFT.US', ?, 'long', 500.44, 463.47, 510, ?, 'active', 'autopilot')`).run(tid, DEMO)
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_000_000 })
+  assert.equal(r.adopted, 1, JSON.stringify(r.skipped))
+  const row = db.prepare(`SELECT * FROM momentum_book WHERE trade_id = ?`).get(tid)
+  assert.ok(row && row.status === 'open' && row.position_id === 'pos-msft', JSON.stringify(row))
+  assert.equal(db.prepare(`SELECT paused, current_tp FROM monitored_positions WHERE trade_id = ?`).get(tid).paused, 1)
+})

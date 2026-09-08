@@ -139,6 +139,21 @@ test('reconcileStaleClosedMarketLimits: gone from broker_orders, a trade opened 
   const row = db.prepare(`SELECT status, note FROM pending_orders WHERE order_id = '502'`).get()
   assert.equal(row.status, 'filled')
   assert.match(row.note, /adopted as trade/)
+  // §7,437·B·4 (08-09-2026 21:32 SGT, four MSFT.US fills with no plan): the
+  // pending row's level/stop/target become the adopted trade's plan.
+  const plan = db.prepare(`SELECT * FROM trade_plans WHERE trade_id = (SELECT id FROM trades WHERE symbol = 'AMZN.US')`).get()
+  assert.ok(plan, 'the adopted trade carries a plan')
+  assert.equal(plan.source, 'closed_market_limit_fill'); assert.equal(plan.side, 'SELL')
+  assert.equal(plan.planned_entry, 250); assert.equal(plan.planned_sl, 253); assert.equal(plan.planned_tp, 240)
+  assert.equal(plan.planned_r, 3.333); assert.equal(plan.timeframe, '1d')
+  // a plan a more direct writer put there first is not overwritten
+  const db2 = initDB(':memory:')
+  db2.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note) VALUES ('AMZN.US', '1d', '502', -1, 250, 253, 240, 1, '2026-07-21T00:00:00Z', '2026-07-28T00:00:00Z', 'working', 'pending-closed')`).run()
+  db2.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('502', 'AMZN.US', 'gone')`).run()
+  const tid = db2.prepare(`INSERT INTO trades (symbol, opened_at) VALUES ('AMZN.US', '2026-07-21T12:00:00Z')`).run().lastInsertRowid
+  db2.prepare(`INSERT INTO trade_plans (trade_id, symbol, side, planned_entry, source, created_at) VALUES (?, 'AMZN.US', 'SELL', 251, 'manual_broker', '2026-07-21T12:00:00Z')`).run(tid)
+  reconcileStaleClosedMarketLimits(db2, { nowMs: Date.parse('2026-07-22T00:00:00Z') })
+  assert.equal(db2.prepare(`SELECT source, planned_entry FROM trade_plans WHERE trade_id = ?`).get(tid).source, 'manual_broker')
 })
 
 test('reconcileStaleClosedMarketLimits: gone from broker_orders, no matching trade becomes expired', () => {
