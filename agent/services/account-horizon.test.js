@@ -79,3 +79,32 @@ test('wiring pin: the loop filters candidates before the analysis slots and skip
   assert.match(loop, /const pool = afterHorizon\s+let hotToAnalyze = pool\.slice\(0, 3\)/, 'the analysis slots are handed the filtered list, with no fallback to the unfiltered one')
   assert.match(loop, /const hz = horizonAdmits\(loadAccountHorizon\(db, acct\.accountId\), \{ timeframe: synth\.timeframe, strategy: synth\.strategy \}\)\s+if \(!hz\.ok\) \{[\s\S]{0,600}?stage: 'account_horizon'[\s\S]{0,200}?continue\s+\}/, 'the per-account gate, with its decision row')
 })
+
+test('the repo declaration is applied at boot, idempotently, and overrides a differing stored value', async () => {
+  const { seedAccountHorizonsFromConfig } = await import('./account-horizon.js')
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const db = initDB(':memory:')
+  const dir = mkdtempSync(join(tmpdir(), 'hz-'))
+  const file = join(dir, 'account-horizons.json')
+  writeFileSync(file, JSON.stringify({ _note: 'x', 46979908: { horizon: 'position', families: ['momentum', 'bogus'] } }))
+  const lines = []
+  const a = seedAccountHorizonsFromConfig(db, { file, log: (m) => lines.push(m) })
+  assert.deepEqual(a.applied, ['46979908']); assert.equal(a.error, null)
+  assert.deepEqual(loadAccountHorizon(db, '46979908'), { horizon: 'position', families: ['momentum'] })
+  assert.match(lines[0], /…9908: position \[momentum\]/)
+  const b = seedAccountHorizonsFromConfig(db, { file })
+  assert.deepEqual(b.unchanged, ['46979908']); assert.deepEqual(b.applied, [])
+  setAccountHorizon(db, '46979908', { horizon: 'swing' })
+  const c = seedAccountHorizonsFromConfig(db, { file })
+  assert.deepEqual(c.applied, ['46979908'], 'the file wins over a differing stored value at boot')
+  assert.equal(loadAccountHorizon(db, '46979908').horizon, 'position')
+  // the checked-in file itself parses and names the owner's declaration
+  const real = seedAccountHorizonsFromConfig(initDB(':memory:'))
+  assert.equal(real.error, null); assert.ok(real.applied.includes('46979908'))
+  assert.equal(seedAccountHorizonsFromConfig(db, { file: join(dir, 'missing.json') }).error?.startsWith('account-horizons.json unreadable'), true)
+  // wiring pin: index.js applies it after the registry bootstrap
+  const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /ensureAccountRegistry\(db\)[\s\S]{0,700}?seedAccountHorizonsFromConfig\(db, \{ log/, 'the boot seed runs after the registry exists')
+})

@@ -14,6 +14,7 @@
 // family set admits everything, exactly as before this file existed.
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { tfMs } from '../lib/timeframes.js'
 import { familyOf, STRATEGY_FAMILIES } from './strategies.js'
@@ -85,6 +86,36 @@ export function anyAccountAdmits(db, accountIds, proposal) {
   }
   if (!(accountIds || []).length) return { ok: true, refusedBy: [], note: 'no accounts to ask — admitted' }
   return { ok: admitted, refusedBy }
+}
+
+/**
+ * Apply the owner's declarations from agent/config/account-horizons.json
+ * at boot (08-09-2026: the declaring route needs the bearer token, which
+ * was lost on 07-09; the file is the durable declaration and survives a
+ * database reset). Idempotent — an account already stored as declared is
+ * left alone; a differing stored value is overwritten by the file, which
+ * is the point of a declaration in the repo.
+ * @returns {{applied:string[], unchanged:string[], error:string|null}}
+ */
+export function seedAccountHorizonsFromConfig(db, { file = null, log = () => {} } = {}) {
+  const out = { applied: [], unchanged: [], error: null }
+  let cfg = null
+  try {
+    cfg = JSON.parse(readFileSync(file || new URL('../config/account-horizons.json', import.meta.url), 'utf8'))
+  } catch (err) {
+    out.error = `account-horizons.json unreadable: ${err.message}`
+    return out
+  }
+  for (const [accountId, raw] of Object.entries(cfg || {})) {
+    if (!/^\d+$/.test(accountId) || !raw || typeof raw !== 'object') continue
+    const want = normalizeHorizon(raw)
+    const have = loadAccountHorizon(db, accountId)
+    if (have.horizon === want.horizon && have.families.join(',') === want.families.join(',')) { out.unchanged.push(accountId); continue }
+    setAccountHorizon(db, accountId, want)
+    out.applied.push(accountId)
+    log(`[boot] account horizon …${accountId.slice(-4)}: ${want.horizon || 'any horizon'}${want.families.length ? ` [${want.families.join(', ')}]` : ''} (from config/account-horizons.json)`)
+  }
+  return out
 }
 
 export function horizonsView(db, accountIds = []) {
