@@ -22,7 +22,7 @@
 // symbol, 20×1m bars) so the fast path stays light on the broker API.
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
 import { rulesForSymbol } from './asset-controllers.js'
@@ -404,63 +404,280 @@ export function makeCadenceGate() {
   }
 }
 
+/** Where the band writes what it measured; the protection_band controller's declared effect. */
+export const PASS_RECORD_KEY = 'fast_monitor_pass_json'
+const RECORD_WINDOW_MS = 10 * 60_000
+
+/** Rolling maximum of {at, ms} samples inside `windowMs` of `nowMs`. Pure. */
+export function rollingMax(samples, nowMs, windowMs = RECORD_WINDOW_MS) {
+  const kept = (samples || []).filter(s => nowMs - s.at <= windowMs)
+  return { kept, max: kept.length ? Math.max(...kept.map(s => s.ms)) : null }
+}
+
+/** A band pass overran when it outlived its own cadence. Pure. */
+export function bandOverran(bandMs, everyMs) {
+  return Number(bandMs) > Number(everyMs)
+}
+
 /**
- * Start the ticker. Returns a stop() handle (tests, shutdown).
+ * The 60-SECOND PROTECTION BAND — everything that used to sit inside the
+ * 3-second tick behind `due('pnl_watch', 60)`: P&L watch, the per-position
+ * loss cap on every account, the profit ratchet, trade guards, profit keeper,
+ * loss guardian, the protection audit, and the watchdog band (cpp probe, log
+ * inspector, stall check, account authorization). Exported so a test can run
+ * one pass directly; startFastMonitor schedules it on its own ticker.
+ */
+export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()) {
+  const due = deps.due ?? makeCadenceGate()
+  const hbMod = deps.heartbeat ?? await import('./heartbeat.js')
+  // P&L drift watch — Telegram warns when an open trade crosses ±N% of
+  // balance (owner audit: nothing warned on drift).
+  try {
+    if (creds?.ready) {
+      const { runPnlWatch } = await import('./pnl-watch.js')
+      await runPnlWatch(db, creds)
+    }
+  } catch (err) {
+    console.error('[fast-monitor] pnl-watch failed:', err.message)
+  }
+  // Hard per-position loss cap (owner 2026-07-28, the GOOGL −$900 case):
+  // same 60s broker-truth cadence, but this one ACTS — closes a position
+  // whose floating loss breached the $/% cap instead of only messaging.
+  try {
+    if (creds?.ready) {
+      // ACROSS EVERY ENABLED ACCOUNT, not just the selected one. Until
+      // 2026-08-03 this called runLossCap(db, creds) — one account — so
+      // every other account ran with no per-position loss cap. A USDZAR
+      // position reached −$2,186 against an $800 cap because the cap was
+      // never asked about that account.
+      const { runLossCapAllAccounts } = await import('./loss-cap.js')
+      const lc = await runLossCapAllAccounts(db, creds)
+      if (lc.closes || lc.errors.length) console.log(`[fast-monitor] loss-cap: ${lc.accounts} account(s), ${lc.closes} close(s), ${lc.errors.length} error(s) ${lc.errors.join(' · ')}`)
+    }
+  } catch (err) {
+    console.error('[fast-monitor] loss-cap failed:', err.message)
+  }
+  // Profit ratchet v2 (owner-approved A4, reworked 01-08): PER-ACCOUNT
+  // equity staircases — soft warning band, hysteresis on the hard floor,
+  // per-account halt/flatten, auto re-arm. Never touches the S.A.T. keys.
+  try {
+    if (creds?.ready) {
+      const { runProfitRatchet } = await import('./profit-ratchet.js')
+      const pr = await runProfitRatchet(db, creds)
+      for (const a of pr?.accounts || []) {
+        if (a.triggered) console.log(`[fast-monitor] profit-ratchet TRIGGERED on ${a.accountId} at equity ${a.equity} — ${a.closes} close(s)`)
+        else if (a.rearmed) console.log(`[fast-monitor] profit-ratchet re-armed on ${a.accountId} at equity ${a.equity}`)
+      }
+    }
+  } catch (err) {
+    console.error('[fast-monitor] profit-ratchet failed:', err.message)
+  }
+  // TRADE GUARDS + PROFIT KEEPER — MOVED here from the loop, not copied.
+  //
+  // §43 wants protection on its own path; §36.2.3 forbids duplicating an
+  // ACTING one: "Two components must not unknowingly write the same stop."
+  // The protection audit only reads, so it runs on both paths deliberately.
+  // These two MOVE stops and CLOSE positions, so their LOOP call sites are
+  // gone — the loop no longer runs them at all.
+  //
+  // CORRECTION (2026-08-04): this comment used to claim they run "here and
+  // ONLY here". That was written about loop.js and was wrong the moment
+  // the guardian existed — guardian.js also calls runTradeGuards and
+  // runProfitKeeper on every ≥0.05% price move, which is deliberate (§70.6
+  // wants price-shaped rules on a price trigger) but means TWO clocks
+  // enter the same module. Neither module had a re-entrancy guard, and
+  // `withBudget` below abandons the WAIT rather than the work, so a slow
+  // pass was still running when the next one started.
+  //
+  // The invariant now lives in the layers themselves: acting-layer.js's
+  // singleFlight means a second caller JOINS the pass in flight instead of
+  // starting another. Two clocks, one pass.
+  //
+  // Budgeted: the loop wrapped them in runBudgetedSubPhase for the same
+  // reason, and the stake is higher here because a hung pass would hold
+  // the band past its cadence — which the band's own record now reports.
+  for (const job of [
+    { key: 'trade_guards', label: 'Trade guards', mod: './trade-guard.js', fn: 'runTradeGuards',
+      say: r => (r.slMoves || r.partialCloses) ? `${r.slMoves} SL move(s), ${r.partialCloses} partial close(s)` : null },
+    { key: 'profit_keeper', label: 'Profit Keeper', mod: './profit-keeper.js', fn: 'runProfitKeeper',
+      say: r => (r.slMoves || r.closes) ? `${r.slMoves} lock(s), ${r.closes} close(s)` : null },
+    // The safety net for LOSING and NAKED positions the Profit Keeper will
+    // not touch. Last of the level-4 writers off the loop, and the one
+    // that most needed to be: it is what puts a stop on a position that
+    // has none.
+    { key: 'loss_guardian', label: 'Loss Guardian', mod: './loss-guardian.js', fn: 'runLossGuardian',
+      say: r => (r.stops || r.closes) ? `${r.stops} protective stop(s), ${r.closes} close(s)` : null },
+  ]) {
+    try {
+      if (!creds?.ready) break
+      const m = await import(job.mod)
+      const res = await withBudget(job.key, 45_000, () => m[job.fn](db, creds, {
+        notify: (text) => import('./telegram-control.js').then(t => t.notifyOwner(text)).catch(() => {}),
+      }))
+      if (res.error) {
+        console.error(`[fast-monitor] ${job.label} failed:`, res.error.message)
+        hbMod.beat(db, job.key, { ok: false, error: res.error.message })
+      } else {
+        const line = job.say(res.value || {})
+        if (line) console.log(`[fast-monitor] ${job.label}: ${line}`)
+        if (res.value?.errors?.length) console.error(`[fast-monitor] ${job.label} errors: ${res.value.errors.join(' · ')}`)
+        hbMod.beat(db, job.key, { ok: true })
+      }
+    } catch (err) {
+      console.error(`[fast-monitor] ${job.label} threw:`, err.message)
+      try { hbMod.beat(db, job.key, { ok: false, error: err.message }) } catch { /* heartbeat is best-effort */ }
+    }
+  }
+  // PROTECTION AUDIT — Operating Goal Plan §43, the Non-Negotiable Rule:
+  // protection must have its OWN functioning and observable path, not a
+  // seat on the strategy loop.
+  //
+  // It had one home, inside the loop's per-account reconcile block, where
+  // it shared a phase with order_monitor. On 2026-08-04 both went stalled
+  // at the same instant — 961s old against a 314s expectation — because
+  // that one phase had not completed. For sixteen minutes nothing asked
+  // whether the open positions still had stops at the broker, and the only
+  // layer still working was the broker's own.
+  //
+  // This path does not depend on the loop. The band has its own ticker and
+  // its own overlap guard, and it is where the loop's watchdog lives — so it
+  // keeps auditing precisely when the loop is the thing that broke. §70.7:
+  // the five-minute loop is never the sole position protector.
+  try {
+    if (creds?.ready) {
+      const { runProtectionAuditAllAccounts } = await import('./naked-position-guard.js')
+      const pa = await runProtectionAuditAllAccounts(db, creds, deps)
+      if (pa.naked || pa.targetless || pa.phantom) {
+        console.warn(`[fast-monitor] protection audit: ${pa.naked} naked, ${pa.targetless} targetless, ${pa.phantom} stop disagreement(s) across ${pa.accounts} account(s)`)
+      }
+      if (pa.errors.length) console.error(`[fast-monitor] protection audit errors: ${pa.errors.join(' · ')}`)
+      if (pa.unauditable.length) console.warn(`[fast-monitor] protection audit could not reach: ${pa.unauditable.join(' · ')}`)
+      // BEAT ON THIS PATH TOO. The controller is what tells the operator
+      // protection is being checked; if only the loop could beat it, this
+      // path could run perfectly while the panel still read "stalled".
+      //
+      // An UNAUDITABLE account does not fail the beat — see
+      // runProtectionAuditAllAccounts. LOGIN-4's token does not cover it,
+      // and letting that hold the controller red forever would train the
+      // operator to ignore the one light that says their positions are
+      // being checked.
+      //
+      // `blind` is the counterweight to that: an account the broker refuses
+      // does not fail the beat, but a sweep that reached NO account verified
+      // nothing, and green there would claim protection nobody checked.
+      hbMod.beat(db, 'protection_audit', {
+        ok: pa.errors.length === 0 && !pa.blind,
+        error: pa.errors.length
+          ? pa.errors.join(' · ')
+          : pa.blind
+            ? `no account could be audited — ${pa.unauditable.join(' · ') || 'nothing reachable'}`
+            : null,
+      })
+    }
+  } catch (err) {
+    console.error('[fast-monitor] protection-audit failed:', err.message)
+    try { hbMod.beat(db, 'protection_audit', { ok: false, error: err.message }) } catch { /* heartbeat is best-effort */ }
+  }
+  // WATCHDOG BAND. Sub-cadences gated by `due()` — see makeCadenceGate for
+  // why they are not tick counts.
+  try {
+    if (due('cpp_probe', 120, nowMs)) await hbMod.probeCppExec(db)
+    // The log inspector (owner invariants 2-4, 31-08) runs HERE, not in
+    // loop.js, deliberately: it must keep inspecting when the 5-minute
+    // loop is the broken thing — the same reasoning that moved the
+    // protection audit onto this band.
+    if (due('log_inspector', 300, nowMs)) {
+      try {
+        const { runLogInspector } = await import('./log-inspector.js')
+        const { getState: gs, setState: ss } = await import('../db.js')
+        const notify = (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {})
+        // No disarm actuator is handed in (02-09-2026): the inspector
+        // reports, the live evaluators act.
+        const out = runLogInspector(db, { now: nowMs, notify, io: { getState: gs, setState: ss } })
+        hbMod.beat(db, 'log_inspector', { ok: !out.errors?.length, error: out.errors?.length ? out.errors.join(' · ').slice(0, 300) : null })
+        if (out.inserted || out.falsified) {
+          console.log(`[fast-monitor] log inspector: +${out.inserted} finding(s), ${out.autoApplied} auto, ${out.confirmed}/${out.falsified}/${out.expired} confirmed/falsified/expired`)
+        }
+      } catch (err) {
+        console.error('[fast-monitor] log inspector failed:', err.message)
+        try { hbMod.beat(db, 'log_inspector', { ok: false, error: err.message }) } catch { /* best effort */ }
+      }
+    }
+    if (due('watchdog', 60, nowMs)) {
+      const notify = (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {})
+      hbMod.checkHeartbeats(db, { notify })
+      // Separate question, same band: checkHeartbeats asks "is the sidecar
+      // alive", this asks "is every enabled account actually reachable
+      // through it". On 05-08-2026 the first answered yes for twelve hours
+      // while four accounts were unreachable and nothing traded.
+      // NO `?.` — deliberately. An optional call turns "this watchdog is not
+      // wired up" into silence, which is the failure mode this whole check
+      // exists to end (twelve hours of it on 05-08). A rename or a stubbed
+      // deps.heartbeat should throw into the enclosing catch and log
+      // "[fast-monitor] watchdog failed" — loud and findable. checkHeartbeats
+      // above is called the same way.
+      hbMod.checkAccountAuthorization(db, { notify })
+    }
+  } catch (err) {
+    console.error('[fast-monitor] watchdog failed:', err.message)
+  }
+}
+
+/**
+ * Start the tickers. Returns a stop() handle (tests, shutdown).
  *
- * The ticker doubles as the reliability watchdog — deliberately independent
- * of the main loop so a silently dead main loop is still detected: every
- * pass beats the fast_monitor heartbeat, every 60s runs the stall check
- * (checkHeartbeats → Telegram alert), every 120s actively probes the C++
- * exec engine's GET /health when EXEC_ENGINE=cpp. Those sub-cadences are
- * gated by `due()` — see makeCadenceGate for why they are not tick counts.
+ * TWO TICKERS, TWO OVERLAP GUARDS (owner § 7,453·C, 08-09-2026). Until this
+ * change one 3-second interval carried both the spike re-pricing pass AND,
+ * behind a once-a-minute gate, the whole protection band — so the band's
+ * 30-60 seconds of broker calls skipped the spike ticks it ran across, and a
+ * slow spike pass pushed the band late. Now:
+ *
+ *   · the TICK (tickMs, default 3s) re-prices open positions and runs the
+ *     session-open guard; it beats `fast_monitor`;
+ *   · the BAND (bandMs, default 60s) runs runProtectionBand; it beats
+ *     `protection_band` — ok only when it finished inside its cadence — and
+ *     writes PASS_RECORD_KEY: last and 10-minute-max durations of both
+ *     tickers, skipped counts, and whether the band overran.
+ *
+ * Each ticker skips its own next firing while its previous pass is still
+ * running (incident 2026-07-28: stacked passes opened dozens of broker
+ * sockets), and neither can skip the other's. The band doubles as the
+ * reliability watchdog — deliberately independent of the main loop so a
+ * silently dead main loop is still detected.
  */
 export function startFastMonitor(db, getCreds, deps = {}) {
   const due = deps.due ?? makeCadenceGate()
   const clock = deps.clock ?? (() => Date.now())
   // Owner 2026-07-24: default tick 3s (was 30s) so spike windows re-price at
-  // tick speed; FAST_MONITOR_MS overrides, floored at 1s. Sub-task cadences
-  // below are wall-clock so a faster ticker doesn't multiply pnl-watch /
-  // watchdog / cpp-probe traffic.
+  // tick speed; FAST_MONITOR_MS overrides, floored at 1s to keep broker RPC
+  // volume inside the 50 req/s connection budget.
   const tickMs = deps.tickMs ?? Math.max(1_000, Number(process.env.FAST_MONITOR_MS) || 3_000)
-  // WHOLE-TICK overlap guard (incident 2026-07-28: the site became
-  // unreachable while the loop itself was healthy). setInterval does not
-  // await an async callback, and only runFastMonitor was guarded — every
-  // 3s the tick ALSO launched an unguarded session-open-guard pass, which
-  // walks open positions serially opening a NEW websocket (+ its own 9s
-  // heartbeat timer) per position with a 6s timeout each. With a dozen
-  // positions and a slow broker one pass outlives twenty ticks, so copies
-  // stacked into dozens of concurrent broker sockets — self-inflicted rate
-  // limiting, and enough synchronous SQLite interleaving to starve HTTP
-  // reads until even a 401 took 30s. One flag now covers the entire body:
-  // a pass that overruns skips ticks instead of multiplying them.
+  const bandMs = deps.bandMs ?? Math.max(5_000, Number(process.env.PROTECTION_BAND_MS) || 60_000)
+  const tickSamples = []
+  const bandSamples = []
   let tickRunning = false
   let skipped = 0
-  const t = setInterval(async () => {
-    if (tickRunning) {
-      skipped++
-      // Still beat — a busy monitor is not a stalled one, and skipping the
-      // heartbeat would trip the watchdog's stall alert on our own backlog.
-      try {
-        const hb = deps.heartbeat ?? await import('./heartbeat.js')
-        hb.beat(db, 'fast_monitor', { ok: true, error: null, detail: { busy: true, skipped } })
-      } catch { /* heartbeat is best-effort */ }
-      // console.LOG, not warn (2026-08-22). Overlap protection working is not
-      // an error: this is the ticker declining to start a second pass while
-      // the first is still going, which is the guard doing its job. At `warn`
-      // it was the single most frequent line in production and it drowned the
-      // real errors around it — a log nobody can scan is a log nobody reads.
-      if (skipped === 1 || skipped % 20 === 0) console.log(`[fast-monitor] previous pass still running — skipped ${skipped} tick(s)`)
-      return
-    }
-    tickRunning = true
-    // ONE creds read per tick: this was called five times per tick, each
-    // doing several getState reads plus a JSON.parse of the symbol map.
-    const creds = getCreds(db)
-    // One clock read per pass, so every sub-cadence below judges itself
-    // against the same instant.
-    const nowMs = clock()
+  let bandRunning = false
+  let bandSkipped = 0
+  let lastTick = null
+
+  const writeRecord = (nowMs, band) => {
     try {
-    skipped = 0
+      const tk = rollingMax(tickSamples, nowMs)
+      const bd = rollingMax(bandSamples, nowMs)
+      tickSamples.splice(0, tickSamples.length, ...tk.kept)
+      bandSamples.splice(0, bandSamples.length, ...bd.kept)
+      setState(db, PASS_RECORD_KEY, JSON.stringify({
+        at: new Date(nowMs).toISOString(),
+        tick: { everyMs: tickMs, lastMs: lastTick, max10mMs: tk.max, skippedTicks: skipped },
+        band: { everyMs: bandMs, lastMs: band.ms, max10mMs: bd.max, overran: band.overran, skippedBands: bandSkipped },
+      }))
+    } catch (err) {
+      console.error('[fast-monitor] pass record not written:', err.message)
+    }
+  }
+
+  const runTick = deps.runTick ?? (async (creds) => {
     let tickErr = null
     try {
       await runFastMonitor(db, creds, deps)
@@ -483,214 +700,77 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] session-open-guard failed:', err.message)
     }
-    // P&L drift watch — every 60s: Telegram warns when an open trade crosses
-    // ±N% of balance (owner audit: nothing warned on drift).
-    if (due('pnl_watch', 60, nowMs)) {
+    return tickErr
+  })
+
+  const t = setInterval(async () => {
+    if (tickRunning) {
+      skipped++
+      // Still beat — a busy monitor is not a stalled one, and skipping the
+      // heartbeat would trip the watchdog's stall alert on our own backlog.
       try {
-        if (creds?.ready) {
-          const { runPnlWatch } = await import('./pnl-watch.js')
-          await runPnlWatch(db, creds)
-        }
-      } catch (err) {
-        console.error('[fast-monitor] pnl-watch failed:', err.message)
-      }
-      // Hard per-position loss cap (owner 2026-07-28, the GOOGL −$900 case):
-      // same 60s broker-truth cadence, but this one ACTS — closes a position
-      // whose floating loss breached the $/% cap instead of only messaging.
-      try {
-        if (creds?.ready) {
-          // ACROSS EVERY ENABLED ACCOUNT, not just the selected one. Until
-          // 2026-08-03 this called runLossCap(db, creds) — one account — so
-          // every other account ran with no per-position loss cap. A USDZAR
-          // position reached −$2,186 against an $800 cap because the cap was
-          // never asked about that account.
-          const { runLossCapAllAccounts } = await import('./loss-cap.js')
-          const lc = await runLossCapAllAccounts(db, creds)
-          if (lc.closes || lc.errors.length) console.log(`[fast-monitor] loss-cap: ${lc.accounts} account(s), ${lc.closes} close(s), ${lc.errors.length} error(s) ${lc.errors.join(' · ')}`)
-        }
-      } catch (err) {
-        console.error('[fast-monitor] loss-cap failed:', err.message)
-      }
-      // Profit ratchet v2 (owner-approved A4, reworked 01-08): PER-ACCOUNT
-      // equity staircases — soft warning band, hysteresis on the hard floor,
-      // per-account halt/flatten, auto re-arm. Never touches the S.A.T. keys.
-      try {
-        if (creds?.ready) {
-          const { runProfitRatchet } = await import('./profit-ratchet.js')
-          const pr = await runProfitRatchet(db, creds)
-          for (const a of pr?.accounts || []) {
-            if (a.triggered) console.log(`[fast-monitor] profit-ratchet TRIGGERED on ${a.accountId} at equity ${a.equity} — ${a.closes} close(s)`)
-            else if (a.rearmed) console.log(`[fast-monitor] profit-ratchet re-armed on ${a.accountId} at equity ${a.equity}`)
-          }
-        }
-      } catch (err) {
-        console.error('[fast-monitor] profit-ratchet failed:', err.message)
-      }
-      // TRADE GUARDS + PROFIT KEEPER — MOVED here from the loop, not copied.
-      //
-      // §43 wants protection on its own path; §36.2.3 forbids duplicating an
-      // ACTING one: "Two components must not unknowingly write the same stop."
-      // The protection audit only reads, so it runs on both paths deliberately.
-      // These two MOVE stops and CLOSE positions, so their LOOP call sites are
-      // gone — the loop no longer runs them at all.
-      //
-      // CORRECTION (2026-08-04): this comment used to claim they run "here and
-      // ONLY here". That was written about loop.js and was wrong the moment
-      // the guardian existed — guardian.js also calls runTradeGuards and
-      // runProfitKeeper on every ≥0.05% price move, which is deliberate (§70.6
-      // wants price-shaped rules on a price trigger) but means TWO clocks
-      // enter the same module. Neither module had a re-entrancy guard, and
-      // `withBudget` below abandons the WAIT rather than the work, so a slow
-      // pass was still running when the next one started.
-      //
-      // The invariant now lives in the layers themselves: acting-layer.js's
-      // singleFlight means a second caller JOINS the pass in flight instead of
-      // starting another. Two clocks, one pass.
-      //
-      // Budgeted: the loop wrapped them in runBudgetedSubPhase for the same
-      // reason, and the stake is higher here because a hung pass would make
-      // tickRunning skip the 3-second ticks that spike protection depends on.
-      for (const job of [
-        { key: 'trade_guards', label: 'Trade guards', mod: './trade-guard.js', fn: 'runTradeGuards',
-          say: r => (r.slMoves || r.partialCloses) ? `${r.slMoves} SL move(s), ${r.partialCloses} partial close(s)` : null },
-        { key: 'profit_keeper', label: 'Profit Keeper', mod: './profit-keeper.js', fn: 'runProfitKeeper',
-          say: r => (r.slMoves || r.closes) ? `${r.slMoves} lock(s), ${r.closes} close(s)` : null },
-        // The safety net for LOSING and NAKED positions the Profit Keeper will
-        // not touch. Last of the level-4 writers off the loop, and the one
-        // that most needed to be: it is what puts a stop on a position that
-        // has none.
-        { key: 'loss_guardian', label: 'Loss Guardian', mod: './loss-guardian.js', fn: 'runLossGuardian',
-          say: r => (r.stops || r.closes) ? `${r.stops} protective stop(s), ${r.closes} close(s)` : null },
-      ]) {
-        try {
-          if (!creds?.ready) break
-          const m = await import(job.mod)
-          const res = await withBudget(job.key, 45_000, () => m[job.fn](db, creds, {
-            notify: (text) => import('./telegram-control.js').then(t => t.notifyOwner(text)).catch(() => {}),
-          }))
-          const hb = deps.heartbeat ?? await import('./heartbeat.js')
-          if (res.error) {
-            console.error(`[fast-monitor] ${job.label} failed:`, res.error.message)
-            hb.beat(db, job.key, { ok: false, error: res.error.message })
-          } else {
-            const line = job.say(res.value || {})
-            if (line) console.log(`[fast-monitor] ${job.label}: ${line}`)
-            if (res.value?.errors?.length) console.error(`[fast-monitor] ${job.label} errors: ${res.value.errors.join(' · ')}`)
-            hb.beat(db, job.key, { ok: true })
-          }
-        } catch (err) {
-          console.error(`[fast-monitor] ${job.label} threw:`, err.message)
-          try {
-            const hb = deps.heartbeat ?? await import('./heartbeat.js')
-            hb.beat(db, job.key, { ok: false, error: err.message })
-          } catch { /* heartbeat is best-effort */ }
-        }
-      }
-      // PROTECTION AUDIT — Operating Goal Plan §43, the Non-Negotiable Rule:
-      // protection must have its OWN functioning and observable path, not a
-      // seat on the strategy loop.
-      //
-      // It had one home, inside the loop's per-account reconcile block, where
-      // it shared a phase with order_monitor. On 2026-08-04 both went stalled
-      // at the same instant — 961s old against a 314s expectation — because
-      // that one phase had not completed. For sixteen minutes nothing asked
-      // whether the open positions still had stops at the broker, and the only
-      // layer still working was the broker's own.
-      //
-      // This path does not depend on the loop. The fast monitor has its own
-      // 3s ticker and its own overlap guard, and it is where the loop's
-      // watchdog lives — so it keeps auditing precisely when the loop is the
-      // thing that broke. §70.7: the five-minute loop is never the sole
-      // position protector.
-      try {
-        if (creds?.ready) {
-          const { runProtectionAuditAllAccounts } = await import('./naked-position-guard.js')
-          const pa = await runProtectionAuditAllAccounts(db, creds, deps)
-          if (pa.naked || pa.targetless || pa.phantom) {
-            console.warn(`[fast-monitor] protection audit: ${pa.naked} naked, ${pa.targetless} targetless, ${pa.phantom} stop disagreement(s) across ${pa.accounts} account(s)`)
-          }
-          if (pa.errors.length) console.error(`[fast-monitor] protection audit errors: ${pa.errors.join(' · ')}`)
-          if (pa.unauditable.length) console.warn(`[fast-monitor] protection audit could not reach: ${pa.unauditable.join(' · ')}`)
-          // BEAT ON THIS PATH TOO. The controller is what tells the operator
-          // protection is being checked; if only the loop could beat it, this
-          // path could run perfectly while the panel still read "stalled".
-          //
-          // An UNAUDITABLE account does not fail the beat — see
-          // runProtectionAuditAllAccounts. LOGIN-4's token does not cover it,
-          // and letting that hold the controller red forever would train the
-          // operator to ignore the one light that says their positions are
-          // being checked.
-          const hb = deps.heartbeat ?? await import('./heartbeat.js')
-          // `blind` is the counterweight to that: an account the broker refuses
-          // does not fail the beat, but a sweep that reached NO account verified
-          // nothing, and green there would claim protection nobody checked.
-          hb.beat(db, 'protection_audit', {
-            ok: pa.errors.length === 0 && !pa.blind,
-            error: pa.errors.length
-              ? pa.errors.join(' · ')
-              : pa.blind
-                ? `no account could be audited — ${pa.unauditable.join(' · ') || 'nothing reachable'}`
-                : null,
-          })
-        }
-      } catch (err) {
-        console.error('[fast-monitor] protection-audit failed:', err.message)
-        try {
-          const hb = deps.heartbeat ?? await import('./heartbeat.js')
-          hb.beat(db, 'protection_audit', { ok: false, error: err.message })
-        } catch { /* heartbeat is best-effort */ }
-      }
+        const hb = deps.heartbeat ?? await import('./heartbeat.js')
+        hb.beat(db, 'fast_monitor', { ok: true, error: null, detail: { busy: true, skipped } })
+      } catch { /* heartbeat is best-effort */ }
+      // console.LOG, not warn (2026-08-22). Overlap protection working is not
+      // an error: this is the ticker declining to start a second pass while
+      // the first is still going, which is the guard doing its job.
+      if (skipped === 1 || skipped % 20 === 0) console.log(`[fast-monitor] previous pass still running — skipped ${skipped} tick(s)`)
+      return
     }
+    tickRunning = true
+    const startedAt = clock()
     try {
-      const hb = deps.heartbeat ?? await import('./heartbeat.js')
-      hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null })
-      if (due('cpp_probe', 120, nowMs)) await hb.probeCppExec(db)
-      // The log inspector (owner invariants 2-4, 31-08) runs HERE, not in
-      // loop.js, deliberately: it must keep inspecting when the 5-minute
-      // loop is the broken thing — the same reasoning that moved the
-      // protection audit onto this band.
-      if (due('log_inspector', 300, nowMs)) {
-        try {
-          const { runLogInspector } = await import('./log-inspector.js')
-          const { getState: gs, setState: ss } = await import('../db.js')
-          const notify = (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {})
-          // No disarm actuator is handed in (02-09-2026): the inspector
-          // reports, the live evaluators act.
-          const out = runLogInspector(db, { now: nowMs, notify, io: { getState: gs, setState: ss } })
-          hb.beat(db, 'log_inspector', { ok: !out.errors?.length, error: out.errors?.length ? out.errors.join(' · ').slice(0, 300) : null })
-          if (out.inserted || out.falsified) {
-            console.log(`[fast-monitor] log inspector: +${out.inserted} finding(s), ${out.autoApplied} auto, ${out.confirmed}/${out.falsified}/${out.expired} confirmed/falsified/expired`)
-          }
-        } catch (err) {
-          console.error('[fast-monitor] log inspector failed:', err.message)
-          try { hb.beat(db, 'log_inspector', { ok: false, error: err.message }) } catch { /* best effort */ }
-        }
-      }
-      if (due('watchdog', 60, nowMs)) {
-        const notify = (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {})
-        hb.checkHeartbeats(db, { notify })
-        // Separate question, same band: checkHeartbeats asks "is the sidecar
-        // alive", this asks "is every enabled account actually reachable
-        // through it". On 05-08-2026 the first answered yes for twelve hours
-        // while four accounts were unreachable and nothing traded.
-        // NO `?.` — deliberately. An optional call turns "this watchdog is not
-        // wired up" into silence, which is the failure mode this whole check
-        // exists to end (twelve hours of it on 05-08). A rename or a stubbed
-        // deps.heartbeat should throw into the enclosing catch and log
-        // "[fast-monitor] watchdog failed" — loud and findable. checkHeartbeats
-        // above is called the same way.
-        hb.checkAccountAuthorization(db, { notify })
-      }
-    } catch (err) {
-      console.error('[fast-monitor] watchdog failed:', err.message)
-    }
+      // ONE creds read per tick: this was called five times per tick, each
+      // doing several getState reads plus a JSON.parse of the symbol map.
+      const creds = getCreds(db)
+      const tickErr = await runTick(creds, startedAt)
+      const ms = clock() - startedAt
+      lastTick = ms
+      tickSamples.push({ at: startedAt, ms })
+      try {
+        const hb = deps.heartbeat ?? await import('./heartbeat.js')
+        hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null, detail: { ms, skipped } })
+      } catch { /* heartbeat is best-effort */ }
+      skipped = 0
     } finally {
       tickRunning = false
     }
-  // Owner 2026-07-24: default tick 3s (was 30s) so profit-banking and stop
-  // management react inside spike moves; FAST_MONITOR_MS overrides, floored
-  // at 1s to keep broker RPC volume inside the 50 req/s connection budget.
   }, tickMs)
   t.unref?.()
-  return () => clearInterval(t)
+
+  const runBand = deps.runBand ?? ((creds, nowMs) => runProtectionBand(db, creds, { ...deps, due }, nowMs))
+  const b = setInterval(async () => {
+    if (bandRunning) {
+      bandSkipped++
+      if (bandSkipped === 1 || bandSkipped % 10 === 0) console.log(`[fast-monitor] protection band still running — skipped ${bandSkipped} band tick(s)`)
+      return
+    }
+    bandRunning = true
+    const startedAt = clock()
+    let bandErr = null
+    try {
+      const creds = getCreds(db)
+      try { await runBand(creds, startedAt) } catch (err) { bandErr = err; console.error('[fast-monitor] protection band failed:', err.message) }
+      const endedAt = clock()
+      const ms = endedAt - startedAt
+      const overran = bandOverran(ms, bandMs)
+      bandSamples.push({ at: startedAt, ms })
+      if (overran) console.warn(`[fast-monitor] protection band took ${Math.round(ms / 1000)}s — over its ${Math.round(bandMs / 1000)}s cadence`)
+      writeRecord(endedAt, { ms, overran })
+      try {
+        const hb = deps.heartbeat ?? await import('./heartbeat.js')
+        hb.beat(db, 'protection_band', {
+          ok: !bandErr && !overran,
+          error: bandErr ? bandErr.message : overran ? `band took ${Math.round(ms / 1000)}s, over its ${Math.round(bandMs / 1000)}s cadence` : null,
+          detail: { ms, overran, skippedBands: bandSkipped },
+        })
+      } catch { /* heartbeat is best-effort */ }
+      bandSkipped = 0
+    } finally {
+      bandRunning = false
+    }
+  }, bandMs)
+  b.unref?.()
+  return () => { clearInterval(t); clearInterval(b) }
 }

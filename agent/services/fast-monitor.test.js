@@ -199,3 +199,62 @@ test('cadence gate: a fast ticker with no skips does not multiply traffic', () =
   assert.equal(runs(1_000), runs(3_000), 'probe count follows the clock, not the tick rate')
   assert.equal(runs(3_000), 29, 'one hour at 120s, minus the arming interval')
 })
+
+// ---------------------------------------------------------------------------
+// TWO TICKERS (owner § 7,453·C, 08-09-2026): the protection band on its own
+// interval, measured, recorded and beaten as its own controller.
+// ---------------------------------------------------------------------------
+import { initDB, getState } from '../db.js'
+import { startFastMonitor, rollingMax, bandOverran, PASS_RECORD_KEY } from './fast-monitor.js'
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+test('rollingMax keeps the window and reports its maximum; bandOverran is strictly past the cadence', () => {
+  const now = 1_000_000
+  const { kept, max } = rollingMax([{ at: now - 700_000, ms: 90 }, { at: now - 100, ms: 40 }, { at: now, ms: 55 }], now, 600_000)
+  assert.equal(kept.length, 2); assert.equal(max, 55)
+  assert.equal(rollingMax([], now).max, null)
+  assert.equal(bandOverran(60_000, 60_000), false); assert.equal(bandOverran(60_001, 60_000), true)
+})
+
+test('a slow protection band never skips the spike tick; its overrun is recorded and beaten as an error', async () => {
+  const db = initDB(':memory:')
+  const beats = []
+  const hb = { beat: (_db, name, o) => beats.push({ name, ...o }), probeCppExec: async () => {}, checkHeartbeats: () => {}, checkAccountAuthorization: () => {} }
+  let ticks = 0
+  const stop = startFastMonitor(db, () => ({ ready: false }), {
+    tickMs: 5, bandMs: 20, heartbeat: hb,
+    runTick: async () => { ticks++; return null },
+    runBand: () => sleep(60),
+  })
+  await sleep(150)
+  stop()
+  // Timer granularity: a 60ms sleep reads 59ms on Date.now() about one run
+  // in three (CI 08-09, then 5/15 locally), so the bounds are loose — the
+  // claims are "ticks kept running" and "the band outlived its 20ms
+  // cadence", not exact milliseconds.
+  assert.ok(ticks >= 6, `the tick kept running while the band slept 60ms: ${ticks} ticks`)
+  const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.equal(rec.band.overran, true)
+  assert.ok(rec.band.lastMs >= 40, `band measured ${rec.band.lastMs}ms`)
+  assert.ok(rec.band.skippedBands >= 1, 'the band skipped its own firings while running, and said so')
+  assert.equal(rec.band.everyMs, 20); assert.equal(rec.tick.everyMs, 5)
+  assert.ok(rec.tick.max10mMs != null && rec.tick.lastMs != null, 'tick durations are measured too')
+  const pb = beats.filter(b => b.name === 'protection_band')
+  assert.ok(pb.length >= 1, 'the band beats its own controller')
+  assert.equal(pb[0].ok, false); assert.match(pb[0].error, /over its 0s cadence/)
+  assert.ok(beats.some(b => b.name === 'fast_monitor' && b.ok === true && Number.isFinite(b.detail?.ms)), 'the tick beats fast_monitor with its duration')
+})
+
+test('a band inside its cadence beats ok and records overran:false', async () => {
+  const db = initDB(':memory:')
+  const beats = []
+  const hb = { beat: (_db, name, o) => beats.push({ name, ...o }) }
+  const stop = startFastMonitor(db, () => ({ ready: false }), { tickMs: 5, bandMs: 15, heartbeat: hb, runTick: async () => null, runBand: async () => {} })
+  await sleep(60)
+  stop()
+  const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.equal(rec.band.overran, false)
+  const pb = beats.filter(b => b.name === 'protection_band')
+  assert.ok(pb.length >= 1); assert.equal(pb[0].ok, true); assert.equal(pb[0].error, null)
+})

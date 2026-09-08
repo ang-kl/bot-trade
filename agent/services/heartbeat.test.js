@@ -1504,3 +1504,30 @@ test('the three sweeps that ran without a record now beat where they run (wiring
     assert.ok(new RegExp(`hbeat\\(db, '${name}', false`).test(src), `loop.js beats ${name} on the failure path`)
   }
 })
+
+test('order_monitor and pnl_reconcile expect every THIRD loop, like weekend_bank — the reconcile block they beat in', () => {
+  // Measured 08-09-2026: both beat ~3 minutes apart on a 1-minute loop and
+  // flapped stalled/recovered four times in 30 minutes against a 1-loop
+  // expectation. Same block, same multiplier.
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '1')
+  setState(db, 'last_loop_ms', String(210_000))
+  for (const n of ['order_monitor', 'pnl_reconcile', 'weekend_bank']) beat(db, n, { now: T0 })
+  const by = Object.fromEntries(heartbeatView(db, { now: plus(10) }).map(v => [v.name, v]))
+  assert.equal(by.order_monitor.expected_sec, by.weekend_bank.expected_sec)
+  assert.equal(by.pnl_reconcile.expected_sec, by.weekend_bank.expected_sec)
+  assert.equal(CONTROLLERS.order_monitor.loopMultiplier, 3)
+})
+
+test('protection_band declares the pass record as its effect, and a written record is dated', () => {
+  assert.equal(CONTROLLERS.protection_band.effect.key, 'fast_monitor_pass_json')
+  assert.equal(CONTROLLERS.protection_band.effect.kind, 'json')
+  const db = initDB(':memory:')
+  const nowMs = Date.now()
+  assert.equal(effectRecord(db, 'protection_band', { nowMs }).hasRecord, false)
+  setState(db, 'fast_monitor_pass_json', JSON.stringify({ at: new Date(nowMs - 30_000).toISOString(), band: { overran: false } }))
+  const r = effectRecord(db, 'protection_band', { nowMs })
+  assert.equal(r.fresh, true); assert.equal(r.ageSec, 30)
+  setState(db, 'fast_monitor_pass_json', JSON.stringify({ at: new Date(nowMs - 600_000).toISOString() }))
+  assert.equal(effectRecord(db, 'protection_band', { nowMs }).fresh, false, '10 minutes is past the 4-minute limit')
+})

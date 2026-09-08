@@ -169,3 +169,20 @@ test('nothing targetless means nothing happens at all', async () => {
   assert.equal(amend.calls.length, 0)
   assert.equal(getState(db, 'target_restore_attempts_json'), null, 'a no-op sweep must not write state')
 })
+
+test('positions with no target on record are counted in ONE line per sweep, not one line per row per pass', async () => {
+  // Measured 08-09-2026: ten momentum-book rows (no target by design) were
+  // 299 of 1,001 log lines in 30 minutes. The fact is stated once.
+  const db = initDB(':memory:')
+  const rowsById = new Map()
+  const findings = []
+  for (const [i, sym] of ['EURUSD', 'GBPUSD', 'USDJPY'].entries()) {
+    rowsById.set(String(i + 1), { id: i + 1, symbol: sym, side: 'long', entry_price: 1, current_tp: null, account_id: 'A', trade_id: 10 + i })
+    findings.push({ positionId: String(i + 1), symbol: sym, brokerSl: 0.9, source: 'bot' })
+  }
+  const amend = spyAmend()
+  const out = await restoreMissingTargets(db, { accountId: 'A' }, findings, rowsById, { amend: amend.fn })
+  assert.equal(out.restored, 0); assert.equal(amend.calls.length, 0)
+  assert.equal(out.skipped.length, 1, JSON.stringify(out.skipped))
+  assert.match(out.skipped[0], /^3 position\(s\) hold no target on record — nothing to restore \(EURUSD, GBPUSD, USDJPY\)$/)
+})

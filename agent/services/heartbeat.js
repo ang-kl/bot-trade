@@ -37,9 +37,25 @@ import { ctraderEnv } from '../lib/ctrader-env.js'
 export const CONTROLLERS = {
   main_loop:        { label: 'Main loop',              tiedToLoop: true,  factor: 3 },
   fast_monitor:     { label: 'Fast position monitor',  expectedSec: 30,   factor: 10 },
+  // THE 60-SECOND PROTECTION BAND, on its own ticker (owner § 7,453·C,
+  // 08-09-2026). Loss cap, ratchet, trade guards, profit keeper, loss
+  // guardian and the protection audit used to run inside the 3-second tick
+  // behind a once-a-minute gate, so a slow band skipped spike ticks and a
+  // slow spike pass delayed protection. The band now ticks by itself, beats
+  // ok only when it finished inside its 60s, and writes what it measured —
+  // tick and band durations, 10-minute maxima, overrun — as its record. A
+  // band that is running but overrunning is an error here, not a warn:
+  // "protection every minute" is the claim, and a 90s band breaks it.
+  protection_band:  { label: 'Protection band (60s)',  expectedSec: 60,   factor: 4, effect: { key: 'fast_monitor_pass_json', kind: 'json', maxAgeSec: 240 } },
   burn_in:          { label: 'Burn-in engine',         tiedToLoop: true,  factor: 3 },
   pending_orders:   { label: 'Pending-order manager',  tiedToLoop: true,  factor: 3 },
-  order_monitor:    { label: 'Order-fill monitor',     tiedToLoop: true,  factor: 3 },
+  // EVERY THIRD LOOP, not every loop (measured 08-09-2026, § 7,453·C): both
+  // of these beat inside loop.js's reconcile block, gated `loopCount % 3 ===
+  // 0`, so their real cadence is ~3 minutes on a 1-minute loop. Expected as
+  // a single loop with grace 3, the threshold sat exactly on the cadence and
+  // the phase audit flapped stalled/recovered four times in 30 minutes on a
+  // healthy controller. Same fix weekend_bank got for the same block.
+  order_monitor:    { label: 'Order-fill monitor',     tiedToLoop: true,  loopMultiplier: 3, factor: 3 },
   // MOVED OFF THE LOOP (2026-08-04, Operating Goal Plan §70.7). Both of these
   // move stops and close positions, and both used to run inside the 5-minute
   // cycle — so a long scan stopped break-even moves, trailing and profit locks
@@ -111,7 +127,7 @@ export const CONTROLLERS = {
   // invisible until the daily-loss veto fired hours later on a total it could
   // no longer trust — the "silence is not health" shape this repo has now hit
   // four times. Loop-tied because it runs in the reconcile phase.
-  pnl_reconcile: { label: 'P&L reconciliation', tiedToLoop: true, factor: 3 },
+  pnl_reconcile: { label: 'P&L reconciliation', tiedToLoop: true, loopMultiplier: 3, factor: 3 }, // reconcile block, every 3rd loop — see order_monitor
   // The weekend LLM watch is a budgeted sub-phase, and runBudgetedSubPhase
   // beats a sub-phase's name FAILED when it overruns its budget. This name
   // was never registered, so that failed beat landed on a row the panel
