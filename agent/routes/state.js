@@ -2493,6 +2493,29 @@ export default function stateRouter(db) {
     }
   })
 
+  // §7,437·B·3 — every enabled account's daily fundable universe.
+  router.get('/fundable-universe', async (req, res) => {
+    try {
+      const { fundableUniverseReport } = await import('../services/fundable-universe.js')
+      const ids = req.query.accountId ? [String(req.query.accountId)]
+        : db.prepare(`SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id`).all().map(r => String(r.account_id))
+      res.json(fundableUniverseReport(db, ids))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // §7,437·B·6 — each enabled account's declared horizon and family set.
+  router.get('/account-horizons', async (_req, res) => {
+    try {
+      const { horizonsView } = await import('../services/account-horizon.js')
+      const ids = db.prepare(`SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id`).all().map(r => String(r.account_id))
+      res.json(horizonsView(db, ids))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/momentum-account', async (_req, res) => {
     try {
       const { momentumAccountReport } = await import('../services/momentum-account.js')

@@ -69,6 +69,10 @@ export const CONTROLLERS = {
   adaptive_breaker: { label: 'Adaptive breaker',       tiedToLoop: true,  factor: 3 },
   autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3, effect: { key: 'autopilot_last_run_ms', kind: 'ms' } },
   hours_refresh:    { label: 'Market-hours refresh',   expectedSec: 86_400, factor: 2 },
+  // Daily per-account budget planner (§7,437·B·3, 08-09-2026): one account
+  // rebuilt per loop cycle when its record is a day old, so the beat lands
+  // several times a day; the record is what the gates read.
+  fundable_universe: { label: 'Fundable universe (daily)', expectedSec: 86_400, factor: 2, effect: { key: 'fundable_universe_last_json', kind: 'json', maxAgeSec: 30 * 3600 } },
   weekend_bank:     { label: 'Weekend profit bank',    tiedToLoop: true, loopMultiplier: 3, factor: 4 },
   weekend_loss_flag: { label: 'Weekend loss flag',     tiedToLoop: true, loopMultiplier: 3, factor: 4 },
   guardian:         { label: 'Tick guardian',          expectedSec: 30,   factor: 10 },
