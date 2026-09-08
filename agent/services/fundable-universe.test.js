@@ -134,3 +134,28 @@ test('a closed market with a scan price on record is judged at the last scan pri
   assert.equal(rec.rows.XAUUSD.priceSource, 'last_scan'); assert.equal(rec.rows.XAUUSD.verdict, 'unfundable')
   assert.equal(isFundable(db, 'A', 'XAUUSD', { now: T0 + 60_000 }).ok, false)
 })
+
+test('THE 19:14 SGT CASE: a long watchlist is judged in batches across cycles, never holding one loop; judged rows are read while pending ones stay unknown', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'acct:A:account_balance_usd', '1000')
+  const prices = {}
+  for (let i = 0; i < 5; i++) prices[`S${i}USD`] = 1.1
+  writeWatchlist(db, 'A', Object.keys(prices).map(symbol => ({ symbol })))
+  const f = fakes({ prices })
+  const cfg = { ...DEFAULT_RISK_CONFIG, perTradeRiskPct: 0.2 }
+  const r1 = await buildFundableUniverse(db, { accountId: 'A', creds: {}, deps: f, now: T0, config: cfg, maxSymbols: 2 })
+  assert.equal(r1.complete, false); assert.equal(r1.judgedThisCall, 2); assert.equal(r1.remaining, 3)
+  assert.equal(r1.at, null, 'no complete build yet'); assert.equal(fundableDue(db, 'A', T0 + 1000), true, 'continues next cycle')
+  assert.equal(isFundable(db, 'A', 'S4USD', { now: T0 + 1000 }).known, false, 'a pending name is unknown')
+  const r2 = await buildFundableUniverse(db, { accountId: 'A', creds: {}, deps: f, now: T0 + 60_000, config: cfg, maxSymbols: 2 })
+  assert.equal(r2.remaining, 1)
+  const r3 = await buildFundableUniverse(db, { accountId: 'A', creds: {}, deps: f, now: T0 + 120_000, config: cfg, maxSymbols: 2 })
+  assert.equal(r3.complete, true); assert.equal(r3.summary.judged, 5); assert.equal(r3.at, new Date(T0 + 120_000).toISOString())
+  assert.equal(fundableDue(db, 'A', T0 + 130_000), false)
+  assert.equal(JSON.parse(getState(db, FUNDABLE_LAST_KEY)).accounts.A.total, 5, 'the summary is stamped only on completion')
+  // a broker call that hangs is timed out, not waited on
+  const slow = fakes({ prices: { EURUSD: 1.1 } }); slow.volumeMeta = () => new Promise(() => {})
+  const db2 = initDB(':memory:'); setState(db2, 'acct:A:account_balance_usd', '1000'); writeWatchlist(db2, 'A', [{ symbol: 'EURUSD' }])
+  const r4 = await buildFundableUniverse(db2, { accountId: 'A', creds: {}, deps: slow, now: T0, config: cfg, callTimeoutMs: 20 })
+  assert.equal(r4.rows.EURUSD.verdict, 'unknown'); assert.match(r4.rows.EURUSD.reason, /timed out/)
+})
