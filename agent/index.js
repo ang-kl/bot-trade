@@ -319,6 +319,16 @@ try {
   const { ensureAccountRegistry, backfillAccountIds } = await import('./services/account-registry.js')
   const reg = ensureAccountRegistry(db)
   console.log(`[boot] account registry: ${reg.total} account(s), enabled=${reg.enabled ?? 'none'}`)
+  // Owner-declared horizons from the repo (§7,437·B·6): applied here, after
+  // the registry exists, so the gates read them from the first loop.
+  try {
+    const { seedAccountHorizonsFromConfig } = await import('./services/account-horizon.js')
+    const hz = seedAccountHorizonsFromConfig(db, { log: (m) => console.log(m) })
+    if (hz.error) console.error(`[boot] account horizons: ${hz.error}`)
+    else console.log(`[boot] account horizons: ${hz.applied.length} applied, ${hz.unchanged.length} unchanged (config/account-horizons.json)`)
+  } catch (err) {
+    console.error(`[boot] account horizons seed failed (non-fatal): ${err.message}`)
+  }
   const bf = backfillAccountIds(db)
   if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
   // Fold the retired per-account autotrade flags into accounts.mode, so

@@ -1,0 +1,4 @@
+{
+  "_note": "Owner-declared account horizons (§7,437·B·6). Applied at boot under the start-from-stored merge rule: an entry here is the durable declaration for that account; POST /actions/account-horizon changes it live until the next boot re-applies this file. horizon: intraday | swing | position | null; families: subset of mean_reversion, breakout, trend, momentum.",
+  "46979908": { "horizon": "position", "families": ["momentum"], "declaredBy": "owner, 08-09-2026 19:39 SGT (ACCT-DEMO-3)" }
+}
