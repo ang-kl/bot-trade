@@ -7,6 +7,7 @@ import { getState, setState, sweepMonitoredPositionsForAccounts, accountsWithOpe
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
 import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
+import { recordTradePlan } from '../services/trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { noteRiskConfigChanges } from '../services/risk-config-history.js'
@@ -5312,6 +5313,13 @@ export default function actionsRouter(db, deps = {}) {
           synth.invalidation_trigger || analysis.invalidation_trigger || null,
           timeCap, analysis.strategy, structuredLabel,
           accountId != null ? String(accountId) : null)
+        // §7,437·B·4: a manual entry carries a plan too — the analysis's own levels.
+        try {
+          recordTradePlan(db, tradeId, {
+            accountId, symbol: analysis.symbol, side, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
+            entry, sl, tp: tp1, timeCapAt: timeCap, source: 'manual_broker',
+          })
+        } catch (err) { console.warn(`[actions] trade plan not recorded for trade ${tradeId}: ${err.message}`) }
       })()
 
       console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${volLots} @ ${executionPrice || 'mkt'}`)

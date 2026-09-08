@@ -254,6 +254,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
     requestedVolume: opts.requestedVolume ?? null,
     strategy: synth.strategy || null,
+    timeframe: synth.timeframe ?? null, // for the refusal ledger's replay (§7,437·B·2)
     conviction: synth.overall_conviction ?? null,
     // Vol-target size from the momentum-account pass (§7,386·D1) rides the
     // resting limit too — the gate decides whether it is honoured.

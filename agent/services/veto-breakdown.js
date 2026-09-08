@@ -15,7 +15,7 @@
 // normalises to the head token; the newest full string per group rides along
 // as the human-readable example.
 
-function reasonKey(reason) {
+export function reasonKey(reason) {
   const s = String(reason || 'unspecified').trim()
   // Head token: everything before the first ':' or ' — ', with any
   // parenthesised scope kept — "unknown_daily_pnl (account)" and

@@ -399,6 +399,67 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_momentum_book_status ON momentum_book(status, account_id);
 
+  -- §7,437·B·4 (08-09-2026): the plan at entry, scored at close. One row per
+  -- trade, written with the intent row; nothing on trades survives as "what
+  -- we meant" once the fill anchor, the trail and the book have written over
+  -- it. Scored columns fill at close.
+  CREATE TABLE IF NOT EXISTS trade_plans (
+    trade_id         INTEGER PRIMARY KEY,
+    account_id       TEXT,
+    symbol           TEXT NOT NULL,
+    side             TEXT NOT NULL,
+    strategy         TEXT,
+    family           TEXT,
+    timeframe        TEXT,
+    planned_entry    REAL,
+    planned_sl       REAL,
+    planned_tp       REAL,
+    planned_r        REAL,
+    risk_dist        REAL,
+    planned_hold_min INTEGER,
+    exit_rule        TEXT,
+    source           TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    scored_at        TEXT,
+    entry_slippage_r REAL,
+    realised_r       REAL,
+    hold_min         INTEGER,
+    hold_vs_plan     REAL,
+    exit_reason      TEXT,
+    exit_matched     INTEGER,
+    score_note       TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_trade_plans_scored ON trade_plans(scored_at);
+
+  -- §7,437·B·2 (08-09-2026): what each refused opportunity would have done.
+  -- One row per risk_events.opportunity_key, scored against broker bars
+  -- after the setup's horizon elapsed. Kept 180 days — longer than the
+  -- risk_events rows it summarises, which prune at 90.
+  CREATE TABLE IF NOT EXISTS refusal_scores (
+    opportunity_key TEXT PRIMARY KEY,
+    account_id      TEXT,
+    symbol          TEXT NOT NULL,
+    side            TEXT,
+    strategy        TEXT,
+    timeframe       TEXT,
+    reason_key      TEXT,
+    reason          TEXT,
+    entry           REAL,
+    sl              REAL,
+    tp              REAL,
+    first_at        TEXT,
+    last_at         TEXT,
+    refusals        INTEGER,
+    horizon_min     INTEGER,
+    scored_at       TEXT,
+    outcome         TEXT,   -- target | stop | stop_moved | time_cap | ambiguous | truncated | no_bars | unscorable | fetch_failed
+    r_reached       REAL,
+    exit_at         TEXT,
+    bars_used       INTEGER,
+    note            TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_refusal_scores_reason ON refusal_scores(reason_key, scored_at);
+
   -- Account Registry (multi-account migration plan, Phase 1 R1 / milestone
   -- M0). Single source of truth for which cTrader accounts exist and which
   -- may trade. account_id is cTrader's INTERNAL ctidTraderAccountId (the
