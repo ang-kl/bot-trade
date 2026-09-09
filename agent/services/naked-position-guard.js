@@ -203,6 +203,24 @@ const LAST_AUDIT_KEY = 'protection_audit_last_json'
 const LOG_MUTE_MS = Math.max(60_000, Number(process.env.PROTECTION_LOG_MUTE_MS) || 3600_000)
 
 /**
+ * Position ids (strings) held by an open momentum-book row — on one account
+ * when `accountId` is given, across all accounts otherwise (the primary pass
+ * runs with the selected account, the per-account pass with each). 'exit_sent'
+ * counts as held: the book has decided that position's fate. A fresh db with
+ * no table holds nothing.
+ */
+export function bookHeldPositionIds(db, accountId = null) {
+  const held = new Set()
+  try {
+    const rows = accountId != null
+      ? db.prepare(`SELECT position_id FROM momentum_book WHERE account_id = ? AND status IN ('open', 'exit_sent') AND position_id IS NOT NULL`).all(String(accountId))
+      : db.prepare(`SELECT position_id FROM momentum_book WHERE status IN ('open', 'exit_sent') AND position_id IS NOT NULL`).all()
+    for (const r of rows) held.add(String(r.position_id))
+  } catch { /* table absent — nothing held */ }
+  return held
+}
+
+/**
  * Each account is audited against its OWN broker snapshot, so each needs its
  * own record — a single global key would mean whichever account ran last
  * silently overwrote the rest, and the panel would report one account's book
@@ -323,21 +341,38 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       // invented one. And a TP can only ever close in profit, so the worst case
       // is a suboptimal exit, never a loss the position would not otherwise
       // have taken.
+      //
+      // AND NOT THE MOMENTUM BOOK'S ROWS (09-09-2026). A book row exits by the
+      // trail, never by a target — the right tail is the whole edge (plan
+      // principle 2), and a 1.5R floor on a position meant to run for weeks
+      // caps exactly that. Measured: the three 0005.HK rows on ACCT-DEMO-1/2/3
+      // were given a target at 09:36 SGT, six minutes after the HK open put
+      // hourly bars under the suggester, with nothing on stdout to say so.
+      // Same shape as the weekend bank's exemption (#851): the row still
+      // shows in the audit and the alert, it is just never amended here.
+      const bookHeld = bookHeldPositionIds(db, accountId)
       const applied = new Map()
       if (typeof applyTarget === 'function') {
         for (const f of targetDue) {
           if (f.source === 'external') continue
+          if (bookHeld.has(String(f.positionId))) continue
           const s = suggestions.get(f)
           if (!s || !(Number(s.tp) > 0)) continue
           try {
             const r = await applyTarget(f, s)
-            if (r && r.ok) applied.set(f, s)
+            if (r && r.ok) {
+              applied.set(f, s)
+              // The Telegram line was the only record. A target that appears
+              // on a position must be attributable from the log too.
+              console.log(`[protection] ${accountId ?? '?'}: target SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp} (${s.basis})`)
+            }
           } catch { /* a failed amend must not lose the alert — it still tells the owner */ }
         }
       }
       const lines = targetDue.map(f => {
         const s = suggestions.get(f)
         if (applied.has(f)) return `· ${f.symbol} (position ${f.positionId}) — TP SET to ${s.tp} (${s.basis})`
+        if (bookHeld.has(String(f.positionId))) return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target · momentum-book row, exits by trail, left alone`
         return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${f.source === 'external' ? ' · opened outside the bot, left alone' : ''}` +
           (s ? `\n  suggested TP ${s.tp} (${s.basis})` : '')
       })
@@ -346,7 +381,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       // No button for a target already set — offering to do what was just done
       // is how an operator learns to distrust the buttons.
       const buttons = targetDue
-        .filter(f => suggestions.has(f) && !applied.has(f))
+        .filter(f => suggestions.has(f) && !applied.has(f) && !bookHeld.has(String(f.positionId)))
         .map(f => [{ text: `Set TP ${suggestions.get(f).tp} on ${f.symbol}`, callback_data: `prottp|${f.positionId}|${suggestions.get(f).tp}` }])
       try {
         await sendMessage(

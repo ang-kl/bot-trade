@@ -14,7 +14,7 @@ import path from 'node:path'
 import { initDB, getState } from '../db.js'
 import {
   auditProtection, dueForAlert, runProtectionAudit,
-  lastProtectionAudit, recordAuditUnavailable,
+  lastProtectionAudit, recordAuditUnavailable, bookHeldPositionIds,
 } from './naked-position-guard.js'
 
 const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'naked-')), 'agent.db'))
@@ -847,4 +847,93 @@ test('the pre-per-account GLOBAL success record is a fossil once any account has
   await runProtectionAudit(db2, [row({ id: 1, ctrader_position_id: '111', current_sl: 1.5 })],
     [{ positionId: '111', stopLoss: 1.5, takeProfit: 1.4 }], { nowMs: now - 60_000, sendMessage: async () => {} })
   assert.equal(lastProtectionAudit(db2, { nowMs: now }).ageSec, 60)
+})
+
+// ---------------------------------------------------------------------------
+// THE MOMENTUM BOOK'S ROWS ARE NEVER GIVEN A TARGET (09-09-2026)
+//
+// A book row exits by the trail; a 1.5R floor on a position meant to run for
+// weeks caps the right tail the system is built on. Measured: three 0005.HK
+// rows were amended at 09:36 SGT, six minutes after the HK open put hourly
+// bars under the suggester, with nothing on stdout to say so.
+// ---------------------------------------------------------------------------
+
+const bookRow = (db, positionId, accountId = 'A', symbol = '0005.HK', status = 'open') =>
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
+              VALUES (1, ?, ?, ?, 'long', 160, 159.642, '2026-09-08T01:33:00Z', ?)`).run(accountId, symbol, positionId, status)
+
+test('a momentum-book row is reported but NEVER amended, and the alert says why', async () => {
+  const db = initDB(':memory:')
+  bookRow(db, 'P7')
+  const sent = []
+  const applied = []
+  await runProtectionAudit(db, [targetlessRow('P7', '0005.HK')], [targetlessPos('P7', '0005.HK')], {
+    sendMessage: async (m, opts) => { sent.push([m, opts]) },
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 175, basis: '1.5R floor from entry' }),
+    applyTarget: async () => { applied.push('should not happen'); return { ok: true } },
+  })
+  assert.deepEqual(applied, [], 'the book row must not be amended')
+  assert.match(sent[0][0], /0005\.HK .*momentum-book row, exits by trail, left alone/)
+  assert.ok(!/TP SET to/.test(sent[0][0]))
+  assert.ok(!/SET AUTOMATICALLY/.test(sent[0][0]))
+  // No one-tap button either — the button is the same amend by another door.
+  assert.equal(sent[0][1], undefined, 'no Set-TP button for a book row')
+})
+
+test('an exit_sent book row counts as held; a closed one does not', async () => {
+  const db = initDB(':memory:')
+  bookRow(db, 'P8', 'A', 'MSFT.US', 'exit_sent')
+  bookRow(db, 'P9', 'A', 'AAPL.US', 'closed')
+  const applied = []
+  await runProtectionAudit(db, [targetlessRow('P8', 'MSFT.US'), { ...targetlessRow('P9', 'AAPL.US'), id: 2 }],
+    [targetlessPos('P8', 'MSFT.US'), targetlessPos('P9', 'AAPL.US')], {
+      sendMessage: async () => {},
+      accountId: 'A',
+      suggestTarget: async () => ({ tp: 999, basis: 'HVN' }),
+      applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+    })
+  assert.deepEqual(applied, ['P9'], 'only the row the book has let go is fair game')
+})
+
+test('a book row on ANOTHER account does not shield this one', async () => {
+  // The exemption is per account, like the book itself: the same position id
+  // on a different account is a different position.
+  const db = initDB(':memory:')
+  bookRow(db, 'P10', 'B')
+  const applied = []
+  await runProtectionAudit(db, [targetlessRow('P10', '0005.HK')], [targetlessPos('P10', '0005.HK')], {
+    sendMessage: async () => {},
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 175, basis: 'HVN' }),
+    applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+  })
+  assert.deepEqual(applied, ['P10'])
+})
+
+test('bookHeldPositionIds: scoped by account when given, all accounts otherwise', () => {
+  const db = initDB(':memory:')
+  bookRow(db, 'X1', 'A')
+  bookRow(db, 'X2', 'B')
+  assert.deepEqual([...bookHeldPositionIds(db, 'A')], ['X1'])
+  assert.deepEqual([...bookHeldPositionIds(db)].sort(), ['X1', 'X2'])
+})
+
+test('an applied target is written to stdout, not only to Telegram', async () => {
+  // The Telegram line was the only record; the count moved in the Railway log
+  // with no line saying why. A target that appears on a position must be
+  // attributable from the log.
+  const db = initDB(':memory:')
+  const lines = []
+  const orig = console.log
+  console.log = (...a) => { lines.push(a.join(' ')) }
+  try {
+    await runProtectionAudit(db, [targetlessRow('P11', 'USDBRL')], [targetlessPos('P11', 'USDBRL')], {
+      sendMessage: async () => {},
+      accountId: 'A',
+      suggestTarget: async () => ({ tp: 5.4, basis: 'HVN volume node, 2.1R' }),
+      applyTarget: async () => ({ ok: true }),
+    })
+  } finally { console.log = orig }
+  assert.ok(lines.some(l => /\[protection\] A: target SET on USDBRL \(position P11\) — TP 5\.4 \(HVN volume node, 2\.1R\)/.test(l)), lines.join('\n'))
 })
