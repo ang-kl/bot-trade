@@ -266,6 +266,19 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     for (const r of db.prepare(`SELECT symbol FROM momentum_book WHERE status = 'open' AND account_id = ? AND note LIKE 'exit_pending:%'`).all(accountId)) {
       if (!acctExits.has(r.symbol)) acctExits.set(r.symbol, { symbol: r.symbol, retry: true })
     }
+    // And the ranking's LAST WORD (09-09-2026, the LLY.US residue): a row
+    // whose close was refused BEFORE the flag existed carries no flag, and
+    // the cursor never re-reads the exit row. So any open row whose newest
+    // shadow enter/exit row for the symbol says `exit`, written AFTER the
+    // row was entered, is an exit still owed. Rows the shadow never ranked
+    // (adopted names) have no word and are untouched; a re-entry after an
+    // exit has a newer `enter` word, or an entered_at after the exit.
+    const lastWord = db.prepare(`SELECT action, at FROM momentum_shadow WHERE symbol = ? AND action IN ('enter', 'exit') ORDER BY id DESC LIMIT 1`)
+    for (const r of db.prepare(`SELECT b.symbol, b.entered_at FROM momentum_book b LEFT JOIN trades t ON t.id = b.trade_id WHERE b.status = 'open' AND b.account_id = ? AND (t.status IS NULL OR t.status = 'open')`).all(accountId)) {
+      if (acctExits.has(r.symbol)) continue
+      const w = lastWord.get(r.symbol)
+      if (w?.action === 'exit' && String(w.at) > String(r.entered_at || '')) acctExits.set(r.symbol, { symbol: r.symbol, retry: true, owed: true })
+    }
     for (const [symbol] of acctExits) {
       const row = openRow.get(accountId, symbol)
       if (!row) continue
