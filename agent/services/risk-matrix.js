@@ -42,7 +42,7 @@ export const RISK_GROUPS = Object.freeze([
   { id: 'day', label: 'Day limits', keys: [
     'dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'equityStopPct',
     'campaign', 'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'dailyLossTierSmallPct', 'dailyLossTierLargePct',
-    'maxMarginUsagePct', 'marginLevelFloorPct',
+    'maxMarginUsagePct', 'maxPositionHeadroomShare', 'marginLevelFloorPct',
     'marginRateStock', 'marginRateIndex', 'marginRateCommodity', 'marginRateCrypto',
   ] },
   { id: 'size', label: 'Position size', keys: [

@@ -919,6 +919,8 @@ export default function Risk() {
               hint="Daily drawdown at which the loop CLOSES all bot positions and disarms (empty = same as daily loss cap)." recommend="unset — falls back to the daily loss cap above." />
             <Field label={`Max margin usage${mark('maxMarginUsagePct')}`} anchor="maxMarginUsagePct" applied={appliedKeys.has('maxMarginUsagePct')} pct value={risk.maxMarginUsagePct} onChange={v => setRisk(r => ({ ...r, maxMarginUsagePct: v }))}
               hint="Bot's own cap on margin locked as a % of balance — separate from the broker's 50% stop-out." recommend="50% of balance." />
+            <Field label={`Max headroom per position${mark('maxPositionHeadroomShare')}`} anchor="maxPositionHeadroomShare" applied={appliedKeys.has('maxPositionHeadroomShare')} pct value={risk.maxPositionHeadroomShare} onChange={v => setRisk(r => ({ ...r, maxPositionHeadroomShare: v }))}
+              hint="A new position may use at most this share of the margin headroom left under the cap, so one setup cannot fill the whole pool (owner, 09-09-2026). 100% restores fill-to-the-cap." recommend="33% — three or more setups share the cap." />
             {/* MISSING UNTIL 2026-08-04. The reassessment can propose this and
                 the owner can apply it — the 31 Jul run moved it 150 → 200 —
                 but the page had no field for it anywhere, so the value it now
@@ -1022,7 +1024,7 @@ export default function Risk() {
             </div>
             </Advanced>
             <div className="flex items-center gap-2">
-              <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'dailyLossTierSmallPct', 'dailyLossTierLargePct', 'equityStopPct', 'maxMarginUsagePct', 'marginLevelFloorPct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
+              <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'dailyLossTierSmallPct', 'dailyLossTierLargePct', 'equityStopPct', 'maxMarginUsagePct', 'maxPositionHeadroomShare', 'marginLevelFloorPct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
               {/* Migrated from Tune > Risk (UI-6). This resets EVERY key in
                   risk_config_json, not just this card's — it is the only
                   control on the page with that reach, so it confirms first. */}

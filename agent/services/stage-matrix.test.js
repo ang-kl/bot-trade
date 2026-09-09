@@ -314,7 +314,7 @@ test('strategy-pin seed: pins the named strategies ON for that account only, ide
   setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend'])) // rsi2 OFF globally, as in production 09-09
   const dir = mkdtempSync(join(tmpdir(), 'pins-'))
   const file = join(dir, 'strategy-pins.json')
-  writeFileSync(file, JSON.stringify({ 111: ['rsi2_reversion', 'rsi_meanrev', 'not_a_strategy'], abc: ['rsi2_reversion'], 222: 'rsi2_reversion' }))
+  writeFileSync(file, JSON.stringify({ _note: 'the file\'s own note, never an account (09-09-2026)', 111: ['rsi2_reversion', 'rsi_meanrev', 'not_a_strategy'], abc: ['rsi2_reversion'], 222: 'rsi2_reversion' }))
   const lines = []
   const a = seedStrategyPinsFromConfig(db, io, { file, log: (m) => lines.push(m) })
   assert.equal(a.error, null)

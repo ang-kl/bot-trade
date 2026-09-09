@@ -41,6 +41,7 @@ import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pac
 import { accountEconomics } from './config-controller.js'
 import { unitsPerLot as unitsPerLotFromRegistry } from '../lib/lot-size-registry.js'
 import { isMomentumAccount, loadMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './momentum-account.js'
+import { strategyVerdict } from './strategy-verdicts.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
 import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
 
@@ -402,6 +403,15 @@ export const DEFAULT_RISK_CONFIG = {
   // Override via POST /actions/balance { leverage: 500 }.
   leverage: 100,
   maxMarginUsagePct: 0.5,          // Max % of balance locked in margin.
+  // PER-POSITION SHARE OF HEADROOM (owner order 09-09-2026 15:20 SGT,
+  // §7,539·B·1). The shrink-to-fit rule below used to size a new position
+  // to whatever margin was left under the cap — so at 13:54 that day one
+  // 9618.HK short filled every account's remaining pool in a single order
+  // and the cluster refused the next 113 setups. A new position may now use
+  // at most this share of the headroom left, so the cap fills across three
+  // or more setups instead of one. Same cap, same per-trade risk, no extra
+  // leverage; 1 restores the old fill-to-the-cap behaviour.
+  maxPositionHeadroomShare: 1 / 3,
   // PER-CLASS MARGIN RATES (owner "build it", 03-09-2026). The account
   // leverage above is an FX number. Brokers margin share CFDs, indices,
   // commodities and crypto at their own rates whatever the account leverage
@@ -1585,6 +1595,25 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     return veto(`symbol_blocked ${proposal.symbol}`, checks, proposal)
   }
 
+  // ---- 5b. THE 30-CLOSE VERDICT, both directions (owner 09-09-2026,
+  // §7,539·B·2). A hand-pinned strategy is judged on its own closes on this
+  // account: under the sample it trades at the exploration scale, a paying
+  // record earns the full budget, a losing one is refused here until its
+  // record recovers. Not pinned → out of scope (the evidence gate already
+  // judged it on its record, or it is the momentum book's own). Ahead of the
+  // R:R and expectancy clauses on purpose: a record this rule turns off is
+  // named as such, not as a ratio that happens to fail on the same closes.
+  const verdict = strategyVerdict(db, { strategy: proposal.strategy, accountId: acct })
+  if (verdict.state !== 'n/a') {
+    checks.strategy_verdict = { state: verdict.state, riskScale: verdict.riskScale, closes: verdict.closes, profitFactor: verdict.profitFactor }
+    if (verdict.state === 'off') {
+      return veto(
+        `strategy_verdict_off: ${proposal.strategy} on …${String(acct).slice(-4)} — ${verdict.reason} — pinned, refused here by its own record until it recovers`,
+        checks, proposal,
+      )
+    }
+  }
+
   // ---- 6. R:R floor -------------------------------------------------------
   // PR-C earned-floor admit (set inside the gate below): non-null when this
   // proposal trades below HARD_MIN_RR on measured evidence; sizing then
@@ -1802,7 +1831,10 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     // 1: 0.5) — the admitted population is unproven BY CONSTRUCTION (it is
     // the trades the old gate refused), so it pays reduced risk until the
     // pre-registered 30-close verdict says otherwise.
-    const efScale = earnedFloor?.riskScale ?? 1
+    // The verdict's scale (§7,539·B·2) combines by the smaller of the two,
+    // never the product: an earned-floor admit on a pending pin is one
+    // half-risk trade, not a quarter-risk one.
+    const efScale = Math.min(earnedFloor?.riskScale ?? 1, verdict.state !== 'n/a' ? verdict.riskScale : 1)
     const effRiskPct = (budget / balance) * efScale
     // VOL-TARGET SIZING (owner 07-09-2026, §7,386·D1): on the momentum
     // account a tsmom proposal carries its own size, computed by the
@@ -1911,6 +1943,33 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
         `insufficient_margin total=${(usedMargin + marginRequired).toFixed(2)} (used=${usedMargin.toFixed(2)} + new=${marginRequired.toFixed(2)}) cap=${marginCap.toFixed(2)} leverage=${leverage} · no headroom left to shrink into`,
         checks, proposal,
       )
+    }
+
+    // PER-POSITION SHARE (§7,539·B·1): a new position may take at most this
+    // share of what is left, so one setup cannot fill the whole pool.
+    // Not on a vol-target size: the momentum account's daily pass already
+    // splits its equity across maxPositions slots, and that size IS the
+    // allocation (§7,386·D1) — the share exists for risk-budget sizing that
+    // would otherwise grow to fill the pool.
+    const volTargetHere = proposal.sizing === 'vol_target' && Number.isFinite(Number(proposal.sizedVolume)) && Number(proposal.sizedVolume) > 0
+    const share = volTargetHere && momentumAcct && proposal.strategy === MOMENTUM_STRATEGY ? 1 : Number(config.maxPositionHeadroomShare)
+    const shareCap = Number.isFinite(share) && share > 0 && share < 1 ? headroom * share : headroom
+    if (shareCap < headroom) checks.margin_headroom_share = { share: Number(share.toFixed(4)), capUsd: Number(shareCap.toFixed(2)) }
+    if (marginRequired > shareCap && shareCap < headroom) {
+      const shrunk = Math.floor(volume * (shareCap / marginRequired) * 100) / 100
+      if (shrunk < config.minLotSize) {
+        checks.margin_required_usd = Number(marginRequired.toFixed(2))
+        checks.margin_total_usd = Number((usedMargin + marginRequired).toFixed(2))
+        return veto(
+          `insufficient_margin share: new=${marginRequired.toFixed(2)} > ${(share * 100).toFixed(0)}% of headroom ${headroom.toFixed(2)} (=${shareCap.toFixed(2)}) leverage=${leverage} · shrunk_to=${shrunk} below min_lot=${config.minLotSize}`,
+          checks, proposal,
+        )
+      }
+      const before = volume
+      volume = shrunk
+      ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates, brokerPerLot, marginRate))
+      checks.margin_shrink = { from: before, to: volume, reason: 'headroom_share' }
+      sizingNote = sizingNote ? `${sizingNote} · shrunk_for_share=${before}->${volume}` : `shrunk_for_share=${before}->${volume}`
     }
 
     if (marginRequired > headroom) {

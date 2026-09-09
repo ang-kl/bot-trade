@@ -349,6 +349,17 @@ try {
   } catch (err) {
     console.error(`[boot] strategy pins seed failed (non-fatal): ${err.message}`)
   }
+  // Owner-declared watchlist additions from the repo (§7,533·B / §7,539·B·3):
+  // appended to the global list and to every enabled account's own list,
+  // never removed.
+  try {
+    const { seedWatchlistAdditionsFromConfig } = await import('./services/watchlists.js')
+    const wa = seedWatchlistAdditionsFromConfig(db, { log: (m) => console.log(m) })
+    if (wa.error) console.error(`[boot] watchlist additions: ${wa.error}`)
+    else console.log(`[boot] watchlist additions: ${wa.added} added across ${wa.lists} list(s), ${wa.present} already present (config/watchlist-additions.json)`)
+  } catch (err) {
+    console.error(`[boot] watchlist additions seed failed (non-fatal): ${err.message}`)
+  }
   const bf = backfillAccountIds(db)
   if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
   // Fold the retired per-account autotrade flags into accounts.mode, so
