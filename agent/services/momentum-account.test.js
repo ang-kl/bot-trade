@@ -100,6 +100,7 @@ function fakes({ fill = true, equity = 100_000 } = {}) {
       atrOf: (bars) => { let s = 0; for (let i = bars.length - 14; i < bars.length; i++) s += bars[i].h - bars[i].l; return s / 14 },
       mayTrade: () => ({ ok: true, item: null }),
       close: async (_c, args) => { calls.close.push(args); return {} },
+      positionVolume: async () => 500_000,
       amend: async () => ({}),
       phasesOn: () => true,
       autoTrade: async (db, symbol, synth, _w, acct) => {
@@ -170,7 +171,7 @@ test('the daily pass: not due → nothing; due → the shadow\'s tradable longs 
   assert.equal(next.ran, true)
   assert.equal(next.exits, 1)
   assert.equal(next.entries, 0)
-  assert.deepEqual(f.calls.close.map(c => c.positionId), [`pos-NATGAS-${MOM}`])
+  assert.deepEqual(f.calls.close, [{ positionId: `pos-NATGAS-${MOM}`, volume: 500_000 }], 'the daily-pass exit carries the broker volume (09-09-2026)')
   assert.equal(db.prepare(`SELECT status FROM momentum_book WHERE symbol = 'NATGAS'`).get().status, 'exit_sent')
   const rep = momentumAccountReport(db)
   assert.equal(rep.config.accountId, MOM)

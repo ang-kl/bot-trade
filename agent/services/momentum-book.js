@@ -29,6 +29,7 @@ import { armedTradeKeys } from './stage-matrix.js'
 import { loadShadowState } from './momentum-shadow.js'
 import { roundToDigits } from './trade-guard.js'
 import { isMomentumAccount, runMomentumAccountPass } from './momentum-account.js'
+import { bookCloseVolume } from './book-close-volume.js'
 
 export const TSMOM_STRATEGY = 'tsmom_long'
 // A held name with no position is re-proposed at most this often per account.
@@ -257,16 +258,32 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       continue
     }
 
-    // EXITS first: the ranking says the name left the band.
-    for (const [symbol] of exits) {
+    // EXITS first: the ranking says the name left the band. The shadow rows
+    // are read once through the cursor, so a close that FAILED (09-09-2026:
+    // LLY.US, volume missing) is flagged on the row and retried every pass
+    // until it goes — an exit the ranking called is not dropped on an error.
+    const acctExits = new Map(exits)
+    for (const r of db.prepare(`SELECT symbol FROM momentum_book WHERE status = 'open' AND account_id = ? AND note LIKE 'exit_pending:%'`).all(accountId)) {
+      if (!acctExits.has(r.symbol)) acctExits.set(r.symbol, { symbol: r.symbol, retry: true })
+    }
+    for (const [symbol] of acctExits) {
       const row = openRow.get(accountId, symbol)
       if (!row) continue
       try {
-        if (row.position_id && deps.close) await deps.close(creds, { positionId: row.position_id })
+        if (row.position_id && deps.close) {
+          // The close needs a volume (09-09-2026): broker position first,
+          // trade lots × lot size second; none → not sent, row stays open.
+          const volume = await bookCloseVolume(db, creds, row, deps)
+          if (volume == null) throw new Error('unknown volume — close not sent')
+          await deps.close(creds, { positionId: row.position_id, volume })
+        }
         db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
         summary.exits++
         log(`momentum book: rank exit ${symbol} on …${accountId.slice(-4)}`)
-      } catch (err) { summary.skipped.push(`${accountId} ${symbol}: close failed — ${err.message}`) }
+      } catch (err) {
+        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run(`exit_pending: ${String(err.message).slice(0, 160)}`, row.id)
+        summary.skipped.push(`${accountId} ${symbol}: close failed — ${err.message}`)
+      }
     }
 
 

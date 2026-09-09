@@ -3577,6 +3577,9 @@ async function runLoop(db) {
             // than the symbol allows. Cached per process in lot-sizing.
             digitsFor: async (creds, symbolId) => (await (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)).digits,
             close: (creds, args) => exec.closePosition(creds, args),
+            // The broker's volume for a position (09-09-2026): a close without
+            // one is refused by cTrader (LLY.US rank exit, 17:00 SGT).
+            positionVolume: async (creds, positionId) => brokerPositionVolume((await exec.reconcile(creds)).position || [], positionId),
             phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade,
             mayTrade: (accountId, symbol) => accountMayTrade(db, accountId, symbol),
             // The scan's own symbols: the row-cursor accounts keep this
