@@ -41,6 +41,13 @@ export const DEFAULT_MOMENTUM_ACCOUNT = Object.freeze({
   maxPositions: 8,          // the vol target is split evenly across this many slots
   dailyRunAfterUtc: '21:05', // one pass per UTC day, after the NY close (20:00) and the FX day close (21:00)
   cadence: 'daily',         // 'daily' | 'loop' (loop = every book pass, for tests and the owner's override)
+  // ONE SYSTEM PER ACCOUNT was the 07-09 rule (§7,386·D1 principle 5): the
+  // risk gate refused every non-tsmom proposal on the momentum account.
+  // Owner, 09-09-2026 13:35 SGT: "all accounts are consider as cluster,
+  // don't make momentum as one it is opportunitistics" — the account keeps
+  // its daily momentum pass and its vol-target sizing, and trades the rest
+  // of the stack alongside. `exclusive: true` restores the 07-09 rule.
+  exclusive: false,
 })
 
 const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d)
@@ -55,6 +62,7 @@ export function momentumAccountConfig(raw) {
     maxPositions: Math.round(clamp(r.maxPositions, 1, 50, d.maxPositions)),
     dailyRunAfterUtc: hhmm,
     cadence: r.cadence === 'loop' ? 'loop' : 'daily',
+    exclusive: r.exclusive === true,
   }
 }
 
@@ -80,7 +88,7 @@ export function seedMomentumAccountFromConfig(db, { file = null, log = () => {} 
   if (!cfg || typeof cfg !== 'object') return { applied: false, effective: null, error: 'momentum-account.json is not an object' }
   const stored = loadMomentumAccount(db)
   const patch = {}
-  for (const k of ['accountId', 'volTargetPct', 'maxPositions', 'dailyRunAfterUtc', 'cadence']) if (k in cfg) patch[k] = cfg[k]
+  for (const k of ['accountId', 'volTargetPct', 'maxPositions', 'dailyRunAfterUtc', 'cadence', 'exclusive']) if (k in cfg) patch[k] = cfg[k]
   const next = momentumAccountConfig({ ...stored, ...patch })
   const same = JSON.stringify(next) === JSON.stringify(stored)
   if (!same) {

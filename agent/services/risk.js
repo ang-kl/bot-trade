@@ -40,7 +40,7 @@ import { loadFxRates } from './fx-rates.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 import { accountEconomics } from './config-controller.js'
 import { unitsPerLot as unitsPerLotFromRegistry } from '../lib/lot-size-registry.js'
-import { isMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './momentum-account.js'
+import { isMomentumAccount, loadMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './momentum-account.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
 import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
 
@@ -1100,9 +1100,16 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // proposal from any other strategy is refused here, by rule, so the
   // account's record is the momentum system's record and no intraday setup
   // can share its budget or its report.
+  //
+  // ONLY WHILE THE ACCOUNT IS DECLARED EXCLUSIVE (owner, 09-09-2026 13:35
+  // SGT: "all accounts are consider as cluster, don't make momentum as one
+  // it is opportunitistics"). The default is now open: the account keeps
+  // its daily pass and vol-target sizing for tsmom and trades the rest of
+  // the stack like every other account. `exclusive: true` in
+  // momentum_account_json restores the 07-09 rule unchanged.
   const momentumAcct = isMomentumAccount(db, acct)
   checks.momentum_account = momentumAcct
-  if (momentumAcct && proposal.strategy !== MOMENTUM_STRATEGY) {
+  if (momentumAcct && proposal.strategy !== MOMENTUM_STRATEGY && loadMomentumAccount(db).exclusive) {
     return veto(`momentum_account_only: ${proposal.strategy || 'unlabelled'} may not dispatch on the momentum account (…${String(acct).slice(-4)} trades ${MOMENTUM_STRATEGY} only)`, checks, proposal)
   }
 
