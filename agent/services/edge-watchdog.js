@@ -153,13 +153,23 @@ export function runEdgeWatchdog(db, { notify } = {}) {
       // last one armed, so no separate "actually armed" pre-check is needed —
       // but only a disarm that CHANGED something is an action worth stamping,
       // logging or waking the owner for.
-      const scopes = disarmStrategyEverywhere(db, io, key, { neverZero: false })
+      //
+      // HAND-PINNED DEMO ARMS ARE HELD (09-09-2026), the breaker's 03-09 rule
+      // applied here too. Measured: the cluster rule (#868) pinned every
+      // strategy on every account at 13:49 SGT; this watchdog unpinned
+      // fib_618_fade and fib_confluence everywhere at 13:54 on their POOLED
+      // record, and the boot seed re-pinned them at 16:08 — two evaluators
+      // overriding each other on the owner's word. A demo pin is judged
+      // per account by the 30-close verdict (strategy-verdicts.js) instead;
+      // the global list and live scopes are still disarmed here.
+      const scopes = disarmStrategyEverywhere(db, io, key, { neverZero: false, exemptHandPinnedDemo: true })
+      const heldPinnedDemo = [...(scopes.held || [])]
       if (scopes.length === 0) continue
       setState(db, seenKey, String(e.newestId))
       // Tell the autopilot: a live disarm holds for the cool-off, and the
       // divergence tracker sees who ended the arm (02-09-2026).
       try { noteLiveDisarm(db, key, 'watchdog') } catch { /* never undoes the disarm */ }
-      const action = { strategy: key, did: 'disarmed_no_edge', scopes, expectancy: e.expectancy, profitFactor: pf, winRate: e.winRate, trades: e.trades, net: e.net }
+      const action = { strategy: key, did: 'disarmed_no_edge', scopes: [...scopes], heldPinnedDemo, expectancy: e.expectancy, profitFactor: pf, winRate: e.winRate, trades: e.trades, net: e.net }
       actions.push(action)
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
