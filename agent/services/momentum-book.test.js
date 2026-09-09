@@ -57,8 +57,9 @@ function fresh() {
   setState(db, 'symbol_id_map', JSON.stringify({ BTCUSD: 1, NATGAS: 2 }))
   return db
 }
-function shadowRow(db, { symbol, action, side = 'long', rank = 1, conviction = 9, price = 100 }) {
-  return db.prepare(`INSERT INTO momentum_shadow (symbol, action, side, rank_pct, conviction, price, timeframe, universe, applied, at) VALUES (?, ?, ?, ?, ?, ?, '1d', 20, 0, datetime('now'))`).run(symbol, action, side, rank, conviction, price).lastInsertRowid
+function shadowRow(db, { symbol, action, side = 'long', rank = 1, conviction = 9, price = 100, at = new Date().toISOString() }) {
+  // `at` is ISO, as the shadow writes it (momentum-shadow.js: new Date(now).toISOString()).
+  return db.prepare(`INSERT INTO momentum_shadow (symbol, action, side, rank_pct, conviction, price, timeframe, universe, applied, at) VALUES (?, ?, ?, ?, ?, ?, '1d', 20, 0, ?)`).run(symbol, action, side, rank, conviction, price, at).lastInsertRowid
 }
 function fakes({ fill = true } = {}) {
   const calls = { autoTrade: [], amend: [], close: [] }
@@ -458,4 +459,42 @@ test('wiring pin: both book exit paths resolve the volume before the close', () 
     assert.match(src, /const volume = await bookCloseVolume\(db, creds, row, deps\)[\s\S]{0,200}?if \(volume == null\) throw new Error\('unknown volume — close not sent'\)[\s\S]{0,120}?deps\.close\(creds, \{ positionId: row\.position_id, volume \}\)/, `${f} sends the close with its volume`)
     assert.ok(!/deps\.close\(creds, \{ positionId: row\.position_id \}\)/.test(src), `${f} has no volume-less close left`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// The ranking's last word (09-09-2026, the LLY.US residue): an exit refused
+// BEFORE the exit_pending flag existed carries no flag and the cursor never
+// re-reads the exit row. The newest shadow enter/exit word for the symbol,
+// written after the row was entered, is an exit still owed.
+// ---------------------------------------------------------------------------
+test('an open row whose newest shadow word is exit (after entry) is exited even with no flag; adopted rows the shadow never ranked and re-entries are untouched', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', at: new Date(500).toISOString() })
+  const f = fakes()
+  let closeOk = false
+  f.deps.close = async (_c, args) => { if (!closeOk) throw new Error('old code: nothing sent'); f.calls.close.push(args); return {} }
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 1_000 })
+  assert.equal(db.prepare(`SELECT status FROM momentum_book WHERE symbol = 'BTCUSD'`).get().status, 'open')
+  // The exit row is read once through the cursor; the close fails; then the
+  // flag is wiped to mimic the pre-#872 code that never wrote one.
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit', at: new Date(5_000).toISOString() })
+  shadowRow(db, { symbol: 'NATGAS', action: 'exit', at: new Date(2_000).toISOString() }) // consumed by this pass too: no NATGAS row yet
+  let r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 6_000 })
+  assert.equal(r.exits, 0)
+  db.prepare(`UPDATE momentum_book SET note = 'rank entry' WHERE symbol = 'BTCUSD'`).run()
+  // An adopted row the shadow never ranked, and a name re-entered AFTER its exit word.
+  const adopted = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES ('MSFT.US','BUY','open',500,463,NULL,?,?,?,'reconciler_adopted','pos-msft',datetime('now'))`)
+    .run(TSMOM_STRATEGY, TSMOM_STRATEGY, DEMO).lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, account_id, status, source) VALUES ('MSFT.US', ?, 'long', 500, 463, ?, 'active', 'autopilot')`).run(adopted, DEMO)
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note) VALUES (NULL, ?, 'NATGAS', 'pos-natgas', 'long', 3, 2.7, 0.1, 0.9, ?, 'open', 're-entered after the exit word')`).run(DEMO, new Date(7_000).toISOString())
+  closeOk = true
+  r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 8_000 })
+  assert.equal(r.exits, 1, JSON.stringify(r.skipped))
+  assert.deepEqual(f.calls.close, [{ positionId: `pos-BTCUSD-${DEMO}`, volume: 1000 }], 'the owed BTCUSD exit goes; nothing else is closed')
+  const st = Object.fromEntries(db.prepare(`SELECT symbol, status FROM momentum_book`).all().map(x => [x.symbol, x.status]))
+  assert.equal(st.BTCUSD, 'exit_sent')
+  assert.equal(st['MSFT.US'], 'open', 'adopted, never ranked by the shadow: untouched')
+  assert.equal(st.NATGAS, 'open', 'entered after its exit word: untouched')
 })
