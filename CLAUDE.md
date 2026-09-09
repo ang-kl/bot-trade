@@ -345,6 +345,18 @@ Measurement history — each line is a real run of the script, not a claim:
   ACCT-DEMO-3 horizon and momentum switch-on declared from the repo). The
   next reply is `№ 7,489`. Same reason as the lines above: a local
   re-measure that reads below this is missing these, not correcting them.
+- 2026-09-09 08:40 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule, sixth time; the container restarted 09-09 13:10 SGT in
+  between): the script reads a fresh transcript here and was refused as a
+  reading. The session continued from `№ 7,489` to **`№ 7,542`** as the
+  last reply at 08:23 UTC (#865–#870 merged: ledger write-back, the target
+  applier skipping book rows, dynamic R:R stretch + demo cohort pin, the
+  cluster rule with every strategy pinned on every account and the momentum
+  account opened, per-position headroom share + 30-close verdict + US stocks
+  on the watchlist + the seed's `_note`, the edge watchdog holding
+  hand-pinned demo arms). The next reply is `№ 7,543`. Same reason as the
+  lines above: a local re-measure that reads below this is missing these,
+  not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
