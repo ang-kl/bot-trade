@@ -127,19 +127,36 @@ test('acts once per newest trade (no re-disarm every cycle)', () => {
   assert.equal(second.actions.length, 0, 'deduped on newest trade id')
 })
 
-test('reaches a strategy armed ONLY by a per-account pin, and disarms the pin', () => {
+test('reaches a strategy armed ONLY by a per-account pin: a LIVE pin is disarmed, a hand-pinned DEMO arm is held (09-09-2026)', () => {
   // 2026-08-31: globally-disarmed strategies kept proposing for days from
   // accounts whose overlay pins held them armed — and the watchdog never even
-  // evaluated them, because its candidate set was the global list.
+  // evaluated them, because its candidate set was the global list. The live
+  // half of that lesson stands. 09-09-2026: the cluster rule pinned every
+  // strategy on every demo account at 13:49 SGT and this watchdog unpinned
+  // two of them at 13:54 on their pooled record; the boot seed re-pinned them
+  // at 16:08. A demo hand pin is the owner's word, judged per account by the
+  // 30-close verdict — the watchdog records it as held and leaves it.
   const db = initDB(':memory:')
   db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('222','2',1,1,'active')`).run()
   arm(db, ['vwap_trend']) // rsi_meanrev globally OFF
   setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111' }, { getState, setState })
+  setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '222' }, { getState, setState })
   seed(db, 'rsi_meanrev', Array.from({ length: 16 }, () => -5))
   const r = runEdgeWatchdog(db, {})
   assert.equal(r.actions.length, 1, 'pin-armed strategy must be a candidate')
-  assert.deepEqual(r.actions[0].scopes, ['111'])
-  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), false, 'account pin disarmed')
+  assert.deepEqual(r.actions[0].scopes, ['222'], 'the live pin is disarmed')
+  assert.deepEqual(r.actions[0].heldPinnedDemo, ['111'], 'the demo hand pin is held and named')
+  assert.equal(armedTradeKeys(db, getState, '222').has('rsi_meanrev'), false, 'live account pin disarmed')
+  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), true, 'demo hand pin still armed')
+  // A demo pin alone: nothing to disarm, no action, nothing stamped.
+  const only = initDB(':memory:')
+  only.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
+  arm(only, ['vwap_trend'])
+  setStage(only, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111' }, { getState, setState })
+  seed(only, 'rsi_meanrev', Array.from({ length: 16 }, () => -5))
+  assert.equal(runEdgeWatchdog(only, {}).actions.length, 0)
+  assert.equal(armedTradeKeys(only, getState, '111').has('rsi_meanrev'), true)
 })
 
 test('off switch fully disables enforcement', () => {
