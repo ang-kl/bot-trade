@@ -25,6 +25,7 @@
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { lotsToVolume } from '../lib/lot-sizing.js'
+import { bookCloseVolume } from './book-close-volume.js'
 import { notionalUsd } from '../lib/contracts.js'
 import { loadShadowState } from './momentum-shadow.js'
 import { assetClassOf } from './strategy-asset-cross.js'
@@ -292,7 +293,12 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
     if (wantedSyms.has(String(row.symbol).toUpperCase())) continue
     if (held[row.symbol]?.side === 'long' || held[String(row.symbol).toUpperCase()]?.side === 'long') continue // still held, only untradable now — keep
     try {
-      if (row.position_id && deps.close) await deps.close(creds, { positionId: row.position_id })
+      if (row.position_id && deps.close) {
+        // Same rule as the row-cursor exit (09-09-2026): no volume, no close.
+        const volume = await bookCloseVolume(db, creds, row, deps)
+        if (volume == null) throw new Error('unknown volume — close not sent')
+        await deps.close(creds, { positionId: row.position_id, volume })
+      }
       db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
       summary.exits++
       log(`momentum account: rank exit ${row.symbol} on …${accountId.slice(-4)}`)

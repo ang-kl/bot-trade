@@ -16,6 +16,7 @@ import {
   atrOf, trailStop, buildEntrySynth, momentumBookConfig, runMomentumBook, momentumBookReport,
   MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_STATE_KEY, TSMOM_STRATEGY, DEFAULT_MOMENTUM_BOOK, RECONCILE_EVERY_MS,
 } from './momentum-book.js'
+import { bookCloseVolume } from './book-close-volume.js'
 import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 
 const DEMO = '111', LIVE = '222'
@@ -70,6 +71,7 @@ function fakes({ fill = true } = {}) {
       spot: async () => ({ bid: 102.9, ask: 103 }),
       amend: async (_c, args) => { calls.amend.push(args); return {} },
       close: async (_c, args) => { calls.close.push(args); return {} },
+      positionVolume: async () => 1000,
       phasesOn: () => true,
       mayTrade: () => ({ ok: true, item: null }),
       autoTrade: async (db, symbol, synth, _w, acct) => {
@@ -196,6 +198,7 @@ test('a shadow exit closes the position and marks the row; the trail ratchets th
   assert.equal(r.exits, 1)
   assert.equal(f.calls.close.length, 1)
   assert.equal(f.calls.close[0].positionId, `pos-BTCUSD-${DEMO}`)
+  assert.equal(f.calls.close[0].volume, 1000, 'the close carries the broker volume — cTrader refuses one without (LLY.US, 09-09-2026)')
   assert.equal(db.prepare(`SELECT status, note FROM momentum_book`).get().status, 'exit_sent')
   // The reconciler closes the trade; the next pass closes the row and the report reads it.
   db.prepare(`UPDATE trades SET status = 'closed', net_pnl = 250, closed_at = datetime('now')`).run()
@@ -218,6 +221,7 @@ test('wiring pins: the loop runs the book after the shadow with the real autoTra
   assert.ok(block.includes('autoTrade,'))
   assert.ok(block.includes('amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: null })'), 'the loop states the book holds no target on every amend')
   assert.ok(block.includes('close: (creds, args) => exec.closePosition(creds, args)'))
+  assert.ok(block.includes('positionVolume: async (creds, positionId) => brokerPositionVolume((await exec.reconcile(creds)).position || [], positionId)'), 'the loop hands the book the broker volume for its closes')
   assert.ok(block.includes('phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade'))
   assert.ok(block.includes("digitsFor: async (creds, symbolId) => (await (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)).digits"), 'the loop hands the book the symbol digits the trailed stop is rounded to')
   assert.ok(src.includes("synth.marketOnly !== true && !fresh"), 'a marketOnly synth never rests as a limit')
@@ -399,4 +403,59 @@ test('THE 21:32 SGT CASE: the momentum account adopts its filled tsmom_long trad
   const row = db.prepare(`SELECT * FROM momentum_book WHERE trade_id = ?`).get(tid)
   assert.ok(row && row.status === 'open' && row.position_id === 'pos-msft', JSON.stringify(row))
   assert.equal(db.prepare(`SELECT paused, current_tp FROM monitored_positions WHERE trade_id = ?`).get(tid).paused, 1)
+})
+
+// ---------------------------------------------------------------------------
+// The close's volume (09-09-2026 17:00 SGT): LLY.US rank exit on ACCT-DEMO-1
+// failed `Message missing required fields: volume`. Broker position first,
+// trade lots × lot size second, else the close is NOT sent and the row stays
+// open with the reason in the summary.
+// ---------------------------------------------------------------------------
+test('bookCloseVolume: broker volume first, trade lots × lot size second, null when neither can say', async () => {
+  const db = fresh()
+  const tid = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, label_strategy, strategy, account_id, origin, ctrader_position_id, volume, opened_at) VALUES ('LLY.US','BUY','open',700,650,?,?,?,'bot_market_dispatch','pos-lly',0.5,datetime('now'))`)
+    .run(TSMOM_STRATEGY, TSMOM_STRATEGY, DEMO).lastInsertRowid
+  const row = { trade_id: tid, position_id: 'pos-lly', symbol: 'LLY.US' }
+  const lotDeps = { symbolIdFor: async () => 7, volumeMeta: async () => ({ lotSize: 100 }) }
+  assert.equal(await bookCloseVolume(db, {}, row, { positionVolume: async () => 60, ...lotDeps }), 60, 'the broker is the authority')
+  assert.equal(await bookCloseVolume(db, {}, row, { positionVolume: async () => null, ...lotDeps }), 50, '0.5 lots × 100 = 50 units')
+  assert.equal(await bookCloseVolume(db, {}, row, { positionVolume: async () => { throw new Error('502') }, ...lotDeps }), 50, 'a broker read failure falls through to the trade row')
+  assert.equal(await bookCloseVolume(db, {}, row, { positionVolume: async () => null }), null, 'no lot meta → nothing to send')
+  assert.equal(await bookCloseVolume(db, {}, { ...row, trade_id: null }, { positionVolume: async () => null, ...lotDeps }), null, 'no trade row → nothing to send')
+  db.prepare(`UPDATE trades SET volume = NULL WHERE id = ?`).run(tid)
+  assert.equal(await bookCloseVolume(db, {}, row, { positionVolume: async () => null, ...lotDeps }), null, 'a trade with no lots → nothing to send')
+})
+
+test('a rank exit with no resolvable volume is NOT sent: the row stays open, the summary says why, and the next pass retries once the broker answers', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  let brokerVolume = null
+  f.deps.positionVolume = async () => brokerVolume
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 1_000 })
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM momentum_book WHERE status = 'open'`).get().n, 1)
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit' })
+  let r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(r.exits, 0)
+  assert.equal(f.calls.close.length, 0, 'no volume, no close')
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'open', 'the row is not marked exit_sent for a close that never went')
+  assert.match(db.prepare(`SELECT note FROM momentum_book`).get().note, /^exit_pending: unknown volume/, 'the refused exit is flagged on the row so the next pass retries it (the shadow cursor never re-reads the exit row)')
+  assert.ok(r.skipped.some(x => /BTCUSD: close failed — unknown volume/.test(x)), JSON.stringify(r.skipped))
+  // The broker answers next pass: the close goes with its volume.
+  brokerVolume = 250
+  r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 3_000 })
+  assert.equal(r.exits, 1)
+  assert.deepEqual(f.calls.close, [{ positionId: `pos-BTCUSD-${DEMO}`, volume: 250 }])
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'exit_sent')
+})
+
+test('wiring pin: both book exit paths resolve the volume before the close', () => {
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  for (const f of ['./momentum-book.js', './momentum-account.js']) {
+    const src = strip(readFileSync(new URL(f, import.meta.url), 'utf8'))
+    assert.match(src, /const volume = await bookCloseVolume\(db, creds, row, deps\)[\s\S]{0,200}?if \(volume == null\) throw new Error\('unknown volume — close not sent'\)[\s\S]{0,120}?deps\.close\(creds, \{ positionId: row\.position_id, volume \}\)/, `${f} sends the close with its volume`)
+    assert.ok(!/deps\.close\(creds, \{ positionId: row\.position_id \}\)/.test(src), `${f} has no volume-less close left`)
+  }
 })
