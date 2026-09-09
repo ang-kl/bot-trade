@@ -14,6 +14,7 @@
 // universe would be a much bigger event than a UI feature.
 //
 // Key: acct:<id>:autopilot_symbols_json  (see account-registry.acctKey)
+import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { getEnabledAccounts } from './account-registry.js'
 
@@ -188,6 +189,57 @@ export function copyWatchlist(db, { from, to, symbols = null, mode = 'merge' } =
  * drop-in for the old global read.
  */
 export function readTradableUnion(db, accountIds = null) {
+  return readTradableUnionImpl(db, accountIds)
+}
+
+/**
+ * OWNER-DECLARED ADDITIONS FROM THE REPO (owner order 09-09-2026 15:20 SGT,
+ * §7,533·B / §7,539·B·3: "more instruments, especially the US stocks"). The
+ * watchlist routes need the bearer token, lost on 07-09, so the additions
+ * live in agent/config/watchlist-additions.json — { group, symbols: [...] } —
+ * and are applied at boot: every symbol missing from the GLOBAL list, and
+ * from each enabled account's OWN list where one exists (an own list ends
+ * inheritance, so a name added only globally would never reach that
+ * account), is appended enabled. Nothing is removed, re-ordered or
+ * re-configured; a symbol already present keeps its settings. A legacy-only
+ * global list is migrated to the current key by the write. Idempotent.
+ *
+ * @returns {{added:number, present:number, lists:number, error:string|null, detail:Record<string,string[]>}}
+ */
+export function seedWatchlistAdditionsFromConfig(db, { file = null, log = () => {} } = {}) {
+  const out = { added: 0, present: 0, lists: 0, error: null, detail: {} }
+  let cfg = null
+  try {
+    cfg = JSON.parse(readFileSync(file || new URL('../config/watchlist-additions.json', import.meta.url), 'utf8'))
+  } catch (err) {
+    out.error = `watchlist-additions.json unreadable: ${err.message}`
+    return out
+  }
+  const symbols = Array.isArray(cfg?.symbols) ? [...new Set(cfg.symbols.map(s => String(s || '').toUpperCase().trim()).filter(Boolean))] : null
+  if (!symbols) { out.error = 'watchlist-additions.json has no symbols array'; return out }
+  const group = typeof cfg.group === 'string' && cfg.group.trim() ? cfg.group.trim() : null
+  const targets = [{ key: WATCHLIST_KEY, name: 'global', items: readWatchlist(db, null) }]
+  let accounts = []
+  try { accounts = getEnabledAccounts(db).map(a => String(a.account_id)) } catch { accounts = [] }
+  for (const id of accounts) {
+    if (hasOwnWatchlist(db, id)) targets.push({ key: acctWatchlistKey(id), name: id, items: readWatchlist(db, id) })
+  }
+  for (const t of targets) {
+    out.lists++
+    const have = new Set(t.items.map(i => i.symbol))
+    const missing = symbols.filter(s => !have.has(s))
+    out.present += symbols.length - missing.length
+    if (!missing.length) continue
+    const next = [...t.items, ...missing.map(symbol => ({ symbol, enabled: true, ...(group ? { group } : {}) }))]
+    setState(db, t.key, JSON.stringify(next))
+    out.added += missing.length
+    out.detail[t.name] = missing
+    log(`[boot] watchlist additions (${t.name === 'global' ? 'global' : `…${t.name.slice(-4)}`}): +${missing.length} — ${missing.join(', ')} (from config/watchlist-additions.json)`)
+  }
+  return out
+}
+
+function readTradableUnionImpl(db, accountIds) {
   let ids = accountIds
   if (!ids) {
     try {

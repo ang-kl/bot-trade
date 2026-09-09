@@ -120,7 +120,9 @@ const NO_SYMBOL_COOLDOWN = { ...DEFAULT_RISK_CONFIG, symbolCooldownMinutes: 0 }
 // shares, indices, commodities and crypto. The older margin and notional
 // tests below pin the LEVERAGE arithmetic on XAUUSD/JPN225 on purpose, so
 // they opt out of the rates; the rate path has its own tests further down.
-const LEVERAGE_ONLY = { marginRateStock: null, marginRateIndex: null, marginRateCommodity: null, marginRateCrypto: null }
+// maxPositionHeadroomShare 1 = the pre-§7,539 fill-to-the-cap shrink these
+// tests pin; the per-position share has its own tests further down.
+const LEVERAGE_ONLY = { marginRateStock: null, marginRateIndex: null, marginRateCommodity: null, marginRateCrypto: null, maxPositionHeadroomShare: 1 }
 
 // Currency legs -----------------------------------------------------------
 
@@ -1594,7 +1596,7 @@ test('2.6.1 — under the CURRENT risk cap the ceiling sits exactly on the bound
   const res = evaluateTrade(db, {
     symbol: 'JPN225', side: 'long', entry: 38_000, sl: 37_943, tp1: 38_199.5,
     requestedVolume: null, strategy: 'trend', conviction: 8,
-  }, NO_SYMBOL_COOLDOWN)
+  }, { ...NO_SYMBOL_COOLDOWN, maxPositionHeadroomShare: 1 }) // the notional shape, not the §7,539 share
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
   assert.ok(Math.abs(res.checks.notional_x_balance - 10) < 0.05,
     `expected the boundary, got ${res.checks.notional_x_balance}x`)
@@ -1877,4 +1879,47 @@ test('the portfolio estimate applies the class rate to open positions too', () =
   const lev = portfolioMarginStatus(db, { ...DEFAULT_RISK_CONFIG, ...LEVERAGE_ONLY }, { balance: 10_000, leverage: 100 })
   assert.equal(rated.source, 'estimate')
   assert.ok(rated.usedMargin > lev.usedMargin * 15, `rated ${rated.usedMargin} vs leverage ${lev.usedMargin}`)
+})
+
+// ---------------------------------------------------------------------------
+// PER-POSITION SHARE OF HEADROOM (owner order 09-09-2026 15:20 SGT,
+// §7,539·B·1). Measured that day at 13:54: one 9618.HK short, shrunk to fit
+// the remaining headroom, filled every account's margin pool in a single
+// order and the cluster refused the next 113 setups.
+// ---------------------------------------------------------------------------
+
+test('margin gate — SHARE: a new position takes at most a third of the headroom left, so one setup cannot fill the pool', () => {
+  const db = freshDB()
+  setBalance(db, 10000)  // cap $5000
+  setLeverage(db, 100)
+  // XAUUSD short 1.0 lot @ 2400 → $2400 used → headroom $2600; a third = $866.67.
+  insertOpenPositionSized(db, { symbol: 'XAUUSD', side: 'short', volume: 1.0, entry: 2400 })
+  // EURUSD at 5% risk on a 30-pip stop sizes to ~1.6 lots → ~$1800 margin:
+  // under the headroom, over the share → shrunk to a third of what is left.
+  const share = { ...NO_SYMBOL_COOLDOWN, ...LEVERAGE_ONLY, perTradeRiskPct: 5, maxRiskCapPct: 5, maxPositionHeadroomShare: 1 / 3 }
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: null }), share)
+  assert.equal(res.approved, true, `expected a share-shrunk approval, got veto: ${res.veto_reason}`)
+  const headroom = res.checks.margin_cap_usd - res.checks.margin_used_usd
+  assert.ok(Math.abs(res.checks.margin_headroom_share.capUsd - headroom / 3) < 0.02, `share cap ${res.checks.margin_headroom_share.capUsd} vs headroom/3 ${headroom / 3}`)
+  const from = res.checks.risk_based_volume
+  assert.ok(from >= 1.2, `the risk budget sizes well over the share: ${from} lots`)
+  const expectLots = Math.floor(from * (res.checks.margin_headroom_share.capUsd / (from * 1100)) * 100) / 100
+  assert.equal(res.adjusted_volume, expectLots)
+  assert.ok(res.adjusted_volume < from, `a real shrink: ${res.adjusted_volume} from ${from}`)
+  assert.deepEqual(res.checks.margin_shrink, { from, to: expectLots, reason: 'headroom_share' })
+  assert.ok(res.checks.margin_required_usd <= res.checks.margin_headroom_share.capUsd + 0.01, 'the shrunk position fits under the share')
+  assert.match(res.sizing_note, /shrunk_for_share=/)
+  // The default config carries the share; share 1 restores the old fill-to-the-cap.
+  assert.ok(Math.abs(DEFAULT_RISK_CONFIG.maxPositionHeadroomShare - 1 / 3) < 1e-9)
+  // (This fixture's tight stop sizes to ~167 lots, so with share 1 the old
+  // fill-to-the-cap shrink lands at the whole headroom and the notional
+  // ceiling then vetoes — the shrink checks are what this compares.)
+  const whole = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: null }), { ...share, maxPositionHeadroomShare: 1 })
+  assert.equal(whole.checks.margin_headroom_share, undefined)
+  assert.equal(whole.checks.margin_shrink?.reason, 'margin_headroom', 'share 1: the old fill-to-the-cap shrink')
+  assert.ok(Math.abs(whole.checks.margin_shrink.to / 3 - res.adjusted_volume) <= 0.02, `a third of the whole headroom: ${res.adjusted_volume} vs ${whole.checks.margin_shrink.to}/3`)
+  // A share so small that the shrunk lot falls under the minimum vetoes with the share named.
+  const tiny = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: null }), { ...share, maxPositionHeadroomShare: 0.001 })
+  assert.equal(tiny.approved, false)
+  assert.match(tiny.veto_reason, /^insufficient_margin share: /)
 })

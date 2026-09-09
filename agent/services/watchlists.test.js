@@ -257,3 +257,54 @@ test('the per-account key is the acct: convention the rest of the codebase uses'
   assert.ok(getState(d, 'acct:43097342:autopilot_symbols_json'), 'written under the scoped key')
   assert.equal(getState(d, 'autopilot_symbols_json'), null, 'and never into the global one')
 })
+
+// ---------------------------------------------------------------------------
+// OWNER-DECLARED ADDITIONS FROM THE REPO (owner order 09-09-2026 15:20 SGT,
+// §7,539·B·3): US stocks appended at boot, to the global list and to every
+// enabled account's own list, never removed.
+// ---------------------------------------------------------------------------
+import { seedWatchlistAdditionsFromConfig } from './watchlists.js'
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+test('watchlist-additions seed: appends missing symbols to the global list and to each account\'s own list, keeps settings, idempotent, never removes', () => {
+  const d = db()
+  setState(d, 'autopilot_symbols_json', JSON.stringify([{ symbol: 'EURUSD', enabled: true, maxVolume: 0.5 }, { symbol: 'NVDA.US', enabled: false, group: 'Mine' }]))
+  upsertAccount(d, { accountId: '111' }); setAccountEnabled(d, '111', true, 'active')
+  upsertAccount(d, { accountId: '222' }); setAccountEnabled(d, '222', true, 'active')
+  writeWatchlist(d, '222', [{ symbol: 'GBPUSD' }]) // own list: must receive the additions too
+  const dir = mkdtempSync(join(tmpdir(), 'wl-'))
+  const file = join(dir, 'watchlist-additions.json')
+  writeFileSync(file, JSON.stringify({ _note: 'x', group: 'US Stocks', symbols: ['nvda.us', 'V.US', 'V.US', 'MA.US'] }))
+  const lines = []
+  const a = seedWatchlistAdditionsFromConfig(d, { file, log: (m) => lines.push(m) })
+  assert.equal(a.error, null)
+  assert.equal(a.lists, 2, 'the global list and 222\'s own; 111 inherits the global')
+  assert.equal(a.added, 5); assert.equal(a.present, 1)
+  assert.deepEqual(a.detail, { global: ['V.US', 'MA.US'], 222: ['NVDA.US', 'V.US', 'MA.US'] })
+  const g = readWatchlist(d, null)
+  assert.deepEqual(g.map(i => i.symbol), ['EURUSD', 'NVDA.US', 'V.US', 'MA.US'], 'appended in order, nothing removed')
+  assert.deepEqual(g[1], { symbol: 'NVDA.US', enabled: false, group: 'Mine' }, 'a present symbol keeps its settings')
+  assert.deepEqual(g[2], { symbol: 'V.US', enabled: true, group: 'US Stocks' })
+  assert.deepEqual(readWatchlist(d, '222').map(i => i.symbol), ['GBPUSD', 'NVDA.US', 'V.US', 'MA.US'])
+  assert.deepEqual(readWatchlist(d, '111').map(i => i.symbol), ['EURUSD', 'NVDA.US', 'V.US', 'MA.US'], '111 reads the global')
+  assert.equal(lines.length, 2)
+  // Idempotent.
+  const b = seedWatchlistAdditionsFromConfig(d, { file })
+  assert.equal(b.added, 0); assert.equal(b.present, 6)
+  // Missing or malformed file: reports, changes nothing.
+  assert.match(seedWatchlistAdditionsFromConfig(d, { file: join(dir, 'missing.json') }).error, /unreadable/)
+  writeFileSync(file, '{}')
+  assert.equal(seedWatchlistAdditionsFromConfig(d, { file }).error, 'watchlist-additions.json has no symbols array')
+})
+
+test('watchlist-additions seed: the checked-in file parses, names US stocks with the broker suffix, and index.js applies it after the strategy pins', () => {
+  const cfg = JSON.parse(readFileSync(new URL('../config/watchlist-additions.json', import.meta.url), 'utf8'))
+  assert.ok(Array.isArray(cfg.symbols) && cfg.symbols.length >= 9)
+  for (const s of cfg.symbols) assert.match(s, /^[A-Z]+\.US$/, s)
+  assert.equal(new Set(cfg.symbols).size, cfg.symbols.length, 'no duplicates')
+  for (const s of ['NVDA.US', 'GOOGL.US', 'NFLX.US', 'COST.US', 'V.US', 'MA.US', 'UNH.US', 'XOM.US', 'WMT.US']) assert.ok(cfg.symbols.includes(s), s)
+  const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log[\s\S]{0,700}?seedWatchlistAdditionsFromConfig\(db, \{ log/, 'the boot seed runs after the strategy pins')
+})

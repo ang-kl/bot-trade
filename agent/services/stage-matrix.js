@@ -463,6 +463,7 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) { out.error = 'strategy-pins.json is not an object'; return out }
   const { getState, setState } = io
   for (const [accountId, keys] of Object.entries(cfg)) {
+    if (accountId.startsWith('_')) continue // the file's own notes, not an account
     if (!/^[0-9]+$/.test(accountId) || !Array.isArray(keys)) { out.skipped.push(`${accountId}: malformed`); continue }
     for (const key of keys) {
       if (!STRATEGY_KEYS.includes(key)) { out.skipped.push(`${accountId}: unknown strategy '${key}'`); continue }

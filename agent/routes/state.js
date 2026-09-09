@@ -2442,6 +2442,17 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/strategy-verdicts — the 30-close verdict per hand-pinned
+  // strategy per account (§7,539·B·2): pending / full / half / off.
+  router.get('/strategy-verdicts', async (_req, res) => {
+    try {
+      const { strategyVerdictsView } = await import('../services/strategy-verdicts.js')
+      res.json(strategyVerdictsView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/momentum-book — the long-only TS momentum book: config, open
   // positions with their trailing stops, and the closed record.
   router.get('/momentum-book', async (_req, res) => {
