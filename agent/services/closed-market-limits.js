@@ -287,6 +287,12 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   const riskResult = risk.evaluateTrade(db, proposal, riskCfg)
   const riskEventId = risk.persistRiskEvent(db, proposal, riskResult) // §70.9 lineage
   if (!riskResult.approved) return { skipped: 'risk_veto', reason: riskResult.veto_reason }
+  // STRETCHED TARGET (§7,522·B): the resting limit carries the bracket the
+  // gate admitted, not the one the signal proposed — the payload, the
+  // pending_orders row and the notice all read synth.tp1 below.
+  if (riskResult.target_override?.tp1 != null) {
+    synth = { ...synth, tp1: riskResult.target_override.tp1 }
+  }
 
   const volLots = riskResult.adjusted_volume
   let sized, digits = 5

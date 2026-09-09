@@ -25,6 +25,7 @@
 // scans every conviction and only the trade column bites.
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from 'node:fs'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from './strategies.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
@@ -435,6 +436,44 @@ export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exempt
   }
   if (exemptHandPinnedDemo) changed.held = held
   return changed
+}
+
+/**
+ * OWNER-DECLARED HAND PINS FROM THE REPO (owner order 09-09-2026, §7,522·B·2:
+ * the rsi2_reversion / rsi_meanrev demo cohort). The pinning route
+ * (POST /actions/stage-matrix with an accountId) needs the bearer token, lost
+ * on 07-09, so the declaration lives in agent/config/strategy-pins.json —
+ * { "<accountId>": ["strategy", …] } — and is applied at boot, same rule as
+ * the horizon and momentum-account seeds: idempotent, an explicit true cell
+ * already present is left alone, a route call changes it live until the next
+ * boot re-applies the file. A pin is the owner's word: the evidence gate
+ * admits it (isHandPinned) and the adaptive breaker holds it on demo.
+ * Unknown strategies and malformed entries are skipped and named; a missing
+ * or unreadable file reports and changes nothing.
+ */
+export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {} } = {}) {
+  const out = { applied: [], unchanged: [], skipped: [], error: null }
+  let cfg = null
+  try {
+    cfg = JSON.parse(readFileSync(file || new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
+  } catch (err) {
+    out.error = `strategy-pins.json unreadable: ${err.message}`
+    return out
+  }
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) { out.error = 'strategy-pins.json is not an object'; return out }
+  const { getState, setState } = io
+  for (const [accountId, keys] of Object.entries(cfg)) {
+    if (!/^[0-9]+$/.test(accountId) || !Array.isArray(keys)) { out.skipped.push(`${accountId}: malformed`); continue }
+    for (const key of keys) {
+      if (!STRATEGY_KEYS.includes(key)) { out.skipped.push(`${accountId}: unknown strategy '${key}'`); continue }
+      const tag = `${accountId}:${key}`
+      if (isHandPinned(db, getState, accountId, key)) { out.unchanged.push(tag); continue }
+      setStage(db, { kind: 'strategy', key, stage: 'trade', on: true, accountId }, { getState, setState })
+      out.applied.push(tag)
+      log(`[boot] strategy pin …${accountId.slice(-4)}: ${key} ON for Auto Trade & Open (from config/strategy-pins.json)`)
+    }
+  }
+  return out
 }
 
 /** Registry entries the SCAN column arms (wide by default — all strategies). */

@@ -453,7 +453,8 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
   let totalWorking = db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE status = 'working'`).get()?.n || 0
   if (totalWorking < maxTotal) notePendingDecision(db, creds?.accountId, 'cap', null)
 
-  for (const { symbol, timeframe, signal } of setups) {
+  for (const { symbol, timeframe, signal: setupSignal } of setups) {
+    let signal = setupSignal // reassigned only by the §7,522·B target stretch below
     if (totalWorking >= maxTotal) {
       summary.skipped.push(`${symbol}: pending cap — ${totalWorking}/${maxTotal} resting orders already working`)
       notePendingDecision(db, creds?.accountId, 'cap', 'pending_cap', `pending cap ${totalWorking}/${maxTotal} — new setups refused until the book drains`)
@@ -502,6 +503,11 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     if (!riskResult.approved) {
       summary.skipped.push(`${symbol}: risk veto — ${riskResult.veto_reason}`)
       continue
+    }
+    // STRETCHED TARGET (§7,522·B): the order, its row and its notice read
+    // signal.tp1 below; the gate's admitted bracket lands there once.
+    if (riskResult.target_override?.tp1 != null) {
+      signal = { ...signal, tp1: riskResult.target_override.tp1 }
     }
     const volLots = riskResult.adjusted_volume ?? proposal.requestedVolume ?? riskCfg.minLotSize ?? 0.01
 

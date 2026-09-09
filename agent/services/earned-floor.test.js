@@ -516,3 +516,147 @@ test('earnedFloorReport splits the prior population (with PF) and the accounts, 
   assert.equal(r.byAccount.unscoped.closed, 1, 'legacy rows are counted, never dropped')
   assert.equal(r.byAccount.unscoped.viaPrior.closed, 0)
 })
+
+// ---------------------------------------------------------------------------
+// TARGET STRETCH (owner order 09-09-2026 11:05 SGT, §7,522·B: "R:R should be
+// dynamic. i don't like opportunities to be thrown away"). A known win rate
+// that does not pay at the proposed ratio no longer vetoes the setup: the
+// gate moves the target to the ratio that clears minE, under a cap, and the
+// order paths carry that target. No record, live scope while staged, or a
+// ratio the win rate cannot pay under the cap → the veto exactly as before.
+// ---------------------------------------------------------------------------
+import { earnedFloorWinRate, earnedFloorStretch, rrNeededFor } from './earned-floor.js'
+
+test('rrNeededFor: the ratio E clears minE at, rounded up so the rounded figure still clears', () => {
+  // W 48%, minE 0.15 → (0.52 + 0.15) / 0.48 = 1.3958… → 1.40 (E = 0.152)
+  assert.equal(rrNeededFor(0.48, 0.15), 1.4)
+  assert.ok(0.48 * 1.4 - 0.52 > 0.15)
+  // W 52.5% → 1.1905 → 1.20 (E = 0.155, strictly above the bar)
+  assert.equal(rrNeededFor(0.525, 0.15), 1.2)
+  // W 50% → exactly 1.30 would give E 0.15, not strictly above → 1.31
+  assert.equal(rrNeededFor(0.5, 0.15), 1.31)
+  // W 30% → 2.8333 → 2.84
+  assert.equal(rrNeededFor(0.3, 0.15), 2.84)
+  assert.equal(rrNeededFor(0, 0.15), null)
+  assert.equal(rrNeededFor(1, 0.15), null)
+})
+
+test('earnedFloorWinRate is the verdict\'s own win-rate side: same refusals, same measured and prior readings', () => {
+  const db = withAccounts(initDB(':memory:'))
+  assert.equal(earnedFloorWinRate(db, { strategy: null, accountId: DEMO }).reason, 'unlabelled_proposal')
+  assert.equal(earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: '999' }).reason, 'unattributable_account')
+  assert.equal(earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: LIVE }).reason, 'live_scope')
+  assert.match(earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: DEMO }).reason, /thin_sample/)
+  seedRecord(db, 'vwap_trend', 20, 70)
+  const m = earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: DEMO })
+  assert.equal(m.ok, true); assert.equal(m.via, 'measured'); assert.equal(m.winRate, 70); assert.equal(m.W, 0.7); assert.equal(m.trades, 20)
+  setState(db, 'autopilot_strategy_prior_json', PRIOR_60)
+  seedRecord(db, 'rsi2_reversion', 7, 28.6)
+  const p = earnedFloorWinRate(db, { strategy: 'rsi2_reversion', accountId: DEMO })
+  assert.equal(p.ok, true); assert.equal(p.via, 'prior'); assert.equal(p.winRate, 52); assert.equal(p.prior.liveTrades, 7)
+  // The verdict built on it reads exactly as before.
+  const v = earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO })
+  assert.equal(v.ok, true); assert.equal(v.e, 0.559); assert.equal(v.winRate, 52); assert.equal(v.trades, 7)
+})
+
+test('stretch: 48% prior at a 1.2R proposal → target moved to 1.40R (E 0.152) at half risk; a paying ratio is not_needed; the cap refuses', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ rsi2_reversion: { winRatePct: 48, trades: 900, combos: 40 } }))
+  const st = earnedFloorStretch(db, { strategy: 'rsi2_reversion', rr: 1.2, accountId: DEMO })
+  assert.equal(st.ok, true, st.reason)
+  assert.equal(st.from, 1.2); assert.equal(st.to, 1.4); assert.equal(st.e, 0.152)
+  assert.equal(st.via, 'prior'); assert.equal(st.winRate, 48); assert.equal(st.riskScale, 0.5)
+  // A ratio the win rate already pays at needs no stretch.
+  const nn = earnedFloorStretch(db, { strategy: 'rsi2_reversion', rr: 1.6, accountId: DEMO })
+  assert.equal(nn.ok, false); assert.equal(nn.reason, 'not_needed'); assert.equal(nn.to, 1.4)
+  // 30% win needs 2.84R — over the 2.0 cap: refused, with the figures.
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ ema_pullback: { winRatePct: 30, trades: 900, combos: 40 } }))
+  const cap = earnedFloorStretch(db, { strategy: 'ema_pullback', rr: 2, accountId: DEMO })
+  assert.equal(cap.ok, false); assert.match(cap.reason, /stretch_over_cap: 30% win needs 2\.84R for 0\.15R, cap 2R/)
+  // Raise the cap and the same setup stretches.
+  setState(db, 'earned_floor_json', JSON.stringify({ maxStretchRr: 2.9 }))
+  assert.equal(earnedFloorStretch(db, { strategy: 'ema_pullback', rr: 2, accountId: DEMO }).to, 2.84)
+  // Switched off → nothing stretches; the cap is clamped to the 3.0 band.
+  setState(db, 'earned_floor_json', JSON.stringify({ stretch: false, maxStretchRr: 9 }))
+  assert.equal(earnedFloorStretch(db, { strategy: 'rsi2_reversion', rr: 1.2, accountId: DEMO }).reason, 'stretch_off')
+  assert.equal(loadEarnedFloor(db).maxStretchRr, EARNED_FLOOR_RR_BAND)
+  assert.equal(loadEarnedFloor(db).stretch, false)
+  // No record at all, or a live scope: the win-rate side's refusal, never a stretch.
+  setState(db, 'earned_floor_json', JSON.stringify({}))
+  assert.match(earnedFloorStretch(db, { strategy: 'vwap_trend', rr: 1.2, accountId: DEMO }).reason, /thin_sample/)
+  assert.equal(earnedFloorStretch(db, { strategy: 'rsi2_reversion', rr: 1.2, accountId: LIVE }).reason, 'live_scope')
+})
+
+test('gate: a 1.2R rsi2 proposal on demo with a 48% prior is ADMITTED at a 1.40R target — target_override carries the new tp1, checks say stretchedFrom', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ rsi2_reversion: { winRatePct: 48, trades: 900, combos: 40 } }))
+  armBalance(db, DEMO, 10_000)
+  // long: entry 1.1000, sl 1.0970 (30 pips), tp1 1.1036 (1.2R)
+  const prop = { symbol: 'EURUSD', side: 'long', entry: 1.1, sl: 1.097, tp1: 1.1036, requestedVolume: null, strategy: 'rsi2_reversion', conviction: 8, accountId: DEMO }
+  const res = evaluateTrade(db, prop)
+  assert.equal(res.approved, true, `expected a stretched admit, got: ${res.veto_reason}`)
+  assert.deepEqual(res.target_override, { tp1: 1.1042, rr: 1.4, from: 1.2 })
+  assert.equal(res.checks.earned_floor.stretchedFrom, 1.2)
+  assert.equal(res.checks.earned_floor.rr, 1.4)
+  assert.equal(res.checks.earned_floor.tp1, 1.1042)
+  assert.equal(res.checks.earned_floor.via, 'prior')
+  assert.equal(res.checks.earned_floor.riskScale, 0.5)
+  assert.equal(res.checks.earned_floor_denied, undefined, 'the denial is withdrawn once the stretch admits')
+  // short mirrors: entry 1.1000, sl 1.1030, tp1 1.0964 → target 1.0958
+  const short = evaluateTrade(db, { ...prop, side: 'short', sl: 1.103, tp1: 1.0964 })
+  assert.equal(short.approved, true, short.veto_reason)
+  assert.equal(short.target_override.tp1, 1.0958)
+  // A ratio the prior already pays at (1.6R) admits WITHOUT a stretch: no override.
+  const paying = evaluateTrade(db, { ...prop, tp1: 1.1048 })
+  assert.equal(paying.approved, true, paying.veto_reason)
+  assert.equal(paying.target_override, undefined)
+  assert.equal(paying.checks.earned_floor.stretchedFrom, undefined)
+  // The report splits the stretched population out of the cohort.
+  persistRiskEvent(db, prop, res)
+  persistRiskEvent(db, { ...prop, tp1: 1.1048 }, paying)
+  const rep = earnedFloorReport(db)
+  assert.equal(rep.stretched.admittedApprovals, 1)
+  // Same symbol, side and strategy → one distinct opportunity, two approval events.
+  assert.equal(rep.admittedApprovals, 1, 'stretched admits are part of the pre-registered cohort')
+  assert.equal(rep.admitEvents, 2)
+})
+
+test('gate: the stretch is a door only for a known win rate — no record, live scope, over the cap, or stretch off all veto bad_rr as before', () => {
+  const db = withAccounts(initDB(':memory:'))
+  armBalance(db, DEMO, 10_000); armBalance(db, LIVE, 10_000)
+  const prop = { symbol: 'EURUSD', side: 'long', entry: 1.1, sl: 1.097, tp1: 1.1036, requestedVolume: null, strategy: 'rsi2_reversion', conviction: 8, accountId: DEMO }
+  // No prior, no closes → thin sample → bad_rr, and the stretch denial names it.
+  const none = evaluateTrade(db, prop)
+  assert.equal(none.approved, false); assert.match(none.veto_reason, /^bad_rr 1\.20<3/)
+  assert.match(none.checks.earned_floor_stretch_denied, /thin_sample/)
+  assert.equal(none.target_override, undefined)
+  // Prior present, live account → live_scope.
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ rsi2_reversion: { winRatePct: 48, trades: 900, combos: 40 }, ema_pullback: { winRatePct: 30, trades: 900, combos: 40 } }))
+  const live = evaluateTrade(db, { ...prop, accountId: LIVE })
+  assert.equal(live.approved, false); assert.match(live.veto_reason, /^bad_rr/)
+  // 30% needs 2.84R > the 2.0 cap → bad_rr, denial says why.
+  const capped = evaluateTrade(db, { ...prop, strategy: 'ema_pullback', tp1: 1.106 })
+  assert.equal(capped.approved, false); assert.match(capped.veto_reason, /^bad_rr 2\.00<3/)
+  assert.match(capped.checks.earned_floor_stretch_denied, /stretch_over_cap/)
+  // Stretch off → the pre-§7,522 behaviour: bad_rr, no stretch key at all.
+  setState(db, 'earned_floor_json', JSON.stringify({ stretch: false }))
+  const off = evaluateTrade(db, prop)
+  assert.equal(off.approved, false); assert.match(off.veto_reason, /^bad_rr 1\.20<3/)
+  assert.equal(off.checks.earned_floor_stretch_denied, undefined)
+  assert.match(off.checks.earned_floor_denied, /prior expectancy/)
+})
+
+test('wiring pins: the three order paths apply target_override to the target they send', () => {
+  const strip = (p) => readFileSync(new URL(p, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const loop = strip('../loop.js')
+  const at = loop.slice(loop.indexOf('export async function autoTrade('))
+  assert.match(at, /riskResult\.target_override\?\.tp1 != null[\s\S]{0,400}?synth = \{ \.\.\.synth, tp1: riskResult\.target_override\.tp1/, 'autoTrade rewrites synth.tp1 from the override')
+  const cml = strip('./closed-market-limits.js')
+  assert.match(cml, /riskResult\.target_override\?\.tp1 != null[\s\S]{0,200}?synth = \{ \.\.\.synth, tp1: riskResult\.target_override\.tp1 \}/, 'closed-market limit carries the override')
+  const po = strip('./pending-orders.js')
+  assert.match(po, /riskResult\.target_override\?\.tp1 != null[\s\S]{0,200}?signal = \{ \.\.\.signal, tp1: riskResult\.target_override\.tp1 \}/, 'pending order carries the override')
+  assert.match(po, /let signal = setupSignal/, 'signal is reassignable — a const from the for-of destructure would throw at the first stretch')
+  // The gate returns the override only on a stretch.
+  const risk = strip('./risk.js')
+  assert.match(risk, /earnedFloor\?\.stretchedFrom != null[\s\S]{0,200}?target_override: \{ tp1: earnedFloor\.tp1, rr: earnedFloor\.rr, from: earnedFloor\.stretchedFrom \}/)
+})

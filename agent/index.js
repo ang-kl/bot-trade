@@ -339,6 +339,16 @@ try {
   } catch (err) {
     console.error(`[boot] momentum account seed failed (non-fatal): ${err.message}`)
   }
+  // Owner-declared strategy pins from the repo (§7,522·B·2), same reason and
+  // same rule as the two seeds above.
+  try {
+    const { seedStrategyPinsFromConfig } = await import('./services/stage-matrix.js')
+    const sp = seedStrategyPinsFromConfig(db, { getState, setState }, { log: (m) => console.log(m) })
+    if (sp.error) console.error(`[boot] strategy pins: ${sp.error}`)
+    else console.log(`[boot] strategy pins: ${sp.applied.length} applied, ${sp.unchanged.length} unchanged${sp.skipped.length ? `, skipped: ${sp.skipped.join('; ')}` : ''} (config/strategy-pins.json)`)
+  } catch (err) {
+    console.error(`[boot] strategy pins seed failed (non-fatal): ${err.message}`)
+  }
   const bf = backfillAccountIds(db)
   if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
   // Fold the retired per-account autotrade flags into accounts.mode, so

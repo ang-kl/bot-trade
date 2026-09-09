@@ -53,6 +53,17 @@ export const EARNED_FLOOR_DEFAULTS = {
   // as before; the prior never overrides a measured verdict.
   priorAdmit: true,
   priorRiskScale: 0.5,
+  // TARGET STRETCH (owner order 09-09-2026 11:05 SGT, §7,522·B: "R:R should
+  // be dynamic. i don't like opportunities to be thrown away"). When the
+  // strategy HAS an earned-floor win rate (measured or prior) but it does
+  // not pay at the proposed ratio, the gate no longer throws the setup
+  // away: it moves the target out to the ratio that clears minE and takes
+  // the trade at that bracket — provided that ratio is under maxStretchRr.
+  // The blanket floor still governs a strategy with no record at all, and a
+  // ratio the win rate cannot pay under the cap is still refused. Dynamic
+  // both ways: the ratio asked for rises as the win rate falls.
+  stretch: true,
+  maxStretchRr: 2.0,
 }
 
 /** Load config from agent_state 'earned_floor_json'; junk degrades to defaults. */
@@ -73,6 +84,8 @@ export function loadEarnedFloor(db) {
         minE: num(p.minE, EARNED_FLOOR_DEFAULTS.minE, 0, 2),
         priorAdmit: p.priorAdmit !== false,
         priorRiskScale: num(p.priorRiskScale, EARNED_FLOOR_DEFAULTS.priorRiskScale, 0.05, 1),
+        stretch: p.stretch !== false,
+        maxStretchRr: num(p.maxStretchRr, EARNED_FLOOR_DEFAULTS.maxStretchRr, 1, EARNED_FLOOR_RR_BAND),
       }
     }
   } catch { /* corrupt — defaults */ }
@@ -80,20 +93,20 @@ export function loadEarnedFloor(db) {
 }
 
 /**
- * May THIS proposal trade below HARD_MIN_RR on its strategy's measured record?
+ * THE WIN-RATE SIDE of the verdict, without a ratio: which record this
+ * strategy on this account is judged on, and what it reads. Shared by the
+ * verdict (E at the proposed rr) and the stretch (the rr that E clears).
  *
- * @param {import('better-sqlite3').Database} db
- * @param {{strategy: string|null, rr: number, accountId: string|null}} p
- * @returns {{ok: boolean, reason: string|null, winRate: number|null,
- *            trades: number, e: number|null, riskScale: number|null}}
+ * @returns {{ok:boolean, reason:string|null, W:number|null, winRate:number|null,
+ *            trades:number, riskScale:number|null, via:'measured'|'prior'|null,
+ *            prior?:object, minE:number}}
  */
-export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
-  const no = (reason, extra = {}) =>
-    ({ ok: false, reason, winRate: null, trades: 0, e: null, riskScale: null, ...extra })
+export function earnedFloorWinRate(db, { strategy, accountId }) {
   const cfg = loadEarnedFloor(db)
+  const no = (reason, extra = {}) =>
+    ({ ok: false, reason, W: null, winRate: null, trades: 0, riskScale: null, via: null, minE: cfg.minE, ...extra })
   if (!cfg.on) return no('off')
   if (!strategy) return no('unlabelled_proposal')
-  if (!Number.isFinite(Number(rr)) || Number(rr) <= 0) return no('no_rr')
 
   // Registry check UNCONDITIONAL, fail-closed (managed-exit precedent — and
   // the same hole it closed there: the first draft put this inside the
@@ -138,18 +151,10 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
         const shrunk = wLive != null ? (n * wLive + EARNED_FLOOR_PRIOR_TRADES * prior.winRatePct) / (n + EARNED_FLOOR_PRIOR_TRADES) : prior.winRatePct
         const Wp = shrunk / 100
         if (Number.isFinite(Wp) && Wp > 0 && Wp < 1) {
-          const ep = Math.round((Wp * rr - (1 - Wp)) * 1000) / 1000
-          const winRatePct = Math.round(shrunk * 10) / 10
-          const detail = { via: 'prior', prior: { winRatePct: prior.winRatePct, trades: prior.trades, k: EARNED_FLOOR_PRIOR_TRADES, liveWinRatePct: wLive, liveTrades: n, liveScope: live.scope } }
-          if (ep <= cfg.minE) {
-            return no(
-              `prior expectancy ${ep}R at shrunk ${winRatePct}% (${n} ${live.scope} live closes toward backtest ${prior.winRatePct}%) ≤ ${cfg.minE}R`,
-              { winRate: winRatePct, trades: n, e: ep, ...detail },
-            )
-          }
           return {
-            ok: true, reason: null, winRate: winRatePct, trades: n, e: ep,
-            riskScale: Math.min(cfg.riskScale, cfg.priorRiskScale), ...detail,
+            ok: true, reason: null, W: Wp, winRate: Math.round(shrunk * 10) / 10, trades: n,
+            riskScale: Math.min(cfg.riskScale, cfg.priorRiskScale), via: 'prior', minE: cfg.minE,
+            prior: { winRatePct: prior.winRatePct, trades: prior.trades, k: EARNED_FLOOR_PRIOR_TRADES, liveWinRatePct: wLive, liveTrades: n, liveScope: live.scope },
           }
         }
       }
@@ -160,14 +165,92 @@ export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
   if (!Number.isFinite(W) || W <= 0 || W >= 1) {
     return no(`unusable_win_rate ${edge.winRate}`, { trades: edge.trades })
   }
-  const e = Math.round((W * rr - (1 - W)) * 1000) / 1000
-  if (e <= cfg.minE) {
+  return { ok: true, reason: null, W, winRate: edge.winRate, trades: edge.trades, riskScale: cfg.riskScale, via: 'measured', minE: cfg.minE }
+}
+
+/**
+ * May THIS proposal trade below HARD_MIN_RR on its strategy's measured record?
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{strategy: string|null, rr: number, accountId: string|null}} p
+ * @returns {{ok: boolean, reason: string|null, winRate: number|null,
+ *            trades: number, e: number|null, riskScale: number|null}}
+ */
+export function earnedFloorVerdict(db, { strategy, rr, accountId }) {
+  const no = (reason, extra = {}) =>
+    ({ ok: false, reason, winRate: null, trades: 0, e: null, riskScale: null, ...extra })
+  if (!Number.isFinite(Number(rr)) || Number(rr) <= 0) {
+    // The win-rate side's own refusals come first, as before (off, unlabelled).
+    const side = earnedFloorWinRate(db, { strategy, accountId })
+    if (!side.ok && (side.reason === 'off' || side.reason === 'unlabelled_proposal')) return no(side.reason)
+    return no('no_rr')
+  }
+  const side = earnedFloorWinRate(db, { strategy, accountId })
+  if (!side.ok) return no(side.reason, { trades: side.trades })
+  const e = Math.round((side.W * rr - (1 - side.W)) * 1000) / 1000
+  if (side.via === 'prior') {
+    const detail = { via: 'prior', prior: side.prior }
+    const n = side.prior.liveTrades
+    if (e <= side.minE) {
+      return no(
+        `prior expectancy ${e}R at shrunk ${side.winRate}% (${n} ${side.prior.liveScope} live closes toward backtest ${side.prior.winRatePct}%) ≤ ${side.minE}R`,
+        { winRate: side.winRate, trades: n, e, ...detail },
+      )
+    }
+    return { ok: true, reason: null, winRate: side.winRate, trades: n, e, riskScale: side.riskScale, ...detail }
+  }
+  if (e <= side.minE) {
     return no(
-      `expectancy ${e}R at measured ${edge.winRate}% win over ${edge.trades} closes ≤ ${cfg.minE}R`,
-      { winRate: edge.winRate, trades: edge.trades, e },
+      `expectancy ${e}R at measured ${side.winRate}% win over ${side.trades} closes ≤ ${side.minE}R`,
+      { winRate: side.winRate, trades: side.trades, e },
     )
   }
-  return { ok: true, reason: null, winRate: edge.winRate, trades: edge.trades, e, riskScale: cfg.riskScale, via: 'measured' }
+  return { ok: true, reason: null, winRate: side.winRate, trades: side.trades, e, riskScale: side.riskScale, via: 'measured' }
+}
+
+/**
+ * The ratio a win rate needs before E = W·rr − (1 − W) clears minE:
+ * rr = (1 − W + minE) / W, rounded UP to 2 decimals so the rounded figure
+ * still clears (the gate compares E > minE strictly).
+ */
+export function rrNeededFor(W, minE) {
+  if (!Number.isFinite(W) || W <= 0 || W >= 1) return null
+  const raw = (1 - W + minE) / W
+  let rr = Math.ceil(raw * 100) / 100
+  // Judged on E rounded to 3 decimals, exactly as the verdict rounds it —
+  // 0.15000000000000002 is 0.15 to the gate, not "above the bar".
+  const e3 = (r) => Math.round((W * r - (1 - W)) * 1000) / 1000
+  if (e3(rr) <= minE) rr = Math.round((rr + 0.01) * 100) / 100
+  return rr
+}
+
+/**
+ * TARGET STRETCH (§7,522·B). The proposed ratio does not pay at the
+ * strategy's earned-floor win rate — would a wider target, still under the
+ * cap, pay? Returns the bracket the gate may take instead of the veto.
+ *
+ * @returns {{ok:boolean, reason:string|null, from:number, to:number|null,
+ *            winRate:number|null, trades:number, e:number|null,
+ *            riskScale:number|null, via:string|null, prior?:object}}
+ */
+export function earnedFloorStretch(db, { strategy, rr, accountId }) {
+  const cfg = loadEarnedFloor(db)
+  const from = Number(rr)
+  const no = (reason, extra = {}) =>
+    ({ ok: false, reason, from, to: null, winRate: null, trades: 0, e: null, riskScale: null, via: null, ...extra })
+  if (!cfg.stretch) return no('stretch_off')
+  if (!Number.isFinite(from) || from <= 0) return no('no_rr')
+  const side = earnedFloorWinRate(db, { strategy, accountId })
+  if (!side.ok) return no(side.reason, { trades: side.trades })
+  const to = rrNeededFor(side.W, side.minE)
+  if (to == null) return no(`unusable_win_rate ${side.winRate}`)
+  const detail = { winRate: side.winRate, trades: side.via === 'prior' ? side.prior.liveTrades : side.trades, riskScale: side.riskScale, via: side.via, ...(side.prior ? { prior: side.prior } : {}) }
+  if (to <= from) return no('not_needed', { to, ...detail }) // the verdict already admits this ratio
+  if (to > cfg.maxStretchRr) {
+    return no(`stretch_over_cap: ${side.winRate}% win needs ${to}R for ${side.minE}R, cap ${cfg.maxStretchRr}R`, { to, ...detail })
+  }
+  const e = Math.round((side.W * to - (1 - side.W)) * 1000) / 1000
+  return { ok: true, reason: null, from, to, e, ...detail }
 }
 
 /**
@@ -352,6 +435,7 @@ export function earnedFloorReport(db) {
   let admitted = 0
   let admitEvents = 0
   let viaPrior = { admittedApprovals: 0, closed: 0, wins: 0, winRate: null, profitFactor: null, net: 0 }
+  let stretched = { admittedApprovals: 0, closed: 0, wins: 0, winRate: null, profitFactor: null, net: 0 }
   let byAccount = {}
   let closed = { trades: 0, wins: 0, winRate: null, profitFactor: null, net: 0 }
   try {
@@ -371,6 +455,20 @@ export function earnedFloorReport(db) {
     ).get() || {}
     admitted = counts.distinct_n || 0
     admitEvents = counts.events || 0
+    // Stretched admits (§7,522·B): the sub-population whose target the gate
+    // moved out to the paying ratio. Its own row in the report so the cohort
+    // verdict can be read with and without the stretch.
+    try {
+      const sc = db.prepare(
+        `SELECT COUNT(DISTINCT COALESCE(opportunity_key, 'row:' || id)) AS distinct_n
+           FROM risk_events WHERE approved = 1 AND checks_json LIKE '%"stretchedFrom"%'`
+      ).get() || {}
+      const srows = db.prepare(
+        `SELECT t.net_pnl FROM trades t JOIN risk_events r ON r.id = t.risk_event_id
+          WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL AND r.approved = 1 AND r.checks_json LIKE '%"stretchedFrom"%'`
+      ).all()
+      stretched = { admittedApprovals: sc.distinct_n || 0, ...cohortStats(srows) }
+    } catch { /* leave the split empty */ }
     // The prior population, split out (owner order 02-09-2026): how many of
     // the admits were judged on the shrunk prior rather than a measured
     // sample, and how those have closed so far.
@@ -428,6 +526,7 @@ export function earnedFloorReport(db) {
     admittedApprovals: admitted,
     admitEvents,
     viaPrior,
+    stretched,
     byAccount,
     closedCohort: closed,
     verdict: closed.trades >= EARNED_FLOOR_VERDICT_TARGET.closes
