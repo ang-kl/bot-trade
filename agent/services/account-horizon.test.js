@@ -102,7 +102,16 @@ test('the repo declaration is applied at boot, idempotently, and overrides a dif
   assert.equal(loadAccountHorizon(db, '46979908').horizon, 'position')
   // the checked-in file itself parses and names the owner's declaration
   const real = seedAccountHorizonsFromConfig(initDB(':memory:'))
-  assert.equal(real.error, null); assert.ok(real.applied.includes('46979908'))
+  assert.equal(real.error, null)
+  // 09-09-2026: the declaration is now "any horizon, every family" (the cluster
+  // rule), which equals a fresh database's default — so it reads as unchanged
+  // there and as applied over the 08-09 position/momentum declaration.
+  assert.ok(real.applied.includes('46979908') || real.unchanged.includes('46979908'))
+  const stale = initDB(':memory:')
+  setAccountHorizon(stale, '46979908', { horizon: 'position', families: ['momentum'] })
+  const over = seedAccountHorizonsFromConfig(stale)
+  assert.ok(over.applied.includes('46979908'), 'the file clears the 08-09 momentum-only declaration')
+  assert.deepEqual(loadAccountHorizon(stale, '46979908'), { horizon: null, families: [] })
   assert.equal(seedAccountHorizonsFromConfig(db, { file: join(dir, 'missing.json') }).error?.startsWith('account-horizons.json unreadable'), true)
   // wiring pin: index.js applies it after the registry bootstrap
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')

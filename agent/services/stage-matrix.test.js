@@ -339,13 +339,12 @@ test('strategy-pin seed: pins the named strategies ON for that account only, ide
   assert.equal(seedStrategyPinsFromConfig(db, io, { file }).error, 'strategy-pins.json is not an object')
 })
 
-test('strategy-pin seed: the checked-in file parses, names one demo account with the mean-reversion pair, and index.js applies it at boot after the momentum seed', () => {
+test('strategy-pin seed: the checked-in file parses, pins the whole non-momentum stack on every account of the cluster (owner 09-09-2026), and index.js applies it at boot after the momentum seed', () => {
   const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
-  const ids = Object.keys(cfg)
-  assert.equal(ids.length, 1)
-  assert.match(ids[0], /^\d{8}$/)
-  assert.deepEqual(cfg[ids[0]], ['rsi2_reversion', 'rsi_meanrev'])
-  for (const k of cfg[ids[0]]) assert.ok(STRATEGY_KEYS.includes(k))
+  const ids = Object.keys(cfg).filter(k => /^\d{8}$/.test(k))
+  assert.equal(ids.length, 5, 'the five accounts the loop runs')
+  const stack = STRATEGY_KEYS.filter(k => k !== 'tsmom_long')
+  for (const id of ids) assert.deepEqual(cfg[id], stack, `${id}: every strategy but the momentum book's own`)
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /seedMomentumAccountFromConfig\(db, \{ log[\s\S]{0,900}?seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log/, 'the boot seed runs after the momentum-account seed')
 })

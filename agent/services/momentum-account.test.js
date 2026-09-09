@@ -218,14 +218,23 @@ const tsmomProposal = (accountId, extra = {}) => ({
   strategy: TSMOM_STRATEGY, conviction: 8, source: 'momentum_account', accountId, sizing: 'vol_target', sizedVolume: 0.05, ...extra,
 })
 
-test('risk gate: on the momentum account every non-tsmom proposal is refused as momentum_account_only', () => {
+test('risk gate: the momentum account is OPEN by default (owner 09-09-2026, the cluster rule); exclusive:true restores the one-system refusal', () => {
   const db = gateDb()
-  const r = evaluateTrade(db, { symbol: 'EURUSD', side: 'long', entry: 1.1, sl: 1.097, tp1: 1.1105, requestedVolume: 0.01, strategy: 'ema_pullback', conviction: 8, accountId: MOM })
+  const prop = { symbol: 'EURUSD', side: 'long', entry: 1.1, sl: 1.097, tp1: 1.1105, requestedVolume: 0.01, strategy: 'ema_pullback', conviction: 8, accountId: MOM }
+  const open = evaluateTrade(db, prop)
+  assert.doesNotMatch(String(open.veto_reason || ''), /momentum_account_only/, 'not exclusive → the stack trades here like anywhere else')
+  assert.equal(open.checks.momentum_account, true, 'the account is still the momentum account (daily pass, vol sizing)')
+  // The 07-09 rule, on request only.
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ ...loadMomentumAccount(db), exclusive: true }))
+  const r = evaluateTrade(db, prop)
   assert.equal(r.approved, false)
   assert.match(r.veto_reason, /^momentum_account_only: ema_pullback/)
-  assert.equal(r.checks.momentum_account, true)
-  const other = evaluateTrade(db, { symbol: 'EURUSD', side: 'long', entry: 1.1, sl: 1.097, tp1: 1.1105, requestedVolume: 0.01, strategy: 'ema_pullback', conviction: 8, accountId: OTHER })
+  const other = evaluateTrade(db, { ...prop, accountId: OTHER })
   assert.doesNotMatch(String(other.veto_reason || ''), /momentum_account_only/, 'other accounts are untouched by the rule')
+  // Config shape: exclusive is a strict boolean, default false, seeded from the file when named.
+  assert.equal(momentumAccountConfig(null).exclusive, false)
+  assert.equal(momentumAccountConfig({ exclusive: 'yes' }).exclusive, false)
+  assert.equal(momentumAccountConfig({ exclusive: true }).exclusive, true)
 })
 
 test('risk gate: the vol-target size is THE size on the momentum account; declared elsewhere it is ignored; the min-lot floor still vetoes', () => {
