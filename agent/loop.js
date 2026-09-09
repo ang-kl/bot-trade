@@ -504,6 +504,14 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   if (Math.abs(volLots - requestedVol) > 0.001) {
     log(`Risk sizing: ${symbol} ${requestedVol} → ${volLots} (${riskResult.sizing_note})`)
   }
+  // STRETCHED TARGET (§7,522·B): the gate admitted this setup at a wider
+  // bracket than the signal proposed. Everything below — the order's
+  // relative take profit, the trades row, the fill anchor, the plan — reads
+  // synth.tp1, so the override lands there once, here, with the reason.
+  if (riskResult.target_override?.tp1 != null) {
+    log(`Risk target: ${symbol} tp1 ${synth.tp1} → ${riskResult.target_override.tp1} (${riskResult.target_override.from}R → ${riskResult.target_override.rr}R, earned-floor stretch)`)
+    synth = { ...synth, tp1: riskResult.target_override.tp1, tp1_price: riskResult.target_override.tp1 }
+  }
 
   // We need symbolId — THIS ACCOUNT's id (03-09-2026). The global
   // symbol_id_map belongs to the account it was built from; on ACCT-LIVE-1

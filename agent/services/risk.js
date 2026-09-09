@@ -23,7 +23,7 @@ import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
-import { earnedFloorVerdict } from './earned-floor.js'
+import { earnedFloorVerdict, earnedFloorStretch } from './earned-floor.js'
 import { campaignConfig, campaignStopVerdict } from './campaign-stop.js'
 import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN, DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
@@ -1661,6 +1661,38 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
             )
           } else {
             checks.earned_floor_denied = ef.reason
+            // TARGET STRETCH (owner order 09-09-2026, §7,522·B: "R:R should
+            // be dynamic. i don't like opportunities to be thrown away"). The
+            // win rate is known and does not pay at THIS ratio — so ask what
+            // ratio it does pay at, and if that is under the cap, take the
+            // trade at that bracket instead of refusing it. The target the
+            // order carries is then `target_override.tp1`, computed here from
+            // the proposal's own entry and stop; every caller that places the
+            // order applies it (loop.js autoTrade, closed-market-limits,
+            // pending-orders). A strategy with no record, a live scope while
+            // staged, or a ratio the win rate cannot pay under the cap all
+            // still veto exactly as before — the stretch is a door only for
+            // a measured or prior-backed win rate.
+            const st = earnedFloorStretch(db, { strategy: proposal.strategy, rr, accountId: acct })
+            if (st.ok) {
+              const dir = String(proposal.side).toLowerCase() === 'sell' || String(proposal.side).toLowerCase() === 'short' ? -1 : 1
+              const dec = (n) => { const t = String(n), i = t.indexOf('.'); return i === -1 ? 0 : Math.min(t.length - i - 1, 8) }
+              const digits = Math.max(dec(entry), dec(sl), dec(proposal.tp1))
+              const newTp = Number((entry + dir * st.to * slDistance).toFixed(digits))
+              earnedFloor = { ...st, rr: st.to, stretchedFrom: rr, tp1: newTp }
+              checks.earned_floor = {
+                rr: st.to, stretchedFrom: rr, tp1: newTp, winRate: st.winRate, trades: st.trades, e: st.e,
+                riskScale: st.riskScale, via: st.via, ...(st.prior ? { prior: st.prior } : {}),
+              }
+              delete checks.earned_floor_denied
+              console.log(
+                `[risk] earned_floor admit: ${proposal.strategy} ${proposal.symbol ?? '?'} rr=${st.to.toFixed(2)} ` +
+                `(stretched from ${rr.toFixed(2)}, target ${newTp}) W=${st.winRate}% over ${st.trades} closes e=${st.e}R ` +
+                `riskScale=${st.riskScale} via=${st.via} acct=${acct ?? '?'}`,
+              )
+            } else if (st.reason && st.reason !== 'not_needed' && st.reason !== 'stretch_off') {
+              checks.earned_floor_stretch_denied = st.reason
+            }
           }
         }
         if (!earnedFloor) {
@@ -1958,6 +1990,12 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     adjusted_volume: volume,
     sizing_note: combinedNote,
     checks,
+    // §7,522·B: a stretched target the order must carry instead of the
+    // proposal's. Absent (undefined) on every approval that did not stretch,
+    // so an older caller that ignores it behaves exactly as before.
+    ...(earnedFloor?.stretchedFrom != null
+      ? { target_override: { tp1: earnedFloor.tp1, rr: earnedFloor.rr, from: earnedFloor.stretchedFrom } }
+      : {}),
   }
 }
 

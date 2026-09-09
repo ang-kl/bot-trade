@@ -298,3 +298,54 @@ test('wiring: POST /actions/strategies clears pins for every strategy it turns o
   assert.match(route, /unpinTradeStageEverywhere\(db, \{ getState, setState \}, k\)/)
   assert.match(route, /unpinned,/)
 })
+
+// ---------------------------------------------------------------------------
+// OWNER-DECLARED PINS FROM THE REPO (owner order 09-09-2026, §7,522·B·2): the
+// rsi2_reversion / rsi_meanrev demo cohort, applied at boot from
+// config/strategy-pins.json because the pinning route needs the lost token.
+// ---------------------------------------------------------------------------
+import { seedStrategyPinsFromConfig, isHandPinned, tradeStageGate as gateFor } from './stage-matrix.js'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+test('strategy-pin seed: pins the named strategies ON for that account only, idempotent, the gates read the pin, junk is skipped by name', () => {
+  const db = withAccounts(initDB(':memory:'), ['111', '222'])
+  setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend'])) // rsi2 OFF globally, as in production 09-09
+  const dir = mkdtempSync(join(tmpdir(), 'pins-'))
+  const file = join(dir, 'strategy-pins.json')
+  writeFileSync(file, JSON.stringify({ 111: ['rsi2_reversion', 'rsi_meanrev', 'not_a_strategy'], abc: ['rsi2_reversion'], 222: 'rsi2_reversion' }))
+  const lines = []
+  const a = seedStrategyPinsFromConfig(db, io, { file, log: (m) => lines.push(m) })
+  assert.equal(a.error, null)
+  assert.deepEqual(a.applied, ['111:rsi2_reversion', '111:rsi_meanrev'])
+  // (integer-like keys enumerate first, so 222 precedes abc)
+  assert.deepEqual(a.skipped, ["111: unknown strategy 'not_a_strategy'", '222: malformed', 'abc: malformed'])
+  assert.equal(lines.length, 2)
+  assert.match(lines[0], /strategy pin …111: rsi2_reversion ON for Auto Trade & Open/)
+  // The pin is the owner's word: explicit true cell, gate open on 111, still OFF on 222 and globally.
+  assert.equal(isHandPinned(db, getState, '111', 'rsi2_reversion'), true)
+  assert.equal(isHandPinned(db, getState, '222', 'rsi2_reversion'), false)
+  assert.equal(gateFor(db, getState, { strategy: 'rsi2_reversion', accountId: '111' }).ok, true)
+  assert.equal(gateFor(db, getState, { strategy: 'rsi2_reversion', accountId: '222' }).ok, false)
+  assert.equal(gateFor(db, getState, { strategy: 'rsi2_reversion' }).ok, false, 'the global cell is untouched')
+  assert.ok(!armedTradeKeys(db, getState, '111').has('ema_pullback'), 'other cells on the account keep their value')
+  // Idempotent: a second boot changes nothing.
+  const b = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(b.applied, []); assert.deepEqual(b.unchanged, ['111:rsi2_reversion', '111:rsi_meanrev'])
+  // Missing or malformed file: reports, changes nothing.
+  assert.match(seedStrategyPinsFromConfig(db, io, { file: join(dir, 'missing.json') }).error, /strategy-pins.json unreadable/)
+  writeFileSync(file, '[1,2]')
+  assert.equal(seedStrategyPinsFromConfig(db, io, { file }).error, 'strategy-pins.json is not an object')
+})
+
+test('strategy-pin seed: the checked-in file parses, names one demo account with the mean-reversion pair, and index.js applies it at boot after the momentum seed', () => {
+  const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
+  const ids = Object.keys(cfg)
+  assert.equal(ids.length, 1)
+  assert.match(ids[0], /^\d{8}$/)
+  assert.deepEqual(cfg[ids[0]], ['rsi2_reversion', 'rsi_meanrev'])
+  for (const k of cfg[ids[0]]) assert.ok(STRATEGY_KEYS.includes(k))
+  const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /seedMomentumAccountFromConfig\(db, \{ log[\s\S]{0,900}?seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log/, 'the boot seed runs after the momentum-account seed')
+})
