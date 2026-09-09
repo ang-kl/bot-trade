@@ -4525,7 +4525,7 @@ async function runLoop(db) {
         const ew = runEdgeWatchdog(db, {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
         })
-        if (ew.actions?.length) log(`Edge watchdog: disarmed ${ew.actions.map(a => `${a.strategy} (exp $${a.expectancy}, PF ${a.profitFactor ?? '∞'})`).join(', ')}`)
+        if (ew.actions?.length) log(`Edge watchdog: disarmed ${ew.actions.map(a => `${a.strategy} (exp $${a.expectancy}, PF ${a.profitFactor ?? '∞'}, scopes ${a.scopes.join('/')}${a.heldPinnedDemo?.length ? `, held demo pins ${a.heldPinnedDemo.join('/')}` : ''})`).join(', ')}`)
         await hbeat(db, 'edge_watchdog')
       } catch (err) {
         log(`Edge watchdog failed (non-fatal): ${err.message}`)
