@@ -1,5 +1,6 @@
 // cpp-exec/src/engine.cpp
 #include "engine.hpp"
+#include "heartbeat.hpp"
 
 #include <cctype>
 
@@ -183,7 +184,7 @@ void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
 
 void ExecEngine::maybeHeartbeatLocked() {
   auto now = steady_clock::now();
-  if (ws_.isOpen() && now - lastSend_ >= seconds(25)) {
+  if (ws_.isOpen() && now - lastSend_ >= seconds(kHeartbeatIdleSeconds)) {
     ws_.sendText("{\"payloadType\":51}");
     lastSend_ = now;
   }
@@ -483,6 +484,25 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
     return errResult(v.reason, v.reason, false);
   }
   std::lock_guard lk(mtx_);
+  if (preSendHook_) preSendHook_();
+  // SEND-BOUNDARY RECHECK (10-09-2026). The validation above ran BEFORE the
+  // mutex: an order could validate, wait behind a slow reconcile or another
+  // order, and be sent after /config had set a halt — the halt was checked
+  // against a state that no longer held. The guard is re-read here, under
+  // the lock, immediately before the send; nothing can change it in between
+  // that this thread does not see.
+  {
+    const OrderVerdict again = validateOrder(payload, guard_.snapshot());
+    if (!again.ok) {
+      logLine("order REJECTED by guard at the send boundary (state changed while queued): " + again.reason);
+      if (telemetry_) {
+        telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
+                         volume, price, 0, classifyReasonCode(again.reason)});
+      }
+      if (ring_) ring_->log("order_guard", "refused_at_send", ringAcct, symbolId, again.reason);
+      return errResult(again.reason, again.reason + " (guard changed while the order was queued)", false);
+    }
+  }
   // SUBMIT is logged after the lock is held — with it logged before, the
   // record timestamped a submission that could still be a minute away behind
   // a reconcile sweep (audit #2 note).
@@ -610,7 +630,8 @@ void ExecEngine::runLoop() {
     auto r = reconcile();
     if (!r.ok && !r.brokerError)
       continue; // transport problem — loop back into reconnect path
-    // Idle between reconcile polls; the slice keeps heartbeats within 25s.
+    // Idle between reconcile polls; the 5s slice keeps heartbeats inside the
+    // 9s idle bound (heartbeat.hpp).
     for (int slept = 0; slept < 30000 && isConnected(); slept += 5000) {
       std::this_thread::sleep_for(milliseconds(5000));
       std::lock_guard lk(mtx_);

@@ -60,8 +60,7 @@ bool armIfRewardClearsFloor(VirtualPendingOrder& o, double trigger, Side side,
   o.side.store(side, std::memory_order_relaxed);
   o.relativeStopLoss.store(slDistance, std::memory_order_relaxed);
   o.relativeTakeProfit.store(tpDistance, std::memory_order_relaxed);
-  o.state.store(VposState::ARMED, std::memory_order_relaxed);
-  return true;
+  return armUnlessFired(o);
 }
 
 constexpr double kDayMs = 86'400'000.0;
@@ -386,7 +385,7 @@ namespace {
 // order atomics directly (order() is public; IDLE store == disarm()).
 void recomputeCupHandle(StrategyModule& s, const std::vector<Bar>& macroBars, int dir) {
   auto& o = s.order();
-  const auto idle = [&o] { o.state.store(VposState::IDLE, std::memory_order_relaxed); };
+  const auto idle = [&o] { idleUnlessFired(o); };
 
   if (static_cast<int>(macroBars.size()) < kChMinBars) { idle(); return; }
   const int last = static_cast<int>(macroBars.size()) - 1;
@@ -499,7 +498,7 @@ void recomputeCupHandle(StrategyModule& s, const std::vector<Bar>& macroBars, in
     o.side.store(dir == 1 ? Side::Buy : Side::Sell, std::memory_order_relaxed);
     o.relativeStopLoss.store(sl, std::memory_order_relaxed);
     o.relativeTakeProfit.store(tp, std::memory_order_relaxed);
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+    armUnlessFired(o);
     return;
   }
   idle();

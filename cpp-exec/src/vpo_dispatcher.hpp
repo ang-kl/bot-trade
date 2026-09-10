@@ -109,6 +109,12 @@ public:
   // Non-owning; null = disabled. Set before start().
   void setDecisionRing(class DecisionRing* r) { ring_ = r; }
 
+  // One recompute pass over every strategy — what recomputeLoop() does each
+  // interval, public so a test can drive it. A strategy whose fire is still
+  // unresolved (FIRED) is SKIPPED (10-09-2026): recomputing it re-armed the
+  // same setup under a pending order and let the next tick fire it twice.
+  void recomputeAll();
+
 private:
   void recomputeLoop(int intervalMs);
   // Attempts to fire one ARMED strategy whose trigger the tick crossed.
@@ -119,7 +125,11 @@ private:
   // the engine mutex plus a request timeout, and running it inside onTick
   // stalled the SpotFeed read loop — no ticks, no heartbeats, no trailing —
   // for up to a minute per fire.
-  void fireNow(StrategyModule& s);
+  // The setup as it was at the CAS that won the fire (10-09-2026): the fire
+  // thread reads THIS, not the strategy's live atomics, so a recompute that
+  // lands between the tick and the send cannot change what is sent.
+  struct FireIntent { StrategyModule* s; Side side; double sl; double tp; double trigger; };
+  void fireNow(const FireIntent& in);
   void fireLoop();
 
   ExecEngine& engine_;
@@ -139,7 +149,7 @@ private:
   std::thread fireThread_;
   std::mutex fireMtx_;
   std::condition_variable fireCv_;
-  std::vector<StrategyModule*> fireQueue_;
+  std::vector<FireIntent> fireQueue_;
 
   // Written on the tick thread, read by the HTTP thread. A short mutex, not
   // atomics: lastDetail is a string, and the whole block should be read as

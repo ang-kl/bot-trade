@@ -67,6 +67,22 @@ test('a gate that vetoed everything reads as blocked and names the top reason', 
   assert.match(shouldAlert(a, { marketOpen: true })?.text || '', /insufficient_margin/)
 })
 
+test('approvals all refused downstream are named, not folded into "every one was vetoed" (10-09-2026)', () => {
+  const db = initDB(':memory:')
+  gate(db, { approved: false, reason: 'max_positions' })
+  gate(db, { approved: false, reason: 'max_positions' })
+  approve(db, { symbol: 'AVGO.US' })
+  resolve(db, { symbol: 'AVGO.US', reason: 'below_min_volume: 0.42 lots' })
+  const a = auditDecisions(db)
+  assert.equal(a.verdict, VERDICTS.BLOCKED)
+  assert.equal(a.approved, 1)
+  assert.equal(a.landed, 0)
+  assert.match(a.because, /1 approved at the gate, all 1 refused downstream/)
+  assert.match(a.because, /2 vetoed at the gate/, 'the resolution is not double-counted as a gate veto')
+  assert.doesNotMatch(a.because, /every one was vetoed/)
+  assert.doesNotMatch(a.because, /0\.42/, 'the public body still carries no raw reason text')
+})
+
 test('nothing reaching the gate names the UPSTREAM stage that ate it', () => {
   const db = initDB(':memory:')
   for (let i = 0; i < 5; i++) skip(db, { stage: 'style_filter', reason: 'all_styles_disabled' })

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -146,8 +147,14 @@ public:
   // disabled, every call site null-checks.
   void setDecisionRing(DecisionRing* r) { ring_ = r; }
 
+  // TEST SEAM (10-09-2026): runs under mtx_ right before the send-boundary
+  // guard recheck in placeOrder(), so a test can flip the halt while the
+  // order is "queued" — the interleaving the recheck exists for.
+  void setPreSendHookForTests(std::function<void()> h) { preSendHook_ = std::move(h); }
+
   // Blocking loop: connect/auth with capped exponential backoff, reconcile
-  // every 30s, heartbeat every 25s of idle. Runs until process exit.
+  // every 30s, heartbeat every 9s of idle (cTrader asks for 10s). Runs until
+  // process exit.
   void runLoop();
 
 private:
@@ -210,5 +217,6 @@ private:
 
   OrderGuard guard_; // atomic knobs read on the order hot path
   Telemetry* telemetry_ = nullptr; // non-owning; null = disabled
+  std::function<void()> preSendHook_;
   DecisionRing* ring_ = nullptr;   // non-owning; null = disabled
 };

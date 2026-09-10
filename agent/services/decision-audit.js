@@ -287,7 +287,13 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
       // topVetoes list had already been sanitised. The full reason is still
       // available in `topVetoes` for Telegram and the logs, which are
       // owner-only.
-      because = `${vetoed} proposal(s) reached the risk gate and every one was vetoed — top reason: ${guardName(topVetoes[0]?.key) || 'unspecified'}`
+      // "Every one was vetoed" was printed even when the gate had APPROVED
+      // some and every approval was then refused downstream with a reason
+      // (10-09-2026: 49 approved, 0 landed, 1,985 vetoed read as "every
+      // proposal vetoed"). Say both halves when both happened.
+      because = approved > 0
+        ? `${approved} approved at the gate, all ${resolutions} refused downstream with a reason; ${Math.max(0, vetoed - resolutions)} vetoed at the gate — top reason: ${guardName(topVetoes[0]?.key) || 'unspecified'}`
+        : `${vetoed} proposal(s) reached the risk gate and every one was vetoed — top reason: ${guardName(topVetoes[0]?.key) || 'unspecified'}`
     } else if (skipped > 0) {
       // Nothing even reached the gate. THIS is the config answer, and naming
       // the dominant stage is the whole value — "why didn't it trade" becomes

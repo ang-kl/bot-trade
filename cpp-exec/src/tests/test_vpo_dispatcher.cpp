@@ -41,6 +41,61 @@ static void forceArm(vpo::StrategyModule& s, double trigger, Side side) {
   o.state.store(VposState::ARMED);
 }
 
+// (10-09-2026) A strategy whose fire is unresolved is FIRED. Reproduced
+// before the fix: recompute() stored ARMED over FIRED, and the next tick won
+// a second ARMED->FIRED CAS on the same setup. Two layers now hold: the
+// dispatcher skips a FIRED strategy in its recompute pass, and the strategy-
+// side arm/idle helpers are CASes that refuse to touch FIRED.
+static void test_arm_and_idle_helpers_never_overwrite_fired() {
+  vpo::VwapTrendStrategy s("vwap_trend", "EURUSD", "15m", 42);
+  auto& o = s.order();
+  assert(vpo::armUnlessFired(o));           // IDLE -> ARMED
+  assert(o.state.load() == VposState::ARMED);
+  assert(vpo::idleUnlessFired(o));          // ARMED -> IDLE
+  assert(o.state.load() == VposState::IDLE);
+  o.state.store(VposState::FIRED);          // a fire in flight
+  assert(!vpo::armUnlessFired(o));
+  assert(o.state.load() == VposState::FIRED);
+  assert(!vpo::idleUnlessFired(o));
+  assert(o.state.load() == VposState::FIRED);
+  s.resetAfterFire();                       // the fire thread's exit, the only way out
+  assert(o.state.load() == VposState::IDLE);
+}
+
+// A strategy that arms the way the OLD code did (plain store) — so this test
+// proves the dispatcher's skip on its own, not the CAS helper.
+struct AlwaysArmRawStore : vpo::StrategyModule {
+  int calls = 0;
+  using StrategyModule::StrategyModule;
+  void recompute(const std::vector<Bar>&, const std::vector<Bar>&) override {
+    calls++;
+    order().triggerPrice.store(1.2345);
+    order().state.store(VposState::ARMED);
+  }
+};
+
+static void test_recompute_skips_a_strategy_with_a_pending_fire() {
+  ExecEngine engine;
+  auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
+  auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
+  vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  auto strategy = std::make_unique<AlwaysArmRawStore>("raw", "EURUSD", "15m", 42);
+  AlwaysArmRawStore* raw = strategy.get();
+  dispatcher.registerStrategy(std::move(strategy));
+
+  raw->order().state.store(VposState::FIRED); // fire unresolved
+  raw->order().triggerPrice.store(1.1000);
+  dispatcher.recomputeAll();
+  assert(raw->calls == 0);                                 // not recomputed
+  assert(raw->order().state.load() == VposState::FIRED);   // not re-armed
+  assert(raw->order().triggerPrice.load() == 1.1000);      // setup untouched
+
+  raw->resetAfterFire();                                   // the fire resolves
+  dispatcher.recomputeAll();
+  assert(raw->calls == 1);
+  assert(raw->order().state.load() == VposState::ARMED);
+}
+
 static void test_onTick_fires_on_touch_and_rearms_to_idle() {
   ExecEngine engine; // no credentials — placeOrder() will fail fast with
                       // NOT_CONNECTED (see engine.cpp's request()), which is
@@ -263,6 +318,8 @@ static void test_no_account_refuses_to_fire_and_is_counted() {
 }
 
 int main() {
+  test_arm_and_idle_helpers_never_overwrite_fired();
+  test_recompute_skips_a_strategy_with_a_pending_fire();
   test_relative_points_scales_and_snaps_to_symbol_precision();
   test_onTick_fires_on_touch_and_rearms_to_idle();
   test_onTick_ignores_other_symbols();

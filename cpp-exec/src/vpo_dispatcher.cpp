@@ -18,6 +18,8 @@
 //   the FIRED transition itself: only the hot thread ever produces FIRED,
 //   and only resetAfterFire() (called by THIS dispatcher, single-threaded
 //   from tryFire's own call site) ever clears it back to IDLE.
+#include <optional>
+
 #include "vpo_dispatcher.hpp"
 
 #include "decision_ring.hpp"
@@ -67,13 +69,19 @@ void VpoDispatcher::stop() {
   if (fireThread_.joinable()) fireThread_.join();
 }
 
+void VpoDispatcher::recomputeAll() {
+  for (auto& s : strategies_) {
+    // A pending fire owns the setup until it resolves — see vpo_types.hpp.
+    if (s->order().state.load(std::memory_order_acquire) == VposState::FIRED) continue;
+    const std::vector<Bar> macro = barProvider_(s->order().symbol, macroTimeframe_);
+    const std::vector<Bar> micro = barProvider_(s->order().symbol, microTimeframe_);
+    s->recompute(macro, micro);
+  }
+}
+
 void VpoDispatcher::recomputeLoop(int intervalMs) {
   while (running_.load(std::memory_order_relaxed)) {
-    for (auto& s : strategies_) {
-      const std::vector<Bar> macro = barProvider_(s->order().symbol, macroTimeframe_);
-      const std::vector<Bar> micro = barProvider_(s->order().symbol, microTimeframe_);
-      s->recompute(macro, micro);
-    }
+    recomputeAll();
     std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
   }
 }
@@ -100,6 +108,8 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
     std::lock_guard<std::mutex> lk(outcomesMtx_);
     outcomes_.triggered++;
   }
+  const FireIntent intent{&s, side, o.relativeStopLoss.load(std::memory_order_relaxed),
+                          o.relativeTakeProfit.load(std::memory_order_relaxed), trigger};
 
   // Hand the SLOW half (sizing + placeOrder + outcome record) to the fire
   // thread — audit #6: running placeOrder here, on the SpotFeed read thread,
@@ -110,12 +120,12 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
   // Not started (unit tests drive onTick directly, no SpotFeed thread to
   // protect) → fire synchronously, same behaviour as before the queue.
   if (!running_.load(std::memory_order_relaxed)) {
-    fireNow(s);
+    fireNow(intent);
     return true;
   }
   {
     std::lock_guard<std::mutex> lk(fireMtx_);
-    fireQueue_.push_back(&s);
+    fireQueue_.push_back(intent);
   }
   fireCv_.notify_one();
   return true;
@@ -123,24 +133,25 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
 
 void VpoDispatcher::fireLoop() {
   while (running_.load(std::memory_order_relaxed)) {
-    StrategyModule* s = nullptr;
+    std::optional<FireIntent> in;
     {
       std::unique_lock<std::mutex> lk(fireMtx_);
       fireCv_.wait_for(lk, std::chrono::milliseconds(500), [this] {
         return !fireQueue_.empty() || !running_.load(std::memory_order_relaxed);
       });
       if (!fireQueue_.empty()) {
-        s = fireQueue_.front();
+        in = fireQueue_.front();
         fireQueue_.erase(fireQueue_.begin());
       }
     }
-    if (s) fireNow(*s);
+    if (in) fireNow(*in);
   }
 }
 
-void VpoDispatcher::fireNow(StrategyModule& s) {
+void VpoDispatcher::fireNow(const FireIntent& in) {
+  StrategyModule& s = *in.s;
   VirtualPendingOrder& o = s.order();
-  const Side side = o.side.load(std::memory_order_relaxed);
+  const Side side = in.side;
 
   const double volume = volumeResolver_ ? volumeResolver_(s) : -1.0;
   if (!(volume > 0.0) || std::isnan(volume)) {
@@ -188,8 +199,8 @@ void VpoDispatcher::fireNow(StrategyModule& s) {
   payload.set("tradeSide", side == Side::Buy ? std::string("BUY") : std::string("SELL"));
   payload.set("orderType", std::string("MARKET"));
   payload.set("volume", volume);
-  payload.set("relativeStopLoss", relativePoints(o.relativeStopLoss.load(std::memory_order_relaxed), o.digits));
-  payload.set("relativeTakeProfit", relativePoints(o.relativeTakeProfit.load(std::memory_order_relaxed), o.digits));
+  payload.set("relativeStopLoss", relativePoints(in.sl, o.digits));
+  payload.set("relativeTakeProfit", relativePoints(in.tp, o.digits));
   payload.set("label", std::string("vpo:") + s.key());
 
   const EngineResult result = engine_.placeOrder(payload);

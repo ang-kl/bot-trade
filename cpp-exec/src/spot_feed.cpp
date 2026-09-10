@@ -1,5 +1,6 @@
 // cpp-exec/src/spot_feed.cpp — see spot_feed.hpp.
 #include "spot_feed.hpp"
+#include "heartbeat.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -247,7 +248,7 @@ void SpotFeed::runOnce() {
     drainPendingSubs(); // trail-engine symbols queued since the last slice
     auto text = ws_.recvText(5000);
     auto now = steady_clock::now();
-    if (ws_.isOpen() && now - lastSend >= seconds(25)) {
+    if (ws_.isOpen() && now - lastSend >= seconds(kHeartbeatIdleSeconds)) {
       ws_.sendText("{\"payloadType\":51}");
       lastSend = now;
     }

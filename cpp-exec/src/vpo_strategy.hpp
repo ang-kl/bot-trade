@@ -59,12 +59,14 @@ public:
   // Called ONLY by the dispatcher, ONLY after a FIRED order's placeOrder
   // attempt completes (success or failure) — re-arms the strategy for the
   // next recompute cycle rather than leaving it stuck FIRED forever.
-  void resetAfterFire() { disarm(); }
+  // The ONLY transition out of FIRED (10-09-2026): a plain release store,
+  // made by the fire thread once the placeOrder attempt has resolved.
+  void resetAfterFire() { order_.state.store(VposState::IDLE, std::memory_order_release); }
 
 protected:
   // Disarm back to IDLE — used both by recompute() (setup invalidated) and
   // by resetAfterFire() above.
-  void disarm() { order_.state.store(VposState::IDLE, std::memory_order_relaxed); }
+  void disarm() { idleUnlessFired(order_); } // never clears a pending fire
 
 private:
   std::string key_;

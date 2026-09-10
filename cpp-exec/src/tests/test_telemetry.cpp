@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <thread>
 #include <unistd.h>
 
 #include "../telemetry.hpp"
@@ -75,9 +76,46 @@ static void test_drop_never_blocks() {
   std::remove(path.c_str());
 }
 
+// MANY PRODUCERS, ONE RING (10-09-2026). Reproduced before the fix: eight
+// producer threads submitted 400,000 records into a ring large enough for all
+// of them; 106,404 were written and zero were reported dropped. The ring is
+// SPSC and log() had no producer lock. With the lock, every accepted record is
+// a written record — the count is exact, not "most of them".
+static void test_many_producers_lose_nothing() {
+  const std::string path = tmpPath();
+  const int kThreads = 8, kPer = 50000;
+  {
+    Telemetry t(1u << 19, path); // 524,288 slots > 400,000 records: the ring can never be the reason
+    std::vector<std::thread> th;
+    for (int k = 0; k < kThreads; k++) {
+      th.emplace_back([&t, k] {
+        for (int i = 0; i < kPer; i++) {
+          TelemetryRecord r{};
+          r.ts_ms = static_cast<uint64_t>(k) * kPer + i;
+          r.kind = TK_ORDER_SUBMIT;
+          r.symbol_id = k;
+          while (!t.log(r)) { /* drain thread runs concurrently; never full in practice */ }
+        }
+      });
+    }
+    for (auto& x : th) x.join();
+    t.flush();
+    assert(t.written() == (uint64_t)(kThreads * kPer));
+    assert(t.writeErrors() == 0);
+  }
+  std::FILE* f = std::fopen(path.c_str(), "rb");
+  assert(f);
+  std::fseek(f, 0, SEEK_END);
+  const long bytes = std::ftell(f);
+  std::fclose(f);
+  assert(bytes == (long)(sizeof(TelemetryRecord) * kThreads * kPer));
+  std::remove(path.c_str());
+}
+
 int main() {
   test_roundtrip();
   test_drop_never_blocks();
+  test_many_producers_lose_nothing();
   std::puts("test_telemetry: all assertions passed");
   return 0;
 }
