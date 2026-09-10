@@ -325,7 +325,7 @@ export async function runBurnIn(db, creds, deps = {}) {
       }
       // maxVolume is the pin, not a ceiling on a risk-based size: burn-in
       // trades at cfg.lots and nothing about the balance changes that.
-      const result = await autoTrade(db, symbol, synth, { maxVolume: cfg.lots }, null)
+      const result = await autoTrade(db, symbol, synth, { maxVolume: cfg.lots }, null, { producerId: 'burn_in_probe' })
       if (result) {
         placed++
         log(`${symbol}: ${result.side} ${cfg.lots} [${plan.regime}/${plan.tf}] cap ${plan.capMin}m (pace ${completed}/${pace.expected} of ${cfg.targetTrades})`)

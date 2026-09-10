@@ -19,6 +19,7 @@
 
 import { getState } from '../db.js'
 import { getCtraderCreds } from '../lib/ctrader-creds.js'
+import { admitEntry } from './entry-mode.js'
 import { execBaseFor } from '../lib/exec-engine.js'
 import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume, persistRiskEvent } from './risk.js'
 import { evaluateGlobalGuards } from './global-guards.js'
@@ -210,6 +211,13 @@ export async function runVpoFeeder(db, deps = {}) {
   // from; when it is absent or unusable the dispatcher refuses to fire and
   // counts it under /vpo-status noAccount, rather than guessing.
   const acct = Number(creds?.accountId)
+  // P1b: the ARMING fence for the C++ VPO tier. A STOPPED account is not
+  // armed at all — the tier cannot fire what it was never told to hold. The
+  // fire-time fence (a permit checked at the sidecar's send) is P2.
+  if (Number.isFinite(acct) && acct > 0) {
+    const admission = admitEntry(db, { accountId: String(acct), producerId: 'vpo_cpp_direct', basis: 'bar' })
+    if (!admission.ok) return { skipped: `entry_mode: ${admission.reason}`, accountId: acct }
+  }
   const payload = { bars: barsOut, volumes: volumesOut }
   if (Number.isFinite(acct) && acct > 0) payload.ctidTraderAccountId = acct
   await push(payload, execBaseFor(creds))

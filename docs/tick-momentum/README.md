@@ -31,8 +31,9 @@ updated in the same change.
 | Phase | Content | State |
 |---|---|---|
 | P1a | The four sidecar defects from the investigation (telemetry producer lock, VPO pending-fire skip + CAS transitions + fire snapshot, send-boundary halt recheck, 9 s heartbeat) and the audit wording | **merged #877, 11-09-2026** |
-| P0 | Contracts as code (`agent/lib/entry-contracts.js`), the producer inventory pinned by test (`agent/lib/entry-producers.js`), the runtime manifest with unknowns labelled (`agent/services/runtime-manifest.js`, `GET /state/runtime-manifest`), this folder | this change |
-| P1 | Entry-mode / admission services, DB migrations, producer closure at the final boundary | planned |
+| P0 | Contracts as code (`agent/lib/entry-contracts.js`), the producer inventory pinned by test (`agent/lib/entry-producers.js`), the runtime manifest with unknowns labelled (`agent/services/runtime-manifest.js`, `GET /state/runtime-manifest`), this folder | **merged #878, 11-09-2026** |
+| P1b | Entry-mode service (`agent/services/entry-mode.js`), `admitEntry` at every Node producer and re-checked in `exec-engine.placeOrder`, the VPO arming fence, `POST /actions/entry-mode`, `GET /state/entry-engines`; register TM-06/TM-16 IMPLEMENTED, TM-10/TM-11/TM-39 PARTIAL | this change |
+| P1c | Drain of account-owned resting entry orders by stored origin on a mode switch; QUIESCING → RECONCILING → STABLE | planned |
 | P2 | Async broker session, durable intent ledger, one-use permits, mode fencing | planned |
 | P3 | Normalized tick feed, symbol workers, bounded recorder and archive | planned — needs the volume mapping (B18) |
 | P4 | `tick_momentum_breakout`, reference oracle, replayer, trial ledger | planned |

@@ -659,3 +659,22 @@ test('2.6.3 — the lock is keyed on the ORDER, not on the burst', async () => {
   )
   assert.equal(requests.filter(r => r.url === '/order').length, 4, 'nothing more reached the wire')
 })
+
+// P1b (11-09-2026): the per-account entry fence is re-checked at the last
+// Node boundary. A refusing fence stops the order before /connect, before
+// the lock, before any transport; an admitting one changes nothing.
+test('placeOrder: a refusing creds.entryAdmission throws ENTRY_MODE_REFUSED before any sidecar call', async () => {
+  const creds = { ...CREDS, producerId: 'scan_dispatch', entryAdmission: () => ({ ok: false, reason: 'entry_mode_stopped' }) }
+  const payload = { symbolId: 41, tradeSide: 'BUY', volume: 100000, relativeStopLoss: 50000, relativeTakeProfit: 50000 }
+  await assert.rejects(() => placeOrder(creds, payload), (err) => err.code === 'ENTRY_MODE_REFUSED' && /entry_mode_stopped/.test(err.message) && /scan_dispatch/.test(err.message))
+  assert.equal(requests.length, 0, 'nothing reached the sidecar, not even /connect')
+})
+
+test('placeOrder: an admitting creds.entryAdmission is transparent', async () => {
+  nextResponse = { status: 200, body: JSON.stringify({ ok: true, positionId: 11 }) }
+  const creds = { ...CREDS, producerId: 'scan_dispatch', entryAdmission: async () => ({ ok: true, modeEpoch: 3 }) }
+  const payload = { symbolId: 42, tradeSide: 'SELL', volume: 100000, relativeStopLoss: 50000, relativeTakeProfit: 50000 }
+  const out = await placeOrder(creds, payload)
+  assert.deepEqual(out, { ok: true, positionId: 11 })
+  assert.equal(requests.at(-1).url, '/order')
+})

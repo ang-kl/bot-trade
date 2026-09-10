@@ -330,7 +330,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         const price = Number(q?.ask) > 0 ? Number(q.ask) : Number(bars[bars.length - 1]?.c)
         const synth = buildEntrySynth({ symbol, price, atr, cfg, conviction, rankPct })
         if (!synth) { summary.skipped.push(`${symbol}: no usable price/ATR`); return 'skipped' }
-        const result = await deps.autoTrade(db, symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive })
+        const result = await deps.autoTrade(db, symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'cross_sectional_book' })
         if (!result) { summary.skipped.push(`${accountId} ${symbol}: not filled (gate or broker)`); return 'skipped' }
         const t = tradeRowFor.get(symbol, accountId, TSMOM_STRATEGY)
         insBook.run(t?.id ?? null, accountId, symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null,

@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { admitEntry } from './entry-mode.js'
 import { encodeLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { tradePrice } from './alert-format.js'
 import { getActiveSessions } from '../lib/sessions.js'
@@ -338,6 +339,9 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     riskCfg,
   })
 
+  // P1b: the fence, by name — this producer places its own orders.
+  const admission = admitEntry(db, { accountId: creds.accountId, producerId: 'closed_market_limits', basis: 'bar' })
+  if (!admission.ok) return { placed: false, skipped: 'entry_mode', reason: admission.reason }
   try {
     const ev = await exec.placeOrder(creds, payload)
     const orderId = ev?.order?.orderId ?? ev?.orderId ?? null
