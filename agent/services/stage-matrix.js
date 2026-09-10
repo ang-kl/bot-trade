@@ -462,18 +462,38 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
   }
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) { out.error = 'strategy-pins.json is not an object'; return out }
   const { getState, setState } = io
+  // SEED ONCE (10-09-2026). The file is the owner's initial declaration, not
+  // a setting re-asserted on every boot. Measured: the watchdog disarmed
+  // donchian_breakout, vwap_trend and rsi2_reversion on ACCT-LIVE-1 at 20:59
+  // SGT (demo pins held, #870), and the next boot re-pinned all of them
+  // ("strategy pins: 5 applied") — the #870 loop again, on the live account,
+  // where the guard's word is the one that must stand. A pin the seed has
+  // applied (or found) before is recorded here and never re-applied; what
+  // a guard or a human does to it afterwards persists across deploys. A
+  // key newly added to the file is still applied on its first boot.
+  out.held = []
+  let seeded = {}
+  try { seeded = JSON.parse(getState(db, 'strategy_pins_seeded_json') || '{}') || {} } catch { seeded = {} }
+  let dirty = false
   for (const [accountId, keys] of Object.entries(cfg)) {
     if (accountId.startsWith('_')) continue // the file's own notes, not an account
     if (!/^[0-9]+$/.test(accountId) || !Array.isArray(keys)) { out.skipped.push(`${accountId}: malformed`); continue }
+    const done = new Set(Array.isArray(seeded[accountId]) ? seeded[accountId] : [])
     for (const key of keys) {
       if (!STRATEGY_KEYS.includes(key)) { out.skipped.push(`${accountId}: unknown strategy '${key}'`); continue }
       const tag = `${accountId}:${key}`
-      if (isHandPinned(db, getState, accountId, key)) { out.unchanged.push(tag); continue }
-      setStage(db, { kind: 'strategy', key, stage: 'trade', on: true, accountId }, { getState, setState })
-      out.applied.push(tag)
-      log(`[boot] strategy pin …${accountId.slice(-4)}: ${key} ON for Auto Trade & Open (from config/strategy-pins.json)`)
+      const pinned = isHandPinned(db, getState, accountId, key)
+      if (done.has(key)) { (pinned ? out.unchanged : out.held).push(tag); continue }
+      if (pinned) { out.unchanged.push(tag) } else {
+        setStage(db, { kind: 'strategy', key, stage: 'trade', on: true, accountId }, { getState, setState })
+        out.applied.push(tag)
+        log(`[boot] strategy pin …${accountId.slice(-4)}: ${key} ON for Auto Trade & Open (from config/strategy-pins.json)`)
+      }
+      done.add(key); dirty = true
     }
+    seeded[accountId] = [...done]
   }
+  if (dirty) setState(db, 'strategy_pins_seeded_json', JSON.stringify(seeded))
   return out
 }
 
