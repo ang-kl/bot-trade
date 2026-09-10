@@ -1,0 +1,7 @@
+feed_symbol_keys,received_events_per_second_per_key,bytes_per_event_uncompressed,events_per_day,bytes_per_day,decimal_GB_per_day,decimal_GB_per_30_days,spool_bytes,spool_hours,hypothetical_empty_10GB_days,status,assumptions
+20,5,64,8640000,552960000,0.55296,16.5888,2147483648,93.206756,18.084491,SCENARIO_NOT_MEASURED,24h continuous; payload only; no compression benefit; excludes headers/indexes/existing files; independent feeds add
+20,5,96,8640000,829440000,0.82944,24.8832,2147483648,62.137837,12.056327,SCENARIO_NOT_MEASURED,24h continuous; payload only; no compression benefit; excludes headers/indexes/existing files; independent feeds add
+20,20,64,34560000,2211840000,2.21184,66.3552,2147483648,23.301689,4.521123,SCENARIO_NOT_MEASURED,24h continuous; payload only; no compression benefit; excludes headers/indexes/existing files; independent feeds add
+20,20,96,34560000,3317760000,3.31776,99.5328,2147483648,15.534459,3.014082,SCENARIO_NOT_MEASURED,24h continuous; payload only; no compression benefit; excludes headers/indexes/existing files; independent feeds add
+20,100,64,172800000,11059200000,11.0592,331.776,2147483648,4.660338,0.904225,SCENARIO_NOT_MEASURED,24h continuous; payload only; no compression benefit; excludes headers/indexes/existing files; independent feeds add
+20,100,96,172800000,16588800000,16.5888,497.664,2147483648,3.106892,0.602816,SCENARIO_NOT_MEASURED,24h continuous; payload only; no compression benefit; excludes headers/indexes/existing files; independent feeds add

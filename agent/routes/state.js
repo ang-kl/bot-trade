@@ -2453,6 +2453,29 @@ export default function stateRouter(db) {
     }
   })
 
+  // P0 of the tick-momentum programme (docs/tick-momentum/plan.md §17, B18):
+  // what this deployment actually is, unknowns labelled — and the inventory
+  // of every path that can open new risk (§13, B11).
+  router.get('/runtime-manifest', async (_req, res) => {
+    try {
+      const { runtimeManifest } = await import('../services/runtime-manifest.js')
+      const { readFileSync } = await import('node:fs')
+      let packageVersion = null
+      try { packageVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version } catch { /* unknown */ }
+      res.json(await runtimeManifest(db, { packageVersion }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+  router.get('/entry-producers', async (_req, res) => {
+    try {
+      const { producerInventoryView } = await import('../lib/entry-producers.js')
+      res.json(producerInventoryView())
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/momentum-book — the long-only TS momentum book: config, open
   // positions with their trailing stops, and the closed record.
   router.get('/momentum-book', async (_req, res) => {
