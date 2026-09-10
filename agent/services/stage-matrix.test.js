@@ -304,7 +304,7 @@ test('wiring: POST /actions/strategies clears pins for every strategy it turns o
 // rsi2_reversion / rsi_meanrev demo cohort, applied at boot from
 // config/strategy-pins.json because the pinning route needs the lost token.
 // ---------------------------------------------------------------------------
-import { seedStrategyPinsFromConfig, isHandPinned, tradeStageGate as gateFor } from './stage-matrix.js'
+import { seedStrategyPinsFromConfig, isHandPinned, tradeStageGate as gateFor, disarmStrategyEverywhere } from './stage-matrix.js'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -332,7 +332,25 @@ test('strategy-pin seed: pins the named strategies ON for that account only, ide
   assert.ok(!armedTradeKeys(db, getState, '111').has('ema_pullback'), 'other cells on the account keep their value')
   // Idempotent: a second boot changes nothing.
   const b = seedStrategyPinsFromConfig(db, io, { file })
-  assert.deepEqual(b.applied, []); assert.deepEqual(b.unchanged, ['111:rsi2_reversion', '111:rsi_meanrev'])
+  assert.deepEqual(b.applied, []); assert.deepEqual(b.unchanged, ['111:rsi2_reversion', '111:rsi_meanrev']); assert.deepEqual(b.held, [])
+  // SEED ONCE (10-09-2026): a guard disarms the pin; the next boot does NOT
+  // re-pin it — the file is a declaration, not a setting re-asserted per
+  // deploy. Measured: watchdog disarmed three strategies on ACCT-LIVE-1 at
+  // 20:59 SGT, boot re-applied five ("strategy pins: 5 applied").
+  db.prepare(`UPDATE accounts SET is_live = 1 WHERE account_id = '111'`).run()
+  const scopes = disarmStrategyEverywhere(db, io, 'rsi2_reversion', { neverZero: false, exemptHandPinnedDemo: true })
+  assert.deepEqual([...scopes], ['111'], 'a live pin is disarmed by the guard')
+  assert.equal(isHandPinned(db, getState, '111', 'rsi2_reversion'), false)
+  const c = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(c.applied, [], 'the guard-disarmed pin is not re-applied')
+  assert.deepEqual(c.held, ['111:rsi2_reversion'])
+  assert.deepEqual(c.unchanged, ['111:rsi_meanrev'])
+  assert.equal(isHandPinned(db, getState, '111', 'rsi2_reversion'), false, 'the guard\'s word stands across the boot')
+  // A key newly added to the file is still applied on its first boot.
+  writeFileSync(file, JSON.stringify({ 111: ['rsi2_reversion', 'rsi_meanrev', 'ema_pullback'] }))
+  const d = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(d.applied, ['111:ema_pullback']); assert.deepEqual(d.held, ['111:rsi2_reversion'])
+  assert.deepEqual(JSON.parse(getState(db, 'strategy_pins_seeded_json'))['111'].sort(), ['ema_pullback', 'rsi2_reversion', 'rsi_meanrev'])
   // Missing or malformed file: reports, changes nothing.
   assert.match(seedStrategyPinsFromConfig(db, io, { file: join(dir, 'missing.json') }).error, /strategy-pins.json unreadable/)
   writeFileSync(file, '[1,2]')

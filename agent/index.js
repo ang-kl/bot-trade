@@ -345,7 +345,7 @@ try {
     const { seedStrategyPinsFromConfig } = await import('./services/stage-matrix.js')
     const sp = seedStrategyPinsFromConfig(db, { getState, setState }, { log: (m) => console.log(m) })
     if (sp.error) console.error(`[boot] strategy pins: ${sp.error}`)
-    else console.log(`[boot] strategy pins: ${sp.applied.length} applied, ${sp.unchanged.length} unchanged${sp.skipped.length ? `, skipped: ${sp.skipped.join('; ')}` : ''} (config/strategy-pins.json)`)
+    else console.log(`[boot] strategy pins: ${sp.applied.length} applied, ${sp.unchanged.length} unchanged${sp.held?.length ? `, ${sp.held.length} held (seeded before, since disarmed: ${sp.held.join(' ')})` : ''}${sp.skipped.length ? `, skipped: ${sp.skipped.join('; ')}` : ''} (config/strategy-pins.json)`)
   } catch (err) {
     console.error(`[boot] strategy pins seed failed (non-fatal): ${err.message}`)
   }
