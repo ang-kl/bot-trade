@@ -1,0 +1,109 @@
+{
+  "document_type": "RESEARCH_PLAN_ONLY_NOT_DEPLOYABLE_CONFIG",
+  "source_commit": "a0f6d8bd48794e1c9e81e633311c11045fc64285",
+  "strategy_id": "tick_momentum_breakout",
+  "strategy_version": "proposed-v1",
+  "execution_enabled": false,
+  "account_scope": "all authorized discovered accounts; independently gated",
+  "entry_modes": [
+    "TIME_BASED",
+    "TICK_MOMENTUM",
+    "STOPPED"
+  ],
+  "initial_policy": "Tick off; existing time configuration preserved; new accounts unarmed",
+  "signal_basis": "ordered valid bid/ask quote changes; no candle timeframe",
+  "baseline": {
+    "range_events": 256,
+    "momentum_events": 64,
+    "minimum_efficiency": 0.4,
+    "spread_buffer_multiplier": 0.5,
+    "confirmation_events_including_crossing": 2,
+    "stop_volatility_multiple": 2,
+    "minimum_gross_rr": "effective account policy floor; current source default 3",
+    "minimum_target_to_estimated_round_trip_cost": 3,
+    "maximum_holding_events": "4*N",
+    "rearm_cooldown_events": "N/4",
+    "untriggered_setup_expiry_events": "N",
+    "minimum_warmup_prices": "N+1 prior prices",
+    "maximum_wall_clock_holding_time": "required finite policy value determined before demo",
+    "quote_age_side_skew_signal_ttl": "required versioned safety bounds from measured feed/execution; not test-set fitted"
+  },
+  "stage_a_trials": [
+    {
+      "range_events": 128,
+      "momentum_events": 32,
+      "minimum_efficiency": 0.25
+    },
+    {
+      "range_events": 128,
+      "momentum_events": 32,
+      "minimum_efficiency": 0.4
+    },
+    {
+      "range_events": 128,
+      "momentum_events": 32,
+      "minimum_efficiency": 0.55
+    },
+    {
+      "range_events": 256,
+      "momentum_events": 64,
+      "minimum_efficiency": 0.25
+    },
+    {
+      "range_events": 256,
+      "momentum_events": 64,
+      "minimum_efficiency": 0.4
+    },
+    {
+      "range_events": 256,
+      "momentum_events": 64,
+      "minimum_efficiency": 0.55
+    },
+    {
+      "range_events": 512,
+      "momentum_events": 128,
+      "minimum_efficiency": 0.25
+    },
+    {
+      "range_events": 512,
+      "momentum_events": 128,
+      "minimum_efficiency": 0.4
+    },
+    {
+      "range_events": 512,
+      "momentum_events": 128,
+      "minimum_efficiency": 0.55
+    },
+    {
+      "range_events": 1024,
+      "momentum_events": 256,
+      "minimum_efficiency": 0.25
+    },
+    {
+      "range_events": 1024,
+      "momentum_events": 256,
+      "minimum_efficiency": 0.4
+    },
+    {
+      "range_events": 1024,
+      "momentum_events": 256,
+      "minimum_efficiency": 0.55
+    }
+  ],
+  "later_research": "Predeclare limited training-only local sensitivity and ablations; record all trials; no Cartesian grid",
+  "policy": "Broker minimums and account risk/cooldown/evidence limits retained; no forced target inflation",
+  "promotion": "Replay, shadow, demo and independent live readiness tied to implementation/profile/feed version; not automatically activated",
+  "memory_scenarios": {
+    "history_records_per_feed_symbol": 4096,
+    "initial_max_feed_symbols_per_process": 128,
+    "initial_tick_feature_budget_bytes": 134217728,
+    "initial_recorder_queue_bytes": 33554432
+  },
+  "storage_scenarios": {
+    "spool_cap_per_verified_mount_bytes": 2147483648,
+    "segment_cap_bytes": 67108864,
+    "raw_ticks_in_operational_db": false,
+    "archive_days_initial_budget": 90
+  },
+  "parameter_provenance": "Engineering/research proposals, not literature-derived optimal settings or validated profitable presets"
+}
