@@ -32,13 +32,13 @@ import { clearErrorLog } from '../services/error-log.js'
 // Credentials for ONE account by id (03-09-2026): the accounts registry says
 // which side (live/demo) it sits on. Null or unknown id → the primary, as
 // every caller behaved before.
-export function credsForAccountId(db, accountId) {
-  if (accountId == null || accountId === '') return getCtraderCreds(db)
+export function credsForAccountId(db, accountId, opts = {}) {
+  if (accountId == null || accountId === '') return getCtraderCreds(db, undefined, opts)
   const id = String(accountId)
   let row = null
   try { row = db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(id) } catch { row = null }
-  if (!row) return getCtraderCreds(db)
-  return getCtraderCreds(db, { accountId: id, isLive: Number(row.is_live) === 1 })
+  if (!row) return getCtraderCreds(db, undefined, opts)
+  return getCtraderCreds(db, { accountId: id, isLive: Number(row.is_live) === 1 }, opts)
 }
 
 /**
@@ -1042,6 +1042,24 @@ export default function actionsRouter(db, deps = {}) {
       console.log('[actions] fundable-universe → rebuild requested for every account (one per loop cycle)')
       res.json({ ok: true, queued: true, note: 'the loop rebuilds one due account per cycle; read /state/fundable-universe' })
     } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // P1b (docs/tick-momentum/plan.md §3): the per-account entry engine.
+  // { accountId, mode: TIME_BASED | STOPPED (TICK_MOMENTUM refused until P4/P6),
+  //   expectedRevision } — a stale revision is refused, never applied.
+  router.post('/entry-mode', async (req, res) => {
+    try {
+      const { requestEntryMode } = await import('../services/entry-mode.js')
+      const { accountId, mode, expectedRevision = null } = req.body || {}
+      if (!accountId || !mode) return res.status(400).json({ error: 'accountId and mode are required' })
+      const r = requestEntryMode(db, String(accountId), String(mode), { expectedRevision, actor: 'owner' })
+      if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
+      console.log(`[actions] entry-mode → …${String(accountId).slice(-4)} ${r.status.effectiveEntryMode} (revision ${r.status.configRevision}, epoch ${r.status.modeEpoch}, resting ${r.status.entryCounts.resting})`)
+      res.json({ ok: true, changed: r.changed, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` } })
+    } catch (err) {
+      console.error('[actions/entry-mode] error:', err.message)
       res.status(500).json({ error: err.message })
     }
   })
@@ -2064,7 +2082,7 @@ export default function actionsRouter(db, deps = {}) {
   // The action is recorded either way, so the ledger stops being blind to it.
   router.post('/position-double', async (req, res) => {
     try {
-      const creds = getCtraderCreds(db)
+      const creds = getCtraderCreds(db, undefined, { producerId: 'route_position_double' })
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { positionId } = req.body || {}
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
@@ -2136,7 +2154,7 @@ export default function actionsRouter(db, deps = {}) {
     const { positionId } = req.body || {}
     let closed = false
     try {
-      const creds = getCtraderCreds(db)
+      const creds = getCtraderCreds(db, undefined, { producerId: 'route_position_reverse' })
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
 
@@ -2588,7 +2606,7 @@ export default function actionsRouter(db, deps = {}) {
 
       // Dynamic import keeps route wiring free of load-order surprises.
       const { autoTrade } = await import('../loop.js')
-      const result = await autoTrade(db, symbol, synth, { maxVolume: 0.01 }, null)
+      const result = await autoTrade(db, symbol, synth, { maxVolume: 0.01 }, null, { producerId: 'route_validation_fill' })
       const lastEvent = db.prepare(
         `SELECT approved, veto_reason, created_at FROM risk_events WHERE symbol = ? ORDER BY id DESC LIMIT 1`
       ).get(symbol)
@@ -3286,7 +3304,7 @@ export default function actionsRouter(db, deps = {}) {
       for (const { w, signal } of candidates) {
         if (placed >= count) break
         const synth = synthesizeFibSignal(w.symbol, signal, minConviction).synthesis
-        const result = await autoTrade(db, w.symbol, synth, w, null)
+        const result = await autoTrade(db, w.symbol, synth, w, null, { producerId: 'route_trade_now' })
         attempts.push({
           symbol: w.symbol,
           timeframe: signal.timeframe || null,
@@ -5308,7 +5326,7 @@ export default function actionsRouter(db, deps = {}) {
       let exec
       try {
         exec = await execPlaceOrder(
-          { ...getCtraderCreds(db), host, clientId, clientSecret, accessToken, accountId },
+          { ...getCtraderCreds(db, undefined, { producerId: 'route_execute_trade' }), host, clientId, clientSecret, accessToken, accountId },
           orderPayload)
       } catch (err) {
         // A guard_* refusal is a veto, not a server fault: record it against the
@@ -5396,7 +5414,7 @@ export default function actionsRouter(db, deps = {}) {
       if (account != null && account !== '' && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(String(account))) {
         return res.status(400).json({ error: `account ${String(account)} is not in the registry` })
       }
-      const creds = credsForAccountId(db, account)
+      const creds = credsForAccountId(db, account, { producerId: 'route_manual_order' })
       if (!creds.ready) return res.status(400).json({ error: 'cTrader credentials not configured' })
       // THIS ACCOUNT's id (03-09-2026): the shared map's ids were other
       // instruments on ACCT-LIVE-1 for LLY.US and GD.US.

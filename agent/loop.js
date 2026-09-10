@@ -15,6 +15,7 @@ import { recordTradePlan } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates } from './services/risk.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
+import { admitEntry } from './services/entry-mode.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
@@ -294,7 +295,11 @@ export function getAutopilotAccounts(db) {
   return [{ accountId: id, isLive: getState(db, 'ctrader_is_live') === 'true' }]
 }
 
-export async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
+export async function autoTrade(db, symbol, synth, watchlistItem, accountOverride, opts = {}) {
+  // P1b: which producer this dispatch is, for the entry fence. Callers name
+  // themselves (book, momentum account, burn-in, the routes); the ordinary
+  // scan path is the default.
+  const producerId = opts.producerId || accountOverride?.producerId || 'scan_dispatch'
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
@@ -798,7 +803,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const submitT0 = Date.now()
     let exec
     try {
-      exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId, execGuard }, orderPayload)
+      exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId, execGuard, producerId, entryAdmission: () => admitEntry(db, { accountId, producerId, basis: 'bar' }) }, orderPayload)
     } catch (err) {
       // Mark the intent by OUTCOME rather than deleting it. A provably-unsent
       // order is dead and must not block the next attempt; an ambiguous one

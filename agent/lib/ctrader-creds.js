@@ -6,6 +6,7 @@
 
 import { getState } from '../db.js'
 import { ctraderEnv } from './ctrader-env.js'
+import { admitEntry } from '../services/entry-mode.js'
 
 /**
  * Assemble cTrader connection credentials from env + agent state.
@@ -15,7 +16,7 @@ import { ctraderEnv } from './ctrader-env.js'
  * @param {{accountId?: string|number, isLive?: boolean}} [accountOverride]
  * @returns {{host: string, clientId: string|undefined, clientSecret: string|undefined, accessToken: string|null, accountId: string|null, ready: boolean}}
  */
-export function getCtraderCreds(db, accountOverride) {
+export function getCtraderCreds(db, accountOverride, { producerId = null, basis = 'bar' } = {}) {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
@@ -64,6 +65,11 @@ export function getCtraderCreds(db, accountOverride) {
     accountId,
     accountIds,
     execGuard: execGuard && typeof execGuard === 'object' ? execGuard : null,
+    // P1b (11-09-2026): the entry fence travels with the credentials the same
+    // way the exec guard does, so exec-engine.placeOrder can re-check it at
+    // the last Node boundary. Absent producerId = a non-producing caller
+    // (reads, reconcile, amends): no fence attached.
+    ...(producerId ? { producerId, entryAdmission: () => admitEntry(db, { accountId, producerId, basis }) } : {}),
     ready: !!(clientId && clientSecret && accessToken && accountId),
   }
 }

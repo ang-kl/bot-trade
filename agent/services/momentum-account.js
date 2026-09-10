@@ -328,7 +328,7 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
         source: 'momentum_account',
         synthesis: `${synth.synthesis} Sized by the ${cfg.volTargetPct}% vol target: ${u.lots} lots ($${u.notionalUsd} notional at ${u.assetVolPct}% asset vol).`,
       })
-      const result = await deps.autoTrade(db, w.symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive })
+      const result = await deps.autoTrade(db, w.symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'daily_momentum_account' })
       if (!result) { summary.skipped.push(`${w.symbol}: not filled (gate, closed market, or broker)`); continue }
       const t = tradeRowFor.get(w.symbol, accountId, TSMOM_STRATEGY)
       insBook.run(t?.id ?? null, accountId, w.symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null,

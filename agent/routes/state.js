@@ -2467,6 +2467,14 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  router.get('/entry-engines', async (_req, res) => {
+    try {
+      const { entryEnginesView } = await import('../services/entry-mode.js')
+      res.json(entryEnginesView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   router.get('/entry-producers', async (_req, res) => {
     try {
       const { producerInventoryView } = await import('../lib/entry-producers.js')

@@ -649,6 +649,19 @@ export function claimOrderLock(payload, nowMs = Date.now()) {
 export async function placeOrder(creds, orderPayload) {
   const g = validateExecGuard(orderPayload, creds?.execGuard)
   if (!g.ok) throw new Error(g.reason)
+  // P1b (11-09-2026): THE FINAL NODE BOUNDARY for the per-account entry
+  // mode. A producer that never asked admitEntry() is still refused here,
+  // before the account is stamped, before the lock, before any transport.
+  // Manual families are admitted by the fence itself; only automatic
+  // producers on a STOPPED (or wrong-basis) account are refused.
+  if (typeof creds?.entryAdmission === 'function') {
+    const a = await creds.entryAdmission()
+    if (!a?.ok) {
+      const err = new Error(`ENTRY_MODE_REFUSED: ${a?.reason || 'refused'} (producer ${creds.producerId || '?'})`)
+      err.code = 'ENTRY_MODE_REFUSED'
+      throw err
+    }
+  }
   const v = validateOrderBracket(orderPayload)
   if (!v.ok) throw new Error(v.reason)
   // Throws on an unresolvable or contradictory account, BEFORE the guard-passed

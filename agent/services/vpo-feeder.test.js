@@ -292,3 +292,31 @@ test('feeder: an unvetoed symbol still sizes normally with the gate present', as
   assert.ok(pushed.volumes[0].volume > 0)
 
 })
+
+// P1b (11-09-2026): the ARMING fence — a STOPPED account is never pushed to
+// the C++ VPO tier, so the tier cannot fire what it was never told to hold.
+test('feeder: a STOPPED account is not armed — no /vpo-config push, the reason names the fence', async () => {
+  const db = freshDB()
+  setState(db, 'vpo_enabled', 'true')
+  setState(db, 'vpo_config_json', JSON.stringify([
+    { key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, macroTf: '4h', microTf: '15m' },
+  ]))
+  setState(db, 'ctrader_access_token', 'tok')
+  setState(db, 'ctrader_account_id', '42')
+  setState(db, 'account_balance_usd', '10000')
+  const { upsertAccount } = await import('./account-registry.js')
+  const { requestEntryMode } = await import('./entry-mode.js')
+  upsertAccount(db, { accountId: '42', isLive: false })
+  assert.equal(requestEntryMode(db, '42', 'STOPPED').ok, true)
+
+  let pushed = null
+  const r = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
+  assert.equal(r.skipped, 'entry_mode: entry_mode_stopped')
+  assert.equal(pushed, null, 'nothing was pushed')
+
+  // Back to TIME_BASED: the push resumes.
+  assert.equal(requestEntryMode(db, '42', 'TIME_BASED', { expectedRevision: 1 }).ok, true)
+  const r2 = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
+  assert.equal(r2.ok, true)
+  assert.ok(pushed && pushed.ctidTraderAccountId === 42)
+})

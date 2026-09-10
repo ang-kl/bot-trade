@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { admitEntry } from './entry-mode.js'
 import { recordDecision } from './decision-log.js'
 import { readTradableUnion } from './watchlists.js'
 import { tradePrice } from './alert-format.js'
@@ -580,6 +581,9 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       comment: 'pending-fib',
     }
 
+    // P1b: the fence, by name.
+    const admission = admitEntry(db, { accountId: creds.accountId, producerId: 'pending_fib_orders', basis: 'bar' })
+    if (!admission.ok) { summary.skipped.push(`${symbol}: entry_mode ${admission.reason}`); continue }
     try {
       const execEvent = await exec.placeOrder(creds, orderPayload)
       const orderId = execEvent?.order?.orderId ?? execEvent?.orderId ?? null

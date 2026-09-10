@@ -55,7 +55,7 @@ test('both cancel routes resolve the ORDER\'s account, and neither builds its ca
 test('manual-order and position-close take the ORDER\'s account too (owner: "use ACCT-DEMO-2"), and manual-order resolves the id per account', () => {
   const src = strip(readFileSync(new URL('./actions.js', import.meta.url), 'utf8'))
   const mo = routeBody(src, '/manual-order')
-  assert.ok(mo.includes('const creds = credsForAccountId(db, account)'))
+  assert.ok(mo.includes("const creds = credsForAccountId(db, account, { producerId: 'route_manual_order' })"), 'the ORDER\'s account, and (P1b) the route names itself to the entry fence')
   assert.ok(mo.includes('await resolveSymbolId(db, creds, symbol)'), 'the account\'s own symbol id, never the shared map')
   assert.ok(!mo.includes('ensureSymbolMap(db, creds)'), 'the shared-map lookup is gone from /manual-order')
   assert.ok(mo.includes("is not in the registry"), 'an unknown account is refused, not routed to the primary')
