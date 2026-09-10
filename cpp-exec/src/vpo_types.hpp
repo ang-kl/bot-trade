@@ -63,4 +63,28 @@ struct VirtualPendingOrder {
       : symbol(std::move(sym)), timeframe(std::move(tf)), symbolId(symId), digits(dig) {}
 };
 
+// ARM / IDLE TRANSITIONS NEVER OVERWRITE FIRED (10-09-2026). Reproduced: the
+// recompute thread stored ARMED unconditionally, so a strategy whose fire was
+// still unresolved (FIRED, waiting on the fire thread) was re-armed and the
+// next tick won a SECOND ARMED->FIRED CAS on the same setup. The plain store
+// was the hole: a load-then-store can also interleave with the tick thread's
+// CAS. These helpers make every recompute-side transition a CAS that refuses
+// to touch FIRED; only the fire thread's resetAfterFire() leaves FIRED.
+inline bool armUnlessFired(VirtualPendingOrder& o) {
+  VposState cur = o.state.load(std::memory_order_acquire);
+  while (cur != VposState::FIRED) {
+    if (o.state.compare_exchange_weak(cur, VposState::ARMED, std::memory_order_acq_rel,
+                                      std::memory_order_acquire)) return true;
+  }
+  return false;
+}
+inline bool idleUnlessFired(VirtualPendingOrder& o) {
+  VposState cur = o.state.load(std::memory_order_acquire);
+  while (cur != VposState::FIRED) {
+    if (o.state.compare_exchange_weak(cur, VposState::IDLE, std::memory_order_acq_rel,
+                                      std::memory_order_acquire)) return true;
+  }
+  return false;
+}
+
 } // namespace vpo

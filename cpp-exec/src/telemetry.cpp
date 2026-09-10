@@ -15,6 +15,7 @@ Telemetry::~Telemetry() {
 }
 
 bool Telemetry::log(const TelemetryRecord& rec) {
+  std::lock_guard<std::mutex> lk(producerMtx_); // many producers, one SPSC ring
   if (ring_.push(rec)) return true;
   dropped_.fetch_add(1, std::memory_order_relaxed);
   return false;
@@ -36,11 +37,11 @@ void Telemetry::run() {
     while (auto rec = ring_.pop()) {
       didWork = true;
       if (!f) { dropped_.fetch_add(1, std::memory_order_relaxed); continue; }
-      std::fwrite(&*rec, sizeof(TelemetryRecord), 1, f);
-      written_.fetch_add(1, std::memory_order_relaxed);
+      if (std::fwrite(&*rec, sizeof(TelemetryRecord), 1, f) == 1) written_.fetch_add(1, std::memory_order_relaxed);
+      else writeErrors_.fetch_add(1, std::memory_order_relaxed);
     }
     if (f && didWork) {
-      std::fflush(f);
+      if (std::fflush(f) != 0) writeErrors_.fetch_add(1, std::memory_order_relaxed);
       if (std::ftell(f) > kRotateBytes) {
         std::fclose(f);
         const std::string old = path_ + ".1";

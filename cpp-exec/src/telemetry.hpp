@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -43,12 +44,22 @@ public:
   Telemetry(size_t capacity, std::string path);
   ~Telemetry();
 
-  // Producer (hot path): non-blocking. Returns false if the ring was full
-  // (record dropped + counted). Never allocates, never locks, never does I/O.
+  // Producer: non-blocking on I/O, never allocates. Returns false if the ring
+  // was full (record dropped + counted).
+  //
+  // PRODUCER-SAFE (10-09-2026). The ring is SPSC but log() has several callers
+  // on several threads — the order path, the VPO fire thread, guard refusals
+  // logged before the engine mutex, detached HTTP handlers. Reproduced: eight
+  // producers submitted 400,000 records, 106,404 were written and ZERO were
+  // reported dropped. A short uncontended mutex around the push costs tens of
+  // nanoseconds and makes every accepted record a written record.
   bool log(const TelemetryRecord& rec);
 
   uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
   uint64_t written() const { return written_.load(std::memory_order_relaxed); }
+  // fwrite/fflush failures, which used to be invisible: a record the worker
+  // popped but the file did not take was counted as written.
+  uint64_t writeErrors() const { return writeErrors_.load(std::memory_order_relaxed); }
 
   // Block until the background thread has drained everything currently queued
   // (tests + graceful shutdown). Not for the hot path.
@@ -63,4 +74,6 @@ private:
   std::atomic<bool> stop_{false};
   std::atomic<uint64_t> dropped_{0};
   std::atomic<uint64_t> written_{0};
+  std::atomic<uint64_t> writeErrors_{0};
+  std::mutex producerMtx_;
 };
