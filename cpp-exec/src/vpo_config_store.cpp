@@ -37,4 +37,10 @@ double VpoConfigStore::getVolume(const std::string& strategyKey) const {
   return it->second.volume;
 }
 
+void VpoConfigStore::clear() {
+  std::lock_guard lk(mtx_);
+  bars_.clear();
+  vols_.clear();
+}
+
 } // namespace vpo

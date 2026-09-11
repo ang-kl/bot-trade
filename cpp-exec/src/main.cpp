@@ -400,6 +400,12 @@ int main(int argc, char** argv) {
       gj.set("requireTarget", g.requireTarget);
       gj.set("maxOrderVolume", g.maxOrderVolume);
       gj.set("haltAccountCount", static_cast<double>(g.haltAccounts.size()));
+      // P2a: the fenced epochs, so the keeper's guard sync can see whether
+      // its push bound (and an older keeper reads a plain object it ignores).
+      jsn::Value eo{jsn::Object{}};
+      for (const auto& kv : g.entryEpochs) eo.set(std::to_string(kv.first), static_cast<double>(kv.second));
+      gj.set("entryEpochs", std::move(eo));
+      gj.set("entryEpochCount", static_cast<double>(g.entryEpochs.size()));
       v.set("guard", std::move(gj));
     }
     v.set("decisionsSeq", static_cast<double>(decisionRing.latestSeq()));
@@ -667,6 +673,28 @@ int main(int argc, char** argv) {
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
     const jsn::Value& v = *parsed;
+    // P2a: the keeper's DISARM for a STOPPED account. The fence that only
+    // withheld the next push left the last one armed until the store aged it
+    // out (5 min); this clears the store, idles every strategy not mid-fire
+    // and forgets the account, at once.
+    if (v.get("disarm").asBool(false)) {
+      vpoStore.clear();
+      long long prev = 0;
+      size_t idled = 0;
+      if (vpoDispatcher) {
+        prev = vpoDispatcher->accountId();
+        idled = vpoDispatcher->disarmAll();
+        vpoDispatcher->setAccountId(0);
+      }
+      logLine("VPO tier DISARMED by the keeper (" + v.get("reason").asString() + "): store cleared, " +
+              std::to_string(idled) + " strategy/ies idled, account " + std::to_string(prev) + " -> 0");
+      jsn::Value out{jsn::Object{}};
+      out.set("ok", true);
+      out.set("disarmed", true);
+      out.set("idled", static_cast<double>(idled));
+      out.set("previousAccountId", static_cast<double>(prev));
+      return {200, jsn::dump(out)};
+    }
     int barsUpdated = 0, volsUpdated = 0;
     for (const auto& entry : v.get("bars").asArray()) {
       const std::string symbol = entry.get("symbol").asString();
@@ -745,17 +773,30 @@ int main(int argc, char** argv) {
       }
       engine.guard().setHaltAccounts(std::move(ids));
     }
+    // P2a: per-account entry epochs — full replace, same declarative contract
+    // as haltAccounts. { "<accountId>": epoch, ... }
+    if (v.get("entryEpochs").isObject()) {
+      std::map<long long, long long> m;
+      for (const auto& kv : v.get("entryEpochs").asObject()) {
+        const long long id = std::strtoll(kv.first.c_str(), nullptr, 10);
+        if (id > 0 && kv.second.isNumber()) m[id] = static_cast<long long>(kv.second.asNumber(0));
+      }
+      engine.guard().setEntryEpochs(std::move(m));
+    }
     const GuardSnapshot g = engine.guard().snapshot();
     // A guard change is a declaration worth remembering — the ring is how the
     // keeper's inspector later asks "who changed the guard, and did it bind".
     if (before.halt != g.halt || before.haltAccounts != g.haltAccounts ||
         before.requireBracket != g.requireBracket || before.requireTarget != g.requireTarget ||
-        before.maxOrderVolume != g.maxOrderVolume) {
+        before.maxOrderVolume != g.maxOrderVolume || before.entryEpochs != g.entryEpochs) {
+      std::string epochs;
+      for (const auto& kv : g.entryEpochs) epochs += (epochs.empty() ? "" : ",") + std::to_string(kv.first) + ":" + std::to_string(kv.second);
       decisionRing.log("guard", "config_changed", 0, 0, "",
                        std::string("halt=") + (g.halt ? "1" : "0") +
                        " haltAccounts=" + std::to_string(g.haltAccounts.size()) +
                        " bracket=" + (g.requireBracket ? "1" : "0") +
-                       " target=" + (g.requireTarget ? "1" : "0"));
+                       " target=" + (g.requireTarget ? "1" : "0") +
+                       " entryEpochs=" + (epochs.empty() ? std::string("none") : epochs));
     }
     jsn::Value out{jsn::Object{}};
     out.set("ok", true);
@@ -766,6 +807,9 @@ int main(int argc, char** argv) {
     jsn::Array ha;
     for (long long id : g.haltAccounts) ha.push_back(jsn::Value(id));
     out.set("haltAccounts", jsn::Value(std::move(ha)));
+    jsn::Value eo{jsn::Object{}};
+    for (const auto& kv : g.entryEpochs) eo.set(std::to_string(kv.first), static_cast<double>(kv.second));
+    out.set("entryEpochs", std::move(eo));
     return {200, jsn::dump(out)};
   });
 

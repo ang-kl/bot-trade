@@ -38,6 +38,9 @@ import { getAccountState, setAccountState } from './account-registry.js'
 import { recordDecision } from './decision-log.js'
 import { ENTRY_MODES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
 import { ENTRY_PRODUCERS } from '../lib/entry-producers.js'
+// P2a: the intent ledger (a function-only cycle: entry-ledger imports the
+// fence from here; nothing on either side runs at module load).
+import { releaseOldEpoch, intentCounts } from './entry-ledger.js'
 
 export const ENGINE_STATUS_KEY = 'engine_status_json'
 
@@ -97,20 +100,27 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
     return { ok: false, reason: 'tick_engine_not_built: the tick strategy (P4) and its evidence (P6) do not exist yet', current: cur.configRevision }
   }
   const resting = countResting(db, id)
+  const nextEpoch = cur.modeEpoch + 1
+  // P2a (plan §3 step 1): RESERVED intents of the old epoch are never sent;
+  // DISPATCHING / SENT ones stay in flight (step 2) and UNKNOWN ones keep the
+  // state RECONCILING (step 4) until the broker's evidence resolves them.
+  let ledger = { unsent: 0, inFlight: 0, unknown: 0 }
+  try { releaseOldEpoch(db, id, nextEpoch, { now: now.getTime() }); ledger = intentCounts(db, id) } catch { /* ledger table absent on an old schema */ }
+  const unknown = Math.max(cur.entryCounts.unknown, ledger.unknown)
   // P1c: STOPPED with resting entry orders enters QUIESCING — entry-drain.js
   // cancels them by stored id and settles the state on the broker's word. Any
   // other switch is STABLE unless an unresolved entry is still counted, which
   // an active mode may not call STABLE (validateEngineStatus).
-  const transitionState = mode === 'STOPPED' && resting > 0 ? 'QUIESCING' : (cur.entryCounts.unknown > 0 ? 'RECONCILING' : 'STABLE')
+  const transitionState = mode === 'STOPPED' && resting > 0 ? 'QUIESCING' : (unknown > 0 ? 'RECONCILING' : 'STABLE')
   const next = {
     ...cur,
     requestedEntryMode: mode,
     effectiveEntryMode: mode,   // Node acknowledges at once — the fence is admitEntry()
     transitionState,
     configRevision: cur.configRevision + 1,
-    modeEpoch: cur.modeEpoch + 1,
-    fenceAckEpoch: cur.modeEpoch + 1,
-    entryCounts: { ...cur.entryCounts, resting },
+    modeEpoch: nextEpoch,
+    fenceAckEpoch: nextEpoch,
+    entryCounts: { unsent: ledger.unsent, inFlight: ledger.inFlight, resting, unknown },
     updatedAt: now.toISOString(),
   }
   const saved = writeEngineStatus(db, next)
@@ -171,7 +181,7 @@ export function entryEnginesView(db) {
       validationStage: st.validationStage,
       configRevision: st.configRevision,
       modeEpoch: st.modeEpoch,
-      entryCounts: { ...st.entryCounts, resting: countResting(db, r.account_id) },
+      entryCounts: { ...st.entryCounts, resting: countResting(db, r.account_id), ...(() => { try { return intentCounts(db, r.account_id) } catch { return {} } })() },
       stored: st.stored !== false,
       invalid: st.invalid || null,
     }

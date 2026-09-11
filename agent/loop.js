@@ -15,7 +15,6 @@ import { recordTradePlan } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates } from './services/risk.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
-import { admitEntry } from './services/entry-mode.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
@@ -25,7 +24,7 @@ import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from '.
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
 import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
-import { getCtraderCreds, getSymbolMap } from './lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, attachEntryFence } from './lib/ctrader-creds.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
@@ -340,7 +339,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
       const r = await placeClosedMarketLimit(
         db,
-        { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId },
+        attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId: 'closed_market_limits' }),
         symbol, synth,
         { requestedVolume: requestedVol, notify: (t) => import('./services/telegram-control.js').then(m => m.notifyOwner(t)).catch(() => {}) }
       )
@@ -423,7 +422,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
       const r = await placeClosedMarketLimit(
         db,
-        { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId },
+        attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId: 'closed_market_limits' }),
         symbol, synth,
         {
           requestedVolume: requestedVol, reason: 'htf', expiresAtMs,
@@ -803,7 +802,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const submitT0 = Date.now()
     let exec
     try {
-      exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId, execGuard, producerId, entryAdmission: () => admitEntry(db, { accountId, producerId, basis: 'bar' }) }, orderPayload)
+      exec = await execPlaceOrder(attachEntryFence(db, { host, clientId, clientSecret, accessToken, accountId, execGuard }, { producerId }), orderPayload)
     } catch (err) {
       // Mark the intent by OUTCOME rather than deleting it. A provably-unsent
       // order is dead and must not block the next attempt; an ambiguous one
@@ -2831,6 +2830,22 @@ async function runLoop(db) {
             log(`Broker order cleanup failed (non-fatal): ${err.message}`)
           }
 
+          // P2a (docs/tick-momentum/plan.md §3 step 4, §9): the intent ledger
+          // settles on the broker's word. Unredeemed permits expire, an
+          // unanswered send becomes UNKNOWN (never failed, never filled), and
+          // an open intent is resolved by the position or resting order that
+          // carries its tag in this snapshot, or by the sidecar's ring.
+          try {
+            const { expireStale, reconcileIntents } = await import('./services/entry-ledger.js')
+            const ex = expireStale(db)
+            const rc = reconcileIntents(db, { accountId, positions: reconcileData.position || [], orders: reconcileData.order || [] })
+            if (ex.expired || ex.unknown || rc.resolved.length) {
+              log(`Entry ledger …${String(accountId).slice(-4)}: ${ex.expired} permit(s) expired, ${ex.unknown} send(s) now UNKNOWN, ${rc.resolved.length} resolved by evidence${rc.resolved.length ? ` (${rc.resolved.map(r => `${r.intentId} ${r.from}→${r.to}`).join(', ')})` : ''}, ${rc.stillOpen} still open`)
+            }
+          } catch (err) {
+            log(`Entry ledger reconcile failed (non-fatal): ${err.message}`)
+          }
+
           // Un-blind the safety brakes: a position closed at the BROKER (a
           // resting SL/TP fill — the normal stop-out) was marked closed with
           // net_pnl NULL, invisible to the daily cap, equity stop, loss-streak
@@ -3961,7 +3976,7 @@ async function runLoop(db) {
         } else if (pendingPhaseInFlight) {
           log('Pending-order phase from a previous cycle still in flight — skipping this cycle (no overlap)')
         } else if (getState(db, 'pending_mode_enabled') === 'true') {
-          const pendingCreds = getCtraderCreds(db)
+          const pendingCreds = getCtraderCreds(db, undefined, { producerId: 'pending_fib_orders' })
           if (pendingCreds.ready) {
             const budgetMs = Math.max(10_000, Number(process.env.PENDING_PHASE_BUDGET_MS || 90_000))
             const startedAt = Date.now()

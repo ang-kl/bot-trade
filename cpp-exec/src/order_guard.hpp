@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <map>
 #include <set>
 #include <string>
 
@@ -35,6 +36,12 @@ struct GuardSnapshot {
   // scoped the same way, or halting one tripped account would halt every
   // healthy account sharing this sidecar. Empty = nobody halted.
   std::set<long long> haltAccounts;
+  // P2a (11-09-2026): per-account ENTRY EPOCHS pushed by the keeper's guard
+  // sync. An account listed here has its one-use permits REQUIRED at the send
+  // boundary, and a permit from any other epoch is refused there. Absent =
+  // no fence pushed for that account (an older keeper): a permit is still
+  // checked when present, never demanded.
+  std::map<long long, long long> entryEpochs;
 };
 
 class OrderGuard {
@@ -54,6 +61,11 @@ public:
     std::lock_guard<std::mutex> lk(haltAccountsMtx_);
     haltAccounts_ = std::move(ids);
   }
+  // P2a: full replace, same declarative contract and the same short lock.
+  void setEntryEpochs(std::map<long long, long long> m) {
+    std::lock_guard<std::mutex> lk(haltAccountsMtx_);
+    entryEpochs_ = std::move(m);
+  }
 
   GuardSnapshot snapshot() const {
     GuardSnapshot g{ halt_.load(std::memory_order_relaxed),
@@ -63,6 +75,7 @@ public:
                      {} };
     std::lock_guard<std::mutex> lk(haltAccountsMtx_);
     g.haltAccounts = haltAccounts_;
+    g.entryEpochs = entryEpochs_;
     return g;
   }
 
@@ -73,6 +86,7 @@ private:
   std::atomic<double> maxOrderVolume_{0.0};
   mutable std::mutex  haltAccountsMtx_;
   std::set<long long> haltAccounts_;
+  std::map<long long, long long> entryEpochs_; // P2a; guarded by haltAccountsMtx_
 };
 
 struct OrderVerdict {
@@ -92,3 +106,20 @@ bool orderHasTarget(const jsn::Value& payload);
 
 // The pure guard. Pass the payload and a GuardSnapshot; get a verdict.
 OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g);
+
+// P2a (docs/tick-momentum/plan.md §9, §13; 11-09-2026): the ONE-USE PERMIT at
+// the send boundary. An order for an account whose entry epoch the keeper
+// has fenced must carry a permit from THAT epoch, unexpired, describing THIS
+// order (account, symbol, side, volume), never seen before. `consumed` is the
+// engine's bounded memory of redeemed permit ids — read and inserted here,
+// under the execution mutex the engine holds at the boundary. An in-process
+// VPO fire (payload `_vpoFire`) is WAIVED from the requirement until P2a-2
+// issues its permits; the engine rings that waiver so it is never silent.
+struct PermitVerdict {
+  bool ok = true;
+  std::string reason;   // machine code when ok == false
+  std::string intentId; // the permit's intent, when one was presented
+  std::string permitId; // consumed on ok; "" when no permit was presented
+};
+PermitVerdict validatePermit(const jsn::Value& payload, const GuardSnapshot& g,
+                             std::set<std::string>& consumed, long long nowMs);

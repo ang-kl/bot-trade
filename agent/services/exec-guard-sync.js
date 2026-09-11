@@ -28,6 +28,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { engineStatusFor } from './entry-mode.js'
 import { alreadyTrippedToday } from './equity-stop.js'
 import { loadGlobalGuards } from './global-guards.js'
 import { loadPerformanceBreakerConfig } from './performance-breaker.js'
@@ -87,6 +88,18 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
     if (typeof stored[k] === 'boolean') out[k] = stored[k]
   }
   if (Number.isFinite(Number(stored.maxOrderVolume))) out.maxOrderVolume = Number(stored.maxOrderVolume)
+  // P2a (docs/tick-momentum/plan.md §3 step 1, §13): every registry account's
+  // current entry epoch, so the sidecar can refuse a permit from an earlier
+  // one at ITS send boundary. Full replace, like haltAccounts. An account
+  // listed here has its permits REQUIRED by the sidecar — which is why every
+  // Node entry path carries one (ctrader-creds.js attachEntryFence).
+  try {
+    const epochs = {}
+    const rows = db.prepare('SELECT account_id FROM accounts' + (side?.isLive == null ? '' : ' WHERE is_live = ?'))
+      .all(...(side?.isLive == null ? [] : [side.isLive ? 1 : 0]))
+    for (const r of rows) epochs[String(r.account_id)] = engineStatusFor(db, r.account_id).modeEpoch
+    out.entryEpochs = epochs
+  } catch { /* no accounts table — no epochs pushed, no permits required */ }
   return out
 }
 
@@ -104,6 +117,14 @@ export function guardDiffers(desired, reported) {
     if (typeof desired[k] === 'boolean' && reported[k] !== desired[k]) return true
   }
   if (desired.maxOrderVolume != null && Number(reported.maxOrderVolume) !== desired.maxOrderVolume) return true
+  // P2a: an epoch the sidecar does not hold, or holds at another value, is a
+  // difference; an older sidecar that reports none is pushed every time,
+  // which is harmless (the push is idempotent).
+  if (desired.entryEpochs) {
+    const rep = reported.entryEpochs && typeof reported.entryEpochs === 'object' ? reported.entryEpochs : {}
+    for (const [id, epoch] of Object.entries(desired.entryEpochs)) if (Number(rep[id]) !== Number(epoch)) return true
+    if (Object.keys(rep).length !== Object.keys(desired.entryEpochs).length) return true
+  }
   return false
 }
 

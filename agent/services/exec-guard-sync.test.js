@@ -20,12 +20,26 @@ function withAccounts(db) {
   return db
 }
 
-test('derivation truth table: stored guard, 5A halt, equity trips per side', () => {
+test('derivation truth table: stored guard, 5A halt, equity trips per side', async () => {
   const db = withAccounts(initDB(':memory:'))
   const now = Date.now()
 
-  // Nothing stored, nothing tripped → open guard, empty set.
-  assert.deepEqual(desiredGuardFor(db, { isLive: null }, now), { halt: false, haltAccounts: [] })
+  // Nothing stored, nothing tripped → open guard, empty set. P2a: every
+  // registry account's entry epoch rides along (0 until a switch), scoped
+  // to the side asked for.
+  const g0 = desiredGuardFor(db, { isLive: null }, now)
+  assert.equal(g0.halt, false); assert.deepEqual(g0.haltAccounts, [])
+  assert.ok('111' in g0.entryEpochs, 'the demo account is fenced from epoch 0')
+  assert.ok(Object.values(g0.entryEpochs).every(e => e === 0))
+  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs'])
+  {
+    const { requestEntryMode } = await import('./entry-mode.js')
+    requestEntryMode(db, '111', 'STOPPED')
+    assert.equal(desiredGuardFor(db, { isLive: null }, now).entryEpochs['111'], 1, 'a switch moves the pushed epoch')
+    assert.equal(desiredGuardFor(db, { isLive: false }, now).entryEpochs['111'], 1)
+    assert.ok(!('111' in desiredGuardFor(db, { isLive: true }, now).entryEpochs), 'the live side does not carry a demo account')
+    requestEntryMode(db, '111', 'TIME_BASED', { expectedRevision: 1 })
+  }
 
   // Stored knobs pass through; halt from exec_guard_json binds.
   setState(db, 'exec_guard_json', JSON.stringify({ halt: true, requireBracket: true, maxOrderVolume: 5 }))
@@ -99,12 +113,19 @@ test('syncExecGuard pushes on diff, logs GUARD_SYNC, and stays silent in sync', 
     { reportedGuard: { halt: false, haltAccountCount: 0 }, creds: { ready: true } })
   assert.equal(r1.pushed, true)
   assert.deepEqual(pushes[0].haltAccounts, [111])
+  assert.equal(pushes[0].entryEpochs['111'], 0, 'P2a: the entry epochs ride on the same push')
   const audit = db.prepare(`SELECT method, path FROM action_log WHERE method = 'GUARD_SYNC'`).all()
   assert.equal(audit.length, 1)
 
   // Sidecar now reports the converged guard → NO push (absence asserted).
   const r2 = await syncExecGuard(db, exec, { isLive: false, name: 'cpp_exec_demo' },
-    { reportedGuard: { halt: false, haltAccountCount: 1 }, creds: { ready: true } })
+    { reportedGuard: { halt: false, haltAccountCount: 1, entryEpochs: pushes[0].entryEpochs }, creds: { ready: true } })
   assert.equal(r2.pushed, false)
   assert.equal(pushes.length, 1, 'an in-sync sidecar gets no traffic')
+
+  // An older sidecar that reports no epochs, or one holding a stale epoch, is pushed.
+  const r3 = await syncExecGuard(db, exec, { isLive: false, name: 'cpp_exec_demo' },
+    { reportedGuard: { halt: false, haltAccountCount: 1, entryEpochs: { ...pushes[0].entryEpochs, 111: 5 } }, creds: { ready: true } })
+  assert.equal(r3.pushed, true)
+  assert.equal(pushes.length, 2)
 })

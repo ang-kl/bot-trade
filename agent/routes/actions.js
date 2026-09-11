@@ -1082,6 +1082,22 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // P2a: an operator resolves an UNKNOWN (or otherwise open) intent with a
+  // reason, after reading the broker's history — the last resolver, never
+  // a timer. { state: FILLED | ACCEPTED | REJECTED | RELEASED, reason }
+  router.post('/entry-intents/:id/resolve', async (req, res) => {
+    try {
+      const { operatorResolve } = await import('../services/entry-ledger.js')
+      const { state, reason } = req.body || {}
+      const r = operatorResolve(db, String(req.params.id), { state: String(state || ''), reason: String(reason || ''), actor: 'owner' })
+      if (!r.ok) return res.status(r.reason === 'intent_unknown' ? 404 : 400).json(r)
+      console.log(`[actions] entry-intents resolve ${req.params.id}: ${r.from} → ${r.to} (${String(reason).slice(0, 80)})`)
+      res.json(r)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.post('/momentum-account', async (req, res) => {
     try {
       const { momentumAccountConfig, loadMomentumAccount, MOMENTUM_ACCOUNT_KEY } = await import('../services/momentum-account.js')

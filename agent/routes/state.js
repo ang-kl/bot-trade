@@ -2475,6 +2475,17 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // P2a: the entry-intent ledger — open intents (an UNKNOWN one is the thing
+  // to look at), recent resolutions, counts per account. Ids redacted.
+  router.get('/entry-intents', async (req, res) => {
+    try {
+      const { ledgerView } = await import('../services/entry-ledger.js')
+      const limit = Math.min(200, Math.max(1, Number(req.query?.limit) || 50))
+      res.json(ledgerView(db, { limit }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   router.get('/entry-producers', async (_req, res) => {
     try {
       const { producerInventoryView } = await import('../lib/entry-producers.js')

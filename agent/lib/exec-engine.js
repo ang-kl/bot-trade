@@ -6,6 +6,9 @@
 // sidecar error bodies are surfaced verbatim in thrown Error messages.
 // ---------------------------------------------------------------------------
 
+import { tagLabelWithIntent } from './trade-labels.js'
+import { isAmbiguousOrderOutcome } from './exec-fallback.js'
+
 export function execEngineMode() {
   return process.env.EXEC_ENGINE === 'cpp' ? 'cpp' : 'js'
 }
@@ -646,6 +649,75 @@ export function claimOrderLock(payload, nowMs = Date.now()) {
   return { ok: true, key }
 }
 
+// ---------------------------------------------------------------------------
+// P2a (docs/tick-momentum/plan.md §9, 11-09-2026): THE LEDGER AT THE SEND.
+// With a ledger on the credentials (ctrader-creds.js attaches one whenever a
+// producerId is given), no entry leaves placeOrder without an intent row and
+// a redeemed one-use permit: reserve — the P1b fence again, plus "no open
+// intent on this account/symbol/side", which is DURABLE, so an UNKNOWN
+// outcome from before a restart still blocks — then redeem exactly once. The
+// permit travels to the sidecar, which refuses it at its own send boundary
+// when the epoch moved, it expired, it does not match the order, or it was
+// already used. The JS transport never sees the ledger fields.
+// ---------------------------------------------------------------------------
+function reserveAndRedeem(creds, p) {
+  const L = creds?.entryLedger
+  if (!L) return null
+  let permit = p?.permit && p.permit.id ? p.permit : null
+  if (!permit) {
+    const r = L.reserve({
+      symbolId: p.symbolId ?? null, symbol: p.symbolName ?? p.symbol ?? null, side: p.tradeSide,
+      orderType: p.orderType || 'MARKET', volume: p.volume ?? null,
+      sl: p.relativeStopLoss ?? p.stopLoss ?? null, tp: p.relativeTakeProfit ?? p.takeProfit ?? null,
+      signalRef: p.signalRef ?? null,
+    })
+    if (!r.ok) {
+      const err = new Error(`ENTRY_LEDGER_REFUSED: ${r.reason} (producer ${creds.producerId || '?'})`)
+      err.code = 'ENTRY_LEDGER_REFUSED'
+      throw err
+    }
+    permit = r.permit
+  }
+  const red = L.redeem(permit.id)
+  if (!red.ok) {
+    const err = new Error(`ENTRY_PERMIT_REFUSED: ${red.reason}`)
+    err.code = 'ENTRY_PERMIT_REFUSED'
+    throw err
+  }
+  return {
+    id: permit.intentId,
+    permit: {
+      id: permit.id, intentId: permit.intentId, accountId: Number(permit.accountId), symbolId: permit.symbolId ?? null,
+      side: permit.side, volume: permit.volume ?? null, epoch: permit.epoch,
+      expiresAtMs: permit.expiresAtMs ?? Date.parse(permit.expiresAt),
+    },
+  }
+}
+
+/** The wire payload for the JS transport: cTrader must never see ledger fields. */
+export function stripLedgerFields(p) {
+  const { permit, intentId, signalRef, symbolName, ...wire } = p || {} // eslint-disable-line no-unused-vars
+  return wire
+}
+
+/** The intent's verdict from the order's own outcome. Never masks that outcome. */
+function settleIntent(creds, intentId, result, err) {
+  const L = creds?.entryLedger
+  if (!L) return
+  try {
+    if (!err) {
+      const positionId = result?.position?.positionId ?? result?.deal?.positionId ?? null
+      const orderId = result?.order?.orderId ?? null
+      L.resolve(intentId, { state: positionId != null ? 'FILLED' : 'ACCEPTED', positionId, brokerOrderId: orderId, source: 'response' })
+      return
+    }
+    const code = String(err?.message || err).slice(0, 200)
+    if (isDefiniteRejection(err)) L.resolve(intentId, { state: 'REJECTED', errorCode: code, source: 'response' })
+    else if (isAmbiguousOrderOutcome(err)) L.resolve(intentId, { state: 'UNKNOWN', errorCode: code, source: 'response' })
+    else L.resolve(intentId, { state: 'RELEASED', errorCode: code, source: 'response' }) // provably never submitted
+  } catch { /* the ledger must never mask the order's own outcome */ }
+}
+
 export async function placeOrder(creds, orderPayload) {
   const g = validateExecGuard(orderPayload, creds?.execGuard)
   if (!g.ok) throw new Error(g.reason)
@@ -680,18 +752,38 @@ export async function placeOrder(creds, orderPayload) {
     err.code = 'DUPLICATE_ORDER_DISPATCH_BLOCKED'
     throw err
   }
+  // P2a: the ledger — after the lock (cheap, no writes) and before any
+  // transport. A refusal here releases the lock: nothing was sent.
+  let intent = null
   try {
+    intent = reserveAndRedeem(creds, orderPayload)
+  } catch (err) {
+    releaseOrderLock(lock.key)
+    throw err
+  }
+  if (intent) {
+    orderPayload = { ...orderPayload, intentId: intent.id, permit: intent.permit }
+    if (orderPayload.label) orderPayload.label = tagLabelWithIntent(orderPayload.label, intent.id)
+  }
+  const wire = stripLedgerFields(orderPayload)
+  try {
+    if (intent) creds.entryLedger.markSent(intent.id, {})
+    let result
     if (execEngineMode() === 'cpp') {
-      return await withFallback('order',
+      result = await withFallback('order',
         async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/order', orderPayload) },
         async () => {
           const m = await ws()
-          return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+          return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, wire)
         }, execBaseFor(creds))
+    } else {
+      const m = await ws()
+      result = await m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, wire)
     }
-    const m = await ws()
-    return await m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+    if (intent) settleIntent(creds, intent.id, result, null)
+    return result
   } catch (err) {
+    if (intent) settleIntent(creds, intent.id, null, err)
     // A DEFINITE REJECTION RELEASES THE LOCK. loop.js already draws this line
     // for its own dedupe and draws it correctly: "a plain order_failed —
     // broker REJECTED it, provably no position — is NOT caught here, so

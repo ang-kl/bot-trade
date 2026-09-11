@@ -571,6 +571,45 @@ const TABLES = `
   CREATE INDEX IF NOT EXISTS idx_cpp_decisions_at ON cpp_decisions(at);
   CREATE INDEX IF NOT EXISTS idx_cpp_decisions_kind ON cpp_decisions(component, kind);
 
+  -- P2a (docs/tick-momentum/plan.md §9, 11-09-2026): the durable entry-intent
+  -- ledger — the consumption authority for one-use execution permits. One
+  -- row per attempt to open new risk; RESERVED → DISPATCHING (redeemed once)
+  -- → SENT → ACCEPTED | FILLED | REJECTED, or UNKNOWN when the send's outcome
+  -- was never learned — which survives a restart and blocks a resend on the
+  -- same account/symbol/side until the broker's evidence resolves it.
+  CREATE TABLE IF NOT EXISTS entry_intents (
+    id                TEXT PRIMARY KEY,
+    account_id        TEXT NOT NULL,
+    environment       TEXT NOT NULL,      -- 'demo' | 'live'
+    symbol            TEXT,
+    symbol_id         INTEGER,
+    side              TEXT NOT NULL,      -- BUY | SELL
+    order_type        TEXT,
+    volume            REAL,
+    sl                REAL,
+    tp                REAL,
+    producer_id       TEXT NOT NULL,
+    basis             TEXT NOT NULL,
+    signal_ref        TEXT,
+    mode_epoch        INTEGER NOT NULL,
+    config_revision   INTEGER,
+    permit_id         TEXT NOT NULL UNIQUE,
+    permit_expires_at TEXT NOT NULL,
+    state             TEXT NOT NULL,      -- RESERVED|DISPATCHING|SENT|ACCEPTED|FILLED|REJECTED|UNKNOWN|RELEASED|EXPIRED
+    gateway_instance  TEXT,
+    sidecar_boot_id   TEXT,
+    client_msg_id     TEXT,
+    broker_order_id   TEXT,
+    broker_position_id TEXT,
+    error_code        TEXT,
+    resolution_source TEXT,               -- response | event | reconcile | ring | timeout | operator | epoch
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    resolved_at       TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_entry_intents_open ON entry_intents(account_id, state);
+  CREATE INDEX IF NOT EXISTS idx_entry_intents_key ON entry_intents(account_id, symbol_id, side, state);
+
   -- Speech-act inspection findings (owner invariants 2-4, 31-08-2026): what
   -- each log SAID vs what it was DOING, the principlised next action, and a
   -- falsifier with a deadline. The PARTIAL UNIQUE index is the anti-noise

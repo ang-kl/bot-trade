@@ -115,6 +115,13 @@ public:
   // same setup under a pending order and let the next tick fire it twice.
   void recomputeAll();
 
+  // P2a (11-09-2026): the keeper's DISARM. Every strategy that is not mid-fire
+  // goes IDLE through the same CAS the recompute uses (atomics only, so it is
+  // safe from the HTTP thread while the recompute and fire threads run) and
+  // the count is returned. The caller clears the store, so the next recompute
+  // finds no bars and keeps them idle. Rung as vpo/disarmed.
+  size_t disarmAll();
+
 private:
   void recomputeLoop(int intervalMs);
   // Attempts to fire one ARMED strategy whose trigger the tick crossed.
@@ -142,6 +149,7 @@ private:
   std::thread recomputeThread_;
   std::atomic<bool> running_{false};
   std::atomic<long long> accountId_{0};
+  std::atomic<long long> lastDisarmAtMs_{0}; // P2a; reported in statusJson
 
   // Fire queue: tick thread enqueues a CAS-won strategy, fireThread_ drains.
   // Raw pointers are safe — strategies_ is append-only before start() and

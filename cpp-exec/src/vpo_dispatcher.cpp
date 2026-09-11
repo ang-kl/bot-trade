@@ -79,6 +79,22 @@ void VpoDispatcher::recomputeAll() {
   }
 }
 
+size_t VpoDispatcher::disarmAll() {
+  size_t idled = 0;
+  for (auto& s : strategies_) {
+    VirtualPendingOrder& o = s->order();
+    const VposState before = o.state.load(std::memory_order_acquire);
+    if (before == VposState::FIRED) continue;   // a pending fire owns its setup until it resolves
+    if (idleUnlessFired(o) && before != VposState::IDLE) idled++;
+  }
+  const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  lastDisarmAtMs_.store(nowMs, std::memory_order_relaxed);
+  if (ring_) ring_->log("vpo", "disarmed", accountId_.load(std::memory_order_relaxed), 0, "",
+                        std::to_string(idled) + " strategy/ies idled by the keeper");
+  return idled;
+}
+
 void VpoDispatcher::recomputeLoop(int intervalMs) {
   while (running_.load(std::memory_order_relaxed)) {
     recomputeAll();
@@ -202,6 +218,9 @@ void VpoDispatcher::fireNow(const FireIntent& in) {
   payload.set("relativeStopLoss", relativePoints(in.sl, o.digits));
   payload.set("relativeTakeProfit", relativePoints(in.tp, o.digits));
   payload.set("label", std::string("vpo:") + s.key());
+  // P2a: an in-process fire carries no keeper permit until P2a-2 issues them;
+  // the engine strips this marker before the wire and rings the waiver.
+  payload.set("_vpoFire", true);
 
   const EngineResult result = engine_.placeOrder(payload);
   if (result.ok) {
@@ -255,6 +274,8 @@ std::string VpoDispatcher::statusJson() const {
   // no account is configured — visible in /vpo-status instead of only in stderr.
   v.set("noAccount", static_cast<double>(o.noAccount));
   v.set("accountId", static_cast<double>(accountId_.load(std::memory_order_relaxed)));
+  const long long disarmAt = lastDisarmAtMs_.load(std::memory_order_relaxed);
+  v.set("lastDisarmAt", disarmAt > 0 ? jsn::Value(static_cast<double>(disarmAt)) : jsn::Value(nullptr));
   v.set("lastFireAt", o.lastFireAtMs > 0 ? jsn::Value(static_cast<double>(o.lastFireAtMs))
                                          : jsn::Value(nullptr));
   v.set("lastDetail", o.lastDetail.empty() ? jsn::Value(nullptr) : jsn::Value(o.lastDetail));
