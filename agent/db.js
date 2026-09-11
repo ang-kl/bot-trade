@@ -675,6 +675,38 @@ const TABLES = `
     per_symbol TEXT,
     UNIQUE(side, at_ms)
   );
+  -- P6a: the shadow portfolio's closed trades, pulled from the sidecar's
+  -- ledger (POST /tick-shadow) per side. Prices in the feed's wire units,
+  -- results in R; the keeper sizes each account's projection from its own
+  -- risk budget at read time. UNIQUE(side, boot_id, seq) makes the pull
+  -- idempotent across probes and restarts.
+  CREATE TABLE IF NOT EXISTS tick_shadow_trades (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    at            TEXT NOT NULL DEFAULT (datetime('now')),
+    side          TEXT NOT NULL,
+    boot_id       TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    symbol_id     INTEGER,
+    profile_hash  TEXT,
+    trade_side    TEXT,
+    signal_seq    INTEGER,
+    entry_seq     INTEGER,
+    exit_seq      INTEGER,
+    entry         REAL,
+    exit          REAL,
+    stop          REAL,
+    target        REAL,
+    stop_distance REAL,
+    reason        TEXT,
+    hold_events   INTEGER,
+    hold_ms       INTEGER,
+    entry_ms      INTEGER,
+    exit_ms       INTEGER,
+    gross_r       REAL,
+    net_r         REAL,
+    UNIQUE(side, boot_id, seq)
+  );
+  CREATE INDEX IF NOT EXISTS idx_tick_shadow_side_profile ON tick_shadow_trades(side, profile_hash, exit_ms);
 
   -- Speech-act inspection findings (owner invariants 2-4, 31-08-2026): what
   -- each log SAID vs what it was DOING, the principlised next action, and a

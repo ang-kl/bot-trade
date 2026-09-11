@@ -17,7 +17,7 @@ import { DEFAULT_PARAMS, profileHash, profileHashFull, normalizeParams } from '.
 import { importTickValidation, loadThresholds, validationHistory, shadowSignalEvidence, TICK_VALIDATION_KEY } from './tick-validation.js'
 
 const DEMO = '46979908', LIVE = '42993489'
-const TH = { replay: { minTrades: 30, minProfitFactor: 1.3, minTestNetR: 0, maxDrawdownR: 10 }, shadow: { minSignals: 20, minHours: 24 }, demo: { minClosedTrades: 30, minProfitFactor: 1.2, maxDrawdownR: 10 } }
+const TH = { replay: { minTrades: 30, minProfitFactor: 1.3, minTestNetR: 0, maxDrawdownR: 10 }, shadow: { minSignals: 20, minHours: 24, minTrades: 5, minLosses: 2, minProfitFactor: 1.2, minExpectancyLowerR: -1, maxDrawdownR: 6, maxResetSharePct: 20 }, demo: { minClosedTrades: 30, minProfitFactor: 1.2, maxDrawdownR: 10 } }
 
 function fresh() {
   const db = initDB(':memory:')
@@ -35,6 +35,10 @@ function trial(db, { params = DEFAULT_PARAMS, trades = 40, profitFactor = 1.6, t
   assert.equal(r.ok, true)
   return r.trialId
 }
+function shadowTrade(db, { side = 'cpp_exec_demo', seq, profile, netR, exitMs, reason = 'target', symbolId = 1 }) {
+  db.prepare(`INSERT INTO tick_shadow_trades (side, boot_id, seq, symbol_id, profile_hash, trade_side, reason, net_r, gross_r, exit_ms) VALUES (?, 'b1', ?, ?, ?, 'BUY', ?, ?, ?, ?)`)
+    .run(side, seq, symbolId, profile, reason, netR, netR, exitMs)
+}
 function signal(db, { side = 'cpp_exec_demo', at, profile, symbolId = 1, seq }) {
   db.prepare(`INSERT INTO cpp_decisions (at, side, boot_id, seq, ts_ms, component, kind, symbol_id, code, detail) VALUES (?, ?, 'b1', ?, ?, 'tick', 'signal', ?, 'BUY', ?)`)
     .run(at, side, seq, Date.parse(at + 'Z'), symbolId, `shadow trigger2=1.1 stop=0.002 V=0.5 E=0.7 setup=${seq} profile=${profile}`)
@@ -43,6 +47,7 @@ function signal(db, { side = 'cpp_exec_demo', at, profile, symbolId = 1, seq }) 
 test('the checked-in thresholds file leaves every threshold unset, and an unset threshold refuses the import with nothing written', () => {
   const th = loadThresholds()
   for (const g of ['replay', 'shadow', 'demo']) for (const [k, v] of Object.entries(th[g])) assert.equal(v, null, `${g}.${k} must be null in the checked-in file (owner-held risk limit)`)
+  assert.deepEqual(Object.keys(th.shadow), ['minSignals', 'minHours', 'minTrades', 'minLosses', 'minProfitFactor', 'minExpectancyLowerR', 'maxDrawdownR', 'maxResetSharePct'], 'P6a: the shadow stage judges the portfolio')
   const db = fresh()
   const id = trial(db)
   const r = importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: id }, thresholds: th })
@@ -111,7 +116,7 @@ test('a reset needs a reason and keeps the pin so a re-import must match; UNVALI
 test('SHADOW_PASSED counts only signals rung under the pinned profile on the account\'s side since its SHADOW switch, over the owner\'s minimums', () => {
   const db = fresh()
   const good = trial(db)
-  importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: good }, thresholds: TH })
+  importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: good }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
   assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH }).reason, 'observation_not_shadow')
   // signals BEFORE the switch must not count
   const prefix = profileHash(DEFAULT_PARAMS)
@@ -119,7 +124,7 @@ test('SHADOW_PASSED counts only signals rung under the pinned profile on the acc
   requestTickObservation(db, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
   db.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
   const r0 = importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
-  assert.equal(r0.ok, false); assert.equal(r0.reason, 'shadow_below_threshold'); assert.equal(r0.evidence.signals, 0)
+  assert.equal(r0.ok, false); assert.equal(r0.reason, 'shadow_below_threshold'); assert.equal(r0.evidence.signals.signals, 0)
   // 25 signals under the profile across 30 h, plus 5 under another profile and 3 on the live side
   for (let i = 0; i < 25; i++) signal(db, { at: `2026-09-11 ${String(Math.floor(i * 1.25)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i, symbolId: 1 + (i % 3) })
   signal(db, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
@@ -127,10 +132,53 @@ test('SHADOW_PASSED counts only signals rung under the pinned profile on the acc
   for (let i = 0; i < 3; i++) signal(db, { side: 'cpp_exec', at: '2026-09-11 05:00:00', profile: prefix, seq: 60 + i })
   const ev = shadowSignalEvidence(db, { side: 'cpp_exec_demo', profilePrefix: prefix, sinceIso: '2026-09-11 00:00:00' })
   assert.equal(ev.signals, 26); assert.equal(ev.otherProfile, 5); assert.equal(ev.symbols, 3); assert.ok(ev.hours >= 24, `hours ${ev.hours}`)
+  // P6a: signals alone do not pass — the shadow's own portfolio must clear
+  // the owner's trade count, profit factor and drawdown
+  const rs = importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+  assert.equal(rs.ok, false); assert.equal(rs.reason, 'shadow_below_threshold'); assert.deepEqual(rs.failed, ['trades', 'losses', 'profitFactor', 'expectancyLowerR', 'resetSharePct'])
+  const T0 = Date.parse('2026-09-11T00:00:00Z')
+  // a trade closed BEFORE the switch and one under another profile must not count
+  shadowTrade(db, { seq: 1, profile: prefix, netR: 5, exitMs: T0 - 1000 })
+  shadowTrade(db, { seq: 2, profile: 'ffffffffffffffff', netR: 5, exitMs: T0 + 1000 })
+  for (const [i, r] of [2, -1, 3, -1, 1.5, -1].entries()) shadowTrade(db, { seq: 10 + i, profile: prefix, netR: r, exitMs: T0 + (i + 1) * 3_600_000, reason: r > 0 ? 'target' : 'stop' })
   const r = importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(engineStatusFor(db, DEMO).validationStage, 'SHADOW_PASSED')
-  assert.equal(r.record.evidence.signals, 26)
+  assert.equal(r.record.evidence.signals.signals, 26)
+  assert.equal(r.record.evidence.portfolio.trades, 6); assert.equal(r.record.evidence.portfolio.netR, 3.5); assert.equal(r.record.evidence.portfolio.losses, 3)
+  assert.equal(r.record.evidence.portfolio.profitFactor, +(6.5 / 3).toFixed(3))
+  assert.ok(r.record.evidence.provenance && Array.isArray(r.record.evidence.provenance.window.switches), 'the window and its switches are on the record')
+  assert.match(r.record.evidence.provenance.costsNote, /spread-only/)
+  // a book with no losing trade has an UNDEFINED profit factor and cannot pass any floor
+  const db3 = fresh(); const g3 = trial(db3)
+  importTickValidation(db3, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g3 }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
+  requestTickObservation(db3, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
+  db3.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  for (let i = 0; i < 26; i++) signal(db3, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
+  signal(db3, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
+  for (let i = 0; i < 6; i++) shadowTrade(db3, { seq: 10 + i, profile: prefix, netR: 0.01, exitMs: T0 + (i + 1) * 3_600_000 })
+  const nl = importTickValidation(db3, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: { ...TH, shadow: { ...TH.shadow, minProfitFactor: 0.0001, minLosses: 0 } } })
+  assert.equal(nl.ok, false); assert.ok(nl.failed.includes('profitFactor')); assert.equal(nl.checks.profitFactor.observed, null)
+  // cycling SHADOW → OFF → SHADOW after a losing stretch does NOT re-open the window
+  const db4 = fresh(); const g4 = trial(db4)
+  importTickValidation(db4, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g4 }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
+  requestTickObservation(db4, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
+  requestTickObservation(db4, DEMO, 'OFF', { now: new Date('2026-09-11T06:00:00Z') })
+  requestTickObservation(db4, DEMO, 'SHADOW', { now: new Date('2026-09-11T07:00:00Z') })
+  const rows4 = db4.prepare(`SELECT id FROM action_log WHERE path = '/actions/tick-observation' ORDER BY id`).all()
+  for (const [i, at] of ['2026-09-11 00:00:00', '2026-09-11 06:00:00', '2026-09-11 07:00:00'].entries()) db4.prepare('UPDATE action_log SET at = ? WHERE id = ?').run(at, rows4[i].id)
+  const wb = importTickValidation(db4, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+  assert.equal(wb.ok, false); assert.equal(wb.reason, 'shadow_window_broken'); assert.equal(wb.brokenBy.to, 'OFF'); assert.equal(wb.switches.length, 3)
+  // a deep drawdown under the same profile refuses even with enough trades
+  const db2 = fresh(); const g2 = trial(db2)
+  importTickValidation(db2, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g2 }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
+  requestTickObservation(db2, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
+  db2.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  for (let i = 0; i < 26; i++) signal(db2, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
+  signal(db2, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
+  for (const [i, r] of [4, 4, -1, -1, -1, -1, -1, -1, -1, 6].entries()) shadowTrade(db2, { seq: 10 + i, profile: prefix, netR: r, exitMs: T0 + (i + 1) * 3_600_000 })
+  const dd = importTickValidation(db2, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+  assert.equal(dd.ok, false); assert.ok(dd.failed.includes('maxDrawdownR')); assert.equal(dd.checks.maxDrawdownR.observed, 7)
 })
 
 test('DEMO_PASSED is refused honestly until P6 produces tick trades; LIVE_APPROVED needs the owner\'s typed word and a demo account cannot skip to it', () => {

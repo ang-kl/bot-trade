@@ -366,6 +366,34 @@ export async function sidecarTickStatus({ timeoutMs = 5_000, base = execBaseFor(
   }
 }
 
+/**
+ * P6a: the shadow portfolio's closed trades (POST /tick-shadow), same cursor
+ * contract as /decisions: {after, bootId}; a bootId mismatch hands over the
+ * whole ring. null when the sidecar is unreachable, not in cpp mode, or
+ * predates the route.
+ */
+export async function pullSidecarShadow({ after = 0, bootId = '', timeoutMs = 5_000, base = execBaseFor() } = {}) {
+  if (execEngineMode() !== 'cpp') return null
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(base + '/tick-shadow', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ after, bootId }),
+    })
+    if (!res.ok) return null
+    const body = await res.json().catch(() => null)
+    if (!body || typeof body.bootId !== 'string') return null
+    return { bootId: body.bootId, latestSeq: Number(body.latestSeq) || 0, total: Number(body.total) || 0, trades: Array.isArray(body.trades) ? body.trades : [] }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 export async function pullSidecarEvents({ after = 0, bootId = '', timeoutMs = 5_000, base = execBaseFor() } = {}) {
   if (execEngineMode() !== 'cpp') return null
   const ctrl = new AbortController()

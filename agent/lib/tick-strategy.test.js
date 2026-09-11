@@ -109,6 +109,27 @@ test('the checked-in fixture and expected signals match the oracle (REGEN=1 rewr
   assert.equal(readFileSync(EXPECTED, 'utf8').trim(), expectedText, 'expected signals drifted: run with REGEN=1 and re-check the C++ test')
 })
 
+// P6a: the sidecar's shadow book (cpp-exec/src/tick_shadow.*) must fill and
+// exit exactly as the replayer does. The replayer's trades over the same
+// fixture, under two sim settings, are checked in for test_tick_shadow.cpp.
+const SHADOW_EXPECTED = new URL('../../cpp-exec/src/tests/fixtures/tick_shadow_expected.json', import.meta.url)
+test('the checked-in shadow-book expectations match the replayer over the fixture (REGEN=1 rewrites them)', async () => {
+  const { simulate } = await import('./tick-replay-sim.js')
+  const events = buildFixture()
+  const sims = [
+    { latencyMs: 250, slippage: 0, commissionPerSide: 0, targetR: 3, minTargetToCost: 3, maxHoldMs: 6 * 3600_000 },
+    { latencyMs: 250, slippage: 1, commissionPerSide: 2, targetR: 3, minTargetToCost: 1, maxHoldEvents: 40, maxHoldMs: 6 * 3600_000 },
+  ]
+  const cases = sims.map(sim => {
+    const r = simulate(events, PARAMS, sim)
+    return { sim: { ...sim, maxHoldEvents: sim.maxHoldEvents ?? 0 }, rejected: r.rejected, trades: r.trades.filter(t => t.reason !== 'data_end').map(t => ({ side: t.side, signalSeq: t.signalSeq, entrySeq: t.entrySeq, exitSeq: t.exitSeq, entry: t.entry, exit: t.exit, stop: t.stop, target: t.target, stopDistance: t.stopDistance, reason: t.reason, holdEvents: t.holdEvents, holdMs: t.holdMs, grossR: t.grossR, netR: t.netR })), openAtEnd: r.trades.some(t => t.reason === 'data_end') }
+  })
+  const text = JSON.stringify({ profileHash: profileHash(PARAMS), cases }, null, 1)
+  if (process.env.REGEN === '1' || !existsSync(SHADOW_EXPECTED)) writeFileSync(SHADOW_EXPECTED, text + '\n')
+  assert.equal(readFileSync(SHADOW_EXPECTED, 'utf8').trim(), text, 'shadow expectations drifted: run with REGEN=1 and re-check the C++ test')
+  assert.ok(cases.some(c => c.trades.length > 0), 'the fixture must close at least one shadow trade under some setting')
+})
+
 // P5: the engine record pins the FULL sha256; the sidecar and the trial
 // ledger print its first 16 characters, so the two match by prefix.
 test('profileHashFull is the 64-hex sha256 whose first 16 characters are profileHash; PROFILE_ID names strategy@version', () => {

@@ -31,7 +31,8 @@ test('derivation truth table: stored guard, 5A halt, equity trips per side', asy
   assert.equal(g0.halt, false); assert.deepEqual(g0.haltAccounts, [])
   assert.ok('111' in g0.entryEpochs, 'the demo account is fenced from epoch 0')
   assert.ok(Object.values(g0.entryEpochs).every(e => e === 0))
-  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord', 'tickShadow'])
+  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord', 'tickShadow', 'tickShadowSim'])
+  assert.deepEqual(g0.tickShadowSim, { latencyMs: 250, slippage: 0, commissionPerSide: 0, targetR: 3, minTargetToCost: 3, maxHoldEvents: 0, maxHoldMs: 21600000 }, 'P6a: the repo\'s shadow sim rides the guard push')
   assert.equal(g0.tickRecord, false, 'P3a: recording is off unless an account asks')
   {
     const { requestEntryMode } = await import('./entry-mode.js')
