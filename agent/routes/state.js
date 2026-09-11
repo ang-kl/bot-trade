@@ -2124,9 +2124,15 @@ export default function stateRouter(db) {
   router.get('/perf-ledger', async (req, res) => {
     try {
       const { buildPerfLedger } = await import('../services/perf-ledger.js')
-      res.json(buildPerfLedger(db, {
-        accountId: req.query.account ? String(req.query.account) : null,
-      }))
+      const accountId = req.query.account ? String(req.query.account) : null
+      const ledger = buildPerfLedger(db, { accountId })
+      // The daily-loss fraction THIS account trades under (its overlay merged
+      // over the global), so a per-account card computes its daily stop from
+      // its own balance and its own limit — not the global limit applied to
+      // another account's money (11-09-2026, the Performance cards).
+      const scoped = accountId && accountId !== 'all' ? accountId : null
+      const dailyLossPct = (() => { try { const v = loadRiskConfig(db, scoped)?.dailyLossPct; return Number.isFinite(Number(v)) ? Number(v) : null } catch { return null } })()
+      res.json({ ...ledger, dailyLossPct, dailyLossScope: scoped ? 'account' : 'global' })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

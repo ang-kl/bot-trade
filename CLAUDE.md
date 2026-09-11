@@ -407,10 +407,17 @@ Measurement history — each line is a real run of the script, not a claim:
   (`№ 7,628` the #888 merge, `№ 7,629` the cherry-pick conflict), so the
   next stamped reply was `№ 7,630`. Continued in the same container:
   six unstamped status lines followed (`№ 7,630`–`№ 7,635`, 06:03–06:26
-  UTC: #889 opened, gate green, #888 read back, #889 merged, P5 built), so
-  the next stamped reply is **`№ 7,636`**. The count is by replies, not by stamps
-  (the 08-09 rule). A later re-measure that reads below this line is
-  missing these, not correcting them.
+  UTC: #889 opened, gate green, #888 read back, #889 merged, P5 built), and
+  four more unstamped lines after that ledger was written (`№ 7,636`–
+  `№ 7,639`, 06:26–06:33 UTC: #890 opened, gate green, merged, branch
+  restarted), so the reply stamped **`№ 7,640`** (06:35 UTC: the
+  #888/#889/#890 report) is right by count; `№ 7,641` (06:57 UTC, the
+  Performance-card balance investigation) and `№ 7,642` (07:08 UTC, the
+  revised plan: roles, P6, the whole-plan audit) followed; two unstamped
+  lines followed those (`№ 7,643`–`№ 7,644`, the perf-card fix build), so
+  the next stamped reply is **`№ 7,645`**. The count is by replies, not by
+  stamps (the 08-09 rule). A later re-measure that reads below this line
+  is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

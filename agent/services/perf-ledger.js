@@ -192,13 +192,32 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
   })).filter(tr => tr.t != null)
 
   // Carry baseline: current balance for this scope. Injectable for tests.
+  //
+  // THE SCOPED KEY ONLY for a named account (11-09-2026, owner screenshot of
+  // the Performance cards). This used to fall through to the legacy global
+  // `account_balance_usd` whenever the account's own key was absent or not
+  // > 0 — and the global is the CONNECTED account's balance, written by its
+  // reconcile. Two unfunded live accounts (answered 0 by the broker, and
+  // since #886 stamped as 0) therefore printed the selected demo account's
+  // US$45,837.59 beside their own logins, and a daily stop computed from it.
+  // The same defect was fixed for the Go-live cards in goal-tracker.js
+  // safeBalance; this is the sibling path the Performance cards read.
+  //
+  // A stamped 0 is a reading and prints as 0. An absent key is `null` and
+  // the card prints "not read" — never another account's money. The global
+  // is used only for the portfolio ('all') scope, where it is the connected
+  // account's balance by design and labelled as such.
   let bal = balance
+  let balanceSource = balance != null ? 'injected' : null
   if (bal == null) {
     if (acct != null) {
-      const scoped = Number(getState(db, `acct:${acct}:account_balance_usd`))
-      bal = Number.isFinite(scoped) && scoped > 0 ? scoped : (Number(getState(db, 'account_balance_usd')) || null)
+      const raw = getState(db, `acct:${acct}:account_balance_usd`)
+      const scoped = raw == null ? NaN : Number(raw)
+      bal = Number.isFinite(scoped) && scoped >= 0 ? scoped : null
+      balanceSource = bal != null ? 'scoped' : null
     } else {
       bal = Number(getState(db, 'account_balance_usd')) || null
+      balanceSource = bal != null ? 'global' : null
     }
   }
 
@@ -230,5 +249,5 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
     }
   })
 
-  return { generatedAt: new Date(now).toISOString(), accountId: acct ?? 'all', balance: bal, windows }
+  return { generatedAt: new Date(now).toISOString(), accountId: acct ?? 'all', balance: bal, balanceSource, windows }
 }
