@@ -357,6 +357,18 @@ Measurement history — each line is a real run of the script, not a claim:
   hand-pinned demo arms). The next reply is `№ 7,543`. Same reason as the
   lines above: a local re-measure that reads below this is missing these,
   not correcting them.
+- 2026-09-11 00:05 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule, seventh time; the container restarted 10-09 ~20:20 SGT
+  and 11-09 00:42 / 07:36 SGT in between): the script reads a fresh
+  transcript here and was refused as a reading. The session continued from
+  `№ 7,543` to **`№ 7,555`** as the last reply at 07:59 SGT 11-09 (#871–#879
+  merged: the ledger write-back, book closes carry the broker volume with
+  the refused exit retried, the owed-exit rule, dependabot's vitest 5,
+  js-yaml, strategy pins seeded once, then the tick-momentum programme's
+  P1a sidecar defects, P0 contracts + producer inventory + runtime manifest
+  + docs, and P1b's per-account entry mode). The next reply is `№ 7,556`.
+  Same reason as the lines above: a local re-measure that reads below this
+  is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

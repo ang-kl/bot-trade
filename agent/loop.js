@@ -2639,6 +2639,26 @@ async function runLoop(db) {
       } catch { /* seeding is best-effort; the periodic pass retries */ }
     }
 
+    // P1c (docs/tick-momentum/plan.md §3, TM-14): an account switched to
+    // STOPPED has its resting entry orders cancelled by stored id, and its
+    // state settles QUIESCING → RECONCILING → STABLE on the broker's word.
+    // The route ran the first pass; this is the retry. It returns before any
+    // broker call while no account is draining, so it runs every cycle
+    // rather than on the reconcile cadence. Best-effort.
+    try {
+      const { drainEntryOrdersPass } = await import('./services/entry-drain.js')
+      const dr = await drainEntryOrdersPass(db)
+      for (const d of dr.drained) {
+        if (d.skipped) continue
+        if (d.cancelled.length || d.failures.length || d.from !== d.transitionState) {
+          log(`Entry drain …${String(d.accountId).slice(-4)} (epoch ${d.epoch}): cancelled ${d.cancelled.length} by stored id, ${d.failures.length} failed, resting ${d.resting}, unknown ${d.unknown}${d.unattributed ? `, ${d.unattributed} unattributed row(s) left alone` : ''}${d.snapshotError ? `, no broker snapshot (${d.snapshotError})` : ''} → ${d.transitionState}`)
+        }
+      }
+      if (loopCount % 10 === 0) for (const s of dr.skipped) log(`Entry drain …${String(s.accountId).slice(-4)} skipped: ${s.reason}`)
+    } catch (err) {
+      log(`Entry drain pass failed (non-fatal): ${err.message}`)
+    }
+
     if (loopCount % 3 === 0) {
       try {
         const clientId = ctraderEnv('clientId')

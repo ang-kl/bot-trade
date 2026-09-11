@@ -1056,8 +1056,26 @@ export default function actionsRouter(db, deps = {}) {
       if (!accountId || !mode) return res.status(400).json({ error: 'accountId and mode are required' })
       const r = requestEntryMode(db, String(accountId), String(mode), { expectedRevision, actor: 'owner' })
       if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
-      console.log(`[actions] entry-mode → …${String(accountId).slice(-4)} ${r.status.effectiveEntryMode} (revision ${r.status.configRevision}, epoch ${r.status.modeEpoch}, resting ${r.status.entryCounts.resting})`)
-      res.json({ ok: true, changed: r.changed, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` } })
+      console.log(`[actions] entry-mode → …${String(accountId).slice(-4)} ${r.status.effectiveEntryMode} (revision ${r.status.configRevision}, epoch ${r.status.modeEpoch}, resting ${r.status.entryCounts.resting}, ${r.status.transitionState})`)
+      // P1c: STOPPED with resting entry orders → cancel them by stored id now,
+      // with the account's own credentials; the loop's pass retries until the
+      // state settles. A drain failure is reported, never a reason to undo the
+      // mode change (the fence is already closed).
+      let drain = null
+      let status = r.status
+      if (r.status.transitionState === 'QUIESCING') {
+        try {
+          const { drainEntryOrders } = await import('../services/entry-drain.js')
+          const { engineStatusFor } = await import('../services/entry-mode.js')
+          const creds = credsForAccountId(db, String(accountId))
+          drain = creds.ready ? await drainEntryOrders(db, creds, {}) : { skipped: 'credentials not ready' }
+          if (!drain.skipped) console.log(`[actions] entry-mode drain …${String(accountId).slice(-4)}: cancelled ${drain.cancelled.length} by stored id, ${drain.failures.length} failed, resting ${drain.resting}, unknown ${drain.unknown} → ${drain.transitionState}`)
+          status = engineStatusFor(db, String(accountId))
+        } catch (err) {
+          drain = { error: err.message }
+        }
+      }
+      res.json({ ok: true, changed: r.changed, status: { ...status, accountId: `…${String(accountId).slice(-4)}` }, drain: drain ? { ...drain, accountId: undefined } : null })
     } catch (err) {
       console.error('[actions/entry-mode] error:', err.message)
       res.status(500).json({ error: err.message })

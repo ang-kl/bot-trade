@@ -31,6 +31,23 @@ const DEFAULT_EXPIRY_MINUTES = 24 * 60
 // RECONCILE_RES positions carry tradeData.label but NOT the order comment,
 // so the label is the only channel that survives order→position.
 const PENDING_MARKER = 'pending-fib'
+
+// Both bot markers, not just pending-fib: closed-market limits rest with
+// 'pending-closed' and were previously miscounted as the owner's MANUAL
+// orders by the broker sweep — so their orphans/duplicates were never cleaned
+// by anything (owner-approved build 2, 2026-07-27: "i see duplication", 82
+// resting). Module scope since P1c (11-09-2026): the entry drain
+// (entry-drain.js) must never count or touch an order without one of these.
+export const BOT_MARKERS = Object.freeze([PENDING_MARKER, 'pending-closed'])
+export function isBotOrderLabel(label) { return BOT_MARKERS.some(m => String(label || '').includes(m)) }
+/** The fields the sweep and the drain read off a broker order, whatever the payload shape. */
+export function brokerOrderFields(o) {
+  return {
+    orderId: o?.orderId ?? posField(o, 'orderId') ?? null,
+    label: String(posField(o, 'label') || posField(o, 'comment') || o?.comment || ''),
+    symbolId: posField(o, 'symbolId') ?? null,
+  }
+}
 // cTrader hard label cap; trade-labels.js MAX_LABEL_LEN (90) + marker fits.
 const BROKER_LABEL_MAX = 100
 
@@ -663,12 +680,7 @@ export async function reconcileBrokerPendingOrders(db, creds, deps = {}) {
       .all().map(r => String(r.order_id)),
   )
 
-  // Both bot markers, not just pending-fib: closed-market limits rest with
-  // 'pending-closed' and were previously miscounted as the owner's MANUAL
-  // orders here — so their orphans/duplicates were never cleaned by anything
-  // (owner-approved build 2, 2026-07-27: "i see duplication", 82 resting).
-  const BOT_MARKERS = [PENDING_MARKER, 'pending-closed']
-  const isBotOrder = (label) => BOT_MARKERS.some(m => label.includes(m))
+  const isBotOrder = isBotOrderLabel // both markers — see BOT_MARKERS at module scope
 
   const out = { brokerOrders: brokerOrders.length, botMarked: 0, kept: 0, manual: 0, cancelled: [], failures: [] }
   const markCancelled = db.prepare(`UPDATE pending_orders SET status = 'cancelled' WHERE order_id = ?`)
