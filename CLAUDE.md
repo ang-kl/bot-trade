@@ -405,7 +405,10 @@ Measurement history — each line is a real run of the script, not a claim:
   **`№ 7,627`** (05:55 UTC: the #887 read-back, #888 open, the 13:10 SGT
   daily report) is right by count; two unstamped lines followed it
   (`№ 7,628` the #888 merge, `№ 7,629` the cherry-pick conflict), so the
-  next stamped reply is `№ 7,630`. The count is by replies, not by stamps
+  next stamped reply was `№ 7,630`. Continued in the same container:
+  six unstamped status lines followed (`№ 7,630`–`№ 7,635`, 06:03–06:26
+  UTC: #889 opened, gate green, #888 read back, #889 merged, P5 built), so
+  the next stamped reply is **`№ 7,636`**. The count is by replies, not by stamps
   (the 08-09 rule). A later re-measure that reads below this line is
   missing these, not correcting them.
 

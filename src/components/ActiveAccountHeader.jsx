@@ -36,6 +36,7 @@ import { isPollPaused, setPollPaused, subscribePollPaused } from '../lib/agent-a
 import PhaseDots from './common/PhaseDots.jsx'
 import { useActiveAccount, formatBalance } from '../lib/use-active-account.js'
 import { accountNumbers } from "../lib/scope-label.js"
+import EngineStatusLine from './EngineStatusLine.jsx'
 
 // Same session cache AccountSwitcher fills — reading it here costs nothing
 // and avoids a second /actions/ctrader-accounts round-trip on every mount.
@@ -158,6 +159,10 @@ export default function ActiveAccountHeader() {
             <PhaseDots phases={phases} />
           </span>
         </div>
+        {/* P5 (plan §13): the entry engine from the server's record — what was
+            requested, what the executor acknowledged, stale when the answer is
+            old. Same store as the Accounts panel, so the two cannot disagree. */}
+        <EngineStatusLine accountId={acct.accountId} />
         {paused && (
           // Owner: "a tiny 3 px smaller font size at the bottom centre of the
           // border ring state 'pause'". Sized against the block's PRIMARY text

@@ -46,10 +46,20 @@ export function normalizeParams(p = {}) {
 
 /** The profile hash: strategy id + version + the parameters, canonical order. */
 export function profileHash(params) {
+  return profileHashFull(params).slice(0, 16)
+}
+
+/** P5: the full sha256 (64 hex) the engine record pins (ENGINE_STATUS_SHAPE
+ *  profileHash is HEX64); the sidecar and the trial ledger print its first
+ *  16 characters, so a pinned record matches a reported profile by prefix. */
+export function profileHashFull(params) {
   const p = normalizeParams(params)
   const canon = JSON.stringify({ id: STRATEGY_ID, version: STRATEGY_VERSION, ...Object.fromEntries(Object.keys(p).sort().map(k => [k, p[k]])) })
-  return createHash('sha256').update(canon).digest('hex').slice(0, 16)
+  return createHash('sha256').update(canon).digest('hex')
 }
+
+/** The profile id the engine record carries beside the hash: strategy@version. */
+export const PROFILE_ID = `${STRATEGY_ID}@${STRATEGY_VERSION}`
 
 function median(arr) {
   const s = [...arr].sort((a, b) => a - b)

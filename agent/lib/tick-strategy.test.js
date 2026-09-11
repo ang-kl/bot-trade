@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 
-import { TickMomentumOracle, runOracle, profileHash, normalizeParams, DEFAULT_PARAMS } from './tick-strategy.js'
+import { TickMomentumOracle, runOracle, profileHash, profileHashFull, PROFILE_ID, normalizeParams, DEFAULT_PARAMS } from './tick-strategy.js'
 
 const FIXTURE = new URL('../../cpp-exec/src/tests/fixtures/tick_momentum_fixture.json', import.meta.url)
 const EXPECTED = new URL('../../cpp-exec/src/tests/fixtures/tick_momentum_expected.json', import.meta.url)
@@ -107,4 +107,15 @@ test('the checked-in fixture and expected signals match the oracle (REGEN=1 rewr
   }
   assert.equal(readFileSync(FIXTURE, 'utf8').trim(), fixtureText, 'fixture drifted: run with REGEN=1 and re-check the C++ test')
   assert.equal(readFileSync(EXPECTED, 'utf8').trim(), expectedText, 'expected signals drifted: run with REGEN=1 and re-check the C++ test')
+})
+
+// P5: the engine record pins the FULL sha256; the sidecar and the trial
+// ledger print its first 16 characters, so the two match by prefix.
+test('profileHashFull is the 64-hex sha256 whose first 16 characters are profileHash; PROFILE_ID names strategy@version', () => {
+  const full = profileHashFull(PARAMS)
+  assert.match(full, /^[0-9a-f]{64}$/)
+  assert.equal(full.slice(0, 16), profileHash(PARAMS))
+  assert.equal(profileHashFull({ ...PARAMS }), full)
+  assert.notEqual(profileHashFull({ ...PARAMS, N: PARAMS.N + 1 }), full)
+  assert.equal(PROFILE_ID, 'tick_momentum_breakout@v1')
 })

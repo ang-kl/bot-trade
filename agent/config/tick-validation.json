@@ -1,0 +1,6 @@
+{
+  "_note": "P5 (plan §7, §12): the evidence thresholds the validation importer judges against. They are RISK LIMITS held by the owner — a null refuses every import at that stage with thresholds_unset, and nothing here is lowered to make a setup pass. Set them by pull request, with the reasoning in the PR body.",
+  "replay": { "minTrades": null, "minProfitFactor": null, "minTestNetR": null, "maxDrawdownR": null },
+  "shadow": { "minSignals": null, "minHours": null },
+  "demo": { "minClosedTrades": null, "minProfitFactor": null, "maxDrawdownR": null }
+}

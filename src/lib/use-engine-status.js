@@ -1,0 +1,73 @@
+// The server-derived engine status, polled ONCE and shared by every mount
+// (plan §13: "one server-derived engine status component with revision and
+// freshness, rather than separate UI interpretations of flags"). Reads
+// GET /state/entry-engines (requested/effective mode, transition, revision,
+// epoch, counts) and GET /state/tick-readiness (the classed blockers). The
+// UI never derives a mode from any other flag: what the gateway acknowledged
+// is what is shown, and the age of the answer is shown beside it.
+//
+// Lives in lib/ because a component module may only export components
+// (react-refresh/only-export-components); the sidebar line and the Accounts
+// panel both subscribe here.
+import { useEffect, useSyncExternalStore } from 'react'
+import { agentGet, agentConfigured, pageAsleep } from './agent-api.js'
+
+const POLL_MS = 15_000
+let snapshot = { engines: null, readiness: null, at: null, error: null, loading: false }
+const listeners = new Set()
+let timer = null
+let inflight = null
+
+function emit(next) {
+  snapshot = { ...snapshot, ...next }
+  for (const l of listeners) l()
+}
+
+export async function refreshEngineStatus() {
+  if (inflight) return inflight
+  if (!agentConfigured()) { emit({ error: 'agent not configured' }); return null }
+  emit({ loading: true })
+  inflight = (async () => {
+    try {
+      const [engines, readiness] = await Promise.all([agentGet('/state/entry-engines'), agentGet('/state/tick-readiness')])
+      emit({ engines, readiness, at: Date.now(), error: null, loading: false })
+    } catch (e) {
+      emit({ error: e?.message || String(e), loading: false })
+    } finally { inflight = null }
+  })()
+  return inflight
+}
+
+function tick() {
+  if (pageAsleep()) return
+  refreshEngineStatus()
+}
+
+function subscribe(l) {
+  listeners.add(l)
+  if (listeners.size === 1) {
+    tick()
+    timer = setInterval(tick, POLL_MS)
+  }
+  return () => {
+    listeners.delete(l)
+    if (listeners.size === 0 && timer) { clearInterval(timer); timer = null }
+  }
+}
+const getSnapshot = () => snapshot
+
+/** Every account's engine status + readiness, and the age of the answer. */
+export function useEngineStatus() {
+  const s = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  useEffect(() => { /* subscription is the effect; nothing else to do */ }, [])
+  return s
+}
+
+/** The row for one account, matched by the redacted suffix the server prints. */
+export function engineRowFor(snap, accountId) {
+  if (!snap?.engines?.accounts || accountId == null) return null
+  const tail = String(accountId).slice(-4)
+  const row = snap.engines.accounts.find(a => String(a.accountId).endsWith(tail)) || null
+  const ready = snap.readiness?.accounts?.find(a => String(a.accountId).endsWith(tail)) || null
+  return row ? { ...row, readiness: ready } : null
+}

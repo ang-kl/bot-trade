@@ -2475,6 +2475,31 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // P5: the per-account readiness endpoint (plan §2 `readiness` /
+  // `blocked_reasons`, §10): every check with its source, observed value,
+  // age, class of "no" and remedy, derived on each read from the stored
+  // records and the last pulled sidecar status — never cached, never
+  // written back. `?account=<id>` narrows to one account. Read-only.
+  router.get('/tick-readiness', async (req, res) => {
+    try {
+      const { tickReadinessFor, tickReadinessView } = await import('../services/tick-readiness.js')
+      if (req.query.account) return res.json(tickReadinessFor(db, String(req.query.account)))
+      res.json(tickReadinessView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+  // P5: the signals the sidecar rang in SHADOW (cpp_decisions tick/signal),
+  // parsed — direction, trigger, stop distance, V, E, setup and the profile
+  // each was produced under. Nothing here was placed.
+  router.get('/tick-signals', async (req, res) => {
+    try {
+      const { tickSignalsView } = await import('../services/tick-readiness.js')
+      res.json(tickSignalsView(db, { limit: Math.min(500, Number(req.query.limit) || 100) }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // P4: the trial ledger — every replay run with its profile hash, manifest,
   // costs and block results. Research only; nothing here approves trading.
   router.get('/tick-research', async (req, res) => {

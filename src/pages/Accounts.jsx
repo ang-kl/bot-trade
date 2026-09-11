@@ -19,6 +19,7 @@ import StrategyInsights from '../components/StrategyInsights.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import AccountSwitcher from '../components/AccountSwitcher.jsx'
+import EngineStatusPanel from '../components/EngineStatusPanel.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
@@ -229,6 +230,12 @@ export default function Accounts() {
       <Card id="sec-switches">
         <AccountSwitcher title="Trading switches" broker={brokerMap} />
       </Card>
+
+      {/* P5 (plan §13, TM-32/TM-33): the entry engine per account from the
+          server's own record — requested vs acknowledged mode, transition,
+          revision, readiness blockers — with per-account and bulk actions
+          whose acknowledgements are listed one account at a time. */}
+      <EngineStatusPanel accounts={[bot, ...(others || [])].filter(Boolean)} scope={viewAcct} />
 
       <div id="sec-clock"><MarketClock /></div>
 
