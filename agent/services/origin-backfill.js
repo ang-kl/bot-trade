@@ -26,6 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import { deriveOrigin } from '../lib/trade-origin.js'
+import { TRADE_REASONS_CUTOFF_ISO } from './close-completeness.js'
 
 /**
  * What would a backfill write? Pure read — no mutation, ever.
@@ -38,7 +39,8 @@ export function planOriginBackfill(db) {
       FROM trades t
       LEFT JOIN monitored_positions mp ON mp.trade_id = t.id
      WHERE t.origin IS NULL
-  `).all()
+       AND (t.opened_at IS NULL OR REPLACE(t.opened_at, 'T', ' ') < ?)
+  `).all(TRADE_REASONS_CUTOFF_ISO)
   const counts = {}
   const plan = rows.map(r => {
     const origin = deriveOrigin(r)
@@ -58,10 +60,16 @@ export function planOriginBackfill(db) {
  * this must never produce.
  */
 export function applyOriginBackfill(db, plan) {
-  const stmt = db.prepare("UPDATE trades SET origin = ?, origin_source = 'backfill' WHERE id = ? AND origin IS NULL")
+  // PR-E M3 (checker): bounded to rows opened BEFORE the origin column's
+  // first write. A post-cutoff row with origin NULL is a write path's
+  // failure — findUnreasonedTrades lists it as origin_missing — and a
+  // backfill that stamped it legacy_unattributed would launder that
+  // violation into history. The plan already excludes such rows; the UPDATE
+  // repeats the bound so a plan built elsewhere cannot widen it.
+  const stmt = db.prepare("UPDATE trades SET origin = ?, origin_source = 'backfill' WHERE id = ? AND origin IS NULL AND (opened_at IS NULL OR REPLACE(opened_at, 'T', ' ') < ?)")
   let written = 0
   db.transaction(() => {
-    for (const p of plan) written += stmt.run(p.origin, p.id).changes
+    for (const p of plan) written += stmt.run(p.origin, p.id, TRADE_REASONS_CUTOFF_ISO).changes
   })()
   return written
 }

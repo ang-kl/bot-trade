@@ -11,6 +11,8 @@
 
 import { getState, setState } from '../db.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
+import { exitKind } from './trade-plans.js'
+import { findUnreasonedTrades } from './close-completeness.js'
 
 /** Compose the journal for one UTC day ('YYYY-MM-DD'). Pure DB read. */
 export function buildDailyJournal(db, day) {
@@ -45,6 +47,18 @@ export function buildDailyJournal(db, day) {
   }
   const topVetoes = Object.entries(fam).sort((a, b) => b[1] - a[1]).slice(0, 3)
 
+  // PR-E (owner principle 4): the day's closes the BOT did not make — the
+  // reconciler's "closed at the broker …" and the monitor's already_closed
+  // — counted apart from the attributed exits; and the standing invariant
+  // (every bot trade since the origin cutoff has a reason, no stale UNKNOWN)
+  // read at composition time, so the report says how many are unexplained
+  // rather than leaving it to a page nobody opens.
+  const closedByBroker = db.prepare(
+    `SELECT close_reason FROM trades WHERE status = 'closed' AND substr(closed_at, 1, 10) = ?`
+  ).all(day).filter(r => exitKind(r.close_reason) === 'broker_closed').length
+  let reasonViolations = null
+  try { reasonViolations = findUnreasonedTrades(db).counts.total } catch { reasonViolations = null }
+
   return {
     day,
     trades: trades.length,
@@ -57,6 +71,8 @@ export function buildDailyJournal(db, day) {
     vetoedDistinct: Number(risk?.vetoed_distinct) || 0,
     vetoRate: vetoRate(Number(risk?.ok) || 0, Number(risk?.vetoed) || 0),
     topVetoes: topVetoes.map(([reason, count]) => ({ reason, count })),
+    closedByBroker,
+    reasonViolations,
   }
 }
 
@@ -82,6 +98,7 @@ export function journalText(j) {
       (j.best ? ` · best ${j.best.symbol} ${money(j.best.net)}` : '') +
       (j.worst && j.trades > 1 ? ` · worst ${j.worst.symbol} ${money(j.worst.net)}` : ''))
   lines.push(`Gate: ${j.approved} approved · ${vetoLine(j)}${j.topVetoes.length ? ` (top: ${j.topVetoes.map(v => `${v.reason.replace(/_/g, ' ')} ×${v.count}`).join(', ')})` : ''}`)
+  lines.push(`reasons: ${j.reasonViolations == null ? 'unavailable' : `${j.reasonViolations} violation(s)`} · closedByBroker: ${j.closedByBroker ?? 0}`)
   return lines.join('\n')
 }
 
@@ -109,6 +126,7 @@ ${j.best ? row('Best', `${j.best.symbol} <span style="color:${tone(j.best.net)}"
 ${j.worst && j.trades > 1 ? row('Worst', `${j.worst.symbol} <span style="color:${tone(j.worst.net)}">${money(j.worst.net)}</span>`) : ''}
 ${row('Risk gate', `${j.approved} approved · ${vetoLine(j)}`)}
 ${j.topVetoes.length ? row('Top vetoes', j.topVetoes.map(v => `${v.reason.replace(/_/g, ' ')} ×${v.count}`).join(' · ')) : ''}
+${row('Reasons', `${j.reasonViolations == null ? 'unavailable' : `${j.reasonViolations} violation(s)`} · closed by broker ${j.closedByBroker ?? 0}`)}
 </table>
 <h2 style="font-size:14px;margin:18px 0 6px">Act on it</h2>
 <ul style="font-size:14px;line-height:1.9;margin:0;padding-left:18px">

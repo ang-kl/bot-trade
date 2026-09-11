@@ -77,6 +77,13 @@ export function recordTradePlan(db, tradeId, {
 export function exitKind(closeReason) {
   const r = String(closeReason || '').toLowerCase()
   if (!r) return 'unknown'
+  // PR-E (owner principle 4, 11-09-2026): a close the BOT did not make — the
+  // reconciler's "closed at the broker …" stamp and the monitor's
+  // 'already_closed' — is a named, non-attributive reason, not 'other'. It
+  // never matches a rule (ruleAdmits) and the daily report counts it apart,
+  // so a broker-side exit is visible as what it is rather than folded into
+  // the unexplained bucket.
+  if (r === 'already_closed' || /^closed at the broker/.test(r)) return 'broker_closed'
   if (/take_profit|target|tp\b|tp_hit|tp1|tp2/.test(r)) return 'target'
   if (/trail|ratchet|locked|profit_lock|be_stop|breakeven/.test(r)) return 'trail'
   if (/stop_loss|stop|sl\b|sl_hit|stopped/.test(r)) return 'stop'

@@ -1,4 +1,5 @@
-import { isOurs, parseLabel } from '../lib/trade-labels.js'
+import { isOurs, parseLabel, labelIntentId } from '../lib/trade-labels.js'
+import { recordTradePlan } from './trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
 import { getState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
@@ -31,6 +32,40 @@ export function brokerVolumeToLots(bp, symbol, db = null) {
   const perLot = contractSize(symbol) || 1
   return perLot > 0 ? units / perLot : units
 }
+/** M4: see the call site in reconcilePositions. Returns what was stamped, or null. */
+export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbolName, side, entry, sl, tp }) {
+  try {
+    const tag = labelIntentId(String(label || ''))
+    if (!tag || acct == null) return null
+    const it = db.prepare(`SELECT * FROM entry_intents WHERE id = ? AND account_id = ?`).get(tag, String(acct))
+    if (!it) return null
+    const origin = String(it.order_type || 'MARKET').toUpperCase() === 'MARKET' ? 'bot_market_dispatch' : 'bot_pending_fill'
+    const sideWord = side === 'long' ? 'BUY' : 'SELL'
+    const strategy = parsed?.strategy && parsed.strategy !== 'other' ? parsed.strategy : null
+    const createdMs = Date.parse(it.created_at)
+    let riskEventId = null
+    if (Number.isFinite(createdMs)) {
+      const ev = db.prepare(`SELECT id FROM risk_events WHERE account_id = ? AND symbol = ? AND side = ? AND approved = 1
+        AND created_at <= ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1`)
+        .get(String(acct), symbolName, sideWord, new Date(createdMs).toISOString(), new Date(createdMs - 5 * 60_000).toISOString())
+      riskEventId = ev?.id ?? null
+    }
+    db.prepare(`UPDATE trades SET origin = ?, origin_source = 'write', strategy = COALESCE(strategy, ?), risk_event_id = COALESCE(risk_event_id, ?) WHERE id = ?`)
+      .run(origin, strategy, riskEventId, tradeId)
+    db.prepare(`UPDATE monitored_positions SET strategy = COALESCE(strategy, ?) WHERE trade_id = ?`).run(strategy, tradeId)
+    const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(tradeId)
+    if (!hasPlan) {
+      recordTradePlan(db, tradeId, {
+        accountId: acct, symbol: symbolName, side: sideWord, strategy, timeframe: parsed?.timeframe || null,
+        entry: entry ?? null, sl: it.sl ?? sl ?? null, tp: it.tp ?? tp ?? null, source: 'reconciler_adopted_intent',
+      })
+    }
+    return { intentId: tag, origin, strategy, riskEventId }
+  } catch {
+    return null
+  }
+}
+
 
 /**
  * Reconcile the agent's local DB against live broker positions/orders.
@@ -380,7 +415,19 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       return tradeId
     })()
 
-    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted })
+    // PR-E M4 (checker, 11-09-2026): an adopted position whose label carries
+    // an INTENT TAG is a fill this system sent (the ledger row is the
+    // decision) whose local trade row was lost. Stamp it as the bot trade
+    // it is — origin by the intent's order type, strategy from the label,
+    // the approval id as the nearest approved risk event on the same
+    // account / symbol / side in the five minutes before the intent was
+    // reserved (the gate runs before reserveEntry), and the plan from the
+    // intent's own stop and target. Best-effort: a stamp that fails leaves
+    // the row reconciler_adopted, which findUnreasonedTrades then lists as
+    // adopted_ours_unreasoned rather than hiding.
+    const stamped = ours ? stampAdoptedFromIntent(db, { tradeId: inserted, label, parsed, acct, symbolName, side, entry, sl, tp }) : null
+
+    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted, ...(stamped ? { stampedFromIntent: stamped } : {}) })
   }
 
   const closedDetected = []

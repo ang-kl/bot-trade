@@ -68,6 +68,16 @@ test('exitKind and ruleAdmits: a trail exit outside a stop/target rule is flagge
   assert.equal(ruleAdmits('time_cap_30m', 'time_cap'), true)
 })
 
+test('exitKind: a close the bot did not make is broker_closed, not other/unknown, and no rule admits it (PR-E)', () => {
+  assert.equal(exitKind('already_closed'), 'broker_closed')
+  assert.equal(exitKind('closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot'), 'broker_closed')
+  assert.equal(exitKind('closed at the broker with NO STOP LOSS on record — this position was unprotected; cause of exit unknown (reclassified from the broker exit price)'), 'broker_closed')
+  assert.notEqual(exitKind('already_closed'), 'other')
+  assert.notEqual(exitKind('already_closed'), 'unknown')
+  for (const rule of ['stop_target', 'managed_trail0.5R', 'momentum_trail_3atr', 'time_cap_30m']) assert.equal(ruleAdmits(rule, 'broker_closed'), false, rule)
+  assert.equal(exitKind('stop_loss'), 'stop', 'a bot exit is unaffected')
+})
+
 test('tradePlansReport: coverage counts bot closes apart from adopted ones, and aggregates the scored', () => {
   const db = initDB(':memory:')
   const a = openTrade(db); recordTradePlan(db, a, { symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.095, tp: 1.11, now: T0 })

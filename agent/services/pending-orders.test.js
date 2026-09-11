@@ -592,3 +592,49 @@ test('2.6.4 — time_cap_at == T_fill + hold, exactly, and never T_placed + hold
   // rule this position was born with 145 minutes to live instead of 240.
   assert.equal(capMs - (placedMs + HOLD_MIN * 60_000), RESTED_MIN * 60_000)
 })
+
+test('PR-E: a pending row with its own strategy fills into a trade, monitor row and plan carrying THAT strategy; a null column keeps the fib fallback', async () => {
+  const db = freshDb()
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, status, strategy)
+              VALUES ('EURUSD','4h','889',1,1.1,1.095,1.11,0.02,'working','va_breakout')`).run()
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, status, strategy)
+              VALUES ('XAUUSD','4h','890',-1,2400,2410,2380,0.02,'working',NULL)`).run()
+  const { deps } = makeDeps({
+    reconcile: {
+      order: [],
+      position: [
+        { positionId: 43, price: 1.0999, tradeData: { symbolId: 1, tradeSide: 'BUY', label: 'ap|v1|other|high|LDN|4h|-|pending-fib' } },
+        { positionId: 44, price: 2399, tradeData: { symbolId: 41, tradeSide: 'SELL', label: 'ap|v1|fib_618_fade|high|LDN|4h|-|pending-fib' } },
+      ],
+    },
+  })
+  const res = await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(res.filled, 2)
+  const va = db.prepare(`SELECT * FROM trades WHERE symbol = 'EURUSD'`).get()
+  assert.equal(va.strategy, 'va_breakout', 'trades.strategy is the pending row\'s, not the literal')
+  assert.equal(db.prepare(`SELECT strategy FROM monitored_positions WHERE trade_id = ?`).get(va.id).strategy, 'va_breakout')
+  assert.equal(db.prepare(`SELECT strategy FROM trade_plans WHERE trade_id = ?`).get(va.id).strategy, 'va_breakout')
+  const fib = db.prepare(`SELECT * FROM trades WHERE symbol = 'XAUUSD'`).get()
+  assert.equal(fib.strategy, 'fib_618_fade', 'a row placed before the column was stamped keeps the fallback')
+})
+
+test('PR-E m2: a null column falls back to the strategy the broker label decodes to before the literal', async () => {
+  const db = freshDb()
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, status, strategy)
+              VALUES ('EURUSD','4h','891',1,1.1,1.095,1.11,0.02,'working',NULL)`).run()
+  const { deps } = makeDeps({ reconcile: { order: [], position: [
+    { positionId: 45, price: 1.0999, tradeData: { symbolId: 1, tradeSide: 'BUY', label: 'ap|v1|VAB|H|LN|4h|RG|pending-fib' } },
+  ] } })
+  const res = await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(res.filled, 1)
+  const t = db.prepare(`SELECT strategy FROM trades`).get()
+  assert.equal(t.strategy, 'va_breakout', 'VAB decodes to va_breakout; the column was null')
+})
+
+test('PR-E: placement stamps pending_orders.strategy', async () => {
+  const db = freshDb()
+  const { deps } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  const res = await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(res.placed, 1)
+  assert.equal(db.prepare(`SELECT strategy FROM pending_orders`).get().strategy, 'fib_618_fade')
+})

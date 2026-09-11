@@ -1081,3 +1081,32 @@ test('the loop logs a reconciler block error when the field is present', async (
   assert.match(slice, /result\.dedupError/)
   assert.match(slice, /result\.dupPnlError/)
 })
+
+test('PR-E M4: an adopted position whose label carries an intent tag is stamped as the bot trade it is — origin, strategy, the approval id and a plan from the intent', async () => {
+  const { tagLabelWithIntent } = await import('../lib/trade-labels.js')
+  const db = mkDb()
+  const ACCT = '46130058'
+  const created = '2026-09-11T08:00:00.000Z'
+  db.prepare(`INSERT INTO risk_events (symbol, side, approved, checks_json, proposal_json, account_id, created_at) VALUES ('EURUSD','BUY',1,'{}','{}',?, '2026-09-11T07:59:30.000Z')`).run(ACCT)
+  const ev = db.prepare(`SELECT id FROM risk_events`).get().id
+  db.prepare(`INSERT INTO risk_events (symbol, side, approved, checks_json, proposal_json, account_id, created_at) VALUES ('EURUSD','BUY',0,'{}','{}',?, '2026-09-11T07:59:40.000Z')`).run(ACCT) // a veto is not an approval
+  db.prepare(`INSERT INTO entry_intents (id, account_id, environment, symbol, symbol_id, side, order_type, volume, sl, tp, producer_id, basis, mode_epoch, permit_id, permit_expires_at, state, created_at, updated_at)
+              VALUES ('iabcdefabcdef', ?, 'demo', 'EURUSD', 1, 'BUY', 'MARKET', 1000, 99, 104, 'scan_dispatch', 'bar', 0, 'pabcdefabcdef', ?, 'UNKNOWN', ?, ?)`).run(ACCT, created, created, created)
+  const label = tagLabelWithIntent('ap|v1|FIB|H|LN|4h|RG', 'iabcdefabcdef')
+  const brokerPos = [makeBrokerPosition({ positionId: 501, symbolName: 'EURUSD', openPrice: 100, stopLoss: 99, label })]
+  const result = reconcilePositions(db, brokerPos, [], mkSetState(db), { accountId: ACCT })
+  assert.equal(result.newExternal.length, 1)
+  assert.deepEqual(result.newExternal[0].stampedFromIntent, { intentId: 'iabcdefabcdef', origin: 'bot_market_dispatch', strategy: 'fib_618_fade', riskEventId: ev })
+  const t = db.prepare(`SELECT origin, origin_source, strategy, risk_event_id FROM trades WHERE ctrader_position_id = '501'`).get()
+  assert.deepEqual(t, { origin: 'bot_market_dispatch', origin_source: 'write', strategy: 'fib_618_fade', risk_event_id: ev })
+  const p = db.prepare(`SELECT * FROM trade_plans WHERE trade_id = (SELECT id FROM trades WHERE ctrader_position_id = '501')`).get()
+  assert.equal(p.source, 'reconciler_adopted_intent'); assert.equal(p.planned_entry, 100); assert.equal(p.planned_sl, 99); assert.equal(p.planned_tp, 104); assert.equal(p.strategy, 'fib_618_fade')
+  const { findUnreasonedTrades } = await import('./close-completeness.js')
+  assert.equal(findUnreasonedTrades(db, { now: Date.parse('2026-09-11T09:00:00Z') }).violations.filter(v => v.tradeId).length, 0, 'the stamped row has every reason')
+  // our label, NO intent tag → stays reconciler_adopted and is listed
+  const plain = [makeBrokerPosition({ positionId: 502, symbolName: 'EURUSD', openPrice: 100, label: 'ap|v1|FIB|H|LN|4h|RG' })]
+  reconcilePositions(db, [...brokerPos, ...plain], [], mkSetState(db), { accountId: ACCT })
+  assert.equal(db.prepare(`SELECT origin FROM trades WHERE ctrader_position_id = '502'`).get().origin, 'reconciler_adopted')
+  const v = findUnreasonedTrades(db, { now: Date.parse('2026-09-11T09:00:00Z') })
+  assert.deepEqual(v.violations.filter(x => x.tradeId).map(x => x.kind), ['adopted_ours_unreasoned'])
+})

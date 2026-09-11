@@ -2874,6 +2874,25 @@ async function runLoop(db) {
             if (ex.expired || ex.unknown || rc.resolved.length) {
               log(`Entry ledger …${String(accountId).slice(-4)}: ${ex.expired} permit(s) expired, ${ex.unknown} send(s) now UNKNOWN, ${rc.resolved.length} resolved by evidence${rc.resolved.length ? ` (${rc.resolved.map(r => `${r.intentId} ${r.from}→${r.to}`).join(', ')})` : ''}, ${rc.stillOpen} still open`)
             }
+            // PR-E (owner principle 4): an UNKNOWN the snapshot and the ring
+            // could not settle is read against the broker's DEAL HISTORY —
+            // the same pull pnl-backfill makes, one per pass and only when
+            // an UNKNOWN exists (the settle itself skips otherwise). A deal
+            // in the send window → FILLED; no match → the row STAYS UNKNOWN
+            // and is listed (checker B1: a capped pull cannot prove absence);
+            // hasMore pages are followed; a pull that fails settles nothing.
+            try {
+              const { settleUnknownsFromDealHistory } = await import('./services/entry-ledger.js')
+              const { wsGetDeals } = await import('./lib/ctrader-ws.js')
+              const dh = await settleUnknownsFromDealHistory(db, {
+                accountId, getDeals: (t0, t1) => wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1),
+              })
+              if (dh.filled?.length || dh.stillUnknown) {
+                log(`Entry ledger …${String(accountId).slice(-4)} deal history: ${dh.pulled} deal(s) over ${dh.pages} page(s)${dh.truncated ? ' (TRUNCATED — coverage not claimed)' : ''}, ${dh.filled.length} FILLED${dh.filled.length ? ` (${dh.filled.map(f => `${f.intentId}→pos ${f.positionId}`).join(', ')})` : ''}, ${dh.stillUnknown} still UNKNOWN (listed, never auto-rejected)`)
+              }
+            } catch (err) {
+              log(`Entry ledger deal-history settle failed (non-fatal): ${err.message}`)
+            }
           } catch (err) {
             log(`Entry ledger reconcile failed (non-fatal): ${err.message}`)
           }
@@ -3280,6 +3299,27 @@ async function runLoop(db) {
                   (k, v) => setAccountState(db, acc.account_id, k, v),
                   { accountId: acc.account_id })
                 log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)`)
+
+                // PR-E M2 (checker, 11-09-2026): this account's intents settle
+                // on ITS snapshot and ITS deal history — until now only the
+                // primary pass reconciled intents, so an UNKNOWN on any other
+                // account could never be resolved automatically. Same two
+                // steps as the primary pass (expireStale is global and ran
+                // there); best-effort per account.
+                try {
+                  const { reconcileIntents, settleUnknownsFromDealHistory } = await import('./services/entry-ledger.js')
+                  const rc2 = reconcileIntents(db, { accountId: acc.account_id, positions: rd.position || [], orders: rd.order || [] })
+                  if (rc2.resolved.length) log(`Entry ledger …${String(acc.account_id).slice(-4)}: ${rc2.resolved.length} resolved by evidence (${rc2.resolved.map(r => `${r.intentId} ${r.from}→${r.to}`).join(', ')}), ${rc2.stillOpen} still open`)
+                  const { wsGetDeals } = await import('./lib/ctrader-ws.js')
+                  const dh2 = await settleUnknownsFromDealHistory(db, {
+                    accountId: acc.account_id, getDeals: (t0, t1) => wsGetDeals(host, clientId, clientSecret, accessToken, acc.account_id, t0, t1),
+                  })
+                  if (dh2.filled?.length || dh2.stillUnknown) {
+                    log(`Entry ledger …${String(acc.account_id).slice(-4)} deal history: ${dh2.pulled} deal(s) over ${dh2.pages} page(s)${dh2.truncated ? ' (TRUNCATED)' : ''}, ${dh2.filled.length} FILLED, ${dh2.stillUnknown} still UNKNOWN`)
+                  }
+                } catch (err) {
+                  log(`Entry ledger [${acc.account_id}] failed (non-fatal): ${err.message}`)
+                }
 
                 // THIS ACCOUNT'S OWN EQUITY. The primary pass above stamps the
                 // selected account's balance and leverage; this sweep used to

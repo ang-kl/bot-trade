@@ -13,6 +13,7 @@ import {
   reserveEntry, redeemPermit, markSent, resolveIntent, releaseOldEpoch, expireStale, openIntents, intentCounts,
   pendingExposure, reconcileIntents, operatorResolve, ledgerView, newIntentId, OPEN_STATES,
   reserveVpoPermits, releaseVpoReservations, VPO_PRODUCER,
+  resolveUnknownFromDeals, settleUnknownsFromDealHistory, UNKNOWN_MAX_AGE_MS, DEFAULT_SENT_TIMEOUT_MS, DEAL_PULL_MAX_PAGES,
 } from './entry-ledger.js'
 import { tagLabelWithIntent, labelIntentId, encodeLabel, parseLabel, MAX_LABEL_LEN } from '../lib/trade-labels.js'
 
@@ -280,4 +281,188 @@ test('the event journal settles an UNKNOWN intent: a late frame matched by clien
   assert.equal(rec.resolved.length, 2)
   assert.equal(row(db, a.intentId).state, 'FILLED'); assert.equal(row(db, a.intentId).broker_position_id, '502'); assert.equal(row(db, a.intentId).resolution_source, 'event')
   assert.equal(row(db, b.intentId).state, 'REJECTED'); assert.equal(row(db, b.intentId).error_code, 'TRADING_BAD_VOLUME')
+})
+
+// ---------------------------------------------------------------------------
+// PR-E (owner principle 4): the deal-history resolver for UNKNOWN intents.
+// `deals` is the ProtoOAGetDealListRes `deal` array pnl-backfill.js pulls
+// (dealId, orderId, positionId, symbolId, tradeSide 1|2, volume,
+// executionTimestamp, dealStatus, closePositionDetail on a closing deal).
+// Checker B1: an UNKNOWN is NEVER auto-REJECTED — no evidence is no verdict.
+// ---------------------------------------------------------------------------
+function unknownIntent(db, { now, symbolId = 1, symbol = 'EURUSD', side = 'BUY', volume = 1000 } = {}) {
+  const r = reserveEntry(db, { ...base, symbolId, symbol, side, volume, now })
+  redeemPermit(db, r.permit.id, { now }); markSent(db, r.intentId, { now: now + 1000 })
+  const ex = expireStale(db, { now: now + 1000 + DEFAULT_SENT_TIMEOUT_MS + 1 })
+  assert.equal(ex.unknown, 1)
+  assert.equal(row(db, r.intentId).state, 'UNKNOWN')
+  return r.intentId
+}
+const deal = (o) => ({ dealId: 501, orderId: 601, positionId: 7001, symbolId: 1, tradeSide: 1, volume: 1000, executionTimestamp: 0, executionPrice: 1.1, dealStatus: 'FILLED', ...o })
+
+test('PR-E resolver: a deal whose label carries the intent tag settles the UNKNOWN as FILLED with the position id, source deal_history', () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-11T08:00:00Z')
+  const id = unknownIntent(db, { now: t0 })
+  const label = tagLabelWithIntent('AU|v1|SCAN|H|LN|4h|TR', id)
+  // the tagged deal is on ANOTHER symbol/side and outside the window — the tag alone is the evidence
+  const r = resolveUnknownFromDeals(db, { accountId: DEMO, now: t0 + 30 * 60_000, deals: [deal({ symbolId: 9, tradeSide: 2, executionTimestamp: t0 - 86_400_000, label, positionId: 7777 })] })
+  assert.deepEqual(r.filled, [{ intentId: id, positionId: '7777', dealId: '501' }])
+  assert.equal(r.stillUnknown, 0)
+  const it = row(db, id)
+  assert.equal(it.state, 'FILLED'); assert.equal(it.broker_position_id, '7777'); assert.equal(it.broker_order_id, '601'); assert.equal(it.resolution_source, 'deal_history')
+  assert.equal(reserveEntry(db, { ...base, now: t0 + 31 * 60_000 }).ok, true, 'the key is free again')
+})
+
+test('PR-E resolver: an untagged FILLED opening deal on the same symbol, side and volume inside the send window settles FILLED; a close, the other side, another symbol or outside the window does not', () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-11T08:00:00Z')
+  const id = unknownIntent(db, { now: t0 })
+  const now = t0 + 20 * 60_000
+  const noise = [
+    deal({ dealId: 1, positionId: 1, executionTimestamp: t0 + 5000, closePositionDetail: { grossProfit: 100 } }), // a close
+    deal({ dealId: 2, positionId: 2, executionTimestamp: t0 + 5000, tradeSide: 2 }),                            // the other side
+    deal({ dealId: 3, positionId: 3, executionTimestamp: t0 + 5000, symbolId: 2 }),                              // another symbol
+    deal({ dealId: 4, positionId: 4, executionTimestamp: t0 - 60_000 }),                                         // before the send
+    deal({ dealId: 5, positionId: 5, executionTimestamp: t0 + 1000 + DEFAULT_SENT_TIMEOUT_MS * 2 + 6 * 60_000 }), // after the window
+  ]
+  let r = resolveUnknownFromDeals(db, { accountId: DEMO, now, deals: noise, coverage: { fromMs: t0 - 3_600_000, toMs: now } })
+  assert.equal(r.filled.length, 0); assert.equal(r.stillUnknown, 1)
+  assert.equal(row(db, id).state, 'UNKNOWN')
+  r = resolveUnknownFromDeals(db, { accountId: DEMO, now, deals: [...noise, deal({ dealId: 6, positionId: 6, executionTimestamp: t0 + 2500 })] })
+  assert.deepEqual(r.filled, [{ intentId: id, positionId: '6', dealId: '6' }])
+  assert.equal(row(db, id).state, 'FILLED'); assert.equal(row(db, id).broker_position_id, '6'); assert.equal(row(db, id).resolution_source, 'deal_history')
+})
+
+test('PR-E resolver (M1): a REJECTED-status deal never fills; a 5x-volume manual deal never fills; partial fills are summed; a fill for another intent\'s accepted limit order never claims the market intent', () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-11T08:00:00Z')
+  // a resting limit of this account, ACCEPTED as order 9100 (terminal for the key), filling later inside the market intent's window
+  const lim = reserveEntry(db, { ...base, symbolId: 1, symbol: 'EURUSD', side: 'BUY', volume: 1000, orderType: 'LIMIT', producerId: 'route_manual_order', now: t0 - 60_000 })
+  assert.equal(lim.ok, true)
+  redeemPermit(db, lim.permit.id, { now: t0 - 60_000 }); markSent(db, lim.intentId, { now: t0 - 59_000 })
+  assert.equal(resolveIntent(db, lim.intentId, { state: 'ACCEPTED', brokerOrderId: 9100, source: 'response', now: t0 - 58_000 }).ok, true)
+  const id = unknownIntent(db, { now: t0, volume: 1000 })
+  const now = t0 + 20 * 60_000
+  const bad = [
+    deal({ dealId: 11, positionId: 11, executionTimestamp: t0 + 2000, dealStatus: 'REJECTED' }),
+    deal({ dealId: 12, positionId: 12, executionTimestamp: t0 + 2000, dealStatus: 4 }),
+    deal({ dealId: 13, positionId: 13, executionTimestamp: t0 + 2000, volume: 5000 }),               // a manual 5x order
+    deal({ dealId: 14, positionId: 14, orderId: 9100, executionTimestamp: t0 + 2000 }),               // the limit's own fill
+  ]
+  let r = resolveUnknownFromDeals(db, { accountId: DEMO, now, deals: bad })
+  assert.equal(r.filled.length, 0); assert.equal(row(db, id).state, 'UNKNOWN')
+  // two partial fills summing to the intent's volume ARE its fill
+  r = resolveUnknownFromDeals(db, { accountId: DEMO, now, deals: [...bad,
+    deal({ dealId: 15, positionId: 15, executionTimestamp: t0 + 2100, volume: 1000, filledVolume: 400, dealStatus: 'PARTIALLY_FILLED' }),
+    deal({ dealId: 16, positionId: 15, executionTimestamp: t0 + 2200, volume: 1000, filledVolume: 600, dealStatus: 'PARTIALLY_FILLED' }),
+  ] })
+  assert.deepEqual(r.filled.map(f => f.positionId), ['15'])
+  assert.equal(row(db, id).broker_position_id, '15')
+  assert.equal(row(db, lim.intentId).state, 'ACCEPTED', 'the limit intent is untouched')
+})
+
+test('PR-E resolver (B1): an UNKNOWN older than UNKNOWN_MAX_AGE_MS with nothing in its window STAYS UNKNOWN whatever the coverage says, keeps its key blocked, is listed by the reasons invariant as intent_unknown_stale, and carries the pull note (m4)', async () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-11T08:00:00Z')
+  const id = unknownIntent(db, { now: t0 })
+  const late = t0 + UNKNOWN_MAX_AGE_MS + 60_000
+  const r = resolveUnknownFromDeals(db, { accountId: DEMO, now: late, deals: [deal({ executionTimestamp: t0 - 3_600_000 })], coverage: { fromMs: t0 - 4 * 3_600_000, toMs: late } })
+  assert.equal(r.filled.length, 0); assert.equal(r.stillUnknown, 1); assert.equal(r.noted, 1)
+  assert.equal('rejected' in r, false, 'there is no rejected outcome any more')
+  const it = row(db, id)
+  assert.equal(it.state, 'UNKNOWN'); assert.equal(it.resolved_at, null)
+  assert.match(it.error_code, /^no verdict within the send timeout; deal_history: 1 deal\(s\) pulled, 0 on this key in window 2026-09-11T08:00:00\.000Z–2026-09-11T08:07:01\.001Z, none matched, coverage complete, read /)
+  assert.match(reserveEntry(db, { ...base, now: late }).reason, /^intent_open: UNKNOWN/, 'the key stays blocked')
+  const { findUnreasonedTrades } = await import('./close-completeness.js')
+  const v = findUnreasonedTrades(db, { now: late })
+  assert.deepEqual(v.violations.filter(x => x.intentId).map(x => [x.intentId, x.kind]), [[id, 'intent_unknown_stale']])
+  // a second pass rewrites the note rather than stacking it
+  resolveUnknownFromDeals(db, { accountId: DEMO, now: late + 60_000, deals: [] })
+  assert.equal((row(db, id).error_code.match(/deal_history:/g) || []).length, 1)
+  assert.match(row(db, id).error_code, /coverage truncated or none/)
+})
+
+test('PR-E resolver: a fresh UNKNOWN (under the age floor) with a covering pull and no deal stays UNKNOWN and is not yet stale', async () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-11T08:00:00Z')
+  const id = unknownIntent(db, { now: t0 })
+  const soon = t0 + UNKNOWN_MAX_AGE_MS - 60_000
+  const r = resolveUnknownFromDeals(db, { accountId: DEMO, now: soon, deals: [], coverage: { fromMs: t0 - 3_600_000, toMs: soon } })
+  assert.equal(r.checked, 1); assert.equal(r.filled.length, 0); assert.equal(r.stillUnknown, 1)
+  assert.equal(row(db, id).state, 'UNKNOWN')
+  const { findUnreasonedTrades } = await import('./close-completeness.js')
+  assert.equal(findUnreasonedTrades(db, { now: soon }).violations.filter(x => x.intentId).length, 0)
+})
+
+test('PR-E settle: pulls once per pass only when an UNKNOWN exists, follows hasMore pages, reports truncation as coverage null, and never rejects', async () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-11T08:00:00Z')
+  const calls = []
+  const getDeals = async (from, to) => { calls.push([from, to]); return { deal: [deal({ dealId: 9, positionId: 9, executionTimestamp: t0 + 3000 })], hasMore: false } }
+  let r = await settleUnknownsFromDealHistory(db, { accountId: DEMO, getDeals, now: t0 })
+  assert.equal(r.skipped, 'no_unknown'); assert.equal(calls.length, 0, 'no UNKNOWN → no broker call')
+  const id = unknownIntent(db, { now: t0 })
+  r = await settleUnknownsFromDealHistory(db, { accountId: DEMO, getDeals, now: t0 + 10 * 60_000 })
+  assert.equal(calls.length, 1, 'one pull per pass'); assert.ok(calls[0][0] <= t0); assert.equal(calls[0][1], t0 + 10 * 60_000)
+  assert.equal(r.pulled, 1); assert.equal(r.truncated, false); assert.deepEqual(r.filled.map(f => f.intentId), [id]); assert.equal(row(db, id).state, 'FILLED')
+  // B1: the fill sits BEYOND a capped first page — hasMore is followed to it
+  const id2 = unknownIntent(db, { now: t0 + 20 * 60_000, symbolId: 2, symbol: 'GBPUSD' })
+  const pages = []
+  const paged = async (from, to) => {
+    pages.push([from, to])
+    if (pages.length === 1) return { deal: [deal({ dealId: 20, orderId: 620, positionId: 20, symbolId: 3, executionTimestamp: t0 + 20 * 60_000 + 500 })], hasMore: true }
+    return { deal: [deal({ dealId: 21, orderId: 621, positionId: 21, symbolId: 2, executionTimestamp: t0 + 20 * 60_000 + 2000 })], hasMore: false }
+  }
+  r = await settleUnknownsFromDealHistory(db, { accountId: DEMO, getDeals: paged, now: t0 + 30 * 60_000 })
+  assert.equal(pages.length, 2); assert.equal(pages[1][0], t0 + 20 * 60_000 + 501, 'the second page starts after the first page\'s last deal')
+  assert.equal(r.pages, 2); assert.deepEqual(r.filled.map(f => f.positionId), ['21']); assert.equal(row(db, id2).state, 'FILLED')
+  // B1: hasMore forever → truncated, coverage null, the intent stays UNKNOWN even past the age floor
+  const id3 = unknownIntent(db, { now: t0 + 40 * 60_000, symbolId: 4, symbol: 'USDJPY' })
+  let n = 0
+  const endless = async (from) => ({ deal: [deal({ dealId: 100 + n, orderId: 700 + n, positionId: 100 + n, symbolId: 9, executionTimestamp: from + 1 + (n++) })], hasMore: true })
+  r = await settleUnknownsFromDealHistory(db, { accountId: DEMO, getDeals: endless, now: t0 + 40 * 60_000 + UNKNOWN_MAX_AGE_MS + 1 })
+  assert.equal(r.truncated, true); assert.equal(r.coverage, null); assert.equal(r.pages, DEAL_PULL_MAX_PAGES)
+  assert.equal(r.filled.length, 0); assert.equal(r.stillUnknown, 1)
+  assert.equal(row(db, id3).state, 'UNKNOWN'); assert.match(row(db, id3).error_code, /coverage truncated or none/)
+  // a pull that throws settles nothing
+  await assert.rejects(() => settleUnknownsFromDealHistory(db, { accountId: DEMO, getDeals: async () => { throw new Error('502') }, now: t0 + 50 * 60_000 }))
+  assert.equal(row(db, id3).state, 'UNKNOWN')
+  // a complete empty pull past the age → STILL UNKNOWN (B1)
+  r = await settleUnknownsFromDealHistory(db, { accountId: DEMO, getDeals: async () => ({ deal: [], hasMore: false }), now: t0 + 40 * 60_000 + UNKNOWN_MAX_AGE_MS + 1 })
+  assert.equal(r.stillUnknown, 1); assert.equal(row(db, id3).state, 'UNKNOWN')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE error_code = 'no_deal_in_window' OR (state = 'REJECTED' AND resolution_source = 'deal_history')`).get().n, 0)
+})
+
+test('PR-E (m1): an operator\'s FILLED may name the position; it lands on the row', () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-11T08:00:00Z')
+  const id = unknownIntent(db, { now: t0 })
+  const r = operatorResolve(db, id, { state: 'FILLED', reason: 'seen in cTrader history', positionId: ' 424242 ' })
+  assert.deepEqual(r, { ok: true, from: 'UNKNOWN', to: 'FILLED', positionId: '424242' })
+  assert.equal(row(db, id).broker_position_id, '424242'); assert.equal(row(db, id).resolution_source, 'operator')
+  const id2 = unknownIntent(db, { now: t0, symbolId: 2, symbol: 'GBPUSD' })
+  assert.deepEqual(operatorResolve(db, id2, { state: 'REJECTED', reason: 'nothing at the broker', positionId: '1' }), { ok: true, from: 'UNKNOWN', to: 'REJECTED' })
+  assert.equal(row(db, id2).broker_position_id, null, 'a position id is only meaningful on FILLED')
+})
+
+test('PR-E wiring: the primary reconcile pass calls the deal-history settle right after reconcileIntents with the pass\'s own credentials, and the other-accounts sweep (M2) reconciles and settles each account with ITS id (comment-stripped pins — CLAUDE.md failure mode #4)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const src = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  const rec = src.indexOf('const rc = reconcileIntents(db, { accountId, positions: reconcileData.position')
+  assert.ok(rec > 0, 'reconcileIntents call found')
+  const settle = src.indexOf('await settleUnknownsFromDealHistory(db, {', rec)
+  assert.ok(settle > rec && settle - rec < 3000, 'the settle follows the reconcile in the same pass')
+  const args = src.slice(settle, src.indexOf('})', settle))
+  assert.ok(args.includes('getDeals: (t0, t1) => wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1)'), 'the pull uses this pass\'s creds and account')
+  // M2: the other-accounts sweep
+  const sweep = src.indexOf('const r2 = reconcilePositions(db, pos2, ord2,')
+  assert.ok(sweep > 0, 'other-accounts sweep found')
+  const rec2 = src.indexOf("reconcileIntents(db, { accountId: acc.account_id, positions: rd.position || [], orders: rd.order || [] })", sweep)
+  assert.ok(rec2 > sweep && rec2 - sweep < 6000, 'each other account reconciles its intents with its own snapshot')
+  const settle2 = src.indexOf('await settleUnknownsFromDealHistory(db, {', rec2)
+  assert.ok(settle2 > rec2 && settle2 - rec2 < 3000, 'and settles them')
+  const args2 = src.slice(settle2, src.indexOf('})', settle2))
+  assert.ok(args2.includes('accountId: acc.account_id') && args2.includes('wsGetDeals(host, clientId, clientSecret, accessToken, acc.account_id, t0, t1)'), 'with that account\'s id on the pull')
 })

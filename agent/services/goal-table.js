@@ -80,6 +80,10 @@ export const DEFAULT_GOAL_TARGETS = Object.freeze({
   // into the hundreds, and a floor the plan expects to fall under would make
   // the goal not_measurable exactly when it starts working (checker, 11-09).
   vetoMinReachedGate: 50,
+  // PR-E (owner principle 4): trades since the origin cutoff with no stated
+  // reason (origin, strategy, plan, approval id, close reason, scored plan)
+  // plus UNKNOWN sends older than the resolver's age floor.
+  tradeReasonsMax: 0,
 })
 
 export function goalTargets(raw) {
@@ -342,6 +346,25 @@ async function refusalGoal(db, targets, nowMs) {
   })
 }
 
+async function reasonsGoal(db, targets, nowMs) {
+  const { findUnreasonedTrades, TRADE_REASONS_CUTOFF_ISO } = await import('./close-completeness.js')
+  const r = findUnreasonedTrades(db, { now: nowMs })
+  const stale = r.counts.byKind.intent_unknown_stale || 0
+  const measurable = r.trades > 0 || (r.considered ?? 0) > 0 || stale > 0
+  const kinds = Object.entries(r.counts.byKind).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')
+  return goal('trade_reasons', {
+    name: 'Every trade has a reason', subsystem: 'record',
+    metric: `bot trades since ${TRADE_REASONS_CUTOFF_ISO} missing origin, strategy, plan, approval id, close reason or a scored plan, plus stale UNKNOWN sends`,
+    target: `≤ ${targets.tradeReasonsMax}`,
+    horizon: `since ${TRADE_REASONS_CUTOFF_ISO}`, current: measurable ? r.counts.total : null,
+    verdict: !measurable ? 'not_measurable' : r.counts.total <= targets.tradeReasonsMax ? 'on_track' : 'off_track',
+    note: !measurable ? `no bot trade since ${TRADE_REASONS_CUTOFF_ISO} and no UNKNOWN send — the invariant has nothing to judge; this is a fact about trading volume (the bot has not opened a trade since the cutoff), not a pass`
+      : r.counts.total === 0 ? `${r.trades} bot trade(s) since the cutoff, every one with a reason on record`
+        : `${r.counts.total} violation(s) over ${r.trades} trade(s): ${kinds}`,
+    source: 'close-completeness findUnreasonedTrades',
+  })
+}
+
 function enabledAccountIds(db) {
   try { return db.prepare(`SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id`).all().map(r => String(r.account_id)) } catch { return [] }
 }
@@ -400,6 +423,7 @@ export async function goalTable(db, { now = Date.now() } = {}) {
     ['momentum_universe_tradable', () => momentumGoal(db, t)],
     ['plans_scored', () => plansGoal(db, t, now)],
     ['refusal_cost', () => refusalGoal(db, t, now)],
+    ['trade_reasons', () => reasonsGoal(db, t, now)],
     ['fundable_universe', () => fundableGoal(db, t, now)],
     ['account_horizon', () => horizonGoal(db, t)],
   ]
