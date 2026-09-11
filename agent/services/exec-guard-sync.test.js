@@ -131,6 +131,55 @@ test('syncExecGuard pushes on diff, logs GUARD_SYNC, and stays silent in sync', 
   assert.equal(pushes.length, 2)
 })
 
+test('AUDIT 11-09-2026 (B05): halt accounts are compared by IDENTITY when the sidecar reports the list — two swapped for two others is a diff; an older sidecar reporting only the count is compared by count', () => {
+  const desired = { halt: false, haltAccounts: [111, 222] }
+  assert.equal(guardDiffers(desired, { halt: false, haltAccounts: [222, 111] }), false, 'order does not matter')
+  assert.equal(guardDiffers(desired, { halt: false, haltAccounts: [111, 333] }), true, 'same count, different account')
+  assert.equal(guardDiffers(desired, { halt: false, haltAccounts: [111] }), true)
+  assert.equal(guardDiffers(desired, { halt: false, haltAccounts: ['111', '222'], haltAccountCount: 2 }), false, 'the list wins over the count, as numbers')
+  assert.equal(guardDiffers(desired, { halt: false, haltAccountCount: 2 }), false, 'count only: the old comparison')
+})
+
+test('AUDIT 11-09-2026 (plan §3.6): the sidecar\'s echoed epochs ACKNOWLEDGE a WARMING account on the probe and on the push\'s own reply; force pushes even when nothing differs', async () => {
+  const db = withAccounts(initDB(':memory:'))
+  const { requestEntryMode, engineStatusFor } = await import('./entry-mode.js')
+  requestEntryMode(db, '111', 'STOPPED')
+  const r = requestEntryMode(db, '111', 'TIME_BASED', { expectedRevision: 1 })
+  assert.equal(r.status.transitionState, 'WARMING'); assert.equal(r.status.modeEpoch, 2)
+  const pushes = []
+  // the sidecar's /config reply echoes the epochs it bound
+  const exec = { setExecGuard: async (_creds, cfg) => { pushes.push(cfg); return { ok: true, entryEpochs: cfg.entryEpochs } } }
+  const side = { isLive: false, name: 'cpp_exec_demo' }
+  // 1. a probe whose report already carries the epoch acknowledges without a push
+  const probe = await syncExecGuard(db, exec, side, { reportedGuard: { halt: false, haltAccounts: [], entryEpochs: { 111: 2, 333: 0 } }, creds: { ready: true } })
+  assert.equal(probe.pushed, false); assert.equal(probe.acked.length, 1); assert.equal(probe.acked[0].transitionState, 'STABLE')
+  assert.equal(engineStatusFor(db, '111').effectiveEntryMode, 'TIME_BASED'); assert.equal(engineStatusFor(db, '111').fenceAckEpoch, 2)
+  // 2. a new switch: the route's forced push binds it from the reply
+  const rev = () => engineStatusFor(db, '111').configRevision
+  const r2 = requestEntryMode(db, '111', 'STOPPED', { expectedRevision: rev() })
+  assert.equal(r2.ok, true)
+  const r3 = requestEntryMode(db, '111', 'TIME_BASED', { expectedRevision: rev() })
+  assert.equal(r3.status.transitionState, 'WARMING'); assert.equal(r3.status.modeEpoch, 4)
+  const pushed = await syncExecGuard(db, exec, side, { reportedGuard: null, creds: { ready: true }, force: true })
+  assert.equal(pushed.pushed, true); assert.deepEqual(pushed.echoed, pushes[0].entryEpochs)
+  assert.equal(pushed.acked.length, 1); assert.equal(pushed.acked[0].epoch, 4); assert.equal(pushed.acked[0].transitionState, 'STABLE')
+  assert.equal(engineStatusFor(db, '111').effectiveEntryMode, 'TIME_BASED')
+  // 3. force pushes an in-sync guard too; nothing left to acknowledge
+  const forced = await syncExecGuard(db, exec, side, { reportedGuard: { halt: false, haltAccounts: [], entryEpochs: pushes[0].entryEpochs }, creds: { ready: true }, force: true })
+  assert.equal(forced.pushed, true); assert.equal(forced.acked.length, 0); assert.equal(pushes.length, 2)
+  // 4. a JS-mode push (no sidecar to bind) counts as acknowledged for what it was asked to set
+  requestEntryMode(db, '111', 'STOPPED', { expectedRevision: rev() })
+  const r5 = requestEntryMode(db, '111', 'TIME_BASED', { expectedRevision: rev() })
+  assert.equal(r5.status.transitionState, 'WARMING')
+  const js = await syncExecGuard(db, { setExecGuard: async () => ({ ok: true, mode: 'js' }) }, side, { reportedGuard: null, creds: { ready: true }, force: true })
+  assert.equal(js.acked.length, 1); assert.equal(engineStatusFor(db, '111').transitionState, 'STABLE')
+  // 5. a refused push acknowledges nothing and reports the error
+  requestEntryMode(db, '111', 'STOPPED', { expectedRevision: rev() })
+  assert.equal(requestEntryMode(db, '111', 'TIME_BASED', { expectedRevision: rev() }).ok, true)
+  const bad = await syncExecGuard(db, { setExecGuard: async () => ({ ok: false, error: '502' }) }, side, { reportedGuard: null, creds: { ready: true }, force: true })
+  assert.equal(bad.pushed, false); assert.equal(bad.error, '502'); assert.equal(engineStatusFor(db, '111').transitionState, 'WARMING')
+})
+
 test('P3a: an account in RECORD switches its side on; the names resolve to ids per side; the diff reads the sidecar\'s tick object', async () => {
   const db = withAccounts(initDB(':memory:'))
   const now = Date.now()

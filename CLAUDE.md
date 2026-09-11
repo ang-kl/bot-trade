@@ -398,10 +398,16 @@ Measurement history — each line is a real run of the script, not a claim:
   `№ 7,607` (04:48 UTC, the go-live cards answer) is **`№ 7,611`** by
   count; one unstamped line followed it, so the reply stamped `№ 7,608`
   (04:52 UTC, the second audit) is **`№ 7,613`**; one unstamped line
-  followed that (`№ 7,614`). The two stamps were wrong, the count is by
-  replies, not by stamps (the 08-09 rule), and the next stamped reply is
-  `№ 7,615`. A later re-measure that reads below this line is missing
-  these, not correcting them.
+  followed that (`№ 7,614`); `№ 7,615` (05:25 UTC) reported the demo
+  sidecar's SIGPIPE restart loop and PR #887. Twelve unstamped status
+  lines followed it (`№ 7,616`–`№ 7,626`, 05:25–05:53 UTC: #887 merged
+  and read back, the C++ drift PR #888 opened), so the reply stamped
+  **`№ 7,627`** (05:55 UTC: the #887 read-back, #888 open, the 13:10 SGT
+  daily report) is right by count; two unstamped lines followed it
+  (`№ 7,628` the #888 merge, `№ 7,629` the cherry-pick conflict), so the
+  next stamped reply is `№ 7,630`. The count is by replies, not by stamps
+  (the 08-09 rule). A later re-measure that reads below this line is
+  missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

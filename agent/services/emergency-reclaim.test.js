@@ -47,8 +47,11 @@ test('stale sidecars and crash leftovers are reclaimable', () => {
     fs.writeFileSync(path.join(dir, n), 'x')
   }
   const names = reclaimableFiles(dir, 'agent.db').map((f) => f.name).sort()
-  assert.deepEqual(names, ['a.tmp', 'agent.db-journal', 'b.old', 'core.123'])
+  assert.deepEqual(names, ['a.tmp', 'b.old', 'core.123'])
   assert.ok(!names.includes('keep.json'), 'unknown files are left alone')
+  // AUDIT 11-09-2026 (plan §11): the rollback journal is a live recovery
+  // record, never a reclaim candidate — it used to be listed as stale.
+  assert.ok(!names.includes('agent.db-journal'), 'the SQLite rollback journal is never reclaimed')
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

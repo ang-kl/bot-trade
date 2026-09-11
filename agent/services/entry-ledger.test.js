@@ -8,7 +8,7 @@ import { join } from 'node:path'
 
 import { initDB } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { requestEntryMode, engineStatusFor, writeEngineStatus, _resetRefusalDedupe } from './entry-mode.js'
+import { requestEntryMode, engineStatusFor, writeEngineStatus, _resetRefusalDedupe, acknowledgeEntryEpochs } from './entry-mode.js'
 import {
   reserveEntry, redeemPermit, markSent, resolveIntent, releaseOldEpoch, expireStale, openIntents, intentCounts,
   pendingExposure, reconcileIntents, operatorResolve, ledgerView, newIntentId, OPEN_STATES,
@@ -71,6 +71,7 @@ test('redeem moves RESERVED → DISPATCHING exactly once; expired, consumed, unk
   // the unsent reservation (plan §3 step 1), so the redeem finds it consumed
   const s = reserveEntry(db, { ...base, symbolId: 3, symbol: 'USDJPY', now })
   requestEntryMode(db, DEMO, 'TIME_BASED') // epoch 0 → 1, mode unchanged
+  acknowledgeEntryEpochs(db, { [DEMO]: 1 }) // the gateway's echo (11-09-2026: an active mode waits for it)
   const released = redeemPermit(db, s.permit.id, { now: now + 1000 })
   assert.equal(released.ok, false); assert.equal(released.reason, 'permit_consumed: RELEASED')
   assert.equal(row(db, s.intentId).state, 'RELEASED'); assert.equal(row(db, s.intentId).error_code, 'epoch_stale')

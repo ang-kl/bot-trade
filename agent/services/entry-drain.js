@@ -59,7 +59,10 @@ export async function drainEntryOrders(db, creds, deps = {}) {
 
   // 1. cancel by stored id — only under STOPPED. Rows are read fresh each
   // pass, so a row the fill pass has since marked 'filled' is not here.
-  if (cur.effectiveEntryMode === 'STOPPED') {
+  // The REQUESTED mode decides whether resting rows are ours to cancel: an
+  // active mode's effective reading is STOPPED while its transition is in
+  // progress (11-09-2026), and its resting rows are legitimate there.
+  if (cur.requestedEntryMode === 'STOPPED') {
     const rows = db.prepare(`SELECT id, order_id, symbol, note FROM pending_orders WHERE status = 'working' AND account_id = ? ORDER BY id`).all(id)
     const mark = db.prepare(`UPDATE pending_orders SET status = 'cancelled', note = ? WHERE id = ? AND status = 'working'`)
     for (const row of rows) {
@@ -108,12 +111,21 @@ export async function drainEntryOrders(db, creds, deps = {}) {
     out.unknown = cur.entryCounts.unknown // no evidence either way: carry what was last measured
   }
 
-  // 3. settle — on evidence only
-  const settled = snapshot != null && out.unknown === 0 && (cur.effectiveEntryMode !== 'STOPPED' || out.resting === 0)
-  out.transitionState = settled ? 'STABLE' : 'RECONCILING'
+  // 3. settle — on evidence only. AUDIT 11-09-2026 (plan §3.4/§3.6): an
+  // ACTIVE requested mode whose effective mode is still STOPPED becomes
+  // effective here only once the unknowns are gone AND the sidecar has
+  // echoed this epoch (fenceAckEpoch); with the unknowns gone but the fence
+  // not yet bound the state is WARMING, not STABLE.
+  const activeRequested = cur.requestedEntryMode !== 'STOPPED'
+  const quiesced = cur.requestedEntryMode !== 'STOPPED' || out.resting === 0
+  const evidenceClean = snapshot != null && out.unknown === 0 && quiesced
+  const fenceBound = cur.fenceAckEpoch === cur.modeEpoch
+  out.transitionState = !evidenceClean ? 'RECONCILING' : (activeRequested && !fenceBound) ? 'WARMING' : 'STABLE'
+  const effectiveEntryMode = out.transitionState === 'STABLE' ? cur.requestedEntryMode : (activeRequested ? 'STOPPED' : cur.effectiveEntryMode)
   writeEngineStatus(db, {
     ...cur,
     transitionState: out.transitionState,
+    effectiveEntryMode,
     entryCounts: { ...cur.entryCounts, resting: out.resting, unknown: out.unknown },
     updatedAt: new Date().toISOString(),
   })

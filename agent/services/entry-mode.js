@@ -111,18 +111,32 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
   try { releaseOldEpoch(db, id, nextEpoch, { now: now.getTime() }); ledger = intentCounts(db, id) } catch { /* ledger table absent on an old schema */ }
   const unknown = Math.max(cur.entryCounts.unknown, ledger.unknown)
   // P1c: STOPPED with resting entry orders enters QUIESCING — entry-drain.js
-  // cancels them by stored id and settles the state on the broker's word. Any
-  // other switch is STABLE unless an unresolved entry is still counted, which
-  // an active mode may not call STABLE (validateEngineStatus).
-  const transitionState = mode === 'STOPPED' && resting > 0 ? 'QUIESCING' : (unknown > 0 ? 'RECONCILING' : 'STABLE')
+  // cancels them by stored id and settles the state on the broker's word.
+  //
+  // AUDIT 11-09-2026 (plan §3.4 / §3.6, register TM-14 / TM-10): the
+  // EFFECTIVE mode is no longer the requested one written in the same
+  // breath. STOPPED takes effect at once — the Node fence (admitEntry) is
+  // the thing that stops entries, and it reads this record. An ACTIVE mode
+  // (TIME_BASED, TICK_MOMENTUM) takes effect only when (1) no entry outcome
+  // is UNKNOWN — an unknown outcome prevents activation of the new engine —
+  // and (2) the gateway has acknowledged the new epoch: the sidecar echoes
+  // it on the push (acknowledgeEntryEpochs), and until then the state is
+  // WARMING with new automatic entries stopped; a failed push is BLOCKED
+  // (markEntryModeBlocked), never a silent fall-back to time trading.
+  const active = mode !== 'STOPPED'
+  const transitionState = mode === 'STOPPED' && resting > 0 ? 'QUIESCING'
+    : unknown > 0 ? 'RECONCILING'
+    : active ? 'WARMING' : 'STABLE'
   const next = {
     ...cur,
     requestedEntryMode: mode,
-    effectiveEntryMode: mode,   // Node acknowledges at once — the fence is admitEntry()
+    effectiveEntryMode: active ? 'STOPPED' : mode, // active modes wait for the ack
     transitionState,
     configRevision: cur.configRevision + 1,
     modeEpoch: nextEpoch,
-    fenceAckEpoch: nextEpoch,
+    // The ack is the sidecar's echo of THIS epoch, not our own write. Kept
+    // as it was until then, so a reader can see the fence is not yet bound.
+    fenceAckEpoch: cur.fenceAckEpoch,
     entryCounts: { unsent: ledger.unsent, inFlight: ledger.inFlight, resting, unknown },
     updatedAt: now.toISOString(),
   }
@@ -131,7 +145,64 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
     db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
       .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, from: cur.effectiveEntryMode, to: mode, revision: saved.configRevision, epoch: saved.modeEpoch, resting: saved.entryCounts.resting, transition: saved.transitionState, actor }), id)
   } catch { /* audit best-effort */ }
-  return { ok: true, status: saved, changed: cur.effectiveEntryMode !== mode }
+  return { ok: true, status: saved, changed: cur.requestedEntryMode !== mode || cur.effectiveEntryMode !== saved.effectiveEntryMode }
+}
+
+/**
+ * AUDIT 11-09-2026 (plan §3.6): the gateway's acknowledgement. Called with
+ * the sidecar's echoed entry epochs — from the push's own response and from
+ * every probe's reported guard. An account whose echoed epoch equals its
+ * modeEpoch has its fence bound (fenceAckEpoch); one that was WARMING (or
+ * BLOCKED after a failed push) with no unknown entry becomes STABLE with the
+ * requested mode effective. Anything else is left alone: the ack never
+ * settles a drain or a reconcile — the broker's evidence does (entry-drain).
+ * Returns the accounts that changed.
+ */
+export function acknowledgeEntryEpochs(db, epochs, { now = new Date(), source = 'probe' } = {}) {
+  const changed = []
+  if (!epochs || typeof epochs !== 'object') return changed
+  for (const [rawId, rawEpoch] of Object.entries(epochs)) {
+    const id = String(rawId), epoch = Number(rawEpoch)
+    if (!Number.isFinite(epoch)) continue
+    const cur = engineStatusFor(db, id)
+    if (cur.invalid || cur.stored === false) continue        // nothing requested here, nothing to bind
+    if (epoch !== cur.modeEpoch) continue                    // an older epoch echoed: the fence is not bound yet
+    if (cur.fenceAckEpoch === epoch && cur.transitionState !== 'WARMING' && cur.transitionState !== 'BLOCKED') continue
+    let unknown = cur.entryCounts.unknown
+    try { unknown = Math.max(unknown, intentCounts(db, id).unknown) } catch { /* ledger absent */ }
+    const next = { ...cur, fenceAckEpoch: epoch, updatedAt: now.toISOString() }
+    if ((cur.transitionState === 'WARMING' || cur.transitionState === 'BLOCKED') && unknown === 0) {
+      next.transitionState = 'STABLE'
+      next.effectiveEntryMode = cur.requestedEntryMode
+    } else if (cur.transitionState === 'BLOCKED') {
+      next.transitionState = 'RECONCILING'                   // the fence is bound; the unknown still holds activation
+    }
+    const saved = writeEngineStatus(db, next)
+    changed.push({ accountId: id, epoch, transitionState: saved.transitionState, effectiveEntryMode: saved.effectiveEntryMode })
+    try {
+      db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+        .run('ACK', '/entry-mode/ack', JSON.stringify({ accountId: id, epoch, source, transition: saved.transitionState, effective: saved.effectiveEntryMode }), id)
+    } catch { /* audit best-effort */ }
+  }
+  return changed
+}
+
+/**
+ * AUDIT 11-09-2026 (plan §3.6): the push to the gateway failed. The account
+ * stays visibly BLOCKED with new automatic entries stopped until a later
+ * push (the probe's convergence) is acknowledged — never a silent fall-back.
+ */
+export function markEntryModeBlocked(db, accountId, reason, { now = new Date() } = {}) {
+  const id = String(accountId)
+  const cur = engineStatusFor(db, id)
+  if (cur.invalid) return { ok: false, reason: 'engine_record_invalid' }
+  if (cur.fenceAckEpoch === cur.modeEpoch && cur.transitionState === 'STABLE') return { ok: true, status: cur, changed: false } // already bound: nothing to block
+  const saved = writeEngineStatus(db, { ...cur, transitionState: 'BLOCKED', effectiveEntryMode: 'STOPPED', updatedAt: now.toISOString() })
+  try {
+    db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+      .run('BLOCK', '/entry-mode/blocked', JSON.stringify({ accountId: id, epoch: cur.modeEpoch, requested: cur.requestedEntryMode, reason: String(reason).slice(0, 300) }), id)
+  } catch { /* audit best-effort */ }
+  return { ok: true, status: saved, changed: true }
 }
 
 /**
@@ -139,8 +210,9 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
  * OFF | RECORD | SHADOW). RECORD asks the account's sidecar to record the
  * feed it carries (exec-guard-sync.js derives the side's `tickRecord` from
  * it); it changes no entry authority — the mode epoch is untouched, only
- * configRevision moves. SHADOW is refused until the tick strategy (P4)
- * exists to shadow. Observation can run while time entries continue.
+ * configRevision moves. SHADOW (admitted since P4) runs the strategy on the
+ * sidecar's workers, signalling only. Observation can run while time entries
+ * continue.
  */
 export function requestTickObservation(db, accountId, mode, { expectedRevision = null, actor = 'owner', now = new Date() } = {}) {
   const id = String(accountId)
@@ -244,7 +316,13 @@ export function admitEntry(db, { accountId, producerId, basis = 'bar' }) {
   if (producer.family !== 'automatic') return { ok: true, reason: null, modeEpoch: st.modeEpoch, mode: st.effectiveEntryMode, family: producer.family }
   const mode = st.effectiveEntryMode
   let reason = null
-  if (mode === 'STOPPED') reason = 'entry_mode_stopped'
+  // AUDIT 11-09-2026 (plan §3.4): a transition in progress admits nothing
+  // automatic — a drain (QUIESCING), an unknown outcome (RECONCILING), an
+  // unacknowledged fence (WARMING) or a failed push (BLOCKED) each hold the
+  // engine off, and the reason names the state so a reader can tell "stopped
+  // by the owner" from "stopped until the broker's evidence arrives".
+  if (st.transitionState !== 'STABLE') reason = `entry_mode_transition: ${st.transitionState}`
+  else if (mode === 'STOPPED') reason = 'entry_mode_stopped'
   else if (MODE_BASIS[mode] !== basis) reason = `entry_mode_basis: ${mode} admits ${MODE_BASIS[mode]} producers, ${producerId} is ${basis}`
   if (reason) {
     const key = `${id}:${producerId}:${st.modeEpoch}`
@@ -285,7 +363,7 @@ export function entryEnginesView(db) {
   return {
     at: new Date().toISOString(),
     accounts,
-    note: 'P1b/P1c: Node producers are fenced by admitEntry; the VPO tier is fenced at arming only (P2 fences its fire); on STOPPED the account\'s resting entry orders are cancelled by stored id and the state settles QUIESCING → RECONCILING → STABLE; TICK_MOMENTUM is refused until P4/P6.',
+    note: 'Node producers are fenced by admitEntry (P1b) and the VPO tier by its permits at the sidecar\'s send (P2a); on STOPPED the account\'s resting entry orders are cancelled by stored id and the state settles QUIESCING → RECONCILING → STABLE (P1c); an ACTIVE mode takes effect only after the sidecar echoes the new epoch (WARMING → STABLE) and never while an entry outcome is UNKNOWN (11-09-2026 audit); TICK_MOMENTUM is refused until P6\'s evidence.',
     // No account may be armed by omission: a record that is absent reads OFF.
     globalHalt: (() => { try { return JSON.parse(getState(db, 'exec_guard_json') || '{}')?.halt === true } catch { return false } })(),
   }

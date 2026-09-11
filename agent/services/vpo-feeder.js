@@ -108,6 +108,30 @@ function getVpoConfig(db) {
 // Deep enough for the sidecar's Cup & Handle (kChMinBars = 210), with headroom.
 const VPO_FETCH_BARS = 260
 
+/**
+ * The DISARM push, once per (account, epoch). Called by the feeder when the
+ * fence refuses an account, and — AUDIT 11-09-2026 (plan §3.1) — by the
+ * entry-mode route the moment a switch is requested, so the old arming and
+ * its standing permits do not outlive the switch by a feeder interval.
+ * Never throws: a failed push is returned as { ok:false, error } and is not
+ * remembered, so the next caller tries again.
+ */
+export async function pushVpoDisarm(db, accountId, base, { reason = 'entry_mode', epoch = null, push = pushToSidecar } = {}) {
+  const acct = Number(accountId)
+  const key = `${acct}:${epoch}`
+  if (disarmPushed.has(key)) return { ok: true, skipped: 'already pushed for this epoch' }
+  // P2a-2: the standing permits go with the arming they authorised.
+  try { releaseVpoReservations(db, String(acct), 'vpo_disarmed') } catch { /* ledger absent on an old schema */ }
+  try {
+    await push({ disarm: true, ctidTraderAccountId: acct, reason }, base)
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+  disarmPushed.add(key)
+  console.log(`[vpo-feeder] disarmed the VPO tier for …${String(acct).slice(-4)} (${reason}, epoch ${epoch})`)
+  return { ok: true }
+}
+
 /** One feeder pass: fetch bars + resolve sizing for every configured entry, push once. */
 export async function runVpoFeeder(db, deps = {}) {
   if ((getState(db, 'vpo_enabled') || 'false') !== 'true') return { skipped: 'vpo_enabled is not true' }
@@ -228,14 +252,7 @@ export async function runVpoFeeder(db, deps = {}) {
       // DISARM instead: the sidecar clears its bars and volumes, idles every
       // strategy that is not mid-fire and forgets the account, at once. Once
       // per epoch is enough (the sidecar's state is idempotent).
-      const key = `${acct}:${admission.modeEpoch}`
-      if (!disarmPushed.has(key)) {
-        // P2a-2: the standing permits go with the arming they authorised.
-        try { releaseVpoReservations(db, String(acct), 'vpo_disarmed') } catch { /* ledger absent on an old schema */ }
-        await push({ disarm: true, ctidTraderAccountId: acct, reason: admission.reason }, execBaseFor(creds))
-        disarmPushed.add(key)
-        console.log(`[vpo-feeder] disarmed the VPO tier for …${String(acct).slice(-4)} (${admission.reason}, epoch ${admission.modeEpoch})`)
-      }
+      await pushVpoDisarm(db, acct, execBaseFor(creds), { reason: admission.reason, epoch: admission.modeEpoch, push })
       return { skipped: `entry_mode: ${admission.reason}`, accountId: acct, disarmed: true }
     }
   }

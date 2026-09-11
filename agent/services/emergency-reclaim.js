@@ -66,10 +66,14 @@ export function reclaimableFiles(dir, dbName) {
     // committed transactions that have not been checkpointed. The WAL is
     // reclaimed through SQLite's own truncation below, not with unlink.
     if (name === dbName || name === `${dbName}-wal`) continue
+    // AUDIT 11-09-2026 (plan §11): a `*.db-journal` is SQLite's rollback
+    // journal — a live recovery record for a transaction in flight, not a
+    // stale file. Unlinking it under a crash-mid-write is how a database
+    // gets corrupted. It is never a reclaim candidate, exactly like the WAL.
+    if (/\.db-journal$/.test(name)) continue
     const isStale = name.endsWith('.bak')
       || name.endsWith('.old')
       || name.endsWith('.tmp')
-      || /\.db-journal$/.test(name)
       || /^core(\.\d+)?$/.test(name)
     if (!isStale) continue
     try {
