@@ -91,6 +91,9 @@ const AccountsWorkspace = lazy(() => import('./pages/AccountsWorkspace.jsx'))
 const Tune = lazy(() => import('./pages/Tune.jsx'))
 const Risk = lazy(() => import('./pages/Risk.jsx'))
 const Connect = lazy(() => import('./pages/Connect.jsx'))
+// PR-F (owner principle 4): the twelve attribution endpoints, read by no page
+// until now.
+const Reasons = lazy(() => import('./pages/Reasons.jsx'))
 import ActiveAccountHeader, { ActiveAccountHeaderCompact } from './components/ActiveAccountHeader.jsx'
 import ViewAccountPicker from './components/ViewAccountPicker.jsx'
 import MobileTabBar from './components/MobileTabBar.jsx'
@@ -127,6 +130,7 @@ const NAV_GROUPS = [
     items: [
       { to: '/trade', label: 'Trade', icon: '📈' },
       { to: '/risk', label: 'Risk', icon: '🛡️' },
+      { to: '/reasons', label: 'Reasons', icon: '🧾' },
     ],
   },
   {
@@ -411,6 +415,7 @@ export default function App() {
             <Route path="/accounts/workspace" element={<AccountsWorkspace />} />
             <Route path="/tune" element={<Tune />} />
             <Route path="/risk" element={<Risk />} />
+            <Route path="/reasons" element={<Reasons />} />
             <Route path="/connect" element={<Connect />} />
             {/* Spotware OAuth redirect URI (registered on the cTrader app) */}
             <Route path="/link-up" element={<Connect />} />

@@ -20,6 +20,7 @@ import PositionChart from './PositionChart.jsx'
 import { agentPost } from '../lib/agent-api.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { sideDir } from '../lib/side.js'
+import { EMPTY_GUARD_FORM, guardFormState, guardApplyBlocker } from '../lib/position-guard-form.js'
 
 // Purpose-named tabs (owner: "how do I change with such window layout" — the
 // old Modify/Protect labels didn't say WHERE to change size vs the stop/target).
@@ -97,45 +98,58 @@ function ToggleRow({ label, on, onToggle }) {
   )
 }
 
-export default function PositionManager({ p, onDone }) {
-  const [tab, setTab] = useState('Modify')
+export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
+  const [tab, setTab] = useState(initialTab)
   const tabRefs = useRef([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const dir = sideDir(p.side) ?? 1
+  // PR-F checker M1: every post names the position's account when the row
+  // knows it; the routes fall back to the position's own record otherwise
+  // (credsForPosition), never to the primary account.
+  const acct = p.accountId ?? p.account_id ?? p.account ?? null
+  const withAcct = body => ({ ...body, ...(acct != null ? { account: String(acct) } : {}) })
 
   // Protect state — native SL/TP prefilled from the broker snapshot.
   const [slOn, setSlOn] = useState(p.sl != null)
   const [slPrice, setSlPrice] = useState(p.sl != null ? String(p.sl) : '')
   const [tpOn, setTpOn] = useState(p.tp != null)
   const [tpPrice, setTpPrice] = useState(p.tp != null ? String(p.tp) : '')
-  const [trailOn, setTrailOn] = useState(false)
-  const [trailPips, setTrailPips] = useState('10')
-  const [beOn, setBeOn] = useState(false)
-  const [beTrigger, setBeTrigger] = useState('15')
-  const [beOffset, setBeOffset] = useState('3')
+  // PR-F (owner principle 6): the bot-enforced rules start EMPTY — the old
+  // 10 / 15 / 3 defaults read as the position's settings on positions that
+  // had no guard at all. They fill ONLY from /actions/position-guard-get
+  // (src/lib/position-guard-form.js), and `guardRead` says which state the
+  // fields are in: reading · stored · not set · not monitored · read failed.
+  const empty = EMPTY_GUARD_FORM()
+  const [trailOn, setTrailOn] = useState(empty.trailOn)
+  const [trailPips, setTrailPips] = useState(empty.trailPips)
+  const [beOn, setBeOn] = useState(empty.beOn)
+  const [beTrigger, setBeTrigger] = useState(empty.beTrigger)
+  const [beOffset, setBeOffset] = useState(empty.beOffset)
   // TP 2–4 — bot-managed partial closes {on, price, lots}
-  const [extraTps, setExtraTps] = useState([
-    { on: false, price: '', lots: '' },
-    { on: false, price: '', lots: '' },
-    { on: false, price: '', lots: '' },
-  ])
+  const [extraTps, setExtraTps] = useState(empty.extraTps)
+  const [guardRead, setGuardRead] = useState('reading') // reading | stored | not_set | not_monitored | failed
 
   useEffect(() => {
     let alive = true
     agentPost('/actions/position-guard-get', { positionId: p.positionId }).then(r => {
-      if (!alive || !r?.guard) return
-      const g = r.guard
-      if (g.breakEven) { setBeOn(!!g.breakEven.on); setBeTrigger(String(g.breakEven.triggerPips ?? 15)); setBeOffset(String(g.breakEven.offsetPips ?? 3)) }
-      if (g.trailing) { setTrailOn(!!g.trailing.on); setTrailPips(String(g.trailing.distancePips ?? 10)) }
-      if (Array.isArray(g.takeProfits)) {
-        setExtraTps([0, 1, 2].map(i => g.takeProfits[i]
-          ? { on: !g.takeProfits[i].done, price: String(g.takeProfits[i].price ?? ''), lots: String(g.takeProfits[i].lots ?? '') }
-          : { on: false, price: '', lots: '' }))
-      }
-    }).catch(() => {})
+      if (!alive) return
+      const { status, form } = guardFormState(r)
+      setGuardRead(status)
+      setTrailOn(form.trailOn); setTrailPips(form.trailPips)
+      setBeOn(form.beOn); setBeTrigger(form.beTrigger); setBeOffset(form.beOffset)
+      setExtraTps(form.extraTps)
+    }).catch(() => { if (alive) setGuardRead('failed') })
     return () => { alive = false }
   }, [p.positionId])
+  const notSet = v => (v === '' ? ' (not set)' : '')
+  const guardNote = {
+    reading: 'reading the stored guard for this position…',
+    stored: 'trailing / break-even / partial TPs below are the values stored for this position',
+    not_set: 'no bot-enforced rules stored for this position — trailing, break-even and partial TPs are not set',
+    not_monitored: 'this position is not monitored by the bot — no guard can be stored for it',
+    failed: 'guard read failed — the stored values are unknown; the fields below are empty, not the position\'s settings',
+  }[guardRead]
 
   const run = async (fn, okMsg) => {
     setBusy(true); setMsg('')
@@ -147,6 +161,8 @@ export default function PositionManager({ p, onDone }) {
   // unconfirmed write in this sheet — it moves a LIVE stop/target. Summarise
   // exactly what will be written before writing it.
   const applyProtection = () => {
+    const blocker = guardApplyBlocker({ trailOn, trailPips, beOn, beTrigger, beOffset })
+    if (blocker) { setMsg(`Error: ${blocker}`); return }
     const parts = [
       slOn && Number(slPrice) > 0 ? `SL → ${slPrice}` : 'SL unchanged',
       tpOn && Number(tpPrice) > 0 ? `TP → ${tpPrice}` : 'TP unchanged',
@@ -159,9 +175,9 @@ export default function PositionManager({ p, onDone }) {
   }
   const applyProtectionNow = () => run(async () => {
     if (slOn && Number(slPrice) > 0) {
-      await agentPost('/actions/position-protect', { positionId: p.positionId, sl: Number(slPrice), ...(tpOn && Number(tpPrice) > 0 ? { tp: Number(tpPrice) } : {}) })
+      await agentPost('/actions/position-protect', withAcct({ positionId: p.positionId, sl: Number(slPrice), ...(tpOn && Number(tpPrice) > 0 ? { tp: Number(tpPrice) } : {}) }))
     } else if (tpOn && Number(tpPrice) > 0) {
-      await agentPost('/actions/position-protect', { positionId: p.positionId, tp: Number(tpPrice) })
+      await agentPost('/actions/position-protect', withAcct({ positionId: p.positionId, tp: Number(tpPrice) }))
     }
     const takeProfits = extraTps
       .filter(t => t.on && Number(t.price) > 0 && Number(t.lots) > 0)
@@ -171,7 +187,7 @@ export default function PositionManager({ p, onDone }) {
       ...(trailOn ? { trailing: { on: true, distancePips: Number(trailPips) || 0 } } : {}),
       ...(takeProfits.length ? { takeProfits } : {}),
     }
-    await agentPost('/actions/position-guard', { positionId: p.positionId, guard: Object.keys(guard).length ? guard : null })
+    await agentPost('/actions/position-guard', withAcct({ positionId: p.positionId, guard: Object.keys(guard).length ? guard : null }))
   }, 'Protection updated')
 
   const slPips = pipsFromPrice(p.entry, Number(slPrice) || null, p.pipSize, dir, 'sl')
@@ -227,25 +243,26 @@ export default function PositionManager({ p, onDone }) {
           </div>
           <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">Used margin: {money(p.usedMargin)}</div>
 
-          <button type="button" disabled className="w-full rounded-[var(--radius-control)] glass-inset py-2.5 text-(length:--fs-h) font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
-          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] my-1.5">Leave size intact</div>
-          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
+          {/* PR-F: the permanently-disabled "Modify" (amend size in place) is
+              gone until the route exists — a dead dominant button is not a
+              feature. The three real size actions follow. */}
+          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] my-1.5">Size cannot be amended in place (no route yet) — the real actions:</div>
 
           <div className="flex gap-2 mb-1.5">
             {/* Real market orders — danger emphasis, not subtle (inventory D20/D21). */}
             <Button className="flex-1" variant="danger" disabled={busy}
               onClick={() => window.confirm(`Double ${p.symbol}: open ANOTHER ${p.side} ${fmt(p.lots, 2)} lots at market?`) &&
-                run(() => agentPost('/actions/position-double', { positionId: p.positionId }), 'Position doubled')}>Double</Button>
+                run(() => agentPost('/actions/position-double', withAcct({ positionId: p.positionId })), 'Position doubled')}>Double</Button>
             <Button className="flex-1" variant="danger" disabled={busy}
               onClick={() => window.confirm(`Reverse ${p.symbol}: CLOSE this ${p.side} and open ${p.side === 'BUY' ? 'SELL' : 'BUY'} ${fmt(p.lots, 2)} lots at market?`) &&
-                run(() => agentPost('/actions/position-reverse', { positionId: p.positionId }), 'Position reversed')}>Reverse</Button>
+                run(() => agentPost('/actions/position-reverse', withAcct({ positionId: p.positionId })), 'Position reversed')}>Reverse</Button>
           </div>
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <button type="button" disabled={busy}
             className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"
             onClick={() => window.confirm(`Close ${p.symbol} ${p.side} ${fmt(p.lots, 2)} lots at market?`) &&
-              run(() => agentPost('/actions/position-close', { positionId: p.positionId }), 'Position closed')}>
+              run(() => agentPost('/actions/position-close', withAcct({ positionId: p.positionId })), 'Position closed')}>
             Close ({fmt(p.currentPrice, p.digits ?? 5)})
           </button>
           <div className="text-center text-(length:--fs-body) mt-1.5">
@@ -291,21 +308,22 @@ export default function PositionManager({ p, onDone }) {
               <div className="flex items-center justify-between border-t border-[var(--color-border)] py-1.5 text-(length:--fs-body)">
                 <span>Trigger</span><span className="text-[var(--color-text-sub)]">Trade ›</span>
               </div>
-              <ToggleRow label="Trailing Stop Loss" on={trailOn} onToggle={() => setTrailOn(v => !v)} />
+              <ToggleRow label={`Trailing Stop Loss${notSet(trailPips)}`} on={trailOn} onToggle={() => setTrailOn(v => !v)} />
               {trailOn && (
-                <Stepper label="Distance (pips)" value={trailPips} onChange={setTrailPips} step={1} digits={1} />
+                <Stepper label={`Distance (pips)${notSet(trailPips)}`} value={trailPips} onChange={setTrailPips} step={1} digits={1} />
               )}
             </>
           )}
 
           {/* Break-even — bot-enforced, trigger + offset in pips */}
-          <ToggleRow label="Break-even" on={beOn} onToggle={() => setBeOn(v => !v)} />
+          <ToggleRow label={`Break-even${notSet(beTrigger)}`} on={beOn} onToggle={() => setBeOn(v => !v)} />
           {beOn && (
             <>
-              <Stepper label="Trigger (pips)" value={beTrigger} onChange={setBeTrigger} step={1} digits={1} />
-              <Stepper label="Offset (pips)" value={beOffset} onChange={setBeOffset} step={1} digits={1} />
+              <Stepper label={`Trigger (pips)${notSet(beTrigger)}`} value={beTrigger} onChange={setBeTrigger} step={1} digits={1} />
+              <Stepper label={`Offset (pips)${notSet(beOffset)}`} value={beOffset} onChange={setBeOffset} step={1} digits={1} />
             </>
           )}
+          <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]" data-guard-read={guardRead}>{guardNote}</p>
 
           <button type="button" disabled={busy}
             className="w-full mt-2 rounded-[var(--radius-control)] bg-[var(--color-accent)] text-[var(--color-on-accent)] py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"

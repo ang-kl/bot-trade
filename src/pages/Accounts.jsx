@@ -76,7 +76,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
                 rows={brokerPositionRows(acct.positions, { manageable })}
                 countLabel="open positions"
                 marketHours={marketHours}
-                panel={manageable ? { label: 'Manage', render: (row, close) => <PositionManager p={row.raw} onDone={() => { close(); onChanged?.() }} /> } : null}
+                panel={manageable ? { label: 'Manage', render: (row, close) => <PositionManager p={{ ...row.raw, accountId: row.raw.accountId ?? row.accountId ?? null }} onDone={() => { close(); onChanged?.() }} /> } : null}
               />
             </>
           )}

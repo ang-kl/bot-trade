@@ -15,6 +15,7 @@ export const PRIMARY_TABS = [
 ]
 
 export const MORE_TABS = [
+  { to: '/reasons', label: 'Reasons', icon: '🧾' },
   { to: '/tune', label: 'Tune', icon: '⚙️' },
   { to: '/accounts', label: 'Accounts', icon: '💼' },
   { to: '/connect', label: 'Connect', icon: '🔗' },

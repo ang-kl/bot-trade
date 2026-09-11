@@ -1,0 +1,13 @@
+{
+  "meta": { "schemaVersion": 1, "dataMode": "fixture", "note": "npm run audit:ui fixture — a bound position for the cockpit and the Manage sheet (CLAUDE.md failure mode #3: the audit used to render with no agent, so the cockpit/position manager were never measured with a position). Values are a fixture, not a record." },
+  "position": { "symbol": "EURUSD", "side": "LONG", "lots": 0.5, "entry": 1.1, "sl": 1.09, "tp": 1.12, "price": 1.105, "pnl": 25, "marketOpen": true, "nextOpenAt": null, "openedAt": "2026-09-10T08:07:00Z", "mfeR": 0.6, "maeR": -0.2 },
+  "account": { "balance": 25000, "equity": 25025, "usedMargin": 300, "dailyLossCap": 500, "dailyLossUsed": 125 },
+  "indicators": { "rvol": 1.2, "ema9": [], "ema20": [], "ema50": [], "vwap": [], "volumeProfile": { "buckets": [], "pocPrice": null, "valueAreaLow": null, "valueAreaHigh": null, "status": "unknown" }, "status": "derived" },
+  "execution": { "spreadNow": 0.0001, "spreadRatio": 1.1, "latencyMs": null },
+  "intention": { "strategy": "fib_618_fade", "currentDecision": { "state": "holding" }, "armedActions": [ { "kind": "scale_out", "trigger": "close 50% at +1R", "triggerPrice": 1.11, "distance": 0.005, "eta": null, "armed": true, "ruleSource": "position_manager" } ], "invalidation": [ { "kind": "stop_loss", "condition": "broker SL at 1.09", "state": "armed" } ] },
+  "correlation": { "status": "live", "related": [], "summary": { "held": 0, "stacked": 0, "hedged": 0 } },
+  "environment": { "regime": { "label": "trending", "direction": "up", "status": "live" }, "macroNews": { "events": [], "gate": { "enabled": true, "activeEvent": null } } },
+  "journal": [],
+  "advisories": [ { "kind": "fixture", "detail": "audit fixture — not a broker record" } ],
+  "bars": { "timeframe": "15m", "rows": [], "status": "unavailable", "detail": "audit fixture serves no bars", "source": "fixture", "asOf": "2026-09-11T00:00:00Z" }
+}

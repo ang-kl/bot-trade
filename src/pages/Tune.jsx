@@ -17,6 +17,7 @@ import Input from '../components/common/Input.jsx'
 import Field from '../components/common/Field.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { armBenchmarksLine } from '../lib/arm-benchmarks.js'
 import { strategyTfGrid } from '../lib/strategy-tf-grid.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
 import { stratShort, strategyLabel, STRATEGY_KEYS } from '../lib/strategy-labels.js'
@@ -934,6 +935,9 @@ export default function Tune() {
   const [risk, setRisk] = useState(null)              // { effective, derived }
   const [timeframes, setTimeframes] = useState(['4h', '1d'])
   const [armedMatrix, setArmedMatrix] = useState(null)   // {SYM:[tfs]} currently armed on the agent
+  // PR-F: the stats stored at Apply time (POST /actions/arm-benchmarks) read
+  // back from GET /state/arm-benchmarks — the write had no reader on the site.
+  const [armBenchmarks, setArmBenchmarks] = useState(null)
   const [tfMenu, setTfMenu] = useState(false)
   const [tfDraft, setTfDraft] = useState('')   // free-text timeframe, e.g. "1.5h"
   // Backtest table sorting — TF slow→fast by default; click a header to re-sort.
@@ -1134,13 +1138,14 @@ export default function Tune() {
     const seenSeq = writeSeq.current
     console.log('[dbg] load start seq=', seenSeq)
     try {
-      const [c, r, tf, rf, vf, ff, sm, vm] = await Promise.all([
+      const [c, r, tf, ab, rf, vf, ff, sm, vm] = await Promise.all([
         // Only `symbols` is account-scoped by this param; the strategies,
         // master toggles and everything else on /state/config are global and
         // come back unchanged either way.
         agentGet(`/state/config${wlAcct && wlAcct !== 'all' ? `?account=${encodeURIComponent(wlAcct)}` : ''}`),
         agentGet('/state/risk-config'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
+        agentGet('/state/arm-benchmarks').catch(() => null),
         agentGet('/state/fib-rsi-filter').catch(() => null),
         agentGet('/state/fib-vwap-filter').catch(() => null),
         agentGet('/state/fib-fvg-filter').catch(() => null),
@@ -1153,6 +1158,7 @@ export default function Tune() {
       setRisk(r)
       if (tf?.timeframes) setTimeframes(tf.timeframes)
       setArmedMatrix(tf?.matrix && typeof tf.matrix === 'object' ? tf.matrix : null)
+      setArmBenchmarks(ab)
       if (rf) setRsiFilter(!!rf.on)
       if (vf) setVwapFilter(!!vf.on)
       if (ff) setFvgFilter(!!ff.on)
@@ -3436,7 +3442,7 @@ export default function Tune() {
                     // no button to act on them.
                     const same = matrixEq(armMatrix, armedMatrix)
                     if (same) {
-                      return <p className="text-(length:--fs-body) font-semibold">Quant trading is ACTIVE, armed per instrument: {matrixSummary}. Your current selection matches — nothing to apply.</p>
+                      return <p className="text-(length:--fs-body) font-semibold">Quant trading is ACTIVE, armed per instrument: {matrixSummary}. Your current selection matches — nothing to apply. <span className="font-normal text-[var(--color-text-sub)]" data-arm-benchmarks>{armBenchmarksLine(armBenchmarks)}</span></p>
                     }
                     return (
                       <div className="flex flex-wrap items-center gap-2">
@@ -3463,6 +3469,7 @@ export default function Tune() {
                         <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
                           will arm {matrixSummary || 'nothing'} — currently armed: {armedMatrix ? Object.entries(armedMatrix).map(([s2, t2]) => `${s2} (${t2.join(', ')})`).join(' · ') : `${[...timeframes].sort(byTfDesc).join(' + ')} (all watchlist symbols)`}
                         </span>
+                        <span className="basis-full text-(length:--fs-body) text-[var(--color-text-sub)]" data-arm-benchmarks>{armBenchmarksLine(armBenchmarks)}</span>
                       </div>
                     )
                   })()}
@@ -3498,6 +3505,7 @@ export default function Tune() {
                           ? `turns on Scan + Analyze + Autotrade — GO timeframes + your overrides (${forcedTfs.join(', ')})`
                           : 'turns on Scan + Analyze + Autotrade and arms the GO timeframes'}
                       </span>
+                      <span className="basis-full text-(length:--fs-body) text-[var(--color-text-sub)]" data-arm-benchmarks>{armBenchmarksLine(armBenchmarks)}</span>
                     </div>
                   )}
                   {/* Touch-fill runs proved the resting-limit entry — offer to arm

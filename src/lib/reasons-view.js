@@ -1,0 +1,66 @@
+// PR-F (owner principle 4, "every trade has a reason" / §3.5 of the plan):
+// twelve attribution endpoints were served by the agent and read by no page.
+// The Reasons page reads them. This module is the page's pure half — the
+// endpoint roster and a generic shaper that renders EACH BODY WITH ITS OWN
+// FIELDS: scalars as a summary, nested objects as sub-summaries, arrays of
+// objects as a table whose columns are the rows' own keys. Nothing here
+// computes a number the agent did not send (no totals, no rates, no
+// averages) — a page that added its own arithmetic would be a second,
+// unaudited attribution.
+
+export const REASON_ENDPOINTS = [
+  { key: 'entry-intents', path: '/state/entry-intents', title: 'Entry intents', why: 'every entry the bot meant to make, with its resolution — UNKNOWN rows are the ones principle 4 forbids after four weeks' },
+  { key: 'trade-plans', path: '/state/trade-plans', title: 'Trade plans', why: 'the plan written at entry (strategy, risk event, targets) per trade' },
+  { key: 'unknown-pnl', path: '/state/unknown-pnl', title: 'Unknown P&L', why: 'closed rows whose money is not yet resolved from the broker' },
+  { key: 'unresolvable-plan', path: '/state/unresolvable-plan', title: 'Unresolvable plan', why: 'rows past the resolution horizon and what writing them off would cost' },
+  { key: 'trade-consistency', path: '/state/trade-consistency', title: 'Trade consistency', why: 'trades whose recorded P&L disagrees with their price move (failure mode #6)' },
+  { key: 'attribution', path: '/state/attribution', title: 'Attribution', why: 'P&L by strategy / origin on the viewed account' },
+  { key: 'refusal-cost', path: '/state/refusal-cost', title: 'Refusal cost', why: 'what the vetoed entries would have done — the refusal ledger' },
+  { key: 'exit-counterfactual', path: '/state/exit-counterfactual', title: 'Exit counterfactual', why: 'what a different exit rule would have returned on the same trades' },
+  { key: 'exit-price-suspects', path: '/state/exit-price-suspects', title: 'Exit price suspects', why: 'closes whose recorded exit price looks wrong against the broker' },
+  { key: 'open-duplicates', path: '/state/open-duplicates', title: 'Open duplicates', why: 'more than one open row for one broker position' },
+  { key: 'go-live-readiness', path: '/state/go-live-readiness', title: 'Go-live readiness', why: 'the evidence checks, each with its own verdict' },
+  { key: 'phase-audit', path: '/state/phase-audit', title: 'Phase audit', why: 'the viewed account\'s phase switches against what the loop actually did' },
+]
+
+const isScalar = v => v == null || ['string', 'number', 'boolean'].includes(typeof v)
+const isObj = v => v != null && typeof v === 'object' && !Array.isArray(v)
+
+export function fmtCell(v) {
+  if (v == null) return '—'
+  if (typeof v === 'boolean') return v ? 'yes' : 'no'
+  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(Math.abs(v) < 1 ? 4 : 2)
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) return v.length ? v.map(fmtCell).join(', ') : '[]'
+  return JSON.stringify(v)
+}
+
+/**
+ * Split a body into renderable parts, in the body's own key order.
+ * @returns {{ scalars: Array<[string,string]>, objects: Array<{key, scalars}>, tables: Array<{key, columns:string[], rows:object[], total:number}>, lists: Array<[string,string]> }}
+ */
+export function shapeBody(body, { maxRows = 25 } = {}) {
+  const out = { scalars: [], objects: [], tables: [], lists: [] }
+  if (!isObj(body)) return out
+  for (const [k, v] of Object.entries(body)) {
+    if (isScalar(v)) out.scalars.push([k, fmtCell(v)])
+    else if (isObj(v)) {
+      const scalars = Object.entries(v).filter(([, x]) => isScalar(x)).map(([kk, x]) => [kk, fmtCell(x)])
+      const nested = Object.entries(v).filter(([, x]) => !isScalar(x))
+      out.objects.push({ key: k, scalars, nested: nested.map(([kk, x]) => [kk, Array.isArray(x) ? `${x.length} item${x.length === 1 ? '' : 's'}` : `${Object.keys(x).length} field${Object.keys(x).length === 1 ? '' : 's'}`]) })
+    } else if (Array.isArray(v)) {
+      if (v.length && v.every(isObj)) {
+        const columns = [...new Set(v.slice(0, maxRows).flatMap(r => Object.keys(r)))]
+        out.tables.push({ key: k, columns, rows: v.slice(0, maxRows), total: v.length })
+      } else out.lists.push([k, v.length ? v.map(fmtCell).join(', ') : 'empty'])
+    }
+  }
+  return out
+}
+
+/** The per-block read state: 'ok' | 'error' with the agent's own message. */
+export function blockState(result) {
+  if (result && result.ok) return { status: 'ok', body: result.body }
+  const msg = result?.error ?? 'not read'
+  return { status: 'error', message: /401|unauthori[sz]ed|bearer/i.test(String(msg)) ? `not read — ${msg} (the state routes need the bearer token)` : `not read — ${msg}` }
+}

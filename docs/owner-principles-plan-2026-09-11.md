@@ -143,6 +143,13 @@ sweep, `exec-engine.js` rosters, `main.cpp:192` recorder header stamp.
 - Half-wired: `src/pages/Tune.jsx:3759-3761` RSI/VWAP/FVG confluence filters are
   honoured by the manual routes only — `agent/loop.js` never reads them;
   `Tune.jsx:3458,3488` arm-benchmarks writes a key nothing reads.
+  **CORRECTION (PR-F, 11-09-2026, measured):** both claims are wrong at HEAD.
+  The loop reads the three switches via `scanFilterOptions` (`loop.js:3511`)
+  → `runFibScan` annotate mode → `signal.filters_failed` → `tradeStageGate`
+  (`loop.js:1424`); the chain was real but unpinned, and is now pinned by
+  `agent/loop-confluence-filters.test.js`. `arm_benchmarks_json` is read by
+  `GET /state/arm-benchmarks`; what was missing was a page reading it, which
+  Tune now does. See `docs/plan-execution-audit-2026-09-11.md` §8.
 - `docs/ui-control-inventory.md` is stale (pinned to `16defbd`).
 - `entry_intents` UNKNOWN has no deal-history resolver (`broker_deals`
   unreferenced in `entry-ledger.js`) and no operator UI (`/actions/entry-intents/:id/resolve`,

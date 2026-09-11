@@ -179,10 +179,30 @@ export function cockpitFrame(store, tick, opts = {}) {
   const dollarPerR = real
     ? (rPnl != null && Math.abs(rNow) >= .05 ? Math.abs(rPnl / rNow) : null)
     : rUnit * 1092 * 10 / 7.8
-  const spd = wv(1) * 1.6 + .5
-  const vsi = rNow * .7 + wv(2) * .35
-  const hdgV = clamp(wv(3) * 55 + 18, -100, 100)
-  const spdTicks = [2, 1, 0, -1, -2].map((v, i) => ({ v: (v >= 0 ? '+' : '') + (v + Math.round(spd)), top: 24 + i * 16 }))
+  // PR-F checker B1 (owner principle 6): SPD / VSI / HDG were sine-wave
+  // generators (wv(), tick-driven) painted under a REAL position as
+  // "+1.90 pips/min", "TP 4.0h", "BULL 46". Under a real position each is
+  // now derived from a SERVED input or is null ('—' on the dial, no ETA, no
+  // BULL/BEAR word):
+  //   SPD  pips/min over the last served bar  (snapshot.bars rows + timeframe)
+  //   VSI  R per hour since the position opened (snapshot.position.openedAt + rNow)
+  //   HDG  EMA9 − EMA50 at the last bar, in risk units (snapshot.indicators)
+  const servedRows = Array.isArray(snap?.bars?.rows) ? snap.bars.rows.filter(b => b && Number.isFinite(b.c)) : []
+  const tfMinutes = (() => { const m = /^(\d+(?:\.\d+)?)([mhdw])$/.exec(String(snap?.bars?.timeframe || '')); return m ? Number(m[1]) * { m: 1, h: 60, d: 1440, w: 10080 }[m[2]] : null })()
+  const spd = real
+    ? (servedRows.length >= 2 && tfMinutes ? (servedRows[servedRows.length - 1].c - servedRows[servedRows.length - 2].c) / Math.pow(10, -dp) / tfMinutes : null)
+    : wv(1) * 1.6 + .5
+  const openedMs = snap?.position?.openedAt ? new Date(snap.position.openedAt).getTime() : NaN
+  const hoursOpen = Number.isFinite(openedMs) ? (Date.now() - openedMs) / 36e5 : null
+  const vsi = real
+    ? (hoursOpen != null && hoursOpen > 0.05 ? rNow / hoursOpen : null)
+    : rNow * .7 + wv(2) * .35
+  const lastOf = arr => (Array.isArray(arr) ? [...arr].reverse().find(x => x != null && Number.isFinite(x)) ?? null : null)
+  const e9 = lastOf(snap?.indicators?.ema9), e50 = lastOf(snap?.indicators?.ema50)
+  const hdgV = real
+    ? (e9 != null && e50 != null && rUnit > 0 ? clamp((e9 - e50) / rUnit * 50, -100, 100) : null)
+    : clamp(wv(3) * 55 + 18, -100, 100)
+  const spdTicks = spd == null ? [] : [2, 1, 0, -1, -2].map((v, i) => ({ v: (v >= 0 ? '+' : '') + (v + Math.round(spd)), top: 24 + i * 16 }))
   // Tick spacing follows the instrument's own risk unit, not a fixed 0.10 —
   // on FX a 0.10 step would put every tick far outside the visible band.
   const tickStep = rUnit / 3
@@ -222,7 +242,7 @@ export function cockpitFrame(store, tick, opts = {}) {
     { r: '−1', t: fmtDur(remSl / 1), top: 71 },
     { r: '−2', t: fmtDur(remSl / 2), top: 92 },
   ]
-  const vsiEta = marketClosed ? null
+  const vsiEta = marketClosed || vsi == null ? null
     : vsi > .05 ? 'TP ' + fmtDur(remTp / vsi)
     : vsi < -.05 ? 'SL ' + fmtDur(remSl / -vsi)
     : 'level'
@@ -355,6 +375,22 @@ export function cockpitFrame(store, tick, opts = {}) {
     tip: (i === pocIdx ? 'POC (most volume) · ' : vpVol[i] >= vaCut ? 'Value Area · ' : 'Low volume node · ') + f2(pc) }))
   const pocTop = (pocIdx * vpRowH + vpRowH / 2).toFixed(2)
   const vaTop = (Math.max(0, pocIdx - 2) * vpRowH).toFixed(2), vaH = (5 * vpRowH).toFixed(2)
+  // PR-F (owner principle 6: "the website shows no fake result"). Under a
+  // REAL position the chart, the PRICE·tf candles and the volume profile
+  // were still the reference generator's synthetic series — a wave over the
+  // demo instrument's random walk, drawn in the bound symbol's price units.
+  // The snapshot has served REAL bars + indicators since PHASE 3
+  // (agent/services/cockpit-bars.js: buildBarsAndIndicators over the same
+  // trendbar call POST /actions/chart makes), so a bound position renders
+  // those, and when the snapshot carries none the panels say so — "no chart
+  // data for this position" — rather than borrowing the demo candle. The
+  // demo route (no position bound at all) is unchanged.
+  const chartOverride = real ? realChart({ snap, entry, sl, tp, price, rUnit, f2, clamp }) : null
+  // `chart.status`: 'synthetic' on the reference route (no position bound),
+  // else the server's bars status or 'empty'. The word is a data-source
+  // status — the account-environment invariant (one-account-model.test.js)
+  // scans src/ by token, so the environment words are not used here.
+  const chart = chartOverride ? chartOverride.chart : { status: 'synthetic' }
   const TFC = [
     ['HSI', .82, 40, -22, 'idx corr .82', '4px,-120%'],
     ['0003.HK', .74, 96, -30, 'peer corr .74', '-108%,-160%'],
@@ -389,7 +425,9 @@ export function cockpitFrame(store, tick, opts = {}) {
         const meta = (t0.coefficient != null ? `corr ${t0.coefficient >= 0 ? '' : '−'}${Math.abs(t0.coefficient).toFixed(2)}` : 'corr unmeasured') + ' · ' + rel
         return mkTfc(t0.symbol, meta, tx, ty, REL_ROT[rel], 10 + Math.abs(num(t0.coefficient) ?? 0) * 8, REL_COL[rel])
       })
-    : snap ? [] : TFC.map(([s, c, dx, rotBase, meta], i) => {
+    // PR-F: a real position never flies the demo roster — with no snapshot
+    // the pane is empty and MARKET SAYS reads 'not loaded'.
+    : (snap || real) ? [] : TFC.map(([s, c, dx, rotBase, meta], i) => {
         const same = c >= .4 && Math.abs(rotBase) < 60
         return mkTfc(s, meta, 190 + dx, 112 - c * 46 + wv(10 + i) * 5, rotBase + wv(8 + i) * 10,
           10 + Math.abs(c) * 8, same ? 'var(--up)' : c < 0 ? 'var(--dn)' : 'var(--wrn)')
@@ -452,19 +490,45 @@ export function cockpitFrame(store, tick, opts = {}) {
       })()
     : snap
       ? `Correlation unknown — ${snap.correlation?.detail || 'no matrix measurements for this symbol'}. Traffic is not shown rather than invented. ${regimeTxt}`
+      : real
+        ? 'Not loaded — the snapshot for this position has not been fetched; nothing here is invented in its place.'
       : nSame >= 3
         ? 'HK utilities & index flying the same heading as you — sector-wide climb, tailwind confirmed. Rates ticking inverse (normal). Path to TP is with the traffic flow.'
         : 'Correlated traffic scattering — sector consensus weakening; treat the climb as single-engine, tighten the trail.'
   const etaTxt = (base) => marketClosed ? 'on next open' : base
-  const legs = [
+  // PR-F: the flight-plan legs under a real position come from the snapshot
+  // (opened-at, the first armed action, the TP rail) — null (skeleton) when
+  // it has not been fetched. The dated demo legs are the demo route's only.
+  const fmtAt = iso => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? String(d.getUTCDate()).padStart(2, '0') + '/' + String(d.getUTCMonth() + 1).padStart(2, '0') + ' ' + String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC' : '—' }
+  const firstArmed = snap && Array.isArray(snap.intention?.armedActions) ? snap.intention.armedActions[0] : null
+  const legs = real
+    ? (snap ? [
+        { k: 'LEG 1 — flown', v: 'Entry filled', s: snap.position?.openedAt ? fmtAt(snap.position.openedAt) : 'opened-at not recorded', col: 'var(--wrn)', bd: 'var(--edg)' },
+        { k: 'LEG 2 — active', v: firstArmed ? String(firstArmed.kind ?? 'armed action').replace(/_/g, ' ') : 'no armed action', s: firstArmed ? (firstArmed.trigger ?? '—') : 'none recorded for this position', col: 'var(--acc)', bd: firstArmed ? 'var(--acc)' : 'var(--edg)' },
+        { k: 'LEG 3 — planned', v: haveRails ? 'Target ' + f2(tp) : 'Target', s: haveRails ? rOf(tp) + ' from entry' : 'no TP rail', col: 'var(--up)', bd: 'var(--edg)' }]
+      : null)
+    : [
     { k: 'LEG 1 — flown', v: 'Entry filled ✓', s: '23/07 10:07 · 0.4bp slip', col: 'var(--wrn)', bd: 'var(--edg)' },
     { k: 'LEG 2 — active', v: 'Scale-out waypoint', s: etaTxt('arms at +1R · coded rule §2.4'), col: 'var(--acc)', bd: 'var(--acc)' },
     { k: 'LEG 3 — planned', v: 'Target', s: etaTxt('ETA ~4h at current velocity'), col: 'var(--up)', bd: 'var(--edg)' }]
-  const riskUsed = clamp(rNow < 0 ? -rNow * 100 : 8, 0, 100)
-  const fuelW = 100 - riskUsed
-  const balance = 184920, dailyCap = 3698
-  const usedAbs = dailyCap * riskUsed / 100
-  const usd = n => '$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 })
+  // PR-F: the RISK BUDGET card read the demo account ($184,920 balance,
+  // $3,698 cap) under every real position. Now: the snapshot's account block
+  // (balance, equity, dailyLossCap, dailyLossUsed — the risk gate's own
+  // formula) or '—' when it is not served; the fuel gauge only fills when
+  // the cap is known.
+  const acct = snap?.account || null
+  const rBal = real ? num(acct?.balance) : null
+  const rEq = real ? num(acct?.equity) : null
+  const rCap = real ? num(acct?.dailyLossCap) : null
+  const rUsed = real ? num(acct?.dailyLossUsed) : null
+  const riskUsed = real
+    ? (rCap != null && rCap > 0 && rUsed != null ? clamp(rUsed / rCap * 100, 0, 100) : null)
+    : clamp(rNow < 0 ? -rNow * 100 : 8, 0, 100)
+  const fuelUnknown = riskUsed == null
+  const fuelW = fuelUnknown ? 0 : 100 - riskUsed
+  const balance = real ? rBal : 184920, dailyCap = real ? rCap : 3698
+  const usedAbs = real ? rUsed : dailyCap * riskUsed / 100
+  const usd = n => (n == null || !Number.isFinite(Number(n))) ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })
   const mult = 10, shares = 1092 * mult, fx = 7.8, mgnRate = .2
   const notionalL = price * shares, notionalUsd = notionalL / fx
   const marginUsd = notionalUsd * mgnRate
@@ -481,13 +545,14 @@ export function cockpitFrame(store, tick, opts = {}) {
   // Bullet values: with a snapshot the wave generators above are replaced by
   // the served fields — and a null field renders '—'/unknown, not the demo
   // number (execution.latencyMs is UNKNOWN by design: no authoritative source).
-  const rvolV = snap ? num(snap.indicators?.rvol) : rvol
-  const sprV = snap ? num(snap.execution?.spreadRatio) : sprX
-  const latV = snap ? num(snap.execution?.latencyMs) : lat
+  // PR-F: a real position with no snapshot shows '—' on every rate, not the wave.
+  const rvolV = snap ? num(snap.indicators?.rvol) : real ? null : rvol
+  const sprV = snap ? num(snap.execution?.spreadRatio) : real ? null : sprX
+  const latV = snap ? num(snap.execution?.latencyMs) : real ? null : lat
   const margV = snap
     ? (num(snap.account?.usedMargin) != null && num(snap.account?.equity) > 0
         ? snap.account.usedMargin / snap.account.equity * 100 : null)
-    : marg
+    : real ? null : marg
   const E2 = [
     ['RVOL', rvolV, 0, 3, [0.8, 1.6], 0.6, -1, '×', v => v.toFixed(1), 'volume vs 20-bar average — below 0.6× the move has no participation'],
     ['Spread', sprV, 0, 3, [0.9, 1.4], 2.5, 1, '×', v => v.toFixed(1), 'live spread vs backtest assumption — above 2.5× the edge is eaten by cost'],
@@ -533,6 +598,9 @@ export function cockpitFrame(store, tick, opts = {}) {
         prog: a.triggerPrice != null && haveRails ? prox(num(a.triggerPrice) ?? entry) : 0,
         progCol: a.armed ? 'var(--acc)' : 'var(--mu)',
       })) : [{ k: 'NONE', v: 'no armed actions recorded for this position', d: '', col: 'var(--mu)', prog: 0, progCol: 'var(--mu)' }])
+    // PR-F: a real position with no snapshot says so; the demo waypoints
+    // below are the demo route's only.
+    : real ? [{ k: 'NOT LOADED', v: 'snapshot not fetched — armed actions unknown', d: '', col: 'var(--mu)', prog: 0, progCol: 'var(--mu)' }]
     : marketClosed ? [
     { k: 'SCALE-OUT 50%', v: '+1R waypoint', d: 'arms at next open', col: 'var(--mu)', prog: prox(wp1), progCol: 'var(--mu)' },
     { k: 'TRAIL TIGHTEN', v: '0.5R gap at +1.2R', d: 'arms at next open', col: 'var(--mu)', prog: prox(wp2), progCol: 'var(--mu)' },
@@ -553,6 +621,8 @@ export function cockpitFrame(store, tick, opts = {}) {
         return { k: String(g.kind ?? '—').replace(/_/g, ' '), f: g.condition ?? '—', now: st,
           ok: st !== 'met', mark: INV_MARK[st][0], okCol: INV_MARK[st][1] }
       })
+    // PR-F: real + no snapshot → no rows (the header note says not loaded).
+    : real ? []
     : [
     { k: 'Quadrant flip', f: 'Quadrant flips Q1 → Q2/Q3', now: 'Q1 holding', ok: true },
     { k: 'RVOL < 0.6×', f: 'RVOL dies below 0.6×', now: rvol.toFixed(1) + '×', ok: rvol >= .6 },
@@ -583,6 +653,9 @@ export function cockpitFrame(store, tick, opts = {}) {
         ...(f.r == null ? { barL: 50, barW: 0 } : fleetBar(f.r)),
         bd: 'var(--edg)', bg: 'transparent',
       }))
+    // PR-F: a REAL position with no roster handed over shows an EMPTY strip
+    // labelled as not loaded — the demo roster is for the demo route only.
+    : real ? []
     : DEMO_FLEET.slice(0, 5).map(([sym, r0, active], i) => {
         const r = r0 + wv(12 + i) * .08
         return { sym, r: (r >= 0 ? '+' : '') + r.toFixed(2), col: r >= 0 ? 'var(--up)' : 'var(--dn)',
@@ -590,6 +663,7 @@ export function cockpitFrame(store, tick, opts = {}) {
       })
   const fleetLabel = realFleet
     ? (realFleet.total > fleet.length ? `top ${fleet.length} of ${realFleet.total}` : `${realFleet.total} other open`)
+    : real ? 'fleet not loaded — no roster handed over by the opening surface'
     : 'top 5 of 8 · demo'
   const fleetIsReal = !!realFleet
   // MFE/MAE: monitored_positions records these per trade (mfe_r / mae_r), so
@@ -631,20 +705,21 @@ export function cockpitFrame(store, tick, opts = {}) {
     : null
   const wx = snap
     ? (gateEv ? { label: `WX · ${gateEv.title}${gateEv.scheduledAt ? ' ' + hmOf(gateEv.scheduledAt) : ''}` } : null)
-    : { label: 'WX · HK CPI 14:30' }
+    : real ? null : { label: 'WX · HK CPI 14:30' }
   const alerts = []
-  if (real) {
-    const live = ['price', 'P&L', 'entry/SL/TP', 'R', 'market state']
-    const demo = ['chart', 'volume profile']
-    if (snap) live.push('journal'); else demo.push('journal')
-    // With a full snapshot bound, traffic / armed actions / invalidation /
-    // engine rates come from (or honestly say unknown per) the served body —
-    // they are no longer flagged demo. Without one they still are.
-    if (snap) live.push('traffic', 'armed actions', 'invalidation', 'engine rates', 'advisories')
-    else demo.push('traffic', 'engine rates')
-    if (fleetIsReal) live.push('fleet'); else demo.push('fleet')
-    if (exIsReal) live.push('MFE/MAE'); else demo.push('MFE/MAE')
-    alerts.push({ t: ft(0), k: 'DEMO DATA', d: 'live: ' + live.join(', ') + ' · demo: ' + demo.join(', '), col: 'var(--wrn)' })
+  // PR-F: the DEMO DATA pill belongs to the demo route ONLY. A real position
+  // never renders a demo panel any more — what it cannot show yet it labels
+  // as NOT LOADED (the snapshot has not arrived) or as absent (the snapshot
+  // carries no bars / roster / extrema), never as a demo number.
+  if (!real) {
+    alerts.push({ t: ft(0), k: 'DEMO DATA', d: 'reference cockpit — no position bound; every panel is the design handoff\'s generator', col: 'var(--wrn)' })
+  } else if (!snap) {
+    const waiting = ['chart', 'volume profile', 'journal', 'traffic', 'armed actions', 'invalidation', 'engine rates']
+    if (!fleetIsReal) waiting.push('fleet')
+    if (!exIsReal) waiting.push('MFE/MAE')
+    alerts.push({ t: ft(0), k: 'NOT LOADED', d: 'snapshot not fetched for this position — waiting on: ' + waiting.join(', ') + ' (live: price, P&L, entry/SL/TP, R, market state)', col: 'var(--wrn)' })
+  } else if (chart.status === 'empty') {
+    alerts.push({ t: ft(0), k: 'NO CHART', d: chart.reason, col: 'var(--mu)' })
   }
   if (snap) {
     // PHASE 9 — the intention explanation, in the existing ADVISORIES list (no
@@ -666,40 +741,45 @@ export function cockpitFrame(store, tick, opts = {}) {
       d: `${gateEv.title} (${[gateEv.currency, gateEv.impact].filter(Boolean).join(' ')}) — new entries blocked; this position is not auto-closed by the gate`, col: 'var(--wrn)' })
   }
   if (!real && sprX > 2) alerts.push({ t: ft(0), k: 'CAUTION', d: 'spread ' + sprX.toFixed(1) + '× backtest — pending entries suspended', col: 'var(--wrn)' })
-  if (!snap && rvol > 1.8) alerts.push({ t: ft(2), k: 'CAUTION', d: 'RVOL ' + rvol.toFixed(1) + '× — volatility expansion, trail tightened', col: 'var(--wrn)' })
+  if (!real && rvol > 1.8) alerts.push({ t: ft(2), k: 'CAUTION', d: 'RVOL ' + rvol.toFixed(1) + '× — volatility expansion, trail tightened', col: 'var(--wrn)' })
   if (rNow < -.4) alerts.push({ t: ft(1), k: 'WARNING', d: 'price within 0.6R of stop — no averaging down permitted', col: 'var(--dn)' })
-  if (!snap) {
-    // Reference demo advisories — a bound snapshot never shows these.
+  if (!real) {
+    // Reference demo advisories — a bound position never shows these.
     alerts.push({ t: ft(14), k: 'ADVISORY', d: 'WX cell ahead: HK CPI 14:30 UTC — TP orders persist, new entries blocked ±15m', col: 'var(--sb)' })
     alerts.push({ t: ft(48), k: 'ADVISORY', d: 'SL moved to breakeven per trailing rule after +0.8R', col: 'var(--sb)' })
     alerts.push({ t: ft(192), k: 'ADVISORY', d: 'entry filled 76.85 · slippage 0.4bp · quadrant Q1 agrees with LONG', col: 'var(--sb)' })
   }
   const sessOpensIn = session.opensInMins != null ? Math.floor(session.opensInMins / 60) + 'h ' + (session.opensInMins % 60) + 'm' : null
-  const anim = { vsiA: clamp(-vsi / 2 * 80, -84, 84), hdgX: -hdgV / 10, fuelW,
+  const anim = { vsiA: vsi == null ? 0 : clamp(-vsi / 2 * 80, -84, 84), hdgX: hdgV == null ? 0 : -hdgV / 10, fuelW,
     tpT: mTP.t, enT: mEN.t, slT: mSL.t, acX: 0, acY: acYm - 112, pnlNum: pnlUsd }
-  return { sym: real?.sym || '0002.HK', ccy: real ? (real.ccy || '') : 'HKD',
+  // PR-F: the reference symbol is the demo route's only; a real position
+  // with no symbol handed over reads '—'.
+  return { sym: real ? (real.sym || '—') : '0002.HK', ccy: real ? (real.ccy || '') : 'HKD',
     strategy: real ? (real.strategy || '—') : 'fib 61.8% fade v2.3',
     lots: real ? String(real.lots ?? '—') : '1092.00', timeIn: real ? (real.timeIn || '') : '2.3d',
     side: short ? 'SHORT' : 'LONG', isReal: !!real,
     // Panels with no agent source yet — the UI names them so nothing mock
     // reads as broker truth (PR open question Q3).
-    demoPanels: real
-      ? (snap
-          ? ['MFD chart & EMAs', 'volume profile']
-          // 'tweak journal' is deliberately NOT in this list any more: with a
-          // real position bound it renders unloaded/empty, never demo rows.
-          : ['MFD chart & EMAs', 'volume profile', 'correlated traffic', 'RVOL / spread / latency', 'MFE / MAE', 'armed actions'])
-      : null,
+    // PR-F: nothing renders demo under a real position any more — the chart
+    // is real or empty, the fleet is real or "not loaded", MFE/MAE real or
+    // '—'. The field stays (readers pin it) and is always empty for real.
+    demoPanels: real ? [] : null,
     review, session, sessOpensIn, marketClosed,
     pnl: (pnlUsd >= 0 ? '+' : '−') + '$' + Math.abs(pnlUsd).toFixed(0), pnlNum: pnlUsd, rNow: (rNow >= 0 ? '+' : '') + rNow.toFixed(2) + 'R', rCol: rNow >= 0 ? 'var(--up)' : 'var(--dn)',
-    spd: marketClosed ? '—' : (spd >= 0 ? '+' : '') + spd.toFixed(2), spdCol: marketClosed ? 'var(--mu)' : spd >= 0 ? 'var(--up)' : 'var(--dn)', spdTicks,
+    spd: marketClosed || spd == null ? '—' : (spd >= 0 ? '+' : '') + spd.toFixed(2), spdCol: marketClosed || spd == null ? 'var(--mu)' : spd >= 0 ? 'var(--up)' : 'var(--dn)', spdTicks,
+    spdSource: real ? (spd == null ? 'no served bars — momentum unknown' : `last ${snap.bars.timeframe} bar, served`) : 'synthetic (reference cockpit, no position bound)',
+    vsiSource: real ? (vsi == null ? 'opened-at not served — R/hour unknown' : 'R since open ÷ hours open, served') : 'synthetic (reference cockpit, no position bound)',
+    hdgSource: real ? (hdgV == null ? 'no served EMA9/EMA50 — trend unknown' : 'EMA9 − EMA50 at the last served bar') : 'synthetic (reference cockpit, no position bound)',
     price: f2(price), altTicks, tpLb: mTP.lb, enLb: mEN.lb, slLb: mSL.lb,
     tpBrd: mTP.off ? 'none' : '2px solid var(--up)', enBrd: mEN.off ? 'none' : '2px dashed var(--wrn)', slBrd: mSL.off ? 'none' : '2px solid var(--dn)',
-    vsi: marketClosed ? '—' : (vsi >= 0 ? '+' : '') + vsi.toFixed(2), vsiCol: marketClosed ? 'var(--mu)' : vsi >= 0 ? 'var(--up)' : 'var(--dn)', vsiBezel, vsiEta,
-    hdg: hdgV >= 25 ? 'BULL ' + Math.round(hdgV) : hdgV <= -25 ? 'BEAR ' + Math.round(-hdgV) : 'CHOP', hdgCol: hdgV >= 25 ? 'var(--up)' : hdgV <= -25 ? 'var(--dn)' : 'var(--sb)', hdgTicks,
-    mfeR: (exMfe >= 0 ? '+' : '') + exMfe.toFixed(2) + 'R', maeR: (exMae >= 0 ? '+' : '') + exMae.toFixed(2) + 'R',
-    giveback: (exMfe - rNow).toFixed(2) + 'R', exIsReal,
-    altMfe, altMae, candles, mcVwap, mcTp: mcY(tp), mcEn: mcY(entry), mcSl: mcY(sl), tpPx: f2(tp), enPx: f2(entry), slPx: f2(sl), vwapPrice: f2(vwapNow),
+    vsi: marketClosed || vsi == null ? '—' : (vsi >= 0 ? '+' : '') + vsi.toFixed(2), vsiCol: marketClosed || vsi == null ? 'var(--mu)' : vsi >= 0 ? 'var(--up)' : 'var(--dn)', vsiBezel, vsiEta,
+    hdg: hdgV == null ? '—' : hdgV >= 25 ? 'BULL ' + Math.round(hdgV) : hdgV <= -25 ? 'BEAR ' + Math.round(-hdgV) : 'CHOP', hdgCol: hdgV == null ? 'var(--mu)' : hdgV >= 25 ? 'var(--up)' : hdgV <= -25 ? 'var(--dn)' : 'var(--sb)', hdgTicks,
+    // PR-F: a real position whose extrema the agent has not served shows
+    // '—' — the "extremes seen since this modal opened" were a demo device.
+    mfeR: real && !exIsReal ? '—' : (exMfe >= 0 ? '+' : '') + exMfe.toFixed(2) + 'R',
+    maeR: real && !exIsReal ? '—' : (exMae >= 0 ? '+' : '') + exMae.toFixed(2) + 'R',
+    giveback: real && !exIsReal ? '—' : (exMfe - rNow).toFixed(2) + 'R', exIsReal,
+    altMfe: real && !exIsReal ? null : altMfe, altMae: real && !exIsReal ? null : altMae, candles, mcVwap, mcTp: mcY(tp), mcEn: mcY(entry), mcSl: mcY(sl), tpPx: f2(tp), enPx: f2(entry), slPx: f2(sl), vwapPrice: f2(vwapNow),
     // Notional / margin / leverage need the symbol's contract size, which no
     // agent route serves per position — shown as unavailable rather than
     // invented once a real position is bound.
@@ -718,18 +798,127 @@ export function cockpitFrame(store, tick, opts = {}) {
       + ' · SL ' + f2(sl) + ' / TP ' + f2(tp),
     // '—' when a snapshot is bound but correlation is unknown: an unmeasured
     // count is not zero (the prompt's missing-is-UNKNOWN rule).
-    legs, traffic, nSame: snap && !corr ? '—' : String(nSame), nDiv: snap && !corr ? '—' : String(nDiv), mktRead, flownPath, planPath, tweaks: tweakMarks, journal, journalUnloaded, wx,
+    legs, traffic, nSame: real && !corr ? '—' : String(nSame), nDiv: real && !corr ? '—' : String(nDiv), mktRead, flownPath, planPath, tweaks: tweakMarks, journal, journalUnloaded, wx,
     yAxis, xAxis, vwapPath, vpBars, vaTop, vaH, pocTop, yMinor, xMinor, resBands, xLabels, volBars, ema9Path, ema20Path, ema50Path,
-    fuel: Math.round(fuelW) + '%',
-    acctBal: usd(balance), acctEq: usd(balance + pnlUsd), capAbs: usd(dailyCap), capUsed: '−' + usd(usedAbs), capLeft: usd(dailyCap - usedAbs),
+    fuel: fuelUnknown ? 'loss-cap not loaded' : Math.round(fuelW) + '%', fuelUnknown,
+    acctBal: usd(balance), acctEq: real ? usd(rEq) : usd(balance + pnlUsd), capAbs: usd(dailyCap),
+    capUsed: usedAbs == null ? '—' : '−' + usd(usedAbs), capLeft: dailyCap == null || usedAbs == null ? '—' : usd(dailyCap - usedAbs),
     engines, alerts, autopilot, goaround,
     gaNote: decisionState != null
       ? 'bot state: ' + decisionState + (gaBreach ? ' · ' + gaBreach + ' condition(s) met' : '')
+      : real && !invReal
+        ? 'not loaded — snapshot not fetched for this position'
       : invReal
         ? (gaBreach === 0 ? 'no invalidation condition met' : gaBreach + ' condition(s) met')
         : gaBreach === 0 ? 'thesis intact — all go-around conditions clear' : gaBreach + ' condition(s) breached — bot exits on ' + (gaBreach >= 2 ? 'NEXT BAR' : 'confirmation'),
     gaCol: decisionState != null
       ? (['exiting', 'blocked'].includes(decisionState) ? 'var(--dn)' : decisionState === 'managing' ? 'var(--wrn)' : ['holding', 'monitoring'].includes(decisionState) ? 'var(--acc)' : 'var(--mu)')
       : gaBreach === 0 ? 'var(--acc)' : gaBreach >= 2 ? 'var(--dn)' : 'var(--wrn)', fleet, fleetLabel, fleetIsReal,
-    clock: new Date().toUTCString().slice(17, 25) + ' UTC', anim }
+    clock: new Date().toUTCString().slice(17, 25) + ' UTC', anim: { ...anim, ...(chartOverride ? chartOverride.anim : {}) },
+    chart, ...(chartOverride ? chartOverride.fields : {}) }
+}
+
+// PR-F — the bound position's chart, from the snapshot's served bars and
+// indicators, in the SAME view-model keys the demo generator emits so the
+// components need no second render path. Returns { chart, fields } where
+// `chart.status` is the server's bars status ('served' when it names none) or
+// 'empty' with the honest reason, and `fields` overrides every synthetic
+// series key. Pure: no clock, no wave, nothing invented.
+export function realChart({ snap, entry, sl, tp, price, rUnit, f2, clamp }) {
+  const rows = Array.isArray(snap?.bars?.rows) ? snap.bars.rows.filter(b => b && Number.isFinite(b.c)) : []
+  const empty = reason => ({
+    chart: { status: 'empty', reason },
+    fields: {
+      candles: [], mcVwap: '', vpBars: [], vaTop: 0, vaH: 0, pocTop: 0, volBars: [], yAxis: [], yMinor: [], xMinor: [], xLabels: [], xAxis: [], resBands: [],
+      flownPath: '', planPath: null, ema9Path: '', ema20Path: '', ema50Path: '', vwapPath: '', vwapPrice: '—', tweaks: [],
+    },
+    anim: {},
+  })
+  if (!snap) return empty('no chart data for this position — the snapshot has not been fetched')
+  if (rows.length < 2) {
+    const st = snap.bars?.status || 'unknown'
+    return empty('no chart data for this position — bars ' + st + (snap.bars?.detail ? ': ' + snap.bars.detail : ''))
+  }
+  const ind = snap.indicators || {}
+  const N = rows.length
+  const X0 = 30, X1 = 448
+  const xAt = i => X0 + (X1 - X0) * i / (N - 1)
+  const lows = rows.map(b => (Number.isFinite(b.l) ? b.l : b.c)), highs = rows.map(b => (Number.isFinite(b.h) ? b.h : b.c))
+  const rails = [entry, sl, tp].filter(Number.isFinite)
+  let yLo = Math.min(...lows, ...rails), yHi = Math.max(...highs, ...rails)
+  const pad = (yHi - yLo) * .05 || (rUnit || 1) * .1
+  yLo -= pad; yHi += pad
+  const mapY = p => clamp(178 - (p - yLo) / (yHi - yLo) * 162, -16, 224)
+  const series = arr => Array.isArray(arr) ? arr : []
+  const pathOf = vals => { let out = '', pen = false; vals.forEach((p, i) => { if (p == null || !Number.isFinite(p)) { pen = false; return } out += (pen ? 'L' : 'M') + xAt(i).toFixed(1) + ',' + mapY(p).toFixed(1) + ' '; pen = true }); return out.trim() }
+  const closes = rows.map(b => b.c)
+  const flownPath = pathOf(closes)
+  const ema9Path = pathOf(series(ind.ema9)), ema20Path = pathOf(series(ind.ema20)), ema50Path = pathOf(series(ind.ema50))
+  const vwapSer = series(ind.vwap)
+  const vwapPath = pathOf(vwapSer)
+  const vwapNow = [...vwapSer].reverse().find(v => v != null && Number.isFinite(v))
+  const volMax = Math.max(0, ...rows.map(b => b.v || 0))
+  const volBars = rows.map((b, i) => {
+    const v = b.v || 0
+    const h = volMax > 0 ? Math.max(1, Math.pow(v / volMax, .75) * 26) : 0
+    const xs = xAt(i), wFull = Math.max(1.2, (X1 - X0) / (N - 1))
+    const up = i ? b.c >= rows[i - 1].c : true
+    return { x: (xs - wFull / 2).toFixed(1), w: (wFull * .9).toFixed(2), y: (210 - h).toFixed(1), h: h.toFixed(1),
+      col: up ? 'var(--up)' : 'var(--dn)', tip: (up ? 'up' : 'down') + ' bar · vol ' + (volMax > 0 ? (v / volMax * 100).toFixed(0) + '% of peak' : 'n/a') }
+  })
+  const yAxis = [0, 1, 2, 3, 4].map(i => yHi - (yHi - yLo) * i / 4).map(v => ({ v: f2(v), y: mapY(v).toFixed(1), pc: (mapY(v) / 208 * 100).toFixed(2) }))
+  const yMinor = []
+  for (let i = 0; i <= 16; i++) yMinor.push({ y: mapY(yLo + (yHi - yLo) * i / 16).toFixed(1) })
+  const hm = t => { const d = new Date(t); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') }
+  const dLb = t => { const d = new Date(t); return d.getUTCDate() + ' ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()] }
+  const labelIdx = [...new Set([0, 1, 2, 3, 4, 5].map(k => Math.round((N - 1) * k / 5)))]
+  const xLabels = labelIdx.map(i => ({ v: i === N - 1 ? 'LAST ' + hm(rows[i].t) : hm(rows[i].t), pc: (xAt(i) / 460 * 100).toFixed(2), x: +xAt(i).toFixed(1) }))
+  const xMinor = rows.map((_, i) => ({ x: +xAt(i).toFixed(1) })).filter((o, i) => i % Math.max(1, Math.round(N / 24)) === 0)
+  const xAxis = [0, Math.floor((N - 1) / 2), N - 1].map(i => ({ x: +xAt(i).toFixed(1), v: dLb(rows[i].t), pc: (xAt(i) / 460 * 100).toFixed(2) }))
+  const tf = snap.bars.timeframe || '?'
+  const resBands = [{ lb: tf + ' · ' + N + ' bars · ' + (snap.bars.status || 'served') + ' · ' + (snap.bars.source || 'broker'), c: 'var(--sb)', lpc: (X0 / 460 * 100).toFixed(2), wpc: ((X1 - X0) / 460 * 100).toFixed(2) }]
+  // PRICE·tf mini chart: the last 30 REAL candles, rails included in the range.
+  const mc = rows.slice(-30)
+  const mcLo = Math.min(...mc.map(b => (Number.isFinite(b.l) ? b.l : b.c)), ...rails), mcHi = Math.max(...mc.map(b => (Number.isFinite(b.h) ? b.h : b.c)), ...rails)
+  const mcPad = (mcHi - mcLo) * .05 || (rUnit || 1) * .1
+  const mcY = p => (150 - (p - (mcLo - mcPad)) / ((mcHi + mcPad) - (mcLo - mcPad)) * 150).toFixed(1)
+  const candles = mc.map((b, i) => {
+    const o = Number.isFinite(b.o) ? b.o : b.c, c = b.c, hi = Number.isFinite(b.h) ? b.h : Math.max(o, c), lo = Number.isFinite(b.l) ? b.l : Math.min(o, c)
+    const up = c >= o, x = 5 + i * 6.4
+    const by = +mcY(Math.max(o, c)), bh = Math.max(1.2, +mcY(Math.min(o, c)) - by)
+    return { x: x.toFixed(1), bx: (x - 1.7).toFixed(1), hi: mcY(hi), lo: mcY(lo), by: by.toFixed(1), bh: bh.toFixed(1),
+      col: up ? 'var(--up)' : 'var(--dn)', tip: (up ? 'up' : 'down') + ' bar ' + hm(b.t) + ' · O ' + f2(o) + ' H ' + f2(hi) + ' L ' + f2(lo) + ' C ' + f2(c) }
+  })
+  const mcVwapSer = vwapSer.slice(-30)
+  const mcVwap = (() => { let out = '', pen = false; mcVwapSer.forEach((p, i) => { if (p == null || !Number.isFinite(p)) { pen = false; return } out += (pen ? 'L' : 'M') + (5 + i * 6.4).toFixed(1) + ',' + mcY(p) + ' '; pen = true }); return out.trim() })()
+  // Volume profile: the server's own buckets (agent/lib/indicators.js), top
+  // row = highest price. Unknown (no volume) → an empty column, labelled.
+  const vp = ind.volumeProfile || {}
+  const buckets = Array.isArray(vp.buckets) ? [...vp.buckets].sort((a, b) => b.price - a.price) : []
+  const vpKnown = vp.status === 'derived' && buckets.length > 0 && vp.pocPrice != null
+  const vpMax = vpKnown ? Math.max(...buckets.map(b => b.volume || 0)) : 0
+  const vpRowH = buckets.length ? 100 / buckets.length : 0
+  const pocIdx = vpKnown ? buckets.findIndex(b => b.price === vp.pocPrice) : -1
+  const inVa = b => vpKnown && vp.valueAreaLow != null && vp.valueAreaHigh != null && b.price >= vp.valueAreaLow && b.price <= vp.valueAreaHigh
+  const vpBars = vpKnown ? buckets.map((b, i) => ({ top: (i * vpRowH).toFixed(2), h: (vpRowH - .8).toFixed(2), w: vpMax > 0 ? Math.round((b.volume || 0) / vpMax * 88) + 10 : 10,
+    col: i === pocIdx ? 'var(--wrn)' : inVa(b) ? 'var(--vio)' : 'rgba(154,168,204,.45)',
+    gl: i === pocIdx ? '0 0 8px rgba(255,196,102,.6)' : 'none',
+    tip: (i === pocIdx ? 'POC (most volume) · ' : inVa(b) ? 'Value Area · ' : 'Low volume node · ') + f2(b.price) + ' · ' + (b.pct != null ? b.pct.toFixed(1) + '%' : '') })) : []
+  const vaIdx = vpKnown ? buckets.map((b, i) => (inVa(b) ? i : null)).filter(i => i != null) : []
+  const vaTop = vaIdx.length ? (vaIdx[0] * vpRowH).toFixed(2) : 0
+  const vaH = vaIdx.length ? (vaIdx.length * vpRowH).toFixed(2) : 0
+  const pocTop = pocIdx >= 0 ? (pocIdx * vpRowH + vpRowH / 2).toFixed(2) : 0
+  const acYm = mapY(price)
+  return {
+    chart: { status: snap.bars.status || 'served', timeframe: tf, bars: N, source: snap.bars.source || null, asOf: snap.bars.asOf || null,
+      vp: vpKnown ? 'derived' : 'unknown', reason: vpKnown ? null : 'volume profile unknown — the served bars carry no volume' },
+    fields: {
+      candles, mcVwap, mcTp: mcY(tp), mcEn: mcY(entry), mcSl: mcY(sl), vwapPrice: vwapNow != null ? f2(vwapNow) : '—',
+      vpBars, vaTop, vaH, pocTop, volBars, yAxis, yMinor, xMinor, xLabels, xAxis, resBands,
+      flownPath, planPath: null, ema9Path, ema20Path, ema50Path, vwapPath, tweaks: [],
+    },
+    // The aircraft rides the LAST real bar (x = X1), not the demo's NOW
+    // seam at x = 190; acY is relative to the SVG's own 104 baseline.
+    anim: { acX: X1 - 190, acY: acYm - 112 },
+  }
 }
