@@ -310,9 +310,17 @@ test('feeder: a STOPPED account is not armed — no /vpo-config push, the reason
   assert.equal(requestEntryMode(db, '42', 'STOPPED').ok, true)
 
   let pushed = null
+  const { _resetDisarmPushedForTests } = await import('./vpo-feeder.js')
+  _resetDisarmPushedForTests()
   const r = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
-  assert.equal(r.skipped, 'entry_mode: entry_mode_stopped')
-  assert.equal(pushed, null, 'nothing was pushed')
+  assert.equal(r.skipped, 'entry_mode: entry_mode_stopped'); assert.equal(r.disarmed, true)
+  // P2a: not "nothing pushed" — the DISARM is pushed, so the sidecar drops
+  // the arming it already held instead of keeping it until the store ages
+  // it out (the measured 5-minute residue of the P1b fence).
+  assert.deepEqual(pushed, { disarm: true, ctidTraderAccountId: 42, reason: 'entry_mode_stopped' })
+  pushed = null
+  const rAgain = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
+  assert.equal(rAgain.disarmed, true); assert.equal(pushed, null, 'one disarm per (account, epoch)')
 
   // Back to TIME_BASED: the push resumes.
   assert.equal(requestEntryMode(db, '42', 'TIME_BASED', { expectedRevision: 1 }).ok, true)

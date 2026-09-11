@@ -451,6 +451,19 @@ static const char* kNoAccountDesc =
     "operation does not name a ctidTraderAccountId — refusing to choose an "
     "account on the caller's behalf";
 
+// P2a: what cTrader receives — the order without the keeper's ledger fields
+// (the permit, the intent id, the in-process fire marker). A stray field on
+// ProtoOANewOrderReq is a broker-side refusal or, worse, a silent ignore that
+// nobody would see; stripping is explicit and testable.
+jsn::Value wireOrderPayload(const jsn::Value& payload) {
+  jsn::Value wire{jsn::Object{}};
+  for (const auto& kv : payload.asObject()) {
+    if (kv.first == "permit" || kv.first == "intentId" || kv.first == "_vpoFire") continue;
+    wire.set(kv.first, kv.second);
+  }
+  return wire;
+}
+
 EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
   // Telemetry fields read once regardless of outcome — symbolId/volume are
   // whatever the caller sent (missing → 0/-1, never a crash); price is 0 for
@@ -503,6 +516,41 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
       return errResult(again.reason, again.reason + " (guard changed while the order was queued)", false);
     }
   }
+  // P2a PERMIT CHECK (11-09-2026), under the same lock at the same boundary:
+  // an entry for an account whose epoch the keeper has fenced must carry a
+  // one-use permit from THAT epoch, unexpired, describing THIS order, never
+  // seen before. An in-process VPO fire is waived until P2a-2 issues its
+  // permits — and the waiver is rung, never silent.
+  std::string intentTag;
+  {
+    const GuardSnapshot gs = guard_.snapshot();
+    const PermitVerdict pv = validatePermit(payload, gs, consumedPermits_, nowMs());
+    if (!pv.ok) {
+      logLine("order REFUSED at the send boundary: " + pv.reason);
+      if (telemetry_) {
+        telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
+                         volume, price, 0, classifyReasonCode(pv.reason)});
+      }
+      if (ring_) ring_->log("order_guard", "refused_at_send", ringAcct, symbolId, pv.reason,
+                            pv.intentId.empty() ? std::string() : "intent=" + pv.intentId);
+      return errResult(pv.reason, pv.reason, false);
+    }
+    if (!pv.permitId.empty()) {
+      constexpr size_t kConsumedPermitCap = 4096;
+      consumedOrder_.push_back(pv.permitId);
+      while (consumedOrder_.size() > kConsumedPermitCap) {
+        consumedPermits_.erase(consumedOrder_.front());
+        consumedOrder_.pop_front();
+      }
+    }
+    if (!pv.intentId.empty()) intentTag = "intent=" + pv.intentId;
+    else if (payload.get("_vpoFire").asBool(false) && gs.entryEpochs.count(ringAcct) > 0 && ring_) {
+      ring_->log("order_guard", "permit_waived", ringAcct, symbolId, "vpo",
+                 "in-process VPO fire carries no permit until P2a-2");
+    }
+  }
+  // The wire payload: the broker must never see the ledger's fields.
+  const jsn::Value wire = wireOrderPayload(payload);
   // SUBMIT is logged after the lock is held — with it logged before, the
   // record timestamped a submission that could still be a minute away behind
   // a reconcile sweep (audit #2 note).
@@ -510,18 +558,28 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
     telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_SUBMIT, symbolId,
                      volume, price, 1, 0});
   }
-  if (ring_) ring_->log("engine", "order_submit", ringAcct, symbolId);
+  if (ring_) ring_->log("engine", "order_submit", ringAcct, symbolId, "", intentTag);
   // The account is NOT filled in — validateOrder above has already refused a
   // payload that does not name one (guard_no_account).
-  EngineResult r = request(pt::NEW_ORDER_REQ, payload, pt::EXECUTION_EVENT);
+  EngineResult r = request(pt::NEW_ORDER_REQ, wire, pt::EXECUTION_EVENT);
   if (telemetry_) {
     const std::string reason = r.ok ? "" : r.body.get("errorCode").asString();
     telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_RESULT, symbolId,
                      volume, price, r.ok ? 1 : 0, classifyReasonCode(reason)});
   }
   if (ring_) {
+    // P2a: the result names the intent and the broker's ids, so the keeper's
+    // ledger can settle an intent from the ring even when the HTTP reply to
+    // it was lost (the ambiguous case the ledger exists for).
+    std::string detail = intentTag;
+    if (r.ok) {
+      const long long orderId = static_cast<long long>(r.body.get("order").get("orderId").asNumber(0));
+      const long long positionId = static_cast<long long>(r.body.get("position").get("positionId").asNumber(0));
+      if (orderId > 0) detail += (detail.empty() ? "" : " ") + std::string("order=") + std::to_string(orderId);
+      if (positionId > 0) detail += (detail.empty() ? "" : " ") + std::string("pos=") + std::to_string(positionId);
+    }
     ring_->log("engine", r.ok ? "order_result" : "order_reject", ringAcct, symbolId,
-               r.ok ? "" : r.body.get("errorCode").asString());
+               r.ok ? "" : r.body.get("errorCode").asString(), detail);
   }
   return r;
 }

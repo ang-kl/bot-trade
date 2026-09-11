@@ -4,7 +4,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget, validateExecGuard, execBaseFor, invalidateSidecarSession,
+import { execEngineMode, placeOrder, stripLedgerFields, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget, validateExecGuard, execBaseFor, invalidateSidecarSession,
   _resetOrderLocks,
 } from './exec-engine.js'
 
@@ -677,4 +677,82 @@ test('placeOrder: an admitting creds.entryAdmission is transparent', async () =>
   const out = await placeOrder(creds, payload)
   assert.deepEqual(out, { ok: true, positionId: 11 })
   assert.equal(requests.at(-1).url, '/order')
+})
+
+// ---------------------------------------------------------------------------
+// P2a (11-09-2026): the intent ledger at the send. With a ledger on the
+// credentials every entry is reserved and redeemed before any transport, the
+// permit and intent id travel to the sidecar (and never to the JS wire), and
+// the intent is settled from the order's own outcome — UNKNOWN when that
+// outcome was never learned.
+// ---------------------------------------------------------------------------
+function fakeLedger({ reserveOk = true, redeemOk = true, reason = 'intent_open: UNKNOWN i1' } = {}) {
+  const calls = { reserve: [], redeem: [], sent: [], resolved: [] }
+  const permit = { id: 'p000000000001', intentId: 'i000000000001', accountId: '123', environment: 'demo', symbolId: 41, side: 'BUY', volume: 100000, epoch: 3, expiresAtMs: Date.now() + 30_000 }
+  return {
+    calls, permit,
+    ledger: {
+      reserve: (o) => { calls.reserve.push(o); return reserveOk ? { ok: true, intentId: permit.intentId, permit } : { ok: false, reason } },
+      redeem: (id) => { calls.redeem.push(id); return redeemOk ? { ok: true } : { ok: false, reason: 'permit_consumed: DISPATCHING' } },
+      markSent: (id, o) => { calls.sent.push({ id, ...o }); return { ok: true } },
+      resolve: (id, o) => { calls.resolved.push({ id, ...o }); return { ok: true } },
+    },
+  }
+}
+const ORDER = { symbolId: 41, tradeSide: 'BUY', orderType: 'MARKET', volume: 100000, relativeStopLoss: 50000, relativeTakeProfit: 50000, label: 'AU|v1|VWAP|H|LN|4h|TR' }
+
+test('placeOrder with a ledger: reserve, redeem, send with the permit and a tagged label, then FILLED from the response', async () => {
+  const fx = fakeLedger()
+  nextResponse = { status: 200, body: '{"executionType":"ORDER_FILLED","position":{"positionId":777},"order":{"orderId":555}}' }
+  const creds = { ...CREDS, producerId: 'scan_dispatch', entryAdmission: () => ({ ok: true }), entryLedger: fx.ledger }
+  const r = await placeOrder(creds, { ...ORDER, symbolId: 61 })
+  assert.equal(r.position.positionId, 777)
+  assert.equal(fx.calls.reserve.length, 1); assert.equal(fx.calls.reserve[0].symbolId, 61); assert.equal(fx.calls.reserve[0].side, 'BUY'); assert.equal(fx.calls.reserve[0].volume, 100000)
+  assert.deepEqual(fx.calls.redeem, ['p000000000001'])
+  assert.equal(fx.calls.sent.length, 1); assert.equal(fx.calls.sent[0].id, 'i000000000001')
+  const sent = JSON.parse(requests.filter(q => q.url === '/order').at(-1).body)
+  assert.equal(sent.intentId, 'i000000000001'); assert.equal(sent.permit.id, 'p000000000001'); assert.equal(sent.permit.epoch, 3); assert.equal(sent.permit.accountId, 123)
+  assert.equal(sent.label, 'AU|v1|VWAP|H|LN|4h|TR|i000000000001', 'the label carries the intent tag')
+  assert.deepEqual(fx.calls.resolved, [{ id: 'i000000000001', state: 'FILLED', positionId: 777, brokerOrderId: 555, source: 'response' }])
+})
+
+test('placeOrder with a ledger: a refused reservation throws ENTRY_LEDGER_REFUSED before any transport and releases the lock; a refused redeem throws ENTRY_PERMIT_REFUSED', async () => {
+  const before = requests.filter(q => q.url === '/order').length
+  const refused = fakeLedger({ reserveOk: false })
+  await assert.rejects(() => placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: refused.ledger }, { ...ORDER, symbolId: 62 }),
+    (err) => err.code === 'ENTRY_LEDGER_REFUSED' && /intent_open: UNKNOWN i1/.test(err.message) && /scan_dispatch/.test(err.message))
+  assert.equal(requests.filter(q => q.url === '/order').length, before, 'nothing reached the sidecar')
+  assert.equal(refused.calls.redeem.length, 0); assert.equal(refused.calls.sent.length, 0)
+  // the lock was released: the same order with an admitting ledger goes through at once
+  nextResponse = { status: 200, body: '{"position":{"positionId":1}}' }
+  const ok = fakeLedger()
+  await placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: ok.ledger }, { ...ORDER, symbolId: 62 })
+  assert.equal(requests.filter(q => q.url === '/order').length, before + 1)
+  const noRedeem = fakeLedger({ redeemOk: false })
+  await assert.rejects(() => placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: noRedeem.ledger }, { ...ORDER, symbolId: 63 }),
+    (err) => err.code === 'ENTRY_PERMIT_REFUSED' && /permit_consumed/.test(err.message))
+  assert.equal(requests.filter(q => q.url === '/order').length, before + 1)
+})
+
+test('placeOrder with a ledger: a definite rejection settles REJECTED, an unanswered send settles UNKNOWN — never FILLED, never released', async () => {
+  const rej = fakeLedger()
+  nextResponse = { status: 502, body: '{"error":"order rejected: TRADING_BAD_VOLUME"}' }
+  await assert.rejects(() => placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: rej.ledger }, { ...ORDER, symbolId: 64 }))
+  assert.equal(rej.calls.resolved.length, 1); assert.equal(rej.calls.resolved[0].state, 'REJECTED'); assert.match(rej.calls.resolved[0].errorCode, /TRADING_BAD_VOLUME/)
+  const unk = fakeLedger()
+  nextResponse = { status: 502, body: '{"error":"TIMEOUT: no payloadType 2126 within 20000ms"}' }
+  await assert.rejects(() => placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: unk.ledger }, { ...ORDER, symbolId: 65 }))
+  assert.equal(unk.calls.resolved.length, 1); assert.equal(unk.calls.resolved[0].state, 'UNKNOWN'); assert.equal(unk.calls.resolved[0].source, 'response')
+  assert.equal(unk.calls.sent.length, 1, 'SENT was recorded before the transport')
+})
+
+test('placeOrder without a ledger behaves as before, and stripLedgerFields keeps ledger fields off the JS wire', async () => {
+  nextResponse = { status: 200, body: '{"position":{"positionId":2}}' }
+  const before = requests.filter(q => q.url === '/order').length
+  await placeOrder(CREDS, { ...ORDER, symbolId: 66 })
+  const sent = JSON.parse(requests.filter(q => q.url === '/order').at(-1).body)
+  assert.equal(requests.filter(q => q.url === '/order').length, before + 1)
+  assert.equal(sent.intentId, undefined); assert.equal(sent.permit, undefined); assert.equal(sent.label, ORDER.label)
+  assert.deepEqual(stripLedgerFields({ a: 1, permit: { id: 'p' }, intentId: 'i', signalRef: 'r', symbolName: 'EURUSD' }), { a: 1 })
+  assert.deepEqual(stripLedgerFields(null), {})
 })

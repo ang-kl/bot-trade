@@ -6,10 +6,12 @@
 #pragma once
 
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -77,6 +79,9 @@ constexpr int EXECUTION_EVENT         = 2126;
 constexpr int ORDER_ERROR_EVENT       = 2132;
 constexpr int ERROR_RES               = 2142;
 } // namespace pt
+
+// P2a: the order as the broker receives it — ledger fields stripped.
+jsn::Value wireOrderPayload(const jsn::Value& payload);
 
 struct EngineResult {
   bool ok = false;
@@ -219,4 +224,8 @@ private:
   Telemetry* telemetry_ = nullptr; // non-owning; null = disabled
   std::function<void()> preSendHook_;
   DecisionRing* ring_ = nullptr;   // non-owning; null = disabled
+  // P2a: redeemed permit ids, bounded (the deque keeps insertion order so the
+  // oldest are forgotten first). Read and written under mtx_ only.
+  std::set<std::string> consumedPermits_;
+  std::deque<std::string> consumedOrder_;
 };

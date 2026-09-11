@@ -216,13 +216,31 @@ export async function runVpoFeeder(db, deps = {}) {
   // fire-time fence (a permit checked at the sidecar's send) is P2.
   if (Number.isFinite(acct) && acct > 0) {
     const admission = admitEntry(db, { accountId: String(acct), producerId: 'vpo_cpp_direct', basis: 'bar' })
-    if (!admission.ok) return { skipped: `entry_mode: ${admission.reason}`, accountId: acct }
+    if (!admission.ok) {
+      // P2a (11-09-2026): a fence that only withholds the NEXT push leaves the
+      // previous one armed until the store ages it out (VpoConfigStore
+      // maxAgeMs, 5 min — measured residue of the P1b fence). Push the
+      // DISARM instead: the sidecar clears its bars and volumes, idles every
+      // strategy that is not mid-fire and forgets the account, at once. Once
+      // per epoch is enough (the sidecar's state is idempotent).
+      const key = `${acct}:${admission.modeEpoch}`
+      if (!disarmPushed.has(key)) {
+        await push({ disarm: true, ctidTraderAccountId: acct, reason: admission.reason }, execBaseFor(creds))
+        disarmPushed.add(key)
+        console.log(`[vpo-feeder] disarmed the VPO tier for …${String(acct).slice(-4)} (${admission.reason}, epoch ${admission.modeEpoch})`)
+      }
+      return { skipped: `entry_mode: ${admission.reason}`, accountId: acct, disarmed: true }
+    }
   }
   const payload = { bars: barsOut, volumes: volumesOut }
   if (Number.isFinite(acct) && acct > 0) payload.ctidTraderAccountId = acct
   await push(payload, execBaseFor(creds))
   return { ok: true, bars: barsOut.length, volumes: volumesOut.length, accountId: payload.ctidTraderAccountId ?? null }
 }
+
+// P2a: one disarm push per (account, epoch) — see the fence above.
+const disarmPushed = new Set()
+export function _resetDisarmPushedForTests() { disarmPushed.clear() }
 
 /** Runs the feeder on an interval until stopped. Mirrors guardian.js's startX(db, ...) shape. */
 export function startVpoFeeder(db, intervalMs = 60_000) {

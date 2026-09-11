@@ -37,6 +37,10 @@ public:
   // contract: <= 0 means "sizing unavailable, refuse to fire").
   double getVolume(const std::string& strategyKey) const;
 
+  // P2a: the keeper's disarm — every bar set and volume forgotten at once,
+  // so the next recompute finds "no data" and the fire path "no sizing".
+  void clear();
+
 private:
   struct BarEntry { std::vector<Bar> bars; long long updatedAtMs = 0; };
   struct VolEntry { double volume = -1; long long updatedAtMs = 0; };

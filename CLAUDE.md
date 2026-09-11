@@ -367,8 +367,10 @@ Measurement history — each line is a real run of the script, not a claim:
   js-yaml, strategy pins seeded once, then the tick-momentum programme's
   P1a sidecar defects, P0 contracts + producer inventory + runtime manifest
   + docs, and P1b's per-account entry mode). The next reply is `№ 7,556`.
-  Same reason as the lines above: a local re-measure that reads below this
-  is missing these, not correcting them.
+  Continued in the same container to **`№ 7,557`** at 08:29 SGT 11-09 (#880,
+  P1c, merged); the next reply is `№ 7,558`. Same reason as the lines above:
+  a local re-measure that reads below this is missing these, not correcting
+  them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

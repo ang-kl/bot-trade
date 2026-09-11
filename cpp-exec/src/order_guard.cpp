@@ -88,3 +88,68 @@ OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g) {
 
   return { true, "" };
 }
+
+// ---------------------------------------------------------------------------
+// P2a: the one-use permit at the send boundary. See order_guard.hpp.
+// ---------------------------------------------------------------------------
+PermitVerdict validatePermit(const jsn::Value& payload, const GuardSnapshot& g,
+                             std::set<std::string>& consumed, long long nowMs) {
+  PermitVerdict v;
+  const long long acct = payload.isObject()
+      ? static_cast<long long>(payload.get("ctidTraderAccountId").asNumber(0)) : 0;
+  const jsn::Value& permit = payload.get("permit");
+  const bool internalFire = payload.get("_vpoFire").asBool(false);
+  const auto epochIt = g.entryEpochs.find(acct);
+  const bool fenced = epochIt != g.entryEpochs.end();
+  if (!permit.isObject()) {
+    if (fenced && !internalFire) {
+      v.ok = false;
+      v.reason = "permit_missing: this account's entry epoch is fenced (" +
+                 std::to_string(epochIt->second) + ") and the order carries no permit";
+    }
+    return v; // not fenced, or an in-process VPO fire (waived until P2a-2)
+  }
+  v.intentId = permit.get("intentId").asString();
+  const std::string id = permit.get("id").asString();
+  if (id.empty() || v.intentId.empty()) {
+    v.ok = false;
+    v.reason = "permit_malformed: id and intentId are required";
+    return v;
+  }
+  if (fenced) {
+    const long long pe = static_cast<long long>(permit.get("epoch").asNumber(-1));
+    if (pe != epochIt->second) {
+      v.ok = false;
+      v.reason = "permit_epoch_stale: permit epoch " + std::to_string(pe) +
+                 ", account epoch " + std::to_string(epochIt->second);
+      return v;
+    }
+  }
+  const double exp = permit.get("expiresAtMs").asNumber(0);
+  if (exp <= 0 || static_cast<long long>(exp) < nowMs) {
+    v.ok = false;
+    v.reason = "permit_expired";
+    return v;
+  }
+  const long long pAcct = static_cast<long long>(permit.get("accountId").asNumber(0));
+  const long long pSym = static_cast<long long>(permit.get("symbolId").asNumber(-1));
+  const long long sym = static_cast<long long>(payload.get("symbolId").asNumber(-2));
+  const std::string pSide = permit.get("side").asString();
+  const std::string side = payload.get("tradeSide").asString();
+  const double pVol = permit.get("volume").asNumber(-1);
+  const double vol = payload.get("volume").asNumber(-2);
+  if (pAcct != acct || (pSym >= 0 && pSym != sym) || (!pSide.empty() && pSide != side) ||
+      (pVol >= 0 && pVol != vol)) {
+    v.ok = false;
+    v.reason = "permit_mismatch: the permit does not describe this order (account/symbol/side/volume)";
+    return v;
+  }
+  if (consumed.count(id) > 0) {
+    v.ok = false;
+    v.reason = "permit_consumed: " + id + " was already used";
+    return v;
+  }
+  consumed.insert(id);
+  v.permitId = id;
+  return v;
+}

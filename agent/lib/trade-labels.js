@@ -145,7 +145,37 @@ export function encodeLabel(parts = {}) {
   const tf = compact(parts.timeframe || '-')
   const reg = REGIMES[parts.regime] || '-'
   const label = [src, ver, strat, conv, sess, tf, reg].join('|')
-  return label.length > MAX_LABEL_LEN ? label.slice(0, MAX_LABEL_LEN) : label
+  const capped = label.length > MAX_LABEL_LEN ? label.slice(0, MAX_LABEL_LEN) : label
+  // P2a: the entry-intent tag rides as an 8th field so the broker's own
+  // position/order record names the ledger row that placed it.
+  return parts.intentId ? tagLabelWithIntent(capped, parts.intentId) : capped
+}
+
+// ---------------------------------------------------------------------------
+// P2a (docs/tick-momentum/plan.md §9, 11-09-2026): the entry-intent tag.
+// `|i<id>` is appended as the label's 8th field. parseLabel() reads only the
+// first seven, so every existing reader is unchanged; labelIntentId() is the
+// one reader of the eighth. A tag that would push the label past
+// MAX_LABEL_LEN is NOT applied (the caller records that the label carries no
+// tag) — a truncated tag would be a wrong id, which is worse than none.
+// ---------------------------------------------------------------------------
+const INTENT_TAG_RE = /^i[0-9a-z]{6,24}$/
+
+export function tagLabelWithIntent(label, intentId) {
+  const id = String(intentId || '')
+  if (!INTENT_TAG_RE.test(id)) return label
+  const base = String(label || '')
+  const parts = base.split('|')
+  if (parts.length >= 8) parts.length = 7 // replace an existing tag
+  const tagged = [...parts, id].join('|')
+  return tagged.length > MAX_LABEL_LEN ? base : tagged
+}
+
+export function labelIntentId(label) {
+  if (!label || typeof label !== 'string') return null
+  const parts = label.split('|').map(s => s.trim())
+  const tag = parts[7]
+  return tag && INTENT_TAG_RE.test(tag) ? tag : null
 }
 
 /**

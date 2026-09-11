@@ -7,6 +7,7 @@
 import { getState } from '../db.js'
 import { ctraderEnv } from './ctrader-env.js'
 import { admitEntry } from '../services/entry-mode.js'
+import { reserveEntry, redeemPermit, markSent, resolveIntent } from '../services/entry-ledger.js'
 
 /**
  * Assemble cTrader connection credentials from env + agent state.
@@ -68,10 +69,40 @@ export function getCtraderCreds(db, accountOverride, { producerId = null, basis 
     // P1b (11-09-2026): the entry fence travels with the credentials the same
     // way the exec guard does, so exec-engine.placeOrder can re-check it at
     // the last Node boundary. Absent producerId = a non-producing caller
-    // (reads, reconcile, amends): no fence attached.
-    ...(producerId ? { producerId, entryAdmission: () => admitEntry(db, { accountId, producerId, basis }) } : {}),
+    // (reads, reconcile, amends): no fence attached. P2a: the intent ledger
+    // rides the same way (attachEntryFence).
+    ...(producerId ? entryFenceFor(db, accountId, { producerId, basis }) : {}),
     ready: !!(clientId && clientSecret && accessToken && accountId),
   }
+}
+
+// P2a: one gateway instance id per Node process — the ledger records which
+// process redeemed a permit, so a restart between redeem and send is legible.
+export const GATEWAY_INSTANCE = `node:${process.pid}:${Date.now().toString(36)}`
+
+function entryFenceFor(db, accountId, { producerId, basis = 'bar' }) {
+  const id = accountId != null ? String(accountId) : null
+  return {
+    producerId,
+    entryAdmission: () => admitEntry(db, { accountId: id, producerId, basis }),
+    entryLedger: {
+      reserve: (o = {}) => reserveEntry(db, { accountId: id, producerId, basis, gatewayInstance: GATEWAY_INSTANCE, ...o }),
+      redeem: (permitId) => redeemPermit(db, permitId),
+      markSent: (intentId, o = {}) => markSent(db, intentId, o),
+      resolve: (intentId, o = {}) => resolveIntent(db, intentId, o),
+    },
+  }
+}
+
+/**
+ * P2a: the same fence + ledger for credentials a caller builds by hand
+ * (loop.js autoTrade, the closed-market path). One rule, one place — a
+ * hand-built creds object without this cannot place an entry once the
+ * sidecar requires permits.
+ */
+export function attachEntryFence(db, creds, { producerId, basis = 'bar' }) {
+  if (!producerId) return creds
+  return { ...creds, ...entryFenceFor(db, creds?.accountId, { producerId, basis }) }
 }
 
 /**
