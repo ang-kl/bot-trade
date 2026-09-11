@@ -285,6 +285,9 @@ export async function pingSidecar({ timeoutMs = 5_000, base = execBaseFor() } = 
       vpo: body?.vpo ?? null,
       guard: body?.guard ?? null,
       peer: body?.peer ?? null,
+      // P3a: the tick recorder's summary (null = no TICK_SPOOL_PATH on that
+      // sidecar); the guard sync reads `tick.recording` and `tick.subscribed`.
+      tick: body?.tick ?? null,
       decisionsSeq: body?.decisionsSeq ?? null,
       bootId: body?.bootId ?? null,
       ...(res.ok ? {} : { error: `health ${res.status}` }),
@@ -338,6 +341,31 @@ export async function pullSidecarDecisions({ after = 0, bootId = '', timeoutMs =
  * same cursor contract as the decision ring. null = unreachable / older
  * sidecar (404); callers treat null as "not told".
  */
+/**
+ * P3a: the sidecar's tick recorder in full (GET /tick-status) — state,
+ * counters, segments, the mount's free bytes, events/sec per symbol. null
+ * when the sidecar is unreachable or not in cpp mode; `{enabled:false}` when
+ * the sidecar has no TICK_SPOOL_PATH.
+ */
+export async function sidecarTickStatus({ timeoutMs = 5_000, base = execBaseFor() } = {}) {
+  if (execEngineMode() !== 'cpp') return null
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(base + '/tick-status', {
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
+    })
+    if (!res.ok) return null
+    const body = await res.json().catch(() => null)
+    return body && typeof body === 'object' ? body : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 export async function pullSidecarEvents({ after = 0, bootId = '', timeoutMs = 5_000, base = execBaseFor() } = {}) {
   if (execEngineMode() !== 'cpp') return null
   const ctrl = new AbortController()

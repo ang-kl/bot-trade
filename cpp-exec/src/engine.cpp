@@ -13,6 +13,10 @@ static long long nowMs() {
   return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
+static long long steadyMs() {
+  return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 static void logLine(const std::string& msg) {
   std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
 }
@@ -55,6 +59,16 @@ static EngineResult errResult(const std::string& code, const std::string& desc,
   return r;
 }
 
+// The reader's receive slice. Short, so a wake-up (setCredentials, shutdown)
+// is honoured within a second and the heartbeat lands within a second of its
+// idle bound; the slice is not a timeout on anything the broker does.
+static constexpr int kReaderSliceMs = 1000;
+
+void ExecEngine::Pending::settle(EngineResult r) {
+  if (done.exchange(true)) return;
+  promise.set_value(std::move(r));
+}
+
 ExecEngine::ExecEngine(std::string host, std::string clientId,
                        std::string clientSecret, std::string accessToken,
                        long long accountId)
@@ -64,13 +78,18 @@ ExecEngine::ExecEngine(std::string host, std::string clientId,
       accessToken_(std::move(accessToken)),
       requestedAccountIds_{accountId} {}
 
+ExecEngine::~ExecEngine() {
+  ws_.wakeReader();
+  if (reader_.joinable()) reader_.join();
+}
+
 void ExecEngine::setCredentials(std::string host, std::string clientId,
                                 std::string clientSecret,
                                 std::string accessToken, long long accountId,
                                 std::vector<long long> extraAccountIds) {
   std::lock_guard lk(mtx_);
   const bool sameSession = host == host_ && clientId == clientId_ &&
-                           accessToken == accessToken_ && authed_;
+                           accessToken == accessToken_ && authed_.load();
   // The REQUESTED roster is authoritative either way — a failed auth keeps
   // the id requested so the next reconnect retries it (audit #5).
   std::vector<long long> wanted;
@@ -95,8 +114,7 @@ void ExecEngine::setCredentials(std::string host, std::string clientId,
       // already trading on. This is the path the owner's registry change went
       // through — enabling one demo account should never be able to stop
       // execution for the rest.
-      ExtraAuthScope guard(authorizingExtra_);
-      EngineResult r = authAccountLocked(id);
+      EngineResult r = authAccountLocked(id, /*extra=*/true);
       if (r.ok) {
         accountIds_.push_back(id);
         logLine("account " + std::to_string(id) + " authorized on existing session");
@@ -113,9 +131,10 @@ void ExecEngine::setCredentials(std::string host, std::string clientId,
   requestedAccountIds_ = wanted;
   accountIds_.clear();
   // Force a clean reconnect+reauth on the next runLoop pass — the old
-  // session (if any) may be authed against a different account/token.
-  ws_.close();
-  authed_ = false;
+  // session (if any) may be authed against a different account/token. The
+  // reader owns the socket: wake it and let it tear the connection down.
+  stopReaderLocked();
+  authed_.store(false);
 }
 
 bool ExecEngine::hasCredentials() {
@@ -129,12 +148,11 @@ std::vector<long long> ExecEngine::accountIds() {
   // exists: the requested roster (what the keeper asked for) — /health and
   // the pre-connection tests both want the meaningful answer for their
   // moment, and an empty list pre-auth would read as "no accounts at all".
-  return authed_ && !accountIds_.empty() ? accountIds_ : requestedAccountIds_;
+  return authed_.load() && !accountIds_.empty() ? accountIds_ : requestedAccountIds_;
 }
 
 bool ExecEngine::isConnected() {
-  std::lock_guard lk(mtx_);
-  return ws_.isOpen() && authed_;
+  return ws_.isOpen() && authed_.load();
 }
 
 std::string ExecEngine::lastReconcileJson() {
@@ -161,6 +179,20 @@ long long ExecEngine::lastReconcileAtMs(long long accountId) {
   return it == reconcileByAccount_.end() ? 0 : it->second.atMs;
 }
 
+ExecEngine::SessionStats ExecEngine::sessionStats() {
+  SessionStats s;
+  s.readerRunning = readerRunning_.load();
+  { std::lock_guard lk(pendingMtx_); s.pending = pending_.size(); }
+  s.generation = generation_.load();
+  s.framesIn = framesIn_.load();
+  s.lateFrames = lateFrames_.load();
+  s.unsolicited = unsolicited_.load();
+  s.timeouts = timeouts_.load();
+  s.heartbeatsSent = heartbeatsSent_.load();
+  s.disconnects = disconnects_.load();
+  return s;
+}
+
 void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
   int type = static_cast<int>(msg.get("payloadType").asNumber(-1));
   if (type == pt::HEARTBEAT) return;
@@ -181,14 +213,6 @@ void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
     return;
   }
   logLine("unsolicited payloadType=" + std::to_string(type));
-}
-
-void ExecEngine::maybeHeartbeatLocked() {
-  auto now = steady_clock::now();
-  if (ws_.isOpen() && now - lastSend_ >= seconds(kHeartbeatIdleSeconds)) {
-    ws_.sendText("{\"payloadType\":51}");
-    lastSend_ = now;
-  }
 }
 
 // Auth-family error codes mean the session (not this one request) is dead:
@@ -245,8 +269,8 @@ std::string effectiveConnectHost(const std::string& pinned, const std::string& r
   return r.empty() ? "live.ctraderapi.com" : r;
 }
 
-void ExecEngine::noteBrokerErrorLocked(const std::string& errorCode) {
-  const AuthErrorAction act = authErrorAction(errorCode, authorizingExtra_);
+void ExecEngine::noteBrokerError(const std::string& errorCode, bool extraAuth) {
+  const AuthErrorAction act = authErrorAction(errorCode, extraAuth);
   if (act == AuthErrorAction::Ignore) return;
   // ONE ACCOUNT'S REJECTION IS NOT THE SESSION'S DEATH (production incident,
   // 2026-08-04, ~23:47Z onward).
@@ -279,14 +303,157 @@ void ExecEngine::noteBrokerErrorLocked(const std::string& errorCode) {
   }
   logLine("auth-family broker error '" + errorCode + "' — closing session for reauth");
   if (ring_) ring_->log("engine", "auth_error", 0, 0, errorCode, "kill_session: closing for reauth");
+  // On the reader thread — the socket's owner — so closing here is the C1-safe
+  // path; the reader loop then exits and fails everything still in flight.
+  authed_.store(false);
   ws_.close();
-  authed_ = false;
 }
 
-EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
-                                 int expectType, int timeoutMs, RequestClass cls) {
-  if (!ws_.isOpen())
-    return errResult("NOT_CONNECTED", "websocket is not connected", false);
+// --- the async session ------------------------------------------------------
+
+void ExecEngine::startReaderLocked() {
+  if (reader_.joinable()) reader_.join(); // a finished reader from the last connection
+  const long long gen = generation_.fetch_add(1) + 1;
+  readerRunning_.store(true);
+  reader_ = std::thread([this, gen] { readerLoop(gen); });
+}
+
+void ExecEngine::stopReaderLocked() {
+  ws_.wakeReader();
+  if (reader_.joinable()) reader_.join();
+  readerRunning_.store(false);
+}
+
+void ExecEngine::failAllPending(const std::string& code, const std::string& desc) {
+  std::map<std::string, std::shared_ptr<Pending>> gone;
+  {
+    std::lock_guard lk(pendingMtx_);
+    gone.swap(pending_);
+  }
+  for (auto& kv : gone) kv.second->settle(errResult(code, desc, false));
+}
+
+void ExecEngine::readerLoop(long long generation) {
+  if (ring_) ring_->log("engine", "reader_started", 0, 0, "", "connection " + std::to_string(generation));
+  while (ws_.isOpen()) {
+    auto text = ws_.recvText(kReaderSliceMs);
+    // The heartbeat lives here because the reader is the one thread that is
+    // always awake on the connection (cTrader asks for one every 10 s; the
+    // bound is heartbeat.hpp's).
+    const long long now = steadyMs();
+    if (ws_.isOpen() && now - lastSendMs_.load() >= heartbeatIdleMs_.load()) {
+      if (ws_.sendText("{\"payloadType\":51}")) {
+        lastSendMs_.store(now);
+        heartbeatsSent_.fetch_add(1);
+      }
+    }
+    if (!text) continue; // idle slice, or the socket closed (the loop condition sees it)
+    auto msg = jsn::parse(*text);
+    if (!msg || !msg->isObject()) {
+      logLine("unparseable frame dropped");
+      continue;
+    }
+    framesIn_.fetch_add(1);
+    dispatchFrame(*msg);
+  }
+  // The reader owns teardown (no-op when the peer already closed it).
+  ws_.close();
+  authed_.store(false);
+  const std::string why = ws_.lastError();
+  failAllPending("DISCONNECTED", why.empty() ? "connection closed" : why);
+  disconnects_.fetch_add(1);
+  if (ring_) ring_->log("engine", "disconnected", 0, 0, "", "connection " + std::to_string(generation) + (why.empty() ? "" : ": " + why));
+  readerRunning_.store(false);
+}
+
+void ExecEngine::dispatchFrame(const jsn::Value& msg) {
+  const int type = static_cast<int>(msg.get("payloadType").asNumber(-1));
+  if (type == pt::HEARTBEAT) return;
+  const std::string theirId = msg.get("clientMsgId").asString();
+  const bool isError = type == pt::ERROR_RES || type == pt::ORDER_ERROR_EVENT;
+
+  // Every request carries a fresh clientMsgId and ONLY a frame echoing it can
+  // answer it. Pairing by payloadType alone returned buffered or unsolicited
+  // EXECUTION_EVENTs (ORDER_ACCEPTED leftovers, another account's SL hit) as
+  // the current call's success — Node then marked live positions closed or
+  // counted stop ratchets that never happened (audit #1, critical).
+  std::shared_ptr<Pending> mine;
+  if (!theirId.empty()) {
+    std::lock_guard lk(pendingMtx_);
+    auto it = pending_.find(theirId);
+    if (it != pending_.end() && (type == it->second->expectType || isError)) {
+      mine = it->second;
+      pending_.erase(it);
+    }
+  }
+  if (mine) {
+    if (journal_) journal_->record(msg, true); // an execution event a request waited for
+    if (type == mine->expectType) {
+      EngineResult r;
+      r.ok = true;
+      r.body = msg.get("payload");
+      mine->settle(std::move(r));
+      return;
+    }
+    const auto& p = msg.get("payload");
+    const std::string code = p.get("errorCode").asString();
+    // An auth-family error kills the session whether or not it answers this
+    // request (and if it does, the request's own answer is that error).
+    noteBrokerError(code, mine->extraAuth);
+    mine->settle(errResult(code, p.get("description").asString(), true));
+    return;
+  }
+
+  if (isError) {
+    const auto& p = msg.get("payload");
+    const std::string code = p.get("errorCode").asString();
+    // SUCCESS demands our echoed id; failure is accepted on an id-less error
+    // frame too — misattributing an error fails safe (the caller retries or
+    // reports), misattributing a success is the audit-#1 bug. But an id-less
+    // error can only be attributed when there is exactly ONE request it
+    // could belong to (the only case the synchronous session ever faced);
+    // with several in flight it is nobody's answer — journaled, and each
+    // request runs to its own echoed answer or its timeout, which the keeper
+    // resolves as UNKNOWN from the journal, never as a definite REJECTED
+    // that would license a resend.
+    std::shared_ptr<Pending> sole;
+    if (theirId.empty()) {
+      std::lock_guard lk(pendingMtx_);
+      if (pending_.size() == 1) {
+        sole = pending_.begin()->second;
+        pending_.clear();
+      }
+    }
+    if (journal_) journal_->record(msg, sole != nullptr);
+    noteBrokerError(code, sole ? sole->extraAuth : false);
+    if (sole) {
+      sole->settle(errResult(code, p.get("description").asString(), true));
+    } else if (!theirId.empty()) {
+      lateFrames_.fetch_add(1); // an error for a request that already gave up
+    } else {
+      unsolicited_.fetch_add(1);
+    }
+    return;
+  }
+
+  // A frame with our id whose request already gave up (a LATE answer — the
+  // keeper matches it in the journal by clientMsgId), or a second event for
+  // a settled request (ORDER_FILLED after the ORDER_ACCEPTED that answered
+  // it), or a frame with no id at all: journaled if it is an execution
+  // event, otherwise noted.
+  if (!theirId.empty()) lateFrames_.fetch_add(1);
+  else unsolicited_.fetch_add(1);
+  handleUnsolicited(msg);
+}
+
+ExecEngine::Ticket ExecEngine::beginRequest(int reqType, const jsn::Value& payload,
+                                            int expectType, RequestClass cls, bool extraAuth) {
+  Ticket t;
+  if (!ws_.isOpen() || !readerRunning_.load()) {
+    t.failed = true;
+    t.early = errResult("NOT_CONNECTED", "websocket is not connected", false);
+    return t;
+  }
 
   // P2b-1 PACING (TM-25): one token per request against the connection's
   // documented budget. An entry or read that would eat into the protection
@@ -306,85 +473,66 @@ EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
       const auto& pc = pacer_->config();
       if (ring_) ring_->log("engine", "rate_limited", 0, 0, cls == RequestClass::Entry ? "entry" : (cls == RequestClass::Read ? "read" : "protection"),
                             std::to_string(pc.capacityPerSec) + "/s, " + std::to_string(pc.protectionReservePct) + "% reserved for protection");
-      return errResult("rate_limited", "the connection's request budget is spent (" + std::to_string(pc.capacityPerSec) +
-                       "/s, " + std::to_string(pc.protectionReservePct) + "% reserved for protection) — not sent", false);
+      t.failed = true;
+      t.early = errResult("rate_limited", "the connection's request budget is spent (" + std::to_string(pc.capacityPerSec) +
+                          "/s, " + std::to_string(pc.protectionReservePct) + "% reserved for protection) — not sent", false);
+      return t;
     }
   }
 
-  // Every request carries a fresh clientMsgId and ONLY a frame echoing it can
-  // answer it. Pairing by payloadType alone returned buffered or unsolicited
-  // EXECUTION_EVENTs (ORDER_ACCEPTED leftovers, another account's SL hit) as
-  // the current call's success — Node then marked live positions closed or
-  // counted stop ratchets that never happened (audit #1, critical).
-  const std::string msgId = "cx" + std::to_string(++msgSeq_);
+  auto p = std::make_shared<Pending>();
+  p->expectType = expectType;
+  p->extraAuth = extraAuth;
+  {
+    // Registered BEFORE the send, so the answer cannot arrive at a reader
+    // that does not yet know the id.
+    std::lock_guard lk(pendingMtx_);
+    p->msgId = "cx" + std::to_string(++msgSeq_);
+    pending_[p->msgId] = p;
+  }
+  t.p = p;
+  t.fut = p->promise.get_future();
   jsn::Value frame{jsn::Object{}};
-  frame.set("clientMsgId", msgId);
+  frame.set("clientMsgId", p->msgId);
   frame.set("payloadType", reqType);
   frame.set("payload", payload);
   if (!ws_.sendText(jsn::dump(frame))) {
-    authed_ = false;
-    return errResult("SEND_FAILED", ws_.lastError(), false);
+    { std::lock_guard lk(pendingMtx_); pending_.erase(p->msgId); }
+    t.failed = true;
+    t.early = errResult("SEND_FAILED", ws_.lastError(), false);
+    return t;
   }
-  lastSend_ = steady_clock::now();
+  lastSendMs_.store(steadyMs());
+  return t;
+}
 
-  auto deadline = steady_clock::now() + milliseconds(timeoutMs);
-  while (steady_clock::now() < deadline) {
-    int remain = static_cast<int>(
-        duration_cast<milliseconds>(deadline - steady_clock::now()).count());
-    if (remain <= 0) break;
-    // Cap each wait so heartbeats keep flowing on long waits.
-    auto text = ws_.recvText(remain > 5000 ? 5000 : remain);
-    maybeHeartbeatLocked();
-    if (!text) {
-      if (!ws_.isOpen()) {
-        authed_ = false;
-        return errResult("DISCONNECTED", ws_.lastError(), false);
-      }
-      continue; // idle timeout slice
-    }
-    auto msg = jsn::parse(*text);
-    if (!msg || !msg->isObject()) {
-      logLine("unparseable frame dropped");
-      continue;
-    }
-    const std::string theirId = msg->get("clientMsgId").asString();
-    const bool mine = theirId == msgId;
-    // A frame echoing a DIFFERENT id answers some other (earlier) request —
-    // it can never answer this one. Unsolicited events carry no id at all.
-    const bool foreign = !theirId.empty() && !mine;
-    int type = static_cast<int>(msg->get("payloadType").asNumber(-1));
-    if (mine && type == expectType) {
-      if (journal_) journal_->record(*msg, true); // an execution event this call waited for
-      EngineResult r;
-      r.ok = true;
-      r.body = msg->get("payload");
-      return r;
-    }
-    if (type == pt::ERROR_RES || type == pt::ORDER_ERROR_EVENT) {
-      if (journal_) journal_->record(*msg, mine);
-      const auto& p = msg->get("payload");
-      const std::string code = p.get("errorCode").asString();
-      // An auth-family error kills the session whether or not it answers this
-      // request.
-      noteBrokerErrorLocked(code);
-      // SUCCESS demands our echoed id; failure is accepted on an id-less
-      // error frame too — misattributing an error fails safe (the caller
-      // retries/reports), misattributing a success is the audit-#1 bug.
-      if (!foreign || !ws_.isOpen())
-        return errResult(code, p.get("description").asString(), true);
-      handleUnsolicited(*msg);
-      continue;
-    }
-    handleUnsolicited(*msg);
+EngineResult ExecEngine::awaitRequest(Ticket& t, int timeoutMs) {
+  if (t.failed) return t.early;
+  const int override = requestTimeoutOverrideMs_.load();
+  if (override > 0) timeoutMs = override;
+  if (t.fut.wait_for(milliseconds(timeoutMs)) == std::future_status::ready) return t.fut.get();
+  bool withdrawn;
+  {
+    std::lock_guard lk(pendingMtx_);
+    withdrawn = pending_.erase(t.p->msgId) > 0;
   }
+  // The reader settled it between the wait and the erase — its answer stands.
+  if (!withdrawn) return t.fut.get();
+  timeouts_.fetch_add(1);
   // P2b-1: the id this request went out under, so the keeper can match a
   // late frame in the journal to the intent it marked UNKNOWN.
   EngineResult r = errResult("TIMEOUT",
-                             "no payloadType " + std::to_string(expectType) + " within " +
+                             "no payloadType " + std::to_string(t.p->expectType) + " within " +
                                  std::to_string(timeoutMs) + "ms",
                              false);
-  r.body.set("clientMsgId", msgId);
+  r.body.set("clientMsgId", t.p->msgId);
   return r;
+}
+
+EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
+                                 int expectType, int timeoutMs, RequestClass cls, bool extraAuth) {
+  Ticket t = beginRequest(reqType, payload, expectType, cls, extraAuth);
+  return awaitRequest(t, timeoutMs);
 }
 
 EngineResult ExecEngine::authApp() {
@@ -394,29 +542,35 @@ EngineResult ExecEngine::authApp() {
   return request(pt::APP_AUTH_REQ, p, pt::APP_AUTH_RES);
 }
 
-EngineResult ExecEngine::authAccountLocked(long long accountId) {
+EngineResult ExecEngine::authAccountLocked(long long accountId, bool extra) {
   jsn::Value p{jsn::Object{}};
   p.set("ctidTraderAccountId", accountId);
   p.set("accessToken", accessToken_);
-  return request(pt::ACCOUNT_AUTH_REQ, p, pt::ACCOUNT_AUTH_RES);
+  return request(pt::ACCOUNT_AUTH_REQ, p, pt::ACCOUNT_AUTH_RES, 20000, RequestClass::Read, extra);
 }
 
 EngineResult ExecEngine::authAccount() {
-  return authAccountLocked(primaryAccountLocked());
+  std::lock_guard lk(mtx_);
+  return authAccountLocked(primaryAccountLocked(), /*extra=*/false);
 }
 
 bool ExecEngine::connectAndAuth() {
   std::lock_guard lk(mtx_);
-  authed_ = false;
-  if (!ws_.connect(host_)) {
+  authed_.store(false);
+  // Whatever reader the last connection had is finished or being replaced;
+  // it must be gone before connect() touches the socket state it owned.
+  stopReaderLocked();
+  const bool loopback = loopbackPort_ > 0;
+  if (!ws_.connect(loopback ? "127.0.0.1" : host_, loopback ? loopbackPort_ : 5036, !loopback)) {
     logLine("connect failed: " + ws_.lastError());
     return false;
   }
-  lastSend_ = steady_clock::now();
+  lastSendMs_.store(steadyMs());
+  startReaderLocked();
   auto a = authApp();
   if (!a.ok) {
     logLine("app auth failed: " + jsn::dump(a.body));
-    ws_.close();
+    stopReaderLocked();
     return false;
   }
   // M2: authorize EVERY REQUESTED account over this one connection
@@ -425,18 +579,17 @@ bool ExecEngine::connectAndAuth() {
   // SESSION with a loud log — it stays requested, so the next reconnect
   // retries it instead of a transient failure erasing the account from
   // management forever (audit #5).
-  auto b = authAccountLocked(primaryAccountLocked());
+  auto b = authAccountLocked(primaryAccountLocked(), /*extra=*/false);
   if (!b.ok) {
     logLine("account auth failed: " + jsn::dump(b.body));
-    ws_.close();
+    stopReaderLocked();
     return false;
   }
   accountIds_.clear();
   accountIds_.push_back(primaryAccountLocked());
   for (size_t i = 1; i < requestedAccountIds_.size(); ++i) {
     const long long id = requestedAccountIds_[i];
-    ExtraAuthScope guard(authorizingExtra_);
-    EngineResult r = authAccountLocked(id);
+    EngineResult r = authAccountLocked(id, /*extra=*/true);
     if (r.ok) {
       accountIds_.push_back(id);
     } else {
@@ -445,7 +598,11 @@ bool ExecEngine::connectAndAuth() {
               jsn::dump(r.body));
     }
   }
-  authed_ = true;
+  if (!ws_.isOpen()) { // an auth-family error on the way killed the session
+    stopReaderLocked();
+    return false;
+  }
+  authed_.store(true);
   logLine("connected and authenticated to " + host_ + " (" +
           std::to_string(accountIds_.size()) + "/" +
           std::to_string(requestedAccountIds_.size()) + " account(s))");
@@ -470,7 +627,7 @@ bool ExecEngine::connectAndAuth() {
 // withAccount), merged and deployed BEFORE this, so in practice there is nothing
 // left to refuse: this is a tripwire against regression, not a behaviour change.
 //
-// reconcileLocked is unaffected — it always set the id explicitly.
+// reconcileOne is unaffected — it always set the id explicitly.
 static bool hasAccountId(const jsn::Value& payload) {
   if (!payload.isObject()) return false;
   const jsn::Value& v = payload.get("ctidTraderAccountId");
@@ -526,67 +683,76 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
     if (ring_) ring_->log("order_guard", "refused", ringAcct, symbolId, v.reason);
     return errResult(v.reason, v.reason, false);
   }
-  std::lock_guard lk(mtx_);
-  if (preSendHook_) preSendHook_();
-  // SEND-BOUNDARY RECHECK (10-09-2026). The validation above ran BEFORE the
-  // mutex: an order could validate, wait behind a slow reconcile or another
-  // order, and be sent after /config had set a halt — the halt was checked
-  // against a state that no longer held. The guard is re-read here, under
-  // the lock, immediately before the send; nothing can change it in between
-  // that this thread does not see.
-  {
-    const OrderVerdict again = validateOrder(payload, guard_.snapshot());
-    if (!again.ok) {
-      logLine("order REJECTED by guard at the send boundary (state changed while queued): " + again.reason);
-      if (telemetry_) {
-        telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
-                         volume, price, 0, classifyReasonCode(again.reason)});
-      }
-      if (ring_) ring_->log("order_guard", "refused_at_send", ringAcct, symbolId, again.reason);
-      return errResult(again.reason, again.reason + " (guard changed while the order was queued)", false);
-    }
-  }
-  // P2a PERMIT CHECK (11-09-2026), under the same lock at the same boundary:
-  // an entry for an account whose epoch the keeper has fenced must carry a
-  // one-use permit from THAT epoch, unexpired, describing THIS order, never
-  // seen before — a keeper-placed order and a VPO fire alike (P2a-2).
   std::string intentTag;
+  Ticket ticket;
   {
-    const GuardSnapshot gs = guard_.snapshot();
-    const PermitVerdict pv = validatePermit(payload, gs, consumedPermits_, nowMs());
-    if (!pv.ok) {
-      logLine("order REFUSED at the send boundary: " + pv.reason);
-      if (telemetry_) {
-        telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
-                         volume, price, 0, classifyReasonCode(pv.reason)});
+    // THE SEND BOUNDARY: the fence rechecks and the physical send share this
+    // one critical section (plan §8: "mode fencing and physical sends share
+    // the execution serialization boundary so an old queued order cannot
+    // slip through after a fence acknowledgement"). The WAIT for the
+    // broker's answer happens after it, outside the lock.
+    std::lock_guard lk(mtx_);
+    if (preSendHook_) preSendHook_();
+    // SEND-BOUNDARY RECHECK (10-09-2026). The validation above ran BEFORE the
+    // mutex: an order could validate, wait behind another order, and be sent
+    // after /config had set a halt — the halt was checked against a state
+    // that no longer held. The guard is re-read here, under the lock,
+    // immediately before the send; nothing can change it in between that
+    // this thread does not see.
+    {
+      const OrderVerdict again = validateOrder(payload, guard_.snapshot());
+      if (!again.ok) {
+        logLine("order REJECTED by guard at the send boundary (state changed while queued): " + again.reason);
+        if (telemetry_) {
+          telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
+                           volume, price, 0, classifyReasonCode(again.reason)});
+        }
+        if (ring_) ring_->log("order_guard", "refused_at_send", ringAcct, symbolId, again.reason);
+        return errResult(again.reason, again.reason + " (guard changed while the order was queued)", false);
       }
-      if (ring_) ring_->log("order_guard", "refused_at_send", ringAcct, symbolId, pv.reason,
-                            pv.intentId.empty() ? std::string() : "intent=" + pv.intentId);
-      return errResult(pv.reason, pv.reason, false);
     }
-    if (!pv.permitId.empty()) {
-      constexpr size_t kConsumedPermitCap = 4096;
-      consumedOrder_.push_back(pv.permitId);
-      while (consumedOrder_.size() > kConsumedPermitCap) {
-        consumedPermits_.erase(consumedOrder_.front());
-        consumedOrder_.pop_front();
+    // P2a PERMIT CHECK (11-09-2026), under the same lock at the same boundary:
+    // an entry for an account whose epoch the keeper has fenced must carry a
+    // one-use permit from THAT epoch, unexpired, describing THIS order, never
+    // seen before — a keeper-placed order and a VPO fire alike (P2a-2).
+    {
+      const GuardSnapshot gs = guard_.snapshot();
+      const PermitVerdict pv = validatePermit(payload, gs, consumedPermits_, nowMs());
+      if (!pv.ok) {
+        logLine("order REFUSED at the send boundary: " + pv.reason);
+        if (telemetry_) {
+          telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
+                           volume, price, 0, classifyReasonCode(pv.reason)});
+        }
+        if (ring_) ring_->log("order_guard", "refused_at_send", ringAcct, symbolId, pv.reason,
+                              pv.intentId.empty() ? std::string() : "intent=" + pv.intentId);
+        return errResult(pv.reason, pv.reason, false);
       }
+      if (!pv.permitId.empty()) {
+        constexpr size_t kConsumedPermitCap = 4096;
+        consumedOrder_.push_back(pv.permitId);
+        while (consumedOrder_.size() > kConsumedPermitCap) {
+          consumedPermits_.erase(consumedOrder_.front());
+          consumedOrder_.pop_front();
+        }
+      }
+      if (!pv.intentId.empty()) intentTag = "intent=" + pv.intentId;
     }
-    if (!pv.intentId.empty()) intentTag = "intent=" + pv.intentId;
+    // The wire payload: the broker must never see the ledger's fields.
+    const jsn::Value wire = wireOrderPayload(payload);
+    // SUBMIT is logged after the lock is held — with it logged before, the
+    // record timestamped a submission that could still be a minute away behind
+    // a reconcile sweep (audit #2 note).
+    if (telemetry_) {
+      telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_SUBMIT, symbolId,
+                       volume, price, 1, 0});
+    }
+    if (ring_) ring_->log("engine", "order_submit", ringAcct, symbolId, "", intentTag);
+    // The account is NOT filled in — validateOrder above has already refused a
+    // payload that does not name one (guard_no_account).
+    ticket = beginRequest(pt::NEW_ORDER_REQ, wire, pt::EXECUTION_EVENT, RequestClass::Entry);
   }
-  // The wire payload: the broker must never see the ledger's fields.
-  const jsn::Value wire = wireOrderPayload(payload);
-  // SUBMIT is logged after the lock is held — with it logged before, the
-  // record timestamped a submission that could still be a minute away behind
-  // a reconcile sweep (audit #2 note).
-  if (telemetry_) {
-    telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_SUBMIT, symbolId,
-                     volume, price, 1, 0});
-  }
-  if (ring_) ring_->log("engine", "order_submit", ringAcct, symbolId, "", intentTag);
-  // The account is NOT filled in — validateOrder above has already refused a
-  // payload that does not name one (guard_no_account).
-  EngineResult r = request(pt::NEW_ORDER_REQ, wire, pt::EXECUTION_EVENT, 20000, RequestClass::Entry);
+  EngineResult r = awaitRequest(ticket, 20000);
   if (telemetry_) {
     const std::string reason = r.ok ? "" : r.body.get("errorCode").asString();
     telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_RESULT, symbolId,
@@ -622,7 +788,8 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
                           "guard_halt", "amend refused during halt");
     return errResult("guard_halt", "execution halted by kill switch — amends refused (closes still allowed)", false);
   }
-  std::lock_guard lk(mtx_);
+  // No engine lock: the request is a future, and a protection request must
+  // never queue behind an entry's wait for the broker.
   EngineResult r = request(pt::AMEND_POSITION_SLTP_REQ, payload, pt::EXECUTION_EVENT, 15000, RequestClass::Protection);
   // Amends never had telemetry (it covers placeOrder only, a measured gap) —
   // the ring is where amend outcomes become inspectable.
@@ -635,21 +802,19 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
 
 EngineResult ExecEngine::closePosition(const jsn::Value& payload) {
   if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
-  std::lock_guard lk(mtx_);
   return request(pt::CLOSE_POSITION_REQ, payload, pt::EXECUTION_EVENT, 20000, RequestClass::Protection);
 }
 
 EngineResult ExecEngine::cancelOrder(const jsn::Value& payload) {
   if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
-  std::lock_guard lk(mtx_);
   return request(pt::CANCEL_ORDER_REQ, payload, pt::EXECUTION_EVENT, 20000, RequestClass::Protection);
 }
 
-EngineResult ExecEngine::reconcileLocked(long long accountId) {
+EngineResult ExecEngine::reconcileOne(long long accountId) {
   jsn::Value p{jsn::Object{}};
   p.set("ctidTraderAccountId", accountId);
-  // 10s, not 25s: even with per-account lock scope, a hung reconcile still
-  // holds the order path for its own timeout — keep that bound tight.
+  // 10s: a hung reconcile no longer holds the order path (the request is a
+  // future), but the loop's own cadence still wants a tight bound.
   auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, 10000);
   if (r.ok) {
     std::lock_guard sk(stateMtx_);
@@ -664,10 +829,9 @@ EngineResult ExecEngine::reconcile() {
   // transport failure aborts the sweep — the connection is gone for all of
   // them anyway.
   //
-  // The lock is taken PER ACCOUNT, not across the sweep (audit #2): holding
-  // mtx_ for N × up-to-25s blocked every order/amend/close — including the
-  // profit keeper's exits — behind a background poll. Between accounts the
-  // mutex is free, so a queued close runs after at most one reconcile.
+  // P2b-2: no lock is held across any of it. Before, the mutex was taken per
+  // account so a queued close ran after at most one reconcile (audit #2);
+  // now a close never queues behind a reconcile at all.
   std::vector<long long> ids;
   {
     std::lock_guard lk(mtx_);
@@ -678,11 +842,7 @@ EngineResult ExecEngine::reconcile() {
   bool havePrimary = false;
   for (long long id : ids) {
     if (id <= 0) continue;
-    EngineResult r;
-    {
-      std::lock_guard lk(mtx_);
-      r = reconcileLocked(id);
-    }
+    EngineResult r = reconcileOne(id);
     if (!havePrimary) { primary = r; havePrimary = true; }
     if (!r.ok && !r.brokerError) return r;
   }
@@ -713,12 +873,9 @@ void ExecEngine::runLoop() {
     auto r = reconcile();
     if (!r.ok && !r.brokerError)
       continue; // transport problem — loop back into reconnect path
-    // Idle between reconcile polls; the 5s slice keeps heartbeats inside the
-    // 9s idle bound (heartbeat.hpp).
-    for (int slept = 0; slept < 30000 && isConnected(); slept += 5000) {
-      std::this_thread::sleep_for(milliseconds(5000));
-      std::lock_guard lk(mtx_);
-      maybeHeartbeatLocked();
-    }
+    // Idle between reconcile polls. The heartbeat is the reader's now, so a
+    // 1 s slice here only bounds how fast a drop is noticed.
+    for (int slept = 0; slept < 30000 && isConnected(); slept += 1000)
+      std::this_thread::sleep_for(milliseconds(1000));
   }
 }

@@ -100,8 +100,55 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
     for (const r of rows) epochs[String(r.account_id)] = engineStatusFor(db, r.account_id).modeEpoch
     out.entryEpochs = epochs
   } catch { /* no accounts table — no epochs pushed, no permits required */ }
+  // P3a: the recorder's switch. Recording is ON for a side when any account
+  // on it has tick observation RECORD (or SHADOW, once P4 exists) — an
+  // operator's declaration per account (POST /actions/tick-observation),
+  // never a side effect of deploying the recorder. The symbol NAMES the
+  // owner wants carried live on tick_symbols_json; syncExecGuard resolves
+  // them to this side's ids (the resolution needs the broker's symbol map,
+  // so it is not in this pure derivation).
+  out.tickRecord = false
+  try {
+    const rows = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
+      .all(...(side?.isLive == null ? [] : [side.isLive ? 1 : 0]))
+    for (const r of rows) if (engineStatusFor(db, r.account_id).tickObservation !== 'OFF') { out.tickRecord = true; break }
+  } catch { /* no accounts table — recording stays off */ }
   return out
 }
+
+/** The owner's tick symbol names (tick_symbols_json), validated. */
+export function tickSymbolNames(db) {
+  try {
+    const arr = JSON.parse(getState(db, 'tick_symbols_json') || '[]')
+    return Array.isArray(arr) ? [...new Set(arr.map(s => String(s).trim().toUpperCase()).filter(Boolean))] : []
+  } catch { return [] }
+}
+
+// Unresolvable names are logged once per (side, name), not per probe.
+const unresolvedLogged = new Set()
+/** Resolve the tick symbol names to this side's ids (unknown names skipped). */
+export async function resolveTickSymbolIds(db, creds, side, { resolveSymbolId = null } = {}) {
+  const names = tickSymbolNames(db)
+  if (!names.length || !creds?.ready) return []
+  const resolve = resolveSymbolId || (await import('../lib/ctrader-creds.js')).resolveSymbolId
+  const ids = []
+  for (const name of names) {
+    try {
+      const r = await resolve(db, creds, name)
+      const id = Number(r?.id ?? r?.symbolId ?? r) // resolveSymbolId → { id, source }
+      if (Number.isFinite(id) && id > 0) ids.push(id)
+      else throw new Error('no id')
+    } catch (err) {
+      const key = `${side?.name || 'exec'}:${name}`
+      if (!unresolvedLogged.has(key)) {
+        unresolvedLogged.add(key)
+        console.warn(`[tick] ${side?.name || 'exec'}: symbol ${name} not resolvable on this side (${err?.message || err}) — not carried`)
+      }
+    }
+  }
+  return [...new Set(ids)].sort((a, b) => a - b)
+}
+export function _resetTickResolveLogForTests() { unresolvedLogged.clear() }
 
 /**
  * Does the sidecar's reported guard snapshot (from GET /health `guard`)
@@ -125,6 +172,15 @@ export function guardDiffers(desired, reported) {
     for (const [id, epoch] of Object.entries(desired.entryEpochs)) if (Number(rep[id]) !== Number(epoch)) return true
     if (Object.keys(rep).length !== Object.keys(desired.entryEpochs).length) return true
   }
+  // P3a: compared only against a sidecar that reports a recorder at all — a
+  // sidecar without TICK_SPOOL_PATH reports tick:null and is never pushed
+  // for it (the push would be a no-op there anyway).
+  const tick = reported.tick && typeof reported.tick === 'object' ? reported.tick : null
+  if (tick && typeof desired.tickRecord === 'boolean' && typeof tick.recording === 'boolean' && tick.recording !== desired.tickRecord) return true
+  if (tick && Array.isArray(desired.tickSymbolIds) && desired.tickSymbolIds.length && Array.isArray(tick.subscribed)) {
+    const have = new Set(tick.subscribed.map(Number))
+    for (const id of desired.tickSymbolIds) if (!have.has(Number(id))) return true
+  }
   return false
 }
 
@@ -140,9 +196,15 @@ export function guardDiffers(desired, reported) {
  *
  * @returns {{pushed: boolean, desired: object, error?: string}}
  */
-export async function syncExecGuard(db, exec, side, { reportedGuard = null, creds = null, now = null } = {}) {
+export async function syncExecGuard(db, exec, side, { reportedGuard = null, creds = null, now = null, reportedTick = null, resolveSymbolId = null } = {}) {
   const desired = desiredGuardFor(db, side, now ?? Date.now())
   try {
+    // P3a: the tick symbols ride on the same push, resolved to this side's
+    // ids; only asked for when recording is wanted (nothing to carry otherwise).
+    if (desired.tickRecord && creds) {
+      try { desired.tickSymbolIds = await resolveTickSymbolIds(db, creds, side, { resolveSymbolId }) } catch { desired.tickSymbolIds = [] }
+    }
+    if (reportedTick && reportedGuard && typeof reportedGuard === 'object' && !('tick' in reportedGuard)) reportedGuard = { ...reportedGuard, tick: reportedTick }
     if (!guardDiffers(desired, reportedGuard)) return { pushed: false, desired }
     if (!exec?.setExecGuard || !creds) return { pushed: false, desired }
     const r = await exec.setExecGuard(creds, desired)

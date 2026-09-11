@@ -30,6 +30,13 @@
 // own last-known value the same way wsStreamSpots' callers do.
 using SpotTickCallback = std::function<void(long long symbolId, double bid, double ask)>;
 
+// P3a: the RAW spot event, before any side is carried forward — which sides
+// the frame carried and their wire-unit prices, plus the connection
+// generation (1 on the first connection, +1 per reconnect). The tick
+// recorder taps this; the strategy/trail path keeps SpotTickCallback.
+using SpotRawTap = std::function<void(long long symbolId, bool hasBid, long long bid,
+                                      bool hasAsk, long long ask, long long generation)>;
+
 class SpotFeed {
 public:
   // depthEnabled additionally subscribes the same symbol list to L2 depth
@@ -92,6 +99,11 @@ public:
   // decisions worth persisting. Non-owning; null = disabled. Set before the
   // feed thread starts.
   void setDecisionRing(class DecisionRing* r) { ring_ = r; }
+  // P3a: the recorder's tap on the raw event. Set before the feed thread starts.
+  void setRawTap(SpotRawTap t) { rawTap_ = std::move(t); }
+  // The symbols this feed subscribes to (current + queued). Thread-safe; for
+  // /health so the keeper can see whether its tick symbols are carried.
+  std::vector<long long> subscribedSymbols();
 
 private:
   // One connect+auth+subscribe+read cycle. Returns when the connection
@@ -135,4 +147,5 @@ private:
   std::mutex tickMtx_;
   std::map<long long, long long> lastTickBySymbol_;
   class DecisionRing* ring_ = nullptr;
+  SpotRawTap rawTap_;
 };

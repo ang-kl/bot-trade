@@ -278,6 +278,15 @@ void SpotFeed::runOnce() {
     const auto& p = msg->get("payload");
     long long symbolId = static_cast<long long>(p.get("symbolId").asNumber(0));
     if (symbolId == 0) continue;
+    // P3a: the recorder sees the frame as it came — which sides it carried,
+    // in wire units — before the last-known carry below.
+    if (rawTap_) {
+      const jsn::Value& rb = p.get("bid");
+      const jsn::Value& ra = p.get("ask");
+      rawTap_(symbolId, rb.isNumber(), static_cast<long long>(rb.asNumber(0)),
+              ra.isNumber(), static_cast<long long>(ra.asNumber(0)),
+              reconnects_.load(std::memory_order_relaxed) + 1);
+    }
     // Feed truth: two relaxed stores + one short-held map write per tick.
     {
       const long long tickMs = duration_cast<milliseconds>(
@@ -294,6 +303,13 @@ void SpotFeed::runOnce() {
     if (askV.isNumber()) { q.ask = askV.asNumber(0) / kPointsPerPrice; q.haveAsk = true; }
     if (q.haveBid && q.haveAsk && onTick_) onTick_(symbolId, q.bid, q.ask);
   }
+}
+
+std::vector<long long> SpotFeed::subscribedSymbols() {
+  std::lock_guard<std::mutex> lk(symMtx_);
+  std::vector<long long> out = symbolIds_;
+  out.insert(out.end(), pendingSubs_.begin(), pendingSubs_.end());
+  return out;
 }
 
 std::vector<std::pair<long long, long long>> SpotFeed::lastTickBySymbol() {

@@ -9,7 +9,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { desiredGuardFor, guardDiffers, syncExecGuard } from './exec-guard-sync.js'
+import { desiredGuardFor, guardDiffers, syncExecGuard, resolveTickSymbolIds, tickSymbolNames, _resetTickResolveLogForTests } from './exec-guard-sync.js'
 import { trippedKey } from './equity-stop.js'
 import { fxDayOpenMs } from '../lib/volume-structure.js'
 
@@ -31,7 +31,8 @@ test('derivation truth table: stored guard, 5A halt, equity trips per side', asy
   assert.equal(g0.halt, false); assert.deepEqual(g0.haltAccounts, [])
   assert.ok('111' in g0.entryEpochs, 'the demo account is fenced from epoch 0')
   assert.ok(Object.values(g0.entryEpochs).every(e => e === 0))
-  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs'])
+  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord'])
+  assert.equal(g0.tickRecord, false, 'P3a: recording is off unless an account asks')
   {
     const { requestEntryMode } = await import('./entry-mode.js')
     requestEntryMode(db, '111', 'STOPPED')
@@ -128,4 +129,52 @@ test('syncExecGuard pushes on diff, logs GUARD_SYNC, and stays silent in sync', 
     { reportedGuard: { halt: false, haltAccountCount: 1, entryEpochs: { ...pushes[0].entryEpochs, 111: 5 } }, creds: { ready: true } })
   assert.equal(r3.pushed, true)
   assert.equal(pushes.length, 2)
+})
+
+test('P3a: an account in RECORD switches its side on; the names resolve to ids per side; the diff reads the sidecar\'s tick object', async () => {
+  const db = withAccounts(initDB(':memory:'))
+  const now = Date.now()
+  const { requestTickObservation } = await import('./entry-mode.js')
+  assert.equal(desiredGuardFor(db, { isLive: false }, now).tickRecord, false)
+  const r = requestTickObservation(db, '111', 'RECORD')
+  assert.equal(r.ok, true); assert.equal(r.status.tickObservation, 'RECORD'); assert.equal(r.status.modeEpoch, 0, 'observation moves no entry epoch')
+  assert.equal(desiredGuardFor(db, { isLive: false }, now).tickRecord, true, 'the demo side records')
+  assert.equal(desiredGuardFor(db, { isLive: true }, now).tickRecord, false, 'the live side does not')
+  assert.equal(desiredGuardFor(db, { isLive: null }, now).tickRecord, true)
+  db.prepare("UPDATE accounts SET enabled = 0 WHERE account_id = '111'").run()
+  assert.equal(desiredGuardFor(db, { isLive: false }, now).tickRecord, false, 'a disabled account asks for nothing')
+  db.prepare("UPDATE accounts SET enabled = 1 WHERE account_id = '111'").run()
+
+  // names → ids with an injected resolver (the real one reads the broker's symbol map)
+  setState(db, 'tick_symbols_json', JSON.stringify(['eurusd', 'XAUUSD', 'nope', 'EURUSD']))
+  assert.deepEqual(tickSymbolNames(db), ['EURUSD', 'XAUUSD', 'NOPE'])
+  _resetTickResolveLogForTests()
+  const seen = []
+  const resolve = async (_db, _creds, name) => { seen.push(name); return name === 'NOPE' ? { id: null } : { id: name === 'EURUSD' ? 1 : 41, source: 'account' } }
+  const ids = await resolveTickSymbolIds(db, { ready: true }, { name: 'cpp_exec_demo' }, { resolveSymbolId: resolve })
+  assert.deepEqual(ids, [1, 41])
+  assert.deepEqual(seen, ['EURUSD', 'XAUUSD', 'NOPE'])
+  assert.deepEqual(await resolveTickSymbolIds(db, { ready: false }, { name: 'x' }, { resolveSymbolId: resolve }), [], 'no creds, no ids')
+
+  // the diff: only against a sidecar that reports a recorder
+  const desired = { halt: false, haltAccounts: [], entryEpochs: { 111: 0, 333: 0 }, tickRecord: true, tickSymbolIds: [1, 41] }
+  const base = { halt: false, haltAccountCount: 0, entryEpochs: { 111: 0, 333: 0 } } // the demo side's two registry rows, epoch 0
+  assert.equal(guardDiffers(desired, { ...base, tick: null }), false, 'no recorder on that sidecar → nothing to converge')
+  assert.equal(guardDiffers(desired, { ...base, tick: { recording: false, subscribed: [1, 41] } }), true, 'switch differs')
+  assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1] } }), true, 'a wanted symbol is not carried')
+  assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 41, 7] } }), false, 'in sync (extra carried symbols are fine)')
+  assert.equal(guardDiffers({ ...desired, tickRecord: false, tickSymbolIds: [] }, { ...base, tick: { recording: false, subscribed: [] } }), false)
+
+  // the sync pushes the resolved ids with the switch
+  const pushes = []
+  const exec = { setExecGuard: async (_c, cfg) => { pushes.push(cfg); return { ok: true } } }
+  const out = await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, {
+    reportedGuard: base, reportedTick: { recording: false, subscribed: [] }, creds: { ready: true }, now, resolveSymbolId: resolve,
+  })
+  assert.equal(out.pushed, true)
+  assert.equal(pushes[0].tickRecord, true); assert.deepEqual(pushes[0].tickSymbolIds, [1, 41])
+  const again = await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, {
+    reportedGuard: base, reportedTick: { recording: true, subscribed: [1, 41] }, creds: { ready: true }, now, resolveSymbolId: resolve,
+  })
+  assert.equal(again.pushed, false, 'converged: no traffic')
 })

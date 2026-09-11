@@ -1082,6 +1082,44 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // P3a: the per-account tick observation switch (OFF | RECORD; SHADOW is
+  // refused until P4) — the operator's declaration that the account's
+  // sidecar should record the feed it carries. The exec guard sync pushes
+  // the side's recording switch within a probe (~2 min) and a sidecar
+  // without TICK_SPOOL_PATH records nothing regardless (the reply says so).
+  router.post('/tick-observation', async (req, res) => {
+    try {
+      const { requestTickObservation } = await import('../services/entry-mode.js')
+      const { accountId, mode, expectedRevision = null } = req.body || {}
+      if (!accountId || !mode) return res.status(400).json({ error: 'accountId and mode are required' })
+      const r = requestTickObservation(db, String(accountId), String(mode).toUpperCase(), { expectedRevision, actor: 'owner' })
+      if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
+      console.log(`[actions] tick-observation → …${String(accountId).slice(-4)} ${r.status.tickObservation} (revision ${r.status.configRevision}; the sidecar's switch converges on the next probe)`)
+      res.json({ ok: true, changed: r.changed, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` }, note: 'the sidecar records only when TICK_SPOOL_PATH is set on it; see GET /state/tick-recorder' })
+    } catch (err) {
+      console.error('[actions/tick-observation] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // P3a: the symbol NAMES the recorder should carry (replace-all), resolved
+  // per side to ids by the guard sync. Empty list = only what the feed
+  // already carries (VPO symbols, the tick trail's open positions).
+  router.post('/tick-symbols', async (req, res) => {
+    try {
+      const { symbols } = req.body || {}
+      if (!Array.isArray(symbols)) return res.status(400).json({ error: 'symbols must be an array of names' })
+      const names = [...new Set(symbols.map(s => String(s).trim().toUpperCase()).filter(s => /^[A-Z0-9._-]{2,24}$/.test(s)))]
+      if (names.length > 64) return res.status(400).json({ error: 'at most 64 symbols' })
+      setState(db, 'tick_symbols_json', JSON.stringify(names))
+      try { db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run('POST', '/actions/tick-symbols', JSON.stringify({ symbols: names })) } catch { /* audit best-effort */ }
+      console.log(`[actions] tick-symbols → ${names.length} name(s): ${names.join(', ') || '(none)'}`)
+      res.json({ ok: true, symbols: names })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // P2a: an operator resolves an UNKNOWN (or otherwise open) intent with a
   // reason, after reading the broker's history — the last resolver, never
   // a timer. { state: FILLED | ACCEPTED | REJECTED | RELEASED, reason }

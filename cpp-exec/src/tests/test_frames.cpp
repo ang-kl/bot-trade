@@ -143,6 +143,31 @@ static void testRoundtripThroughUnmask() {
   assert(f && f->payload == payload);
 }
 
+// P2b-2: the fake broker is the one server this repo writes — it reads the
+// engine's MASKED client frames and answers with UNMASKED server frames.
+static void testClientFrameDecodeUnmasks() {
+  std::string payload = "{\"clientMsgId\":\"cx1\",\"payloadType\":2124}";
+  auto client = encodeFrame(wsframe::TEXT, payload, kMask);
+  auto f = decodeFrame(client, /*fromClient=*/true);
+  assert(f && f->opcode == wsframe::TEXT && f->payload == payload);
+  assert(f->bytesConsumed == client.size());
+  // an UNMASKED frame from a client is the protocol violation on that side
+  auto bare = decodeFrame(asServerFrame(wsframe::TEXT, payload), /*fromClient=*/true);
+  assert(bare && bare->opcode == 0xFF);
+  // a masked medium frame (extended length + key) round-trips too
+  std::string mid(300, 'm');
+  auto midFrame = decodeFrame(encodeFrame(wsframe::TEXT, mid, kMask), true);
+  assert(midFrame && midFrame->payload == mid);
+}
+
+static void testServerFrameEncodeIsUnmasked() {
+  std::string payload = "{\"payloadType\":2126}";
+  auto server = encodeFrame(wsframe::TEXT, payload, nullptr);
+  assert(server == asServerFrame(wsframe::TEXT, payload));
+  auto f = decodeFrame(server);
+  assert(f && f->payload == payload);
+}
+
 static void testAcceptKey() {
   // RFC 6455 §1.3 worked example
   assert(wsAcceptFor("dGhlIHNhbXBsZSBub25jZQ==") ==
@@ -162,6 +187,8 @@ int main() {
   testDecodeRejectsMaskedServerFrame();
   testDecodeRejectsRsvBits();
   testRoundtripThroughUnmask();
+  testClientFrameDecodeUnmasks();
+  testServerFrameEncodeIsUnmasked();
   testAcceptKey();
   std::puts("test_frames: all assertions passed");
   return 0;

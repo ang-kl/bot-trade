@@ -2475,6 +2475,28 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // P3a: the tick recorder per sidecar side — the last pulled /tick-status
+  // (state, counters, segments, the mount's free bytes, events/sec per
+  // symbol), each account's observation switch, and the symbol names the
+  // owner asked to carry.
+  router.get('/tick-recorder', async (_req, res) => {
+    try {
+      const { engineStatusFor } = await import('../services/entry-mode.js')
+      const { tickSymbolNames } = await import('../services/exec-guard-sync.js')
+      const sides = []
+      for (const name of ['cpp_exec', 'cpp_exec_demo']) {
+        let rec = null
+        try { rec = JSON.parse(getState(db, `${name}_tick_json`) || 'null') } catch { rec = null }
+        if (rec) sides.push({ side: name, at: rec.at, status: rec.status })
+      }
+      let rows = []
+      try { rows = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY is_live, account_id').all() } catch { rows = [] }
+      const accounts = rows.map(r => ({ accountId: `…${String(r.account_id).slice(-4)}`, environment: Number(r.is_live) === 1 ? 'live' : 'demo', enabled: Number(r.enabled) === 1, tickObservation: engineStatusFor(db, r.account_id).tickObservation }))
+      res.json({ at: new Date().toISOString(), sides, accounts, symbols: tickSymbolNames(db), note: 'P3a: recording is OFF unless an account on the side has tickObservation RECORD and the sidecar was started with TICK_SPOOL_PATH; the sidecar reports enabled:false otherwise.' })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // P2a: the entry-intent ledger — open intents (an UNKNOWN one is the thing
   // to look at), recent resolutions, counts per account. Ids redacted.
   router.get('/entry-intents', async (req, res) => {
