@@ -16,7 +16,9 @@
 #include <vector>
 
 #include "decision_ring.hpp"
+#include "event_journal.hpp"
 #include "json.hpp"
+#include "request_pacer.hpp"
 #include "ws_client.hpp"
 #include "order_guard.hpp"
 #include "telemetry.hpp"
@@ -156,6 +158,10 @@ public:
   // guard recheck in placeOrder(), so a test can flip the halt while the
   // order is "queued" — the interleaving the recheck exists for.
   void setPreSendHookForTests(std::function<void()> h) { preSendHook_ = std::move(h); }
+  // P2b-1: every execution-event frame is journaled for the keeper (non-owning;
+  // null = off), and every request draws a token from the pacer first.
+  void setEventJournal(EventJournal* j) { journal_ = j; }
+  void setPacer(RequestPacer* p) { pacer_ = p; }
 
   // Blocking loop: connect/auth with capped exponential backoff, reconcile
   // every 30s, heartbeat every 9s of idle (cTrader asks for 10s). Runs until
@@ -166,7 +172,7 @@ private:
   // Sends `payload` under `reqType`, then drains frames until `expectType`
   // (or an error frame) arrives. Caller must hold mtx_.
   EngineResult request(int reqType, const jsn::Value& payload, int expectType,
-                       int timeoutMs = 20000);
+                       int timeoutMs = 20000, RequestClass cls = RequestClass::Read);
   // ACCOUNT_AUTH_REQ for one id. Caller must hold mtx_.
   EngineResult authAccountLocked(long long accountId);
   // Reconcile one id. Caller must hold mtx_.
@@ -224,6 +230,8 @@ private:
   Telemetry* telemetry_ = nullptr; // non-owning; null = disabled
   std::function<void()> preSendHook_;
   DecisionRing* ring_ = nullptr;   // non-owning; null = disabled
+  EventJournal* journal_ = nullptr; // P2b-1; non-owning; null = off
+  RequestPacer* pacer_ = nullptr;   // P2b-1; non-owning; null = unpaced
   // P2a: redeemed permit ids, bounded (the deque keeps insertion order so the
   // oldest are forgotten first). Read and written under mtx_ only.
   std::set<std::string> consumedPermits_;

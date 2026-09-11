@@ -172,13 +172,14 @@ void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
   // act on.
   if (type == pt::SYMBOL_CHANGED_EVENT) return;
   // Unsolicited EXECUTION_EVENTs (an order expiring, a broker-side SL/TP
-  // fill, another account's activity) are real events but nothing here acts
-  // on them — the Node reconcile pass owns state reconstruction via
-  // /positions and picks every one of them up on its next sweep. Logging
-  // them only painted the owner's log with bare "payloadType=2126" lines
-  // that carried no symbol, account or reason a reader could act on
-  // (owner 2026-08-27: "silence the 2126 log noise", same call as 2120).
-  if (type == pt::EXECUTION_EVENT) return;
+  // fill, another account's activity, a LATE ANSWER to a request that gave
+  // up) are real events. P2b-1: they are journaled for the keeper's ledger
+  // (POST /events) instead of dropped; still not logged to stdout (owner
+  // 2026-08-27: "silence the 2126 log noise", same call as 2120).
+  if (type == pt::EXECUTION_EVENT || type == pt::ORDER_ERROR_EVENT) {
+    if (journal_) journal_->record(msg, false);
+    return;
+  }
   logLine("unsolicited payloadType=" + std::to_string(type));
 }
 
@@ -283,9 +284,32 @@ void ExecEngine::noteBrokerErrorLocked(const std::string& errorCode) {
 }
 
 EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
-                                 int expectType, int timeoutMs) {
+                                 int expectType, int timeoutMs, RequestClass cls) {
   if (!ws_.isOpen())
     return errResult("NOT_CONNECTED", "websocket is not connected", false);
+
+  // P2b-1 PACING (TM-25): one token per request against the connection's
+  // documented budget. An entry or read that would eat into the protection
+  // reserve is refused before anything is written — provably not sent, so
+  // the keeper's ledger releases its intent and the loop retries. A
+  // protection request (amend / close / cancel) waits, bounded, for its
+  // token: it is never the one that yields.
+  if (pacer_ && !pacer_->tryAcquire(cls, nowMs())) {
+    bool acquired = false;
+    if (cls == RequestClass::Protection) {
+      for (int waited = 0; waited < 1000 && !acquired; waited += 50) {
+        std::this_thread::sleep_for(milliseconds(50));
+        acquired = pacer_->tryAcquire(cls, nowMs());
+      }
+    }
+    if (!acquired) {
+      const auto& pc = pacer_->config();
+      if (ring_) ring_->log("engine", "rate_limited", 0, 0, cls == RequestClass::Entry ? "entry" : (cls == RequestClass::Read ? "read" : "protection"),
+                            std::to_string(pc.capacityPerSec) + "/s, " + std::to_string(pc.protectionReservePct) + "% reserved for protection");
+      return errResult("rate_limited", "the connection's request budget is spent (" + std::to_string(pc.capacityPerSec) +
+                       "/s, " + std::to_string(pc.protectionReservePct) + "% reserved for protection) — not sent", false);
+    }
+  }
 
   // Every request carries a fresh clientMsgId and ONLY a frame echoing it can
   // answer it. Pairing by payloadType alone returned buffered or unsolicited
@@ -330,12 +354,14 @@ EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
     const bool foreign = !theirId.empty() && !mine;
     int type = static_cast<int>(msg->get("payloadType").asNumber(-1));
     if (mine && type == expectType) {
+      if (journal_) journal_->record(*msg, true); // an execution event this call waited for
       EngineResult r;
       r.ok = true;
       r.body = msg->get("payload");
       return r;
     }
     if (type == pt::ERROR_RES || type == pt::ORDER_ERROR_EVENT) {
+      if (journal_) journal_->record(*msg, mine);
       const auto& p = msg->get("payload");
       const std::string code = p.get("errorCode").asString();
       // An auth-family error kills the session whether or not it answers this
@@ -351,10 +377,14 @@ EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
     }
     handleUnsolicited(*msg);
   }
-  return errResult("TIMEOUT",
-                   "no payloadType " + std::to_string(expectType) + " within " +
-                       std::to_string(timeoutMs) + "ms",
-                   false);
+  // P2b-1: the id this request went out under, so the keeper can match a
+  // late frame in the journal to the intent it marked UNKNOWN.
+  EngineResult r = errResult("TIMEOUT",
+                             "no payloadType " + std::to_string(expectType) + " within " +
+                                 std::to_string(timeoutMs) + "ms",
+                             false);
+  r.body.set("clientMsgId", msgId);
+  return r;
 }
 
 EngineResult ExecEngine::authApp() {
@@ -452,13 +482,13 @@ static const char* kNoAccountDesc =
     "account on the caller's behalf";
 
 // P2a: what cTrader receives — the order without the keeper's ledger fields
-// (the permit, the intent id, the in-process fire marker). A stray field on
+// (the permit and the intent id). A stray field on
 // ProtoOANewOrderReq is a broker-side refusal or, worse, a silent ignore that
 // nobody would see; stripping is explicit and testable.
 jsn::Value wireOrderPayload(const jsn::Value& payload) {
   jsn::Value wire{jsn::Object{}};
   for (const auto& kv : payload.asObject()) {
-    if (kv.first == "permit" || kv.first == "intentId" || kv.first == "_vpoFire") continue;
+    if (kv.first == "permit" || kv.first == "intentId") continue;
     wire.set(kv.first, kv.second);
   }
   return wire;
@@ -519,8 +549,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
   // P2a PERMIT CHECK (11-09-2026), under the same lock at the same boundary:
   // an entry for an account whose epoch the keeper has fenced must carry a
   // one-use permit from THAT epoch, unexpired, describing THIS order, never
-  // seen before. An in-process VPO fire is waived until P2a-2 issues its
-  // permits — and the waiver is rung, never silent.
+  // seen before — a keeper-placed order and a VPO fire alike (P2a-2).
   std::string intentTag;
   {
     const GuardSnapshot gs = guard_.snapshot();
@@ -544,10 +573,6 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
       }
     }
     if (!pv.intentId.empty()) intentTag = "intent=" + pv.intentId;
-    else if (payload.get("_vpoFire").asBool(false) && gs.entryEpochs.count(ringAcct) > 0 && ring_) {
-      ring_->log("order_guard", "permit_waived", ringAcct, symbolId, "vpo",
-                 "in-process VPO fire carries no permit until P2a-2");
-    }
   }
   // The wire payload: the broker must never see the ledger's fields.
   const jsn::Value wire = wireOrderPayload(payload);
@@ -561,7 +586,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
   if (ring_) ring_->log("engine", "order_submit", ringAcct, symbolId, "", intentTag);
   // The account is NOT filled in — validateOrder above has already refused a
   // payload that does not name one (guard_no_account).
-  EngineResult r = request(pt::NEW_ORDER_REQ, wire, pt::EXECUTION_EVENT);
+  EngineResult r = request(pt::NEW_ORDER_REQ, wire, pt::EXECUTION_EVENT, 20000, RequestClass::Entry);
   if (telemetry_) {
     const std::string reason = r.ok ? "" : r.body.get("errorCode").asString();
     telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_RESULT, symbolId,
@@ -598,7 +623,7 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
     return errResult("guard_halt", "execution halted by kill switch — amends refused (closes still allowed)", false);
   }
   std::lock_guard lk(mtx_);
-  EngineResult r = request(pt::AMEND_POSITION_SLTP_REQ, payload, pt::EXECUTION_EVENT, 15000);
+  EngineResult r = request(pt::AMEND_POSITION_SLTP_REQ, payload, pt::EXECUTION_EVENT, 15000, RequestClass::Protection);
   // Amends never had telemetry (it covers placeOrder only, a measured gap) —
   // the ring is where amend outcomes become inspectable.
   if (ring_) ring_->log("engine", r.ok ? "amend_result" : "amend_reject",
@@ -611,13 +636,13 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
 EngineResult ExecEngine::closePosition(const jsn::Value& payload) {
   if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
   std::lock_guard lk(mtx_);
-  return request(pt::CLOSE_POSITION_REQ, payload, pt::EXECUTION_EVENT);
+  return request(pt::CLOSE_POSITION_REQ, payload, pt::EXECUTION_EVENT, 20000, RequestClass::Protection);
 }
 
 EngineResult ExecEngine::cancelOrder(const jsn::Value& payload) {
   if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
   std::lock_guard lk(mtx_);
-  return request(pt::CANCEL_ORDER_REQ, payload, pt::EXECUTION_EVENT);
+  return request(pt::CANCEL_ORDER_REQ, payload, pt::EXECUTION_EVENT, 20000, RequestClass::Protection);
 }
 
 EngineResult ExecEngine::reconcileLocked(long long accountId) {

@@ -20,6 +20,7 @@
 import { getState } from '../db.js'
 import { getCtraderCreds } from '../lib/ctrader-creds.js'
 import { admitEntry } from './entry-mode.js'
+import { reserveVpoPermits, releaseVpoReservations } from './entry-ledger.js'
 import { execBaseFor } from '../lib/exec-engine.js'
 import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume, persistRiskEvent } from './risk.js'
 import { evaluateGlobalGuards } from './global-guards.js'
@@ -133,6 +134,7 @@ export async function runVpoFeeder(db, deps = {}) {
 
   const barsOut = []
   const volumesOut = []
+  const permitEntries = [] // P2a-2: { key, symbol, symbolId, volume } per strategy, for the pre-issued permits
   const seenBarKeys = new Set()
   const batchCache = new Map() // symbol -> {macroTf,microTf} batch, avoid refetching per duplicate symbol
 
@@ -176,6 +178,7 @@ export async function runVpoFeeder(db, deps = {}) {
       const vetoReason = vpoPreArmVeto(db, cfg, symbol)
       if (vetoReason) {
         volumesOut.push({ key: `${key}:${symbol}`, volume: -1 })
+        permitEntries.push({ key, symbol, symbolId, volume: -1 })
         try {
           persistRiskEvent(db,
             { symbol, side: null, strategy: `vpo:${key}`, source: 'vpo_pre_arm' },
@@ -192,8 +195,10 @@ export async function runVpoFeeder(db, deps = {}) {
         )
         const { volume } = lotsToVolume(sized.volume, meta)
         volumesOut.push({ key: `${key}:${symbol}`, volume: volume > 0 ? volume : -1 })
+        permitEntries.push({ key, symbol, symbolId, volume: volume > 0 ? volume : -1 })
       } else {
         volumesOut.push({ key: `${key}:${symbol}`, volume: -1 })
+        permitEntries.push({ key, symbol, symbolId, volume: -1 })
       }
     } catch (err) {
       console.error(`[vpo-feeder] ${key}/${symbol} failed:`, err.message)
@@ -225,6 +230,8 @@ export async function runVpoFeeder(db, deps = {}) {
       // per epoch is enough (the sidecar's state is idempotent).
       const key = `${acct}:${admission.modeEpoch}`
       if (!disarmPushed.has(key)) {
+        // P2a-2: the standing permits go with the arming they authorised.
+        try { releaseVpoReservations(db, String(acct), 'vpo_disarmed') } catch { /* ledger absent on an old schema */ }
         await push({ disarm: true, ctidTraderAccountId: acct, reason: admission.reason }, execBaseFor(creds))
         disarmPushed.add(key)
         console.log(`[vpo-feeder] disarmed the VPO tier for …${String(acct).slice(-4)} (${admission.reason}, epoch ${admission.modeEpoch})`)
@@ -232,10 +239,30 @@ export async function runVpoFeeder(db, deps = {}) {
       return { skipped: `entry_mode: ${admission.reason}`, accountId: acct, disarmed: true }
     }
   }
-  const payload = { bars: barsOut, volumes: volumesOut }
+  // P2a-2 (docs/tick-momentum/plan.md §9): the VPO tier's ONE-USE PERMITS,
+  // pre-issued here with each push — one per armed strategy and side, bound
+  // to this account, the symbol, the sized volume and the current epoch,
+  // five minutes long and refreshed by the next push. The sidecar attaches
+  // the matching permit when a strategy fires and its send boundary refuses
+  // a fire without one once the account's epoch is fenced. The ledger row is
+  // RESERVED until the ring's order_submit says the tier redeemed it.
+  let permits = []
+  if (Number.isFinite(acct) && acct > 0) {
+    try {
+      const r = reserveVpoPermits(db, { accountId: String(acct), entries: permitEntries })
+      permits = r.permits
+      if (r.issued || r.released || r.refused.length) {
+        console.log(`[vpo-feeder] permits for …${String(acct).slice(-4)}: ${r.issued} issued, ${r.reused} reused, ${r.released} released` +
+          (r.refused.length ? `, ${r.refused.length} refused (${r.refused.map(x => `${x.key}/${x.symbol} ${x.side}: ${x.reason}`).join('; ')})` : ''))
+      }
+    } catch (err) {
+      console.error('[vpo-feeder] permits failed:', err.message)
+    }
+  }
+  const payload = { bars: barsOut, volumes: volumesOut, permits }
   if (Number.isFinite(acct) && acct > 0) payload.ctidTraderAccountId = acct
   await push(payload, execBaseFor(creds))
-  return { ok: true, bars: barsOut.length, volumes: volumesOut.length, accountId: payload.ctidTraderAccountId ?? null }
+  return { ok: true, bars: barsOut.length, volumes: volumesOut.length, permits: permits.length, accountId: payload.ctidTraderAccountId ?? null }
 }
 
 // P2a: one disarm push per (account, epoch) — see the fence above.

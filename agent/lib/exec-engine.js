@@ -333,6 +333,40 @@ export async function pullSidecarDecisions({ after = 0, bootId = '', timeoutMs =
   }
 }
 
+/**
+ * P2b-1: pull the sidecar's execution-event journal (POST /events) — the
+ * same cursor contract as the decision ring. null = unreachable / older
+ * sidecar (404); callers treat null as "not told".
+ */
+export async function pullSidecarEvents({ after = 0, bootId = '', timeoutMs = 5_000, base = execBaseFor() } = {}) {
+  if (execEngineMode() !== 'cpp') return null
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(base + '/events', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        authorization: `Bearer ${process.env.EXEC_SECRET || ''}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ after, bootId }),
+    })
+    if (!res.ok) return null
+    const body = await res.json().catch(() => null)
+    if (!body || typeof body.bootId !== 'string') return null
+    return {
+      bootId: body.bootId,
+      latestSeq: Number(body.latestSeq) || 0,
+      entries: Array.isArray(body.entries) ? body.entries : [],
+    }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 // Which accounts the sidecar's broker session has actually AUTHORIZED right
 // now — the connectivity truth the per-account sweeps gate on. With five
 // enabled registry rows and one account failing AccountAuth, the sweeps used
@@ -711,9 +745,15 @@ function settleIntent(creds, intentId, result, err) {
       L.resolve(intentId, { state: positionId != null ? 'FILLED' : 'ACCEPTED', positionId, brokerOrderId: orderId, source: 'response' })
       return
     }
-    const code = String(err?.message || err).slice(0, 200)
+    const text = String(err?.message || err)
+    const code = text.slice(0, 200)
+    // P2b-1: the sidecar's TIMEOUT names the clientMsgId the request went out
+    // under; the ledger keeps it so a late frame in the event journal can
+    // settle the intent.
+    const clientMsgId = /"clientMsgId"\s*:\s*"([^"]+)"/.exec(text)?.[1] ?? null
     if (isDefiniteRejection(err)) L.resolve(intentId, { state: 'REJECTED', errorCode: code, source: 'response' })
-    else if (isAmbiguousOrderOutcome(err)) L.resolve(intentId, { state: 'UNKNOWN', errorCode: code, source: 'response' })
+    else if (/\brate_limited\b/.test(text)) L.resolve(intentId, { state: 'RELEASED', errorCode: code, source: 'response' }) // the pacer refused it before any write
+    else if (isAmbiguousOrderOutcome(err)) L.resolve(intentId, { state: 'UNKNOWN', errorCode: code, clientMsgId, source: 'response' })
     else L.resolve(intentId, { state: 'RELEASED', errorCode: code, source: 'response' }) // provably never submitted
   } catch { /* the ledger must never mask the order's own outcome */ }
 }

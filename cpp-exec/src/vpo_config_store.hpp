@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "json.hpp"
 #include "vpo_indicators.hpp" // vpo::Bar (== bt::Bar)
 
 namespace vpo {
@@ -37,18 +38,27 @@ public:
   // contract: <= 0 means "sizing unavailable, refuse to fire").
   double getVolume(const std::string& strategyKey) const;
 
-  // P2a: the keeper's disarm — every bar set and volume forgotten at once,
-  // so the next recompute finds "no data" and the fire path "no sizing".
+  // P2a-2: the keeper's pre-issued permit for one strategy + symbol + side
+  // ("key:SYMBOL:BUY"), aged like a volume: a null Value when never pushed
+  // or older than maxAgeMs, so a fire never carries a permit the keeper
+  // stopped refreshing.
+  void setPermit(const std::string& key, jsn::Value permit);
+  jsn::Value getPermit(const std::string& key) const;
+
+  // P2a: the keeper's disarm — every bar set, volume and permit forgotten at
+  // once, so the next recompute finds "no data" and the fire path "no sizing".
   void clear();
 
 private:
   struct BarEntry { std::vector<Bar> bars; long long updatedAtMs = 0; };
   struct VolEntry { double volume = -1; long long updatedAtMs = 0; };
+  struct PermitEntry { jsn::Value permit; long long updatedAtMs = 0; };
   static long long nowMs();
 
   mutable std::mutex mtx_;
   std::map<std::string, BarEntry> bars_; // key: symbol + "|" + timeframe
   std::map<std::string, VolEntry> vols_; // key: strategyKey
+  std::map<std::string, PermitEntry> permits_; // key: strategyKey:SYMBOL:SIDE
   long long maxAgeMs_;
 };
 

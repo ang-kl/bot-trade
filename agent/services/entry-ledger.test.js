@@ -12,6 +12,7 @@ import { requestEntryMode, engineStatusFor, writeEngineStatus, _resetRefusalDedu
 import {
   reserveEntry, redeemPermit, markSent, resolveIntent, releaseOldEpoch, expireStale, openIntents, intentCounts,
   pendingExposure, reconcileIntents, operatorResolve, ledgerView, newIntentId, OPEN_STATES,
+  reserveVpoPermits, releaseVpoReservations, VPO_PRODUCER,
 } from './entry-ledger.js'
 import { tagLabelWithIntent, labelIntentId, encodeLabel, parseLabel, MAX_LABEL_LEN } from '../lib/trade-labels.js'
 
@@ -195,4 +196,87 @@ test('the label tag: an 8th field parseLabel ignores and labelIntentId reads; ne
   assert.equal(tagLabelWithIntent(long, id), long, 'no room → no tag, never a truncated one')
   assert.equal(encodeLabel({ source: 'autopilot', strategy: 'vwap_trend', intentId: id }).endsWith(`|${id}`), true)
   assert.ok(OPEN_STATES.includes('UNKNOWN'))
+})
+
+// ---------------------------------------------------------------------------
+// P2a-2: the VPO tier's pre-issued permits, and P2b-1: settling from the
+// sidecar's event journal.
+// ---------------------------------------------------------------------------
+
+test('reserveVpoPermits issues one permit per strategy and side, reuses them across pushes, re-issues on a volume change and releases them without sizing', () => {
+  const db = fresh()
+  const now = Date.now()
+  const entries = [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }, { key: 'vp_value', symbol: 'GBPUSD', symbolId: 2, volume: -1 }]
+  const r1 = reserveVpoPermits(db, { accountId: DEMO, entries, now })
+  assert.equal(r1.issued, 2); assert.equal(r1.reused, 0); assert.equal(r1.released, 0); assert.deepEqual(r1.refused, [])
+  assert.deepEqual(r1.permits.map(p => [p.key, p.symbol, p.side, p.permit.volume, p.permit.epoch]), [['vwap_trend', 'EURUSD', 'BUY', 1000, 0], ['vwap_trend', 'EURUSD', 'SELL', 1000, 0]])
+  assert.equal(r1.permits[0].permit.expiresAtMs, now + 5 * 60 * 1000)
+  const ids = r1.permits.map(p => p.permit.intentId)
+  // the next push reuses them and extends their expiry
+  const r2 = reserveVpoPermits(db, { accountId: DEMO, entries, now: now + 60_000 })
+  assert.equal(r2.reused, 2); assert.equal(r2.issued, 0)
+  assert.deepEqual(r2.permits.map(p => p.permit.intentId), ids)
+  assert.equal(row(db, ids[0]).permit_expires_at, new Date(now + 60_000 + 5 * 60 * 1000).toISOString())
+  // a sizing change supersedes them
+  const r3 = reserveVpoPermits(db, { accountId: DEMO, entries: [{ ...entries[0], volume: 2000 }], now })
+  assert.equal(r3.released, 2); assert.equal(r3.issued, 2)
+  assert.equal(row(db, ids[0]).state, 'RELEASED'); assert.equal(row(db, ids[0]).error_code, 'vpo_permit_superseded')
+  // no sizing → nothing held
+  const r4 = reserveVpoPermits(db, { accountId: DEMO, entries: [{ ...entries[0], volume: -1 }], now })
+  assert.equal(r4.released, 2); assert.equal(r4.permits.length, 0)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED'`).get(VPO_PRODUCER).n, 0)
+  // the fence still binds
+  requestEntryMode(db, DEMO, 'STOPPED')
+  const r5 = reserveVpoPermits(db, { accountId: DEMO, entries, now })
+  assert.equal(r5.permits.length, 0); assert.equal(r5.refused.length, 2); assert.equal(r5.refused[0].reason, 'entry_mode_stopped')
+})
+
+test('a standing VPO reservation never blocks another producer, but a VPO fire in flight does, and another producer\'s open intent blocks the VPO reserve', () => {
+  const db = fresh()
+  const r = reserveVpoPermits(db, { accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
+  const buy = r.permits.find(p => p.side === 'BUY').permit
+  const scan = reserveEntry(db, { ...base, symbolId: 1, symbol: 'EURUSD', side: 'BUY' })
+  assert.equal(scan.ok, true, 'capacity held in advance is not a commitment')
+  redeemPermit(db, scan.permit.id); markSent(db, scan.intentId)
+  // now the VPO reserve on the same key is refused while the scan entry is in flight
+  releaseVpoReservations(db, DEMO, 'test')
+  const again = reserveVpoPermits(db, { accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
+  assert.equal(again.refused.length, 1); assert.match(again.refused[0].reason, /^intent_open: SENT/)
+  assert.equal(again.permits.length, 1, 'the SELL side is free')
+  // the ring says the tier redeemed the standing BUY permit → SENT (from RESERVED), then FILLED
+  resolveIntent(db, scan.intentId, { state: 'FILLED', positionId: 1, source: 'response' })
+  const r2 = reserveVpoPermits(db, { accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
+  const buy2 = r2.permits.find(p => p.side === 'BUY').permit
+  assert.notEqual(buy2.intentId, buy.intentId)
+  const ins = db.prepare(`INSERT INTO cpp_decisions (side, boot_id, seq, ts_ms, component, kind, account_id, symbol_id, code, detail) VALUES ('cpp_exec_demo', 'b1', ?, 1, 'engine', ?, ?, ?, ?, ?)`)
+  ins.run(1, 'order_submit', DEMO, 1, '', `intent=${buy2.intentId}`)
+  let rec = reconcileIntents(db, { accountId: DEMO })
+  assert.deepEqual(rec.resolved, [{ intentId: buy2.intentId, from: 'RESERVED', to: 'SENT' }])
+  assert.equal(reserveEntry(db, { ...base, symbolId: 1, symbol: 'EURUSD', side: 'BUY' }).ok, false, 'a VPO fire in flight blocks the key')
+  ins.run(2, 'order_result', DEMO, 1, '', `intent=${buy2.intentId} order=71 pos=72`)
+  rec = reconcileIntents(db, { accountId: DEMO })
+  assert.equal(row(db, buy2.intentId).state, 'FILLED'); assert.equal(row(db, buy2.intentId).broker_position_id, '72')
+  // SENT is only ever the sidecar's word
+  const x = reserveEntry(db, { ...base, symbolId: 5, symbol: 'NZDUSD' })
+  assert.equal(resolveIntent(db, x.intentId, { state: 'SENT', source: 'response' }).ok, false)
+  assert.equal(resolveIntent(db, x.intentId, { state: 'SENT', source: 'ring' }).ok, true)
+  assert.equal(resolveIntent(db, x.intentId, { state: 'UNKNOWN', source: 'timeout' }).ok, true)
+  assert.equal(resolveIntent(db, x.intentId, { state: 'SENT', source: 'ring' }).ok, false, 'UNKNOWN never goes back to SENT')
+})
+
+test('the event journal settles an UNKNOWN intent: a late frame matched by clientMsgId, or an order error whose label carries the tag', () => {
+  const db = fresh()
+  const a = reserveEntry(db, base); redeemPermit(db, a.permit.id); markSent(db, a.intentId)
+  resolveIntent(db, a.intentId, { state: 'UNKNOWN', errorCode: 'TIMEOUT', clientMsgId: 'cx41', source: 'response' })
+  assert.equal(row(db, a.intentId).client_msg_id, 'cx41')
+  const b = reserveEntry(db, { ...base, symbolId: 2, symbol: 'GBPUSD' }); redeemPermit(db, b.permit.id); markSent(db, b.intentId)
+  resolveIntent(db, b.intentId, { state: 'UNKNOWN', errorCode: 'socket closed', source: 'response' })
+  const ins = db.prepare(`INSERT INTO cpp_events (side, boot_id, seq, ts_ms, client_msg_id, payload_type, execution_type, order_id, position_id, account_id, symbol_id, error_code, label, solicited)
+    VALUES ('cpp_exec_demo', 'b1', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+  ins.run(1, 'cx41', 2126, 'ORDER_FILLED', '501', '502', DEMO, 1, null, 'AU|v1|VWAP|H|LN|4h|TR|iother000000')
+  ins.run(2, null, 2132, null, '503', null, DEMO, 2, 'TRADING_BAD_VOLUME', `AU|v1|VWAP|H|LN|4h|TR|${b.intentId}`)
+  const rec = reconcileIntents(db, { accountId: DEMO })
+  assert.equal(rec.resolved.length, 2)
+  assert.equal(row(db, a.intentId).state, 'FILLED'); assert.equal(row(db, a.intentId).broker_position_id, '502'); assert.equal(row(db, a.intentId).resolution_source, 'event')
+  assert.equal(row(db, b.intentId).state, 'REJECTED'); assert.equal(row(db, b.intentId).error_code, 'TRADING_BAD_VOLUME')
 })

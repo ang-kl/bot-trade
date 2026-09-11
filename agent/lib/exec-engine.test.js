@@ -756,3 +756,14 @@ test('placeOrder without a ledger behaves as before, and stripLedgerFields keeps
   assert.deepEqual(stripLedgerFields({ a: 1, permit: { id: 'p' }, intentId: 'i', signalRef: 'r', symbolName: 'EURUSD' }), { a: 1 })
   assert.deepEqual(stripLedgerFields(null), {})
 })
+
+test('placeOrder with a ledger: a TIMEOUT from the sidecar keeps its clientMsgId on the UNKNOWN intent; a pacer refusal releases it', async () => {
+  const to = fakeLedger()
+  nextResponse = { status: 502, body: '{"errorCode":"TIMEOUT","description":"no payloadType 2126 within 20000ms","clientMsgId":"cx4242"}' }
+  await assert.rejects(() => placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: to.ledger }, { ...ORDER, symbolId: 67 }))
+  assert.equal(to.calls.resolved.length, 1); assert.equal(to.calls.resolved[0].state, 'UNKNOWN'); assert.equal(to.calls.resolved[0].clientMsgId, 'cx4242')
+  const rl = fakeLedger()
+  nextResponse = { status: 502, body: '{"errorCode":"rate_limited","description":"the connection\'s request budget is spent (40/s, 25% reserved for protection) — not sent"}' }
+  await assert.rejects(() => placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: rl.ledger }, { ...ORDER, symbolId: 68 }))
+  assert.equal(rl.calls.resolved.length, 1); assert.equal(rl.calls.resolved[0].state, 'RELEASED')
+})

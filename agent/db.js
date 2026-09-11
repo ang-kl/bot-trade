@@ -610,6 +610,31 @@ const TABLES = `
   CREATE INDEX IF NOT EXISTS idx_entry_intents_open ON entry_intents(account_id, state);
   CREATE INDEX IF NOT EXISTS idx_entry_intents_key ON entry_intents(account_id, symbol_id, side, state);
 
+  -- P2b-1: the sidecar's execution-event journal, pulled like cpp_decisions.
+  -- A late answer to a request that gave up, or an unsolicited fill, lands
+  -- here and settles the intent that was marked UNKNOWN.
+  CREATE TABLE IF NOT EXISTS cpp_events (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    at             TEXT NOT NULL DEFAULT (datetime('now')),
+    side           TEXT NOT NULL,
+    boot_id        TEXT NOT NULL,
+    seq            INTEGER NOT NULL,
+    ts_ms          INTEGER,
+    client_msg_id  TEXT,
+    payload_type   INTEGER,
+    execution_type TEXT,
+    order_id       TEXT,
+    position_id    TEXT,
+    account_id     TEXT,
+    symbol_id      INTEGER,
+    error_code     TEXT,
+    label          TEXT,
+    solicited      INTEGER,
+    UNIQUE(side, boot_id, seq)
+  );
+  CREATE INDEX IF NOT EXISTS idx_cpp_events_msg ON cpp_events(client_msg_id);
+  CREATE INDEX IF NOT EXISTS idx_cpp_events_label ON cpp_events(label);
+
   -- Speech-act inspection findings (owner invariants 2-4, 31-08-2026): what
   -- each log SAID vs what it was DOING, the principlised next action, and a
   -- falsifier with a deadline. The PARTIAL UNIQUE index is the anti-noise
