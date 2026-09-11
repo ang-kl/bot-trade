@@ -498,8 +498,13 @@ Measurement history — each line is a real run of the script, not a claim:
   on the merged tree and merged), so the E/D/G/F report was stamped
   **`№ 7,765`** (15:23 UTC); five unstamped lines followed it (`№ 7,766`–
   `№ 7,770`, 15:24–16:01 UTC: the PR-F read-back, the PR-H checker round,
-  the PR-H gate), so the PR-H report is **`№ 7,771`** by count. The count
-  is by replies, not by
+  the PR-H gate), so the PR-H report was expected at `№ 7,771`; it was not
+  stamped — #902 was undrafted and merged by the owner at 16:09 UTC while
+  six unstamped lines ran on (`№ 7,771`–`№ 7,776`, 16:01–23:32 UTC: the
+  PR-H draft opened and subscribed, its merged-tree gate, the CI wait, then
+  the owner's 12-09 07:3x SGT order "inspect what have been done and update
+  what have done in the plan folder" and the plan-mode exit), so the status
+  report is **`№ 7,777`** by count. The count is by replies, not by
   stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 
