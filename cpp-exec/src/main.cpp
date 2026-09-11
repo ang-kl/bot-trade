@@ -63,6 +63,17 @@ extern "C" void fatalSignalHandler(int sig) {
 }
 static void installCrashHandler() {
   for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGFPE }) signal(sig, fatalSignalHandler);
+  // SIGPIPE IS NOT A CRASH (11-09-2026, measured on the demo sidecar): a
+  // write to a socket whose peer has hung up raises SIGPIPE, whose default
+  // action is to terminate the process silently. The plain-TCP path sends
+  // with MSG_NOSIGNAL, but the TLS path goes through OpenSSL's socket BIO,
+  // which does not — and since the async session (P2b-2) the reader thread
+  // heartbeats on a socket the keeper's next /connect may have just dropped.
+  // The demo sidecar restarted every one to two minutes after the #886
+  // deploy with "Broken pipe" as the last line each time (the live sidecar,
+  // with one /connect at boot, did not). Ignored process-wide, the write
+  // returns EPIPE and the existing error path closes the session honestly.
+  signal(SIGPIPE, SIG_IGN);
 }
 
 static std::string envOr(const char* name, const std::string& dflt) {
