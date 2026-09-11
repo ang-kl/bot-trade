@@ -108,10 +108,16 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
   // them to this side's ids (the resolution needs the broker's symbol map,
   // so it is not in this pure derivation).
   out.tickRecord = false
+  // P4: SHADOW runs the strategy on the sidecar's workers (signals only).
+  out.tickShadow = false
   try {
     const rows = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
       .all(...(side?.isLive == null ? [] : [side.isLive ? 1 : 0]))
-    for (const r of rows) if (engineStatusFor(db, r.account_id).tickObservation !== 'OFF') { out.tickRecord = true; break }
+    for (const r of rows) {
+      const mode = engineStatusFor(db, r.account_id).tickObservation
+      if (mode !== 'OFF') out.tickRecord = true
+      if (mode === 'SHADOW') out.tickShadow = true
+    }
   } catch { /* no accounts table — recording stays off */ }
   return out
 }
@@ -177,6 +183,7 @@ export function guardDiffers(desired, reported) {
   // for it (the push would be a no-op there anyway).
   const tick = reported.tick && typeof reported.tick === 'object' ? reported.tick : null
   if (tick && typeof desired.tickRecord === 'boolean' && typeof tick.recording === 'boolean' && tick.recording !== desired.tickRecord) return true
+  if (tick && typeof desired.tickShadow === 'boolean' && typeof tick.shadow === 'boolean' && tick.shadow !== desired.tickShadow) return true
   if (tick && Array.isArray(desired.tickSymbolIds) && desired.tickSymbolIds.length && Array.isArray(tick.subscribed)) {
     const have = new Set(tick.subscribed.map(Number))
     for (const id of desired.tickSymbolIds) if (!have.has(Number(id))) return true

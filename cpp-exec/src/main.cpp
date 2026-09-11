@@ -20,6 +20,7 @@
 #include "engine.hpp"
 #include "heartbeat.hpp"
 #include "tick_recorder.hpp"
+#include "tick_strategy.hpp"
 #include "tick_workers.hpp"
 #include "event_journal.hpp"
 #include "request_pacer.hpp"
@@ -149,6 +150,10 @@ int main(int argc, char** argv) {
     logLine("TELEMETRY_PATH not set — order telemetry disabled");
   }
 
+  DecisionRing decisionRing;
+  const long long startedAtMs = static_cast<long long>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
   // P3a: the bounded tick recorder (docs/tick-momentum/plan.md §10-§11).
   // Constructed only when TICK_SPOOL_PATH names a directory on this
   // service's volume, and even then it writes nothing until the keeper
@@ -180,12 +185,47 @@ int main(int argc, char** argv) {
   // (P4); until then the consumer counts, and /tick-status shows the shape.
   std::unique_ptr<tick::SymbolWorkers> tickWorkers;
   std::atomic<uint64_t> tickWorkerEvents{0};
+  // P4: the strategy runs on the workers in SHADOW only — one
+  // tick_momentum_breakout per symbol, per worker (a symbol lives on one
+  // worker, so no lock is shared between workers), switched by /config
+  // tickShadow from the keeper (an account in tick observation SHADOW).
+  // Every signal is rung and counted; nothing is placed — the entry path
+  // (P6) does not exist yet. Symbol price increments are unknown here, so
+  // the buffer floor is 4 wire units (the reference's priceIncrement 1).
+  std::atomic<bool> tickShadow{false};
+  std::atomic<uint64_t> tickSignals{0}, tickSignalsBuy{0}, tickSignalsSell{0}, tickLastSignalMs{0};
+  std::mutex tickStratMtx; // guards the per-worker maps' creation/clear only; each worker owns its map's entries
+  std::vector<std::map<long long, tick::TickMomentumStrategy>> tickStrategies;
+  const tick::StrategyParams tickParams; // v1 baseline (research-profile.json)
   if (tickRecorder) {
     const int nWorkers = std::max(1, std::atoi(envOr("TICK_WORKERS", "2").c_str()));
+    tickStrategies.resize(static_cast<size_t>(nWorkers));
     tickWorkers = std::make_unique<tick::SymbolWorkers>(nWorkers, 1u << 14,
-        [&tickWorkerEvents](int, const tick::WorkerEvent&) { tickWorkerEvents.fetch_add(1, std::memory_order_relaxed); });
+        [&tickWorkerEvents, &tickShadow, &tickStrategies, &tickParams, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &decisionRing](int worker, const tick::WorkerEvent& ev) {
+          tickWorkerEvents.fetch_add(1, std::memory_order_relaxed);
+          if (!tickShadow.load(std::memory_order_relaxed)) return;
+          auto& bank = tickStrategies[static_cast<size_t>(worker)];
+          auto it = bank.find(ev.symbolId);
+          if (it == bank.end()) it = bank.emplace(ev.symbolId, tick::TickMomentumStrategy(tickParams)).first;
+          tick::StrategyQuote q;
+          q.seq = ev.seq; q.recvMs = ev.recvMs;
+          q.hasBid = (ev.flags & tick::BID_PRESENT) != 0; q.hasAsk = (ev.flags & tick::ASK_PRESENT) != 0;
+          q.bid = ev.bid; q.ask = ev.ask;
+          q.snapshot = (ev.flags & tick::SNAPSHOT) != 0 || ev.gapBefore; // a continuity break warms, never counts
+          q.crossed = (ev.flags & tick::CROSSED) != 0;
+          q.changed = (ev.flags & tick::REPEAT) == 0;
+          if (auto sig = it->second.onQuote(q)) {
+            tickSignals.fetch_add(1, std::memory_order_relaxed);
+            (sig->side == "BUY" ? tickSignalsBuy : tickSignalsSell).fetch_add(1, std::memory_order_relaxed);
+            tickLastSignalMs.store(sig->recvMs, std::memory_order_relaxed);
+            decisionRing.log("tick", "signal", 0, static_cast<long long>(ev.symbolId), sig->side,
+                             "shadow trigger2=" + std::to_string(sig->trigger2) + " stop=" + std::to_string(sig->stopDistance) +
+                             " V=" + std::to_string(sig->V) + " E=" + std::to_string(sig->E) + " setup=" + std::to_string(sig->setupId) +
+                             " profile=" + it->second.profileHash());
+          }
+        });
     tickWorkers->start();
-    logLine("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; no strategy consumer until P4)");
+    logLine("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; strategy " + std::string("tick_momentum_breakout v1 profile ") + tickParams.profileHash() + " runs in SHADOW only when the keeper switches it on)");
   }
 
   // The decision ring (owner invariant 1, 2026-08-31): every decision this
@@ -193,10 +233,6 @@ int main(int argc, char** argv) {
   // POST /decisions and persists. Always on — unlike telemetry it needs no
   // volume, costs a few KB of memory, and a supervision channel that can be
   // configured off is a guard whose trigger is out of reach.
-  DecisionRing decisionRing;
-  const long long startedAtMs = static_cast<long long>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count());
 
   ExecEngine engine;
   if (telemetry) engine.setTelemetry(telemetry.get());
@@ -366,7 +402,7 @@ int main(int argc, char** argv) {
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -496,6 +532,8 @@ int main(int argc, char** argv) {
         tj.set("diskAvailBytes", static_cast<double>(ts.diskAvailBytes));
         tj.set("usagePct", static_cast<double>(ts.usagePct));
         tj.set("symbols", static_cast<double>(ts.perSymbol.size()));
+        tj.set("shadow", tickShadow.load());
+        tj.set("signals", static_cast<double>(tickSignals.load()));
         if (trusted) {
           jsn::Array subs;
           std::lock_guard<std::mutex> lk(vpoMtx);
@@ -563,7 +601,7 @@ int main(int argc, char** argv) {
   // P3a: the recorder in full — state, counters, segments, the mount's free
   // bytes (statvfs on the spool path: the measurement TM-27 asks for),
   // events/sec per symbol. {enabled:false} when TICK_SPOOL_PATH is unset.
-  server.route("GET", "/tick-status", [&tickRecorder, &tickWorkers, &tickWorkerEvents](const HttpRequest&) -> HttpResponse {
+  server.route("GET", "/tick-status", [&tickRecorder, &tickWorkers, &tickWorkerEvents, &tickShadow, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &tickParams](const HttpRequest&) -> HttpResponse {
     if (!tickRecorder) return {200, "{\"enabled\":false,\"reason\":\"TICK_SPOOL_PATH not set\"}"};
     auto parsed = jsn::parse(tickRecorder->statusJson());
     if (!parsed) return {200, tickRecorder->statusJson()};
@@ -588,6 +626,19 @@ int main(int argc, char** argv) {
       v.set("workers", std::move(w));
     } else {
       v.set("workers", jsn::Value(nullptr));
+    }
+    {
+      jsn::Value st{jsn::Object{}};
+      st.set("id", std::string("tick_momentum_breakout"));
+      st.set("version", std::string("v1"));
+      st.set("profileHash", tickParams.profileHash());
+      st.set("shadow", tickShadow.load());
+      st.set("signals", static_cast<double>(tickSignals.load()));
+      st.set("signalsBuy", static_cast<double>(tickSignalsBuy.load()));
+      st.set("signalsSell", static_cast<double>(tickSignalsSell.load()));
+      st.set("lastSignalMs", static_cast<double>(tickLastSignalMs.load()));
+      st.set("places", false); // P4: shadow only — the entry path is P6
+      v.set("strategy", std::move(st));
     }
     return {200, jsn::dump(v)};
   });
@@ -948,7 +999,7 @@ int main(int argc, char** argv) {
   // guard live — halt (kill switch), require-bracket, max order volume —
   // without pausing or locking the order path. Each field is optional; only
   // the ones present are changed. Reads on the order path are lock-free.
-  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStrategies, &tickStratMtx](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -995,6 +1046,15 @@ int main(int argc, char** argv) {
           logLine(std::string("tick recorder: recording ") + (tickRecorder->recording() ? "ON" : "OFF") + " (keeper's switch)");
           decisionRing.log("tick", "recording_changed", 0, 0, tickRecorder->recording() ? "on" : "off", "keeper's switch via /config");
         }
+      }
+    }
+    if (v.get("tickShadow").isBool() && tickWorkers) {
+      const bool want = v.get("tickShadow").asBool();
+      const bool was = tickShadow.exchange(want);
+      if (was != want) {
+        if (!want) { std::lock_guard<std::mutex> lk(tickStratMtx); for (auto& bank : tickStrategies) bank.clear(); } // a fresh warm-up next time
+        logLine(std::string("tick strategy shadow ") + (want ? "ON" : "OFF") + " (keeper's switch; signals are rung, nothing is placed)");
+        decisionRing.log("tick", "shadow_changed", 0, 0, want ? "on" : "off", "keeper's switch via /config");
       }
     }
     if (v.get("tickSymbolIds").isArray()) {

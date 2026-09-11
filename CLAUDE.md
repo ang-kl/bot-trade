@@ -385,8 +385,14 @@ Measurement history — each line is a real run of the script, not a claim:
   while six were made. The count is by replies, not by what the file
   captured: `№ 7,575` (the running-agents answer, 02:40 UTC) and
   `№ 7,577` (the "finished?" answer, 02:44 UTC) were stamped from that
-  count; the P2b-2 + P3a report follows them. A later re-measure that
-  reads below this line is missing these, not correcting them.
+  count. Continued in the same container: `№ 7,584` (the P2b-2 + P3a
+  report, 03:11 UTC, #883 merged), `№ 7,585` (the tick-switch answer),
+  `№ 7,586` (P3b start; TICK_SPOOL_PATH set on the owner's "go"),
+  `№ 7,595` (P4 start, 03:50 UTC; #884 P3b merged 03:44 UTC), each with
+  the unstamped status lines between them counted by replies made, not by
+  what the file captured; the P4 report is the next stamped reply after
+  `№ 7,597`. A later re-measure that reads below this line is missing
+  these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
