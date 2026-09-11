@@ -3,20 +3,40 @@
 // ExecEngine: request/response layer over CtraderWs for the cTrader Open API
 // JSON protocol. Payload type constants mirror agent/lib/ctrader-ws.js — that
 // file is the protocol source of truth for this repo.
+//
+// P2b-2 (11-09-2026, docs/tick-momentum/plan.md §8 "one asynchronous
+// broker-session owner ... with one serialized physical writer"; register
+// TM-24): the session is ASYNC. A reader thread owns the socket's inbound
+// side for the life of a connection; every request is a future keyed by its
+// clientMsgId — registered, sent under the writer lock, then awaited OUTSIDE
+// the execution mutex. Before this, request() read the socket inline under
+// mtx_ until its own answer arrived, so a close waited behind a slow order
+// or a reconcile for up to 20 s (head-of-line blocking), and a frame that
+// arrived while nothing was waiting was only seen by whichever request came
+// next. Now: requests resolve independently and in any order; a frame that
+// answers a request which already gave up is journaled as a LATE frame under
+// its clientMsgId (the keeper settles the UNKNOWN intent from it); a
+// disconnect fails every request in flight at once; the heartbeat comes from
+// the reader, which is always awake.
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "decision_ring.hpp"
 #include "event_journal.hpp"
+#include "heartbeat.hpp"
 #include "json.hpp"
 #include "request_pacer.hpp"
 #include "ws_client.hpp"
@@ -99,6 +119,12 @@ public:
   // Credentials arrive at runtime (POST /connect from the Node keeper —
   // access token + account id live in the keeper's DB, not env vars).
   ExecEngine() = default;
+  // Stops the reader thread (wake + join) — a connection never outlives its
+  // owner.
+  ~ExecEngine();
+  ExecEngine(const ExecEngine&) = delete;
+  ExecEngine& operator=(const ExecEngine&) = delete;
+
   // M2 multi-account (plan C1): ONE trade connection can authorize several
   // ctidTraderAccountIds under the same cTID access token. `accountId` is
   // the primary (first) account; `extraAccountIds` join it on the same
@@ -114,8 +140,9 @@ public:
   // The full authorized-account roster (primary first). For /health.
   std::vector<long long> accountIds();
 
-  // Connect + authApp + authAccount for every account. Serialized with the
-  // request methods.
+  // Connect, start the reader, authApp + authAccount for every account.
+  // Serialized with setCredentials by mtx_; the reader needs no lock, so the
+  // auth round trips complete while it is held.
   bool connectAndAuth();
 
   EngineResult authApp();
@@ -126,6 +153,7 @@ public:
   EngineResult cancelOrder(const jsn::Value& payload);
   EngineResult reconcile();
 
+  // Lock-free (two atomics): /health never waits behind a request.
   bool isConnected();
   std::string lastReconcileJson();   // primary account; "" until first success
   long long lastReconcileAtMs();     // primary account; 0 until first success
@@ -163,22 +191,86 @@ public:
   void setEventJournal(EventJournal* j) { journal_ = j; }
   void setPacer(RequestPacer* p) { pacer_ = p; }
 
+  // P2b-2 TEST SEAMS — the fake-broker harness (src/tests/fake_broker.hpp).
+  // Plain TCP to 127.0.0.1:port instead of TLS to host:5036; main.cpp never
+  // calls this, so production is always TLS to the pinned host.
+  void setLoopbackTransportForTests(int port) { loopbackPort_ = port; }
+  // The idle bound before the reader sends a heartbeat (default
+  // kHeartbeatIdleSeconds) and the per-request timeout override (0 = each
+  // call's own), so the late-frame and heartbeat paths can be exercised in
+  // seconds rather than minutes.
+  void setHeartbeatIdleMsForTests(int ms) { heartbeatIdleMs_.store(ms); }
+  void setRequestTimeoutMsForTests(int ms) { requestTimeoutOverrideMs_.store(ms); }
+
+  // Session facts for /health (P2b-2): the reader's state and the counters
+  // that tell "nothing happened" apart from "the path is dead".
+  struct SessionStats {
+    bool readerRunning = false;
+    size_t pending = 0;          // requests in flight right now
+    long long generation = 0;    // connections started this process
+    uint64_t framesIn = 0;       // parsed frames the reader dispatched
+    uint64_t lateFrames = 0;     // answers to requests that had given up (journaled)
+    uint64_t unsolicited = 0;    // frames matching no request (journaled if execution events)
+    uint64_t timeouts = 0;       // requests that gave up
+    uint64_t heartbeatsSent = 0;
+    uint64_t disconnects = 0;    // reader exits after a connection was up
+  };
+  SessionStats sessionStats();
+
   // Blocking loop: connect/auth with capped exponential backoff, reconcile
-  // every 30s, heartbeat every 9s of idle (cTrader asks for 10s). Runs until
-  // process exit.
+  // every 30s. Runs until process exit. The heartbeat is the reader's.
   void runLoop();
 
 private:
-  // Sends `payload` under `reqType`, then drains frames until `expectType`
-  // (or an error frame) arrives. Caller must hold mtx_.
+  // One request in flight: its id, what answers it, and the promise the
+  // reader settles. `extraAuth` marks an EXTRA account's ACCOUNT_AUTH so an
+  // auth-family rejection there is charged to that account, not the session
+  // every other account is trading on (see authErrorAction) — a per-request
+  // fact now, not an engine-wide flag, because several requests can be in
+  // flight at once.
+  struct Pending {
+    std::string msgId;
+    int expectType = 0;
+    bool extraAuth = false;
+    std::promise<EngineResult> promise;
+    std::atomic<bool> done{false};
+    void settle(EngineResult r);   // first caller wins; later calls are no-ops
+  };
+  struct Ticket {
+    std::shared_ptr<Pending> p;
+    std::future<EngineResult> fut;
+    bool failed = false;           // refused before or at the send (early holds why)
+    EngineResult early;
+  };
+  // Registers the request, sends the frame (the one serialized writer —
+  // CtraderWs::sendText), returns the ticket to await. Refusals that
+  // provably did not reach the wire (NOT_CONNECTED, rate_limited,
+  // SEND_FAILED) come back in the ticket. Callers that must fence and send
+  // atomically (placeOrder) call this under mtx_; nobody awaits under it.
+  Ticket beginRequest(int reqType, const jsn::Value& payload, int expectType,
+                      RequestClass cls, bool extraAuth = false);
+  // Waits for the reader to settle the ticket. On timeout the pending entry
+  // is withdrawn, so a late answer is journaled as unsolicited (with its
+  // clientMsgId) instead of delivered to nobody; the TIMEOUT body carries
+  // the clientMsgId for the keeper's ledger.
+  EngineResult awaitRequest(Ticket& t, int timeoutMs);
+  // beginRequest + awaitRequest, for callers holding no lock.
   EngineResult request(int reqType, const jsn::Value& payload, int expectType,
-                       int timeoutMs = 20000, RequestClass cls = RequestClass::Read);
+                       int timeoutMs = 20000, RequestClass cls = RequestClass::Read,
+                       bool extraAuth = false);
   // ACCOUNT_AUTH_REQ for one id. Caller must hold mtx_.
-  EngineResult authAccountLocked(long long accountId);
-  // Reconcile one id. Caller must hold mtx_.
-  EngineResult reconcileLocked(long long accountId);
+  EngineResult authAccountLocked(long long accountId, bool extra);
+  // Reconcile one id (no lock needed: the request is a future).
+  EngineResult reconcileOne(long long accountId);
+
+  // The reader thread: recvText slices, heartbeat, dispatch. Owns teardown.
+  void readerLoop(long long generation);
+  void dispatchFrame(const jsn::Value& msg);
   void handleUnsolicited(const jsn::Value& msg);
-  void maybeHeartbeatLocked();
+  void failAllPending(const std::string& code, const std::string& desc);
+  // Caller must hold mtx_ (connect / drop are serialized with setCredentials).
+  void startReaderLocked();
+  void stopReaderLocked();   // wake + join; the reader tears the socket down
   long long primaryAccountLocked() const {
     // The requested roster answers "who should we be" (hasCredentials runs
     // before any auth); the authorized roster is a per-session subset of it.
@@ -187,23 +279,10 @@ private:
   }
 
   // Auth-family broker errors mean the session is dead no matter what
-  // /health's socket state says — force a reconnect+reauth. Caller must hold
-  // mtx_.
-  void noteBrokerErrorLocked(const std::string& errorCode);
-
-  // True only while an EXTRA (non-primary) account is being authorized, so an
-  // auth-family rejection there is charged to that account instead of killing
-  // the session every other account is trading on. See noteBrokerErrorLocked.
-  // Always set through ExtraAuthScope below — an early return that left this
-  // true would make the engine ignore a genuinely dead token.
-  bool authorizingExtra_ = false;
-  struct ExtraAuthScope {
-    bool& flag;
-    explicit ExtraAuthScope(bool& f) : flag(f) { flag = true; }
-    ~ExtraAuthScope() { flag = false; }
-    ExtraAuthScope(const ExtraAuthScope&) = delete;
-    ExtraAuthScope& operator=(const ExtraAuthScope&) = delete;
-  };
+  // /health's socket state says — force a reconnect+reauth. Runs on the
+  // READER thread (the socket's owner), which is why it may close the
+  // socket directly.
+  void noteBrokerError(const std::string& errorCode, bool extraAuth);
 
   std::string host_, clientId_, clientSecret_, accessToken_;
   // requestedAccountIds_ is what the keeper ASKED for (primary first);
@@ -212,15 +291,30 @@ private:
   // reconnect instead of silently shrinking the roster forever (audit #5).
   std::vector<long long> requestedAccountIds_;
   std::vector<long long> accountIds_; // authorized this session, primary first
-  // Monotonic clientMsgId so every response is matched to ITS request —
-  // pairing by payloadType alone returned buffered/unsolicited execution
-  // events as the current call's success (audit #1).
-  long long msgSeq_ = 0;
 
-  std::mutex mtx_; // serializes all WS access; protocol is strictly req/res here
+  // mtx_ serializes the engine's STATE (credentials, roster, connect/drop,
+  // the send-boundary section of placeOrder) — never a wait for the broker.
+  std::mutex mtx_;
   CtraderWs ws_;
-  bool authed_ = false;
-  std::chrono::steady_clock::time_point lastSend_{};
+  std::atomic<bool> authed_{false};
+
+  // The requests in flight, keyed by clientMsgId. Monotonic msgSeq_ so every
+  // response is matched to ITS request — pairing by payloadType alone
+  // returned buffered/unsolicited execution events as the current call's
+  // success (audit #1).
+  std::mutex pendingMtx_;
+  std::map<std::string, std::shared_ptr<Pending>> pending_;
+  long long msgSeq_ = 0;             // under pendingMtx_
+
+  std::thread reader_;
+  std::atomic<bool> readerRunning_{false};
+  std::atomic<long long> generation_{0};
+  std::atomic<long long> lastSendMs_{0};   // steady-clock ms of the last frame written
+  std::atomic<int> heartbeatIdleMs_{kHeartbeatIdleSeconds * 1000};
+  std::atomic<int> requestTimeoutOverrideMs_{0};
+  int loopbackPort_ = 0;                   // tests only: plain TCP to 127.0.0.1:port
+  std::atomic<uint64_t> framesIn_{0}, lateFrames_{0}, unsolicited_{0}, timeouts_{0},
+                        heartbeatsSent_{0}, disconnects_{0};
 
   std::mutex stateMtx_;
   struct ReconcileSnap { std::string json; long long atMs = 0; };

@@ -18,6 +18,8 @@
 #include "backtest.hpp"
 #include "decision_ring.hpp"
 #include "engine.hpp"
+#include "heartbeat.hpp"
+#include "tick_recorder.hpp"
 #include "event_journal.hpp"
 #include "request_pacer.hpp"
 #include "peer_probe.hpp"
@@ -144,6 +146,32 @@ int main(int argc, char** argv) {
     logLine("order telemetry -> " + telemetryPath);
   } else {
     logLine("TELEMETRY_PATH not set — order telemetry disabled");
+  }
+
+  // P3a: the bounded tick recorder (docs/tick-momentum/plan.md §10-§11).
+  // Constructed only when TICK_SPOOL_PATH names a directory on this
+  // service's volume, and even then it writes nothing until the keeper
+  // switches recording on (POST /config tickRecord:true) — OFF by default at
+  // both layers. The switch, the counters and the mount's free bytes are on
+  // GET /tick-status and summarised in /health.
+  const std::string tickSpoolPath = envOr("TICK_SPOOL_PATH", "");
+  std::unique_ptr<tick::TickRecorder> tickRecorder;
+  if (!tickSpoolPath.empty()) {
+    tick::RecorderConfig rc;
+    rc.spoolDir = tickSpoolPath;
+    const std::string feedHost = envOr("CTRADER_HOST", "unpinned");
+    rc.feedId = feedHost;
+    rc.environment = feedHost.find("demo") != std::string::npos ? 0 : 1;
+    tickRecorder = std::make_unique<tick::TickRecorder>(rc);
+    if (tickRecorder->start()) {
+      logLine("tick recorder: spool " + tickSpoolPath + " (" + std::to_string(rc.segmentBytes >> 20) + " MiB segments, " +
+              std::to_string(rc.spoolCapBytes >> 30) + " GiB cap, reserve >= " + std::to_string(rc.reserveMinBytes >> 30) +
+              " GiB or " + std::to_string(rc.reservePct) + "% of the mount) — OFF until the keeper switches recording on");
+    } else {
+      logLine("tick recorder: NOT started — " + tickRecorder->stats().reason + " (recording stays off)");
+    }
+  } else {
+    logLine("TICK_SPOOL_PATH not set — tick recorder disabled");
   }
 
   // The decision ring (owner invariant 1, 2026-08-31): every decision this
@@ -315,10 +343,16 @@ int main(int argc, char** argv) {
   engine.setPacer(&pacer);
   logLine("request pacer: " + std::to_string(pacer.config().capacityPerSec) + "/s (docs: 50/s per connection), " +
           std::to_string(pacer.config().protectionReservePct) + "% reserved for protection");
+  // P2b-2: the broker session is async — a reader thread per connection,
+  // every request a future keyed by its clientMsgId, awaited outside the
+  // execution mutex; the heartbeat is the reader's. Stated at boot so the
+  // shape in force is never inferred from the version alone.
+  logLine("broker session: async (reader thread + request futures; heartbeat idle bound " +
+          std::to_string(kHeartbeatIdleSeconds) + " s)");
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -429,6 +463,54 @@ int main(int argc, char** argv) {
       v.set("guard", std::move(gj));
     }
     {
+      // P3a: the recorder's summary — null when TICK_SPOOL_PATH is unset,
+      // so "disabled" and "configured, idle" never read the same. The
+      // subscribed symbol ids ride only on the trusted branch (they say what
+      // is traded, same reasoning as the accounts redaction).
+      if (tickRecorder) {
+        const tick::RecorderStats ts = tickRecorder->stats();
+        jsn::Value tj{jsn::Object{}};
+        tj.set("enabled", true);
+        tj.set("recording", ts.recording);
+        tj.set("state", ts.state);
+        tj.set("events", static_cast<double>(ts.events));
+        tj.set("dropped", static_cast<double>(ts.dropped));
+        tj.set("gaps", static_cast<double>(ts.gaps));
+        tj.set("segmentsSealed", static_cast<double>(ts.segmentsSealed));
+        tj.set("sealedBytes", static_cast<double>(ts.sealedBytes));
+        tj.set("openBytes", static_cast<double>(ts.openBytes));
+        tj.set("diskAvailBytes", static_cast<double>(ts.diskAvailBytes));
+        tj.set("usagePct", static_cast<double>(ts.usagePct));
+        tj.set("symbols", static_cast<double>(ts.perSymbol.size()));
+        if (trusted) {
+          jsn::Array subs;
+          std::lock_guard<std::mutex> lk(vpoMtx);
+          if (spotFeed) for (long long id : spotFeed->subscribedSymbols()) subs.push_back(jsn::Value(static_cast<double>(id)));
+          tj.set("subscribed", jsn::Value(std::move(subs)));
+        }
+        v.set("tick", std::move(tj));
+      } else {
+        v.set("tick", jsn::Value(nullptr));
+      }
+    }
+    {
+      // P2b-2: the async session's facts — whether the reader is up, what is
+      // in flight, and the counters that tell a quiet path from a dead one.
+      const ExecEngine::SessionStats ss = engine.sessionStats();
+      jsn::Value sj{jsn::Object{}};
+      sj.set("async", true);
+      sj.set("readerRunning", ss.readerRunning);
+      sj.set("pending", static_cast<double>(ss.pending));
+      sj.set("generation", static_cast<double>(ss.generation));
+      sj.set("framesIn", static_cast<double>(ss.framesIn));
+      sj.set("lateFrames", static_cast<double>(ss.lateFrames));
+      sj.set("unsolicited", static_cast<double>(ss.unsolicited));
+      sj.set("timeouts", static_cast<double>(ss.timeouts));
+      sj.set("heartbeatsSent", static_cast<double>(ss.heartbeatsSent));
+      sj.set("disconnects", static_cast<double>(ss.disconnects));
+      v.set("session", std::move(sj));
+    }
+    {
       // P2b-1: the pacer in force and the journal's cursor.
       const RequestPacer::Counters pc = pacer.counters();
       jsn::Value pj{jsn::Object{}};
@@ -464,6 +546,14 @@ int main(int argc, char** argv) {
   // table is exact-match with no query strings (same reason /depth is a
   // POST). Body: {after?, bootId?} — entries newer than `after` when the
   // caller's bootId matches this boot, the whole retained ring otherwise.
+  // P3a: the recorder in full — state, counters, segments, the mount's free
+  // bytes (statvfs on the spool path: the measurement TM-27 asks for),
+  // events/sec per symbol. {enabled:false} when TICK_SPOOL_PATH is unset.
+  server.route("GET", "/tick-status", [&tickRecorder](const HttpRequest&) -> HttpResponse {
+    if (!tickRecorder) return {200, "{\"enabled\":false,\"reason\":\"TICK_SPOOL_PATH not set\"}"};
+    return {200, tickRecorder->statusJson()};
+  });
+
   server.route("POST", "/decisions", [&decisionRing](const HttpRequest& req) -> HttpResponse {
     long long after = 0;
     std::string callerBootId;
@@ -510,7 +600,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -561,7 +651,9 @@ int main(int argc, char** argv) {
     // replacing the pointer: SpotFeed::runLoop() runs on a detached-less
     // thread against `*spotFeed`, so swapping the object out from under a
     // still-running thread would be a use-after-free.
-    if ((vpoDispatcher && !vpoSymbolIds.empty()) || trailTickEnabled) {
+    // P3a: a configured tick recorder needs the feed too, even with no VPO
+    // strategy and no tick trail — it records whatever the feed carries.
+    if ((vpoDispatcher && !vpoSymbolIds.empty()) || trailTickEnabled || tickRecorder) {
       // Audit C2: the old shape held vpoMtx across stop() + join(), so
       // GET /health — which takes the same mutex for depthBookEntries — blocked
       // behind a thread join that could take as long as the feed's reconnect
@@ -594,6 +686,13 @@ int main(int argc, char** argv) {
           },
           depthFeedEnabled);
       spotFeed->setDecisionRing(&decisionRing);
+      if (tick::TickRecorder* rec = tickRecorder.get()) {
+        spotFeed->setRawTap([rec](long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask, long long generation) {
+          const uint64_t recvMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch()).count());
+          rec->onQuote(symbolId, hasBid, bid, hasAsk, ask, recvMs, static_cast<uint32_t>(generation));
+        });
+      }
       if (trailPtr) spotFeed->ensureSymbols(trailEngine.symbolIds());
       SpotFeed* feedPtr = spotFeed.get();
       spotFeedThread = std::thread([feedPtr] { feedPtr->runLoop(); });
@@ -805,7 +904,7 @@ int main(int argc, char** argv) {
   // guard live — halt (kill switch), require-bracket, max order volume —
   // without pausing or locking the order path. Each field is optional; only
   // the ones present are changed. Reads on the order path are lock-free.
-  server.route("POST", "/config", [&engine, &decisionRing](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -838,6 +937,29 @@ int main(int argc, char** argv) {
         if (id > 0 && kv.second.isNumber()) m[id] = static_cast<long long>(kv.second.asNumber(0));
       }
       engine.guard().setEntryEpochs(std::move(m));
+    }
+    // P3a: the keeper's recording switch and the symbols it wants carried.
+    // Declarative like the rest of this body: pushed on every probe that
+    // finds a difference, so a sidecar restart re-converges. Ignored (with
+    // the fact stated in the reply) when no recorder is configured.
+    if (v.get("tickRecord").isBool()) {
+      if (tickRecorder) {
+        const bool was = tickRecorder->recording();
+        tickRecorder->setRecording(v.get("tickRecord").asBool());
+        if (was != tickRecorder->recording()) {
+          logLine(std::string("tick recorder: recording ") + (tickRecorder->recording() ? "ON" : "OFF") + " (keeper's switch)");
+          decisionRing.log("tick", "recording_changed", 0, 0, tickRecorder->recording() ? "on" : "off", "keeper's switch via /config");
+        }
+      }
+    }
+    if (v.get("tickSymbolIds").isArray()) {
+      std::vector<long long> ids;
+      for (const auto& e : v.get("tickSymbolIds").asArray()) {
+        long long id = e.isNumber() ? (long long)e.asNumber() : std::strtoll(e.asString().c_str(), nullptr, 10);
+        if (id > 0) ids.push_back(id);
+      }
+      std::lock_guard<std::mutex> lk(vpoMtx);
+      if (spotFeed && !ids.empty()) spotFeed->ensureSymbols(ids);
     }
     const GuardSnapshot g = engine.guard().snapshot();
     // A guard change is a declaration worth remembering — the ring is how the
@@ -908,5 +1030,6 @@ int main(int argc, char** argv) {
   // the spot-feed block above exists to avoid. Same rule for the peer probe.
   trailEngine.stop();
   peerProbe.stop();
+  if (tickRecorder) { tickRecorder->stop(); logLine("tick recorder stopped (segment sealed)"); }
   return served ? 0 : 1;
 }

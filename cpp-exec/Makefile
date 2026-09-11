@@ -16,7 +16,14 @@ BIN       := bin/cpp-exec
 # Each tests/*.cpp defines its own main, so every test file gets its own binary.
 TEST_BINS := $(patsubst src/tests/%.cpp,bin/%,$(TEST_SRC))
 
-.PHONY: all test clean
+# P2b-2: the threading tests under ThreadSanitizer (plan §14 "ThreadSanitizer
+# where supported"). Only the tests that drive real threads across a socket
+# or a ring — the whole suite under TSan would double the build for no
+# additional coverage. Separate output dir so the plain binaries stay cached.
+TSAN_TESTS := test_async_session test_tick_recorder test_spot_feed_stop test_telemetry test_engine_send_boundary
+TSAN_BINS  := $(addprefix bin/tsan/,$(TSAN_TESTS))
+
+.PHONY: all test tsan clean
 
 all: $(BIN)
 
@@ -30,6 +37,13 @@ bin/%: src/tests/%.cpp $(LIB_SRC)
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do ./$$t; done
+
+bin/tsan/%: src/tests/%.cpp $(LIB_SRC)
+	@mkdir -p bin/tsan
+	$(CXX) $(CXXFLAGS) -g -fsanitize=thread $< $(LIB_SRC) -o $@ $(LDFLAGS) $(LDLIBS)
+
+tsan: $(TSAN_BINS)
+	@set -e; for t in $(TSAN_BINS); do TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1" ./$$t; done
 
 clean:
 	rm -rf bin

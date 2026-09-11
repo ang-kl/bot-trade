@@ -372,6 +372,22 @@ Measurement history — each line is a real run of the script, not a claim:
   a local re-measure that reads below this is missing these, not correcting
   them.
 
+- 2026-09-11 02:50 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule, eighth time): the script reads this container's single
+  transcript and was refused as a reading. The session continued from
+  `№ 7,558` to **`№ 7,568`** as the last stamped reply at 01:42 UTC
+  (#881 P2a-1 and #882 P2a-2 + P2b-1 of the tick-momentum programme
+  merged). After the compaction that followed, the transcript captured
+  only two of the six unstamped status lines made while P2b-2 and P3a
+  were built (01:47–02:41 UTC): the four emitted alongside tool calls are
+  absent as text entries (the entries after the compaction are thinking
+  and tool_use only), so a measurement reads 2 replies since the stamp
+  while six were made. The count is by replies, not by what the file
+  captured: `№ 7,575` (the running-agents answer, 02:40 UTC) and
+  `№ 7,577` (the "finished?" answer, 02:44 UTC) were stamped from that
+  count; the P2b-2 + P3a report follows them. A later re-measure that
+  reads below this line is missing these, not correcting them.
+
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

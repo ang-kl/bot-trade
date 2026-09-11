@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 
 import { initDB, getState, setState } from '../db.js'
 import { upsertAccount, syncSelectedAccount, ensureAccountRegistry, getAccountState } from './account-registry.js'
-import { engineStatusFor, requestEntryMode, admitEntry, entryEnginesView, ENGINE_STATUS_KEY, _resetRefusalDedupe } from './entry-mode.js'
+import { engineStatusFor, requestEntryMode, requestTickObservation, admitEntry, entryEnginesView, ENGINE_STATUS_KEY, _resetRefusalDedupe } from './entry-mode.js'
 import { automaticProducers } from '../lib/entry-producers.js'
 import { seedStrategyPinsFromConfig } from './stage-matrix.js'
 import { seedMomentumAccountFromConfig } from './momentum-account.js'
@@ -141,4 +141,30 @@ test('wiring pins (comments stripped): the fence is called at every Node produce
   }
   assert.ok(actions.includes("router.post('/entry-mode'"))
   assert.ok(src('../routes/state.js').includes("router.get('/entry-engines'"))
+})
+
+test('P3a: tick observation OFF → RECORD → OFF moves the revision, never the epoch; SHADOW is refused until P4; the fence is untouched', () => {
+  const db = fresh()
+  _resetRefusalDedupe()
+  const r = requestTickObservation(db, DEMO, 'RECORD', { expectedRevision: 0 })
+  assert.equal(r.ok, true); assert.equal(r.changed, true)
+  assert.equal(r.status.tickObservation, 'RECORD'); assert.equal(r.status.configRevision, 1); assert.equal(r.status.modeEpoch, 0)
+  assert.equal(engineStatusFor(db, DEMO).tickObservation, 'RECORD', 'persisted')
+  assert.equal(engineStatusFor(db, DEMO).effectiveEntryMode, 'TIME_BASED', 'observation changes no entry authority')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar' }).ok, true, 'time entries continue while observing')
+  assert.equal(requestTickObservation(db, DEMO, 'RECORD', { expectedRevision: 0 }).reason, 'revision_conflict')
+  const shadow = requestTickObservation(db, DEMO, 'SHADOW')
+  assert.equal(shadow.ok, false); assert.match(shadow.reason, /^tick_strategy_not_built/)
+  assert.equal(requestTickObservation(db, DEMO, 'BOGUS').ok, false)
+  const off = requestTickObservation(db, DEMO, 'OFF')
+  assert.equal(off.ok, true); assert.equal(off.status.tickObservation, 'OFF'); assert.equal(off.status.configRevision, 2)
+  const again = requestTickObservation(db, DEMO, 'OFF')
+  assert.equal(again.ok, true); assert.equal(again.changed, false)
+  const rows = db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE path = '/actions/tick-observation' AND account_id = ?`).get(DEMO).n
+  assert.equal(rows, 3)
+  // a STOPPED account keeps its observation setting: the two switches are independent
+  requestEntryMode(db, DEMO, 'STOPPED')
+  requestTickObservation(db, DEMO, 'RECORD')
+  const st = engineStatusFor(db, DEMO)
+  assert.equal(st.effectiveEntryMode, 'STOPPED'); assert.equal(st.tickObservation, 'RECORD'); assert.equal(st.modeEpoch, 1)
 })

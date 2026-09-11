@@ -36,7 +36,7 @@
 import { getState } from '../db.js'
 import { getAccountState, setAccountState } from './account-registry.js'
 import { recordDecision } from './decision-log.js'
-import { ENTRY_MODES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
+import { ENTRY_MODES, OBSERVATION_MODES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
 import { ENTRY_PRODUCERS } from '../lib/entry-producers.js'
 // P2a: the intent ledger (a function-only cycle: entry-ledger imports the
 // fence from here; nothing on either side runs at module load).
@@ -129,6 +129,33 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
       .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, from: cur.effectiveEntryMode, to: mode, revision: saved.configRevision, epoch: saved.modeEpoch, resting: saved.entryCounts.resting, transition: saved.transitionState, actor }), id)
   } catch { /* audit best-effort */ }
   return { ok: true, status: saved, changed: cur.effectiveEntryMode !== mode }
+}
+
+/**
+ * P3a: the per-account tick OBSERVATION switch (plan §2 `tick_observation`:
+ * OFF | RECORD | SHADOW). RECORD asks the account's sidecar to record the
+ * feed it carries (exec-guard-sync.js derives the side's `tickRecord` from
+ * it); it changes no entry authority — the mode epoch is untouched, only
+ * configRevision moves. SHADOW is refused until the tick strategy (P4)
+ * exists to shadow. Observation can run while time entries continue.
+ */
+export function requestTickObservation(db, accountId, mode, { expectedRevision = null, actor = 'owner', now = new Date() } = {}) {
+  const id = String(accountId)
+  if (!OBSERVATION_MODES.includes(mode)) return { ok: false, reason: `unknown_observation_mode: ${mode}` }
+  const cur = engineStatusFor(db, id)
+  if (expectedRevision != null && Number(expectedRevision) !== cur.configRevision) {
+    return { ok: false, reason: 'revision_conflict', current: cur.configRevision, expected: Number(expectedRevision) }
+  }
+  if (mode === 'SHADOW') {
+    return { ok: false, reason: 'tick_strategy_not_built: SHADOW needs the tick strategy (P4) to shadow', current: cur.configRevision }
+  }
+  const next = { ...cur, tickObservation: mode, configRevision: cur.configRevision + 1, updatedAt: now.toISOString() }
+  const saved = writeEngineStatus(db, next)
+  try {
+    db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+      .run('POST', '/actions/tick-observation', JSON.stringify({ accountId: id, from: cur.tickObservation, to: mode, revision: saved.configRevision, actor }), id)
+  } catch { /* audit best-effort */ }
+  return { ok: true, status: saved, changed: cur.tickObservation !== mode }
 }
 
 // One refusal record per (account, producer, epoch): the loop asks every

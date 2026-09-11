@@ -875,6 +875,31 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
   setState(db, CPP_DECISIONS_CURSOR_KEY, JSON.stringify(cursors))
 }
 
+// P3a: the tick recorder's status, stored per side under <side>_tick_json
+// for GET /state/tick-recorder, with a log line on every state change
+// (RECORDING / PAUSED_RESERVE / WARN / OFF / ERROR) and one per ~30 minutes
+// while recording, so the spool's growth and the mount's free bytes are on
+// record without a token.
+export const TICK_STATUS_LOG_EVERY_MS = 30 * 60_000
+export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
+  const status = await exec.sidecarTickStatus(side.base ? { base: side.base } : {})
+  if (!status) return null
+  const key = `${side.name}_tick_json`
+  let prev = null
+  try { prev = JSON.parse(getState(db, key) || 'null') } catch { prev = null }
+  const record = { at: new Date(nowMs).toISOString(), side: side.name, status, lastLoggedAt: prev?.lastLoggedAt ?? null }
+  const changed = !prev || prev.status?.state !== status.state || prev.status?.recording !== status.recording
+  const due = !record.lastLoggedAt || nowMs - Date.parse(record.lastLoggedAt) >= TICK_STATUS_LOG_EVERY_MS
+  if (status.enabled !== false && (changed || (status.recording && due))) {
+    const ev = status.events || {}, seg = status.segments || {}, disk = status.disk || {}
+    const gb = (n) => (Number(n) / 1e9).toFixed(2)
+    console.log(`[tick] ${side.name} recorder ${status.state}${status.recording ? '' : ' (switch off)'}: ${ev.total ?? 0} events (${ev.changed ?? 0} changed, ${ev.dropped ?? 0} dropped, ${ev.gaps ?? 0} gaps), ${seg.sealed ?? 0} segments sealed (${gb(seg.sealedBytes)} GB) + ${gb(seg.openBytes)} GB open, mount ${gb(disk.availBytes)} GB free of ${gb(disk.totalBytes)} GB (${disk.usagePct ?? '?'}% used, reserve ${gb(disk.reserveBytes)} GB)${status.reason ? ` — ${status.reason}` : ''}`)
+    record.lastLoggedAt = new Date(nowMs).toISOString()
+  }
+  try { setState(db, key, JSON.stringify(record)) } catch { /* best effort */ }
+  return record
+}
+
 // P2b-1: the execution-event journal, pulled the same way into cpp_events.
 // The ledger's reconcile settles UNKNOWN intents from it (a late frame
 // matched by clientMsgId, or any event whose label carries the intent tag).
@@ -1054,11 +1079,12 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       const { syncExecGuard } = await import('./exec-guard-sync.js')
       const sync = await syncExecGuard(db, exec, side, {
         reportedGuard: r.guard,
+        reportedTick: r.tick ?? null, // P3a: the recorder's switch and subscription converge on the same push
         creds: await sideCreds(db, side),
         now: nowMs,
       })
       if (sync.pushed) {
-        console.warn(`[heartbeat] ${side.name}: exec guard converged — halt=${sync.desired.halt} haltAccounts=[${sync.desired.haltAccounts.join(', ')}]`)
+        console.warn(`[heartbeat] ${side.name}: exec guard converged — halt=${sync.desired.halt} haltAccounts=[${sync.desired.haltAccounts.join(', ')}]${sync.desired.tickRecord ? ` tickRecord=true tickSymbolIds=[${(sync.desired.tickSymbolIds || []).join(', ')}]` : ''}`)
       }
       if (sync.error) console.warn(`[heartbeat] ${side.name}: exec guard push FAILED — ${sync.error}`)
       stampGuardSync(sync.error ?? null)
@@ -1067,6 +1093,16 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
     // Guard convergence retries next probe — and the failure is on record.
     stampGuardSync(err?.message || String(err))
   }
+  // P3a TICK RECORDER PULL: the recorder's full status (GET /tick-status)
+  // is stored per side and a STATE CHANGE is logged — the Railway log is the
+  // owner's read-back path while the bearer token is lost. Gated on the
+  // sidecar reporting a `tick` object at all: an older sidecar, or one with
+  // no TICK_SPOOL_PATH, changes nothing here.
+  try {
+    if (r.ok !== undefined && r.tick && typeof r.tick === 'object' && typeof exec.sidecarTickStatus === 'function') {
+      await pullTickStatus(db, exec, side, nowMs)
+    }
+  } catch { /* next probe retries */ }
   // Persist what the probe learned so a READ route never has to call the
   // sidecar itself. This probe already runs every ~2 minutes; making
   // /state/account-engineering re-fetch /health on every page load would put an
