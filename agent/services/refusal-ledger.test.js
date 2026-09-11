@@ -10,7 +10,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import { persistRiskEvent } from './risk.js'
-import { pendingRefusals, scoreRefusedOpportunities, refusalCostReport, horizonMinFor } from './refusal-ledger.js'
+import { pendingRefusals, scoreRefusedOpportunities, refusalCostReport, horizonMinFor, evidenceShadowRefusals } from './refusal-ledger.js'
+import { recordEvidenceShadow } from './gate-skips.js'
 
 const T0 = Date.parse('2026-09-01T10:00:00Z')
 const iso = (ms) => new Date(ms).toISOString()
@@ -104,4 +105,34 @@ test('wiring pin: the loop scores refusals with the postmortem fetcher, capped p
   assert.match(loop, /scoreRefusedOpportunities\(db, pmFetch, \{ maxPerCycle: 6/, 'scored with the broker fetcher, six per cycle')
   assert.match(cml, /timeframe: synth\.timeframe \?\? null/, 'closed-market proposals carry their timeframe')
   assert.match(loop, /prune-refusal-scores/, 'refusal scores have their own retention step')
+})
+
+test('PR-C: evidence-gate SKIPS are scored too — read from decision_log, keyed by the same rule, one opportunity per re-proposal run', () => {
+  const db = initDB(':memory:')
+  const acct = '44440001'
+  const synth = { strategy: 'vwap_trend', timeframe: '1h', entry: 100, sl: 99, tp1: 103 }
+  for (let i = 0; i < 3; i++) {
+    recordEvidenceShadow(db, { symbol: 'EURUSD', side: 'BUY', accountId: acct, synth, gate: { reason: 'thin record' } })
+  }
+  // Three rows minutes apart → one opportunity; dated three days back so the 1h horizon (48 bars = 2 days) has elapsed.
+  db.prepare(`UPDATE decision_log SET created_at = datetime('now', '-3 days', '+' || id || ' minutes')`).run()
+  const shadow = evidenceShadowRefusals(db)
+  assert.equal(shadow.length, 1)
+  assert.equal(shadow[0].refusals, 3)
+  assert.match(shadow[0].opportunity_key, new RegExp(`^${acct}\\|EURUSD\\|BUY\\|VWAP_TREND@\\d+$`))
+
+  const pending = pendingRefusals(db, { nowMs: Date.now() })
+  assert.equal(pending.length, 1)
+  const it = pending[0]
+  assert.equal(it.strategy, 'vwap_trend')
+  assert.equal(it.timeframe, '1h')
+  assert.deepEqual([it.entry, it.sl, it.tp], [100, 99, 103])
+  assert.equal(it.refusals, 3)
+  assert.equal(it.reasonKey, 'evidence_gate')
+  assert.equal(it.unscorable, undefined)
+
+  // Scored once → gone from the pending set, like a risk_events refusal.
+  db.prepare(`INSERT INTO refusal_scores (opportunity_key, symbol, scored_at, outcome) VALUES (?, 'EURUSD', datetime('now'), 'target')`).run(it.opportunityKey)
+  assert.equal(pendingRefusals(db, { nowMs: Date.now() }).length, 0)
+  assert.equal(evidenceShadowRefusals(db).length, 0)
 })

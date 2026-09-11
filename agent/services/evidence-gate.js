@@ -112,12 +112,21 @@ export function evidenceGateReport(db) {
   try { accounts = db.prepare(`SELECT account_id, is_live FROM accounts WHERE enabled = 1 ORDER BY account_id`).all() } catch { accounts = [] }
   let shadow = {}
   try {
+    // Rows written before PR-C (risk_events vetoes; repeat_count summed) …
     for (const r of db.prepare(`
-      SELECT json_extract(proposal_json, '$.strategy') AS s, account_id AS a, COUNT(*) AS n
+      SELECT json_extract(proposal_json, '$.strategy') AS s, account_id AS a, SUM(COALESCE(repeat_count, 1)) AS n
         FROM risk_events
        WHERE veto_reason LIKE 'evidence_gate:%' AND created_at >= datetime('now', '-7 days')
-       GROUP BY s, a`).all()) shadow[`${r.s}|${r.a ?? ''}`] = r.n
-  } catch { shadow = {} }
+       GROUP BY s, a`).all()) shadow[`${r.s}|${r.a ?? ''}`] = (shadow[`${r.s}|${r.a ?? ''}`] || 0) + r.n
+  } catch { /* pre-migration schema — the decision_log read below still counts */ }
+  try {
+    // … and the decision_log skips the gate writes since (services/gate-skips.js).
+    for (const r of db.prepare(`
+      SELECT strategy AS s, account_id AS a, COUNT(*) AS n
+        FROM decision_log
+       WHERE stage = 'evidence_gate' AND decision = 'skip' AND created_at >= datetime('now', '-7 days')
+       GROUP BY s, a`).all()) shadow[`${r.s}|${r.a ?? ''}`] = (shadow[`${r.s}|${r.a ?? ''}`] || 0) + r.n
+  } catch { /* nothing to add */ }
   const strategies = {}
   for (const s of STRATEGY_REGISTRY) {
     strategies[s.key] = {}

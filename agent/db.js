@@ -1530,6 +1530,20 @@ export function initDB(dbPath) {
            CREATE INDEX IF NOT EXISTS idx_risk_events_lookback
              ON risk_events(symbol, side, account_id, created_at);`);
 
+  // PR-C REPEAT VETOES (owner principle 7, 11-09-2026). A setup re-scored
+  // eight times by the scanner and refused eight times for the same reason
+  // used to be eight rows. persistRiskEvent now bumps `repeat_count` and
+  // `last_at` on the newest row of the same opportunity_key when the reason
+  // head is unchanged and the row is younger than VETO_REPEAT_WINDOW_MS
+  // (risk.js). `created_at` remains the first sighting. Additive: existing
+  // rows read as repeat_count 1 / last_at NULL, so every SUM(repeat_count)
+  // reader equals the old COUNT(*) on un-merged history.
+  {
+    const cols = new Set(db.prepare(`PRAGMA table_info(risk_events)`).all().map(c => c.name));
+    if (!cols.has('repeat_count')) db.exec(`ALTER TABLE risk_events ADD COLUMN repeat_count INTEGER NOT NULL DEFAULT 1`);
+    if (!cols.has('last_at')) db.exec(`ALTER TABLE risk_events ADD COLUMN last_at TEXT`);
+  }
+
   // §70.9 P&L RECONCILIATION EVIDENCE. The backfill's "we tried and gave up"
   // record lived in a module-level Map keyed by ACCOUNT — so it was forgotten
   // on every restart, and this service redeploys on every push to main. The

@@ -19,7 +19,7 @@ function byId(table) { return Object.fromEntries(table.goals.map(g => [g.id, g])
 test('an empty db reports every goal, none of them as a number it did not earn', async () => {
   const db = initDB(':memory:')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 12)
+  assert.equal(t.goals.length, 13)
   const g = byId(t)
   assert.equal(g.controllers_ok.verdict, 'not_measurable', 'no controller has beaten')
   assert.equal(g.pipeline_conversion.verdict, 'not_measurable', 'no decision audit on record')
@@ -31,7 +31,7 @@ test('an empty db reports every goal, none of them as a number it did not earn',
     assert.ok(['on_track', 'off_track', 'not_measurable'].includes(goal.verdict), `${goal.id} has a verdict`)
     assert.ok(goal.metric && goal.target !== undefined && goal.horizon !== undefined, `${goal.id} names metric/target/horizon`)
   }
-  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 12)
+  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 13)
 })
 
 test('controllers_ok: reads the heartbeat verdicts, names the offenders', async () => {
@@ -105,7 +105,7 @@ test('a reader that throws becomes a not_measurable row, not a missing table', a
   // Break one reader's input: an unparseable momentum config must not take the table down.
   setState(db, 'momentum_account_json', '{not json')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 12)
+  assert.equal(t.goals.length, 13)
   assert.ok(t.goals.every(g => g.verdict))
 })
 
@@ -115,4 +115,52 @@ test('every controller with a declared effect is a registered controller', () =>
   }
   assert.ok(Object.values(CONTROLLERS).some(d => d.effect), 'at least one effect is declared')
   assert.equal(typeof getState, 'function')
+})
+
+// ---------------------------------------------------------------------------
+// PR-C (owner principle 7): the veto goal.
+// ---------------------------------------------------------------------------
+
+test('veto goal: 11-09-2026 production (10,580 vetoed of 10,593 reached) reads off_track with the waste share', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'decision_audit_last_json', JSON.stringify({
+    vetoed: 10580, vetoedDistinct: 1200, reachedGate: 10593, approved: 13,
+    topVetoes: [{ key: 'max_positions=5/5', n: 9915 }],
+  }))
+  const g = byId(await goalTable(db, { now: T0.getTime() })).veto_rate
+  assert.ok(g, 'the goal exists')
+  assert.equal(g.verdict, 'off_track')
+  assert.equal(g.vetoRate, 0.999)
+  assert.equal(g.wasteRate, 0.887)
+  assert.equal(g.target, `≤ ${DEFAULT_GOAL_TARGETS.vetoRateMax}`)
+  assert.equal(DEFAULT_GOAL_TARGETS.vetoRateMax, 0.9)
+  assert.equal(DEFAULT_GOAL_TARGETS.vetoMinReachedGate, 50)
+  assert.match(g.current, /^0\.999 \(10580 vetoes, 1200 distinct, waste 89%\)$/)
+  assert.match(g.note, /top reason: max_positions/)
+})
+
+test('veto goal: below the reached-gate floor reads not_measurable with the shortfall; at the target reads on_track; the owner can lower the ceiling', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'decision_audit_last_json', JSON.stringify({ vetoed: 40, vetoedDistinct: 40, reachedGate: 41, approved: 1 }))
+  let g = byId(await goalTable(db, { now: T0.getTime() })).veto_rate
+  assert.equal(g.verdict, 'not_measurable')
+  assert.match(g.note, /41 proposal\(s\) reached the gate — below the 50 floor/)
+  assert.equal(g.current, null)
+
+  setState(db, 'decision_audit_last_json', JSON.stringify({ vetoed: 150, vetoedDistinct: 150, reachedGate: 200, approved: 50 }))
+  g = byId(await goalTable(db, { now: T0.getTime() })).veto_rate
+  assert.equal(g.verdict, 'on_track')
+  assert.equal(g.vetoRate, 0.75)
+  assert.equal(g.wasteRate, 0)
+
+  setState(db, GOAL_TABLE_KEY, JSON.stringify({ targets: { vetoRateMax: 0.5 } }))
+  g = byId(await goalTable(db, { now: T0.getTime() })).veto_rate
+  assert.equal(g.verdict, 'off_track', 'a lowered ceiling bites')
+})
+
+test('veto goal: with no stored audit it audits live rather than reporting a number it did not read', async () => {
+  const db = initDB(':memory:')
+  const g = byId(await goalTable(db, { now: T0.getTime() })).veto_rate
+  assert.equal(g.verdict, 'not_measurable')
+  assert.match(g.note, /0 proposal\(s\) reached the gate/)
 })
