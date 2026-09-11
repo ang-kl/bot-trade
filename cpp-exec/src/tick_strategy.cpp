@@ -107,7 +107,12 @@ void TickMomentumStrategy::pushAccepted(long long mid2, long long bid, long long
 std::optional<TickSignal> TickMomentumStrategy::onQuote(const StrategyQuote& q) {
   if (!q.hasBid || !q.hasAsk || q.snapshot || q.crossed) {
     rejected_.invalid++;
-    if (q.hasBid && q.hasAsk && q.crossed) invalidate();
+    // Plan §4/§5 (11-09-2026 audit): a snapshot — a (re)subscribe, or a
+    // continuity break the worker folds into it (gapBefore) — a one-sided
+    // update or a crossed quote invalidates the setup AND the warm-up. The
+    // window must not carry on with the missed events absent: a fresh N+1
+    // prior events are required before anything can arm again.
+    invalidate();
     return std::nullopt;
   }
   if (!q.changed) { rejected_.repeat++; return std::nullopt; }

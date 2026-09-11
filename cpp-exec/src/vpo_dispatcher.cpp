@@ -106,6 +106,10 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
   VirtualPendingOrder& o = s.order();
   if (o.state.load(std::memory_order_relaxed) != VposState::ARMED) return false;
 
+  // Setup generation (vpo_types.hpp storeBracket): odd = a recompute is
+  // writing this bracket right now — not a setup, skip the tick.
+  const uint64_t gen = o.generation.load(std::memory_order_acquire);
+  if (gen & 1u) return false;
   const double trigger = o.triggerPrice.load(std::memory_order_relaxed);
   const Side side = o.side.load(std::memory_order_relaxed);
   // A Buy virtual order arms expecting a pullback DOWN onto the level, then
@@ -120,12 +124,27 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
     return false; // another caller already won the race this tick
   }
 
+  if (preFireHook_) preFireHook_(); // test seam: a recompute landing between the CAS and the snapshot
+  const FireIntent intent{&s, side, o.relativeStopLoss.load(std::memory_order_relaxed),
+                          o.relativeTakeProfit.load(std::memory_order_relaxed), trigger};
+  if (o.generation.load(std::memory_order_acquire) != gen) {
+    // The bracket changed between the trigger read and the snapshot: the
+    // intent could carry one setup's trigger with another's stop. Refuse it
+    // and hand the strategy back to IDLE — the next recompute arms the new
+    // setup cleanly and the next touch fires that one, coherent.
+    o.state.store(VposState::IDLE, std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> lk(outcomesMtx_);
+      outcomes_.staleSetup++;
+      outcomes_.lastDetail = s.key() + ": setup changed under the fire — refused";
+    }
+    if (ring_) ring_->log("vpo", "stale_setup", 0, o.symbolId, s.key(), "bracket rewritten between the trigger read and the fire snapshot; refused, strategy idle");
+    return false;
+  }
   {
     std::lock_guard<std::mutex> lk(outcomesMtx_);
     outcomes_.triggered++;
   }
-  const FireIntent intent{&s, side, o.relativeStopLoss.load(std::memory_order_relaxed),
-                          o.relativeTakeProfit.load(std::memory_order_relaxed), trigger};
 
   // Hand the SLOW half (sizing + placeOrder + outcome record) to the fire
   // thread — audit #6: running placeOrder here, on the SpotFeed read thread,
@@ -285,6 +304,7 @@ std::string VpoDispatcher::statusJson() const {
   // no account is configured — visible in /vpo-status instead of only in stderr.
   v.set("noAccount", static_cast<double>(o.noAccount));
   v.set("permitMissing", static_cast<double>(o.permitMissing));
+  v.set("staleSetup", static_cast<double>(o.staleSetup));
   v.set("accountId", static_cast<double>(accountId_.load(std::memory_order_relaxed)));
   const long long disarmAt = lastDisarmAtMs_.load(std::memory_order_relaxed);
   v.set("lastDisarmAt", disarmAt > 0 ? jsn::Value(static_cast<double>(disarmAt)) : jsn::Value(nullptr));

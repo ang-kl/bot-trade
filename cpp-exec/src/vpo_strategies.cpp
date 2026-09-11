@@ -56,10 +56,7 @@ bool armIfRewardClearsFloor(VirtualPendingOrder& o, double trigger, Side side,
   // The epsilon matters: rsi2 builds tp as exactly TP_RR × sl and passes
   // TP_RR as its own floor, so a bare `<` would reject it on rounding alone.
   if (tpDistance / slDistance < minRR - 1e-9) return false;
-  o.triggerPrice.store(trigger, std::memory_order_relaxed);
-  o.side.store(side, std::memory_order_relaxed);
-  o.relativeStopLoss.store(slDistance, std::memory_order_relaxed);
-  o.relativeTakeProfit.store(tpDistance, std::memory_order_relaxed);
+  storeBracket(o, trigger, side, slDistance, tpDistance);
   return armUnlessFired(o);
 }
 
@@ -494,10 +491,7 @@ void recomputeCupHandle(StrategyModule& s, const std::vector<Bar>& macroBars, in
     const double breakoutLevel = dir == 1 ? std::max(prior2Extreme, handleExtreme)
                                           : std::min(prior2Extreme, handleExtreme);
 
-    o.triggerPrice.store(breakoutLevel, std::memory_order_relaxed);
-    o.side.store(dir == 1 ? Side::Buy : Side::Sell, std::memory_order_relaxed);
-    o.relativeStopLoss.store(sl, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(tp, std::memory_order_relaxed);
+    storeBracket(o, breakoutLevel, dir == 1 ? Side::Buy : Side::Sell, sl, tp);
     armUnlessFired(o);
     return;
   }

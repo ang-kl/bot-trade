@@ -123,6 +123,48 @@ static void test_onTick_fires_on_touch_and_rearms_to_idle() {
   assert(raw->order().state.load() == VposState::IDLE);
 }
 
+// 11-09-2026 audit (investigation F2, "immutable setup generations"): the
+// FireIntent used to be assembled from the live per-field atomics across the
+// CAS — trigger and side before it, stop and target after — so a recompute
+// landing in between (it stores its new bracket BEFORE its own arm CAS
+// fails on FIRED) produced an intent with one setup's trigger and another's
+// stop. storeBracket() now writes the bracket inside an odd/even generation
+// window and tryFire refuses a fire whose generation moved under it.
+static void test_a_bracket_rewritten_under_the_fire_is_refused_and_counted() {
+  ExecEngine engine;
+  auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
+  auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
+  vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002);
+  auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
+  vpo::StrategyModule* raw = strategy.get();
+  dispatcher.registerStrategy(std::move(strategy));
+  forceArm(*raw, 1.1000, Side::Buy);
+
+  // The recompute thread's rewrite, landing after the CAS and before the snapshot.
+  dispatcher.setPreFireHookForTests([raw] { vpo::storeBracket(raw->order(), 1.0500, Side::Buy, 30.0, 60.0); });
+  dispatcher.onTick(42, 1.0999, 1.1000); // touches the OLD trigger
+  assert(raw->order().state.load() == VposState::IDLE);      // handed back, not fired
+  assert(dispatcher.outcomes().staleSetup == 1);
+  assert(dispatcher.outcomes().triggered == 0 && dispatcher.outcomes().placed == 0);
+  assert(raw->order().generation.load() % 2 == 0);           // the rewrite completed
+  assert(raw->order().triggerPrice.load() == 1.0500);        // and its setup stands for the next arm
+
+  // A write IN PROGRESS (odd generation) is not a setup either: the tick is skipped.
+  dispatcher.setPreFireHookForTests(nullptr);
+  forceArm(*raw, 1.1000, Side::Buy);
+  raw->order().generation.fetch_add(1);                      // a recompute mid-write
+  dispatcher.onTick(42, 1.0999, 1.1000);
+  assert(raw->order().state.load() == VposState::ARMED);     // untouched, no CAS
+  assert(dispatcher.outcomes().staleSetup == 1);
+  raw->order().generation.fetch_add(1);                      // the write completes
+
+  // A coherent setup still fires exactly as before.
+  dispatcher.onTick(42, 1.0999, 1.1000);
+  assert(dispatcher.outcomes().triggered == 1);
+  assert(raw->order().state.load() == VposState::IDLE);      // NOT_CONNECTED placeOrder → reset
+}
+
 static void test_onTick_ignores_other_symbols() {
   ExecEngine engine;
   auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
@@ -323,6 +365,7 @@ int main() {
   test_relative_points_scales_and_snaps_to_symbol_precision();
   test_onTick_fires_on_touch_and_rearms_to_idle();
   test_onTick_ignores_other_symbols();
+  test_a_bracket_rewritten_under_the_fire_is_refused_and_counted();
   test_onTick_refuses_to_fire_without_resolvable_volume();
   test_sell_side_fires_on_bid_rising_to_trigger();
   test_outcomes_start_empty_and_count_a_failed_submit();

@@ -13,11 +13,15 @@
 // stop distance is in price units. Rounding: floor(x + 0.5), the reference's
 // Math.round.
 //
-// Incremental (plan §5 "without rescanning every history buffer"): the
-// prior-N range by monotonic deques, the prior-N volatility by a running
-// sum of squared differences, the momentum window by a ring of the last M
-// mids and a running sum of |dm|, the spread median by a two-multiset
-// median. Every window excludes the candidate event.
+// Windows (plan §5 "without rescanning every history buffer"): the prior-N
+// volatility is a running sum of squared differences and the prior-N spread
+// median is a two-multiset median, both O(1) per event; the prior-N range
+// (H/L), the M-window Σ|Δm| and the bid/ask ranges frozen at arming are
+// RESCANNED per event over bounded deques. AUDIT 11-09-2026: this header
+// claimed monotonic deques for the range; the implementation never had them.
+// Correctness (no lookahead, exact prior-window warm-up) does not depend on
+// it; it is an efficiency item, measured before it is changed. Every window
+// excludes the candidate event.
 #pragma once
 
 #include <cstdint>
