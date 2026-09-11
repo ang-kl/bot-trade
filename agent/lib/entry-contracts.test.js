@@ -137,3 +137,14 @@ test('EngineStatus: a new account is fully OFF and valid; TICK_MOMENTUM needs ev
   assert.ok(r.errors.some(e => e.includes("'feed' is not a failing readiness check")))
   assert.equal(validateEngineStatus({ ...base, readiness: [failing], blockedReasons: ['journal'] }).ok, true)
 })
+
+test('PR-G: entryModePolicy is manual | auto, defaults to manual, and a pre-PR-G record without it still validates', () => {
+  const base = defaultEngineStatus({ accountId: '46130058', environment: 'demo' })
+  assert.equal(base.entryModePolicy, 'manual', 'no account is handed to the bot by omission')
+  assert.equal(validateEngineStatus(base).ok, true)
+  assert.equal(validateEngineStatus({ ...base, entryModePolicy: 'auto' }).ok, true)
+  const bad = validateEngineStatus({ ...base, entryModePolicy: 'sometimes' })
+  assert.equal(bad.ok, false); assert.match(bad.errors.join('; '), /entryModePolicy: 'sometimes' not in \[manual, auto\]/)
+  const { entryModePolicy, ...legacy } = base // eslint-disable-line no-unused-vars
+  assert.equal(validateEngineStatus(legacy).ok, true, 'a record written before the field existed is not refused')
+})

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { readFileSync, writeFileSync } from 'node:fs'
 
 import { initDB, getState, setState } from '../db.js'
-import { upsertAccount, syncSelectedAccount, ensureAccountRegistry, getAccountState } from './account-registry.js'
+import { upsertAccount, syncSelectedAccount, ensureAccountRegistry, getAccountState, setAccountState } from './account-registry.js'
 import { engineStatusFor, requestEntryMode, requestTickObservation, seedTickObservationFromConfig, admitEntry, entryEnginesView, ENGINE_STATUS_KEY, _resetRefusalDedupe, acknowledgeEntryEpochs, markEntryModeBlocked } from './entry-mode.js'
 import * as engineModule from './entry-mode.js'
 import { automaticProducers } from '../lib/entry-producers.js'
@@ -185,9 +185,14 @@ test('wiring pins (comments stripped): the fence is called at every Node produce
   // AUDIT 11-09-2026 (plan §3.1 / §3.6): the switch pushes the gateway NOW —
   // the guard (forced), the VPO disarm — and blocks on a failed push; the JS
   // fallback transport re-reads the fence right before its own write.
-  assert.match(actions, /router\.post\('\/entry-mode'[\s\S]{0,3000}syncExecGuard\(db, execMod, side, \{ reportedGuard: null, creds, force: true \}\)/, 'the route forces the guard push on a switch')
-  assert.match(actions, /router\.post\('\/entry-mode'[\s\S]{0,4000}pushVpoDisarm\(db, String\(accountId\)/, 'the route disarms the VPO tier on a switch')
-  assert.match(actions, /router\.post\('\/entry-mode'[\s\S]{0,4000}markEntryModeBlocked\(db, String\(accountId\), sync\.error/, 'a failed push blocks the account')
+  // PR-G: the post-switch block moved to entry-mode-gateway.js so the bot's
+  // pass binds the epoch the same way; the route calls it, the helper carries
+  // the forced push, the disarm and the block (entry-mode-gateway.test.js).
+  assert.match(actions, /router\.post\('\/entry-mode'[\s\S]{0,3000}bindEntryModeGateway\(db, String\(accountId\), mode, \{ epoch: r\.status\.modeEpoch \}\)/, 'the route binds the gateway on a switch')
+  const gateway = src('./entry-mode-gateway.js')
+  assert.match(gateway, /syncExecGuard\(db, d\.execMod, side, \{ reportedGuard: null, creds, force: true \}\)/, 'the helper forces the guard push on a switch')
+  assert.match(gateway, /pushVpoDisarm\(db, id, /, 'the helper disarms the VPO tier on a switch')
+  assert.match(gateway, /markEntryModeBlocked\(db, id, sync\.error/, 'a failed push blocks the account')
   assert.match(src('../lib/exec-engine.js'), /again = await creds\.entryAdmission\(\)[\s\S]{0,400}wsPlaceOrder\(/, 'the fallback write re-reads the fence')
   assert.match(src('./exec-guard-sync.js'), /acknowledgeEntryEpochs\(db, reportedGuard\.entryEpochs/, 'every probe acknowledges what the sidecar reports')
   assert.match(src('./exec-guard-sync.js'), /acknowledgeEntryEpochs\(db, echoed/, 'the push acknowledges what its reply echoes')
@@ -330,4 +335,116 @@ test('P6b / PR-B: TICK_MOMENTUM is admitted on ANY account whose injected readin
   assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'route_manual_order' }).ok, true, 'manual keeps its own attribution under any mode')
   // and the tick producer is refused everywhere else
   assert.equal(admitEntry(db, { accountId: LIVE, producerId: 'tick_momentum', basis: 'tick' }).ok, false)
+})
+
+// ---------------------------------------------------------------------------
+// PR-G (owner principle 2): the switch policy — manual | auto per account.
+// ---------------------------------------------------------------------------
+test('PR-G: the policy defaults to manual, is exposed by the view, and requestEntryModePolicy moves only the revision (409 on a stale one)', () => {
+  const db = fresh()
+  assert.equal(engineStatusFor(db, DEMO).entryModePolicy, 'manual')
+  assert.equal(entryEnginesView(db).accounts.find(a => a.accountId.endsWith(DEMO.slice(-4))).entryModePolicy, 'manual')
+  const r = engineModule.requestEntryModePolicy(db, DEMO, 'AUTO', { expectedRevision: 0 })
+  assert.equal(r.ok, true); assert.equal(r.status.entryModePolicy, 'auto'); assert.equal(r.status.configRevision, 1); assert.equal(r.status.modeEpoch, 0, 'no epoch moves: the policy is not a mode')
+  assert.equal(r.changed, true)
+  assert.equal(entryEnginesView(db).accounts.find(a => a.accountId.endsWith(DEMO.slice(-4))).entryModePolicy, 'auto')
+  const stale = engineModule.requestEntryModePolicy(db, DEMO, 'manual', { expectedRevision: 0 })
+  assert.equal(stale.ok, false); assert.equal(stale.reason, 'revision_conflict'); assert.equal(engineStatusFor(db, DEMO).entryModePolicy, 'auto')
+  assert.equal(engineModule.requestEntryModePolicy(db, DEMO, 'sometimes').ok, false)
+  const row = db.prepare(`SELECT body FROM action_log WHERE path = '/actions/entry-mode-policy' ORDER BY id DESC LIMIT 1`).get()
+  assert.deepEqual(JSON.parse(row.body), { accountId: DEMO, from: 'manual', to: 'auto', revision: 1, actor: 'owner' })
+  // a record stored before the field existed reads as manual
+  const stored = JSON.parse(getAccountState(db, LIVE, ENGINE_STATUS_KEY) || 'null')
+  assert.equal(stored, null)
+  const { entryModePolicy, ...legacy } = engineStatusFor(db, DEMO) // eslint-disable-line no-unused-vars
+  delete legacy.stored; delete legacy.invalid
+  setAccountState(db, DEMO, ENGINE_STATUS_KEY, JSON.stringify(legacy))
+  assert.equal(engineStatusFor(db, DEMO).entryModePolicy, 'manual', 'absent field → manual, never auto by omission')
+})
+
+test('PR-G: an actor auto:* is refused on a manual account (policy_manual) and admitted on an auto one; a human is admitted on both', () => {
+  const db = fresh()
+  const ready = () => ({ ready: true, blockedReasons: [], side: 'cpp_exec_demo' })
+  const refused = requestEntryMode(db, DEMO, 'STOPPED', { actor: 'auto:readiness' })
+  assert.equal(refused.ok, false); assert.equal(refused.reason, 'policy_manual'); assert.equal(refused.policy, 'manual')
+  assert.equal(engineStatusFor(db, DEMO).requestedEntryMode, 'TIME_BASED', 'nothing written')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE path = '/actions/entry-mode'`).get().n, 0)
+  assert.equal(requestEntryMode(db, DEMO, 'STOPPED', { actor: 'owner' }).ok, true, 'the human is admitted on a manual account')
+  engineModule.requestEntryModePolicy(db, LIVE, 'auto')
+  const tick = requestEntryMode(db, LIVE, 'TICK_MOMENTUM', { actor: 'auto:readiness', readiness: ready, detail: { tickShadow: 3, timeApprovals: 1 } })
+  assert.equal(tick.ok, true); assert.equal(tick.status.requestedEntryMode, 'TICK_MOMENTUM')
+  const row = JSON.parse(db.prepare(`SELECT body FROM action_log WHERE path = '/actions/entry-mode' AND account_id = ? ORDER BY id DESC LIMIT 1`).get(LIVE).body)
+  assert.equal(row.actor, 'auto:readiness'); assert.deepEqual(row.detail, { tickShadow: 3, timeApprovals: 1 }, 'the counts travel on the action row')
+  assert.equal(requestEntryMode(db, LIVE, 'TIME_BASED', { actor: 'owner' }).ok, true, 'the human is admitted on an auto account too')
+})
+
+test('PR-G: seedEntryModePolicyFromConfig expands _all to every enabled account, a per-id key wins, applies once per content, and a later route change stands', () => {
+  const db = fresh()
+  db.prepare('UPDATE accounts SET enabled = 1').run()
+  upsertAccount(db, { accountId: '55555555', isLive: false })
+  db.prepare(`UPDATE accounts SET enabled = 0 WHERE account_id = '55555555'`).run()
+  const dir = mkdtempSync(join(tmpdir(), 'emp-'))
+  const file = join(dir, 'entry-mode-policy.json')
+  writeFileSync(file, JSON.stringify({ _note: 'x', accounts: { _all: 'auto', [LIVE]: 'manual', '77777777': 'auto' } }))
+  const first = engineModule.seedEntryModePolicyFromConfig(db, { file })
+  assert.equal(first.error, null)
+  assert.deepEqual(first.applied.sort(), [`…${DEMO.slice(-4)}:auto`])
+  assert.equal(engineStatusFor(db, DEMO).entryModePolicy, 'auto', '_all reached the enabled account')
+  assert.equal(engineStatusFor(db, LIVE).entryModePolicy, 'manual', 'the per-id key wins over _all')
+  assert.equal(engineStatusFor(db, '55555555').entryModePolicy, 'manual', 'a disabled account is not under _all')
+  assert.ok(first.skipped.some(s => /7777: not in the registry/.test(s)))
+  assert.equal(engineModule.requestEntryModePolicy(db, DEMO, 'manual').ok, true, 'the operator flips it back through the route')
+  const again = engineModule.seedEntryModePolicyFromConfig(db, { file })
+  assert.deepEqual(again.applied, [], 'same content: nothing re-applied')
+  assert.equal(engineStatusFor(db, DEMO).entryModePolicy, 'manual', 'the route change stands across boots')
+  // an account enabled later is seeded on its next boot under _all
+  db.prepare(`UPDATE accounts SET enabled = 1 WHERE account_id = '55555555'`).run()
+  const late = engineModule.seedEntryModePolicyFromConfig(db, { file })
+  assert.deepEqual(late.applied, ['…5555:auto'])
+  assert.equal(engineStatusFor(db, DEMO).entryModePolicy, 'manual', 'the already-reached account keeps what the operator did')
+  // new content re-applies
+  writeFileSync(file, JSON.stringify({ accounts: { _all: 'manual' } }))
+  const changed = engineModule.seedEntryModePolicyFromConfig(db, { file })
+  assert.deepEqual(changed.applied.sort(), ['…5555:manual'])
+  assert.equal(engineStatusFor(db, '55555555').entryModePolicy, 'manual')
+  // the checked-in file is the manual default for every account
+  const shipped = JSON.parse(readFileSync(new URL('../config/entry-mode-policy.json', import.meta.url), 'utf8'))
+  assert.deepEqual(shipped.accounts, { _all: 'manual' })
+})
+
+test('PR-G (checker minor 9): a content change re-applies only the ids whose declaration changed — an operator\'s route-set policy on an untouched id stands', () => {
+  const db = fresh()
+  db.prepare('UPDATE accounts SET enabled = 1').run()
+  const dir = mkdtempSync(join(tmpdir(), 'emp2-'))
+  const file = join(dir, 'entry-mode-policy.json')
+  writeFileSync(file, JSON.stringify({ accounts: { _all: 'manual' } }))
+  engineModule.seedEntryModePolicyFromConfig(db, { file })
+  assert.equal(engineModule.requestEntryModePolicy(db, DEMO, 'auto').ok, true, 'the operator puts one account under the bot')
+  // the owner edits the OTHER account's key: the operator's auto must stand
+  writeFileSync(file, JSON.stringify({ accounts: { _all: 'manual', [LIVE]: 'auto' } }))
+  const r = engineModule.seedEntryModePolicyFromConfig(db, { file })
+  assert.deepEqual(r.applied, [`…${LIVE.slice(-4)}:auto`])
+  assert.equal(engineStatusFor(db, DEMO).entryModePolicy, 'auto', 'not flipped back by an edit to another key')
+  assert.equal(engineStatusFor(db, LIVE).entryModePolicy, 'auto')
+  // changing _all itself reaches the id with no own key — and only that one
+  writeFileSync(file, JSON.stringify({ accounts: { _all: 'auto', [LIVE]: 'auto' } }))
+  const r2 = engineModule.seedEntryModePolicyFromConfig(db, { file })
+  assert.deepEqual(r2.applied, [], 'DEMO is already auto: unchanged; LIVE\'s own key did not move')
+  writeFileSync(file, JSON.stringify({ accounts: { _all: 'manual', [LIVE]: 'auto' } }))
+  const r3 = engineModule.seedEntryModePolicyFromConfig(db, { file })
+  assert.deepEqual(r3.applied, [`…${DEMO.slice(-4)}:manual`], '_all changed: the id under _all is re-applied, the keyed id is not')
+})
+
+test('PR-G (checker blocker 1): a HUMAN requestEntryMode zeroes the bot\'s streak and records the override; the bot\'s own does not', () => {
+  const db = fresh()
+  engineModule.writeAutoState(db, DEMO, { readyStreak: 5, blockedCycles: 1 })
+  const h = requestEntryMode(db, DEMO, 'STOPPED', { actor: 'owner', now: new Date('2026-09-11T06:00:00Z') })
+  assert.equal(h.ok, true)
+  assert.deepEqual(engineModule.readAutoState(db, DEMO), { readyStreak: 0, lastEval: null, lastAction: null, blockedCycles: 0, humanOverride: { mode: 'STOPPED', at: '2026-09-11T06:00:00.000Z', epoch: 1, actor: 'owner' } })
+  engineModule.requestEntryModePolicy(db, DEMO, 'auto')
+  engineModule.writeAutoState(db, DEMO, { readyStreak: 3 })
+  const ready = () => ({ ready: true, blockedReasons: [], side: 'cpp_exec' })
+  assert.equal(requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { actor: 'auto:readiness', readiness: ready }).ok, true)
+  assert.equal(engineModule.readAutoState(db, DEMO).readyStreak, 3, 'the bot\'s switch leaves the streak to the pass')
+  assert.equal(engineModule.readAutoState(db, DEMO).humanOverride, null)
 })

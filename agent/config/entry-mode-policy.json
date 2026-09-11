@@ -1,0 +1,6 @@
+{
+  "_note": "PR-G (owner principle 2, 11-09-2026: 'the tick-based switch is on/off per account BY A HUMAN and AUTOMATICALLY by the bot'). accounts: ctidTraderAccountId -> manual | auto, or \"_all\" for every enabled registry account (a per-id key still wins for that id; an account enabled later is seeded on its first boot). manual: only POST /actions/entry-mode throws the account's entry-mode switch. auto: the loop's readiness pass (agent/services/entry-mode-auto.js, actor auto:readiness) may also promote the account to TICK_MOMENTUM after AUTO_PROMOTE_CYCLES consecutive ready evaluations with SHADOW_PASSED or above AND the tick path's shadow-taken signals over OPPORTUNITY_WINDOW_H at least matching the time path's approvals, and demotes it to TIME_BASED on one failing evaluation. Seeded ONCE per content (entry_mode_policy_seed_json): a later change through POST /actions/entry-mode-policy stands until THIS ACCOUNT'S declaration here changes (its own key, or _all when it has none) — editing one key never re-applies the others. Every automatic switch still passes requestEntryMode's readiness gate, ack protocol and drain.",
+  "accounts": {
+    "_all": "manual"
+  }
+}

@@ -4922,6 +4922,18 @@ async function runLoop(db) {
         }
         log(`Regime (ADX/ATR) computed for ${regimeWritten}/${recentScans.length} scanned symbols`)
 
+        // PR-G (owner principle 2): the AUTOMATIC entry-mode switch, on the
+        // same cadence as the regime. Only accounts under policy `auto` are
+        // touched; every switch goes through requestEntryMode (readiness,
+        // ack, drain, action_log) and binds the gateway as the route does.
+        try {
+          const { evaluateAutoEntryModes } = await import('./services/entry-mode-auto.js')
+          const autoModes = await evaluateAutoEntryModes(db)
+          for (const line of autoModes.lines) log(`[entry-mode] auto: ${line}`)
+        } catch (err) {
+          log(`[entry-mode] auto: evaluation failed (${err.message})`)
+        }
+
         // Performance snapshot from closed trades
         const stats = db.prepare(
           `SELECT COUNT(*) as total,

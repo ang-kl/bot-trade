@@ -38,6 +38,17 @@ export async function refreshEngineStatus() {
   return inflight
 }
 
+/**
+ * A refresh that is guaranteed to START after this call: if a poll is already
+ * in flight its answer predates the action just taken, so wait for it and
+ * then fetch again (PR-G, checker minor 10 — refreshEngineStatus alone
+ * returns the in-flight poll and the switch would render a stale value).
+ */
+export async function refreshEngineStatusAfterAction() {
+  if (inflight) { try { await inflight } catch { /* the fresh fetch below reports its own error */ } }
+  return refreshEngineStatus()
+}
+
 function tick() {
   if (pageAsleep()) return
   refreshEngineStatus()

@@ -372,6 +372,16 @@ try {
   } catch (err) {
     console.error(`[boot] tick observation seed failed (non-fatal): ${err.message}`)
   }
+  // PR-G (owner principle 2): the switch-policy declaration (manual | auto
+  // per account), seeded once per file content on the same rule.
+  try {
+    const { seedEntryModePolicyFromConfig } = await import('./services/entry-mode.js')
+    const ep = seedEntryModePolicyFromConfig(db, { log: (m) => console.log(m) })
+    if (ep.error) console.error(`[boot] entry-mode policy: ${ep.error}`)
+    else console.log(`[boot] entry-mode policy: ${ep.applied.length} applied${ep.applied.length ? ` (${ep.applied.join(' ')})` : ''}, ${ep.unchanged.length} unchanged${ep.skipped.length ? `, skipped: ${ep.skipped.join('; ')}` : ''} (config/entry-mode-policy.json)`)
+  } catch (err) {
+    console.error(`[boot] entry-mode policy seed failed (non-fatal): ${err.message}`)
+  }
   const bf = backfillAccountIds(db)
   if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
   // Fold the retired per-account autotrade flags into accounts.mode, so

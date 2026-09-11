@@ -12,9 +12,12 @@
 // Actions: Stop entries / Time-based per account (POST /actions/entry-mode
 // with expectedRevision — a 409 means someone changed it first; the panel
 // reloads and says so). Tick momentum is a button that is DISABLED with the
-// server's blocker list as its title until readiness says ready, and even
-// then the server refuses it until P6 — the UI can never grant what the
-// record refuses. Bulk Stop / Time-based run per account and list each
+// server's blocker list as its title until the live readiness predicate
+// (/state/tick-readiness `ready`) holds; enabled, it posts the same route and
+// the server re-checks readiness at the request — the UI can never grant
+// what the record refuses (PR-G). Beside it the switch POLICY (manual |
+// auto, EntryModePolicySwitch) says whether the bot's readiness pass may
+// throw the switch too. Bulk Stop / Time-based run per account and list each
 // account's own acknowledgement (TM-33): one executor offline shows as that
 // account NOT acknowledged, never as an all-stopped success.
 //
@@ -31,6 +34,7 @@ import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
 import Collapse from './common/Collapse.jsx'
+import EntryModePolicySwitch from './EntryModePolicySwitch.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { useEngineStatus, refreshEngineStatus } from '../lib/use-engine-status.js'
 import { engineReading, blockerGroups, tickBlockedReason, ackLine, mixedSummary, MODE_LABEL } from '../lib/engine-status-view.js'
@@ -84,7 +88,8 @@ export function EngineRow({ row, readiness, fullId, busy, onMode, at }) {
       <div className="mt-1 flex flex-wrap gap-1">
         <Button size="sm" variant="danger" disabled={disabledAll || row.requestedEntryMode === 'STOPPED'} title={why || 'stop every automatic entry on this account; resting entry orders are cancelled by id; manual orders stay admitted'} onClick={() => onMode(fullId, 'STOPPED', row.configRevision)}>Stop entries</Button>
         <Button size="sm" variant="primary" disabled={disabledAll || row.requestedEntryMode === 'TIME_BASED'} title={why || 'bar-based entries; the executor must echo the new epoch before entries resume (WARMING → STABLE)'} onClick={() => onMode(fullId, 'TIME_BASED', row.configRevision)}>Time-based</Button>
-        <Button size="sm" variant="ghost" disabled title={tickWhy ? `Tick momentum is refused: ${tickWhy}` : 'Tick momentum: readiness holds, but the entry path (P6) is not built — the server refuses tick_engine_not_built'}>Tick momentum</Button>
+        <Button size="sm" variant="ghost" disabled={disabledAll || !readiness?.ready || row.requestedEntryMode === 'TICK_MOMENTUM'} title={why || (tickWhy ? `Tick momentum is refused: ${tickWhy}` : 'tick-basis entries; every readiness check holds — the server re-checks at the request and the executor must echo the new epoch before entries begin (WARMING → STABLE)')} onClick={() => onMode(fullId, 'TICK_MOMENTUM', row.configRevision)}>Tick momentum</Button>
+        <EntryModePolicySwitch row={row} fullId={fullId} busy={busy} />
       </div>
       {groups.length > 0 && (
         <Collapse id={`engine-blockers-${row.accountId}`} label={`Why not tick-ready (${readiness.blockedReasons.length})`} defaultOpen={false}>
@@ -252,7 +257,7 @@ export default function EngineStatusPanel({ accounts = null, scope = 'all' }) {
       )}
       <UnknownsBlock scope={scope} />
       <div className="mt-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
-        Every value here is the server's record: the effective mode is what the executor acknowledged, not what was clicked. Tick momentum stays refused until the readiness checks hold AND the tick entry path (P6) exists.
+        Every value here is the server's record: the effective mode is what the executor acknowledged, not what was clicked. Tick momentum is admitted only while every readiness check holds — the server re-checks at the request — and, under switch policy <b>auto</b>, the bot may promote or demote the account on the same checks.
       </div>
     </Card>
   )
