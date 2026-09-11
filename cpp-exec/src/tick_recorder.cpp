@@ -210,7 +210,8 @@ bool TickRecorder::start() {
     st_.state = "OFF";
     st_.reason.clear();
   }
-  if (torn > 0) noteGap(GAP_RESTART, torn);
+  tornAtStart_ = torn;
+  restartGapPending_ = torn > 0;
   retire();
   stop_.store(false);
   started_.store(true);
@@ -239,19 +240,19 @@ void TickRecorder::noteGap(GapReason reason, uint64_t count) {
   g.kind = GAP;
   g.bid = static_cast<int64_t>(count);
   g.ask = static_cast<int64_t>(reason);
-  g.generation = static_cast<uint16_t>(generation_ & 0xFFFF);
+  g.generation = static_cast<uint16_t>(generation_.load(std::memory_order_relaxed) & 0xFFFF);
   if (!ring_.push(g)) { dropped_.fetch_add(1); pendingOverflow_.fetch_add(1); }
 }
 
 void TickRecorder::onQuote(long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask,
                            uint64_t recvMs, uint32_t generation) {
   events_.fetch_add(1, std::memory_order_relaxed);
-  if (generation != generation_) {
+  if (generation != generation_.load(std::memory_order_relaxed)) {
     // A (re)subscribe: the first event per symbol after it is a snapshot, and
     // the discontinuity is on disk as a gap IN ORDER — pushed through the
     // same ring, ahead of the new generation's first quote.
-    const bool reconnect = generation_ != 0;
-    generation_ = generation;
+    const bool reconnect = generation_.load(std::memory_order_relaxed) != 0;
+    generation_.store(generation, std::memory_order_relaxed);
     for (auto& kv : last_) kv.second.snapshotPending = true;
     if (reconnect && recording_.load(std::memory_order_relaxed)) noteGap(GAP_RECONNECT, 1);
   }
@@ -366,8 +367,7 @@ bool TickRecorder::openSegment(uint64_t now) {
   retire(); // make room under the cap before adding to it
   if (!budgetAllows(cfg_.segmentBytes, now)) return false;
   char name[96];
-  static uint32_t index = 0;
-  std::snprintf(name, sizeof name, "/seg-%013llu-%06u.tks", static_cast<unsigned long long>(now), ++index);
+  std::snprintf(name, sizeof name, "/seg-%013llu-%06u.tks", static_cast<unsigned long long>(now), ++segIndex_);
   sealedPath_ = cfg_.spoolDir + name;
   openPath_ = sealedPath_ + ".open";
   out_ = std::fopen(openPath_.c_str(), "wb");
@@ -379,7 +379,7 @@ bool TickRecorder::openSegment(uint64_t now) {
   }
   SegmentHeader h;
   h.environment = cfg_.environment;
-  h.generation = generation_;
+  h.generation = generation_.load(std::memory_order_relaxed);
   h.startedMs = now;
   h.feedId = cfg_.feedId;
   uint8_t hdr[kHeaderBytes];
@@ -390,6 +390,25 @@ bool TickRecorder::openSegment(uint64_t now) {
   }
   openBytes_ = kHeaderBytes;
   lastFsyncMs_ = now;
+  if (restartGapPending_) {
+    // The discontinuity a crash left behind, first thing in the first segment.
+    restartGapPending_ = false;
+    Record g;
+    g.recvMs = now;
+    g.seq = seq_.load(std::memory_order_relaxed);
+    g.kind = GAP;
+    g.bid = static_cast<int64_t>(tornAtStart_);
+    g.ask = GAP_RESTART;
+    g.generation = static_cast<uint16_t>(generation_.load(std::memory_order_relaxed) & 0xFFFF);
+    uint8_t gb[kRecordBytes];
+    encodeRecord(g, gb);
+    buf_.insert(buf_.end(), gb, gb + kRecordBytes);
+    openBytes_ += kRecordBytes;
+    std::lock_guard<std::mutex> lk(statsMtx_);
+    st_.gaps++;
+    st_.recordsWritten++;
+    st_.bytesWritten += kRecordBytes;
+  }
   return true;
 }
 
@@ -482,7 +501,7 @@ void TickRecorder::writerLoop() {
         g.kind = GAP;
         g.bid = 0;
         g.ask = GAP_SWITCHED_OFF;
-        g.generation = static_cast<uint16_t>(generation_ & 0xFFFF);
+        g.generation = static_cast<uint16_t>(generation_.load(std::memory_order_relaxed) & 0xFFFF);
         writeRecord(g);
         sealSegment(true);
       }
@@ -494,7 +513,7 @@ void TickRecorder::writerLoop() {
     if (rec) {
       if (const uint64_t n = pendingOverflow_.exchange(0)) {
         Record g; g.recvMs = nowMs(); g.kind = GAP; g.bid = static_cast<int64_t>(n); g.ask = GAP_QUEUE_OVERFLOW;
-        g.generation = static_cast<uint16_t>(generation_ & 0xFFFF);
+        g.generation = static_cast<uint16_t>(generation_.load(std::memory_order_relaxed) & 0xFFFF);
         writeRecord(g);
       }
       while (auto r = ring_.pop()) { didWork = true; writeRecord(*r); }
@@ -535,8 +554,8 @@ RecorderStats TickRecorder::stats() const {
   { std::lock_guard<std::mutex> lk(statsMtx_); s = st_; }
   s.enabled = true;
   s.recording = recording_.load();
-  s.generation = generation_;
-  s.seq = seq_;
+  s.generation = generation_.load(std::memory_order_relaxed);
+  s.seq = seq_.load(std::memory_order_relaxed);
   s.events = events_.load();
   s.changed = changed_.load();
   s.repeats = repeats_.load();

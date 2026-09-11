@@ -199,11 +199,20 @@ private:
   std::atomic<bool> recording_{false};
   std::atomic<bool> flushRequested_{false};
   int lockFd_ = -1;
+  // A torn tail found at start is reported in the FIRST segment the writer
+  // opens — set before the writer thread exists, consumed by it. (Pushing
+  // the gap through the ring at start() lost it whenever the writer's
+  // off-branch drained the ring before recording was switched on.)
+  bool restartGapPending_ = false;
+  uint64_t tornAtStart_ = 0;
 
-  // Feed-thread state (no lock: one producer).
+  // Feed-thread state (no lock: one producer). generation_ and seq_ are
+  // atomics only because the writer thread stamps gap records with the
+  // generation and stats() reads both from any thread.
   std::map<long long, SymbolState> last_;
-  uint32_t generation_ = 0;
-  uint32_t seq_ = 0;
+  std::atomic<uint32_t> generation_{0};
+  std::atomic<uint32_t> seq_{0};
+  uint32_t segIndex_ = 0;
   std::atomic<uint64_t> pendingOverflow_{0};   // dropped since the last overflow gap
 
   // Writer-thread state.
