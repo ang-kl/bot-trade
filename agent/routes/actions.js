@@ -1996,15 +1996,17 @@ export default function actionsRouter(db, deps = {}) {
   // TP on ONE position. Body: { positionId, sl?, tp? } (absolute prices).
   router.post('/position-protect', async (req, res) => {
     try {
-      const creds = getCtraderCreds(db)
-      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { positionId, sl, tp } = req.body || {}
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      // PR-F checker M1: was getCtraderCreds(db) — the primary account for
+      // every position. The position's own record names the account.
+      const creds = req.body?.account ? { ...credsForAccountId(db, req.body.account), accountSource: 'body' } : credsForPosition(db, positionId)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       // Shared with the Telegram "Set TP" button (services/position-protect.js)
       // so the two entry points cannot drift.
       const { protectPosition } = await import('../services/position-protect.js')
       const out = await protectPosition(db, creds, { positionId, sl, tp, source: 'manual' }, { amend: execAmendPosition })
-      res.json(out)
+      res.json({ ...out, accountId: creds.accountId, accountSource: creds.accountSource })
     } catch (err) {
       const code = /required/.test(err.message) ? 400 : 502
       res.status(code).json({ error: err.message })
@@ -2257,11 +2259,16 @@ export default function actionsRouter(db, deps = {}) {
   // Body: { positionId, lots? } (omit lots → full close).
   router.post('/position-close', async (req, res) => {
     try {
-      // `account` (03-09-2026): close on the NAMED account, else the primary.
-      const creds = credsForAccountId(db, req.body?.account)
-      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { positionId, lots } = req.body || {}
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      // `account` (03-09-2026): close on the NAMED account. PR-F checker M1:
+      // with no account in the body this used to fall back to the PRIMARY
+      // account's creds — a close for a position held on another account
+      // went to the wrong broker session. Now the position's own record
+      // names the account (credsForPosition, as double/reverse already do)
+      // and the reply says which source chose it.
+      const creds = req.body?.account ? { ...credsForAccountId(db, req.body.account), accountSource: 'body' } : credsForPosition(db, positionId)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const pos = await findLivePosition(creds, positionId)
       if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker (already closed?)` })
       let volume = pos.tradeData?.volume
@@ -2280,7 +2287,7 @@ export default function actionsRouter(db, deps = {}) {
         symbol: pos.symbolName || null, kind: partial ? 'scale_out' : 'close',
         toValue: volume, source: 'manual',
       })
-      res.json({ ok: true, positionId, closedVolume: volume, partial, deal: exec.deal ?? null })
+      res.json({ ok: true, positionId, closedVolume: volume, partial, deal: exec.deal ?? null, accountId: creds.accountId, accountSource: creds.accountSource })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }

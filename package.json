@@ -11,9 +11,9 @@
     "test:watch": "vitest",
     "check:no-green": "bash scripts/check-no-green.sh",
     "serial": "node scripts/count-interactions.js --serial",
-    "audit:ui": "node scripts/responsive-audit.mjs /performance,/desk,/trade,/accounts,/tune,/risk,/connect",
+    "audit:ui": "node scripts/responsive-audit.mjs '/performance,/desk,/trade,/accounts,/tune,/risk,/connect,/reasons,/desk?trade=1&tdb=1&tacct=1'",
     "audit:ui:rows": "node scripts/connect-rows-audit.mjs",
-    "audit:ui:live": "node scripts/responsive-audit.mjs /performance,/desk,/trade,/accounts,/tune,/risk,/connect --live"
+    "audit:ui:live": "node scripts/responsive-audit.mjs '/performance,/desk,/trade,/accounts,/tune,/risk,/connect,/reasons,/desk?trade=1&tdb=1&tacct=1' --live"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

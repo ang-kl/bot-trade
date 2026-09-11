@@ -40,10 +40,25 @@ const ctx = await b.newContext({ hasTouch: true })
 // way to exercise the code paths that run once data is present.
 const LIVE = process.argv.includes('--live')
 const AGENT = process.env.AUDIT_AGENT_URL || 'https://sg-trade.up.railway.app'
-if (!LIVE) {
-  await ctx.route('**', (route) =>
-    route.request().url().includes('localhost:4173') ? route.continue() : route.abort())
-}
+// BOUND-POSITION FIXTURE (PR-F, CLAUDE.md failure mode #3). Layout mode
+// aborts every off-host request, so a route carrying ?trade=… rendered the
+// cockpit with NO position — the very panels principle 6 is about (the
+// header actions, the chart empty state, the Manage sheet's guard fields)
+// were never measured. Two agent calls are now answered from a fixture in
+// BOTH modes when the route carries ?trade=: the cockpit snapshot and the
+// position-guard read. Everything else keeps its mode's rule. The fixture
+// is scripts/fixtures/cockpit-snapshot.json and says so in its meta.
+import { readFileSync } from 'node:fs'
+const FIXTURE = JSON.parse(readFileSync(new URL('./fixtures/cockpit-snapshot.json', import.meta.url), 'utf8'))
+const FIXTURE_AGENT = 'http://fixture-agent.invalid'
+await ctx.route('**', (route) => {
+  const u = route.request().url()
+  if (u.includes('localhost:4173')) return route.continue()
+  if (/\/state\/position\/[^/]+\/cockpit/.test(u)) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FIXTURE) })
+  if (/\/actions\/position-guard-get$/.test(u)) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, positionId: '1', guard: { trailing: { on: true, distancePips: 12 } }, beMoved: false, monitored: true }) })
+  if (LIVE) return route.continue()
+  return route.abort()
+})
 let failed = 0
 
 for (const r of ROUTES) {
@@ -67,14 +82,40 @@ for (const r of ROUTES) {
     const errs = []
     p.on('pageerror', e => errs.push(String(e.message).slice(0, 110)))
     await p.setViewportSize({ width: w, height: 900 })
-    if (LIVE) {
-      // Point the app at a real agent the way a browser would, then reload so
-      // the pages fetch on mount.
+    const bound = /[?&]trade=/.test(r)
+    if (LIVE || bound) {
+      // Point the app at a real agent the way a browser would (or, for a
+      // bound-position route in layout mode, at the fixture host so the
+      // cockpit host issues the snapshot fetch the fixture answers), then
+      // reload so the pages fetch on mount.
       await p.goto('http://localhost:4173/').catch(() => {})
-      await p.evaluate((u) => localStorage.setItem('agent_url', u), AGENT)
+      await p.evaluate((u) => localStorage.setItem('agent_url', u), LIVE ? AGENT : FIXTURE_AGENT)
+      // agentConfigured() needs BOTH the url and a secret; the fixture host
+      // never sees the value, every request to it is answered or aborted above.
+      if (!LIVE) await p.evaluate(() => localStorage.setItem('agent_secret', 'fixture'))
     }
     await p.goto('http://localhost:4173' + r).catch(() => {})
-    await p.waitForTimeout(LIVE ? 8000 : 700)
+    await p.waitForTimeout(LIVE ? 8000 : bound ? 1800 : 700)
+    if (bound) {
+      // Open the Manage sheet so the PositionManager is measured WITH a
+      // position (its guard fields answered by the fixture). A missing
+      // button is a failure — that is the decorative state this exists to catch.
+      const manage = await p.$('.tc-root button:has-text("Manage")')
+      if (!manage) { errs.push('bound-position route rendered no Manage button in the cockpit') }
+      else { await manage.click().catch(e => errs.push('Manage click failed: ' + e.message)); await p.waitForTimeout(600) }
+      const sheet = await p.$('[aria-label="Manage position"]')
+      if (!sheet) errs.push('Manage did not open the position sheet')
+      const guard = await p.$('[data-guard-read]')
+      const guardState = guard ? await guard.getAttribute('data-guard-read') : null
+      if (guardState !== 'stored' && guardState !== 'reading') {
+        // The Stop & Target tab is where the guard note lives; open it.
+        const tab = await p.$('[role="tab"]:has-text("Stop & Target")')
+        if (tab) { await tab.click().catch(() => {}); await p.waitForTimeout(300) }
+      }
+      const guard2 = await p.$('[data-guard-read]')
+      const st = guard2 ? await guard2.getAttribute('data-guard-read') : 'absent'
+      if (st !== 'stored') errs.push(`guard fields not filled from the fixture guard (data-guard-read=${st})`)
+    }
     const m = await p.evaluate(() => {
       const de = document.documentElement, vw = de.clientWidth
       const wide = []

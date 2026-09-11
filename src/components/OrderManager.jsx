@@ -98,11 +98,12 @@ export default function OrderManager({ o, onDone }) {
             <span>Take Profit</span><span className="font-semibold">{fmt(o.tp, o.digits ?? 5)}</span>
           </div>
 
-          <button type="button" disabled className="w-full mt-2 rounded-[var(--radius-control)] glass-inset py-2.5 text-(length:--fs-h) font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
+          {/* PR-F: the permanently-disabled "Modify" is gone until amend-in-
+              place has a route — the one real action a resting order supports
+              through the agent is Cancel. */}
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] my-1.5">
-            Amend-in-place isn't wired yet — cancel and let the bot re-stage (or edit in cTrader)
+            Amend-in-place isn't wired (no route yet) — cancel and let the bot re-stage, or edit in cTrader
           </div>
-          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <button type="button" disabled={busy}
             className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"

@@ -63,6 +63,10 @@ test('manual-order and position-close take the ORDER\'s account too (owner: "use
   // hands it THIS order's account — the same fact, pinned where it now lives.
   assert.ok(mo.includes('accountId: creds.accountId'), 'the trade row is stamped with the order\'s account')
   const pc = routeBody(src, '/position-close')
-  assert.ok(pc.includes('credsForAccountId(db, req.body?.account)'))
+  // PR-F (11-09-2026): a named account still wins; with none in the body the
+  // POSITION's own record chooses (credsForPosition) — no primary fallback.
+  // Pinned in full by position-account-routing.test.js.
+  assert.ok(pc.includes('credsForAccountId(db, req.body.account)'))
+  assert.ok(pc.includes('credsForPosition(db, positionId)'))
   assert.ok(!pc.includes('getCtraderCreds(db)'))
 })

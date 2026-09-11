@@ -417,10 +417,16 @@ export default function stateRouter(db) {
       // helper /state/positions uses. Best effort; an unknown stays null.
       if (out.status === 200) {
         try {
-          const { isSymbolOpenCached } = await import('../services/symbol-hours.js')
+          const { isSymbolOpenCached, nextOpenInfo } = await import('../services/symbol-hours.js')
           const o = isSymbolOpenCached(db, out.body.position.symbol)
           out.body.position.marketOpen = !!o.open
           out.body.position.marketSource = o.source || null
+          // PR-F (owner principle 6): the cockpit used to animate a hard-coded
+          // "opens in 4h 23m" on a closed market. The only honest next-open
+          // time is the broker schedule's (the same helper /state/market-hours
+          // serves); a heuristic-only symbol reports null and the cockpit
+          // then says "market closed" with no countdown at all.
+          out.body.position.nextOpenAt = o.open ? null : (nextOpenInfo(db, out.body.position.symbol).next_open_at ?? null)
         } catch { /* stays null */ }
       }
       // PHASE 3: real bars + indicators through the EXISTING chart data path
@@ -436,12 +442,19 @@ export default function stateRouter(db) {
         let fetched = []
         let fetchError = null
         try {
-          const { getCtraderCreds, ensureSymbolMap } = await import('../lib/ctrader-creds.js')
+          const { resolveSymbolId } = await import('../lib/ctrader-creds.js')
+          const { credsForAccountId } = await import('./actions.js')
           const { wsGetTrendbarsBatch } = await import('../lib/ctrader-ws.js')
-          const creds = getCtraderCreds(db)
+          // PR-F checker (minor): was the PRIMARY account's creds and the
+          // shared symbol map for every account's position — a non-primary
+          // account's chart was a permanent "no symbol id" empty state. The
+          // snapshot's own account (the row's, else the requested scope)
+          // and that account's symbol id.
+          const acctId = out.body.account?.accountId ?? (scope?.all ? null : scope?.accountId ?? null)
+          const creds = credsForAccountId(db, acctId)
           if (!creds.ready) throw new Error('cTrader not connected')
-          const symbolId = (await ensureSymbolMap(db, creds))[out.body.position.symbol]
-          if (!symbolId) throw new Error(`no symbol id for ${out.body.position.symbol}`)
+          const symbolId = await resolveSymbolId(db, creds, out.body.position.symbol)
+          if (!symbolId) throw new Error(`no symbol id for ${out.body.position.symbol} on account …${String(creds.accountId).slice(-4)}`)
           const count = barCountFor(timeframe, lookbackH * 3_600_000)
           const byPeriod = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, [timeframe], count, 30_000)
           fetched = byPeriod[timeframe] || []

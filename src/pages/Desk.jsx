@@ -656,7 +656,7 @@ export default function Desk() {
             countLabel="open positions"
             marketHours={marketHours}
             onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
-            panel={{ label: 'Manage', render: (row, close) => <PositionManager p={row.raw} onDone={() => { close(); load() }} /> }}
+            panel={{ label: 'Manage', render: (row, close) => <PositionManager p={{ ...row.raw, accountId: row.raw.accountId ?? row.accountId ?? null }} onDone={() => { close(); load() }} /> }}
           />
         )}
         {(broker?.orders?.length ?? 0) > 0 && (

@@ -9,10 +9,14 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import gsap from 'gsap'
 import { cockpitFrame } from './cockpit-data.js'
-import { pageAsleep } from '../lib/agent-api.js'
+import { agentPost, pageAsleep } from '../lib/agent-api.js'
 import { makeFs } from './typeScale.js'
 import './cockpit-tokens.css'
 import { strategyLabel } from '../lib/strategy-labels.js'
+import CockpitActions from './CockpitActions.jsx'
+import { sessionLabel, sendClose, NO_ACCOUNT_CLOSE_TITLE } from './cockpit-session.js'
+import { urlIdentity, toast } from './cockpit-nav.js'
+import PositionManager from '../components/PositionManager.jsx'
 
 // BUILD-ORDER §6 — the variant table, verbatim. (Conflict, reported: iPhone
 // PFD columns are `50·1fr·22·84·36` in §6 but `50px minmax(90px,1fr) 22px 84px
@@ -169,19 +173,65 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   }, [marketClosed, feedBlocked])
   const stale = staleFor > 5
 
-  // The countdown is reference demo timing. A real position has no next-open
-  // source on this route, so it shows CLOSED with no invented time-to-open.
-  const opensInMins = marketClosed && !position ? Math.max(1, 4 * 60 + 23 - minuteTick) : null
+  // PR-F (owner principle 6): the closed-market pill used to animate a
+  // hard-coded "opens in 4h 23m". It now reads the snapshot's
+  // position.nextOpenAt (the symbol-hours schedule, the same source the
+  // tables' 🔒 labels use) and says "market closed" with no countdown when
+  // that is null — never a fabricated number. `minuteTick` re-renders the
+  // label once a minute so the real remaining time stays current.
+  const nextOpenAt = position?.nextOpenAt ?? position?.snapshot?.position?.nextOpenAt ?? null
+  const closedLabel = useMemo(() => (marketClosed ? sessionLabel({ position, state: sess, nextOpenAt }) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- minuteTick is the clock; the label reads Date.now() through it
+    [marketClosed, position, sess, nextOpenAt, minuteTick])
   const [v, setV] = useState(null)
   useEffect(() => {
     // async apply (mirrors the reference's deferred animate() pass) — also
     // keeps this effect purely synchronising with the mock feed
     const id = setTimeout(() => setV(loaded ? cockpitFrame(storeRef.current, tick, {
-      positionState, session: { state: sess, exchange: position?.exchange || 'HKEX', opensInMins },
+      positionState, session: { state: sess, exchange: position ? (position.exchange || 'MARKET') : 'HKEX', opensInMins: null },
       real: position,
     }) : null), 0)
     return () => clearTimeout(id)
-  }, [loaded, tick, positionState, sess, opensInMins, position])
+  }, [loaded, tick, positionState, sess, position])
+
+  // PR-F: Manage opens the per-position sheet (the one Desk/Accounts open per
+  // row); Close sends the same route that sheet's own Close button sends,
+  // after a confirm naming symbol / side / volume. Both exist only for a
+  // bound position (CockpitActions renders nothing otherwise).
+  const [manageOpen, setManageOpen] = useState(false)
+  const [closing, setClosing] = useState(false)
+  const managed = useMemo(() => (position && tradeId != null ? {
+    positionId: tradeId, symbol: position.sym, side: position.side === 'SHORT' ? 'SELL' : 'BUY',
+    lots: position.lots ?? null, entry: position.entry ?? null, sl: position.sl ?? null, tp: position.tp ?? null,
+    currentPrice: position.price ?? null, netPnl: position.pnl ?? null,
+    usedMargin: position.snapshot?.account?.usedMargin ?? null, openedAt: position.snapshot?.position?.openedAt ?? null,
+    // The sheet's own posts carry the account too (PR-F checker M1).
+    accountId: urlIdentity().accountId ?? position.snapshot?.account?.accountId ?? null,
+  } : null), [position, tradeId])
+  // The account comes from the deep link (?tacct=, stamped by the clicking
+  // surface). Without it the close is REFUSED (PR-F checker M1) — the route
+  // would otherwise resolve the account from the position's record, but the
+  // cockpit does not know that record and must not send a close it cannot
+  // name the account for. A cold deep link with no ?tacct= shows the reason
+  // on the disabled button.
+  const closeAccountId = urlIdentity().accountId
+  const closeReason = managed && !closeAccountId ? NO_ACCOUNT_CLOSE_TITLE : null
+  // NOTE (checker): with no snapshot and no marketOpen fact on the bound
+  // facts, `marketClosed` is false and Close stays enabled on a market that
+  // is in fact closed — the broker's refusal then surfaces as the toast
+  // below. Acceptable: the button never claims to queue, and the honest
+  // disabled state appears as soon as the snapshot (market_open) arrives.
+  const closePosition = useCallback(async () => {
+    if (closing) return
+    setClosing(true)
+    try {
+      const r = await sendClose({ managed, accountId: closeAccountId, marketClosed, closing: false, confirm: m => window.confirm(m), post: agentPost })
+      if (r.sent) { toast(`close sent · ${managed.symbol} ${managed.side} ${managed.lots ?? '—'} lots`); onClose?.() }
+      else if (r.reason && r.reason !== 'not confirmed') toast(`close refused: ${r.reason}`)
+    } catch (e) {
+      toast(`close refused: ${e.message}`)
+    } finally { setClosing(false) }
+  }, [managed, closeAccountId, marketClosed, closing, onClose])
 
   // GSAP wiring — port of the reference animate(); reduced-motion applies values instantly.
   const pnlObj = useRef(null)
@@ -288,30 +338,27 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   }, [])
 
   const dim = stale ? 'var(--sb)' : null
-  const touchPad = cfg.touch ? { minHeight: 44 } : {}
 
   // ————— sections (all reference-verbatim values, fs() = §3 pass) —————
   const skeleton = h => <div style={{ height: h ?? 2, background: 'var(--edg)', borderRadius: 1, margin: '4px 6px' }} />
 
   const header = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-      <span style={{ fontSize: fs(19), fontWeight: 700, letterSpacing: '-.02em' }}>{v?.sym ?? '0002.HK'}</span>
+      <span style={{ fontSize: fs(19), fontWeight: 700, letterSpacing: '-.02em' }}>{v?.sym ?? (position ? (position.sym ?? '—') : '0002.HK')}</span>
       <span style={{ fontSize: fs(11.5), fontWeight: 600, padding: '2px 9px', borderRadius: 999, color: v?.side === 'SHORT' ? 'var(--dn)' : 'var(--up)', background: v?.side === 'SHORT' ? 'var(--dns)' : 'var(--acs)', border: `1px solid ${v?.side === 'SHORT' ? 'var(--dn)' : 'var(--up)'}` }}>{v?.side ?? 'LONG'} · {v?.lots ?? '—'} lots</span>
-      <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--sb)', padding: '2px 8px', borderRadius: 6, background: 'var(--acs)' }}>{strategyLabel(v?.strategy) ?? 'Fibonacci 61.8% Fade'}</span>
+      <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--sb)', padding: '2px 8px', borderRadius: 6, background: 'var(--acs)' }}>{strategyLabel(v?.strategy) ?? (position ? '—' : 'Fibonacci 61.8% Fade')}</span>
       {review
         ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: fs(11.5), fontWeight: 600, color: 'var(--mu)', border: '1px solid var(--mu)', borderRadius: 999, padding: '2px 8px' }}>CLOSED {v?.timeIn ?? ''}</span>
         : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: fs(11.5), fontWeight: 600, color: stale ? 'var(--wrn)' : 'var(--acc)', border: `1px solid ${stale ? 'var(--wrn)' : 'var(--acc)'}`, borderRadius: 999, padding: '2px 8px' }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: stale ? 'var(--wrn)' : 'var(--acc)', animation: stale || marketClosed ? 'none' : 'tc-pulse 1.6s infinite' }} />OPEN {v?.timeIn ?? ''}{stale ? ` · STALE ${staleFor}s` : ''}</span>}
       {marketClosed && (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: fs(11.5), fontWeight: 600, color: 'var(--mu)', border: '1px solid var(--mu)', borderRadius: 999, padding: '2px 8px', fontVariantNumeric: 'tabular-nums' }}>
-          {position?.exchange || 'HKEX'} {sess.toUpperCase()}{sess === 'closed' && opensInMins != null ? ` · opens in ${Math.floor(opensInMins / 60)}h ${opensInMins % 60}m` : ''}</span>)}
+          {closedLabel}</span>)}
       <span style={{ fontSize: fs(15), fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: dim || v?.rCol }}><span id="hdr-pnl">{v?.pnl ?? '—'}</span> · {v?.rNow ?? '—'}</span>
       <span style={{ marginLeft: 'auto', fontSize: fs(10.5), fontWeight: 600, color: 'var(--sb)', fontVariantNumeric: 'tabular-nums' }}>{v?.clock ?? ''}</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 'none', whiteSpace: 'nowrap', ...(cfg.headerWraps ? { flexBasis: '100%' } : {}) }}>
-        <button disabled={marketClosed} title={marketClosed ? `market closed — opens in ${Math.floor(opensInMins / 60)}h ${opensInMins % 60}m` : undefined}
-          style={{ cursor: marketClosed ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: marketClosed ? 'var(--mu)' : 'var(--tx)', background: 'var(--acs)', border: `1px solid ${marketClosed ? 'var(--mu)' : 'var(--acc)'}`, borderRadius: 10, padding: cfg.headerWraps ? '11px 14px' : '4px 12px', ...(cfg.headerWraps ? { flex: 1 } : {}) }}>Manage</button>
-        <button title={marketClosed ? 'queues for next open' : undefined}
-          style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--dn)', background: 'var(--dns)', border: '1px solid var(--dn)', borderRadius: 10, padding: cfg.headerWraps ? '11px 14px' : '4px 12px', ...(cfg.headerWraps ? { flex: 1 } : {}) }}>Close</button>
+        <CockpitActions fs={fs} wraps={cfg.headerWraps} position={position} tradeId={tradeId} marketClosed={marketClosed} busy={closing} closeReason={closeReason}
+          onManage={() => setManageOpen(true)} onClosePosition={closePosition} />
         <button title={themeOverride == null ? 'Following the system theme — tap to override' : 'Overriding the system theme — tap to cycle'}
           aria-pressed={themeOverride != null}
           onClick={() => setThemeOverride(o => (o == null ? (sysDark ? 'light' : 'dark') : null))}
@@ -337,9 +384,10 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
         </div>
         <div style={{ position: 'relative', minWidth: 0 }}>
           <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', borderRadius: 12, border: '1px solid var(--edg)', background: 'var(--acs)', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px 1px' }}><Chip fs={fs} hue="vio">PRICE · 15m</Chip><Info fs={fs} tip="Last 30 bars with session VWAP (amber) and the TP/SL/entry rails — the direct read, no metaphor." /></div>
-            <svg viewBox="0 0 200 150" preserveAspectRatio="none" style={{ flex: 1, width: '100%' }}>
-              {v && <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px 1px' }}><Chip fs={fs} hue="vio">PRICE · {v?.chart?.timeframe ?? '15m'}</Chip><Info fs={fs} tip="Last 30 bars with session VWAP (amber) and the TP/SL/entry rails — the direct read, no metaphor." /></div>
+            {v && v.chart?.status === 'empty' && <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 8px', textAlign: 'center', fontSize: fs(9.5), color: 'var(--mu)' }}>{v.chart.reason}</div>}
+            <svg viewBox="0 0 200 150" preserveAspectRatio="none" style={{ flex: 1, width: '100%', ...(v && v.chart?.status === 'empty' ? { display: 'none' } : {}) }}>
+              {v && v.chart?.status !== 'empty' && <>
                 <line x1="0" y1={v.mcTp} x2="200" y2={v.mcTp} stroke="var(--up)" strokeWidth=".7" />
                 <line x1="0" y1={v.mcEn} x2="200" y2={v.mcEn} stroke="var(--wrn)" strokeWidth=".7" strokeDasharray="3 2" />
                 <line x1="0" y1={v.mcSl} x2="200" y2={v.mcSl} stroke="var(--dn)" strokeWidth=".7" />
@@ -357,7 +405,8 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
         <div style={{ ...pane, display: 'flex', flexDirection: 'column' }}>
           <span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--mu)', textAlign: 'center', paddingTop: 2, borderBottom: '1px solid var(--edg)', paddingBottom: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>VOL <Info fs={fs} tip="Volume Profile: how much trading happened at each price. Amber = POC (most-traded price, widest bar). Violet band = Value Area (70% of volume). Grey = low-volume price (LVN) — price tends to move fast through these." /></span>
           <div style={{ flex: 1, position: 'relative' }}>
-            {v && <>
+            {v && (v.chart?.status === 'empty' || v.chart?.vp === 'unknown') && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, textAlign: 'center', fontSize: fs(8.5), color: 'var(--mu)', writingMode: 'vertical-rl' }}>{v.chart.status === 'empty' ? 'no chart data' : 'VP unknown'}</div>}
+            {v && v.chart?.status !== 'empty' && v.chart?.vp !== 'unknown' && <>
               <div style={{ position: 'absolute', left: 0, right: 0, top: v.vaTop + '%', height: v.vaH + '%', background: 'linear-gradient(90deg,rgba(168,85,247,.16),transparent)' }} />
               {v.vpBars.map((b, i) => (
                 <div key={i} className="vp-bar" title={b.tip} data-w={b.w} style={{ position: 'absolute', left: 0, top: b.top + '%', height: b.h + '%', minWidth: 2, background: `linear-gradient(90deg,${b.col},transparent)`, boxShadow: b.gl }} />))}
@@ -370,8 +419,8 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
         <div style={pane}>
           <div style={{ position: 'absolute', top: 2, left: 0, right: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'var(--gls)', zIndex: 2 }}><span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--acc)' }}>PRICE · R</span><Info fs={fs} tip="Slide-rule tape, three paired scales: price on the left, the same level in R (risk units) and in this position's dollars on the right. ENT = your entry price (always 0.00R — the zero line of the trade). SL and TP are the stop and target rails. Blue/red ticks are the best (MFE) and worst (MAE) excursion this trade has reached." /></div>
           {v && <>
-            <div title="best excursion so far (MFE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMfe + '%', height: 2, background: 'var(--up)', zIndex: 2 }} />
-            <div title="worst excursion so far (MAE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMae + '%', height: 2, background: 'var(--dn)', zIndex: 2 }} />
+            {v.altMfe != null && <div title="best excursion so far (MFE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMfe + '%', height: 2, background: 'var(--up)', zIndex: 2 }} />}
+            {v.altMae != null && <div title="worst excursion so far (MAE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMae + '%', height: 2, background: 'var(--dn)', zIndex: 2 }} />}
             <div title={`best ${v.mfeR} · worst ${v.maeR} · handed back ▼${v.giveback} from the peak`} style={{ position: 'absolute', left: 2, right: 2, bottom: 2, display: 'flex', gap: 3, justifyContent: 'space-between', fontSize: fs(8.5), fontVariantNumeric: 'tabular-nums', zIndex: 2, background: 'var(--gls)', cursor: 'help' }}><span style={{ color: 'var(--up)' }}>{v.mfeR}</span><span style={{ color: 'var(--dn)' }}>{v.maeR}</span></div>
             {v.altTicks.map((s, i) => (
               <div key={i} style={{ position: 'absolute', left: 0, right: 0, top: s.top + '%', display: 'flex', alignItems: 'center', gap: 3, padding: '0 4px', transform: 'translateY(-50%)' }}><span style={{ width: 6, height: 1, background: 'var(--mu)' }} /><span style={{ fontSize: fs(10.5), color: dim || 'var(--sb)', fontVariantNumeric: 'tabular-nums' }}>{s.v}</span><span style={{ marginLeft: 'auto', fontSize: fs(8.5), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden' }}>{s.r}{s.usd && variant !== 'iphone' ? ' · ' + s.usd : ''}</span></div>))}
@@ -444,21 +493,28 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             overflow those strokes walked over every card below the MFD. The
             canvas now clips; only the sub-canvas x-axis ticks (y≤214) lose
             their last 4px, which the axis line already marks. */}
+        {v && v.chart?.status === 'empty' && (
+          <div style={{ position: 'absolute', top: 34, left: 28, right: 8, bottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 12, fontSize: fs(10.5), color: 'var(--mu)', border: '1px dashed var(--edg)', borderRadius: 8, zIndex: 1 }}>{v.chart.reason}</div>)}
         <svg viewBox="0 0 460 208" preserveAspectRatio="none" style={{ width: '100%', aspectRatio: '460 / 176.8', overflow: 'hidden', display: 'block' }}>
           <defs><filter id="glo" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.2" result="b" /><feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
           <line x1="28" y1="16" x2="28" y2="210" stroke="var(--sb)" strokeWidth="1" />
           <line x1="28" y1="210" x2="452" y2="210" stroke="var(--sb)" strokeWidth="1" />
           <line x1="28" y1="178" x2="452" y2="178" stroke="var(--sb)" strokeWidth="1" opacity=".45" />
-          {v && <>
+          {v && v.chart?.status !== 'empty' && <>
             {v.volBars.map((b, i) => <rect key={i} x={b.x} y={b.y} width={b.w} height={b.h} fill={b.col} opacity=".8"><title>{b.tip}</title></rect>)}
             {v.yMinor.map((y, i) => <line key={i} x1="28" y1={y.y} x2="452" y2={y.y} stroke="var(--mu)" strokeWidth=".5" opacity=".3" />)}
             {v.xMinor.map((x, i) => <line key={i} x1={x.x} y1="16" x2={x.x} y2="210" stroke="var(--mu)" strokeWidth=".5" opacity=".3" />)}
             {v.xLabels.map((x, i) => <line key={i} x1={x.x} y1="16" x2={x.x} y2="214" stroke="var(--sb)" strokeWidth="1" opacity=".4" />)}
             {v.yAxis.map((y, i) => <g key={i}><line x1="24" y1={y.y} x2="28" y2={y.y} stroke="var(--sb)" strokeWidth="1" /><line x1="28" y1={y.y} x2="452" y2={y.y} stroke="var(--sb)" strokeWidth="1" opacity=".45" /></g>)}
+            {/* PR-F: the terrain bands, the fixed waypoint circles and the
+                dashed flight plan are the reference's demo flight — drawn
+                only on the demo route, never over real bars. */}
+            {v.chart?.status === 'synthetic' && <>
             <rect x="28" y="158" width="424" height="2" fill="var(--dn)" opacity=".55" />
             <rect x="28" y="160" width="424" height="18" fill="rgba(255,77,109,.08)" />
             <rect x="28" y="30" width="424" height="2" fill="var(--acc)" opacity=".55" />
             <rect x="28" y="16" width="424" height="14" fill="rgba(79,140,255,.07)" />
+            </>}
             {/* WX cell only when the view-model carries an actual relevant
                 event (news-gate window) — no ellipse for a clear sky. */}
             {v.wx && <>
@@ -471,17 +527,19 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             <path d={v.ema9Path} fill="none" stroke="var(--color-accent)" strokeWidth="1.4" />
             <path id="mfd-vwap" d={v.vwapPath} fill="none" stroke="var(--wrn)" strokeWidth="1.8" strokeDasharray="5 3" filter="url(#glo)" />
             <path id="mfd-flown" d={v.flownPath} fill="none" stroke="var(--acc)" strokeWidth="2" strokeLinejoin="round" filter="url(#glo)" />
-            {!review && <path id="mfd-plan" d={v.planPath} fill="none" stroke="var(--sb)" strokeWidth="2" strokeDasharray="6 5" />}
+            {!review && v.planPath && <path id="mfd-plan" d={v.planPath} fill="none" stroke="var(--sb)" strokeWidth="2" strokeDasharray="6 5" />}
             {v.xAxis.map((x, i) => <g key={i}><line x1={x.x} y1="210" x2={x.x} y2="214" stroke="var(--sb)" strokeWidth="1" /></g>)}
             {v.tweaks.map(tw => (
               <g key={tw.key} className="tw-mark" data-key={tw.key} style={{ cursor: 'pointer' }}
                 onMouseEnter={() => setHi(tw.key, true)} onMouseLeave={() => setHi(null, false)}>
                 <title>{tw.tip}</title>
                 <path d={`M${tw.x},${tw.y} m0,-7 l7,7 l-7,7 l-7,-7 z`} fill={tw.col} stroke="var(--gls)" strokeWidth="1" /></g>))}
+            {v.chart?.status === 'synthetic' && <>
             <circle cx="30" cy="150" r="4" fill="var(--wrn)" filter="url(#glo)" />
             <circle cx="290" cy="88" r="4" fill="none" stroke="var(--sb)" strokeWidth="1.2" />
             <line x1="290" y1="92" x2="290" y2="112" stroke="var(--sb)" strokeWidth=".75" opacity=".5" />
             <circle cx="420" cy="52" r="5" fill="var(--up)" filter="url(#glo)" />
+            </>}
             {v.traffic.map((tr, i) => (
               <g key={i} className="mfd-tfc" style={{ transformBox: 'fill-box', transformOrigin: 'center' }}>
                 <g transform={`translate(${tr.x},${tr.y})`}>
@@ -503,11 +561,13 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           </div>
           {/* Chart captions — BUILD-ORDER §3 pins these at 7.5px on every device.
               (Conflict, reported: the reference draws them at 8.5px; §3 wins.) */}
+          {v?.chart?.status === 'synthetic' && <>
           <span style={{ position: 'absolute', right: '1.5%', top: '13.5%', transform: 'translateY(-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.6px', color: 'var(--acc)', whiteSpace: 'nowrap' }}>RESISTANCE · TERRAIN</span>
           <span style={{ position: 'absolute', right: '1.5%', top: '83.2%', transform: 'translateY(-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.6px', color: 'var(--dn)', whiteSpace: 'nowrap' }}>SUPPORT · TERRAIN</span>
           <span style={{ position: 'absolute', left: '8.7%', top: '74%', transform: 'translateY(-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.6px', color: 'var(--wrn)', whiteSpace: 'nowrap' }}>ENTRY</span>
           <span style={{ position: 'absolute', left: '63%', top: '58.6%', transform: 'translate(-50%,-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.4px', color: 'var(--sb)', whiteSpace: 'nowrap' }}>WPT · SCALE-OUT</span>
           <span style={{ position: 'absolute', left: '91.3%', top: '32%', transform: 'translate(-50%,-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.6px', color: 'var(--up)', whiteSpace: 'nowrap' }}>TP</span>
+          </>}
           {v?.wx && <span style={{ position: 'absolute', left: '73%', top: '73.5%', transform: 'translate(-50%,-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.4px', color: 'var(--wrn)', whiteSpace: 'nowrap' }}>{v.wx.label}</span>}
           {v?.tweaks.map(tw => <span key={tw.key} className="tw-key" data-key={tw.key} title={tw.tip} style={{ position: 'absolute', left: tw.lpc + '%', top: tw.tpc + '%', transform: 'translate(-50%,-50%)', fontSize: 5, fontWeight: 600, color: 'var(--bg)', pointerEvents: 'auto', cursor: 'pointer', lineHeight: 1 }}
             onMouseEnter={() => setHi(tw.key, true)} onMouseLeave={() => setHi(null, false)}>{tw.key}</span>)}
@@ -605,7 +665,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
       {sectHead({ k: "rb", hue: "wrn", label: `RISK BUDGET${review ? ' · at close' : ''}`, tip: "Cockpit fuel gauge: how much of today's loss-cap is left. Empty = bot closes everything and disarms for the day." })}
       {!shut.rb && <>
-        <div style={{ height: 10, borderRadius: 5, background: 'var(--edg)', overflow: 'hidden' }}><div id="ei-fuel" style={{ height: 10, width: '100%', background: 'linear-gradient(90deg,var(--dn),var(--wrn),var(--acc))', borderRadius: 5 }} /></div>
+        <div title={v?.fuelUnknown ? 'daily loss-cap not served for this position — gauge withheld' : undefined} style={{ height: 10, borderRadius: 5, background: v?.fuelUnknown ? 'repeating-linear-gradient(90deg,var(--edg) 0 4px,transparent 4px 8px)' : 'var(--edg)', overflow: 'hidden' }}><div id="ei-fuel" style={{ height: 10, width: v?.fuelUnknown ? '0%' : '100%', background: 'linear-gradient(90deg,var(--dn),var(--wrn),var(--acc))', borderRadius: 5 }} /></div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0 6px', fontSize: fs(10.5), fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
           <span style={{ color: 'var(--mu)' }}>Lot size</span><span style={{ color: 'var(--tx)' }}>{v?.lots} · {v?.shares} sh</span>
           <span style={{ color: 'var(--mu)' }}>Notional</span><span style={{ color: 'var(--sb)' }}>{v?.notionalL} · {v?.notionalU}</span>
@@ -711,11 +771,14 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
 
   const fleetCard = (
     <div style={{ ...card, borderRadius: 16, padding: '4px 12px', display: 'flex', gap: 5, alignItems: 'center', ...(variant === 'desktop' ? { overflowX: 'auto', scrollbarWidth: 'thin' } : { flexWrap: 'wrap' }) }}>
-      {sectHead({ k: "fl", hue: "mu", label: "FLEET", tip: "Your other open positions, each shown as R (profit/loss in risk units). Scale spans −2R…+2R with a tick every 0.5R; amber centre line = entry. Click to switch this cockpit to that symbol." })}
+      {sectHead({ k: "fl", hue: "mu", label: "FLEET", tip: "Your other open positions, each shown as R (profit/loss in risk units). Scale spans −2R…+2R with a tick every 0.5R; amber centre line = entry." })}
       <span style={{ fontSize: fs(9.5), color: v?.fleetIsReal ? 'var(--sb)' : 'var(--mu)', whiteSpace: 'nowrap' }}>{v?.fleetLabel ?? ''}</span>
       {!shut.fl && (v?.fleet ?? []).map((f, i) => (
-          <div key={i} className="tc-fleet-chip" role="button" tabIndex={0} title={`${f.sym} · ${f.r}R — scale −2R … +2R, tick every 0.5R, amber = entry (0R). Click to switch cockpit (mock)`}
-            style={{ cursor: 'pointer', flex: 'none', display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${f.bd}`, background: f.bg, borderRadius: 8, padding: cfg.touch ? '13px 9px' : '3px 9px', ...touchPad }}>
+          // PR-F: plain labels. The chips carried role=button / cursor:pointer /
+          // "Click to switch cockpit (mock)" with no handler — a control that
+          // did nothing. No cockpit switch is wired, so they are not styled as one.
+          <div key={i} className="tc-fleet-chip" title={`${f.sym} · ${f.r}R — scale −2R … +2R, tick every 0.5R, amber = entry (0R)`}
+            style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${f.bd}`, background: f.bg, borderRadius: 8, padding: cfg.touch ? '13px 9px' : '3px 9px' }}>
             <span style={{ fontSize: fs(10.5) }}>{f.sym}</span>
             <div style={{ position: 'relative', width: 56, height: 8, border: '1px solid var(--edg)', borderRadius: 2, background: 'repeating-linear-gradient(90deg,var(--edg) 0 1px,transparent 1px 14px)' }}>
               <div style={{ position: 'absolute', top: 1, bottom: 1, left: f.barL + '%', width: f.barW + '%', background: f.col }} />
@@ -840,6 +903,17 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           {(!cfg.tabs || cfg.tabs.length === 2 || pane2 === 'LOG') && shared}
         </div>
       </div>
+      {/* PR-F: the Manage sheet — the same PositionManager Desk/Accounts open
+          per row, portalled over the cockpit (same overlay as StdTradeTable's
+          pop-up). Backdrop click closes; the sheet's own ✕ and onDone close it
+          and the cockpit re-reads on its next snapshot poll. */}
+      {manageOpen && managed && createPortal(
+        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-label="Manage position"
+          onClick={() => setManageOpen(false)}>
+          <div className="w-full max-w-xl max-h-[92dvh] overflow-y-auto overscroll-contain sm:max-h-[85vh]" onClick={e => e.stopPropagation()}>
+            <PositionManager p={managed} onDone={() => setManageOpen(false)} />
+          </div>
+        </div>, document.body)}
     </div>)
 }
 
