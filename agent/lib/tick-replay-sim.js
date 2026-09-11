@@ -140,6 +140,34 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   return { strategyId: STRATEGY_ID, strategyVersion: STRATEGY_VERSION, profileHash: profileHash(p), params: p, sim: s, trades, summary, blocks, rejected, events: events.length }
 }
 
+/** A small deterministic PRNG (mulberry32) so the bootstrap is reproducible. */
+function rng(seed) {
+  let a = seed >>> 0
+  return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+}
+
+/**
+ * The 5th percentile of bootstrapped mean R (plan §7 "uncertainty"): the
+ * expectancy a run of this many trades cannot rule out. null below 2
+ * trades. Lives here (PR-H) so the replayer's summaries and the shadow
+ * portfolio (services/tick-shadow.js re-exports it) judge by ONE method —
+ * the replay stage's `minExpectancyLowerR` and the shadow stage's are the
+ * same statistic.
+ */
+export function expectancyLowerR(rs, { resamples = 1000, seed = 7, pct = 0.05 } = {}) {
+  const xs = rs.filter(Number.isFinite)
+  if (xs.length < 2) return null
+  const rand = rng(seed)
+  const means = []
+  for (let b = 0; b < resamples; b++) {
+    let sum = 0
+    for (let i = 0; i < xs.length; i++) sum += xs[Math.floor(rand() * xs.length)]
+    means.push(sum / xs.length)
+  }
+  means.sort((a, b) => a - b)
+  return +means[Math.min(means.length - 1, Math.floor(pct * means.length))].toFixed(4)
+}
+
 export function summarize(trades) {
   const n = trades.length
   const wins = trades.filter(t => t.netR > 0), losses = trades.filter(t => t.netR <= 0)
@@ -153,6 +181,9 @@ export function summarize(trades) {
     netR: +eq.toFixed(4), avgR: n ? +(eq / n).toFixed(4) : null,
     profitFactor: grossLoss > 0 ? +(grossWin / grossLoss).toFixed(4) : (grossWin > 0 ? Infinity : null),
     maxDrawdownR: +maxDD.toFixed(4),
+    // PR-H: the bootstrap 5th-percentile expectancy in R, the replay
+    // stage's `minExpectancyLowerR` when read from the TEST block
+    expectancyLowerR: expectancyLowerR(trades.map(t => t.netR)),
     tailShare: n ? +(trades.filter(t => t.netR >= 2).length / n).toFixed(4) : null,
     exits: { stop: by('stop'), target: by('target'), hold_events: by('hold_events'), hold_clock: by('hold_clock'), data_end: by('data_end') },
     avgHoldEvents: n ? Math.round(trades.reduce((a, t) => a + t.holdEvents, 0) / n) : null,

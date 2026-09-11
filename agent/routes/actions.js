@@ -1292,6 +1292,31 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // PR-H (owner principle 3): the stage-A replay research as an operator
+  // action. Starts ONE worker-thread job over the segments at
+  // TICK_SEGMENTS_DIR (env) — 202 + jobId, polled on GET
+  // /state/tick-research-job — that imports every trial with its replay
+  // verdict; 409 no_segments — never a fabricated trial — when the keeper
+  // cannot reach any segment (the sealed spool is on the demo sidecar's
+  // volume); 409 research_running while a job runs; 413 too_many_records
+  // over the cap. dryRun judges, writes nothing. The stage still moves only
+  // through POST /actions/tick-validation.
+  router.post('/tick-research', async (req, res) => {
+    try {
+      const { startTickResearchJob } = await import('../services/tick-research-run.js')
+      const r = startTickResearchJob(db, req.body && typeof req.body === 'object' ? req.body : {})
+      if (r.status === 202) {
+        console.log(`[actions] tick-research: job ${r.body.jobId} started over ${r.body.segments} segment(s) / ${r.body.records} record(s) at ${r.body.segmentsDir}${r.body.dryRun ? ' (dry run)' : ''}`)
+      } else {
+        console.log(`[actions] tick-research REFUSED ${r.body.error}: ${r.body.where || r.body.detail || ''}`)
+      }
+      res.status(r.status).json(r.body)
+    } catch (err) {
+      console.error('[actions/tick-research] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // P3a: the symbol NAMES the recorder should carry (replace-all), resolved
   // per side to ids by the guard sync. Empty list = only what the feed
   // already carries (VPO symbols, the tick trail's open positions).

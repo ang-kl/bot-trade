@@ -25,6 +25,19 @@
 // owner holds: a null threshold refuses every import at that stage with
 // `thresholds_unset`. That is the ask-first rule (plan §12, CLAUDE.md P7)
 // built in — the importer cannot pass a stage on a number nobody set.
+// PR-H (11-09-2026): the owner SET them (docs/owner-principles-plan-2026-09-11.md
+// §2 / §4 PR-H). Replay key mapping: `replay.minTestNetR` (the test block's
+// net R ≥ x) is REPLACED by `replay.minExpectancyLowerR`, judged on the same
+// TEST block — the out-of-sample block, plan §7 — as the bootstrap 5th
+// percentile of its trades' R (lib/tick-replay-sim.js expectancyLowerR, the
+// statistic the shadow stage already uses). A trial whose test block is
+// withheld (a research run without includeTest) carries no such figure and
+// cannot pass; a trial imported before the replayer wrote the figure reads
+// null and cannot pass either — it is re-run, not waved through. The other
+// three replay checks are unchanged: `trades` and `profitFactor` and
+// `maxDrawdownR` read the trial's whole summary. `replayChecks` is exported
+// so POST /actions/tick-research can report the verdict without moving a
+// stage.
 //
 // What this never does: read strategy pins, the evidence gate, or any
 // bar-strategy track record (TM-20: promotion cannot borrow time-strategy
@@ -52,7 +65,7 @@ export function loadThresholds({ file = THRESHOLDS_FILE } = {}) {
     const raw = JSON.parse(readFileSync(file, 'utf8'))
     const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
     return {
-      replay: { minTrades: num(raw?.replay?.minTrades), minProfitFactor: num(raw?.replay?.minProfitFactor), minTestNetR: num(raw?.replay?.minTestNetR), maxDrawdownR: num(raw?.replay?.maxDrawdownR) },
+      replay: { minTrades: num(raw?.replay?.minTrades), minProfitFactor: num(raw?.replay?.minProfitFactor), maxDrawdownR: num(raw?.replay?.maxDrawdownR), minExpectancyLowerR: num(raw?.replay?.minExpectancyLowerR), minTestTrades: num(raw?.replay?.minTestTrades) },
       shadow: { minSignals: num(raw?.shadow?.minSignals), minHours: num(raw?.shadow?.minHours), minTrades: num(raw?.shadow?.minTrades), minLosses: num(raw?.shadow?.minLosses), minProfitFactor: num(raw?.shadow?.minProfitFactor), minExpectancyLowerR: num(raw?.shadow?.minExpectancyLowerR), maxDrawdownR: num(raw?.shadow?.maxDrawdownR), maxResetSharePct: num(raw?.shadow?.maxResetSharePct) },
       traded: { minTrades: num(raw?.traded?.minTrades), minProfitFactor: num(raw?.traded?.minProfitFactor), maxDrawdownR: num(raw?.traded?.maxDrawdownR) },
     }
@@ -98,6 +111,35 @@ export function tradedTickEvidence(db, accountId) {
   }
 }
 
+/**
+ * PR-H: the replay stage's four checks over one trial (P4 ledger shape:
+ * summary + blocks), against the owner's replay thresholds. `trades`,
+ * `profitFactor` and `maxDrawdownR` read the whole summary; the expectancy
+ * lower bound reads the TEST block (out of sample) and is null — failing —
+ * when that block is withheld or predates the figure. The test block must
+ * also hold at least `minTestTrades` trades (checker 11-09-2026: blocks are
+ * cut by EVENT index, so a two-trade block carried a bootstrap figure and
+ * a zero-trade block with a pasted figure passed; a block with no finite
+ * trade count is refused too). Pure: reads nothing, writes nothing, so the
+ * research route can report a verdict without moving the stage.
+ */
+export function replayChecks(trial, replay) {
+  const s = trial?.summary || {}
+  const test = (trial?.blocks || []).find(b => b.name === 'test') || null
+  const testLower = test && !test.withheld && typeof test.expectancyLowerR === 'number' && Number.isFinite(test.expectancyLowerR) ? test.expectancyLowerR : null
+  const pf = typeof s.profitFactor === 'number' && Number.isFinite(s.profitFactor) ? s.profitFactor : null
+  const testTrades = test && !test.withheld && typeof test.trades === 'number' && Number.isFinite(test.trades) ? test.trades : null
+  const checks = {
+    trades: { observed: Number(s.trades ?? 0), min: replay.minTrades, ok: Number(s.trades ?? 0) >= replay.minTrades },
+    profitFactor: { observed: pf, min: replay.minProfitFactor, ok: pf != null && pf >= replay.minProfitFactor },
+    maxDrawdownR: { observed: Number(s.maxDrawdownR ?? Infinity), max: replay.maxDrawdownR, ok: Number(s.maxDrawdownR ?? Infinity) <= replay.maxDrawdownR },
+    testTrades: { observed: testTrades, min: replay.minTestTrades, ok: testTrades != null && testTrades >= replay.minTestTrades, block: 'test', withheld: !!(test && test.withheld) },
+    expectancyLowerR: { observed: testLower, min: replay.minExpectancyLowerR, ok: testLower != null && testLower >= replay.minExpectancyLowerR, block: 'test', withheld: !!(test && test.withheld) },
+  }
+  const failed = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k)
+  return { ok: failed.length === 0, failed, checks }
+}
+
 function unset(group) {
   return Object.entries(group || {}).filter(([, v]) => v == null).map(([k]) => k)
 }
@@ -136,15 +178,22 @@ export function shadowSignalEvidence(db, { side, profilePrefix, sinceIso }) {
 export function shadowWindow(db, accountId, pinnedAtIso) {
   let rows = []
   try {
-    rows = db.prepare(`SELECT at, body FROM action_log WHERE path = '/actions/tick-observation' AND account_id = ? ORDER BY id`).all(String(accountId))
+    rows = db.prepare(`SELECT id, at, body FROM action_log WHERE path = '/actions/tick-observation' AND account_id = ? ORDER BY id`).all(String(accountId))
   } catch { rows = [] }
   const switches = []
-  for (const r of rows) { try { const b = JSON.parse(r.body); if (b?.to) switches.push({ at: r.at, to: b.to }) } catch { /* skip */ } }
-  const afterPin = pinnedAtIso ? switches.filter(sw => sw.at.replace(' ', 'T') >= pinnedAtIso.replace(' ', 'T').replace(/Z$/, '')) : switches
+  for (const r of rows) { try { const b = JSON.parse(r.body); if (b?.to) switches.push({ id: r.id, at: r.at, to: b.to }) } catch { /* skip */ } }
+  // Seconds resolution on both sides: action_log.at is datetime('now')
+  // (no millis) while the pin's `at` carries them, so a switch recorded in
+  // the pin's own second must not sort before it (PR-H: the pin itself
+  // records the window's opening when the account is already in SHADOW).
+  const pinKey = pinnedAtIso ? pinnedAtIso.replace(' ', 'T').replace(/\.\d+Z?$/, '').replace(/Z$/, '') : null
+  const afterPin = pinKey ? switches.filter(sw => sw.at.replace(' ', 'T').replace(/\.\d+Z?$/, '') >= pinKey) : switches
   const first = afterPin.find(sw => sw.to === 'SHADOW') || null
   if (!first) return { since: null, broken: false, switches: afterPin }
-  const later = afterPin.filter(sw => sw.at > first.at)
-  const brokenBy = later.find(sw => sw.to !== 'SHADOW') || null
+  // Ordered by action_log.id, not by the seconds-resolution `at`: a switch
+  // away in the same second as the opening row is still a break (checker
+  // m-1, 11-09-2026 — the string compare on `at` hid it).
+  const brokenBy = afterPin.find(sw => sw.id > first.id && sw.to !== 'SHADOW') || null
   return { since: first.at, broken: !!brokenBy, brokenBy, switches: afterPin }
 }
 
@@ -184,15 +233,8 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
       const full = profileHashFull(normalizeParams(trial.params))
       if (!full.startsWith(trial.profileHash)) return { ok: false, reason: 'trial_hash_mismatch', note: 'the trial\'s stored hash does not match its own parameters' }
       if (cur.profileHash && cur.profileHash !== full) return { ok: false, reason: 'profile_mismatch', pinned: cur.profileHash.slice(0, 16), trial: trial.profileHash, note: 'evidence for another profile cannot promote this one (TM-20); reset to UNVALIDATED to re-pin' }
-      const test = (trial.blocks || []).find(b => b.name === 'test') || null
-      const s = trial.summary || {}
-      const checks = {
-        trades: { observed: Number(s.trades ?? 0), min: th.replay.minTrades, ok: Number(s.trades ?? 0) >= th.replay.minTrades },
-        profitFactor: { observed: Number(s.profitFactor ?? 0), min: th.replay.minProfitFactor, ok: Number(s.profitFactor ?? 0) >= th.replay.minProfitFactor },
-        testNetR: { observed: Number(test?.netR ?? 0), min: th.replay.minTestNetR, ok: test != null && Number(test.netR ?? 0) >= th.replay.minTestNetR },
-        maxDrawdownR: { observed: Number(s.maxDrawdownR ?? Infinity), max: th.replay.maxDrawdownR, ok: Number(s.maxDrawdownR ?? Infinity) <= th.replay.maxDrawdownR },
-      }
-      const failed = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k)
+      const { failed, checks } = replayChecks(trial, th.replay)
+      if (failed.includes('testTrades')) return { ok: false, reason: 'test_block_too_small', failed, checks, note: `the test block holds ${checks.testTrades.observed ?? 'no counted'} trade(s); the bootstrap bound needs at least ${th.replay.minTestTrades}` }
       if (failed.length) return { ok: false, reason: 'replay_below_threshold', failed, checks }
       record.evidence = { trialId: trial.trialId, profile: trial.profileHash, checks }
       record.profileHash = full
@@ -242,9 +284,8 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
       next.validationStage = 'SHADOW_PASSED'
     } else if (stage === 'TRADED_PASSED') {
       // PR-B (owner principle 1): the same stage on every account, judged on
-      // the account's own closed tick trades — no environment test. The
-      // thresholds are null in the repo today, so every import lands on
-      // thresholds_unset until the owner sets them by pull request.
+      // the account's own closed tick trades — no environment test. PR-H set
+      // the thresholds; a null here still refuses (thresholds_unset).
       const missing = unset(th.traded)
       if (missing.length) return { ok: false, reason: 'thresholds_unset', unset: missing.map(k => `traded.${k}`) }
       if (!cur.profileHash) return { ok: false, reason: 'no_profile_pinned' }
@@ -270,5 +311,20 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
     db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
       .run('POST', '/actions/tick-validation', JSON.stringify({ accountId: id, from, to: saved.validationStage, revision: saved.configRevision, profile: saved.profileHash ? saved.profileHash.slice(0, 16) : null, actor }), id)
   } catch { /* audit best-effort */ }
+  // PR-H (owner principle 3): the shadow window opens at the FIRST SHADOW
+  // switch AFTER the pin (shadowWindow). With config/tick-observation.json
+  // seeding SHADOW on every account at boot, the switch predates the pin
+  // on every account and SHADOW_PASSED would refuse shadow_switch_unrecorded
+  // for ever unless an operator re-posted the switch by hand. So the pin
+  // itself records the opening when the account is already in SHADOW — at
+  // the pin's own time, which no operator chooses, so no losing stretch
+  // can be excluded by it. Written only on a successful pin (nothing above
+  // runs on a refusal).
+  if (stage === 'REPLAY_PASSED' && cur.tickObservation === 'SHADOW') {
+    try {
+      db.prepare('INSERT INTO action_log (at, method, path, body, account_id) VALUES (?, ?, ?, ?, ?)')
+        .run(now.toISOString().slice(0, 19).replace('T', ' '), 'POST', '/actions/tick-observation', JSON.stringify({ accountId: id, from: 'SHADOW', to: 'SHADOW', revision: saved.configRevision, actor: 'tick-validation:pin', note: 'already in SHADOW at the pin: the shadow window opens here' }), id)
+    } catch { /* audit best-effort */ }
+  }
   return { ok: true, status: saved, record }
 }

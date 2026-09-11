@@ -257,7 +257,7 @@ test('P3b: the tick-observation seed applies once per file content, leaves a lat
   assert.deepEqual(JSON.parse(getState(db, 'tick_symbols_json')), ['GBPUSD'])
   // the checked-in file names EVERY account (PR-B, principle 9) and the momentum universe, and boot wires the seed
   const cfg = JSON.parse(readFileSync(new URL('../config/tick-observation.json', import.meta.url), 'utf8'))
-  assert.deepEqual(cfg.accounts, { _all: 'RECORD' }); assert.equal(cfg.symbols, 'momentum-universe')
+  assert.deepEqual(cfg.accounts, { _all: 'SHADOW' }, 'PR-H: every enabled account observes in SHADOW'); assert.equal(cfg.symbols, 'momentum-universe')
   const boot = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
   assert.match(boot, /seedTickObservationFromConfig\(db, \{ log/)
 })
@@ -290,6 +290,45 @@ test('PR-B (owner principle 9): accounts._all seeds every ENABLED registry accou
   assert.equal(engineStatusFor(db, LATER).tickObservation, 'RECORD')
   assert.deepEqual(seedTickObservationFromConfig(db, { file }).applied, [], 'and it is reached only once')
   assert.deepEqual(JSON.parse(getState(db, 'tick_observation_seed_json')).reached.sort(), [DEMO, LIVE, THIRD, LATER].sort())
+})
+
+test('PR-H: the file moving _all RECORD → SHADOW re-applies at the next boot to EVERY enabled account — one the operator had switched OFF included — a per-id key still winning, and the seed record moves to the new content', () => {
+  const db = fresh()
+  const THIRD = '1003', OFF = '1004'
+  upsertAccount(db, { accountId: THIRD, isLive: true })
+  upsertAccount(db, { accountId: OFF, isLive: false })
+  db.prepare('UPDATE accounts SET enabled = 1').run()
+  db.prepare(`UPDATE accounts SET enabled = 0 WHERE account_id = '${OFF}'`).run()
+  const dir = mkdtempSync(join(tmpdir(), 'tick-obs-shadow-'))
+  const file = join(dir, 'tick-observation.json')
+  writeFileSync(file, JSON.stringify({ accounts: { _all: 'RECORD' }, symbols: ['EURUSD'] }))
+  assert.equal(seedTickObservationFromConfig(db, { file }).error, null)
+  for (const id of [DEMO, LIVE, THIRD]) assert.equal(engineStatusFor(db, id).tickObservation, 'RECORD')
+  const before = JSON.parse(getState(db, 'tick_observation_seed_json'))
+  // the operator switches one off; a LIVE id gets its own key
+  requestTickObservation(db, THIRD, 'OFF')
+  assert.deepEqual(seedTickObservationFromConfig(db, { file }).applied, [], 'same content: the operator\'s OFF stands')
+  // PR-H: the file changes RECORD → SHADOW under _all
+  writeFileSync(file, JSON.stringify({ accounts: { _all: 'SHADOW', [LIVE]: 'RECORD' }, symbols: ['EURUSD'] }))
+  const lines = []
+  const r = seedTickObservationFromConfig(db, { file, log: (m) => lines.push(m) })
+  assert.equal(r.error, null)
+  assert.deepEqual([...r.applied].sort(), [`…${DEMO.slice(-4)}:SHADOW`, `…${THIRD.slice(-4)}:SHADOW`].sort(), 'RED if a reached account is skipped on a content change (the seed-once rule must yield to the new declaration)')
+  assert.equal(engineStatusFor(db, DEMO).tickObservation, 'SHADOW')
+  assert.equal(engineStatusFor(db, THIRD).tickObservation, 'SHADOW', 'the operator\'s OFF is overridden by the new declaration — the file is the owner\'s word')
+  assert.equal(engineStatusFor(db, LIVE).tickObservation, 'RECORD', 'the per-id key wins over _all')
+  assert.equal(engineStatusFor(db, OFF).tickObservation, 'OFF', 'a disabled account is not under _all')
+  const after = JSON.parse(getState(db, 'tick_observation_seed_json'))
+  assert.notEqual(after.hash, before.hash, 'the seed record carries the new content hash')
+  // each switch is on the action log as the file's own actor (tick-validation shadowWindow reads these rows; a switch BEFORE the profile pin does not open the window — the pin does, see tick-validation.test.js)
+  const rows = db.prepare(`SELECT account_id, body FROM action_log WHERE path = '/actions/tick-observation' AND account_id = ? ORDER BY id`).all(DEMO)
+  const last = JSON.parse(rows[rows.length - 1].body)
+  assert.equal(last.to, 'SHADOW'); assert.equal(last.actor, 'config/tick-observation.json')
+  // the same content again: nothing re-applied
+  assert.deepEqual(seedTickObservationFromConfig(db, { file }).applied, [])
+  // the checked-in file IS that declaration
+  const cfg = JSON.parse(readFileSync(new URL('../config/tick-observation.json', import.meta.url), 'utf8'))
+  assert.deepEqual(cfg.accounts, { _all: 'SHADOW' })
 })
 
 test('P6b / PR-B: TICK_MOMENTUM is admitted on ANY account whose injected readiness is clean — readiness is the only gate, a live account is not refused on its environment; the tick producer is then admitted and bar producers are not', async () => {
