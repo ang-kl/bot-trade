@@ -295,6 +295,25 @@ test('feeder: an unvetoed symbol still sizes normally with the gate present', as
 
 // P1b (11-09-2026): the ARMING fence — a STOPPED account is never pushed to
 // the C++ VPO tier, so the tier cannot fire what it was never told to hold.
+test('AUDIT 11-09-2026: pushVpoDisarm pushes once per (account, epoch), releases the standing permits, and forgets a FAILED push so the next caller retries', async () => {
+  const db = freshDB()
+  const { pushVpoDisarm, _resetDisarmPushedForTests } = await import('./vpo-feeder.js')
+  _resetDisarmPushedForTests()
+  const pushes = []
+  let fail = true
+  const push = async (payload, base) => { if (fail) throw new Error('sidecar 502'); pushes.push({ payload, base }) }
+  const bad = await pushVpoDisarm(db, '42', 'http://demo:8081', { reason: 'entry_mode STOPPED', epoch: 5, push })
+  assert.equal(bad.ok, false); assert.match(bad.error, /502/); assert.equal(pushes.length, 0)
+  fail = false
+  const good = await pushVpoDisarm(db, '42', 'http://demo:8081', { reason: 'entry_mode STOPPED', epoch: 5, push })
+  assert.equal(good.ok, true); assert.equal(pushes.length, 1)
+  assert.deepEqual(pushes[0].payload, { disarm: true, ctidTraderAccountId: 42, reason: 'entry_mode STOPPED' }); assert.equal(pushes[0].base, 'http://demo:8081')
+  const again = await pushVpoDisarm(db, '42', 'http://demo:8081', { reason: 'entry_mode STOPPED', epoch: 5, push })
+  assert.equal(again.skipped, 'already pushed for this epoch'); assert.equal(pushes.length, 1)
+  const next = await pushVpoDisarm(db, '42', 'http://demo:8081', { reason: 'entry_mode TICK_MOMENTUM', epoch: 6, push })
+  assert.equal(next.ok, true); assert.equal(pushes.length, 2, 'a new epoch is a new disarm')
+})
+
 test('feeder: a STOPPED account is not armed — no /vpo-config push, the reason names the fence', async () => {
   const db = freshDB()
   setState(db, 'vpo_enabled', 'true')
@@ -322,8 +341,10 @@ test('feeder: a STOPPED account is not armed — no /vpo-config push, the reason
   const rAgain = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
   assert.equal(rAgain.disarmed, true); assert.equal(pushed, null, 'one disarm per (account, epoch)')
 
-  // Back to TIME_BASED: the push resumes.
+  // Back to TIME_BASED, acknowledged by the gateway (11-09-2026): the push resumes.
   assert.equal(requestEntryMode(db, '42', 'TIME_BASED', { expectedRevision: 1 }).ok, true)
+  const { acknowledgeEntryEpochs } = await import('./entry-mode.js')
+  assert.equal(acknowledgeEntryEpochs(db, { 42: 2 }).length, 1)
   const r2 = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
   assert.equal(r2.ok, true)
   assert.ok(pushed && pushed.ctidTraderAccountId === 42)

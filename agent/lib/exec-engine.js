@@ -841,6 +841,15 @@ export async function placeOrder(creds, orderPayload) {
       result = await withFallback('order',
         async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/order', orderPayload) },
         async () => {
+          // AUDIT 11-09-2026 (plan §13 "every route must reject stale mode
+          // epochs at the final admission boundary"): the JS transport has
+          // no sidecar fence in front of it, so the fence is re-read HERE,
+          // immediately before the write — the mode may have moved while
+          // the sidecar attempt was failing.
+          if (typeof creds.entryAdmission === 'function') {
+            const again = await creds.entryAdmission()
+            if (again && again.ok === false) throw new Error(`ENTRY_MODE_REFUSED: ${again.reason} (re-checked before the fallback write)`)
+          }
           const m = await ws()
           return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, wire)
         }, execBaseFor(creds))

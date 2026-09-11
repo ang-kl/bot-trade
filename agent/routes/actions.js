@@ -42,6 +42,30 @@ export function credsForAccountId(db, accountId, opts = {}) {
 }
 
 /**
+ * AUDIT 11-09-2026 (plan §13): a manual action on a POSITION acts through
+ * the credentials of the account that HOLDS it — read from our own trade
+ * record by broker position id — never through whichever account happens
+ * to be selected in the UI. Unknown position → the selected account, and
+ * the answer says so (`accountSource`), so a wrong-account action cannot
+ * pass as a routine one.
+ */
+export function credsForPosition(db, positionId, opts = {}) {
+  let acct = null
+  try {
+    const row = db.prepare('SELECT account_id FROM trades WHERE ctrader_position_id = ? AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1').get(String(positionId))
+    acct = row?.account_id != null ? String(row.account_id) : null
+  } catch { acct = null }
+  if (!acct) {
+    try {
+      const row = db.prepare('SELECT account_id FROM monitored_positions WHERE ctrader_position_id = ? AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1').get(String(positionId))
+      acct = row?.account_id != null ? String(row.account_id) : null
+    } catch { acct = null }
+  }
+  const creds = acct ? credsForAccountId(db, acct, opts) : getCtraderCreds(db, undefined, opts)
+  return { ...creds, accountSource: acct ? 'position_record' : 'selected_account' }
+}
+
+/**
  * Resolve which symbols a backtest run covers.
  * Priority: explicit `symbols` list > legacy single `symbol` > every ENABLED
  * watchlist symbol (the instruments set on Tune — never a hardcoded default).
@@ -1047,7 +1071,7 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // P1b (docs/tick-momentum/plan.md §3): the per-account entry engine.
-  // { accountId, mode: TIME_BASED | STOPPED (TICK_MOMENTUM refused until P4/P6),
+  // { accountId, mode: TIME_BASED | STOPPED (TICK_MOMENTUM refused until P6's evidence),
   //   expectedRevision } — a stale revision is refused, never applied.
   router.post('/entry-mode', async (req, res) => {
     try {
@@ -1063,7 +1087,42 @@ export default function actionsRouter(db, deps = {}) {
       // mode change (the fence is already closed).
       let drain = null
       let status = r.status
-      if (r.status.transitionState === 'QUIESCING') {
+      // AUDIT 11-09-2026 (plan §3.1 / §3.6, TM-10): the gateway learns the
+      // new epoch NOW, not on the next probe — the guard push carries every
+      // account's epoch and the sidecar's reply echoes what it bound, which
+      // is the acknowledgement (WARMING → STABLE for an active mode). The
+      // VPO tier is disarmed on the same breath so the old arming and its
+      // standing permits cannot fire after the switch. A push that fails
+      // leaves the account BLOCKED with entries stopped — visibly, never a
+      // silent fall-back.
+      let gateway = null
+      try {
+        const { sideForAccount, sideCreds } = await import('../services/heartbeat.js')
+        const { syncExecGuard } = await import('../services/exec-guard-sync.js')
+        const { markEntryModeBlocked, engineStatusFor: statusOf } = await import('../services/entry-mode.js')
+        const execMod = await import('../lib/exec-engine.js')
+        const side = sideForAccount(db, execMod, String(accountId))
+        const creds = side ? await sideCreds(db, side) : null
+        if (side && creds?.ready) {
+          const sync = await syncExecGuard(db, execMod, side, { reportedGuard: null, creds, force: true })
+          gateway = { side: side.name, pushed: sync.pushed, acked: sync.acked || [], error: sync.error || null }
+          if (sync.error || !sync.pushed) markEntryModeBlocked(db, String(accountId), sync.error || 'guard push not made')
+          if (String(mode).toUpperCase() !== 'TIME_BASED') {
+            const { pushVpoDisarm } = await import('../services/vpo-feeder.js')
+            const acctCreds = credsForAccountId(db, String(accountId))
+            const d = await pushVpoDisarm(db, String(accountId), execBaseFor(acctCreds.ready ? acctCreds : creds), { reason: `entry_mode ${String(mode).toUpperCase()}`, epoch: r.status.modeEpoch })
+            gateway.vpoDisarm = d
+          }
+        } else {
+          gateway = { side: side?.name || null, pushed: false, error: 'no credentials for the account\'s side' }
+          markEntryModeBlocked(db, String(accountId), gateway.error)
+        }
+        status = statusOf(db, String(accountId))
+        console.log(`[actions] entry-mode gateway …${String(accountId).slice(-4)}: ${gateway.pushed ? 'pushed' : 'NOT pushed'}${gateway.error ? ` (${gateway.error})` : ''} → ${status.transitionState} / effective ${status.effectiveEntryMode}`)
+      } catch (err) {
+        gateway = { pushed: false, error: err.message }
+      }
+      if (status.transitionState === 'QUIESCING') {
         try {
           const { drainEntryOrders } = await import('../services/entry-drain.js')
           const { engineStatusFor } = await import('../services/entry-mode.js')
@@ -1075,15 +1134,15 @@ export default function actionsRouter(db, deps = {}) {
           drain = { error: err.message }
         }
       }
-      res.json({ ok: true, changed: r.changed, status: { ...status, accountId: `…${String(accountId).slice(-4)}` }, drain: drain ? { ...drain, accountId: undefined } : null })
+      res.json({ ok: true, changed: r.changed, status: { ...status, accountId: `…${String(accountId).slice(-4)}` }, gateway, drain: drain ? { ...drain, accountId: undefined } : null })
     } catch (err) {
       console.error('[actions/entry-mode] error:', err.message)
       res.status(500).json({ error: err.message })
     }
   })
 
-  // P3a: the per-account tick observation switch (OFF | RECORD; SHADOW is
-  // refused until P4) — the operator's declaration that the account's
+  // P3a: the per-account tick observation switch (OFF | RECORD | SHADOW,
+  // the last admitted since P4) — the operator's declaration that the account's
   // sidecar should record the feed it carries. The exec guard sync pushes
   // the side's recording switch within a probe (~2 min) and a sidecar
   // without TICK_SPOOL_PATH records nothing regardless (the reply says so).
@@ -2170,10 +2229,10 @@ export default function actionsRouter(db, deps = {}) {
   // The action is recorded either way, so the ledger stops being blind to it.
   router.post('/position-double', async (req, res) => {
     try {
-      const creds = getCtraderCreds(db, undefined, { producerId: 'route_position_double' })
-      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { positionId } = req.body || {}
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const creds = credsForPosition(db, positionId, { producerId: 'route_position_double' })
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
 
       const guards = loadManualGuards(db)
       const dupe = isDuplicateCall(recentManualCalls(db), { route: 'position-double', positionId }, Date.now(), guards)
@@ -2242,9 +2301,9 @@ export default function actionsRouter(db, deps = {}) {
     const { positionId } = req.body || {}
     let closed = false
     try {
-      const creds = getCtraderCreds(db, undefined, { producerId: 'route_position_reverse' })
-      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const creds = credsForPosition(db, positionId, { producerId: 'route_position_reverse' })
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
 
       const guards = loadManualGuards(db)
       const dupe = isDuplicateCall(recentManualCalls(db), { route: 'position-reverse', positionId }, Date.now(), guards)

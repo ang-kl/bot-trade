@@ -35,10 +35,18 @@ export function tickTrialsView(db, { limit = 50 } = {}) {
   }))
   const byProfile = {}
   for (const t of trials) {
+    const validation = t.blocks.find(b => b.name === 'validation') || null
     const test = t.blocks.find(b => b.name === 'test') || null
-    byProfile[t.profileHash] ??= { profileHash: t.profileHash, trials: 0, params: t.params, testTrades: 0, testNetR: 0 }
-    byProfile[t.profileHash].trials++
-    if (test) { byProfile[t.profileHash].testTrades += test.trades; byProfile[t.profileHash].testNetR = +(byProfile[t.profileHash].testNetR + (test.netR || 0)).toFixed(4) }
+    // AUDIT 11-09-2026 (plan §7): the test block is WITHHELD on a research
+    // trial (blocks[test].withheld); only a trial run with includeTest —
+    // the owner's confirmation run — carries test figures, and the profile
+    // row says how many of its trials were of which kind.
+    byProfile[t.profileHash] ??= { profileHash: t.profileHash, trials: 0, params: t.params, validationTrades: 0, validationNetR: 0, testTrials: 0, testWithheld: 0, testTrades: 0, testNetR: 0 }
+    const row = byProfile[t.profileHash]
+    row.trials++
+    if (validation && validation.trades != null) { row.validationTrades += validation.trades; row.validationNetR = +(row.validationNetR + (validation.netR || 0)).toFixed(4) }
+    if (test && test.withheld) row.testWithheld++
+    else if (test && test.trades != null) { row.testTrials++; row.testTrades += test.trades; row.testNetR = +(row.testNetR + (test.netR || 0)).toFixed(4) }
   }
   return {
     at: new Date().toISOString(), trials, profiles: Object.values(byProfile),

@@ -790,7 +790,15 @@ export async function probeCppExec(db, deps = {}) {
  * A split passes an explicit side, which flips both the host and the
  * `WHERE is_live = ?` roster filter to match the process being probed.
  */
-async function sideCreds(db, side) {
+/** AUDIT 11-09-2026: the sidecar side an account lives on, for an on-demand push. */
+export function sideForAccount(db, exec, accountId) {
+  let isLive = null
+  try { const r = db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(String(accountId)); if (r) isLive = Number(r.is_live) === 1 } catch { isLive = null }
+  const sides = execSidesToProbe(exec)
+  return sides.find(s => s.isLive === isLive) || sides.find(s => s.isLive === null) || null
+}
+
+export async function sideCreds(db, side) {
   const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
   if (side.isLive === null) return getCtraderCreds(db)
   const ids = enabledOnSide(db, side.isLive) || []

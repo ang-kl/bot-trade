@@ -19,11 +19,14 @@ import { trialIdFor } from '../agent/services/tick-research.js'
 
 const args = process.argv.slice(2)
 const target = args.find(a => !a.startsWith('--'))
-if (!target) { console.error('usage: tick-research.mjs <segments dir> [--stage-a] [--params json] [--sim json] [--symbol id] [--out file]'); process.exit(2) }
+if (!target) { console.error('usage: tick-research.mjs <segments dir> [--stage-a] [--params json] [--sim json] [--include-test] [--symbol id] [--out file]'); process.exit(2) }
 const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null }
 const stageA = args.includes('--stage-a')
 const paramsArg = opt('--params') ? JSON.parse(opt('--params')) : {}
 const simArg = opt('--sim') ? JSON.parse(opt('--sim')) : {}
+// Plan §7: the test block is WITHHELD on every research run; the owner's one
+// confirmation run passes --include-test (recorded on the trial's sim).
+if (args.includes('--include-test')) simArg.includeTest = true
 const onlySymbol = opt('--symbol') ? Number(opt('--symbol')) : null
 const outFile = opt('--out')
 

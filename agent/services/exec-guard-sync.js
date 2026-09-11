@@ -28,7 +28,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
-import { engineStatusFor } from './entry-mode.js'
+import { engineStatusFor, acknowledgeEntryEpochs } from './entry-mode.js'
 import { alreadyTrippedToday } from './equity-stop.js'
 import { loadGlobalGuards } from './global-guards.js'
 import { loadPerformanceBreakerConfig } from './performance-breaker.js'
@@ -164,8 +164,18 @@ export function _resetTickResolveLogForTests() { unresolvedLogged.clear() }
 export function guardDiffers(desired, reported) {
   if (!reported || typeof reported !== 'object') return true // unknown → push
   if ((reported.halt === true) !== (desired.halt === true)) return true
-  const reportedCount = Number(reported.haltAccountCount)
-  if (Number.isFinite(reportedCount) && reportedCount !== desired.haltAccounts.length) return true
+  // AUDIT 11-09-2026 (plan B05): identity, not count. Two halted accounts
+  // swapped for two others read as "in sync" by count; the sidecar now
+  // reports the list, and an older sidecar that reports only the count is
+  // compared by count as before.
+  if (Array.isArray(reported.haltAccounts)) {
+    const rep = [...reported.haltAccounts.map(Number)].sort((a, b) => a - b)
+    const want = [...desired.haltAccounts.map(Number)].sort((a, b) => a - b)
+    if (rep.length !== want.length || rep.some((v, i) => v !== want[i])) return true
+  } else {
+    const reportedCount = Number(reported.haltAccountCount)
+    if (Number.isFinite(reportedCount) && reportedCount !== desired.haltAccounts.length) return true
+  }
   for (const k of ['requireBracket', 'requireTarget']) {
     if (typeof desired[k] === 'boolean' && reported[k] !== desired[k]) return true
   }
@@ -203,7 +213,7 @@ export function guardDiffers(desired, reported) {
  *
  * @returns {{pushed: boolean, desired: object, error?: string}}
  */
-export async function syncExecGuard(db, exec, side, { reportedGuard = null, creds = null, now = null, reportedTick = null, resolveSymbolId = null } = {}) {
+export async function syncExecGuard(db, exec, side, { reportedGuard = null, creds = null, now = null, reportedTick = null, resolveSymbolId = null, force = false } = {}) {
   const desired = desiredGuardFor(db, side, now ?? Date.now())
   try {
     // P3a: the tick symbols ride on the same push, resolved to this side's
@@ -212,8 +222,14 @@ export async function syncExecGuard(db, exec, side, { reportedGuard = null, cred
       try { desired.tickSymbolIds = await resolveTickSymbolIds(db, creds, side, { resolveSymbolId }) } catch { desired.tickSymbolIds = [] }
     }
     if (reportedTick && reportedGuard && typeof reportedGuard === 'object' && !('tick' in reportedGuard)) reportedGuard = { ...reportedGuard, tick: reportedTick }
-    if (!guardDiffers(desired, reportedGuard)) return { pushed: false, desired }
-    if (!exec?.setExecGuard || !creds) return { pushed: false, desired }
+    // AUDIT 11-09-2026 (plan §3.6): the sidecar's echoed epochs are the
+    // gateway's ACKNOWLEDGEMENT — every probe binds the fences it reports.
+    let acked = []
+    if (reportedGuard && reportedGuard.entryEpochs && typeof reportedGuard.entryEpochs === 'object') {
+      try { acked = acknowledgeEntryEpochs(db, reportedGuard.entryEpochs, { source: `probe:${side?.name || 'exec'}` }) } catch { acked = [] }
+    }
+    if (!force && !guardDiffers(desired, reportedGuard)) return { pushed: false, desired, acked }
+    if (!exec?.setExecGuard || !creds) return { pushed: false, desired, acked }
     const r = await exec.setExecGuard(creds, desired)
     const pushed = r?.ok !== false
     if (pushed) {
@@ -221,9 +237,16 @@ export async function syncExecGuard(db, exec, side, { reportedGuard = null, cred
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
           .run('GUARD_SYNC', `/exec-guard/${side?.name || 'exec'}`, JSON.stringify(desired).slice(0, 2000))
       } catch { /* audit best-effort */ }
-      return { pushed, desired }
+      // The push's own answer echoes the epochs it bound (the sidecar's
+      // /config reply); a JS-mode "push" has no gateway to bind and counts
+      // as acknowledged for the epochs it was asked to set.
+      const echoed = r?.entryEpochs && typeof r.entryEpochs === 'object' ? r.entryEpochs
+        : (r?.guard?.entryEpochs && typeof r.guard.entryEpochs === 'object') ? r.guard.entryEpochs
+        : (r?.mode === 'js' ? desired.entryEpochs : null)
+      if (echoed) { try { acked = acked.concat(acknowledgeEntryEpochs(db, echoed, { source: `push:${side?.name || 'exec'}` })) } catch { /* best effort */ } }
+      return { pushed, desired, acked, echoed: echoed || null }
     }
-    return { pushed, desired, error: String(r?.error || 'sidecar refused the guard push') }
+    return { pushed, desired, acked, error: String(r?.error || 'sidecar refused the guard push') }
   } catch (err) {
     return { pushed: false, desired, error: err?.message || String(err) }
   }

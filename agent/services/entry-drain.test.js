@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 
 import { initDB } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { engineStatusFor, requestEntryMode, admitEntry } from './entry-mode.js'
+import { engineStatusFor, requestEntryMode, admitEntry, acknowledgeEntryEpochs } from './entry-mode.js'
 import { drainEntryOrders, drainEntryOrdersPass } from './entry-drain.js'
 import { isBotOrderLabel, brokerOrderFields, BOT_MARKERS } from './pending-orders.js'
 
@@ -130,12 +130,23 @@ test('under an active mode the pass recounts and never cancels: resting rows are
   const back = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: 1 })
   assert.equal(back.ok, true)
   assert.equal(back.status.transitionState, 'RECONCILING', 'an unresolved entry cannot be declared STABLE under an active mode')
-  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch' }).ok, true, 'the fence reads the mode, not the transition')
+  // AUDIT 11-09-2026 (plan §3.4): an unknown outcome PREVENTS activation —
+  // the effective mode stays STOPPED and the fence refuses, until the
+  // unknown clears AND the gateway has acknowledged the epoch.
+  assert.equal(back.status.effectiveEntryMode, 'STOPPED')
+  const held = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch' })
+  assert.equal(held.ok, false); assert.match(held.reason, /^entry_mode_transition: RECONCILING/)
   db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, account_id)
     VALUES ('AUDUSD', '4h', '150', 1, 0.7, 0.69, 0.72, 1000, '2099-01-01T00:00:00.000Z', 'working', 'pending-fib', ?)`).run(DEMO)
   const d2 = await drainEntryOrders(db, creds(DEMO), { exec: fx.exec })
-  assert.equal(fx.calls.cancelled.length, 2, 'no cancel under TIME_BASED'); assert.equal(d2.resting, 1); assert.equal(d2.unknown, 0); assert.equal(d2.transitionState, 'STABLE')
+  assert.equal(fx.calls.cancelled.length, 2, 'no cancel under TIME_BASED'); assert.equal(d2.resting, 1); assert.equal(d2.unknown, 0)
+  assert.equal(d2.transitionState, 'WARMING', 'the unknown cleared but the gateway has not echoed the epoch')
+  assert.equal(engineStatusFor(db, DEMO).effectiveEntryMode, 'STOPPED')
   assert.equal(rowOf(db, '150').status, 'working')
+  const acked = acknowledgeEntryEpochs(db, { [DEMO]: back.status.modeEpoch })
+  assert.equal(acked.length, 1); assert.equal(acked[0].transitionState, 'STABLE'); assert.equal(acked[0].effectiveEntryMode, 'TIME_BASED')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch' }).ok, true, 'active, acknowledged, nothing unknown')
+  assert.equal((await drainEntryOrders(db, creds(DEMO), { exec: fx.exec })).skipped, 'stable')
   // a STOPPED account with nothing resting is STABLE at once and the drain has nothing to do
   const r2 = requestEntryMode(db, LIVE, 'STOPPED')
   db.prepare(`UPDATE pending_orders SET status = 'expired' WHERE order_id = '201'`).run()
