@@ -229,7 +229,11 @@ void TickRecorder::stop() {
   st_.state = "STOPPED";
 }
 
-void TickRecorder::setRecording(bool on) { recording_.store(on); }
+bool TickRecorder::setRecording(bool on) {
+  if (on && !started_.load()) return false;
+  recording_.store(on);
+  return true;
+}
 
 void TickRecorder::noteGap(GapReason reason, uint64_t count) {
   // Gaps are queued through the same ring as quotes so they land in order;
@@ -244,8 +248,8 @@ void TickRecorder::noteGap(GapReason reason, uint64_t count) {
   if (!ring_.push(g)) { dropped_.fetch_add(1); pendingOverflow_.fetch_add(1); }
 }
 
-void TickRecorder::onQuote(long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask,
-                           uint64_t recvMs, uint32_t generation) {
+Record TickRecorder::onQuote(long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask,
+                             uint64_t recvMs, uint32_t generation) {
   events_.fetch_add(1, std::memory_order_relaxed);
   if (generation != generation_.load(std::memory_order_relaxed)) {
     // A (re)subscribe: the first event per symbol after it is a snapshot, and
@@ -291,8 +295,9 @@ void TickRecorder::onQuote(long long symbolId, bool hasBid, long long bid, bool 
     if (ss.windowStartMs == 0 || recvMs - ss.windowStartMs >= 10000) { ss.windowStartMs = recvMs; ss.windowEvents = 0; }
     ss.windowEvents++;
   }
-  if (!recording_.load(std::memory_order_relaxed)) { skippedOff_.fetch_add(1); return; }
+  if (!recording_.load(std::memory_order_relaxed)) { skippedOff_.fetch_add(1); return r; }
   if (!ring_.push(r)) { dropped_.fetch_add(1); pendingOverflow_.fetch_add(1); }
+  return r;
 }
 
 bool TickRecorder::budgetAllows(uint64_t nextWriteBytes, uint64_t now) {

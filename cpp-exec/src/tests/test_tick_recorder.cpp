@@ -280,6 +280,9 @@ static void test_a_second_writer_on_the_same_spool_is_refused() {
   assert(!second.start());
   assert(second.stats().state == "ERROR");
   assert(second.stats().reason.find("locked") != std::string::npos);
+  assert(!second.setRecording(true) && !second.recording()); // a switch on a recorder that never started is refused
+  second.onQuote(41, true, 1, true, 2, now(), 1);
+  assert(second.stats().skippedOff == 1 && second.stats().dropped == 0);
   first.stop();
   TickRecorder third(smallConfig(dir), plenty()); // the lock is released with the first
   assert(third.start());

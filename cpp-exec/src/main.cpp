@@ -20,6 +20,7 @@
 #include "engine.hpp"
 #include "heartbeat.hpp"
 #include "tick_recorder.hpp"
+#include "tick_workers.hpp"
 #include "event_journal.hpp"
 #include "request_pacer.hpp"
 #include "peer_probe.hpp"
@@ -172,6 +173,19 @@ int main(int argc, char** argv) {
     }
   } else {
     logLine("TICK_SPOOL_PATH not set — tick recorder disabled");
+  }
+  // P3b: the symbol workers (plan §8, TM-22/TM-23) — TICK_WORKERS threads
+  // (default 2), each owning a fixed shard of symbols, fed the same
+  // classified observation the recorder saw. No strategy consumes them yet
+  // (P4); until then the consumer counts, and /tick-status shows the shape.
+  std::unique_ptr<tick::SymbolWorkers> tickWorkers;
+  std::atomic<uint64_t> tickWorkerEvents{0};
+  if (tickRecorder) {
+    const int nWorkers = std::max(1, std::atoi(envOr("TICK_WORKERS", "2").c_str()));
+    tickWorkers = std::make_unique<tick::SymbolWorkers>(nWorkers, 1u << 14,
+        [&tickWorkerEvents](int, const tick::WorkerEvent&) { tickWorkerEvents.fetch_add(1, std::memory_order_relaxed); });
+    tickWorkers->start();
+    logLine("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; no strategy consumer until P4)");
   }
 
   // The decision ring (owner invariant 1, 2026-08-31): every decision this
@@ -549,9 +563,33 @@ int main(int argc, char** argv) {
   // P3a: the recorder in full — state, counters, segments, the mount's free
   // bytes (statvfs on the spool path: the measurement TM-27 asks for),
   // events/sec per symbol. {enabled:false} when TICK_SPOOL_PATH is unset.
-  server.route("GET", "/tick-status", [&tickRecorder](const HttpRequest&) -> HttpResponse {
+  server.route("GET", "/tick-status", [&tickRecorder, &tickWorkers, &tickWorkerEvents](const HttpRequest&) -> HttpResponse {
     if (!tickRecorder) return {200, "{\"enabled\":false,\"reason\":\"TICK_SPOOL_PATH not set\"}"};
-    return {200, tickRecorder->statusJson()};
+    auto parsed = jsn::parse(tickRecorder->statusJson());
+    if (!parsed) return {200, tickRecorder->statusJson()};
+    jsn::Value v = *parsed;
+    if (tickWorkers) {
+      const tick::WorkerStats ws = tickWorkers->stats();
+      jsn::Value w{jsn::Object{}};
+      w.set("workers", static_cast<double>(ws.workers));
+      w.set("dispatched", static_cast<double>(ws.dispatched));
+      w.set("processed", static_cast<double>(ws.processed));
+      w.set("consumed", static_cast<double>(tickWorkerEvents.load()));
+      w.set("dropped", static_cast<double>(ws.dropped));
+      w.set("gapsMarked", static_cast<double>(ws.gapsMarked));
+      jsn::Array per;
+      for (size_t i = 0; i < ws.perWorkerProcessed.size(); ++i) {
+        jsn::Value p{jsn::Object{}};
+        p.set("processed", static_cast<double>(ws.perWorkerProcessed[i]));
+        p.set("dropped", static_cast<double>(ws.perWorkerDropped[i]));
+        per.push_back(std::move(p));
+      }
+      w.set("perWorker", jsn::Value(std::move(per)));
+      v.set("workers", std::move(w));
+    } else {
+      v.set("workers", jsn::Value(nullptr));
+    }
+    return {200, jsn::dump(v)};
   });
 
   server.route("POST", "/decisions", [&decisionRing](const HttpRequest& req) -> HttpResponse {
@@ -600,7 +638,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder, &tickWorkers](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -687,10 +725,16 @@ int main(int argc, char** argv) {
           depthFeedEnabled);
       spotFeed->setDecisionRing(&decisionRing);
       if (tick::TickRecorder* rec = tickRecorder.get()) {
-        spotFeed->setRawTap([rec](long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask, long long generation) {
+        tick::SymbolWorkers* workers = tickWorkers.get();
+        spotFeed->setRawTap([rec, workers](long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask, long long generation) {
           const uint64_t recvMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
               std::chrono::system_clock::now().time_since_epoch()).count());
-          rec->onQuote(symbolId, hasBid, bid, hasAsk, ask, recvMs, static_cast<uint32_t>(generation));
+          const tick::Record r = rec->onQuote(symbolId, hasBid, bid, hasAsk, ask, recvMs, static_cast<uint32_t>(generation));
+          if (workers) {
+            tick::WorkerEvent ev;
+            ev.recvMs = r.recvMs; ev.seq = r.seq; ev.symbolId = r.symbolId; ev.bid = r.bid; ev.ask = r.ask; ev.flags = r.flags;
+            workers->dispatch(ev);
+          }
         });
       }
       if (trailPtr) spotFeed->ensureSymbols(trailEngine.symbolIds());
@@ -945,7 +989,8 @@ int main(int argc, char** argv) {
     if (v.get("tickRecord").isBool()) {
       if (tickRecorder) {
         const bool was = tickRecorder->recording();
-        tickRecorder->setRecording(v.get("tickRecord").asBool());
+        if (!tickRecorder->setRecording(v.get("tickRecord").asBool()))
+          logLine("tick recorder: recording switch ignored — the recorder never started (" + tickRecorder->stats().reason + ")");
         if (was != tickRecorder->recording()) {
           logLine(std::string("tick recorder: recording ") + (tickRecorder->recording() ? "ON" : "OFF") + " (keeper's switch)");
           decisionRing.log("tick", "recording_changed", 0, 0, tickRecorder->recording() ? "on" : "off", "keeper's switch via /config");
@@ -1030,6 +1075,7 @@ int main(int argc, char** argv) {
   // the spot-feed block above exists to avoid. Same rule for the peer probe.
   trailEngine.stop();
   peerProbe.stop();
+  if (tickWorkers) tickWorkers->stop();
   if (tickRecorder) { tickRecorder->stop(); logLine("tick recorder stopped (segment sealed)"); }
   return served ? 0 : 1;
 }

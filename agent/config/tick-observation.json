@@ -1,0 +1,5 @@
+{
+  "_note": "The owner's tick-observation declaration as DATA (11-09-2026: 'ACCT-DEMO-3 records first'). accounts: ctidTraderAccountId -> OFF | RECORD (SHADOW is refused until P4). symbols: the names the recorder should carry on the account's sidecar, resolved per side; 'momentum-universe' means every symbol in config/momentum-universe.json. Seeded ONCE per content (tick_observation_seed_json): a later change made through POST /actions/tick-observation or /actions/tick-symbols stands until this file changes. The recorder still needs TICK_SPOOL_PATH on the sidecar.",
+  "accounts": { "46979908": "RECORD" },
+  "symbols": "momentum-universe"
+}
