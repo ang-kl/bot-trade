@@ -16,32 +16,32 @@
  "profileHash": "a15a82842ecf30e4",
  "signals": [
   {
-   "seq": 106,
+   "seq": 119,
    "side": "BUY",
-   "trigger2": 200208,
-   "bid": 100099,
-   "ask": 100109,
-   "stopDistance": 84,
+   "trigger2": 200078,
+   "bid": 100034,
+   "ask": 100044,
+   "stopDistance": 80,
    "setupId": 1,
    "confirmations": 2,
    "H": 200034,
    "L": 200004,
    "B": 10,
-   "D": 194
+   "D": 64
   },
   {
-   "seq": 258,
+   "seq": 285,
    "side": "SELL",
-   "trigger2": 199954,
-   "bid": 99972,
-   "ask": 99982,
-   "stopDistance": 54,
+   "trigger2": 199976,
+   "bid": 99983,
+   "ask": 99993,
+   "stopDistance": 53,
    "setupId": 2,
    "confirmations": 2,
-   "H": 200166,
-   "L": 200034,
+   "H": 200164,
+   "L": 200032,
    "B": 10,
-   "D": -62
+   "D": -32
   }
  ]
 }

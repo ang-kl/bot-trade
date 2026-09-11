@@ -390,9 +390,12 @@ Measurement history — each line is a real run of the script, not a claim:
   `№ 7,586` (P3b start; TICK_SPOOL_PATH set on the owner's "go"),
   `№ 7,595` (P4 start, 03:50 UTC; #884 P3b merged 03:44 UTC), each with
   the unstamped status lines between them counted by replies made, not by
-  what the file captured; the P4 report is the next stamped reply after
-  `№ 7,597`. A later re-measure that reads below this line is missing
-  these, not correcting them.
+  what the file captured. Continued in the same container: ten unstamped
+  status lines followed `№ 7,595` (`№ 7,596`–`№ 7,605`, 03:50–04:40 UTC,
+  #885 P4 merged 04:26 UTC), so the P4 report is **`№ 7,606`** (04:4x
+  UTC) and the next reply is `№ 7,607`. The script reads 507 here. A
+  later re-measure that reads below this line is missing these, not
+  correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

@@ -26,22 +26,27 @@ export function buildFixture() {
   for (let i = 0; i < 90; i++) { const d = Math.round((rnd() - 0.5) * 6); bid = Math.max(99_960, Math.min(100_040, bid + d)); ask = bid + 10 + (rnd() < 0.1 ? 2 : 0); push() }
   push({ changed: false })                       // an identical repeat counts nowhere
   push({ ask: null })                            // a one-sided update counts nowhere
-  // 2. spread-only widening: ask jumps far above the range while bid stays — must NOT be a long
-  const keepBid = bid; ask = keepBid + 120; push(); ask = keepBid + 10; push()
+  // 2. spread-only widening: the ask jumps far above the range on TWO consecutive events while the bid
+  //    stays inside it — enough to confirm on mid alone, so only the two-sided rule (bid > frozen bidHigh)
+  //    refuses it; then the spread closes and the range idles long enough for the momentum window to clear
+  const keepBid = bid; ask = keepBid + 120; push(); ask = keepBid + 121; push(); ask = keepBid + 10; push()
+  for (let i = 0; i < 20; i++) { const d = Math.round((rnd() - 0.5) * 4); bid = Math.max(99_960, Math.min(100_040, bid + d)); ask = bid + 10; push() }
   // 3. a genuine upward breakout: 12 events climbing fast with both sides above the prior range
   for (let i = 0; i < 12; i++) { bid += 9; ask = bid + 10; push() }
   // 4. an inefficient drift back inside the range (−4, +2 alternating: E ≈ 0.33 < 0.4, never a short), then cooldown events
   for (let i = 0; bid > 100_010; i++) { bid += (i % 2 === 0 ? -4 : 2); ask = bid + 10; push() }
-  for (let i = 0; i < 30; i++) { const d = Math.round((rnd() - 0.5) * 4); bid += d; ask = bid + 10; push() }
+  const floor4 = bid - 3, ceil4 = bid + 3   // bounded: the cooldown idles inside the range, it never breaks out by chance
+  for (let i = 0; i < 30; i++) { const d = Math.round((rnd() - 0.5) * 4); bid = Math.max(floor4, Math.min(ceil4, bid + d)); ask = bid + 10; push() }
   // 5. a crossing that retraces before confirming (no signal), then a real short breakout
   bid -= 40; ask = bid + 10; push(); bid += 30; ask = bid + 10; push()
   for (let i = 0; i < 20; i++) { const d = Math.round((rnd() - 0.5) * 4); bid += d; ask = bid + 10; push() }
   for (let i = 0; i < 14; i++) { bid -= 9; ask = bid + 10; push() }
   // 6. a crossed quote invalidates; then a stale gap invalidates again
   push({ bid: ask + 5, crossed: true })
-  for (let i = 0; i < 70; i++) { const d = Math.round((rnd() - 0.5) * 4); bid += d; ask = bid + 10; push() }
+  const floor6 = bid - 12, ceil6 = bid + 12   // a bounded walk: no breakout can be planted here by chance
+  for (let i = 0; i < 70; i++) { const d = Math.round((rnd() - 0.5) * 4); bid = Math.max(floor6, Math.min(ceil6, bid + d)); ask = bid + 10; push() }
   t += 120_000; push()
-  for (let i = 0; i < 20; i++) { const d = Math.round((rnd() - 0.5) * 4); bid += d; ask = bid + 10; push() }
+  for (let i = 0; i < 20; i++) { const d = Math.round((rnd() - 0.5) * 4); bid = Math.max(floor6, Math.min(ceil6, bid + d)); ask = bid + 10; push() }
   return ev
 }
 
@@ -52,7 +57,8 @@ test('the planted fixture yields exactly one long and one short, the spread-only
   const { signals, rejected, accepted } = runOracle(events, PARAMS)
   assert.equal(signals.length, 2, JSON.stringify(signals.map(s => [s.seq, s.side])))
   assert.equal(signals[0].side, 'BUY'); assert.equal(signals[1].side, 'SELL')
-  assert.ok(signals[0].seq > 95 && signals[0].seq < 110, `long at ${signals[0].seq}`)
+  assert.ok(signals[0].seq > 115 && signals[0].seq < 130, `long at ${signals[0].seq}`)
+  assert.ok(!signals.some(s => s.seq >= 94 && s.seq <= 96), 'the two-event spread-only jump confirmed nothing')
   assert.ok(signals[1].seq > signals[0].seq + 60, `short at ${signals[1].seq}`)
   assert.equal(signals[0].confirmations, 2); assert.equal(signals[0].setupId, 1)
   assert.ok(signals[0].bid > signals[0].H / 2, 'the long needed the bid above the frozen range too')

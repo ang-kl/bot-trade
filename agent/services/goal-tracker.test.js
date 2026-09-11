@@ -258,6 +258,35 @@ test('per-account scoping does not leak another account trades', () => {
   assert.equal(out.accounts.find(a => a.accountId === 'B').trades, 41)
 })
 
+test('a card reads ONLY its own balance key: an unstamped account says "not read", never the selected account\'s number; a stamped zero is zero', () => {
+  const db = freshDb()
+  seedAccount(db, 'SEL'); seedAccount(db, 'EMPTY'); seedAccount(db, 'ZERO')
+  setState(db, 'ctrader_account_id', 'SEL')
+  setState(db, 'account_balance_usd', '45837.59')          // the legacy global = the selected account
+  setState(db, 'acct:SEL:account_balance_usd', '45837.59')
+  setState(db, 'acct:ZERO:account_balance_usd', '0')
+  const out = goalTracker(db, { now: NOW })
+  const bal = (id) => out.accounts.find(a => a.accountId === id).balance
+  assert.equal(bal('SEL'), 45837.59)
+  assert.equal(bal('EMPTY'), null, 'no scoped key → not read; the global is somebody else\'s balance')
+  assert.equal(bal('ZERO'), 0, 'a stamped zero is a reading')
+})
+
+test('unstamped closed trades count once, in the roll-up, and never as an account\'s own record', () => {
+  const db = freshDb()
+  seedAccount(db, 'A'); seedAccount(db, 'NEVER')
+  seedTrades(db, { accountId: 'A', wins: 3, losses: 2 })
+  seedTrades(db, { accountId: null, wins: 1, losses: 3 })   // legacy rows, nobody's
+  const out = goalTracker(db, { now: NOW })
+  const a = out.accounts.find(r => r.accountId === 'A'), n = out.accounts.find(r => r.accountId === 'NEVER')
+  assert.equal(a.trades, 5, 'A counts only its own five')
+  assert.equal(n.trades, 0, 'an account that never traded has no record — not the four legacy rows')
+  assert.equal(n.verdict, 'no_data')
+  assert.equal(a.attributablePct, 100); assert.equal(a.coverage.excluded, 4)
+  assert.equal(out.portfolio.trades, 9, 'the roll-up holds every row')
+  assert.equal(out.unattributed, 4); assert.equal(out.portfolio.unattributed, 4)
+})
+
 test('the trade rate is measured over the account own span, never divided by zero', () => {
   const db = freshDb()
   seedAccount(db, '5203012')
@@ -408,12 +437,15 @@ test('each card reports what fraction of its rows belong to that account', () =>
   const out = goalTracker(db, { accountIds: ['AAA'] })
   const card = out.accounts[0]
 
-  // The OR-NULL read gives AAA three rows: its two plus the unstamped one.
-  // BBB's row is not in the denominator — it was never AAA's to count.
-  assert.equal(card.coverage.total, 3)
+  // 11-09-2026: the card counts ONLY AAA's two rows (the unstamped one
+  // goes to the roll-up), so every row behind it is attributable and the
+  // one it no longer counts is named as `excluded`. BBB's row is not in the
+  // denominator — it was never AAA's to count.
+  assert.equal(card.coverage.total, 2)
   assert.equal(card.coverage.attributable, 2)
-  assert.equal(card.attributablePct, 66.7,
-    'the card must be able to SAY "66.7% of 3 rows" rather than showing a clean number')
+  assert.equal(card.coverage.excluded, 1)
+  assert.equal(card.attributablePct, 100)
+  assert.equal(card.trades, 2, 'the card\'s own count agrees with its coverage')
 
   // The roll-up spans every account by design, so coverage is not measured
   // against one — reporting a gap there would cry wolf on a portfolio view.
