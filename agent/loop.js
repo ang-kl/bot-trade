@@ -4600,7 +4600,7 @@ async function runLoop(db) {
         const ew = runEdgeWatchdog(db, {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
         })
-        if (ew.actions?.length) log(`Edge watchdog: disarmed ${ew.actions.map(a => `${a.strategy} (exp $${a.expectancy}, PF ${a.profitFactor ?? '∞'}, scopes ${a.scopes.join('/')}${a.heldPinnedDemo?.length ? `, held demo pins ${a.heldPinnedDemo.join('/')}` : ''})`).join(', ')}`)
+        if (ew.actions?.length) log(`Edge watchdog: disarmed ${ew.actions.map(a => `${a.strategy} (exp $${a.expectancy}, PF ${a.profitFactor ?? '∞'}, scopes ${a.scopes.join('/')}${a.heldPinned?.length ? `, held pins ${a.heldPinned.join('/')}` : ''})`).join(', ')}`)
         await hbeat(db, 'edge_watchdog')
       } catch (err) {
         log(`Edge watchdog failed (non-fatal): ${err.message}`)
@@ -5326,7 +5326,7 @@ async function runLoop(db) {
         const { configProposals, newDangerProposals, dangerAlertText } =
           await import('./services/config-controller.js')
         const { getState: gs, setState: ss } = await import('./db.js')
-        const report = configProposals(db, { includeLive: false })
+        const report = configProposals(db)
         const { fresh } = newDangerProposals(db, report, { getState: gs, setState: ss })
         for (const p of fresh) {
           log(`CONFIG CONTROLLER (danger) [${p.accountId}] ${p.setting} ${p.current} → ${p.proposed}: ${p.why}`)

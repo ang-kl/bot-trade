@@ -39,10 +39,11 @@ import { familyOf } from './strategies.js'
 // 1R measured 1.82 / 50%). capBars moved to 0: the sweep's trail figures
 // were measured WITHOUT a cap, and every cap variant scored below the
 // trail alone. Both remain one state write away in managed_exit_json.
-// demoOnly false (owner 28-08-2026: "why only demo? i stressed it should be
-// regardless of account") — the trail governs every REGISTERED account,
-// live included. The registry check below still fails closed for accounts
-// it cannot identify.
+// Every REGISTERED account is governed, live included (owner 28-08-2026:
+// "why only demo? i stressed it should be regardless of account"; PR-B
+// 11-09-2026 deleted the inert `demoOnly` option so the fence cannot come
+// back through a state write). The registry check below still fails closed
+// for accounts it cannot identify.
 /**
  * The managed ruleset, applied wherever a position of a governed account is
  * evaluated. On managed accounts the peak-based trail is the ONLY
@@ -102,7 +103,6 @@ export function takeAtRFor(policy, strategy) {
 // timeframe, which is the dependency being removed.
 export const MANAGED_EXIT_DEFAULTS = Object.freeze({
   on: true,
-  demoOnly: false,
   capMinutes: 0,
   trailR: 0.5,
   // TAKE THE WHOLE POSITION at this R (owner "do the different exit",
@@ -132,7 +132,6 @@ export function loadManagedExit(db) {
   }
   return {
     on: stored.on !== undefined ? stored.on === true : MANAGED_EXIT_DEFAULTS.on,
-    demoOnly: stored.demoOnly !== undefined ? stored.demoOnly !== false : MANAGED_EXIT_DEFAULTS.demoOnly,
     capMinutes: Number.isFinite(capMinutes) && capMinutes >= 0 ? capMinutes : MANAGED_EXIT_DEFAULTS.capMinutes,
     trailR: num(stored.trailR, MANAGED_EXIT_DEFAULTS.trailR),
     // 0 is a VALUE here too (trail only); junk degrades to the default.
@@ -154,15 +153,12 @@ export function managedExitApplies(db, accountId, cfg = null) {
   if (!c.on) return false
   if (accountId == null) return false
   try {
-    const row = db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(String(accountId))
-    // The registry check is UNCONDITIONAL: with demoOnly off the policy
-    // reaches live accounts, but never an account it cannot identify.
-    // (`!c.demoOnly → return true` used to sit above the null/registry
-    // checks, so widening the scope would also have widened it to
-    // unattributable rows — fail-closed must not depend on which scope is
-    // configured.)
-    if (!row) return false
-    return c.demoOnly ? Number(row.is_live) === 0 : true
+    const row = db.prepare('SELECT account_id FROM accounts WHERE account_id = ?').get(String(accountId))
+    // The registry check is UNCONDITIONAL: the policy reaches every
+    // registered account, live included, but never an account it cannot
+    // identify. PR-B: the row is read for existence only — no environment
+    // column, no `demoOnly` branch, so a stored `demoOnly: true` is inert.
+    return !!row
   } catch { return false }
 }
 

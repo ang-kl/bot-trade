@@ -45,7 +45,7 @@ describe('AccountScopeFab', () => {
   // the lens. The sheet has to say which kind of switch it is — the previous
   // wording promised view-only, and a control that quietly re-points real
   // trading while claiming otherwise is worse than either behaviour alone.
-  it('opened, it says it sets the TRADED account and warns about the live confirm', () => {
+  it('opened, it says it sets the TRADED account and that every account confirms (PR-B: no typed LIVE word)', () => {
     // Choosing a row here calls setViewedAccount, never
     // /actions/ctrader-select-account. A control this easy to reach must not
     // be readable as "this re-points what the bot trades".
@@ -53,7 +53,8 @@ describe('AccountScopeFab', () => {
     expect(h).toContain('role="dialog"')
     expect(h).toContain('All accounts')
     expect(h).toMatch(/TRADES/)
-    expect(h).toMatch(/type LIVE/i)
+    expect(h).toMatch(/Every account asks you to confirm/)
+    expect(h).not.toMatch(/type LIVE/i)
   })
 
   it('every sheet row clears 44px', () => {

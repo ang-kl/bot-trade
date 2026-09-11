@@ -337,9 +337,17 @@ test('strategy-pin seed: pins the named strategies ON for that account only, ide
   // re-pin it — the file is a declaration, not a setting re-asserted per
   // deploy. Measured: watchdog disarmed three strategies on ACCT-LIVE-1 at
   // 20:59 SGT, boot re-applied five ("strategy pins: 5 applied").
+  // PR-B (owner principle 1): a hand pin is held on EVERY scope under the
+  // exemption, whichever environment the account is — so the guard's plain
+  // disarm (no exemption: a human unpin, or a guard that does not hold pins)
+  // is what removes it here. RED if the exemption regains an environment term.
   db.prepare(`UPDATE accounts SET is_live = 1 WHERE account_id = '111'`).run()
-  const scopes = disarmStrategyEverywhere(db, io, 'rsi2_reversion', { neverZero: false, exemptHandPinnedDemo: true })
-  assert.deepEqual([...scopes], ['111'], 'a live pin is disarmed by the guard')
+  const heldLive = disarmStrategyEverywhere(db, io, 'rsi2_reversion', { neverZero: false, exemptHandPinned: true })
+  assert.deepEqual([...heldLive], [], 'a hand pin on a live scope is held like any other')
+  assert.deepEqual(heldLive.held, ['111'])
+  assert.equal(isHandPinned(db, getState, '111', 'rsi2_reversion'), true)
+  const scopes = disarmStrategyEverywhere(db, io, 'rsi2_reversion', { neverZero: false })
+  assert.deepEqual([...scopes], ['111'], 'without the exemption the pin is disarmed')
   assert.equal(isHandPinned(db, getState, '111', 'rsi2_reversion'), false)
   const c = seedStrategyPinsFromConfig(db, io, { file })
   assert.deepEqual(c.applied, [], 'the guard-disarmed pin is not re-applied')
@@ -357,12 +365,34 @@ test('strategy-pin seed: pins the named strategies ON for that account only, ide
   assert.equal(seedStrategyPinsFromConfig(db, io, { file }).error, 'strategy-pins.json is not an object')
 })
 
-test('strategy-pin seed: the checked-in file parses, pins the whole non-momentum stack on every account of the cluster (owner 09-09-2026), and index.js applies it at boot after the momentum seed', () => {
+test('strategy-pin seed: _all pins the list on every ENABLED account, a per-id key wins for its id, a disabled account is skipped, and an account enabled later is pinned on its first boot (PR-B, principle 9)', () => {
+  const db = withAccounts(initDB(':memory:'), ['111', '222', '333'])
+  db.prepare(`UPDATE accounts SET enabled = 0 WHERE account_id = '333'`).run()
+  setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
+  const dir = mkdtempSync(join(tmpdir(), 'pins-all-'))
+  const file = join(dir, 'strategy-pins.json')
+  writeFileSync(file, JSON.stringify({ _note: 'x', _all: ['rsi2_reversion', 'rsi_meanrev'], 222: ['ema_pullback'] }))
+  const a = seedStrategyPinsFromConfig(db, io, { file })
+  assert.equal(a.error, null)
+  assert.deepEqual(a.applied.sort(), ['111:rsi2_reversion', '111:rsi_meanrev', '222:ema_pullback'].sort(), 'every enabled account from _all; the explicit key wins for 222')
+  assert.equal(isHandPinned(db, getState, '333', 'rsi2_reversion'), false, 'a disabled account is not pinned')
+  assert.equal(isHandPinned(db, getState, '222', 'rsi2_reversion'), false, 'the per-id key replaced _all for 222')
+  // An account enabled AFTER the first boot is pinned on its next boot — RED if _all is read as a note and skipped.
+  db.prepare(`UPDATE accounts SET enabled = 1 WHERE account_id = '333'`).run()
+  const b = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(b.applied.sort(), ['333:rsi2_reversion', '333:rsi_meanrev'])
+  assert.deepEqual(seedStrategyPinsFromConfig(db, io, { file }).applied, [], 'idempotent')
+  // A malformed _all is named, not silently ignored.
+  writeFileSync(file, JSON.stringify({ _all: 'rsi2_reversion' }))
+  assert.deepEqual(seedStrategyPinsFromConfig(db, io, { file }).skipped, ['_all: malformed'])
+})
+
+test('strategy-pin seed: the checked-in file parses, pins the whole non-momentum stack on EVERY account (owner 09-09-2026; PR-B: one _all list, no ids), and index.js applies it at boot after the momentum seed', () => {
   const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
-  const ids = Object.keys(cfg).filter(k => /^\d{8}$/.test(k))
-  assert.equal(ids.length, 5, 'the five accounts the loop runs')
+  const ids = Object.keys(cfg).filter(k => /^\d+$/.test(k))
+  assert.deepEqual(ids, [], 'no hardcoded account ids (principle 9)')
   const stack = STRATEGY_KEYS.filter(k => k !== 'tsmom_long')
-  for (const id of ids) assert.deepEqual(cfg[id], stack, `${id}: every strategy but the momentum book's own`)
+  assert.deepEqual(cfg._all, stack, '_all: every strategy but the momentum book\'s own')
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /seedMomentumAccountFromConfig\(db, \{ log[\s\S]{0,900}?seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log/, 'the boot seed runs after the momentum-account seed')
 })

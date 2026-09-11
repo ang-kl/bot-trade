@@ -10,14 +10,14 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { initDB } from '../db.js'
-import { upsertAccount, getAccountState } from './account-registry.js'
+import { upsertAccount, getAccountState, setAccountState } from './account-registry.js'
 import { engineStatusFor, requestTickObservation, ENGINE_STATUS_KEY } from './entry-mode.js'
 import { importTickTrial } from './tick-research.js'
 import { DEFAULT_PARAMS, profileHash, profileHashFull, normalizeParams } from '../lib/tick-strategy.js'
-import { importTickValidation, loadThresholds, validationHistory, shadowSignalEvidence, TICK_VALIDATION_KEY } from './tick-validation.js'
+import { importTickValidation, loadThresholds, validationHistory, shadowSignalEvidence, tradedTickEvidence, TICK_VALIDATION_KEY } from './tick-validation.js'
 
 const DEMO = '46979908', LIVE = '42993489'
-const TH = { replay: { minTrades: 30, minProfitFactor: 1.3, minTestNetR: 0, maxDrawdownR: 10 }, shadow: { minSignals: 20, minHours: 24, minTrades: 5, minLosses: 2, minProfitFactor: 1.2, minExpectancyLowerR: -1, maxDrawdownR: 6, maxResetSharePct: 20 }, demo: { minClosedTrades: 30, minProfitFactor: 1.2, maxDrawdownR: 10 } }
+const TH = { replay: { minTrades: 30, minProfitFactor: 1.3, minTestNetR: 0, maxDrawdownR: 10 }, shadow: { minSignals: 20, minHours: 24, minTrades: 5, minLosses: 2, minProfitFactor: 1.2, minExpectancyLowerR: -1, maxDrawdownR: 6, maxResetSharePct: 20 }, traded: { minTrades: 3, minProfitFactor: 1.2, maxDrawdownR: 10 } }
 
 function fresh() {
   const db = initDB(':memory:')
@@ -46,7 +46,7 @@ function signal(db, { side = 'cpp_exec_demo', at, profile, symbolId = 1, seq }) 
 
 test('the checked-in thresholds file leaves every threshold unset, and an unset threshold refuses the import with nothing written', () => {
   const th = loadThresholds()
-  for (const g of ['replay', 'shadow', 'demo']) for (const [k, v] of Object.entries(th[g])) assert.equal(v, null, `${g}.${k} must be null in the checked-in file (owner-held risk limit)`)
+  for (const g of ['replay', 'shadow', 'traded']) for (const [k, v] of Object.entries(th[g])) assert.equal(v, null, `${g}.${k} must be null in the checked-in file (owner-held risk limit)`)
   assert.deepEqual(Object.keys(th.shadow), ['minSignals', 'minHours', 'minTrades', 'minLosses', 'minProfitFactor', 'minExpectancyLowerR', 'maxDrawdownR', 'maxResetSharePct'], 'P6a: the shadow stage judges the portfolio')
   const db = fresh()
   const id = trial(db)
@@ -62,8 +62,11 @@ test('stages move one step at a time, in order; a skip is refused', () => {
   const db = fresh()
   const r = importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
   assert.equal(r.ok, false); assert.match(r.reason, /^stage_order/)
-  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'LIVE_APPROVED', evidence: { approval: 'LIVE_APPROVED' }, thresholds: TH }).ok, false)
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'TRADED_PASSED', thresholds: TH }).ok, false)
   assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'NOPE', thresholds: TH }).reason, 'unknown_stage: NOPE')
+  // PR-B: the environment-tiered stages are gone from the ladder
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'LIVE_APPROVED', evidence: { approval: 'LIVE_APPROVED' }, thresholds: TH }).reason, 'unknown_stage: LIVE_APPROVED')
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'DEMO_PASSED', thresholds: TH }).reason, 'unknown_stage: DEMO_PASSED')
   assert.equal(importTickValidation(db, { accountId: '', stage: 'REPLAY_PASSED', thresholds: TH }).reason, 'no_account')
   assert.equal(engineStatusFor(db, DEMO).configRevision, 0)
 })
@@ -181,22 +184,72 @@ test('SHADOW_PASSED counts only signals rung under the pinned profile on the acc
   assert.equal(dd.ok, false); assert.ok(dd.failed.includes('maxDrawdownR')); assert.equal(dd.checks.maxDrawdownR.observed, 7)
 })
 
-test('DEMO_PASSED is refused honestly until P6 produces tick trades; LIVE_APPROVED needs the owner\'s typed word and a demo account cannot skip to it', () => {
+// PR-B (owner principle 1): the traded stage is ONE stage for every account,
+// judged on the account's own closed tick trades in R. Lineage via the entry
+// ledger, so a time-based close on the same account is not tick evidence.
+function tickClose(db, accountId, { id, positionId, entry, exit, sl, side = 'BUY', producer = 'tick_momentum', at = '2026-09-11 01:00:00' }) {
+  db.prepare(`INSERT INTO entry_intents (id, account_id, environment, symbol, symbol_id, side, order_type, volume, producer_id, basis, mode_epoch, config_revision, permit_id, permit_expires_at, state, broker_position_id, created_at, updated_at)
+              VALUES (?, ?, 'demo', 'EURUSD', 1, ?, 'MARKET', 1000, ?, 'tick', 1, 1, ?, ?, 'FILLED', ?, ?, ?)`).run(id, accountId, side, producer, `p-${id}`, at, String(positionId), at, at)
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, volume, status, opened_at, closed_at, net_pnl, account_id, ctrader_position_id)
+              VALUES ('EURUSD', ?, ?, ?, ?, 0.01, 'closed', ?, ?, ?, ?, ?)`).run(side, entry, exit, sl, at, at, (exit - entry) * (side === 'BUY' ? 1 : -1) * 1000, accountId, String(positionId))
+}
+
+test('TRADED_PASSED: thresholds_unset when the owner has set nothing; otherwise judged on the account\'s OWN closed tick trades in R, the same on a live account (no environment test), and non-tick closes do not count', () => {
   const db = fresh()
   const good = trial(db)
-  importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: good }, thresholds: TH })
-  requestTickObservation(db, DEMO, 'SHADOW')
-  // force the stage forward for the DEMO_PASSED check without the shadow evidence
   const { writeEngineStatus } = engineModule
-  writeEngineStatus(db, { ...engineStatusFor(db, DEMO), validationStage: 'SHADOW_PASSED' })
-  const r = importTickValidation(db, { accountId: DEMO, stage: 'DEMO_PASSED', evidence: { closedTrades: 50, profitFactor: 2, maxDrawdownR: 3 }, thresholds: TH })
-  assert.equal(r.ok, false); assert.match(r.reason, /^demo_evidence_not_produced/)
-  assert.equal(importTickValidation(db, { accountId: LIVE, stage: 'DEMO_PASSED', thresholds: TH }).ok, false)
-  writeEngineStatus(db, { ...engineStatusFor(db, DEMO), validationStage: 'DEMO_PASSED' })
-  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'LIVE_APPROVED', thresholds: TH }).reason, 'approval_word_required')
-  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'LIVE_APPROVED', evidence: { approval: 'LIVE_APPROVED' }, actor: 'autopilot', thresholds: TH }).reason, 'owner_only')
-  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'LIVE_APPROVED', evidence: { approval: 'LIVE_APPROVED' }, thresholds: TH }).ok, true)
-  assert.equal(engineStatusFor(db, DEMO).validationStage, 'LIVE_APPROVED')
+  for (const id of [DEMO, LIVE]) {
+    importTickValidation(db, { accountId: id, stage: 'REPLAY_PASSED', evidence: { trialId: good }, thresholds: TH })
+    // force the stage forward without the shadow evidence
+    writeEngineStatus(db, { ...engineStatusFor(db, id), validationStage: 'SHADOW_PASSED' })
+  }
+  const unset = importTickValidation(db, { accountId: DEMO, stage: 'TRADED_PASSED', thresholds: { ...TH, traded: { minTrades: null, minProfitFactor: null, maxDrawdownR: null } } })
+  assert.equal(unset.ok, false); assert.equal(unset.reason, 'thresholds_unset'); assert.deepEqual(unset.unset, ['traded.minTrades', 'traded.minProfitFactor', 'traded.maxDrawdownR'])
+  // the checked-in file: every traded threshold is null today
+  const file = loadThresholds()
+  assert.deepEqual(file.traded, { minTrades: null, minProfitFactor: null, maxDrawdownR: null })
+  assert.equal('demo' in file, false, 'the demo key is gone from the thresholds')
+  // no trades yet → below threshold, nothing written
+  const none = importTickValidation(db, { accountId: DEMO, stage: 'TRADED_PASSED', thresholds: TH })
+  assert.equal(none.ok, false); assert.equal(none.reason, 'traded_below_threshold'); assert.deepEqual(none.failed, ['trades', 'profitFactor'])
+  assert.equal(engineStatusFor(db, DEMO).validationStage, 'SHADOW_PASSED')
+  // three tick closes on the LIVE account: +2R, +2R, −1R → PF 4, DD 1R; and a
+  // time-based close on the same account that must NOT be counted
+  tickClose(db, LIVE, { id: 'l1', positionId: 9001, entry: 1.1000, exit: 1.1020, sl: 1.0990 })
+  tickClose(db, LIVE, { id: 'l2', positionId: 9002, entry: 1.1000, exit: 1.1020, sl: 1.0990 })
+  tickClose(db, LIVE, { id: 'l3', positionId: 9003, entry: 1.1000, exit: 1.0990, sl: 1.0990 })
+  tickClose(db, LIVE, { id: 'l4', positionId: 9004, entry: 1.1000, exit: 1.1100, sl: 1.0990, producer: 'scan_dispatch' })
+  const ev = tradedTickEvidence(db, LIVE)
+  assert.equal(ev.trades, 3); assert.equal(ev.losses, 1); assert.equal(ev.profitFactor, 4); assert.equal(ev.maxDrawdownR, 1); assert.equal(ev.netR, 3)
+  const live = importTickValidation(db, { accountId: LIVE, stage: 'TRADED_PASSED', thresholds: TH })
+  assert.equal(live.ok, true, JSON.stringify(live))
+  assert.equal(engineStatusFor(db, LIVE).validationStage, 'TRADED_PASSED')
+  assert.equal(live.record.evidence.traded.trades, 3)
+  assert.doesNotMatch(JSON.stringify(live), /not_a_demo_account|LIVE_APPROVED|approval/)
+  // the demo account with the same evidence reaches the same stage the same way
+  tickClose(db, DEMO, { id: 'd1', positionId: 9101, entry: 1.1000, exit: 1.1020, sl: 1.0990 })
+  tickClose(db, DEMO, { id: 'd2', positionId: 9102, entry: 1.1000, exit: 1.1020, sl: 1.0990 })
+  tickClose(db, DEMO, { id: 'd3', positionId: 9103, entry: 1.1000, exit: 1.0990, sl: 1.0990 })
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'TRADED_PASSED', thresholds: TH }).ok, true)
+  assert.equal(engineStatusFor(db, DEMO).validationStage, 'TRADED_PASSED')
+  // nothing above it
+  assert.match(importTickValidation(db, { accountId: DEMO, stage: 'TRADED_PASSED', thresholds: TH }).reason, /^stage_order/)
+})
+
+test('PR-B: a record stored with the old environment-tiered stages reads as TRADED_PASSED, and the next write stores the new name', () => {
+  const db = fresh()
+  const { ENGINE_STATUS_KEY: key } = engineModule
+  for (const legacy of ['DEMO_PASSED', 'LIVE_APPROVED']) {
+    const base = { ...engineStatusFor(db, DEMO), profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: legacy, configRevision: 3, updatedAt: '2026-09-10T00:00:00.000Z' }
+    delete base.stored
+    setAccountState(db, DEMO, key, JSON.stringify(base))
+    const st = engineStatusFor(db, DEMO)
+    assert.equal(st.validationStage, 'TRADED_PASSED', `${legacy} reads as TRADED_PASSED`)
+    assert.equal(st.invalid, undefined, 'the normalised record is valid')
+    assert.match(getAccountState(db, DEMO, key), new RegExp(legacy), 'a read never writes')
+    engineModule.writeEngineStatus(db, { ...st, configRevision: 4 })
+    assert.doesNotMatch(getAccountState(db, DEMO, key), new RegExp(legacy))
+  }
 })
 import * as engineModule from './entry-mode.js'
 

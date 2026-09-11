@@ -30,7 +30,7 @@ export function PriorCohortRow({ data, error }) {
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span className="font-semibold">Prior cohort</span>
         <span className="text-[var(--color-text-sub)]">
-          prior admit {cfg.priorAdmit === false ? 'off' : 'on'} · risk scale {fmt(cfg.priorRiskScale)} · demo only by code
+          prior admit {cfg.priorAdmit === false ? 'off' : 'on'} · risk scale {fmt(cfg.priorRiskScale)} · every account
         </span>
       </div>
       <div className="tabular-nums">

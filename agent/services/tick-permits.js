@@ -92,7 +92,7 @@ export function openPositionsFor(db, accountId) {
   return { symbols, total }
 }
 
-/** The enabled accounts on `side` whose EFFECTIVE mode is TICK_MOMENTUM (demo only: live stays refused until P7). */
+/** The enabled accounts on `side` whose EFFECTIVE mode is TICK_MOMENTUM (PR-B: every account on the same evidence bar; `side` is routing only). */
 export function pausedTickAccounts(db) {
   try { const m = JSON.parse(getState(db, PAUSED_KEY) || '{}'); return m && typeof m === 'object' ? m : {} } catch { return {} }
 }
@@ -101,14 +101,16 @@ export function tickEntryAccountsFor(db, side = { isLive: null }, { excludePause
   const paused = excludePaused ? pausedTickAccounts(db) : {}
   let rows = []
   try {
-    rows = db.prepare('SELECT account_id, is_live FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
+    rows = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
       .all(...(side?.isLive == null ? [] : [side.isLive ? 1 : 0]))
   } catch { return [] }
   const out = []
   for (const r of rows) {
     const st = engineStatusFor(db, r.account_id)
     if (st.effectiveEntryMode !== 'TICK_MOMENTUM' || st.transitionState !== 'STABLE') continue
-    if (Number(r.is_live) === 1 || st.environment === 'live') continue
+    // PR-B (owner principle 1): mode, STABLE and the pause map are the whole
+    // test — the environment is not read here. `side` above is routing (which
+    // sidecar), never a policy.
     if (paused[String(r.account_id)]) continue
     out.push(String(r.account_id))
   }

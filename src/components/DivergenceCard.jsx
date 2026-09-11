@@ -199,7 +199,7 @@ export function EarnedFloorRow({ data, error }) {
       </div>
       <div className="tabular-nums">
         <span className="font-semibold">Config:</span>{' '}
-        {cfg.on ? 'on' : 'off'} · {cfg.demoOnly ? 'demo only' : 'live included'} · risk scale {fmt(cfg.riskScale)} · window {cfg.window ?? '—'} · min sample {cfg.minSample ?? '—'} · min E {fmt(cfg.minE)}R
+        {cfg.on ? 'on' : 'off'} · every account · risk scale {fmt(cfg.riskScale)} · window {cfg.window ?? '—'} · min sample {cfg.minSample ?? '—'} · min E {fmt(cfg.minE)}R
       </div>
       <div className="tabular-nums">
         <span className="font-semibold">Cohort:</span>{' '}

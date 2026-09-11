@@ -250,22 +250,63 @@ test('P3b: the tick-observation seed applies once per file content, leaves a lat
   const third = seedTickObservationFromConfig(db, { file, universeFile: universe })
   assert.deepEqual(third.applied, [`…${DEMO.slice(-4)}:RECORD`])
   assert.deepEqual(JSON.parse(getState(db, 'tick_symbols_json')), ['GBPUSD'])
-  // the checked-in file names the momentum account and the momentum universe, and boot wires the seed
+  // the checked-in file names EVERY account (PR-B, principle 9) and the momentum universe, and boot wires the seed
   const cfg = JSON.parse(readFileSync(new URL('../config/tick-observation.json', import.meta.url), 'utf8'))
-  assert.equal(cfg.accounts['46979908'], 'RECORD'); assert.equal(cfg.symbols, 'momentum-universe')
+  assert.deepEqual(cfg.accounts, { _all: 'RECORD' }); assert.equal(cfg.symbols, 'momentum-universe')
   const boot = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
   assert.match(boot, /seedTickObservationFromConfig\(db, \{ log/)
 })
 
-test('P6b: TICK_MOMENTUM is admitted only on a demo account whose injected readiness is clean; live is refused even when ready; the tick producer is then admitted and bar producers are not', async () => {
+test('PR-B (owner principle 9): accounts._all seeds every ENABLED registry account, a per-id key still wins, a disabled account is left alone, and an account enabled after the first boot is seeded on its next boot', () => {
+  const db = fresh()
+  const THIRD = '46979908', OFF = '47790949', LATER = '43097342'
+  upsertAccount(db, { accountId: THIRD, isLive: true })
+  upsertAccount(db, { accountId: OFF, isLive: false })
+  db.prepare('UPDATE accounts SET enabled = 1').run()
+  db.prepare(`UPDATE accounts SET enabled = 0 WHERE account_id = '${OFF}'`).run()
+  const dir = mkdtempSync(join(tmpdir(), 'tick-obs-all-'))
+  const file = join(dir, 'tick-observation.json')
+  writeFileSync(file, JSON.stringify({ accounts: { _all: 'RECORD', [LIVE]: 'SHADOW' }, symbols: ['EURUSD'] }))
+  const r = seedTickObservationFromConfig(db, { file })
+  assert.equal(r.error, null)
+  assert.deepEqual([...r.applied].sort(), [`…${DEMO.slice(-4)}:RECORD`, `…${LIVE.slice(-4)}:SHADOW`, `…${THIRD.slice(-4)}:RECORD`].sort(), 'every enabled account, the explicit key winning for its id')
+  assert.equal(engineStatusFor(db, OFF).tickObservation, 'OFF', 'a disabled account is not seeded')
+  assert.equal(engineStatusFor(db, LIVE).tickObservation, 'SHADOW')
+  // The operator switches one off; the same file on the next boot leaves it.
+  requestTickObservation(db, THIRD, 'OFF')
+  const again = seedTickObservationFromConfig(db, { file })
+  assert.deepEqual(again.applied, []); assert.equal(engineStatusFor(db, THIRD).tickObservation, 'OFF', 'seed once still holds under _all')
+  // A NEW account joins the registry (enabled) after the file was applied: seeded on its first boot, nothing else touched.
+  upsertAccount(db, { accountId: LATER, isLive: false })
+  db.prepare(`UPDATE accounts SET enabled = 1 WHERE account_id = '${LATER}'`).run()
+  const late = seedTickObservationFromConfig(db, { file })
+  assert.deepEqual(late.applied, [`…${LATER.slice(-4)}:RECORD`], 'RED if the content hash alone decides and the late account is skipped')
+  assert.equal(engineStatusFor(db, THIRD).tickObservation, 'OFF', 'the operator\'s OFF still stands')
+  assert.equal(engineStatusFor(db, LATER).tickObservation, 'RECORD')
+  assert.deepEqual(seedTickObservationFromConfig(db, { file }).applied, [], 'and it is reached only once')
+  assert.deepEqual(JSON.parse(getState(db, 'tick_observation_seed_json')).reached.sort(), [DEMO, LIVE, THIRD, LATER].sort())
+})
+
+test('P6b / PR-B: TICK_MOMENTUM is admitted on ANY account whose injected readiness is clean — readiness is the only gate, a live account is not refused on its environment; the tick producer is then admitted and bar producers are not', async () => {
   const db = fresh()
   const notReady = () => ({ ready: false, blockedReasons: ['recorder_recording', 'validation_stage'] })
   const ready = () => ({ ready: true, blockedReasons: [] })
   const boom = () => { throw new Error('status table missing') }
   const r1 = requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { readiness: notReady })
   assert.equal(r1.ok, false); assert.equal(r1.reason, 'tick_not_ready: recorder_recording, validation_stage'); assert.deepEqual(r1.blockedReasons, ['recorder_recording', 'validation_stage'])
+  // PR-B (owner principle 1): the live account with the same evidence is
+  // admitted the same way — WARMING until the gateway acks. RED if the old
+  // `tick_live_refused` environment test comes back.
+  const { profileHashFull: phf, DEFAULT_PARAMS: dp } = await import('../lib/tick-strategy.js')
+  engineModule.writeEngineStatus(db, { ...engineStatusFor(db, LIVE), profileHash: phf(dp), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', configRevision: 1, updatedAt: new Date().toISOString() })
   const r2 = requestEntryMode(db, LIVE, 'TICK_MOMENTUM', { readiness: ready })
-  assert.equal(r2.ok, false); assert.match(r2.reason, /^tick_live_refused/)
+  assert.equal(r2.ok, true, `live admitted on readiness alone: ${r2.reason}`)
+  assert.equal(r2.status.requestedEntryMode, 'TICK_MOMENTUM'); assert.equal(r2.status.transitionState, 'WARMING')
+  assert.doesNotMatch(JSON.stringify(r2), /tick_live_refused/)
+  const liveNotReady = requestEntryMode(db, LIVE, 'TIME_BASED')
+  assert.equal(liveNotReady.ok, true)
+  const r2b = requestEntryMode(db, LIVE, 'TICK_MOMENTUM', { readiness: notReady })
+  assert.equal(r2b.ok, false); assert.match(r2b.reason, /^tick_not_ready/, 'a live account is refused ONLY by readiness')
   const r3 = requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { readiness: boom })
   assert.equal(r3.ok, false); assert.match(r3.reason, /^tick_readiness_error: status table missing/)
   assert.equal(engineStatusFor(db, DEMO).requestedEntryMode, 'TIME_BASED', 'three refusals wrote nothing')

@@ -37,11 +37,12 @@ recorded here so it cannot drift later):
   **≥ 15 closes and PF ≥ 1.5**. A measured cohort that passes on the back of a
   prior population that fails is not a pass for the prior.
 
-Widening the **measured** path to live is the owner's action:
-`POST /actions/earned-floor { demoOnly: false }`. The **prior** path stays
-demo-only by code whatever `demoOnly` says; widening it to live is a separate,
-owner-approved code change. Turning the prior off without touching the
-measured path: `POST /actions/earned-floor { priorAdmit: false }`.
+Since PR-B (11-09-2026, owner principle 1) both the **measured** and the
+**prior** path admit on every account by code — there is no `demoOnly` dial
+and no demo-only prior any more (`agent/services/earned-floor.js`,
+`earned-floor.test.js`: a live row admits by both paths). Turning the prior
+off without touching the measured path: `POST /actions/earned-floor
+{ priorAdmit: false }`.
 
 ## What would change my mind
 

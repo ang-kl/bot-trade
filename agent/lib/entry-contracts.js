@@ -27,7 +27,14 @@ export const ENVIRONMENTS = Object.freeze(['demo', 'live'])
 export const ENTRY_MODES = Object.freeze(['TIME_BASED', 'TICK_MOMENTUM', 'STOPPED'])
 export const TRANSITION_STATES = Object.freeze(['STABLE', 'QUIESCING', 'RECONCILING', 'WARMING', 'BLOCKED'])
 export const OBSERVATION_MODES = Object.freeze(['OFF', 'RECORD', 'SHADOW'])
-export const VALIDATION_STAGES = Object.freeze(['UNVALIDATED', 'REPLAY_PASSED', 'SHADOW_PASSED', 'DEMO_PASSED', 'LIVE_APPROVED'])
+// PR-B (owner principle 1, 11-09-2026): ONE ladder for every account.
+// TRADED_PASSED is judged on the account's own closed tick trades in R
+// (tick-validation.js); the environment-tiered stages it replaced (a demo
+// stage, then a typed live approval) are read back as TRADED_PASSED by
+// engineStatusFor so stored records stay readable.
+export const VALIDATION_STAGES = Object.freeze(['UNVALIDATED', 'REPLAY_PASSED', 'SHADOW_PASSED', 'TRADED_PASSED'])
+/** Stages that admit an effective TICK_MOMENTUM — the same bar on every account. */
+export const TICK_ENTRY_STAGES = Object.freeze(['SHADOW_PASSED', 'TRADED_PASSED'])
 export const SIGNAL_BASES = Object.freeze(['bar', 'tick'])
 export const SIDES = Object.freeze(['BUY', 'SELL'])
 export const ENTRY_TYPES = Object.freeze(['MARKET', 'LIMIT', 'STOP'])
@@ -282,11 +289,9 @@ export function validateEngineStatus(obj) {
     }
     if (e.effectiveEntryMode === 'TICK_MOMENTUM') {
       if (e.profileHash == null) errors.push('profileHash: required while TICK_MOMENTUM is effective')
-      if (!['DEMO_PASSED', 'LIVE_APPROVED', 'SHADOW_PASSED'].includes(e.validationStage)) {
-        errors.push('validationStage: TICK_MOMENTUM needs at least SHADOW_PASSED (demo) — plan runbook "Stages"')
-      }
-      if (e.environment === 'live' && e.validationStage !== 'LIVE_APPROVED') {
-        errors.push('validationStage: a live account needs LIVE_APPROVED before TICK_MOMENTUM is effective')
+      // PR-B: one evidence bar for every account — no environment clause.
+      if (!TICK_ENTRY_STAGES.includes(e.validationStage)) {
+        errors.push('validationStage: TICK_MOMENTUM needs at least SHADOW_PASSED — plan runbook "Stages"')
       }
     }
     if (e.entryCounts.unknown > 0 && e.transitionState === 'STABLE' && e.effectiveEntryMode !== 'STOPPED') {

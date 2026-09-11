@@ -16,6 +16,7 @@ import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { useAccountPhases, refreshPhases } from '../lib/use-active-account.js'
 import { PHASES } from '../lib/account-phases.js'
 import { accountNumbers } from "../lib/scope-label.js"
+import { confirmAccountAction } from '../lib/account-confirm.js'
 
 const CACHE = 'accounts_cache_v1'
 
@@ -85,13 +86,9 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
 
   const pick = async (a) => {
     if (busy || a.accountId === data.selectedAccountId) return
-    if (a.isLive) {
-      const word = window.prompt(
-        `⚠ ${accountNumbers(a)} is a LIVE account with REAL money.\n\n` +
-        'If Autotrade is armed, the bot will place REAL orders on it.\n\nType LIVE to confirm.'
-      )
-      if (word !== 'LIVE') return
-    }
+    // PR-B (owner principle 1): the same neutral confirm on every row — the
+    // "Type LIVE" prompt that keyed on the environment is gone.
+    if (!confirmAccountAction(a, 'switch the bot to it — if Autotrade is armed, the bot will place orders on it.')) return
     setBusy(true)
     setErr('')
     try {
@@ -106,22 +103,15 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
   // account in the registry — the bot stops EVERYTHING for it (scan,
   // analyse, autotrade, keeper, reconcile) and the sidecar drops it from
   // the credential roster on the next push. Reconnect re-enables the row
-  // and re-establishes the roster the same way. Both confirm; re-enabling
-  // a LIVE account additionally goes through the server's confirmLive
-  // carve-out with a typed word.
+  // and re-establishes the roster the same way. Both confirm with the same
+  // neutral text every account gets (PR-B: no typed environment word).
   const setConnected = async (a, next) => {
-    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${accountNumbers(a)}`
-    if (!next && !window.confirm(`Disconnect ${who}? The bot stops ALL activity for this account — scanning, analysis, autotrade AND position management/reconcile — and the sidecar drops its credentials on the next roster push. Open positions are left to their broker-side SL/TP.`)) return
-    let confirmLive
-    if (next && a.isLive) {
-      const word = window.prompt(`⚠ ${who} is a LIVE account with REAL money.\n\nReconnecting re-establishes its credentials and re-enables it in the registry.\n\nType LIVE to confirm:`)
-      if (word !== 'LIVE') return
-      confirmLive = true
-    } else if (next && !window.confirm(`Reconnect ${who}? The account is re-enabled in the registry and the sidecar re-establishes its credentials on the next roster push.`)) return
+    if (!next && !confirmAccountAction(a, 'disconnect — the bot stops ALL activity for it (scanning, analysis, autotrade AND position management/reconcile) and the sidecar drops its credentials on the next roster push; open positions are left to their broker-side SL/TP.')) return
+    if (next && !confirmAccountAction(a, 'reconnect — it is re-enabled in the registry and the sidecar re-establishes its credentials on the next roster push.')) return
     setPhaseBusy(`${a.accountId}:conn`)
     setErr('')
     try {
-      await agentPost('/actions/registry-account', { accountId: a.accountId, enabled: next, ...(confirmLive ? { confirmLive } : {}) })
+      await agentPost('/actions/registry-account', { accountId: a.accountId, enabled: next })
       await Promise.all([refreshPhases(), load()])
     } catch (e) { setErr(e.message) } finally { setPhaseBusy('') }
   }

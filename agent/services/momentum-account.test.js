@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import {
-  momentumAccountConfig, loadMomentumAccount, isMomentumAccount, MOMENTUM_ACCOUNT_KEY, MOMENTUM_ACCOUNT_STATE_KEY, MOMENTUM_UNIVERSE_KEY,
+  momentumAccountConfig, loadMomentumAccount, isMomentumAccount, momentumAccountIds, momentumAccountStateKey, migrateLegacyPassCursor, ALL_ACCOUNTS, MOMENTUM_ACCOUNT_KEY, MOMENTUM_ACCOUNT_STATE_KEY, MOMENTUM_UNIVERSE_KEY,
   momentumUniverse, momentumUniverseSymbols, volTargetLots, dailyDue, thresholdMs, buildUniverse, runMomentumAccountPass, momentumAccountReport,
 } from './momentum-account.js'
 import { buildEntrySynth, loadMomentumBook, runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, TSMOM_STRATEGY } from './momentum-book.js'
@@ -177,7 +177,50 @@ test('the daily pass: not due → nothing; due → the shadow\'s tradable longs 
   assert.equal(rep.config.accountId, MOM)
   assert.equal(rep.universe.tradable, 2)
   assert.equal(rep.lastPass.exits, 1)
-  assert.equal(JSON.parse(getState(db, MOMENTUM_ACCOUNT_STATE_KEY)).lastRunMs, DUE + 86_400_000)
+  assert.equal(JSON.parse(getState(db, momentumAccountStateKey(MOM))).lastRunMs, DUE + 86_400_000, 'PR-B: the pass cursor is per account')
+  assert.equal(rep.accounts[MOM].lastPass.exits, 1)
+})
+
+test('PR-B (owner principle 9): accountId "_all" runs the daily pass on EVERY enabled account, each sized from its OWN equity, each with its own cursor; a disabled account is not a momentum account', async () => {
+  const db = fresh()
+  const THIRD = '42993489', OFF = '47790949'
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('${THIRD}','2',1,1,'active')`).run()
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('${OFF}','4',0,0,'archived')`).run()
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: '_all', volTargetPct: 10, maxPositions: 8 }))
+  assert.equal(loadMomentumAccount(db).accountId, ALL_ACCOUNTS)
+  assert.equal(momentumAccountConfig({ accountId: '_ALL' }).accountId, ALL_ACCOUNTS, 'case-insensitive')
+  for (const id of [MOM, OTHER, THIRD]) assert.equal(isMomentumAccount(db, id), true, `${id} is a momentum account under _all`)
+  assert.equal(isMomentumAccount(db, OFF), false, 'a disabled account is not')
+  assert.equal(isMomentumAccount(db, '99999999'), false, 'an unknown account is not')
+  assert.deepEqual(momentumAccountIds(db), [THIRD, OTHER, MOM].sort())
+  // Two accounts, two balances: the same shadow holding sizes to different lots.
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  const io = { getState, setState }
+  for (const id of [MOM, OTHER, THIRD]) setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: id }, io)
+  const equityOf = { [MOM]: 100_000, [OTHER]: 20_000, [THIRD]: 300 }
+  const f = fakes()
+  f.deps.equity = (accountId) => equityOf[String(accountId)]
+  const accounts = [{ accountId: MOM, isLive: false }, { accountId: OTHER, isLive: false }, { accountId: THIRD, isLive: true }, { accountId: OFF, isLive: false }]
+  const r = await runMomentumBook(db, { accounts, credsFor: (a) => ({ accountId: a.accountId }), deps: { ...f.deps, symbolMap: { BTCUSD: 1 } }, now: DUE })
+  assert.equal(r.ran, true)
+  const byAcct = Object.fromEntries(f.calls.autoTrade.map(c => [c.acct.accountId, c.synth]))
+  assert.equal(byAcct[MOM].sizing, 'vol_target'); assert.equal(byAcct[MOM].sizedVolume, 0.05, '100k equity → 0.05 lots')
+  assert.equal(byAcct[OTHER].sizing, 'vol_target'); assert.equal(byAcct[OTHER].sizedVolume, 0.01, '20k equity → 0.01 lots — sized by ITS balance, not the first account\'s')
+  assert.equal(byAcct[THIRD], undefined, '300 equity: below the min lot → excluded at universe build, nothing placed')
+  assert.equal(r.entries, 2, `skipped: ${JSON.stringify(r.skipped)}`)
+  for (const id of [MOM, OTHER, THIRD]) assert.equal(JSON.parse(getState(db, momentumAccountStateKey(id))).lastRunMs, DUE, `${id} keeps its own cursor`)
+  assert.equal(getState(db, momentumAccountStateKey(OFF)), null, 'the disabled account never ran')
+  const rep = momentumAccountReport(db)
+  assert.equal(rep.config.account, 'every enabled account')
+  assert.deepEqual(Object.keys(rep.accounts).sort(), [THIRD, OTHER, MOM].sort())
+  assert.equal(rep.accounts[MOM].universe.tradable, 1); assert.equal(rep.accounts[THIRD].universe.tradable, 0)
+  assert.equal(rep.universe.built, 3); assert.equal(rep.universe.tradable, 2)
+  assert.equal(rep.universe.byReason.below_min_lot, 1)
+  // The checked-in file declares every account.
+  const file = JSON.parse(readFileSync(new URL('../config/momentum-account.json', import.meta.url), 'utf8'))
+  assert.equal(file.accountId, '_all'); assert.equal('exclusive' in file, false)
 })
 
 test('runMomentumBook routes the momentum account to the daily pass and the other accounts to the row cursor', async () => {
@@ -219,23 +262,20 @@ const tsmomProposal = (accountId, extra = {}) => ({
   strategy: TSMOM_STRATEGY, conviction: 8, source: 'momentum_account', accountId, sizing: 'vol_target', sizedVolume: 0.05, ...extra,
 })
 
-test('risk gate: the momentum account is OPEN by default (owner 09-09-2026, the cluster rule); exclusive:true restores the one-system refusal', () => {
+test('risk gate: the momentum account is OPEN (owner 09-09-2026, the cluster rule); PR-B deleted the exclusive switch and the momentum_account_only veto — a stored exclusive:true changes nothing', () => {
   const db = gateDb()
   const prop = { symbol: 'EURUSD', side: 'long', entry: 1.1, sl: 1.097, tp1: 1.1105, requestedVolume: 0.01, strategy: 'ema_pullback', conviction: 8, accountId: MOM }
   const open = evaluateTrade(db, prop)
-  assert.doesNotMatch(String(open.veto_reason || ''), /momentum_account_only/, 'not exclusive → the stack trades here like anywhere else')
-  assert.equal(open.checks.momentum_account, true, 'the account is still the momentum account (daily pass, vol sizing)')
-  // The 07-09 rule, on request only.
+  assert.doesNotMatch(String(open.veto_reason || ''), /momentum_account_only/, 'the stack trades here like anywhere else')
+  assert.equal(open.checks.momentum_account, true, 'the account is still a momentum account (daily pass, vol sizing)')
+  // RED if the 07-09 veto comes back behind a stored switch.
   setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ ...loadMomentumAccount(db), exclusive: true }))
   const r = evaluateTrade(db, prop)
-  assert.equal(r.approved, false)
-  assert.match(r.veto_reason, /^momentum_account_only: ema_pullback/)
+  assert.doesNotMatch(String(r.veto_reason || ''), /momentum_account_only/, 'a stored exclusive:true is inert')
+  assert.equal('exclusive' in loadMomentumAccount(db), false, 'the config no longer carries the switch')
+  assert.equal('exclusive' in momentumAccountConfig({ exclusive: true }), false)
   const other = evaluateTrade(db, { ...prop, accountId: OTHER })
-  assert.doesNotMatch(String(other.veto_reason || ''), /momentum_account_only/, 'other accounts are untouched by the rule')
-  // Config shape: exclusive is a strict boolean, default false, seeded from the file when named.
-  assert.equal(momentumAccountConfig(null).exclusive, false)
-  assert.equal(momentumAccountConfig({ exclusive: 'yes' }).exclusive, false)
-  assert.equal(momentumAccountConfig({ exclusive: true }).exclusive, true)
+  assert.doesNotMatch(String(other.veto_reason || ''), /momentum_account_only/)
 })
 
 test('risk gate: the vol-target size is THE size on the momentum account; declared elsewhere it is ignored; the min-lot floor still vetoes', () => {
@@ -275,10 +315,10 @@ test('wiring pins (comments stripped): the size rides both dispatch paths, the g
   const cml = strip(readFileSync(new URL('./closed-market-limits.js', import.meta.url), 'utf8'))
   assert.match(cml, /sizing: synth\.sizing \?\? null,\s*sizedVolume: synth\.sizedVolume \?\? null,/, 'the resting-limit path must pass the size too')
   const risk = strip(readFileSync(new URL('./risk.js', import.meta.url), 'utf8'))
-  assert.match(risk, /if \(volTargetSized && momentumAcct && proposal\.strategy === MOMENTUM_STRATEGY\)/, 'the gate honours the size only on the momentum account for tsmom')
-  assert.match(risk, /momentum_account_only:/)
+  assert.match(risk, /if \(volTargetSized && momentumAcct && proposal\.strategy === MOMENTUM_STRATEGY\)/, 'the gate honours the size only on a momentum account for tsmom')
+  assert.doesNotMatch(risk, /momentum_account_only:/, 'PR-B: the one-system veto is gone from the gate')
   const book = strip(readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8'))
-  assert.match(book, /if \(isMomentumAccount\(db, accountId\)\) \{[\s\S]*runMomentumAccountPass\(db, \{ acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log \}\)/, 'the book must route the momentum account to the daily pass')
+  assert.match(book, /if \(isMomentumAccount\(db, accountId\)\) \{[\s\S]*runMomentumAccountPass\(db, \{ acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted \}\)/, 'the book must route the momentum account to the daily pass WITH its margin state')
 })
 
 test('scope: a shadow row for a momentum-universe name is NOT taken by a row-cursor account outside its scan universe; the momentum account still takes it', async () => {
@@ -331,11 +371,106 @@ test('the repo declaration switches the momentum account on at boot, idempotentl
   setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: null }))
   assert.equal(seedMomentumAccountFromConfig(db, { file }).applied, true, 'the file wins over a differing stored value at boot')
   assert.equal(loadMomentumAccount(db).accountId, '46979908')
-  // the checked-in file itself names the owner's account
-  const real = seedMomentumAccountFromConfig(initDB(':memory:'))
-  assert.equal(real.error, null); assert.equal(real.effective.accountId, '46979908'); assert.equal(real.effective.volTargetPct, 10); assert.equal(real.effective.maxPositions, 8)
+  // the checked-in file itself declares every enabled account (PR-B, principle 9)
+  const real = seedMomentumAccountFromConfig(initDB(':memory:'), { log: (m) => lines.push(m) })
+  assert.equal(real.error, null); assert.equal(real.effective.accountId, '_all'); assert.equal(real.effective.volTargetPct, 10); assert.equal(real.effective.maxPositions, 8)
+  assert.match(lines[lines.length - 1], /momentum account every enabled account: volTarget 10%/)
   assert.ok(seedMomentumAccountFromConfig(db, { file: join(dir, 'missing.json') }).error?.startsWith('momentum-account.json unreadable'))
   // wiring pin: index.js applies it at boot, after the horizons
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /seedAccountHorizonsFromConfig\(db, \{ log[\s\S]{0,900}?seedMomentumAccountFromConfig\(db, \{ log/, 'the boot seed runs after the horizons seed')
+})
+
+// PR-B checker (11-09-2026): the daily pass applies the SAME gates the
+// row-cursor tryEnter applies — an exhausted margin pool takes no entries,
+// an unfundable name is skipped by name — and a FUNDED live account goes
+// through the pass like any other, sized from its own equity.
+function allAccountsDb() {
+  const db = fresh()
+  const LIVE = '42993489'
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('${LIVE}','2',1,1,'active')`).run()
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: '_all', volTargetPct: 10, maxPositions: 8 }))
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD', 'NATGAS'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 }, NATGAS: { side: 'long', entryRank: 0.85, entryConviction: 8 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  const io = { getState, setState }
+  for (const id of [MOM, OTHER, LIVE]) setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: id }, io)
+  return { db, LIVE }
+}
+
+test('the daily pass on a margin-exhausted account places NOTHING (exits still run, the cursor is not advanced); an unfundable symbol is skipped by name', async () => {
+  const { db } = allAccountsDb()
+  const bookCfg = loadMomentumBook(db)
+  const f = fakes()
+  // An open row the shadow no longer holds: the exit must still go out while entries are refused.
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note) VALUES (NULL, ?, 'NATGAS', 'pos-NATGAS-x', 'long', 2.9, 2.7, 0.06, 0.8, '2026-09-06T21:30:00Z', 'open', 'x')`).run(MOM)
+  const capped = await runMomentumAccountPass(db, { acct: { accountId: MOM, isLive: false }, creds: {}, bookCfg, buildEntrySynth, deps: f.deps, now: DUE, marginExhausted: true })
+  assert.equal(capped.ran, false); assert.match(capped.why, /margin exhausted/)
+  assert.equal(f.calls.autoTrade.length, 0, 'RED if an exhausted account takes a daily-pass entry')
+  assert.equal(capped.exits, 1, 'the exit still runs'); assert.deepEqual(f.calls.close, [{ positionId: 'pos-NATGAS-x', volume: 500_000 }])
+  assert.equal(getState(db, momentumAccountStateKey(MOM)), null, 'the cursor is not advanced — retried once headroom frees')
+  // Through the book: the headroom reader marks the account exhausted.
+  const f2 = fakes()
+  const r = await runMomentumBook(db, { accounts: [{ accountId: MOM, isLive: false }], credsFor: (a) => ({ accountId: a.accountId }), deps: { ...f2.deps, symbolMap: { BTCUSD: 1, NATGAS: 2 }, marginHeadroom: () => 0 }, now: DUE })
+  assert.equal(f2.calls.autoTrade.length, 0, `book: exhausted → nothing placed; skipped ${JSON.stringify(r.skipped)}`)
+  assert.ok(r.skipped.some(s => /margin exhausted/.test(s)))
+  // Headroom back: the same day's pass now runs, and the unfundable name is skipped by name.
+  const f3 = fakes()
+  const ok = await runMomentumAccountPass(db, { acct: { accountId: MOM, isLive: false }, creds: {}, bookCfg, buildEntrySynth, deps: { ...f3.deps, fundable: (_a, sym) => (sym === 'BTCUSD' ? { ok: false, reason: 'unfundable: min lot needs $9,000 margin' } : { ok: true }) }, now: DUE })
+  assert.equal(ok.ran, true)
+  assert.deepEqual(f3.calls.autoTrade.map(c => c.symbol), [], 'BTCUSD unfundable, NATGAS no longer held → nothing')
+  assert.ok(ok.skipped.some(s => s.startsWith('BTCUSD: unfundable')), JSON.stringify(ok.skipped))
+  assert.equal(JSON.parse(getState(db, momentumAccountStateKey(MOM))).lastRunMs, DUE, 'a completed pass advances the cursor')
+})
+
+test('a FUNDED live account goes through the daily pass: its autoTrade call carries isLive:true and its OWN vol-target size', async () => {
+  const { db, LIVE } = allAccountsDb()
+  const equityOf = { [MOM]: 100_000, [OTHER]: 20_000, [LIVE]: 60_000 }
+  const f = fakes()
+  f.deps.equity = (accountId) => equityOf[String(accountId)]
+  const accounts = [{ accountId: MOM, isLive: false }, { accountId: OTHER, isLive: false }, { accountId: LIVE, isLive: true }]
+  const r = await runMomentumBook(db, { accounts, credsFor: (a) => ({ accountId: a.accountId }), deps: { ...f.deps, symbolMap: { BTCUSD: 1, NATGAS: 2 } }, now: DUE })
+  const liveCalls = f.calls.autoTrade.filter(c => c.acct.accountId === LIVE)
+  assert.equal(liveCalls.length, 2, `the live account entered both holdings; skipped ${JSON.stringify(r.skipped)}`)
+  for (const c of liveCalls) assert.equal(c.acct.isLive, true, 'routing: the live side\'s creds')
+  const liveBtc = liveCalls.find(c => c.symbol === 'BTCUSD').synth
+  assert.equal(liveBtc.sizing, 'vol_target'); assert.equal(liveBtc.sizedVolume, 0.03, '60k equity → 0.03 lots, its own size')
+  assert.equal(f.calls.autoTrade.find(c => c.acct.accountId === MOM && c.symbol === 'BTCUSD').synth.sizedVolume, 0.05)
+  assert.equal(f.calls.autoTrade.find(c => c.acct.accountId === OTHER && c.symbol === 'BTCUSD').synth.sizedVolume, 0.01)
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM momentum_book WHERE account_id = ? AND status = 'open'`).get(LIVE).n, 2)
+  assert.equal(JSON.parse(getState(db, momentumAccountStateKey(LIVE))).lastRunMs, DUE)
+})
+
+test('boot migrates the previously named account\'s global pass cursor to its per-account key once, then clears the legacy key', async () => {
+  const { seedMomentumAccountFromConfig } = await import('./momentum-account.js')
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const db = initDB(':memory:')
+  // The pre-PR-B deploy: config names one account, the global cursor says today already ran.
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: MOM, volTargetPct: 10, maxPositions: 8 }))
+  setState(db, MOMENTUM_ACCOUNT_STATE_KEY, JSON.stringify({ lastRunMs: DUE, universe: { BTCUSD: { ok: true } }, universeBuiltAt: 'x', lastPass: { entries: 1 } }))
+  const dir = mkdtempSync(join(tmpdir(), 'ma-mig-'))
+  const file = join(dir, 'momentum-account.json')
+  writeFileSync(file, JSON.stringify({ accountId: '_all', volTargetPct: 10, maxPositions: 8 }))
+  const lines = []
+  seedMomentumAccountFromConfig(db, { file, log: (m) => lines.push(m) })
+  assert.equal(JSON.parse(getState(db, momentumAccountStateKey(MOM))).lastRunMs, DUE, 'RED if the cursor is not carried: the first pass would re-run the same UTC day')
+  assert.equal(getState(db, MOMENTUM_ACCOUNT_STATE_KEY), null, 'the legacy key is cleared')
+  assert.ok(lines.some(l => /pass cursor migrated/.test(l)))
+  assert.equal(loadMomentumAccount(db).accountId, '_all')
+  // The pass on that account the same day: not due.
+  const f = fakes()
+  const r = await runMomentumAccountPass(db, { acct: { accountId: MOM, isLive: false }, creds: {}, bookCfg: loadMomentumBook(db), buildEntrySynth, deps: f.deps, now: DUE + 3600_000 })
+  assert.equal(r.ran, false)
+  // Idempotent and never overwrites an existing per-account key.
+  setState(db, MOMENTUM_ACCOUNT_STATE_KEY, JSON.stringify({ lastRunMs: 1 }))
+  assert.deepEqual(migrateLegacyPassCursor(db, { accountId: MOM }), { migrated: true, accountId: MOM, reason: null })
+  assert.equal(JSON.parse(getState(db, momentumAccountStateKey(MOM))).lastRunMs, DUE, 'existing per-account cursor kept')
+  assert.equal(migrateLegacyPassCursor(db, { accountId: MOM }).reason, 'no_legacy_key')
+  // A legacy key with no named account (null / _all): cleared, nothing copied.
+  setState(db, MOMENTUM_ACCOUNT_STATE_KEY, JSON.stringify({ lastRunMs: 1 }))
+  assert.equal(migrateLegacyPassCursor(db, { accountId: '_all' }).reason, 'legacy_cursor_named_no_account')
+  assert.equal(getState(db, MOMENTUM_ACCOUNT_STATE_KEY), null)
 })

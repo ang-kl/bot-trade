@@ -44,7 +44,8 @@ function permit(over = {}) {
 test('enums are the plan\'s §2 table, frozen', () => {
   assert.deepEqual([...ENTRY_MODES], ['TIME_BASED', 'TICK_MOMENTUM', 'STOPPED'])
   assert.deepEqual([...OBSERVATION_MODES], ['OFF', 'RECORD', 'SHADOW'])
-  assert.deepEqual([...VALIDATION_STAGES], ['UNVALIDATED', 'REPLAY_PASSED', 'SHADOW_PASSED', 'DEMO_PASSED', 'LIVE_APPROVED'])
+  // PR-B: one ladder, no environment tier — RED if a demo stage or a live approval returns.
+  assert.deepEqual([...VALIDATION_STAGES], ['UNVALIDATED', 'REPLAY_PASSED', 'SHADOW_PASSED', 'TRADED_PASSED'])
   assert.deepEqual([...TRANSITION_STATES], ['STABLE', 'QUIESCING', 'RECONCILING', 'WARMING', 'BLOCKED'])
   assert.ok(Object.isFrozen(ENTRY_MODES) && Object.isFrozen(PERMIT_STATES))
   assert.throws(() => { ENTRY_MODES.push('FAKE') })
@@ -118,8 +119,12 @@ test('EngineStatus: a new account is fully OFF and valid; TICK_MOMENTUM needs ev
   assert.ok(r.errors.some(e => e.startsWith('profileHash')) && r.errors.some(e => e.startsWith('validationStage')))
   const tickDemo = { ...base, requestedEntryMode: 'TICK_MOMENTUM', effectiveEntryMode: 'TICK_MOMENTUM', profileHash: HASH, validationStage: 'SHADOW_PASSED' }
   assert.equal(validateEngineStatus(tickDemo).ok, true, 'demo may run tick after SHADOW_PASSED (runbook: no circular requirement)')
+  // PR-B (owner principle 1): the same record on a live account is valid on
+  // the same evidence — RED if the live → typed-approval clause comes back.
   r = validateEngineStatus({ ...tickDemo, environment: 'live', riskGroupId: 'live:1' })
-  assert.ok(r.errors.some(e => e.includes('LIVE_APPROVED')))
+  assert.deepEqual(r, { ok: true, errors: [] }, 'live runs tick after SHADOW_PASSED like any account')
+  assert.equal(validateEngineStatus({ ...tickDemo, environment: 'live', riskGroupId: 'live:1', validationStage: 'TRADED_PASSED' }).ok, true)
+  assert.equal(validateEngineStatus({ ...tickDemo, validationStage: 'REPLAY_PASSED' }).ok, false, 'REPLAY_PASSED is below the bar on every account')
   // unknown exposure while stable and active
   r = validateEngineStatus({ ...base, entryCounts: { unsent: 0, inFlight: 0, resting: 0, unknown: 1 } })
   assert.ok(r.errors.some(e => e.startsWith('entryCounts.unknown')))

@@ -135,20 +135,24 @@ test('reaches a strategy armed ONLY by a per-account pin: a LIVE pin is disarmed
   // strategy on every demo account at 13:49 SGT and this watchdog unpinned
   // two of them at 13:54 on their pooled record; the boot seed re-pinned them
   // at 16:08. A demo hand pin is the owner's word, judged per account by the
-  // 30-close verdict — the watchdog records it as held and leaves it.
+  // 30-close verdict — the watchdog records it as held and leaves it. PR-B
+  // (owner principle 1): a hand pin on a LIVE account is held the same way;
+  // an account inheriting the global list still follows the global disarm.
   const db = initDB(':memory:')
   db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
   db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('222','2',1,1,'active')`).run()
-  arm(db, ['vwap_trend']) // rsi_meanrev globally OFF
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('444','4',1,1,'active')`).run() // live, inherits global
+  arm(db, ['vwap_trend', 'rsi_meanrev']) // rsi_meanrev on the global list too, so the inheriting scope has something to lose
   setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111' }, { getState, setState })
   setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '222' }, { getState, setState })
   seed(db, 'rsi_meanrev', Array.from({ length: 16 }, () => -5))
   const r = runEdgeWatchdog(db, {})
   assert.equal(r.actions.length, 1, 'pin-armed strategy must be a candidate')
-  assert.deepEqual(r.actions[0].scopes, ['222'], 'the live pin is disarmed')
-  assert.deepEqual(r.actions[0].heldPinnedDemo, ['111'], 'the demo hand pin is held and named')
-  assert.equal(armedTradeKeys(db, getState, '222').has('rsi_meanrev'), false, 'live account pin disarmed')
+  assert.deepEqual(r.actions[0].scopes, ['global'], 'the global list is disarmed; both hand pins hold')
+  assert.deepEqual(r.actions[0].heldPinned, ['111', '222'], 'the demo AND the live hand pin are held and named')
+  assert.equal(armedTradeKeys(db, getState, '222').has('rsi_meanrev'), true, 'PR-B: a hand-pinned live scope is held under the watchdog — RED if the !isLive term returns')
   assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), true, 'demo hand pin still armed')
+  assert.equal(armedTradeKeys(db, getState, '444').has('rsi_meanrev'), false, 'a scope inheriting the global list follows the global disarm')
   // A demo pin alone: nothing to disarm, no action, nothing stamped.
   const only = initDB(':memory:')
   only.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
@@ -206,4 +210,40 @@ test('wiring pin: the owner has a route to the dials', async () => {
   const src = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8')
   assert.ok(src.includes("router.post('/edge-watchdog'"), 'POST /actions/edge-watchdog route missing')
   assert.ok(src.includes("setState(db, 'edge_watchdog_json'"), 'route must write edge_watchdog_json')
+})
+
+// PR-B checker (11-09-2026): the pin holds against the POOLED verdict; an
+// account whose OWN window reads clearly no-edge has its cell written false.
+test('production shape (every account pinned): a no-edge record on account X\'s OWN closes disarms X\'s cell and holds the other pins; a pooled-only verdict holds every pin', () => {
+  const db = initDB(':memory:')
+  const ids = ['111', '222', '333']
+  for (const [id, live] of [['111', 1], ['222', 0], ['333', 0]]) db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, ?, 1, 'active')`).run(id, id, live)
+  arm(db, ['vwap_trend', 'rsi_meanrev'])
+  const io = { getState, setState }
+  for (const id of ids) for (const k of ['vwap_trend', 'rsi_meanrev']) setStage(db, { kind: 'strategy', key: k, stage: 'trade', on: true, accountId: id }, io)
+  // 16 losses stamped on the LIVE account 111; the pooled window is the same 16.
+  seedScoped(db, 'rsi_meanrev', '111', Array.from({ length: 16 }, () => -5))
+  const r = runEdgeWatchdog(db, {})
+  assert.equal(r.actions.length, 1)
+  assert.deepEqual(r.actions[0].ownVerdictScopes, ['111'])
+  assert.deepEqual(r.actions[0].scopes.sort(), ['111', 'global'], 'RED if the pin holds against the account\'s own no-edge record')
+  assert.deepEqual(r.actions[0].heldPinned, ['222', '333'])
+  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), false)
+  assert.equal(armedTradeKeys(db, getState, '222').has('rsi_meanrev'), true)
+  assert.equal(armedTradeKeys(db, getState, '333').has('rsi_meanrev'), true)
+  // Pooled only: 16 legacy (NULL-account) losses — no account owns the record → every pin holds, the global list is disarmed.
+  const db2 = initDB(':memory:')
+  for (const id of ids) db2.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id)
+  arm(db2, ['vwap_trend', 'rsi_meanrev'])
+  for (const id of ids) for (const k of ['vwap_trend', 'rsi_meanrev']) setStage(db2, { kind: 'strategy', key: k, stage: 'trade', on: true, accountId: id }, io)
+  seed(db2, 'rsi_meanrev', Array.from({ length: 16 }, () => -5))
+  const p = runEdgeWatchdog(db2, {})
+  assert.equal(p.actions.length, 1)
+  assert.deepEqual(p.actions[0].ownVerdictScopes, [])
+  assert.deepEqual(p.actions[0].scopes, ['global'])
+  assert.deepEqual(p.actions[0].heldPinned, ids)
+  for (const id of ids) assert.equal(armedTradeKeys(db2, getState, id).has('rsi_meanrev'), true)
+  // ownOnly excludes the legacy rows; the default scoping still counts them.
+  assert.equal(strategyRollingEdge(db2, 'rsi_meanrev', 30, { accountId: '111', ownOnly: true }).trades, 0)
+  assert.equal(strategyRollingEdge(db2, 'rsi_meanrev', 30, { accountId: '111' }).trades, 16)
 })

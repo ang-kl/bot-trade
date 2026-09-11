@@ -82,7 +82,7 @@ test('W is measured over the ADMITTED band only: closes planned at ≥3R do not 
   assert.match(banded.reason, /expectancy 0\.04R/)
 })
 
-test('defaults: on, demo-only, half risk, 30-window/15-sample/0.15R — junk degrades to them', () => {
+test('defaults: on, every account, half risk, 30-window/15-sample/0.15R — junk degrades to them', () => {
   const db = initDB(':memory:')
   assert.deepEqual(loadEarnedFloor(db), { ...EARNED_FLOOR_DEFAULTS })
   setState(db, 'earned_floor_json', '{"riskScale":"junk","window":-4')
@@ -94,7 +94,7 @@ test('defaults: on, demo-only, half risk, 30-window/15-sample/0.15R — junk deg
   assert.equal(cfg.on, true)
 })
 
-test('verdict refuses: off, unlabelled, unknown account, live scope, thin sample, unpaying win rate', () => {
+test('verdict refuses: off, unlabelled, unknown account, thin sample, unpaying win rate — and a live account is judged on its OWN record like any other (PR-B)', () => {
   const db = withAccounts(initDB(':memory:'))
   seedRecord(db, 'vwap_trend', 20, 70) // 70% over 20 — a record that WOULD earn
   const base = { strategy: 'vwap_trend', rr: 1.6, accountId: DEMO }
@@ -102,7 +102,13 @@ test('verdict refuses: off, unlabelled, unknown account, live scope, thin sample
   assert.equal(earnedFloorVerdict(db, { ...base, strategy: null }).reason, 'unlabelled_proposal')
   assert.equal(earnedFloorVerdict(db, { ...base, accountId: '999' }).reason, 'unattributable_account')
   assert.equal(earnedFloorVerdict(db, { ...base, accountId: null }).reason, 'unattributable_account')
-  assert.equal(earnedFloorVerdict(db, { ...base, accountId: LIVE }).reason, 'live_scope')
+  // PR-B (owner principle 1): no `live_scope` refusal exists. The live
+  // account has no record of its own → thin sample; with one, it earns.
+  assert.match(earnedFloorVerdict(db, { ...base, accountId: LIVE }).reason, /^thin_sample 0<15/)
+  seedRecord(db, 'vwap_trend', 20, 70, { accountId: LIVE })
+  const liveMeasured = earnedFloorVerdict(db, { ...base, accountId: LIVE })
+  assert.equal(liveMeasured.ok, true, `measured path admits a live row: ${liveMeasured.reason}`)
+  assert.equal(liveMeasured.via, 'measured'); assert.equal(liveMeasured.trades, 20)
   assert.match(earnedFloorVerdict(db, { ...base, strategy: 'rsi2_reversion' }).reason, /thin_sample 0<15/)
 
   // 40% at rr 1.6: E = 0.4×1.6 − 0.6 = 0.04R ≤ 0.15R — measured but unpaying.
@@ -184,7 +190,7 @@ test('the checkpoint report measures the ADMITTED cohort via risk-event lineage'
   assert.equal(r.verdict, 'pending 2/30 closes')
 })
 
-test('gate still vetoes: live account, thin record, and below the strategy\'s own floor', () => {
+test('gate still vetoes: a live account with NO record of its own (thin, not its environment), thin record, and below the strategy\'s own floor', () => {
   const db = withAccounts(initDB(':memory:'))
   seedRecord(db, 'vwap_trend', 20, 70)
   armBalance(db, DEMO, 10_000)
@@ -193,7 +199,7 @@ test('gate still vetoes: live account, thin record, and below the strategy\'s ow
   const live = evaluateTrade(db, lowRrProposal(LIVE))
   assert.equal(live.approved, false)
   assert.match(live.veto_reason, /bad_rr/)
-  assert.equal(live.checks.earned_floor_denied, 'live_scope')
+  assert.match(live.checks.earned_floor_denied, /^thin_sample/, 'PR-B: refused on evidence, never on the environment')
 
   const thin = evaluateTrade(db, { ...lowRrProposal(DEMO), strategy: 'donchian_breakout' })
   assert.equal(thin.approved, false)
@@ -217,25 +223,27 @@ test('gate still vetoes: live account, thin record, and below the strategy\'s ow
 // defaults; unknown accounts fail closed under BOTH scopes (existing test
 // pins the demoOnly side of that).
 // ---------------------------------------------------------------------------
-test('stage-2 config: a measured LIVE account admits at full risk; stage-1 defaults refuse it', () => {
+test('stage-2 config: a measured LIVE account admits at full risk; the defaults refuse it on its thin sample (PR-B: never on its environment)', () => {
   const db = withAccounts(initDB(':memory:'))
-  seedRecord(db, 'vwap_trend', 12, 60, { accountId: LIVE }) // 12 closes at 60% W on the LIVE account — under stage-1's 15 sample
+  seedRecord(db, 'vwap_trend', 12, 60, { accountId: LIVE }) // 12 closes at 60% W on the LIVE account — under the default 15 sample
   armBalance(db, LIVE, 10_000)
 
-  // Stage-1 defaults: refused twice over (live scope, thin sample).
+  // Defaults: refused on the thin sample only. RED if `demoOnly` / `live_scope` returns.
   const s1 = evaluateTrade(db, lowRrProposal(LIVE))
   assert.equal(s1.approved, false)
-  assert.equal(s1.checks.earned_floor_denied, 'live_scope')
+  assert.match(s1.checks.earned_floor_denied, /^thin_sample 12<15/)
+  assert.equal('demoOnly' in loadEarnedFloor(db), false, 'the demoOnly switch is gone from the config')
+  assert.equal('demoOnly' in EARNED_FLOOR_DEFAULTS, false)
 
-  // Stage-2 config: demoOnly off, sample 10, minE 0.10, full risk.
-  setState(db, 'earned_floor_json', JSON.stringify({ demoOnly: false, riskScale: 1.0, minSample: 10, minE: 0.10 }))
+  // Stage-2 config: sample 10, minE 0.10, full risk.
+  setState(db, 'earned_floor_json', JSON.stringify({ riskScale: 1.0, minSample: 10, minE: 0.10 }))
   const s2 = evaluateTrade(db, lowRrProposal(LIVE))
   // 60% W at rr 1.6 → E = 0.96 − 0.40 = 0.56R > 0.10R → admitted.
   assert.equal(s2.approved, true, `expected stage-2 admit, got: ${s2.veto_reason}`)
   assert.equal(s2.checks.earned_floor.riskScale, 1.0, 'full risk on admits')
 
-  // Unknown account STILL fails closed with demoOnly off (the registry check
-  // is unconditional — the scope widening must not widen it to nobody-knows).
+  // Unknown account STILL fails closed (the registry check is unconditional
+  // — the scope widening must not widen it to nobody-knows).
   const ghost = evaluateTrade(db, { ...lowRrProposal('999'), accountId: '999' })
   assert.equal(ghost.approved, false)
   assert.equal(ghost.checks.earned_floor_denied, 'unattributable_account')
@@ -294,7 +302,7 @@ test('prior report: live sub-floor W shrunk toward the sweep backtest W with k p
   assert.equal(p.sweepAt, '2026-09-02T04:23:19.000Z')
   assert.equal(p.source, 'autopilot_last_verdicts_json', 'no aggregate key yet → the verdict list is the fallback')
   assert.equal(p.strategiesWithPrior, 2)
-  assert.deepEqual(p.accounts, [DEMO, DEMO2], 'demoOnly: live accounts are out of scope')
+  assert.deepEqual(p.accounts, [DEMO, LIVE, DEMO2], 'PR-B: every enabled account is in scope, live included')
   const r = p.strategies.rsi2_reversion
   assert.deepEqual(r.backtest, { winRatePct: 60, trades: 40, combos: 2 })
   assert.equal(r.pooled.live.trades, 7)
@@ -388,18 +396,20 @@ test('prior admit: 7 live closes at 29% shrunk toward a 60% backtest reads 52%, 
   assert.equal(bare.ok, true); assert.equal(bare.winRate, 52); assert.equal(bare.trades, 7)
   assert.equal(bare.prior.liveScope, 'pooled')
   // riskScale never exceeds the measured path's own scale.
-  setState(db, 'earned_floor_json', JSON.stringify({ riskScale: 0.25, demoOnly: false }))
+  setState(db, 'earned_floor_json', JSON.stringify({ riskScale: 0.25 }))
   assert.equal(earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: DEMO }).riskScale, 0.25)
 })
 
-test('prior admit: never on a live account (even with demoOnly off), never without a prior, never over a measured sample, switchable off', () => {
+test('prior admit: on a LIVE account too (PR-B), never without a prior, never over a measured sample, switchable off', () => {
   const db = withAccounts(initDB(':memory:'))
   setState(db, 'autopilot_strategy_prior_json', PRIOR_60)
-  setState(db, 'earned_floor_json', JSON.stringify({ demoOnly: false, riskScale: 1 }))
+  setState(db, 'earned_floor_json', JSON.stringify({ riskScale: 1 }))
   seedRecord(db, 'rsi2_reversion', 7, 28.6, { accountId: LIVE })
+  // 7 live closes at 29% shrunk toward the 60% backtest → 52%, +0.56R at 2R.
+  // RED if the prior path regains its `is_live === 0` condition.
   const live = earnedFloorVerdict(db, { strategy: 'rsi2_reversion', rr: 2, accountId: LIVE })
-  assert.equal(live.ok, false)
-  assert.match(live.reason, /^thin_sample 7</, 'live stays on the measured path')
+  assert.equal(live.ok, true, `prior admits a live row: ${live.reason}`)
+  assert.equal(live.via, 'prior'); assert.equal(live.winRate, 52); assert.equal(live.trades, 7); assert.equal(live.riskScale, 0.5)
   const noPrior = earnedFloorVerdict(db, { strategy: 'donchian_breakout', rr: 2, accountId: DEMO })
   assert.match(noPrior.reason, /^thin_sample/)
   // A measured sample at minSample is judged as before — the prior does not override it.
@@ -469,11 +479,13 @@ test('gate: a prior admit approves a sub-3R demo proposal at half risk and stamp
   assert.equal(demo.checks.earned_floor.via, 'prior')
   assert.equal(demo.checks.earned_floor.riskScale, 0.5)
   assert.equal(demo.checks.earned_floor.prior.winRatePct, 60)
+  // PR-B: the same prior admits the live account the same way.
   const live = evaluateTrade(db, lowRrProposal(LIVE))
-  assert.equal(live.approved, false)
-  assert.match(live.checks.earned_floor_denied, /live_scope|thin_sample/)
+  assert.equal(live.approved, true, live.veto_reason)
+  assert.equal(live.checks.earned_floor.via, 'prior')
+  assert.equal(live.checks.earned_floor.riskScale, 0.5)
   const rep = earnedFloorReport(db)
-  assert.equal(rep.viaPrior.admittedApprovals, 1)
+  assert.equal(rep.viaPrior.admittedApprovals, 1, 'only the demo approval was persisted to the ledger')
   assert.equal(rep.admittedApprovals, 1, 'prior admits are part of the pre-registered cohort')
 })
 
@@ -545,7 +557,7 @@ test('earnedFloorWinRate is the verdict\'s own win-rate side: same refusals, sam
   const db = withAccounts(initDB(':memory:'))
   assert.equal(earnedFloorWinRate(db, { strategy: null, accountId: DEMO }).reason, 'unlabelled_proposal')
   assert.equal(earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: '999' }).reason, 'unattributable_account')
-  assert.equal(earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: LIVE }).reason, 'live_scope')
+  assert.match(earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: LIVE }).reason, /thin_sample/, 'PR-B: a live row is thin, not out of scope')
   assert.match(earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: DEMO }).reason, /thin_sample/)
   seedRecord(db, 'vwap_trend', 20, 70)
   const m = earnedFloorWinRate(db, { strategy: 'vwap_trend', accountId: DEMO })
@@ -581,10 +593,14 @@ test('stretch: 48% prior at a 1.2R proposal → target moved to 1.40R (E 0.152) 
   assert.equal(earnedFloorStretch(db, { strategy: 'rsi2_reversion', rr: 1.2, accountId: DEMO }).reason, 'stretch_off')
   assert.equal(loadEarnedFloor(db).maxStretchRr, EARNED_FLOOR_RR_BAND)
   assert.equal(loadEarnedFloor(db).stretch, false)
-  // No record at all, or a live scope: the win-rate side's refusal, never a stretch.
+  // No record at all: the win-rate side's refusal, never a stretch. A live
+  // row with the prior stretches like the demo one (PR-B).
   setState(db, 'earned_floor_json', JSON.stringify({}))
   assert.match(earnedFloorStretch(db, { strategy: 'vwap_trend', rr: 1.2, accountId: DEMO }).reason, /thin_sample/)
-  assert.equal(earnedFloorStretch(db, { strategy: 'rsi2_reversion', rr: 1.2, accountId: LIVE }).reason, 'live_scope')
+  assert.match(earnedFloorStretch(db, { strategy: 'rsi2_reversion', rr: 1.2, accountId: LIVE }).reason, /thin_sample/, 'no prior for rsi2 any more → thin, never a scope refusal')
+  setState(db, 'earned_floor_json', JSON.stringify({ maxStretchRr: 2.9 }))
+  const liveSt = earnedFloorStretch(db, { strategy: 'ema_pullback', rr: 2, accountId: LIVE })
+  assert.equal(liveSt.ok, true, `PR-B: the stretch is a door on a live row too: ${liveSt.reason}`); assert.equal(liveSt.to, 2.84)
 })
 
 test('gate: a 1.2R rsi2 proposal on demo with a 48% prior is ADMITTED at a 1.40R target — target_override carries the new tp1, checks say stretchedFrom', () => {
@@ -630,10 +646,10 @@ test('gate: the stretch is a door only for a known win rate — no record, live 
   assert.equal(none.approved, false); assert.match(none.veto_reason, /^bad_rr 1\.20<3/)
   assert.match(none.checks.earned_floor_stretch_denied, /thin_sample/)
   assert.equal(none.target_override, undefined)
-  // Prior present, live account → live_scope.
+  // Prior present, live account → the same stretched admit as demo (PR-B).
   setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ rsi2_reversion: { winRatePct: 48, trades: 900, combos: 40 }, ema_pullback: { winRatePct: 30, trades: 900, combos: 40 } }))
   const live = evaluateTrade(db, { ...prop, accountId: LIVE })
-  assert.equal(live.approved, false); assert.match(live.veto_reason, /^bad_rr/)
+  assert.equal(live.approved, true, live.veto_reason); assert.equal(live.checks.earned_floor.stretchedFrom, 1.2)
   // 30% needs 2.84R > the 2.0 cap → bad_rr, denial says why.
   const capped = evaluateTrade(db, { ...prop, strategy: 'ema_pullback', tp1: 1.106 })
   assert.equal(capped.approved, false); assert.match(capped.veto_reason, /^bad_rr 2\.00<3/)

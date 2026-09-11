@@ -41,7 +41,7 @@ import { loadFxRates } from './fx-rates.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 import { accountEconomics } from './config-controller.js'
 import { unitsPerLot as unitsPerLotFromRegistry } from '../lib/lot-size-registry.js'
-import { isMomentumAccount, loadMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './momentum-account.js'
+import { isMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './momentum-account.js'
 import { strategyVerdict } from './strategy-verdicts.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
 import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
@@ -1479,23 +1479,14 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   Object.assign(checks, gg.checks)
   if (!gg.ok) return veto(gg.reason, checks, proposal)
 
-  // ---- 0b. ONE SYSTEM PER ACCOUNT (owner 07-09-2026, §7,386·D1) ----------
-  // The momentum account trades the momentum system and nothing else: a
-  // proposal from any other strategy is refused here, by rule, so the
-  // account's record is the momentum system's record and no intraday setup
-  // can share its budget or its report.
-  //
-  // ONLY WHILE THE ACCOUNT IS DECLARED EXCLUSIVE (owner, 09-09-2026 13:35
-  // SGT: "all accounts are consider as cluster, don't make momentum as one
-  // it is opportunitistics"). The default is now open: the account keeps
-  // its daily pass and vol-target sizing for tsmom and trades the rest of
-  // the stack like every other account. `exclusive: true` in
-  // momentum_account_json restores the 07-09 rule unchanged.
+  // ---- 0b. THE MOMENTUM ACCOUNT FLAG ---------------------------------------
+  // Read for the vol-target sizing below (the size is THE size for tsmom on
+  // a momentum account). The 07-09 one-system-per-account veto that stood
+  // here (`momentum_account_only`, behind an `exclusive` switch) is gone
+  // since PR-B (owner principle 9, 11-09-2026): every account trades the
+  // whole stack, the momentum pass included.
   const momentumAcct = isMomentumAccount(db, acct)
   checks.momentum_account = momentumAcct
-  if (momentumAcct && proposal.strategy !== MOMENTUM_STRATEGY && loadMomentumAccount(db).exclusive) {
-    return veto(`momentum_account_only: ${proposal.strategy || 'unlabelled'} may not dispatch on the momentum account (…${String(acct).slice(-4)} trades ${MOMENTUM_STRATEGY} only)`, checks, proposal)
-  }
 
   // ---- 0a. FAIL CLOSED ON A BALANCE THAT IS NOT THIS ACCOUNT'S ------------
   // Owner decision, 2026-08-06 ("D-1 proceed to risk gate veto"), on the

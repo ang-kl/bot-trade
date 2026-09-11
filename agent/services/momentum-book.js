@@ -240,15 +240,17 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price})`)
     }
 
-    // THE MOMENTUM ACCOUNT (owner 07-09-2026, §7,386·D1): one account runs
-    // the momentum system on its own terms — target portfolio from the
-    // shadow's holdings ∩ the tradable universe, vol-target sizing, one
-    // decision per day after the daily close. The row-cursor path below is
-    // for the other accounts; the trail pass at the bottom still covers
-    // every open book row, this account's included.
+    // A MOMENTUM ACCOUNT (owner 07-09-2026, §7,386·D1; every enabled account
+    // under `_all` since PR-B, 11-09-2026) runs the momentum system on its
+    // own terms — target portfolio from the shadow's holdings ∩ the tradable
+    // universe, vol-target sizing from THIS account's equity (the pass reads
+    // deps.equity(accountId), never a global), one decision per day after
+    // the daily close, its own lastRunMs cursor. The row-cursor path below
+    // is for accounts the config does not name; the trail pass at the
+    // bottom still covers every open book row, these included.
     if (isMomentumAccount(db, accountId)) {
       try {
-        const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log })
+        const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted })
         if (ma.ran) {
           summary.entries += ma.entries; summary.exits += ma.exits
           summary.momentumAccount = { account: accountId, entries: ma.entries, exits: ma.exits, universe: ma.universe }

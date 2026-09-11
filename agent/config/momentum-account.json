@@ -1,8 +1,7 @@
 {
-  "_note": "Owner-declared momentum account (§7,386·D1 Phase 1, switched on 08-09-2026 19:52 SGT). Applied at boot: the file is the durable declaration; POST /actions/momentum-account changes it live until the next boot re-applies this file. accountId null = the momentum system runs nowhere. exclusive false (owner, 09-09-2026 13:35 SGT: the account keeps its daily momentum pass and vol-target sizing and trades the rest of the stack alongside; true restores the 07-09 one-system-per-account rule).",
-  "accountId": "46979908",
+  "_note": "Owner-declared momentum system (§7,386·D1 Phase 1, switched on 08-09-2026 19:52 SGT for one account; PR-B 11-09-2026, owner principle 9: setups are for all accounts and not hardcoded). Applied at boot: the file is the durable declaration; POST /actions/momentum-account changes it live until the next boot re-applies this file. accountId \"_all\" = the daily momentum pass runs on EVERY enabled registry account, each sized from its own equity by the vol target; a specific id names one account; null = nowhere. The rest of the stack trades alongside on every account (the 07-09 exclusive veto is gone).",
+  "accountId": "_all",
   "volTargetPct": 10,
   "maxPositions": 8,
-  "exclusive": false,
-  "declaredBy": "owner, 08-09-2026 19:52 SGT (ACCT-DEMO-3): \"switch on the momentum account for ACCT-DEMO-3\"; opened to the whole stack 09-09-2026 13:35 SGT"
+  "declaredBy": "owner, 08-09-2026 19:52 SGT (ACCT-DEMO-3): \"switch on the momentum account for ACCT-DEMO-3\"; opened to the whole stack 09-09-2026 13:35 SGT; every account 11-09-2026 (principle 9)"
 }

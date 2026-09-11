@@ -88,10 +88,10 @@ export function evidenceGate(db, { strategy, accountId = null } = {}) {
   if (isHandPinned(db, getState, accountId, String(strategy))) {
     return { allowed: true, via: 'pinned', reason: null, record: null, bar }
   }
-  // (c) THE MOMENTUM ACCOUNT runs the momentum system by construction
-  // (owner 07-09-2026, §7,386·D1): tsmom_long is admitted there without a
-  // pin or a record — the account IS the pin. Every other strategy on that
-  // account is refused upstream by the risk gate (momentum_account_only).
+  // (c) A MOMENTUM ACCOUNT runs the momentum system by construction (owner
+  // 07-09-2026, §7,386·D1; every enabled account since PR-B, 11-09-2026):
+  // tsmom_long is admitted there without a pin or a record — the account IS
+  // the pin. The rest of the stack is judged here like anywhere else.
   if (String(strategy) === TSMOM_STRATEGY && isMomentumAccount(db, accountId)) {
     return { allowed: true, via: 'momentum_account', reason: null, record: null, bar }
   }

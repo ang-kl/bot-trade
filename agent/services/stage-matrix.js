@@ -405,36 +405,42 @@ function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag
  *
  * @returns {string[]} scopes changed: 'global' and/or account ids.
  */
-export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinnedDemo = false } = {}) {
+export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinned = false, ownVerdictScopes = [] } = {}) {
   const { getState } = io
   const changed = []
   const held = []
+  // THE PIN HOLDS AGAINST A POOLED VERDICT ONLY (checker, 11-09-2026). With
+  // `_all` pins every enabled account carries an explicit trade:true for
+  // every strategy, so an exemption that held every pin left a guard unable
+  // to disarm anything anywhere. A pin is the owner's word to MEASURE the
+  // strategy on that account — not to ignore that account's own losses. A
+  // scope named here had the verdict measured on ITS OWN closes, and its
+  // cell is written false like any other; the other pins still hold.
+  const own = new Set((ownVerdictScopes || []).map(String))
   const scopes = [null]
-  const isLive = {}
   try {
-    for (const r of db.prepare('SELECT account_id, is_live FROM accounts').all()) {
-      scopes.push(String(r.account_id)); isLive[String(r.account_id)] = Number(r.is_live) !== 0
-    }
+    for (const r of db.prepare('SELECT account_id FROM accounts').all()) scopes.push(String(r.account_id))
   } catch { /* no accounts table — global only */ }
   for (const scope of scopes) {
     const armed = armedTradeKeys(db, getState, scope)
     if (!armed.has(key)) continue
     if (neverZero && ![...armed].some(k => k !== key)) continue // last armed here — hold
-    // HAND-PINNED DEMO ARMS ARE EXEMPT (owner, 03-09-2026 00:50 SGT). A demo
-    // account whose overlay carries an explicit trade:true for this strategy
-    // was armed on purpose to be MEASURED — the split's point is to record
-    // the loss, not to prevent it. Only routes and the owner's overlay
-    // migration write a true cell (the autopilot writes the global list, the
-    // breaker writes false), so an explicit true on a demo scope is the
-    // owner's word. Live scopes are never exempt.
-    if (exemptHandPinnedDemo && scope != null && !isLive[scope]) {
+    // HAND-PINNED ARMS ARE EXEMPT (owner, 03-09-2026 00:50 SGT; every scope
+    // since PR-B, 11-09-2026, owner principle 1). An account whose overlay
+    // carries an explicit trade:true for this strategy was armed on purpose
+    // to be MEASURED — the split's point is to record the loss, not to
+    // prevent it. Only routes and the owner's overlay migration write a true
+    // cell (the autopilot writes the global list, the breaker writes false),
+    // so an explicit true on an account scope is the owner's word, whichever
+    // environment the account is. The global list is never a pin.
+    if (exemptHandPinned && scope != null && !own.has(scope)) {
       const cell = readJson(db, getState, acctMatrixKey(scope))?.strategy?.[key]?.trade
       if (cell === true) { held.push(scope); continue }
     }
     setStage(db, { kind: 'strategy', key, stage: 'trade', on: false, accountId: scope }, io)
     changed.push(scope == null ? 'global' : scope)
   }
-  if (exemptHandPinnedDemo) changed.held = held
+  if (exemptHandPinned) changed.held = held
   return changed
 }
 
@@ -447,9 +453,14 @@ export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exempt
  * the horizon and momentum-account seeds: idempotent, an explicit true cell
  * already present is left alone, a route call changes it live until the next
  * boot re-applies the file. A pin is the owner's word: the evidence gate
- * admits it (isHandPinned) and the adaptive breaker holds it on demo.
+ * admits it (isHandPinned) and the adaptive breaker holds it on every scope.
  * Unknown strategies and malformed entries are skipped and named; a missing
  * or unreadable file reports and changes nothing.
+ *
+ * PR-B (owner principle 9, 11-09-2026): the key `_all` pins its list on
+ * EVERY enabled registry account — including one enabled after the file was
+ * first applied, on its first boot, because the seed-once record is kept per
+ * account. An explicit per-id key still wins over `_all` for that account.
  */
 export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {} } = {}) {
   const out = { applied: [], unchanged: [], skipped: [], error: null }
@@ -475,8 +486,16 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
   let seeded = {}
   try { seeded = JSON.parse(getState(db, 'strategy_pins_seeded_json') || '{}') || {} } catch { seeded = {} }
   let dirty = false
-  for (const [accountId, keys] of Object.entries(cfg)) {
-    if (accountId.startsWith('_')) continue // the file's own notes, not an account
+  const entries = Object.entries(cfg).filter(([k]) => !k.startsWith('_')) // `_note` etc. are the file's own notes
+  if (Array.isArray(cfg._all)) {
+    let ids = []
+    try { ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { ids = [] }
+    const named = new Set(entries.map(([k]) => k))
+    for (const id of ids) if (!named.has(id)) entries.push([id, cfg._all])
+  } else if ('_all' in cfg) {
+    out.skipped.push('_all: malformed')
+  }
+  for (const [accountId, keys] of entries) {
     if (!/^[0-9]+$/.test(accountId) || !Array.isArray(keys)) { out.skipped.push(`${accountId}: malformed`); continue }
     const done = new Set(Array.isArray(seeded[accountId]) ? seeded[accountId] : [])
     for (const key of keys) {

@@ -278,9 +278,8 @@ export function archiveAccount(db, accountId) {
  * ENTRY IS NEVER GRANTED BY A REPAIR. `enabled = 0, mode = 'active'` is
  * contradictory config reachable through two live routes, and promoting it
  * would flip ENTER on — `registryAutopilotAccounts` is enabled ∩ enter — which
- * is a boot job handing out entry permission and bypassing the `confirmLive`
- * carve-out that exists precisely because that is the owner's word and never a
- * default. Such rows are REPORTED and left for a human.
+ * is a boot job handing out entry permission on nobody's word. Such rows are
+ * REPORTED and left for a human.
  *
  * SCAN, STATED HONESTLY. This DOES turn SCAN on for the rows it promotes, and
  * an earlier draft of this comment claimed the opposite. `scan` is
@@ -356,15 +355,16 @@ export function repairRosterMembership(db) {
   return { promoted: [], flagged }
 }
 
-/** Bring an archived account back. Always returns to the quietest live mode. */
-export function unarchiveAccount(db, accountId, mode = 'manage_only', { confirmLive = false } = {}) {
+/** Bring an archived account back. Always returns to the quietest mode. */
+export function unarchiveAccount(db, accountId, mode = 'manage_only') {
   const id = String(accountId)
   if (!SETTABLE_MODES.includes(mode)) return { ok: false, error: `invalid mode ${mode}` }
-  const row = db.prepare('SELECT mode, is_live FROM accounts WHERE account_id = ?').get(id)
+  const row = db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get(id)
   if (!row) return { ok: false, error: `account ${id} is not in the registry` }
   if (!OFF_ROSTER_MODES.includes(row.mode)) return { ok: false, error: `account ${id} is not archived` }
-  const gate = liveEntryRefusal(row.is_live === 1, mode, confirmLive)
-  if (gate) return gate
+  // PR-B (owner principle 1, 11-09-2026): no environment carve-out. The
+  // `liveEntryRefusal` / `confirmLive` gate that stood here is gone — every
+  // account takes the same neutral confirm in the UI and none in the service.
   // RE-ENABLING IS NO LONGER A SEPARATE DECISION, because `enabled` is no
   // longer a decision at all — it is derived from the mode being set here. The
   // old note ("a separate, louder decision") described a switch that existed;
@@ -372,30 +372,6 @@ export function unarchiveAccount(db, accountId, mode = 'manage_only', { confirmL
   db.prepare('UPDATE accounts SET mode = ?, enabled = ?, updated_at = ? WHERE account_id = ?')
     .run(mode, enabledForMode(mode) ? 1 : 0, new Date().toISOString(), id)
   return { ok: true, accountId: id, mode, enabled: enabledForMode(mode) }
-}
-
-/**
- * The live-entry carve-out, in ONE place so every path that can grant a live
- * account ENTER is covered rather than just the route that happened to have it.
- *
- * It used to gate `enabled = true` on a live account, from the era when
- * `enabled` was the only switch. With `enabled` derived, the gate attaches to
- * what it was always protecting: giving a LIVE account the ability to open
- * positions. That is strictly tighter than before — `unarchiveAccount(id,
- * 'active')` reached live-active with no confirmation at all.
- *
- * Roster membership is deliberately NOT gated. Reaching an account to amend or
- * close its existing positions is not a privilege to be confirmed; that is the
- * principle this file opens with, and #701/#702 are what it cost to relearn.
- */
-export function liveEntryRefusal(isLive, mode, confirmLive) {
-  if (!isLive) return null
-  if (!capabilitiesFor(mode).enter) return null
-  if (confirmLive === true) return null
-  return {
-    ok: false,
-    error: `letting a LIVE account ENTER requires confirmLive:true — mode '${mode}' grants entry (M5 cutover carve-out)`,
-  }
 }
 
 /** Every account with its capabilities and open work — the A4 traffic-light feed. */

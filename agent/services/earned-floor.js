@@ -15,10 +15,12 @@
 // sample, or a win rate that does not pay at the proposed ratio all keep
 // getting the 3.0 veto exactly as before.
 //
-// Scope is fail-closed on both axes: with demoOnly on (the default), an
-// account the registry cannot identify is NEVER in scope — same contract as
-// managed-exit.js, for the same reason (an unattributable row must not be
-// governed by the more permissive rule).
+// Scope is fail-closed on the registry axis: an account the registry cannot
+// identify is NEVER in scope — same contract as managed-exit.js, for the same
+// reason (an unattributable row must not be governed by the more permissive
+// rule). PR-B (owner principle 1, 11-09-2026): there is no environment axis
+// any more — the `demoOnly` switch and the demo-only prior are gone; every
+// account is judged on the same evidence (minSample, window, minE).
 // ---------------------------------------------------------------------------
 
 // docs/one-simple-system.md P5 marked the 3R floor "re-derivation needed —
@@ -39,7 +41,6 @@ export const EARNED_FLOOR_RR_BAND = 3.0
 
 export const EARNED_FLOOR_DEFAULTS = {
   on: true,        // owner order 31-08-2026: "go PR-C"
-  demoOnly: true,  // stage 1 of the rollout — live only after the verdict
   riskScale: 0.5,  // admitted-below-3R entries risk HALF the per-trade budget
   window: 30,      // rolling closed-trade window the win rate is measured on
   minSample: 15,   // never earn a floor on a handful of trades
@@ -48,9 +49,9 @@ export const EARNED_FLOOR_DEFAULTS = {
   // on demo at half risk"). When the live sub-floor sample is under
   // minSample, the strategy's live W is shrunk toward its last-sweep
   // backtest W with k phantom trades and the same expectancy test is applied
-  // to W'. DEMO ACCOUNTS ONLY, whatever demoOnly says, at priorRiskScale of
-  // the per-trade budget. A measured sample at or above minSample is judged
-  // as before; the prior never overrides a measured verdict.
+  // to W', at priorRiskScale of the per-trade budget — on EVERY account
+  // (PR-B: the demo-only condition is gone). A measured sample at or above
+  // minSample is judged as before; the prior never overrides a measured verdict.
   priorAdmit: true,
   priorRiskScale: 0.5,
   // TARGET STRETCH (owner order 09-09-2026 11:05 SGT, §7,522·B: "R:R should
@@ -77,7 +78,6 @@ export function loadEarnedFloor(db) {
       }
       return {
         on: p.on !== false,
-        demoOnly: p.demoOnly !== false,
         riskScale: num(p.riskScale, EARNED_FLOOR_DEFAULTS.riskScale, 0.05, 1),
         window: Math.round(num(p.window, EARNED_FLOOR_DEFAULTS.window, 5, 200)),
         minSample: Math.round(num(p.minSample, EARNED_FLOOR_DEFAULTS.minSample, 5, 200)),
@@ -109,17 +109,18 @@ export function earnedFloorWinRate(db, { strategy, accountId }) {
   if (!strategy) return no('unlabelled_proposal')
 
   // Registry check UNCONDITIONAL, fail-closed (managed-exit precedent — and
-  // the same hole it closed there: the first draft put this inside the
-  // demoOnly branch, so widening the scope to live would have widened it to
+  // the same hole it closed there: the first draft put this inside an
+  // environment branch, so widening the scope would have widened it to
   // accounts nobody can name. Caught by the stage-2 test before it shipped.)
+  // PR-B: the row is read for existence only — nothing here reads which
+  // environment it is.
   let row = null
   try {
     row = accountId != null
-      ? db.prepare('SELECT is_live FROM accounts WHERE account_id = ?').get(String(accountId))
+      ? db.prepare('SELECT account_id FROM accounts WHERE account_id = ?').get(String(accountId))
       : null
   } catch { row = null }
   if (!row) return no('unattributable_account')
-  if (cfg.demoOnly && Number(row.is_live) !== 0) return no('live_scope')
 
   // Per-account, sub-floor band: the gate acts on THIS account, so the record
   // is this account's (plus unscoped legacy rows), and only its closes that
@@ -131,11 +132,11 @@ export function earnedFloorWinRate(db, { strategy, accountId }) {
     // THE PRIOR PATH (owner order 02-09-2026). The measured path needs
     // minSample closes under 3R that the gate itself refuses to produce —
     // 7 of 30 in two days, measured that morning. With a thin sample the
-    // verdict is taken on W' = (n·W_live + k·W_bt)/(n + k), demo accounts
-    // only, at priorRiskScale. Every admit is stamped `via: 'prior'` so the
-    // cohort report can split the two populations. No sweep prior for the
-    // strategy → the thin-sample refusal exactly as before.
-    if (cfg.priorAdmit && Number(row.is_live) === 0) {
+    // verdict is taken on W' = (n·W_live + k·W_bt)/(n + k), on any account
+    // (PR-B), at priorRiskScale. Every admit is stamped `via: 'prior'` so
+    // the cohort report can split the two populations. No sweep prior for
+    // the strategy → the thin-sample refusal exactly as before.
+    if (cfg.priorAdmit) {
       const prior = strategyPriorFor(db, strategy)
       if (prior) {
         // THE LIVE SIDE OF THE SHRINK (owner order 02-09-2026 21:30 SGT:
@@ -323,7 +324,7 @@ export const EARNED_FLOOR_PRIOR_RR = [1.5, 2, 2.5]
  * Backtest side: the last autopilot sweep's verdicts (agent_state
  * `autopilot_last_verdicts_json`), trade-weighted per strategy over verdicts
  * with trades. Live side: strategyRollingEdge over the admitted band, pooled
- * and per in-scope account (demo accounts while demoOnly).
+ * and per enabled account (PR-B: every account, no environment split).
  */
 export function earnedFloorPriorReport(db, { k = EARNED_FLOOR_PRIOR_TRADES } = {}) {
   const cfg = loadEarnedFloor(db)
@@ -364,8 +365,7 @@ export function earnedFloorPriorReport(db, { k = EARNED_FLOOR_PRIOR_TRADES } = {
   }
   let accounts = []
   try {
-    accounts = db.prepare(`SELECT account_id, is_live FROM accounts WHERE enabled = 1 ORDER BY account_id`).all()
-      .filter(a => !cfg.demoOnly || Number(a.is_live) === 0)
+    accounts = db.prepare(`SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id`).all()
       .map(a => String(a.account_id))
   } catch { accounts = [] }
   const strategies = [...new Set([...Object.keys(bt), ...(() => {
@@ -484,7 +484,7 @@ export function earnedFloorReport(db) {
       viaPrior = { admittedApprovals: pc.distinct_n || 0, ...cohortStats(prows) }
     } catch { /* leave the split empty */ }
     // PER ACCOUNT (02-09-2026 plan, part 1). The pooled cohort above is the
-    // pre-registered verdict; the widening decision is read per demo account,
+    // pre-registered verdict; the widening decision is read per account,
     // so the same join is grouped by trades.account_id. Legacy rows with a
     // NULL account land in 'unscoped' — counted, never silently dropped.
     try {

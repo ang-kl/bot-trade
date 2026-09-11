@@ -332,7 +332,7 @@ function mkManagedKeeperDb({ managedOn = true } = {}) {
 }
 
 test('a position on a MANAGED account never reaches the keeper decision step', async () => {
-  const db = mkManagedKeeperDb({ managedOn: true }) // managed-exit defaults ON, demoOnly false
+  const db = mkManagedKeeperDb({ managedOn: true }) // managed-exit defaults ON, every registered account (PR-B)
   const out = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, keeperDeps())
   assert.equal(out.managedSkipped, 1, 'the managed fence must count the skip')
   assert.equal(out.checked, 0, 'the keeper must not evaluate a managed position')

@@ -16,8 +16,9 @@
 //
 // INVARIANT (2026-07-21 audit): the breaker NEVER leaves the account with zero
 // armed strategies. An earlier "aggressive" mode disarmed the last strategy on
-// the theory the autopilot would re-arm proven combos — but on a LIVE account
-// without autopilot_allow_live the autopilot only SUGGESTS and never re-arms,
+// the theory the autopilot would re-arm proven combos — but in suggest mode
+// (and, before PR-B, on a live account by default) the autopilot only
+// SUGGESTS and never re-arms,
 // so the account ratcheted to zero armed and stopped trading entirely (the
 // "no pending trades for hours" symptom). Adapting (tighten filters) is the
 // aggressive-in-spirit response; going dark is not.
@@ -48,13 +49,19 @@ export function loadAdaptiveBreakerConfig(db) {
   return { ...DEFAULT_ADAPTIVE_BREAKER }
 }
 
-/** Leading consecutive-loss streak for one strategy; newest trade id rides along. */
-export function strategyLossStreak(db, strategyKey, limit = 12) {
+/**
+ * Leading consecutive-loss streak for one strategy; newest trade id rides
+ * along. `accountId` scopes it to THAT account's own closes (a per-account
+ * verdict, PR-B checker 11-09-2026); null is the pooled book as before.
+ */
+export function strategyLossStreak(db, strategyKey, limit = 12, { accountId = null } = {}) {
+  const acct = accountId != null ? String(accountId) : null
   const rows = db.prepare(
     `SELECT id, net_pnl FROM trades
       WHERE status = 'closed' AND closed_at IS NOT NULL AND label_strategy = ?
+        AND (? IS NULL OR account_id = ?)
       ORDER BY closed_at DESC, id DESC LIMIT ?`
-  ).all(strategyKey, limit)
+  ).all(strategyKey, acct, acct, limit)
   let streak = 0
   for (const r of rows) {
     // A broker-side close lands with net_pnl NULL until the paced backfill
@@ -67,6 +74,13 @@ export function strategyLossStreak(db, strategyKey, limit = 12) {
     else break
   }
   return { streak, newestId: rows[0]?.id ?? null }
+}
+
+/** The enabled accounts whose OWN closes carry a streak of at least `min`. */
+export function accountsWithOwnStreak(db, strategyKey, min) {
+  let ids = []
+  try { ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { return [] }
+  return ids.filter(id => strategyLossStreak(db, strategyKey, 12, { accountId: id }).streak >= min)
 }
 
 /**
@@ -110,14 +124,23 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
         // donchian_breakout disarm was silently outvoted for days by
         // per-account trade pins (2026-08-31). The helper holds the strategy
         // wherever it is the last one armed, same never-go-dark rule as below.
-        // Hand-pinned DEMO arms are held (owner, 03-09-2026): the demo split
-        // exists to measure a strategy's losses, and the breaker disarming
-        // rsi2 on ACCT-DEMO-4 two minutes after the split (21:11 SGT) ended
-        // the measurement it was set up for. The disarm still lands on the
-        // global list and on live scopes, and the held scopes are recorded.
-        const scopes = disarmStrategyEverywhere(db, io, key, { exemptHandPinnedDemo: true })
-        const heldPinnedDemo = [...(scopes.held || [])]
-        action = { strategy: key, streak, did: 'disarmed_strategy', scopes: [...scopes], heldPinnedDemo }
+        // Hand-pinned arms are held (owner, 03-09-2026): the split exists to
+        // measure a strategy's losses, and the breaker disarming rsi2 on
+        // ACCT-DEMO-4 two minutes after the split (21:11 SGT) ended the
+        // measurement it was set up for. PR-B (11-09-2026, owner principle
+        // 1): the exemption holds an explicit owner pin on EVERY scope, not
+        // demo only. The disarm still lands on the global list, and the
+        // held scopes are recorded.
+        //
+        // …EXCEPT where the streak is the account's OWN (checker, 11-09-2026):
+        // an account whose own closes carry the streak has its pin written
+        // false — with `_all` pins on every account, a pin that always held
+        // left the breaker unable to disarm anything. Measured per account
+        // on that account's closes only; the others' pins still hold.
+        const ownVerdictScopes = accountsWithOwnStreak(db, key, cfg.streak)
+        const scopes = disarmStrategyEverywhere(db, io, key, { exemptHandPinned: true, ownVerdictScopes })
+        const heldPinned = [...(scopes.held || [])]
+        action = { strategy: key, streak, did: 'disarmed_strategy', scopes: [...scopes], heldPinned, ownVerdictScopes }
         // The autopilot honours a cool-off after a live disarm (02-09-2026):
         // it re-armed this breaker's rsi2 disarm twice in one morning.
         if (scopes.length) { try { noteLiveDisarm(db, key, 'breaker') } catch { /* never undoes the disarm */ } }

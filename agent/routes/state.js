@@ -1257,9 +1257,9 @@ export default function stateRouter(db) {
   // should be, with the arithmetic attached. READ-ONLY BY CONSTRUCTION: the
   // controller has no write path and a test asserts it never gains one.
   //
-  // Live accounts are excluded unless ?includeLive=1 — a controller's first
-  // published opinion should not be about the account that can lose real
-  // money, and reading it should be a decision.
+  // Every enabled account, whichever environment (PR-B, owner principle 1,
+  // 11-09-2026: the ?includeLive flag that kept the live account out by
+  // default is gone).
   // -----------------------------------------------------------------------
   router.get('/config-proposals', async (req, res) => {
     try {
@@ -1267,7 +1267,6 @@ export default function stateRouter(db) {
       res.json(configProposals(db, {
         days: Number(req.query.days) || 30,
         minSample: Number(req.query.minSample) || undefined,
-        includeLive: req.query.includeLive === '1' || req.query.includeLive === 'true',
       }))
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
@@ -3139,7 +3138,6 @@ export default function stateRouter(db) {
       autopilot: {
         arm_bar: loadArmBar(db),
         max_changes: Number(getState(db, 'autopilot_max_changes')) || 4,
-        allow_live: getState(db, 'autopilot_allow_live') === 'true',
       },
       selected_account_id: getState(db, 'ctrader_account_id') || null,
       analyze_enabled: getState(db, 'analyze_enabled') !== 'false',

@@ -18,7 +18,7 @@ All-account support means account-specific routing, symbol metadata, permissions
 | `effective_entry_mode` | Gateway-acknowledged mode; never inferred from a saved UI choice |
 | `transition_state` | `STABLE`, `QUIESCING`, `RECONCILING`, `WARMING`, `BLOCKED` |
 | `tick_observation` | `OFF`, `RECORD`, `SHADOW`; observation can run while time entries continue |
-| `validation_stage` | `UNVALIDATED`, `REPLAY_PASSED`, `SHADOW_PASSED`, `DEMO_PASSED`, `LIVE_APPROVED` |
+| `validation_stage` | `UNVALIDATED`, `REPLAY_PASSED`, `SHADOW_PASSED`, `TRADED_PASSED` — one ladder for every account (PR-B, 11-09-2026, owner principle 1: the demo-only stage and the typed live approval it replaced collapse into `TRADED_PASSED`, judged on the account's own closed tick trades in R; stored records carrying the old names read as `TRADED_PASSED`) |
 | `config_revision`, `mode_epoch` | Monotonic, persisted revisions; reject stale commands and proposals |
 | `profile_id`, `profile_hash` | Exact tick parameters and strategy implementation version |
 | `environment`, `account_id`, `risk_group_id` | Immutable execution identity and explicit portfolio grouping |

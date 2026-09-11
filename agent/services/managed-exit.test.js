@@ -25,18 +25,21 @@ test('defaults: on, demo-only, 8 bars, 1R — and junk state degrades to them', 
   assert.deepEqual(loadManagedExit(db), { ...MANAGED_EXIT_DEFAULTS })
 })
 
-test('every REGISTERED account is governed; unknown still fails closed', () => {
-  // Owner 28-08-2026: "regardless of account" — demoOnly defaults false, so
-  // live is governed too. The registry check is unconditional: an account
-  // the policy cannot identify is never governed, whichever scope is on.
+test('every REGISTERED account is governed; unknown still fails closed; a stored demoOnly is inert (PR-B)', () => {
+  // Owner 28-08-2026: "regardless of account" — live is governed too. The
+  // registry check is unconditional: an account the policy cannot identify
+  // is never governed. PR-B deleted the `demoOnly` option: RED if a stored
+  // `demoOnly: true` fences the live account again.
   const db = withAccounts(initDB(':memory:'))
   assert.equal(managedExitApplies(db, '43097342'), true, 'demo account governed')
   assert.equal(managedExitApplies(db, '42993489'), true, 'live account governed (owner order)')
   assert.equal(managedExitApplies(db, '99999999'), false, 'unregistered account fails closed')
   assert.equal(managedExitApplies(db, null), false, 'unattributable rows fail closed')
   setState(db, 'managed_exit_json', JSON.stringify({ demoOnly: true }))
-  assert.equal(managedExitApplies(db, '42993489'), false, 'demoOnly:true stored restores the demo fence')
-  assert.equal(managedExitApplies(db, '99999999'), false, 'unknown fails closed under demoOnly too')
+  assert.equal(managedExitApplies(db, '42993489'), true, 'a stored demoOnly:true changes nothing — the option is gone')
+  assert.equal('demoOnly' in loadManagedExit(db), false)
+  assert.equal('demoOnly' in MANAGED_EXIT_DEFAULTS, false)
+  assert.equal(managedExitApplies(db, '99999999'), false, 'unknown still fails closed')
   setState(db, 'managed_exit_json', JSON.stringify({ on: false }))
   assert.equal(managedExitApplies(db, '43097342'), false, 'off means off, even for demo')
 })

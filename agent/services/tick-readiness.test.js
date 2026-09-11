@@ -55,7 +55,7 @@ test('a default account is not ready, every check carries the contract, the reas
   assert.equal(v.accounts.length, 2); assert.equal(v.readyCount, 0)
 })
 
-test('a fully evidenced demo account in SHADOW with a fresh recording sidecar on the same profile is ready; the same on a live account needs LIVE_APPROVED', () => {
+test('a fully evidenced account in SHADOW with a fresh recording sidecar on the same profile is ready — on demo AND on live, the same bar (PR-B)', () => {
   const db = fresh()
   setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD', 'XAUUSD']))
   requestTickObservation(db, DEMO, 'SHADOW', { now: NOW })
@@ -65,13 +65,23 @@ test('a fully evidenced demo account in SHADOW with a fresh recording sidecar on
   assert.deepEqual(r.blockedReasons, [], JSON.stringify(r.readiness.filter(c => !c.ok)))
   assert.equal(r.ready, true)
   assert.equal(r.profileHash, profileHash(DEFAULT_PARAMS)); assert.equal(r.sidecarProfileHash, profileHash(DEFAULT_PARAMS))
-  // live side: the same evidence is not enough
+  // live side: the same evidence IS enough (owner principle 1). RED if the
+  // live → typed-approval clause returns to the validation_stage check.
   requestTickObservation(db, LIVE, 'SHADOW', { now: NOW })
   pin(db, LIVE, 'SHADOW_PASSED')
   recorder(db, { side: 'cpp_exec' })
   const l = tickReadinessFor(db, LIVE, { now: NOW })
-  assert.deepEqual(l.blockedReasons, ['validation_stage'])
-  assert.match(l.readiness.find(c => c.check === 'validation_stage').remedy, /LIVE_APPROVED/)
+  assert.deepEqual(l.blockedReasons, [], JSON.stringify(l.readiness.filter(c => !c.ok)))
+  assert.equal(l.ready, true); assert.equal(l.side, 'cpp_exec', 'the side is routing, not policy')
+  // REPLAY_PASSED is under the bar on both; TRADED_PASSED clears it on both; the remedy names no environment
+  for (const id of [DEMO, LIVE]) {
+    pin(db, id, 'REPLAY_PASSED')
+    const under = tickReadinessFor(db, id, { now: NOW })
+    assert.deepEqual(under.blockedReasons, ['validation_stage'])
+    assert.doesNotMatch(under.readiness.find(c => c.check === 'validation_stage').remedy, /LIVE_APPROVED|DEMO_PASSED|live account/)
+    pin(db, id, 'TRADED_PASSED')
+    assert.equal(tickReadinessFor(db, id, { now: NOW }).ready, true)
+  }
 })
 
 test('one stale or wrong input flips exactly its own check: recorder age, profile mismatch, shadow switch not converged, dropped events, the disk reserve, a swing horizon, a global halt, an UNKNOWN entry', () => {
