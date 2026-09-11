@@ -87,15 +87,17 @@ export function computeVaBreakout(bars, timeframe, opts = {}) {
   //  bearish open  → VAL is resistance; likewise.
   let bias = null
   let level = null
+  let direction_reason = null // PR-D: the level that gave way, stated where the side is decided
   if (structure === 'ranging') {
     const confirmed = findConfirmedBreak(bars, vs)
     if (!confirmed) return null
     bias = confirmed.bias
     level = confirmed.level
+    direction_reason = bias === 'long' ? 'va:close>vah' : 'va:close<val'
   } else if (structure === 'bullish') {
-    bias = 'long'; level = prev.vah
+    bias = 'long'; level = prev.vah; direction_reason = 'va:bullish_open>vah'
   } else if (structure === 'bearish') {
-    bias = 'short'; level = prev.val
+    bias = 'short'; level = prev.val; direction_reason = 'va:bearish_open<val'
   }
   if (!bias) return null
 
@@ -149,6 +151,7 @@ export function computeVaBreakout(bars, timeframe, opts = {}) {
 
   return {
     bias,
+    direction_reason,
     entry,
     sl,
     tp1,

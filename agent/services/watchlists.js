@@ -81,6 +81,8 @@ export function writeWatchlist(db, accountId, items) {
 // defaults — the symbol would look transferred and behave differently.
 export const CARRIED_FIELDS = [
   'enabled', 'group', 'maxVolume', 'autoTradeThreshold', 'allowed_styles', 'override_bias',
+  // PR-D: an override_bias without an override_reason is refused by the loop.
+  'override_reason',
   'strategies',
 ]
 

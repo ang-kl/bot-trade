@@ -196,7 +196,8 @@ test('the report reads the shadow book and per-side outcomes, and says it is a s
 test('source pin: no gate, dispatch, loop or strategy import; only the shadow table is written', () => {
   const src = readFileSync(new URL('./momentum-shadow.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
   const imports = [...src.matchAll(/(?:from|import\()\s*'([^']+)'/g)].map(m => m[1])
-  assert.deepEqual([...new Set(imports)].sort(), ['../db.js', './fib-strategy.js'])
+  // PR-D: the short rule is imported from direction-policy.js (pure; no gate, no dispatch) — one rule, two consumers.
+  assert.deepEqual([...new Set(imports)].sort(), ['../db.js', './direction-policy.js', './fib-strategy.js'])
   assert.ok(!/evaluateTrade|autoTrade|dispatchSymbolSignal|placeOrder|persistRiskEvent/.test(src))
   const inserts = [...src.matchAll(/INSERT INTO (\w+)/g)].map(m => m[1])
   assert.deepEqual(inserts, ['momentum_shadow'])

@@ -168,7 +168,8 @@ export class TickMomentumOracle {
             this.state = 'CONFIRMING'
             if (s.confirmed >= p.confirmations) {
               const stopDist = Math.max(p.minStopPrice, Math.round(p.stopVolMult * V / 2))
-              signal = { symbolId: q.symbolId ?? null, side: dir, seq: q.seq, recvMs: q.recvMs, trigger2: mid2, bid: q.bid, ask: q.ask, stopDistance: stopDist, spread, V: +V.toFixed(6), D, E: +E.toFixed(6), H: s.H, L: s.L, B: s.B, setupId: s.id, profileHash: this.hash, confirmations: s.confirmed }
+              // PR-D: the direction is stated where it is decided — the frozen boundary the mid broke.
+              signal = { symbolId: q.symbolId ?? null, side: dir, dirReason: dir === 'BUY' ? 'tick:break_high' : 'tick:break_low', seq: q.seq, recvMs: q.recvMs, trigger2: mid2, bid: q.bid, ask: q.ask, stopDistance: stopDist, spread, V: +V.toFixed(6), D, E: +E.toFixed(6), H: s.H, L: s.L, B: s.B, setupId: s.id, profileHash: this.hash, confirmations: s.confirmed }
               this.state = 'SIGNALLED'; this.signalledAt = ev
             }
           } else {

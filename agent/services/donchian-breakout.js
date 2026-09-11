@@ -48,9 +48,10 @@ export function computeDonchianBreakout(bars, timeframe) {
   const a = atr(bars)
   if (!(a > 0) || range < MIN_RANGE_ATR * a) return null // micro-range noise
 
-  let bias = null
-  if (close > hi) bias = 'long'
-  else if (close < lo) bias = 'short'
+  // PR-D: the direction is stated where it is decided (owner principle 8).
+  let bias = null, direction_reason = null
+  if (close > hi) { bias = 'long'; direction_reason = 'donchian:close>hi20' }
+  else if (close < lo) { bias = 'short'; direction_reason = 'donchian:close<lo20' }
   if (!bias) return null
 
   // Don't chase: the close may sit at most 1×ATR beyond the band it broke.
@@ -77,6 +78,7 @@ export function computeDonchianBreakout(bars, timeframe) {
 
   return {
     bias,
+    direction_reason,
     entry,
     sl,
     tp1,

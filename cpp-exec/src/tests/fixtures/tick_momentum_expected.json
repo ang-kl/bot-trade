@@ -18,6 +18,7 @@
   {
    "seq": 118,
    "side": "BUY",
+   "dirReason": "tick:break_high",
    "trigger2": 200078,
    "bid": 100034,
    "ask": 100044,
@@ -32,6 +33,7 @@
   {
    "seq": 284,
    "side": "SELL",
+   "dirReason": "tick:break_low",
    "trigger2": 199976,
    "bid": 99983,
    "ask": 99993,

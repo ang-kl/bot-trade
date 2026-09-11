@@ -123,6 +123,8 @@ export function computeRsiMeanrev(bars, timeframe, opts = {}) {
   if (!longCross && !shortCross) return null
 
   const bias = longCross ? 'long' : 'short'
+  // PR-D: the cross and the trend it agrees with, stated where the side is decided.
+  const direction_reason = longCross ? 'rsi:cross_up_30,trend_up' : 'rsi:cross_down_70,trend_down'
   const entry = last.c
   const a = atr(bars)
 
@@ -179,6 +181,7 @@ export function computeRsiMeanrev(bars, timeframe, opts = {}) {
 
   return {
     bias,
+    direction_reason,
     entry,
     sl,
     tp1,

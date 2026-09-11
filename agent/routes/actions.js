@@ -5455,7 +5455,13 @@ export default function actionsRouter(db, deps = {}) {
       const idx = symbols.findIndex(s => s.symbol === symbol.toUpperCase())
       if (idx === -1) return res.status(404).json({ error: `Symbol ${symbol} not in watchlist` })
 
-      const ALLOWED = ['enabled', 'maxVolume', 'autoTradeThreshold', 'force_skip', 'override_bias', 'block_next_trade', 'allowed_styles']
+      const ALLOWED = ['enabled', 'maxVolume', 'autoTradeThreshold', 'force_skip', 'override_bias', 'override_reason', 'block_next_trade', 'allowed_styles']
+      // PR-D: an override_reason is a non-blank string or null (cleared) — a
+      // blank one would read as a reason at the loop and is refused here.
+      if ('override_reason' in updates && updates.override_reason != null && !(typeof updates.override_reason === 'string' && updates.override_reason.trim())) {
+        return res.status(400).json({ error: 'override_reason must be a non-blank string (or null to clear it)' })
+      }
+      if (typeof updates.override_reason === 'string') updates.override_reason = updates.override_reason.trim()
       for (const k of ALLOWED) {
         if (k in updates) symbols[idx][k] = updates[k]
       }

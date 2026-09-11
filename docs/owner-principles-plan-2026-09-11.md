@@ -324,7 +324,9 @@ gets a dated follow-up section rather than a new file.
 - PR-E: the invariant reads 0 violations for trades since the cutoff; no UNKNOWN
   older than N h; the manual-order path writes a plan.
 - PR-D: every `proposal_json` since deploy carries `direction_reason`; a
-  trend-vs-trend block appears in `decision_log`.
+  trend-vs-trend block appears in `decision_log` (skip) on the book's path
+  (stage `regime_gate`) and on the scan path once PR-C's `recordRegimeBlock`
+  carries it; a short on the book only ever with a fresh down-trend reading.
 - PR-G: an `auto` account is promoted after N ready cycles (action_log actor
   `auto:readiness`) and demoted on a failing check within one cycle.
 - PR-F: `npm run audit:ui` and the inventory test green; the cockpit shows no

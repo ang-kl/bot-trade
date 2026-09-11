@@ -161,6 +161,8 @@ export function computeFvgSignal(bars, timeframe, opts = {}) {
 
   return {
     bias,
+    // PR-D: the gap reacted to, stated where the side is decided.
+    direction_reason: z.dir === 'bull' ? 'fvg:bull_gap_retrace' : 'fvg:bear_gap_retrace',
     entry: round5(entry),
     sl: round5(sl),
     tp1: round5(tp1),

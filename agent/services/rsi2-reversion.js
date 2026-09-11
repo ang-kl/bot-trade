@@ -72,6 +72,8 @@ export function computeRsi2(bars, timeframe) {
   if (!longSetup && !shortSetup) return null
 
   const bias = longSetup ? 'long' : 'short'
+  // PR-D: the direction is stated where it is decided (owner principle 8).
+  const direction_reason = longSetup ? `rsi2:close>sma${TREND_PERIOD},rsi${RSI_PERIOD}<${OVERSOLD}` : `rsi2:close<sma${TREND_PERIOD},rsi${RSI_PERIOD}>${100 - OVERSOLD}`
   const entry = last.c
   const slDist = SL_ATR * a
   const sl = bias === 'long' ? entry - slDist : entry + slDist
@@ -93,6 +95,7 @@ export function computeRsi2(bars, timeframe) {
 
   return {
     bias,
+    direction_reason,
     entry,
     sl,
     tp1,

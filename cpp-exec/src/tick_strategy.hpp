@@ -61,6 +61,7 @@ struct StrategyQuote {
 
 struct TickSignal {
   std::string side;      // BUY | SELL
+  std::string dirReason; // PR-D: tick:break_high | tick:break_low — the frozen boundary the mid broke (the reference's dirReason)
   uint32_t seq = 0;
   uint64_t recvMs = 0;
   long long trigger2 = 0;

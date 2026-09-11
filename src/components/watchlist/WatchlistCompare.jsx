@@ -220,7 +220,7 @@ function Panel({ role, accounts, value, onChange, other, data, checked, setCheck
     const mine = acct?.items || []
     const theirs = otherAcct?.items || []
     const theirBySym = Object.fromEntries(theirs.map(i => [i.symbol, i]))
-    const FIELDS = ['enabled', 'group', 'maxVolume', 'autoTradeThreshold', 'allowed_styles', 'override_bias']
+    const FIELDS = ['enabled', 'group', 'maxVolume', 'autoTradeThreshold', 'allowed_styles', 'override_bias', 'override_reason']
     const eq = (a, b) => FIELDS.every(f => JSON.stringify(a?.[f] ?? null) === JSON.stringify(b?.[f] ?? null))
     const onlyH = [], diff = [], sm = []
     for (const i of mine) {

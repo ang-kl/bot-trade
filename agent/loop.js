@@ -28,7 +28,7 @@ import { getCtraderCreds, getSymbolMap, attachEntryFence } from './lib/ctrader-c
 import { managePendingOrders } from './services/pending-orders.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
-import { checkRegimeGate } from './services/regime-gate.js'
+import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
 import { recordRegimeBlock, recordEvidenceShadow } from './services/gate-skips.js'
 import { accountPregate, proposalPregate, invalidateAccountPregate } from './services/account-pregate.js'
 import { recordPositionEvent } from './services/position-events.js'
@@ -468,9 +468,24 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     }
   } catch { /* tuner is optional — never blocks a trade */ }
 
+  // PR-D (owner principle 8): the trend reading the regime table holds for
+  // this symbol at the moment of evaluation, recorded beside the strategy's
+  // own direction reason so a later read of proposal_json can say what the
+  // bot knew about the trend when it chose the side. null when no reading.
+  let trendAtEvaluation = null
+  try {
+    const rr = latestRegime(db, symbol)
+    trendAtEvaluation = rr ? { regime: rr.regime ?? null, trend_direction: rr.trend_direction ?? null, computed_at: rr.computed_at ?? null, stale: !!rr.stale } : null
+  } catch { trendAtEvaluation = null }
+
   const proposal = {
     symbol,
     side,
+    // PR-D: the direction reason stated by the strategy where it assigned its
+    // bias (or `override:<reason>` for a reasoned watchlist override). null is
+    // a visible gap, never a fabricated reason. Rides proposal_json.
+    direction_reason: synth.direction_reason ?? null,
+    trend_at_evaluation: trendAtEvaluation,
     entry: synth.entry ?? null,
     sl: synth.sl ?? null,
     tp1: synth.tp1 ?? null,
@@ -1072,6 +1087,9 @@ function log(...args) {
 // `sym` (scanResult.signals[sym] on the live path, a fresh re-scan on the
 // pending-signal retry path).
 // ---------------------------------------------------------------------------
+// symbol → `sym|side` of the unreasoned override last refused (logged once per item).
+const unreasonedOverrideLogged = new Map()
+
 export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
   const wItem = symbols.find(w => w.symbol === sym) || { autoTradeThreshold: 8 }
 
@@ -1210,6 +1228,59 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     }
   }
 
+  // Human override: if override_bias is set, use it instead of AI's. It runs
+  // BEFORE the regime gate (checker item d, 11-09-2026) so the gate judges
+  // the side that will actually be dispatched, not the one it replaced.
+  if (wItem.override_bias && ['long', 'short', 'neutral', 'skip'].includes(wItem.override_bias)) {
+    if (wItem.override_bias === 'skip' || wItem.override_bias === 'neutral') {
+      if (synth.auto_trade) {
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, { symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'watchlist_override', decision: 'skip', reason: `override_bias=${wItem.override_bias}` })
+        } catch { /* provenance never blocks */ }
+      }
+      synth.auto_trade = false
+    } else {
+      // PR-D (owner principle 8): a human flip of the direction must state
+      // why. An `override_bias` with no `override_reason` on the watchlist
+      // item is REFUSED — the analysis keeps the strategy's side and does
+      // not auto-trade — and the refusal is a decision_log row so the
+      // silence has a name. A reasoned override becomes the direction_reason.
+      const overrideReason = typeof wItem.override_reason === 'string' && wItem.override_reason.trim() ? wItem.override_reason.trim() : null
+      if (!overrideReason) {
+        // Once per item (checker item g): the same unreasoned flag would
+        // otherwise log and write a row every cycle. Re-logged when the
+        // requested side changes or the reason is later filled in.
+        const memo = `${sym}|${wItem.override_bias}`
+        if (unreasonedOverrideLogged.get(sym) !== memo) {
+          unreasonedOverrideLogged.set(sym, memo)
+          log(`Direction override: ${sym} override_bias=${wItem.override_bias} REFUSED — no override_reason on the watchlist item (every trade has a reason)`)
+          try {
+            const { recordDecision } = await import('./services/decision-log.js')
+            recordDecision(db, { symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'watchlist_override', decision: 'skip', reason: `direction_override_unreasoned override_bias=${wItem.override_bias}` })
+          } catch { /* provenance never blocks */ }
+        }
+        synth.auto_trade = false
+      } else {
+        unreasonedOverrideLogged.delete(sym)
+        if (synth.consensus_bias !== wItem.override_bias && Number.isFinite(Number(synth.entry))) {
+          // A FLIP mirrors the bracket about the entry (checker item d): the
+          // stop and targets were built for the strategy's side, and a SELL
+          // with a stop below entry is an order the broker refuses or, worse,
+          // fills with the protection inverted.
+          const e = Number(synth.entry)
+          const mirror = (v) => (Number.isFinite(Number(v)) ? 2 * e - Number(v) : v)
+          synth.sl = mirror(synth.sl); synth.tp1 = mirror(synth.tp1); synth.tp2 = mirror(synth.tp2)
+          if (synth.sl_price != null) synth.sl_price = synth.sl
+          if (synth.tp1_price != null) synth.tp1_price = synth.tp1
+          if (synth.tp2_price != null) synth.tp2_price = synth.tp2
+        }
+        synth.consensus_bias = wItem.override_bias
+        synth.direction_reason = `override:${overrideReason}`
+      }
+    }
+  }
+
   // Regime gate: don't fade a trend, don't chase a range (owner: "trading
   // like a beginner", PF 0.15). The regimes table was computed but never
   // used to gate entries — this is the fix. Recorded as a decision_log SKIP
@@ -1224,21 +1295,6 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
         recordRegimeBlock(db, { symbol: sym, synth, signal, reason: rg.reason, loopId: loopCount })
       } catch { /* provenance never blocks */ }
       synth.auto_trade = false
-    }
-  }
-
-  // Human override: if override_bias is set, use it instead of AI's
-  if (wItem.override_bias && ['long', 'short', 'neutral', 'skip'].includes(wItem.override_bias)) {
-    if (wItem.override_bias === 'skip' || wItem.override_bias === 'neutral') {
-      if (synth.auto_trade) {
-        try {
-          const { recordDecision } = await import('./services/decision-log.js')
-          recordDecision(db, { symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'watchlist_override', decision: 'skip', reason: `override_bias=${wItem.override_bias}` })
-        } catch { /* provenance never blocks */ }
-      }
-      synth.auto_trade = false
-    } else {
-      synth.consensus_bias = wItem.override_bias
     }
   }
 
@@ -4828,6 +4884,13 @@ async function runLoop(db) {
         const recentScans = db.prepare(
           `SELECT DISTINCT symbol FROM scans WHERE scanned_at > datetime('now', '-6 hours')`
         ).all()
+        // PR-D (checker MAJOR 2, 11-09-2026): the momentum universe's names
+        // are ranked by the shadow and traded by the book without ever being
+        // scanned, so they had no regime row and no trend reading — the
+        // book's alignment was decorative for most of the universe. They get
+        // a regime on the same cadence, through the same code path.
+        const { momentumUniverseSymbols: regimeUniverse } = await import('./services/momentum-account.js')
+        const regimeSymbols = [...new Set([...recentScans.map(r => String(r.symbol).toUpperCase()), ...regimeUniverse(db)])].map(symbol => ({ symbol }))
 
         const { computeRegime } = await import('./services/regime.js')
         const { getRegimeBars } = await import('./services/fib-strategy.js')
@@ -4844,7 +4907,7 @@ async function runLoop(db) {
            VALUES (?, ?, ?, ?, datetime('now'))`
         )
         let regimeWritten = 0
-        for (const { symbol } of recentScans) {
+        for (const { symbol } of regimeSymbols) {
           const sid = regimeSymbolMap[String(symbol).toUpperCase()]
           if (!sid) continue
           try {

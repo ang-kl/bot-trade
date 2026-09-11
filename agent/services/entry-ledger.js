@@ -132,11 +132,18 @@ export function reserveStandingPermits(db, { accountId, producerId, basis = 'bar
       if (!carried.has(String(r.signal_ref))) { release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + 'permit_withdrawn', iso(now), iso(now), r.id); out.released++ }
     }
     for (const e of entries) {
-      const { key, symbol, symbolId, volume } = e || {}
+      const { key, symbol, symbolId, volume, sides = null } = e || {}
       if (!key || !symbol) continue
       const usable = sizeRequired ? Number(volume) > 0 : (volume == null || Number(volume) > 0)
       const sameVolume = (r) => (volume == null ? r.volume == null : Number(r.volume) === Number(volume))
       for (const side of ['BUY', 'SELL']) {
+        // PR-D: an entry may name the sides it carries (the tick feeder
+        // withholds the against-trend side); a side not named has its
+        // standing rows released now, not left for the sidecar to spend.
+        if (Array.isArray(sides) && !sides.includes(side)) {
+          for (const r of standing.all(id, producerId, String(key), side)) { release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + 'direction_against_trend', iso(now), iso(now), r.id); out.released++ }
+          continue
+        }
         let kept = null
         for (const r of standing.all(id, producerId, String(key), side)) {
           const same = usable && r.mode_epoch === st.modeEpoch && sameVolume(r) && Number(r.symbol_id) === Number(symbolId)
