@@ -106,6 +106,7 @@ public:
     uint64_t noSizing = 0;    // refused: volumeResolver gave nothing usable
     uint64_t noAccount = 0;   // refused: no account configured to trade on
     uint64_t permitMissing = 0; // P2a-2: fired with no keeper permit held (the boundary decides)
+    uint64_t staleSetup = 0;    // 11-09-2026: the bracket changed between the trigger read and the fire snapshot — refused
     long long lastFireAtMs = 0;
     std::string lastDetail;   // key + verdict of the most recent attempt
   };
@@ -117,6 +118,10 @@ public:
   // can record. Fired orders are already ringed by the engine's order path.
   // Non-owning; null = disabled. Set before start().
   void setDecisionRing(class DecisionRing* r) { ring_ = r; }
+  // TEST SEAM (11-09-2026): runs inside tryFire after the ARMED->FIRED CAS
+  // and before the fire snapshot is taken, so a test can rewrite the
+  // bracket at exactly the point the generation check exists for.
+  void setPreFireHookForTests(std::function<void()> h) { preFireHook_ = std::move(h); }
 
   // One recompute pass over every strategy — what recomputeLoop() does each
   // interval, public so a test can drive it. A strategy whose fire is still
@@ -149,6 +154,7 @@ private:
   void fireLoop();
 
   ExecEngine& engine_;
+  std::function<void()> preFireHook_; // tests only
   BarProvider barProvider_;
   VolumeResolver volumeResolver_;
   PermitResolver permitResolver_; // P2a-2; may be empty

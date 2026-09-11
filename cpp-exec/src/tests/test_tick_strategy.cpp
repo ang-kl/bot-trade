@@ -76,6 +76,26 @@ int main() {
   TickMomentumStrategy cold(params);
   for (int i = 0; i < params.rangeEvents; ++i) { StrategyQuote q; q.seq = i + 1; q.recvMs = 1000 + i; q.hasBid = q.hasAsk = true; q.bid = 1000 + i * 50; q.ask = q.bid + 10; assert(!cold.onQuote(q)); }
   assert(cold.state() == SetupState::WARMING);
+  // 11-09-2026 audit (plan §4/§5): a continuity break re-warms. An ARMED
+  // strategy fed a snapshot (what the worker marks a gap as) or a one-sided
+  // update drops its window and needs N+1 fresh prior events again.
+  for (int mode = 0; mode < 2; ++mode) {
+    TickMomentumStrategy w(params);
+    uint32_t seq = 0; uint64_t t = 1'000'000;
+    auto quiet = [&](bool snapshot, bool oneSided) {
+      StrategyQuote q; q.seq = ++seq; t += 50; q.recvMs = t; q.changed = true; q.crossed = false; q.snapshot = snapshot;
+      q.hasBid = true; q.hasAsk = !oneSided; q.bid = 100000 + (seq % 7) * 2; q.ask = 100010 + (seq % 7) * 2;
+      return w.onQuote(q);
+    };
+    for (int i = 0; i < params.rangeEvents + 2; ++i) quiet(false, false);
+    assert(w.state() == SetupState::ARMED);
+    quiet(mode == 0, mode == 1);
+    assert(w.state() == SetupState::WARMING);
+    for (int i = 0; i < params.rangeEvents; ++i) quiet(false, false);
+    assert(w.state() == SetupState::WARMING); // N prior events are not enough
+    quiet(false, false); quiet(false, false);
+    assert(w.state() == SetupState::ARMED);   // N+1 prior events and one inside the range
+  }
   std::puts("test_tick_strategy: all passed");
   return 0;
 }

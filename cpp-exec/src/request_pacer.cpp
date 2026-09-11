@@ -7,19 +7,20 @@
 RequestPacer::RequestPacer(PacerConfig cfg) : cfg_(cfg) {
   if (cfg_.capacityPerSec < 1) cfg_.capacityPerSec = 1;
   cfg_.protectionReservePct = std::clamp(cfg_.protectionReservePct, 0, 90);
-  tokens_ = cfg_.capacityPerSec;
+  cfg_.burst = std::clamp(cfg_.burst, 1, cfg_.capacityPerSec);
+  tokens_ = cfg_.burst;
 }
 
 double RequestPacer::refilled(long long nowMs) const {
   if (lastMs_ == 0 || nowMs <= lastMs_) return tokens_;
   const double add = static_cast<double>(nowMs - lastMs_) * cfg_.capacityPerSec / 1000.0;
-  return std::min<double>(cfg_.capacityPerSec, tokens_ + add);
+  return std::min<double>(cfg_.burst, tokens_ + add);
 }
 
 double RequestPacer::floorFor(RequestClass cls) const {
   // Entry/Read must leave the reserve untouched; Protection may spend it.
   if (cls == RequestClass::Protection) return 0.0;
-  return cfg_.capacityPerSec * cfg_.protectionReservePct / 100.0;
+  return cfg_.burst * cfg_.protectionReservePct / 100.0;
 }
 
 bool RequestPacer::tryAcquire(RequestClass cls, long long nowMs) {

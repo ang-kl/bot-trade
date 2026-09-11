@@ -25,7 +25,6 @@ export function buildFixture() {
   // 1. warm-up: a bounded random walk (range ~ ±40)
   for (let i = 0; i < 90; i++) { const d = Math.round((rnd() - 0.5) * 6); bid = Math.max(99_960, Math.min(100_040, bid + d)); ask = bid + 10 + (rnd() < 0.1 ? 2 : 0); push() }
   push({ changed: false })                       // an identical repeat counts nowhere
-  push({ ask: null })                            // a one-sided update counts nowhere
   // 2. spread-only widening: the ask jumps far above the range on TWO consecutive events while the bid
   //    stays inside it — enough to confirm on mid alone, so only the two-sided rule (bid > frozen bidHigh)
   //    refuses it; then the spread closes and the range idles long enough for the momentum window to clear
@@ -47,6 +46,8 @@ export function buildFixture() {
   for (let i = 0; i < 70; i++) { const d = Math.round((rnd() - 0.5) * 4); bid = Math.max(floor6, Math.min(ceil6, bid + d)); ask = bid + 10; push() }
   t += 120_000; push()
   for (let i = 0; i < 20; i++) { const d = Math.round((rnd() - 0.5) * 4); bid = Math.max(floor6, Math.min(ceil6, bid + d)); ask = bid + 10; push() }
+  // 7. a one-sided update counts nowhere AND re-warms (plan §4: missing data invalidates) — last, so it costs the planted setups nothing
+  push({ ask: null })
   return ev
 }
 
@@ -58,7 +59,7 @@ test('the planted fixture yields exactly one long and one short, the spread-only
   assert.equal(signals.length, 2, JSON.stringify(signals.map(s => [s.seq, s.side])))
   assert.equal(signals[0].side, 'BUY'); assert.equal(signals[1].side, 'SELL')
   assert.ok(signals[0].seq > 115 && signals[0].seq < 130, `long at ${signals[0].seq}`)
-  assert.ok(!signals.some(s => s.seq >= 94 && s.seq <= 96), 'the two-event spread-only jump confirmed nothing')
+  assert.ok(!signals.some(s => s.seq >= 93 && s.seq <= 95), 'the two-event spread-only jump confirmed nothing')
   assert.ok(signals[1].seq > signals[0].seq + 60, `short at ${signals[1].seq}`)
   assert.equal(signals[0].confirmations, 2); assert.equal(signals[0].setupId, 1)
   assert.ok(signals[0].bid > signals[0].H / 2, 'the long needed the bid above the frozen range too')
@@ -74,6 +75,20 @@ test('the planted fixture yields exactly one long and one short, the spread-only
   const short = new TickMomentumOracle(PARAMS)
   for (const q of events.slice(0, PARAMS.rangeEvents)) short.feed(q)
   assert.equal(short.state, 'WARMING')
+  // a continuity break re-warms: an ARMED strategy fed a snapshot (or a one-sided update) drops its window and needs N+1 fresh events again
+  for (const breaker of [{ snapshot: true }, { ask: null }]) {
+    const o2 = new TickMomentumOracle(PARAMS)
+    let seq = 0, t = 1_000_000
+    const quiet = (over = {}) => { seq++; t += 50; return o2.feed({ seq, recvMs: t, bid: 100_000 + (seq % 7) * 2, ask: 100_010 + (seq % 7) * 2, snapshot: false, crossed: false, changed: true, ...over }) }
+    for (let i = 0; i < PARAMS.rangeEvents + 2; i++) quiet()
+    assert.equal(o2.state, 'ARMED', 'warm and inside its range')
+    quiet(breaker)
+    assert.equal(o2.state, 'WARMING', `${JSON.stringify(breaker)} re-warms`); assert.equal(o2.mids.length, 0)
+    for (let i = 0; i < PARAMS.rangeEvents; i++) quiet()
+    assert.equal(o2.state, 'WARMING', 'N prior events are not enough')
+    quiet(); quiet()
+    assert.equal(o2.state, 'ARMED', 'N+1 prior events and one inside the range arm again')
+  }
   // the profile hash is stable and parameter-sensitive
   assert.equal(profileHash(PARAMS), profileHash({ ...PARAMS }))
   assert.notEqual(profileHash(PARAMS), profileHash({ ...PARAMS, minEfficiency: 0.55 }))

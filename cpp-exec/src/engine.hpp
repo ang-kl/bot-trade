@@ -201,6 +201,9 @@ public:
   // seconds rather than minutes.
   void setHeartbeatIdleMsForTests(int ms) { heartbeatIdleMs_.store(ms); }
   void setRequestTimeoutMsForTests(int ms) { requestTimeoutOverrideMs_.store(ms); }
+  // The in-flight cap for entries and reads (default kMaxInFlightDefault);
+  // protection is never capped. Configured from EXEC_MAX_IN_FLIGHT in main.
+  void setMaxInFlight(int n) { maxInFlight_.store(n < 1 ? 1 : n); }
 
   // Session facts for /health (P2b-2): the reader's state and the counters
   // that tell "nothing happened" apart from "the path is dead".
@@ -214,6 +217,12 @@ public:
     uint64_t timeouts = 0;       // requests that gave up
     uint64_t heartbeatsSent = 0;
     uint64_t disconnects = 0;    // reader exits after a connection was up
+    // 11-09-2026 audit (investigation F1c / F5b): the in-flight cap and the
+    // broker's retryAfter, both honoured before anything is written.
+    uint64_t inFlightRefused = 0; // entries/reads refused because the cap was reached
+    uint64_t deferrals = 0;       // retryAfter pauses the broker asked for
+    long long deferredMsRemaining = 0; // of the current pause (0 = none)
+    int maxInFlight = 0;
   };
   SessionStats sessionStats();
 
@@ -312,6 +321,15 @@ private:
   std::atomic<long long> lastSendMs_{0};   // steady-clock ms of the last frame written
   std::atomic<int> heartbeatIdleMs_{kHeartbeatIdleSeconds * 1000};
   std::atomic<int> requestTimeoutOverrideMs_{0};
+  // 11-09-2026: bounded in-flight work (the investigation's "up to eight
+  // requests in flight") and the broker's retryAfter (ProtoOAErrorRes,
+  // seconds until the blocked payload type is unlocked), which defers every
+  // entry and read — never protection — until it has elapsed.
+  static constexpr int kMaxInFlightDefault = 8;
+  std::atomic<int> maxInFlight_{kMaxInFlightDefault};
+  std::atomic<long long> deferUntilMs_{0};   // steady-clock ms; 0 = no pause
+  std::atomic<uint64_t> inFlightRefused_{0}, deferrals_{0};
+  void noteRetryAfter(const jsn::Value& errorPayload); // reader thread
   int loopbackPort_ = 0;                   // tests only: plain TCP to 127.0.0.1:port
   std::atomic<uint64_t> framesIn_{0}, lateFrames_{0}, unsolicited_{0}, timeouts_{0},
                         heartbeatsSent_{0}, disconnects_{0};

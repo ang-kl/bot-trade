@@ -46,6 +46,14 @@ struct VirtualPendingOrder {
   // (vpo_dispatcher.hpp) must supply this before an order can ever fire.
   std::atomic<double> relativeStopLoss{0.0};
   std::atomic<double> relativeTakeProfit{0.0};
+  // SETUP GENERATION (11-09-2026 audit, investigation F2 "immutable setup
+  // generations"): a seqlock over the four fields above. storeBracket()
+  // bumps it to odd before writing and to even after, so a reader that sees
+  // an odd value, or a different value after its reads, knows it read a
+  // torn or superseded setup and refuses to fire on it. The state CAS alone
+  // cannot give this: a recompute already past the FIRED check stores its
+  // new bracket before its own arm CAS fails.
+  std::atomic<uint64_t> generation{0};
 
   // Set once at construction, never mutated afterward — plain fields are
   // fine (no torn reads possible on an immutable value).
@@ -62,6 +70,18 @@ struct VirtualPendingOrder {
   VirtualPendingOrder(std::string sym, std::string tf, long long symId, int dig = 5)
       : symbol(std::move(sym)), timeframe(std::move(tf)), symbolId(symId), digits(dig) {}
 };
+
+// The ONE writer of a setup's shape (recompute thread only): the bracket is
+// written inside an odd/even generation window so tryFire can tell a
+// coherent setup from a torn or superseded one.
+inline void storeBracket(VirtualPendingOrder& o, double trigger, Side side, double slDistance, double tpDistance) {
+  o.generation.fetch_add(1, std::memory_order_acq_rel);   // odd: write in progress
+  o.triggerPrice.store(trigger, std::memory_order_relaxed);
+  o.side.store(side, std::memory_order_relaxed);
+  o.relativeStopLoss.store(slDistance, std::memory_order_relaxed);
+  o.relativeTakeProfit.store(tpDistance, std::memory_order_relaxed);
+  o.generation.fetch_add(1, std::memory_order_acq_rel);   // even: complete
+}
 
 // ARM / IDLE TRANSITIONS NEVER OVERWRITE FIRED (10-09-2026). Reproduced: the
 // recompute thread stored ARMED unconditionally, so a strategy whose fire was

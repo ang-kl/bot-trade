@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "depth_book.hpp"
+#include "heartbeat.hpp"
 #include "ws_client.hpp"
 
 // (symbolId, bid, ask) — bid/ask already descaled to real price units.
@@ -105,6 +106,13 @@ public:
   // /health so the keeper can see whether its tick symbols are carried.
   std::vector<long long> subscribedSymbols();
 
+  // TEST SEAMS (11-09-2026 audit, feed heartbeat): plain TCP to
+  // 127.0.0.1:port instead of TLS to the host, and the idle bound before a
+  // heartbeat (default kHeartbeatIdleSeconds), so the heartbeat path can be
+  // exercised against the fake broker in seconds.
+  void setLoopbackTransportForTests(int port) { loopbackPort_ = port; }
+  void setHeartbeatIdleMsForTests(int ms) { heartbeatIdleMs_.store(ms); }
+
 private:
   // One connect+auth+subscribe+read cycle. Returns when the connection
   // drops or stop() fires; the caller (runLoop) decides whether to retry.
@@ -117,6 +125,8 @@ private:
   SpotTickCallback onTick_;
   CtraderWs ws_;
   std::atomic<bool> stopped_{false};
+  int loopbackPort_ = 0;                                       // tests only
+  std::atomic<int> heartbeatIdleMs_{kHeartbeatIdleSeconds * 1000};
 
   // The reconnect backoff sleeps up to 60s. Sleeping on this instead of
   // this_thread::sleep_for means stop() returns the thread promptly rather

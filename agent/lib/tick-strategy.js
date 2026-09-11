@@ -99,7 +99,10 @@ export class TickMomentumOracle {
     const acc = this._accept(q)
     if (acc === 'stale') { this._invalidate(); this.lastRecvMs = q.recvMs; return null }
     if (!acc) {
-      if (q.bid != null && q.ask != null && q.crossed) this._invalidate()
+      // Plan §4/§5: a snapshot (or a continuity break marked as one), a
+      // one-sided update or a crossed quote invalidates the setup and the
+      // warm-up; a repeat or an over-wide spread merely does not count.
+      if (q.bid == null || q.ask == null || q.snapshot || q.crossed) this._invalidate()
       return null
     }
     this.lastRecvMs = q.recvMs

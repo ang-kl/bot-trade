@@ -1,5 +1,7 @@
 // cpp-exec/src/engine.cpp
 #include "engine.hpp"
+
+#include <algorithm>
 #include "heartbeat.hpp"
 
 #include <cctype>
@@ -190,7 +192,30 @@ ExecEngine::SessionStats ExecEngine::sessionStats() {
   s.timeouts = timeouts_.load();
   s.heartbeatsSent = heartbeatsSent_.load();
   s.disconnects = disconnects_.load();
+  s.inFlightRefused = inFlightRefused_.load();
+  s.deferrals = deferrals_.load();
+  const long long until = deferUntilMs_.load();
+  s.deferredMsRemaining = until > 0 ? std::max<long long>(0, until - steadyMs()) : 0;
+  s.maxInFlight = maxInFlight_.load();
   return s;
+}
+
+// ProtoOAErrorRes.retryAfter (help.ctrader.com/open-api/messages, read
+// 11-09-2026): "When you hit rate limit with errorCode=BLOCKED_PAYLOAD_TYPE,
+// this field will contain amount of seconds until related payload type will
+// be unlocked." Honoured as a pause on every entry and read; capped at two
+// minutes (the keeper's own cap) so a malformed value cannot park the
+// session, and never applied to protection — a stop still has to move.
+void ExecEngine::noteRetryAfter(const jsn::Value& p) {
+  const double sec = p.get("retryAfter").asNumber(0);
+  if (!(sec > 0)) return;
+  const long long ms = std::min<long long>(120'000, static_cast<long long>(sec * 1000.0));
+  const long long until = steadyMs() + ms;
+  long long cur = deferUntilMs_.load();
+  while (until > cur && !deferUntilMs_.compare_exchange_weak(cur, until)) {}
+  deferrals_.fetch_add(1);
+  if (ring_) ring_->log("engine", "retry_after", 0, 0, p.get("errorCode").asString(),
+                        "broker asked for " + std::to_string(ms) + " ms; entries and reads deferred, protection not");
 }
 
 void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
@@ -400,7 +425,10 @@ void ExecEngine::dispatchFrame(const jsn::Value& msg) {
     // An auth-family error kills the session whether or not it answers this
     // request (and if it does, the request's own answer is that error).
     noteBrokerError(code, mine->extraAuth);
-    mine->settle(errResult(code, p.get("description").asString(), true));
+    noteRetryAfter(p);
+    EngineResult er = errResult(code, p.get("description").asString(), true);
+    if (p.get("retryAfter").asNumber(0) > 0) er.body.set("retryAfterMs", p.get("retryAfter").asNumber(0) * 1000.0);
+    mine->settle(std::move(er));
     return;
   }
 
@@ -426,8 +454,11 @@ void ExecEngine::dispatchFrame(const jsn::Value& msg) {
     }
     if (journal_) journal_->record(msg, sole != nullptr);
     noteBrokerError(code, sole ? sole->extraAuth : false);
+    noteRetryAfter(p);
     if (sole) {
-      sole->settle(errResult(code, p.get("description").asString(), true));
+      EngineResult er = errResult(code, p.get("description").asString(), true);
+      if (p.get("retryAfter").asNumber(0) > 0) er.body.set("retryAfterMs", p.get("retryAfter").asNumber(0) * 1000.0);
+      sole->settle(std::move(er));
     } else if (!theirId.empty()) {
       lateFrames_.fetch_add(1); // an error for a request that already gave up
     } else {
@@ -453,6 +484,32 @@ ExecEngine::Ticket ExecEngine::beginRequest(int reqType, const jsn::Value& paylo
     t.failed = true;
     t.early = errResult("NOT_CONNECTED", "websocket is not connected", false);
     return t;
+  }
+
+  if (cls != RequestClass::Protection) {
+    // The broker's retryAfter pause (noteRetryAfter): provably not sent.
+    const long long until = deferUntilMs_.load();
+    const long long remain = until > 0 ? until - steadyMs() : 0;
+    if (remain > 0) {
+      if (ring_) ring_->log("engine", "deferred", 0, 0, cls == RequestClass::Entry ? "entry" : "read", std::to_string(remain) + " ms of the broker's retryAfter remain");
+      t.failed = true;
+      t.early = errResult("rate_limited", "the broker asked for a pause (retryAfter) — " + std::to_string(remain) + " ms remain; not sent", false);
+      t.early.body.set("retryAfterMs", static_cast<double>(remain));
+      return t;
+    }
+    // Bounded in-flight work: an entry or read that would be the (cap+1)th
+    // request outstanding is refused before anything is written. Protection
+    // is never capped — a close must not wait behind a burst of reads.
+    size_t inFlight;
+    { std::lock_guard lk(pendingMtx_); inFlight = pending_.size(); }
+    const int cap = maxInFlight_.load();
+    if (inFlight >= static_cast<size_t>(cap)) {
+      inFlightRefused_.fetch_add(1);
+      if (ring_) ring_->log("engine", "too_many_in_flight", 0, 0, cls == RequestClass::Entry ? "entry" : "read", std::to_string(inFlight) + " in flight, cap " + std::to_string(cap));
+      t.failed = true;
+      t.early = errResult("too_many_in_flight", std::to_string(inFlight) + " request(s) in flight (cap " + std::to_string(cap) + ") — not sent", false);
+      return t;
+    }
   }
 
   // P2b-1 PACING (TM-25): one token per request against the connection's

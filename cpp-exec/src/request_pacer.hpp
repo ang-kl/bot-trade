@@ -18,8 +18,14 @@
 enum class RequestClass { Protection, Entry, Read };
 
 struct PacerConfig {
-  int capacityPerSec = 40;        // < the documented 50/s
+  int capacityPerSec = 40;        // refill RATE, < the documented 50/s
   int protectionReservePct = 25;  // share of the bucket only Protection may use
+  // The bucket's size — the largest instantaneous burst. Smaller than the
+  // rate on purpose (11-09-2026 audit): a bucket the size of the rate let
+  // 40 requests go in one instant after any idle second, which is exactly
+  // the burst the investigation's "smooth pacing or a small burst cap"
+  // exists to prevent. Clamped to [1, capacityPerSec].
+  int burst = 8;
 };
 
 class RequestPacer {
@@ -27,7 +33,8 @@ public:
   explicit RequestPacer(PacerConfig cfg = {});
 
   // Take one token for `cls` at `nowMs`. Entry and Read are refused when
-  // taking one would leave fewer tokens than the protection reserve;
+  // taking one would leave fewer tokens than the protection reserve (a share
+  // of the BURST, so protection always has a token or two in hand);
   // Protection is refused only when the bucket is empty. Never blocks.
   bool tryAcquire(RequestClass cls, long long nowMs);
   // Milliseconds until `cls` could acquire (0 = now).

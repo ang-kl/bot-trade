@@ -157,7 +157,10 @@ void SpotFeed::drainPendingSubs() {
 }
 
 bool SpotFeed::connectAuthSubscribe() {
-  if (!ws_.connect(host_)) {
+  // The loopback seam (tests only): plain TCP to the fake broker; main.cpp
+  // never sets it, so production is always TLS to the pinned host.
+  const bool up = loopbackPort_ > 0 ? ws_.connect("127.0.0.1", loopbackPort_, false) : ws_.connect(host_);
+  if (!up) {
     logLine("connect failed: " + ws_.lastError());
     return false;
   }
@@ -246,9 +249,13 @@ void SpotFeed::runOnce() {
   auto lastSend = steady_clock::now();
   while (!stopped_.load(std::memory_order_relaxed) && ws_.isOpen()) {
     drainPendingSubs(); // trail-engine symbols queued since the last slice
-    auto text = ws_.recvText(5000);
+    // One-second slices (heartbeat.hpp): the heartbeat check below runs at
+    // least once a second, so an idle socket is pinged within a second of
+    // the bound — the 5 s slice this used to be put the effective bound at
+    // 9–14 s (11-09-2026 audit), past the 10 s guidance.
+    auto text = ws_.recvText(kHeartbeatSliceMs);
     auto now = steady_clock::now();
-    if (ws_.isOpen() && now - lastSend >= seconds(kHeartbeatIdleSeconds)) {
+    if (ws_.isOpen() && now - lastSend >= milliseconds(heartbeatIdleMs_.load(std::memory_order_relaxed))) {
       ws_.sendText("{\"payloadType\":51}");
       lastSend = now;
     }

@@ -205,17 +205,26 @@ int main(int argc, char** argv) {
   // the buffer floor is 4 wire units (the reference's priceIncrement 1).
   std::atomic<bool> tickShadow{false};
   std::atomic<uint64_t> tickSignals{0}, tickSignalsBuy{0}, tickSignalsSell{0}, tickLastSignalMs{0};
-  std::mutex tickStratMtx; // guards the per-worker maps' creation/clear only; each worker owns its map's entries
+  // Each worker OWNS its map; no other thread touches it. A shadow switch-off
+  // asks for a reset by bumping tickStratReset, and each worker clears its
+  // own bank when it next runs and sees a new value (11-09-2026 audit: the
+  // HTTP thread used to clear the maps under a mutex the workers never
+  // took — a data race on the very maps they were reading).
+  std::atomic<uint64_t> tickStratReset{0};
+  std::vector<uint64_t> tickStratSeen;
   std::vector<std::map<long long, tick::TickMomentumStrategy>> tickStrategies;
   const tick::StrategyParams tickParams; // v1 baseline (research-profile.json)
   if (tickRecorder) {
     const int nWorkers = std::max(1, std::atoi(envOr("TICK_WORKERS", "2").c_str()));
     tickStrategies.resize(static_cast<size_t>(nWorkers));
+    tickStratSeen.assign(static_cast<size_t>(nWorkers), 0);
     tickWorkers = std::make_unique<tick::SymbolWorkers>(nWorkers, 1u << 14,
-        [&tickWorkerEvents, &tickShadow, &tickStrategies, &tickParams, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &decisionRing](int worker, const tick::WorkerEvent& ev) {
+        [&tickWorkerEvents, &tickShadow, &tickStrategies, &tickStratReset, &tickStratSeen, &tickParams, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &decisionRing](int worker, const tick::WorkerEvent& ev) {
           tickWorkerEvents.fetch_add(1, std::memory_order_relaxed);
-          if (!tickShadow.load(std::memory_order_relaxed)) return;
           auto& bank = tickStrategies[static_cast<size_t>(worker)];
+          const uint64_t reset = tickStratReset.load(std::memory_order_acquire);
+          if (tickStratSeen[static_cast<size_t>(worker)] != reset) { bank.clear(); tickStratSeen[static_cast<size_t>(worker)] = reset; } // a fresh warm-up after a switch-off
+          if (!tickShadow.load(std::memory_order_relaxed)) return;
           auto it = bank.find(ev.symbolId);
           if (it == bank.end()) it = bank.emplace(ev.symbolId, tick::TickMomentumStrategy(tickParams)).first;
           tick::StrategyQuote q;
@@ -400,10 +409,12 @@ int main(int argc, char** argv) {
   PacerConfig pacerCfg;
   pacerCfg.capacityPerSec = std::atoi(envOr("EXEC_RATE_LIMIT_PER_SEC", "40").c_str());
   pacerCfg.protectionReservePct = std::atoi(envOr("EXEC_PROTECTION_RESERVE_PCT", "25").c_str());
+  pacerCfg.burst = std::atoi(envOr("EXEC_RATE_BURST", "8").c_str());
   RequestPacer pacer(pacerCfg);
   engine.setPacer(&pacer);
-  logLine("request pacer: " + std::to_string(pacer.config().capacityPerSec) + "/s (docs: 50/s per connection), " +
-          std::to_string(pacer.config().protectionReservePct) + "% reserved for protection");
+  engine.setMaxInFlight(std::atoi(envOr("EXEC_MAX_IN_FLIGHT", "8").c_str()));
+  logLine("request pacer: " + std::to_string(pacer.config().capacityPerSec) + "/s (docs: 50/s per connection), burst " +
+          std::to_string(pacer.config().burst) + ", " + std::to_string(pacer.config().protectionReservePct) + "% reserved for protection");
   // P2b-2: the broker session is async — a reader thread per connection,
   // every request a future keyed by its clientMsgId, awaited outside the
   // execution mutex; the heartbeat is the reader's. Stated at boot so the
@@ -515,6 +526,14 @@ int main(int argc, char** argv) {
       gj.set("requireTarget", g.requireTarget);
       gj.set("maxOrderVolume", g.maxOrderVolume);
       gj.set("haltAccountCount", static_cast<double>(g.haltAccounts.size()));
+      // AUDIT 11-09-2026 (plan B05): the LIST, so the keeper's guard sync can
+      // compare identity — two accounts swapped for two others read as "in
+      // sync" by count alone. Bearer-gated like the account roster.
+      if (trusted) {
+        jsn::Array ha;
+        for (long long id : g.haltAccounts) ha.push_back(jsn::Value(static_cast<double>(id)));
+        gj.set("haltAccounts", jsn::Value(std::move(ha)));
+      }
       // P2a: the fenced epochs, so the keeper's guard sync can see whether
       // its push bound (and an older keeper reads a plain object it ignores).
       jsn::Value eo{jsn::Object{}};
@@ -571,6 +590,10 @@ int main(int argc, char** argv) {
       sj.set("timeouts", static_cast<double>(ss.timeouts));
       sj.set("heartbeatsSent", static_cast<double>(ss.heartbeatsSent));
       sj.set("disconnects", static_cast<double>(ss.disconnects));
+      sj.set("maxInFlight", static_cast<double>(ss.maxInFlight));
+      sj.set("inFlightRefused", static_cast<double>(ss.inFlightRefused));
+      sj.set("deferrals", static_cast<double>(ss.deferrals));
+      sj.set("deferredMsRemaining", static_cast<double>(ss.deferredMsRemaining));
       v.set("session", std::move(sj));
     }
     {
@@ -579,6 +602,7 @@ int main(int argc, char** argv) {
       jsn::Value pj{jsn::Object{}};
       pj.set("capacityPerSec", static_cast<double>(pacer.config().capacityPerSec));
       pj.set("protectionReservePct", static_cast<double>(pacer.config().protectionReservePct));
+      pj.set("burst", static_cast<double>(pacer.config().burst));
       pj.set("granted", static_cast<double>(pc.granted));
       pj.set("refusedEntry", static_cast<double>(pc.refusedEntry));
       pj.set("refusedRead", static_cast<double>(pc.refusedRead));
@@ -1010,7 +1034,7 @@ int main(int argc, char** argv) {
   // guard live — halt (kill switch), require-bracket, max order volume —
   // without pausing or locking the order path. Each field is optional; only
   // the ones present are changed. Reads on the order path are lock-free.
-  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStrategies, &tickStratMtx](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStratReset](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -1063,7 +1087,7 @@ int main(int argc, char** argv) {
       const bool want = v.get("tickShadow").asBool();
       const bool was = tickShadow.exchange(want);
       if (was != want) {
-        if (!want) { std::lock_guard<std::mutex> lk(tickStratMtx); for (auto& bank : tickStrategies) bank.clear(); } // a fresh warm-up next time
+        if (!want) tickStratReset.fetch_add(1, std::memory_order_release); // each worker clears its own bank on its next event
         logLine(std::string("tick strategy shadow ") + (want ? "ON" : "OFF") + " (keeper's switch; signals are rung, nothing is placed)");
         decisionRing.log("tick", "shadow_changed", 0, 0, want ? "on" : "off", "keeper's switch via /config");
       }

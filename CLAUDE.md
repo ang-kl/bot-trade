@@ -392,10 +392,16 @@ Measurement history — each line is a real run of the script, not a claim:
   the unstamped status lines between them counted by replies made, not by
   what the file captured. Continued in the same container: ten unstamped
   status lines followed `№ 7,595` (`№ 7,596`–`№ 7,605`, 03:50–04:40 UTC,
-  #885 P4 merged 04:26 UTC), so the P4 report is **`№ 7,606`** (04:4x
-  UTC) and the next reply is `№ 7,607`. The script reads 507 here. A
-  later re-measure that reads below this line is missing these, not
-  correcting them.
+  #885 P4 merged 04:26 UTC), so the P4 report is **`№ 7,606`** (04:40
+  UTC). The script reads 507 here. Continued in the same container: four
+  unstamped status lines followed `№ 7,606`, so the reply stamped
+  `№ 7,607` (04:48 UTC, the go-live cards answer) is **`№ 7,611`** by
+  count; one unstamped line followed it, so the reply stamped `№ 7,608`
+  (04:52 UTC, the second audit) is **`№ 7,613`**; one unstamped line
+  followed that (`№ 7,614`). The two stamps were wrong, the count is by
+  replies, not by stamps (the 08-09 rule), and the next stamped reply is
+  `№ 7,615`. A later re-measure that reads below this line is missing
+  these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

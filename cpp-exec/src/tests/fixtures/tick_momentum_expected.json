@@ -16,7 +16,7 @@
  "profileHash": "a15a82842ecf30e4",
  "signals": [
   {
-   "seq": 119,
+   "seq": 118,
    "side": "BUY",
    "trigger2": 200078,
    "bid": 100034,
@@ -30,7 +30,7 @@
    "D": 64
   },
   {
-   "seq": 285,
+   "seq": 284,
    "side": "SELL",
    "trigger2": 199976,
    "bid": 99983,

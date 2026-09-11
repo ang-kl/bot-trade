@@ -4,11 +4,13 @@
 // even express: two requests in flight at once, an answer that arrives after
 // its request gave up, an event with nothing waiting, a hang-up with a
 // request pending, an id-less error with two requests to choose from.
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "../decision_ring.hpp"
 #include "../engine.hpp"
@@ -342,6 +344,156 @@ static void test_unconnected_engine_paths_are_unchanged() {
   assert(!e.sessionStats().readerRunning && e.sessionStats().generation == 0);
 }
 
+// ---- 11-09-2026 audit additions ------------------------------------------
+// The register's TM-24 acceptance names accepted-before-filled, duplicate and
+// partial-fill frames; none was exercised. And the investigation's in-flight
+// cap and retryAfter handling did not exist.
+
+static void test_accepted_then_filled_for_one_request_answers_once_and_journals_both() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& f) {
+    authAndReconcile(b, f);
+    if (typeOf(f) == pt::NEW_ORDER_REQ) {
+      b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_ACCEPTED", 61, 0));
+      b.replyAfter(150, f, pt::EXECUTION_EVENT, executionEvent("ORDER_FILLED", 61, 91));
+    }
+  });
+  EventJournal journal(64, "boot-test");
+  ExecEngine e;
+  e.setEventJournal(&journal);
+  connectEngine(e, broker);
+  EngineResult r = e.placeOrder(marketOrder());
+  assert(r.ok && r.body.get("executionType").asString() == "ORDER_ACCEPTED"); // the request's answer is the FIRST frame
+  std::this_thread::sleep_for(milliseconds(500));
+  const auto recs = journal.since(0);
+  assert(recs.size() == 2);
+  assert(recs[0].solicited && recs[0].executionType == "ORDER_ACCEPTED" && recs[0].orderId == 61);
+  assert(!recs[1].solicited && recs[1].executionType == "ORDER_FILLED" && recs[1].orderId == 61 && recs[1].positionId == 91);
+  assert(recs[1].clientMsgId == recs[0].clientMsgId); // the later frame is matched to the same intent by id
+  assert(e.sessionStats().lateFrames == 1 && e.sessionStats().pending == 0);
+  assert(e.reconcile().ok);
+}
+
+static void test_a_duplicate_frame_is_journaled_twice_and_settles_nothing_twice() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& f) {
+    authAndReconcile(b, f);
+    if (typeOf(f) == pt::NEW_ORDER_REQ) {
+      b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_ACCEPTED", 62, 0));
+      b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_ACCEPTED", 62, 0)); // the same frame again
+    }
+  });
+  EventJournal journal(64, "boot-test");
+  ExecEngine e;
+  e.setEventJournal(&journal);
+  connectEngine(e, broker);
+  EngineResult r = e.placeOrder(marketOrder());
+  assert(r.ok && r.body.get("order").get("orderId").asNumber(0) == 62);
+  std::this_thread::sleep_for(milliseconds(300));
+  const auto recs = journal.since(0);
+  assert(recs.size() == 2 && recs[0].solicited && !recs[1].solicited); // both on record; the keeper dedupes by order id + type
+  assert(e.sessionStats().lateFrames == 1);
+  assert(e.reconcile().ok); // the session is intact
+}
+
+static void test_a_partial_fill_answers_the_request_and_the_final_fill_follows_in_the_journal() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& f) {
+    authAndReconcile(b, f);
+    if (typeOf(f) == pt::NEW_ORDER_REQ) {
+      b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_PARTIAL_FILL", 63, 93));
+      b.replyAfter(120, f, pt::EXECUTION_EVENT, executionEvent("ORDER_FILLED", 63, 93));
+    }
+  });
+  EventJournal journal(64, "boot-test");
+  ExecEngine e;
+  e.setEventJournal(&journal);
+  connectEngine(e, broker);
+  EngineResult r = e.placeOrder(marketOrder());
+  assert(r.ok && r.body.get("executionType").asString() == "ORDER_PARTIAL_FILL");
+  std::this_thread::sleep_for(milliseconds(400));
+  const auto recs = journal.since(0);
+  assert(recs.size() == 2 && recs[1].executionType == "ORDER_FILLED" && recs[1].positionId == 93);
+}
+
+static void test_the_in_flight_cap_refuses_reads_and_entries_but_never_protection() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& f) {
+    const int type = typeOf(f);
+    if (type == pt::RECONCILE_REQ) {
+      // Every reconcile is slow, so two of them stay in flight together.
+      jsn::Value p{jsn::Object{}};
+      p.set("ctidTraderAccountId", f.get("payload").get("ctidTraderAccountId"));
+      p.set("position", jsn::Value(jsn::Array{}));
+      p.set("order", jsn::Value(jsn::Array{}));
+      b.replyAfter(900, f, pt::RECONCILE_RES, p);
+      return;
+    }
+    authAndReconcile(b, f);
+    if (type == pt::CLOSE_POSITION_REQ)
+      b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_FILLED", 0, static_cast<long long>(f.get("payload").get("positionId").asNumber(0))));
+    if (type == pt::NEW_ORDER_REQ)
+      b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_ACCEPTED", 64, 0));
+  });
+  ExecEngine e;
+  connectEngine(e, broker);
+  e.setMaxInFlight(2);
+  std::vector<std::thread> readers;
+  std::vector<EngineResult> results(2);
+  for (int i = 0; i < 2; ++i) { readers.emplace_back([&e, &results, i] { results[static_cast<size_t>(i)] = e.reconcile(); }); std::this_thread::sleep_for(milliseconds(80)); }
+  std::this_thread::sleep_for(milliseconds(80));
+  assert(e.sessionStats().pending == 2);
+  const auto t0 = steady_clock::now();
+  EngineResult third = e.reconcile();                       // the (cap+1)th read
+  assert(!third.ok && third.body.get("errorCode").asString() == "too_many_in_flight");
+  assert(msSince(t0) < 200);                                // refused, not queued
+  EngineResult entry = e.placeOrder(marketOrder());         // an entry is capped the same way
+  assert(!entry.ok && entry.body.get("errorCode").asString() == "too_many_in_flight");
+  EngineResult close = e.closePosition(closeReq(7));        // protection is never capped
+  assert(close.ok && close.body.get("position").get("positionId").asNumber(0) == 7);
+  for (auto& t : readers) t.join();
+  assert(results[0].ok && results[1].ok);
+  assert(e.sessionStats().inFlightRefused == 2 && e.sessionStats().maxInFlight == 2);
+  assert(e.placeOrder(marketOrder()).ok);                   // and once they drain, entries flow again
+}
+
+static void test_retry_after_defers_entries_and_reads_but_not_protection() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& f) {
+    authAndReconcile(b, f);
+    const int type = typeOf(f);
+    if (type == pt::NEW_ORDER_REQ) {
+      static std::atomic<int> n{0};
+      if (n.fetch_add(1) == 0) {
+        jsn::Value p = errorPayload("BLOCKED_PAYLOAD_TYPE", "rate limit");
+        p.set("retryAfter", 1.0); // seconds (ProtoOAErrorRes)
+        b.reply(f, pt::ERROR_RES, p);
+      } else {
+        b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_ACCEPTED", 65, 0));
+      }
+    }
+    if (type == pt::CLOSE_POSITION_REQ)
+      b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_FILLED", 0, static_cast<long long>(f.get("payload").get("positionId").asNumber(0))));
+  });
+  ExecEngine e;
+  connectEngine(e, broker);
+  const size_t before = broker.receivedCount();
+  EngineResult first = e.placeOrder(marketOrder());
+  assert(!first.ok && first.body.get("errorCode").asString() == "BLOCKED_PAYLOAD_TYPE");
+  assert(first.body.get("retryAfterMs").asNumber(0) == 1000.0); // preserved for the keeper
+  assert(broker.receivedCount() == before + 1);
+  EngineResult second = e.placeOrder(marketOrder());        // inside the pause: not sent
+  assert(!second.ok && second.body.get("errorCode").asString() == "rate_limited");
+  assert(second.body.get("retryAfterMs").asNumber(0) > 0 && second.body.get("retryAfterMs").asNumber(0) <= 1000.0);
+  EngineResult read = e.reconcile();
+  assert(!read.ok && read.body.get("errorCode").asString() == "rate_limited");
+  assert(broker.receivedCount() == before + 1);            // nothing else went out
+  EngineResult close = e.closePosition(closeReq(8));        // protection is never deferred
+  assert(close.ok);
+  assert(broker.receivedCount() == before + 2);
+  const ExecEngine::SessionStats s = e.sessionStats();
+  assert(s.deferrals == 1 && s.deferredMsRemaining > 0);
+  std::this_thread::sleep_for(milliseconds(1100));
+  assert(e.sessionStats().deferredMsRemaining == 0);
+  EngineResult third = e.placeOrder(marketOrder());         // the pause elapsed: sent and accepted
+  assert(third.ok && third.body.get("order").get("orderId").asNumber(0) == 65);
+}
+
 int main() {
   test_unconnected_engine_paths_are_unchanged();
   test_connect_auth_reconcile_and_the_roster();
@@ -353,6 +505,11 @@ int main() {
   test_auth_family_errors_skip_an_extra_account_but_kill_the_session_otherwise();
   test_the_reader_heartbeats_while_idle();
   test_new_credentials_drop_the_session_without_touching_the_reader_s_socket();
+  test_accepted_then_filled_for_one_request_answers_once_and_journals_both();
+  test_a_duplicate_frame_is_journaled_twice_and_settles_nothing_twice();
+  test_a_partial_fill_answers_the_request_and_the_final_fill_follows_in_the_journal();
+  test_the_in_flight_cap_refuses_reads_and_entries_but_never_protection();
+  test_retry_after_defers_entries_and_reads_but_not_protection();
   std::puts("test_async_session: all passed");
   return 0;
 }
