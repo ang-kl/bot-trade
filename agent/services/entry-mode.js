@@ -24,12 +24,13 @@
 //
 // WHAT THIS PHASE DOES NOT DO (and says so): the C++ VPO tier is fenced at
 // ARMING time (vpo-feeder.js refuses the /vpo-config push for a STOPPED
-// account) but not at FIRE time — that is the P2 permit; resting entry orders
-// are COUNTED on a switch, not cancelled — cancel-by-stored-origin is P1c;
-// TICK_MOMENTUM is refused outright until the strategy (P4) and its evidence
-// (P6) exist. The Node gateway acknowledges STOPPED and TIME_BASED at once
-// because for Node producers the fence IS this module, so requested and
-// effective agree immediately and the transition is STABLE.
+// account) but not at FIRE time — that is the P2 permit; TICK_MOMENTUM is
+// refused outright until the strategy (P4) and its evidence (P6) exist. The
+// Node gateway acknowledges STOPPED and TIME_BASED at once because for Node
+// producers the fence IS this module, so requested and effective agree
+// immediately. P1c (entry-drain.js, 11-09-2026): a switch to STOPPED with
+// resting entry orders enters QUIESCING; the drain cancels them by stored id
+// and settles RECONCILING → STABLE on the broker's word.
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
@@ -71,7 +72,8 @@ export function engineStatusFor(db, accountId) {
   return { ...defaultEngineStatus({ accountId: id, environment }), stored: false }
 }
 
-function persist(db, status) {
+/** The only writer of the record: validated, or refused with the reasons. */
+export function writeEngineStatus(db, status) {
   const { stored, invalid, ...clean } = status // eslint-disable-line no-unused-vars
   const v = validateEngineStatus(clean)
   if (!v.ok) throw new Error(`engine status invalid: ${v.errors.join('; ')}`)
@@ -94,21 +96,27 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
   if (mode === 'TICK_MOMENTUM') {
     return { ok: false, reason: 'tick_engine_not_built: the tick strategy (P4) and its evidence (P6) do not exist yet', current: cur.configRevision }
   }
+  const resting = countResting(db, id)
+  // P1c: STOPPED with resting entry orders enters QUIESCING — entry-drain.js
+  // cancels them by stored id and settles the state on the broker's word. Any
+  // other switch is STABLE unless an unresolved entry is still counted, which
+  // an active mode may not call STABLE (validateEngineStatus).
+  const transitionState = mode === 'STOPPED' && resting > 0 ? 'QUIESCING' : (cur.entryCounts.unknown > 0 ? 'RECONCILING' : 'STABLE')
   const next = {
     ...cur,
     requestedEntryMode: mode,
     effectiveEntryMode: mode,   // Node acknowledges at once — the fence is admitEntry()
-    transitionState: 'STABLE',
+    transitionState,
     configRevision: cur.configRevision + 1,
     modeEpoch: cur.modeEpoch + 1,
     fenceAckEpoch: cur.modeEpoch + 1,
-    entryCounts: { ...cur.entryCounts, resting: countResting(db, id) },
+    entryCounts: { ...cur.entryCounts, resting },
     updatedAt: now.toISOString(),
   }
-  const saved = persist(db, next)
+  const saved = writeEngineStatus(db, next)
   try {
     db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
-      .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, from: cur.effectiveEntryMode, to: mode, revision: saved.configRevision, epoch: saved.modeEpoch, resting: saved.entryCounts.resting, actor }), id)
+      .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, from: cur.effectiveEntryMode, to: mode, revision: saved.configRevision, epoch: saved.modeEpoch, resting: saved.entryCounts.resting, transition: saved.transitionState, actor }), id)
   } catch { /* audit best-effort */ }
   return { ok: true, status: saved, changed: cur.effectiveEntryMode !== mode }
 }
@@ -171,7 +179,7 @@ export function entryEnginesView(db) {
   return {
     at: new Date().toISOString(),
     accounts,
-    note: 'P1b: Node producers are fenced by admitEntry; the VPO tier is fenced at arming only (P2 fences its fire); resting orders are counted, not cancelled (P1c); TICK_MOMENTUM is refused until P4/P6.',
+    note: 'P1b/P1c: Node producers are fenced by admitEntry; the VPO tier is fenced at arming only (P2 fences its fire); on STOPPED the account\'s resting entry orders are cancelled by stored id and the state settles QUIESCING → RECONCILING → STABLE; TICK_MOMENTUM is refused until P4/P6.',
     // No account may be armed by omission: a record that is absent reads OFF.
     globalHalt: (() => { try { return JSON.parse(getState(db, 'exec_guard_json') || '{}')?.halt === true } catch { return false } })(),
   }

@@ -2,8 +2,9 @@
 
 **Status: PROPOSAL UNDER CONSTRUCTION. Nothing here is approved for trading, and
 no tick order can be placed by this repository.** The per-account entry mode
-does not exist yet; when it does it defaults to `TIME_BASED` with tick
-observation `OFF` (see `agent/lib/entry-contracts.js`, `defaultEngineStatus`).
+exists since P1b (#879) and defaults to `TIME_BASED` with tick observation
+`OFF` (see `agent/lib/entry-contracts.js`, `defaultEngineStatus`);
+`TICK_MOMENTUM` is refused until the strategy (P4) and its evidence (P6) exist.
 
 ## What is in this folder
 
@@ -32,8 +33,8 @@ updated in the same change.
 |---|---|---|
 | P1a | The four sidecar defects from the investigation (telemetry producer lock, VPO pending-fire skip + CAS transitions + fire snapshot, send-boundary halt recheck, 9 s heartbeat) and the audit wording | **merged #877, 11-09-2026** |
 | P0 | Contracts as code (`agent/lib/entry-contracts.js`), the producer inventory pinned by test (`agent/lib/entry-producers.js`), the runtime manifest with unknowns labelled (`agent/services/runtime-manifest.js`, `GET /state/runtime-manifest`), this folder | **merged #878, 11-09-2026** |
-| P1b | Entry-mode service (`agent/services/entry-mode.js`), `admitEntry` at every Node producer and re-checked in `exec-engine.placeOrder`, the VPO arming fence, `POST /actions/entry-mode`, `GET /state/entry-engines`; register TM-06/TM-16 IMPLEMENTED, TM-10/TM-11/TM-39 PARTIAL | this change |
-| P1c | Drain of account-owned resting entry orders by stored origin on a mode switch; QUIESCING → RECONCILING → STABLE | planned |
+| P1b | Entry-mode service (`agent/services/entry-mode.js`), `admitEntry` at every Node producer and re-checked in `exec-engine.placeOrder`, the VPO arming fence, `POST /actions/entry-mode`, `GET /state/entry-engines`; register TM-06/TM-16 IMPLEMENTED, TM-10/TM-11/TM-39 PARTIAL | **merged #879, 11-09-2026** |
+| P1c | Drain of the account's resting entry orders by stored broker id on a switch to STOPPED (`agent/services/entry-drain.js`): QUIESCING → RECONCILING → STABLE on a post-cancel broker snapshot, run once from the route and every loop cycle until settled; register TM-14 IMPLEMENTED (Node side) | this change |
 | P2 | Async broker session, durable intent ledger, one-use permits, mode fencing | planned |
 | P3 | Normalized tick feed, symbol workers, bounded recorder and archive | planned — needs the volume mapping (B18) |
 | P4 | `tick_momentum_breakout`, reference oracle, replayer, trial ledger | planned |
