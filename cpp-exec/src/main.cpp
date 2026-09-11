@@ -20,6 +20,7 @@
 #include "engine.hpp"
 #include "heartbeat.hpp"
 #include "tick_recorder.hpp"
+#include "tick_firer.hpp"
 #include "tick_shadow.hpp"
 #include "tick_strategy.hpp"
 #include "tick_workers.hpp"
@@ -162,10 +163,19 @@ int main(int argc, char** argv) {
     logLine("TELEMETRY_PATH not set — order telemetry disabled");
   }
 
-  DecisionRing decisionRing;
+  // 4096 slots (was 256): the tick path rings a signal and a shadow close
+  // per event per symbol plus a fire line per account, and the keeper pulls
+  // every ~2 min — an evicted order_submit/order_result would leave an
+  // intent nothing can settle (RACE CHECKER 11-09-2026).
+  DecisionRing decisionRing(4096);
   const long long startedAtMs = static_cast<long long>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count());
+  // The engine is constructed before the tick block (P6b): the tick firer
+  // places through it, so it must outlive the workers that queue fires.
+  ExecEngine engine;
+  if (telemetry) engine.setTelemetry(telemetry.get());
+  engine.setDecisionRing(&decisionRing);
   // P3a: the bounded tick recorder (docs/tick-momentum/plan.md §10-§11).
   // Constructed only when TICK_SPOOL_PATH names a directory on this
   // service's volume, and even then it writes nothing until the keeper
@@ -226,6 +236,21 @@ int main(int argc, char** argv) {
   std::mutex tickSimMtx;
   tick::ShadowSim tickSim;
   std::atomic<uint64_t> tickShadowOpen{0}, tickShadowRejectedCost{0}, tickShadowRejectedNoFill{0}, tickShadowResets{0};
+  // P6b: the tick entry path (plan §3, §9, §13; TM-09/10/11/40). The
+  // shadow book's fill is handed to the firer, which places ONE real order
+  // per account the keeper has put in TICK_MOMENTUM on this executor
+  // (/config tickEntryAccounts, empty by default = nothing is placed),
+  // with that account's pre-issued one-use permit (/config tickPermits),
+  // sized from the permit's risk figures at the signal's stop distance,
+  // and refused when the recorder is not RECORDING (TM-40). Declared before
+  // the workers so it outlives them, after the engine so it dies first.
+  tick::TickPermitStore tickPermits;
+  tick::TickFirer tickFirer(engine, tickPermits);
+  tickFirer.setDecisionRing(&decisionRing);
+  if (tickRecorder) {
+    tickFirer.setRecordingCheck([&tickRecorder] { return tickRecorder->stats().state == "RECORDING"; });
+    tickFirer.start();
+  }
   if (tickRecorder) {
     const int nWorkers = std::max(1, std::atoi(envOr("TICK_WORKERS", "2").c_str()));
     tickStrategies.resize(static_cast<size_t>(nWorkers));
@@ -233,7 +258,7 @@ int main(int argc, char** argv) {
     tickStratSeen.assign(static_cast<size_t>(nWorkers), 0);
     tickWorkers = std::make_unique<tick::SymbolWorkers>(nWorkers, 1u << 14,
         [&tickWorkerEvents, &tickShadow, &tickStrategies, &tickBooks, &tickStratReset, &tickStratSeen, &tickParams, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &decisionRing,
-         &tickShadowLedger, &tickSimMtx, &tickSim, &tickShadowOpen, &tickShadowRejectedCost, &tickShadowRejectedNoFill, &tickShadowResets](int worker, const tick::WorkerEvent& ev) {
+         &tickShadowLedger, &tickSimMtx, &tickSim, &tickShadowOpen, &tickShadowRejectedCost, &tickShadowRejectedNoFill, &tickShadowResets, &tickFirer](int worker, const tick::WorkerEvent& ev) {
           tickWorkerEvents.fetch_add(1, std::memory_order_relaxed);
           auto& bank = tickStrategies[static_cast<size_t>(worker)];
           auto& books = tickBooks[static_cast<size_t>(worker)];
@@ -277,6 +302,9 @@ int main(int argc, char** argv) {
             decisionRing.log("tick", "shadow_close", 0, static_cast<long long>(ev.symbolId), closed->reason,
                              closed->side + " netR=" + std::to_string(closed->netR) + " hold=" + std::to_string(closed->holdEvents) + " seq=" + std::to_string(seq) + " profile=" + closed->profileHash);
           }
+          // P6b: the book's fill on THIS event is the entry moment for every
+          // TICK_MOMENTUM account — taken once, refused or queued, never blocking.
+          if (auto fill = bk->second.takeFill()) tickFirer.onFill(*fill, static_cast<long long>(ev.recvMs));
           const bool hasOpen = bk->second.open().has_value();
           if (hadOpen != hasOpen) { if (hasOpen) tickShadowOpen.fetch_add(1, std::memory_order_relaxed); else tickShadowOpen.fetch_sub(1, std::memory_order_relaxed); }
           if (auto sig = it->second.onQuote(q)) {
@@ -301,7 +329,7 @@ int main(int argc, char** argv) {
           }
         });
     tickWorkers->start();
-    logLine("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; strategy " + std::string("tick_momentum_breakout v1 profile ") + tickParams.profileHash() + " runs in SHADOW only when the keeper switches it on; the shadow portfolio fills by the replayer's rules, " + tickSim.json() + ")");
+    logLine("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; strategy " + std::string("tick_momentum_breakout v1 profile ") + tickParams.profileHash() + " runs in SHADOW only when the keeper switches it on; the shadow portfolio fills by the replayer's rules, " + tickSim.json() + "; tick entries place only for accounts the keeper lists in tickEntryAccounts — none at boot)");
   }
 
   // The decision ring (owner invariant 1, 2026-08-31): every decision this
@@ -310,9 +338,6 @@ int main(int argc, char** argv) {
   // volume, costs a few KB of memory, and a supervision channel that can be
   // configured off is a guard whose trigger is out of reach.
 
-  ExecEngine engine;
-  if (telemetry) engine.setTelemetry(telemetry.get());
-  engine.setDecisionRing(&decisionRing);
   // THE PIN. Set CTRADER_HOST and this process serves that broker host and only
   // that one, for its whole life — /connect refuses anything else. Unset (the
   // default, and today's deployment) leaves the sidecar unpinned and every
@@ -480,7 +505,7 @@ int main(int argc, char** argv) {
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim, &tickFirer](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -621,6 +646,17 @@ int main(int argc, char** argv) {
         tj.set("shadow", tickShadow.load());
         tj.set("signals", static_cast<double>(tickSignals.load()));
         { std::lock_guard<std::mutex> lk(tickSimMtx); if (auto sj = jsn::parse(tickSim.json())) tj.set("shadowSim", *sj); }
+        // P6b: whether this executor PLACES tick entries and for how many
+        // accounts — the TM-42 marker reads places:false until P6c.
+        if (auto ej = jsn::parse(tickFirer.statusJson())) {
+          jsn::Value e{jsn::Object{}};
+          e.set("places", ej->get("places"));
+          e.set("accounts", ej->get("accounts"));
+          e.set("permitsHeld", ej->get("permitsHeld"));
+          e.set("sent", ej->get("sent"));
+          e.set("rejected", ej->get("rejected"));
+          tj.set("entry", std::move(e));
+        }
         if (trusted) {
           jsn::Array subs;
           std::lock_guard<std::mutex> lk(vpoMtx);
@@ -693,7 +729,7 @@ int main(int argc, char** argv) {
   // P3a: the recorder in full — state, counters, segments, the mount's free
   // bytes (statvfs on the spool path: the measurement TM-27 asks for),
   // events/sec per symbol. {enabled:false} when TICK_SPOOL_PATH is unset.
-  server.route("GET", "/tick-status", [&tickRecorder, &tickWorkers, &tickWorkerEvents, &tickShadow, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &tickParams, &tickShadowLedger, &tickShadowOpen, &tickShadowRejectedCost, &tickShadowRejectedNoFill, &tickShadowResets, &tickSimMtx, &tickSim](const HttpRequest&) -> HttpResponse {
+  server.route("GET", "/tick-status", [&tickRecorder, &tickWorkers, &tickWorkerEvents, &tickShadow, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &tickParams, &tickShadowLedger, &tickShadowOpen, &tickShadowRejectedCost, &tickShadowRejectedNoFill, &tickShadowResets, &tickSimMtx, &tickSim, &tickFirer](const HttpRequest&) -> HttpResponse {
     if (!tickRecorder) return {200, "{\"enabled\":false,\"reason\":\"TICK_SPOOL_PATH not set\"}"};
     auto parsed = jsn::parse(tickRecorder->statusJson());
     if (!parsed) return {200, tickRecorder->statusJson()};
@@ -729,8 +765,13 @@ int main(int argc, char** argv) {
       st.set("signalsBuy", static_cast<double>(tickSignalsBuy.load()));
       st.set("signalsSell", static_cast<double>(tickSignalsSell.load()));
       st.set("lastSignalMs", static_cast<double>(tickLastSignalMs.load()));
-      st.set("places", false); // P4: shadow only — the entry path is P6
+      st.set("places", !tickFirer.accounts().empty()); // P6b: true only while the keeper lists a TICK_MOMENTUM account here
       v.set("strategy", std::move(st));
+    }
+    {
+      // P6b: the entry path's counters — accounts placing, permits held,
+      // fires queued/sent/rejected and every refusal by kind.
+      if (auto ej = jsn::parse(tickFirer.statusJson())) v.set("entry", *ej);
     }
     {
       // P6a: the shadow portfolio's shape — closed count, open positions,
@@ -1117,13 +1158,18 @@ int main(int argc, char** argv) {
   // guard live — halt (kill switch), require-bracket, max order volume —
   // without pausing or locking the order path. Each field is optional; only
   // the ones present are changed. Reads on the order path are lock-free.
-  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStratReset, &tickSimMtx, &tickSim](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStratReset, &tickSimMtx, &tickSim, &tickFirer, &tickPermits](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
     const jsn::Value& v = *parsed;
     const GuardSnapshot before = engine.guard().snapshot();
     if (v.get("halt").isBool()) engine.guard().setHalt(v.get("halt").asBool());
+    // The keeper says WHY a push halts when its own derivation failed
+    // (exec-guard-sync.js `degraded`): rung, so an operator can tell a
+    // registry read error from an owner's halt.
+    if (v.get("degraded").isString() && !v.get("degraded").asString().empty())
+      decisionRing.log("guard", "degraded", 0, 0, v.get("halt").asBool(false) ? "halt" : "", v.get("degraded").asString());
     if (v.get("requireBracket").isBool()) engine.guard().setRequireBracket(v.get("requireBracket").asBool());
     if (v.get("requireTarget").isBool()) engine.guard().setRequireTarget(v.get("requireTarget").asBool());
     if (v.get("maxOrderVolume").isNumber()) engine.guard().setMaxOrderVolume(v.get("maxOrderVolume").asNumber());
@@ -1190,6 +1236,44 @@ int main(int argc, char** argv) {
       if (sj.get("maxHoldEvents").isNumber()) next.maxHoldEvents = static_cast<int>(sj.get("maxHoldEvents").asNumber());
       if (sj.get("maxHoldMs").isNumber()) next.maxHoldMs = static_cast<long long>(sj.get("maxHoldMs").asNumber());
       if (next.json() != tickSim.json()) { tickSim = next; logLine("tick shadow sim: " + tickSim.json() + " (keeper's push; applies to new books)"); }
+    }
+    // P6b: the accounts in TICK_MOMENTUM on this executor — FULL REPLACE,
+    // declarative like haltAccounts; an account that leaves the set has its
+    // held permits dropped at once (a switch away must not leave a permit
+    // that a fill a second later could still spend).
+    if (v.get("tickEntryAccounts").isArray()) {
+      std::set<long long> ids;
+      for (const auto& e : v.get("tickEntryAccounts").asArray()) {
+        long long id = e.isNumber() ? (long long)e.asNumber() : std::strtoll(e.asString().c_str(), nullptr, 10);
+        if (id > 0) ids.insert(id);
+      }
+      const std::set<long long> was = tickFirer.accounts();
+      if (was != ids) {
+        for (long long id : was) if (!ids.count(id)) tickPermits.clearAccount(id);
+        tickFirer.setAccounts(ids);
+        logLine("tick entries: " + std::to_string(ids.size()) + " account(s) in TICK_MOMENTUM on this executor (keeper's push; " +
+                (ids.empty() ? std::string("nothing is placed") : std::string("the shadow book's fills place with the keeper's permits")) + ")");
+        decisionRing.log("tick", "entry_accounts_changed", 0, 0, ids.empty() ? "none" : std::to_string(ids.size()),
+                         "was " + std::to_string(was.size()) + " account(s), keeper's push via /config");
+      }
+    }
+    // P6b: the keeper's pre-issued one-use permits for the tick path —
+    // [{accountId, symbolId, side, permit}], each replacing the one held
+    // for that account/symbol/side; a permit for an account not in
+    // tickEntryAccounts is dropped (nothing would spend it).
+    if (v.get("tickPermits").isArray()) {
+      const std::set<long long> placing = tickFirer.accounts();
+      size_t set = 0, dropped = 0;
+      for (const auto& e : v.get("tickPermits").asArray()) {
+        const long long acct = static_cast<long long>(e.get("accountId").asNumber(0));
+        const long long sym = static_cast<long long>(e.get("symbolId").asNumber(0));
+        const std::string side = e.get("side").asString();
+        if (acct <= 0 || sym <= 0 || (side != "BUY" && side != "SELL") || !e.get("permit").isObject() || !placing.count(acct)) { dropped++; continue; }
+        tickPermits.set(acct, sym, side, e.get("permit"));
+        set++;
+      }
+      if (dropped) decisionRing.log("tick", "permits_dropped", 0, 0, std::to_string(dropped), "malformed or for an account not in tickEntryAccounts");
+      (void)set;
     }
     if (v.get("tickSymbolIds").isArray()) {
       std::vector<long long> ids;
@@ -1270,6 +1354,7 @@ int main(int argc, char** argv) {
   trailEngine.stop();
   peerProbe.stop();
   if (tickWorkers) tickWorkers->stop();
+  tickFirer.stop();
   if (tickRecorder) { tickRecorder->stop(); logLine("tick recorder stopped (segment sealed)"); }
   return served ? 0 : 1;
 }

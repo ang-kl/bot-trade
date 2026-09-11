@@ -53,6 +53,13 @@ test('every route the inventory names exists in actions.js, and the C++ direct p
   assert.ok(vpo.includes('engine_.placeOrder('), 'the VPO tier still places orders in-process')
   const feeder = readFileSync(join(ROOT, 'agent/services/vpo-feeder.js'), 'utf8')
   assert.ok(feeder.includes('/vpo-config'), 'the feeder still arms it over /vpo-config')
+  // P6b: the tick path places in-process too, and only with the keeper's permit.
+  const firer = strip(readFileSync(join(ROOT, 'cpp-exec/src/tick_firer.cpp'), 'utf8'))
+  assert.ok(firer.includes('engine_.placeOrder('), 'the tick firer still places through the engine (the send boundary)')
+  assert.ok(firer.includes('permits_.take('), 'the tick firer takes a keeper permit before building a fire')
+  const tickFeeder = strip(readFileSync(join(ROOT, 'agent/services/tick-permits.js'), 'utf8'))
+  assert.ok(tickFeeder.includes('reserveStandingPermits('), 'the tick feeder issues permits through the ledger')
+  assert.ok(tickFeeder.includes('tickEntryAccounts'), 'the tick feeder names the placing accounts on the push')
 })
 
 test('the shape of every entry, and the P2 work list', () => {
@@ -62,13 +69,14 @@ test('the shape of every entry, and the P2 work list', () => {
     assert.ok(PRODUCER_FAMILIES.includes(p.family), `${p.id}: family ${p.family}`)
     assert.ok(ADMISSIONS.includes(p.admission), `${p.id}: admission ${p.admission}`)
     assert.ok(p.file && p.via, `${p.id}: file and via`)
-    if (p.family === 'automatic') assert.ok(p.basis === 'bar', `${p.id}: every automatic producer today is bar-based; tick arrives in P4`)
+    if (p.family === 'automatic') assert.ok(p.basis === 'bar' || p.basis === 'tick', `${p.id}: an automatic producer is bar- or tick-based`)
   }
-  assert.equal(automaticProducers().length, 7)
-  assert.deepEqual(producersOutsideExecEngine().map(p => p.id), ['vpo_cpp_direct'], 'the one path the Node chokepoint does not cover')
+  assert.equal(automaticProducers().length, 8)
+  assert.deepEqual(automaticProducers().filter(p => p.basis === 'tick').map(p => p.id), ['tick_momentum'], 'P6b: the one tick-basis producer')
+  assert.deepEqual(producersOutsideExecEngine().map(p => p.id), ['vpo_cpp_direct', 'tick_momentum'], 'the two in-process sidecar paths the Node chokepoint does not cover (both fenced by the permit at the send boundary)')
   const v = producerInventoryView()
   assert.equal(v.total, ENTRY_PRODUCERS.length)
-  assert.deepEqual(v.outsideExecEngine, ['vpo_cpp_direct'])
+  assert.deepEqual(v.outsideExecEngine, ['vpo_cpp_direct', 'tick_momentum'])
 })
 
 test('wiring pin: GET /state/entry-producers and /state/runtime-manifest are routed', () => {

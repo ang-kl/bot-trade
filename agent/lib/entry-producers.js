@@ -67,6 +67,13 @@ export const ENTRY_PRODUCERS = Object.freeze([
     note: 'blocker B01/B04: sized from a cached minimum-stop volume; no Node risk gate or reservation',
   },
   {
+    id: 'tick_momentum', family: 'automatic', basis: 'tick',
+    file: 'cpp-exec/src/tick_firer.cpp', via: 'ExecEngine::placeOrder (C++, in-process)',
+    fedBy: 'agent/services/tick-permits.js → POST /config tickEntryAccounts + tickPermits',
+    trigger: 'the shadow book\'s fill on the sidecar\'s symbol worker (tick_momentum_breakout)', admission: 'cpp-guard',
+    note: 'P6b: one standing keeper permit per account/symbol/side (reserveStandingPermits, basis tick), sized on the sidecar from the permit\'s own risk figures at the signal\'s stop distance; refused without a permit, below the minimum lot, past the overshoot bound, or while the recorder is not RECORDING (TM-40); places only for accounts the keeper lists in tickEntryAccounts',
+  },
+  {
     id: 'route_trade_now', family: 'manual_assisted',
     file: 'agent/routes/actions.js', route: 'POST /actions/trade-now', via: 'autoTrade',
     admission: 'exec-engine',

@@ -1,0 +1,7 @@
+{
+  "_note": "P6b (11-09-2026): the tick entry path's owner-held knobs, pushed to the sidecar inside every tick permit (agent/services/tick-permits.js). overshootFraction: a fill more than this fraction of the signal's stop distance away from the quote the signal was made at is refused on the sidecar (plan §9 price bound). minStopFraction: a fill whose stop distance is below this fraction of the entry price is refused (plan §3: the greatest of the volatility distance, the broker's minimum and the account's policy floor; the Race checker's XAUUSD one-spread stop). maxFireDelayMs: a queued fire older than this at the send is refused. maxLots: null = no cap beyond the broker's maxVolume and the exec guard's maxOrderVolume. Sizing itself uses the account's OWN risk config and stamped balance (riskBudgetUsd) — never these figures. A change here is a risk-limit change: ask-first (CLAUDE.md P7).",
+  "overshootFraction": 0.25,
+  "minStopFraction": 0.0015,
+  "maxFireDelayMs": 5000,
+  "maxLots": null
+}

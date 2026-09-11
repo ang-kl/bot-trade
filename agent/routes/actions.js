@@ -29,6 +29,7 @@ import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
 import { clearErrorLog } from '../services/error-log.js'
+import { desiredGuardFor } from '../services/exec-guard-sync.js'
 // Credentials for ONE account by id (03-09-2026): the accounts registry says
 // which side (live/demo) it sits on. Null or unknown id → the primary, as
 // every caller behaved before.
@@ -49,6 +50,31 @@ export function credsForAccountId(db, accountId, opts = {}) {
  * the answer says so (`accountSource`), so a wrong-account action cannot
  * pass as a routine one.
  */
+/**
+ * The credentials for the OPENING leg of a two-leg manual action, built
+ * fresh after the closing leg so the exec guard they carry is the guard of
+ * this instant (WHOLE-PLAN AUDIT 11-09-2026, TM-39). Refuses on a halt,
+ * a per-account halt or a volume above the cap — the same verdicts
+ * exec-engine.validateExecGuard gives at the send — and on credentials
+ * that are no longer ready.
+ */
+export function legTwoCreds(db, accountId, { producerId, volume = null } = {}) {
+  const creds = credsForAccountId(db, accountId, { producerId })
+  if (!creds.ready) return { ok: false, reason: 'cTrader not connected', creds }
+  // RACE CHECKER 11-09-2026: the stored guard JSON carries the owner's knobs
+  // only; the per-account halts (equity-stop trips) and the breaker /
+  // global-guards halt are DERIVED at push time. Read the derivation, not
+  // the stored copy — the stored copy never names a halted account.
+  let derived = null
+  try { derived = desiredGuardFor(db, { isLive: creds.isLive == null ? null : !!creds.isLive }) } catch { derived = null }
+  if (!derived) return { ok: false, reason: 'guard_unreadable: the exec guard could not be derived — refusing the opening leg', creds }
+  const g = { ...(creds.execGuard || {}), halt: derived.halt === true || creds.execGuard?.halt === true, haltAccounts: derived.haltAccounts || [] }
+  if (g.haltAccounts.map(String).includes(String(accountId))) return { ok: false, reason: `guard_halt_account: ${String(accountId).slice(-4)} is halted`, creds }
+  const v = validateExecGuard({ volume }, g)
+  if (!v.ok) return { ok: false, reason: v.reason, creds }
+  return { ok: true, creds }
+}
+
 export function credsForPosition(db, positionId, opts = {}) {
   let acct = null
   try {
@@ -1076,9 +1102,11 @@ export default function actionsRouter(db, deps = {}) {
   router.post('/entry-mode', async (req, res) => {
     try {
       const { requestEntryMode } = await import('../services/entry-mode.js')
+      const { tickReadinessFor } = await import('../services/tick-readiness.js')
       const { accountId, mode, expectedRevision = null } = req.body || {}
       if (!accountId || !mode) return res.status(400).json({ error: 'accountId and mode are required' })
-      const r = requestEntryMode(db, String(accountId), String(mode), { expectedRevision, actor: 'owner' })
+      // P6b: TICK_MOMENTUM is judged on the account's readiness at this moment (demo only).
+      const r = requestEntryMode(db, String(accountId), String(mode), { expectedRevision, actor: 'owner', readiness: tickReadinessFor })
       if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
       console.log(`[actions] entry-mode → …${String(accountId).slice(-4)} ${r.status.effectiveEntryMode} (revision ${r.status.configRevision}, epoch ${r.status.modeEpoch}, resting ${r.status.entryCounts.resting}, ${r.status.transitionState})`)
       // P1c: STOPPED with resting entry orders → cancel them by stored id now,
@@ -2357,9 +2385,18 @@ export default function actionsRouter(db, deps = {}) {
         reason: 'reverse_leg_one', source: 'manual',
       })
 
+      // WHOLE-PLAN AUDIT 11-09-2026 (plan §13, TM-39): the opening leg is NEW
+      // risk and must see the guard as it is NOW, not the snapshot taken
+      // before the close — a halt raised between the two legs used to be
+      // invisible here (creds carry exec_guard_json from the moment they were
+      // built). Re-read the credentials for the position's account and refuse
+      // the leg on a live halt; the half-done alarm below then fires as it
+      // should, because the account IS flat.
+      const legTwo = legTwoCreds(db, String(local?.account_id ?? creds.accountId), { producerId: 'route_position_reverse', volume: td.volume })
+      if (!legTwo.ok) throw new Error(`leg two refused by the live guard: ${legTwo.reason}`)
       const label = encodeLabel({ source: 'manual', version: LABEL_VERSION, strategy: 'manual', session: getActiveSessions()[0]?.label || 'Off' })
-      const exec = await execPlaceOrder(creds, {
-        ctidTraderAccountId: parseInt(creds.accountId),
+      const exec = await execPlaceOrder(legTwo.creds, {
+        ctidTraderAccountId: parseInt(legTwo.creds.accountId),
         symbolId: parseInt(td.symbolId),
         orderType: 'MARKET',
         tradeSide: wasSell ? 'BUY' : 'SELL',

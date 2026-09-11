@@ -76,7 +76,7 @@ test('a stale revision is refused; TICK_MOMENTUM is refused until the engine exi
   assert.equal(stale.ok, false); assert.equal(stale.reason, 'revision_conflict'); assert.equal(stale.current, 1)
   assert.equal(engineStatusFor(db, DEMO).effectiveEntryMode, 'STOPPED', 'nothing changed on a conflict')
   const tick = requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { expectedRevision: 1 })
-  assert.equal(tick.ok, false); assert.match(tick.reason, /^tick_engine_not_built/)
+  assert.equal(tick.ok, false); assert.match(tick.reason, /^tick_readiness_unavailable/, 'P6b: no readiness function → no path into tick trading')
   assert.equal(requestEntryMode(db, DEMO, 'PAUSED').ok, false)
   assert.equal(engineStatusFor(db, DEMO).configRevision, 1)
   const log = db.prepare(`SELECT body FROM action_log WHERE path = '/actions/entry-mode'`).all()
@@ -255,4 +255,38 @@ test('P3b: the tick-observation seed applies once per file content, leaves a lat
   assert.equal(cfg.accounts['46979908'], 'RECORD'); assert.equal(cfg.symbols, 'momentum-universe')
   const boot = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
   assert.match(boot, /seedTickObservationFromConfig\(db, \{ log/)
+})
+
+test('P6b: TICK_MOMENTUM is admitted only on a demo account whose injected readiness is clean; live is refused even when ready; the tick producer is then admitted and bar producers are not', async () => {
+  const db = fresh()
+  const notReady = () => ({ ready: false, blockedReasons: ['recorder_recording', 'validation_stage'] })
+  const ready = () => ({ ready: true, blockedReasons: [] })
+  const boom = () => { throw new Error('status table missing') }
+  const r1 = requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { readiness: notReady })
+  assert.equal(r1.ok, false); assert.equal(r1.reason, 'tick_not_ready: recorder_recording, validation_stage'); assert.deepEqual(r1.blockedReasons, ['recorder_recording', 'validation_stage'])
+  const r2 = requestEntryMode(db, LIVE, 'TICK_MOMENTUM', { readiness: ready })
+  assert.equal(r2.ok, false); assert.match(r2.reason, /^tick_live_refused/)
+  const r3 = requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { readiness: boom })
+  assert.equal(r3.ok, false); assert.match(r3.reason, /^tick_readiness_error: status table missing/)
+  assert.equal(engineStatusFor(db, DEMO).requestedEntryMode, 'TIME_BASED', 'three refusals wrote nothing')
+  // The contract (P0) refuses an effective TICK_MOMENTUM without a pinned
+  // profile and SHADOW_PASSED — readiness would have refused too; pin them.
+  const { profileHashFull, DEFAULT_PARAMS } = await import('../lib/tick-strategy.js')
+  engineModule.writeEngineStatus(db, { ...engineStatusFor(db, DEMO), profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', configRevision: 1, updatedAt: new Date().toISOString() })
+  const ok = requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { readiness: ready })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.status.requestedEntryMode, 'TICK_MOMENTUM')
+  assert.equal(ok.status.effectiveEntryMode, 'STOPPED', 'active modes wait for the gateway ack')
+  assert.equal(ok.status.transitionState, 'WARMING')
+  // the sidecar echoes the epoch → STABLE, effective TICK_MOMENTUM
+  acknowledgeEntryEpochs(db, { [DEMO]: ok.status.modeEpoch })
+  const st = engineStatusFor(db, DEMO)
+  assert.equal(st.effectiveEntryMode, 'TICK_MOMENTUM'); assert.equal(st.transitionState, 'STABLE')
+  _resetRefusalDedupe()
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum', basis: 'tick' }).ok, true, 'the tick producer is admitted under TICK_MOMENTUM')
+  const bar = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar' })
+  assert.equal(bar.ok, false); assert.match(bar.reason, /^entry_mode_basis/)
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'route_manual_order' }).ok, true, 'manual keeps its own attribution under any mode')
+  // and the tick producer is refused everywhere else
+  assert.equal(admitEntry(db, { accountId: LIVE, producerId: 'tick_momentum', basis: 'tick' }).ok, false)
 })

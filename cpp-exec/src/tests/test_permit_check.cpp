@@ -101,6 +101,30 @@ static void test_fenced_account_refuses_missing_stale_expired_mismatch_malformed
     v = validatePermit(o, snap, used, 1000); assert(v.ok && v.permitId == "p2"); }
 }
 
+// WHOLE-PLAN AUDIT 11-09-2026: (a) once any account is fenced, an account the
+// keeper never fenced is refused without a permit; (b) the permit binds the
+// bracket; (c) the price bound is a pure rule the fire path applies.
+static void test_unknown_account_under_a_fence_bracket_binding_and_price_bound() {
+  const GuardSnapshot snap = fenced(4002, 3);
+  std::set<std::string> used;
+  jsn::Value other = marketOrder(4009); // never fenced by the keeper
+  PermitVerdict v = validatePermit(other, snap, used, 1000);
+  assert(!v.ok && startsWith(v.reason, "permit_missing: the keeper fences 1 account(s)"));
+  jsn::Value o = marketOrder();
+  { jsn::Value p = permitFor(o, 3, 5000, "pb1"); p.set("relativeStopLoss", 100.0); p.set("relativeTakeProfit", 200.0); o.set("permit", p);
+    v = validatePermit(o, snap, used, 1000); assert(v.ok && v.permitId == "pb1"); }
+  { jsn::Value p = permitFor(o, 3, 5000, "pb2"); p.set("relativeStopLoss", 90.0); o.set("permit", p);
+    v = validatePermit(o, snap, used, 1000); assert(!v.ok && v.reason == "permit_bracket_mismatch: relativeStopLoss differs from the permit"); assert(used.count("pb2") == 0); }
+  { jsn::Value p = permitFor(o, 3, 5000, "pb3"); p.set("takeProfit", 1.2345); o.set("permit", p); // the order carries no absolute takeProfit
+    v = validatePermit(o, snap, used, 1000); assert(!v.ok && startsWith(v.reason, "permit_bracket_mismatch: takeProfit")); }
+  { jsn::Value stripped = marketOrder(); stripped.set("relativeTakeProfit", jsn::Value(nullptr));
+    jsn::Value p = permitFor(stripped, 3, 5000, "pb4"); p.set("relativeTakeProfit", 200.0); stripped.set("permit", p);
+    v = validatePermit(stripped, snap, used, 1000); assert(!v.ok && startsWith(v.reason, "permit_bracket_mismatch: relativeTakeProfit")); }
+  assert(priceWithinBound(100000, 100040, 50) && priceWithinBound(100000, 99950, 50));
+  assert(!priceWithinBound(100000, 100051, 50) && !priceWithinBound(100000, 99949, 50));
+  assert(!priceWithinBound(0, 100, 50) && !priceWithinBound(100, 100, -1));
+}
+
 static void test_no_waiver_a_vpo_fire_on_a_fenced_account_needs_its_permit_too() {
   // P2a-2: the tier's fires carry the keeper's pre-issued permits, so the
   // marker an earlier draft waived on is just another field the boundary
@@ -176,6 +200,7 @@ static void test_engine_boundary_refuses_without_a_permit_once_fenced_and_passes
 int main() {
   test_unfenced_account_needs_no_permit_but_a_bad_one_is_still_refused();
   test_fenced_account_refuses_missing_stale_expired_mismatch_malformed_and_reuse();
+  test_unknown_account_under_a_fence_bracket_binding_and_price_bound();
   test_no_waiver_a_vpo_fire_on_a_fenced_account_needs_its_permit_too();
   test_wire_payload_carries_no_ledger_fields();
   test_engine_boundary_refuses_without_a_permit_once_fenced_and_passes_one_use_with_one();

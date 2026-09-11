@@ -975,7 +975,11 @@ export function initDB(dbPath) {
   maybeEmergencyReclaim(db, resolvedPath);
   console.log(`[boot] storage: ${journal.storage} journal=${journal.mode}`);
   db.pragma('busy_timeout = 5000');
-  db.pragma('synchronous = NORMAL');
+  // WHOLE-PLAN AUDIT 11-09-2026 (plan §11, TM-26): the intent ledger and the
+  // permits it issues are only as durable as the journal's sync. NORMAL
+  // can lose the last transactions on power loss — an intent RESERVED or
+  // SENT that the restart never sees. FULL, pinned by db-pragmas.test.js.
+  db.pragma('synchronous = FULL');
   db.pragma('foreign_keys = ON');
 
   // Create schema (indexes created after migrations to avoid referencing

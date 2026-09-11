@@ -428,7 +428,13 @@ Measurement history — each line is a real run of the script, not a claim:
   the audit agents launched, groups C and B in, #892 merged, the branch
   restarted), so the reply stamped **`№ 7,663`** (09:06 UTC: #892 read
   back, the whole-plan audit's headline findings) is right by count, and
-  the next stamped reply is **`№ 7,664`**. The count is by replies, not by
+  the next stamped reply is **`№ 7,664`**. Continued in the same container:
+  twelve unstamped status lines followed `№ 7,663` (`№ 7,664` the #893 PR
+  open, `№ 7,665` its subscription note, `№ 7,666` the P6b build start,
+  `№ 7,667`–`№ 7,675` the P6b build, the Race checker's findings applied,
+  the gate and the mutation checks, 09:39–10:50 UTC; #893 merged 09:28
+  UTC), so the P6b report is **`№ 7,676`** by count, and the reply after
+  it is `№ 7,677`. The count is by replies, not by
   stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 

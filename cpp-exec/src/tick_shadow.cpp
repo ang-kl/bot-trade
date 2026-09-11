@@ -74,6 +74,11 @@ std::optional<ShadowTrade> ShadowBook::onQuote(const StrategyQuote& q) {
     o.target = p.side == "BUY" ? entry + static_cast<long long>(std::llround(tgt)) : entry - static_cast<long long>(std::llround(tgt));
     o.entryMs = q.recvMs; o.tradableSeen = 0;
     open_ = o;
+    ShadowFill f;
+    f.symbolId = symbolId_; f.side = p.side; f.signalSeq = p.seq; f.entrySeq = q.seq; f.recvMs = q.recvMs;
+    f.entry = entry; f.stop = o.stop; f.target = o.target; f.stopDistance = p.stopDistance;
+    f.signalBid = p.bid; f.signalAsk = p.ask; f.profileHash = hash_;
+    fill_ = f;
     pending_.reset();
   }
   return closed;

@@ -371,7 +371,7 @@ test('feeder: the push carries two permits per sized strategy, reused on the nex
   assert.equal(r.ok, true); assert.equal(r.permits, 2)
   assert.deepEqual(pushed.permits.map(p => [p.key, p.symbol, p.side]), [['vwap_trend', 'EURUSD', 'BUY'], ['vwap_trend', 'EURUSD', 'SELL']])
   const permit = pushed.permits[0].permit
-  assert.equal(permit.accountId, '42'); assert.equal(permit.symbolId, 1); assert.equal(permit.epoch, 0); assert.ok(permit.volume > 0); assert.match(permit.id, /^p/)
+  assert.equal(permit.accountId, 42, 'numeric on the wire: the sidecar reads it with asNumber (RACE CHECKER 11-09-2026)'); assert.equal(permit.symbolId, 1); assert.equal(permit.epoch, 0); assert.ok(permit.volume > 0); assert.match(permit.id, /^p/)
   assert.equal(permit.volume, pushed.volumes[0].volume, 'bound to the sized volume the sidecar was given')
   const open = db.prepare(`SELECT id, state, producer_id FROM entry_intents WHERE account_id = '42'`).all()
   assert.equal(open.length, 2); assert.ok(open.every(o => o.state === 'RESERVED' && o.producer_id === 'vpo_cpp_direct'))
