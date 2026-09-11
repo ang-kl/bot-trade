@@ -846,6 +846,14 @@ Thirty-two citation groups checked; one refuted, three with shifted line numbers
 
 **Not done here, by instruction:** no repo file was edited; no route was called; no production account was read. Nothing in this document is a runtime observation.
 
+> **12-09-2026:** the owner-principles programme is complete — PR-A..PR-H are
+> merged (#895–#902) and deployed. The per-PR record with merge commits and
+> runtime read-back is `docs/owner-principles-plan-2026-09-11.md` §7; what is
+> still open (owner-side items and the follow-ups these sections flag) is its
+> §8. The follow-ups below (§7–§12) are the per-PR dated sections the standing
+> principle-5 rule asked for; a whole-plan re-audit over the merged tree is the
+> next docs task, not done here.
+
 ## 7. PR-C follow-up — vetoes minimised (built 2026-09-11, principle 7)
 
 Follow-up to `docs/owner-principles-plan-2026-09-11.md` §3.2 / §4 PR-C. The
