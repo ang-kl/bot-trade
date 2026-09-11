@@ -360,6 +360,18 @@ try {
   } catch (err) {
     console.error(`[boot] watchlist additions seed failed (non-fatal): ${err.message}`)
   }
+  // P3b: the owner's tick-observation declaration from the repo (11-09-2026,
+  // "ACCT-DEMO-3 records first"), seeded once per file content, same rule
+  // as the pins. The recorder itself records only on a sidecar started
+  // with TICK_SPOOL_PATH; the guard sync pushes the switch within a probe.
+  try {
+    const { seedTickObservationFromConfig } = await import('./services/entry-mode.js')
+    const to = seedTickObservationFromConfig(db, { log: (m) => console.log(m) })
+    if (to.error) console.error(`[boot] tick observation: ${to.error}`)
+    else console.log(`[boot] tick observation: ${to.applied.length} applied${to.applied.length ? ` (${to.applied.join(' ')})` : ''}, ${to.unchanged.length} unchanged${to.symbols != null ? `, ${to.symbols} symbol name(s) to carry` : ''}${to.skipped.length ? `, skipped: ${to.skipped.join('; ')}` : ''} (config/tick-observation.json)`)
+  } catch (err) {
+    console.error(`[boot] tick observation seed failed (non-fatal): ${err.message}`)
+  }
   const bf = backfillAccountIds(db)
   if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
   // Fold the retired per-account autotrade flags into accounts.mode, so

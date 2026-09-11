@@ -4,11 +4,11 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 
 import { initDB, getState, setState } from '../db.js'
 import { upsertAccount, syncSelectedAccount, ensureAccountRegistry, getAccountState } from './account-registry.js'
-import { engineStatusFor, requestEntryMode, requestTickObservation, admitEntry, entryEnginesView, ENGINE_STATUS_KEY, _resetRefusalDedupe } from './entry-mode.js'
+import { engineStatusFor, requestEntryMode, requestTickObservation, seedTickObservationFromConfig, admitEntry, entryEnginesView, ENGINE_STATUS_KEY, _resetRefusalDedupe } from './entry-mode.js'
 import { automaticProducers } from '../lib/entry-producers.js'
 import { seedStrategyPinsFromConfig } from './stage-matrix.js'
 import { seedMomentumAccountFromConfig } from './momentum-account.js'
@@ -167,4 +167,40 @@ test('P3a: tick observation OFF → RECORD → OFF moves the revision, never the
   requestTickObservation(db, DEMO, 'RECORD')
   const st = engineStatusFor(db, DEMO)
   assert.equal(st.effectiveEntryMode, 'STOPPED'); assert.equal(st.tickObservation, 'RECORD'); assert.equal(st.modeEpoch, 1)
+})
+
+test('P3b: the tick-observation seed applies once per file content, leaves a later operator switch alone, and re-applies when the file changes', () => {
+  const db = fresh()
+  const dir = mkdtempSync(join(tmpdir(), 'tick-obs-'))
+  const file = join(dir, 'tick-observation.json')
+  const universe = join(dir, 'momentum-universe.json')
+  writeFileSync(universe, JSON.stringify({ _note: 'x', fx: ['EURUSD', 'eurusd'], stock: ['AAPL.US'] }))
+  writeFileSync(file, JSON.stringify({ accounts: { [DEMO]: 'RECORD', 999: 'RECORD', [LIVE]: 'SHADOW' }, symbols: 'momentum-universe' }))
+  const lines = []
+  const r = seedTickObservationFromConfig(db, { file, universeFile: universe, log: (m) => lines.push(m) })
+  assert.equal(r.error, null)
+  assert.deepEqual(r.applied, [`…${DEMO.slice(-4)}:RECORD`])
+  assert.equal(engineStatusFor(db, DEMO).tickObservation, 'RECORD')
+  assert.equal(engineStatusFor(db, LIVE).tickObservation, 'OFF', 'SHADOW is refused until P4')
+  assert.ok(r.skipped.some(s => s.includes('not in the registry')) && r.skipped.some(s => s.includes('tick_strategy_not_built')))
+  assert.equal(r.symbols, 2)
+  assert.deepEqual(JSON.parse(getState(db, 'tick_symbols_json')), ['EURUSD', 'AAPL.US'])
+  assert.equal(lines.length, 1)
+  // the operator switches it off; the same file on the next boot does not re-apply
+  assert.equal(requestTickObservation(db, DEMO, 'OFF').ok, true)
+  setState(db, 'tick_symbols_json', JSON.stringify(['XAUUSD']))
+  const again = seedTickObservationFromConfig(db, { file, universeFile: universe })
+  assert.deepEqual(again.applied, []); assert.ok(again.unchanged.includes(DEMO))
+  assert.equal(engineStatusFor(db, DEMO).tickObservation, 'OFF', 'seed once: the operator\'s OFF stands')
+  assert.deepEqual(JSON.parse(getState(db, 'tick_symbols_json')), ['XAUUSD'], 'and so does the operator\'s symbol list')
+  // the file changes: applied again
+  writeFileSync(file, JSON.stringify({ accounts: { [DEMO]: 'RECORD' }, symbols: ['gbpusd', 'bad symbol!'] }))
+  const third = seedTickObservationFromConfig(db, { file, universeFile: universe })
+  assert.deepEqual(third.applied, [`…${DEMO.slice(-4)}:RECORD`])
+  assert.deepEqual(JSON.parse(getState(db, 'tick_symbols_json')), ['GBPUSD'])
+  // the checked-in file names the momentum account and the momentum universe, and boot wires the seed
+  const cfg = JSON.parse(readFileSync(new URL('../config/tick-observation.json', import.meta.url), 'utf8'))
+  assert.equal(cfg.accounts['46979908'], 'RECORD'); assert.equal(cfg.symbols, 'momentum-universe')
+  const boot = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  assert.match(boot, /seedTickObservationFromConfig\(db, \{ log/)
 })

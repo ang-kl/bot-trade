@@ -635,6 +635,28 @@ const TABLES = `
   CREATE INDEX IF NOT EXISTS idx_cpp_events_msg ON cpp_events(client_msg_id);
   CREATE INDEX IF NOT EXISTS idx_cpp_events_label ON cpp_events(label);
 
+  -- P3b: one row per side per hour from the sidecar's /tick-status, so the
+  -- recorder's real events/sec and bytes/day are measured over a day, not
+  -- read off a model (docs/tick-momentum/storage-capacity.csv is
+  -- SCENARIO_NOT_MEASURED until these rows exist).
+  CREATE TABLE IF NOT EXISTS tick_status_samples (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    side      TEXT NOT NULL,
+    at_ms     INTEGER NOT NULL,
+    state     TEXT,
+    recording INTEGER,
+    events    INTEGER,
+    changed   INTEGER,
+    dropped   INTEGER,
+    gaps      INTEGER,
+    bytes_written INTEGER,
+    sealed    INTEGER,
+    avail_bytes INTEGER,
+    symbols   INTEGER,
+    per_symbol TEXT,
+    UNIQUE(side, at_ms)
+  );
+
   -- Speech-act inspection findings (owner invariants 2-4, 31-08-2026): what
   -- each log SAID vs what it was DOING, the principlised next action, and a
   -- falsifier with a deadline. The PARTIAL UNIQUE index is the anti-noise

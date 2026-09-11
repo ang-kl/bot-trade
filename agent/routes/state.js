@@ -2483,11 +2483,12 @@ export default function stateRouter(db) {
     try {
       const { engineStatusFor } = await import('../services/entry-mode.js')
       const { tickSymbolNames } = await import('../services/exec-guard-sync.js')
+      const { tickRate24h } = await import('../services/heartbeat.js')
       const sides = []
       for (const name of ['cpp_exec', 'cpp_exec_demo']) {
         let rec = null
         try { rec = JSON.parse(getState(db, `${name}_tick_json`) || 'null') } catch { rec = null }
-        if (rec) sides.push({ side: name, at: rec.at, status: rec.status })
+        if (rec) sides.push({ side: name, at: rec.at, status: rec.status, rate24h: tickRate24h(db, name) })
       }
       let rows = []
       try { rows = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY is_live, account_id').all() } catch { rows = [] }

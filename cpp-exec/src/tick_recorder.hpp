@@ -163,14 +163,18 @@ public:
   bool started() const { return started_.load(); }
 
   // The keeper's switch. Off (the default) counts events and writes nothing.
-  void setRecording(bool on);
+  // Returns false (and stays off) when the recorder never started — a
+  // switch on a recorder with no spool would only fill a ring nobody drains.
+  bool setRecording(bool on);
   bool recording() const { return recording_.load(); }
 
   // Feed thread only (single producer). `generation` is the feed's
   // connection generation — a change marks the next event per symbol as a
   // snapshot and writes a reconnect gap.
-  void onQuote(long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask,
-               uint64_t recvMs, uint32_t generation);
+  // Returns the record as classified (flags, seq), whether or not it was
+  // queued — the symbol workers (P3b) consume the same observation.
+  Record onQuote(long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask,
+                 uint64_t recvMs, uint32_t generation);
 
   RecorderStats stats() const;
   std::string statusJson() const;

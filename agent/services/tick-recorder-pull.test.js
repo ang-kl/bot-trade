@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { initDB, getState } from '../db.js'
-import { pullTickStatus, TICK_STATUS_LOG_EVERY_MS } from './heartbeat.js'
+import { pullTickStatus, tickRate24h, TICK_STATUS_LOG_EVERY_MS } from './heartbeat.js'
 
 const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
 
@@ -92,4 +92,29 @@ test('wiring pins: the probe pulls tick status, pingSidecar carries the tick fie
   assert.match(main, /server\.route\("GET", "\/tick-status"/)
   const feed = readFileSync(new URL('../../cpp-exec/src/spot_feed.cpp', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
   assert.match(feed, /if \(rawTap_\) \{[\s\S]*?rawTap_\(symbolId, rb\.isNumber\(\)/, 'the tap sees the raw sides')
+})
+
+test('P3b: hourly samples measure the 24 h rate from counter deltas, surviving a sidecar restart', async () => {
+  const db = initDB(':memory:')
+  const orig = console.log
+  console.log = () => {}
+  try {
+    const side = { name: 'cpp_exec_demo' }
+    const t0 = Date.parse('2026-09-11T00:00:00Z')
+    const at = (h, total, bytes) => ({ sidecarTickStatus: async () => status({ events: { total, changed: total, dropped: 0, gaps: 0 }, segments: { sealed: 0, sealedBytes: 0, openBytes: 0, bytesWritten: bytes } }) })
+    await pullTickStatus(db, at(0, 0, 0), side, t0)
+    await pullTickStatus(db, at(0, 500, 20000), side, t0 + 60_000) // same hour: ignored (one row per hour)
+    assert.equal(tickRate24h(db, 'cpp_exec_demo', t0 + 60_000).eventsPerSec, null, 'one sample is not a rate')
+    await pullTickStatus(db, at(1, 36000, 1440000), side, t0 + 3_600_000)   // 36,000 events in the hour = 10/s
+    await pullTickStatus(db, at(2, 100, 4000), side, t0 + 7_200_000)        // restart: counters reset → delta clamped to 0
+    await pullTickStatus(db, at(3, 36100, 1444000), side, t0 + 10_800_000)  // 36,000 more = 10/s
+    const r = tickRate24h(db, 'cpp_exec_demo', t0 + 10_800_000)
+    assert.equal(r.samples, 4); assert.equal(r.spanHours, 3)
+    assert.equal(r.eventsPerSec, +(72000 / 10800).toFixed(3))
+    assert.equal(r.bytesPerDay, Math.round(2880000 / 10800 * 86400))
+    assert.ok(r.spoolHoursAt2GiB > 0)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM tick_status_samples').get().n, 4)
+  } finally {
+    console.log = orig
+  }
 })

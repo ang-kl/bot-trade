@@ -897,7 +897,52 @@ export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
     record.lastLoggedAt = new Date(nowMs).toISOString()
   }
   try { setState(db, key, JSON.stringify(record)) } catch { /* best effort */ }
+  // P3b: one sample per hour into tick_status_samples — the measured
+  // events/sec and bytes/day the storage model is judged against.
+  try {
+    if (status.enabled !== false) {
+      const hourMs = Math.floor(nowMs / 3_600_000) * 3_600_000
+      const ev = status.events || {}, seg = status.segments || {}, disk = status.disk || {}
+      db.prepare(`INSERT OR IGNORE INTO tick_status_samples (side, at_ms, state, recording, events, changed, dropped, gaps, bytes_written, sealed, avail_bytes, symbols, per_symbol)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(side.name, hourMs, String(status.state || ''), status.recording ? 1 : 0, Number(ev.total) || 0, Number(ev.changed) || 0, Number(ev.dropped) || 0, Number(ev.gaps) || 0,
+             Number(seg.bytesWritten) || 0, Number(seg.sealed) || 0, Number(disk.availBytes) || 0,
+             Array.isArray(status.perSymbol) ? status.perSymbol.length : 0,
+             JSON.stringify(Array.isArray(status.perSymbol) ? status.perSymbol.map(p => [p.symbolId, p.events]) : []).slice(0, 8000))
+    }
+  } catch { /* table absent on an old schema */ }
   return record
+}
+
+/**
+ * P3b: the measured rate over the last 24 h per side, from the hourly
+ * samples: events/sec, bytes/day at the recorder's 40 B record, and the
+ * projection against the plan's 2 GiB spool. Null fields when fewer than
+ * two samples exist — a rate from one point is a guess, not a measurement.
+ */
+export function tickRate24h(db, side, nowMs = Date.now()) {
+  let rows = []
+  try {
+    rows = db.prepare('SELECT at_ms, events, bytes_written, dropped, gaps, symbols FROM tick_status_samples WHERE side = ? AND at_ms >= ? ORDER BY at_ms')
+      .all(side, nowMs - 24 * 3_600_000)
+  } catch { rows = [] }
+  if (rows.length < 2) return { side, samples: rows.length, eventsPerSec: null, bytesPerDay: null, spoolHoursAt2GiB: null, dropped: null, gaps: null }
+  // Counters reset on a sidecar restart: sum only the non-negative deltas.
+  let events = 0, bytes = 0, dropped = 0, gaps = 0
+  for (let i = 1; i < rows.length; i++) {
+    const d = (k) => Math.max(0, Number(rows[i][k]) - Number(rows[i - 1][k]))
+    events += d('events'); bytes += d('bytes_written'); dropped += d('dropped'); gaps += d('gaps')
+  }
+  const spanS = Math.max(1, (rows[rows.length - 1].at_ms - rows[0].at_ms) / 1000)
+  const eventsPerSec = events / spanS
+  const bytesPerDay = (bytes / spanS) * 86_400
+  return {
+    side, samples: rows.length, spanHours: +(spanS / 3600).toFixed(2), symbols: rows[rows.length - 1].symbols,
+    eventsPerSec: +eventsPerSec.toFixed(3), bytesPerDay: Math.round(bytesPerDay),
+    spoolHoursAt2GiB: bytesPerDay > 0 ? +((2 * 1024 ** 3) / bytesPerDay * 24).toFixed(1) : null,
+    dropped, gaps,
+    model: 'docs/tick-momentum/storage-capacity.csv: 20 symbols × 5/20/100 events/s × 96 B = 0.83 / 3.3 / 16.6 GB/day; this recorder writes 40 B per event',
+  }
 }
 
 // P2b-1: the execution-event journal, pulled the same way into cpp_events.

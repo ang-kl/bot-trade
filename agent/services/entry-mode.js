@@ -33,7 +33,10 @@
 // and settles RECONCILING → STABLE on the broker's word.
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+
+import { getState, setState } from '../db.js'
 import { getAccountState, setAccountState } from './account-registry.js'
 import { recordDecision } from './decision-log.js'
 import { ENTRY_MODES, OBSERVATION_MODES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
@@ -156,6 +159,71 @@ export function requestTickObservation(db, accountId, mode, { expectedRevision =
       .run('POST', '/actions/tick-observation', JSON.stringify({ accountId: id, from: cur.tickObservation, to: mode, revision: saved.configRevision, actor }), id)
   } catch { /* audit best-effort */ }
   return { ok: true, status: saved, changed: cur.tickObservation !== mode }
+}
+
+/**
+ * P3b: the owner's tick-observation declaration from the repo
+ * (config/tick-observation.json), applied ONCE per file content — the same
+ * rule as the strategy-pin seed: the file is the initial declaration, a
+ * later switch through the routes stands across deploys until the file
+ * changes. Exists because the bearer token is lost and the routes are the
+ * only other way to throw the switch. Never writes the engine record when
+ * nothing changes; unknown accounts and refused modes are reported.
+ */
+export function seedTickObservationFromConfig(db, { file = null, universeFile = null, log = () => {} } = {}) {
+  const out = { applied: [], unchanged: [], skipped: [], symbols: null, error: null }
+  let cfg = null
+  try {
+    cfg = JSON.parse(readFileSync(file || new URL('../config/tick-observation.json', import.meta.url), 'utf8'))
+  } catch (err) {
+    out.error = `tick-observation.json unreadable: ${err.message}`
+    return out
+  }
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) { out.error = 'tick-observation.json is not an object'; return out }
+  const content = JSON.stringify({ accounts: cfg.accounts ?? null, symbols: cfg.symbols ?? null })
+  const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
+  let seeded = null
+  try { seeded = JSON.parse(getState(db, 'tick_observation_seed_json') || 'null') } catch { seeded = null }
+  if (seeded?.hash === hash) {
+    // Already applied for this content: what the operator did since stands.
+    for (const id of Object.keys(cfg.accounts || {})) if (!id.startsWith('_')) out.unchanged.push(id)
+    return out
+  }
+  const accounts = cfg.accounts && typeof cfg.accounts === 'object' ? cfg.accounts : {}
+  for (const [accountId, mode] of Object.entries(accounts)) {
+    if (accountId.startsWith('_')) continue
+    if (!/^[0-9]+$/.test(accountId)) { out.skipped.push(`${accountId}: malformed id`); continue }
+    let known = false
+    try { known = !!db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(accountId) } catch { known = false }
+    if (!known) { out.skipped.push(`…${accountId.slice(-4)}: not in the registry`); continue }
+    const want = String(mode).toUpperCase()
+    const cur = engineStatusFor(db, accountId).tickObservation
+    if (cur === want) { out.unchanged.push(accountId); continue }
+    const r = requestTickObservation(db, accountId, want, { actor: 'config/tick-observation.json' })
+    if (r.ok) {
+      out.applied.push(`…${accountId.slice(-4)}:${want}`)
+      log(`[boot] tick observation …${accountId.slice(-4)}: ${cur} → ${want} (from config/tick-observation.json)`)
+    } else {
+      out.skipped.push(`…${accountId.slice(-4)}: ${r.reason}`)
+    }
+  }
+  let names = null
+  if (cfg.symbols === 'momentum-universe') {
+    try {
+      const u = JSON.parse(readFileSync(universeFile || new URL('../config/momentum-universe.json', import.meta.url), 'utf8'))
+      names = []
+      for (const [cls, list] of Object.entries(u)) if (!cls.startsWith('_') && Array.isArray(list)) for (const n of list) names.push(String(n))
+    } catch (err) { out.skipped.push(`symbols: momentum-universe.json unreadable: ${err.message}`) }
+  } else if (Array.isArray(cfg.symbols)) {
+    names = cfg.symbols.map(String)
+  }
+  if (names) {
+    names = [...new Set(names.map(n => n.trim().toUpperCase()).filter(n => /^[A-Z0-9._-]{2,24}$/.test(n)))]
+    setState(db, 'tick_symbols_json', JSON.stringify(names))
+    out.symbols = names.length
+  }
+  setState(db, 'tick_observation_seed_json', JSON.stringify({ hash, at: new Date().toISOString(), applied: out.applied, symbols: out.symbols }))
+  return out
 }
 
 // One refusal record per (account, producer, epoch): the loop asks every

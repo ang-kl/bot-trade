@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home appuser
 COPY --from=build /app/bin/cpp-exec /usr/local/bin/cpp-exec
-USER appuser
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+# The entrypoint prepares the volume-mounted spool as root (Railway mounts
+# volumes root-owned) and drops to appuser for the process — see the script.
 EXPOSE 8091
-CMD ["cpp-exec"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
