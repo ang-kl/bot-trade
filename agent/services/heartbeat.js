@@ -927,6 +927,26 @@ export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
 // per-side summary the sidecar reports (/tick-status.shadowPortfolio) is
 // already stored inside <side>_tick_json by pullTickStatus.
 export const TICK_SHADOW_CURSOR_KEY = 'tick_shadow_cursor_json'
+// P6b: the tick permit feeder (services/tick-permits.js). Pushes only when
+// an account on this side is in TICK_MOMENTUM or the sidecar still lists
+// one (its /health tick.entry.accounts > 0) — an idle side costs nothing.
+let lastTickEntryPush = new Map() // side.name → count pushed
+export async function feedTickPermits(db, exec, side, nowMs = Date.now()) {
+  const { tickEntryAccountsFor, runTickPermitFeeder } = await import('./tick-permits.js')
+  const want = tickEntryAccountsFor(db, side)
+  let reported = null
+  try { reported = JSON.parse(getState(db, `${side.name}_tick_json`) || 'null')?.status?.entry?.accounts ?? null } catch { reported = null }
+  if (!want.length && !(Number(reported) > 0) && !(lastTickEntryPush.get(side.name) > 0)) return null
+  const creds = await sideCreds(db, side)
+  const r = await runTickPermitFeeder(db, side, { creds, now: nowMs })
+  lastTickEntryPush.set(side.name, want.length)
+  if (r.pushed) console.warn(`[heartbeat] ${side.name}: tick permits pushed — ${r.accounts.length} account(s) placing [${r.accounts.join(', ')}], ${r.permits} permit(s), ${r.refused.length} refused${r.paused.length ? `, paused ${r.paused.map(p => `${p.accountId} (${p.reason})`).join('; ')}` : ''}`)
+  else if (r.error) console.warn(`[heartbeat] ${side.name}: tick permit push FAILED — ${r.error}`)
+  for (const x of r.refused.slice(0, 5)) console.warn(`[heartbeat] ${side.name}: tick permit refused ${x.accountId} ${x.symbol}: ${x.reason}`)
+  return r
+}
+export function _resetTickPermitPushForTests() { lastTickEntryPush = new Map() }
+
 export async function pullTickShadow(db, exec, side) {
   let cursors = {}
   try { cursors = JSON.parse(getState(db, TICK_SHADOW_CURSOR_KEY) || '{}') } catch { cursors = {} }
@@ -1196,6 +1216,11 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       if (typeof exec.pullSidecarShadow === 'function') {
         try { await pullTickShadow(db, exec, side) } catch (err) { console.warn(`[heartbeat] tick shadow pull failed (${side.name}): ${err.message}`) }
       }
+      // P6b: the tick permit feeder rides the same probe — standing permits
+      // for every TICK_MOMENTUM account on this side (none today), refreshed
+      // well inside their 5-minute life; a push happens only when there is
+      // an account to place for or a set to clear.
+      try { await feedTickPermits(db, exec, side, nowMs) } catch (err) { console.warn(`[heartbeat] tick permit feeder failed (${side.name}): ${err.message}`) }
     }
   } catch { /* next probe retries */ }
   // Persist what the probe learned so a READ route never has to call the

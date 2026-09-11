@@ -92,15 +92,30 @@ export function writeEngineStatus(db, status) {
  * until the tick engine exists, otherwise bumps configRevision and modeEpoch
  * and acknowledges (Node is the gateway for Node producers in this phase).
  */
-export function requestEntryMode(db, accountId, mode, { expectedRevision = null, actor = 'owner', now = new Date() } = {}) {
+export function requestEntryMode(db, accountId, mode, { expectedRevision = null, actor = 'owner', now = new Date(), readiness = null } = {}) {
   const id = String(accountId)
   if (!ENTRY_MODES.includes(mode)) return { ok: false, reason: `unknown_mode: ${mode}` }
   const cur = engineStatusFor(db, id)
   if (expectedRevision != null && Number(expectedRevision) !== cur.configRevision) {
     return { ok: false, reason: 'revision_conflict', current: cur.configRevision, expected: Number(expectedRevision) }
   }
+  // P6b (plan §3 P6b, §14 P7): TICK_MOMENTUM is admitted ONLY on a demo
+  // account whose readiness (tick-readiness.js: registry, halt, record,
+  // horizon, observation, recorder, disk, feed, pinned profile, replay
+  // evidence, validation stage) is clean at the moment of the request. The
+  // readiness function is injected by the route so this module stays free
+  // of the sidecar's status tables; a caller that passes none is refused —
+  // there is no unchecked path into tick trading. Live stays refused until
+  // P7's LIVE_APPROVED gate exists as code.
   if (mode === 'TICK_MOMENTUM') {
-    return { ok: false, reason: 'tick_engine_not_built: the tick strategy (P4) and its evidence (P6) do not exist yet', current: cur.configRevision }
+    if (typeof readiness !== 'function') return { ok: false, reason: 'tick_readiness_unavailable: TICK_MOMENTUM needs the readiness check the route supplies', current: cur.configRevision }
+    if (cur.environment !== 'demo') return { ok: false, reason: `tick_live_refused: TICK_MOMENTUM is admitted on demo accounts only until P7 (this account is ${cur.environment})`, current: cur.configRevision }
+    let rd = null
+    try { rd = readiness(db, id) } catch (err) { return { ok: false, reason: `tick_readiness_error: ${err?.message || err}`, current: cur.configRevision } }
+    if (!rd || rd.ready !== true) {
+      const blocked = Array.isArray(rd?.blockedReasons) && rd.blockedReasons.length ? rd.blockedReasons.join(', ') : 'readiness did not report ready'
+      return { ok: false, reason: `tick_not_ready: ${blocked}`, current: cur.configRevision, blockedReasons: rd?.blockedReasons || [] }
+    }
   }
   const resting = countResting(db, id)
   const nextEpoch = cur.modeEpoch + 1
@@ -363,7 +378,7 @@ export function entryEnginesView(db) {
   return {
     at: new Date().toISOString(),
     accounts,
-    note: 'Node producers are fenced by admitEntry (P1b) and the VPO tier by its permits at the sidecar\'s send (P2a); on STOPPED the account\'s resting entry orders are cancelled by stored id and the state settles QUIESCING → RECONCILING → STABLE (P1c); an ACTIVE mode takes effect only after the sidecar echoes the new epoch (WARMING → STABLE) and never while an entry outcome is UNKNOWN (11-09-2026 audit); TICK_MOMENTUM is refused until P6\'s evidence.',
+    note: 'Node producers are fenced by admitEntry (P1b) and the VPO tier by its permits at the sidecar\'s send (P2a); on STOPPED the account\'s resting entry orders are cancelled by stored id and the state settles QUIESCING → RECONCILING → STABLE (P1c); an ACTIVE mode takes effect only after the sidecar echoes the new epoch (WARMING → STABLE) and never while an entry outcome is UNKNOWN (11-09-2026 audit); TICK_MOMENTUM is admitted only on a demo account whose readiness (tick-readiness.js) is clean at the request and only through the route that supplies that check (P6b); live stays refused until P7.',
     // No account may be armed by omission: a record that is absent reads OFF.
     globalHalt: (() => { try { return JSON.parse(getState(db, 'exec_guard_json') || '{}')?.halt === true } catch { return false } })(),
   }

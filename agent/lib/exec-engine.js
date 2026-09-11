@@ -780,6 +780,13 @@ function reserveAndRedeem(creds, p) {
       id: permit.id, intentId: permit.intentId, accountId: Number(permit.accountId), symbolId: permit.symbolId ?? null,
       side: permit.side, volume: permit.volume ?? null, epoch: permit.epoch,
       expiresAtMs: permit.expiresAtMs ?? Date.parse(permit.expiresAt),
+      // WHOLE-PLAN AUDIT 11-09-2026 (plan §9): the bracket the order carries
+      // at redemption is bound into the permit; the sidecar refuses an order
+      // whose stop or target differs from it.
+      ...(Number.isFinite(Number(p.relativeStopLoss)) ? { relativeStopLoss: Number(p.relativeStopLoss) } : {}),
+      ...(Number.isFinite(Number(p.relativeTakeProfit)) ? { relativeTakeProfit: Number(p.relativeTakeProfit) } : {}),
+      ...(Number.isFinite(Number(p.stopLoss)) ? { stopLoss: Number(p.stopLoss) } : {}),
+      ...(Number.isFinite(Number(p.takeProfit)) ? { takeProfit: Number(p.takeProfit) } : {}),
     },
   }
 }

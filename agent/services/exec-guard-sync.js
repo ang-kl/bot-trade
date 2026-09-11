@@ -86,6 +86,7 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
 
   // Equity-stop trips, per account, self-clearing at the FX-day rollover.
   const haltAccounts = []
+  let out_degraded = null
   try {
     const dayOpen = fxDayOpenMs(nowMs)
     const rows = db.prepare(
@@ -97,10 +98,16 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
         haltAccounts.push(Number(r.account_id))
       }
     }
-  } catch { /* no accounts table — empty set */ }
+  } catch (err) {
+    // Same rule as the epochs below: an unreadable registry halts (fail
+    // closed) rather than reporting nobody halted.
+    halt = true
+    out_degraded = `halt_accounts_unreadable: ${err?.message || err}`
+  }
   haltAccounts.sort((a, b) => a - b)
 
   const out = { halt, haltAccounts }
+  if (out_degraded) out.degraded = out_degraded
   for (const k of ['requireBracket', 'requireTarget']) {
     if (typeof stored[k] === 'boolean') out[k] = stored[k]
   }
@@ -116,7 +123,14 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
       .all(...(side?.isLive == null ? [] : [side.isLive ? 1 : 0]))
     for (const r of rows) epochs[String(r.account_id)] = engineStatusFor(db, r.account_id).modeEpoch
     out.entryEpochs = epochs
-  } catch { /* no accounts table — no epochs pushed, no permits required */ }
+  } catch (err) {
+    // WHOLE-PLAN AUDIT 11-09-2026 (TM-10): a keeper that cannot read its own
+    // registry must not push an EMPTY fence — the sidecar would then require
+    // no permit from anyone. Fail closed: halt, and say why on the push.
+    out.halt = true
+    out.entryEpochs = {}
+    out.degraded = `entry_epochs_unreadable: ${err?.message || err}`
+  }
   // P3a: the recorder's switch. Recording is ON for a side when any account
   // on it has tick observation RECORD (or SHADOW, once P4 exists) — an
   // operator's declaration per account (POST /actions/tick-observation),
@@ -131,15 +145,28 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
   // whenever the sidecar reports a different set, so the costs a pass was
   // judged at are the ones on record, not a default nobody set.
   out.tickShadowSim = loadTickShadowSim()
+  // P6b: the accounts whose EFFECTIVE (acknowledged) mode is TICK_MOMENTUM
+  // on this side — the sidecar places tick entries for these and no other.
+  // Demo only until P7. Full replace on the push, like haltAccounts.
+  out.tickEntryAccounts = []
+  let pausedTick = {}
+  try { pausedTick = JSON.parse(getState(db, 'tick_entry_paused_json') || '{}') || {} } catch { pausedTick = {} }
   try {
-    const rows = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
+    const rows = db.prepare('SELECT account_id, is_live FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
       .all(...(side?.isLive == null ? [] : [side.isLive ? 1 : 0]))
     for (const r of rows) {
-      const mode = engineStatusFor(db, r.account_id).tickObservation
+      const st = engineStatusFor(db, r.account_id)
+      const mode = st.tickObservation
       if (mode !== 'OFF') out.tickRecord = true
       if (mode === 'SHADOW') out.tickShadow = true
+      // A TM-40-paused account (tick-permits.js writes the map) is left out
+      // here too, so this push and the feeder's never disagree.
+      if (st.effectiveEntryMode === 'TICK_MOMENTUM' && st.transitionState === 'STABLE' && Number(r.is_live) !== 1 && st.environment !== 'live' && !pausedTick[String(r.account_id)]) {
+        out.tickEntryAccounts.push(Number(r.account_id))
+      }
     }
-  } catch { /* no accounts table — recording stays off */ }
+    out.tickEntryAccounts.sort((a, b) => a - b)
+  } catch { /* no accounts table — recording stays off, nothing places */ }
   return out
 }
 
@@ -215,6 +242,10 @@ export function guardDiffers(desired, reported) {
   const tick = reported.tick && typeof reported.tick === 'object' ? reported.tick : null
   if (tick && typeof desired.tickRecord === 'boolean' && typeof tick.recording === 'boolean' && tick.recording !== desired.tickRecord) return true
   if (tick && typeof desired.tickShadow === 'boolean' && typeof tick.shadow === 'boolean' && tick.shadow !== desired.tickShadow) return true
+  // P6b: the sidecar reports how many accounts it places tick entries for;
+  // a count that differs from the desired list is a push (the list itself
+  // is redacted from /health, so the count is the comparable fact).
+  if (tick && tick.entry && typeof tick.entry === 'object' && Array.isArray(desired.tickEntryAccounts) && Number.isFinite(Number(tick.entry.accounts)) && Number(tick.entry.accounts) !== desired.tickEntryAccounts.length) return true
   if (tick && desired.tickShadowSim && tick.shadowSim && typeof tick.shadowSim === 'object' && !sameSim(desired.tickShadowSim, tick.shadowSim)) return true
   if (tick && Array.isArray(desired.tickSymbolIds) && desired.tickSymbolIds.length && Array.isArray(tick.subscribed)) {
     const have = new Set(tick.subscribed.map(Number))

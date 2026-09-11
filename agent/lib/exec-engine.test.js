@@ -713,6 +713,8 @@ test('placeOrder with a ledger: reserve, redeem, send with the permit and a tagg
   const sent = JSON.parse(requests.filter(q => q.url === '/order').at(-1).body)
   assert.equal(sent.intentId, 'i000000000001'); assert.equal(sent.permit.id, 'p000000000001'); assert.equal(sent.permit.epoch, 3); assert.equal(sent.permit.accountId, 123)
   assert.equal(sent.label, 'AU|v1|VWAP|H|LN|4h|TR|i000000000001', 'the label carries the intent tag')
+  // WHOLE-PLAN AUDIT 11-09-2026 (plan §9): the permit binds the bracket the order carries
+  assert.equal(sent.permit.relativeStopLoss, 50000); assert.equal(sent.permit.relativeTakeProfit, 50000); assert.equal('stopLoss' in sent.permit, false)
   assert.deepEqual(fx.calls.resolved, [{ id: 'i000000000001', state: 'FILLED', positionId: 777, brokerOrderId: 555, source: 'response' }])
 })
 

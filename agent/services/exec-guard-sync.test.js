@@ -9,6 +9,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
+import { upsertAccount } from './account-registry.js'
 import { desiredGuardFor, guardDiffers, syncExecGuard, resolveTickSymbolIds, tickSymbolNames, _resetTickResolveLogForTests } from './exec-guard-sync.js'
 import { trippedKey } from './equity-stop.js'
 import { fxDayOpenMs } from '../lib/volume-structure.js'
@@ -31,7 +32,8 @@ test('derivation truth table: stored guard, 5A halt, equity trips per side', asy
   assert.equal(g0.halt, false); assert.deepEqual(g0.haltAccounts, [])
   assert.ok('111' in g0.entryEpochs, 'the demo account is fenced from epoch 0')
   assert.ok(Object.values(g0.entryEpochs).every(e => e === 0))
-  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord', 'tickShadow', 'tickShadowSim'])
+  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord', 'tickShadow', 'tickShadowSim', 'tickEntryAccounts'])
+  assert.deepEqual(g0.tickEntryAccounts, [], 'P6b: nobody places tick entries by default')
   assert.deepEqual(g0.tickShadowSim, { latencyMs: 250, slippage: 0, commissionPerSide: 0, targetR: 3, minTargetToCost: 3, maxHoldEvents: 0, maxHoldMs: 21600000 }, 'P6a: the repo\'s shadow sim rides the guard push')
   assert.equal(g0.tickRecord, false, 'P3a: recording is off unless an account asks')
   {
@@ -233,4 +235,45 @@ test('P3a: an account in RECORD switches its side on; the names resolve to ids p
     reportedGuard: base, reportedTick: { recording: true, subscribed: [1, 41] }, creds: { ready: true }, now, resolveSymbolId: resolve,
   })
   assert.equal(again.pushed, false, 'converged: no traffic')
+})
+
+
+// WHOLE-PLAN AUDIT 11-09-2026 (TM-10): a keeper that cannot read its own
+// registry pushes a HALT, never an empty fence that requires no permit.
+test('desiredGuardFor fails CLOSED when the registry is unreadable: halt true and the reason on the push', () => {
+  const real = withAccounts(initDB(':memory:'))
+  const broken = new Proxy(real, { get(t, k) { if (k === 'prepare') return (sql) => { if (/FROM accounts/.test(sql)) throw new Error('disk I/O error'); return t.prepare(sql) }; const v = t[k]; return typeof v === 'function' ? v.bind(t) : v } })
+  const g = desiredGuardFor(broken, { isLive: null }, Date.now())
+  assert.equal(g.halt, true)
+  assert.match(g.degraded, /unreadable: disk I\/O error/)
+  assert.deepEqual(g.entryEpochs, {})
+  const ok = desiredGuardFor(real, { isLive: null }, Date.now())
+  assert.equal(ok.halt, false); assert.equal('degraded' in ok, false)
+})
+
+test('P6b: tickEntryAccounts lists only enabled DEMO accounts whose EFFECTIVE mode is TICK_MOMENTUM and STABLE, and a sidecar reporting a different placing count is pushed', async () => {
+  const { requestEntryMode, acknowledgeEntryEpochs, engineStatusFor } = await import('./entry-mode.js')
+  const db = initDB(':memory:')
+  upsertAccount(db, { accountId: '46979908', isLive: false })
+  upsertAccount(db, { accountId: '46130058', isLive: false })
+  upsertAccount(db, { accountId: '42993489', isLive: true })
+  db.prepare('UPDATE accounts SET enabled = 1').run()
+  const ready = () => ({ ready: true, blockedReasons: [] })
+  const { profileHashFull, DEFAULT_PARAMS } = await import('../lib/tick-strategy.js')
+  const { writeEngineStatus } = await import('./entry-mode.js')
+  writeEngineStatus(db, { ...engineStatusFor(db, '46979908'), profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', configRevision: 1, updatedAt: new Date().toISOString() })
+  const r = requestEntryMode(db, '46979908', 'TICK_MOMENTUM', { readiness: ready })
+  assert.equal(r.ok, true)
+  assert.deepEqual(desiredGuardFor(db, { isLive: false }).tickEntryAccounts, [], 'WARMING (not yet acknowledged) does not place')
+  acknowledgeEntryEpochs(db, { 46979908: r.status.modeEpoch })
+  assert.equal(engineStatusFor(db, '46979908').effectiveEntryMode, 'TICK_MOMENTUM')
+  assert.deepEqual(desiredGuardFor(db, { isLive: false }).tickEntryAccounts, [46979908])
+  assert.deepEqual(desiredGuardFor(db, { isLive: true }).tickEntryAccounts, [], 'the live side never lists a demo account')
+  db.prepare('UPDATE accounts SET enabled = 0 WHERE account_id = ?').run('46979908')
+  assert.deepEqual(desiredGuardFor(db, { isLive: false }).tickEntryAccounts, [], 'a disabled account leaves the list')
+  const desired = { halt: false, haltAccounts: [], entryEpochs: {}, tickRecord: true, tickShadow: true, tickEntryAccounts: [46979908] }
+  const reported = { halt: false, haltAccounts: [], entryEpochs: {}, tick: { recording: true, shadow: true, entry: { accounts: 0, places: false } } }
+  assert.equal(guardDiffers(desired, reported), true, 'sidecar places for 0, keeper wants 1 → push')
+  assert.equal(guardDiffers(desired, { ...reported, tick: { ...reported.tick, entry: { accounts: 1, places: true } } }), false)
+  assert.equal(guardDiffers({ ...desired, tickEntryAccounts: [] }, { ...reported, tick: { ...reported.tick, entry: { accounts: 1, places: true } } }), true, 'sidecar still places for 1 after the account left → push clears it')
 })

@@ -77,11 +77,25 @@ struct ShadowOpen {
   int tradableSeen = 0;
 };
 
+// P6b: the moment the book FILLS a pending signal — the price the real
+// order would be placed at. Taken once by the fire path (takeFill).
+struct ShadowFill {
+  long long symbolId = 0;
+  std::string side;
+  uint32_t signalSeq = 0, entrySeq = 0;
+  uint64_t recvMs = 0;
+  long long entry = 0, stop = 0, target = 0, stopDistance = 0;
+  long long signalBid = 0, signalAsk = 0;   // the quote the signal was made at
+  std::string profileHash;
+};
+
 class ShadowBook {
 public:
   ShadowBook(ShadowSim sim, int rangeEvents, long long symbolId, std::string profileHash);
   // Steps 1 and 2 for this event. Returns the trade this event closed, if any.
   std::optional<ShadowTrade> onQuote(const StrategyQuote& q);
+  // P6b: the fill made by the last onQuote, if any — cleared on take.
+  std::optional<ShadowFill> takeFill() { auto f = fill_; fill_.reset(); return f; }
   // Step 3: the strategy's signal for the SAME event, after onQuote. Returns
   // true when it became the pending trade.
   bool offer(const TickSignal& sig);
@@ -108,6 +122,7 @@ private:
   Rejected rejected_;
   bool haveLast_ = false;
   StrategyQuote last_;   // the last tradable quote (for markAtLast)
+  std::optional<ShadowFill> fill_;
 };
 
 // The process-wide closed-trade ring. bootId is random per construction so

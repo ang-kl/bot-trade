@@ -124,3 +124,10 @@ struct PermitVerdict {
 };
 PermitVerdict validatePermit(const jsn::Value& payload, const GuardSnapshot& g,
                              std::set<std::string>& consumed, long long nowMs);
+
+// WHOLE-PLAN AUDIT 11-09-2026 (plan §9 price bounds): a fire is allowed only
+// while the executable price is within `maxDeviation` wire units of the
+// price the permit was made at. Pure; the caller that knows the live quote
+// (the tick fire path) applies it before the send. A non-positive reference
+// or a negative bound never passes.
+bool priceWithinBound(long long refPrice, long long nowPrice, long long maxDeviation);

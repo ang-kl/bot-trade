@@ -43,6 +43,9 @@ export const OPEN_STATES = Object.freeze(['RESERVED', 'DISPATCHING', 'SENT', 'UN
 const IN_FLIGHT = Object.freeze(['DISPATCHING', 'SENT'])
 export const DEFAULT_PERMIT_TTL_MS = 30_000
 export const DEFAULT_SENT_TIMEOUT_MS = 60_000
+// How long a RELEASED standing row stays visible to the ring path (a fire
+// that beat the mode switch; see reconcileIntents).
+export const RELEASED_RING_WINDOW_MS = 60 * 60 * 1000
 
 const iso = (ms) => new Date(ms).toISOString()
 
@@ -59,22 +62,33 @@ function sameKeySql(symbolId) {
 
 export const VPO_PRODUCER = 'vpo_cpp_direct'
 export const VPO_PERMIT_TTL_MS = 5 * 60 * 1000 // the sidecar store's maxAgeMs; refreshed by every push
+// P6b: the tick producer's permits are STANDING too — pre-issued per
+// account / symbol / side with each feeder push, redeemed in-process by the
+// sidecar's firer at the shadow book's fill (cpp-exec/src/tick_firer.cpp).
+export const TICK_PRODUCER = 'tick_momentum'
+export const TICK_PERMIT_TTL_MS = VPO_PERMIT_TTL_MS
+export const STANDING_PRODUCERS = Object.freeze([VPO_PRODUCER, TICK_PRODUCER])
 
 function openConflict(db, { accountId, symbolId, symbol, side, producerId = null }) {
   const key = symbolId != null ? Number(symbolId) : String(symbol || '')
-  // A STANDING VPO reservation (issued with each push, redeemed only if the
-  // tier fires) is capacity held in advance, not a commitment: it never
-  // blocks another producer. Everything else open blocks everyone, the VPO
-  // producer included.
+  // A STANDING reservation (issued with each push, redeemed only if the
+  // sidecar's tier fires) is capacity held in advance, not a commitment: it
+  // never blocks ANOTHER producer. It does block its own producer (one
+  // standing permit per account/symbol/side), and everything else open
+  // blocks everyone, the standing producers included.
+  const standing = STANDING_PRODUCERS.map(() => '?').join(',')
   return db.prepare(`SELECT id, state, producer_id, created_at FROM entry_intents
     WHERE account_id = ? AND ${sameKeySql(symbolId)} AND side = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')})
-      AND NOT (state = 'RESERVED' AND producer_id = ? AND ? <> ?)
-    ORDER BY id LIMIT 1`).get(String(accountId), key, String(side), ...OPEN_STATES, VPO_PRODUCER, String(producerId || ''), VPO_PRODUCER) || null
+      AND NOT (state = 'RESERVED' AND producer_id IN (${standing}) AND producer_id <> ?)
+    ORDER BY id LIMIT 1`).get(String(accountId), key, String(side), ...OPEN_STATES, ...STANDING_PRODUCERS, String(producerId || '')) || null
 }
 
 function permitOf(row, expiresAtMs) {
   return {
-    id: row.permit_id, intentId: row.id, accountId: row.account_id, environment: row.environment,
+    // RACE CHECKER 11-09-2026: the sidecar's validatePermit reads accountId
+    // with asNumber and does not coerce a string — a TEXT id here would
+    // refuse every in-process fire as permit_mismatch. Numeric on the wire.
+    id: row.permit_id, intentId: row.id, accountId: Number(row.account_id), environment: row.environment,
     symbolId: row.symbol_id, symbol: row.symbol, side: row.side, volume: row.volume, epoch: row.mode_epoch,
     expiresAt: iso(expiresAtMs), expiresAtMs,
   }
@@ -88,24 +102,46 @@ function permitOf(row, expiresAtMs) {
  * a strategy with no usable sizing keeps none. Refusals (the fence) are
  * reported, never hidden.
  */
-export function reserveVpoPermits(db, { accountId, entries = [], ttlMs = VPO_PERMIT_TTL_MS, now = Date.now() } = {}) {
+export function reserveVpoPermits(db, opts = {}) {
+  return reserveStandingPermits(db, { ...opts, producerId: VPO_PRODUCER, basis: 'bar', ttlMs: opts.ttlMs ?? VPO_PERMIT_TTL_MS })
+}
+
+/**
+ * P6b: the same standing-permit rule for any in-process sidecar producer.
+ * `entries` are { key, symbol, symbolId, volume } — volume null means the
+ * sidecar sizes at fire time from the permit's risk figures (the tick
+ * producer); the permit's volume is then null and the send boundary skips
+ * the volume match (order_guard.cpp validatePermit) while the keeper's
+ * maxOrderVolume cap still binds. A standing row is reused only when its
+ * epoch, volume and symbol id are unchanged.
+ */
+export function reserveStandingPermits(db, { accountId, producerId, basis = 'bar', entries = [], sizeRequired = true, ttlMs = VPO_PERMIT_TTL_MS, now = Date.now() } = {}) {
   const id = String(accountId)
+  if (!STANDING_PRODUCERS.includes(producerId)) throw new Error(`reserveStandingPermits: ${producerId} is not a standing producer`)
   const st = engineStatusFor(db, id)
   const out = { permits: [], reused: 0, issued: 0, released: 0, refused: [] }
   const standing = db.prepare(`SELECT * FROM entry_intents WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED' AND signal_ref = ? AND side = ? ORDER BY id`)
   const extend = db.prepare(`UPDATE entry_intents SET permit_expires_at = ?, updated_at = ? WHERE id = ? AND state = 'RESERVED'`)
   const release = db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = ?, resolution_source = 'epoch', resolved_at = ?, updated_at = ? WHERE id = ? AND state = 'RESERVED'`)
   db.transaction(() => {
+    // Keys this pass does not carry (a symbol dropped, a position now open on
+    // it, the cap reached) have their standing rows withdrawn now, not left
+    // to expire while the sidecar could still spend a copy it holds.
+    const carried = new Set(entries.filter(e => e && e.key && e.symbol).map(e => String(e.key)))
+    for (const r of db.prepare(`SELECT id, signal_ref FROM entry_intents WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED'`).all(id, producerId)) {
+      if (!carried.has(String(r.signal_ref))) { release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + 'permit_withdrawn', iso(now), iso(now), r.id); out.released++ }
+    }
     for (const e of entries) {
       const { key, symbol, symbolId, volume } = e || {}
       if (!key || !symbol) continue
-      const usable = Number(volume) > 0
+      const usable = sizeRequired ? Number(volume) > 0 : (volume == null || Number(volume) > 0)
+      const sameVolume = (r) => (volume == null ? r.volume == null : Number(r.volume) === Number(volume))
       for (const side of ['BUY', 'SELL']) {
         let kept = null
-        for (const r of standing.all(id, VPO_PRODUCER, String(key), side)) {
-          const same = usable && r.mode_epoch === st.modeEpoch && Number(r.volume) === Number(volume) && Number(r.symbol_id) === Number(symbolId)
+        for (const r of standing.all(id, producerId, String(key), side)) {
+          const same = usable && r.mode_epoch === st.modeEpoch && sameVolume(r) && Number(r.symbol_id) === Number(symbolId)
           if (same && !kept) { kept = r; continue }
-          release.run(usable ? 'vpo_permit_superseded' : 'vpo_no_sizing', iso(now), iso(now), r.id)
+          release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + (usable ? 'permit_superseded' : 'no_sizing'), iso(now), iso(now), r.id)
           out.released++
         }
         if (!usable) continue
@@ -115,7 +151,7 @@ export function reserveVpoPermits(db, { accountId, entries = [], ttlMs = VPO_PER
           out.permits.push({ key, symbol, side, permit: permitOf(kept, now + ttlMs) })
           continue
         }
-        const r = reserveEntry(db, { accountId: id, producerId: VPO_PRODUCER, basis: 'bar', symbol, symbolId, side, orderType: 'MARKET', volume, signalRef: String(key), ttlMs, now })
+        const r = reserveEntry(db, { accountId: id, producerId, basis, symbol, symbolId, side, orderType: 'MARKET', volume, signalRef: String(key), ttlMs, now })
         if (!r.ok) { out.refused.push({ key, symbol, side, reason: r.reason }); continue }
         out.issued++
         out.permits.push({ key, symbol, side, permit: r.permit })
@@ -127,8 +163,12 @@ export function reserveVpoPermits(db, { accountId, entries = [], ttlMs = VPO_PER
 
 /** The disarm's counterpart: standing VPO permits are released, never left to expire. */
 export function releaseVpoReservations(db, accountId, reason = 'vpo_disarmed', { now = Date.now() } = {}) {
+  return releaseStandingReservations(db, accountId, VPO_PRODUCER, reason, { now })
+}
+/** P6b: the same release for any standing producer (the tick feeder on a mode change or a readiness failure). */
+export function releaseStandingReservations(db, accountId, producerId, reason, { now = Date.now() } = {}) {
   const r = db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = ?, resolution_source = 'epoch', resolved_at = ?, updated_at = ?
-    WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED'`).run(String(reason), iso(now), iso(now), String(accountId), VPO_PRODUCER)
+    WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED'`).run(String(reason), iso(now), iso(now), String(accountId), String(producerId))
   return { released: r.changes }
 }
 
@@ -174,7 +214,7 @@ export function reserveEntry(db, {
     return {
       ok: true, intentId,
       permit: {
-        id: permitId, intentId, accountId: id, environment: st.environment,
+        id: permitId, intentId, accountId: Number(id), environment: st.environment,
         symbolId: symbolId != null ? Number(symbolId) : null, symbol: symbol ?? null, side: sideU,
         volume: volume != null ? Number(volume) : null, epoch: st.modeEpoch, expiresAt, expiresAtMs: now + ttlMs,
       },
@@ -220,10 +260,13 @@ export function markSent(db, intentId, { clientMsgId = null, sidecarBootId = nul
  * sidecar's own evidence (ring / event): a VPO permit is redeemed inside the
  * sidecar, so the keeper learns of the send after the fact.
  */
-export function resolveIntent(db, intentId, { state, brokerOrderId = null, positionId = null, errorCode = null, clientMsgId = null, source, now = Date.now() } = {}) {
+export function resolveIntent(db, intentId, { state, brokerOrderId = null, positionId = null, errorCode = null, clientMsgId = null, source, now = Date.now(), from: fromOverride = null } = {}) {
   if (!INTENT_STATES.includes(state) || OPEN_STATES.includes(state) && state !== 'UNKNOWN' && state !== 'SENT') return { ok: false, reason: `bad_state: ${state}` }
   if (state === 'SENT' && !['ring', 'event'].includes(source)) return { ok: false, reason: 'SENT needs the sidecar\'s evidence' }
-  const from = state === 'SENT' ? ['RESERVED', 'DISPATCHING'] : OPEN_STATES
+  // `from` may name RELEASED only from the ring path (a standing permit the
+  // sidecar spent as the epoch moved) — never from a response or an operator.
+  if (fromOverride && !(fromOverride.length === 1 && fromOverride[0] === 'RELEASED' && source === 'ring')) return { ok: false, reason: 'bad_from' }
+  const from = fromOverride || (state === 'SENT' ? ['RESERVED', 'DISPATCHING'] : OPEN_STATES)
   const terminal = state !== 'UNKNOWN' && state !== 'SENT'
   const r = db.prepare(`UPDATE entry_intents SET state = ?, broker_order_id = COALESCE(?, broker_order_id), broker_position_id = COALESCE(?, broker_position_id),
       error_code = COALESCE(?, error_code), client_msg_id = COALESCE(?, client_msg_id), resolution_source = ?, resolved_at = ?, updated_at = ?
@@ -290,8 +333,11 @@ export function reconcileIntents(db, { accountId, positions = [], orders = [], n
   const out = { checked: 0, resolved: [], stillOpen: 0 }
   // Standing VPO permits are open too: the sidecar redeems them in-process,
   // so the ring's order_submit is how the keeper learns one was sent.
+  const standingSql = STANDING_PRODUCERS.map(() => '?').join(',')
   const open = db.prepare(`SELECT * FROM entry_intents WHERE account_id = ?
-    AND (state IN ('DISPATCHING', 'SENT', 'UNKNOWN') OR (state = 'RESERVED' AND producer_id = ?)) ORDER BY id`).all(String(accountId), VPO_PRODUCER)
+    AND (state IN ('DISPATCHING', 'SENT', 'UNKNOWN') OR (state = 'RESERVED' AND producer_id IN (${standingSql}))
+      OR (state = 'RELEASED' AND producer_id IN (${standingSql}) AND resolved_at >= ?)) ORDER BY id`)
+    .all(String(accountId), ...STANDING_PRODUCERS, ...STANDING_PRODUCERS, iso(now - RELEASED_RING_WINDOW_MS))
   const byTag = new Map()
   for (const p of positions) { const t = labelIntentId(String(posField(p, 'label') || '')); if (t) byTag.set(t, { kind: 'position', id: p?.positionId ?? posField(p, 'positionId') }) }
   for (const o of orders) { const t = labelIntentId(String(posField(o, 'label') || posField(o, 'comment') || '')); if (t && !byTag.has(t)) byTag.set(t, { kind: 'order', id: o?.orderId ?? posField(o, 'orderId') }) }
@@ -310,13 +356,23 @@ export function reconcileIntents(db, { accountId, positions = [], orders = [], n
     else {
       let rec = null
       try { rec = ring.get(`intent=${it.id}%`) } catch { rec = null }
-      if (rec?.kind === 'order_reject') r = resolveIntent(db, it.id, { state: 'REJECTED', errorCode: rec.code || 'rejected', source: 'ring', now })
+      // RACE CHECKER 11-09-2026: the engine rings a TIMEOUT as order_reject
+      // (r.ok is false for both). A timeout is not a refusal (plan §3.4):
+      // the order may well have filled, so the intent is UNKNOWN — it keeps
+      // its key blocked until the event journal or the reconcile settles it —
+      // never REJECTED, which would free the key for a second order.
+      if (it.state === 'RELEASED' && !rec) { out.stillOpen--; continue } // a released row nothing names is not open
+      if (rec?.kind === 'order_reject' && String(rec.code || '').toUpperCase() === 'TIMEOUT') r = resolveIntent(db, it.id, { state: 'UNKNOWN', errorCode: 'TIMEOUT', source: 'ring', now, from: it.state === 'RELEASED' ? ['RELEASED'] : null })
+      else if (rec?.kind === 'order_reject') r = resolveIntent(db, it.id, { state: 'REJECTED', errorCode: rec.code || 'rejected', source: 'ring', now, from: it.state === 'RELEASED' ? ['RELEASED'] : null })
       else if (rec?.kind === 'order_result') {
         const pos = /pos=(\d+)/.exec(rec.detail || '')?.[1] ?? null
         const ord = /order=(\d+)/.exec(rec.detail || '')?.[1] ?? null
-        r = resolveIntent(db, it.id, { state: pos ? 'FILLED' : 'ACCEPTED', positionId: pos, brokerOrderId: ord, source: 'ring', now })
-      } else if (rec?.kind === 'order_submit' && (it.state === 'RESERVED' || it.state === 'DISPATCHING')) {
-        r = resolveIntent(db, it.id, { state: 'SENT', source: 'ring', now })
+        r = resolveIntent(db, it.id, { state: pos ? 'FILLED' : 'ACCEPTED', positionId: pos, brokerOrderId: ord, source: 'ring', now, from: it.state === 'RELEASED' ? ['RELEASED'] : null })
+      } else if (rec?.kind === 'order_submit' && (it.state === 'RESERVED' || it.state === 'DISPATCHING' || it.state === 'RELEASED')) {
+        // RACE CHECKER 11-09-2026: a fire that passed the boundary as the
+        // mode switched has a RELEASED row and a real order; the ring is
+        // the only thing that names it, so the row is reopened as SENT.
+        r = resolveIntent(db, it.id, { state: 'SENT', source: 'ring', now, from: it.state === 'RELEASED' ? ['RELEASED'] : null })
       } else if (events && it.state !== 'RESERVED') {
         let ev = null
         try { ev = events.get(it.client_msg_id || '', it.client_msg_id || '', `%|${it.id}`) } catch { ev = null }

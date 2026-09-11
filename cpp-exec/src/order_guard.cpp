@@ -105,8 +105,17 @@ PermitVerdict validatePermit(const jsn::Value& payload, const GuardSnapshot& g,
       v.ok = false;
       v.reason = "permit_missing: this account's entry epoch is fenced (" +
                  std::to_string(epochIt->second) + ") and the order carries no permit";
+      return v;
     }
-    return v; // not fenced: nothing to check (P2a-2 removed the VPO waiver — every fire carries the keeper's permit)
+    // WHOLE-PLAN AUDIT 11-09-2026 (TM-10): once the keeper has fenced ANY
+    // account on this sidecar, an account it never fenced is one it does not
+    // know — its orders are refused, not waved through (fail closed).
+    if (!g.entryEpochs.empty()) {
+      v.ok = false;
+      v.reason = "permit_missing: the keeper fences " + std::to_string(g.entryEpochs.size()) +
+                 " account(s) on this executor and this account is not among them";
+    }
+    return v; // no fence pushed at all (an older keeper): nothing to check
   }
   v.intentId = permit.get("intentId").asString();
   const std::string id = permit.get("id").asString();
@@ -143,6 +152,20 @@ PermitVerdict validatePermit(const jsn::Value& payload, const GuardSnapshot& g,
     v.reason = "permit_mismatch: the permit does not describe this order (account/symbol/side/volume)";
     return v;
   }
+  // WHOLE-PLAN AUDIT 11-09-2026 (plan §9): the permit binds the BRACKET the
+  // intent was reserved with. When the permit names a stop or target, the
+  // order must carry exactly that one — a re-priced or stripped bracket is
+  // not the order the keeper admitted.
+  for (const char* k : {"relativeStopLoss", "relativeTakeProfit", "stopLoss", "takeProfit"}) {
+    const jsn::Value& pv = permit.get(k);
+    if (!pv.isNumber()) continue;
+    const jsn::Value& ov = payload.get(k);
+    if (!ov.isNumber() || ov.asNumber() != pv.asNumber()) {
+      v.ok = false;
+      v.reason = std::string("permit_bracket_mismatch: ") + k + " differs from the permit";
+      return v;
+    }
+  }
   if (consumed.count(id) > 0) {
     v.ok = false;
     v.reason = "permit_consumed: " + id + " was already used";
@@ -151,4 +174,10 @@ PermitVerdict validatePermit(const jsn::Value& payload, const GuardSnapshot& g,
   consumed.insert(id);
   v.permitId = id;
   return v;
+}
+
+bool priceWithinBound(long long refPrice, long long nowPrice, long long maxDeviation) {
+  if (refPrice <= 0 || maxDeviation < 0) return false;
+  const long long d = nowPrice > refPrice ? nowPrice - refPrice : refPrice - nowPrice;
+  return d <= maxDeviation;
 }
