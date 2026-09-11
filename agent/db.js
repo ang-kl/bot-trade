@@ -639,6 +639,25 @@ const TABLES = `
   -- recorder's real events/sec and bytes/day are measured over a day, not
   -- read off a model (docs/tick-momentum/storage-capacity.csv is
   -- SCENARIO_NOT_MEASURED until these rows exist).
+  -- P4: the versioned trial ledger (plan §6-§7): every replay run, its
+  -- profile hash, data manifest, costs and block results — failures and
+  -- abandoned variants included. The evidence importer (P6) reads it.
+  CREATE TABLE IF NOT EXISTS tick_trials (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    at            TEXT NOT NULL DEFAULT (datetime('now')),
+    trial_id      TEXT NOT NULL UNIQUE,
+    strategy_id   TEXT NOT NULL,
+    version       TEXT NOT NULL,
+    profile_hash  TEXT NOT NULL,
+    params_json   TEXT NOT NULL,
+    sim_json      TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    summary_json  TEXT NOT NULL,
+    blocks_json   TEXT NOT NULL,
+    note          TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_tick_trials_profile ON tick_trials(profile_hash);
+
   CREATE TABLE IF NOT EXISTS tick_status_samples (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     side      TEXT NOT NULL,

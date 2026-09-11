@@ -82,7 +82,8 @@ test('wiring pins: the probe pulls tick status, pingSidecar carries the tick fie
   const state = strip(readFileSync(new URL('../routes/state.js', import.meta.url), 'utf8'))
   assert.match(state, /router\.get\('\/tick-recorder'/)
   const sync = strip(readFileSync(new URL('./exec-guard-sync.js', import.meta.url), 'utf8'))
-  assert.match(sync, /out\.tickRecord = true; break/, 'any RECORD account switches the side on')
+  assert.match(sync, /if \(mode !== 'OFF'\) out\.tickRecord = true/, 'any RECORD or SHADOW account switches recording on')
+  assert.match(sync, /if \(mode === 'SHADOW'\) out\.tickShadow = true/, 'SHADOW switches the strategy shadow on')
   // the sidecar: the recorder exists only with TICK_SPOOL_PATH, taps the raw feed, and /config carries the switch
   const main = readFileSync(new URL('../../cpp-exec/src/main.cpp', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
   assert.match(main, /envOr\("TICK_SPOOL_PATH", ""\)/)

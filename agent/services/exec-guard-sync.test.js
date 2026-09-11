@@ -31,7 +31,7 @@ test('derivation truth table: stored guard, 5A halt, equity trips per side', asy
   assert.equal(g0.halt, false); assert.deepEqual(g0.haltAccounts, [])
   assert.ok('111' in g0.entryEpochs, 'the demo account is fenced from epoch 0')
   assert.ok(Object.values(g0.entryEpochs).every(e => e === 0))
-  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord'])
+  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord', 'tickShadow'])
   assert.equal(g0.tickRecord, false, 'P3a: recording is off unless an account asks')
   {
     const { requestEntryMode } = await import('./entry-mode.js')
@@ -164,6 +164,12 @@ test('P3a: an account in RECORD switches its side on; the names resolve to ids p
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1] } }), true, 'a wanted symbol is not carried')
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 41, 7] } }), false, 'in sync (extra carried symbols are fine)')
   assert.equal(guardDiffers({ ...desired, tickRecord: false, tickSymbolIds: [] }, { ...base, tick: { recording: false, subscribed: [] } }), false)
+  // P4: the shadow switch converges the same way
+  assert.equal(guardDiffers({ ...desired, tickShadow: true }, { ...base, tick: { recording: true, shadow: false, subscribed: [1, 41] } }), true)
+  assert.equal(guardDiffers({ ...desired, tickShadow: true }, { ...base, tick: { recording: true, shadow: true, subscribed: [1, 41] } }), false)
+  requestTickObservation(db, '111', 'SHADOW')
+  const gs = desiredGuardFor(db, { isLive: false }, now)
+  assert.equal(gs.tickRecord, true); assert.equal(gs.tickShadow, true, 'SHADOW records and shadows')
 
   // the sync pushes the resolved ids with the switch
   const pushes = []

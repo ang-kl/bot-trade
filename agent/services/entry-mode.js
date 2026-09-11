@@ -149,9 +149,10 @@ export function requestTickObservation(db, accountId, mode, { expectedRevision =
   if (expectedRevision != null && Number(expectedRevision) !== cur.configRevision) {
     return { ok: false, reason: 'revision_conflict', current: cur.configRevision, expected: Number(expectedRevision) }
   }
-  if (mode === 'SHADOW') {
-    return { ok: false, reason: 'tick_strategy_not_built: SHADOW needs the tick strategy (P4) to shadow', current: cur.configRevision }
-  }
+  // P4: SHADOW is admitted — tick_momentum_breakout v1 exists (cpp-exec
+  // tick_strategy.*, reference agent/lib/tick-strategy.js) and runs on the
+  // sidecar's workers signalling into the decision ring, placing nothing;
+  // the exec guard sync pushes the side's tickShadow switch.
   const next = { ...cur, tickObservation: mode, configRevision: cur.configRevision + 1, updatedAt: now.toISOString() }
   const saved = writeEngineStatus(db, next)
   try {

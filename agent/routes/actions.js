@@ -1102,6 +1102,22 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // P4: import trial ledger entries produced by scripts/tick-research.mjs
+  // ({trials:[...]} or one trial). Content-keyed: re-importing is a no-op.
+  router.post('/tick-trials', async (req, res) => {
+    try {
+      const { importTickTrial } = await import('../services/tick-research.js')
+      const body = req.body || {}
+      const list = Array.isArray(body.trials) ? body.trials : [body]
+      if (list.length > 200) return res.status(400).json({ error: 'at most 200 trials per import' })
+      const out = list.map(t => importTickTrial(db, t, { note: body.note ?? t.note ?? null }))
+      console.log(`[actions] tick-trials: ${out.filter(o => o.inserted).length} inserted, ${out.filter(o => o.ok && !o.inserted).length} already present, ${out.filter(o => !o.ok).length} refused`)
+      res.json({ ok: true, results: out })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // P3a: the symbol NAMES the recorder should carry (replace-all), resolved
   // per side to ids by the guard sync. Empty list = only what the feed
   // already carries (VPO symbols, the tick trail's open positions).

@@ -2475,6 +2475,16 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // P4: the trial ledger — every replay run with its profile hash, manifest,
+  // costs and block results. Research only; nothing here approves trading.
+  router.get('/tick-research', async (req, res) => {
+    try {
+      const { tickTrialsView } = await import('../services/tick-research.js')
+      res.json(tickTrialsView(db, { limit: Math.min(200, Number(req.query.limit) || 50) }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // P3a: the tick recorder per sidecar side — the last pulled /tick-status
   // (state, counters, segments, the mount's free bytes, events/sec per
   // symbol), each account's observation switch, and the symbol names the
