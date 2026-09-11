@@ -55,7 +55,6 @@
 // consumed a slot and returned nothing.
 import { accountAnalytics } from './account-analytics.js'
 import { listAccounts } from './account-registry.js'
-import { getAccountBalance } from './risk.js'
 import { getState } from '../db.js'
 import { GO_LIVE_BAR } from './edge-bars.js'
 
@@ -273,8 +272,28 @@ function verdictFor({ needed, remaining, sampleOk, trades, meetsNow }) {
  */
 function safeBalance(db, accountId) {
   try {
-    const b = getAccountBalance(db, accountId)
-    return Number.isFinite(Number(b)) && Number(b) > 0 ? Number(b) : null
+    // THE SCOPED KEY ONLY. getAccountBalance(db, id) falls through to the
+    // legacy global when the scoped value is absent or not > 0 — and the
+    // global is the SELECTED account's balance. Measured 11-09-2026 on the
+    // Performance page: ACCT-LIVE-2 and ACCT-LIVE-3, both answered by the
+    // broker with balance 0 (unfunded) and therefore never stamped, printed
+    // the selected demo account's US$45,837.59 beside their own logins. A
+    // named card reads its own key or says "not read"; a stamped zero is a
+    // real reading and prints as zero.
+    const raw = getState(db, `acct:${String(accountId)}:account_balance_usd`)
+    if (raw == null) return null
+    const b = Number(raw)
+    return Number.isFinite(b) && b >= 0 ? b : null
+  } catch { return null }
+}
+
+/** Closed trades with no account id at all — counted only in the roll-up. */
+function unattributedClosed(db, days) {
+  try {
+    const params = []
+    let win = ''
+    if (days) { win = " AND closed_at >= datetime('now', ?)"; params.push(`-${days} days`) }
+    return Number(db.prepare(`SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NOT NULL AND account_id IS NULL${win}`).get(...params)?.n || 0)
   } catch { return null }
 }
 
@@ -306,16 +325,21 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
       // LIVE BALANCE, PER ACCOUNT (owner 04-08-2026: "Include Account Balance
       // (Live) in each of the sub-card here").
       //
-      // getAccountBalance(db, id) reads `acct:<id>:account_balance_usd` and
-      // resolves — it never falls back to the legacy global key for a NAMED
-      // account, which is the bug that printed one account's balance beside
-      // another's login on the Trade header. Null when never read, and the card
-      // says "not read" rather than $0: a zero balance reads as a wiped
-      // account.
+      // safeBalance reads `acct:<id>:account_balance_usd` and NOTHING else.
+      // The earlier comment here claimed getAccountBalance never falls back
+      // to the legacy global for a named account; it does (risk.js: the
+      // scoped value must be > 0, else the global), and that is what put the
+      // selected account's balance on two empty live accounts' cards
+      // (11-09-2026). Null when never read — the card says "not read".
       balance: safeBalance(db, id),
       isLive: reg?.is_live === 1,
       enabled: reg?.enabled === 1,
-      stats: accountAnalytics(db, { accountId: id, days, now }),
+      // STAMPED ROWS ONLY (11-09-2026). Under the OR-NULL convention the
+      // unstamped legacy rows were counted into EVERY account's card: two
+      // live accounts that never traded showed the same four closed trades,
+      // 1W / 3L, identical averages — a record that was nobody's. Those rows
+      // now count once, in the roll-up, and are named there.
+      stats: accountAnalytics(db, { accountId: id, days, now, unstamped: 'exclude' }),
       // S4b — the card's OWN coverage, so its dot can print a number instead
       // of "no scope reported". This is the panel that showed six per-account
       // headings over one pooled set of 245 trades; the figure it lacked is
@@ -348,7 +372,8 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
     left,
   })
 
-  return { goal, now, daysRemaining: left, windowDays: days || null, accounts, portfolio }
+  const unattributed = unattributedClosed(db, days)
+  return { goal, now, daysRemaining: left, windowDays: days || null, accounts, portfolio: { ...portfolio, unattributed }, unattributed }
 }
 
 /**
@@ -378,9 +403,11 @@ function rowCoverage(db, accountId, days) {
          AND (account_id = ? OR account_id IS NULL)
     `).get(...params)
     const total = Number(r?.total || 0)
-    if (total === 0) return { total: 0, attributable: 0, pct: 100 }
     const mine = Number(r?.mine || 0)
-    return { total, attributable: mine, pct: Math.round((mine / total) * 1000) / 10 }
+    // The card now counts only `mine` (accountAnalytics unstamped: 'exclude'),
+    // so every row behind it is attributable by construction; `excluded` is
+    // what the old convention would have added and the roll-up still holds.
+    return { total: mine, attributable: mine, pct: 100, excluded: total - mine }
   } catch { return null }
 }
 

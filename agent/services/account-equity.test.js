@@ -87,19 +87,23 @@ test('a broker failure on one account is reported, not thrown — the sweep cont
   assert.equal(b.balance, 100, 'the next account still stamps')
 })
 
-test('an unusable balance is NOT stamped — a present-but-useless key reads as covered', async () => {
-  // 0, null and NaN all fail getAccountBalance's `> 0` check, so writing them
-  // would leave the key present while the reader still falls through to the
-  // global — coverage that looks complete and is not.
+test('an unusable balance is NOT stamped, but a read ZERO is — an unfunded account is a reading, not a gap', async () => {
+  // null, undefined, NaN and a negative are not readings. Zero IS: the
+  // broker answered "this account holds nothing" (ACCT-LIVE-2/3, measured
+  // 11-09-2026), and leaving it unstamped made every scoped reader print
+  // "not read" — or fall through to the selected account's balance.
   const db = db0([['A', false]])
   const set = (d, id, k, v) => setState(d, `acct:${id}:${k}`, v)
-  for (const balance of [0, null, undefined, NaN, -5]) {
+  for (const balance of [null, undefined, NaN, -5]) {
     const r = await stampAccountEquity(db, CREDS, 'A', {
       ws: fakeWs({ A: { balance, leverageInCents: 0 } }), setAccountState: set,
     })
     assert.equal(r.balance, null, `balance ${balance} must not be stamped`)
     assert.equal(getState(db, 'acct:A:account_balance_usd'), null)
   }
+  const z = await stampAccountEquity(db, CREDS, 'A', { ws: fakeWs({ A: { balance: 0, leverageInCents: 0 } }), setAccountState: set })
+  assert.equal(z.balance, 0)
+  assert.equal(getState(db, 'acct:A:account_balance_usd'), '0')
 })
 
 // ---------------------------------------------------------------------------

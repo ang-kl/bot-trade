@@ -291,6 +291,12 @@ export default function GoalTracker({ variant = 'full' }) {
           an average of the account rows. */}
       <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
         “All accounts” is rebuilt from every closed trade, not averaged from the per-account rates.
+        {data.unattributed > 0 && (
+          // Said here because it used to be said nowhere: these rows carry no
+          // account id and were printed as every account's own record
+          // (11-09-2026: two never-traded live accounts, identical cards).
+          <> {data.unattributed} closed trade{data.unattributed === 1 ? '' : 's'} carr{data.unattributed === 1 ? 'ies' : 'y'} no account id and count only here, in no account card.</>
+        )}
       </span>
     </div>
   )

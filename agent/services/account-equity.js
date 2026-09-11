@@ -50,10 +50,15 @@ export async function stampAccountEquity(db, creds, accountId, deps = {}) {
       creds.host, creds.clientId, creds.clientSecret, creds.accessToken, accountId,
     )
     const bal = ws.traderBalance(trader)
-    // `> 0` matches what getAccountBalance will accept. Stamping a zero or a
-    // NaN would leave the key present but unusable, which reads as "stamped"
-    // to anyone auditing coverage while still falling through to the global.
-    if (Number.isFinite(bal) && bal > 0) {
+    // A finite, non-negative balance is a READING — including zero. An
+    // unfunded live account answered 0 by the broker used to be left
+    // unstamped (the `> 0` gate matched getAccountBalance's), so every
+    // reader that goes to the scoped key alone printed "not read" or, worse,
+    // fell through to the selected account's number (measured 11-09-2026:
+    // the Performance page showed the selected demo balance on two empty
+    // live accounts). Sizing still refuses a zero — getAccountBalance keeps
+    // its own `> 0` — but the record now says what the broker said.
+    if (Number.isFinite(bal) && bal >= 0) {
       setAcct(db, accountId, 'account_balance_usd', String(bal))
       out.balance = bal
     }

@@ -40,13 +40,19 @@ import { closedAtMs } from '../shared/formulas.js'
  *   days: rolling window ending now; null/0 = every closed trade on record.
  * @returns {object} whole-period statistics (nulls where undefined, never 0)
  */
-export function accountAnalytics(db, { accountId = null, days = null, now = Date.now() } = {}) {
+export function accountAnalytics(db, { accountId = null, days = null, now = Date.now(), unstamped = 'include' } = {}) {
   const acct = accountId && accountId !== 'all' ? String(accountId) : null
   // NULL account_id rows predate per-account stamping — they belong to
   // whichever account is asking, the same convention accountWhere() uses.
+  // `unstamped: 'exclude'` (goal cards, 11-09-2026) counts ONLY rows that
+  // carry the account's id: under 'include' the same four unstamped rows
+  // were printed as the whole record of two live accounts that had never
+  // traded, identical card for card.
   const scope = acct == null
     ? { sql: '', params: [] }
-    : { sql: 'AND (account_id = ? OR account_id IS NULL)', params: [acct] }
+    : unstamped === 'exclude'
+      ? { sql: 'AND account_id = ?', params: [acct] }
+      : { sql: 'AND (account_id = ? OR account_id IS NULL)', params: [acct] }
 
   const rows = db.prepare(
     `SELECT net_pnl, closed_at, closed_at_ms, opened_at, hold_duration_ms, account_id

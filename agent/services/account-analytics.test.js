@@ -157,6 +157,13 @@ test('accountAnalytics — account scope includes unstamped legacy rows only', (
   const all = accountAnalytics(db, { accountId: 'all' })
   assert.equal(all.trades, 3)
   assert.equal(all.net, 35)
+
+  // unstamped: 'exclude' — the goal cards' rule: only rows carrying the id
+  const strictA = accountAnalytics(db, { accountId: 'A', unstamped: 'exclude' })
+  assert.equal(strictA.trades, 1); assert.equal(strictA.net, 10)
+  const strictC = accountAnalytics(db, { accountId: 'C', unstamped: 'exclude' })
+  assert.equal(strictC.trades, 0, 'an account that never traded shows nothing, not the legacy row')
+  assert.equal(accountAnalytics(db, { accountId: 'all', unstamped: 'exclude' }).trades, 3, 'the roll-up still holds every row')
 })
 
 test('accountAnalytics — median hold is the middle value, in minutes', () => {
