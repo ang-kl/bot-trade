@@ -174,7 +174,13 @@ export function ensureAccountRegistry(db) {
   const enabled = db.prepare('SELECT COUNT(*) AS n FROM accounts WHERE enabled = 1').get().n
   if (enabled === 0 && id) syncSelectedAccount(db, id, isLive, traderLogin)
   const total = db.prepare('SELECT COUNT(*) AS n FROM accounts').get().n
-  return { total, enabled: db.prepare('SELECT account_id FROM accounts WHERE enabled = 1').get()?.account_id ?? null }
+  // OWNER PRINCIPLES 11-09-2026 (docs/owner-principles-plan-2026-09-11.md,
+  // PR-A): this used to return the FIRST enabled row's id under a field named
+  // `enabled`, so the boot line read "7 account(s), enabled=<one id>" while
+  // all seven rows were enabled — the line that made the system look
+  // single-account. The count and every enabled id, so the line cannot lie.
+  const enabledIds = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id))
+  return { total, enabledCount: enabledIds.length, enabledIds }
 }
 
 // Tables whose historical rows belong to the account they were created

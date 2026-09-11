@@ -28,7 +28,7 @@ test('ensureAccountRegistry: bootstraps the current legacy account as the single
   setState(db, 'ctrader_trader_login', '5306502')
   const r = ensureAccountRegistry(db)
   assert.equal(r.total, 1)
-  assert.equal(r.enabled, '47790949')
+  assert.equal(r.enabledCount, 1); assert.deepEqual(r.enabledIds, ['47790949'])
   const rows = listAccounts(db)
   assert.equal(rows[0].trader_login, '5306502')
   assert.equal(rows[0].enabled, 1)
@@ -36,7 +36,7 @@ test('ensureAccountRegistry: bootstraps the current legacy account as the single
   // Idempotent: a second boot changes nothing.
   const r2 = ensureAccountRegistry(db)
   assert.equal(r2.total, 1)
-  assert.equal(r2.enabled, '47790949')
+  assert.equal(r2.enabledCount, 1); assert.deepEqual(r2.enabledIds, ['47790949'])
 })
 
 test('ensureAccountRegistry: a later boot does not resurrect a disarmed account', () => {

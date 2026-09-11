@@ -221,6 +221,42 @@ what was removed. It did not: the generic P7 is the bare rule. Owner-confirmed
 text is the last thing a tidying pass may drop, and it survived the 2026-08-22
 fold-in for the same reason.
 
+## Owner principles (owner, 2026-09-11) — standing rules, owner-confirmed
+
+Stated by the owner on 11-09-2026 ~20:10 SGT after P6b (#894) merged, with
+four decisions answered the same evening. The build plan that brings the code
+under them, with the measured contradictions (file:line) and the PR order, is
+`docs/owner-principles-plan-2026-09-11.md`. Owner-confirmed text: the last
+thing a tidying pass may drop.
+
+1. **No demo/live distinction.** An account is only "how much is inside it".
+   Only routing (host, credentials, which sidecar) may read `is_live`; every
+   policy gate reads balance and evidence. (Decision: yes, no distinction —
+   a live account is eligible for tick entries and app arming on the same
+   evidence bar as demo.)
+2. **Prioritise for opportunities.** The tick-based switch (vs time-based) is
+   on/off per account BY A HUMAN and AUTOMATICALLY by the bot.
+3. **Codebase-built blockages are addressed, not carried.**
+4. **"Unknown" must not happen** after four weeks of trading. Every trade has
+   a reason.
+5. **The `.md` plans are checked** — kept audited against the code.
+6. **The website shows no fake result.** UI switches are logic-built, not for
+   show.
+7. **Vetoes are part of what is minimised.** (Decision: the position cap stays
+   as is — `maxOpenPositions` 5 and the book's 8, adopted/manual/book
+   positions counting; the dedupe, the leak fix, the pre-filter move and the
+   veto goal ship.)
+8. **Trade direction is key** for trending / momentum trading. (Decision:
+   shorts on the momentum book under the 9/10 conviction floor with regime-gate
+   alignment.)
+9. **No restricted trading for certain accounts.** Setups are for all
+   accounts and not hardcoded.
+
+Decision on thresholds: `agent/config/tick-validation.json` takes the plan's
+proposed defaults (replay 40 trades / PF ≥ 1.3 / max DD 8R / expectancy lower
+bound ≥ 0; shadow 200 signals / 48 h / 30 trades / 8 losses / PF ≥ 1.3 /
+lower bound ≥ 0 / max DD 8R / resets ≤ 20 %).
+
 ## PR merge policy (owner, 2026-07-22)
 
 Auto-merge is standing approval, not a one-off: once a PR's full gate is
@@ -433,8 +469,12 @@ Measurement history — each line is a real run of the script, not a claim:
   open, `№ 7,665` its subscription note, `№ 7,666` the P6b build start,
   `№ 7,667`–`№ 7,675` the P6b build, the Race checker's findings applied,
   the gate and the mutation checks, 09:39–10:50 UTC; #893 merged 09:28
-  UTC), so the P6b report is **`№ 7,676`** by count, and the reply after
-  it is `№ 7,677`. The count is by replies, not by
+  UTC). Five more text replies followed before the P6b report (the PR-open
+  acknowledgement, the plan-mode note, the undraft, the merge, the demo
+  read-back), so the P6b report is **`№ 7,681`** (11:55 UTC), the "any agents
+  building?" answer `№ 7,682`, the principles' investigation status line
+  `№ 7,683`, the plan-URL answer `№ 7,684`; the PR-A report is `№ 7,685` by
+  count. The count is by replies, not by
   stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 
