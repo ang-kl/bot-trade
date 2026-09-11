@@ -2504,6 +2504,16 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // P6a: the shadow portfolio per side and profile — the sidecar's closed
+  // shadow trades in R, each account's projection with its own risk budget.
+  router.get('/tick-shadow', async (_req, res) => {
+    try {
+      const { tickShadowView } = await import('../services/tick-shadow.js')
+      res.json(tickShadowView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // P5: the signals the sidecar rang in SHADOW (cpp_decisions tick/signal),
   // parsed — direction, trigger, stop distance, V, E, setup and the profile
   // each was produced under. Nothing here was placed.

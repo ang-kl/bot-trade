@@ -20,6 +20,7 @@
 #include "engine.hpp"
 #include "heartbeat.hpp"
 #include "tick_recorder.hpp"
+#include "tick_shadow.hpp"
 #include "tick_strategy.hpp"
 #include "tick_workers.hpp"
 #include "event_journal.hpp"
@@ -214,19 +215,53 @@ int main(int argc, char** argv) {
   std::vector<uint64_t> tickStratSeen;
   std::vector<std::map<long long, tick::TickMomentumStrategy>> tickStrategies;
   const tick::StrategyParams tickParams; // v1 baseline (research-profile.json)
+  // P6a: the shadow's OWN simulated portfolio (plan §2) — one ShadowBook per
+  // symbol beside its strategy, on the same worker, filled and exited by the
+  // reference replayer's rules event by event; closed trades go to the
+  // process ledger the keeper pulls (POST /tick-shadow). Nothing is placed.
+  // The sim parameters are the replayer's defaults; the keeper may set them
+  // through /config tickShadowSim (declarative, applied to NEW books).
+  std::vector<std::map<long long, tick::ShadowBook>> tickBooks;
+  tick::ShadowLedger tickShadowLedger(4096);
+  std::mutex tickSimMtx;
+  tick::ShadowSim tickSim;
+  std::atomic<uint64_t> tickShadowOpen{0}, tickShadowRejectedCost{0}, tickShadowRejectedNoFill{0}, tickShadowResets{0};
   if (tickRecorder) {
     const int nWorkers = std::max(1, std::atoi(envOr("TICK_WORKERS", "2").c_str()));
     tickStrategies.resize(static_cast<size_t>(nWorkers));
+    tickBooks.resize(static_cast<size_t>(nWorkers));
     tickStratSeen.assign(static_cast<size_t>(nWorkers), 0);
     tickWorkers = std::make_unique<tick::SymbolWorkers>(nWorkers, 1u << 14,
-        [&tickWorkerEvents, &tickShadow, &tickStrategies, &tickStratReset, &tickStratSeen, &tickParams, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &decisionRing](int worker, const tick::WorkerEvent& ev) {
+        [&tickWorkerEvents, &tickShadow, &tickStrategies, &tickBooks, &tickStratReset, &tickStratSeen, &tickParams, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &decisionRing,
+         &tickShadowLedger, &tickSimMtx, &tickSim, &tickShadowOpen, &tickShadowRejectedCost, &tickShadowRejectedNoFill, &tickShadowResets](int worker, const tick::WorkerEvent& ev) {
           tickWorkerEvents.fetch_add(1, std::memory_order_relaxed);
           auto& bank = tickStrategies[static_cast<size_t>(worker)];
+          auto& books = tickBooks[static_cast<size_t>(worker)];
           const uint64_t reset = tickStratReset.load(std::memory_order_acquire);
-          if (tickStratSeen[static_cast<size_t>(worker)] != reset) { bank.clear(); tickStratSeen[static_cast<size_t>(worker)] = reset; } // a fresh warm-up after a switch-off
+          if (tickStratSeen[static_cast<size_t>(worker)] != reset) {
+            // A fresh warm-up after a switch-off. Open shadow trades are
+            // MARKED at the last executable side with reason 'reset', never
+            // dropped (Statistics auditor, 11-09-2026: a dropped open trade is
+            // survivorship that flatters a book whose losers run longer).
+            for (auto& kv : books) {
+              if (auto t = kv.second.markAtLast("reset")) {
+                const long long seq = tickShadowLedger.record(*t);
+                tickShadowResets.fetch_add(1, std::memory_order_relaxed);
+                tickShadowOpen.fetch_sub(1, std::memory_order_relaxed);
+                decisionRing.log("tick", "shadow_close", 0, kv.first, "reset", t->side + " netR=" + std::to_string(t->netR) + " hold=" + std::to_string(t->holdEvents) + " seq=" + std::to_string(seq) + " profile=" + t->profileHash);
+              }
+            }
+            bank.clear(); books.clear(); tickStratSeen[static_cast<size_t>(worker)] = reset;
+          }
           if (!tickShadow.load(std::memory_order_relaxed)) return;
           auto it = bank.find(ev.symbolId);
           if (it == bank.end()) it = bank.emplace(ev.symbolId, tick::TickMomentumStrategy(tickParams)).first;
+          auto bk = books.find(ev.symbolId);
+          if (bk == books.end()) {
+            tick::ShadowSim sim;
+            { std::lock_guard<std::mutex> lk(tickSimMtx); sim = tickSim; }
+            bk = books.emplace(ev.symbolId, tick::ShadowBook(sim, tickParams.rangeEvents, static_cast<long long>(ev.symbolId), it->second.profileHash())).first;
+          }
           tick::StrategyQuote q;
           q.seq = ev.seq; q.recvMs = ev.recvMs;
           q.hasBid = (ev.flags & tick::BID_PRESENT) != 0; q.hasAsk = (ev.flags & tick::ASK_PRESENT) != 0;
@@ -234,18 +269,39 @@ int main(int argc, char** argv) {
           q.snapshot = (ev.flags & tick::SNAPSHOT) != 0 || ev.gapBefore; // a continuity break warms, never counts
           q.crossed = (ev.flags & tick::CROSSED) != 0;
           q.changed = (ev.flags & tick::REPEAT) == 0;
+          // The book manages its open trade and fills its pending signal on
+          // THIS event before the strategy sees it (no lookahead on a fill).
+          const bool hadOpen = bk->second.open().has_value();
+          if (auto closed = bk->second.onQuote(q)) {
+            const long long seq = tickShadowLedger.record(*closed);
+            decisionRing.log("tick", "shadow_close", 0, static_cast<long long>(ev.symbolId), closed->reason,
+                             closed->side + " netR=" + std::to_string(closed->netR) + " hold=" + std::to_string(closed->holdEvents) + " seq=" + std::to_string(seq) + " profile=" + closed->profileHash);
+          }
+          const bool hasOpen = bk->second.open().has_value();
+          if (hadOpen != hasOpen) { if (hasOpen) tickShadowOpen.fetch_add(1, std::memory_order_relaxed); else tickShadowOpen.fetch_sub(1, std::memory_order_relaxed); }
           if (auto sig = it->second.onQuote(q)) {
             tickSignals.fetch_add(1, std::memory_order_relaxed);
             (sig->side == "BUY" ? tickSignalsBuy : tickSignalsSell).fetch_add(1, std::memory_order_relaxed);
             tickLastSignalMs.store(sig->recvMs, std::memory_order_relaxed);
+            const auto before = bk->second.rejected();
+            const bool taken = bk->second.offer(*sig);
+            const auto after = bk->second.rejected();
+            if (after.cost != before.cost) tickShadowRejectedCost.fetch_add(1, std::memory_order_relaxed);
+            if (after.noFill != before.noFill) tickShadowRejectedNoFill.fetch_add(1, std::memory_order_relaxed);
+            // The signal's own quote travels with it (P6a): the keeper's
+            // evidence needs the price the signal was made at, not only
+            // that it happened.
             decisionRing.log("tick", "signal", 0, static_cast<long long>(ev.symbolId), sig->side,
-                             "shadow trigger2=" + std::to_string(sig->trigger2) + " stop=" + std::to_string(sig->stopDistance) +
+                             std::string(taken ? "shadow" : (after.cost != before.cost ? "shadow_cost" : "shadow_busy")) +
+                             " seq=" + std::to_string(sig->seq) + " recvMs=" + std::to_string(sig->recvMs) +
+                             " bid=" + std::to_string(sig->bid) + " ask=" + std::to_string(sig->ask) +
+                             " trigger2=" + std::to_string(sig->trigger2) + " stop=" + std::to_string(sig->stopDistance) +
                              " V=" + std::to_string(sig->V) + " E=" + std::to_string(sig->E) + " setup=" + std::to_string(sig->setupId) +
                              " profile=" + it->second.profileHash());
           }
         });
     tickWorkers->start();
-    logLine("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; strategy " + std::string("tick_momentum_breakout v1 profile ") + tickParams.profileHash() + " runs in SHADOW only when the keeper switches it on)");
+    logLine("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; strategy " + std::string("tick_momentum_breakout v1 profile ") + tickParams.profileHash() + " runs in SHADOW only when the keeper switches it on; the shadow portfolio fills by the replayer's rules, " + tickSim.json() + ")");
   }
 
   // The decision ring (owner invariant 1, 2026-08-31): every decision this
@@ -424,7 +480,7 @@ int main(int argc, char** argv) {
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -564,6 +620,7 @@ int main(int argc, char** argv) {
         tj.set("symbols", static_cast<double>(ts.perSymbol.size()));
         tj.set("shadow", tickShadow.load());
         tj.set("signals", static_cast<double>(tickSignals.load()));
+        { std::lock_guard<std::mutex> lk(tickSimMtx); if (auto sj = jsn::parse(tickSim.json())) tj.set("shadowSim", *sj); }
         if (trusted) {
           jsn::Array subs;
           std::lock_guard<std::mutex> lk(vpoMtx);
@@ -636,7 +693,7 @@ int main(int argc, char** argv) {
   // P3a: the recorder in full — state, counters, segments, the mount's free
   // bytes (statvfs on the spool path: the measurement TM-27 asks for),
   // events/sec per symbol. {enabled:false} when TICK_SPOOL_PATH is unset.
-  server.route("GET", "/tick-status", [&tickRecorder, &tickWorkers, &tickWorkerEvents, &tickShadow, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &tickParams](const HttpRequest&) -> HttpResponse {
+  server.route("GET", "/tick-status", [&tickRecorder, &tickWorkers, &tickWorkerEvents, &tickShadow, &tickSignals, &tickSignalsBuy, &tickSignalsSell, &tickLastSignalMs, &tickParams, &tickShadowLedger, &tickShadowOpen, &tickShadowRejectedCost, &tickShadowRejectedNoFill, &tickShadowResets, &tickSimMtx, &tickSim](const HttpRequest&) -> HttpResponse {
     if (!tickRecorder) return {200, "{\"enabled\":false,\"reason\":\"TICK_SPOOL_PATH not set\"}"};
     auto parsed = jsn::parse(tickRecorder->statusJson());
     if (!parsed) return {200, tickRecorder->statusJson()};
@@ -675,7 +732,33 @@ int main(int argc, char** argv) {
       st.set("places", false); // P4: shadow only — the entry path is P6
       v.set("strategy", std::move(st));
     }
+    {
+      // P6a: the shadow portfolio's shape — closed count, open positions,
+      // the rejections, the sim parameters in force for new books.
+      jsn::Value sp{jsn::Object{}};
+      sp.set("bootId", tickShadowLedger.bootId());
+      sp.set("closed", static_cast<double>(tickShadowLedger.total()));
+      sp.set("latestSeq", static_cast<double>(tickShadowLedger.latestSeq()));
+      sp.set("open", static_cast<double>(tickShadowOpen.load()));
+      sp.set("rejectedCost", static_cast<double>(tickShadowRejectedCost.load()));
+      sp.set("rejectedNoFill", static_cast<double>(tickShadowRejectedNoFill.load()));
+      sp.set("resets", static_cast<double>(tickShadowResets.load()));
+      { std::lock_guard<std::mutex> lk(tickSimMtx); if (auto sj = jsn::parse(tickSim.json())) sp.set("sim", *sj); }
+      v.set("shadowPortfolio", std::move(sp));
+    }
     return {200, jsn::dump(v)};
+  });
+
+  // P6a: the shadow portfolio's closed trades, same cursor contract as
+  // /decisions — {after, bootId}; a bootId mismatch hands over the whole ring.
+  server.route("POST", "/tick-shadow", [&tickShadowLedger](const HttpRequest& req) -> HttpResponse {
+    long long after = 0;
+    std::string callerBootId;
+    if (auto parsed = jsn::parse(req.body); parsed && parsed->isObject()) {
+      after = static_cast<long long>(parsed->get("after").asNumber(0));
+      callerBootId = parsed->get("bootId").asString();
+    }
+    return {200, tickShadowLedger.dumpJson(after, callerBootId)};
   });
 
   server.route("POST", "/decisions", [&decisionRing](const HttpRequest& req) -> HttpResponse {
@@ -1034,7 +1117,7 @@ int main(int argc, char** argv) {
   // guard live — halt (kill switch), require-bracket, max order volume —
   // without pausing or locking the order path. Each field is optional; only
   // the ones present are changed. Reads on the order path are lock-free.
-  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStratReset](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStratReset, &tickSimMtx, &tickSim](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -1091,6 +1174,22 @@ int main(int argc, char** argv) {
         logLine(std::string("tick strategy shadow ") + (want ? "ON" : "OFF") + " (keeper's switch; signals are rung, nothing is placed)");
         decisionRing.log("tick", "shadow_changed", 0, 0, want ? "on" : "off", "keeper's switch via /config");
       }
+    }
+    // P6a: the shadow portfolio's sim parameters (the replayer's fields);
+    // applied to books created after this push, so a change re-warms
+    // through the shadow switch rather than rewriting an open trade's rule.
+    if (v.get("tickShadowSim").isObject()) {
+      const auto& sj = v.get("tickShadowSim");
+      std::lock_guard<std::mutex> lk(tickSimMtx);
+      tick::ShadowSim next = tickSim;
+      if (sj.get("latencyMs").isNumber()) next.latencyMs = static_cast<long long>(sj.get("latencyMs").asNumber());
+      if (sj.get("slippage").isNumber()) next.slippage = static_cast<long long>(sj.get("slippage").asNumber());
+      if (sj.get("commissionPerSide").isNumber()) next.commissionPerSide = static_cast<long long>(sj.get("commissionPerSide").asNumber());
+      if (sj.get("targetR").isNumber()) next.targetR = sj.get("targetR").asNumber();
+      if (sj.get("minTargetToCost").isNumber()) next.minTargetToCost = sj.get("minTargetToCost").asNumber();
+      if (sj.get("maxHoldEvents").isNumber()) next.maxHoldEvents = static_cast<int>(sj.get("maxHoldEvents").asNumber());
+      if (sj.get("maxHoldMs").isNumber()) next.maxHoldMs = static_cast<long long>(sj.get("maxHoldMs").asNumber());
+      if (next.json() != tickSim.json()) { tickSim = next; logLine("tick shadow sim: " + tickSim.json() + " (keeper's push; applies to new books)"); }
     }
     if (v.get("tickSymbolIds").isArray()) {
       std::vector<long long> ids;

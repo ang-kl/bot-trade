@@ -27,6 +27,7 @@
 //   the machine was already authorized to stop trading.
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from 'node:fs'
 import { getState } from '../db.js'
 import { engineStatusFor, acknowledgeEntryEpochs } from './entry-mode.js'
 import { alreadyTrippedToday } from './equity-stop.js'
@@ -45,6 +46,22 @@ import { fxDayOpenMs } from '../lib/volume-structure.js'
  * @returns {{halt:boolean, requireBracket?:boolean, requireTarget?:boolean,
  *            maxOrderVolume?:number, haltAccounts:number[]}}
  */
+export const TICK_SHADOW_SIM_FILE = new URL('../config/tick-shadow-sim.json', import.meta.url)
+export const SIM_KEYS = Object.freeze(['latencyMs', 'slippage', 'commissionPerSide', 'targetR', 'minTargetToCost', 'maxHoldEvents', 'maxHoldMs'])
+/** The repo's shadow sim (numbers only; a missing or unreadable file → null, nothing pushed). */
+export function loadTickShadowSim(file = TICK_SHADOW_SIM_FILE) {
+  try {
+    const raw = JSON.parse(readFileSync(file, 'utf8'))
+    const out = {}
+    for (const k of SIM_KEYS) if (Number.isFinite(Number(raw?.[k]))) out[k] = Number(raw[k])
+    return Object.keys(out).length ? out : null
+  } catch { return null }
+}
+function sameSim(a, b) {
+  for (const k of SIM_KEYS) { if (a[k] == null) continue; if (Number(b[k]) !== Number(a[k])) return false }
+  return true
+}
+
 export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now()) {
   let stored = {}
   try { stored = JSON.parse(getState(db, 'exec_guard_json') || '{}') } catch { stored = {} }
@@ -110,6 +127,10 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
   out.tickRecord = false
   // P4: SHADOW runs the strategy on the sidecar's workers (signals only).
   out.tickShadow = false
+  // P6a: the shadow portfolio's sim parameters from the repo file — pushed
+  // whenever the sidecar reports a different set, so the costs a pass was
+  // judged at are the ones on record, not a default nobody set.
+  out.tickShadowSim = loadTickShadowSim()
   try {
     const rows = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
       .all(...(side?.isLive == null ? [] : [side.isLive ? 1 : 0]))
@@ -194,6 +215,7 @@ export function guardDiffers(desired, reported) {
   const tick = reported.tick && typeof reported.tick === 'object' ? reported.tick : null
   if (tick && typeof desired.tickRecord === 'boolean' && typeof tick.recording === 'boolean' && tick.recording !== desired.tickRecord) return true
   if (tick && typeof desired.tickShadow === 'boolean' && typeof tick.shadow === 'boolean' && tick.shadow !== desired.tickShadow) return true
+  if (tick && desired.tickShadowSim && tick.shadowSim && typeof tick.shadowSim === 'object' && !sameSim(desired.tickShadowSim, tick.shadowSim)) return true
   if (tick && Array.isArray(desired.tickSymbolIds) && desired.tickSymbolIds.length && Array.isArray(tick.subscribed)) {
     const have = new Set(tick.subscribed.map(Number))
     for (const id of desired.tickSymbolIds) if (!have.has(Number(id))) return true

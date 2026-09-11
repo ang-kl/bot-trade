@@ -1,0 +1,10 @@
+{
+  "_note": "P6a (plan §7): the shadow portfolio's fill costs, pushed to the demo sidecar as /config tickShadowSim and applied to books created after the push. Prices are the feed's integer wire units and one number serves every symbol, so a non-zero slippage or commission here is a deliberate, owner-set pessimism, not a schedule; leave 0 to record spread-only costs and say so. Recorded in every SHADOW_PASSED evidence record.",
+  "latencyMs": 250,
+  "slippage": 0,
+  "commissionPerSide": 0,
+  "targetR": 3,
+  "minTargetToCost": 3,
+  "maxHoldEvents": 0,
+  "maxHoldMs": 21600000
+}

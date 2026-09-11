@@ -415,9 +415,16 @@ Measurement history — each line is a real run of the script, not a claim:
   Performance-card balance investigation) and `№ 7,642` (07:08 UTC, the
   revised plan: roles, P6, the whole-plan audit) followed; two unstamped
   lines followed those (`№ 7,643`–`№ 7,644`, the perf-card fix build), so
-  the next stamped reply is **`№ 7,645`**. The count is by replies, not by
-  stamps (the 08-09 rule). A later re-measure that reads below this line
-  is missing these, not correcting them.
+  the next stamped reply was `№ 7,645`. Continued in the same container:
+  eight unstamped status lines followed (`№ 7,645`–`№ 7,652`, 07:05–07:35
+  UTC: the perf-card tests, #891's gate and the checker's blocker fixed,
+  #891 merged by the owner at 07:20 UTC, the shadow book built and its
+  Statistics audit folded in), so the reply stamped **`№ 7,653`** (07:52
+  UTC, "not yet merged") is right by count; one unstamped line followed
+  it (`№ 7,654`, the gate re-run), so the next stamped reply is
+  **`№ 7,655`**. The count is by replies, not by stamps (the 08-09 rule).
+  A later re-measure that reads below this line is missing these, not
+  correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

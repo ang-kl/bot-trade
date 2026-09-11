@@ -8,9 +8,11 @@
 //   UNVALIDATED → REPLAY_PASSED   a trial in tick_trials (P4 ledger) whose
 //                                 profile hash the record pins — or, on the
 //                                 first import, PINS the record to that hash
-//   REPLAY_PASSED → SHADOW_PASSED shadow signals rung by the sidecar under
-//                                 the SAME profile since the account's
-//                                 SHADOW switch, over enough hours
+//   REPLAY_PASSED → SHADOW_PASSED the shadow's OWN portfolio (P6a): closed
+//                                 shadow trades under the SAME profile since
+//                                 the account's SHADOW switch — trades, profit
+//                                 factor and drawdown in R — plus the signal
+//                                 count and hours
 //   SHADOW_PASSED → DEMO_PASSED   closed tick trades on a demo account
 //                                 (P6 produces them; refused until then)
 //   DEMO_PASSED → LIVE_APPROVED   the owner's word, typed as the stage name
@@ -30,9 +32,11 @@
 import { readFileSync } from 'node:fs'
 
 import { getAccountState, setAccountState } from './account-registry.js'
+import { getState } from '../db.js'
 import { engineStatusFor, writeEngineStatus } from './entry-mode.js'
 import { VALIDATION_STAGES } from '../lib/entry-contracts.js'
 import { profileHashFull, normalizeParams, PROFILE_ID } from '../lib/tick-strategy.js'
+import { shadowPortfolio } from './tick-shadow.js'
 
 export const TICK_VALIDATION_KEY = 'tick_validation_json'
 export const THRESHOLDS_FILE = new URL('../config/tick-validation.json', import.meta.url)
@@ -45,7 +49,7 @@ export function loadThresholds({ file = THRESHOLDS_FILE } = {}) {
     const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
     return {
       replay: { minTrades: num(raw?.replay?.minTrades), minProfitFactor: num(raw?.replay?.minProfitFactor), minTestNetR: num(raw?.replay?.minTestNetR), maxDrawdownR: num(raw?.replay?.maxDrawdownR) },
-      shadow: { minSignals: num(raw?.shadow?.minSignals), minHours: num(raw?.shadow?.minHours) },
+      shadow: { minSignals: num(raw?.shadow?.minSignals), minHours: num(raw?.shadow?.minHours), minTrades: num(raw?.shadow?.minTrades), minLosses: num(raw?.shadow?.minLosses), minProfitFactor: num(raw?.shadow?.minProfitFactor), minExpectancyLowerR: num(raw?.shadow?.minExpectancyLowerR), maxDrawdownR: num(raw?.shadow?.maxDrawdownR), maxResetSharePct: num(raw?.shadow?.maxResetSharePct) },
       demo: { minClosedTrades: num(raw?.demo?.minClosedTrades), minProfitFactor: num(raw?.demo?.minProfitFactor), maxDrawdownR: num(raw?.demo?.maxDrawdownR) },
     }
   } catch {
@@ -80,12 +84,27 @@ export function shadowSignalEvidence(db, { side, profilePrefix, sinceIso }) {
   return { signals: matching.length, otherProfile: rows.length - matching.length, symbols: new Set(matching.map(r => r.symbol_id)).size, firstAt: first, lastAt: last, hours: +Math.max(0, hours).toFixed(2) }
 }
 
-function shadowSwitchedAt(db, accountId) {
+/**
+ * The observation window (Statistics auditor, 11-09-2026): it opens at the
+ * FIRST SHADOW switch after the profile was pinned and must run unbroken —
+ * any switch away from SHADOW after that breaks it, and the stage refuses
+ * until the profile is re-pinned (a reset to UNVALIDATED). Before this the
+ * window opened at the LATEST switch, so cycling SHADOW→OFF→SHADOW after a
+ * losing stretch excluded it: an owner-resettable peeking channel.
+ */
+export function shadowWindow(db, accountId, pinnedAtIso) {
+  let rows = []
   try {
-    const rows = db.prepare(`SELECT at, body FROM action_log WHERE path = '/actions/tick-observation' AND account_id = ? ORDER BY id DESC LIMIT 20`).all(String(accountId))
-    for (const r of rows) { try { if (JSON.parse(r.body)?.to === 'SHADOW') return r.at } catch { /* skip */ } }
-  } catch { /* no column on an old schema */ }
-  return null
+    rows = db.prepare(`SELECT at, body FROM action_log WHERE path = '/actions/tick-observation' AND account_id = ? ORDER BY id`).all(String(accountId))
+  } catch { rows = [] }
+  const switches = []
+  for (const r of rows) { try { const b = JSON.parse(r.body); if (b?.to) switches.push({ at: r.at, to: b.to }) } catch { /* skip */ } }
+  const afterPin = pinnedAtIso ? switches.filter(sw => sw.at.replace(' ', 'T') >= pinnedAtIso.replace(' ', 'T').replace(/Z$/, '')) : switches
+  const first = afterPin.find(sw => sw.to === 'SHADOW') || null
+  if (!first) return { since: null, broken: false, switches: afterPin }
+  const later = afterPin.filter(sw => sw.at > first.at)
+  const brokenBy = later.find(sw => sw.to !== 'SHADOW') || null
+  return { since: first.at, broken: !!brokenBy, brokenBy, switches: afterPin }
 }
 
 /**
@@ -145,17 +164,41 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
       if (missing.length) return { ok: false, reason: 'thresholds_unset', unset: missing.map(k => `shadow.${k}`) }
       if (!cur.profileHash) return { ok: false, reason: 'no_profile_pinned' }
       if (cur.tickObservation !== 'SHADOW') return { ok: false, reason: 'observation_not_shadow', observed: cur.tickObservation }
-      const since = shadowSwitchedAt(db, id)
-      if (!since) return { ok: false, reason: 'shadow_switch_unrecorded', note: 'no /actions/tick-observation SHADOW row in action_log for this account' }
+      const pinnedAt = [...validationHistory(db, id)].reverse().find(h => h.stage === 'REPLAY_PASSED' && h.profileHash === cur.profileHash)?.at || null
+      const win = shadowWindow(db, id, pinnedAt)
+      if (!win.since) return { ok: false, reason: 'shadow_switch_unrecorded', note: 'no /actions/tick-observation SHADOW row in action_log for this account since the profile was pinned', switches: win.switches }
+      if (win.broken) return { ok: false, reason: 'shadow_window_broken', note: 'the observation left SHADOW after the window opened; the window cannot be re-opened by switching back (that would let a losing stretch be excluded) — reset to UNVALIDATED and re-pin the profile', brokenBy: win.brokenBy, switches: win.switches }
+      const since = win.since
       const side = cur.environment === 'live' ? 'cpp_exec' : 'cpp_exec_demo'
-      const ev = shadowSignalEvidence(db, { side, profilePrefix: cur.profileHash.slice(0, 16), sinceIso: since })
+      const prefix = cur.profileHash.slice(0, 16)
+      const ev = shadowSignalEvidence(db, { side, profilePrefix: prefix, sinceIso: since })
+      // P6a (plan §2): the shadow's OWN portfolio is the evidence — closed
+      // shadow trades under this profile since the window opened, judged in
+      // R: enough trades AND enough losses (a profit factor with no losing
+      // trade is undefined, never infinite), the profit factor, the 5th
+      // percentile of bootstrapped expectancy, the closed-equity drawdown,
+      // and the share of trades that were marked at a reset or lost to a
+      // restart rather than closed by the rule.
+      const pf = shadowPortfolio(db, { side, profilePrefix: prefix, sinceMs: Date.parse(since.replace(' ', 'T') + 'Z') })
       const checks = {
         signals: { observed: ev.signals, min: th.shadow.minSignals, ok: ev.signals >= th.shadow.minSignals },
         hours: { observed: ev.hours, min: th.shadow.minHours, ok: ev.hours >= th.shadow.minHours },
+        trades: { observed: pf.trades, min: th.shadow.minTrades, ok: pf.trades >= th.shadow.minTrades },
+        losses: { observed: pf.losses, min: th.shadow.minLosses, ok: pf.losses >= th.shadow.minLosses },
+        profitFactor: { observed: pf.profitFactor, min: th.shadow.minProfitFactor, ok: pf.profitFactor != null && pf.profitFactor >= th.shadow.minProfitFactor },
+        expectancyLowerR: { observed: pf.expectancyLowerR, min: th.shadow.minExpectancyLowerR, ok: pf.expectancyLowerR != null && pf.expectancyLowerR >= th.shadow.minExpectancyLowerR },
+        maxDrawdownR: { observed: pf.maxDrawdownR, max: th.shadow.maxDrawdownR, ok: pf.maxDrawdownR <= th.shadow.maxDrawdownR },
+        resetSharePct: { observed: pf.resetSharePct, max: th.shadow.maxResetSharePct, ok: pf.resetSharePct != null && pf.resetSharePct <= th.shadow.maxResetSharePct },
       }
+      let sim = null
+      try { sim = JSON.parse(getState(db, `${side}_tick_json`) || 'null')?.status?.shadowPortfolio?.sim ?? null } catch { sim = null }
+      const portfolio = { trades: pf.trades, losses: pf.losses, netR: pf.netR, profitFactor: pf.profitFactor, expectancyLowerR: pf.expectancyLowerR, maxDrawdownR: pf.maxDrawdownR, maxConcurrentOpen: pf.maxConcurrentOpen, exits: pf.exits, resets: pf.resets, lost: pf.lost, resetSharePct: pf.resetSharePct, hours: pf.hours, symbols: pf.symbols }
+      // Provenance (plan §7): the sim the book ran at, the sidecar boots the
+      // trades came from, the window's switches — on the record, not implied.
+      const provenance = { sim, bootIds: pf.bootIds, window: { since, pinnedAt, switches: win.switches }, costsNote: sim && (Number(sim.slippage) > 0 || Number(sim.commissionPerSide) > 0) ? 'owner-set slippage/commission' : 'spread-only costs (slippage and commission 0)' }
       const failed = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k)
-      if (failed.length) return { ok: false, reason: 'shadow_below_threshold', failed, checks, evidence: ev }
-      record.evidence = { side, since, ...ev, checks }
+      if (failed.length) return { ok: false, reason: 'shadow_below_threshold', failed, checks, evidence: { signals: ev, portfolio, provenance } }
+      record.evidence = { side, since, signals: ev, portfolio, provenance, checks }
       next.validationStage = 'SHADOW_PASSED'
     } else if (stage === 'DEMO_PASSED') {
       const missing = unset(th.demo)

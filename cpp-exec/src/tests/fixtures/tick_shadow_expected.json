@@ -1,0 +1,89 @@
+{
+ "profileHash": "a15a82842ecf30e4",
+ "cases": [
+  {
+   "sim": {
+    "latencyMs": 250,
+    "slippage": 0,
+    "commissionPerSide": 0,
+    "targetR": 3,
+    "minTargetToCost": 3,
+    "maxHoldMs": 21600000,
+    "maxHoldEvents": 0
+   },
+   "rejected": {
+    "cost": 0,
+    "noFill": 0
+   },
+   "trades": [
+    {
+     "side": "BUY",
+     "signalSeq": 118,
+     "entrySeq": 123,
+     "exitSeq": 230,
+     "entry": 100089,
+     "exit": 100009,
+     "stop": 100009,
+     "target": 100329,
+     "stopDistance": 80,
+     "reason": "stop",
+     "holdEvents": 107,
+     "holdMs": 5350,
+     "grossR": -1,
+     "netR": -1
+    }
+   ],
+   "openAtEnd": true
+  },
+  {
+   "sim": {
+    "latencyMs": 250,
+    "slippage": 1,
+    "commissionPerSide": 2,
+    "targetR": 3,
+    "minTargetToCost": 1,
+    "maxHoldEvents": 40,
+    "maxHoldMs": 21600000
+   },
+   "rejected": {
+    "cost": 0,
+    "noFill": 0
+   },
+   "trades": [
+    {
+     "side": "BUY",
+     "signalSeq": 118,
+     "entrySeq": 123,
+     "exitSeq": 163,
+     "entry": 100090,
+     "exit": 100078,
+     "stop": 100010,
+     "target": 100330,
+     "stopDistance": 80,
+     "reason": "hold_events",
+     "holdEvents": 40,
+     "holdMs": 2000,
+     "grossR": -0.15,
+     "netR": -0.2
+    },
+    {
+     "side": "SELL",
+     "signalSeq": 284,
+     "entrySeq": 289,
+     "exitSeq": 330,
+     "entry": 99937,
+     "exit": 99883,
+     "stop": 99990,
+     "target": 99778,
+     "stopDistance": 53,
+     "reason": "hold_events",
+     "holdEvents": 40,
+     "holdMs": 2050,
+     "grossR": 1.0189,
+     "netR": 0.9434
+    }
+   ],
+   "openAtEnd": false
+  }
+ ]
+}

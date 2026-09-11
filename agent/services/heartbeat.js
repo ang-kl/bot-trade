@@ -922,6 +922,44 @@ export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
   return record
 }
 
+// P6a: the shadow portfolio's closed trades, pulled per side with a cursor
+// (bootId + seq) into tick_shadow_trades — idempotent, restart-aware. The
+// per-side summary the sidecar reports (/tick-status.shadowPortfolio) is
+// already stored inside <side>_tick_json by pullTickStatus.
+export const TICK_SHADOW_CURSOR_KEY = 'tick_shadow_cursor_json'
+export async function pullTickShadow(db, exec, side) {
+  let cursors = {}
+  try { cursors = JSON.parse(getState(db, TICK_SHADOW_CURSOR_KEY) || '{}') } catch { cursors = {} }
+  const cur = cursors[side.name] || { bootId: '', lastSeq: 0 }
+  const pulled = await exec.pullSidecarShadow({ after: cur.lastSeq, bootId: cur.bootId, ...(side.base ? { base: side.base } : {}) })
+  if (!pulled) return null
+  const ins = db.prepare(`INSERT OR IGNORE INTO tick_shadow_trades
+      (side, boot_id, seq, symbol_id, profile_hash, trade_side, signal_seq, entry_seq, exit_seq, entry, exit, stop, target, stop_distance, reason, hold_events, hold_ms, entry_ms, exit_ms, gross_r, net_r)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  let inserted = 0
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null)
+  for (const t of pulled.trades) {
+    if (!t || !Number.isFinite(Number(t.seq))) continue
+    const r = ins.run(side.name, pulled.bootId, Number(t.seq), num(t.symbolId), t.profile != null ? String(t.profile).slice(0, 64) : null, t.side != null ? String(t.side) : null,
+      num(t.signalSeq), num(t.entrySeq), num(t.exitSeq), num(t.entry), num(t.exit), num(t.stop), num(t.target), num(t.stopDistance),
+      t.reason != null ? String(t.reason).slice(0, 32) : null, num(t.holdEvents), num(t.holdMs), num(t.entryMs), num(t.exitMs), num(t.grossR), num(t.netR))
+    inserted += r.changes
+  }
+  if (cur.bootId && pulled.bootId !== cur.bootId) {
+    // A restart loses every open shadow trade with it. They are written as
+    // 'lost_restart' rows (no result) so the evidence counts what vanished
+    // instead of pretending it never traded (Statistics auditor, 11-09-2026).
+    let lostOpen = 0
+    try { lostOpen = Number(JSON.parse(getState(db, `${side.name}_tick_json`) || 'null')?.status?.shadowPortfolio?.open) || 0 } catch { lostOpen = 0 }
+    for (let i = 0; i < lostOpen; i++) ins.run(side.name, cur.bootId, 1_000_000_000 + i, null, null, null, null, null, null, null, null, null, null, null, 'lost_restart', null, null, null, Date.now(), null, null)
+    console.log(`[tick] ${side.name} shadow ledger restarted (boot ${cur.bootId} → ${pulled.bootId}); ${pulled.trades.length} trade(s) re-read, ${lostOpen} open trade(s) lost`)
+  }
+  if (inserted > 0) console.log(`[tick] ${side.name} shadow portfolio: ${inserted} closed trade(s) recorded (ledger seq ${pulled.latestSeq}, ${pulled.total} this boot)`)
+  cursors[side.name] = { bootId: pulled.bootId, lastSeq: pulled.latestSeq }
+  setState(db, TICK_SHADOW_CURSOR_KEY, JSON.stringify(cursors))
+  return { inserted, latestSeq: pulled.latestSeq, bootId: pulled.bootId }
+}
+
 /**
  * P3b: the measured rate over the last 24 h per side, from the hourly
  * samples: events/sec, bytes/day at the recorder's 40 B record, and the
@@ -1154,6 +1192,10 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
   try {
     if (r.ok !== undefined && r.tick && typeof r.tick === 'object' && typeof exec.sidecarTickStatus === 'function') {
       await pullTickStatus(db, exec, side, nowMs)
+      // P6a: the shadow portfolio's closed trades ride the same probe.
+      if (typeof exec.pullSidecarShadow === 'function') {
+        try { await pullTickShadow(db, exec, side) } catch (err) { console.warn(`[heartbeat] tick shadow pull failed (${side.name}): ${err.message}`) }
+      }
     }
   } catch { /* next probe retries */ }
   // Persist what the probe learned so a READ route never has to call the
