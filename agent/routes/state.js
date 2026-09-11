@@ -2547,6 +2547,21 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // PR-H: the research jobs POST /actions/tick-research started — the
+  // running one and the last few, each with its result once done.
+  // ?id=<jobId> answers that one job (404 when unknown).
+  router.get('/tick-research-job', async (req, res) => {
+    try {
+      const { tickResearchJob, tickResearchJobsView } = await import('../services/tick-research-run.js')
+      if (req.query.id) {
+        const j = tickResearchJob(String(req.query.id))
+        return j ? res.json(j) : res.status(404).json({ error: 'unknown_job', jobId: String(req.query.id) })
+      }
+      res.json(tickResearchJobsView())
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // P3a: the tick recorder per sidecar side — the last pulled /tick-status
   // (state, counters, segments, the mount's free bytes, events/sec per
   // symbol), each account's observation switch, and the symbol names the

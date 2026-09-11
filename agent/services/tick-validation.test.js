@@ -14,10 +14,12 @@ import { upsertAccount, getAccountState, setAccountState } from './account-regis
 import { engineStatusFor, requestTickObservation, ENGINE_STATUS_KEY } from './entry-mode.js'
 import { importTickTrial } from './tick-research.js'
 import { DEFAULT_PARAMS, profileHash, profileHashFull, normalizeParams } from '../lib/tick-strategy.js'
-import { importTickValidation, loadThresholds, validationHistory, shadowSignalEvidence, tradedTickEvidence, TICK_VALIDATION_KEY } from './tick-validation.js'
+import { importTickValidation, loadThresholds, validationHistory, shadowSignalEvidence, tradedTickEvidence, replayChecks, shadowWindow, TICK_VALIDATION_KEY } from './tick-validation.js'
+import { simulate } from '../lib/tick-replay-sim.js'
+import { buildFixture } from '../lib/tick-strategy.test.js'
 
 const DEMO = '46979908', LIVE = '42993489'
-const TH = { replay: { minTrades: 30, minProfitFactor: 1.3, minTestNetR: 0, maxDrawdownR: 10 }, shadow: { minSignals: 20, minHours: 24, minTrades: 5, minLosses: 2, minProfitFactor: 1.2, minExpectancyLowerR: -1, maxDrawdownR: 6, maxResetSharePct: 20 }, traded: { minTrades: 3, minProfitFactor: 1.2, maxDrawdownR: 10 } }
+const TH = { replay: { minTrades: 30, minProfitFactor: 1.3, maxDrawdownR: 10, minExpectancyLowerR: 0, minTestTrades: 10 }, shadow: { minSignals: 20, minHours: 24, minTrades: 5, minLosses: 2, minProfitFactor: 1.2, minExpectancyLowerR: -1, maxDrawdownR: 6, maxResetSharePct: 20 }, traded: { minTrades: 3, minProfitFactor: 1.2, maxDrawdownR: 10 } }
 
 function fresh() {
   const db = initDB(':memory:')
@@ -25,11 +27,12 @@ function fresh() {
   upsertAccount(db, { accountId: LIVE, isLive: true })
   return db
 }
-function trial(db, { params = DEFAULT_PARAMS, trades = 40, profitFactor = 1.6, testNetR = 3, maxDrawdownR = 4, trialId = null } = {}) {
+function trial(db, { params = DEFAULT_PARAMS, trades = 40, profitFactor = 1.6, testNetR = 3, testLowerR = 0.2, testWithheld = false, maxDrawdownR = 4, trialId = null } = {}) {
+  const testBlock = testWithheld ? { name: 'test', withheld: true, trades: null } : { name: 'test', trades: 10, netR: testNetR, expectancyLowerR: testLowerR }
   const t = {
     trialId, strategyId: 'tick_momentum_breakout', strategyVersion: 'v1', profileHash: profileHash(params), params: normalizeParams(params),
     sim: { latencyMs: 250 }, manifest: { segments: 1 }, summary: { trades, profitFactor, maxDrawdownR, netR: testNetR + 2 },
-    blocks: [{ name: 'train', trades: 20, netR: 1 }, { name: 'validation', trades: 10, netR: 1 }, { name: 'test', trades: 10, netR: testNetR }],
+    blocks: [{ name: 'train', trades: 20, netR: 1 }, { name: 'validation', trades: 10, netR: 1 }, testBlock],
   }
   const r = importTickTrial(db, t)
   assert.equal(r.ok, true)
@@ -44,18 +47,95 @@ function signal(db, { side = 'cpp_exec_demo', at, profile, symbolId = 1, seq }) 
     .run(at, side, seq, Date.parse(at + 'Z'), symbolId, `shadow trigger2=1.1 stop=0.002 V=0.5 E=0.7 setup=${seq} profile=${profile}`)
 }
 
-test('the checked-in thresholds file leaves every threshold unset, and an unset threshold refuses the import with nothing written', () => {
+// PR-H (11-09-2026): the owner's decision of 11-09-2026 (CLAUDE.md "Owner
+// principles", decision on thresholds; plan §4 PR-H). These are THE numbers,
+// pinned here so a silent edit of the file is red. replay.minTestNetR is
+// gone: replay.minExpectancyLowerR is judged on the same TEST block.
+export const OWNER_THRESHOLDS = Object.freeze({
+  replay: { minTrades: 40, minProfitFactor: 1.3, maxDrawdownR: 8, minExpectancyLowerR: 0, minTestTrades: 10 },
+  shadow: { minSignals: 200, minHours: 48, minTrades: 30, minLosses: 8, minProfitFactor: 1.3, minExpectancyLowerR: 0, maxDrawdownR: 8, maxResetSharePct: 20 },
+  traded: { minTrades: 30, minProfitFactor: 1.3, maxDrawdownR: 8 },
+})
+
+test('PR-H: the checked-in thresholds file carries the owner\'s exact numbers (a silent edit is red), no stage is thresholds_unset any more, and an injected null still refuses with nothing written', () => {
+  const raw = JSON.parse(readFileSync(new URL('../config/tick-validation.json', import.meta.url), 'utf8'))
+  for (const g of ['replay', 'shadow', 'traded']) {
+    assert.deepEqual(raw[g], OWNER_THRESHOLDS[g], `${g}: the file must carry exactly the owner's thresholds`)
+    for (const [k, v] of Object.entries(raw[g])) assert.ok(typeof v === 'number' && Number.isFinite(v), `${g}.${k} is a finite number, not ${v}`)
+  }
+  assert.equal('minTestNetR' in raw.replay, false, 'the old key is gone (mapped to minExpectancyLowerR on the test block)')
+  assert.equal(raw.replay.minTestTrades, 10, 'checker M-3: the test block needs a sample floor (a quarter of minTrades)')
+  assert.match(raw._note, /11-09-2026/); assert.match(raw._note, /minExpectancyLowerR REPLACES the former replay\.minTestNetR/)
   const th = loadThresholds()
-  for (const g of ['replay', 'shadow', 'traded']) for (const [k, v] of Object.entries(th[g])) assert.equal(v, null, `${g}.${k} must be null in the checked-in file (owner-held risk limit)`)
+  assert.deepEqual(th, OWNER_THRESHOLDS, 'the loader reads every value as set (no key silently dropped)')
   assert.deepEqual(Object.keys(th.shadow), ['minSignals', 'minHours', 'minTrades', 'minLosses', 'minProfitFactor', 'minExpectancyLowerR', 'maxDrawdownR', 'maxResetSharePct'], 'P6a: the shadow stage judges the portfolio')
+  // no stage answers thresholds_unset with the checked-in file
   const db = fresh()
   const id = trial(db)
-  const r = importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: id }, thresholds: th })
-  assert.equal(r.ok, false); assert.equal(r.reason, 'thresholds_unset')
-  assert.ok(r.unset.includes('replay.minTrades'))
-  assert.equal(engineStatusFor(db, DEMO).configRevision, 0, 'nothing written on a refusal')
-  assert.equal(getAccountState(db, DEMO, ENGINE_STATUS_KEY), null)
-  assert.equal(getAccountState(db, DEMO, TICK_VALIDATION_KEY), null)
+  const r = importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: id } })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED' }).reason, 'observation_not_shadow', 'past the threshold gate: refused on evidence, not on thresholds_unset')
+  engineModule.writeEngineStatus(db, { ...engineStatusFor(db, DEMO), validationStage: 'SHADOW_PASSED' })
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'TRADED_PASSED' }).reason, 'traded_below_threshold')
+  // a null anywhere still refuses that stage and writes nothing (the ask-first rule is intact)
+  const db2 = fresh()
+  const id2 = trial(db2)
+  const un = importTickValidation(db2, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: id2 }, thresholds: { ...OWNER_THRESHOLDS, replay: { ...OWNER_THRESHOLDS.replay, minExpectancyLowerR: null } } })
+  assert.equal(un.ok, false); assert.equal(un.reason, 'thresholds_unset'); assert.deepEqual(un.unset, ['replay.minExpectancyLowerR'])
+  assert.equal(engineStatusFor(db2, DEMO).configRevision, 0, 'nothing written on a refusal')
+  assert.equal(getAccountState(db2, DEMO, ENGINE_STATUS_KEY), null)
+  assert.equal(getAccountState(db2, DEMO, TICK_VALIDATION_KEY), null)
+})
+
+test('PR-H replay stage against the file\'s exact numbers: 40 trades / PF 1.3 / DD 8R / test-block expectancy lower bound 0 pass at the boundary; one short on each fails; a withheld test block or a pre-PR-H trial with no lower bound cannot pass', () => {
+  const th = loadThresholds()
+  const db = fresh()
+  const pass = trial(db, { trades: 40, profitFactor: 1.3, maxDrawdownR: 8, testLowerR: 0, trialId: 'pass' })
+  assert.deepEqual(replayChecks({ summary: { trades: 40, profitFactor: 1.3, maxDrawdownR: 8 }, blocks: [{ name: 'test', trades: 10, expectancyLowerR: 0 }] }, th.replay).failed, [])
+  for (const [name, over] of Object.entries({ trades: { trades: 39 }, profitFactor: { profitFactor: 1.29 }, maxDrawdownR: { maxDrawdownR: 8.01 }, expectancyLowerR: { testLowerR: -0.01 } })) {
+    const dbx = fresh()
+    const id = trial(dbx, { trades: 40, profitFactor: 1.3, maxDrawdownR: 8, testLowerR: 0, ...over, trialId: `fail-${name}` })
+    const r = importTickValidation(dbx, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: id } })
+    assert.equal(r.ok, false, name); assert.equal(r.reason, 'replay_below_threshold'); assert.deepEqual(r.failed, [name], `${name} alone fails`)
+    assert.equal(engineStatusFor(dbx, DEMO).validationStage, 'UNVALIDATED')
+  }
+  // a research trial (test block withheld) has no out-of-sample figure
+  const dbw = fresh()
+  const w = trial(dbw, { trades: 40, profitFactor: 1.3, maxDrawdownR: 8, testWithheld: true, trialId: 'withheld' })
+  const rw = importTickValidation(dbw, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: w } })
+  assert.equal(rw.ok, false); assert.equal(rw.reason, 'test_block_too_small'); assert.deepEqual(rw.failed, ['testTrades', 'expectancyLowerR']); assert.equal(rw.checks.expectancyLowerR.withheld, true); assert.equal(rw.checks.expectancyLowerR.observed, null)
+  // a trial written before the replayer carried the figure (test block with netR only) cannot pass on netR
+  const dbo = fresh()
+  const o = trial(dbo, { trades: 40, profitFactor: 1.3, maxDrawdownR: 8, testNetR: 5, testLowerR: undefined, trialId: 'old' })
+  dbo.prepare(`UPDATE tick_trials SET blocks_json = ? WHERE trial_id = ?`).run(JSON.stringify([{ name: 'train', trades: 20, netR: 1 }, { name: 'validation', trades: 10, netR: 1 }, { name: 'test', trades: 10, netR: 5 }]), o)
+  const ro = importTickValidation(dbo, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: o } })
+  assert.equal(ro.ok, false); assert.deepEqual(ro.failed, ['expectancyLowerR'], 'net R on the test block is not the bar any more')
+  // an Infinity / null profit factor (no losing trade) cannot pass a floor
+  assert.deepEqual(replayChecks({ summary: { trades: 40, profitFactor: null, maxDrawdownR: 0 }, blocks: [{ name: 'test', trades: 10, expectancyLowerR: 1 }] }, th.replay).failed, ['profitFactor'])
+  // a block marked withheld that nonetheless carries a figure (a hand-edited import) is still withheld: the flag wins over the number
+  assert.deepEqual(replayChecks({ summary: { trades: 40, profitFactor: 2, maxDrawdownR: 0 }, blocks: [{ name: 'test', trades: 10, withheld: true, expectancyLowerR: 1 }] }, th.replay).failed, ['testTrades', 'expectancyLowerR'])
+  // checker M-3: the test block's SAMPLE — blocks are cut by event index, so a two-trade block (bootstrap over two numbers) and a zero-trade block with a pasted figure must not pass; a block with no trade count is refused too
+  for (const [name, block] of Object.entries({ twoTrades: { name: 'test', trades: 2, netR: 0.2, expectancyLowerR: 0.1 }, zeroWithFigure: { name: 'test', trades: 0, expectancyLowerR: 0.5 }, nineTrades: { name: 'test', trades: 9, expectancyLowerR: 0.5 }, noCount: { name: 'test', expectancyLowerR: 0.5 }, stringCount: { name: 'test', trades: '12', expectancyLowerR: 0.5 } })) {
+    const dbs = fresh()
+    const id = trial(dbs, { trialId: `small-${name}` })
+    dbs.prepare('UPDATE tick_trials SET blocks_json = ? WHERE trial_id = ?').run(JSON.stringify([{ name: 'train', trades: 30, netR: 1 }, { name: 'validation', trades: 8, netR: 1 }, block]), id)
+    const rs = importTickValidation(dbs, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: id } })
+    assert.equal(rs.ok, false, name); assert.equal(rs.reason, 'test_block_too_small', name); assert.ok(rs.failed.includes('testTrades'), name)
+    assert.equal(engineStatusFor(dbs, DEMO).validationStage, 'UNVALIDATED', name)
+  }
+  const db10 = fresh()
+  const ten = trial(db10, { trialId: 'ten' })
+  db10.prepare('UPDATE tick_trials SET blocks_json = ? WHERE trial_id = ?').run(JSON.stringify([{ name: 'train', trades: 20, netR: 1 }, { name: 'validation', trades: 10, netR: 1 }, { name: 'test', trades: 10, netR: 1, expectancyLowerR: 0 }]), ten)
+  assert.equal(importTickValidation(db10, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: ten } }).ok, true, 'ten trades at the boundary pass')
+  // the boundary trial passes and pins
+  const rp = importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: pass } })
+  assert.equal(rp.ok, true, JSON.stringify(rp)); assert.equal(engineStatusFor(db, DEMO).validationStage, 'REPLAY_PASSED')
+  assert.equal(rp.record.evidence.checks.expectancyLowerR.block, 'test')
+  // and the replayer writes the figure the check reads, on every block and the summary
+  const sim = simulate(buildFixture(), { rangeEvents: 64, momentumEvents: 16, maxSpread: 200 }, { latencyMs: 60, minTargetToCost: 1, includeTest: true })
+  assert.ok('expectancyLowerR' in sim.summary, 'summary carries expectancyLowerR')
+  assert.ok(sim.blocks.every(b => 'expectancyLowerR' in b), 'each unsealed block carries expectancyLowerR')
+  assert.equal(simulate(buildFixture(), { rangeEvents: 64, momentumEvents: 16, maxSpread: 200 }, { latencyMs: 60, minTargetToCost: 1 }).blocks.find(b => b.name === 'test').expectancyLowerR, undefined, 'a withheld test block carries no figure')
 })
 
 test('stages move one step at a time, in order; a skip is refused', () => {
@@ -184,6 +264,119 @@ test('SHADOW_PASSED counts only signals rung under the pinned profile on the acc
   assert.equal(dd.ok, false); assert.ok(dd.failed.includes('maxDrawdownR')); assert.equal(dd.checks.maxDrawdownR.observed, 7)
 })
 
+test('PR-H shadow and traded stages against the file\'s exact numbers: a boundary book passes, one short on the loss count / signal count / trade count fails', () => {
+  const prefix = profileHash(DEFAULT_PARAMS)
+  const T0 = Date.parse('2026-09-11T00:00:00Z')
+  const at = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
+  const setup = () => {
+    const db = fresh()
+    const g = trial(db)
+    assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g }, now: new Date('2026-09-10T00:00:00Z') }).ok, true)
+    requestTickObservation(db, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
+    db.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+    return db
+  }
+  // 200 signals over 50 h (one per 15 min); 30 trades = 7 × [+1, +1, +1, −1] + [+1, +1]: 8 losses, PF 22/8, DD 1R, lower bound > 0, no resets
+  const fill = (db, { signals = 200, losses = 8 }) => {
+    for (let i = 0; i < signals; i++) signal(db, { at: at(T0 + i * 15 * 60_000), profile: prefix, seq: 1000 + i, symbolId: 1 + (i % 4) })
+    const rs = []
+    for (let i = 0; i < 30; i++) rs.push(rs.filter(r => r < 0).length < losses && i % 4 === 3 ? -1 : 1)
+    while (rs.filter(r => r < 0).length < losses) rs[rs.lastIndexOf(1)] = -1
+    for (const [i, r] of rs.entries()) shadowTrade(db, { seq: 10 + i, profile: prefix, netR: r, exitMs: T0 + (i + 1) * 3_600_000, reason: r > 0 ? 'target' : 'stop' })
+    return rs
+  }
+  const db = setup()
+  const rs = fill(db, {})
+  assert.equal(rs.filter(r => r < 0).length, 8)
+  const r = importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED' })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const ev = r.record.evidence
+  assert.equal(ev.signals.signals, 200); assert.ok(ev.signals.hours >= 48, `hours ${ev.signals.hours}`)
+  assert.equal(ev.portfolio.trades, 30); assert.equal(ev.portfolio.losses, 8); assert.equal(ev.portfolio.profitFactor, 2.75); assert.ok(ev.portfolio.expectancyLowerR >= 0); assert.ok(ev.portfolio.maxDrawdownR <= 8); assert.equal(ev.portfolio.resetSharePct, 0)
+  assert.equal(engineStatusFor(db, DEMO).validationStage, 'SHADOW_PASSED')
+  // one short on the loss count
+  const db7 = setup(); fill(db7, { losses: 7 })
+  const r7 = importTickValidation(db7, { accountId: DEMO, stage: 'SHADOW_PASSED' })
+  assert.equal(r7.ok, false); assert.equal(r7.reason, 'shadow_below_threshold'); assert.deepEqual(r7.failed, ['losses'])
+  // one short on the signal count (199 over 49.75 h: hours still pass)
+  const db199 = setup(); fill(db199, { signals: 199 })
+  const r199 = importTickValidation(db199, { accountId: DEMO, stage: 'SHADOW_PASSED' })
+  assert.equal(r199.ok, false); assert.deepEqual(r199.failed, ['signals'])
+  assert.equal(engineStatusFor(db199, DEMO).validationStage, 'REPLAY_PASSED', 'nothing written on a refusal')
+  // TRADED: 30 own tick closes (20 × +2R, 10 × −1R → PF 4, DD ≤ 2R) pass; 29 fail on the count alone
+  const traded = (n) => {
+    const dbt = fresh()
+    const g = trial(dbt)
+    importTickValidation(dbt, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g } })
+    engineModule.writeEngineStatus(dbt, { ...engineStatusFor(dbt, DEMO), validationStage: 'SHADOW_PASSED' })
+    for (let i = 0; i < n; i++) tickClose(dbt, DEMO, { id: `t${i}`, positionId: 9500 + i, entry: 1.1000, exit: i % 3 === 2 ? 1.0990 : 1.1020, sl: 1.0990, at: `2026-09-11 ${String(i % 24).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00` })
+    return dbt
+  }
+  const db30 = traded(30)
+  const t30 = importTickValidation(db30, { accountId: DEMO, stage: 'TRADED_PASSED' })
+  assert.equal(t30.ok, true, JSON.stringify(t30)); assert.equal(t30.record.evidence.traded.trades, 30); assert.equal(t30.record.evidence.traded.profitFactor, 4)
+  const db29 = traded(29)
+  const t29 = importTickValidation(db29, { accountId: DEMO, stage: 'TRADED_PASSED' })
+  assert.equal(t29.ok, false); assert.equal(t29.reason, 'traded_below_threshold'); assert.deepEqual(t29.failed, ['trades'])
+  assert.equal(engineStatusFor(db29, DEMO).validationStage, 'SHADOW_PASSED')
+})
+
+test('PR-H: an account already in SHADOW when the profile is pinned (the seeded case) has its window opened BY THE PIN — no re-posted switch — at the pin\'s own time; a switch away after it still breaks the window; a refused pin records nothing', () => {
+  const prefix = profileHash(DEFAULT_PARAMS)
+  const db = fresh()
+  // boot seeds SHADOW before any evidence exists
+  requestTickObservation(db, DEMO, 'SHADOW', { actor: 'config/tick-observation.json', now: new Date('2026-09-10T00:00:00Z') })
+  db.prepare(`UPDATE action_log SET at = '2026-09-10 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  // a refused pin (weak trial) writes no window row
+  const weak = trial(db, { trades: 10, trialId: 'weak' })
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: weak } }).ok, false)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE path = '/actions/tick-observation'`).get().n, 1)
+  const good = trial(db, { trialId: 'good' })
+  const pinAt = new Date('2026-09-11T00:00:00.700Z')
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: good }, now: pinAt }).ok, true)
+  const rows = db.prepare(`SELECT at, body FROM action_log WHERE path = '/actions/tick-observation' AND account_id = ? ORDER BY id`).all(DEMO)
+  assert.equal(rows.length, 2, 'RED if the pin does not record the window opening')
+  const opened = JSON.parse(rows[1].body)
+  assert.equal(opened.actor, 'tick-validation:pin'); assert.equal(opened.to, 'SHADOW'); assert.equal(rows[1].at, '2026-09-11 00:00:00', 'the pin\'s own time, seconds resolution')
+  const win = shadowWindow(db, DEMO, pinAt.toISOString())
+  assert.equal(win.since, '2026-09-11 00:00:00', 'the window opens at the pin even though the pin carries milliseconds and the row does not'); assert.equal(win.broken, false)
+  // evidence since the pin passes without any operator re-post
+  const T0 = Date.parse('2026-09-11T00:00:00Z')
+  for (let i = 0; i < 26; i++) signal(db, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
+  signal(db, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
+  for (const [i, r] of [2, -1, 3, -1, 1.5, -1].entries()) shadowTrade(db, { seq: 10 + i, profile: prefix, netR: r, exitMs: T0 + (i + 1) * 3_600_000, reason: r > 0 ? 'target' : 'stop' })
+  const r = importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+  assert.equal(r.ok, true, JSON.stringify(r)); assert.equal(r.record.evidence.since, '2026-09-11 00:00:00')
+  // the same seeded account, but switched OFF after the pin: the window is broken, not re-openable
+  const db2 = fresh()
+  requestTickObservation(db2, DEMO, 'SHADOW', { now: new Date('2026-09-10T00:00:00Z') })
+  db2.prepare(`UPDATE action_log SET at = '2026-09-10 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  const g2 = trial(db2)
+  importTickValidation(db2, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g2 }, now: pinAt })
+  requestTickObservation(db2, DEMO, 'OFF', { now: new Date('2026-09-11T06:00:00Z') })
+  db2.prepare(`UPDATE action_log SET at = '2026-09-11 06:00:00' WHERE path = '/actions/tick-observation' AND id = (SELECT MAX(id) FROM action_log WHERE path = '/actions/tick-observation')`).run()
+  requestTickObservation(db2, DEMO, 'SHADOW', { now: new Date('2026-09-11T07:00:00Z') })
+  db2.prepare(`UPDATE action_log SET at = '2026-09-11 07:00:00' WHERE path = '/actions/tick-observation' AND id = (SELECT MAX(id) FROM action_log WHERE path = '/actions/tick-observation')`).run()
+  const wb = importTickValidation(db2, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+  assert.equal(wb.ok, false); assert.equal(wb.reason, 'shadow_window_broken'); assert.equal(wb.brokenBy.to, 'OFF')
+  // checker m-1: a switch away in the SAME SECOND as the opening row is still a break (ordered by action_log.id, not by the seconds-resolution `at`)
+  const db5 = fresh()
+  requestTickObservation(db5, DEMO, 'SHADOW', { now: new Date('2026-09-10T00:00:00Z') })
+  db5.prepare(`UPDATE action_log SET at = '2026-09-10 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  const g5 = trial(db5)
+  const pin5 = new Date('2026-09-11T00:00:00.100Z')
+  assert.equal(importTickValidation(db5, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g5 }, now: pin5 }).ok, true)
+  requestTickObservation(db5, DEMO, 'OFF', { now: pin5 })
+  db5.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE id = (SELECT MAX(id) FROM action_log WHERE path = '/actions/tick-observation')`).run()
+  const w5 = shadowWindow(db5, DEMO, pin5.toISOString())
+  assert.equal(w5.since, '2026-09-11 00:00:00'); assert.equal(w5.broken, true, 'RED if the same-second OFF is invisible'); assert.equal(w5.brokenBy.to, 'OFF')
+  // an account NOT in SHADOW at the pin gets no row (the window opens at its later switch, as before)
+  const db3 = fresh()
+  const g3 = trial(db3)
+  importTickValidation(db3, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g3 }, now: pinAt })
+  assert.equal(db3.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE path = '/actions/tick-observation'`).get().n, 0)
+})
+
 // PR-B (owner principle 1): the traded stage is ONE stage for every account,
 // judged on the account's own closed tick trades in R. Lineage via the entry
 // ledger, so a time-based close on the same account is not tick evidence.
@@ -194,7 +387,7 @@ function tickClose(db, accountId, { id, positionId, entry, exit, sl, side = 'BUY
               VALUES ('EURUSD', ?, ?, ?, ?, 0.01, 'closed', ?, ?, ?, ?, ?)`).run(side, entry, exit, sl, at, at, (exit - entry) * (side === 'BUY' ? 1 : -1) * 1000, accountId, String(positionId))
 }
 
-test('TRADED_PASSED: thresholds_unset when the owner has set nothing; otherwise judged on the account\'s OWN closed tick trades in R, the same on a live account (no environment test), and non-tick closes do not count', () => {
+test('TRADED_PASSED: thresholds_unset on an injected null; otherwise judged on the account\'s OWN closed tick trades in R, the same on a live account (no environment test), and non-tick closes do not count', () => {
   const db = fresh()
   const good = trial(db)
   const { writeEngineStatus } = engineModule
@@ -205,9 +398,9 @@ test('TRADED_PASSED: thresholds_unset when the owner has set nothing; otherwise 
   }
   const unset = importTickValidation(db, { accountId: DEMO, stage: 'TRADED_PASSED', thresholds: { ...TH, traded: { minTrades: null, minProfitFactor: null, maxDrawdownR: null } } })
   assert.equal(unset.ok, false); assert.equal(unset.reason, 'thresholds_unset'); assert.deepEqual(unset.unset, ['traded.minTrades', 'traded.minProfitFactor', 'traded.maxDrawdownR'])
-  // the checked-in file: every traded threshold is null today
+  // the checked-in file (PR-H): the traded thresholds are set; the demo key is gone
   const file = loadThresholds()
-  assert.deepEqual(file.traded, { minTrades: null, minProfitFactor: null, maxDrawdownR: null })
+  assert.deepEqual(file.traded, { minTrades: 30, minProfitFactor: 1.3, maxDrawdownR: 8 })
   assert.equal('demo' in file, false, 'the demo key is gone from the thresholds')
   // no trades yet → below threshold, nothing written
   const none = importTickValidation(db, { accountId: DEMO, stage: 'TRADED_PASSED', thresholds: TH })

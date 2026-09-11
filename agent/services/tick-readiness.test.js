@@ -120,6 +120,26 @@ test('one stale or wrong input flips exactly its own check: recorder age, profil
   assert.equal(u.entryCounts.unknown, 1)
 })
 
+test('PR-H checker m-2: a live account in SHADOW whose sidecar reports enabled:false (no TICK_SPOOL_PATH) is told to set the spool path, not to wait for the guard sync to converge', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD']))
+  requestTickObservation(db, LIVE, 'SHADOW', { now: NOW })
+  pin(db, LIVE)
+  setState(db, 'cpp_exec_tick_json', JSON.stringify({ at: NOW.toISOString(), side: 'cpp_exec', status: { enabled: false, reason: 'TICK_SPOOL_PATH not set' } }))
+  const r = tickReadinessFor(db, LIVE, { now: NOW })
+  const byName = Object.fromEntries(r.readiness.map(c => [c.check, c]))
+  assert.equal(byName.shadow_strategy_running.ok, false)
+  assert.match(byName.shadow_strategy_running.remedy, /no TICK_SPOOL_PATH/); assert.match(byName.shadow_strategy_running.remedy, /TM-27/); assert.doesNotMatch(byName.shadow_strategy_running.remedy, /check the next probe/)
+  assert.equal(byName.shadow_strategy_running.blockClass, 'infrastructure')
+  assert.match(byName.profile_matches_sidecar.remedy, /no TICK_SPOOL_PATH/); assert.equal(byName.profile_matches_sidecar.blockClass, 'infrastructure')
+  assert.match(byName.recorder_recording.observed, /no TICK_SPOOL_PATH/)
+  assert.equal(r.ready, false)
+  // the same account against a sidecar WITH a spool whose switch has not converged keeps the probe remedy
+  recorder(db, { side: 'cpp_exec', shadow: false })
+  const c = tickReadinessFor(db, LIVE, { now: NOW }).readiness.find(x => x.check === 'shadow_strategy_running')
+  assert.match(c.remedy, /check the next probe/); assert.equal(c.blockClass, 'integration_defect')
+})
+
 test('the signals view parses what the sidecar rang, names the symbol when the hours table knows the id, and counts per profile', () => {
   const db = fresh()
   db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id) VALUES ('EURUSD', 1)`).run()

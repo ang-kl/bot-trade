@@ -269,7 +269,7 @@ test('one account model: the hardcoded-account configs declare every account', (
   const cfg = (rel) => JSON.parse(readFileSync(join(ROOT, rel), 'utf8'))
   assert.equal(cfg('agent/config/momentum-account.json').accountId, '_all')
   assert.equal('exclusive' in cfg('agent/config/momentum-account.json'), false)
-  assert.deepEqual(cfg('agent/config/tick-observation.json').accounts, { _all: 'RECORD' })
+  assert.deepEqual(cfg('agent/config/tick-observation.json').accounts, { _all: 'SHADOW' })
   const pins = cfg('agent/config/strategy-pins.json')
   assert.ok(Array.isArray(pins._all) && pins._all.length >= 12)
   assert.deepEqual(Object.keys(pins).filter(k => /^\d+$/.test(k)), [], 'no account ids in the pins file')
