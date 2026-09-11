@@ -13,9 +13,11 @@
 //                                 the account's SHADOW switch — trades, profit
 //                                 factor and drawdown in R — plus the signal
 //                                 count and hours
-//   SHADOW_PASSED → DEMO_PASSED   closed tick trades on a demo account
-//                                 (P6 produces them; refused until then)
-//   DEMO_PASSED → LIVE_APPROVED   the owner's word, typed as the stage name
+//   SHADOW_PASSED → TRADED_PASSED the account's OWN closed tick trades in R
+//                                 (PR-B, owner principle 1: one stage for
+//                                 every account — the demo-only stage and
+//                                 the typed live approval it replaced are
+//                                 read back as this one by engineStatusFor)
 //   any → UNVALIDATED             a reset, with a reason (evidence withdrawn,
 //                                 profile changed)
 //
@@ -37,11 +39,13 @@ import { engineStatusFor, writeEngineStatus } from './entry-mode.js'
 import { VALIDATION_STAGES } from '../lib/entry-contracts.js'
 import { profileHashFull, normalizeParams, PROFILE_ID } from '../lib/tick-strategy.js'
 import { shadowPortfolio } from './tick-shadow.js'
+import { TICK_PRODUCER } from './entry-ledger.js'
+import { realisedRR } from './trade-consistency.js'
 
 export const TICK_VALIDATION_KEY = 'tick_validation_json'
 export const THRESHOLDS_FILE = new URL('../config/tick-validation.json', import.meta.url)
 
-const ORDER = VALIDATION_STAGES // ['UNVALIDATED', 'REPLAY_PASSED', 'SHADOW_PASSED', 'DEMO_PASSED', 'LIVE_APPROVED']
+const ORDER = VALIDATION_STAGES // ['UNVALIDATED', 'REPLAY_PASSED', 'SHADOW_PASSED', 'TRADED_PASSED']
 
 export function loadThresholds({ file = THRESHOLDS_FILE } = {}) {
   try {
@@ -50,10 +54,47 @@ export function loadThresholds({ file = THRESHOLDS_FILE } = {}) {
     return {
       replay: { minTrades: num(raw?.replay?.minTrades), minProfitFactor: num(raw?.replay?.minProfitFactor), minTestNetR: num(raw?.replay?.minTestNetR), maxDrawdownR: num(raw?.replay?.maxDrawdownR) },
       shadow: { minSignals: num(raw?.shadow?.minSignals), minHours: num(raw?.shadow?.minHours), minTrades: num(raw?.shadow?.minTrades), minLosses: num(raw?.shadow?.minLosses), minProfitFactor: num(raw?.shadow?.minProfitFactor), minExpectancyLowerR: num(raw?.shadow?.minExpectancyLowerR), maxDrawdownR: num(raw?.shadow?.maxDrawdownR), maxResetSharePct: num(raw?.shadow?.maxResetSharePct) },
-      demo: { minClosedTrades: num(raw?.demo?.minClosedTrades), minProfitFactor: num(raw?.demo?.minProfitFactor), maxDrawdownR: num(raw?.demo?.maxDrawdownR) },
+      traded: { minTrades: num(raw?.traded?.minTrades), minProfitFactor: num(raw?.traded?.minProfitFactor), maxDrawdownR: num(raw?.traded?.maxDrawdownR) },
     }
   } catch {
-    return { replay: {}, shadow: {}, demo: {} }
+    return { replay: {}, shadow: {}, traded: {} }
+  }
+}
+
+/**
+ * PR-B: the TRADED stage's evidence — the account's OWN closed tick trades,
+ * in R. Lineage is the entry ledger: a trade counts iff its broker position
+ * was FILLED from a `tick_momentum` intent on this account (entry_intents →
+ * trades.ctrader_position_id), so a time-based close on the same account
+ * can never stand in for tick evidence (TM-20). R is realisedRR: the move
+ * over the risk taken at entry. Profit factor is gross R won / gross R lost
+ * (null with no losing trade — undefined, never infinite); drawdown is the
+ * closed-equity drawdown in R, entry order.
+ */
+export function tradedTickEvidence(db, accountId) {
+  let rows = []
+  try {
+    rows = db.prepare(`
+      SELECT t.id, t.side, t.entry_price, t.exit_price, t.sl_price, t.broker_sl_initial, t.net_pnl, t.closed_at
+        FROM trades t
+        JOIN entry_intents i ON CAST(i.broker_position_id AS TEXT) = CAST(t.ctrader_position_id AS TEXT) AND i.account_id = t.account_id
+       WHERE t.account_id = ? AND t.status = 'closed' AND t.ctrader_position_id IS NOT NULL
+         AND i.producer_id = ? AND i.state = 'FILLED'
+       GROUP BY t.id ORDER BY t.closed_at, t.id`).all(String(accountId), TICK_PRODUCER)
+  } catch { rows = [] }
+  const rs = rows.map(r => realisedRR(r)).filter(r => Number.isFinite(r))
+  let grossWin = 0, grossLoss = 0, losses = 0, equity = 0, peak = 0, maxDD = 0
+  for (const r of rs) {
+    if (r > 0) grossWin += r; else if (r < 0) { grossLoss += -r; losses++ }
+    equity += r; peak = Math.max(peak, equity); maxDD = Math.max(maxDD, peak - equity)
+  }
+  const round = (x) => Math.round(x * 1000) / 1000
+  return {
+    trades: rs.length, losses, unscorable: rows.length - rs.length,
+    netR: round(equity),
+    profitFactor: grossLoss > 0 ? round(grossWin / grossLoss) : null,
+    maxDrawdownR: round(maxDD),
+    firstAt: rows[0]?.closed_at ?? null, lastAt: rows[rows.length - 1]?.closed_at ?? null,
   }
 }
 
@@ -113,8 +154,7 @@ export function shadowWindow(db, accountId, pinnedAtIso) {
  *
  *   stage 'REPLAY_PASSED'  evidence { trialId }
  *   stage 'SHADOW_PASSED'  evidence {} (read from cpp_decisions)
- *   stage 'DEMO_PASSED'    evidence { closedTrades, profitFactor, maxDrawdownR } (P6 supplies)
- *   stage 'LIVE_APPROVED'  evidence { approval: 'LIVE_APPROVED' } typed by the owner
+ *   stage 'TRADED_PASSED'  evidence {} (read from the account's own closed tick trades)
  *   stage 'UNVALIDATED'    evidence { reason }
  */
 export function importTickValidation(db, { accountId, stage, evidence = {}, actor = 'owner', now = new Date(), thresholds = null, file = THRESHOLDS_FILE } = {}) {
@@ -200,18 +240,24 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
       if (failed.length) return { ok: false, reason: 'shadow_below_threshold', failed, checks, evidence: { signals: ev, portfolio, provenance } }
       record.evidence = { side, since, signals: ev, portfolio, provenance, checks }
       next.validationStage = 'SHADOW_PASSED'
-    } else if (stage === 'DEMO_PASSED') {
-      const missing = unset(th.demo)
-      if (missing.length) return { ok: false, reason: 'thresholds_unset', unset: missing.map(k => `demo.${k}`) }
-      if (cur.environment !== 'demo') return { ok: false, reason: 'not_a_demo_account' }
-      // P6 produces the demo trades and passes them here; until then every
-      // import lands on this refusal, honestly.
-      return { ok: false, reason: 'demo_evidence_not_produced: the tick entry path (P6) has not produced closed tick trades' }
-    } else if (stage === 'LIVE_APPROVED') {
-      if (evidence.approval !== 'LIVE_APPROVED') return { ok: false, reason: 'approval_word_required', note: 'the owner types the stage name as evidence.approval' }
-      if (actor !== 'owner') return { ok: false, reason: 'owner_only' }
-      record.evidence = { approval: 'LIVE_APPROVED' }
-      next.validationStage = 'LIVE_APPROVED'
+    } else if (stage === 'TRADED_PASSED') {
+      // PR-B (owner principle 1): the same stage on every account, judged on
+      // the account's own closed tick trades — no environment test. The
+      // thresholds are null in the repo today, so every import lands on
+      // thresholds_unset until the owner sets them by pull request.
+      const missing = unset(th.traded)
+      if (missing.length) return { ok: false, reason: 'thresholds_unset', unset: missing.map(k => `traded.${k}`) }
+      if (!cur.profileHash) return { ok: false, reason: 'no_profile_pinned' }
+      const ev = tradedTickEvidence(db, id)
+      const checks = {
+        trades: { observed: ev.trades, min: th.traded.minTrades, ok: ev.trades >= th.traded.minTrades },
+        profitFactor: { observed: ev.profitFactor, min: th.traded.minProfitFactor, ok: ev.profitFactor != null && ev.profitFactor >= th.traded.minProfitFactor },
+        maxDrawdownR: { observed: ev.maxDrawdownR, max: th.traded.maxDrawdownR, ok: ev.maxDrawdownR <= th.traded.maxDrawdownR },
+      }
+      const failed = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k)
+      if (failed.length) return { ok: false, reason: 'traded_below_threshold', failed, checks, evidence: ev }
+      record.evidence = { traded: ev, checks }
+      next.validationStage = 'TRADED_PASSED'
     }
   }
   next.configRevision = cur.configRevision + 1

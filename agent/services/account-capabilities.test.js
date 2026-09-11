@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import { upsertAccount, setAccountEnabled } from './account-registry.js'
 import { setAccountArmed } from './account-arming.js'
@@ -210,27 +211,21 @@ test('unarchive returns to the quietest live mode AND re-enters the roster', () 
   assert.equal(accountCapabilities(db, 'A').enter, false, 'but it enters nothing')
 })
 
-test('unarchiving a LIVE account straight to active needs the owner word', () => {
-  // The hole this closes: unarchiveAccount(id, 'active') reached live-active
-  // with no confirmation, while /actions/registry-account had demanded
-  // confirmLive for years. One carve-out, one place, every path.
+test('PR-B: unarchiving a LIVE account straight to active needs no environment word — the same gesture as any account', () => {
+  // The `liveEntryRefusal` / `confirmLive` carve-out is gone (owner principle
+  // 1). RED if a refusal naming confirmLive comes back on this path.
   const db = freshDb()
   seedAccount(db, 'L', { isLive: 1 })
   archiveAccount(db, 'L')
-  const refused = unarchiveAccount(db, 'L', 'active')
-  assert.equal(refused.ok, false)
-  assert.match(refused.error, /confirmLive/)
-  assert.equal(db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get('L').mode, 'archived')
-
-  const allowed = unarchiveAccount(db, 'L', 'active', { confirmLive: true })
-  assert.equal(allowed.ok, true)
+  const allowed = unarchiveAccount(db, 'L', 'active')
+  assert.equal(allowed.ok, true, JSON.stringify(allowed))
   assert.equal(accountCapabilities(db, 'L').enter, true)
+  assert.doesNotMatch(JSON.stringify(allowed), /confirmLive|LIVE/)
 })
 
 test('a LIVE account may be MANAGED without confirmation — reach is not a privilege', () => {
-  // The other half, and the one #701/#702 were about: confirmLive guards
-  // ENTRY. Getting a live account back on the roster so its open positions can
-  // be amended and closed must never require a ceremony.
+  // The half #701/#702 were about: getting a live account back on the roster
+  // so its open positions can be amended and closed must never require a ceremony.
   const db = freshDb()
   seedAccount(db, 'L', { isLive: 1 })
   archiveAccount(db, 'L')
@@ -518,16 +513,17 @@ test('a registered account is off the roster and claims nothing', () => {
   assert.deepEqual(rosterInvariantViolations(db), [], 'an honest off-roster row is not a violation')
 })
 
-test('setAccountEnabled will not hand a LIVE account entry without the word', () => {
+test('PR-B: setAccountEnabled hands a LIVE account entry like any other — no confirmLive parameter exists', () => {
   const db = freshDb()
   seedAccount(db, 'L', { mode: 'manage_only', isLive: 1 })
-  const refused = setAccountEnabled(db, 'L', true, 'active')
-  assert.equal(refused.ok, false)
-  assert.match(refused.error, /confirmLive/)
-  assert.equal(accountCapabilities(db, 'L').enter, false)
-
-  assert.equal(setAccountEnabled(db, 'L', true, 'active', { confirmLive: true }).ok, true)
+  const r = setAccountEnabled(db, 'L', true, 'active')
+  assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(accountCapabilities(db, 'L').enter, true)
+  assert.equal(setAccountEnabled.length <= 4, true, 'no options bag for a confirm word')
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  for (const f of ['./account-capabilities.js', './account-registry.js', '../routes/actions.js']) {
+    assert.doesNotMatch(strip(readFileSync(new URL(f, import.meta.url), 'utf8')), /confirmLive|liveEntryRefusal/, `${f} carries no live-entry carve-out`)
+  }
 })
 
 // ---------------------------------------------------------------------------

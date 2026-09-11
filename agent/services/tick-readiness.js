@@ -20,6 +20,7 @@ import { intentCounts } from './entry-ledger.js'
 import { loadAccountHorizon, horizonAdmits } from './account-horizon.js'
 import { tickSymbolNames } from './exec-guard-sync.js'
 import { validationHistory } from './tick-validation.js'
+import { TICK_ENTRY_STAGES } from '../lib/entry-contracts.js'
 
 export const RECORDER_STATUS_MAX_AGE_MS = 10 * 60_000
 export const DISK_STOP_PCT = 85
@@ -88,8 +89,10 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
   add('shadow_strategy_running', st.tickObservation !== 'SHADOW' ? true : !!(status?.strategy?.shadow), `${side}:/tick-status.strategy.shadow`, st.tickObservation === 'SHADOW' ? String(!!status?.strategy?.shadow) : 'n/a (not in SHADOW)', rec?.at ?? null, 'integration_defect', 'the guard sync has not converged the sidecar\'s shadow switch; check the next probe')
   const trial = replayTrialFor(db, pinned)
   add('replay_evidence', !!trial, 'tick_trials', trial ? `trial ${trial.trialId} at ${trial.at}` : (pinned ? 'no trial for the pinned profile' : 'no profile pinned'), trial?.at ?? null, 'missing_evidence', 'run scripts/tick-research.mjs over sealed segments and import the trial (POST /actions/tick-trials)')
-  const stageOk = st.environment === 'live' ? st.validationStage === 'LIVE_APPROVED' : ['SHADOW_PASSED', 'DEMO_PASSED', 'LIVE_APPROVED'].includes(st.validationStage)
-  add('validation_stage', stageOk, 'engine_status_json.validationStage', st.validationStage, st.updatedAt, 'missing_evidence', st.environment === 'live' ? 'a live account needs LIVE_APPROVED (the owner\'s word after DEMO_PASSED)' : 'reach SHADOW_PASSED: REPLAY_PASSED then shadow evidence over the owner-set minimums (POST /actions/tick-validation)')
+  // PR-B (owner principle 1): ONE bar for every account — SHADOW_PASSED or
+  // the traded stage above it. The environment is not read here.
+  const stageOk = TICK_ENTRY_STAGES.includes(st.validationStage)
+  add('validation_stage', stageOk, 'engine_status_json.validationStage', st.validationStage, st.updatedAt, 'missing_evidence', 'reach SHADOW_PASSED: REPLAY_PASSED then shadow evidence over the owner-set minimums (POST /actions/tick-validation) — the same bar on every account')
 
   const blockedReasons = checks.filter(c => !c.ok).map(c => c.check)
   return {

@@ -133,9 +133,12 @@ the owner approved ("go PR-C", 31-08, after the disarm leak was closed in
 Chosen by the owner from four offered levers, with the checkpoint warning in
 view (the bootstrap-sampler option was offered and NOT chosen):
 
-- **Live scope** (`demoOnly: false`). OWNER-CONFIRMED OVERRIDE of the
-  stage-1 rule above that live waits for the 30-close verdict — the option
-  text carried that warning verbatim and the owner selected it knowingly, at
+- **Live scope**. OWNER-CONFIRMED OVERRIDE of the stage-1 rule above that
+  live waits for the 30-close verdict — the option text carried that warning
+  verbatim and the owner selected it knowingly, at the time as a
+  `demoOnly: false` dial; since PR-B (11-09-2026, owner principle 1) there
+  is no such dial: every account is in scope by code, and this override is
+  the standing state, not a switch. Selected at
   0/30 closes. Recorded here because owner-confirmed text is the last thing
   a tidying pass may drop. The registry check stays: unknown accounts still
   fail closed under either scope.

@@ -1,7 +1,12 @@
 // ---------------------------------------------------------------------------
-// agent/services/momentum-account.js — ONE account runs the momentum system
-// (owner, 07-09-2026: "use ACCT-DEMO-3 for momentum, 10% vol target, shorts
-// in shadow. Build §7,386·D1").
+// agent/services/momentum-account.js — the momentum system on EVERY enabled
+// account (PR-B, owner principle 9, 11-09-2026: "setups are for all accounts
+// and not hardcoded"; first built for one account, owner 07-09-2026: "use
+// ACCT-DEMO-3 for momentum, 10% vol target, shorts in shadow. Build
+// §7,386·D1"). `accountId: "_all"` in config/momentum-account.json means
+// every enabled registry account runs the daily pass, each sized from ITS
+// OWN equity (buildUniverse reads deps.equity(accountId)); a specific id
+// still names one account.
 //
 // First principles this file carries (№ 7,386):
 //   1. HORIZON IS THE DESIGN VARIABLE — the momentum account's book decides
@@ -13,9 +18,10 @@
 //      pre-filtered per account by min-lot affordability at universe build,
 //      so a name the account cannot hold is excluded once a day with a
 //      reason, not refused every hour.
-//   5. ONE SYSTEM PER HORIZON, ONE ACCOUNT PER SYSTEM — on this account only
-//      tsmom_long may dispatch (risk gate: momentum_account_only), and the
-//      evidence gate admits tsmom_long here by construction.
+//   5. ONE SYSTEM PER HORIZON — the evidence gate admits tsmom_long on a
+//      momentum account by construction. (The 07-09 one-account-per-system
+//      veto, `momentum_account_only`, and its `exclusive` switch are gone
+//      since PR-B: the rest of the stack trades alongside on every account.)
 //
 // What it does NOT change: the trailing stop (3×ATR, only rises), the
 // keeper pause on book rows, the weekend-bank exemption (#851), the shadow's
@@ -36,19 +42,15 @@ export const MOMENTUM_UNIVERSE_KEY = 'momentum_universe_json'
 export const TSMOM_STRATEGY = 'tsmom_long'
 export const TRADING_DAYS = 252
 
+/** The config value that means "every enabled registry account". */
+export const ALL_ACCOUNTS = '_all'
+
 export const DEFAULT_MOMENTUM_ACCOUNT = Object.freeze({
-  accountId: null,          // no account → the momentum system is not running anywhere
+  accountId: null,          // null → the momentum system runs nowhere; '_all' → every enabled account; an id → that one
   volTargetPct: 10,         // annualised portfolio volatility target, percent of equity
   maxPositions: 8,          // the vol target is split evenly across this many slots
   dailyRunAfterUtc: '21:05', // one pass per UTC day, after the NY close (20:00) and the FX day close (21:00)
   cadence: 'daily',         // 'daily' | 'loop' (loop = every book pass, for tests and the owner's override)
-  // ONE SYSTEM PER ACCOUNT was the 07-09 rule (§7,386·D1 principle 5): the
-  // risk gate refused every non-tsmom proposal on the momentum account.
-  // Owner, 09-09-2026 13:35 SGT: "all accounts are consider as cluster,
-  // don't make momentum as one it is opportunitistics" — the account keeps
-  // its daily momentum pass and its vol-target sizing, and trades the rest
-  // of the stack alongside. `exclusive: true` restores the 07-09 rule.
-  exclusive: false,
 })
 
 const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d)
@@ -57,13 +59,13 @@ export function momentumAccountConfig(raw) {
   const r = raw && typeof raw === 'object' ? raw : {}
   const d = DEFAULT_MOMENTUM_ACCOUNT
   const hhmm = typeof r.dailyRunAfterUtc === 'string' && /^\d{2}:\d{2}$/.test(r.dailyRunAfterUtc) ? r.dailyRunAfterUtc : d.dailyRunAfterUtc
+  const id = r.accountId != null && String(r.accountId).trim() ? String(r.accountId).trim() : null
   return {
-    accountId: r.accountId != null && String(r.accountId).trim() ? String(r.accountId).trim() : null,
+    accountId: id == null ? null : id.toLowerCase() === ALL_ACCOUNTS ? ALL_ACCOUNTS : id,
     volTargetPct: clamp(r.volTargetPct, 1, 100, d.volTargetPct),
     maxPositions: Math.round(clamp(r.maxPositions, 1, 50, d.maxPositions)),
     dailyRunAfterUtc: hhmm,
     cadence: r.cadence === 'loop' ? 'loop' : 'daily',
-    exclusive: r.exclusive === true,
   }
 }
 
@@ -88,23 +90,63 @@ export function seedMomentumAccountFromConfig(db, { file = null, log = () => {} 
   }
   if (!cfg || typeof cfg !== 'object') return { applied: false, effective: null, error: 'momentum-account.json is not an object' }
   const stored = loadMomentumAccount(db)
+  migrateLegacyPassCursor(db, stored, log)
   const patch = {}
-  for (const k of ['accountId', 'volTargetPct', 'maxPositions', 'dailyRunAfterUtc', 'cadence', 'exclusive']) if (k in cfg) patch[k] = cfg[k]
+  for (const k of ['accountId', 'volTargetPct', 'maxPositions', 'dailyRunAfterUtc', 'cadence']) if (k in cfg) patch[k] = cfg[k]
   const next = momentumAccountConfig({ ...stored, ...patch })
   const same = JSON.stringify(next) === JSON.stringify(stored)
   if (!same) {
     setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify(next))
-    log(`[boot] momentum account …${String(next.accountId || '').slice(-4) || 'none'}: volTarget ${next.volTargetPct}% maxPositions ${next.maxPositions} after ${next.dailyRunAfterUtc}Z cadence ${next.cadence} (from config/momentum-account.json)`)
+    log(`[boot] momentum account ${next.accountId === ALL_ACCOUNTS ? 'every enabled account' : `…${String(next.accountId || '').slice(-4) || 'none'}`}: volTarget ${next.volTargetPct}% maxPositions ${next.maxPositions} after ${next.dailyRunAfterUtc}Z cadence ${next.cadence} (from config/momentum-account.json)`)
   }
   return { applied: !same, effective: next, error: null }
 }
 
-/** Is this the momentum account? Null/unknown → false. */
+/**
+ * ONE-TIME MIGRATION (PR-B checker, 11-09-2026): before the per-account
+ * cursor the single global `momentum_account_state_json` held the previously
+ * named account's lastRunMs. Copied to that account's own key once, at the
+ * first boot after deploy — read BEFORE the file patches the config, while
+ * the stored config still names the account — so the first pass does not
+ * re-run the same UTC day; then the legacy key is cleared. Idempotent: no
+ * legacy key, nothing to do; an existing per-account key is never overwritten.
+ */
+export function migrateLegacyPassCursor(db, storedCfg, log = () => {}) {
+  let legacy = null
+  try { legacy = JSON.parse(getState(db, MOMENTUM_ACCOUNT_STATE_KEY) || 'null') } catch { legacy = null }
+  if (!legacy || typeof legacy !== 'object') return { migrated: false, reason: 'no_legacy_key' }
+  const id = storedCfg?.accountId && storedCfg.accountId !== ALL_ACCOUNTS ? String(storedCfg.accountId) : null
+  if (id && getState(db, momentumAccountStateKey(id)) == null) {
+    setState(db, momentumAccountStateKey(id), JSON.stringify(legacy))
+    log(`[boot] momentum account …${id.slice(-4)}: pass cursor migrated to its own key (lastRun ${legacy.lastRunMs ? new Date(Number(legacy.lastRunMs)).toISOString() : 'none'})`)
+  }
+  setState(db, MOMENTUM_ACCOUNT_STATE_KEY, null)
+  return { migrated: !!id, accountId: id, reason: id ? null : 'legacy_cursor_named_no_account' }
+}
+
+/**
+ * Does the momentum system run on this account? Null/unknown → false. Under
+ * `_all` every ENABLED registry account qualifies (a disabled or unknown row
+ * never does); a specific id qualifies only itself.
+ */
 export function isMomentumAccount(db, accountId) {
   if (accountId == null) return false
   const cfg = loadMomentumAccount(db)
-  return cfg.accountId != null && String(accountId) === cfg.accountId
+  if (cfg.accountId == null) return false
+  if (cfg.accountId !== ALL_ACCOUNTS) return String(accountId) === cfg.accountId
+  try { return !!db.prepare('SELECT 1 FROM accounts WHERE account_id = ? AND enabled = 1').get(String(accountId)) } catch { return false }
 }
+
+/** The accounts the momentum system runs on right now, in registry order. */
+export function momentumAccountIds(db) {
+  const cfg = loadMomentumAccount(db)
+  if (cfg.accountId == null) return []
+  if (cfg.accountId !== ALL_ACCOUNTS) return [cfg.accountId]
+  try { return db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { return [] }
+}
+
+/** Per-account pass state key (PR-B: one cursor per account, so two accounts' daily passes never share a lastRunMs). */
+export function momentumAccountStateKey(accountId) { return `${MOMENTUM_ACCOUNT_STATE_KEY}:${String(accountId)}` }
 
 // ---------------------------------------------------------------------------
 // Universe — data, not code.
@@ -196,9 +238,9 @@ export function dailyDue({ nowMs, lastRunMs = 0, afterUtc = '21:05', cadence = '
   return nowMs >= t && !(Number(lastRunMs) >= t)
 }
 
-export function loadMomentumAccountState(db) {
+export function loadMomentumAccountState(db, accountId = null) {
   try {
-    const s = JSON.parse(getState(db, MOMENTUM_ACCOUNT_STATE_KEY) || 'null')
+    const s = JSON.parse(getState(db, accountId == null ? MOMENTUM_ACCOUNT_STATE_KEY : momentumAccountStateKey(accountId)) || 'null')
     if (s && typeof s === 'object') return { lastRunMs: Number(s.lastRunMs) || 0, universe: s.universe && typeof s.universe === 'object' ? s.universe : {}, universeBuiltAt: s.universeBuiltAt || null, lastPass: s.lastPass || null }
   } catch { /* fresh */ }
   return { lastRunMs: 0, universe: {}, universeBuiltAt: null, lastPass: null }
@@ -262,13 +304,23 @@ export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
  * `bookCfg` is the book's own config (timeframe, atrPeriod, stopAtr);
  * `buildEntrySynth` is injected from momentum-book.js to avoid the cycle.
  */
-export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEntrySynth, deps = {}, now = Date.now(), log = () => {} }) {
+export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEntrySynth, deps = {}, now = Date.now(), log = () => {}, marginExhausted = false }) {
   const cfg = loadMomentumAccount(db)
   const accountId = String(acct.accountId)
-  const state = loadMomentumAccountState(db)
+  const state = loadMomentumAccountState(db, accountId)
   const summary = { account: accountId, ran: false, entries: 0, exits: 0, skipped: [], universe: null }
   if (!dailyDue({ nowMs: now, lastRunMs: state.lastRunMs, afterUtc: cfg.dailyRunAfterUtc, cadence: cfg.cadence })) {
     summary.why = 'not due (daily cadence)'
+    return summary
+  }
+  // THE SAME GATES THE ROW-CURSOR PATH APPLIES (checker, 11-09-2026): an
+  // account whose margin pool is exhausted takes NO entries this pass (owner
+  // §7,453·B) — its exits still run below, and the cursor is NOT advanced,
+  // so the day's pass is retried once headroom frees rather than forfeited.
+  if (marginExhausted) {
+    summary.why = 'margin exhausted — no entries this pass'
+    summary.skipped.push('margin exhausted — no entries this pass')
+    summary.exits = await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary })
     return summary
   }
   summary.ran = true
@@ -286,24 +338,9 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
 
   const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
   const openSyms = new Set(openRows.map(r => String(r.symbol).toUpperCase()))
-  const wantedSyms = new Set(wanted.map(w => w.symbol))
 
   // EXITS: the shadow no longer holds it.
-  for (const row of openRows) {
-    if (wantedSyms.has(String(row.symbol).toUpperCase())) continue
-    if (held[row.symbol]?.side === 'long' || held[String(row.symbol).toUpperCase()]?.side === 'long') continue // still held, only untradable now — keep
-    try {
-      if (row.position_id && deps.close) {
-        // Same rule as the row-cursor exit (09-09-2026): no volume, no close.
-        const volume = await bookCloseVolume(db, creds, row, deps)
-        if (volume == null) throw new Error('unknown volume — close not sent')
-        await deps.close(creds, { positionId: row.position_id, volume })
-      }
-      db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
-      summary.exits++
-      log(`momentum account: rank exit ${row.symbol} on …${accountId.slice(-4)}`)
-    } catch (err) { summary.skipped.push(`${row.symbol}: close failed — ${err.message}`) }
-  }
+  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held })
 
   // ENTRIES: best rank first, up to the slot count.
   const insBook = db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note)
@@ -315,6 +352,13 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
     if (open >= cfg.maxPositions) { summary.skipped.push(`at maxPositions ${cfg.maxPositions}`); break }
     if (openSyms.has(w.symbol)) continue
     try { if (workingLimit.get(accountId, w.symbol, TSMOM_STRATEGY)) { summary.skipped.push(`${w.symbol}: limit already working`); continue } } catch { /* no table */ }
+    // The account's daily fundable universe (§7,437·B·3), exactly as the
+    // row-cursor tryEnter applies it: a name this account cannot fund is
+    // skipped by name. Unknown is not a block.
+    if (deps.fundable) {
+      const fu = deps.fundable(accountId, w.symbol)
+      if (fu && fu.ok === false) { summary.skipped.push(`${w.symbol}: ${fu.reason}`); continue }
+    }
     const u = built.universe[w.symbol]
     const may = deps.mayTrade ? deps.mayTrade(accountId, w.symbol) : { ok: true, item: null }
     if (!may.ok) { summary.skipped.push(`${w.symbol}: ${may.reason}`); continue }
@@ -340,30 +384,79 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
     } catch (err) { summary.skipped.push(`${w.symbol}: ${err.message}`) }
   }
 
-  setState(db, MOMENTUM_ACCOUNT_STATE_KEY, JSON.stringify({
+  setState(db, momentumAccountStateKey(accountId), JSON.stringify({
     lastRunMs: now, universeBuiltAt: new Date(now).toISOString(), universe: built.universe,
     lastPass: { at: new Date(now).toISOString(), entries: summary.entries, exits: summary.exits, skipped: summary.skipped.slice(0, 20), universe: summary.universe },
   }))
   return summary
 }
 
-/** The read: config, cadence, universe tradability, open rows on the account. */
+/**
+ * Close the account's open book rows the shadow no longer holds long. Shared
+ * by the full pass and the margin-exhausted pass (exits run regardless of
+ * headroom). Returns the number of exits sent.
+ */
+async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held = null }) {
+  const holdings = held || (() => { try { return loadShadowState(db).holdings || {} } catch { return {} } })()
+  const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
+  let exits = 0
+  for (const row of openRows) {
+    if (holdings[row.symbol]?.side === 'long' || holdings[String(row.symbol).toUpperCase()]?.side === 'long') continue // still held — keep (untradable-now names included)
+    try {
+      if (row.position_id && deps.close) {
+        // Same rule as the row-cursor exit (09-09-2026): no volume, no close.
+        const volume = await bookCloseVolume(db, creds, row, deps)
+        if (volume == null) throw new Error('unknown volume — close not sent')
+        await deps.close(creds, { positionId: row.position_id, volume })
+      }
+      db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
+      exits++
+      log(`momentum account: rank exit ${row.symbol} on …${accountId.slice(-4)}`)
+    } catch (err) { summary.skipped.push(`${row.symbol}: close failed — ${err.message}`) }
+  }
+  return exits
+}
+
+/**
+ * The read: config, cadence, and PER ACCOUNT the universe tradability, the
+ * last pass and the open rows. The top-level `universe` / `lastPass` /
+ * `lastRunAt` / `open` aggregate every momentum account (built and tradable
+ * summed, reasons merged, the newest pass) so the goal table keeps one
+ * figure; `accounts` carries each account's own.
+ */
 export function momentumAccountReport(db) {
   const cfg = loadMomentumAccount(db)
-  const state = loadMomentumAccountState(db)
-  const universe = state.universe || {}
-  const byReason = {}
-  for (const u of Object.values(universe)) if (!u.ok) { const k = String(u.reason).split(':')[0]; byReason[k] = (byReason[k] || 0) + 1 }
-  let open = []
-  try { if (cfg.accountId) open = db.prepare(`SELECT symbol, entry_price, stop, atr, entry_rank, entered_at, status, note FROM momentum_book WHERE status IN ('open','exit_sent') AND account_id = ? ORDER BY entered_at`).all(cfg.accountId) } catch { open = [] }
+  const ids = momentumAccountIds(db)
+  const accounts = {}
+  const agg = { built: 0, tradable: 0, byReason: {}, builtAt: null, lastRunMs: 0, lastPass: null, open: [] }
+  for (const id of ids) {
+    const state = loadMomentumAccountState(db, id)
+    const universe = state.universe || {}
+    const byReason = {}
+    for (const u of Object.values(universe)) if (!u.ok) { const k = String(u.reason).split(':')[0]; byReason[k] = (byReason[k] || 0) + 1; agg.byReason[k] = (agg.byReason[k] || 0) + 1 }
+    let open = []
+    try { open = db.prepare(`SELECT symbol, entry_price, stop, atr, entry_rank, entered_at, status, note FROM momentum_book WHERE status IN ('open','exit_sent') AND account_id = ? ORDER BY entered_at`).all(id) } catch { open = [] }
+    const built = Object.keys(universe).length, tradable = Object.values(universe).filter(u => u.ok).length
+    accounts[id] = {
+      account: `…${id.slice(-4)}`,
+      lastRunAt: state.lastRunMs ? new Date(state.lastRunMs).toISOString() : null,
+      universe: { built, tradable, byReason, builtAt: state.universeBuiltAt, symbols: universe },
+      lastPass: state.lastPass,
+      open,
+    }
+    agg.built += built; agg.tradable += tradable
+    agg.open.push(...open.map(o => ({ ...o, account: `…${id.slice(-4)}` })))
+    if (state.lastRunMs > agg.lastRunMs) { agg.lastRunMs = state.lastRunMs; agg.lastPass = state.lastPass; agg.builtAt = state.universeBuiltAt }
+  }
   return {
     reportOnly: true,
-    config: { ...cfg, account: cfg.accountId ? `…${cfg.accountId.slice(-4)}` : null },
+    config: { ...cfg, account: cfg.accountId == null ? null : cfg.accountId === ALL_ACCOUNTS ? 'every enabled account' : `…${cfg.accountId.slice(-4)}`, accounts: ids.map(id => `…${id.slice(-4)}`) },
     nextDueAfterUtc: cfg.dailyRunAfterUtc,
-    lastRunAt: state.lastRunMs ? new Date(state.lastRunMs).toISOString() : null,
-    universe: { configured: momentumUniverseSymbols(db).length, built: Object.keys(universe).length, tradable: Object.values(universe).filter(u => u.ok).length, byReason, builtAt: state.universeBuiltAt, symbols: universe },
-    lastPass: state.lastPass,
-    open,
-    note: 'One account, one system: tsmom_long only (risk gate momentum_account_only), sized by the vol target, decided once per day after the daily close. Shorts stay in shadow (D2).',
+    lastRunAt: agg.lastRunMs ? new Date(agg.lastRunMs).toISOString() : null,
+    universe: { configured: momentumUniverseSymbols(db).length, built: agg.built, tradable: agg.tradable, byReason: agg.byReason, builtAt: agg.builtAt },
+    lastPass: agg.lastPass,
+    open: agg.open,
+    accounts,
+    note: 'The momentum system on every configured account: tsmom_long sized by the vol target from each account\'s own equity, decided once per day after the daily close; the rest of the stack trades alongside. Shorts stay in shadow (D2).',
   }
 }

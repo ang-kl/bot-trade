@@ -147,12 +147,13 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
   out.tickShadowSim = loadTickShadowSim()
   // P6b: the accounts whose EFFECTIVE (acknowledged) mode is TICK_MOMENTUM
   // on this side — the sidecar places tick entries for these and no other.
-  // Demo only until P7. Full replace on the push, like haltAccounts.
+  // PR-B (owner principle 1): mode + STABLE + the pause map only; `side` is
+  // which sidecar, never a policy. Full replace on the push, like haltAccounts.
   out.tickEntryAccounts = []
   let pausedTick = {}
   try { pausedTick = JSON.parse(getState(db, 'tick_entry_paused_json') || '{}') || {} } catch { pausedTick = {} }
   try {
-    const rows = db.prepare('SELECT account_id, is_live FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
+    const rows = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1' + (side?.isLive == null ? '' : ' AND is_live = ?'))
       .all(...(side?.isLive == null ? [] : [side.isLive ? 1 : 0]))
     for (const r of rows) {
       const st = engineStatusFor(db, r.account_id)
@@ -161,7 +162,7 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
       if (mode === 'SHADOW') out.tickShadow = true
       // A TM-40-paused account (tick-permits.js writes the map) is left out
       // here too, so this push and the feeder's never disagree.
-      if (st.effectiveEntryMode === 'TICK_MOMENTUM' && st.transitionState === 'STABLE' && Number(r.is_live) !== 1 && st.environment !== 'live' && !pausedTick[String(r.account_id)]) {
+      if (st.effectiveEntryMode === 'TICK_MOMENTUM' && st.transitionState === 'STABLE' && !pausedTick[String(r.account_id)]) {
         out.tickEntryAccounts.push(Number(r.account_id))
       }
     }

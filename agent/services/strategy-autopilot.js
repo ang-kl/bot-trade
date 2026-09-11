@@ -748,10 +748,9 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   // rate the bounded history above cannot supply. Measurement only.
   try { persistSweepHistogram(db, verdicts) } catch (err) { errors.push(`sweep histogram: ${err.message}`) }
 
-  const isLive = getState(db, 'ctrader_is_live') === 'true'
-  // Owner opted into full-auto on live (autopilot_allow_live). Without it, auto
-  // mode still refuses to arm real money and downgrades to suggestions.
-  const allowLive = getState(db, 'autopilot_allow_live') === 'true'
+  // PR-B (owner principle 1, 11-09-2026): the autopilot acts on every account
+  // the same way. The `autopilot_allow_live` opt-in that downgraded auto mode
+  // to suggestions on a live selection is gone.
   const goCount = verdicts.filter(v => v.state === 'go').length
   // "GO" is the loose backtest bar (PF≥1.1) — it protects an existing arm from
   // being churned, but it is NOT the bar to be NEWLY armed. Report the ARMABLE
@@ -772,9 +771,9 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
     : ''
   const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable at PF≥${armBar.minPf}/W≥${armBar.minWin}%/n≥${armBar.minTrades} (${goCount} GO at the loose bar; disarm floor PF<${changes.disarmMinPf.toFixed(2)})${errors.length ? `, ${errors.length} errors` : ''}.${prior}${cooled}${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
 
-  if (mode === 'suggest' || (isLive && !allowLive)) {
+  if (mode === 'suggest') {
     const all = [...changes.disarm.map(c => `disarm ${describe(c)}`), ...changes.arm.map(c => `arm ${describe(c)}`), ...changes.suggestions.map(c => `${c.action} ${describe(c)}`)]
-    await notify(`${head}${isLive && mode === 'auto' ? ' LIVE account — auto mode refuses to act (set autopilot_allow_live to enable); suggestions only:' : ' Suggestions:'}\n${all.length ? all.join('\n') : 'no changes needed'}`)
+    await notify(`${head} Suggestions:\n${all.length ? all.join('\n') : 'no changes needed'}`)
     return { mode: 'suggest', suggested: all.length }
   }
 

@@ -19,11 +19,12 @@
 // what the bot trades.
 //
 // I argued against this and was overruled, which is the owner's call to make;
-// what I would not do is ship it without the guard the other switch has. The
-// LIVE row therefore carries the SAME typed-word confirmation AccountSwitcher
-// uses — a one-tap control that can re-point real money is the exact hazard
-// the previous design existed to prevent, and the confirm is what keeps a
-// mis-tap from being expensive.
+// what I would not do is ship it without the guard the other switch has.
+// Every row therefore carries the SAME confirm AccountSwitcher uses (PR-B,
+// owner principle 1: one neutral confirm naming the account and its balance,
+// no environment branch) — a one-tap control that can re-point money is the
+// exact hazard the previous design existed to prevent, and the confirm is
+// what keeps a mis-tap from being expensive.
 //
 // "All accounts" stays VIEW-ONLY, necessarily: there is no such thing as
 // trading "all", so that row must never reach the server.
@@ -41,6 +42,7 @@ import { accountRoster } from '../../lib/account-roster.js'
 import { fabFace, fabOptions, FAB_ALL } from '../../lib/scope-fab.js'
 import { viewedAccountId, selectedAccountId, setViewedAccount, onAccountSwitch, writeSelection } from '../../lib/selected-account.js'
 import { agentPost } from '../../lib/agent-api.js'
+import { confirmAccountAction } from '../../lib/account-confirm.js'
 
 const readScope = () => {
   try {
@@ -107,13 +109,9 @@ export default function AccountScopeFab({ open = false, onToggle = () => {} }) {
       setScope(readScope())
       return
     }
-    if (row?.isLive) {
-      const word = window.prompt(
-        `⚠ LIVE account ${row.traderLogin ? `${row.traderLogin} · ` : ''}${row.accountId} holds REAL money.\n\n` +
-        'Picking it here makes it THE account the bot trades. If Autotrade is armed, the bot will place REAL orders on it.\n\nType LIVE to confirm.'
-      )
-      if (word !== 'LIVE') return
-    }
+    // PR-B (owner principle 1): the same neutral confirm on every row — the
+    // "Type LIVE" prompt that keyed on the environment is gone.
+    if (!confirmAccountAction(row || { accountId: value }, 'picking it here makes it THE account the bot trades — if Autotrade is armed, the bot will place orders on it.')) return
     setBusy(true)
     try {
       await agentPost('/actions/ctrader-select-account', {
@@ -188,7 +186,7 @@ export default function AccountScopeFab({ open = false, onToggle = () => {} }) {
             borderTop: '1px solid var(--glass-edge)', maxWidth: 216, whiteSpace: 'normal',
           }}>
             Sets the account the bot TRADES, and what you are looking at.
-            A live account asks you to type LIVE first.
+            Every account asks you to confirm first.
           </div>
         </div>
       )}

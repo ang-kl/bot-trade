@@ -251,7 +251,7 @@ test('desiredGuardFor fails CLOSED when the registry is unreadable: halt true an
   assert.equal(ok.halt, false); assert.equal('degraded' in ok, false)
 })
 
-test('P6b: tickEntryAccounts lists only enabled DEMO accounts whose EFFECTIVE mode is TICK_MOMENTUM and STABLE, and a sidecar reporting a different placing count is pushed', async () => {
+test('P6b / PR-B: tickEntryAccounts lists every enabled account on the side whose EFFECTIVE mode is TICK_MOMENTUM and STABLE (live on its own side), and a sidecar reporting a different placing count is pushed', async () => {
   const { requestEntryMode, acknowledgeEntryEpochs, engineStatusFor } = await import('./entry-mode.js')
   const db = initDB(':memory:')
   upsertAccount(db, { accountId: '46979908', isLive: false })
@@ -268,7 +268,16 @@ test('P6b: tickEntryAccounts lists only enabled DEMO accounts whose EFFECTIVE mo
   acknowledgeEntryEpochs(db, { 46979908: r.status.modeEpoch })
   assert.equal(engineStatusFor(db, '46979908').effectiveEntryMode, 'TICK_MOMENTUM')
   assert.deepEqual(desiredGuardFor(db, { isLive: false }).tickEntryAccounts, [46979908])
-  assert.deepEqual(desiredGuardFor(db, { isLive: true }).tickEntryAccounts, [], 'the live side never lists a demo account')
+  assert.deepEqual(desiredGuardFor(db, { isLive: true }).tickEntryAccounts, [], 'the live side does not carry a demo account (routing)')
+  // PR-B (owner principle 1): a live account in effective TICK_MOMENTUM is
+  // listed on its own side. RED if the `is_live !== 1 && environment !== 'live'` term returns.
+  writeEngineStatus(db, { ...engineStatusFor(db, '42993489'), profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', configRevision: 1, updatedAt: new Date().toISOString() })
+  const rl = requestEntryMode(db, '42993489', 'TICK_MOMENTUM', { readiness: ready })
+  assert.equal(rl.ok, true, `live admitted by readiness alone: ${rl.reason}`)
+  acknowledgeEntryEpochs(db, { 42993489: rl.status.modeEpoch })
+  assert.equal(engineStatusFor(db, '42993489').effectiveEntryMode, 'TICK_MOMENTUM')
+  assert.deepEqual(desiredGuardFor(db, { isLive: true }).tickEntryAccounts, [42993489], 'the live side lists its own tick account')
+  assert.deepEqual(desiredGuardFor(db, { isLive: null }).tickEntryAccounts, [42993489, 46979908])
   db.prepare('UPDATE accounts SET enabled = 0 WHERE account_id = ?').run('46979908')
   assert.deepEqual(desiredGuardFor(db, { isLive: false }).tickEntryAccounts, [], 'a disabled account leaves the list')
   const desired = { halt: false, haltAccounts: [], entryEpochs: {}, tickRecord: true, tickShadow: true, tickEntryAccounts: [46979908] }

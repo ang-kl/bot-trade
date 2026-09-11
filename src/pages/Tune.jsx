@@ -1623,7 +1623,6 @@ export default function Tune() {
     ? `PF ≥ ${autopilotBar.minPf} · WR ≥ ${autopilotBar.minWin}% · n ≥ ${autopilotBar.minTrades}`
     : 'arm bar not reported by this agent'
   const autopilotMaxChanges = config?.autopilot?.max_changes ?? '—'
-  const autopilotAllowLive = config?.autopilot?.allow_live === true
   const pendingArmed = config?.pending_mode_enabled === true || config?.pending_mode_enabled === 'true'
   const pendingMatrixSummary = config?.pending_matrix && typeof config.pending_matrix === 'object'
     ? Object.entries(config.pending_matrix).map(([s, tfs]) => `${s} (${(tfs || []).join(', ')})`).join(' · ')
@@ -1816,15 +1815,15 @@ export default function Tune() {
                   // cannot describe a gate the code no longer applies. Until
                   // 02-09-2026 this said "arms GO combos … max 4 … never on
                   // LIVE": the autopilot arms only combos clearing the arm bar,
-                  // the cap is configurable, and LIVE is a flag.
-                  if (m === 'auto' && !window.confirm(`AUTO mode: the bot re-backtests every strategy × symbol × timeframe on a session-adaptive cadence and arms combos clearing the arm bar (${autopilotBarText}) / disarms decayed ones by itself — at most ${autopilotMaxChanges} changes per run, announced on Telegram, ${autopilotAllowLive ? 'LIVE accounts INCLUDED (allowLive is on)' : 'demo accounts only (allowLive is off)'}. You stay in charge via /pause, Disarm and these buttons. Enable?`)) return
+                  // the cap is configurable, and every account is treated alike (PR-B).
+                  if (m === 'auto' && !window.confirm(`AUTO mode: the bot re-backtests every strategy × symbol × timeframe on a session-adaptive cadence and arms combos clearing the arm bar (${autopilotBarText}) / disarms decayed ones by itself — at most ${autopilotMaxChanges} changes per run, announced on Telegram, on every enabled account. You stay in charge via /pause, Disarm and these buttons. Enable?`)) return
                   run(async () => {
                     await agentPost('/actions/autopilot', { mode: m })
                     setConfig(c => ({ ...c, autopilot_mode: m }))
                   }, `Autopilot: ${m}`)
                 }} />
               <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-                evidence loop on a session-adaptive cadence — arms combos clearing <span className="font-semibold tabular-nums">{autopilotBarText}</span>, max {autopilotMaxChanges} changes per run, {autopilotAllowLive ? 'LIVE accounts included' : 'demo accounts only'}; every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies
+                evidence loop on a session-adaptive cadence — arms combos clearing <span className="font-semibold tabular-nums">{autopilotBarText}</span>, max {autopilotMaxChanges} changes per run, every enabled account; every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies
               </span>
             </div>
             </Card>

@@ -73,21 +73,24 @@ export function loadEdgeWatchdogConfig(db) {
  *    no planned bracket (tp or sl NULL, zero stop distance) are not IN the
  *    band — they cannot be, their R:R is unknowable — so they are excluded,
  *    not read as sub-floor.
+ *  · `ownOnly` — with an accountId, count ONLY that account's stamped closes
+ *    (no legacy NULL rows): the per-account no-edge verdict that overrides
+ *    a hand pin (PR-B checker, 11-09-2026) must be the account's own record.
  */
-export function strategyRollingEdge(db, strategyKey, window, { accountId = null, rrBand = null } = {}) {
+export function strategyRollingEdge(db, strategyKey, window, { accountId = null, rrBand = null, ownOnly = false } = {}) {
   const acct = accountId != null ? String(accountId) : null
   const below = Number(rrBand?.below)
   const banded = Number.isFinite(below) && below > 0
   const rows = db.prepare(
     `SELECT id, net_pnl FROM trades
       WHERE status = 'closed' AND net_pnl IS NOT NULL AND label_strategy = ?
-        AND (? IS NULL OR account_id = ? OR account_id IS NULL)
+        AND (? IS NULL OR account_id = ? OR (? = 0 AND account_id IS NULL))
         AND (? = 0 OR (
           tp_price IS NOT NULL AND sl_price IS NOT NULL AND entry_price IS NOT NULL
           AND ABS(sl_price - entry_price) > 0
           AND ABS(tp_price - entry_price) / ABS(sl_price - entry_price) < ?))
       ORDER BY closed_at DESC, id DESC LIMIT ?`
-  ).all(strategyKey, acct, acct, banded ? 1 : 0, banded ? below : 0, window)
+  ).all(strategyKey, acct, acct, ownOnly ? 1 : 0, banded ? 1 : 0, banded ? below : 0, window)
   const n = rows.length
   if (n === 0) return { trades: 0, expectancy: null, profitFactor: null, winRate: null, net: 0, newestId: null }
   const wins = rows.filter(r => Number(r.net_pnl) > 0)
@@ -109,6 +112,16 @@ export function strategyRollingEdge(db, strategyKey, window, { accountId = null,
  * edge is clearly negative over a full window. Returns the actions taken and
  * the per-strategy evaluation (for the dashboard). Never throws.
  */
+/** The enabled accounts whose OWN closes over the window read clearly no-edge (same bar as the pooled verdict). */
+export function accountsWithOwnNoEdge(db, strategyKey, cfg) {
+  let ids = []
+  try { ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { return [] }
+  return ids.filter(id => {
+    const e = strategyRollingEdge(db, strategyKey, cfg.window, { accountId: id, ownOnly: true })
+    return e.trades >= cfg.minTrades && e.expectancy < 0 && e.profitFactor != null && e.profitFactor < cfg.pfFloor
+  })
+}
+
 export function runEdgeWatchdog(db, { notify } = {}) {
   const cfg = loadEdgeWatchdogConfig(db)
   if (!cfg.on) return { skipped: 'off', actions: [], evaluated: [] }
@@ -154,22 +167,31 @@ export function runEdgeWatchdog(db, { notify } = {}) {
       // but only a disarm that CHANGED something is an action worth stamping,
       // logging or waking the owner for.
       //
-      // HAND-PINNED DEMO ARMS ARE HELD (09-09-2026), the breaker's 03-09 rule
+      // HAND-PINNED ARMS ARE HELD (09-09-2026), the breaker's 03-09 rule
       // applied here too. Measured: the cluster rule (#868) pinned every
       // strategy on every account at 13:49 SGT; this watchdog unpinned
       // fib_618_fade and fib_confluence everywhere at 13:54 on their POOLED
       // record, and the boot seed re-pinned them at 16:08 — two evaluators
-      // overriding each other on the owner's word. A demo pin is judged
-      // per account by the 30-close verdict (strategy-verdicts.js) instead;
-      // the global list and live scopes are still disarmed here.
-      const scopes = disarmStrategyEverywhere(db, io, key, { neverZero: false, exemptHandPinnedDemo: true })
-      const heldPinnedDemo = [...(scopes.held || [])]
+      // overriding each other on the owner's word. A pin is judged per
+      // account by the 30-close verdict (strategy-verdicts.js) instead. PR-B
+      // (11-09-2026, owner principle 1): held on EVERY scope, not demo only;
+      // the global list is still disarmed here.
+      //
+      // …EXCEPT where the no-edge record is the account's OWN (checker,
+      // 11-09-2026): an account whose own closes over the window clear
+      // minTrades and read clearly losing has its pin written false — the
+      // pooled verdict holds the pins, the account's own does not. With
+      // `_all` pins on every account a pin that always held left the
+      // watchdog unable to disarm anything.
+      const ownVerdictScopes = accountsWithOwnNoEdge(db, key, cfg)
+      const scopes = disarmStrategyEverywhere(db, io, key, { neverZero: false, exemptHandPinned: true, ownVerdictScopes })
+      const heldPinned = [...(scopes.held || [])]
       if (scopes.length === 0) continue
       setState(db, seenKey, String(e.newestId))
       // Tell the autopilot: a live disarm holds for the cool-off, and the
       // divergence tracker sees who ended the arm (02-09-2026).
       try { noteLiveDisarm(db, key, 'watchdog') } catch { /* never undoes the disarm */ }
-      const action = { strategy: key, did: 'disarmed_no_edge', scopes: [...scopes], heldPinnedDemo, expectancy: e.expectancy, profitFactor: pf, winRate: e.winRate, trades: e.trades, net: e.net }
+      const action = { strategy: key, did: 'disarmed_no_edge', scopes: [...scopes], heldPinned, ownVerdictScopes, expectancy: e.expectancy, profitFactor: pf, winRate: e.winRate, trades: e.trades, net: e.net }
       actions.push(action)
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')

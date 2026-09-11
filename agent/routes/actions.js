@@ -551,9 +551,10 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/earned-floor — { on?, demoOnly?, riskScale?, window?,
-  // minSample?, minE? }. PR-C's dials (owner "go PR-C stage 2",
-  // 31-08-2026: live scope + full risk on admits + relaxed thresholds).
+  // POST /actions/earned-floor — { on?, riskScale?, window?, minSample?,
+  // minE? }. PR-C's dials (owner "go PR-C stage 2", 31-08-2026: full risk on
+  // admits + relaxed thresholds; PR-B 11-09-2026 removed the demoOnly scope —
+  // every account is in scope on the same evidence).
   // Until this route, earned_floor_json had NO writer — the staged limits
   // were code constants, which is right for stage 1 and wrong the moment
   // the owner orders stage 2. Values are clamped by loadEarnedFloor; the
@@ -567,7 +568,6 @@ export default function actionsRouter(db, deps = {}) {
       const next = {
         ...current,
         ...(typeof req.body?.on === 'boolean' ? { on: req.body.on } : {}),
-        ...(typeof req.body?.demoOnly === 'boolean' ? { demoOnly: req.body.demoOnly } : {}),
         ...(req.body?.riskScale != null ? { riskScale: Number(req.body.riskScale) } : {}),
         ...(req.body?.window != null ? { window: Number(req.body.window) } : {}),
         ...(req.body?.minSample != null ? { minSample: Number(req.body.minSample) } : {}),
@@ -579,7 +579,7 @@ export default function actionsRouter(db, deps = {}) {
       }
       setState(db, 'earned_floor_json', JSON.stringify(next))
       const clamped = loadEarnedFloor(db)
-      console.log(`[actions] earned floor ${clamped.on ? 'ON' : 'off'} demoOnly=${clamped.demoOnly} riskScale=${clamped.riskScale} window=${clamped.window} minSample=${clamped.minSample} minE=${clamped.minE} priorAdmit=${clamped.priorAdmit} priorRiskScale=${clamped.priorRiskScale}`)
+      console.log(`[actions] earned floor ${clamped.on ? 'ON' : 'off'} riskScale=${clamped.riskScale} window=${clamped.window} minSample=${clamped.minSample} minE=${clamped.minE} priorAdmit=${clamped.priorAdmit} priorRiskScale=${clamped.priorRiskScale}`)
       res.json({ ok: true, config: clamped })
     } catch (e) {
       res.status(400).json({ error: e.message })
@@ -1017,7 +1017,7 @@ export default function actionsRouter(db, deps = {}) {
   router.get('/momentum-account', async (_req, res) => {
     try {
       const { loadMomentumAccount } = await import('../services/momentum-account.js')
-      res.json({ ok: true, effective: loadMomentumAccount(db), writes: 'momentum_book rows + real orders through autoTrade on the momentum account, sized by the vol target, once per day' })
+      res.json({ ok: true, effective: loadMomentumAccount(db), writes: 'momentum_book rows + real orders through autoTrade on every momentum account (accountId "_all" = every enabled account), each sized by the vol target from its own equity, once per day' })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2887,9 +2887,10 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/autopilot — { mode, maxChanges?, allowLive?, intervalMs? }
-  // The strategy autopilot's master switch. allowLive=true lets 'auto' arm a
-  // LIVE account; intervalMs overrides the session-adaptive cadence.
+  // POST /actions/autopilot — { mode, maxChanges?, intervalMs? }
+  // The strategy autopilot's master switch; intervalMs overrides the
+  // session-adaptive cadence. (PR-B: the allowLive opt-in is gone — auto
+  // mode acts on every account alike.)
   // -----------------------------------------------------------------------
   router.post('/autopilot', async (req, res) => {
     const mode = ['off', 'suggest', 'auto'].includes(req.body?.mode) ? req.body.mode : null
@@ -2899,7 +2900,6 @@ export default function actionsRouter(db, deps = {}) {
       const n = Number(req.body.maxChanges)
       if (Number.isFinite(n) && n >= 1 && n <= 20) setState(db, 'autopilot_max_changes', String(Math.round(n)))
     }
-    if (req.body?.allowLive != null) setState(db, 'autopilot_allow_live', req.body.allowLive === true ? 'true' : 'false')
     if (req.body?.intervalMs != null) {
       const n = Number(req.body.intervalMs)
       // 0/null clears the override → back to the session-adaptive cadence.
@@ -2926,7 +2926,6 @@ export default function actionsRouter(db, deps = {}) {
     res.json({
       ok: true, mode,
       maxChanges: Number(getState(db, 'autopilot_max_changes')) || 4,
-      allowLive: getState(db, 'autopilot_allow_live') === 'true',
       armBar,
     })
   })
@@ -4562,26 +4561,20 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/registry-account — { accountId, enabled, mode? ,
-  // confirmLive? } enables/disables one registry row (M4: lifts the M0
-  // sole-enabled invariant). SAFETY CARVE-OUT: enabling a LIVE account is
-  // the M5 cutover gesture and requires confirmLive:true explicitly — the
-  // owner's word, never a default.
+  // POST /actions/registry-account — { accountId, enabled, mode? }
+  // enables/disables one registry row (M4: lifts the M0 sole-enabled
+  // invariant). PR-B (owner principle 1, 11-09-2026): the live-entry
+  // carve-out (`confirmLive`) is gone — every account is enabled the same way.
   // -----------------------------------------------------------------------
   router.post('/registry-account', async (req, res) => {
     try {
-      const { accountId, enabled, mode, confirmLive } = req.body || {}
+      const { accountId, enabled, mode } = req.body || {}
       if (accountId == null || typeof enabled !== 'boolean') {
         return res.status(400).json({ error: 'need accountId and enabled:boolean' })
       }
       const { setAccountEnabled, listAccounts } = await import('../services/account-registry.js')
-      // THE CARVE-OUT MOVED INTO THE SERVICE (PR B). It used to live here and
-      // guard `enabled`, which was the only switch at the time. `enabled` is
-      // now derived from `mode`, so the check guards what it was always for —
-      // letting a LIVE account ENTER — and it lives in one place, so the
-      // unarchive path is covered too instead of reaching live-active free.
-      const out = setAccountEnabled(db, accountId, enabled, mode || null, { confirmLive: confirmLive === true })
-      if (!out.ok) return res.status(out.error && /confirmLive/.test(out.error) ? 403 : 400).json({ error: out.error, ...out })
+      const out = setAccountEnabled(db, accountId, enabled, mode || null)
+      if (!out.ok) return res.status(400).json({ error: out.error, ...out })
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
           .run('POST', '/actions/registry-account', JSON.stringify(out).slice(0, 2000))
@@ -4676,17 +4669,16 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/account-archive', async (req, res) => {
     try {
-      const { accountId, archived, mode, confirmLive } = req.body || {}
+      const { accountId, archived, mode } = req.body || {}
       if (accountId == null || typeof archived !== 'boolean') {
         return res.status(400).json({ error: 'need accountId and archived:boolean' })
       }
       const { archiveAccount, unarchiveAccount } = await import('../services/account-capabilities.js')
-      // Un-filing now re-enters the roster (enabled is derived), so this path
-      // can grant a live account ENTER when mode='active' — it needs the same
-      // confirmation the registry route has always had.
+      // Un-filing re-enters the roster (enabled is derived). PR-B: no
+      // environment confirmation on this path either.
       const out = archived
         ? archiveAccount(db, accountId)
-        : unarchiveAccount(db, accountId, mode || 'manage_only', { confirmLive: confirmLive === true })
+        : unarchiveAccount(db, accountId, mode || 'manage_only')
       if (!out.ok) return res.status(409).json(out)
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')

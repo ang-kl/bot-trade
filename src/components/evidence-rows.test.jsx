@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 import EvidenceRows, { PriorCohortRow, TargetReviewRow, ExitChainRow } from './EvidenceRows.jsx'
 
 const report = (over = {}) => ({
-  config: { on: true, demoOnly: false, riskScale: 1, priorAdmit: true, priorRiskScale: 0.5 },
+  config: { on: true, riskScale: 1, priorAdmit: true, priorRiskScale: 0.5 },
   target: { closes: 30, minPf: 1.5 },
   admittedApprovals: 16,
   viaPrior: { admittedApprovals: 3, closed: 2, wins: 1, winRate: 50, profitFactor: 2.1, net: 42.5 },

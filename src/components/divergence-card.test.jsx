@@ -46,7 +46,7 @@ const divergence = (over = {}) => ({
 })
 
 const earnedFloor = (over = {}) => ({
-  config: { on: true, demoOnly: true, riskScale: 0.5, window: 30, minSample: 15, minE: 0.15 },
+  config: { on: true, riskScale: 0.5, window: 30, minSample: 15, minE: 0.15 },
   target: { closes: 30, minPf: 1.5 },
   admittedApprovals: 7,
   admitEvents: 23,
@@ -126,7 +126,8 @@ describe('EarnedFloorRow', () => {
   it('renders config, cohort, admitted counts and the verdict from a fixture', () => {
     const html = renderToStaticMarkup(<EarnedFloorRow data={earnedFloor()} />)
     expect(html).toContain('pending 5/30 closes')
-    expect(html).toContain('demo only')
+    expect(html).toContain('every account')
+    expect(html).not.toMatch(/demo only|live included/)
     expect(html).toContain('risk scale 0.50')
     expect(html).toContain('window 30')
     expect(html).toContain('min sample 15')

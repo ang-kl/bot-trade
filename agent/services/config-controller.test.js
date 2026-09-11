@@ -122,14 +122,15 @@ test('silence is REPORTED, not implied — an absent proposal must not read as a
   assert.equal(out.skipped != null, true, 'no data still produces a stated reason')
 })
 
-test('the live account is excluded unless asked for', () => {
+test('PR-B: the controller proposes for a live account by default — no includeLive flag exists', () => {
   const db = fresh()
   db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode)
               VALUES ('42993489','1251247',1,1,'active')`).run()
   seed(db, { account: '42993489' })
-  assert.equal(configProposals(db).accounts.some(a => a.accountId === '42993489'), false)
-  assert.match(configProposals(db).scope.note, /live accounts excluded/)
-  assert.equal(configProposals(db, { includeLive: true }).accounts.some(a => a.accountId === '42993489'), true)
+  const r = configProposals(db)
+  assert.equal(r.accounts.some(a => a.accountId === '42993489'), true, 'RED if the live row is skipped again')
+  assert.doesNotMatch(String(r.scope.note), /live accounts excluded/)
+  assert.equal('includeLive' in r.scope, false)
 })
 
 test('a disabled account is not advised about', () => {

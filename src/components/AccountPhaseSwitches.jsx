@@ -33,6 +33,7 @@ import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost } from '../lib/agent-api.js'
 import { PHASES } from '../lib/account-phases.js'
 import { accountNumbers } from "../lib/scope-label.js"
+import { confirmAccountAction } from '../lib/account-confirm.js'
 
 /**
  * One phase switch for one account.
@@ -173,19 +174,19 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
 
   // Change what an account is ALLOWED to do. Same route, same privilege as the
   // Disable button above — this only widens which of its arguments the UI can
-  // reach, and never for a LIVE row (the select is disabled there, and the
-  // route refuses an enable without confirmLive regardless).
+  // reach, on EVERY row (PR-B, owner principle 1: the select is no longer
+  // greyed on a live row and the route takes no environment word).
   //
   // Moving to Active is the one direction that can start new orders, so it
-  // confirms exactly like arming does. Every other direction only ever removes
-  // permission, and management of open positions survives all four.
+  // confirms exactly like arming does — the same neutral confirm every
+  // account gets. Every other direction only ever removes permission, and
+  // management of open positions survives all four.
   const setMode = async (a, next) => {
-    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${accountNumbers(a)}`
     const enabled = next !== 'disabled'
     const mode = enabled ? next : 'manage_only'
     if (next === 'active') {
-      if (!window.confirm(`Set ${who} to Active? With Auto Trade armed, the agent may open REAL new positions on this account.`)) return
-    } else if (!window.confirm(`Set ${who} to ${next === 'disabled' ? 'Disabled' : next === 'paused' ? 'Paused' : 'Manage only'}? No new entries will be opened on it. Open positions keep being managed.`)) return
+      if (!confirmAccountAction(a, 'set to Active — with Auto Trade armed, the agent may open new positions on it.')) return
+    } else if (!confirmAccountAction(a, `set to ${next === 'disabled' ? 'Disabled' : next === 'paused' ? 'Paused' : 'Manage only'} — no new entries will be opened on it; open positions keep being managed.`)) return
     setBusyId(a.accountId)
     try {
       await agentPost('/actions/registry-account', { accountId: a.accountId, enabled, mode })
@@ -394,21 +395,16 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                   overruled, and the only way out was a route call by hand.
                   A veto with no control beside it is not a safety feature; it
                   is a dead end.
-                  LIVE rows are read-only here on purpose: enabling live
-                  trading is the M5 cutover gesture and the route refuses it
-                  without confirmLive — that stays a deliberate act, never a
-                  dropdown. */}
+                  PR-B (owner principle 1, 11-09-2026): the dropdown is live
+                  on EVERY row — the environment no longer greys it. */}
               <select
                 aria-label={`Trading mode for account ${accountNumbers(a)}`}
                 value={a.enabled ? (a.mode || 'manage_only') : 'disabled'}
-                disabled={a.isLive || busyId === a.accountId}
-                title={a.isLive
-                  ? 'LIVE account — its mode is not changed from this dropdown. Enabling live trading is a deliberate cutover, not a click.'
-                  : 'Active = may open new trades · Manage only = keeps existing positions managed, opens nothing new · Paused = no scanning, no entries · Disabled = out of the broker roster entirely. Open positions are ALWAYS managed.'}
+                disabled={busyId === a.accountId}
+                title="Active = may open new trades · Manage only = keeps existing positions managed, opens nothing new · Paused = no scanning, no entries · Disabled = out of the broker roster entirely. Open positions are ALWAYS managed."
                 onChange={(e) => setMode(a, e.target.value)}
-                className={`rounded-[3px] border border-[var(--color-border)] bg-transparent px-[3px] py-[2px]
-                            text-(length:--fs-body) font-semibold text-[var(--color-text)]
-                            ${a.isLive ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer'}`}
+                className="rounded-[3px] border border-[var(--color-border)] bg-transparent px-[3px] py-[2px]
+                            text-(length:--fs-body) font-semibold text-[var(--color-text)] cursor-pointer"
               >
                 <option value="active">Active</option>
                 <option value="manage_only">Manage only</option>

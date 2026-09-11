@@ -10,7 +10,7 @@ import Input from '../components/common/Input.jsx'
 import WatchlistCompare from '../components/watchlist/WatchlistCompare.jsx'
 import { getAgentConn, setAgentConn, clearAgentConn, agentGet, agentPost } from '../lib/agent-api.js'
 import { writeSelection } from '../lib/selected-account.js'
-import { accountNumbers } from "../lib/scope-label.js"
+import { confirmAccountAction } from '../lib/account-confirm.js'
 
 
 export default function Connect() {
@@ -155,17 +155,11 @@ export default function Connect() {
   }
 
   const selectAccount = async (a) => {
-    // LIVE accounts hold real money — make switching to one deliberate.
-    // (Backtests and charts are read-only either way; this gates what
-    // autotrade and manual orders would act on.)
-    if (a.isLive) {
-      const word = window.prompt(
-        `⚠ ${accountNumbers(a)} is a LIVE account with REAL money.\n\n` +
-        'Backtests and charts never trade — but if you later arm Autotrade or place a manual order, it will use REAL funds on this account.\n\n' +
-        'Type LIVE to confirm, or Cancel to pick a DEMO account instead.'
-      )
-      if (word !== 'LIVE') return
-    }
+    // Switching the bot's account is deliberate on EVERY row (PR-B, owner
+    // principle 1): one neutral confirm naming the account and its balance,
+    // no environment branch. (Backtests and charts are read-only either way;
+    // this gates what autotrade and manual orders would act on.)
+    if (!confirmAccountAction(a, 'link it as the bot\'s account — backtests and charts never trade, but Autotrade and manual orders would use its funds.')) return
     setLinking(true)
     try {
       const r = await agentPost('/actions/ctrader-select-account', { accountId: a.accountId, isLive: a.isLive, traderLogin: a.traderLogin ?? null })

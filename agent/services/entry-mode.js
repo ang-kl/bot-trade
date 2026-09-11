@@ -63,6 +63,19 @@ function countResting(db, accountId) {
   } catch { return 0 }
 }
 
+/**
+ * PR-B (owner principle 1): the ladder lost its environment tier. A record
+ * written before that with the demo-only stage or the typed live approval
+ * reads as TRADED_PASSED — both meant "this account's own tick trades were
+ * judged good enough", which is what TRADED_PASSED now means for every
+ * account. Read-side only: the stored text is rewritten on the next write.
+ */
+const LEGACY_STAGE_ALIASES = Object.freeze({ DEMO_PASSED: 'TRADED_PASSED', LIVE_APPROVED: 'TRADED_PASSED' })
+export function normaliseLegacyStage(status) {
+  const alias = LEGACY_STAGE_ALIASES[status?.validationStage]
+  return alias ? { ...status, validationStage: alias } : status
+}
+
 /** The account's engine record; a missing or invalid record reads as the
  *  fully-OFF default and is NOT written back (a read never writes). */
 export function engineStatusFor(db, accountId) {
@@ -71,6 +84,7 @@ export function engineStatusFor(db, accountId) {
   let stored = null
   try { stored = JSON.parse(getAccountState(db, id, ENGINE_STATUS_KEY) || 'null') } catch { stored = null }
   if (stored && typeof stored === 'object') {
+    stored = normaliseLegacyStage(stored)
     const v = validateEngineStatus(stored)
     if (v.ok) return { ...stored, invalid: undefined }
     return { ...defaultEngineStatus({ accountId: id, environment }), stored: false, invalid: v.errors }
@@ -99,17 +113,20 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
   if (expectedRevision != null && Number(expectedRevision) !== cur.configRevision) {
     return { ok: false, reason: 'revision_conflict', current: cur.configRevision, expected: Number(expectedRevision) }
   }
-  // P6b (plan §3 P6b, §14 P7): TICK_MOMENTUM is admitted ONLY on a demo
-  // account whose readiness (tick-readiness.js: registry, halt, record,
-  // horizon, observation, recorder, disk, feed, pinned profile, replay
-  // evidence, validation stage) is clean at the moment of the request. The
-  // readiness function is injected by the route so this module stays free
-  // of the sidecar's status tables; a caller that passes none is refused —
-  // there is no unchecked path into tick trading. Live stays refused until
-  // P7's LIVE_APPROVED gate exists as code.
+  // P6b (plan §3 P6b): TICK_MOMENTUM is admitted ONLY on an account whose
+  // readiness (tick-readiness.js: registry, halt, record, horizon,
+  // observation, recorder, disk, feed, pinned profile, replay evidence,
+  // validation stage) is clean at the moment of the request. The readiness
+  // function is injected by the route so this module stays free of the
+  // sidecar's status tables; a caller that passes none is refused — there
+  // is no unchecked path into tick trading.
+  //
+  // PR-B (owner principle 1, 11-09-2026): readiness is the ONLY gate. The
+  // environment test that used to sit here (`tick_live_refused`, demo only
+  // until a typed live approval) is gone — an account is only how much is
+  // inside it, and the evidence bar is the same on every account.
   if (mode === 'TICK_MOMENTUM') {
     if (typeof readiness !== 'function') return { ok: false, reason: 'tick_readiness_unavailable: TICK_MOMENTUM needs the readiness check the route supplies', current: cur.configRevision }
-    if (cur.environment !== 'demo') return { ok: false, reason: `tick_live_refused: TICK_MOMENTUM is admitted on demo accounts only until P7 (this account is ${cur.environment})`, current: cur.configRevision }
     let rd = null
     try { rd = readiness(db, id) } catch (err) { return { ok: false, reason: `tick_readiness_error: ${err?.message || err}`, current: cur.configRevision } }
     if (!rd || rd.ready !== true) {
@@ -250,6 +267,23 @@ export function requestTickObservation(db, accountId, mode, { expectedRevision =
 }
 
 /**
+ * Expand `_all` in a per-account config map to every ENABLED registry
+ * account (PR-B, owner principle 9: setups are for all accounts and not
+ * hardcoded). Explicit per-id keys still win over `_all` for that id; other
+ * `_`-prefixed keys are the file's own notes. Returns [[accountId, value]].
+ */
+export function expandAllAccounts(db, map) {
+  const entries = map && typeof map === 'object' ? Object.entries(map) : []
+  const explicit = entries.filter(([k]) => !k.startsWith('_'))
+  const all = entries.find(([k]) => k === '_all')
+  if (!all) return explicit
+  let ids = []
+  try { ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { ids = [] }
+  const named = new Set(explicit.map(([k]) => k))
+  return [...explicit, ...ids.filter(id => !named.has(id)).map(id => [id, all[1]])]
+}
+
+/**
  * P3b: the owner's tick-observation declaration from the repo
  * (config/tick-observation.json), applied ONCE per file content — the same
  * rule as the strategy-pin seed: the file is the initial declaration, a
@@ -257,6 +291,12 @@ export function requestTickObservation(db, accountId, mode, { expectedRevision =
  * changes. Exists because the bearer token is lost and the routes are the
  * only other way to throw the switch. Never writes the engine record when
  * nothing changes; unknown accounts and refused modes are reported.
+ *
+ * PR-B: `accounts._all` applies to every enabled registry account. The seed
+ * record keeps the ids `_all` has reached, so an account enabled AFTER the
+ * file was applied is still seeded on its first boot (the content hash alone
+ * would have skipped it), while every account already reached keeps what
+ * the operator did since.
  */
 export function seedTickObservationFromConfig(db, { file = null, universeFile = null, log = () => {} } = {}) {
   const out = { applied: [], unchanged: [], skipped: [], symbols: null, error: null }
@@ -272,18 +312,24 @@ export function seedTickObservationFromConfig(db, { file = null, universeFile = 
   const hash = createHash('sha256').update(content).digest('hex').slice(0, 16)
   let seeded = null
   try { seeded = JSON.parse(getState(db, 'tick_observation_seed_json') || 'null') } catch { seeded = null }
-  if (seeded?.hash === hash) {
-    // Already applied for this content: what the operator did since stands.
-    for (const id of Object.keys(cfg.accounts || {})) if (!id.startsWith('_')) out.unchanged.push(id)
-    return out
-  }
   const accounts = cfg.accounts && typeof cfg.accounts === 'object' ? cfg.accounts : {}
-  for (const [accountId, mode] of Object.entries(accounts)) {
-    if (accountId.startsWith('_')) continue
+  const hasAll = Object.prototype.hasOwnProperty.call(accounts, '_all')
+  const reached = new Set(Array.isArray(seeded?.reached) ? seeded.reached.map(String) : [])
+  let entries = expandAllAccounts(db, accounts)
+  const sameContent = seeded?.hash === hash
+  if (sameContent) {
+    // Already applied for this content: what the operator did since stands.
+    // Under `_all`, only an account the seed has never reached is still due.
+    for (const [id] of entries) if (!hasAll || reached.has(id)) out.unchanged.push(id)
+    entries = hasAll ? entries.filter(([id]) => !reached.has(id)) : []
+    if (!entries.length) return out
+  }
+  for (const [accountId, mode] of entries) {
     if (!/^[0-9]+$/.test(accountId)) { out.skipped.push(`${accountId}: malformed id`); continue }
     let known = false
     try { known = !!db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(accountId) } catch { known = false }
     if (!known) { out.skipped.push(`…${accountId.slice(-4)}: not in the registry`); continue }
+    reached.add(accountId)
     const want = String(mode).toUpperCase()
     const cur = engineStatusFor(db, accountId).tickObservation
     if (cur === want) { out.unchanged.push(accountId); continue }
@@ -294,6 +340,11 @@ export function seedTickObservationFromConfig(db, { file = null, universeFile = 
     } else {
       out.skipped.push(`…${accountId.slice(-4)}: ${r.reason}`)
     }
+  }
+  if (sameContent) {
+    // A late-joining account under `_all`: record it reached, touch nothing else.
+    setState(db, 'tick_observation_seed_json', JSON.stringify({ ...seeded, reached: [...reached].sort() }))
+    return out
   }
   let names = null
   if (cfg.symbols === 'momentum-universe') {
@@ -310,7 +361,7 @@ export function seedTickObservationFromConfig(db, { file = null, universeFile = 
     setState(db, 'tick_symbols_json', JSON.stringify(names))
     out.symbols = names.length
   }
-  setState(db, 'tick_observation_seed_json', JSON.stringify({ hash, at: new Date().toISOString(), applied: out.applied, symbols: out.symbols }))
+  setState(db, 'tick_observation_seed_json', JSON.stringify({ hash, at: new Date().toISOString(), applied: out.applied, symbols: out.symbols, reached: [...reached].sort() }))
   return out
 }
 

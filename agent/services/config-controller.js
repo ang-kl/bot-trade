@@ -337,19 +337,19 @@ export function proposeForAccount(db, accountId, { days = 30, minSample = MIN_SA
 /**
  * Every enabled account, worst first.
  *
- * DELIBERATELY NOT the LIVE account by default. A controller's first published
- * opinion should not be about the account that can lose real money, and
- * `includeLive` makes reading it a decision rather than a default.
+ * PR-B (owner principle 1, 11-09-2026): every enabled account, whichever
+ * environment. The `includeLive` flag that kept the live account out of the
+ * controller's opinion by default is gone — an account is only how much is
+ * inside it, and the arithmetic below already sizes off that balance.
  */
-export function configProposals(db, { days = 30, minSample = MIN_SAMPLE, includeLive = false } = {}) {
+export function configProposals(db, { days = 30, minSample = MIN_SAMPLE } = {}) {
   let rows = []
   try {
-    rows = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY account_id').all()
+    rows = db.prepare('SELECT account_id, enabled FROM accounts ORDER BY account_id').all()
   } catch { return { accounts: [], proposals: 0, at: new Date().toISOString() } }
 
   const out = []
   for (const r of rows) {
-    if (!includeLive && r.is_live === 1) continue
     if (r.enabled !== 1) continue
     // Balance comes from risk.js's own resolver so the daily-cap arithmetic
     // below sizes off the same number the cap itself uses. A controller that
@@ -364,7 +364,7 @@ export function configProposals(db, { days = 30, minSample = MIN_SAMPLE, include
     accounts: out,
     proposals: out.reduce((n, a) => n + a.proposals.length, 0),
     // Named so a reader knows what this did NOT look at.
-    scope: { days, minSample, includeLive, note: includeLive ? null : 'live accounts excluded — pass includeLive to see them' },
+    scope: { days, minSample, note: 'every enabled account (PR-B: no environment split)' },
     at: new Date().toISOString(),
   }
 }

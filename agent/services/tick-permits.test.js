@@ -163,11 +163,13 @@ test('TM-40: a failing recorder / reserve / continuity check pauses the account 
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED'`).get(TICK_PRODUCER).n, 0)
 })
 
-test('a live account is never fed even when its record says TICK_MOMENTUM; no credentials → nothing pushed', async () => {
+test('PR-B: a live account in effective TICK_MOMENTUM is listed on its OWN side (routing), on the same evidence bar as demo; no credentials → nothing pushed', async () => {
   const db = fresh()
-  // force the record past the gate the way a corrupt write would
-  writeEngineStatus(db, { ...engineStatusFor(db, LIVE), profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'LIVE_APPROVED', requestedEntryMode: 'TICK_MOMENTUM', effectiveEntryMode: 'TICK_MOMENTUM', transitionState: 'STABLE', configRevision: 1, modeEpoch: 1, fenceAckEpoch: 1, updatedAt: new Date().toISOString() })
-  assert.deepEqual(tickEntryAccountsFor(db, { isLive: true, name: 'cpp_exec' }), [])
+  writeEngineStatus(db, { ...engineStatusFor(db, LIVE), profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', requestedEntryMode: 'TICK_MOMENTUM', effectiveEntryMode: 'TICK_MOMENTUM', transitionState: 'STABLE', configRevision: 1, modeEpoch: 1, fenceAckEpoch: 1, updatedAt: new Date().toISOString() })
+  // RED if the old `is_live === 1 || environment === 'live'` strike returns.
+  assert.deepEqual(tickEntryAccountsFor(db, { isLive: true, name: 'cpp_exec' }), [LIVE], 'the live side lists its own tick account')
+  assert.deepEqual(tickEntryAccountsFor(db, { isLive: false, name: 'cpp_exec_demo' }), [], 'the demo side does not carry it (routing, not policy)')
+  assert.deepEqual(tickEntryAccountsFor(db, { isLive: null }), [LIVE])
   const d = deps({ creds: { ready: false } })
   const r = await runTickPermitFeeder(db, { isLive: true, name: 'cpp_exec' }, d.opts)
   assert.equal(r.pushed, false); assert.equal(r.reason, 'no_creds'); assert.equal(d.pushes.length, 0)

@@ -18,7 +18,7 @@
 import { getState, setState } from '../db.js'
 // capabilitiesFor is a PURE preset table with no imports of its own, so
 // importing it here cannot create a cycle back through this module.
-import { capabilitiesFor, SETTABLE_MODES, enabledForMode, liveEntryRefusal, archiveAccount } from './account-capabilities.js'
+import { capabilitiesFor, SETTABLE_MODES, enabledForMode, archiveAccount } from './account-capabilities.js'
 
 const now = () => new Date().toISOString()
 
@@ -134,7 +134,7 @@ export function syncSelectedAccount(db, accountId, isLive, traderLogin = null, {
  * already exist (created by selection or an accounts push) — enabling an
  * unknown id is refused rather than inventing a row with no metadata.
  */
-export function setAccountEnabled(db, accountId, enabled, mode = null, { confirmLive = false } = {}) {
+export function setAccountEnabled(db, accountId, enabled, mode = null) {
   if (accountId == null) return { ok: false, error: 'accountId required' }
   const id = String(accountId)
   const row = db.prepare('SELECT account_id, is_live FROM accounts WHERE account_id = ?').get(id)
@@ -152,8 +152,9 @@ export function setAccountEnabled(db, accountId, enabled, mode = null, { confirm
 
   const m = mode || 'active'
   if (!SETTABLE_MODES.includes(m)) return { ok: false, error: `invalid mode ${m}` }
-  const gate = liveEntryRefusal(row.is_live === 1, m, confirmLive)
-  if (gate) return gate
+  // PR-B (owner principle 1): no live-entry carve-out here — the row's
+  // environment is echoed in the reply for the caller's display, never read
+  // as a gate.
   // `enabled` is derived, never passed in — see enabledForMode.
   db.prepare('UPDATE accounts SET enabled = ?, mode = ?, updated_at = ? WHERE account_id = ?')
     .run(enabledForMode(m) ? 1 : 0, m, now(), id)

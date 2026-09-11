@@ -432,9 +432,8 @@ try {
 // account. Reversible in Tune / via /actions/autopilot. Runs once.
 if (!getState(db, 'autopilot_boot_v1')) {
   if (!getState(db, 'autopilot_mode')) setState(db, 'autopilot_mode', 'auto')
-  setState(db, 'autopilot_allow_live', 'true')
   setState(db, 'autopilot_boot_v1', new Date().toISOString())
-  console.log('[boot] Strategy Autopilot enabled — auto mode, live arming allowed, session-adaptive cadence')
+  console.log('[boot] Strategy Autopilot enabled — auto mode on every account, session-adaptive cadence')
 }
 
 // ---------------------------------------------------------------------------

@@ -395,14 +395,15 @@ test('boot reconcile squares combo_arms with the live matrices: stale rows close
 })
 
 test('wiring: /state/config emits the autopilot dials the action enforces (UI audit 02-09-2026)', () => {
-  // The Tune page reads config.autopilot to describe the bar/cap/allowLive;
+  // The Tune page reads config.autopilot to describe the bar/cap;
   // a route that stopped emitting it would silently return the copy to
   // "not reported". Comments stripped so the pin cannot pass on prose.
   const src = readFileSync(new URL('../routes/state.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
-  assert.match(src, /autopilot: \{\s*arm_bar: loadArmBar\(db\),\s*max_changes: Number\(getState\(db, 'autopilot_max_changes'\)\) \|\| 4,\s*allow_live: getState\(db, 'autopilot_allow_live'\) === 'true',\s*\}/)
+  assert.match(src, /autopilot: \{\s*arm_bar: loadArmBar\(db\),\s*max_changes: Number\(getState\(db, 'autopilot_max_changes'\)\) \|\| 4,\s*\}/)
+  assert.doesNotMatch(src, /autopilot_allow_live/, 'PR-B: the allow_live opt-in is gone')
   const tune = readFileSync(new URL('../../src/pages/Tune.jsx', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\{\/\*[\s\S]*?\*\/\}/g, '')
   assert.match(tune, /config\?\.autopilot\?\.arm_bar/)
-  assert.doesNotMatch(tune, /arms GO combos|never on LIVE accounts|4-change cap/, 'the stale gate description must be gone')
+  assert.doesNotMatch(tune, /arms GO combos|never on LIVE accounts|4-change cap|allowLive|demo accounts only/, 'the stale gate description must be gone')
 })
 
 // ---------------------------------------------------------------------------

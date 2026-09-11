@@ -334,11 +334,11 @@ export default function WatchlistCompare() {
   const copy = async (from, to, symbols) => {
     if (!from || !to || !symbols.length) return
     const dst = accounts.find(x => String(x.accountId) === String(to[0]))
-    // A copy changes what an account may trade. Onto a LIVE account, or onto
-    // the one the bot is currently trading, that is a live-money change and
-    // gets named out loud before it happens — the whole reason the owner could
-    // not tell which account was which.
-    if (dst?.isLive || dst?.isSelected) {
+    // A copy changes what an account may trade, and is named out loud before
+    // it happens — the whole reason the owner could not tell which account
+    // was which. PR-B (owner principle 1): on EVERY destination, not only a
+    // live one or the one the bot trades.
+    if (dst) {
       const ok = window.confirm(
         `This will change what ${nameOf(to[0])} may trade.\n\n` +
         `${symbols.length} symbol(s) from ${nameOf(from)}. Continue?`
