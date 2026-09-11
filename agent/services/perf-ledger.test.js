@@ -133,4 +133,10 @@ test('buildPerfLedger balance: scoped key only for a named account — absent is
   assert.equal(all.balance, 45837.59); assert.equal(all.balanceSource, 'global')
   const inj = buildPerfLedger(db, { now, accountId: 'B', balance: 12 })
   assert.equal(inj.balance, 12); assert.equal(inj.balanceSource, 'injected')
+  // independent checker, 11-09-2026: a negative broker answer is a reading,
+  // an empty or unparseable key is not
+  setState(db, 'acct:N:account_balance_usd', '-5.5'); setState(db, 'acct:E:account_balance_usd', ''); setState(db, 'acct:X:account_balance_usd', 'abc')
+  assert.equal(buildPerfLedger(db, { now, accountId: 'N' }).balance, -5.5)
+  assert.equal(buildPerfLedger(db, { now, accountId: 'E' }).balance, null)
+  assert.equal(buildPerfLedger(db, { now, accountId: 'X' }).balance, null)
 })

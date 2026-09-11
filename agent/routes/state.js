@@ -2131,8 +2131,17 @@ export default function stateRouter(db) {
       // its own balance and its own limit — not the global limit applied to
       // another account's money (11-09-2026, the Performance cards).
       const scoped = accountId && accountId !== 'all' ? accountId : null
-      const dailyLossPct = (() => { try { const v = loadRiskConfig(db, scoped)?.dailyLossPct; return Number.isFinite(Number(v)) ? Number(v) : null } catch { return null } })()
-      res.json({ ...ledger, dailyLossPct, dailyLossScope: scoped ? 'account' : 'global' })
+      // null means "check off" (risk.js DEFAULT_RISK_CONFIG) and stays null:
+      // Number(null) is 0, and 0 would print as a zero-loss daily stop where
+      // there is no stop at all (independent checker, 11-09-2026).
+      const num = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
+      const dailyLossPct = (() => { try { return num(loadRiskConfig(db, scoped)?.dailyLossPct) } catch { return null } })()
+      // `dailyLossScope` says whose limit this IS, not what was asked for: an
+      // account with no overlay trades under the global limit and is labelled
+      // so; an id the registry has never heard of is not an "account" scope.
+      const overlay = (() => { try { return scoped ? accountRiskOverlay(db, scoped) : null } catch { return null } })()
+      const dailyLossScope = scoped && overlay && overlay.dailyLossPct !== undefined ? 'account' : 'global'
+      res.json({ ...ledger, dailyLossPct, dailyLossScope })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

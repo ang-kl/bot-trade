@@ -203,17 +203,19 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
   // The same defect was fixed for the Go-live cards in goal-tracker.js
   // safeBalance; this is the sibling path the Performance cards read.
   //
-  // A stamped 0 is a reading and prints as 0. An absent key is `null` and
-  // the card prints "not read" — never another account's money. The global
-  // is used only for the portfolio ('all') scope, where it is the connected
-  // account's balance by design and labelled as such.
+  // A stamped number is a reading and prints as itself — 0 as 0, and a
+  // negative balance as negative (the broker can answer one after a
+  // blow-up; "not read" would be the lie there). An absent or unparseable
+  // key is `null` and the card prints "not read" — never another account's
+  // money. The global is used only for the portfolio ('all') scope, where it
+  // is the connected account's balance by design and labelled as such.
   let bal = balance
   let balanceSource = balance != null ? 'injected' : null
   if (bal == null) {
     if (acct != null) {
       const raw = getState(db, `acct:${acct}:account_balance_usd`)
-      const scoped = raw == null ? NaN : Number(raw)
-      bal = Number.isFinite(scoped) && scoped >= 0 ? scoped : null
+      const scoped = raw == null || String(raw).trim() === '' ? NaN : Number(raw)
+      bal = Number.isFinite(scoped) ? scoped : null
       balanceSource = bal != null ? 'scoped' : null
     } else {
       bal = Number(getState(db, 'account_balance_usd')) || null
