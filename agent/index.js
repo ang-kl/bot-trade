@@ -318,7 +318,7 @@ try {
 try {
   const { ensureAccountRegistry, backfillAccountIds } = await import('./services/account-registry.js')
   const reg = ensureAccountRegistry(db)
-  console.log(`[boot] account registry: ${reg.total} account(s), enabled=${reg.enabled ?? 'none'}`)
+  console.log(`[boot] account registry: ${reg.total} account(s), ${reg.enabledCount} enabled${reg.enabledCount ? ` (${reg.enabledIds.map(id => `…${id.slice(-4)}`).join(', ')})` : ''}`)
   // Owner-declared horizons from the repo (§7,437·B·6): applied here, after
   // the registry exists, so the gates read them from the first loop.
   try {
