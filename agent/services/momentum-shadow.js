@@ -24,6 +24,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { shortMinConviction } from './direction-policy.js'
 
 export const MOMENTUM_SHADOW_MODE_LOG = 'log'
 export const MOMENTUM_SHADOW_CONFIG_KEY = 'momentum_shadow_json'
@@ -78,16 +79,11 @@ export function loadMomentumShadow(db) {
   return momentumShadowConfig(raw)
 }
 
-/**
- * The short floor the owner's rule implies: longMin × mult, capped at the
- * 0–10 scale. When the product exceeds 10 the rule is unreachable on this
- * scale and `shortRuleAboveScale` says so rather than silently refusing every
- * short.
- */
-export function shortMinConviction(cfg) {
-  const raw = cfg.longMinConviction * cfg.shortConvictionMult
-  return { shortMin: Math.min(10, Math.ceil(raw)), raw, shortRuleAboveScale: raw > 10 }
-}
+// The short floor (longMin × mult, capped at 10) is ONE rule with two
+// consumers since PR-D (11-09-2026): this shadow logs refusals against it and
+// the momentum book places against it. It lives in direction-policy.js and is
+// re-exported here so every existing reader of the shadow keeps its import.
+export { shortMinConviction }
 
 /**
  * Trailing return over `lookback` bars ending `skip` bars before the last

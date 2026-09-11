@@ -54,6 +54,32 @@ test('trend/breakout strategies are blocked in a quiet regime, allowed in a tren
   assert.equal(regimeBlocks('ema_pullback', 'long', { regime: 'volatile' }).block, false)
 })
 
+test('PR-D (owner principle 8): a trend/breakout signal AGAINST the measured trend is blocked (trend-vs-trend); aligned passes; quiet is unchanged; unknown direction fails open', () => {
+  // a donchian short into an up-trending regime → blocked, with the reason
+  const r = regimeBlocks('donchian_breakout', 'short', { regime: 'trending', trend_direction: 'long' })
+  assert.equal(r.block, true)
+  assert.match(r.reason, /^regime_block trend-vs-trend \(donchian_breakout\): short trend signal against a long-trending market/)
+  // aligned → passes, both ways
+  assert.equal(regimeBlocks('donchian_breakout', 'long', { regime: 'trending', trend_direction: 'long' }).block, false)
+  assert.equal(regimeBlocks('donchian_breakout', 'short', { regime: 'trending', trend_direction: 'short' }).block, false)
+  assert.equal(regimeBlocks('ema_pullback', 'long', { regime: 'trending', trend_direction: 'short' }).block, true)
+  assert.equal(regimeBlocks('tsmom_long', 'short', { regime: 'trending', trend_direction: 'long' }).block, true, 'the momentum book\'s shorts meet the same wall')
+  // quiet is the same block it always was; ranging/volatile never read the trend for a trend strategy
+  assert.match(regimeBlocks('donchian_breakout', 'short', { regime: 'quiet', trend_direction: 'long' }).reason, /trend-in-quiet/)
+  assert.equal(regimeBlocks('donchian_breakout', 'short', { regime: 'ranging', trend_direction: 'long' }).block, false)
+  assert.equal(regimeBlocks('donchian_breakout', 'short', { regime: 'volatile', trend_direction: 'long' }).block, false)
+  // trending with no direction → fails open for a trend strategy (a fade into it still blocks, above)
+  assert.equal(regimeBlocks('donchian_breakout', 'short', { regime: 'trending', trend_direction: null }).block, false)
+  // DB-backed: the same wall through checkRegimeGate; a stale row is no reading
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('NATGAS', 'trending', 'long', datetime('now'))`).run()
+  assert.equal(checkRegimeGate(db, 'donchian_breakout', 'short', 'NATGAS').block, true)
+  assert.equal(checkRegimeGate(db, 'donchian_breakout', 'long', 'NATGAS').block, false)
+  db.prepare(`DELETE FROM regimes`).run()
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('NATGAS', 'trending', 'long', datetime('now', '-2 days'))`).run()
+  assert.equal(checkRegimeGate(db, 'donchian_breakout', 'short', 'NATGAS').block, false, 'a fossil reading fails open')
+})
+
 test('unknown regime or unknown strategy fails open (never blocks)', () => {
   assert.equal(regimeBlocks('fib_618_fade', 'long', null).block, false)
   assert.equal(regimeBlocks('fib_618_fade', 'long', { regime: null }).block, false)

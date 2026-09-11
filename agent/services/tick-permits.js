@@ -39,6 +39,7 @@ import { reserveStandingPermits, releaseStandingReservations, TICK_PRODUCER, TIC
 import { accountRiskPerTrade } from './tick-shadow.js'
 import { tickSymbolNames, resolveTickSymbolIds } from './exec-guard-sync.js'
 import { scanRates, loadRiskConfig } from './risk.js'
+import { permittedSides, trendReadingFor } from './direction-policy.js'
 
 export const TICK_ENTRY_FILE = new URL('../config/tick-entry.json', import.meta.url)
 export const DEFAULT_OVERSHOOT_FRACTION = 0.25
@@ -152,6 +153,7 @@ export function permitSizing({ risk, symbol, meta, price = null, rates = null, c
 
 const pausedLogged = new Map() // accountId → reason last logged
 
+
 /**
  * One feeder pass for one side: derive the TICK_MOMENTUM accounts, refresh
  * their standing permits (one per carried symbol and side), attach the
@@ -226,7 +228,15 @@ export async function runTickPermitFeeder(db, side, {
       const s = permitSizing({ risk, symbol, meta, rates, cfg, perLot: units })
       if (!s.ok) { out.refused.push({ accountId: `…${accountId.slice(-4)}`, symbol, reason: s.reason }); continue }
       sizing.set(symbolId, s.fields)
-      entries.push({ key: `tick:${symbolId}`, symbol, symbolId, volume: null })
+      // PR-D (owner principle 8): when the regime table holds a fresh trend
+      // reading for the symbol, the against-trend side gets NO permit — an
+      // up-trend withholds SELL, a down-trend withholds BUY; no reading (or
+      // a stale one) leaves both, the same fail-open as the regime gate.
+      const sides = permittedSides(trendReadingFor(db, symbol))
+      for (const withheld of ['BUY', 'SELL']) {
+        if (!sides.includes(withheld)) out.refused.push({ accountId: `…${accountId.slice(-4)}`, symbol, side: withheld, reason: `direction_against_trend: ${withheld} withheld under a ${sides[0] === 'BUY' ? 'up' : 'down'}-trend reading` })
+      }
+      entries.push({ key: `tick:${symbolId}`, symbol, symbolId, volume: null, sides })
     }
     const r = reserveStandingPermits(db, { accountId, producerId: TICK_PRODUCER, basis: 'tick', entries, sizeRequired: false, ttlMs: TICK_PERMIT_TTL_MS, now })
     out.released += r.released

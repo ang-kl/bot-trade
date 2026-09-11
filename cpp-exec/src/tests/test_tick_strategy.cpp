@@ -62,6 +62,7 @@ int main() {
     const TickSignal& g = got[i];
     assert(g.seq == static_cast<uint32_t>(w.get("seq").asNumber(0)));
     assert(g.side == w.get("side").asString());
+    assert(g.dirReason == w.get("dirReason").asString()); // PR-D: the oracles agree on the stated direction reason
     assert(g.trigger2 == static_cast<long long>(w.get("trigger2").asNumber(0)));
     assert(g.bid == static_cast<long long>(w.get("bid").asNumber(0)) && g.ask == static_cast<long long>(w.get("ask").asNumber(0)));
     assert(g.stopDistance == static_cast<long long>(w.get("stopDistance").asNumber(0)));

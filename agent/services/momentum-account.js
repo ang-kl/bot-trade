@@ -23,9 +23,12 @@
 //      veto, `momentum_account_only`, and its `exclusive` switch are gone
 //      since PR-B: the rest of the stack trades alongside on every account.)
 //
-// What it does NOT change: the trailing stop (3×ATR, only rises), the
-// keeper pause on book rows, the weekend-bank exemption (#851), the shadow's
-// ranking (shorts stay in shadow — D2). Every broker call is injected.
+// What it does NOT change: the trailing stop (3×ATR, only in the trade's
+// favour), the keeper pause on book rows, the weekend-bank exemption (#851),
+// the shadow's ranking. PR-D (11-09-2026, owner principle 8): the pass is
+// TWO-SIDED — a shadow short holding is taken only when direction-policy.js
+// says ok (conviction ≥ the 9/10 floor, no up-trend reading); the row's
+// side is 'short' and the order's SELL. Every broker call is injected.
 // ---------------------------------------------------------------------------
 
 import { readFileSync } from 'node:fs'
@@ -33,7 +36,10 @@ import { getState, setState } from '../db.js'
 import { lotsToVolume } from '../lib/lot-sizing.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { notionalUsd } from '../lib/contracts.js'
-import { loadShadowState } from './momentum-shadow.js'
+import { loadShadowState, loadMomentumShadow } from './momentum-shadow.js'
+import { directionFor, trendReadingFor } from './direction-policy.js'
+import { checkRegimeGate } from './regime-gate.js'
+import { recordDecision } from './decision-log.js'
 import { assetClassOf } from './strategy-asset-cross.js'
 
 export const MOMENTUM_ACCOUNT_KEY = 'momentum_account_json'
@@ -264,7 +270,7 @@ export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
   const rates = deps.rates ? deps.rates() : null
   for (const u of momentumUniverse(db)) {
     const symbol = u.symbol.toUpperCase()
-    const row = { class: u.class, ok: false, reason: null, lots: 0, notionalUsd: 0, assetVolPct: null, atr: null, price: null, symbolId: null }
+    const row = { class: u.class, ok: false, reason: null, lots: 0, notionalUsd: 0, assetVolPct: null, atr: null, price: null, bid: null, symbolId: null }
     out[symbol] = row
     try {
       const id = deps.symbolIdFor ? await deps.symbolIdFor(creds, symbol) : null
@@ -279,6 +285,7 @@ export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
       const price = Number(q?.ask) > 0 ? Number(q.ask) : Number(bars[bars.length - 1]?.c)
       if (!(atr > 0) || !(price > 0)) { row.reason = 'no_bars'; continue }
       row.atr = atr; row.price = price
+      row.bid = Number(q?.bid) > 0 ? Number(q.bid) : null // a short is priced at the bid (checker item c)
       const s = volTargetLots({ equity, volTargetPct: cfg.volTargetPct, maxPositions: cfg.maxPositions, atr, price, symbol, meta, rates })
       row.lots = s.lots; row.notionalUsd = s.notionalUsd; row.assetVolPct = s.assetVolPct ?? null
       if (!s.affordable) { row.reason = s.note; continue }
@@ -293,7 +300,8 @@ export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Target portfolio = the shadow's LONG holdings ∩ the tradable universe.
+ * Target portfolio = the shadow's holdings (long, and — PR-D — short where
+ * the direction policy admits them) ∩ the tradable universe.
  * Exits: open book rows on this account the shadow no longer holds.
  * Entries: target names with no open row, best entry rank first, up to
  * cfg.maxPositions, each sized by the vol target and dispatched through
@@ -332,19 +340,23 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   summary.universe = { total: Object.keys(built.universe).length, tradable: tradable.length, byReason, equity: built.equity }
 
   const held = (() => { try { return loadShadowState(db).holdings || {} } catch { return {} } })()
-  const wanted = Object.entries(held).filter(([s, h]) => h?.side === 'long' && tradable.includes(String(s).toUpperCase()))
-    .map(([s, h]) => ({ symbol: String(s).toUpperCase(), rank: Number(h.entryRank) || 0, conviction: h.entryConviction ?? null }))
-    .sort((a, b) => b.rank - a.rank)
+  const shadowCfg = loadMomentumShadow(db)
+  // Best rank first: strongest longs (rank → 1) and weakest shorts (rank → 0)
+  // sort by their own side's strength.
+  const wanted = Object.entries(held).filter(([s, h]) => (h?.side === 'long' || h?.side === 'short') && tradable.includes(String(s).toUpperCase()))
+    .map(([s, h]) => ({ symbol: String(s).toUpperCase(), side: h.side, rank: Number(h.entryRank) || 0, conviction: h.entryConviction ?? null }))
+    .sort((a, b) => (b.side === 'short' ? 1 - b.rank : b.rank) - (a.side === 'short' ? 1 - a.rank : a.rank))
 
+  // EXITS FIRST: the shadow no longer holds it (or holds the other side).
+  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held })
+  // The open set is read AFTER the exits (checker item a): a same-day flip
+  // has its long row exited above and its short entered below.
   const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
   const openSyms = new Set(openRows.map(r => String(r.symbol).toUpperCase()))
 
-  // EXITS: the shadow no longer holds it.
-  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held })
-
   // ENTRIES: best rank first, up to the slot count.
   const insBook = db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note)
-                              VALUES (?, ?, ?, ?, 'long', ?, ?, ?, ?, ?, 'open', ?)`)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`)
   const tradeRowFor = db.prepare(`SELECT id, ctrader_position_id, entry_price, sl_price FROM trades WHERE symbol = ? AND account_id = ? AND label_strategy = ? AND status = 'open' ORDER BY id DESC LIMIT 1`)
   const workingLimit = db.prepare(`SELECT id FROM pending_orders WHERE account_id = ? AND symbol = ? AND status = 'working' AND strategy = ? LIMIT 1`)
   let open = openSyms.size
@@ -362,8 +374,18 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
     const u = built.universe[w.symbol]
     const may = deps.mayTrade ? deps.mayTrade(accountId, w.symbol) : { ok: true, item: null }
     if (!may.ok) { summary.skipped.push(`${w.symbol}: ${may.reason}`); continue }
+    // PR-D: the direction policy and the regime gate — the same calls the
+    // row-cursor book makes (a short's conviction must be a number).
+    const dp = directionFor({ side: w.side, conviction: w.side === 'short' ? w.conviction : (w.conviction ?? bookCfg.conviction), trendDirection: trendReadingFor(db, w.symbol), cfg: shadowCfg })
+    if (!dp.ok) { summary.skipped.push(`${w.symbol}: ${dp.reason}`); continue }
+    const rg = checkRegimeGate(db, TSMOM_STRATEGY, w.side, w.symbol)
+    if (rg.block) {
+      try { recordDecision(db, { accountId, symbol: w.symbol, strategy: TSMOM_STRATEGY, stage: 'regime_gate', decision: 'skip', reason: rg.reason }) } catch { /* provenance never blocks */ }
+      summary.skipped.push(`${w.symbol}: ${rg.reason}`); continue
+    }
     try {
-      const synth = buildEntrySynth({ symbol: w.symbol, price: u.price, atr: u.atr, cfg: bookCfg, conviction: w.conviction, rankPct: w.rank })
+      const entryPrice = w.side === 'short' && u.bid > 0 ? u.bid : u.price
+      const synth = buildEntrySynth({ symbol: w.symbol, price: entryPrice, atr: u.atr, cfg: bookCfg, conviction: w.conviction, rankPct: w.rank, side: w.side, directionReason: dp.reason })
       if (!synth) { summary.skipped.push(`${w.symbol}: no usable price/ATR`); continue }
       Object.assign(synth, {
         marketOnly: false,             // closed market → resting limit at this price; the adopt pass books the fill
@@ -375,12 +397,12 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
       const result = await deps.autoTrade(db, w.symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'daily_momentum_account' })
       if (!result) { summary.skipped.push(`${w.symbol}: not filled (gate, closed market, or broker)`); continue }
       const t = tradeRowFor.get(w.symbol, accountId, TSMOM_STRATEGY)
-      insBook.run(t?.id ?? null, accountId, w.symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null,
+      insBook.run(t?.id ?? null, accountId, w.symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null, w.side,
         t?.entry_price ?? synth.entry, t?.sl_price ?? synth.sl, u.atr, w.rank, new Date(now).toISOString(), `daily pass: vol-target ${u.lots} lots`)
       if (t?.id != null) db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(t.id)
       openSyms.add(w.symbol); open++
       summary.entries++
-      log(`momentum account: long ${w.symbol} on …${accountId.slice(-4)} @ ${synth.entry} stop ${synth.sl.toFixed(5)} ${u.lots} lots (vol target)`)
+      log(`momentum account: ${w.side} ${w.symbol} on …${accountId.slice(-4)} @ ${synth.entry} stop ${synth.sl.toFixed(5)} ${u.lots} lots (vol target; ${dp.reason})`)
     } catch (err) { summary.skipped.push(`${w.symbol}: ${err.message}`) }
   }
 
@@ -392,8 +414,9 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
 }
 
 /**
- * Close the account's open book rows the shadow no longer holds long. Shared
- * by the full pass and the margin-exhausted pass (exits run regardless of
+ * Close the account's open book rows the shadow no longer holds ON THAT
+ * SIDE (a row's side flipping in the shadow is an exit too). Shared by the
+ * full pass and the margin-exhausted pass (exits run regardless of
  * headroom). Returns the number of exits sent.
  */
 async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held = null }) {
@@ -401,7 +424,8 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
   const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
   let exits = 0
   for (const row of openRows) {
-    if (holdings[row.symbol]?.side === 'long' || holdings[String(row.symbol).toUpperCase()]?.side === 'long') continue // still held — keep (untradable-now names included)
+    const rowSide = row.side === 'short' ? 'short' : 'long'
+    if (holdings[row.symbol]?.side === rowSide || holdings[String(row.symbol).toUpperCase()]?.side === rowSide) continue // still held on this side — keep (untradable-now names included)
     try {
       if (row.position_id && deps.close) {
         // Same rule as the row-cursor exit (09-09-2026): no volume, no close.
@@ -435,7 +459,7 @@ export function momentumAccountReport(db) {
     const byReason = {}
     for (const u of Object.values(universe)) if (!u.ok) { const k = String(u.reason).split(':')[0]; byReason[k] = (byReason[k] || 0) + 1; agg.byReason[k] = (agg.byReason[k] || 0) + 1 }
     let open = []
-    try { open = db.prepare(`SELECT symbol, entry_price, stop, atr, entry_rank, entered_at, status, note FROM momentum_book WHERE status IN ('open','exit_sent') AND account_id = ? ORDER BY entered_at`).all(id) } catch { open = [] }
+    try { open = db.prepare(`SELECT symbol, side, entry_price, stop, atr, entry_rank, entered_at, status, note FROM momentum_book WHERE status IN ('open','exit_sent') AND account_id = ? ORDER BY entered_at`).all(id) } catch { open = [] }
     const built = Object.keys(universe).length, tradable = Object.values(universe).filter(u => u.ok).length
     accounts[id] = {
       account: `…${id.slice(-4)}`,
@@ -457,6 +481,6 @@ export function momentumAccountReport(db) {
     lastPass: agg.lastPass,
     open: agg.open,
     accounts,
-    note: 'The momentum system on every configured account: tsmom_long sized by the vol target from each account\'s own equity, decided once per day after the daily close; the rest of the stack trades alongside. Shorts stay in shadow (D2).',
+    note: 'The momentum system on every configured account: tsmom_long sized by the vol target from each account\'s own equity, decided once per day after the daily close; the rest of the stack trades alongside. Two-sided since PR-D: a shadow short is taken only at conviction ≥ the short floor (9/10 on the defaults) and never against an up-trend reading.',
   }
 }

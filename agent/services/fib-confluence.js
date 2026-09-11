@@ -100,6 +100,8 @@ export function computeFibConfluence(bars, timeframe /*, opts = {} */) {
 
   return {
     bias, entry, sl, tp1, tp2, conviction, rr, timeframe,
+    // PR-D: the zone reacted to, stated where the side is decided.
+    direction_reason: bias === 'long' ? `fibconf:support_stack_${cluster.length}` : `fibconf:resistance_stack_${cluster.length}`,
     // How many Fib levels stack in the zone — the Trade-Lesson agent's
     // Entry-quality check reads this (≤2 → Watch).
     confluenceCount: cluster.length,

@@ -59,12 +59,13 @@ export function computeVpValue(bars, timeframe, opts = {}) {
 
   let bias = null
   let edge = null
+  let direction_reason = null // PR-D: the edge reacted to, stated where the side is decided
   // At the value-area LOW and closed back UP into the area → long toward POC.
   if (Math.abs(bar.l - valPrice) <= tol && bar.c > valPrice && bar.c < pocPrice) {
-    bias = 'long'; edge = valPrice
+    bias = 'long'; edge = valPrice; direction_reason = 'vp:val_reclaim'
   // At the value-area HIGH and closed back DOWN into the area → short toward POC.
   } else if (Math.abs(bar.h - vahPrice) <= tol && bar.c < vahPrice && bar.c > pocPrice) {
-    bias = 'short'; edge = vahPrice
+    bias = 'short'; edge = vahPrice; direction_reason = 'vp:vah_reject'
   }
   if (!bias) return null
 
@@ -95,7 +96,7 @@ export function computeVpValue(bars, timeframe, opts = {}) {
   conviction = Math.min(conviction, 10)
 
   return {
-    bias, entry, sl, tp1, tp2, conviction, rr, timeframe,
+    bias, direction_reason, entry, sl, tp1, tp2, conviction, rr, timeframe,
     time_cap_minutes: null,
     strategy: 'vp_value',
     thesis: bias === 'long'

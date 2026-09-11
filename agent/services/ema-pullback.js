@@ -155,21 +155,21 @@ export function computeEmaPullback(bars, timeframe, opts = {}) {
   const upTrend = ema20 > ema50 && (!requireStack || ema50 > trendEma)
   const downTrend = ema20 < ema50 && (!requireStack || ema50 < trendEma)
 
-  let bias = null
+  let bias = null, direction_reason = null // PR-D: the direction is stated where it is decided
   if (pendingSetup) {
     // Pre-touch: the trend is intact and price sits on the trend side of
     // EMA20, so we park the order AT EMA20 and let the dip come to us.
     // No pullback-depth guard - the pullback has not happened yet.
-    if (upTrend && bar.c > ema20) bias = 'long'
-    else if (downTrend && bar.c < ema20) bias = 'short'
+    if (upTrend && bar.c > ema20) { bias = 'long'; direction_reason = 'ema:ema20>ema50,close>ema20' }
+    else if (downTrend && bar.c < ema20) { bias = 'short'; direction_reason = 'ema:ema20<ema50,close<ema20' }
   } else if (upTrend && bar.l <= ema20 && bar.c > ema20 && bar.c > ema50) {
     // uptrend: bar dipped into EMA20 but closed back above it, trend intact
     if (ema20 - bar.l > MAX_PULLBACK_ATR * a) return null // too deep
-    bias = 'long'
+    bias = 'long'; direction_reason = 'ema:uptrend_dip_held_ema20'
   } else if (downTrend && bar.h >= ema20 && bar.c < ema20 && bar.c < ema50) {
     // downtrend mirror: bar poked up into EMA20 but closed back below
     if (bar.h - ema20 > MAX_PULLBACK_ATR * a) return null // too deep
-    bias = 'short'
+    bias = 'short'; direction_reason = 'ema:downtrend_pop_held_ema20'
   }
   if (!bias) return null
 
@@ -222,6 +222,7 @@ export function computeEmaPullback(bars, timeframe, opts = {}) {
 
   return {
     bias,
+    direction_reason,
     entry,
     sl,
     tp1,

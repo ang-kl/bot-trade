@@ -482,7 +482,10 @@ Measurement history — each line is a real run of the script, not a claim:
   the PR-B report was expected at `№ 7,717` — by count it was stamped
   **`№ 7,726`** (14:30 UTC; eighteen unstamped lines followed `№ 7,707`,
   not nine), and three more followed it, so the PR-E report is
-  **`№ 7,730`** by count. The count is by replies, not by
+  **`№ 7,730`** by count. Nine unstamped status lines followed it
+  (`№ 7,731`–`№ 7,739`, 14:37–14:46 UTC: #898 gated and merged, the PR-D
+  fix round gated and committed, the PR-G checker's findings sent to its
+  maker), so the PR-D report is **`№ 7,740`** by count. The count is by replies, not by
   stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 

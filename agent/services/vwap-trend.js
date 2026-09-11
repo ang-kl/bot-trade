@@ -55,15 +55,15 @@ export function computeVwapTrend(bars, timeframe /*, opts = {} */) {
   const a = atr(bars, ATR_PERIOD)
   if (!(a > 0)) return null
 
-  let bias = null
+  let bias = null, direction_reason = null // PR-D: the direction is stated where it is decided
   // Uptrend: price above a RISING VWAP; this bar dipped to/through VWAP but
   // closed back above it — a pullback that held.
   if (bar.c > v && v > vPrev && bar.l <= v) {
     if (v - bar.l > MAX_PULLBACK_ATR * a) return null // too deep — trend may be breaking
-    bias = 'long'
+    bias = 'long'; direction_reason = 'vwap:close>rising_vwap'
   } else if (bar.c < v && v < vPrev && bar.h >= v) {
     if (bar.h - v > MAX_PULLBACK_ATR * a) return null
-    bias = 'short'
+    bias = 'short'; direction_reason = 'vwap:close<falling_vwap'
   }
   if (!bias) return null
 
@@ -87,7 +87,7 @@ export function computeVwapTrend(bars, timeframe /*, opts = {} */) {
   conviction = Math.min(conviction, 10)
 
   return {
-    bias, entry, sl, tp1, tp2, conviction, rr, timeframe,
+    bias, direction_reason, entry, sl, tp1, tp2, conviction, rr, timeframe,
     time_cap_minutes: null,
     strategy: 'vwap_trend',
     thesis: bias === 'long'

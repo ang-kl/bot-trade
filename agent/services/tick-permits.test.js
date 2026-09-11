@@ -121,6 +121,38 @@ test('the feeder issues one standing permit per symbol and side with the sizing 
   assert.deepEqual([...STANDING_PRODUCERS], ['vpo_cpp_direct', 'tick_momentum'])
 })
 
+test('PR-D (owner principle 8): under a fresh up-trend reading the feeder withholds the SELL permit (direction_against_trend), a down-trend withholds BUY, no or stale reading leaves both; a withheld side\'s standing row is released', async () => {
+  const db = fresh()
+  switchOn(db, DEMO)
+  setState(db, `acct:${DEMO}:account_balance_usd`, '10000')
+  const d = deps()
+  let r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 4, 'no reading: 2 symbols × BUY/SELL')
+  // XAUUSD trending up → its SELL permit is withheld and its standing SELL row released with the reason
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('XAUUSD', 'trending', 'long', datetime('now'))`).run()
+  r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 3)
+  const body = d.pushes.at(-1)
+  assert.ok(body.tickPermits.some(p => p.symbolId === 41 && p.side === 'BUY'), 'XAUUSD BUY still permitted')
+  assert.ok(!body.tickPermits.some(p => p.symbolId === 41 && p.side === 'SELL'), 'XAUUSD SELL permit absent')
+  assert.ok(body.tickPermits.some(p => p.symbolId === 1 && p.side === 'SELL'), 'EURUSD (no reading) keeps both')
+  const ref = r.refused.find(x => x.symbol === 'XAUUSD' && x.side === 'SELL')
+  assert.ok(ref, JSON.stringify(r.refused)); assert.match(ref.reason, /^direction_against_trend: SELL withheld under a up-trend reading/)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RELEASED' AND error_code = 'tick_direction_against_trend'`).get(TICK_PRODUCER).n, 1, 'the standing SELL row went, with the reason')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED' AND symbol = 'XAUUSD'`).get(TICK_PRODUCER).n, 1)
+  // a newer down-trend flips it: BUY withheld, SELL back
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('XAUUSD', 'trending', 'short', datetime('now', '+1 second'))`).run()
+  r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 3)
+  assert.ok(!d.pushes.at(-1).tickPermits.some(p => p.symbolId === 41 && p.side === 'BUY'))
+  assert.ok(d.pushes.at(-1).tickPermits.some(p => p.symbolId === 41 && p.side === 'SELL'))
+  // a stale reading is no reading: both sides again
+  db.prepare(`DELETE FROM regimes`).run()
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('XAUUSD', 'trending', 'long', datetime('now', '-2 days'))`).run()
+  r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 4, 'a fossil reading withholds nothing')
+})
+
 test('TM-40: a failing recorder / reserve / continuity check pauses the account — permits released, the account left out of tickEntryAccounts — and a mode change releases them too', async () => {
   const db = fresh()
   switchOn(db, DEMO)

@@ -58,6 +58,7 @@ test('the planted fixture yields exactly one long and one short, the spread-only
   const { signals, rejected, accepted } = runOracle(events, PARAMS)
   assert.equal(signals.length, 2, JSON.stringify(signals.map(s => [s.seq, s.side])))
   assert.equal(signals[0].side, 'BUY'); assert.equal(signals[1].side, 'SELL')
+  assert.equal(signals[0].dirReason, 'tick:break_high'); assert.equal(signals[1].dirReason, 'tick:break_low') // PR-D: the direction is stated on the signal
   assert.ok(signals[0].seq > 115 && signals[0].seq < 130, `long at ${signals[0].seq}`)
   assert.ok(!signals.some(s => s.seq >= 93 && s.seq <= 95), 'the two-event spread-only jump confirmed nothing')
   assert.ok(signals[1].seq > signals[0].seq + 60, `short at ${signals[1].seq}`)
@@ -99,7 +100,7 @@ test('the planted fixture yields exactly one long and one short, the spread-only
 test('the checked-in fixture and expected signals match the oracle (REGEN=1 rewrites them)', () => {
   const events = buildFixture()
   const { signals } = runOracle(events, PARAMS)
-  const expected = { params: PARAMS, profileHash: profileHash(PARAMS), signals: signals.map(s => ({ seq: s.seq, side: s.side, trigger2: s.trigger2, bid: s.bid, ask: s.ask, stopDistance: s.stopDistance, setupId: s.setupId, confirmations: s.confirmations, H: s.H, L: s.L, B: s.B, D: s.D })) }
+  const expected = { params: PARAMS, profileHash: profileHash(PARAMS), signals: signals.map(s => ({ seq: s.seq, side: s.side, dirReason: s.dirReason, trigger2: s.trigger2, bid: s.bid, ask: s.ask, stopDistance: s.stopDistance, setupId: s.setupId, confirmations: s.confirmations, H: s.H, L: s.L, B: s.B, D: s.D })) }
   const fixtureText = JSON.stringify({ params: PARAMS, events }, null, 0)
   const expectedText = JSON.stringify(expected, null, 1)
   if (process.env.REGEN === '1' || !existsSync(FIXTURE) || !existsSync(EXPECTED)) {

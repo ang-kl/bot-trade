@@ -235,8 +235,11 @@ function searchCupHandle(bars, timeframe, opts, dir) {
 
     const bias = dir === 1 ? 'long' : 'short'
     const strategy = dir === 1 ? 'cup_handle' : 'inv_cup_handle'
+    // PR-D: the direction is stated where it is decided (owner principle 8).
+    const direction_reason = dir === 1 ? 'cup:breakout>rim,close>sma20/50/200' : 'inv_cup:breakdown<rim,close<sma20/50/200'
     return {
       bias,
+      direction_reason,
       entry,
       sl,
       tp1,
@@ -327,7 +330,7 @@ export const GATE_ORDER = Object.keys(GATE_RANK)
 function traceDirection(bars, timeframe, dir) {
   const scanned_at = new Date().toISOString()
   const bias = dir === 1 ? 'long' : 'short'
-  const base = { timeframe, scanned_at, bias, uptrend_ok: false, cup_found: false, best_candidate: null }
+  const base = { timeframe, scanned_at, bias, direction_reason: dir === 1 ? 'cup:classic_search_above_sma20/50/200' : 'inv_cup:inverted_search_below_sma20/50/200', uptrend_ok: false, cup_found: false, best_candidate: null }
   if (!Array.isArray(bars) || bars.length < MIN_BARS) return base
 
   const last = bars.length - 1

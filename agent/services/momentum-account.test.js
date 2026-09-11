@@ -106,10 +106,11 @@ function fakes({ fill = true, equity = 100_000 } = {}) {
       autoTrade: async (db, symbol, synth, _w, acct) => {
         calls.autoTrade.push({ symbol, synth, acct })
         if (!fill) return null
-        const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,'BUY','open',?,?,NULL,?,?,?,'bot_market_dispatch',?,datetime('now'))`)
-          .run(symbol, synth.entry, synth.sl, synth.strategy, synth.strategy, acct.accountId, `pos-${symbol}-${acct.accountId}`)
-        db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, account_id, status, source) VALUES (?, ?, 'long', ?, ?, ?, 'active', 'autopilot')`).run(symbol, t.lastInsertRowid, synth.entry, synth.sl, acct.accountId)
-        return { side: 'BUY', tradeId: t.lastInsertRowid }
+        const orderSide = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
+        const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,?,'open',?,?,NULL,?,?,?,'bot_market_dispatch',?,datetime('now'))`)
+          .run(symbol, orderSide, synth.entry, synth.sl, synth.strategy, synth.strategy, acct.accountId, `pos-${symbol}-${acct.accountId}`)
+        db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, account_id, status, source) VALUES (?, ?, ?, ?, ?, ?, 'active', 'autopilot')`).run(symbol, t.lastInsertRowid, synth.consensus_bias, synth.entry, synth.sl, acct.accountId)
+        return { side: orderSide, tradeId: t.lastInsertRowid }
       },
     },
   }
@@ -473,4 +474,78 @@ test('boot migrates the previously named account\'s global pass cursor to its pe
   setState(db, MOMENTUM_ACCOUNT_STATE_KEY, JSON.stringify({ lastRunMs: 1 }))
   assert.equal(migrateLegacyPassCursor(db, { accountId: '_all' }).reason, 'legacy_cursor_named_no_account')
   assert.equal(getState(db, MOMENTUM_ACCOUNT_STATE_KEY), null)
+})
+
+test('PR-D (owner principle 8): the daily pass is two-sided — a shadow short at conviction 9 under a fresh down-trend is a SELL row priced at the BID with the stop above entry; at 8 refused; no reading refused; against an up-trend refused; a short row exits when the shadow drops the short; the report says the side', async () => {
+  const db = fresh()
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('NATGAS', 'trending', 'short', datetime('now'))`).run()
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD', 'NATGAS'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 }, NATGAS: { side: 'short', entryRank: 0.05, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  const bookCfg = loadMomentumBook(db)
+  const f = fakes()
+  const acct = { accountId: MOM, isLive: false }
+  const r = await runMomentumAccountPass(db, { acct, creds: {}, bookCfg, buildEntrySynth, deps: f.deps, now: DUE })
+  assert.equal(r.entries, 2, `skipped: ${JSON.stringify(r.skipped)}`)
+  const sh = f.calls.autoTrade.find(c => c.symbol === 'NATGAS').synth
+  assert.equal(sh.consensus_bias, 'short'); assert.ok(sh.sl > sh.entry, 'a short stop is ABOVE entry'); assert.equal(sh.sizing, 'vol_target')
+  assert.equal(sh.entry, 2.899, 'a short is priced at the bid, not the ask (checker item c)')
+  assert.match(sh.direction_reason, /^tsmom:short conviction 9 ≥ 9 trend down/)
+  const row = db.prepare(`SELECT side, entry_price, stop FROM momentum_book WHERE symbol = 'NATGAS'`).get()
+  assert.equal(row.side, 'short'); assert.ok(row.stop > row.entry_price)
+  assert.equal(db.prepare(`SELECT side FROM trades WHERE symbol = 'NATGAS'`).get().side, 'SELL')
+  assert.ok(momentumAccountReport(db).open.some(o => o.symbol === 'NATGAS' && o.side === 'short'), 'the report selects the side (checker item f)')
+  // Next day the shadow no longer holds the short: the row exits.
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  const next = await runMomentumAccountPass(db, { acct, creds: {}, bookCfg, buildEntrySynth, deps: f.deps, now: DUE + 86_400_000 })
+  assert.equal(next.exits, 1); assert.equal(db.prepare(`SELECT status FROM momentum_book WHERE symbol = 'NATGAS'`).get().status, 'exit_sent')
+  // conviction 8 → refused by the short rule; a fresh up-trend reading → refused by alignment
+  const db2 = fresh()
+  setState(db2, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['NATGAS'] }))
+  setState(db2, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { NATGAS: { side: 'short', entryRank: 0.15, entryConviction: 8 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  const g = fakes()
+  const r2 = await runMomentumAccountPass(db2, { acct, creds: {}, bookCfg, buildEntrySynth, deps: g.deps, now: DUE })
+  assert.equal(r2.entries, 0); assert.ok(r2.skipped.some(s => /^NATGAS: short_rule: conviction 8 < 9/.test(s)), JSON.stringify(r2.skipped))
+  const db2b = fresh()
+  setState(db2b, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['NATGAS'] }))
+  setState(db2b, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { NATGAS: { side: 'short', entryRank: 0.05, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  const g2 = fakes()
+  const r2b = await runMomentumAccountPass(db2b, { acct, creds: {}, bookCfg, buildEntrySynth, deps: g2.deps, now: DUE })
+  assert.equal(r2b.entries, 0); assert.ok(r2b.skipped.some(s => /^NATGAS: direction_no_trend_reading/.test(s)), JSON.stringify(r2b.skipped))
+  const db3 = fresh()
+  setState(db3, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['NATGAS'] }))
+  setState(db3, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { NATGAS: { side: 'short', entryRank: 0.05, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  db3.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('NATGAS', 'trending', 'long', datetime('now'))`).run()
+  const h = fakes()
+  const r3 = await runMomentumAccountPass(db3, { acct, creds: {}, bookCfg, buildEntrySynth, deps: h.deps, now: DUE })
+  assert.equal(r3.entries, 0); assert.ok(r3.skipped.some(s => /^NATGAS: direction_against_trend: short into an up-trend/.test(s)), JSON.stringify(r3.skipped))
+  assert.equal(h.calls.autoTrade.length, 0)
+})
+
+test('PR-D flip on the daily pass (checker items a, b): a long row whose shadow holding is now SHORT is exited and, the open set re-read after the exits, the short is entered the same day; the regime gate is on this path too', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['NATGAS'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { NATGAS: { side: 'long', entryRank: 0.95, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  const bookCfg = loadMomentumBook(db)
+  const f = fakes()
+  const acct = { accountId: MOM, isLive: false }
+  let r = await runMomentumAccountPass(db, { acct, creds: {}, bookCfg, buildEntrySynth, deps: f.deps, now: DUE })
+  assert.equal(r.entries, 1, JSON.stringify(r.skipped))
+  // the trend turned (why the shadow flipped) before the next day's pass
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('NATGAS', 'trending', 'short', datetime('now'))`).run()
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { NATGAS: { side: 'short', entryRank: 0.05, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  r = await runMomentumAccountPass(db, { acct, creds: {}, bookCfg, buildEntrySynth, deps: f.deps, now: DUE + 86_400_000 })
+  assert.equal(r.exits, 1, 'the long row is exited (the holding flipped)')
+  assert.equal(r.entries, 1, `the short is entered the same day — skipped: ${JSON.stringify(r.skipped)}`)
+  assert.deepEqual(db.prepare(`SELECT side, status FROM momentum_book ORDER BY id`).all(), [{ side: 'long', status: 'exit_sent' }, { side: 'short', status: 'open' }])
+  assert.deepEqual(f.calls.autoTrade.map(c => c.synth.consensus_bias), ['long', 'short'])
+  // the regime gate on the daily pass: a quiet regime refuses a long with a decision_log row
+  const db2 = fresh()
+  db2.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('BTCUSD', 'quiet', null, datetime('now'))`).run()
+  setState(db2, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+  setState(db2, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  const g = fakes()
+  const r2 = await runMomentumAccountPass(db2, { acct, creds: {}, bookCfg, buildEntrySynth, deps: g.deps, now: DUE })
+  assert.equal(r2.entries, 0); assert.ok(r2.skipped.some(s => /^BTCUSD: regime_block trend-in-quiet \(tsmom_long\)/.test(s)), JSON.stringify(r2.skipped))
+  const { recentDecisions } = await import('./decision-log.js')
+  assert.equal(recentDecisions(db2, { symbol: 'BTCUSD', stage: 'regime_gate' }).length, 1)
 })

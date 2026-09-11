@@ -321,7 +321,7 @@ int main(int argc, char** argv) {
             // that it happened.
             decisionRing.log("tick", "signal", 0, static_cast<long long>(ev.symbolId), sig->side,
                              std::string(taken ? "shadow" : (after.cost != before.cost ? "shadow_cost" : "shadow_busy")) +
-                             " seq=" + std::to_string(sig->seq) + " recvMs=" + std::to_string(sig->recvMs) +
+                             " dir=" + sig->dirReason + " seq=" + std::to_string(sig->seq) + " recvMs=" + std::to_string(sig->recvMs) +
                              " bid=" + std::to_string(sig->bid) + " ask=" + std::to_string(sig->ask) +
                              " trigger2=" + std::to_string(sig->trigger2) + " stop=" + std::to_string(sig->stopDistance) +
                              " V=" + std::to_string(sig->V) + " E=" + std::to_string(sig->E) + " setup=" + std::to_string(sig->setupId) +

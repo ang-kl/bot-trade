@@ -416,6 +416,8 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
 
   return {
     bias,
+    // PR-D: the level reacted to, stated where the side is decided.
+    direction_reason: `fib:${upLeg ? 'up' : 'down'}_leg_retrace@${roundedLevel}`,
     entry,
     sl,
     tp1,
@@ -875,6 +877,10 @@ export function synthesizeFibSignal(symbol, signal, threshold = 8) {
     synthesis: {
       symbol,
       consensus_bias: signal.bias,
+      // PR-D: the strategy's stated direction reason rides the synth to the
+      // proposal (loop.js autoTrade) and into proposal_json. null when a
+      // strategy has not stated one — the gap is visible, not papered over.
+      direction_reason: signal.direction_reason ?? null,
       overall_conviction: signal.conviction,
       synthesis: signal.thesis,
       entry: signal.entry,

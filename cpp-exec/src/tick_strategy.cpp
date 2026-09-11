@@ -180,7 +180,7 @@ std::optional<TickSignal> TickMomentumStrategy::onQuote(const StrategyQuote& q) 
           state_ = SetupState::CONFIRMING;
           if (s.confirmed >= p_.confirmations) {
             TickSignal sig;
-            sig.side = dir; sig.seq = q.seq; sig.recvMs = q.recvMs; sig.trigger2 = mid2; sig.bid = q.bid; sig.ask = q.ask;
+            sig.side = dir; sig.dirReason = dir == "BUY" ? "tick:break_high" : "tick:break_low"; sig.seq = q.seq; sig.recvMs = q.recvMs; sig.trigger2 = mid2; sig.bid = q.bid; sig.ask = q.ask;
             sig.stopDistance = std::max<long long>(p_.minStopPrice, roundHalfUp(p_.stopVolMult * V / 2.0));
             sig.spread = spread; sig.V = V; sig.D = D; sig.E = E; sig.H = s.H; sig.L = s.L; sig.B = s.B;
             sig.setupId = s.id; sig.confirmations = s.confirmed;

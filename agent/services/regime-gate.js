@@ -63,9 +63,9 @@ export const STRATEGY_KIND = {
   // noise and fill with no follow-through, which is exactly what 'trend'
   // keeps it out of.
   fvg_retrace: 'trend',
-  // The long-only momentum book holds what has already been going up; a
-  // quiet regime is where its entries are noise, the same reading as the
-  // pullback strategies. Kind 'trend'.
+  // The momentum book holds what has already been going (two-sided since
+  // PR-D, under direction-policy.js); a quiet regime is where its entries
+  // are noise, the same reading as the pullback strategies. Kind 'trend'.
   tsmom_long: 'trend',
 }
 
@@ -141,6 +141,19 @@ export function regimeBlocks(strategy, bias, regimeRow) {
   // trend / breakout strategies
   if (regime === 'quiet') {
     return { block: true, reason: `regime_block trend-in-quiet (${strategy}): no trend to ride, breakouts fake out` }
+  }
+  // PR-D (owner principle 8, 11-09-2026): a trend signal AGAINST the live
+  // trend is blocked, symmetric with the fade-vs-trend rule above. Before
+  // this the branch never read trend_direction, so a donchian short fired
+  // into an up-trending regime the gate had already measured. An unknown
+  // direction on a trending regime fails OPEN here (unlike the fade branch):
+  // riding a trend whose direction is unqualified is the ordinary case for
+  // these strategies, not the risky default a fade into it is.
+  if (regime === 'trending') {
+    const trendDir = regimeRow.trend_direction // 'long' | 'short' | null
+    if (trendDir && trendDir !== bias) {
+      return { block: true, reason: `regime_block trend-vs-trend (${strategy}): ${bias} ${kind} signal against a ${trendDir}-trending market` }
+    }
   }
   return { block: false }
 }
