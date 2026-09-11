@@ -616,7 +616,7 @@ export function stageMatrixStats(db, getState) {
     const rows = db.prepare(
       `SELECT json_extract(proposal_json, '$.strategy') AS k,
               SUM(CASE WHEN approved = 1 THEN 1 ELSE 0 END) AS ok,
-              SUM(CASE WHEN approved = 1 THEN 0 ELSE 1 END) AS fail
+              SUM(CASE WHEN approved = 1 THEN 0 ELSE COALESCE(repeat_count, 1) END) AS fail
          FROM risk_events
         WHERE datetime(created_at) >= datetime('now', '-30 days')
         GROUP BY k`

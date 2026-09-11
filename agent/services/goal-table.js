@@ -72,6 +72,14 @@ export const DEFAULT_GOAL_TARGETS = Object.freeze({
   refusalNetRMax: 0,
   refusalMinScored: 20,
   refusalDays: 7,
+  // PR-C (owner principle 7): vetoes are a cost to minimise. The rate is
+  // vetoed / reached-gate this FX day; the target is a ceiling the owner can
+  // lower as the pre-gates take effect (11-09-2026 read 99.9 %).
+  vetoRateMax: 0.9,
+  // 50, not 200: the pre-gates are meant to pull reachedGate from ~10k/day
+  // into the hundreds, and a floor the plan expects to fall under would make
+  // the goal not_measurable exactly when it starts working (checker, 11-09).
+  vetoMinReachedGate: 50,
 })
 
 export function goalTargets(raw) {
@@ -159,6 +167,52 @@ function pipelineGoal(db, targets) {
     note: !audit ? 'no decision audit on record'
       : !measurable ? `${Number.isFinite(approved) ? approved : 0} approval(s) — below the ${targets.pipelineMinApprovals}-approval floor`
         : `${trades} trade(s) from ${approved} approval(s)${audit.because ? ` — ${audit.because}` : ''}`,
+    source: 'decision_audit_last_json',
+  })
+}
+
+/**
+ * PR-C — the veto goal. Reads the decision audit the loop stores every cycle
+ * (`decision_audit_last_json`, the same source pipelineGoal reads) and falls
+ * back to a live audit when none is stored yet.
+ *
+ *   vetoRate  = vetoed / reachedGate
+ *   wasteRate = (vetoed − vetoedDistinct) / vetoed — the share of refusals
+ *               that were repeats of a refusal already on record
+ *
+ * off_track when the rate is above `vetoRateMax`; not_measurable below the
+ * `vetoMinReachedGate` floor, since a rate over a handful of proposals says
+ * nothing about the pipeline.
+ */
+export async function vetoGoal(db, targets, nowMs = Date.now()) {
+  let audit = null
+  try { audit = JSON.parse(getState(db, 'decision_audit_last_json') || 'null') } catch { audit = null }
+  if (!audit) {
+    try {
+      const { auditDecisions } = await import('./decision-audit.js')
+      audit = auditDecisions(db, { now: new Date(nowMs) })
+    } catch { audit = null }
+  }
+  const vetoed = Number(audit?.vetoed ?? NaN)
+  const reachedGate = Number(audit?.reachedGate ?? NaN)
+  const distinctRaw = Number(audit?.vetoedDistinct ?? NaN)
+  const vetoedDistinct = Number.isFinite(distinctRaw) ? distinctRaw : null
+  const measurable = !!audit && Number.isFinite(vetoed) && Number.isFinite(reachedGate) && reachedGate >= targets.vetoMinReachedGate
+  const vetoRate = measurable ? Math.round((vetoed / reachedGate) * 1000) / 1000 : null
+  const wasteRate = measurable && vetoed > 0 && vetoedDistinct != null
+    ? Math.round(((vetoed - vetoedDistinct) / vetoed) * 1000) / 1000
+    : null
+  return goal('veto_rate', {
+    name: 'Vetoes minimised', subsystem: 'risk gate',
+    metric: 'proposals vetoed / proposals that reached the gate, this FX day (waste = repeats of a refusal already on record)',
+    target: `≤ ${targets.vetoRateMax}`,
+    horizon: 'FX day',
+    current: vetoRate == null ? null : `${vetoRate} (${vetoed} vetoes, ${vetoedDistinct ?? '?'} distinct${wasteRate == null ? '' : `, waste ${Math.round(wasteRate * 100)}%`})`,
+    verdict: !audit ? 'not_measurable' : !measurable ? 'not_measurable' : vetoRate <= targets.vetoRateMax ? 'on_track' : 'off_track',
+    note: !audit ? 'no decision audit on record'
+      : !measurable ? `${Number.isFinite(reachedGate) ? reachedGate : 0} proposal(s) reached the gate — below the ${targets.vetoMinReachedGate} floor`
+        : `${vetoed}/${reachedGate} vetoed${audit.topVetoes?.[0]?.key ? ` — top reason: ${String(audit.topVetoes[0].key).split(/[:\s]/)[0]}` : ''}`,
+    vetoRate, wasteRate, vetoed, vetoedDistinct, reachedGate,
     source: 'decision_audit_last_json',
   })
 }
@@ -338,6 +392,7 @@ export async function goalTable(db, { now = Date.now() } = {}) {
     ['controllers_ok', () => controllersGoal(db, t, now)],
     ['records_fresh', () => recordsGoal(db, t, now)],
     ['pipeline_conversion', () => pipelineGoal(db, t)],
+    ['veto_rate', () => vetoGoal(db, t, now)],
     ['close_completeness', () => closesGoal(db, t, now)],
     ['trail_rule', () => trailGoal(db, t)],
     ['earned_floor', () => earnedFloorGoal(db)],

@@ -845,3 +845,61 @@ Columns: Sec = the investigator's subsection; Where = the code/component cell as
 Thirty-two citation groups checked; one refuted, three with shifted line numbers or paths (content confirmed), the rest exact. Everything not in this table is carried from the investigator's report and marked so in §4.
 
 **Not done here, by instruction:** no repo file was edited; no route was called; no production account was read. Nothing in this document is a runtime observation.
+
+## 7. PR-C follow-up — vetoes minimised (built 2026-09-11, principle 7)
+
+Follow-up to `docs/owner-principles-plan-2026-09-11.md` §3.2 / §4 PR-C. The
+position cap is unchanged by owner decision (`maxOpenPositions` 5, the
+momentum book's 8, adopted/manual/book positions still counting).
+
+| Plan item | Built | Where | Test |
+|---|---|---|---|
+| Eight cycle-level guards move to the per-account pre-filter as `decision_log` skips; gate keeps them as backstop | done — six account-level guards asked ONCE per account per cycle (memo on `loopCount`), two proposal-level (exposure, correlation) per symbol on the same position read; stages `account_pregate:<guard>` | `agent/services/account-pregate.js`; predicates exported from `agent/services/risk.js` (`balanceScopeVerdict`, `dailyLossVerdict`, `lossStreakVerdict`, `openPositionsForAccount`, `maxPositionsVerdict`, `exposureVerdict`, `correlationVerdict`) and called by `evaluateTrade` itself; wired in `agent/loop.js` after `margin_pool`, and right before `autoTrade` | `agent/services/account-pregate.test.js` (13) |
+| `persistRiskEvent` dedupe on (opportunity_key, reason head) | done — `repeat_count` bumped and `last_at` stamped on the newest row when the head (`veto-breakdown.js reasonKey`) is unchanged and the row is under 6 h old (`VETO_REPEAT_WINDOW_MS`, measured from first sighting); approvals never merge | `risk.js mergeRepeatVeto`; migration in `agent/db.js` (`repeat_count INTEGER NOT NULL DEFAULT 1`, `last_at TEXT`); gap rule in `opportunity-identity.js` reads `COALESCE(last_at, created_at)` | `agent/services/risk-veto-dedupe.test.js` (10) |
+| Readers sum `repeat_count`, report `distinct` beside it | done — decision-audit (`vetoed`/`vetoedDistinct`), veto-breakdown (`proposalsVetoed`/`proposalsVetoedDistinct`, per-guard `count`/`distinct`), journal (`vetoes: N (M distinct, rate R%)`), opportunity-funnel (`evaluations`), refusal-ledger (`refusals`, `last_at`), log-inspector, stage-matrix, evidence-gate report, fx-legs, `/state` daily gate route (`vetoed`/`vetoed_distinct`) | those files | dedupe test above; `journal.test.js` |
+| Drop `OR mp.account_id IS NULL` from the position count for a scoped account | done — `openPositionsForAccount`: `(mp.account_id = ? OR ? IS NULL)`; NULL rows count only for an unscoped evaluation. Note: the duplicate-symbol, exposure and correlation checks read the same list, so an orphan row no longer blocks a scoped account on those either | `risk.js` | leak tests in `account-pregate.test.js` |
+| `regime_block` and `evidence_gate` written as skips | done — `agent/services/gate-skips.js` (`recordRegimeBlock`, `recordEvidenceShadow`); the evidence skip carries the full proposal in `detail_json`; `evidenceGateReport` counts decision_log skips plus legacy rows | `loop.js` | `agent/services/gate-skips.test.js` (4); `evidence-gate.test.js` pin updated |
+| `bad_rr` pre-filter catches what the gate would veto | done — `rrFloorVerdict` (risk.js) is the gate's R:R block extracted; `proposalPregate` calls it per account (the earned-floor admit/stretch is per account × strategy, which is why the producers' static 1.5 could not catch the 418: every producer floors at `STRATEGY_PREFILTER_RR` 1.5 while the gate floors at `HARD_MIN_RR` 3.0, and rsi2_reversion builds 1.2R with no floor at all). Stage `rr_prefilter` | `risk.js`, `account-pregate.js` | `account-pregate.test.js` |
+| Goal: `vetoRate`, `wasteRate`, `vetoRateMax`, `vetoMinReachedGate` | done — `veto_rate` goal (13th row); `vetoRateMax` 0.9, `vetoMinReachedGate` 200; reads `decision_audit_last_json`, falls back to a live audit | `agent/services/goal-table.js` | `goal-table.test.js` |
+
+**Measured from the code, not from production:** the 418 `bad_rr` and the
+9,915 `max_positions` are the plan's 11-09 figures; nothing here re-read
+production. The first cycle after deploy is the measurement: the audit's
+`vetoedDistinct` against `vetoed`, and `account_pregate:*` rows in
+`decision_log` where `risk_events` rows used to be.
+
+**Checker round (same day) — three MAJORs, three MINORs, one note, all
+built with a red-when-reverted test:**
+1. `mergeRepeatVeto` refuses a merge across the FX day open (`firstMs <
+   fxDayOpenMs(nowMs)`), so no "this FX day" reader under-reads its first
+   hours.
+2. The refusal ledger reads evidence-gate skips back from `decision_log`
+   (`evidenceShadowRefusals`, keyed by `resolveOpportunity` per tuple in time
+   order) and scores them as before; `waiting` counts both sources. ORDERING
+   CHANGE, stated: the account and proposal pre-gates now run BEFORE
+   `autoTrade`'s evidence gate, so a shadow strategy on an account the
+   pre-gate refuses (at cap, daily cap tripped, …) writes the pre-gate skip
+   and NO evidence-gate shadow record that cycle; `shadowRefusals7d` and the
+   ledger's shadow population therefore count only the shadow proposals that
+   reached the evidence gate, which after deploy is a smaller number than
+   before. It is the same trade-off the plan makes for every upstream gate
+   (a proposal refused for the account is not re-refused for the strategy);
+   if the shadow record must be complete regardless of the account, the
+   evidence gate would have to move ahead of the pre-gates — not done here.
+3. The leak fix is the COUNT only: `openPositionsForAccount(db, acct,
+   { countOnly: true })` feeds `max_positions`; `duplicate_symbol`, the
+   symbol cap, exposure, correlation and the margin read keep the
+   NULL-inclusive list (a NULL-account row on X still refuses a second entry
+   on X).
+4. A row carrying `post_approval` never absorbs a gate veto.
+5. `max_positions` merges on the full reason (`6/5` is not `5/5`).
+6. The pre-gate memo is keyed on the account's active-book fingerprint
+   (count + newest id) as well as the cycle, so a close or a fill mid-cycle
+   re-asks; `invalidateAccountPregate` is also called after a placed order.
+7. `vetoMinReachedGate` 200 → 50.
+
+**Known gaps, not widened here:**
+- `mergeRepeatVeto` keeps the first sighting's `checks_json`/`proposal_json`;
+  a repeat's live numbers survive only in the log line.
+- `decision_audit_history` stores `vetoed` (now the summed figure); it has no
+  `distinct` column.

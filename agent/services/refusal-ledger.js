@@ -23,6 +23,7 @@
 
 import { replayExit } from '../lib/exit-replay.js'
 import { reasonKey } from './veto-breakdown.js'
+import { resolveOpportunity } from './opportunity-identity.js'
 
 const TF_MIN = { m1: 1, '1m': 1, m5: 5, '5m': 5, m15: 15, '15m': 15, m30: 30, '30m': 30, h1: 60, '1h': 60, h4: 240, '4h': 240, h8: 480, '8h': 480, h12: 720, '12h': 720, d1: 1440, '1d': 1440, w1: 10080, '1w': 10080 }
 const MAX_HORIZON_MIN = 20 * 1440   // the book's measured median hold (№ 7,379)
@@ -46,10 +47,66 @@ const num = (v) => { if (v == null || v === '') return null; const n = Number(v)
  * One row per opportunity_key: the first refusal's proposal levels, the
  * count of loops it was re-proposed on, and the reason as last stated.
  */
+/**
+ * PR-C: evidence-gate refusals are decision_log SKIPS now (services/
+ * gate-skips.js), with the proposal in detail_json — the ledger used to score
+ * them from risk_events. This reads them back into the same shape the
+ * risk_events query produces, keyed by the SAME rule (resolveOpportunity,
+ * per account|symbol|side|strategy tuple in time order, the backfill's
+ * walk), so a shadow refusal is still scored for forgone R. Unscored keys
+ * only; rows without a readable proposal are unscorable downstream.
+ */
+export function evidenceShadowRefusals(db) {
+  let rows = []
+  try {
+    rows = db.prepare(`
+      SELECT account_id, symbol, strategy, reason, detail_json, created_at
+        FROM decision_log
+       WHERE stage = 'evidence_gate' AND decision = 'skip'
+       ORDER BY account_id, symbol, strategy, created_at ASC, id ASC
+    `).all()
+  } catch { return [] }
+  const byKey = new Map()
+  let prevTuple = null, prev = null
+  for (const r of rows) {
+    let p = null
+    try { p = JSON.parse(r.detail_json || 'null')?.proposal ?? null } catch { p = null }
+    const proposal = { symbol: r.symbol, side: p?.side ?? null, strategy: r.strategy }
+    const createdMs = Date.parse(String(r.created_at).replace(' ', 'T') + (/[zZ]$/.test(String(r.created_at)) ? '' : 'Z'))
+    if (!Number.isFinite(createdMs)) continue
+    const tuple = `${r.account_id ?? '-'}|${r.symbol}|${proposal.side ?? '-'}|${r.strategy ?? '-'}`
+    const res = resolveOpportunity(proposal, { accountId: r.account_id, now: createdMs, previous: tuple === prevTuple ? prev : null })
+    prevTuple = tuple
+    prev = { opportunity_key: res.key, created_at: new Date(createdMs).toISOString() }
+    let g = byKey.get(res.key)
+    if (!g) {
+      g = { opportunity_key: res.key, symbol: r.symbol, side: proposal.side, account_id: r.account_id, first_at: r.created_at, last_at: r.created_at, refusals: 0, reason: r.reason, proposal_json: p ? JSON.stringify(p) : null }
+      byKey.set(res.key, g)
+    }
+    g.refusals += 1
+    if (r.created_at < g.first_at) g.first_at = r.created_at
+    if (r.created_at > g.last_at) { g.last_at = r.created_at; g.reason = r.reason }
+    if (!g.proposal_json && p) g.proposal_json = JSON.stringify(p)
+  }
+  if (!byKey.size) return []
+  const scored = new Set(db.prepare(`SELECT opportunity_key FROM refusal_scores`).all().map(x => x.opportunity_key))
+  return [...byKey.values()].filter(g => !scored.has(g.opportunity_key))
+}
+
+/** Opportunities refused and not yet scored, both sources. */
+function waitingCount(db) {
+  const n = db.prepare(`
+    SELECT COUNT(DISTINCT opportunity_key) AS n FROM risk_events
+     WHERE approved = 0 AND opportunity_key IS NOT NULL AND opportunity_key NOT IN (SELECT opportunity_key FROM refusal_scores)
+  `).get().n
+  return n + evidenceShadowRefusals(db).length
+}
+
 export function pendingRefusals(db, { nowMs = Date.now(), limit = 50 } = {}) {
   const rows = db.prepare(`
     SELECT opportunity_key, symbol, side, account_id,
-           MIN(created_at) AS first_at, MAX(created_at) AS last_at, COUNT(*) AS refusals,
+           MIN(created_at) AS first_at, MAX(COALESCE(last_at, created_at)) AS last_at,
+           SUM(COALESCE(repeat_count, 1)) AS refusals,
            MAX(veto_reason) AS reason, MAX(proposal_json) AS proposal_json
       FROM risk_events
      WHERE approved = 0 AND opportunity_key IS NOT NULL
@@ -57,6 +114,8 @@ export function pendingRefusals(db, { nowMs = Date.now(), limit = 50 } = {}) {
      GROUP BY opportunity_key
      ORDER BY first_at ASC LIMIT ?
   `).all(limit * 4)
+    .concat(evidenceShadowRefusals(db))
+    .sort((a, b) => String(a.first_at).replace('T', ' ').localeCompare(String(b.first_at).replace('T', ' ')))
   const out = []
   for (const r of rows) {
     let p = null
@@ -122,10 +181,7 @@ export async function scoreRefusedOpportunities(db, fetchBars, { nowMs = Date.no
     }
     scored++
   }
-  const waiting = db.prepare(`
-    SELECT COUNT(DISTINCT opportunity_key) AS n FROM risk_events
-     WHERE approved = 0 AND opportunity_key IS NOT NULL AND opportunity_key NOT IN (SELECT opportunity_key FROM refusal_scores)
-  `).get().n
+  const waiting = waitingCount(db)
   if (log && (scored || unscorable || failed)) log(`Refusal ledger: ${scored} scored, ${unscorable} unscorable, ${failed} fetch failed — ${waiting} opportunity(ies) still waiting`)
   return { scored, unscorable, failed, waiting }
 }
@@ -155,10 +211,7 @@ export function refusalCostReport(db, { days = 7, now = Date.now() } = {}) {
   }
   const reasons = Object.values(byReason).map(b => ({ ...b, meanR: b.scored ? Math.round((b.sumR / b.scored) * 1000) / 1000 : null }))
     .sort((a, b) => b.n - a.n)
-  const waiting = db.prepare(`
-    SELECT COUNT(DISTINCT opportunity_key) AS n FROM risk_events
-     WHERE approved = 0 AND opportunity_key IS NOT NULL AND opportunity_key NOT IN (SELECT opportunity_key FROM refusal_scores)
-  `).get().n
+  const waiting = waitingCount(db)
   return {
     days, since, total: { ...total, meanR: total.scored ? Math.round((total.sumR / total.scored) * 1000) / 1000 : null },
     reasons, waiting, recent: rows.slice(0, 50),

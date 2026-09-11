@@ -473,8 +473,11 @@ Measurement history — each line is a real run of the script, not a claim:
   acknowledgement, the plan-mode note, the undraft, the merge, the demo
   read-back), so the P6b report is **`№ 7,681`** (11:55 UTC), the "any agents
   building?" answer `№ 7,682`, the principles' investigation status line
-  `№ 7,683`, the plan-URL answer `№ 7,684`; the PR-A report is `№ 7,685` by
-  count. The count is by replies, not by
+  `№ 7,683`, the plan-URL answer `№ 7,684`. Twenty-two unstamped status
+  lines followed (`№ 7,685`–`№ 7,706`, 12:35–13:42 UTC: PR-A #895 built,
+  its stale assertion fixed, merged and read back; the PR-B and PR-C makers
+  and checkers), so the PR-C report is **`№ 7,707`** by count. The count
+  is by replies, not by
   stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 

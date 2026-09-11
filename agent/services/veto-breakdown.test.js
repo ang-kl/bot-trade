@@ -15,7 +15,8 @@ function mkDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       symbol TEXT, side TEXT, approved INTEGER, veto_reason TEXT,
       checks_json TEXT, proposal_json TEXT, account_id TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      repeat_count INTEGER NOT NULL DEFAULT 1, last_at TEXT
     );
     CREATE TABLE decision_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

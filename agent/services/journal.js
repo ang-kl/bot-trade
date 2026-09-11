@@ -24,18 +24,24 @@ export function buildDailyJournal(db, day) {
   const best = trades.length ? trades.reduce((a, b) => (Number(b.net_pnl) > Number(a.net_pnl) ? b : a)) : null
   const worst = trades.length ? trades.reduce((a, b) => (Number(b.net_pnl) < Number(a.net_pnl) ? b : a)) : null
 
+  // PR-C: a repeated veto is one row with repeat_count n. `vetoed` sums the
+  // repeats (the number of refusals, comparable with the un-merged history);
+  // `vetoedDistinct` counts rows (distinct refusals).
   const risk = db.prepare(
-    `SELECT SUM(approved) AS ok, COUNT(*) - SUM(approved) AS vetoed FROM risk_events
-     WHERE substr(created_at, 1, 10) = ?`
+    `SELECT SUM(approved) AS ok,
+            SUM(CASE WHEN approved = 1 THEN 0 ELSE COALESCE(repeat_count, 1) END) AS vetoed,
+            COUNT(*) - SUM(approved) AS vetoed_distinct
+       FROM risk_events
+      WHERE substr(created_at, 1, 10) = ?`
   ).get(day)
   const topVeto = db.prepare(
-    `SELECT veto_reason FROM risk_events
+    `SELECT veto_reason, COALESCE(repeat_count, 1) AS reps FROM risk_events
      WHERE approved = 0 AND substr(created_at, 1, 10) = ? AND veto_reason IS NOT NULL`
   ).all(day)
   const fam = {}
   for (const r of topVeto) {
     const k = String(r.veto_reason).split(/[:\s]/)[0]
-    fam[k] = (fam[k] || 0) + 1
+    fam[k] = (fam[k] || 0) + Math.max(1, Number(r.reps) || 1)
   }
   const topVetoes = Object.entries(fam).sort((a, b) => b[1] - a[1]).slice(0, 3)
 
@@ -48,8 +54,23 @@ export function buildDailyJournal(db, day) {
     worst: worst ? { symbol: worst.symbol, net: Number(worst.net_pnl) } : null,
     approved: Number(risk?.ok) || 0,
     vetoed: Number(risk?.vetoed) || 0,
+    vetoedDistinct: Number(risk?.vetoed_distinct) || 0,
+    vetoRate: vetoRate(Number(risk?.ok) || 0, Number(risk?.vetoed) || 0),
     topVetoes: topVetoes.map(([reason, count]) => ({ reason, count })),
   }
+}
+
+/** vetoed / (approved + vetoed), as a percentage to one decimal; null when nothing reached the gate. */
+export function vetoRate(approved, vetoed) {
+  const n = approved + vetoed
+  return n > 0 ? Math.round((vetoed / n) * 1000) / 10 : null
+}
+
+/** `vetoes: N (M distinct, rate R%)` — the PR-C line on the daily report. */
+export function vetoLine(j) {
+  const distinct = j.vetoedDistinct ?? j.vetoed
+  const rate = j.vetoRate ?? vetoRate(j.approved || 0, j.vetoed || 0)
+  return `vetoes: ${j.vetoed} (${distinct} distinct${rate == null ? '' : `, rate ${rate}%`})`
 }
 
 export function journalText(j) {
@@ -60,7 +81,7 @@ export function journalText(j) {
     : `${j.trades} closed · net ${money(j.net)} · ${j.winRate}% wins` +
       (j.best ? ` · best ${j.best.symbol} ${money(j.best.net)}` : '') +
       (j.worst && j.trades > 1 ? ` · worst ${j.worst.symbol} ${money(j.worst.net)}` : ''))
-  lines.push(`Gate: ${j.approved} approved · ${j.vetoed} vetoed${j.topVetoes.length ? ` (top: ${j.topVetoes.map(v => `${v.reason.replace(/_/g, ' ')} ×${v.count}`).join(', ')})` : ''}`)
+  lines.push(`Gate: ${j.approved} approved · ${vetoLine(j)}${j.topVetoes.length ? ` (top: ${j.topVetoes.map(v => `${v.reason.replace(/_/g, ' ')} ×${v.count}`).join(', ')})` : ''}`)
   return lines.join('\n')
 }
 
@@ -86,7 +107,7 @@ ${row('Net result', `<span style="color:${tone(j.net)}">${money(j.net)}</span>`)
 ${row('Win rate', j.winRate != null ? `${j.winRate}%` : '—')}
 ${j.best ? row('Best', `${j.best.symbol} <span style="color:${tone(j.best.net)}">${money(j.best.net)}</span>`) : ''}
 ${j.worst && j.trades > 1 ? row('Worst', `${j.worst.symbol} <span style="color:${tone(j.worst.net)}">${money(j.worst.net)}</span>`) : ''}
-${row('Risk gate', `${j.approved} approved · ${j.vetoed} vetoed`)}
+${row('Risk gate', `${j.approved} approved · ${vetoLine(j)}`)}
 ${j.topVetoes.length ? row('Top vetoes', j.topVetoes.map(v => `${v.reason.replace(/_/g, ' ')} ×${v.count}`).join(' · ')) : ''}
 </table>
 <h2 style="font-size:14px;margin:18px 0 6px">Act on it</h2>

@@ -34,6 +34,7 @@ import { pulseFor } from './market-pulse.js'
 import { checkSymbolCap, DEFAULT_MAX_PER_SYMBOL } from './symbol-position-cap.js'
 // Leaf module (pure rule + one indexed lookback) — no cycle back into risk.js.
 import { nextOpportunityKey } from './opportunity-identity.js'
+import { reasonKey } from './veto-breakdown.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
@@ -1017,6 +1018,379 @@ export function blocklistedSymbol(list, symbol) {
   return null
 }
 
+// ---------------------------------------------------------------------------
+// ACCOUNT-LEVEL GUARD PREDICATES — one function each, called from TWO places.
+//
+// PR-C (owner principle 7, 11-09-2026: vetoes are a cost to minimise).
+// Production 11-09: 10,593 proposals reached the gate and 10,580 were vetoed,
+// 9,915 of them `max_positions` — an account at its cap was re-asked, once per
+// symbol per cycle, a question whose answer could not change until a position
+// closed. The eight guards below have inputs that are per-account and
+// cycle-stable, so the loop's per-account pre-filter (services/account-
+// pregate.js) now asks them ONCE per account per cycle and writes a
+// decision_log skip instead of a risk_events veto per symbol.
+//
+// THE DOCTRINE (checkSymbolCap, §4a below): a guard that only one caller
+// consults stopped none of the seventeen. So evaluateTrade keeps every one of
+// these as the backstop — and it calls THE SAME FUNCTION the pre-filter calls,
+// so the two cannot drift. Each helper returns `{ block, reason, checks }`;
+// evaluateTrade folds `checks` into its verdict row exactly as before.
+// ---------------------------------------------------------------------------
+
+/** `balance_not_account_scoped`: a balance borrowed from a different account. */
+export function balanceScopeVerdict(bal) {
+  if (bal?.source === 'legacy') {
+    return {
+      block: true,
+      guard: 'balance_not_account_scoped',
+      reason: `balance_not_account_scoped account=${bal.accountId ?? 'none'} source=${bal.source}` +
+        ` — ${bal.reason}`,
+    }
+  }
+  return { block: false, guard: 'balance_not_account_scoped', reason: null }
+}
+
+/**
+ * The FX-day loss picture for one account: realised P&L since the day open
+ * (stop-outs estimated at planned risk), the paced cap, the campaign stop,
+ * the daily cap and the unknown-P&L block — in the gate's order, so a verdict
+ * that trips two reports the longer-horizon one first (campaign before day).
+ *
+ * Returns `{ block, guard, reason, checks, dayStartSql, todayPnl, pacing,
+ * effectiveDailyCap }`; `checks` carries every daily_* / campaign_* /
+ * unresolved_* field the gate stamps on its row.
+ */
+export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowOpt } = {}) {
+  const checks = {}
+  const dayStartSql = fxDayStartSql()
+  const todayRow = db
+    .prepare(
+      `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
+       WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+    )
+    .get(dayStartSql, acct, acct)
+  // OWNER ORDER, 2026-08-22 audit item 2. SUM skips NULLs, and a broker-side
+  // stop-out sits at NULL net_pnl until the backfill lands — so on exactly the
+  // day this cap exists for, it read the losses as absent (21 Aug: an AUTO
+  // entry approved with the day already −4.4% against a 3% cap). NULL rows
+  // that look like stop-outs now count at PLANNED risk (|entry−sl| × volume ×
+  // usdLossPerLot) until their real P&L arrives; a row is only ever in one of
+  // the two figures, so the backfill replaces the estimate rather than adding
+  // to it. See services/stopout-estimate.js.
+  const stopoutEst = estimateStopoutLossUsd(db, {
+    sinceSql: dayStartSql,
+    accountId: acct,
+    scope: acct == null ? 'all' : 'scoped',
+    rates: scanRates(db),
+  })
+  const todayPnl = (todayRow?.pnl || 0) - stopoutEst.estUsd
+  checks.daily_pnl = todayPnl
+  if (stopoutEst.counted || stopoutEst.unpriceable) {
+    checks.daily_pnl_estimated_stopout_usd = Number(stopoutEst.estUsd.toFixed(2))
+    checks.daily_pnl_estimated_stopouts = stopoutEst.counted
+    // Counted but worth $0 in the sum — the unresolved-pnl block is the only
+    // cover these rows have, and the checks row says so out loud.
+    checks.daily_pnl_unpriceable_stopouts = stopoutEst.unpriceable
+  }
+  // The allowance may be PACED across the FX day (dailyLossPctMax set) or
+  // flat (it isn't). pacedDailyCap collapses to the old arithmetic in the
+  // flat case, so this is one code path rather than two.
+  const nowMs = Number.isFinite(Number(nowOpt)) ? Number(nowOpt) : Date.now()
+  const pacing = pacedDailyCap({
+    balance,
+    basePct: config.dailyLossPct,
+    maxPct: config.dailyLossPctMax,
+    absoluteFallback: config.dailyLossLimit,
+    // Owner's two-tier floor, 2026-08-07. See DEFAULT_RISK_CONFIG.
+    floorUsd: config.dailyLossFloorUsd,
+    tierAtUsd: config.dailyLossTierAtUsd,
+    tierSmallPct: config.dailyLossTierSmallPct,
+    tierLargePct: config.dailyLossTierLargePct,
+    nowMs,
+    dayOpenMs: fxDayOpenMs(nowMs),
+    spentUsd: Math.max(0, -todayPnl),
+    // What one trade typically costs on this account, for "~N more trades".
+    perTradeRiskUsd: config.perTradeRiskUsd > 0
+      ? Number(config.perTradeRiskUsd)
+      : (balance > 0 ? balance * config.perTradeRiskPct : 0),
+  })
+  // NULL MEANS UNCAPPED — both checks off — and it must not be able to look
+  // like a cap of zero, which would veto every entry forever. The checks row
+  // says so out loud so the state is visible in risk_events rather than
+  // inferable from a missing number.
+  const effectiveDailyCap = pacing.capUsd
+  checks.daily_cap_usd = effectiveDailyCap == null ? null : Number(effectiveDailyCap.toFixed(2))
+  checks.daily_cap_uncapped = effectiveDailyCap == null
+  checks.daily_cap_binding = pacing.binding
+  checks.daily_cap_pct_usd = pacing.pctCapUsd == null ? null : Number(pacing.pctCapUsd.toFixed(2))
+  checks.daily_cap_flat_usd = pacing.usdCapUsd == null ? null : Number(pacing.usdCapUsd.toFixed(2))
+  // The owner's floor, recorded on every verdict so the Risk page can say
+  // WHICH rule produced the cap instead of leaving it to be re-derived.
+  checks.daily_cap_floor_usd = pacing.floorUsd
+  checks.daily_cap_floor_binding = !!pacing.floorBinding
+  checks.daily_cap_tier_pct = pacing.tierPct == null ? null : Number((pacing.tierPct * 100).toFixed(3))
+  if (pacing.paced) {
+    checks.daily_cap_paced = true
+    checks.daily_cap_pct = Number((pacing.pct * 100).toFixed(3))
+    checks.daily_cap_ceiling_usd = Number(pacing.ceilingUsd.toFixed(2))
+    checks.daily_day_elapsed = Number(pacing.elapsed.toFixed(3))
+  }
+  checks.daily_budget_left_usd = pacing.remainingUsd == null ? null : Number(pacing.remainingUsd.toFixed(2))
+  checks.daily_trades_left = pacing.tradesLeft
+  const out = (block, guard, reason) => ({ block, guard, reason, checks, dayStartSql, todayPnl, pacing, effectiveDailyCap })
+
+  // CAMPAIGN STOP — spans days, so it is checked separately from the daily cap
+  // and cannot be reset by the FX day rolling over. Deliberately placed AFTER
+  // the daily figures are computed and BEFORE the daily veto, so a verdict that
+  // trips both reports the campaign — the longer-horizon fact is the one the
+  // operator needs, and "you are out for the day" would hide "you are out for
+  // the week".
+  const campaign = campaignConfig(config.campaign)
+  if (campaign.armed) {
+    let sinceStart = null
+    try {
+      sinceStart = db.prepare(
+        `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
+          WHERE status = 'closed' AND net_pnl IS NOT NULL
+            AND REPLACE(closed_at, 'T', ' ') >= REPLACE(?, 'T', ' ')
+            AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+      ).get(campaign.startAt, acct, acct)?.pnl ?? null
+    } catch { sinceStart = null }  // → halts, by campaignStopVerdict's own rule
+    const cs = campaignStopVerdict({ cfg: campaign, realisedSinceStart: sinceStart })
+    checks.campaign_drawdown_usd = cs.drawdownUsd
+    checks.campaign_drawdown_pct = cs.drawdownPct
+    checks.campaign_budget_left_usd = cs.remainingUsd
+    if (cs.halt) return out(true, 'campaign_stop', cs.reason)
+  }
+
+  // An uncapped day cannot breach a cap. This is deliberately NOT an
+  // approval-by-default hidden in a falsy check: with both fields empty the
+  // owner has turned the daily brake off, and the honest behaviour is to let
+  // entries through while the Risk page carries the warning. Every other
+  // guard — per-trade risk, margin, equity stop, the portfolio layer — is
+  // untouched, so "uncapped daily" is not "unprotected".
+  if (effectiveDailyCap != null && todayPnl <= -Math.abs(effectiveDailyCap)) {
+    const tail = [describeBinding(pacing), describePacing(pacing)].filter(Boolean).join(', ')
+    return out(true, 'daily_loss_limit_hit',
+      `daily_loss_limit_hit pnl=${todayPnl.toFixed(2)} limit=${effectiveDailyCap.toFixed(2)}${tail ? ` — ${tail}` : ''}`)
+  }
+
+  // P1 / AUDIT F-L6-06: the sum above SKIPS NULL net_pnl (SQLite SUM) and
+  // COALESCE turns an all-NULL day into 0 — so a day of broker-side stop-outs,
+  // which close with net_pnl left NULL, reads as flat and this cap never
+  // trips. An unknown P&L is not zero; past the grace window it blocks.
+  // See services/unresolved-pnl.js for the full reasoning and the knobs.
+  const unresolved = unresolvedPnlSince(db, dayStartSql, {
+    accountId: acct,
+    graceMin: config.unknownPnlGraceMin,
+    maxAgeMin: config.unknownPnlMaxAgeMin,
+    minAttempts: config.unknownPnlMinAttempts,
+  })
+  checks.unresolved_pnl_trades = unresolved.count
+  // Written-off rows land in checks_json on EVERY evaluation, blocked or not.
+  // The reason string only exists on a veto, so without this the one case that
+  // matters most — rows written off, veto lifted, trading resumes — left no
+  // record anywhere. risk_events keeps it permanently.
+  checks.unresolvable_pnl_trades = unresolved.unresolvableCount ?? 0
+  const unknownVerdict = unknownPnlBlocks(unresolved, {
+    enabled: config.blockOnUnknownPnl,
+    graceMin: config.unknownPnlGraceMin ?? DEFAULT_UNKNOWN_PNL_GRACE_MIN,
+    scope: 'account',
+  })
+  if (unknownVerdict.block) return out(true, 'unknown_daily_pnl', unknownVerdict.reason)
+  return out(false, null, null)
+}
+
+/**
+ * `loss_streak_cooldown`. maxConsecutiveLosses 0 = breaker OFF (owner
+ * 2026-07-17: "cooldown pause is for humans"). The daily loss cap remains the
+ * hard machine backstop.
+ */
+export function lossStreakVerdict(db, config, acct, nowMs = Date.now()) {
+  const streakLimit = Number(config.maxConsecutiveLosses) || 0
+  const recentClosed = streakLimit > 0
+    ? db
+        .prepare(
+          `SELECT net_pnl, closed_at FROM trades
+           WHERE status = 'closed' AND closed_at IS NOT NULL
+             AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+           ORDER BY closed_at DESC LIMIT ?`
+        )
+        .all(acct, acct, streakLimit)
+    : []
+  let streak = 0
+  for (const t of recentClosed) {
+    if ((t.net_pnl || 0) < 0) streak++
+    else break
+  }
+  if (streakLimit > 0 && streak >= streakLimit) {
+    const lastCloseAt = recentClosed[0]?.closed_at
+    const cooldownEndsAt = lastCloseAt
+      ? new Date(lastCloseAt).getTime() + config.cooldownMinutes * 60_000
+      : null
+    if (cooldownEndsAt && cooldownEndsAt > nowMs) {
+      const mins = Math.ceil((cooldownEndsAt - nowMs) / 60_000)
+      return { block: true, guard: 'loss_streak_cooldown', reason: `loss_streak_cooldown streak=${streak} wait=${mins}m`, streak }
+    }
+  }
+  return { block: false, guard: 'loss_streak_cooldown', reason: null, streak }
+}
+
+/**
+ * The active positions the gate counts, sizes against and checks exposure
+ * on, for one account.
+ *
+ * THE LEAK (PR-C, 11-09-2026). This read `(mp.account_id = ? OR
+ * mp.account_id IS NULL OR ? IS NULL)`, so a legacy row with no account was
+ * counted against EVERY account's cap — five accounts, one orphan, five caps
+ * each one position tighter than configured. A scoped account now counts its
+ * own rows only; the NULL-account rows are counted only when the evaluation
+ * itself is unscoped (acct null — the single-account era's meaning of "the
+ * account"), which is the one caller those rows can honestly belong to.
+ */
+export function openPositionsForAccount(db, acct, { countOnly = false } = {}) {
+  // THE ORDER WAS THE COUNT ONLY (checker, 11-09-2026). `countOnly` is the
+  // leak-fixed read that max_positions counts; every other consumer — the
+  // duplicate-symbol gate, the symbol cap, exposure, correlation, margin —
+  // keeps the NULL-inclusive list, the stricter direction: an orphan row on
+  // X must still refuse a second entry on X.
+  const scope = countOnly
+    ? `AND (mp.account_id = ? OR ? IS NULL)`
+    : `AND (mp.account_id = ? OR mp.account_id IS NULL OR ? IS NULL)`
+  return db
+    .prepare(`
+      SELECT mp.symbol, mp.side, mp.entry_price, mp.strategy AS strategy,
+             mp.last_check_action AS lastCheckAction, mp.last_check_at AS lastCheckAt,
+             t.opened_at, t.volume AS volume, ${strategyAttrSql('t.label_strategy', 't.strategy')} AS tradeStrategy
+      FROM monitored_positions mp
+      LEFT JOIN trades t ON t.id = mp.trade_id
+      WHERE mp.status = 'active'
+        ${scope}
+    `)
+    .all(acct, acct)
+}
+
+/** `max_positions`: the account's open-position cap. Cap value unchanged (owner, 11-09-2026). */
+export function maxPositionsVerdict(openPositions, config) {
+  const n = openPositions.length
+  if (n >= config.maxOpenPositions) {
+    return { block: true, guard: 'max_positions', reason: `max_positions=${n}/${config.maxOpenPositions}` }
+  }
+  return { block: false, guard: 'max_positions', reason: null }
+}
+
+/** `overexposed_<ccy>`: net currency-leg exposure across held positions plus this proposal. */
+export function exposureVerdict(openPositions, proposal, config) {
+  const exposure = netExposure(openPositions, proposal)
+  for (const [ccy, v] of Object.entries(exposure)) {
+    if (Math.abs(v) > config.maxCurrencyExposure) {
+      return { block: true, guard: 'overexposed', reason: `overexposed_${ccy}=${v}`, exposure }
+    }
+  }
+  return { block: false, guard: 'overexposed', reason: null, exposure }
+}
+
+/**
+ * `correlated_*`. Owner: "did you check pair and correlation?" Currency
+ * exposure only catches SHARED currency legs; this catches instruments that
+ * move together WITHOUT one (gold vs USDJPY, WTI vs Brent, US indices).
+ *
+ * Two layers: the LIVE-computed matrix (owner: "I want the live-computed
+ * version") is preferred when fresh — it counts how many held positions are
+ * highly correlated with the proposal in the same directional-risk sense and
+ * vetoes the (maxCorrelated+1)th stacked bet. The curated ±1-beta clusters
+ * are the always-on floor for when the matrix is missing/stale (fresh boot, a
+ * symbol not yet in it).
+ */
+export function correlationVerdict(db, openPositions, proposal, config, nowMs = Date.now()) {
+  const liveCfg = loadCorrelationMatrixConfig(db)
+  if (liveCfg.on) {
+    const live = liveCorrelationVeto(openPositions, proposal, loadStoredMatrix(db), liveCfg, nowMs)
+    if (live) {
+      return {
+        block: true, guard: 'correlated', detail: live,
+        reason: `correlated_live=${live.stacked.length} thr=${live.threshold} with=${live.stacked.map(s => `${s.symbol}@${s.corr}`).join('|')}`,
+      }
+    }
+  }
+  if (config.maxClusterExposure > 0) {
+    const corr = correlationVeto(openPositions, proposal, config.maxClusterExposure)
+    if (corr) {
+      return {
+        block: true, guard: 'correlated', detail: corr,
+        reason: `correlated_${corr.cluster}=${corr.net} cap=${corr.cap} with=${corr.others.join('|') || 'none'}`,
+      }
+    }
+  }
+  return { block: false, guard: 'correlated', reason: null, detail: null }
+}
+
+/**
+ * THE R:R FLOOR, as the gate will apply it — one function for the gate and
+ * the scan path's pre-filter (PR-C item 5).
+ *
+ * WHY THE PRE-FILTER MISSED 418 (measured from the code, 11-09-2026). Every
+ * producer floors its own output at STRATEGY_PREFILTER_RR 1.5 (cup_handle,
+ * inv_cup_handle, donchian_breakout, ema_pullback, fib_confluence,
+ * fvg_retrace, vwap_trend, vp_value, va_breakout, rsi_meanrev; rsi2_reversion
+ * builds 1.2R by design with no internal floor and a STRATEGY_MIN_RR of 1.0),
+ * while the gate floors at HARD_MIN_RR 3.0. A proposal in [1.5, 3.0) clears
+ * the producer and reaches the gate, where only an earned-floor admit or
+ * stretch can save it — and that verdict is per (account, strategy), which is
+ * why the pre-filter has to run in the per-account fan-out rather than in the
+ * producer. This helper IS that verdict; the producers' static 1.5 stays as
+ * the cheap first cut.
+ *
+ * Returns `{ ok, rr, rrFloor, requested, raised, earnedFloor, checks,
+ * reason }`. `earnedFloor` is the admit/stretch object the gate sizes from
+ * (`stretchedFrom`/`tp1` present on a stretch); `checks` is what the gate
+ * stamps on its row. Pure read — no logging, no rows.
+ */
+export function rrFloorVerdict(db, { strategy, rr, accountId = null, config, entry, sl, tp1, side }) {
+  const checks = {}
+  const requested = minRrFor(strategy, config.minRR)
+  const rrFloor = Math.max(HARD_MIN_RR, requested)
+  const raised = requested < HARD_MIN_RR
+  if (raised) checks.rr_floor_raised = { requested, enforced: rrFloor }
+  let earnedFloor = null
+  if (!(rr < rrFloor)) return { ok: true, rr, rrFloor, requested, raised, earnedFloor, checks, reason: null }
+  if (rr >= minRrFor(strategy, STRATEGY_PREFILTER_RR)) {
+    const ef = earnedFloorVerdict(db, { strategy, rr, accountId })
+    if (ef.ok) {
+      earnedFloor = ef
+      checks.earned_floor = {
+        rr, winRate: ef.winRate, trades: ef.trades, e: ef.e, riskScale: ef.riskScale,
+        via: ef.via ?? 'measured',
+        ...(ef.prior ? { prior: ef.prior } : {}),
+      }
+    } else {
+      checks.earned_floor_denied = ef.reason
+      const st = earnedFloorStretch(db, { strategy, rr, accountId })
+      if (st.ok) {
+        const dir = String(side).toLowerCase() === 'sell' || String(side).toLowerCase() === 'short' ? -1 : 1
+        const dec = (n) => { const t = String(n), i = t.indexOf('.'); return i === -1 ? 0 : Math.min(t.length - i - 1, 8) }
+        const digits = Math.max(dec(entry), dec(sl), dec(tp1))
+        const slDistance = Math.abs(Number(entry) - Number(sl))
+        const newTp = Number((Number(entry) + dir * st.to * slDistance).toFixed(digits))
+        earnedFloor = { ...st, rr: st.to, stretchedFrom: rr, tp1: newTp }
+        checks.earned_floor = {
+          rr: st.to, stretchedFrom: rr, tp1: newTp, winRate: st.winRate, trades: st.trades, e: st.e,
+          riskScale: st.riskScale, via: st.via, ...(st.prior ? { prior: st.prior } : {}),
+        }
+        delete checks.earned_floor_denied
+      } else if (st.reason && st.reason !== 'not_needed' && st.reason !== 'stretch_off') {
+        checks.earned_floor_stretch_denied = st.reason
+      }
+    }
+  }
+  if (earnedFloor) return { ok: true, rr, rrFloor, requested, raised, earnedFloor, checks, reason: null }
+  const why = requested < rrFloor
+    ? ` (requested ${requested}, raised to the ${HARD_MIN_RR} expectancy floor)`
+    : ''
+  return { ok: false, rr, rrFloor, requested, raised, earnedFloor: null, checks, reason: `bad_rr ${rr.toFixed(2)}<${rrFloor}${why}` }
+}
+
 export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // M1 scoped reads: every per-account query below filters to the account
   // this proposal is FOR (proposal.accountId when a worker passes one, else
@@ -1153,13 +1527,9 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // of a balance: "no balance recorded at all" is a different condition, it
   // already produces volume 0 downstream, and vetoing it here would change
   // behaviour far beyond the hazard the owner approved acting on.
-  if (bal.source === 'legacy') {
-    return veto(
-      `balance_not_account_scoped account=${bal.accountId ?? 'none'} source=${bal.source}` +
-      ` — ${bal.reason}`,
-      checks, proposal,
-    )
-  }
+  // PR-C: the same predicate the per-account pre-filter asks once per cycle.
+  const balScope = balanceScopeVerdict(bal)
+  if (balScope.block) return veto(balScope.reason, checks, proposal)
 
   // ---- 0b. News-window entry gate (config-gated, default OFF) -------------
   // Pure in-memory check against the cached calendar — microseconds, no
@@ -1243,202 +1613,28 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     }
   }
 
-  // ---- 1. Daily loss limit ------------------------------------------------
-  // Prefer % of balance when set; fall back to absolute USD cap.
-  // Day anchor = FX day open, 17:00 NY (owner sign-off 2026-07-24) — was
-  // UTC midnight. Format-proof timestamp comparison — REAL BUG caught by
-  // the M1 contamination test (2026-07-24): closeTradeRow writes closed_at
-  // via SQLite datetime('now') → "YYYY-MM-DD HH:MM:SS" (space), while this
-  // query compared against toISOString() → "YYYY-MM-DDTHH:…". The space
-  // (0x20) sorts BEFORE 'T' (0x54), so every production-closed trade of
-  // the day compared LESS-THAN the day-start string and was silently
-  // EXCLUDED from the daily-loss sum — the daily cap was blind to them.
-  // Normalizing the 'T' away makes both formats compare correctly.
-  const dayStartSql = fxDayStartSql()
-  const todayRow = db
-    .prepare(
-      `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
-       WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?
-         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
-    )
-    .get(dayStartSql, acct, acct)
-  // OWNER ORDER, 2026-08-22 audit item 2. SUM skips NULLs, and a broker-side
-  // stop-out sits at NULL net_pnl until the backfill lands — so on exactly the
-  // day this cap exists for, it read the losses as absent (21 Aug: an AUTO
-  // entry approved with the day already −4.4% against a 3% cap). NULL rows
-  // that look like stop-outs now count at PLANNED risk (|entry−sl| × volume ×
-  // usdLossPerLot) until their real P&L arrives; a row is only ever in one of
-  // the two figures, so the backfill replaces the estimate rather than adding
-  // to it. See services/stopout-estimate.js.
-  const stopoutEst = estimateStopoutLossUsd(db, {
-    sinceSql: dayStartSql,
-    accountId: acct,
-    scope: acct == null ? 'all' : 'scoped',
-    rates: scanRates(db),
-  })
-  const todayPnl = (todayRow?.pnl || 0) - stopoutEst.estUsd
-  checks.daily_pnl = todayPnl
-  if (stopoutEst.counted || stopoutEst.unpriceable) {
-    checks.daily_pnl_estimated_stopout_usd = Number(stopoutEst.estUsd.toFixed(2))
-    checks.daily_pnl_estimated_stopouts = stopoutEst.counted
-    // Counted but worth $0 in the sum — the unresolved-pnl block is the only
-    // cover these rows have, and the checks row says so out loud.
-    checks.daily_pnl_unpriceable_stopouts = stopoutEst.unpriceable
-  }
-  // The allowance may be PACED across the FX day (dailyLossPctMax set) or
-  // flat (it isn't). pacedDailyCap collapses to the old arithmetic in the
-  // flat case, so this is one code path rather than two.
-  const nowMs = Number.isFinite(Number(opts?.nowMs)) ? Number(opts.nowMs) : Date.now()
-  const pacing = pacedDailyCap({
-    balance,
-    basePct: config.dailyLossPct,
-    maxPct: config.dailyLossPctMax,
-    absoluteFallback: config.dailyLossLimit,
-    // Owner's two-tier floor, 2026-08-07. See DEFAULT_RISK_CONFIG.
-    floorUsd: config.dailyLossFloorUsd,
-    tierAtUsd: config.dailyLossTierAtUsd,
-    tierSmallPct: config.dailyLossTierSmallPct,
-    tierLargePct: config.dailyLossTierLargePct,
-    nowMs,
-    dayOpenMs: fxDayOpenMs(nowMs),
-    spentUsd: Math.max(0, -todayPnl),
-    // What one trade typically costs on this account, for "~N more trades".
-    perTradeRiskUsd: config.perTradeRiskUsd > 0
-      ? Number(config.perTradeRiskUsd)
-      : (balance > 0 ? balance * config.perTradeRiskPct : 0),
-  })
-  // NULL MEANS UNCAPPED — both checks off — and it must not be able to look
-  // like a cap of zero, which would veto every entry forever. The checks row
-  // says so out loud so the state is visible in risk_events rather than
-  // inferable from a missing number.
-  const effectiveDailyCap = pacing.capUsd
-  checks.daily_cap_usd = effectiveDailyCap == null ? null : Number(effectiveDailyCap.toFixed(2))
-  checks.daily_cap_uncapped = effectiveDailyCap == null
-  checks.daily_cap_binding = pacing.binding
-  checks.daily_cap_pct_usd = pacing.pctCapUsd == null ? null : Number(pacing.pctCapUsd.toFixed(2))
-  checks.daily_cap_flat_usd = pacing.usdCapUsd == null ? null : Number(pacing.usdCapUsd.toFixed(2))
-  // The owner's floor, recorded on every verdict so the Risk page can say
-  // WHICH rule produced the cap instead of leaving it to be re-derived.
-  checks.daily_cap_floor_usd = pacing.floorUsd
-  checks.daily_cap_floor_binding = !!pacing.floorBinding
-  checks.daily_cap_tier_pct = pacing.tierPct == null ? null : Number((pacing.tierPct * 100).toFixed(3))
-  if (pacing.paced) {
-    checks.daily_cap_paced = true
-    checks.daily_cap_pct = Number((pacing.pct * 100).toFixed(3))
-    checks.daily_cap_ceiling_usd = Number(pacing.ceilingUsd.toFixed(2))
-    checks.daily_day_elapsed = Number(pacing.elapsed.toFixed(3))
-  }
-  checks.daily_budget_left_usd = pacing.remainingUsd == null ? null : Number(pacing.remainingUsd.toFixed(2))
-  checks.daily_trades_left = pacing.tradesLeft
-  // An uncapped day cannot breach a cap. This is deliberately NOT an
-  // approval-by-default hidden in a falsy check: with both fields empty the
-  // owner has turned the daily brake off, and the honest behaviour is to let
-  // entries through while the Risk page carries the warning. Every other
-  // guard — per-trade risk, margin, equity stop, the portfolio layer — is
-  // untouched, so "uncapped daily" is not "unprotected".
-  // CAMPAIGN STOP — spans days, so it is checked separately from the daily cap
-  // and cannot be reset by the FX day rolling over. Deliberately placed AFTER
-  // the daily figures are computed and BEFORE the daily veto, so a verdict that
-  // trips both reports the campaign — the longer-horizon fact is the one the
-  // operator needs, and "you are out for the day" would hide "you are out for
-  // the week".
-  const campaign = campaignConfig(config.campaign)
-  if (campaign.armed) {
-    let sinceStart = null
-    try {
-      sinceStart = db.prepare(
-        `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
-          WHERE status = 'closed' AND net_pnl IS NOT NULL
-            AND REPLACE(closed_at, 'T', ' ') >= REPLACE(?, 'T', ' ')
-            AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
-      ).get(campaign.startAt, acct, acct)?.pnl ?? null
-    } catch { sinceStart = null }  // → halts, by campaignStopVerdict's own rule
-    const cs = campaignStopVerdict({ cfg: campaign, realisedSinceStart: sinceStart })
-    checks.campaign_drawdown_usd = cs.drawdownUsd
-    checks.campaign_drawdown_pct = cs.drawdownPct
-    checks.campaign_budget_left_usd = cs.remainingUsd
-    if (cs.halt) return veto(cs.reason, checks, proposal)
-  }
-
-  if (effectiveDailyCap != null && todayPnl <= -Math.abs(effectiveDailyCap)) {
-    const tail = [describeBinding(pacing), describePacing(pacing)].filter(Boolean).join(', ')
-    return veto(
-      `daily_loss_limit_hit pnl=${todayPnl.toFixed(2)} limit=${effectiveDailyCap.toFixed(2)}${tail ? ` — ${tail}` : ''}`,
-      checks, proposal,
-    )
-  }
-
-  // P1 / AUDIT F-L6-06: the sum above SKIPS NULL net_pnl (SQLite SUM) and
-  // COALESCE turns an all-NULL day into 0 — so a day of broker-side stop-outs,
-  // which close with net_pnl left NULL, reads as flat and this cap never
-  // trips. An unknown P&L is not zero; past the grace window it blocks.
-  // See services/unresolved-pnl.js for the full reasoning and the knobs.
-  const unresolved = unresolvedPnlSince(db, dayStartSql, {
-    accountId: acct,
-    graceMin: config.unknownPnlGraceMin,
-    maxAgeMin: config.unknownPnlMaxAgeMin,
-    minAttempts: config.unknownPnlMinAttempts,
-  })
-  checks.unresolved_pnl_trades = unresolved.count
-  // Written-off rows land in checks_json on EVERY evaluation, blocked or not.
-  // The reason string only exists on a veto, so without this the one case that
-  // matters most — rows written off, veto lifted, trading resumes — left no
-  // record anywhere. risk_events keeps it permanently.
-  checks.unresolvable_pnl_trades = unresolved.unresolvableCount ?? 0
-  const unknownVerdict = unknownPnlBlocks(unresolved, {
-    enabled: config.blockOnUnknownPnl,
-    graceMin: config.unknownPnlGraceMin ?? DEFAULT_UNKNOWN_PNL_GRACE_MIN,
-    scope: 'account',
-  })
-  if (unknownVerdict.block) return veto(unknownVerdict.reason, checks, proposal)
+  // ---- 1. Daily loss limit / campaign stop / unknown P&L -------------------
+  // One helper, shared with the per-account pre-filter (PR-C). Day anchor =
+  // FX day open, 17:00 NY; stop-outs counted at planned risk; the campaign
+  // stop reported before the daily cap. See dailyLossVerdict.
+  const daily = dailyLossVerdict(db, config, acct, { balance, nowMs: opts?.nowMs })
+  Object.assign(checks, daily.checks)
+  if (daily.block) return veto(daily.reason, checks, proposal)
 
   // ---- 2. Consecutive-loss cooldown --------------------------------------
-  // maxConsecutiveLosses 0 = breaker OFF (owner 2026-07-17: "cooldown pause
-  // is for humans"). The daily loss cap remains the hard machine backstop.
-  const streakLimit = Number(config.maxConsecutiveLosses) || 0
-  const recentClosed = streakLimit > 0
-    ? db
-        .prepare(
-          `SELECT net_pnl, closed_at FROM trades
-           WHERE status = 'closed' AND closed_at IS NOT NULL
-             AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
-           ORDER BY closed_at DESC LIMIT ?`
-        )
-        .all(acct, acct, streakLimit)
-    : []
-  let streak = 0
-  for (const t of recentClosed) {
-    if ((t.net_pnl || 0) < 0) streak++
-    else break
-  }
-  checks.loss_streak = streak
-  if (streakLimit > 0 && streak >= streakLimit) {
-    const lastCloseAt = recentClosed[0]?.closed_at
-    const cooldownEndsAt = lastCloseAt
-      ? new Date(new Date(lastCloseAt).getTime() + config.cooldownMinutes * 60_000)
-      : null
-    if (cooldownEndsAt && cooldownEndsAt > new Date()) {
-      const mins = Math.ceil((cooldownEndsAt - new Date()) / 60_000)
-      return veto(`loss_streak_cooldown streak=${streak} wait=${mins}m`, checks, proposal)
-    }
-  }
+  // Shared with the pre-filter (PR-C). See lossStreakVerdict.
+  const streakV = lossStreakVerdict(db, config, acct, opts?.nowMs)
+  checks.loss_streak = streakV.streak
+  if (streakV.block) return veto(streakV.reason, checks, proposal)
 
   // ---- 3. Max open positions ---------------------------------------------
-  const openPositions = db
-    .prepare(`
-      SELECT mp.symbol, mp.side, mp.entry_price, mp.strategy AS strategy,
-             mp.last_check_action AS lastCheckAction, mp.last_check_at AS lastCheckAt,
-             t.opened_at, t.volume AS volume, ${strategyAttrSql('t.label_strategy', 't.strategy')} AS tradeStrategy
-      FROM monitored_positions mp
-      LEFT JOIN trades t ON t.id = mp.trade_id
-      WHERE mp.status = 'active'
-        AND (mp.account_id = ? OR mp.account_id IS NULL OR ? IS NULL)
-    `)
-    .all(acct, acct)
-  checks.open_positions = openPositions.length
-  if (openPositions.length >= config.maxOpenPositions) {
-    return veto(`max_positions=${openPositions.length}/${config.maxOpenPositions}`, checks, proposal)
-  }
+  // Shared with the pre-filter (PR-C); the account-scoped read is the leak
+  // fix — see openPositionsForAccount. The cap itself is unchanged.
+  const openPositions = openPositionsForAccount(db, acct)
+  const countedPositions = openPositionsForAccount(db, acct, { countOnly: true })
+  checks.open_positions = countedPositions.length
+  const maxPos = maxPositionsVerdict(countedPositions, config)
+  if (maxPos.block) return veto(maxPos.reason, checks, proposal)
 
   // ---- 4. No duplicate on same symbol ------------------------------------
   const existingSameSymbol = openPositions.find(p => p.symbol === proposal.symbol)
@@ -1657,87 +1853,27 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       // small R:R on purpose, so it declares a lower floor than the global 1.5.
       // HARD_MIN_RR sits above BOTH — see its definition. Neither an account
       // override nor a strategy's declared floor may go under it.
-      const requested = minRrFor(proposal.strategy, config.minRR)
-      const rrFloor = Math.max(HARD_MIN_RR, requested)
-      if (requested < HARD_MIN_RR) {
-        checks.rr_floor_raised = { requested, enforced: rrFloor }
-      }
-      if (rr < rrFloor) {
-        // PR-C (owner "go PR-C", 2026-08-31): a strategy may trade below
-        // HARD_MIN_RR only when its OWN measured rolling win rate pays at
-        // this ratio — the dynamic expectancy test HARD_MIN_RR's comment has
-        // always named as the honest fix. The proposal must still clear the
-        // strategy's DECLARED minimum (its STRATEGY_MIN_RR override, else the
-        // shared 1.5 pre-filter — deliberately not `requested`, whose
-        // config.minRR default is 3.0 and would make this branch unreachable):
-        // the earned floor lowers the blanket 3.0, never the strategy's own
-        // minimum. Everything the verdict refuses (off, live scope while
-        // staged, unknown account, thin sample, unpaying win rate) vetoes
-        // exactly as before, with the denial recorded so the veto says what
-        // would have to be true.
-        if (rr >= minRrFor(proposal.strategy, STRATEGY_PREFILTER_RR)) {
-          const ef = earnedFloorVerdict(db, { strategy: proposal.strategy, rr, accountId: acct })
-          if (ef.ok) {
-            earnedFloor = ef
-            checks.earned_floor = {
-              rr, winRate: ef.winRate, trades: ef.trades, e: ef.e, riskScale: ef.riskScale,
-              // 'measured' or 'prior' (owner order 02-09-2026): the cohort
-              // report splits the two, and a prior admit carries the backtest
-              // figures it was judged on.
-              via: ef.via ?? 'measured',
-              ...(ef.prior ? { prior: ef.prior } : {}),
-            }
-            // One console line per admit, deliberately: an admitted below-floor
-            // entry is the rare event the whole PR-C experiment exists to
-            // produce, and log-watch.js matches this exact prefix to push it
-            // to Telegram in real time (rule 'earned_floor_admit').
-            console.log(
-              `[risk] earned_floor admit: ${proposal.strategy} ${proposal.symbol ?? '?'} rr=${rr.toFixed(2)} ` +
+      // PR-C: THE SAME FUNCTION the scan path's pre-filter calls, so a
+      // proposal the pre-filter lets through is one this gate will not veto
+      // on R:R alone, and vice versa. See rrFloorVerdict.
+      const rrV = rrFloorVerdict(db, {
+        strategy: proposal.strategy, rr, accountId: acct, config,
+        entry, sl, tp1: proposal.tp1, side: proposal.side,
+      })
+      Object.assign(checks, rrV.checks)
+      if (rrV.earnedFloor) {
+        earnedFloor = rrV.earnedFloor
+        const ef = earnedFloor
+        console.log(
+          ef.stretchedFrom != null
+            ? `[risk] earned_floor admit: ${proposal.strategy} ${proposal.symbol ?? '?'} rr=${ef.rr.toFixed(2)} ` +
+              `(stretched from ${ef.stretchedFrom.toFixed(2)}, target ${ef.tp1}) W=${ef.winRate}% over ${ef.trades} closes e=${ef.e}R ` +
+              `riskScale=${ef.riskScale} via=${ef.via} acct=${acct ?? '?'}`
+            : `[risk] earned_floor admit: ${proposal.strategy} ${proposal.symbol ?? '?'} rr=${rr.toFixed(2)} ` +
               `W=${ef.winRate}% over ${ef.trades} closes e=${ef.e}R riskScale=${ef.riskScale} via=${ef.via ?? 'measured'} acct=${acct ?? '?'}`,
-            )
-          } else {
-            checks.earned_floor_denied = ef.reason
-            // TARGET STRETCH (owner order 09-09-2026, §7,522·B: "R:R should
-            // be dynamic. i don't like opportunities to be thrown away"). The
-            // win rate is known and does not pay at THIS ratio — so ask what
-            // ratio it does pay at, and if that is under the cap, take the
-            // trade at that bracket instead of refusing it. The target the
-            // order carries is then `target_override.tp1`, computed here from
-            // the proposal's own entry and stop; every caller that places the
-            // order applies it (loop.js autoTrade, closed-market-limits,
-            // pending-orders). A strategy with no record, a live scope while
-            // staged, or a ratio the win rate cannot pay under the cap all
-            // still veto exactly as before — the stretch is a door only for
-            // a measured or prior-backed win rate.
-            const st = earnedFloorStretch(db, { strategy: proposal.strategy, rr, accountId: acct })
-            if (st.ok) {
-              const dir = String(proposal.side).toLowerCase() === 'sell' || String(proposal.side).toLowerCase() === 'short' ? -1 : 1
-              const dec = (n) => { const t = String(n), i = t.indexOf('.'); return i === -1 ? 0 : Math.min(t.length - i - 1, 8) }
-              const digits = Math.max(dec(entry), dec(sl), dec(proposal.tp1))
-              const newTp = Number((entry + dir * st.to * slDistance).toFixed(digits))
-              earnedFloor = { ...st, rr: st.to, stretchedFrom: rr, tp1: newTp }
-              checks.earned_floor = {
-                rr: st.to, stretchedFrom: rr, tp1: newTp, winRate: st.winRate, trades: st.trades, e: st.e,
-                riskScale: st.riskScale, via: st.via, ...(st.prior ? { prior: st.prior } : {}),
-              }
-              delete checks.earned_floor_denied
-              console.log(
-                `[risk] earned_floor admit: ${proposal.strategy} ${proposal.symbol ?? '?'} rr=${st.to.toFixed(2)} ` +
-                `(stretched from ${rr.toFixed(2)}, target ${newTp}) W=${st.winRate}% over ${st.trades} closes e=${st.e}R ` +
-                `riskScale=${st.riskScale} via=${st.via} acct=${acct ?? '?'}`,
-              )
-            } else if (st.reason && st.reason !== 'not_needed' && st.reason !== 'stretch_off') {
-              checks.earned_floor_stretch_denied = st.reason
-            }
-          }
-        }
-        if (!earnedFloor) {
-          const why = requested < rrFloor
-            ? ` (requested ${requested}, raised to the ${HARD_MIN_RR} expectancy floor)`
-            : ''
-          return veto(`bad_rr ${rr.toFixed(2)}<${rrFloor}${why}`, checks, proposal)
-        }
+        )
       }
+      if (!rrV.ok) return veto(rrV.reason, checks, proposal)
 
       // Invariant 2, second clause. The static floor above is a constant; this
       // asks whether THIS ratio actually pays at the win rate the account is
@@ -1773,40 +1909,16 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   }
 
   // ---- 8. Currency-exposure cap ------------------------------------------
-  const exposure = netExposure(openPositions, proposal)
-  checks.exposure = exposure
-  for (const [ccy, v] of Object.entries(exposure)) {
-    if (Math.abs(v) > config.maxCurrencyExposure) {
-      return veto(`overexposed_${ccy}=${v}`, checks, proposal)
-    }
-  }
+  // Shared with the pre-filter (PR-C). See exposureVerdict.
+  const expo = exposureVerdict(openPositions, proposal, config)
+  checks.exposure = expo.exposure
+  if (expo.block) return veto(expo.reason, checks, proposal)
 
   // ---- 8b. Correlation cap -----------------------------------------------
-  // Owner: "did you check pair and correlation?" Currency exposure only
-  // catches SHARED currency legs; this catches instruments that move
-  // together WITHOUT one (gold vs USDJPY, WTI vs Brent, US indices).
-  //
-  // Two layers: the LIVE-computed matrix (owner: "I want the live-computed
-  // version") is preferred when fresh — it counts how many held positions
-  // are highly correlated with the proposal in the same directional-risk
-  // sense and vetoes the (maxCorrelated+1)th stacked bet. The curated
-  // ±1-beta clusters are the always-on floor for when the matrix is
-  // missing/stale (fresh boot, a symbol not yet in it).
-  const liveCfg = loadCorrelationMatrixConfig(db)
-  if (liveCfg.on) {
-    const live = liveCorrelationVeto(openPositions, proposal, loadStoredMatrix(db), liveCfg, Date.now())
-    if (live) {
-      checks.correlation = live
-      return veto(`correlated_live=${live.stacked.length} thr=${live.threshold} with=${live.stacked.map(s => `${s.symbol}@${s.corr}`).join('|')}`, checks, proposal)
-    }
-  }
-  if (config.maxClusterExposure > 0) {
-    const corr = correlationVeto(openPositions, proposal, config.maxClusterExposure)
-    if (corr) {
-      checks.correlation = corr
-      return veto(`correlated_${corr.cluster}=${corr.net} cap=${corr.cap} with=${corr.others.join('|') || 'none'}`, checks, proposal)
-    }
-  }
+  // Shared with the pre-filter (PR-C). See correlationVerdict.
+  const corrV = correlationVerdict(db, openPositions, proposal, config, Date.now())
+  if (corrV.detail) checks.correlation = corrV.detail
+  if (corrV.block) return veto(corrV.reason, checks, proposal)
 
   // ---- 9. Equity-aware position sizing -----------------------------------
   // When balance is known, derive the lot size from the per-trade risk
@@ -2095,6 +2207,49 @@ function veto(reason, checks) {
  */
 export const POST_APPROVAL_FLAG = 'post_approval'
 
+/** A repeated veto on the same opportunity merges into its newest row for this long, measured from that row's first sighting. */
+export const VETO_REPEAT_WINDOW_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Fold a repeated veto into the newest row of the same opportunity when that
+ * row is a veto with the same reason head (veto-breakdown's reasonKey — the
+ * live numbers in a reason do not make it a different refusal) and is
+ * younger than `windowMs`. Returns the merged row id, or null when a new row
+ * must be inserted. Exported for tests; persistRiskEvent is the caller.
+ */
+export function mergeRepeatVeto(db, { opportunityKey, reason, nowMs = Date.now(), windowMs = VETO_REPEAT_WINDOW_MS }) {
+  if (!opportunityKey) return null
+  const prev = db.prepare(
+    `SELECT id, approved, veto_reason, created_at, repeat_count, checks_json
+       FROM risk_events
+      WHERE opportunity_key = ?
+      ORDER BY id DESC LIMIT 1`
+  ).get(opportunityKey)
+  if (!prev || Number(prev.approved) === 1) return null
+  // A post-approval refusal (persistPostApprovalVeto) RESOLVES an approval
+  // and is counted as such by decision-audit's `accountedFor`; a plain gate
+  // veto folded into it would inflate that figure. Never merge into one.
+  if (String(prev.checks_json || '').includes(`"${POST_APPROVAL_FLAG}":true`)) return null
+  const head = reasonKey(reason)
+  if (reasonKey(prev.veto_reason) !== head) return null
+  // reasonKey replaces live numbers, so `max_positions=6/5` and `=5/5` share
+  // a head — but 6/5 is an OVERRUN of the cap, and folding it into the 5/5
+  // row would hide exactly the number that matters. The count guard merges
+  // on the full string only.
+  if (/^max_positions/.test(head) && String(prev.veto_reason) !== String(reason)) return null
+  const firstMs = Date.parse(String(prev.created_at).replace(' ', 'T') + (/[zZ]|[+-]\d\d:\d\d$/.test(String(prev.created_at)) ? '' : 'Z'))
+  if (!Number.isFinite(firstMs) || nowMs - firstMs >= windowMs) return null
+  // Never across the FX day open: a row first sighted at 20:30 UTC would
+  // otherwise absorb repeats until 02:30 while the day opened at 21:00, and
+  // every "this FX day" reader (the audit's vetoed/reachedGate, the veto
+  // goal, the journal) would under-read for the first hours of each day.
+  if (firstMs < fxDayOpenMs(nowMs)) return null
+  db.prepare(
+    `UPDATE risk_events SET repeat_count = COALESCE(repeat_count, 1) + 1, last_at = ? WHERE id = ?`
+  ).run(new Date(nowMs).toISOString(), prev.id)
+  return prev.id
+}
+
 /** Persist a refusal that RESOLVES an approval the gate already granted. */
 export function persistPostApprovalVeto(db, proposal, reason, checks = {}) {
   return persistRiskEvent(db, proposal, {
@@ -2125,6 +2280,32 @@ export function persistRiskEvent(db, proposal, result) {
   try {
     opportunityKey = nextOpportunityKey(db, proposal, { accountId }).key
   } catch { opportunityKey = null }
+
+  // PR-C DEDUPE (owner principle 7). The scanner re-scores one setup ~8x and
+  // the gate answered each time with a fresh row saying the same thing —
+  // 10,580 vetoes on 11-09 for far fewer distinct refusals. When the newest
+  // row for THIS opportunity is a veto with the same reason head and is
+  // younger than the window, that row's repeat_count and last_at are bumped
+  // instead of a new row being written. An approval never merges (it is the
+  // row a trade links to), a different reason head starts a new row (the
+  // verdict changed — that is information), a different opportunity is a
+  // different row by definition, and a row past the window starts again so
+  // one refusal cannot sit under a single stamp for a week.
+  //
+  // `created_at` stays the FIRST sighting — the refusal ledger anchors its
+  // horizon on it and the window above measures from it, so a row spans at
+  // most VETO_REPEAT_WINDOW_MS. `last_at` is the newest sighting, which is
+  // what the opportunity gap rule reads. Readers that COUNT vetoes sum
+  // repeat_count (decision-audit, veto-breakdown, journal, funnel, refusal
+  // ledger, log-inspector, stage-matrix, evidence-gate, fx-legs, the daily
+  // route) so the totals stay comparable with the un-merged history, and
+  // report the row count beside it as `distinct`.
+  if (!result.approved && opportunityKey) {
+    try {
+      const merged = mergeRepeatVeto(db, { opportunityKey, reason: result.veto_reason })
+      if (merged != null) return merged
+    } catch { /* an unmergeable repeat is inserted, never lost */ }
+  }
 
   // §70.9: RETURNS THE ROW ID. Callers thread it onto the trade or pending
   // order the approval produces, which is what turns "17 approvals went

@@ -3236,7 +3236,8 @@ export default function stateRouter(db) {
       const rows = db.prepare(
         `SELECT substr(created_at, 1, 10) AS day,
                 SUM(approved = 1) AS approved,
-                SUM(approved != 1 OR approved IS NULL) AS vetoed
+                SUM(CASE WHEN approved = 1 THEN 0 ELSE COALESCE(repeat_count, 1) END) AS vetoed,
+                SUM(approved != 1 OR approved IS NULL) AS vetoed_distinct
            FROM risk_events
           WHERE ${clauses.join(' AND ')}
           GROUP BY day ORDER BY day`

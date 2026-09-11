@@ -141,15 +141,20 @@ export function nextOpportunityKey(db, proposal, {
 } = {}) {
   const acct = accountId != null ? accountId : proposal?.accountId
   let previous = null
+  // PR-C: a repeated veto no longer writes a row — it bumps the newest row's
+  // `last_at` (risk.js mergeRepeatVeto). The gap rule measures continuous
+  // attention, so it must read the newest SIGHTING, not the row's first one;
+  // otherwise a setup refused every cycle would be re-keyed every gapMs and
+  // the merge would split itself.
   try {
     previous = db.prepare(
-      `SELECT opportunity_key, created_at
+      `SELECT opportunity_key, COALESCE(last_at, created_at) AS created_at
          FROM risk_events
         WHERE opportunity_key IS NOT NULL
           AND UPPER(symbol) = ?
           AND UPPER(side) = ?
           AND (account_id = ? OR (account_id IS NULL AND ? IS NULL))
-        ORDER BY created_at DESC
+        ORDER BY COALESCE(last_at, created_at) DESC
         LIMIT 1`
     ).get(
       norm(proposal?.symbol),

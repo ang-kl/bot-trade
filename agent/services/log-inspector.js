@@ -253,7 +253,7 @@ function inspectRefusalAtScale(db, cfg, nowMs) {
   let rows = []
   try {
     rows = db.prepare(
-      `SELECT veto_reason, COUNT(*) AS n FROM risk_events
+      `SELECT veto_reason, SUM(COALESCE(repeat_count, 1)) AS n FROM risk_events
         WHERE approved = 0 AND veto_reason IS NOT NULL AND created_at >= ?
         GROUP BY veto_reason`
     ).all(sinceIso)
@@ -398,7 +398,7 @@ export function evalFalsifierMetric(db, metric) {
       }
       case 'veto_count_at_least': {
         const rows = db.prepare(
-          `SELECT veto_reason, COUNT(*) AS n FROM risk_events
+          `SELECT veto_reason, SUM(COALESCE(repeat_count, 1)) AS n FROM risk_events
             WHERE approved = 0 AND veto_reason IS NOT NULL AND created_at >= ?
             GROUP BY veto_reason`
         ).all(sinceIso)

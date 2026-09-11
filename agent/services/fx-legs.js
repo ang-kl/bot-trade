@@ -88,7 +88,7 @@ export function legVetoDemand(db, { symbolMap, days = 7 } = {}) {
   const demand = {}
   try {
     const rows = db.prepare(
-      `SELECT symbol, COUNT(*) AS n FROM risk_events
+      `SELECT symbol, SUM(COALESCE(repeat_count, 1)) AS n FROM risk_events
         WHERE approved = 0 AND veto_reason LIKE '%usd_per_lot_unknown%'
           AND created_at >= datetime('now', ?)
         GROUP BY symbol`

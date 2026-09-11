@@ -29,6 +29,8 @@ import { managePendingOrders } from './services/pending-orders.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate } from './services/regime-gate.js'
+import { recordRegimeBlock, recordEvidenceShadow } from './services/gate-skips.js'
+import { accountPregate, proposalPregate, invalidateAccountPregate } from './services/account-pregate.js'
 import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
 import { startLagMonitor, sampleLag } from './services/event-loop-lag.js'
@@ -382,11 +384,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const { evidenceGate } = await import('./services/evidence-gate.js')
     const eg = evidenceGate(db, { strategy: synth.strategy || null, accountId })
     if (!eg.allowed) {
-      persistRiskEvent(db, {
-        symbol, side, entry: synth.entry ?? null, sl: synth.sl ?? null, tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
-        requestedVolume: requestedVol, strategy: synth.strategy || null, conviction: synth.overall_conviction ?? null,
-        source: synth.source || 'auto_signal', accountId,
-      }, { approved: false, veto_reason: `evidence_gate: ${eg.reason}`, checks: { evidence_gate: { via: eg.via, record: eg.record, bar: eg.bar } } })
+      // PR-C: a decision_log SKIP carrying the full proposal (its shadow
+      // record), not a risk_events veto — see services/gate-skips.js for
+      // what read the old rows and where each reader looks now.
+      recordEvidenceShadow(db, { symbol, side, synth, accountId, requestedVolume: requestedVol, gate: eg, loopId: loopCount })
       log(`SHADOW ${symbol} ${side} ${synth.strategy || '?'} on ${accountId}: ${eg.reason}`)
       return null
     }
@@ -1211,15 +1212,17 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
 
   // Regime gate: don't fade a trend, don't chase a range (owner: "trading
   // like a beginner", PF 0.15). The regimes table was computed but never
-  // used to gate entries — this is the fix. Records a veto so the block is
-  // auditable in Risk decisions, same as every other gate.
+  // used to gate entries — this is the fix. Recorded as a decision_log SKIP
+  // (PR-C): this is a market-state read upstream of the risk gate, not a
+  // gate verdict, and writing it as a veto counted it in every veto total
+  // and re-wrote it every cycle the regime held. See services/gate-skips.js.
   if (synth.auto_trade) {
     const rg = checkRegimeGate(db, synth.strategy, synth.consensus_bias, sym)
     if (rg.block) {
       log(`Regime gate: ${sym} blocked — ${rg.reason}`)
       try {
-        persistRiskEvent(db, { symbol: sym, side: synth.consensus_bias === 'short' ? 'SELL' : 'BUY', strategy: synth.strategy, entry: signal?.entry ?? null }, { approved: false, veto_reason: rg.reason })
-      } catch { /* audit best-effort */ }
+        recordRegimeBlock(db, { symbol: sym, synth, signal, reason: rg.reason, loopId: loopCount })
+      } catch { /* provenance never blocks */ }
       synth.auto_trade = false
     }
   }
@@ -1358,6 +1361,17 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
             reason: `margin exhausted on this account (used $${poolEntry.status.usedMargin.toFixed(2)} vs cap $${poolEntry.status.cap.toFixed(2)}, ${poolEntry.status.source})`,
           })
         } catch { /* provenance never blocks */ }
+        continue
+      }
+      // ACCOUNT PRE-GATE (PR-C, owner principle 7): the six cycle-level
+      // guards — balance scope, campaign stop, daily loss cap, unknown P&L,
+      // loss streak, position cap — asked ONCE per account per cycle. A
+      // refused account wrote one skip row on the first symbol of the cycle
+      // and writes nothing now; it is not built into an order for this
+      // symbol either. The gate keeps every one of these as the backstop.
+      const pregate = accountPregate(db, acct.accountId, { cycle: loopCount })
+      if (!pregate.ok) {
+        log(`Account pre-gate: ${sym} skipped on …${String(acct.accountId).slice(-4)} — ${pregate.reason}`)
         continue
       }
       // FUNDABLE UNIVERSE (§7,437·B·3): this account's daily budget planner
@@ -1532,9 +1546,27 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
         continue
       }
 
+      // PROPOSAL PRE-GATE (PR-C): currency exposure, correlation and the R:R
+      // floor for THIS symbol on THIS account, each the gate's own function,
+      // each a decision_log skip rather than a risk_events veto. The lesson
+      // tuner inside autoTrade may still widen the stop before the gate reads
+      // it, so the gate remains the authority on the exact ratio.
+      const pp = proposalPregate(db, acct.accountId, {
+        symbol: sym, side: synth.consensus_bias === 'short' ? 'SELL' : 'BUY',
+        strategy: synth.strategy || null, timeframe: synth.timeframe ?? null,
+        entry: synth.entry ?? null, sl: synth.sl ?? null, tp1: synth.tp1 ?? null,
+      }, { cycle: loopCount, account: pregate })
+      if (!pp.ok) {
+        log(`Proposal pre-gate: ${sym} skipped on …${String(acct.accountId).slice(-4)} — ${pp.reason}`)
+        continue
+      }
+
       const tradeResult = await autoTrade(db, sym, synth, acctItem, acct)
       if (tradeResult) {
         fired = true
+        // The book just changed: the next symbol re-asks the pre-gate for
+        // this account instead of trusting a pre-fill verdict.
+        invalidateAccountPregate(acct.accountId)
         if (process.env.TELEGRAM_BOT_TOKEN) {
           try {
             const { sendMessage } = await import('./services/telegram.js')

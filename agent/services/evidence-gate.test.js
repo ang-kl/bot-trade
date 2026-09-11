@@ -98,7 +98,7 @@ test('the report reads the same verdicts per strategy × account and counts shad
   assert.equal(r.strategies.ema_pullback[DEMO].shadowRefusals7d, 1)
 })
 
-test('wiring pins: loop.js runs the gate after the market-hours gate, before the limit branch and the risk gate, and persists the refusal (comments stripped)', () => {
+test('wiring pins: loop.js runs the gate after the market-hours gate, before the limit branch and the risk gate, and records the refusal as a SKIP, not a veto (PR-C; comments stripped)', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
   const gate = src.indexOf("import('./services/evidence-gate.js')")
   assert.ok(gate > 0)
@@ -106,6 +106,9 @@ test('wiring pins: loop.js runs the gate after the market-hours gate, before the
   assert.ok(gate < src.indexOf('limitDispatchMinTf'), 'before the limit branch')
   assert.ok(gate < src.indexOf('const riskResult = evaluateTrade(db, proposal, riskCfg)'), 'before the risk gate')
   const block = src.slice(gate, gate + 1400)
-  assert.ok(block.includes("veto_reason: `evidence_gate: ${eg.reason}`"))
+  // PR-C: the refusal is a decision_log skip carrying the proposal (services/
+  // gate-skips.js), no longer a risk_events veto counted in every veto total.
+  assert.ok(block.includes('recordEvidenceShadow(db, { symbol, side, synth, accountId'))
+  assert.ok(!block.includes('persistRiskEvent('), 'the evidence gate must not write a risk_events veto')
   assert.ok(block.includes('return null'))
 })

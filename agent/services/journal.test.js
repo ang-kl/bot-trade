@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { buildDailyJournal, journalText } from './journal.js'
+import { buildDailyJournal, journalText, journalHtml, vetoLine, vetoRate } from './journal.js'
 
 test('buildDailyJournal: trades, net, win rate, gate pressure for ONE day', () => {
   const db = initDB(':memory:')
@@ -54,4 +54,23 @@ test('empty day journals honestly', () => {
   const j = buildDailyJournal(db, '2026-07-19')
   assert.equal(j.trades, 0)
   assert.match(journalText(j), /No closed trades/)
+})
+
+test('PR-C: the report prints vetoes: N (M distinct, rate R%) — repeats summed, rows counted', () => {
+  const db = initDB(':memory:')
+  const day = '2026-09-11'
+  const ins = db.prepare(`INSERT INTO risk_events (symbol, side, approved, veto_reason, created_at, repeat_count) VALUES (?,?,?,?,?,?)`)
+  ins.run('EURUSD', 'BUY', 0, 'max_positions=5/5', `${day}T01:00:00.000Z`, 7)
+  ins.run('GBPUSD', 'BUY', 0, 'bad_rr 1.20<3', `${day}T02:00:00.000Z`, 1)
+  ins.run('XAUUSD', 'BUY', 1, null, `${day}T03:00:00.000Z`, 1)
+  const j = buildDailyJournal(db, day)
+  assert.equal(j.approved, 1)
+  assert.equal(j.vetoed, 8)
+  assert.equal(j.vetoedDistinct, 2)
+  assert.equal(j.vetoRate, 88.9)
+  assert.deepEqual(j.topVetoes[0], { reason: 'max_positions=5/5', count: 7 })
+  assert.equal(vetoLine(j), 'vetoes: 8 (2 distinct, rate 88.9%)')
+  assert.match(journalText(j), /Gate: 1 approved · vetoes: 8 \(2 distinct, rate 88\.9%\)/)
+  assert.match(journalHtml(j), /1 approved · vetoes: 8 \(2 distinct, rate 88\.9%\)/)
+  assert.equal(vetoRate(0, 0), null)
 })

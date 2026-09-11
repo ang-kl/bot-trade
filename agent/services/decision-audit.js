@@ -101,7 +101,7 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
   const scope = accountId == null ? 'all accounts' : `account ${accountId}`
   const blank = {
     verdict: VERDICTS.IDLE, because: 'no decision records for this FX day', scope,
-    sinceFxDayOpen: true, considered: 0, reachedGate: 0, approved: 0, vetoed: 0,
+    sinceFxDayOpen: true, considered: 0, reachedGate: 0, approved: 0, vetoed: 0, vetoedDistinct: 0,
     tradesOpened: 0, pendingOrders: 0, placementReceipts: 0, landed: 0,
     resolutions: 0, accountedFor: 0, topResolutions: [], droppedApprovals: [],
     silentDrops: 0, topVetoes: [], topSkipStages: [],
@@ -179,7 +179,8 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
                     OR checks_json LIKE '%_placed": true%' THEN 1 ELSE 0 END AS is_receipt,
              CASE WHEN checks_json LIKE '%"post_approval":true%'
                     OR checks_json LIKE '%"post_approval": true%' THEN 1 ELSE 0 END AS is_resolution,
-             COUNT(*) AS n
+             COUNT(*) AS n,
+             SUM(COALESCE(repeat_count, 1)) AS reps
         FROM risk_events
        WHERE REPLACE(created_at, 'T', ' ') >= ?${acctSql}
        GROUP BY approved, veto_reason, symbol, side, is_receipt, is_resolution
@@ -191,13 +192,19 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     const approved = gate
       .filter(r => int(r.approved) === 1 && int(r.is_receipt) !== 1)
       .reduce((a, r) => a + int(r.n), 0)
-    const vetoed = gate.filter(r => int(r.approved) !== 1).reduce((a, r) => a + int(r.n), 0)
+    // PR-C: a repeated veto bumps its row's repeat_count instead of writing
+    // a new row (risk.js mergeRepeatVeto). `vetoed` sums repeat_count so it
+    // stays the number of REFUSALS, comparable with the un-merged history;
+    // `vetoedDistinct` is the row count — the number of distinct refusals.
+    // The gap between them is the waste the veto goal measures.
+    const vetoRows = gate.filter(r => int(r.approved) !== 1)
+    const vetoed = vetoRows.reduce((a, r) => a + int(r.reps ?? r.n), 0)
+    const vetoedDistinct = vetoRows.reduce((a, r) => a + int(r.n), 0)
     // Approvals that a downstream refusal already accounted for.
-    const resolutions = gate
-      .filter(r => int(r.approved) !== 1 && int(r.is_resolution) === 1)
-      .reduce((a, r) => a + int(r.n), 0)
+    const resolutionRows = vetoRows.filter(r => int(r.is_resolution) === 1)
+    const resolutions = resolutionRows.reduce((a, r) => a + int(r.reps ?? r.n), 0)
     const topResolutions = topBy(
-      gate.filter(r => int(r.approved) !== 1 && int(r.is_resolution) === 1),
+      resolutionRows.map(r => ({ ...r, n: r.reps ?? r.n })),
       r => r.veto_reason || 'unspecified',
     )
     const reachedGate = approved + vetoed
@@ -242,7 +249,7 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // yet, which is why the count above stays as the coarse backstop.
     const drops = unlinkedApprovals(db, dayStart, { accountId })
 
-    const topVetoes = topBy(gate.filter(r => int(r.approved) !== 1), r => r.veto_reason || 'unspecified')
+    const topVetoes = topBy(vetoRows.map(r => ({ ...r, n: r.reps ?? r.n })), r => r.veto_reason || 'unspecified')
     const topSkipStages = topBy(skips, r => (r.reason ? `${r.stage}:${r.reason}` : r.stage))
 
     // Minutes since the last thing the pipeline did at all. Null when it has
@@ -307,7 +314,7 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
 
     return {
       verdict, because, scope, sinceFxDayOpen: true,
-      considered, reachedGate, approved, vetoed,
+      considered, reachedGate, approved, vetoed, vetoedDistinct,
       tradesOpened, pendingOrders: pending, placementReceipts, landed,
       resolutions, accountedFor, topResolutions,
       // Symbol + side + when, per dropped approval. Owner-facing only.

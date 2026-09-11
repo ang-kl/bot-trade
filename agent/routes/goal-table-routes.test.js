@@ -33,8 +33,8 @@ test('GET /state/goal-table returns ten goals with verdicts and a summary', asyn
   const h = await server()
   try {
     const r = await fetch(h.url('/state/goal-table')).then(x => x.json())
-    assert.equal(r.goals.length, 12)
-    assert.ok(r.summary.on_track + r.summary.off_track + r.summary.not_measurable === 12)
+    assert.equal(r.goals.length, 13) // PR-C: the veto_rate goal
+    assert.ok(r.summary.on_track + r.summary.off_track + r.summary.not_measurable === 13)
     assert.ok(r.goals.every(g => ['on_track', 'off_track', 'not_measurable'].includes(g.verdict)))
     assert.equal(r.targets.pipelineConversionMin, 0.5)
   } finally { h.close() }

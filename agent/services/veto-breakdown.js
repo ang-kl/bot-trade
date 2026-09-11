@@ -79,7 +79,7 @@ export function vetoBreakdown(db, { days = 7, account = null, limit = MAX_GUARD_
   const acctParams = account != null ? [String(account)] : []
 
   const riskRows = db.prepare(
-    `SELECT approved, veto_reason, symbol, created_at
+    `SELECT approved, veto_reason, symbol, created_at, COALESCE(repeat_count, 1) AS reps
        FROM risk_events
       WHERE created_at >= ${sinceExpr}
         ${acctScope}`
@@ -97,11 +97,16 @@ export function vetoBreakdown(db, { days = 7, account = null, limit = MAX_GUARD_
     const k = `${source}|${key}`
     let g = groups.get(k)
     if (!g) {
-      g = { source, guard: key, count: 0, symbols: new Map(), example: null, lastAt: null }
+      g = { source, guard: key, count: 0, distinct: 0, symbols: new Map(), example: null, lastAt: null }
       groups.set(k, g)
     }
-    g.count += 1
-    if (row.symbol) g.symbols.set(row.symbol, (g.symbols.get(row.symbol) || 0) + 1)
+    // PR-C: a merged repeat is one row with repeat_count n — `count` stays
+    // the number of refusals (comparable with un-merged history), `distinct`
+    // the number of rows.
+    const reps = Math.max(1, Number(row.reps) || 1)
+    g.count += reps
+    g.distinct += 1
+    if (row.symbol) g.symbols.set(row.symbol, (g.symbols.get(row.symbol) || 0) + reps)
     if (!g.lastAt || row.created_at > g.lastAt) {
       g.lastAt = row.created_at
       g.example = row.example
@@ -110,11 +115,13 @@ export function vetoBreakdown(db, { days = 7, account = null, limit = MAX_GUARD_
 
   let approved = 0
   let vetoed = 0
+  let vetoedDistinct = 0
   for (const r of riskRows) {
     if (r.approved === 1) { approved += 1; continue }
-    vetoed += 1
+    vetoed += Math.max(1, Number(r.reps) || 1)
+    vetoedDistinct += 1
     bump('risk_gate', reasonKey(r.veto_reason), {
-      symbol: r.symbol, created_at: r.created_at, example: r.veto_reason || null,
+      symbol: r.symbol, created_at: r.created_at, example: r.veto_reason || null, reps: r.reps,
     })
   }
   for (const r of decisionRows) {
@@ -128,6 +135,7 @@ export function vetoBreakdown(db, { days = 7, account = null, limit = MAX_GUARD_
       source: g.source,
       guard: g.guard,
       count: g.count,
+      distinct: g.distinct,
       // Top 5 symbols so "one symbol eats this gate" is visible at a glance.
       topSymbols: [...g.symbols.entries()]
         .sort((a, b) => b[1] - a[1]).slice(0, 5)
@@ -154,6 +162,8 @@ export function vetoBreakdown(db, { days = 7, account = null, limit = MAX_GUARD_
     summary: {
       proposalsApproved: approved,
       proposalsVetoed: vetoed,
+      // Rows, not refusals — see the PR-C note on `bump`.
+      proposalsVetoedDistinct: vetoedDistinct,
       approvalRate: approved + vetoed > 0
         ? Math.round(approved / (approved + vetoed) * 1000) / 10
         : null,

@@ -50,7 +50,8 @@ export function opportunityFunnel(db, { days = 1, account = null, now = Date.now
             r.id              AS risk_event_id,
             r.approved        AS approved,
             r.account_id      AS account_id,
-            r.symbol          AS symbol
+            r.symbol          AS symbol,
+            COALESCE(r.repeat_count, 1) AS reps
        FROM risk_events r
       WHERE r.created_at >= ? ${scope}`
   ).all(...args)
@@ -76,7 +77,8 @@ export function opportunityFunnel(db, { days = 1, account = null, now = Date.now
       o = { key: r.key, account: r.account_id, symbol: r.symbol, evaluations: 0, approvals: 0, ordered: false, filled: false }
       byKey.set(r.key, o)
     }
-    o.evaluations += 1
+    // PR-C: a merged repeat veto is one row that stands for `reps` evaluations.
+    o.evaluations += Math.max(1, Number(r.reps) || 1)
     if (r.approved === 1) o.approvals += 1
     if (ordered.has(r.risk_event_id)) o.ordered = true
     if (filled.has(r.risk_event_id)) o.filled = true
