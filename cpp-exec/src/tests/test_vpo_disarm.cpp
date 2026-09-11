@@ -81,9 +81,82 @@ static void test_disarm_all_idles_armed_strategies_leaves_a_pending_fire_and_the
   assert(pb->order().state.load() == VposState::IDLE);
 }
 
+
+// ---------------------------------------------------------------------------
+// P2a-2: the keeper's pre-issued permits ride with every fire.
+// ---------------------------------------------------------------------------
+#include "../decision_ring.hpp"
+#include "../order_guard.hpp"
+
+static jsn::Value fakePermit(const std::string& id, long long epoch) {
+  jsn::Value p{jsn::Object{}};
+  p.set("id", id);
+  p.set("intentId", std::string("i") + id);
+  p.set("accountId", 4002.0);
+  p.set("symbolId", 42.0);
+  p.set("side", std::string("BUY"));
+  p.set("volume", 1000.0);
+  p.set("epoch", static_cast<double>(epoch));
+  p.set("expiresAtMs", 4102444800000.0);
+  return p;
+}
+
+static void test_store_permits_round_trip_age_out_and_clear() {
+  vpo::VpoConfigStore store;
+  assert(store.getPermit("raw:EURUSD:BUY").isNull());
+  store.setPermit("raw:EURUSD:BUY", fakePermit("p1", 3));
+  assert(store.getPermit("raw:EURUSD:BUY").get("id").asString() == "p1");
+  store.clear();
+  assert(store.getPermit("raw:EURUSD:BUY").isNull());
+  vpo::VpoConfigStore stale(/*maxAgeMs=*/-1);
+  stale.setPermit("raw:EURUSD:BUY", fakePermit("p2", 3));
+  assert(stale.getPermit("raw:EURUSD:BUY").isNull()); // the keeper stopped refreshing it
+}
+
+static void test_a_fire_carries_the_stored_permit_and_is_refused_without_one_on_a_fenced_account() {
+  int runPermitTest = 0;
+  for (int withPermit = 1; withPermit >= 0; --withPermit) {
+    ExecEngine engine;
+    DecisionRing ring(64);
+    engine.setDecisionRing(&ring);
+    engine.guard().setEntryEpochs({{4002, 3}});
+    vpo::VpoConfigStore store;
+    auto barProvider = [&store](const std::string& symbol, const std::string& tf) { return store.getBars(symbol, tf); };
+    auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
+    vpo::VpoDispatcher d(engine, barProvider, volumeResolver, "4h", "15m");
+    d.setDecisionRing(&ring);
+    d.setPermitResolver([&store](const vpo::StrategyModule& s, vpo::Side side) {
+      return store.getPermit(s.key() + ":" + s.order().symbol + ":" + (side == vpo::Side::Buy ? "BUY" : "SELL"));
+    });
+    auto a = std::make_unique<ArmWithBars>("raw", "EURUSD", "15m", 42);
+    ArmWithBars* pa = a.get();
+    d.registerStrategy(std::move(a));
+    d.setAccountId(4002);
+    if (withPermit) store.setPermit("raw:EURUSD:BUY", fakePermit("p1", 3));
+    pa->order().state.store(VposState::ARMED);
+    pa->order().triggerPrice.store(1.1000);
+    pa->order().side.store(vpo::Side::Buy);
+    d.onTick(42, 1.0995, 1.0999); // ask <= trigger: fires synchronously (dispatcher not started)
+    const auto o = d.outcomes();
+    assert(o.triggered == 1);
+    assert(o.permitMissing == (withPermit ? 0u : 1u));
+    bool sawSubmit = false, sawMissing = false;
+    for (const auto& rec : ring.since(0)) {
+      if (rec.component == "engine" && rec.kind == "order_submit" && rec.detail == "intent=ip1") sawSubmit = true;
+      if (rec.component == "order_guard" && rec.kind == "refused_at_send" && rec.code.rfind("permit_missing", 0) == 0) sawMissing = true;
+    }
+    if (withPermit) { assert(sawSubmit && !sawMissing); assert(o.failed == 1); /* NOT_CONNECTED past the boundary */ }
+    else { assert(!sawSubmit && sawMissing); assert(o.failed == 1); }
+    runPermitTest++;
+  }
+  assert(runPermitTest == 2);
+}
+
 int main() {
   test_store_clear_forgets_bars_and_volumes();
   test_disarm_all_idles_armed_strategies_leaves_a_pending_fire_and_the_cleared_store_keeps_them_idle();
+  test_store_permits_round_trip_age_out_and_clear();
+  test_a_fire_carries_the_stored_permit_and_is_refused_without_one_on_a_fenced_account();
   std::puts("test_vpo_disarm: all passed");
   return 0;
 }

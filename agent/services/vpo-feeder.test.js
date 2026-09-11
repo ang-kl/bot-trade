@@ -328,3 +328,42 @@ test('feeder: a STOPPED account is not armed — no /vpo-config push, the reason
   assert.equal(r2.ok, true)
   assert.ok(pushed && pushed.ctidTraderAccountId === 42)
 })
+
+// P2a-2: the push carries the keeper's pre-issued permits, one per armed
+// strategy and side; the disarm releases them.
+test('feeder: the push carries two permits per sized strategy, reused on the next push, and the disarm releases them', async () => {
+  const db = freshDB()
+  setState(db, 'vpo_enabled', 'true')
+  setState(db, 'vpo_config_json', JSON.stringify([
+    { key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, macroTf: '4h', microTf: '15m' },
+  ]))
+  setState(db, 'ctrader_access_token', 'tok')
+  setState(db, 'ctrader_account_id', '42')
+  setState(db, 'account_balance_usd', '10000')
+  const { upsertAccount } = await import('./account-registry.js')
+  const { requestEntryMode } = await import('./entry-mode.js')
+  const { _resetDisarmPushedForTests } = await import('./vpo-feeder.js')
+  upsertAccount(db, { accountId: '42', isLive: false })
+  _resetDisarmPushedForTests()
+  let pushed = null
+  const r = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
+  assert.equal(r.ok, true); assert.equal(r.permits, 2)
+  assert.deepEqual(pushed.permits.map(p => [p.key, p.symbol, p.side]), [['vwap_trend', 'EURUSD', 'BUY'], ['vwap_trend', 'EURUSD', 'SELL']])
+  const permit = pushed.permits[0].permit
+  assert.equal(permit.accountId, '42'); assert.equal(permit.symbolId, 1); assert.equal(permit.epoch, 0); assert.ok(permit.volume > 0); assert.match(permit.id, /^p/)
+  assert.equal(permit.volume, pushed.volumes[0].volume, 'bound to the sized volume the sidecar was given')
+  const open = db.prepare(`SELECT id, state, producer_id FROM entry_intents WHERE account_id = '42'`).all()
+  assert.equal(open.length, 2); assert.ok(open.every(o => o.state === 'RESERVED' && o.producer_id === 'vpo_cpp_direct'))
+  const r2 = await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
+  assert.equal(r2.permits, 2)
+  assert.deepEqual(pushed.permits.map(p => p.permit.intentId).sort(), open.map(o => o.id).sort(), 'the same standing permits, refreshed')
+  // STOPPED: the disarm releases what it authorised
+  requestEntryMode(db, '42', 'STOPPED')
+  await runVpoFeeder(db, { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async (payload) => { pushed = payload } })
+  assert.equal(pushed.disarm, true)
+  // the switch itself released the unsent old-epoch reservations (plan §3
+  // step 1, epoch_stale); the disarm's own release finds nothing left — either
+  // way no standing permit survives a STOPPED account
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE account_id = '42' AND state = 'RELEASED'`).get().n, 2)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE account_id = '42' AND state = 'RESERVED'`).get().n, 0)
+})

@@ -57,11 +57,79 @@ function sameKeySql(symbolId) {
   return symbolId != null ? 'symbol_id = ?' : 'symbol = ?'
 }
 
-function openConflict(db, { accountId, symbolId, symbol, side }) {
+export const VPO_PRODUCER = 'vpo_cpp_direct'
+export const VPO_PERMIT_TTL_MS = 5 * 60 * 1000 // the sidecar store's maxAgeMs; refreshed by every push
+
+function openConflict(db, { accountId, symbolId, symbol, side, producerId = null }) {
   const key = symbolId != null ? Number(symbolId) : String(symbol || '')
+  // A STANDING VPO reservation (issued with each push, redeemed only if the
+  // tier fires) is capacity held in advance, not a commitment: it never
+  // blocks another producer. Everything else open blocks everyone, the VPO
+  // producer included.
   return db.prepare(`SELECT id, state, producer_id, created_at FROM entry_intents
     WHERE account_id = ? AND ${sameKeySql(symbolId)} AND side = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')})
-    ORDER BY id LIMIT 1`).get(String(accountId), key, String(side), ...OPEN_STATES) || null
+      AND NOT (state = 'RESERVED' AND producer_id = ? AND ? <> ?)
+    ORDER BY id LIMIT 1`).get(String(accountId), key, String(side), ...OPEN_STATES, VPO_PRODUCER, String(producerId || ''), VPO_PRODUCER) || null
+}
+
+function permitOf(row, expiresAtMs) {
+  return {
+    id: row.permit_id, intentId: row.id, accountId: row.account_id, environment: row.environment,
+    symbolId: row.symbol_id, symbol: row.symbol, side: row.side, volume: row.volume, epoch: row.mode_epoch,
+    expiresAt: iso(expiresAtMs), expiresAtMs,
+  }
+}
+
+/**
+ * P2a-2: the VPO tier's permits, pre-issued with each /vpo-config push — one
+ * per armed strategy and side, bound to the account, symbol, sized volume
+ * and current epoch, five minutes long and refreshed by the next push. A
+ * standing permit whose volume or epoch changed is RELEASED and re-issued;
+ * a strategy with no usable sizing keeps none. Refusals (the fence) are
+ * reported, never hidden.
+ */
+export function reserveVpoPermits(db, { accountId, entries = [], ttlMs = VPO_PERMIT_TTL_MS, now = Date.now() } = {}) {
+  const id = String(accountId)
+  const st = engineStatusFor(db, id)
+  const out = { permits: [], reused: 0, issued: 0, released: 0, refused: [] }
+  const standing = db.prepare(`SELECT * FROM entry_intents WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED' AND signal_ref = ? AND side = ? ORDER BY id`)
+  const extend = db.prepare(`UPDATE entry_intents SET permit_expires_at = ?, updated_at = ? WHERE id = ? AND state = 'RESERVED'`)
+  const release = db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = ?, resolution_source = 'epoch', resolved_at = ?, updated_at = ? WHERE id = ? AND state = 'RESERVED'`)
+  db.transaction(() => {
+    for (const e of entries) {
+      const { key, symbol, symbolId, volume } = e || {}
+      if (!key || !symbol) continue
+      const usable = Number(volume) > 0
+      for (const side of ['BUY', 'SELL']) {
+        let kept = null
+        for (const r of standing.all(id, VPO_PRODUCER, String(key), side)) {
+          const same = usable && r.mode_epoch === st.modeEpoch && Number(r.volume) === Number(volume) && Number(r.symbol_id) === Number(symbolId)
+          if (same && !kept) { kept = r; continue }
+          release.run(usable ? 'vpo_permit_superseded' : 'vpo_no_sizing', iso(now), iso(now), r.id)
+          out.released++
+        }
+        if (!usable) continue
+        if (kept) {
+          extend.run(iso(now + ttlMs), iso(now), kept.id)
+          out.reused++
+          out.permits.push({ key, symbol, side, permit: permitOf(kept, now + ttlMs) })
+          continue
+        }
+        const r = reserveEntry(db, { accountId: id, producerId: VPO_PRODUCER, basis: 'bar', symbol, symbolId, side, orderType: 'MARKET', volume, signalRef: String(key), ttlMs, now })
+        if (!r.ok) { out.refused.push({ key, symbol, side, reason: r.reason }); continue }
+        out.issued++
+        out.permits.push({ key, symbol, side, permit: r.permit })
+      }
+    }
+  }).immediate()
+  return out
+}
+
+/** The disarm's counterpart: standing VPO permits are released, never left to expire. */
+export function releaseVpoReservations(db, accountId, reason = 'vpo_disarmed', { now = Date.now() } = {}) {
+  const r = db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = ?, resolution_source = 'epoch', resolved_at = ?, updated_at = ?
+    WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED'`).run(String(reason), iso(now), iso(now), String(accountId), VPO_PRODUCER)
+  return { released: r.changes }
 }
 
 function audit(db, path, body, accountId) {
@@ -90,7 +158,7 @@ export function reserveEntry(db, {
     const a = admitEntry(db, { accountId: id, producerId, basis })
     if (!a.ok) return { ok: false, reason: a.reason, modeEpoch: a.modeEpoch }
     const st = engineStatusFor(db, id)
-    const clash = openConflict(db, { accountId: id, symbolId, symbol, side: sideU })
+    const clash = openConflict(db, { accountId: id, symbolId, symbol, side: sideU, producerId })
     if (clash) return { ok: false, reason: `intent_open: ${clash.state} ${clash.id} (${clash.producer_id}, ${clash.created_at})`, intent: clash }
     const intentId = newIntentId()
     const permitId = 'p' + newIntentId().slice(1)
@@ -146,15 +214,22 @@ export function markSent(db, intentId, { clientMsgId = null, sidecarBootId = nul
   return { ok: r.changes === 1 }
 }
 
-/** Any open state → a terminal one, with the evidence named. UNKNOWN is itself "open". */
-export function resolveIntent(db, intentId, { state, brokerOrderId = null, positionId = null, errorCode = null, source, now = Date.now() } = {}) {
-  if (!INTENT_STATES.includes(state) || OPEN_STATES.includes(state) && state !== 'UNKNOWN') return { ok: false, reason: `bad_state: ${state}` }
-  const terminal = state !== 'UNKNOWN'
+/**
+ * Any open state → a terminal one, with the evidence named. UNKNOWN is itself
+ * "open". SENT is accepted only from RESERVED / DISPATCHING and only on the
+ * sidecar's own evidence (ring / event): a VPO permit is redeemed inside the
+ * sidecar, so the keeper learns of the send after the fact.
+ */
+export function resolveIntent(db, intentId, { state, brokerOrderId = null, positionId = null, errorCode = null, clientMsgId = null, source, now = Date.now() } = {}) {
+  if (!INTENT_STATES.includes(state) || OPEN_STATES.includes(state) && state !== 'UNKNOWN' && state !== 'SENT') return { ok: false, reason: `bad_state: ${state}` }
+  if (state === 'SENT' && !['ring', 'event'].includes(source)) return { ok: false, reason: 'SENT needs the sidecar\'s evidence' }
+  const from = state === 'SENT' ? ['RESERVED', 'DISPATCHING'] : OPEN_STATES
+  const terminal = state !== 'UNKNOWN' && state !== 'SENT'
   const r = db.prepare(`UPDATE entry_intents SET state = ?, broker_order_id = COALESCE(?, broker_order_id), broker_position_id = COALESCE(?, broker_position_id),
-      error_code = COALESCE(?, error_code), resolution_source = ?, resolved_at = ?, updated_at = ?
-    WHERE id = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')})`)
+      error_code = COALESCE(?, error_code), client_msg_id = COALESCE(?, client_msg_id), resolution_source = ?, resolved_at = ?, updated_at = ?
+    WHERE id = ? AND state IN (${from.map(() => '?').join(',')})`)
     .run(state, brokerOrderId != null ? String(brokerOrderId) : null, positionId != null ? String(positionId) : null,
-      errorCode, String(source || 'unspecified'), terminal ? iso(now) : null, iso(now), String(intentId), ...OPEN_STATES)
+      errorCode, clientMsgId != null ? String(clientMsgId) : null, String(source || 'unspecified'), terminal ? iso(now) : null, iso(now), String(intentId), ...from)
   if (r.changes === 1 && state === 'UNKNOWN') {
     const row = db.prepare('SELECT account_id, symbol, side, producer_id FROM entry_intents WHERE id = ?').get(String(intentId))
     audit(db, '/entry-intents/unknown', { intentId, ...row, errorCode, source }, row?.account_id)
@@ -213,11 +288,19 @@ const posField = (p, key) => p?.tradeData?.[key] ?? p?.[key]
  */
 export function reconcileIntents(db, { accountId, positions = [], orders = [], now = Date.now() } = {}) {
   const out = { checked: 0, resolved: [], stillOpen: 0 }
-  const open = db.prepare(`SELECT * FROM entry_intents WHERE account_id = ? AND state IN ('DISPATCHING', 'SENT', 'UNKNOWN') ORDER BY id`).all(String(accountId))
+  // Standing VPO permits are open too: the sidecar redeems them in-process,
+  // so the ring's order_submit is how the keeper learns one was sent.
+  const open = db.prepare(`SELECT * FROM entry_intents WHERE account_id = ?
+    AND (state IN ('DISPATCHING', 'SENT', 'UNKNOWN') OR (state = 'RESERVED' AND producer_id = ?)) ORDER BY id`).all(String(accountId), VPO_PRODUCER)
   const byTag = new Map()
   for (const p of positions) { const t = labelIntentId(String(posField(p, 'label') || '')); if (t) byTag.set(t, { kind: 'position', id: p?.positionId ?? posField(p, 'positionId') }) }
   for (const o of orders) { const t = labelIntentId(String(posField(o, 'label') || posField(o, 'comment') || '')); if (t && !byTag.has(t)) byTag.set(t, { kind: 'order', id: o?.orderId ?? posField(o, 'orderId') }) }
-  const ring = db.prepare(`SELECT kind, code, detail FROM cpp_decisions WHERE component = 'engine' AND kind IN ('order_result', 'order_reject') AND detail LIKE ? ORDER BY id DESC LIMIT 1`)
+  const ring = db.prepare(`SELECT kind, code, detail FROM cpp_decisions WHERE component = 'engine' AND kind IN ('order_submit', 'order_result', 'order_reject') AND detail LIKE ? ORDER BY id DESC LIMIT 1`)
+  // P2b-1: the sidecar's execution-event journal — a late frame after a
+  // TIMEOUT, matched by the clientMsgId the sidecar reported, or any event
+  // whose order label carries the intent tag.
+  let events = null
+  try { events = db.prepare(`SELECT payload_type, execution_type, order_id, position_id, error_code FROM cpp_events WHERE (? <> '' AND client_msg_id = ?) OR label LIKE ? ORDER BY id DESC LIMIT 1`) } catch { events = null }
   for (const it of open) {
     out.checked++
     const hit = byTag.get(it.id)
@@ -232,6 +315,21 @@ export function reconcileIntents(db, { accountId, positions = [], orders = [], n
         const pos = /pos=(\d+)/.exec(rec.detail || '')?.[1] ?? null
         const ord = /order=(\d+)/.exec(rec.detail || '')?.[1] ?? null
         r = resolveIntent(db, it.id, { state: pos ? 'FILLED' : 'ACCEPTED', positionId: pos, brokerOrderId: ord, source: 'ring', now })
+      } else if (rec?.kind === 'order_submit' && (it.state === 'RESERVED' || it.state === 'DISPATCHING')) {
+        r = resolveIntent(db, it.id, { state: 'SENT', source: 'ring', now })
+      } else if (events && it.state !== 'RESERVED') {
+        let ev = null
+        try { ev = events.get(it.client_msg_id || '', it.client_msg_id || '', `%|${it.id}`) } catch { ev = null }
+        if (ev) {
+          const type = String(ev.execution_type || '')
+          if (Number(ev.payload_type) === 2132 || ev.error_code || /REJECTED|CANCELLED|EXPIRED/.test(type)) {
+            r = resolveIntent(db, it.id, { state: 'REJECTED', errorCode: ev.error_code || type || 'order_error', source: 'event', now })
+          } else if (ev.position_id != null || /FILL/.test(type)) {
+            r = resolveIntent(db, it.id, { state: 'FILLED', positionId: ev.position_id, brokerOrderId: ev.order_id, source: 'event', now })
+          } else if (ev.order_id != null || /ACCEPTED/.test(type)) {
+            r = resolveIntent(db, it.id, { state: 'ACCEPTED', brokerOrderId: ev.order_id, source: 'event', now })
+          }
+        }
       }
     }
     if (r?.ok) out.resolved.push({ intentId: it.id, from: it.state, to: db.prepare('SELECT state FROM entry_intents WHERE id = ?').get(it.id).state })

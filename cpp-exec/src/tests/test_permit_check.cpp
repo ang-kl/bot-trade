@@ -101,30 +101,32 @@ static void test_fenced_account_refuses_missing_stale_expired_mismatch_malformed
     v = validatePermit(o, snap, used, 1000); assert(v.ok && v.permitId == "p2"); }
 }
 
-static void test_vpo_fire_is_waived_on_a_fenced_account_until_p2a_2_but_a_permit_it_carries_is_checked() {
+static void test_no_waiver_a_vpo_fire_on_a_fenced_account_needs_its_permit_too() {
+  // P2a-2: the tier's fires carry the keeper's pre-issued permits, so the
+  // marker an earlier draft waived on is just another field the boundary
+  // ignores — a fenced account's order without a permit is refused.
   const GuardSnapshot snap = fenced(4002, 3);
   std::set<std::string> used;
   jsn::Value o = marketOrder();
-  o.set("_vpoFire", true);
+  o.set("label", std::string("vpo:vwap_trend"));
   PermitVerdict v = validatePermit(o, snap, used, 1000);
-  assert(v.ok && v.permitId.empty());
-  o.set("permit", permitFor(o, 2, 5000));
+  assert(!v.ok && startsWith(v.reason, "permit_missing"));
+  o.set("permit", permitFor(o, 3, 5000));
   v = validatePermit(o, snap, used, 1000);
-  assert(!v.ok && startsWith(v.reason, "permit_epoch_stale"));
+  assert(v.ok && v.permitId == "p1");
 }
 
 static void test_wire_payload_carries_no_ledger_fields() {
   jsn::Value o = marketOrder();
   o.set("permit", permitFor(o, 3, 5000));
   o.set("intentId", std::string("iabc123456789"));
-  o.set("_vpoFire", true);
   const jsn::Value w = wireOrderPayload(o);
   assert(w.isObject());
-  assert(w.get("permit").isNull() && w.get("intentId").isNull() && w.get("_vpoFire").isNull());
+  assert(w.get("permit").isNull() && w.get("intentId").isNull());
   assert(w.get("ctidTraderAccountId").asNumber(0) == 4002);
   assert(w.get("label").asString() == "AU|v1|VWAP|H|LN|4h|TR|iabc123456789"); // the tag stays: it is the broker's own record of the intent
   assert(w.get("volume").asNumber(0) == 1000.0);
-  assert(w.asObject().size() == o.asObject().size() - 3);
+  assert(w.asObject().size() == o.asObject().size() - 2);
 }
 
 static void test_engine_boundary_refuses_without_a_permit_once_fenced_and_passes_one_use_with_one() {
@@ -157,24 +159,24 @@ static void test_engine_boundary_refuses_without_a_permit_once_fenced_and_passes
   assert(!r4.ok && startsWith(r4.body.get("errorCode").asString(), "permit_epoch_stale"));
   e.setPreSendHookForTests(std::function<void()>{});
 
-  // an in-process VPO fire is waived — and the waiver is rung
+  // a VPO-labelled fire without a permit is refused like any other (no waiver)
   jsn::Value fire = marketOrder();
-  fire.set("_vpoFire", true);
+  fire.set("label", std::string("vpo:vwap_trend"));
   EngineResult r5 = e.placeOrder(fire);
-  assert(!r5.ok && r5.body.get("errorCode").asString() == "NOT_CONNECTED");
+  assert(!r5.ok && startsWith(r5.body.get("errorCode").asString(), "permit_missing"));
   bool waived = false, refusedWithIntent = false, submitWithIntent = false;
   for (const auto& rec : ring.since(0)) {
-    if (rec.component == "order_guard" && rec.kind == "permit_waived" && rec.code == "vpo") waived = true;
+    if (rec.kind == "permit_waived") waived = true;
     if (rec.component == "order_guard" && rec.kind == "refused_at_send" && rec.detail == "intent=ixyz123456789") refusedWithIntent = true;
     if (rec.component == "engine" && rec.kind == "order_submit" && rec.detail == "intent=iabc123456789") submitWithIntent = true;
   }
-  assert(waived && refusedWithIntent && submitWithIntent);
+  assert(!waived && refusedWithIntent && submitWithIntent);
 }
 
 int main() {
   test_unfenced_account_needs_no_permit_but_a_bad_one_is_still_refused();
   test_fenced_account_refuses_missing_stale_expired_mismatch_malformed_and_reuse();
-  test_vpo_fire_is_waived_on_a_fenced_account_until_p2a_2_but_a_permit_it_carries_is_checked();
+  test_no_waiver_a_vpo_fire_on_a_fenced_account_needs_its_permit_too();
   test_wire_payload_carries_no_ledger_fields();
   test_engine_boundary_refuses_without_a_permit_once_fenced_and_passes_one_use_with_one();
   std::puts("test_permit_check: all passed");

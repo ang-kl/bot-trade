@@ -112,9 +112,10 @@ OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g);
 // has fenced must carry a permit from THAT epoch, unexpired, describing THIS
 // order (account, symbol, side, volume), never seen before. `consumed` is the
 // engine's bounded memory of redeemed permit ids — read and inserted here,
-// under the execution mutex the engine holds at the boundary. An in-process
-// VPO fire (payload `_vpoFire`) is WAIVED from the requirement until P2a-2
-// issues its permits; the engine rings that waiver so it is never silent.
+// under the execution mutex the engine holds at the boundary. Since P2a-2
+// the VPO tier's fires carry the keeper's pre-issued permits, so there is no
+// waiver: a fenced account's order without a permit is refused, whoever
+// built it.
 struct PermitVerdict {
   bool ok = true;
   std::string reason;   // machine code when ok == false

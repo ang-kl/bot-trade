@@ -875,6 +875,47 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
   setState(db, CPP_DECISIONS_CURSOR_KEY, JSON.stringify(cursors))
 }
 
+// P2b-1: the execution-event journal, pulled the same way into cpp_events.
+// The ledger's reconcile settles UNKNOWN intents from it (a late frame
+// matched by clientMsgId, or any event whose label carries the intent tag).
+const CPP_EVENTS_CURSOR_KEY = 'cpp_events_cursor_json'
+export async function pullEventsIntoDb(db, exec, side, health) {
+  if (typeof exec?.pullSidecarEvents !== 'function') return
+  let cursors = {}
+  try { cursors = JSON.parse(getState(db, CPP_EVENTS_CURSOR_KEY) || '{}') } catch { cursors = {} }
+  const cur = cursors[side.name] || { bootId: '', lastSeq: 0 }
+  const pulled = await exec.pullSidecarEvents({
+    after: cur.bootId === health?.bootId ? cur.lastSeq : 0,
+    bootId: cur.bootId,
+    ...(side.base ? { base: side.base } : {}),
+  })
+  if (!pulled) return
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO cpp_events
+       (side, boot_id, seq, ts_ms, client_msg_id, payload_type, execution_type, order_id, position_id, account_id, symbol_id, error_code, label, solicited)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  let inserted = 0
+  for (const e of pulled.entries) {
+    if (!e || !Number.isFinite(Number(e.seq))) continue
+    const r = ins.run(side.name, pulled.bootId, Number(e.seq), Number(e.tsMs) || null,
+      e.clientMsgId ? String(e.clientMsgId) : null,
+      Number.isFinite(Number(e.payloadType)) ? Number(e.payloadType) : null,
+      e.executionType ? String(e.executionType) : null,
+      Number(e.orderId) > 0 ? String(e.orderId) : null,
+      Number(e.positionId) > 0 ? String(e.positionId) : null,
+      Number(e.accountId) > 0 ? String(e.accountId) : null,
+      Number(e.symbolId) > 0 ? Number(e.symbolId) : null,
+      e.errorCode ? String(e.errorCode).slice(0, 200) : null,
+      e.label ? String(e.label).slice(0, 200) : null,
+      e.solicited ? 1 : 0)
+    inserted += r.changes
+  }
+  cursors[side.name] = { bootId: pulled.bootId, lastSeq: pulled.latestSeq }
+  setState(db, CPP_EVENTS_CURSOR_KEY, JSON.stringify(cursors))
+  return { inserted }
+}
+
 // Exported for tests: the probe's verdicts (feed staleness, trail-no-feed)
 // and the ring pull are pinned against fake exec objects, no sockets.
 export async function probeOneSidecar(db, exec, side, deps = {}) {
@@ -991,6 +1032,7 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
   try {
     if (r.bootId && exec.pullSidecarDecisions) {
       await pullDecisionsIntoDb(db, exec, side, r)
+      try { await pullEventsIntoDb(db, exec, side, r) } catch (err) { console.warn(`[heartbeat] events pull failed (${side.name}): ${err.message}`) }
     }
   } catch { /* next probe retries from the stored cursor */ }
   // GUARD SYNC (declarative convergence): only against a CONNECTED sidecar

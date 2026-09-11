@@ -18,6 +18,8 @@
 #include "backtest.hpp"
 #include "decision_ring.hpp"
 #include "engine.hpp"
+#include "event_journal.hpp"
+#include "request_pacer.hpp"
 #include "peer_probe.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
@@ -242,6 +244,10 @@ int main(int argc, char** argv) {
     };
     vpoDispatcher = std::make_unique<vpo::VpoDispatcher>(engine, barProvider, volumeResolver, vpoMacroTf, vpoMicroTf);
     vpoDispatcher->setDecisionRing(&decisionRing);
+    // P2a-2: a fire carries the keeper's permit for its strategy, symbol and side.
+    vpoDispatcher->setPermitResolver([&vpoStore](const vpo::StrategyModule& s, vpo::Side side) {
+      return vpoStore.getPermit(s.key() + ":" + s.order().symbol + ":" + (side == vpo::Side::Buy ? "BUY" : "SELL"));
+    });
 
     // "SYMBOL:SYMBOLID:STRATEGYKEY[:DIGITS],..." — DIGITS (the symbol's
     // decimal price precision, e.g. 5 for EURUSD, 3 for USDJPY) is optional
@@ -296,9 +302,23 @@ int main(int argc, char** argv) {
     }
   }
 
+  // P2b-1: the execution-event journal the keeper pulls (POST /events) and
+  // the request pacer against the broker's documented per-connection budget.
+  // Env: EXEC_RATE_LIMIT_PER_SEC (default 40; the docs say 50), and
+  // EXEC_PROTECTION_RESERVE_PCT (default 25). Both reported in /health.
+  EventJournal eventJournal(512, decisionRing.bootId());
+  engine.setEventJournal(&eventJournal);
+  PacerConfig pacerCfg;
+  pacerCfg.capacityPerSec = std::atoi(envOr("EXEC_RATE_LIMIT_PER_SEC", "40").c_str());
+  pacerCfg.protectionReservePct = std::atoi(envOr("EXEC_PROTECTION_RESERVE_PCT", "25").c_str());
+  RequestPacer pacer(pacerCfg);
+  engine.setPacer(&pacer);
+  logLine("request pacer: " + std::to_string(pacer.config().capacityPerSec) + "/s (docs: 50/s per connection), " +
+          std::to_string(pacer.config().protectionReservePct) + "% reserved for protection");
+
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -408,6 +428,20 @@ int main(int argc, char** argv) {
       gj.set("entryEpochCount", static_cast<double>(g.entryEpochs.size()));
       v.set("guard", std::move(gj));
     }
+    {
+      // P2b-1: the pacer in force and the journal's cursor.
+      const RequestPacer::Counters pc = pacer.counters();
+      jsn::Value pj{jsn::Object{}};
+      pj.set("capacityPerSec", static_cast<double>(pacer.config().capacityPerSec));
+      pj.set("protectionReservePct", static_cast<double>(pacer.config().protectionReservePct));
+      pj.set("granted", static_cast<double>(pc.granted));
+      pj.set("refusedEntry", static_cast<double>(pc.refusedEntry));
+      pj.set("refusedRead", static_cast<double>(pc.refusedRead));
+      pj.set("refusedProtection", static_cast<double>(pc.refusedProtection));
+      pj.set("tokens", pc.tokens);
+      v.set("pacer", std::move(pj));
+      v.set("eventsSeq", static_cast<double>(eventJournal.latestSeq()));
+    }
     v.set("decisionsSeq", static_cast<double>(decisionRing.latestSeq()));
     v.set("bootId", decisionRing.bootId());
     v.set("startedAtMs", static_cast<double>(startedAtMs));
@@ -438,6 +472,17 @@ int main(int argc, char** argv) {
       callerBootId = parsed->get("bootId").asString();
     }
     return {200, decisionRing.dumpJson(after, callerBootId)};
+  });
+
+  // P2b-1: the execution-event journal, same cursor contract as /decisions.
+  server.route("POST", "/events", [&eventJournal](const HttpRequest& req) -> HttpResponse {
+    long long after = 0;
+    std::string callerBootId;
+    if (auto parsed = jsn::parse(req.body); parsed && parsed->isObject()) {
+      after = static_cast<long long>(parsed->get("after").asNumber(0));
+      callerBootId = parsed->get("bootId").asString();
+    }
+    return {200, eventJournal.dumpJson(after, callerBootId)};
   });
 
   server.route("GET", "/positions", [&engine](const HttpRequest&) -> HttpResponse {
@@ -714,6 +759,16 @@ int main(int argc, char** argv) {
       vpoStore.setVolume(key, entry.get("volume").asNumber(-1));
       volsUpdated++;
     }
+    // P2a-2: the keeper's pre-issued permits, one per strategy + symbol + side.
+    int permitsUpdated = 0;
+    for (const auto& entry : v.get("permits").asArray()) {
+      const std::string key = entry.get("key").asString();
+      const std::string symbol = entry.get("symbol").asString();
+      const std::string side = entry.get("side").asString();
+      if (key.empty() || symbol.empty() || side.empty() || !entry.get("permit").isObject()) continue;
+      vpoStore.setPermit(key + ":" + symbol + ":" + side, entry.get("permit"));
+      permitsUpdated++;
+    }
     long long acctSet = 0;
     if (vpoDispatcher) {
       const jsn::Value& acct = v.get("ctidTraderAccountId");
@@ -728,6 +783,7 @@ int main(int argc, char** argv) {
     out.set("ok", true);
     out.set("barsUpdated", barsUpdated);
     out.set("volumesUpdated", volsUpdated);
+    out.set("permitsUpdated", permitsUpdated);
     out.set("accountId", static_cast<double>(acctSet));
     return {200, jsn::dump(out)};
   });

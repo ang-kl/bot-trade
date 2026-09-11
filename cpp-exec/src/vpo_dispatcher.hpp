@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "engine.hpp"
+#include "json.hpp"
 #include "vpo_strategy.hpp"
 
 namespace vpo {
@@ -46,11 +47,18 @@ using BarProvider = std::function<std::vector<Bar>(const std::string& symbol, co
 // wire this to whatever calls back into the Node agent for a real number
 // before this engine ever runs against a live account.
 using VolumeResolver = std::function<double(const StrategyModule&)>;
+// P2a-2: the keeper's pre-issued permit for a strategy about to fire on a
+// side — a JSON object, or a null Value when none is held (the engine's send
+// boundary then refuses the fire on a fenced account, permit_missing).
+using PermitResolver = std::function<jsn::Value(const StrategyModule&, Side)>;
 
 class VpoDispatcher {
 public:
   // `microTimeframe`/`macroTimeframe` are the labels passed to barProvider —
   // initial scope is one pair (owner: "15m up to 4h"), e.g. "4h"/"15m".
+  // P2a-2: setPermitResolver() before start(); absent = fires carry no permit.
+  void setPermitResolver(PermitResolver r) { permitResolver_ = std::move(r); }
+
   VpoDispatcher(ExecEngine& engine, BarProvider barProvider, VolumeResolver volumeResolver,
                 std::string macroTimeframe, std::string microTimeframe);
   ~VpoDispatcher();
@@ -97,6 +105,7 @@ public:
     uint64_t failed = 0;      // transport/guard failure, no broker verdict
     uint64_t noSizing = 0;    // refused: volumeResolver gave nothing usable
     uint64_t noAccount = 0;   // refused: no account configured to trade on
+    uint64_t permitMissing = 0; // P2a-2: fired with no keeper permit held (the boundary decides)
     long long lastFireAtMs = 0;
     std::string lastDetail;   // key + verdict of the most recent attempt
   };
@@ -142,6 +151,7 @@ private:
   ExecEngine& engine_;
   BarProvider barProvider_;
   VolumeResolver volumeResolver_;
+  PermitResolver permitResolver_; // P2a-2; may be empty
   std::string macroTimeframe_;
   std::string microTimeframe_;
 

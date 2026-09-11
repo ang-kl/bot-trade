@@ -218,9 +218,20 @@ void VpoDispatcher::fireNow(const FireIntent& in) {
   payload.set("relativeStopLoss", relativePoints(in.sl, o.digits));
   payload.set("relativeTakeProfit", relativePoints(in.tp, o.digits));
   payload.set("label", std::string("vpo:") + s.key());
-  // P2a: an in-process fire carries no keeper permit until P2a-2 issues them;
-  // the engine strips this marker before the wire and rings the waiver.
-  payload.set("_vpoFire", true);
+  // P2a-2: the keeper's pre-issued permit for this strategy and side rides
+  // with the order; the engine's send boundary checks it exactly as it checks
+  // a keeper-placed order's. None held → counted here, refused there when
+  // the account's epoch is fenced.
+  if (permitResolver_) {
+    const jsn::Value permit = permitResolver_(s, side);
+    if (permit.isObject()) {
+      payload.set("permit", permit);
+      payload.set("intentId", permit.get("intentId"));
+    } else {
+      std::lock_guard<std::mutex> lk(outcomesMtx_);
+      outcomes_.permitMissing++;
+    }
+  }
 
   const EngineResult result = engine_.placeOrder(payload);
   if (result.ok) {
@@ -273,6 +284,7 @@ std::string VpoDispatcher::statusJson() const {
   // Non-zero means this tier armed, triggered, and then could not fire because
   // no account is configured — visible in /vpo-status instead of only in stderr.
   v.set("noAccount", static_cast<double>(o.noAccount));
+  v.set("permitMissing", static_cast<double>(o.permitMissing));
   v.set("accountId", static_cast<double>(accountId_.load(std::memory_order_relaxed)));
   const long long disarmAt = lastDisarmAtMs_.load(std::memory_order_relaxed);
   v.set("lastDisarmAt", disarmAt > 0 ? jsn::Value(static_cast<double>(disarmAt)) : jsn::Value(nullptr));

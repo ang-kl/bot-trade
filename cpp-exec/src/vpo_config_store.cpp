@@ -37,10 +37,24 @@ double VpoConfigStore::getVolume(const std::string& strategyKey) const {
   return it->second.volume;
 }
 
+void VpoConfigStore::setPermit(const std::string& key, jsn::Value permit) {
+  std::lock_guard lk(mtx_);
+  permits_[key] = PermitEntry{std::move(permit), nowMs()};
+}
+
+jsn::Value VpoConfigStore::getPermit(const std::string& key) const {
+  std::lock_guard lk(mtx_);
+  auto it = permits_.find(key);
+  if (it == permits_.end()) return jsn::Value(nullptr);
+  if (nowMs() - it->second.updatedAtMs > maxAgeMs_) return jsn::Value(nullptr); // stale — the keeper stopped refreshing it
+  return it->second.permit;
+}
+
 void VpoConfigStore::clear() {
   std::lock_guard lk(mtx_);
   bars_.clear();
   vols_.clear();
+  permits_.clear();
 }
 
 } // namespace vpo

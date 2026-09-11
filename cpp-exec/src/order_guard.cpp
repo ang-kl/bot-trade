@@ -98,16 +98,15 @@ PermitVerdict validatePermit(const jsn::Value& payload, const GuardSnapshot& g,
   const long long acct = payload.isObject()
       ? static_cast<long long>(payload.get("ctidTraderAccountId").asNumber(0)) : 0;
   const jsn::Value& permit = payload.get("permit");
-  const bool internalFire = payload.get("_vpoFire").asBool(false);
   const auto epochIt = g.entryEpochs.find(acct);
   const bool fenced = epochIt != g.entryEpochs.end();
   if (!permit.isObject()) {
-    if (fenced && !internalFire) {
+    if (fenced) {
       v.ok = false;
       v.reason = "permit_missing: this account's entry epoch is fenced (" +
                  std::to_string(epochIt->second) + ") and the order carries no permit";
     }
-    return v; // not fenced, or an in-process VPO fire (waived until P2a-2)
+    return v; // not fenced: nothing to check (P2a-2 removed the VPO waiver — every fire carries the keeper's permit)
   }
   v.intentId = permit.get("intentId").asString();
   const std::string id = permit.get("id").asString();
