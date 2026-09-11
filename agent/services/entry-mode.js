@@ -39,7 +39,7 @@ import { createHash } from 'node:crypto'
 import { getState, setState } from '../db.js'
 import { getAccountState, setAccountState } from './account-registry.js'
 import { recordDecision } from './decision-log.js'
-import { ENTRY_MODES, OBSERVATION_MODES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
+import { ENTRY_MODES, OBSERVATION_MODES, ENTRY_MODE_POLICIES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
 import { ENTRY_PRODUCERS } from '../lib/entry-producers.js'
 // P2a: the intent ledger (a function-only cycle: entry-ledger imports the
 // fence from here; nothing on either side runs at module load).
@@ -86,7 +86,9 @@ export function engineStatusFor(db, accountId) {
   if (stored && typeof stored === 'object') {
     stored = normaliseLegacyStage(stored)
     const v = validateEngineStatus(stored)
-    if (v.ok) return { ...stored, invalid: undefined }
+    // PR-G: a record written before the policy existed reads as `manual` —
+    // the bot is never handed an account by omission.
+    if (v.ok) return { ...stored, entryModePolicy: ENTRY_MODE_POLICIES.includes(stored.entryModePolicy) ? stored.entryModePolicy : 'manual', invalid: undefined }
     return { ...defaultEngineStatus({ accountId: id, environment }), stored: false, invalid: v.errors }
   }
   return { ...defaultEngineStatus({ accountId: id, environment }), stored: false }
@@ -102,16 +104,51 @@ export function writeEngineStatus(db, status) {
 }
 
 /**
+ * PR-G: the bot's per-account memory for the automatic switch
+ * (acct:<id>:entry_mode_auto_json). Lives here, not in entry-mode-auto.js,
+ * because the HUMAN's switch must write it too (the checker's C-1 / A-1
+ * counterexamples: a human's TIME_BASED was re-promoted on the next pass
+ * from a streak the hold cycles had kept growing). readyStreak: consecutive
+ * ready evaluations; lastEval / lastAction: what the pass last did;
+ * humanOverride: { mode, at, epoch } — the human's last switch, past which
+ * the bot never promotes until the human acts again or the cooldown lapses;
+ * blockedCycles: passes seen BLOCKED under the bot's own epoch.
+ */
+export const AUTO_STATE_KEY = 'entry_mode_auto_json'
+const EMPTY_AUTO_STATE = Object.freeze({ readyStreak: 0, lastEval: null, lastAction: null, humanOverride: null, blockedCycles: 0 })
+export function readAutoState(db, accountId) {
+  try {
+    const st = JSON.parse(getAccountState(db, String(accountId), AUTO_STATE_KEY) || 'null')
+    if (st && typeof st === 'object') {
+      return { readyStreak: Number(st.readyStreak) || 0, lastEval: st.lastEval ?? null, lastAction: st.lastAction ?? null, humanOverride: st.humanOverride ?? null, blockedCycles: Number(st.blockedCycles) || 0 }
+    }
+  } catch { /* fall through */ }
+  return { ...EMPTY_AUTO_STATE }
+}
+export function writeAutoState(db, accountId, st) {
+  const clean = { ...EMPTY_AUTO_STATE, ...st }
+  setAccountState(db, String(accountId), AUTO_STATE_KEY, JSON.stringify(clean))
+  return clean
+}
+
+/**
  * Owner-facing mode change. Refuses a stale revision, refuses TICK_MOMENTUM
  * until the tick engine exists, otherwise bumps configRevision and modeEpoch
  * and acknowledges (Node is the gateway for Node producers in this phase).
  */
-export function requestEntryMode(db, accountId, mode, { expectedRevision = null, actor = 'owner', now = new Date(), readiness = null } = {}) {
+export function requestEntryMode(db, accountId, mode, { expectedRevision = null, actor = 'owner', now = new Date(), readiness = null, detail = null } = {}) {
   const id = String(accountId)
   if (!ENTRY_MODES.includes(mode)) return { ok: false, reason: `unknown_mode: ${mode}` }
   const cur = engineStatusFor(db, id)
   if (expectedRevision != null && Number(expectedRevision) !== cur.configRevision) {
     return { ok: false, reason: 'revision_conflict', current: cur.configRevision, expected: Number(expectedRevision) }
+  }
+  // PR-G (owner principle 2): the bot's own pass (actor `auto:*`) may throw
+  // the switch only on an account whose policy is `auto`. A `manual` account
+  // is the human's alone — refused here, at the one writer, so no automatic
+  // caller can route around it.
+  if (String(actor).startsWith('auto:') && cur.entryModePolicy !== 'auto') {
+    return { ok: false, reason: 'policy_manual', current: cur.configRevision, policy: cur.entryModePolicy }
   }
   // P6b (plan §3 P6b): TICK_MOMENTUM is admitted ONLY on an account whose
   // readiness (tick-readiness.js: registry, halt, record, horizon,
@@ -175,8 +212,15 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
   const saved = writeEngineStatus(db, next)
   try {
     db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
-      .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, from: cur.effectiveEntryMode, to: mode, revision: saved.configRevision, epoch: saved.modeEpoch, resting: saved.entryCounts.resting, transition: saved.transitionState, actor }), id)
+      .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, from: cur.effectiveEntryMode, to: mode, revision: saved.configRevision, epoch: saved.modeEpoch, resting: saved.entryCounts.resting, transition: saved.transitionState, actor, ...(detail && typeof detail === 'object' ? { detail } : {}) }), id)
   } catch { /* audit best-effort */ }
+  // PR-G: a HUMAN's switch zeroes the bot's streak and is remembered as an
+  // override — the pass never promotes past it until the human acts again
+  // or the cooldown lapses (entry-mode-auto.js). The bot's own switches
+  // leave the streak to the pass.
+  if (!String(actor).startsWith('auto:')) {
+    try { writeAutoState(db, id, { ...readAutoState(db, id), readyStreak: 0, blockedCycles: 0, humanOverride: { mode, at: now.toISOString(), epoch: saved.modeEpoch, actor: String(actor) } }) } catch { /* memory best-effort */ }
+  }
   return { ok: true, status: saved, changed: cur.requestedEntryMode !== mode || cur.effectiveEntryMode !== saved.effectiveEntryMode }
 }
 
@@ -264,6 +308,95 @@ export function requestTickObservation(db, accountId, mode, { expectedRevision =
       .run('POST', '/actions/tick-observation', JSON.stringify({ accountId: id, from: cur.tickObservation, to: mode, revision: saved.configRevision, actor }), id)
   } catch { /* audit best-effort */ }
   return { ok: true, status: saved, changed: cur.tickObservation !== mode }
+}
+
+/**
+ * PR-G (owner principle 2): the per-account switch POLICY — `manual` (a
+ * human throws the entry-mode switch) or `auto` (the bot's readiness pass
+ * may throw it too, as actor `auto:readiness`). Changes no mode and no
+ * epoch: only configRevision moves, so a stale caller is still refused.
+ */
+export function requestEntryModePolicy(db, accountId, policy, { expectedRevision = null, actor = 'owner', now = new Date() } = {}) {
+  const id = String(accountId)
+  const want = String(policy).toLowerCase()
+  if (!ENTRY_MODE_POLICIES.includes(want)) return { ok: false, reason: `unknown_policy: ${policy}` }
+  const cur = engineStatusFor(db, id)
+  if (expectedRevision != null && Number(expectedRevision) !== cur.configRevision) {
+    return { ok: false, reason: 'revision_conflict', current: cur.configRevision, expected: Number(expectedRevision) }
+  }
+  const next = { ...cur, entryModePolicy: want, configRevision: cur.configRevision + 1, updatedAt: now.toISOString() }
+  const saved = writeEngineStatus(db, next)
+  // A policy change is the human acting: the bot starts from a clean memory
+  // (no streak, no override, no blocked count) under the new policy.
+  if (cur.entryModePolicy !== want) { try { writeAutoState(db, id, {}) } catch { /* memory best-effort */ } }
+  try {
+    db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+      .run('POST', '/actions/entry-mode-policy', JSON.stringify({ accountId: id, from: cur.entryModePolicy, to: want, revision: saved.configRevision, actor }), id)
+  } catch { /* audit best-effort */ }
+  return { ok: true, status: saved, changed: cur.entryModePolicy !== want }
+}
+
+/**
+ * PR-G: the owner's switch-policy declaration from the repo
+ * (config/entry-mode-policy.json), applied ONCE per file content on the
+ * tick-observation seed's rule: `_all` expands to every enabled registry
+ * account, a per-id key wins for that id, an account enabled after the file
+ * was applied is seeded on its first boot (the `reached` list), and a later
+ * change through POST /actions/entry-mode-policy stands until the file
+ * changes. State key: entry_mode_policy_seed_json.
+ */
+export function seedEntryModePolicyFromConfig(db, { file = null, log = () => {} } = {}) {
+  const out = { applied: [], unchanged: [], skipped: [], error: null }
+  let cfg = null
+  try {
+    cfg = JSON.parse(readFileSync(file || new URL('../config/entry-mode-policy.json', import.meta.url), 'utf8'))
+  } catch (err) {
+    out.error = `entry-mode-policy.json unreadable: ${err.message}`
+    return out
+  }
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) { out.error = 'entry-mode-policy.json is not an object'; return out }
+  const accounts = cfg.accounts && typeof cfg.accounts === 'object' ? cfg.accounts : {}
+  const hash = createHash('sha256').update(JSON.stringify({ accounts })).digest('hex').slice(0, 16)
+  let seeded = null
+  try { seeded = JSON.parse(getState(db, 'entry_mode_policy_seed_json') || 'null') } catch { seeded = null }
+  const hasAll = Object.prototype.hasOwnProperty.call(accounts, '_all')
+  const reached = new Set(Array.isArray(seeded?.reached) ? seeded.reached.map(String) : [])
+  let entries = expandAllAccounts(db, accounts)
+  const sameContent = seeded?.hash === hash
+  if (sameContent) {
+    for (const [id] of entries) if (!hasAll || reached.has(id)) out.unchanged.push(id)
+    entries = hasAll ? entries.filter(([id]) => !reached.has(id)) : []
+    if (!entries.length) return out
+  } else if (seeded?.accounts && typeof seeded.accounts === 'object') {
+    // Changed content: only an id whose DECLARED value changed (its own key,
+    // or `_all` when it has no key) is re-applied. An operator's route-set
+    // policy on an id whose declaration did not move stands — the checker's
+    // finding: hashing the whole map flipped every account on any edit.
+    const declared = (map, id) => (Object.prototype.hasOwnProperty.call(map, id) ? String(map[id]) : (Object.prototype.hasOwnProperty.call(map, '_all') ? String(map._all) : null))
+    entries = entries.filter(([id, v]) => !reached.has(id) || declared(seeded.accounts, id) !== String(v))
+    for (const [id] of expandAllAccounts(db, accounts)) if (!entries.some(([e]) => e === id)) out.unchanged.push(id)
+  }
+  for (const [accountId, policy] of entries) {
+    if (!/^[0-9]+$/.test(accountId)) { out.skipped.push(`${accountId}: malformed id`); continue }
+    let known = false
+    try { known = !!db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(accountId) } catch { known = false }
+    if (!known) { out.skipped.push(`…${accountId.slice(-4)}: not in the registry`); continue }
+    reached.add(accountId)
+    const want = String(policy).toLowerCase()
+    const cur = engineStatusFor(db, accountId).entryModePolicy
+    if (cur === want) { out.unchanged.push(accountId); continue }
+    const r = requestEntryModePolicy(db, accountId, want, { actor: 'config/entry-mode-policy.json' })
+    if (r.ok) {
+      out.applied.push(`…${accountId.slice(-4)}:${want}`)
+      log(`[boot] entry-mode policy …${accountId.slice(-4)}: ${cur} → ${want} (from config/entry-mode-policy.json)`)
+    } else {
+      out.skipped.push(`…${accountId.slice(-4)}: ${r.reason}`)
+    }
+  }
+  setState(db, 'entry_mode_policy_seed_json', JSON.stringify(sameContent
+    ? { ...seeded, reached: [...reached].sort() }
+    : { hash, at: new Date().toISOString(), applied: out.applied, accounts, reached: [...reached].sort() }))
+  return out
 }
 
 /**
@@ -418,6 +551,7 @@ export function entryEnginesView(db) {
       effectiveEntryMode: st.effectiveEntryMode,
       transitionState: st.transitionState,
       tickObservation: st.tickObservation,
+      entryModePolicy: st.entryModePolicy,
       validationStage: st.validationStage,
       configRevision: st.configRevision,
       modeEpoch: st.modeEpoch,

@@ -485,7 +485,12 @@ Measurement history — each line is a real run of the script, not a claim:
   **`№ 7,730`** by count. Nine unstamped status lines followed it
   (`№ 7,731`–`№ 7,739`, 14:37–14:46 UTC: #898 gated and merged, the PR-D
   fix round gated and committed, the PR-G checker's findings sent to its
-  maker), so the PR-D report is **`№ 7,740`** by count. The count is by replies, not by
+  maker), so the PR-D report was expected at `№ 7,740`; it was not
+  stamped — eleven more unstamped status lines followed (`№ 7,740`–
+  `№ 7,750`, 14:46–15:06 UTC: #899 PR-D opened, gated on the merged tree
+  and merged, the PR-G fix round gated and committed, the PR-F checker's
+  findings sent to its maker), so the PR-G report is **`№ 7,751`** by
+  count. The count is by replies, not by
   stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 

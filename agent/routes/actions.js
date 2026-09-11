@@ -1161,15 +1161,15 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // P1b (docs/tick-momentum/plan.md §3): the per-account entry engine.
-  // { accountId, mode: TIME_BASED | STOPPED (TICK_MOMENTUM refused until P6's evidence),
-  //   expectedRevision } — a stale revision is refused, never applied.
+  // { accountId, mode: TIME_BASED | TICK_MOMENTUM | STOPPED, expectedRevision }
+  // — a stale revision is refused, never applied; TICK_MOMENTUM is judged on
+  // the account's readiness at this moment (P6b, PR-B: the only gate).
   router.post('/entry-mode', async (req, res) => {
     try {
       const { requestEntryMode } = await import('../services/entry-mode.js')
       const { tickReadinessFor } = await import('../services/tick-readiness.js')
       const { accountId, mode, expectedRevision = null } = req.body || {}
       if (!accountId || !mode) return res.status(400).json({ error: 'accountId and mode are required' })
-      // P6b: TICK_MOMENTUM is judged on the account's readiness at this moment (demo only).
       const r = requestEntryMode(db, String(accountId), String(mode), { expectedRevision, actor: 'owner', readiness: tickReadinessFor })
       if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
       console.log(`[actions] entry-mode → …${String(accountId).slice(-4)} ${r.status.effectiveEntryMode} (revision ${r.status.configRevision}, epoch ${r.status.modeEpoch}, resting ${r.status.entryCounts.resting}, ${r.status.transitionState})`)
@@ -1187,33 +1187,13 @@ export default function actionsRouter(db, deps = {}) {
       // standing permits cannot fire after the switch. A push that fails
       // leaves the account BLOCKED with entries stopped — visibly, never a
       // silent fall-back.
-      let gateway = null
-      try {
-        const { sideForAccount, sideCreds } = await import('../services/heartbeat.js')
-        const { syncExecGuard } = await import('../services/exec-guard-sync.js')
-        const { markEntryModeBlocked, engineStatusFor: statusOf } = await import('../services/entry-mode.js')
-        const execMod = await import('../lib/exec-engine.js')
-        const side = sideForAccount(db, execMod, String(accountId))
-        const creds = side ? await sideCreds(db, side) : null
-        if (side && creds?.ready) {
-          const sync = await syncExecGuard(db, execMod, side, { reportedGuard: null, creds, force: true })
-          gateway = { side: side.name, pushed: sync.pushed, acked: sync.acked || [], error: sync.error || null }
-          if (sync.error || !sync.pushed) markEntryModeBlocked(db, String(accountId), sync.error || 'guard push not made')
-          if (String(mode).toUpperCase() !== 'TIME_BASED') {
-            const { pushVpoDisarm } = await import('../services/vpo-feeder.js')
-            const acctCreds = credsForAccountId(db, String(accountId))
-            const d = await pushVpoDisarm(db, String(accountId), execBaseFor(acctCreds.ready ? acctCreds : creds), { reason: `entry_mode ${String(mode).toUpperCase()}`, epoch: r.status.modeEpoch })
-            gateway.vpoDisarm = d
-          }
-        } else {
-          gateway = { side: side?.name || null, pushed: false, error: 'no credentials for the account\'s side' }
-          markEntryModeBlocked(db, String(accountId), gateway.error)
-        }
-        status = statusOf(db, String(accountId))
-        console.log(`[actions] entry-mode gateway …${String(accountId).slice(-4)}: ${gateway.pushed ? 'pushed' : 'NOT pushed'}${gateway.error ? ` (${gateway.error})` : ''} → ${status.transitionState} / effective ${status.effectiveEntryMode}`)
-      } catch (err) {
-        gateway = { pushed: false, error: err.message }
-      }
+      // PR-G: the post-switch block lives in entry-mode-gateway.js so the
+      // bot's readiness pass binds the epoch exactly as this route does.
+      const { bindEntryModeGateway } = await import('../services/entry-mode-gateway.js')
+      const bound = await bindEntryModeGateway(db, String(accountId), mode, { epoch: r.status.modeEpoch })
+      const gateway = bound.gateway
+      status = bound.status
+      console.log(`[actions] entry-mode gateway …${String(accountId).slice(-4)}: ${gateway.pushed ? 'pushed' : 'NOT pushed'}${gateway.error ? ` (${gateway.error})` : ''} → ${status.transitionState} / effective ${status.effectiveEntryMode}`)
       if (status.transitionState === 'QUIESCING') {
         try {
           const { drainEntryOrders } = await import('../services/entry-drain.js')
@@ -1249,6 +1229,26 @@ export default function actionsRouter(db, deps = {}) {
       res.json({ ok: true, changed: r.changed, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` }, note: 'the sidecar records only when TICK_SPOOL_PATH is set on it; see GET /state/tick-recorder' })
     } catch (err) {
       console.error('[actions/tick-observation] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // PR-G (owner principle 2): the per-account switch POLICY. { accountId,
+  // policy: manual | auto, expectedRevision }. `auto` lets the loop's
+  // readiness pass (entry-mode-auto.js, actor auto:readiness) promote and
+  // demote the account's entry mode; `manual` keeps the switch human-only.
+  // Changes no mode and no epoch; a stale revision is refused (409).
+  router.post('/entry-mode-policy', async (req, res) => {
+    try {
+      const { requestEntryModePolicy } = await import('../services/entry-mode.js')
+      const { accountId, policy, expectedRevision = null } = req.body || {}
+      if (!accountId || !policy) return res.status(400).json({ error: 'accountId and policy are required' })
+      const r = requestEntryModePolicy(db, String(accountId), String(policy), { expectedRevision, actor: 'owner' })
+      if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
+      console.log(`[actions] entry-mode-policy → …${String(accountId).slice(-4)} ${r.status.entryModePolicy} (revision ${r.status.configRevision})`)
+      res.json({ ok: true, changed: r.changed, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` } })
+    } catch (err) {
+      console.error('[actions/entry-mode-policy] error:', err.message)
       res.status(500).json({ error: err.message })
     }
   })

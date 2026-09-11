@@ -27,6 +27,12 @@ export const ENVIRONMENTS = Object.freeze(['demo', 'live'])
 export const ENTRY_MODES = Object.freeze(['TIME_BASED', 'TICK_MOMENTUM', 'STOPPED'])
 export const TRANSITION_STATES = Object.freeze(['STABLE', 'QUIESCING', 'RECONCILING', 'WARMING', 'BLOCKED'])
 export const OBSERVATION_MODES = Object.freeze(['OFF', 'RECORD', 'SHADOW'])
+// PR-G (owner principle 2, 11-09-2026): who may throw the account's entry-mode
+// switch. `manual` — a human only (POST /actions/entry-mode); `auto` — the
+// bot's readiness pass (entry-mode-auto.js, actor `auto:*`) may promote and
+// demote it too. A record written before PR-G carries no field and reads as
+// `manual` (engineStatusFor): no account is handed to the bot by omission.
+export const ENTRY_MODE_POLICIES = Object.freeze(['manual', 'auto'])
 // PR-B (owner principle 1, 11-09-2026): ONE ladder for every account.
 // TRADED_PASSED is judged on the account's own closed tick trades in R
 // (tick-validation.js); the environment-tiered stages it replaced (a demo
@@ -264,6 +270,7 @@ export const ENGINE_STATUS_SHAPE = Object.freeze({
   effectiveEntryMode: { type: 'string', required: true, enum: ENTRY_MODES },
   transitionState: { type: 'string', required: true, enum: TRANSITION_STATES },
   tickObservation: { type: 'string', required: true, enum: OBSERVATION_MODES },
+  entryModePolicy: { type: 'string', required: false, enum: ENTRY_MODE_POLICIES }, // PR-G: absent reads as 'manual'
   validationStage: { type: 'string', required: true, enum: VALIDATION_STAGES },
   configRevision: { type: 'number', required: true, integer: true, min: 0 },
   modeEpoch: { type: 'number', required: true, integer: true, min: 0 },
@@ -313,7 +320,7 @@ export function defaultEngineStatus({ accountId, environment, riskGroupId = null
   return {
     accountId: String(accountId), environment, riskGroupId: riskGroupId || `${environment}:${accountId}`,
     requestedEntryMode: 'TIME_BASED', effectiveEntryMode: 'TIME_BASED', transitionState: 'STABLE',
-    tickObservation: 'OFF', validationStage: 'UNVALIDATED',
+    tickObservation: 'OFF', entryModePolicy: 'manual', validationStage: 'UNVALIDATED',
     configRevision: 0, modeEpoch: 0, fenceAckEpoch: null,
     profileId: null, profileHash: null, implementationCommit: null,
     entryCounts: { unsent: 0, inFlight: 0, resting: 0, unknown: 0 },
