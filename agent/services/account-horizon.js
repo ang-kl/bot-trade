@@ -61,12 +61,26 @@ export function setAccountHorizon(db, accountId, patch = {}) {
  * strategy the registry does not name) or an unreadable timeframe is not a
  * verdict: it admits, so a registry gap cannot silently disarm an account.
  */
-export function horizonAdmits(decl, { timeframe = null, strategy = null } = {}) {
+export function horizonAdmits(decl, { timeframe = null, strategy = null, basis = null } = {}) {
   const d = normalizeHorizon(decl)
+  // P5 (plan B11, TM-19): a basis that is neither 'bar' nor 'tick' is not
+  // a verdict either way — it is refused BEFORE the undeclared-admits rule,
+  // so an unknown new-mode input cannot bypass the classification on an
+  // account that never declared a horizon.
+  if (basis != null && basis !== 'bar' && basis !== 'tick') return { ok: false, reason: `basis '${basis}' is not classified; only bar and tick are` }
   if (!d.horizon && !d.families.length) return { ok: true, reason: null }
   const fam = strategy ? familyOf(strategy) : null
   if (d.families.length && fam && !d.families.includes(fam)) {
     return { ok: false, reason: `family ${fam} (${strategy}) is outside this account's set [${d.families.join(', ')}]` }
+  }
+  // P5 (plan B11, TM-19): a tick-basis proposal is classified explicitly —
+  // it holds for events, never for days, so it is intraday risk and an
+  // account declared swing or position refuses it. A basis that is neither
+  // 'bar' nor 'tick' is not a verdict either way: it is refused, so an
+  // unknown new-mode input cannot bypass the classification.
+  if (basis === 'tick') {
+    if (d.horizon && d.horizon !== 'intraday') return { ok: false, reason: `a tick signal is intraday risk; this account trades ${d.horizon}` }
+    return { ok: true, reason: null }
   }
   const h = horizonOfTimeframe(timeframe)
   if (d.horizon && h && h !== d.horizon) {

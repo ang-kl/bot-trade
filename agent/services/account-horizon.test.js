@@ -117,3 +117,17 @@ test('the repo declaration is applied at boot, idempotently, and overrides a dif
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /ensureAccountRegistry\(db\)[\s\S]{0,700}?seedAccountHorizonsFromConfig\(db, \{ log/, 'the boot seed runs after the registry exists')
 })
+
+// P5 (plan B11, TM-19): the tick basis is classified explicitly.
+test('horizonAdmits with a basis: tick is intraday risk — a swing or position account refuses it, an intraday or undeclared one admits it, an unknown basis is refused rather than passed through', () => {
+  assert.equal(horizonAdmits({}, { basis: 'tick' }).ok, true, 'undeclared admits')
+  assert.equal(horizonAdmits({ horizon: 'intraday' }, { basis: 'tick' }).ok, true)
+  const swing = horizonAdmits({ horizon: 'swing' }, { basis: 'tick' })
+  assert.equal(swing.ok, false); assert.match(swing.reason, /tick signal is intraday risk/)
+  assert.equal(horizonAdmits({ horizon: 'position' }, { basis: 'tick' }).ok, false)
+  const odd = horizonAdmits({}, { basis: 'candles' })
+  assert.equal(odd.ok, false); assert.match(odd.reason, /not classified/)
+  // bar basis keeps the timeframe rule exactly as before
+  assert.equal(horizonAdmits({ horizon: 'swing' }, { basis: 'bar', timeframe: '4h' }).ok, true)
+  assert.equal(horizonAdmits({ horizon: 'swing' }, { basis: 'bar', timeframe: '5m' }).ok, false)
+})

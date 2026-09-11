@@ -1161,6 +1161,29 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // P5: the validation-stage importer (plan §2, §7, §12; register TM-20).
+  // Moves an account's validationStage by exactly one step on evidence that
+  // names the profile it was produced with, judged against the owner-held
+  // thresholds in agent/config/tick-validation.json — a null threshold
+  // refuses the import (thresholds_unset). Writes nothing when refused.
+  router.post('/tick-validation', async (req, res) => {
+    try {
+      const { importTickValidation } = await import('../services/tick-validation.js')
+      const { accountId, stage, evidence = {} } = req.body || {}
+      if (!accountId || !stage) return res.status(400).json({ error: 'accountId and stage are required' })
+      const r = importTickValidation(db, { accountId: String(accountId), stage: String(stage).toUpperCase(), evidence: evidence && typeof evidence === 'object' ? evidence : {}, actor: 'owner' })
+      if (!r.ok) {
+        console.log(`[actions] tick-validation …${String(accountId).slice(-4)} ${String(stage).toUpperCase()} REFUSED: ${r.reason}`)
+        return res.status(400).json(r)
+      }
+      console.log(`[actions] tick-validation → …${String(accountId).slice(-4)} ${r.record.from} → ${r.status.validationStage} (revision ${r.status.configRevision}, profile ${r.status.profileHash ? r.status.profileHash.slice(0, 16) : 'none'})`)
+      res.json({ ok: true, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` }, record: r.record })
+    } catch (err) {
+      console.error('[actions/tick-validation] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // P4: import trial ledger entries produced by scripts/tick-research.mjs
   // ({trials:[...]} or one trial). Content-keyed: re-importing is a no-op.
   router.post('/tick-trials', async (req, res) => {
