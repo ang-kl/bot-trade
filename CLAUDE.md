@@ -421,10 +421,16 @@ Measurement history — each line is a real run of the script, not a claim:
   #891 merged by the owner at 07:20 UTC, the shadow book built and its
   Statistics audit folded in), so the reply stamped **`№ 7,653`** (07:52
   UTC, "not yet merged") is right by count; one unstamped line followed
-  it (`№ 7,654`, the gate re-run), so the next stamped reply is
-  **`№ 7,655`**. The count is by replies, not by stamps (the 08-09 rule).
-  A later re-measure that reads below this line is missing these, not
-  correcting them.
+  it (`№ 7,654`, the gate re-run); two more unstamped lines followed
+  (`№ 7,655` the P6a PR open, `№ 7,656` the subscription note), so the
+  reply stamped **`№ 7,657`** (08:35 UTC, the outstanding/drift answer) is
+  right by count; five unstamped lines followed it (`№ 7,658`–`№ 7,662`:
+  the audit agents launched, groups C and B in, #892 merged, the branch
+  restarted), so the reply stamped **`№ 7,663`** (09:06 UTC: #892 read
+  back, the whole-plan audit's headline findings) is right by count, and
+  the next stamped reply is **`№ 7,664`**. The count is by replies, not by
+  stamps (the 08-09 rule). A later re-measure that reads below this line
+  is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
