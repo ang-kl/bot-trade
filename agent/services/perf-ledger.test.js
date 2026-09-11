@@ -110,3 +110,33 @@ test('buildPerfLedger: carry-forward reconciles, market cells split, account sco
   assert.equal(b30.trades, 0)
   assert.equal(b30.carryIn, 500)
 })
+
+// 11-09-2026 (owner screenshot): a named account reads ONLY its own stamped
+// balance. Absent → null (the card says "not read"); a stamped 0 is a reading;
+// the legacy global is used for the portfolio scope alone. Before this, an
+// unfunded live account printed the CONNECTED demo account's balance.
+test('buildPerfLedger balance: scoped key only for a named account — absent is null, 0 is 0; the global serves the portfolio scope alone', () => {
+  const db = initDB(':memory:')
+  const now = Date.UTC(2026, 8, 11, 6)
+  setState(db, 'account_balance_usd', '45837.59')           // the connected (selected) account's
+  setState(db, 'acct:A:account_balance_usd', '45837.59')     // its own scoped copy
+  setState(db, 'acct:Z:account_balance_usd', '0')            // unfunded, answered 0 by the broker
+  // B: never stamped
+  const a = buildPerfLedger(db, { now, accountId: 'A' })
+  assert.equal(a.balance, 45837.59); assert.equal(a.balanceSource, 'scoped')
+  const z = buildPerfLedger(db, { now, accountId: 'Z' })
+  assert.equal(z.balance, 0); assert.equal(z.balanceSource, 'scoped')
+  const b = buildPerfLedger(db, { now, accountId: 'B' })
+  assert.equal(b.balance, null, 'an unstamped account never borrows the global'); assert.equal(b.balanceSource, null)
+  assert.equal(b.windows.find(w => w.key === '30d').carryOut, null, 'no carry is anchored on another account\'s money')
+  const all = buildPerfLedger(db, { now })
+  assert.equal(all.balance, 45837.59); assert.equal(all.balanceSource, 'global')
+  const inj = buildPerfLedger(db, { now, accountId: 'B', balance: 12 })
+  assert.equal(inj.balance, 12); assert.equal(inj.balanceSource, 'injected')
+  // independent checker, 11-09-2026: a negative broker answer is a reading,
+  // an empty or unparseable key is not
+  setState(db, 'acct:N:account_balance_usd', '-5.5'); setState(db, 'acct:E:account_balance_usd', ''); setState(db, 'acct:X:account_balance_usd', 'abc')
+  assert.equal(buildPerfLedger(db, { now, accountId: 'N' }).balance, -5.5)
+  assert.equal(buildPerfLedger(db, { now, accountId: 'E' }).balance, null)
+  assert.equal(buildPerfLedger(db, { now, accountId: 'X' }).balance, null)
+})

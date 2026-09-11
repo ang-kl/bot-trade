@@ -2124,9 +2124,24 @@ export default function stateRouter(db) {
   router.get('/perf-ledger', async (req, res) => {
     try {
       const { buildPerfLedger } = await import('../services/perf-ledger.js')
-      res.json(buildPerfLedger(db, {
-        accountId: req.query.account ? String(req.query.account) : null,
-      }))
+      const accountId = req.query.account ? String(req.query.account) : null
+      const ledger = buildPerfLedger(db, { accountId })
+      // The daily-loss fraction THIS account trades under (its overlay merged
+      // over the global), so a per-account card computes its daily stop from
+      // its own balance and its own limit — not the global limit applied to
+      // another account's money (11-09-2026, the Performance cards).
+      const scoped = accountId && accountId !== 'all' ? accountId : null
+      // null means "check off" (risk.js DEFAULT_RISK_CONFIG) and stays null:
+      // Number(null) is 0, and 0 would print as a zero-loss daily stop where
+      // there is no stop at all (independent checker, 11-09-2026).
+      const num = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
+      const dailyLossPct = (() => { try { return num(loadRiskConfig(db, scoped)?.dailyLossPct) } catch { return null } })()
+      // `dailyLossScope` says whose limit this IS, not what was asked for: an
+      // account with no overlay trades under the global limit and is labelled
+      // so; an id the registry has never heard of is not an "account" scope.
+      const overlay = (() => { try { return scoped ? accountRiskOverlay(db, scoped) : null } catch { return null } })()
+      const dailyLossScope = scoped && overlay && overlay.dailyLossPct !== undefined ? 'account' : 'global'
+      res.json({ ...ledger, dailyLossPct, dailyLossScope })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

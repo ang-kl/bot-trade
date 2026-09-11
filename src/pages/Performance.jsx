@@ -1421,7 +1421,6 @@ export default function Performance() {
     // false, and worse than a dash. bal/n30 always came from each account's own
     // ledger, which is why only the day columns were affected.
     const closed = portfolioTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
-    const dailyLossPct = riskFull?.risk?.effective?.dailyLossPct ?? null
     // WHAT IS ACTUALLY IN PLAY — not every row in the registry.
     //
     // Owner (2026-07-30, screenshot): "i only select 3 trading-account but
@@ -1450,7 +1449,14 @@ export default function Performance() {
     })
     return inPlay.map(a => {
       const led = ledgers[a.account_id]
+      // The account's OWN balance and OWN daily-loss fraction, both from its
+      // ledger (11-09-2026): `balance` is null when the account's key was
+      // never stamped (the card says "not read"), and `dailyLossPct` is the
+      // limit this account trades under. The global risk-full figure used
+      // to stand in for every card, which put the selected demo account's
+      // −1,375 daily stop under two unfunded live logins.
       const bal = led?.balance ?? null
+      const dailyLossPct = led?.dailyLossPct ?? null
       const rows = closed.filter(t2 => String(t2.account_id ?? '') === a.account_id && (() => { const ms = closedMs(t2); return ms != null && ms >= anchor })())
       const day = rows.reduce((s, t2) => s + Number(t2.net_pnl), 0)
       const gw = rows.filter(t2 => Number(t2.net_pnl) > 0).reduce((s, t2) => s + Number(t2.net_pnl), 0)

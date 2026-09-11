@@ -157,7 +157,10 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
                 </span>
               </div>
               <div style={{ ...cell, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 800 }}>{a.bal != null ? money(a.bal) : '—'}</span>
+                {/* "not read", not a dash: an account whose balance was never
+                    stamped is a fact worth a word (11-09-2026 — before this it
+                    printed the selected account's balance instead). */}
+                <span style={{ fontWeight: 800, color: a.bal != null ? undefined : P_MU }} title={a.bal != null ? undefined : 'the broker has not answered this account\'s balance; nothing is borrowed from another account'}>{a.bal != null ? money(a.bal) : 'not read'}</span>
                 <span style={{ color: P_SB }}>equity {a.equity != null ? money(a.equity) : '—'}</span>
               </div>
               <span style={{ ...cell, color: P_MU }}>
