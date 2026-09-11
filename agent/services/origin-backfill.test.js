@@ -111,3 +111,24 @@ test('THE UNBLOCK, end to end: clean origins become countable', () => {
   runOriginBackfill(db, { apply: true })
   assert.equal(clean(), 3)
 })
+
+test('PR-E M3: the backfill never touches a row opened after the origin cutoff — a post-cutoff NULL stays a violation, not a legacy row', async () => {
+  const { findUnreasonedTrades, TRADE_REASONS_CUTOFF_ISO } = await import('./close-completeness.js')
+  const db = db0()
+  const ins = db.prepare("INSERT INTO trades (id, symbol, side, status, source, risk_event_id, origin, origin_source, opened_at) VALUES (?,?,?,?,?,?,?,?,?)")
+  ins.run(7, 'EURUSD', 'BUY', 'open', 'autotrade', null, null, null, '2026-09-10 08:00:00')   // after the cutoff
+  ins.run(8, 'EURUSD', 'BUY', 'open', 'autotrade', null, null, null, '2026-08-01T08:00:00.000Z') // before it
+  const plan = planOriginBackfill(db)
+  assert.ok(!plan.plan.some(p => p.id === 7), 'the post-cutoff row is not planned')
+  assert.ok(plan.plan.some(p => p.id === 8), 'the pre-cutoff row is')
+  const r = runOriginBackfill(db, { apply: true })
+  assert.equal(r.written, 6)
+  assert.deepEqual(originOf(db, 7), { origin: null, origin_source: null })
+  assert.equal(originOf(db, 8).origin, 'legacy_unattributed')
+  const v = findUnreasonedTrades(db, { sinceIso: TRADE_REASONS_CUTOFF_ISO, now: Date.parse('2026-09-11T08:00:00Z') })
+  assert.deepEqual(v.violations.filter(x => x.tradeId === 7).map(x => x.kind), ['origin_missing'], 'still a violation after apply')
+  assert.equal(v.violations.filter(x => x.tradeId === 8).length, 0)
+  // a plan forged with the post-cutoff id is refused by the UPDATE's own bound
+  const { applyOriginBackfill } = await import('./origin-backfill.js')
+  assert.equal(applyOriginBackfill(db, [{ id: 7, origin: 'legacy_unattributed' }]), 0)
+})

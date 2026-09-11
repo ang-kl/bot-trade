@@ -30,6 +30,70 @@ import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
 import { clearErrorLog } from '../services/error-log.js'
 import { desiredGuardFor } from '../services/exec-guard-sync.js'
+
+/** PR-E: the strategy a manual order carries when the trader names none. */
+export const MANUAL_ORDER_STRATEGY = 'manual_order'
+
+/**
+ * PR-E m3: the request's `strategy` is honoured only when it is a REGISTRY
+ * key (STRATEGY_KEYS) — anything else (a typo, a display name, an injected
+ * string) records as manual_order, never as a strategy the registry does
+ * not know and every attribution query would then mis-file.
+ */
+export function manualOrderStrategy(raw) {
+  const v = String(raw ?? '').trim()
+  return v && STRATEGY_KEYS.includes(v) ? v : MANUAL_ORDER_STRATEGY
+}
+
+/**
+ * PR-E (owner principle 4, 11-09-2026): the ledger write for
+ * POST /actions/manual-order — the order pad's only live entry button and,
+ * until this, the one entry path that wrote no strategy, no risk_event_id
+ * and no trade_plans row. Trades + monitored_positions in one transaction,
+ * then the plan (best-effort, like every sibling path), all from what the
+ * route already held: the trader's stop and target are the plan, the
+ * approval's id is the lineage, and `strategy` is never null.
+ *
+ * Exported so the write can be exercised without a broker; the route pin in
+ * agent/routes/manual-order-plan.test.js holds the call site.
+ */
+export function recordManualOrderTrade(db, {
+  symbol, side, entryP, entryEstimate = null, sl, tp = null, volLots, positionId = null,
+  structuredLabel, accountId = null, strategy = MANUAL_ORDER_STRATEGY, riskEventId = null,
+} = {}) {
+  const strat = String(strategy || '').trim() || MANUAL_ORDER_STRATEGY
+  const acct = accountId != null ? String(accountId) : null
+  const parsedLabel = parseLabel(structuredLabel)
+  const tradeId = db.transaction(() => {
+    const tradeInsert = db.prepare(`
+      INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
+        ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status,
+        origin, origin_source, account_id, strategy, risk_event_id)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open',
+              'manual_broker', 'write', ?, ?, ?)
+    `).run(symbol, side, entryP, sl, tp, volLots, positionId, structuredLabel,
+      parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session,
+      acct, strat, riskEventId != null ? Number(riskEventId) : null)
+    const id = Number(tradeInsert.lastInsertRowid)
+    db.prepare(`
+      INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
+        thesis, initial_risk, strategy, source, label_raw, account_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
+    `).run(symbol, id, side, entryP, sl, tp,
+      'Manual order via UI', Math.abs(entryP - sl), strat, structuredLabel, acct)
+    return id
+  })()
+  // The plan is the order as entered: the price estimate the gate sized on,
+  // the trader's stop and target. Best-effort, as on every sibling path.
+  try {
+    recordTradePlan(db, tradeId, {
+      accountId: acct, symbol, side, strategy: strat, timeframe: null,
+      entry: entryEstimate ?? entryP, sl, tp, source: 'manual_order',
+    })
+  } catch (err) { console.warn(`[actions] trade plan not recorded for manual order trade ${tradeId}: ${err.message}`) }
+  return tradeId
+}
+
 // Credentials for ONE account by id (03-09-2026): the accounts registry says
 // which side (live/demo) it sits on. Null or unknown id → the primary, as
 // every caller behaved before.
@@ -1252,8 +1316,8 @@ export default function actionsRouter(db, deps = {}) {
   router.post('/entry-intents/:id/resolve', async (req, res) => {
     try {
       const { operatorResolve } = await import('../services/entry-ledger.js')
-      const { state, reason } = req.body || {}
-      const r = operatorResolve(db, String(req.params.id), { state: String(state || ''), reason: String(reason || ''), actor: 'owner' })
+      const { state, reason, positionId } = req.body || {}
+      const r = operatorResolve(db, String(req.params.id), { state: String(state || ''), reason: String(reason || ''), positionId: positionId ?? null, actor: 'owner' })
       if (!r.ok) return res.status(r.reason === 'intent_unknown' ? 404 : 400).json(r)
       console.log(`[actions] entry-intents resolve ${req.params.id}: ${r.from} → ${r.to} (${String(reason).slice(0, 80)})`)
       res.json(r)
@@ -5599,9 +5663,12 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/manual-order', async (req, res) => {
     try {
-      const { symbol: rawSymbol, side: rawSide, lots, sl, tp, account } = req.body || {}
+      const { symbol: rawSymbol, side: rawSide, lots, sl, tp, account, strategy: rawStrategy } = req.body || {}
       const symbol = (rawSymbol || '').toUpperCase().trim()
       const side = String(rawSide || '').toUpperCase()
+      // PR-E (owner principle 4): the order pad's strategy, when the trader
+      // names one, else the route's own — never null on the row it writes.
+      const strategy = manualOrderStrategy(rawStrategy)
       if (!symbol) return res.status(400).json({ error: 'symbol required' })
       if (side !== 'BUY' && side !== 'SELL') return res.status(400).json({ error: "side must be 'BUY' or 'SELL'" })
       if (sl == null || !Number.isFinite(Number(sl))) return res.status(400).json({ error: 'sl (stop-loss price) required — no manual orders without a stop' })
@@ -5647,7 +5714,10 @@ export default function actionsRouter(db, deps = {}) {
         accountId: creds?.accountId ?? null,
       }
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, creds?.accountId ?? null))
-      persistRiskEvent(db, proposal, riskResult)
+      // §70.9 lineage: the approval's row id rides onto the trade this order
+      // produces (PR-E) — the same thread /actions/execute-trade's sibling
+      // paths (loop.js, pending-orders.js) carry.
+      const riskEventId = persistRiskEvent(db, proposal, riskResult)
       if (!riskResult.approved) {
         return res.json({ ok: false, vetoed: true, reason: riskResult.veto_reason, checks: riskResult.checks })
       }
@@ -5665,7 +5735,7 @@ export default function actionsRouter(db, deps = {}) {
 
       const sessionNow = getActiveSessions()[0]?.label || 'Off'
       const structuredLabel = encodeLabel({
-        source: 'manual', version: LABEL_VERSION, strategy: 'manual',
+        source: 'manual', version: LABEL_VERSION, strategy,
         conviction: null, session: sessionNow,
       })
       const orderPayload = {
@@ -5711,29 +5781,14 @@ export default function actionsRouter(db, deps = {}) {
       const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
       const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
       const entryP = executionPrice ?? entry
-      const parsedLabel = parseLabel(structuredLabel)
 
-      db.transaction(() => {
-        const tradeInsert = db.prepare(`
-          INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-            ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status,
-            origin, origin_source, account_id)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open',
-                  'manual_broker', 'write', ?)
-        `).run(symbol, side, entryP, proposal.sl, proposal.tp1, volLots, positionId, structuredLabel,
-          parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session,
-          creds.accountId != null ? String(creds.accountId) : null)
-        db.prepare(`
-          INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-            thesis, initial_risk, strategy, source, label_raw, account_id, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'manual', ?, ?, 'active')
-        `).run(symbol, tradeInsert.lastInsertRowid, side, entryP, proposal.sl, proposal.tp1,
-          'Manual order via UI', Math.abs(entryP - proposal.sl), structuredLabel,
-          creds.accountId != null ? String(creds.accountId) : null)
-      })()
+      const tradeId = recordManualOrderTrade(db, {
+        symbol, side, entryP, entryEstimate: entry, sl: proposal.sl, tp: proposal.tp1, volLots, positionId,
+        structuredLabel, accountId: creds.accountId, strategy, riskEventId,
+      })
 
-      console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${volLots} @ ${executionPrice || 'mkt'}`)
-      res.json({ ok: true, side, symbol, volume: volLots, executionPrice, positionId })
+      console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${volLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} strategy=${strategy} riskEvent=${riskEventId ?? 'none'}`)
+      res.json({ ok: true, side, symbol, volume: volLots, executionPrice, positionId, tradeId, strategy, riskEventId })
     } catch (err) {
       console.error('[actions/manual-order] error:', err.message)
       res.status(500).json({ error: err.message })

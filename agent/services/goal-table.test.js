@@ -19,7 +19,7 @@ function byId(table) { return Object.fromEntries(table.goals.map(g => [g.id, g])
 test('an empty db reports every goal, none of them as a number it did not earn', async () => {
   const db = initDB(':memory:')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 13)
+  assert.equal(t.goals.length, 14)
   const g = byId(t)
   assert.equal(g.controllers_ok.verdict, 'not_measurable', 'no controller has beaten')
   assert.equal(g.pipeline_conversion.verdict, 'not_measurable', 'no decision audit on record')
@@ -31,7 +31,7 @@ test('an empty db reports every goal, none of them as a number it did not earn',
     assert.ok(['on_track', 'off_track', 'not_measurable'].includes(goal.verdict), `${goal.id} has a verdict`)
     assert.ok(goal.metric && goal.target !== undefined && goal.horizon !== undefined, `${goal.id} names metric/target/horizon`)
   }
-  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 13)
+  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 14)
 })
 
 test('controllers_ok: reads the heartbeat verdicts, names the offenders', async () => {
@@ -105,7 +105,7 @@ test('a reader that throws becomes a not_measurable row, not a missing table', a
   // Break one reader's input: an unparseable momentum config must not take the table down.
   setState(db, 'momentum_account_json', '{not json')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 13)
+  assert.equal(t.goals.length, 14)
   assert.ok(t.goals.every(g => g.verdict))
 })
 
@@ -163,4 +163,20 @@ test('veto goal: with no stored audit it audits live rather than reporting a num
   const g = byId(await goalTable(db, { now: T0.getTime() })).veto_rate
   assert.equal(g.verdict, 'not_measurable')
   assert.match(g.note, /0 proposal\(s\) reached the gate/)
+})
+
+test('trade_reasons (PR-E): not_measurable with no bot trade since the cutoff, on_track when every trade has a reason, off_track naming the kinds when one does not', async () => {
+  const db = initDB(':memory:')
+  let g = byId(await goalTable(db, { now: T0.getTime() })).trade_reasons
+  assert.equal(g.verdict, 'not_measurable'); assert.match(g.note, /no bot trade since 2026-08-17/)
+  const { recordTradePlan } = await import('./trade-plans.js')
+  const ok = db.prepare(`INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status, origin, strategy, risk_event_id)
+                         VALUES ('EURUSD','BUY',1.1,1.095,1.11,1000,'2026-09-07 08:00:00','open','bot_market_dispatch','donchian_breakout',5)`).run().lastInsertRowid
+  recordTradePlan(db, ok, { symbol: 'EURUSD', side: 'BUY', strategy: 'donchian_breakout', entry: 1.1, sl: 1.095, tp: 1.11, now: T0.getTime() })
+  g = byId(await goalTable(db, { now: T0.getTime() })).trade_reasons
+  assert.equal(g.verdict, 'on_track'); assert.equal(g.current, 0); assert.match(g.note, /1 bot trade\(s\) since the cutoff, every one with a reason/)
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, opened_at, status, origin) VALUES ('GBPUSD','SELL',1.3,'2026-09-07 09:00:00','open','bot_pending_fill')`).run()
+  g = byId(await goalTable(db, { now: T0.getTime() })).trade_reasons
+  assert.equal(g.verdict, 'off_track'); assert.equal(g.current, 3)
+  assert.match(g.note, /strategy_missing 1/); assert.match(g.note, /plan_missing 1/); assert.match(g.note, /risk_event_missing 1/)
 })

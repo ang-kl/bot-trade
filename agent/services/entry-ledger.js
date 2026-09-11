@@ -394,15 +394,175 @@ export function reconcileIntents(db, { accountId, positions = [], orders = [], n
   return out
 }
 
+// PR-E (owner principle 4, 11-09-2026): an UNKNOWN older than this is
+// STALE — listed by the reasons invariant (intent_unknown_stale) and the
+// Unknowns block for an operator. It is never auto-REJECTED: the checker's
+// finding (B1) is that a deal-history pull is capped (wsGetDeals maxRows
+// 500) and a truncated pull would have "proved" absence for a position that
+// exists, freeing the key for a duplicate. Absence of evidence is never a
+// verdict here; only a matching deal (FILLED) or an operator with a reason
+// moves an UNKNOWN.
+export const UNKNOWN_MAX_AGE_MS = 4 * 60 * 60 * 1000
+// The send window: from the intent's creation to its last transition plus
+// the send timeout plus five minutes of broker clock slack. The window
+// STARTS at created_at, not updated_at — updated_at is the moment the row
+// became UNKNOWN (>= 60 s after the send), and the deal, if there was one,
+// executed at the send.
+export const DEAL_WINDOW_SLACK_MS = 5 * 60 * 1000
+// How many hasMore pages one settle may follow before it reports the pull
+// truncated (coverage null). Bounded so a runaway history cannot hold the
+// reconcile pass.
+export const DEAL_PULL_MAX_PAGES = 20
+const DEAL_SIDE = { 1: 'BUY', 2: 'SELL', BUY: 'BUY', SELL: 'SELL' }
+// ProtoOADealStatus: FILLED 2, PARTIALLY_FILLED 3 (REJECTED 4,
+// INTERNALLY_REJECTED 5, ERROR 6, MISSED 7). A deal that did not fill opened
+// nothing; an absent status (an older shape) is not held against it.
+const DEAL_STATUS_OK = new Set([2, 3, 'FILLED', 'PARTIALLY_FILLED'])
+
+const dealField = (d, key) => d?.[key] ?? d?.tradeData?.[key]
+const dealMs = (d) => { const v = Number(dealField(d, 'executionTimestamp') ?? dealField(d, 'createTimestamp')); return Number.isFinite(v) ? v : null }
+const dealLabel = (d) => String(dealField(d, 'label') || dealField(d, 'comment') || '')
+const dealFilled = (d) => { const st = dealField(d, 'dealStatus'); return st == null || DEAL_STATUS_OK.has(typeof st === 'string' ? st.toUpperCase() : Number(st)) }
+const dealVolume = (d) => { const v = Number(dealField(d, 'filledVolume') ?? dealField(d, 'volume')); return Number.isFinite(v) ? v : null }
+
+/**
+ * Resolve UNKNOWN intents from the broker's DEAL HISTORY — the array
+ * ProtoOAGetDealListReq returns (`wsGetDeals(...).deal`; the same shape
+ * pnl-backfill.js pulls: dealId, orderId, positionId, symbolId, tradeSide
+ * 1|2, volume / filledVolume, executionTimestamp ms, executionPrice,
+ * dealStatus, closePositionDetail on a closing deal). Only OPENING deals
+ * that FILLED (dealStatus FILLED / PARTIALLY_FILLED, or absent) can settle
+ * an entry. Two matchers, in order:
+ *   1. the intent tag in the deal's label/comment (labelIntentId) — a deal
+ *      annotated by a caller that carries the order label; ProtoOADeal
+ *      itself has no label field, so this is the exact path when present;
+ *   2. account + symbol (symbol_id, else symbol name) + side + a deal
+ *      executed inside the intent's send window, whose orderId is not
+ *      another intent's broker_order_id on this account (a limit's later
+ *      fill is that limit's, never a market intent's), and whose position's
+ *      opening volume (summed over partial fills) equals the intent's
+ *      volume when the intent carries one.
+ * A match → FILLED with the position id, resolution_source 'deal_history'.
+ * No match → the row STAYS UNKNOWN, whatever its age; the pull's window,
+ * count and coverage are written into error_code after the original
+ * reason ("…; deal_history: …") so the Unknowns block and the ledger view
+ * say what was looked at. `coverage` ({ fromMs, toMs } of a COMPLETE pull,
+ * null when truncated) is recorded, never acted on.
+ */
+export function resolveUnknownFromDeals(db, { accountId, deals = [], coverage = null, now = Date.now(), sentTimeoutMs = DEFAULT_SENT_TIMEOUT_MS } = {}) {
+  const out = { checked: 0, filled: [], stillUnknown: 0, noted: 0 }
+  const id = accountId != null ? String(accountId) : null
+  if (id == null) return out
+  const unknown = db.prepare(`SELECT * FROM entry_intents WHERE account_id = ? AND state = 'UNKNOWN' ORDER BY id`).all(id)
+  if (!unknown.length) return out
+  const all = Array.isArray(deals) ? deals : []
+  const opening = all.filter(d => d && !d.closePositionDetail && dealFilled(d))
+  // A position another intent already claimed is not evidence for this one,
+  // and a deal filled for another intent's ORDER (a resting limit that
+  // filled later) belongs to that intent.
+  const claimed = new Set(db.prepare(`SELECT broker_position_id AS pid FROM entry_intents WHERE account_id = ? AND broker_position_id IS NOT NULL`).all(id).map(r => String(r.pid)))
+  const foreignOrders = new Set(db.prepare(`SELECT id, broker_order_id AS oid FROM entry_intents WHERE account_id = ? AND broker_order_id IS NOT NULL`).all(id).map(r => `${r.id}:${String(r.oid)}`))
+  const orderOfAnother = (intentId, oid) => oid != null && [...foreignOrders].some(k => k.endsWith(`:${String(oid)}`) && !k.startsWith(`${intentId}:`))
+  const openVolumeByPosition = new Map()
+  for (const d of opening) { const pid = dealField(d, 'positionId'); const v = dealVolume(d); if (pid != null && v != null) openVolumeByPosition.set(String(pid), (openVolumeByPosition.get(String(pid)) || 0) + v) }
+  const byTag = new Map()
+  for (const d of opening) { const t = labelIntentId(dealLabel(d)); if (t && !byTag.has(t)) byTag.set(t, d) }
+  const covFrom = Number(coverage?.fromMs), covTo = Number(coverage?.toMs)
+  const covered = (from, to) => Number.isFinite(covFrom) && Number.isFinite(covTo) && covFrom <= from && covTo >= to
+  const note = db.prepare(`UPDATE entry_intents SET error_code = ? WHERE id = ? AND state = 'UNKNOWN'`)
+  for (const it of unknown) {
+    out.checked++
+    const createdMs = Date.parse(it.created_at)
+    const updatedMs = Date.parse(it.updated_at)
+    const winFrom = Number.isFinite(createdMs) ? createdMs : updatedMs
+    const winTo = (Number.isFinite(updatedMs) ? updatedMs : winFrom) + sentTimeoutMs + DEAL_WINDOW_SLACK_MS
+    let hit = byTag.get(it.id) || null
+    let inWindow = 0
+    if (!hit) {
+      const candidates = opening.filter(d => {
+        const pid = dealField(d, 'positionId')
+        if (pid == null || claimed.has(String(pid))) return false
+        const sideOk = DEAL_SIDE[dealField(d, 'tradeSide')] === String(it.side)
+        const symOk = it.symbol_id != null
+          ? Number(dealField(d, 'symbolId')) === Number(it.symbol_id)
+          : (it.symbol != null && String(dealField(d, 'symbolName') || dealField(d, 'symbol') || '').toUpperCase() === String(it.symbol).toUpperCase())
+        const t = dealMs(d)
+        if (!(sideOk && symOk && t != null && t >= winFrom && t <= winTo)) return false
+        inWindow++
+        if (orderOfAnother(it.id, dealField(d, 'orderId'))) return false
+        if (it.volume != null && Number(openVolumeByPosition.get(String(pid))) !== Number(it.volume)) return false
+        return true
+      }).sort((a, b) => (dealMs(a) ?? 0) - (dealMs(b) ?? 0))
+      hit = candidates[0] || null
+    }
+    if (hit) {
+      const pid = dealField(hit, 'positionId')
+      const r = resolveIntent(db, it.id, { state: 'FILLED', positionId: pid, brokerOrderId: dealField(hit, 'orderId'), source: 'deal_history', now })
+      if (r.ok) { claimed.add(String(pid)); out.filled.push({ intentId: it.id, positionId: pid != null ? String(pid) : null, dealId: dealField(hit, 'dealId') != null ? String(dealField(hit, 'dealId')) : null }); continue }
+    }
+    // m4: what was looked at, on the row — the original reason kept in front.
+    const base = String(it.error_code || '').split('; deal_history:')[0]
+    const cov = coverage == null ? 'truncated or none' : covered(winFrom, winTo) ? 'complete' : 'partial'
+    const text = `${base}; deal_history: ${all.length} deal(s) pulled, ${inWindow} on this key in window ${iso(winFrom)}–${iso(winTo)}, none matched, coverage ${cov}, read ${iso(now)}`
+    try { if (note.run(text.slice(0, 500), it.id).changes === 1) out.noted++ } catch { /* the note is a record, never a reason to fail the pass */ }
+    out.stillUnknown++
+  }
+  return out
+}
+
+/**
+ * The reconcile pass's caller: pulls the deal history ONLY when the account
+ * holds an UNKNOWN (one pull per pass, never per intent), covering every
+ * open window, and hands it to resolveUnknownFromDeals with the coverage the
+ * pull actually achieved. `getDeals(fromMs, toMs)` resolves to
+ * ProtoOAGetDealListRes ({ deal: [...], hasMore }) — wsGetDeals in
+ * production (maxRows 500), a fake in tests. A page that says hasMore is
+ * followed from its last deal's timestamp; past DEAL_PULL_MAX_PAGES the pull
+ * is reported TRUNCATED and coverage is null — a fact, not an assertion. A
+ * pull that throws settles nothing.
+ */
+export async function settleUnknownsFromDealHistory(db, { accountId, getDeals, now = Date.now(), sentTimeoutMs = DEFAULT_SENT_TIMEOUT_MS, maxPages = DEAL_PULL_MAX_PAGES } = {}) {
+  const id = accountId != null ? String(accountId) : null
+  if (id == null || typeof getDeals !== 'function') return { checked: 0, filled: [], stillUnknown: 0, noted: 0, pulled: 0, skipped: 'no_account_or_getter' }
+  const oldest = db.prepare(`SELECT MIN(created_at) AS at, COUNT(*) AS n FROM entry_intents WHERE account_id = ? AND state = 'UNKNOWN'`).get(id)
+  if (!oldest?.n) return { checked: 0, filled: [], stillUnknown: 0, noted: 0, pulled: 0, skipped: 'no_unknown' }
+  const oldestMs = Date.parse(oldest.at)
+  const fromMs = (Number.isFinite(oldestMs) ? oldestMs : now) - DEAL_WINDOW_SLACK_MS
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+  const deals = []
+  let pages = 0, truncated = false
+  for (let t0 = fromMs; t0 < now && !truncated; t0 += WEEK_MS) {
+    let from = t0
+    const to = Math.min(t0 + WEEK_MS, now)
+    for (;;) {
+      if (pages >= maxPages) { truncated = true; break }
+      const chunk = await getDeals(from, to)
+      pages++
+      const page = (chunk && chunk.deal) || []
+      deals.push(...page)
+      if (!chunk?.hasMore) break
+      const last = page.reduce((m, d) => Math.max(m, dealMs(d) ?? 0), 0)
+      if (!(last > from)) { truncated = true; break } // a page that does not advance cannot be followed
+      from = last + 1
+    }
+  }
+  const coverage = truncated ? null : { fromMs, toMs: now }
+  const r = resolveUnknownFromDeals(db, { accountId: id, deals, coverage, now, sentTimeoutMs })
+  return { ...r, pulled: deals.length, pages, truncated, coverage: coverage ? { from: iso(fromMs), to: iso(now) } : null }
+}
+
 /** An operator's word, with a reason, is the last resolver of an UNKNOWN intent. */
-export function operatorResolve(db, intentId, { state, reason, actor = 'owner', now = Date.now() } = {}) {
+export function operatorResolve(db, intentId, { state, reason, positionId = null, actor = 'owner', now = Date.now() } = {}) {
   if (!['FILLED', 'ACCEPTED', 'REJECTED', 'RELEASED'].includes(state)) return { ok: false, reason: `bad_state: ${state}` }
   if (!reason || String(reason).trim().length < 3) return { ok: false, reason: 'reason_required' }
   const row = db.prepare('SELECT * FROM entry_intents WHERE id = ?').get(String(intentId))
   if (!row) return { ok: false, reason: 'intent_unknown' }
-  const r = resolveIntent(db, intentId, { state, errorCode: `operator: ${String(reason).slice(0, 200)}`, source: 'operator', now })
-  if (r.ok) audit(db, '/entry-intents/resolve', { intentId, from: row.state, to: state, reason, actor }, row.account_id)
-  return r.ok ? { ok: true, from: row.state, to: state } : { ok: false, reason: `not_open: ${row.state}` }
+  // m1: a FILLED verdict may name the position the operator read at the
+  // broker; it rides onto the row like the reconcile's would.
+  const pid = state === 'FILLED' && positionId != null && String(positionId).trim() !== '' ? String(positionId).trim() : null
+  const r = resolveIntent(db, intentId, { state, positionId: pid, errorCode: `operator: ${String(reason).slice(0, 200)}`, source: 'operator', now })
+  if (r.ok) audit(db, '/entry-intents/resolve', { intentId, from: row.state, to: state, reason, positionId: pid, actor }, row.account_id)
+  return r.ok ? { ok: true, from: row.state, to: state, ...(pid ? { positionId: pid } : {}) } : { ok: false, reason: `not_open: ${row.state}` }
 }
 
 /** For GET /state/entry-intents — redacted account ids, no secrets. */

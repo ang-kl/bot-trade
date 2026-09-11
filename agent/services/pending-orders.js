@@ -167,13 +167,22 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
   // position's clock started at the fill, not at our noticing it.
   const openedMs = Number(posField(pos, 'openTimestamp'))
   const timeCapAt = fillTimeCapAt(row, Number.isFinite(openedMs) && openedMs > 0 ? openedMs : Date.now())
+  // PR-E (owner principle 4, 11-09-2026): the strategy is the PENDING ROW's
+  // (`pending_orders.strategy`, written at placement) — the literal is only
+  // the fallback for a row placed before the column was stamped. A
+  // va_breakout limit filled here used to become a fib_618_fade trade.
   const parsedLabel = parseLabel(posField(pos, 'label') || encodeLabel({
     source: 'autopilot',
     version: LABEL_VERSION,
-    strategy: 'fib_618_fade',
+    strategy: row.strategy || 'fib_618_fade',
     session: getActiveSessions()[0]?.label || 'Off',
     timeframe: row.timeframe || null,
   }))
+  // m2: the row's column, else the strategy the broker position's own
+  // label decodes to ('other' is the absence of an answer — lib/strategy-
+  // attribution.js), else the literal.
+  const labelStrategy = parsedLabel.strategy && parsedLabel.strategy !== 'other' ? parsedLabel.strategy : null
+  const strategy = row.strategy || labelStrategy || 'fib_618_fade'
 
   const persistTrade = db.transaction(() => {
     const tradeInsert = db.prepare(`
@@ -191,7 +200,7 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       )
     `).run(
       row.symbol, side, executionPrice, row.sl ?? null, row.tp ?? null, row.volume ?? null,
-      positionId, null, 'fib_618_fade', null,
+      positionId, null, strategy, null,
       parsedLabel.raw, parsedLabel.source, parsedLabel.version,
       parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
       parsedLabel.timeframe, parsedLabel.regime,
@@ -223,7 +232,7 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       initialRisk,
       null,
       timeCapAt,
-      'fib_618_fade',
+      strategy,
       parsedLabel.source,
       parsedLabel.raw,
       acct,
@@ -231,7 +240,7 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
     // §7,437·B·4: the plan the limit was placed with, scored at close.
     try {
       recordTradePlan(db, tradeId, {
-        accountId: acct, symbol: row.symbol, side, strategy: 'fib_618_fade', timeframe: row.timeframe || null,
+        accountId: acct, symbol: row.symbol, side, strategy, timeframe: row.timeframe || null,
         entry: row.level ?? executionPrice, sl: row.sl ?? null, tp: row.tp ?? null, timeCapAt, source: 'bot_pending_fill',
       })
     } catch (err) { log(`Trade plan not recorded for trade ${tradeId} (non-fatal): ${err.message}`) }
@@ -608,8 +617,8 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // resting order cannot be scoped by anything downstream, and the reads
       // that must scope it silently widen to every account instead.
       db.prepare(`
-        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?)
+        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes, strategy)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?, ?)
       `).run(
         symbol,
         timeframe || null,
@@ -624,6 +633,9 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         riskEventId ?? null,
         acctKey,
         holdMinutes,
+        // PR-E: the row carries its strategy so the fill reads it back
+        // (persistFilledTrade) instead of assuming the literal.
+        signal.strategy || proposal.strategy || 'fib_618_fade',
       )
       try {
         const { recordSubmitted } = await import('./opportunity-disposition.js')

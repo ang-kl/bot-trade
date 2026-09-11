@@ -17,14 +17,24 @@
 // record refuses. Bulk Stop / Time-based run per account and list each
 // account's own acknowledgement (TM-33): one executor offline shows as that
 // account NOT acknowledged, never as an all-stopped success.
-import { useState } from 'react'
+//
+// Unknowns (PR-E, owner principle 4, 11-09-2026): the UNKNOWN intents from
+// GET /state/entry-intents — account last-4, symbol, side, age, error — each
+// with a resolve form (FILLED / REJECTED + a reason of three characters or
+// more) posting to POST /actions/entry-intents/:id/resolve, and a button
+// for POST /actions/backfill-trade-origin (dry run first, apply on a second
+// click) with the reply's counts shown. Server-derived only: after every
+// post the ledger is re-fetched; nothing here marks a row resolved on its
+// own word.
+import { useEffect, useState } from 'react'
 import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
 import Collapse from './common/Collapse.jsx'
-import { agentPost } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { useEngineStatus, refreshEngineStatus } from '../lib/use-engine-status.js'
 import { engineReading, blockerGroups, tickBlockedReason, ackLine, mixedSummary, MODE_LABEL } from '../lib/engine-status-view.js'
+import { unknownRows, resolveUnknownIntent, runOriginBackfill, backfillSummary, RESOLVE_STATES, MIN_REASON_LEN } from '../lib/unknown-intents.js'
 
 function ageLabel(at) {
   if (!at) return 'not answered'
@@ -81,6 +91,98 @@ export function EngineRow({ row, readiness, fullId, busy, onMode, at }) {
           <BlockerList groups={groups} />
         </Collapse>
       )}
+    </div>
+  )
+}
+
+const FIELD = 'rounded-[3px] border border-[var(--color-border)] bg-transparent px-[3px] py-[2px] text-(length:--fs-body) text-[var(--color-text)]'
+
+/**
+ * The UNKNOWN rows and their resolve forms — presentational, so a fixture
+ * renders without effects. `drafts` is { [id]: { state, reason } }.
+ */
+export function UnknownsList({ rows, drafts = {}, busyId = null, notes = {}, onDraft = () => {}, onResolve = () => {} }) {
+  if (!rows.length) return <div className="text-[var(--color-text-sub)]">no UNKNOWN intent — every send has a verdict</div>
+  return (
+    <ul className="space-y-1" data-testid="unknowns-list">
+      {rows.map(r => {
+        const d = drafts[r.id] || { state: 'FILLED', reason: '' }
+        const short = String(d.reason || '').trim().length < MIN_REASON_LEN
+        return (
+          <li key={r.id} className="flex flex-wrap items-center gap-2" data-testid={`unknown-${r.id}`}>
+            <code>{r.id}</code>
+            <span className="tabular-nums">…{r.account}</span>
+            <b>{r.symbol}</b> <span>{r.side}</span>
+            <span className="text-[var(--color-text-sub)]">UNKNOWN for {r.age}</span>
+            <span className="text-[var(--color-text-sub)]" title="the error the send reported">{r.errorCode}</span>
+            <select aria-label={`Resolution for intent ${r.id}`} className={FIELD} value={d.state} disabled={busyId === r.id}
+              onChange={e => onDraft(r.id, { ...d, state: e.target.value })}>
+              {RESOLVE_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <input aria-label={`Reason for intent ${r.id}`} className={`${FIELD} min-w-[14rem]`} placeholder="reason (what the broker's history shows)" value={d.reason} disabled={busyId === r.id}
+              onChange={e => onDraft(r.id, { ...d, reason: e.target.value })} />
+            <Button size="sm" variant="primary" disabled={busyId === r.id || short}
+              title={short ? `a reason of at least ${MIN_REASON_LEN} characters is required` : `POST /actions/entry-intents/${r.id}/resolve — the ledger is re-read afterwards`}
+              onClick={() => onResolve(r.id, d)}>Resolve</Button>
+            {notes[r.id] && <span className={notes[r.id].ok ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{notes[r.id].text}</span>}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+/**
+ * Fetches the ledger once per panel scope, resolves with a reason,
+ * re-fetches; runs the origin backfill. `scope` is the panel's ('all' or
+ * one account id): the rows shown are the scope's, the fetch is the same
+ * whole-ledger read either way (the route redacts ids, so the filter is on
+ * the last four).
+ */
+export function UnknownsBlock({ scope = 'all' }) {
+  const [view, setView] = useState(null)
+  const [error, setError] = useState(null)
+  const [drafts, setDrafts] = useState({})
+  const [busyId, setBusyId] = useState(null)
+  const [notes, setNotes] = useState({})
+  const [backfill, setBackfill] = useState({ busy: false, reply: null })
+
+  async function load() {
+    if (!agentConfigured()) { setError('agent not configured'); return }
+    try { setView(await agentGet('/state/entry-intents')); setError(null) } catch (e) { setError(e?.message || String(e)) }
+  }
+  useEffect(() => { load() }, [scope]) // one fetch per panel scope (m5)
+
+  async function onResolve(id, draft) {
+    setBusyId(id)
+    try {
+      const r = await resolveUnknownIntent(agentPost, id, draft)
+      setNotes(n => ({ ...n, [id]: { ok: !!r.ok, text: r.ok ? `${r.from} → ${r.to} (server)` : (r.reason || r.error || 'refused') } }))
+    } catch (e) {
+      setNotes(n => ({ ...n, [id]: { ok: false, text: e?.message || String(e) } }))
+    } finally { setBusyId(null); await load(); refreshEngineStatus() }
+  }
+  async function onBackfill(apply) {
+    setBackfill({ busy: true, reply: null })
+    try { setBackfill({ busy: false, reply: await runOriginBackfill(agentPost, { apply }) }) } catch (e) { setBackfill({ busy: false, reply: { error: e?.message || String(e) } }) }
+  }
+
+  const rows = unknownRows(view, Date.now(), { scope })
+  const planned = backfill.reply && backfill.reply.mode === 'plan' && !backfill.reply.error
+  return (
+    <div className="mt-2 text-(length:--fs-body)" data-testid="unknowns-block">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold">Unknowns</span>
+        <span className="text-[var(--color-text-sub)]">{view ? `${rows.length} UNKNOWN intent${rows.length === 1 ? '' : 's'}${scope && scope !== 'all' ? ` on …${String(scope).slice(-4)}` : ''} — an UNKNOWN blocks its account/symbol/side until the broker's evidence or an operator with a reason settles it` : (error || 'reading /state/entry-intents…')}</span>
+        <Button size="sm" variant="ghost" onClick={load} title="re-read GET /state/entry-intents">Refresh</Button>
+      </div>
+      {view && <UnknownsList rows={rows} drafts={drafts} busyId={busyId} notes={notes}
+        onDraft={(id, d) => setDrafts(x => ({ ...x, [id]: d }))} onResolve={onResolve} />}
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="primary" disabled={backfill.busy} title="POST /actions/backfill-trade-origin — dry run: the plan and its counts, nothing written" onClick={() => onBackfill(false)}>Backfill trade origins</Button>
+        {planned && <Button size="sm" variant="danger" disabled={backfill.busy} title="POST /actions/backfill-trade-origin { apply: true } — writes the plan above; every row it writes is origin_source = 'backfill' and reversible" onClick={() => onBackfill(true)}>Apply backfill ({backfill.reply.rows ?? 0} rows)</Button>}
+        {backfill.reply && <span className={backfill.reply.error ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}>{backfillSummary(backfill.reply)}</span>}
+      </div>
     </div>
   )
 }
@@ -148,6 +250,7 @@ export default function EngineStatusPanel({ accounts = null, scope = 'all' }) {
           </ul>
         </div>
       )}
+      <UnknownsBlock scope={scope} />
       <div className="mt-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
         Every value here is the server's record: the effective mode is what the executor acknowledged, not what was clicked. Tick momentum stays refused until the readiness checks hold AND the tick entry path (P6) exists.
       </div>
