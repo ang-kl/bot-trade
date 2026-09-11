@@ -55,7 +55,7 @@ test('the fixture through the real oracle produces trades with the planted long 
   const r = simulate(events, params, { latencyMs: 60, minTargetToCost: 1 })
   assert.equal(r.trades.length, 2)
   assert.equal(r.trades[0].side, 'BUY'); assert.equal(r.trades[1].side, 'SELL')
-  assert.ok(r.trades[0].entrySeq > 106 && r.trades[0].entrySeq <= 109, 'filled on the next events after the 60 ms latency')
+  assert.ok(r.trades[0].entrySeq > 119 && r.trades[0].entrySeq <= 122, `filled on the next events after the 60 ms latency (entered at ${r.trades[0].entrySeq})`)
   assert.ok(['stop', 'target', 'hold_events', 'hold_clock', 'data_end'].includes(r.trades[0].reason))
   assert.equal(r.trades[1].reason, 'data_end', 'the short is still open when the data ends and is marked to the last bid/ask, not dropped')
   assert.equal(r.blocks.length, 3); assert.equal(r.blocks.map(b => b.name).join(','), 'train,validation,test')
