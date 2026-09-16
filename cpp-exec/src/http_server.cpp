@@ -55,6 +55,43 @@ bool HttpServer::run() {
   }
 }
 
+// PR-I: percent-decoding for query values. A '+' is a space only in form
+// bodies, not in a path query, so it is left alone; a malformed escape is
+// left literal rather than guessed at.
+static std::string percentDecode(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  auto hex = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '%' && i + 2 < s.size()) {
+      const int hi = hex(s[i + 1]), lo = hex(s[i + 2]);
+      if (hi >= 0 && lo >= 0) { out += static_cast<char>((hi << 4) | lo); i += 2; continue; }
+    }
+    out += s[i];
+  }
+  return out;
+}
+
+std::string queryParam(const std::string& query, const std::string& key, const std::string& dflt) {
+  size_t pos = 0;
+  while (pos <= query.size()) {
+    size_t amp = query.find('&', pos);
+    if (amp == std::string::npos) amp = query.size();
+    const std::string pair = query.substr(pos, amp - pos);
+    const size_t eq = pair.find('=');
+    if (eq != std::string::npos && percentDecode(pair.substr(0, eq)) == key)
+      return percentDecode(pair.substr(eq + 1));
+    if (amp == query.size()) break;
+    pos = amp + 1;
+  }
+  return dflt;
+}
+
 static bool readRequest(int fd, HttpRequest& req, bool& tooLarge) {
   std::string data;
   char tmp[8192];
@@ -76,7 +113,10 @@ static bool readRequest(int fd, HttpRequest& req, bool& tooLarge) {
   req.method = line.substr(0, sp1);
   req.path = line.substr(sp1 + 1, sp2 - sp1 - 1);
   size_t q = req.path.find('?');
-  if (q != std::string::npos) req.path.resize(q);
+  if (q != std::string::npos) {
+    req.query = req.path.substr(q + 1);
+    req.path.resize(q);
+  }
 
   // Headers
   size_t pos = lineEnd + 2;

@@ -504,7 +504,16 @@ Measurement history — each line is a real run of the script, not a claim:
   PR-H draft opened and subscribed, its merged-tree gate, the CI wait, then
   the owner's 12-09 07:3x SGT order "inspect what have been done and update
   what have done in the plan folder" and the plan-mode exit), so the status
-  report is **`№ 7,777`** by count. The count is by replies, not by
+  report is **`№ 7,777`** by count. The session then idled 12–15 Sep
+  (four daily-report triggers fired into a wall — the state routes still
+  answer 401). It resumed 15-09 22:11 SGT: the statements analysis was
+  stamped `№ 7,778` and the tick-developer tweaks `№ 7,780`, both behind
+  by count (they were `№ 7,781` and `№ 7,783`), so the plan/cost answer
+  was stamped **`№ 7,784`** from the count and the PR-I start
+  **`№ 7,785`**; the PR-I checker report is **`№ 7,786`**. Three
+  unstamped status lines followed (`№ 7,787`–`№ 7,789`: the two makers
+  launched, PR-J built, PR-I's fix round verified), so the PR-I merge
+  report is **`№ 7,790`** by count. The count is by replies, not by
   stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 

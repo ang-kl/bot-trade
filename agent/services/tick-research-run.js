@@ -45,11 +45,19 @@ import { loadThresholds, replayChecks } from './tick-validation.js'
 
 export const SEGMENTS_ENV = 'TICK_SEGMENTS_DIR'
 export const NO_SEGMENTS_WHERE = 'the sealed segments are on the demo sidecar volume (cpp-exec, TICK_SPOOL_PATH); set TICK_SEGMENTS_DIR on the keeper to a directory holding seg-*.tks files, or run scripts/tick-research.mjs beside the spool and POST /actions/tick-trials'
+/** PR-I: the same refusal once the sidecar itself has been asked and had nothing. */
+export const NO_SEGMENTS_ANYWHERE = 'no sealed segment is reachable: TICK_SEGMENTS_DIR names none, and no sidecar side with a tick recorder served one on GET /tick-segments (see GET /state/tick-segments for what each side reports)'
 /** Records the keeper will replay in one job; above it the request is refused, never queued. */
 export const MAX_RECORDS = 5_000_000
 /** The stored note's cap (checker m-3: an unbounded body.note was stored whole). */
 export const NOTE_MAX = 500
 export const WORKER_FILE = new URL('./tick-research-worker.js', import.meta.url)
+/**
+ * Slack above `MAX_RECORDS × RECORD_BYTES` when bounding a sync: each
+ * segment carries a 64-byte header, and a segment that straddles the cap is
+ * pulled whole or not at all. 500 headers plus one 64 MiB segment.
+ */
+export const SYNC_HEADROOM_BYTES = (500 * HEADER_BYTES) + (64 * 1024 * 1024)
 
 /** The plan's stage-A grid: twelve N × efficiency combinations, the rest frozen. */
 export function stageAGrid() {
@@ -224,6 +232,9 @@ export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SE
 // ---- the job: one at a time, off the event loop ----------------------------
 const JOB_HISTORY = 10
 const jobs = { current: null, history: [] }
+// Checker m-3: the single-job slot was only claimed AFTER the sync, so two
+// concurrent POSTs both listed and both pulled. This is claimed first.
+let syncLock = null
 
 function publicJob(j) {
   if (!j) return null
@@ -240,7 +251,7 @@ export function tickResearchJob(id) {
   return publicJob(jobs.history.find(j => j.jobId === id)) || null
 }
 /** Tests only: forget every job. */
-export function _resetTickResearchJobs() { if (jobs.current?.worker) { try { jobs.current.worker.terminate() } catch { /* best effort */ } } jobs.current = null; jobs.history = [] }
+export function _resetTickResearchJobs() { if (jobs.current?.worker) { try { jobs.current.worker.terminate() } catch { /* best effort */ } } jobs.current = null; jobs.history = []; syncLock = null }
 
 function settle(j, patch) {
   Object.assign(j, patch, { finishedAt: new Date().toISOString() })
@@ -289,4 +300,84 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   worker.on('error', (err) => { if (settled) return; settled = true; settle(j, { state: 'failed', error: err.message }) })
   worker.on('exit', (code) => { if (settled) return; settled = true; settle(j, { state: 'failed', error: `worker exited with code ${code} before reporting` }) })
   return { status: 202, body: { ok: true, jobId: j.jobId, state: 'running', startedAt: j.startedAt, segmentsDir: a.dir, segments: a.files.length, records: a.records, dryRun: plan.dryRun, stageA: plan.stageA, noteTruncated: plan.noteTruncated, poll: `/state/tick-research-job?id=${j.jobId}`, note: 'the replay runs in a worker thread; the result and the imported trial ids are on the poll URL once state is done' } }
+}
+
+/**
+ * PR-I: the route's entry point. Same contract as `startTickResearchJob`,
+ * with one step in front of it — when NOTHING is reachable locally, the
+ * sidecar is ASKED for its sealed segments and what is missing is pulled
+ * into the cache directory (`segmentCacheDir()`: `TICK_SEGMENTS_CACHE_DIR`,
+ * else `TICK_SEGMENTS_DIR`, else `<os.tmpdir()>/tick-segments`) before the
+ * job starts. This closes the blockage named in
+ * docs/plan-execution-audit-2026-09-11.md §12.3: the segments existed, the
+ * keeper had no path to them, and REPLAY_PASSED was unreachable.
+ *
+ * WHERE THE WORK HAPPENS. The pull is awaited BEFORE the job is started —
+ * never inside it and never on the event loop as blocking work: it is
+ * network I/O in ≤ 1 MiB chunks (PR-H's checker M-1 caught a CPU-bound
+ * replay on the loop; the replay itself still runs in the worker thread).
+ *
+ * The 409 stays honest. If the sidecar has no recorder, is unreachable, or
+ * has sealed nothing, the answer is still `no_segments` — with `where` and
+ * the per-side detail of what was asked. A trial is never fabricated.
+ */
+export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
+  const { cacheDir = null, sync = null, listAll = null, maxRecords = MAX_RECORDS, ...rest } = opts
+  const segmentsDir = opts.segmentsDir ?? process.env[SEGMENTS_ENV]
+  // A job already running — or a SYNC already running (checker m-3: the job
+  // slot was only claimed after the sync, so two concurrent POSTs both
+  // pulled) — is refused before anything is listed or moved.
+  if (jobs.current) return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir })
+  if (syncLock) {
+    return { status: 409, body: { ok: false, error: 'research_running', jobId: syncLock.jobId, startedAt: syncLock.startedAt, where: 'a segment sync for an earlier request is still running; poll GET /state/tick-research-job and post again when it is done' } }
+  }
+  const local = admit(segmentsDir, { maxRecords })
+  if (!local.refuse) return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir })
+  if (local.refuse.body.error !== 'no_segments') return local.refuse
+  // CLAIMED BEFORE THE FIRST await. A check-then-act across an await is not
+  // a lock: with the claim below the `await import(...)`, both callers ran
+  // their synchronous prefix, both saw a null lock and both pulled the same
+  // segment (measured: 48 chunk requests where one pull is 24). `admit`
+  // above is synchronous, so nothing has yielded yet at this point.
+  syncLock = { jobId: `sync-${randomUUID().slice(0, 8)}`, startedAt: new Date().toISOString() }
+  try {
+    const { segmentCacheDir, syncInWorker, listAllSides } = await import('./tick-segments.js')
+    const dest = cacheDir || segmentCacheDir()
+    // PRE-FLIGHT (checker M-1). The record cap is checked against what the
+    // sides LIST, before a byte moves. Pulling first and refusing afterwards
+    // moved up to 2 GiB to disk for a request that was always going to be
+    // 413 — measured: 413 too_many_records with 2,400,064 bytes already
+    // written to the cache. A listing is one small GET per side.
+    const listed = await (listAll || listAllSides)({})
+    // The cache and the listing OVERLAP after a successful sync — the cache
+    // holds exactly what was pulled. Summing them would double-count every
+    // segment a previous run fetched and refuse 413 on a request that is
+    // well inside the cap, so only cached segments the sides do NOT list are
+    // added to the listed total.
+    const listedNames = new Set(listed.names || [])
+    const cachedOnly = listSegments(dest).filter(f => !listedNames.has(basename(f)))
+    const cachedRecords = segmentRecordCount(cachedOnly)
+    if (listed.records + cachedRecords > maxRecords) {
+      const records = listed.records + cachedRecords
+      return { status: 413, body: { ok: false, error: 'too_many_records', records, maxRecords, segments: listed.segments, segmentsDir: dest, where: `${records.toLocaleString('en-US')} record(s) are reachable across ${listed.segments} sidecar segment(s) and the cache, over the keeper's cap of ${maxRecords.toLocaleString('en-US')} per job — nothing was pulled. Copy a subset to TICK_SEGMENTS_DIR, or run scripts/tick-research.mjs beside the spool`, sync: { destDir: dest, pulled: 0, skipped: 0, bytes: 0, truncated: false, sides: listed.sides, note: 'refused from the listing; no bytes were moved' } } }
+    }
+    let pull
+    try {
+      // The sync — list, pull, decode, VERIFY — runs in a worker thread
+      // (checker B-1): the verification is ~1 s per 64 MiB of CPU and must
+      // not touch the keeper's event loop.
+      pull = await (sync || syncInWorker)(dest, { maxBytes: maxRecords * RECORD_BYTES + SYNC_HEADROOM_BYTES })
+    } catch (err) {
+      pull = { destDir: dest, pulled: 0, skipped: 0, bytes: 0, truncated: false, sides: [], error: err?.message || String(err) }
+    }
+    const after = admit(dest, { maxRecords })
+    if (after.refuse) {
+      const b = after.refuse.body
+      return { status: after.refuse.status, body: { ...b, ...(b.error === 'no_segments' ? { where: NO_SEGMENTS_ANYWHERE, localWhere: NO_SEGMENTS_WHERE } : {}), sync: pull } }
+    }
+    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest })
+    return { status: started.status, body: { ...started.body, sync: pull } }
+  } finally {
+    syncLock = null
+  }
 }

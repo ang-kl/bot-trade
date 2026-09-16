@@ -20,6 +20,7 @@
 #include "engine.hpp"
 #include "heartbeat.hpp"
 #include "tick_recorder.hpp"
+#include "tick_segment_routes.hpp"
 #include "tick_firer.hpp"
 #include "tick_shadow.hpp"
 #include "tick_strategy.hpp"
@@ -789,6 +790,28 @@ int main(int argc, char** argv) {
     }
     return {200, jsn::dump(v)};
   });
+
+  // -------------------------------------------------------------------------
+  // PR-I: the sealed-segment READ path (docs/plan-execution-audit-2026-09-11.md
+  // §12.3 "segment locality"). Until this, 4.59 M recorded tick events sat on
+  // this service's volume with NO path to the keeper, so POST
+  // /actions/tick-research could only answer 409 no_segments and
+  // REPLAY_PASSED was unreachable.
+  //
+  // The two routes live in tick_segment_routes.cpp, NOT as lambdas here:
+  // main.cpp is excluded from every test binary, so a route defined here is
+  // out of reach of the C++ suite (checker M-3 proved it — a mutation that
+  // emptied HttpRequest::query killed the whole read path with a green
+  // suite). test_tick_segments now drives this same registration through a
+  // real HttpServer on a real socket.
+  //
+  // BYTES AS BASE64 IN JSON, deliberately: HttpResponse is {int status;
+  // std::string body} and writeResponse always sends Content-Type:
+  // application/json — that response path also serves order acks on the live
+  // trading socket, so it is not being reshaped for a research read. Base64
+  // costs 33 % on the wire against a 1 MiB cap per call; the keeper pulls in
+  // chunks.
+  registerTickSegmentRoutes(server, tickSpoolPath, tickRecorder != nullptr, execSecret);
 
   // P6a: the shadow portfolio's closed trades, same cursor contract as
   // /decisions — {after, bootId}; a bootId mismatch hands over the whole ring.

@@ -12,9 +12,21 @@
 struct HttpRequest {
   std::string method;
   std::string path;
+  // PR-I: the raw query string (no leading '?'), empty when there is none.
+  // The route table is still keyed on the PATH alone — the query is data for
+  // the handler, never part of the dispatch key.
+  std::string query;
   std::map<std::string, std::string> headers; // keys lower-cased
   std::string body;
 };
+
+/**
+ * One parameter out of a raw `a=1&b=2` query string, percent-decoded.
+ * Returns `dflt` when the key is absent. Repeats: the FIRST occurrence wins,
+ * so a second `?name=` cannot smuggle a different value past a check made on
+ * the first.
+ */
+std::string queryParam(const std::string& query, const std::string& key, const std::string& dflt = "");
 
 struct HttpResponse {
   int status = 200;

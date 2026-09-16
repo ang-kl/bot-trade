@@ -8,9 +8,12 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 
+#include <limits.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "json.hpp"
@@ -144,6 +147,146 @@ SegmentRead readSegment(const std::string& path) {
   std::fclose(f);
   return r;
 }
+
+// ---- PR-I: the sealed-segment read path (see tick_recorder.hpp) -----------
+
+bool isSealedSegmentName(const std::string& name) {
+  // Anchored full match on `seg-[0-9]{13}-[0-9]{6}\.tks`: 4 + 13 + 1 + 6 + 4.
+  // The length check is what anchors the TAIL — it is why ".tks.open" and
+  // "seg-…tks/../../etc/passwd" cannot match — so it is not redundant with
+  // the prefix and suffix compares below.
+  constexpr size_t kNameLen = 4 + 13 + 1 + 6 + 4;
+  if (name.size() != kNameLen) return false;
+  if (!startsWith(name, "seg-") || !endsWith(name, ".tks")) return false;
+  for (size_t i = 4; i < 4 + 13; ++i) if (name[i] < '0' || name[i] > '9') return false;
+  if (name[17] != '-') return false;
+  for (size_t i = 18; i < 18 + 6; ++i) if (name[i] < '0' || name[i] > '9') return false;
+  return true;
+}
+
+SegmentList listSealedSegments(const std::string& dir, size_t maxEntries) {
+  SegmentList out;
+  DIR* d = ::opendir(dir.c_str());
+  if (!d) return out;
+  while (dirent* e = ::readdir(d)) {
+    const std::string name = e->d_name;
+    const std::string path = dir + "/" + name;
+    struct stat sb{};
+    // lstat, NOT stat (checker m-2): stat FOLLOWS a symlink, so a link named
+    // seg-<13>-<6>.tks pointing at /etc/passwd was listed with the TARGET's
+    // size — telling an authenticated caller the size of a file outside the
+    // spool, and giving every sync a permanently failing entry it can never
+    // fetch (the read path refuses it). A link is not a regular file, so
+    // S_ISREG on the lstat result drops it here instead.
+    if (::lstat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) continue;
+    if (startsWith(name, "seg-") && endsWith(name, ".tks.open")) {
+      // Reported so the keeper can see the tail exists; NEVER listed as a
+      // segment and never downloadable — isSealedSegmentName refuses it.
+      out.openBytes += static_cast<uint64_t>(sb.st_size);
+      continue;
+    }
+    if (!isSealedSegmentName(name)) continue;
+    SegmentEntry se;
+    se.name = name;
+    se.bytes = static_cast<uint64_t>(sb.st_size);
+    // Second resolution (st_mtime is portable; st_mtim/st_mtimespec are not).
+    se.sealedAtMs = static_cast<uint64_t>(sb.st_mtime) * 1000ull;
+    se.index = static_cast<uint32_t>(std::strtoul(name.substr(18, 6).c_str(), nullptr, 10));
+    out.segments.push_back(std::move(se));
+  }
+  ::closedir(d);
+  // The name's startMs is zero-padded to 13 digits and the index to 6, so a
+  // plain name sort IS oldest-first (the same property retire() relies on).
+  std::sort(out.segments.begin(), out.segments.end(),
+            [](const SegmentEntry& a, const SegmentEntry& b) { return a.name < b.name; });
+  if (out.segments.size() > maxEntries) {
+    out.segments.resize(maxEntries);
+    out.truncated = true;
+  }
+  return out;
+}
+
+SegmentChunk readSegmentChunk(const std::string& dir, const std::string& name, uint64_t offset, uint64_t len) {
+  SegmentChunk c;
+  c.offset = offset;
+  if (!isSealedSegmentName(name)) { c.status = ChunkStatus::BAD_NAME; return c; }
+  const std::string path = dir + "/" + name;
+  // Open first, THEN resolve and stat through the fd we hold: a file retired
+  // between the listing and this call fails the open and answers NOT_FOUND,
+  // and one retired after it still reads its real bytes (the inode outlives
+  // the unlink) rather than a short read presented as the whole file.
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) { c.status = ChunkStatus::NOT_FOUND; return c; }
+  // Belt on the name pattern: a SYMLINK inside the spool whose name matches
+  // could still point outside it. The resolved path must be the spool's own
+  // resolved directory plus this name.
+  {
+    char realDir[PATH_MAX], realFile[PATH_MAX];
+    if (!::realpath(dir.c_str(), realDir) || !::realpath(path.c_str(), realFile) ||
+        std::string(realFile) != std::string(realDir) + "/" + name) {
+      ::close(fd);
+      c.status = ChunkStatus::BAD_NAME;
+      return c;
+    }
+  }
+  struct stat sb{};
+  if (::fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode)) { ::close(fd); c.status = ChunkStatus::NOT_FOUND; return c; }
+  // A HARDLINK defeats realpath (checker m-1): a hardlink has no target to
+  // resolve, so `realpath` returns the link's own path — inside the spool —
+  // while the inode is a file from anywhere on the same filesystem. A
+  // segment this recorder wrote always has exactly ONE link (it is created
+  // by fopen and renamed once; nothing ever links it), so a link count above
+  // one means the name was planted, not sealed here.
+  if (sb.st_nlink != 1) { ::close(fd); c.status = ChunkStatus::BAD_NAME; return c; }
+  c.totalBytes = static_cast<uint64_t>(sb.st_size);
+  if (offset >= c.totalBytes) { ::close(fd); c.eof = true; return c; }
+  uint64_t want = std::min<uint64_t>(len, kMaxChunkBytes);
+  want = std::min<uint64_t>(want, c.totalBytes - offset);
+  c.bytes.resize(static_cast<size_t>(want));
+  uint64_t got = 0;
+  while (got < want) {
+    // pread: no shared file offset, so nothing here contends with anything —
+    // and sealed files are immutable (see the header), so no lock is needed.
+    const ssize_t n = ::pread(fd, &c.bytes[static_cast<size_t>(got)], static_cast<size_t>(want - got),
+                              static_cast<off_t>(offset + got));
+    if (n <= 0) break;
+    got += static_cast<uint64_t>(n);
+  }
+  ::close(fd);
+  c.bytes.resize(static_cast<size_t>(got));
+  c.eof = offset + got >= c.totalBytes;
+  return c;
+}
+
+std::string base64Encode(const std::string& raw) {
+  static const char* kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((raw.size() + 2) / 3 * 4);
+  size_t i = 0;
+  for (; i + 2 < raw.size(); i += 3) {
+    const uint32_t v = (static_cast<uint8_t>(raw[i]) << 16) | (static_cast<uint8_t>(raw[i + 1]) << 8) |
+                       static_cast<uint8_t>(raw[i + 2]);
+    out += kAlphabet[(v >> 18) & 63];
+    out += kAlphabet[(v >> 12) & 63];
+    out += kAlphabet[(v >> 6) & 63];
+    out += kAlphabet[v & 63];
+  }
+  if (i + 1 == raw.size()) {
+    const uint32_t v = static_cast<uint8_t>(raw[i]) << 16;
+    out += kAlphabet[(v >> 18) & 63];
+    out += kAlphabet[(v >> 12) & 63];
+    out += "==";
+  } else if (i + 2 == raw.size()) {
+    const uint32_t v = (static_cast<uint8_t>(raw[i]) << 16) | (static_cast<uint8_t>(raw[i + 1]) << 8);
+    out += kAlphabet[(v >> 18) & 63];
+    out += kAlphabet[(v >> 12) & 63];
+    out += kAlphabet[(v >> 6) & 63];
+    out += '=';
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 
 bool statvfsProbe(const std::string& dir, uint64_t& availBytes, uint64_t& totalBytes) {
   struct statvfs sv{};
