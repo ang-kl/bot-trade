@@ -1017,3 +1017,115 @@ test('PR-K wiring pin: the revert switch is written by POST /actions/momentum-bo
   assert.match(block, /'bookExitCadence', 'bookMinHoldHours'/, 'both PR-K knobs are writable from the running system')
   assert.match(block, /res\.json\(\{ ok: true, effective: cfg \}\)/, 'the reply is the effective policy')
 })
+
+// ---------------------------------------------------------------------------
+// THE ARM GATE'S REFUSAL IS RECORDED (16-09-2026). Measured in production:
+// `momentum book: 0 entered, 0 exited, 0 trailed on 1 account(s)` with no
+// suffix, because the `!armed` branch dropped six of seven enabled accounts
+// with an empty `skipped`. These cases pin that every drop carries a reason,
+// that a THROWN arm check reads differently from a deliberate "not armed",
+// and that an armed account is untouched.
+
+/**
+ * `db` whose arm check FAILS for every account after the first `survive` of
+ * them. The injection point is real: `armedTradeKeys` → `enabledStrategies`
+ * reads `cup_handle_enabled` from agent_state OUTSIDE any try (strategies.js),
+ * so a state read that throws there propagates out of the arm check exactly as
+ * a disk or corruption failure would. Nothing else is touched: every other
+ * statement passes straight through.
+ *
+ * If that read ever becomes guarded, these cases go RED rather than quietly
+ * proving nothing — the counts below are only reachable if the throw landed.
+ */
+function dbWithArmCheckThrowingAfter(db, survive) {
+  let seen = 0
+  const wrapStmt = (stmt) => new Proxy(stmt, {
+    get(s, prop) {
+      const v = s[prop]
+      if (typeof v !== 'function') return v
+      return (...args) => {
+        if (args.some(a => a === 'cup_handle_enabled') && ++seen > survive) {
+          throw new Error('agent_state read failed (disk I/O error)')
+        }
+        return v.apply(s, args)
+      }
+    },
+  })
+  return new Proxy(db, {
+    get(t, prop) {
+      if (prop === 'prepare') return (sql) => wrapStmt(t.prepare(sql))
+      const v = Reflect.get(t, prop)
+      return typeof v === 'function' ? v.bind(t) : v
+    },
+  })
+}
+
+test('an account the strategy is not armed for is recorded in skipped by name and cause, and the armed account runs exactly as before', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps })
+  // The refusal is READ, not inferred: the account and the cause are both named.
+  const line = r.skipped.find(s => s.startsWith(`${LIVE}:`))
+  assert.ok(line, `LIVE's drop is recorded: ${JSON.stringify(r.skipped)}`)
+  assert.match(line, new RegExp(`^${LIVE}: ${TSMOM_STRATEGY} not armed$`))
+  assert.equal(r.notArmed, 1)
+  assert.equal(r.armCheckFailed, 0, 'nothing threw — a configuration choice is not an error')
+  // UNCHANGED for the armed account: one dispatch, one entry, one book row.
+  assert.equal(r.accounts, 1)
+  assert.equal(r.entries, 1)
+  assert.deepEqual(f.calls.autoTrade.map(c => String(c.acct.accountId)), [DEMO], 'only the armed account traded')
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM momentum_book WHERE account_id = ?`).get(DEMO).n, 1)
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM momentum_book WHERE account_id = ?`).get(LIVE).n, 0)
+})
+
+test('an arm check that THROWS is reported as an error, distinguishable from a deliberate "not armed"', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  const r = await runMomentumBook(dbWithArmCheckThrowingAfter(db, 1), { accounts, credsFor, deps: f.deps })
+  const line = r.skipped.find(s => s.startsWith(`${LIVE}:`))
+  assert.ok(line, `the throw is recorded: ${JSON.stringify(r.skipped)}`)
+  assert.match(line, /arm check failed/, 'the cause is the failure, not the configuration')
+  assert.match(line, /disk I\/O error/, "the thrown error's own message survives")
+  assert.doesNotMatch(line, /not armed$/, 'a thrown error must NOT read as a configuration choice')
+  assert.equal(r.armCheckFailed, 1)
+  assert.equal(r.notArmed, 0, 'a throw is not counted as an unarmed account')
+  // Behaviour is unchanged: the account is still dropped, the armed one still runs.
+  assert.equal(r.accounts, 1)
+  assert.equal(r.entries, 1)
+  assert.deepEqual(f.calls.autoTrade.map(c => String(c.acct.accountId)), [DEMO])
+})
+
+test('considered-vs-ran is counted across a mix of armed, unarmed and throwing accounts, and leads the skipped list the loop prints', async () => {
+  const THIRD = '333'
+  const db = fresh()
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('${THIRD}','3',0,1,'active')`).run()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const three = [...accounts, { accountId: THIRD, isLive: false }]
+  const f = fakes()
+  const r = await runMomentumBook(dbWithArmCheckThrowingAfter(db, 2), { accounts: three, credsFor, deps: f.deps })
+  assert.equal(r.considered, 3, 'every account handed in was considered')
+  assert.equal(r.accounts, 1, 'the pass ran on one — the meaning of `accounts` is unchanged')
+  assert.equal(r.notArmed, 1)
+  assert.equal(r.armCheckFailed, 1)
+  // The count must survive `mb.skipped.slice(0, 4)` in the loop, so it leads.
+  assert.match(r.skipped[0], /^considered 3 account\(s\), ran on 1 — 1 not armed for tsmom_long, 1 arm check failed$/)
+  assert.ok(r.skipped.slice(0, 4).some(s => /considered 3/.test(s)), 'the loop prints at most four; the count is inside them')
+  // A pass that drops nobody keeps its log line unchanged — no roll-up.
+  const dbAll = fresh()
+  setState(dbAll, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  for (const id of [DEMO, LIVE]) setStage(dbAll, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: id }, { getState, setState })
+  const g = fakes()
+  const rAll = await runMomentumBook(dbAll, { accounts, credsFor, deps: g.deps })
+  assert.equal(rAll.considered, 2)
+  assert.equal(rAll.accounts, 2)
+  assert.equal(rAll.notArmed + rAll.armCheckFailed, 0)
+  assert.ok(!rAll.skipped.some(s => /^considered /.test(s)), 'nothing dropped → no roll-up line')
+})
