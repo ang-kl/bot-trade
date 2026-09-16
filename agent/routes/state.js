@@ -2562,6 +2562,18 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // PR-I: the sealed-segment read path, read-only — what each sidecar side
+  // has sealed (GET /tick-segments on it) against what this keeper has
+  // already cached, and where the cache is. Nothing here pulls; the research
+  // action does that.
+  router.get('/tick-segments', async (_req, res) => {
+    try {
+      const { tickSegmentsView } = await import('../services/tick-segments.js')
+      res.json(await tickSegmentsView())
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // P3a: the tick recorder per sidecar side — the last pulled /tick-status
   // (state, counters, segments, the mount's free bytes, events/sec per
   // symbol), each account's observation switch, and the symbol names the

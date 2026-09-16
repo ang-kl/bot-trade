@@ -1303,9 +1303,14 @@ export default function actionsRouter(db, deps = {}) {
   // through POST /actions/tick-validation.
   router.post('/tick-research', async (req, res) => {
     try {
-      const { startTickResearchJob } = await import('../services/tick-research-run.js')
-      const r = startTickResearchJob(db, req.body && typeof req.body === 'object' ? req.body : {})
+      // PR-I: when nothing is reachable locally the sidecar's sealed
+      // segments are pulled into the cache directory FIRST (network I/O,
+      // awaited before the job starts — the CPU-bound replay still runs in
+      // the worker thread); the 409 stays honest when no sidecar has any.
+      const { startTickResearchJobWithSync } = await import('../services/tick-research-run.js')
+      const r = await startTickResearchJobWithSync(db, req.body && typeof req.body === 'object' ? req.body : {})
       if (r.status === 202) {
+        if (r.body.sync) console.log(`[actions] tick-research: pulled ${r.body.sync.pulled} segment(s) (${r.body.sync.bytes} bytes, ${r.body.sync.skipped} already cached) into ${r.body.sync.destDir}`)
         console.log(`[actions] tick-research: job ${r.body.jobId} started over ${r.body.segments} segment(s) / ${r.body.records} record(s) at ${r.body.segmentsDir}${r.body.dryRun ? ' (dry run)' : ''}`)
       } else {
         console.log(`[actions] tick-research REFUSED ${r.body.error}: ${r.body.where || r.body.detail || ''}`)

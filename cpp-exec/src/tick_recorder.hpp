@@ -102,6 +102,73 @@ bool decodeHeader(const uint8_t in[kHeaderBytes], SegmentHeader& out);
 struct SegmentRead { SegmentHeader header; std::vector<Record> records; bool headerOk = false; bool truncated = false; };
 SegmentRead readSegment(const std::string& path);
 
+// ---------------------------------------------------------------------------
+// PR-I: the sealed-segment READ path (docs/plan-execution-audit-2026-09-11.md
+// §12.3 "segment locality"). The keeper cannot reach the spool — it is a
+// volume on the sidecar — so research had no data at all. These helpers are
+// the listing and the bounded range read the two HTTP routes in main.cpp are
+// built from; they are free functions (not TickRecorder methods) because a
+// READER holds no recorder state: a sealed segment is immutable, so nothing
+// here touches the writer thread, its mutexes or its ring.
+//
+// WHY IMMUTABLE IS TRUE, not assumed: the writer only ever has the ".open"
+// file open (`openSegment` opens `openPath_`, `writeRecord`/`sealSegment`
+// write through that same FILE*), sealing is the atomic rename to ".tks",
+// and the ONLY thing that ever touches a sealed file afterwards is
+// `retire()`, which unlinks it. No code path rewrites or appends to a
+// ".tks". So a reader needs no lock; it needs to survive the unlink, which
+// `readSegmentChunk` does by holding an fd (POSIX keeps the inode alive) and
+// by answering NOT_FOUND — never a short read presented as the whole file —
+// when the open itself loses the race.
+//
+// A never-served ".open" is the other half: the rename exists precisely so a
+// reader cannot see a torn tail, and `isSealedSegmentName` is what enforces
+// it (its terminal ".tks" anchor is the ".open" exclusion).
+
+/** One /tick-segment body, capped: bytes are base64 in JSON, so 1 MiB raw. */
+constexpr size_t kMaxChunkBytes = 1u << 20;
+/** At most this many entries in one /tick-segments listing. */
+constexpr size_t kMaxListEntries = 500;
+
+/**
+ * THE SECURITY BOUNDARY. True only for exactly `seg-<13 digits>-<6
+ * digits>.tks` — the recorder's own sealed naming (`openSegment`). No path
+ * separator, no "..", no ".open", no other extension can match, because the
+ * match is anchored at both ends and every byte between is fixed or a digit.
+ */
+bool isSealedSegmentName(const std::string& name);
+
+struct SegmentEntry {
+  std::string name;
+  uint64_t bytes = 0;
+  uint64_t sealedAtMs = 0;   // the file's mtime — the moment of the sealing rename
+  uint32_t index = 0;        // the six-digit counter in the name
+};
+
+struct SegmentList {
+  std::vector<SegmentEntry> segments;  // SEALED only, oldest first
+  uint64_t openBytes = 0;              // the open segment's bytes, reported, never served
+  bool truncated = false;              // more sealed segments than maxEntries
+};
+SegmentList listSealedSegments(const std::string& dir, size_t maxEntries = kMaxListEntries);
+
+enum class ChunkStatus { OK, BAD_NAME, NOT_FOUND };
+struct SegmentChunk {
+  ChunkStatus status = ChunkStatus::OK;
+  uint64_t totalBytes = 0;
+  uint64_t offset = 0;
+  bool eof = false;
+  std::string bytes;   // raw; the route base64s it
+};
+/**
+ * `len` bytes of a sealed segment at `offset`, clamped to kMaxChunkBytes. An
+ * offset at or past EOF is not an error: zero bytes and eof=true.
+ */
+SegmentChunk readSegmentChunk(const std::string& dir, const std::string& name, uint64_t offset, uint64_t len);
+
+/** Standard base64 (RFC 4648, padded) — the JSON transport for segment bytes. */
+std::string base64Encode(const std::string& raw);
+
 struct RecorderConfig {
   std::string spoolDir;
   std::string feedId;
