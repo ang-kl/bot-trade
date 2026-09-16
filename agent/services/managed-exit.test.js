@@ -230,7 +230,7 @@ test('takeAtR: default 1.0, stored value honoured, 0 is a value (trail only), ju
   assert.equal(loadManagedExit(db).takeAtR, 1.0)
 })
 
-test('under the managed ruleset +1R is a FULL_EXIT (bank_target_1R); +0.8R is still the trail; takeAtR 0 leaves the trail alone', () => {
+test('under the managed ruleset +1R BANKS HALF (PR-J); +0.8R is still the trail; takeAtR 0 leaves the trail alone', () => {
   const db = withAccounts(initDB(':memory:'))
   const pos = {
     id: 1, symbol: 'TEST', side: 'long', entry_price: 100, current_sl: 99,
@@ -241,9 +241,12 @@ test('under the managed ruleset +1R is a FULL_EXIT (bank_target_1R); +0.8R is st
   const managed = applyManagedRules(db, '43097342', { ...DEFAULT_RULES }, { strategy: 'rsi2_reversion' })
   assert.equal(managed.bankTriggerR, 1.0)
   const take = evaluatePosition(pos, { currentPrice: 101, rules: managed })
-  assert.equal(take.action, 'FULL_EXIT')
-  assert.match(take.reason, /bank_target_1R/)
-  assert.equal(take.exitFraction, 1)
+  // PR-J (11-09-2026): the take is half the position, not all of it. The old
+  // whole close is one stored value away — see the revert test below.
+  assert.equal(take.action, 'PARTIAL_EXIT')
+  assert.match(take.reason, /bank_partial_1R 50%/)
+  assert.equal(take.exitFraction, 0.5)
+  assert.equal(take.newSL, pos.entry_price, 'the remainder is protected at breakeven or better')
   const below = evaluatePosition(pos, { currentPrice: 100.8, rules: managed })
   assert.equal(below.action, 'MOVE_SL', 'below +1R the 0.5R trail is the rule that answers')
   assert.match(below.reason, /managed_trail/)
@@ -276,7 +279,7 @@ test('takeAtR reaches ONLY the mean_reversion family by default; trend, breakout
   assert.deepEqual(applyManagedRules(db, '99999999', base, { strategy: 'rsi2_reversion' }), base)
 })
 
-test('a trend position at +1R is TRAILED, not taken; the same print on a reversion position is taken whole', () => {
+test('a trend position at +1R is TRAILED, not taken; the same print on a reversion position banks half (PR-J)', () => {
   const db = withAccounts(initDB(':memory:'))
   const pos = {
     id: 1, symbol: 'TEST', side: 'long', entry_price: 100, current_sl: 99,
@@ -288,8 +291,8 @@ test('a trend position at +1R is TRAILED, not taken; the same print on a reversi
   assert.equal(trend.action, 'MOVE_SL', 'trend at +1R: the 0.5R trail answers')
   assert.match(trend.reason, /managed_trail/)
   const rev = evaluatePosition(pos, { currentPrice: 101, rules: applyManagedRules(db, '43097342', { ...DEFAULT_RULES }, { strategy: 'rsi2_reversion' }) })
-  assert.equal(rev.action, 'FULL_EXIT')
-  assert.match(rev.reason, /bank_target_1R/)
+  assert.equal(rev.action, 'PARTIAL_EXIT', 'PR-J: the reversion take banks half')
+  assert.match(rev.reason, /bank_partial_1R/)
 })
 
 test('takeAtRFamilies: an explicit list REPLACES the default, an empty list reaches no family, junk degrades', () => {
@@ -307,4 +310,164 @@ test('takeAtRFamilies: an explicit list REPLACES the default, an empty list reac
   assert.deepEqual(p.takeAtRFamilies, ['mean_reversion'], 'a bare string is junk → default')
   setState(db, 'managed_exit_json', JSON.stringify({ takeAtR: 0 }))
   assert.equal(takeAtRFor(loadManagedExit(db), 'rsi2_reversion'), 0, 'takeAtR 0 is off for every family')
+})
+
+// ---------------------------------------------------------------------------
+// PR-J (11-09-2026) — exit asymmetry. Measured over five broker statements and
+// 95 bot deals (09–11 Sep): winners' median move +0.39%, losers' −0.76%, avg
+// win ÷ avg loss 0.72, win rate 51%, realised R:R ≈ 1.01, 34 of 95 closed
+// inside an hour, and ten closed in ONE batch at 21:31 SGT by the time cap
+// after 17–21h held, several in profit. Both halves of the fix live in this
+// policy record so either can be reverted by one stored value.
+//
+// Account ids are READ from the registry the helper seeded, never typed: the
+// repo's rule is last-4 or ACCT-* labels in code, docs and tests.
+// ---------------------------------------------------------------------------
+
+/** The demo (is_live 0) account id withAccounts() registered. */
+function demoAcct(db) {
+  return db.prepare('SELECT account_id FROM accounts WHERE is_live = 0').get().account_id
+}
+const UNREGISTERED = 'ACCT-NOT-IN-REGISTRY'
+
+test('PR-J defaults: half the take, 1.5 trails, winners held past the cap, 72h backstop', () => {
+  assert.equal(MANAGED_EXIT_DEFAULTS.takeFractionAtR, 0.5)
+  assert.equal(MANAGED_EXIT_DEFAULTS.takeTrailAtrMult, 1.5)
+  assert.equal(MANAGED_EXIT_DEFAULTS.timeCapHoldWinners, true)
+  assert.equal(MANAGED_EXIT_DEFAULTS.timeCapHoldMinR, 0)
+  assert.equal(MANAGED_EXIT_DEFAULTS.timeCapTrailAtrMult, 1.5)
+  assert.equal(MANAGED_EXIT_DEFAULTS.timeCapMaxExtraHours, 72)
+})
+
+test('PR-J: both revert switches survive a state write, and junk degrades to the ordered defaults', () => {
+  const db = initDB(':memory:')
+  setState(db, 'managed_exit_json', JSON.stringify({ takeFractionAtR: 1.0, timeCapHoldWinners: false }))
+  let p = loadManagedExit(db)
+  assert.equal(p.takeFractionAtR, 1.0, '1.0 is the revert value and must not be treated as junk')
+  assert.equal(p.timeCapHoldWinners, false, 'false is the revert value and must be readable')
+  setState(db, 'managed_exit_json', JSON.stringify({ takeFractionAtR: 0, timeCapHoldMinR: 0 }))
+  p = loadManagedExit(db)
+  assert.equal(p.takeFractionAtR, 0.5, 'a 0% take is not a rule — junk degrades to the default')
+  assert.equal(p.timeCapHoldMinR, 0, 'but 0R IS a value: hold anything not losing')
+  setState(db, 'managed_exit_json', JSON.stringify({ takeFractionAtR: 2, timeCapMaxExtraHours: 'junk', timeCapTrailAtrMult: -1 }))
+  p = loadManagedExit(db)
+  assert.equal(p.takeFractionAtR, 0.5)
+  assert.equal(p.timeCapMaxExtraHours, 72)
+  assert.equal(p.timeCapTrailAtrMult, 1.5)
+  // CHECKER minor 1: a non-boolean is NOT a revert. `"false"`, `0`, `null` and
+  // `"true"` all used to load as false — so a typo, or an operator sending the
+  // string "true" to switch the rule ON, silently switched it OFF. Only a real
+  // boolean is read; anything else keeps the ordered default.
+  for (const junk of ['yes please', 'true', 'false', 0, 1, null, []]) {
+    setState(db, 'managed_exit_json', JSON.stringify({ timeCapHoldWinners: junk }))
+    assert.equal(loadManagedExit(db).timeCapHoldWinners, true,
+      `a non-boolean (${JSON.stringify(junk)}) must degrade to the default, never to false`)
+  }
+  setState(db, 'managed_exit_json', JSON.stringify({ timeCapHoldWinners: false }))
+  assert.equal(loadManagedExit(db).timeCapHoldWinners, false, 'a real false still reverts')
+})
+
+test('PR-J/M1: the time-cap knobs are CLAMPED at load, so a raw state write cannot disarm the cap', () => {
+  // Checker M1: `{"timeCapHoldMinR": -99}` made `r >= minR` true for every
+  // losing position — one state write disabled the loss-side time cap on every
+  // account — and `timeCapMaxExtraHours: 100000` defeated the backstop the
+  // docs call a hard bound. Clamped in the LOADER, so a raw agent_state write
+  // is covered and not only the route.
+  const db = initDB(':memory:')
+  setState(db, 'managed_exit_json', JSON.stringify({
+    timeCapHoldMinR: -99, timeCapMaxExtraHours: 100000, timeCapTrailAtrMult: 999, takeTrailAtrMult: -4,
+  }))
+  let p = loadManagedExit(db)
+  assert.equal(p.timeCapHoldMinR, 0, 'a negative hold threshold cannot hold losers')
+  assert.equal(p.timeCapMaxExtraHours, 168, 'the backstop is bounded at one week')
+  assert.equal(p.timeCapTrailAtrMult, 10)
+  assert.equal(p.takeTrailAtrMult, MANAGED_EXIT_DEFAULTS.takeTrailAtrMult)
+  setState(db, 'managed_exit_json', JSON.stringify({ timeCapMaxExtraHours: 0 }))
+  assert.equal(loadManagedExit(db).timeCapMaxExtraHours, 1, 'a zero backstop clamps to the tightest bound, never to "off"')
+  // In-range values pass through untouched — a clamp that rounds everything to
+  // its bounds is not a clamp, it is a constant.
+  setState(db, 'managed_exit_json', JSON.stringify({
+    timeCapHoldMinR: 0.5, timeCapMaxExtraHours: 12, timeCapTrailAtrMult: 2.5,
+  }))
+  p = loadManagedExit(db)
+  assert.equal(p.timeCapHoldMinR, 0.5)
+  assert.equal(p.timeCapMaxExtraHours, 12)
+  assert.equal(p.timeCapTrailAtrMult, 2.5)
+})
+
+test('PR-J/M1: a clamped minR still closes losers at the cap — end to end', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'managed_exit_json', JSON.stringify({ timeCapHoldMinR: -99 }))
+  const capAt = new Date(Date.now() - 60_000).toISOString()
+  const pos = {
+    id: 1, symbol: 'TEST', side: 'long', entry_price: 100, current_sl: 99,
+    current_tp: null, initial_risk: 1, mfe_r: 0, mae_r: 0, be_moved: 0,
+    scaled_out: 0, invalidation_trigger: null, time_cap_at: capAt,
+    created_at: new Date().toISOString(),
+  }
+  const rules = applyManagedRules(db, demoAcct(db), { ...DEFAULT_RULES }, { strategy: 'rsi2_reversion' })
+  const out = evaluatePosition(pos, { currentPrice: 99.5, rules }) // −0.5R
+  assert.equal(out.action, 'FULL_EXIT')
+  assert.match(out.reason, /^time_cap_expired \(/)
+})
+
+test('PR-J: the time-cap knobs reach EVERY account, governed or not — the revert switch cannot be half-applied', () => {
+  const db = withAccounts(initDB(':memory:'))
+  const base = { ...DEFAULT_RULES }
+  setState(db, 'managed_exit_json', JSON.stringify({ timeCapHoldWinners: false, timeCapMaxExtraHours: 6 }))
+  for (const acct of [demoAcct(db), UNREGISTERED, null]) {
+    const r = applyManagedRules(db, acct, base, { strategy: 'rsi2_reversion' })
+    assert.equal(r.timeCapHoldWinners, false, `account ${acct}: the cap override must reach it`)
+    assert.equal(r.timeCapMaxExtraHours, 6)
+  }
+  // And with the policy switched off entirely: the time cap is a signal-owned
+  // rule, so its override still applies while the managed trail does not.
+  setState(db, 'managed_exit_json', JSON.stringify({ on: false, timeCapHoldWinners: false }))
+  const off = applyManagedRules(db, demoAcct(db), base, { strategy: 'rsi2_reversion' })
+  assert.equal(off.timeCapHoldWinners, false)
+  assert.equal(off.alwaysTrailR, DEFAULT_RULES.alwaysTrailR, 'the trail is still off when the policy is off')
+})
+
+test('PR-J: bankFraction rides ONLY where the take rides — an out-of-scope family is untouched', () => {
+  const db = withAccounts(initDB(':memory:'))
+  const base = { ...DEFAULT_RULES }
+  const rev = applyManagedRules(db, demoAcct(db), base, { strategy: 'rsi2_reversion' })
+  assert.equal(rev.bankFraction, 0.5)
+  assert.equal(rev.bankTrailAtrMult, 1.5)
+  const trend = applyManagedRules(db, demoAcct(db), base, { strategy: 'ema_pullback' })
+  assert.equal(trend.bankTriggerR, 0, 'trend has no take at all')
+  assert.equal(trend.bankFraction, 1, 'and therefore no fraction that could halve anything')
+})
+
+test('PR-J REVERT SWITCH: takeFractionAtR 1.0 restores the whole-position take end to end', () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'managed_exit_json', JSON.stringify({ takeFractionAtR: 1.0 }))
+  const pos = {
+    id: 1, symbol: 'TEST', side: 'long', entry_price: 100, current_sl: 99,
+    current_tp: null, initial_risk: 1, mfe_r: 0, mae_r: 0, be_moved: 0,
+    scaled_out: 0, invalidation_trigger: null, time_cap_at: null,
+    created_at: new Date().toISOString(),
+  }
+  const rules = applyManagedRules(db, demoAcct(db), { ...DEFAULT_RULES }, { strategy: 'rsi2_reversion' })
+  const out = evaluatePosition(pos, { currentPrice: 101, rules })
+  assert.equal(out.action, 'FULL_EXIT')
+  assert.equal(out.exitFraction, 1)
+  assert.equal(out.reason, 'bank_target_1R (current R=1.00)')
+})
+
+test('PR-J: the banked remainder keeps trailing and is never re-banked', () => {
+  const db = withAccounts(initDB(':memory:'))
+  const rules = applyManagedRules(db, demoAcct(db), { ...DEFAULT_RULES }, { strategy: 'rsi2_reversion' })
+  const banked = {
+    id: 1, symbol: 'TEST', side: 'long', entry_price: 100, current_sl: 100,
+    current_tp: null, initial_risk: 1, mfe_r: 1, mae_r: 0, be_moved: 1,
+    scaled_out: 1, invalidation_trigger: null, time_cap_at: null,
+    bank_partial_at: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+  }
+  const out = evaluatePosition(banked, { currentPrice: 102, rules })
+  assert.notEqual(out.action, 'PARTIAL_EXIT')
+  assert.equal(out.action, 'MOVE_SL')
+  assert.match(out.reason, /managed_trail/, 'the 0.5R managed trail is what carries the remainder')
+  assert.equal(out.newSL, 101.5, 'peak 2R − 0.5R')
 })

@@ -23,6 +23,7 @@ import { getState } from '../db.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { currentR, priceAtR, evaluatePosition, _internal as pmInternal } from './position-manager.js'
 import { loadProfitKeeperConfig } from './profit-keeper.js'
+import { loadManagedExit } from './managed-exit.js'
 import { loadGlobalGuards } from './global-guards.js'
 import { loadRiskConfig } from './risk.js'
 import { trippedKey } from './equity-stop.js'
@@ -145,7 +146,39 @@ export function buildIntention(db, row, live, liveAt, revision, nowMs = Date.now
 
   if (row.time_cap_at) {
     ev(`mp:${mpId}:time_cap`, 'monitored_positions.time_cap_at', null, row.time_cap_at)
-    armed.push({ kind: 'time_cap_exit', trigger: `full exit when now ≥ ${row.time_cap_at}`, triggerPrice: null, distance: null, eta: row.time_cap_at, armed: manager === 'position_manager', ruleSource: 'position_manager', evidence: [`mp:${mpId}:time_cap`] })
+    // PR-J (11-09-2026): the cap no longer promises a full exit. A position at
+    // or above `timeCapHoldMinR` when its cap expires is HELD and trailed, and
+    // what closes it then is the backstop at `timeCapMaxExtraHours`. Saying
+    // "full exit when now ≥ cap" for a position that has already been held is
+    // a card the code does not honour — owner principle 6, "the website shows
+    // no fake result". The stamp on the row is the fact; the policy is the
+    // rule; neither is inferred.
+    const meCfg = (() => { try { return loadManagedExit(db) } catch { return null } })()
+    const holdWinners = meCfg ? meCfg.timeCapHoldWinners === true : false
+    const capMs = Date.parse(row.time_cap_at)
+    const backstopAt = meCfg && Number.isFinite(capMs)
+      ? new Date(capMs + meCfg.timeCapMaxExtraHours * 3_600_000).toISOString()
+      : null
+    if (row.time_cap_trail_at) {
+      ev(`mp:${mpId}:time_cap_trail`, 'monitored_positions.time_cap_trail_at', row.time_cap_trail_at, row.time_cap_trail_at)
+      armed.push({
+        kind: 'time_cap_backstop',
+        trigger: `held past its time cap at ${row.time_cap_trail_at} (in profit, stop tightened); full exit at the backstop ${backstopAt ?? 'unknown'}`,
+        triggerPrice: null, distance: null, eta: backstopAt,
+        armed: manager === 'position_manager', ruleSource: 'position_manager',
+        evidence: [`mp:${mpId}:time_cap`, `mp:${mpId}:time_cap_trail`],
+      })
+    } else {
+      armed.push({
+        kind: 'time_cap_exit',
+        trigger: holdWinners
+          ? `when now ≥ ${row.time_cap_at}: full exit if the position is below +${meCfg.timeCapHoldMinR}R, otherwise held with its stop tightened (backstop ${backstopAt ?? 'unknown'})`
+          : `full exit when now ≥ ${row.time_cap_at}`,
+        triggerPrice: null, distance: null, eta: row.time_cap_at,
+        armed: manager === 'position_manager', ruleSource: 'position_manager',
+        evidence: [`mp:${mpId}:time_cap`],
+      })
+    }
   }
   if (guard) {
     for (let i = 0; i < (guard.takeProfits || []).length; i++) {
@@ -222,13 +255,21 @@ export function buildIntention(db, row, live, liveAt, revision, nowMs = Date.now
   }
   if (row.time_cap_at) {
     const cap = new Date(row.time_cap_at)
+    const past = Number.isFinite(cap.getTime()) && now >= cap
+    // PR-J: 'met' used to imply the position was about to be closed. When the
+    // cap fired and HELD it (time_cap_trail_at stamped), the honest report is
+    // that it was met and answered, not that a close is pending.
     invalidation.push({
       kind: 'time_cap',
-      condition: `held past ${row.time_cap_at}`,
-      state: Number.isFinite(cap.getTime()) && now >= cap ? 'met' : 'watching',
+      condition: row.time_cap_trail_at
+        ? `held past ${row.time_cap_at} — the cap fired at ${row.time_cap_trail_at} and HELD the position (in profit, stop tightened); it now exits on its stop, its target, or the backstop`
+        : `held past ${row.time_cap_at}`,
+      state: past ? (row.time_cap_trail_at ? 'answered' : 'met') : 'watching',
       source: 'monitored_positions.time_cap_at',
       asOf: new Date(nowMs).toISOString(),
-      evidence: [`mp:${mpId}:time_cap`],
+      evidence: row.time_cap_trail_at
+        ? [`mp:${mpId}:time_cap`, `mp:${mpId}:time_cap_trail`]
+        : [`mp:${mpId}:time_cap`],
     })
   }
   if (row.current_sl != null) {

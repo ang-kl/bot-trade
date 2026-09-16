@@ -60,10 +60,14 @@ import { familyOf } from './strategies.js'
  * two call sites is failure mode #3 wearing #4's clothes.
  */
 export function applyManagedRules(db, accountId, rules, { strategy = null } = {}) {
-  if (!managedExitApplies(db, accountId)) return rules
   const policy = loadManagedExit(db)
+  // PR-J: the time-cap fields ride OUTSIDE the governed check — see
+  // timeCapRulesFrom. Everything below it stays exactly as scoped as it was.
+  const withCap = { ...rules, ...timeCapRulesFrom(policy) }
+  if (!managedExitApplies(db, accountId, policy)) return withCap
+  const takeAtR = takeAtRFor(policy, strategy)
   return {
-    ...rules,
+    ...withCap,
     alwaysTrailR: policy.trailR,
     // takeAtR rides the bank-target rule: FULL_EXIT once R reaches it, the
     // trail answering below. 0 keeps the trail as the only exit. SCOPED BY
@@ -74,7 +78,12 @@ export function applyManagedRules(db, accountId, rules, { strategy = null } = {}
     // momentum tail cut off at the root. So only positions whose strategy
     // family is listed get the take; every other family, and a position
     // with no strategy on record (manual, external), keeps the trail alone.
-    bankTriggerR: takeAtRFor(policy, strategy),
+    bankTriggerR: takeAtR,
+    // PR-J: the take is a PARTIAL, and only where the take reaches at all —
+    // an out-of-scope family has no take (bankTriggerR 0), so its fraction
+    // stays 1 and nothing about it changes.
+    bankFraction: takeAtR > 0 ? policy.takeFractionAtR : 1,
+    bankTrailAtrMult: policy.takeTrailAtrMult,
     partialTriggerR: Infinity,
     runnerTriggerR: Infinity,
     beTriggerR: Infinity,
@@ -116,6 +125,33 @@ export const MANAGED_EXIT_DEFAULTS = Object.freeze({
   // Families the take applies to. Measured basis above is reversion-only;
   // trend, breakout and momentum entries keep the trail as their sole exit.
   takeAtRFamilies: ['mean_reversion'],
+  // PR-J (11-09-2026, "exit asymmetry — stop capping the winners"). Measured
+  // over five broker statements / 95 bot deals, 09–11 Sep: winners' median
+  // move +0.39%, losers' −0.76%, avg win ÷ avg loss 0.72, win rate 51%,
+  // realised R:R ≈ 1.01, 34 of 95 closed inside an hour. The winners were
+  // capped at +1R by takeAtR and cut at the clock by the time cap while the
+  // losers ran to full 1–3% stops — a negative expectancy by construction.
+  //
+  // So the take is now a PARTIAL and the rest trails:
+  //   takeFractionAtR  fraction banked at takeAtR. 1.0 = the pre-PR-J whole
+  //                    close, which is the single value that reverts rule 2.
+  //   takeTrailAtrMult trail distance for the remainder, behind the peak,
+  //                    tighten-only, floored at breakeven.
+  takeFractionAtR: 0.5,
+  takeTrailAtrMult: 1.5,
+  // And the time cap stops closing winners:
+  //   timeCapHoldWinners    false = the pre-PR-J behaviour, exactly.
+  //   timeCapHoldMinR       R at or above which a capped position is held.
+  //   timeCapTrailAtrMult   trail distance applied at the cap, tighten-only.
+  //   timeCapMaxExtraHours  hard backstop past the cap — "hold the winner"
+  //                         can never mean "hold forever".
+  // These four are NOT gated by `on` or by the registry: the time cap itself
+  // is a signal-owned rule that reaches every account, so its override must
+  // too, or the revert switch would be out of reach of half of what it guards.
+  timeCapHoldWinners: true,
+  timeCapHoldMinR: 0,
+  timeCapTrailAtrMult: 1.5,
+  timeCapMaxExtraHours: 72,
 })
 
 /** Stored overrides ← defaults. Junk in state degrades to the defaults. */
@@ -123,6 +159,16 @@ export function loadManagedExit(db) {
   let stored = {}
   try { stored = JSON.parse(getState(db, 'managed_exit_json') || '{}') || {} } catch { stored = {} }
   const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
+  // A stored number held inside [lo, hi] — an out-of-range value is CLAMPED to
+  // the nearest bound rather than silently accepted or silently defaulted, so
+  // a state write can tune these knobs but can never take one out of reach of
+  // what it guards. `loInclusive` says whether lo itself is a legal value.
+  const clamp = (v, d, lo, hi, loInclusive = false) => {
+    const n = Number(v)
+    if (v === undefined || v === null || v === '' || !Number.isFinite(n)) return d
+    if (n < lo || (!loInclusive && n === lo)) return loInclusive ? lo : d
+    return Math.min(n, hi)
+  }
   // capMinutes is the one knob where 0 is a VALUE (no policy cap), not junk —
   // `num()` treating 0 as invalid was exactly the guard-out-of-reach shape:
   // a cap you could configure but never turn off.
@@ -141,6 +187,47 @@ export function loadManagedExit(db) {
     takeAtRFamilies: Array.isArray(stored.takeAtRFamilies)
       ? stored.takeAtRFamilies.map(f => String(f))
       : [...MANAGED_EXIT_DEFAULTS.takeAtRFamilies],
+    // PR-J. A fraction outside (0, 1] is junk and degrades to the default;
+    // 1 is a VALUE (the pre-PR-J whole close) and must survive.
+    takeFractionAtR: (() => {
+      const v = Number(stored.takeFractionAtR)
+      return Number.isFinite(v) && v > 0 && v <= 1 ? v : MANAGED_EXIT_DEFAULTS.takeFractionAtR
+    })(),
+    takeTrailAtrMult: clamp(stored.takeTrailAtrMult, MANAGED_EXIT_DEFAULTS.takeTrailAtrMult, 0, 10),
+    // ONLY a real boolean is read (checker minor 1). `"false"`, `0` and `null`
+    // all satisfy `!== undefined`, and the string `"true"` is not `=== true`,
+    // so the earlier version answered FALSE — i.e. reverted the rule — for an
+    // operator trying to turn it ON. Anything that is not a boolean degrades
+    // to the ordered default.
+    timeCapHoldWinners: typeof stored.timeCapHoldWinners === 'boolean'
+      ? stored.timeCapHoldWinners
+      : MANAGED_EXIT_DEFAULTS.timeCapHoldWinners,
+    // CLAMPED, here rather than only at the route, so a raw agent_state write
+    // is covered too (checker M1): a stored −99 made `r >= minR` true for
+    // every losing position and disabled the loss-side cap on every account.
+    // 0 is a VALUE (hold anything not losing) and must survive the clamp.
+    timeCapHoldMinR: clamp(stored.timeCapHoldMinR, MANAGED_EXIT_DEFAULTS.timeCapHoldMinR, 0, 10, true),
+    timeCapTrailAtrMult: clamp(stored.timeCapTrailAtrMult, MANAGED_EXIT_DEFAULTS.timeCapTrailAtrMult, 0, 10),
+    // 1 week is the ceiling: a backstop that can be set to 100,000 hours is
+    // not a backstop, and "hold the winner" would mean "hold forever" again.
+    timeCapMaxExtraHours: clamp(stored.timeCapMaxExtraHours, MANAGED_EXIT_DEFAULTS.timeCapMaxExtraHours, 1, 168, true),
+  }
+}
+
+/**
+ * The four time-cap rule fields, as position-manager rules.
+ *
+ * Separate from the rest because they reach EVERY account: the time cap is
+ * written at fill from the signal's own `time_cap_minutes` and evaluated for
+ * managed and unmanaged positions alike, so an override that only reached
+ * governed accounts would be a switch that reverts half the change.
+ */
+export function timeCapRulesFrom(policy) {
+  return {
+    timeCapHoldWinners: policy.timeCapHoldWinners,
+    timeCapHoldMinR: policy.timeCapHoldMinR,
+    timeCapTrailAtrMult: policy.timeCapTrailAtrMult,
+    timeCapMaxExtraHours: policy.timeCapMaxExtraHours,
   }
 }
 

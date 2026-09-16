@@ -61,13 +61,17 @@ export function decideLossGuardian(cfg, ctx) {
   const { side, entry, price, currentSl, atr, digits, ageHours, hasOwnTimeCap } = ctx
   const long = String(side).toUpperCase() === 'BUY'
 
-  // 1) Hard time cap — but ONLY for positions carrying no time cap of their
-  // own (hardening 6d). The header always promised this; the code never
+  // 1) Hard time cap — but ONLY for positions whose own cap is still going to
+  // close them (hardening 6d; PR-J, 11-09-2026). The header always promised this; the code never
   // checked it, so both mechanisms ran at once and the guardian's blunt
   // maxHoldHours could close a position hours before the position-manager's
   // per-setup time_cap_at (the authoritative cap, sized to the setup's own
   // timeframe) would have. A position with time_cap_at set is the
-  // position-manager's to time out; the guardian defers.
+  // position-manager's to time out; the guardian defers. PR-J narrowed that:
+  // a cap that has already fired and HELD the winner (time_cap_trail_at
+  // stamped) closes nothing, so the caller stops passing hasOwnTimeCap for it
+  // and this hard cap applies again — otherwise a held position would have no
+  // time-based owner at all for up to timeCapMaxExtraHours.
   if (!hasOwnTimeCap
     && cfg.maxHoldHours != null && Number.isFinite(ageHours) && ageHours >= cfg.maxHoldHours) {
     return { action: { close: true }, rule: 'time_cap', reason: `time_cap ${ageHours.toFixed(1)}h ≥ ${cfg.maxHoldHours}h` }
@@ -131,7 +135,7 @@ async function lossGuardianPass(db, creds, deps = {}) {
     }
     const allRows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
-              mp.time_cap_at, mp.source AS source,
+              mp.time_cap_at, mp.time_cap_trail_at, mp.source AS source,
               t.ctrader_position_id AS position_id, t.account_id AS account_id
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
@@ -229,7 +233,11 @@ async function lossGuardianPass(db, creds, deps = {}) {
         atr: atrCache.get(atrKey(td.symbolId, rowCfg)) ?? null,
         digits: meta.digits,
         ageHours,
-        hasOwnTimeCap: r.time_cap_at != null,
+        // PR-J (checker M2): the deferral below holds only while the position
+        // manager's cap still CLOSES the position. Once `time_cap_trail_at` is
+        // stamped the cap has fired and chosen to hold, so this position has
+        // no second time-based owner — the guardian takes its cap back.
+        hasOwnTimeCap: r.time_cap_at != null && r.time_cap_trail_at == null,
       })
       if (!decision.action) continue
 

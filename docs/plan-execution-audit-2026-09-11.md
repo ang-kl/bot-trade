@@ -1186,7 +1186,7 @@ Gate after the checker round: `node --test agent/**/*.test.js` 4,233 tests, 4,23
 
 ---
 
-## 13. Follow-up — PR-I, the sealed-segment read path (segment locality closed), 15-09-2026
+## 13. Follow-up — PR-I, the sealed-segment read path (segment locality closed), 16-09-2026
 
 Dated follow-up per the plan's standing rule. PR-I builds the item this file's own §12.3 named and did NOT build ("the next C++ step, described, not built: `GET /tick-segments` … and `GET /tick-segments/<name>`") and `docs/owner-principles-plan-2026-09-11.md` §8 item 4. Account ids last-4 only. It is a READ path: it places no order, moves no stage, changes no threshold and touches no trading code path.
 
@@ -1276,3 +1276,280 @@ An independent checker attacked the diff. Every finding below is fixed in the sa
 - `npx eslint .` exit 0. `npx vitest run` 79 files / 892 tests pass. `npm run build` built. `npm run check:no-green` OK.
 - `make -C cpp-exec CXX=g++ test all tsan` from an empty `bin/`: **33 test binaries built and run, 31 pass lines** (the suite's binaries print `all passed`, `all assertions passed` or `OK`), **the sidecar `bin/cpp-exec` linked** — which is what compiles `main.cpp` with the new `registerTickSegmentRoutes` call, since the `test` target builds every source EXCEPT `main.cpp` — and **all 10 ThreadSanitizer binaries pass with zero `WARNING: ThreadSanitizer` and no `*** Error` anywhere in the log**. `test_tick_segments: all passed` appears twice: once plain, once under TSan.
 - Per-file for the touched suites: `tick-segments.test.js` 21, `tick-readiness-routes.test.js` 17 (6 of its own plus the helper file's), `tick-research-run.test.js` 11, `test_tick_segments.cpp` 11 cases.
+
+---
+
+## 14. Follow-up — PR-J, exit asymmetry: the winners stop being capped (built 16-09-2026, from the 09–11-09 statements)
+
+*(Numbered 14 as ordered. This file carries no §13 — the numbering is the PR
+order, not a contiguous count; §7 also appears twice, from the PR-C and PR-B
+rounds.)*
+
+Dated follow-up per the plan's standing rule (owner principle 5, "the `.md`
+plans are checked"). Built on `217b4c3`. Ordered by the owner ("finish the
+outstanding") after the measurement below. **This changes EXIT BEHAVIOUR on
+accounts holding real money**, so both halves are config-driven, each revertible
+by ONE stored value, and both switches are named here with the key and the route
+that writes them.
+
+### 14.1 The measurement that ordered it
+
+Five broker statements, 95 bot deals, 09–11 Sep:
+
+| Fact | Value |
+|---|---|
+| Winners' median move | +0.39 % |
+| Losers' median move | −0.76 % |
+| Average win ÷ average loss | 0.72 |
+| Win rate | 51 % |
+| Realised R:R | ≈ 1.01 |
+| Closed inside 1 h | 34 of 95 |
+
+Ten trades were closed in ONE batch at 21:31:00 SGT (the US open) by the
+position manager's time cap after 17–21 h held, several of them in profit.
+The expectancy is negative **by construction**, not by bad entries: the winners
+were capped at +1R by `takeAtR` and cut mid-move by the clock, while the losers
+ran to their full 1–3 % stops. A 51 % win rate with a 0.72 win/loss ratio cannot
+pay. PR-J removes the two caps and leaves the losers' side exactly as it was.
+
+### 14.2 What changed
+
+**Rule 1 — the time cap stops closing winners** (`agent/services/position-manager.js`,
+the cap branch that runs before the price gate):
+
+- R < `timeCapHoldMinR` (default **0**) → `FULL_EXIT`, with the reason string
+  `time_cap_expired (<cap>)` **unchanged**. A loser still dies at the clock.
+- A position whose price cannot be read → `FULL_EXIT`, unchanged. The 03-08-2026
+  rule stands: an unpriceable position past its deadline is more urgent, not
+  less. `r` is null, and null is not ≥ the threshold.
+- R ≥ `timeCapHoldMinR` → **not closed, and not held at full risk**. The stop is
+  tightened to `max(breakeven, peak − timeCapTrailAtrMult × distance)` for a
+  long (min for a short) — **floored at breakeven**, TIGHTEN-ONLY — the row is
+  stamped `time_cap_trail_at`, and the reason is `time_cap_trailing`. The stamp
+  is what stops the branch being re-decided every cycle: from the next pass the
+  ordinary ladder (managed trail, breakeven, invalidation) governs.
+- **If even that floor would not tighten the stop, the hold is REFUSED and the
+  position is closed**, with the pre-PR-J reason string. This is the checker's
+  BLOCKER B1, and it is the load-bearing correction to the first draft of this
+  PR. Without the floor the trail was `peak − 1.5 × 1R`, which with the entry
+  stop at −1R only tightens at peak ≥ 1.5R — while the winners this PR was
+  written about move **+0.13R to +0.39R** (+0.39 % median against 1–3 % stops).
+  Every one of the ten positions in the 21:31 batch would have been stamped,
+  held for up to 72 h and left at **full original risk**: a realised
+  +0.13R…+0.39R converted back into −1R of open risk, up to ≈$10,600 of newly
+  open risk on the $35,320 account at 3 %. The rule is now "hold only if the
+  hold improves the stop"; a hold that cannot improve the stop is an unpriced
+  extension of risk, and the cap closes as before.
+- `timeCapMaxExtraHours` (default **72**) is the backstop: past `time_cap_at`
+  plus that many hours a held winner is closed with
+  `time_cap_expired_backstop`. "Hold the winner" can never mean "hold forever".
+
+**Rule 2 — the +1R take becomes a partial, and the rest trails**
+(same file, the bank-target branch; wired through `agent/services/managed-exit.js`):
+
+- Where the managed take fires (R ≥ `bankTriggerR`, i.e. `takeAtR` 1.0 for the
+  families in `takeAtRFamilies` — unchanged, still `['mean_reversion']` only),
+  the action is now `PARTIAL_EXIT` of `takeFractionAtR` (default **0.5**), the
+  stop moves to **at least breakeven** and the remainder trails
+  `takeTrailAtrMult` (default **1.5**) behind the peak, tighten-only.
+- The row is stamped `bank_partial_at`, and the remainder is **never** re-banked
+  at the same trigger — without that stamp the remainder sits above the trigger
+  on the very next pass and is banked again, a loop of ever-smaller partials
+  each paying spread.
+- `PARTIAL_EXIT` was already an executed action in `agent/loop.js` and already
+  sizes from broker truth; no new execution path was written.
+
+**Trail distances, and how often the ATR is really there.** Both trails are ATR
+multiples where an ATR is available and multiples of the position's own initial
+risk (1R, also a price distance) where it is not; the reason string says which
+basis was used (`1.5×ATR` or `1.5R (no ATR)`). The ATR is READ from the profit
+keeper's in-memory cache (`cachedAtrForSymbol`, new in `profit-keeper.js`) —
+never fetched on the monitor's path.
+
+An earlier draft of this section claimed the 1R fallback is "the common path".
+**That claim is withdrawn: it cannot be determined from the repo.** What the
+repo does say: the keeper's default mode is `adaptive` and it runs from the same
+process and the same ticker as the monitors, so the cache is shared; it writes an
+ATR per symbol it processes, valid for one bar of `atrTimeframe` (default 1h);
+and it processes only positions in its own scope (`guard_json` null,
+`keeper_opt_out` not 1, the source whitelist). Whether production's stored
+`profit_keeper_json` sets `adaptive` or `fixed`, and what the resulting hit rate
+is, is **not knowable from this repository** — it is a runtime fact and is not
+asserted here either way. The B1 arithmetic above is stated in the 1R basis
+because that is the reachable-by-construction path; with an ATR the distance can
+be tighter OR looser than 1.5R, and the breakeven floor plus the tighten-only
+guard bound both cases identically.
+
+### 14.3 The two revert switches
+
+Storage key: **`agent_state.managed_exit_json`** (the existing managed-exit
+policy record). Route: **`POST /actions/managed-exit`** — added by this PR,
+because until now the record could only be changed by a raw state write, which
+is not a revert path anybody can use under pressure. The route merges into what
+is STORED and replies with the EFFECTIVE policy read back through the loader.
+
+| To revert | POST body | Effect |
+|---|---|---|
+| Rule 1 | `{"timeCapHoldWinners": false}` | The time cap closes winners again, with the pre-PR-J reason string and no stamp. Pinned by a test. |
+| Rule 2 | `{"takeFractionAtR": 1.0}` | The take closes the whole position again, reason `bank_target_1R (current R=…)`. Pinned by a test. |
+
+`timeCapHoldMinR`, `timeCapTrailAtrMult`, `timeCapMaxExtraHours` and
+`takeTrailAtrMult` are tunable through the same route, **within clamps applied
+in the loader** (so a raw `agent_state` write is bound too, not only the route):
+`timeCapHoldMinR` ∈ [0, 10], `timeCapMaxExtraHours` ∈ [1, 168] hours,
+`timeCapTrailAtrMult` and `takeTrailAtrMult` ∈ (0, 10], `takeFractionAtR`
+∈ (0, 1]. Checker M1: before the clamps, `{"timeCapHoldMinR": -99}` made
+`r >= minR` true for every losing position — one state write disabled the
+loss-side time cap on every account — and `timeCapMaxExtraHours: 100000`
+defeated the backstop this document calls a hard bound.
+
+**The boolean fields take only booleans.** `on` and `timeCapHoldWinners` are
+read with `typeof === 'boolean'`; anything else keeps the ordered default, and
+the route answers **400 `not_a_boolean`**. The earlier `=== true` read the
+string `"true"` as false, so an operator asking to switch the rule ON would have
+switched it OFF (checker minor 1).
+
+**One more thing to be plain about (checker minor 2):** because the four
+time-cap fields deliberately bypass the registry and the policy's `on` flag,
+`{"on": false}` no longer switches off the whole of PR-J — it stops the managed
+trail and the take, and leaves the cap's hold-the-winner behaviour running. The
+only full revert of rule 1 is `{"timeCapHoldWinners": false}`. The four time-cap fields
+deliberately ride OUTSIDE the managed-exit registry/`on` check: the time cap is
+a signal-owned rule that reaches every account, so an override that reached only
+governed accounts would be a switch that reverts half the change. The take's
+fraction rides only where the take itself rides — an out-of-scope family has no
+take, so its fraction stays 1 and nothing about it changes.
+
+### 14.4 What this does NOT change
+
+- **Stops.** No stop is ever widened. Both new trails are tighten-only, and the
+  loosening case is pinned by a test and by mutation (b).
+- **Sizing, entry rules, the risk config.** Untouched.
+- **The loss guardian's behaviour where its cap applies** — but its DEFERRAL
+  changed, and had to (checker M2). It skipped `maxHoldHours` for any position
+  carrying its own `time_cap_at`, on the reasoning that the position manager's
+  cap always closes. It no longer always closes, so a held position would have
+  had **no time-based owner at all** for up to 72 h. The guardian now defers
+  only while the cap is still going to close the position:
+  `hasOwnTimeCap: time_cap_at != null && time_cap_trail_at == null`. Once the
+  hold is stamped, the guardian's own cap applies again. There is still no
+  double-close: exactly one of the two owns any position at any time.
+- **The momentum/book rules** and every family outside `takeAtRFamilies`.
+- **`takeAtRFamilies` itself** — still the 07-09 scope, `['mean_reversion']`.
+- **The reason string a loser carries at the clock** — `time_cap_expired (…)`,
+  byte for byte, so the ledger and the postmortems keep reading.
+
+### 14.5 Residual risk, stated plainly
+
+Holding winners past their cap raises overnight and weekend gap exposure: a
+position that would have been closed at 21:31 SGT can now sit through a US
+session, a roll, or a Friday close, and a gap through the trailed stop fills
+worse than the stop level. That is a real, new exposure and it is the price of
+not capping the winners. Four things bound it: a position is held ONLY if the hold improves its stop, and
+the stop it gets is at least breakeven (B1), so a held position carries no
+open loss at the moment it is held; the `timeCapMaxExtraHours` backstop closes it
+72 h past its cap whatever it is doing, and that number is clamped to a week;
+the loss guardian's `maxHoldHours` applies again once the hold is stamped (M2);
+and the weekend/naked-position controllers are unchanged and still run. What is NOT bounded is gap risk inside those 72 h; if that proves
+too wide, `timeCapMaxExtraHours` is the number to cut — or
+`timeCapHoldWinners: false` to revert the rule entirely.
+
+### 14.6 Replay of the 21:31 batch — NOT run, and why
+
+`agent/services/exit-counterfactual.js` is the service built to measure exactly
+this, and it could not be driven here. It replays from
+`trade_postmortems.bars_json` in the PRODUCTION ledger; this worktree has no
+such rows and the repo carries no fixture of the 09–11 Sep deals. Its replay
+rules (`agent/lib/exit-replay.js`) also do not model the new hold-and-trail cap,
+so a comparison would need a new rule variant there as well. Rather than invent
+a number, the statement stands: **the old-vs-new figure for the 21:31 batch has
+not been measured.** The behavioural difference is pinned by tests
+(`exit-asymmetry.test.js`: a +2R position 3 h past its cap is trailed and left
+open where it would previously have been closed), not by a replayed P&L.
+
+### 14.7 Files, tests and mutations
+
+Changed: `agent/services/position-manager.js`, `agent/services/managed-exit.js`,
+`agent/services/profit-keeper.js` (read-only ATR helper), `agent/loop.js`
+(the cached ATR passed in; `roundAmendPayload` + `symbolDigitsFor` shared by both
+amend sites; `stampExitMarks`, which writes from the broker outcome; the
+unfillable-partial fallback), `agent/services/fast-monitor.js` (the same ATR and
+the same stamp helper), `agent/services/loss-guardian.js` (the narrowed
+deferral), `agent/services/cockpit-intention.js` (the held-position card and
+invalidation state), `agent/db.js` (two columns + migrations),
+`agent/routes/actions.js` (the revert route, with boolean strictness). New:
+`agent/services/exit-asymmetry.test.js`. Updated tests:
+`position-manager.test.js`, `managed-exit.test.js`, `keeper-integration.test.js`
+(three cases encoded the old "a winner at the cap is closed" behaviour and now
+encode the new one, with the pre-PR-J behaviour kept under the revert switch),
+`amend-preserves-tp.test.js` (the rounding pin follows the shared helper, plus
+the partial branch and a behavioural rounding test).
+
+Mutation checks (needle counted present-before → absent-after, file restored by
+copy and re-counted):
+
+| # | Mutation | Needle | Count | Result |
+|---|---|---|---|---|
+| a | the `R ≥ timeCapHoldMinR` hold branch forced false | `const wouldHold = holdWinners && r != null && r >= minR` | 1 → 0 (restored 1) | 7 fail, incl. "time cap expired on a WINNER → trails instead of closing" |
+| b | the cap trail's tighten-only guard removed | `if (isTighter(pos.side, pos.current_sl, trailSL)) {` (the `time_cap_trailing` return) | 1 → 0 (restored 1) | 1 fail: "the cap trail NEVER loosens an existing stop" |
+| c | the backstop removed | `const backstopped = backstopAt != null && now.getTime() >= backstopAt` | 1 → 0 (restored 1) | 1 fail: "the backstop closes the held winner at timeCapMaxExtraHours" |
+| d | the partial's "already banked" stamp guard removed | `if (!pos.bank_partial_at) {` | 1 → 0 (restored 1) | 1 fail: "the remainder is NEVER re-banked at the same trigger" |
+| e | the B1 breakeven FLOOR removed (`trailSL = t`) | `trailSL = long ? Math.max(trailSL, t) : Math.min(trailSL, t)` | 1 → 0 (restored 1) | 7 red: every case in the 0.13R–0.9R band |
+| f | the M1 minR clamp reverted to the raw read | `timeCapHoldMinR: clamp(…, 0, 10, true)` | 1 → 0 (restored 1) | 2 red: the clamp test and the end-to-end loser close |
+| g | the M4 outcome gate removed (stamp regardless of the broker) | `if (!outcome \|\| outcome.error \|\| outcome.skipped) return false` | 1 → 0 (restored 1) | 2 red: the broker-error and skipped cases |
+| h | the M4 unfillable-partial fallback removed | `if (eval_.fallbackFullExitIfUnfillable) {` | 1 → 0 (restored 1) | 1 red: the below-min-lot fallback |
+| i | the M2 guardian deferral put back to `time_cap_at != null` | `hasOwnTimeCap: r.time_cap_at != null && r.time_cap_trail_at == null` | 1 → 0 (restored 1) | 1 red: the guardian caller pin |
+| j | the M5 held-position card branch removed | `if (row.time_cap_trail_at) {` | 1 → 0 (restored 1) | 1 red: the cockpit card test |
+| k | the M3 partial rounding removed (raw `eval_.newSL` back in the payload) | `stopLoss: runnerSend.stopLoss,` | 1 → 0 (restored 1) | 1 red: the PARTIAL_EXIT rounding pin |
+
+Mutations a–d were run on the first build; e–k were added for the checker round
+(one per fix) and a–d re-run against the corrected code. Every needle was counted
+present before, absent after, and present again after the copy-restore.
+
+Gate in the worktree after the checker round:
+`shopt -s globstar; node --test agent/**/*.test.js` 4,286 tests / 4,285 pass /
+0 fail / 1 standing skip; `npx eslint .` exit 0; `npx vitest run` 79 files /
+892 tests pass; `npm run build` built; `npm run check:no-green` OK. No C++
+touched.
+
+### 14.9 Checker round (11-09-2026) — what the independent review changed
+
+One BLOCKER, four MAJORs and three minors, all fixed in place:
+
+| # | Finding | Fix |
+|---|---|---|
+| B1 | in the +0.13R…+0.39R band this PR is about, nothing was trailed: the position was stamped and held at FULL ORIGINAL RISK for up to 72 h | the trail is floored at breakeven, and a hold that would not tighten the stop is refused — the cap closes as before (§14.2) |
+| M1 | `timeCapHoldMinR: -99` disabled the loss-side cap on every account; `timeCapMaxExtraHours: 100000` defeated the backstop | clamped in the LOADER, so a raw state write is bound too, not only the route (§14.3) |
+| M2 | the loss guardian deferred to exactly the positions now being held, leaving them with no time-based owner | it defers only while the cap will still close: `time_cap_at != null && time_cap_trail_at == null` (§14.4) |
+| M3 | the partial's runner-leg amend was the one price-bearing path with no digit rounding, and PR-J made it reachable | `roundAmendPayload` + `symbolDigitsFor` hoisted and used at BOTH amend sites; the DB records what was sent |
+| M4 | stamps were written before execution, so a refused amend or an unsizable partial disarmed the rule forever | `stampExitMarks` writes only on `!error && !skipped`; an unfillable bank partial falls back to the full exit it replaced |
+| M5 | the cockpit still promised "full exit when now ≥ cap" for a position that had been held | the card branches on the stamp and the policy: a held position shows `time_cap_backstop` with the backstop eta, and the invalidation reads `answered` |
+| minor 1 | `"true"` stored FALSE — asking to enable silently disabled | booleans read with `typeof`; the route answers 400 `not_a_boolean` |
+| minor 2 | `on:false` no longer reverts the whole change | stated plainly in §14.3: the only full revert of rule 1 is `timeCapHoldWinners:false` |
+| minor 3 | on a stop-less row the trail would have PLACED a stop at peak − 1.5R | closed by B1's floor, with its own test |
+
+The checker also asked whether the "the 1R fallback is the common path" claim
+could be confirmed. It could not, and it is withdrawn — see §14.2.
+
+### 14.8 What an operator sees on the first loop after deploy
+
+- Positions sitting past their time cap **in profit, where the hold improves the
+  stop** stop being closed. Their row reads `PM:MOVE_SL` / `FAST:MOVE_SL` with a
+  reason beginning `time_cap_trailing`, their broker stop moves to at least
+  breakeven, and `time_cap_trail_at` is set **only after the broker confirms**.
+  A position already stopped tighter than breakeven is still closed at the cap,
+  exactly as before.
+- If an amend is refused (MARKET_CLOSED and similar), the row reads
+  `broker_error` and **no stamp is written** — the next pass decides again.
+- The cockpit's position card no longer says "full exit when now ≥ cap" for a
+  held position; it shows a `time_cap_backstop` card whose eta is the backstop
+  time, and the time-cap invalidation reads `answered` rather than `met`.
+- Positions past their cap **at a loss** behave exactly as before:
+  `PM:FULL_EXIT`, `time_cap_expired (…)`.
+- The next `mean_reversion` position to touch +1R produces a `PARTIAL_EXIT`
+  (`bank_partial_1R 50%`) instead of a full close: half the volume banked, the
+  stop at or above breakeven on the runner, `bank_partial_at` stamped, and the
+  0.5R managed trail carrying the remainder from then on.
+- Open-position count and margin usage therefore run HIGHER than before at the
+  same cadence — held winners keep their margin. The position cap
+  (`maxOpenPositions` 5, the book's 8) is unchanged and still binds new entries.

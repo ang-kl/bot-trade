@@ -25,6 +25,7 @@ import { setStage, accountStageTallies, unpinTradeStageEverywhere } from '../ser
 import { loadManualGuards, checkAddCap, inheritedBracket, mirroredBracket, isDuplicateCall } from '../services/manual-position-guards.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
+import { loadManagedExit, MANAGED_EXIT_DEFAULTS } from '../services/managed-exit.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
@@ -1615,6 +1616,54 @@ export default function actionsRouter(db, deps = {}) {
     setState(db, 'session_open_guard_json', JSON.stringify(next))
     console.log(`[actions] session-open guard →`, next)
     res.json({ ok: true, ...next })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/managed-exit — the managed-exit policy record, and with it
+  // BOTH of PR-J's revert switches (11-09-2026, "exit asymmetry"):
+  //
+  //   { takeFractionAtR: 1.0 }        → the +1R take closes the whole position
+  //                                     again, exactly as before PR-J.
+  //   { timeCapHoldWinners: false }   → the time cap closes winners again,
+  //                                     exactly as before PR-J.
+  //
+  // Storage key: agent_state.managed_exit_json. Until this route existed the
+  // record could only be changed by a raw state write, which is not a revert
+  // path anybody can use under pressure.
+  //
+  // Starts from what is STORED and applies the patch — never rebuilt field by
+  // field from a fixed list, which is how eight knobs were silently dropped
+  // from the profit-keeper reply (failure mode #5).
+  // -----------------------------------------------------------------------
+  router.post('/managed-exit', (req, res) => {
+    const b = req.body || {}
+    const stored = storedObject(db, 'managed_exit_json')
+    const next = { ...stored }
+    // A BOOLEAN FIELD TAKES ONLY A BOOLEAN (checker minor 1). `=== true` would
+    // read the string "true" as false — an operator asking to switch the rule
+    // ON would silently switch it OFF, which is the one direction that must
+    // never happen by accident. Refused loudly instead.
+    const bad = []
+    const bool = (k) => {
+      if (b[k] === undefined) return
+      if (typeof b[k] !== 'boolean') { bad.push(k); return }
+      next[k] = b[k]
+    }
+    const number = (k) => { if (b[k] !== undefined && Number.isFinite(Number(b[k]))) next[k] = Number(b[k]) }
+    bool('on')
+    bool('timeCapHoldWinners')
+    if (bad.length) {
+      return res.status(400).json({ error: 'not_a_boolean', fields: bad, hint: 'send true or false, not a string' })
+    }
+    for (const k of ['capMinutes', 'trailR', 'takeAtR', 'takeFractionAtR', 'takeTrailAtrMult',
+      'timeCapHoldMinR', 'timeCapTrailAtrMult', 'timeCapMaxExtraHours']) number(k)
+    if (Array.isArray(b.takeAtRFamilies)) next.takeAtRFamilies = b.takeAtRFamilies.map(String)
+    setState(db, 'managed_exit_json', JSON.stringify(next))
+    // The EFFECTIVE policy is read back through the loader, so the reply is
+    // what the rules will actually see rather than an echo of the patch.
+    const effective = loadManagedExit(db)
+    console.log('[actions] managed-exit →', effective)
+    res.json({ ok: true, stored: next, effective, defaults: MANAGED_EXIT_DEFAULTS })
   })
 
   // -----------------------------------------------------------------------
