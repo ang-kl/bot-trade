@@ -351,11 +351,35 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   const ordered = deps.marginHeadroom
     ? [...accounts].map((a, i) => ({ a, i, h: headroomOf(a) })).sort((x, y) => ((y.h ?? 0) - (x.h ?? 0)) || (x.i - y.i)).map(x => x.a)
     : accounts
+  // HOW MANY WERE CONSIDERED, so "on N account(s)" can never again be read
+  // without knowing what N is out of. `summary.accounts` keeps its meaning
+  // (the accounts the pass RAN on); `considered` is what was handed in.
+  summary.considered = ordered.length
+  summary.notArmed = 0
+  summary.armCheckFailed = 0
   for (const acct of ordered) {
     const accountId = String(acct.accountId)
+    // THE ARM GATE RECORDS ITS REFUSAL (owner principle 4, measured
+    // 16-09-2026): this branch used to `continue` silently while the two
+    // below it pushed to `skipped`, so production logged "on 1 account(s)"
+    // with no suffix while six of seven enabled accounts were dropped and
+    // nothing anywhere said so. A THROW is not a configuration choice and
+    // must not read as one — `catch { armed = false }` made the two
+    // indistinguishable, so the error is carried out of the catch and
+    // reported as its own cause.
     let armed = false
-    try { armed = armedTradeKeys(db, getState, accountId).has(TSMOM_STRATEGY) } catch { armed = false }
-    if (!armed) continue
+    let armError = null
+    try { armed = armedTradeKeys(db, getState, accountId).has(TSMOM_STRATEGY) } catch (err) { armed = false; armError = err }
+    if (armError) {
+      summary.armCheckFailed++
+      summary.skipped.push(`${accountId}: arm check failed — ${armError.message} (NOT a configuration choice; the strategy's armed state is unknown)`)
+      continue
+    }
+    if (!armed) {
+      summary.notArmed++
+      summary.skipped.push(`${accountId}: ${TSMOM_STRATEGY} not armed`)
+      continue
+    }
     if (deps.phasesOn && !deps.phasesOn(accountId)) { summary.skipped.push(`${accountId}: autotrade off`); continue }
     const creds = credsFor(acct)
     if (!creds) { summary.skipped.push(`${accountId}: no credentials`); continue }
@@ -743,6 +767,17 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     } catch (err) { summary.skipped.push(`${row.symbol} trail: ${err.message}`) }
   }
 
+  // THE ROLL-UP GOES FIRST, because the only place this summary is printed
+  // (loop.js: `mb.skipped.slice(0, 4)`) shows four entries at most — a count
+  // that arrives fifth is a count nobody reads. It is unshifted only when
+  // accounts were actually dropped, so a clean pass keeps its log line
+  // unchanged. Nothing else in the summary is reordered or redefined.
+  if (summary.accounts < summary.considered) {
+    const why = []
+    if (summary.notArmed) why.push(`${summary.notArmed} not armed for ${TSMOM_STRATEGY}`)
+    if (summary.armCheckFailed) why.push(`${summary.armCheckFailed} arm check failed`)
+    summary.skipped.unshift(`considered ${summary.considered} account(s), ran on ${summary.accounts}${why.length ? ` — ${why.join(', ')}` : ''}`)
+  }
   setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: maxId, lastRunMs: now, reconciledAt: state.reconciledAt || {}, rankExitAt: state.rankExitAt || {}, pendingFlips: state.pendingFlips || {} }))
   return summary
 }
