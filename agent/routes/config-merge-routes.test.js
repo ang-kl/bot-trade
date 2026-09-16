@@ -96,5 +96,38 @@ test('momentum-book: a one-knob POST keeps every other stored knob, and the hori
     assert.equal(stored.stopAtr, 4)
     assert.equal(stored.bookMinHoldHours, 24)
     assert.equal(stored.bookExitCadence, 'daily')
+    // PR-P (16-09-2026): the entry brake's five knobs go through the SAME
+    // merge. This is a risk control, so the regression that matters is the
+    // one the comment above names — a knob added to momentumBookConfig and
+    // forgotten in the route's key list, which would leave the brake
+    // un-tunable and, worse, reset by any unrelated POST.
+    r = await post(h, '/actions/momentum-book', { bookDrawdownPct: 35 })
+    stored = loadMomentumBook(h.db)
+    assert.equal(stored.bookDrawdownPct, 35, 'the brake threshold is writable')
+    assert.equal(stored.bookDrawdownOn, true)
+    assert.equal(stored.stopAtr, 4, 'and the previous POST survives it')
+    r = await post(h, '/actions/momentum-book', { bookDrawdownMinRows: 3, bookMarkMaxAgeHours: 48, bookDrawdownMinCoveragePct: 80 })
+    stored = loadMomentumBook(h.db)
+    assert.deepEqual([stored.bookDrawdownMinRows, stored.bookMarkMaxAgeHours, stored.bookDrawdownMinCoveragePct, stored.bookDrawdownPct], [3, 48, 80, 35])
+    // An unrelated POST must not reset the brake — the exact failure the
+    // rebuild-instead-of-merge regression caused before (failure mode #5).
+    await post(h, '/actions/momentum-book', { conviction: 9 })
+    stored = loadMomentumBook(h.db)
+    assert.deepEqual([stored.conviction, stored.bookDrawdownPct, stored.bookDrawdownMinRows, stored.bookDrawdownMinCoveragePct], [9, 35, 3, 80])
+    // A cleared field cannot turn a risk control off, and cannot widen it.
+    await post(h, '/actions/momentum-book', { bookDrawdownOn: null, bookDrawdownPct: '' })
+    stored = loadMomentumBook(h.db)
+    assert.equal(stored.bookDrawdownOn, true, 'null is not false')
+    assert.equal(stored.bookDrawdownPct, 50, "'' falls back to the default, never to a permissive number")
+    // Out of range in EITHER direction falls back to the default too — the
+    // clamping version sent -500 to the floor (freezing every account) and
+    // 5000 to the ceiling (as good as off). Both are the worst reading.
+    await post(h, '/actions/momentum-book', { bookDrawdownPct: -500 })
+    assert.equal(loadMomentumBook(h.db).bookDrawdownPct, 50)
+    await post(h, '/actions/momentum-book', { bookDrawdownPct: 5000 })
+    assert.equal(loadMomentumBook(h.db).bookDrawdownPct, 50)
+    // OFF is still reachable, deliberately and explicitly.
+    await post(h, '/actions/momentum-book', { bookDrawdownOn: false })
+    assert.equal(loadMomentumBook(h.db).bookDrawdownOn, false)
   } finally { h.close() }
 })
