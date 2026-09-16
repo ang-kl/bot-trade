@@ -3551,6 +3551,24 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/armed-cell-reachability — armed symbol×timeframe cells that
+  // NO scan can ever produce, with what would fix each one. A diagnostic:
+  // it reads state and computes; it changes nothing. See
+  // services/armed-cell-reachability.js for the measured defect it exists
+  // for. Dynamic import (like /risk-full) so a sync route file does not pull
+  // the scanner — and therefore `ws` — into every boot path that mounts
+  // these routes.
+  // -----------------------------------------------------------------------
+  router.get('/armed-cell-reachability', async (_req, res) => {
+    try {
+      const { readArmedCellReachability } = await import('../services/armed-cell-reachability.js')
+      res.json(readArmedCellReachability(db, getState))
+    } catch (e) {
+      res.json({ cells: [], symbols: [], error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/timeframe-performance — win/loss/no-trade per autotrade
   // timeframe over rolling windows (Tune → Pipeline table)
   // -----------------------------------------------------------------------
