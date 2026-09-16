@@ -55,3 +55,46 @@ test('performance-breaker: a stored key the route does not know survives a parti
     assert.equal(r.futureKnob, 'x')
   } finally { h.close() }
 })
+
+// PR-K (16-09-2026): the momentum book's horizon switches are the REVERT path
+// for a change to exit behaviour on real money, so the merge is exercised for
+// real rather than asserted against the route's source text. A source-text pin
+// cannot catch the regression it is named for — a ninth knob added to
+// momentumBookConfig and forgotten in the route's key list leaves it green.
+test('momentum-book: a one-knob POST keeps every other stored knob, and the horizon switches are writable and readable', async () => {
+  const h = await server()
+  try {
+    const { MOMENTUM_BOOK_CONFIG_KEY, loadMomentumBook } = await import('../services/momentum-book.js')
+    setState(h.db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({
+      enabled: true, timeframe: '1d', atrPeriod: 20, stopAtr: 3, maxPositionsPerAccount: 8, conviction: 8,
+      bookExitCadence: 'daily', bookMinHoldHours: 24,
+    }))
+    // The revert: one value, posted alone.
+    let r = await post(h, '/actions/momentum-book', { bookExitCadence: 'every_pass' })
+    assert.equal(r.ok, true)
+    assert.equal(r.effective.bookExitCadence, 'every_pass', 'the reply is the effective policy')
+    let stored = loadMomentumBook(h.db)
+    assert.equal(stored.bookExitCadence, 'every_pass')
+    assert.equal(stored.enabled, true, 'the book was not switched off by an unrelated POST')
+    assert.equal(stored.bookMinHoldHours, 24, 'the other horizon knob survives')
+    assert.equal(stored.stopAtr, 3)
+    assert.equal(stored.maxPositionsPerAccount, 8)
+    // And back again, plus the hold, each one alone.
+    r = await post(h, '/actions/momentum-book', { bookExitCadence: 'daily' })
+    assert.equal(r.effective.bookExitCadence, 'daily')
+    r = await post(h, '/actions/momentum-book', { bookMinHoldHours: 12 })
+    stored = loadMomentumBook(h.db)
+    assert.equal(stored.bookMinHoldHours, 12)
+    assert.equal(stored.bookExitCadence, 'daily', 'the cadence set a moment ago is not reset by the next POST')
+    assert.equal(stored.conviction, 8)
+    // A cleared field must not silently disable the hold.
+    r = await post(h, '/actions/momentum-book', { bookMinHoldHours: null })
+    assert.equal(loadMomentumBook(h.db).bookMinHoldHours, 24, 'null is not 0 — it falls back to the default')
+    // An unrelated POST leaves the horizon alone.
+    await post(h, '/actions/momentum-book', { stopAtr: 4 })
+    stored = loadMomentumBook(h.db)
+    assert.equal(stored.stopAtr, 4)
+    assert.equal(stored.bookMinHoldHours, 24)
+    assert.equal(stored.bookExitCadence, 'daily')
+  } finally { h.close() }
+})

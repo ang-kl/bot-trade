@@ -17,13 +17,21 @@ import { initDB, getState, setState } from '../db.js'
 import { setStage } from './stage-matrix.js'
 import {
   atrOf, trailStop, trailImproves, buildEntrySynth, momentumBookConfig, runMomentumBook, momentumBookReport,
-  MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_STATE_KEY, TSMOM_STRATEGY, DEFAULT_MOMENTUM_BOOK, RECONCILE_EVERY_MS,
+  MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_STATE_KEY, TSMOM_STRATEGY, DEFAULT_MOMENTUM_BOOK, RECONCILE_EVERY_MS, PENDING_FLIP_TTL_MS,
 } from './momentum-book.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 
 const DEMO = '111', LIVE = '222'
 const cfg = momentumBookConfig({ enabled: true })
+// PR-K (16-09-2026). The cases written before PR-K exercise a RANK EXIT on
+// the pass that follows the shadow row — which is exactly the behaviour
+// `bookExitCadence: 'every_pass'` restores, so they are kept verbatim as the
+// restore-switch pin and say so here. The new default ('daily' cadence + a
+// 24 h minimum hold) has its own cases at the end of this file; nothing that
+// is NOT a rank exit (the stop, the refused-exit retry, the owed exit from a
+// previous day) is configured away anywhere.
+const EVERY_PASS = { enabled: true, bookExitCadence: 'every_pass' }
 
 test('off by default; config repairs nonsense', () => {
   assert.equal(DEFAULT_MOMENTUM_BOOK.enabled, false)
@@ -249,7 +257,7 @@ test('the REGIME GATE is on the book\'s path (checker MAJOR 1): a long into a qu
 
 test('CHECKER COUNTEREXAMPLE (BLOCKER): shadow exit(long)+enter(short) for one name in ONE batch — the long is exited FIRST (rank exit (flip)) and the short entered; a later shadow exit of the short closes the SHORT row', async () => {
   const db = fresh()
-  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
   const f = fakes(); const one = [{ accountId: DEMO, isLive: false }]
   shadowRow(db, { symbol: 'NATGAS', action: 'enter', side: 'long', rank: 0.95, conviction: 9 })
@@ -278,7 +286,7 @@ test('CHECKER COUNTEREXAMPLE (BLOCKER): shadow exit(long)+enter(short) for one n
 test('a flip whose short is REFUSED still exits the long (the exit never waits on the entry); a flip the cursor already passed is an OWED exit (last word: enter on the other side)', async () => {
   // refused short: no trend reading → the long still goes
   let db = fresh()
-  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
   let f = fakes(); const one = [{ accountId: DEMO, isLive: false }]
   shadowRow(db, { symbol: 'NATGAS', action: 'enter', side: 'long', rank: 0.95, conviction: 9 })
@@ -290,7 +298,7 @@ test('a flip whose short is REFUSED still exits the long (the exit never waits o
   assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'exit_sent')
   // owed: the cursor has already passed the flip rows (an earlier pass whose close failed silently, before the flag existed)
   db = fresh()
-  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
   f = fakes()
   shadowRow(db, { symbol: 'NATGAS', action: 'enter', side: 'long', rank: 0.95, conviction: 9, at: '2026-09-10T00:00:00.000Z' })
@@ -305,7 +313,7 @@ test('a flip whose short is REFUSED still exits the long (the exit never waits o
 test('PR-D: the trail moves a short\'s stop DOWN and never up; the ledger follows; a rank exit closes the short', async () => {
   const db = fresh()
   trendRow(db, 'NATGAS', 'short')
-  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
   shadowRow(db, { symbol: 'NATGAS', action: 'enter', side: 'short', rank: 0.05, conviction: 9 })
   const f = fakes()
@@ -365,7 +373,7 @@ test('accounts where tsmom_long is not armed, or autotrade is off, are skipped; 
 
 test('a shadow exit closes the position and marks the row; the trail ratchets the stop up, never down, and a closed trade closes the row', async () => {
   const db = fresh()
-  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
   shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
   const f = fakes()
@@ -503,7 +511,7 @@ test('the symbol id is resolved PER ACCOUNT through symbolIdFor(creds, symbol); 
 
 test('an open tsmom_long trade with no book row (a resting limit that filled later) is adopted once, keeper paused; an exited row is not re-adopted', async () => {
   const db = fresh()
-  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
   // The limit path stamps a 1.5R target (3.45) on both rows; the book must clear it at adoption.
   const tid = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES ('NATGAS','BUY','open',3.0,2.7,3.45,?,?,?,'bot_market_dispatch','pos-late',datetime('now'))`)
@@ -651,7 +659,7 @@ test('bookCloseVolume: broker volume first, trade lots × lot size second, null 
 
 test('a rank exit with no resolvable volume is NOT sent: the row stays open, the summary says why, and the next pass retries once the broker answers', async () => {
   const db = fresh()
-  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
   shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
   const f = fakes()
@@ -691,7 +699,7 @@ test('wiring pin: both book exit paths resolve the volume before the close', () 
 // ---------------------------------------------------------------------------
 test('an open row whose newest shadow word is exit (after entry) is exited even with no flag; adopted rows the shadow never ranked and re-entries are untouched', async () => {
   const db = fresh()
-  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
   shadowRow(db, { symbol: 'BTCUSD', action: 'enter', at: new Date(500).toISOString() })
   const f = fakes()
@@ -719,4 +727,293 @@ test('an open row whose newest shadow word is exit (after entry) is exited even 
   assert.equal(st.BTCUSD, 'exit_sent')
   assert.equal(st['MSFT.US'], 'open', 'adopted, never ranked by the shadow: untouched')
   assert.equal(st.NATGAS, 'open', 'entered after its exit word: untouched')
+})
+
+// ---------------------------------------------------------------------------
+// PR-K (16-09-2026) — THE HORIZON. Measured over 95 bot deals, 09–11 Sep:
+// positions held over 24 h netted −972, and the three largest single losses
+// were this book's RANK exits firing intraday on positions entered for a
+// weeks-long move (US30 and US2000 closed 09-09 18:39 SGT; GER40 −2.66 %).
+// The owner's first principle for the book, 07-09-2026: "HORIZON IS THE
+// DESIGN VARIABLE… book decisions on the daily close only (trail, entries,
+// exits), not per-minute."
+//
+// What moved: the RANK EXIT (the ranking's opinion), including the flip-exit
+// leg — once per UTC day, never under bookMinHoldHours.
+// What did NOT move: the stop at the broker, the retry of an exit the broker
+// REFUSED, the sweep for an exit decided on a previous day, and every guard
+// that is not a rank exit.
+// ---------------------------------------------------------------------------
+
+const T = (iso) => Date.parse(iso)
+const DAILY = { enabled: true }   // the ordered defaults: 'daily' + 24 h
+const armOne = (db) => { setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState }) }
+const one = [{ accountId: DEMO, isLive: false }]
+
+test('PR-K config: the ordered defaults, and nonsense falls back to them (never to every_pass, never to a 0 hold)', () => {
+  const d = momentumBookConfig({ enabled: true })
+  assert.equal(d.bookExitCadence, 'daily', 'the ordered behaviour is the default')
+  assert.equal(d.bookMinHoldHours, 24)
+  assert.equal(momentumBookConfig({ bookExitCadence: 'hourly' }).bookExitCadence, 'daily', 'anything not the literal every_pass is daily')
+  assert.equal(momentumBookConfig({ bookExitCadence: 'every_pass' }).bookExitCadence, 'every_pass')
+  assert.equal(momentumBookConfig({ bookMinHoldHours: 'soon' }).bookMinHoldHours, 24, 'nonsense is the default, not 0')
+  // CHECKER MAJOR (16-09-2026): Number(null), Number(''), Number(false) and
+  // Number([]) are all 0 AND finite, so a clamp that tests Number.isFinite
+  // reads a CLEARED UI FIELD as "no minimum hold at all" — the knob switched
+  // off by a blank box, while the comment above it claims the opposite.
+  for (const blank of [null, '', '   ', false, [], {}, undefined, NaN]) {
+    assert.equal(momentumBookConfig({ bookMinHoldHours: blank }).bookMinHoldHours, 24, `${JSON.stringify(blank) ?? String(blank)} must not disable the hold`)
+  }
+  assert.equal(momentumBookConfig({ bookMinHoldHours: '36' }).bookMinHoldHours, 36, 'a numeric string is a number')
+  assert.equal(momentumBookConfig({ bookMinHoldHours: 0 }).bookMinHoldHours, 0, '0 is a real setting: the daily cadence without the hold')
+  assert.equal(momentumBookConfig({ bookMinHoldHours: 9999 }).bookMinHoldHours, 168, 'the ceiling is 7 days — a typo must not freeze rank exits for a month')
+  assert.equal(DEFAULT_MOMENTUM_BOOK.bookExitCadence, 'daily')
+  assert.equal(DEFAULT_MOMENTUM_BOOK.bookMinHoldHours, 24)
+})
+
+test('PR-K: a row ranked out MID-DAY is not exited on that pass — and its stop is trailed on that very pass; the daily pass after 21:05Z exits it', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(DAILY))
+  armOne(db)
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', at: '2026-09-08T09:00:00.000Z' })
+  const f = fakes()
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-08T09:05:00Z') })
+  const entered = db.prepare(`SELECT status, stop FROM momentum_book`).get()
+  assert.equal(entered.status, 'open')
+  // 10:00 UTC the next day: the ranking says the name left its band.
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit', at: '2026-09-09T10:00:00.000Z' })
+  f.deps.bars = async () => f.bars.map(b => ({ ...b, h: b.h + 10, l: b.l + 10, c: b.c + 10 }))
+  let r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T10:05:00Z') })
+  assert.equal(r.exits, 0, `the opinion waits for the daily close: ${JSON.stringify(r.skipped)}`)
+  assert.equal(f.calls.close.length, 0, 'nothing was closed intraday')
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'open')
+  assert.equal(r.rankExitsDeferred, 1)
+  assert.ok(r.skipped.some(s => /BTCUSD: rank exit held — cadence daily: rank exits are decided once per UTC day after 21:05Z/.test(s)), JSON.stringify(r.skipped))
+  // THE STOP IS NOT DEFERRED WITH THE OPINION: it moved on this same pass.
+  assert.equal(r.trailed, 1, 'the stop is maintained on the pass that defers the rank exit')
+  assert.equal(f.calls.amend.length, 1)
+  assert.ok(db.prepare(`SELECT stop FROM momentum_book`).get().stop > entered.stop, 'the broker holds a tighter stop while the row is carried')
+  // A later intraday pass must not re-admit the deferred exit through the owed sweep.
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T15:00:00Z') })
+  assert.equal(r.exits, 0, `the owed sweep does not smuggle today's opinion back in: ${JSON.stringify(r.skipped)}`)
+  assert.equal(f.calls.close.length, 0)
+  // The daily pass: it goes.
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T21:10:00Z') })
+  assert.equal(r.exits, 1, JSON.stringify(r.skipped))
+  assert.deepEqual(f.calls.close, [{ positionId: `pos-BTCUSD-${DEMO}`, volume: 1000 }])
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'exit_sent')
+})
+
+test('PR-K: a row younger than bookMinHoldHours is NOT rank-exited even on a daily pass; the next daily pass, once it is old enough, exits it', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(DAILY))
+  armOne(db)
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', at: '2026-09-09T19:55:00.000Z' })
+  const f = fakes()
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T20:00:00Z') })
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'open')
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit', at: '2026-09-09T21:06:00.000Z' })
+  let r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T21:10:00Z') })
+  assert.equal(r.exits, 0, `a 1 h old position is not rank-exited by a daily pass: ${JSON.stringify(r.skipped)}`)
+  assert.equal(f.calls.close.length, 0)
+  assert.ok(r.skipped.some(s => /BTCUSD: rank exit held — held 1\.2h < bookMinHoldHours 24 — reconsidered on the next daily pass/.test(s)), JSON.stringify(r.skipped))
+  // Still refused on the following morning's passes (cadence AND hold).
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-10T09:00:00Z') })
+  assert.equal(r.exits, 0)
+  // The next daily pass: 25 h held, the opinion stands, it goes.
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-10T21:10:00Z') })
+  assert.equal(r.exits, 1, JSON.stringify(r.skipped))
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'exit_sent')
+})
+
+test('PR-K: the min hold is measured from the OLDEST stamp — an adopted row does not get a fresh 24 h shield from the moment it was adopted', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(DAILY))
+  armOne(db)
+  // A tsmom_long trade that filled three days ago, adopted by the book today.
+  const tid = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, volume, opened_at) VALUES ('BTCUSD','BUY','open',100,94,NULL,?,?,?,'bot_market_dispatch','pos-old',1,'2026-09-06 09:00:00')`)
+    .run(TSMOM_STRATEGY, TSMOM_STRATEGY, DEMO).lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, account_id, status, source) VALUES ('BTCUSD', ?, 'long', 100, 94, ?, 'active', 'autopilot')`).run(tid, DEMO)
+  const f = fakes()
+  const r0 = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T10:00:00Z') })
+  assert.equal(r0.adopted, 1)
+  assert.equal(db.prepare(`SELECT entered_at FROM momentum_book`).get().entered_at, '2026-09-09T10:00:00.000Z', 'the row is stamped at ADOPTION, not at the fill — 11 h before the daily pass below')
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit', at: '2026-09-09T10:30:00.000Z' })
+  const r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T21:10:00Z') })
+  assert.equal(r.exits, 1, `the trade has been held three days — the adoption stamp is not a new clock: ${JSON.stringify(r.skipped)}`)
+})
+
+test('PR-K: bookExitCadence "every_pass" restores the pre-PR-K behaviour EXACTLY — the same young row, ranked out mid-day, is closed on the next pass (the default is not)', async () => {
+  const mk = (stored) => {
+    const db = fresh()
+    setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(stored))
+    armOne(db)
+    shadowRow(db, { symbol: 'BTCUSD', action: 'enter', at: '2026-09-09T09:55:00.000Z' })
+    return db
+  }
+  // the ordered default: nothing goes
+  const dbDefault = mk(DAILY)
+  const fd = fakes()
+  await runMomentumBook(dbDefault, { accounts: one, credsFor, deps: fd.deps, now: T('2026-09-09T10:00:00Z') })
+  shadowRow(dbDefault, { symbol: 'BTCUSD', action: 'exit', at: '2026-09-09T11:00:00.000Z' })
+  const rd = await runMomentumBook(dbDefault, { accounts: one, credsFor, deps: fd.deps, now: T('2026-09-09T11:05:00Z') })
+  assert.equal(rd.exits, 0)
+  assert.equal(fd.calls.close.length, 0)
+  // the SAME sequence with the one stored value flipped: closed on the next pass, as before PR-K
+  const dbEvery = mk(EVERY_PASS)
+  const fe = fakes()
+  await runMomentumBook(dbEvery, { accounts: one, credsFor, deps: fe.deps, now: T('2026-09-09T10:00:00Z') })
+  shadowRow(dbEvery, { symbol: 'BTCUSD', action: 'exit', at: '2026-09-09T11:00:00.000Z' })
+  const re = await runMomentumBook(dbEvery, { accounts: one, credsFor, deps: fe.deps, now: T('2026-09-09T11:05:00Z') })
+  assert.equal(re.exits, 1, `every_pass is the revert switch — one stored value: ${JSON.stringify(re.skipped)}`)
+  assert.equal(re.rankExitsDeferred, 0, 'neither the cadence nor the hold applies under every_pass')
+  assert.deepEqual(fe.calls.close, [{ positionId: `pos-BTCUSD-${DEMO}`, volume: 1000 }])
+  assert.equal(dbEvery.prepare(`SELECT status FROM momentum_book`).get().status, 'exit_sent')
+})
+
+test('PR-K: an exit the broker REFUSED still retries on EVERY pass, cadence or no cadence (09-09-2026, LLY.US)', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(DAILY))
+  armOne(db)
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', at: '2026-09-08T09:00:00.000Z' })
+  const f = fakes()
+  let brokerVolume = null
+  f.deps.positionVolume = async () => brokerVolume
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-08T09:05:00Z') })
+  // The daily pass decides the exit; the broker refuses it.
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit', at: '2026-09-09T21:06:00.000Z' })
+  let r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T21:10:00Z') })
+  assert.equal(r.exits, 0)
+  assert.equal(f.calls.close.length, 0)
+  assert.match(db.prepare(`SELECT note FROM momentum_book`).get().note, /^exit_pending: unknown volume/)
+  // MID-DAY, the next day, hours before any daily threshold: the owed close goes
+  // the moment the broker can answer. An owed exit does not wait for 21:05.
+  brokerVolume = 250
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-10T03:00:00Z') })
+  assert.equal(r.exits, 1, `the retry is not a fresh opinion and is not gated: ${JSON.stringify(r.skipped)}`)
+  assert.deepEqual(f.calls.close, [{ positionId: `pos-BTCUSD-${DEMO}`, volume: 250 }])
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'exit_sent')
+})
+
+test('PR-K: an exit decided on a PREVIOUS book day and never executed still fires on an ordinary mid-day pass (the owed sweep keeps working)', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(DAILY))
+  armOne(db)
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', at: '2026-09-08T09:00:00.000Z' })
+  const f = fakes()
+  let closeOk = false
+  f.deps.close = async (_c, args) => { if (!closeOk) throw new Error('old code: nothing sent'); f.calls.close.push(args); return {} }
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-08T09:05:00Z') })
+  // The exit word is consumed by the daily pass; the close silently fails and
+  // the flag is wiped, as the pre-#872 code left it.
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit', at: '2026-09-09T21:06:00.000Z' })
+  let r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T21:10:00Z') })
+  assert.equal(r.exits, 0)
+  db.prepare(`UPDATE momentum_book SET note = 'rank entry'`).run()
+  closeOk = true
+  // 04:00 UTC two book days later — no daily threshold has passed on this
+  // pass, but the DECISION is from a previous book day: it is owed, and it goes.
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-11T04:00:00Z') })
+  assert.equal(r.exits, 1, `an exit decided yesterday is not re-deferred: ${JSON.stringify(r.skipped)}`)
+  assert.deepEqual(f.calls.close, [{ positionId: `pos-BTCUSD-${DEMO}`, volume: 1000 }])
+})
+
+test('PR-K: a FLIP still exits and enters in ONE pass on the daily pass; deferred mid-day it does NEITHER, so the book never holds both sides or neither', async () => {
+  const mk = () => {
+    const db = fresh()
+    setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(DAILY))
+    armOne(db)
+    return db
+  }
+  // (a) the daily pass: exit + enter together
+  let db = mk()
+  let f = fakes()
+  shadowRow(db, { symbol: 'NATGAS', action: 'enter', side: 'long', rank: 0.95, conviction: 9, at: '2026-09-08T09:00:00.000Z' })
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-08T09:05:00Z') })
+  trendRow(db, 'NATGAS', 'short')
+  shadowRow(db, { symbol: 'NATGAS', action: 'exit', side: 'long', rank: 0.3, at: '2026-09-09T21:06:00.000Z' })
+  shadowRow(db, { symbol: 'NATGAS', action: 'enter', side: 'short', rank: 0.05, conviction: 9, at: '2026-09-09T21:06:00.000Z' })
+  let r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T21:10:00Z') })
+  assert.equal(r.exits, 1, JSON.stringify(r.skipped))
+  assert.equal(r.entries, 1, 'the flip is one pass: the long is out and the short is on, never both')
+  assert.deepEqual(db.prepare(`SELECT side, status FROM momentum_book ORDER BY id`).all(), [{ side: 'long', status: 'exit_sent' }, { side: 'short', status: 'open' }])
+  // (b) the same flip mid-day: neither leg runs
+  db = mk()
+  f = fakes()
+  shadowRow(db, { symbol: 'NATGAS', action: 'enter', side: 'long', rank: 0.95, conviction: 9, at: '2026-09-08T09:00:00.000Z' })
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-08T09:05:00Z') })
+  trendRow(db, 'NATGAS', 'short')
+  shadowRow(db, { symbol: 'NATGAS', action: 'exit', side: 'long', rank: 0.3, at: '2026-09-09T10:00:00.000Z' })
+  shadowRow(db, { symbol: 'NATGAS', action: 'enter', side: 'short', rank: 0.05, conviction: 9, at: '2026-09-09T10:00:00.000Z' })
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T10:05:00Z') })
+  assert.equal(r.exits, 0)
+  assert.equal(r.entries, 0, 'the flip ENTRY waits with its exit — the book is never left holding both sides')
+  assert.ok(r.skipped.some(s => /NATGAS: flip entry waits for its flip exit \(rank-exit cadence daily\)/.test(s)), JSON.stringify(r.skipped))
+  assert.deepEqual(db.prepare(`SELECT side, status FROM momentum_book ORDER BY id`).all(), [{ side: 'long', status: 'open' }], 'one row, one side, still stopped at the broker')
+  // and on the evening pass the flip completes in ONE pass — the exit AND the
+  // entry the deferral held back. The shadow's `enter` row was consumed by the
+  // cursor on the deferring pass, so this only works because the book
+  // remembered the flip (checker MINOR, 16-09-2026); note this database has NO
+  // shadow holdings at all, so the reconcile path cannot supply it.
+  assert.deepEqual(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).pendingFlips[`${DEMO}|NATGAS`].side, 'short')
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T21:10:00Z') })
+  assert.equal(r.exits, 1, JSON.stringify(r.skipped))
+  assert.equal(r.entries, 1, 'the other side of the flip is entered on the same pass as its exit')
+  assert.deepEqual(db.prepare(`SELECT side, status, note FROM momentum_book ORDER BY id`).all(), [
+    { side: 'long', status: 'exit_sent', note: 'rank exit (flip)' },
+    { side: 'short', status: 'open', note: 'flip entry short after the deferred flip exit' },
+  ])
+  assert.equal(f.calls.autoTrade[f.calls.autoTrade.length - 1].synth.consensus_bias, 'short')
+  assert.deepEqual(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).pendingFlips, {}, 'the record is dropped once acted on')
+  // (c) a remembered flip is not carried forever: past its TTL it expires unacted.
+  const db3 = mk()
+  const f3 = fakes()
+  shadowRow(db3, { symbol: 'NATGAS', action: 'enter', side: 'long', rank: 0.95, conviction: 9, at: '2026-09-08T09:00:00.000Z' })
+  await runMomentumBook(db3, { accounts: one, credsFor, deps: f3.deps, now: T('2026-09-08T09:05:00Z') })
+  trendRow(db3, 'NATGAS', 'short')
+  shadowRow(db3, { symbol: 'NATGAS', action: 'enter', side: 'short', rank: 0.05, conviction: 9, at: '2026-09-09T10:00:00.000Z' })
+  await runMomentumBook(db3, { accounts: one, credsFor, deps: f3.deps, now: T('2026-09-09T10:05:00Z') })
+  assert.ok(JSON.parse(getState(db3, MOMENTUM_BOOK_STATE_KEY)).pendingFlips[`${DEMO}|NATGAS`], 'remembered')
+  db3.prepare(`UPDATE momentum_book SET status = 'exit_sent' WHERE side = 'long'`).run()
+  const late = await runMomentumBook(db3, { accounts: one, credsFor, deps: f3.deps, now: T('2026-09-09T10:05:00Z') + PENDING_FLIP_TTL_MS + 1 })
+  assert.equal(late.entries, 0, 'a ranking opinion from days ago does not open a position today')
+  assert.ok(late.skipped.some(s => /deferred flip entry expired/.test(s)), JSON.stringify(late.skipped))
+  assert.deepEqual(JSON.parse(getState(db3, MOMENTUM_BOOK_STATE_KEY)).pendingFlips, {})
+})
+
+test('PR-K: the day cursor is PER ACCOUNT — one account\'s daily pass does not consume another\'s', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(DAILY))
+  const io = { getState, setState }
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, io)
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: LIVE }, io)
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', at: '2026-09-08T09:00:00.000Z' })
+  const f = fakes()
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: T('2026-09-08T09:05:00Z') })
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM momentum_book WHERE status = 'open'`).get().n, 2, 'both accounts hold the name')
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit', at: '2026-09-09T21:06:00.000Z' })
+  // Only DEMO is passed this cycle: its day is spent, LIVE's is not.
+  let r = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: T('2026-09-09T21:10:00Z') })
+  assert.equal(r.exits, 1)
+  const cursor = JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).rankExitAt
+  assert.deepEqual(Object.keys(cursor), [DEMO], `one cursor entry per account: ${JSON.stringify(cursor)}`)
+  // Ten minutes later, both accounts: LIVE's daily pass runs, DEMO's does not repeat.
+  r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: T('2026-09-09T21:20:00Z') })
+  assert.equal(r.exits, 1, `LIVE was never gated by DEMO's stamp: ${JSON.stringify(r.skipped)}`)
+  assert.deepEqual(f.calls.close.map(c => c.positionId), [`pos-BTCUSD-${DEMO}`, `pos-BTCUSD-${LIVE}`])
+  assert.deepEqual(Object.keys(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).rankExitAt).sort(), [DEMO, LIVE].sort())
+  // A third pass the same day: neither account re-runs its opinion.
+  r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: T('2026-09-09T21:30:00Z') })
+  assert.equal(r.exits, 0)
+  assert.equal(f.calls.close.length, 2)
+})
+
+test('PR-K wiring pin: the revert switch is written by POST /actions/momentum-book, MERGED FROM STORED (comments stripped)', () => {
+  const src = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const at = src.indexOf("router.post('/momentum-book'")
+  assert.ok(at > 0, 'the route exists')
+  const block = src.slice(at, at + 1200)
+  assert.match(block, /const merged = \{ \.\.\.loadMomentumBook\(db\) \}/, 'the patch starts from what is STORED, never from the defaults (failure mode #5)')
+  assert.match(block, /'bookExitCadence', 'bookMinHoldHours'/, 'both PR-K knobs are writable from the running system')
+  assert.match(block, /res\.json\(\{ ok: true, effective: cfg \}\)/, 'the reply is the effective policy')
 })
