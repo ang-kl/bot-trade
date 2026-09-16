@@ -1138,6 +1138,13 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
   try { synth.analysisId = Number(analysisIns?.lastInsertRowid) || null } catch { /* provenance never blocks */ }
 
   log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10) rr=${synth.risk_note || ''}`)
+  // Denominator for the armed-gate waste line the analyze phase prints. One
+  // count per COMPLETED analysis, under every scope; the numerator is the
+  // armed gate below. A rate nobody can read is a rate nobody fixes.
+  try {
+    const { recordAnalysis } = await import('./services/armed-analysis-filter.js')
+    recordAnalysis()
+  } catch { /* measurement never blocks a dispatch */ }
 
   // Auto-trade — only when armed and synthesis recommends it.
   // Iterate all autopilot-enabled accounts so the same signal
@@ -1188,6 +1195,14 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     const scope = armedScopeGate({ symbol: sym, timeframe: synth.timeframe, allowedTfs, matrix })
     if (!scope.ok) {
       log(`${scope.via === 'matrix' ? 'Matrix' : 'Timeframe'} gate: ${sym} blocked — ${scope.reason}`)
+      // A discarded analysis is a spent slot. Counted here, at the only place
+      // that knows the gate refused, and summarised per pass by the analyze
+      // phase — the 38-of-60 figure that motivated the pre-filter above had
+      // to be grepped out of 28 minutes of production logs.
+      try {
+        const { recordArmedGateBlock } = await import('./services/armed-analysis-filter.js')
+        recordArmedGateBlock({ symbol: sym, timeframe: synth.timeframe, reason: scope.reason })
+      } catch { /* measurement never blocks a dispatch */ }
       synth.auto_trade = false
     }
   }
@@ -4127,9 +4142,63 @@ async function runLoop(db) {
         log(`Horizon gate failed (non-fatal, analysing the unfiltered list): ${err.message}`)
         afterHorizon = beforeHorizon
       }
+      // ARMED SCOPE BEFORE THE SLOT IS SPENT (16-09-2026). Measured in
+      // production over 28 minutes with `autotrade_scope = 'armed'`: 38 of
+      // ~60 completed analyses were discarded by the backstop gate further
+      // down this file, which only sees the timeframe AFTER synthesis. Two
+      // thirds of a three-slot budget went to cells that could not trade.
+      // A symbol whose scan produced NO row on a timeframe armed for it is
+      // dropped here, with a reason, so the slot goes to one that can — the
+      // same shape as the horizon gate above, and, like it, an emptied list
+      // is the intended outcome rather than a reason to fall back. The
+      // backstop gate is untouched; this only decides where the budget goes.
+      // The scope check lives INSIDE filterArmedCandidates / armedPickerFor,
+      // where a test can call it, rather than as an `if` here that only a
+      // source-text assertion could pin. Under 'all' both are the identity.
+      const autotradeScope = getState(db, 'autotrade_scope') || 'all'
+      const armedAllowedTfs = armedTimeframes(db, getState)
+      let armedMatrix = null
+      try { armedMatrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { armedMatrix = null /* corrupt — the list gates */ }
+      try {
+        const { filterArmedCandidates } = await import('./services/armed-analysis-filter.js')
+        const armedPool = filterArmedCandidates(afterHorizon, scanResult.scans, { scope: autotradeScope, allowedTfs: armedAllowedTfs, matrix: armedMatrix })
+        if (armedPool.dropped.length) {
+          log(`Armed scope pre-filter: ${armedPool.dropped.length} candidate(s) skipped before analysis — ${armedPool.dropped.slice(0, 6).map(d => `${d.symbol} (${d.reason})`).join(' · ')}`)
+          try {
+            const { recordDecision } = await import('./services/decision-log.js')
+            for (const d of armedPool.dropped) {
+              recordDecision(db, {
+                symbol: d.symbol,
+                timeframe: d.attribution?.timeframe ?? null,
+                strategy: d.attribution?.strategy ?? null,
+                stage: 'armed_scope_prefilter', decision: 'skip', reason: d.reason,
+              })
+            }
+          } catch { /* provenance never blocks */ }
+        }
+        // Reassigned, not a new name, so the slot allocator below keeps
+        // reading one list and cannot be handed the unfiltered one.
+        afterHorizon = armedPool.kept
+      } catch (err) {
+        log(`Armed scope pre-filter failed (non-fatal, analysing the unfiltered list): ${err.message}`)
+      }
       const pool = afterHorizon
       let hotToAnalyze = pool.slice(0, 3)
       let fairShare = null
+      // THE LRU CLOCK IS STAMPED BY WHAT WAS ANALYSED, NOT BY WHAT WAS PLANNED
+      // (checker, 16-09-2026). It used to be written here, before dispatch,
+      // from `fairShare.byStrategy` — the strategies the slots were GRANTED
+      // to. Under scope 'armed' the armed pick below may dispatch a different
+      // strategy, so the granted one would be marked analysed without being
+      // analysed (the exact defect the comment further down documents), and
+      // the dispatched one's clock would never advance — leaving it
+      // permanently "hungriest" in fairShareSlots' round-one sort and taking
+      // other strategies' slots forever. The write now happens AFTER the
+      // dispatch loop, from the strategies actually dispatched. Under scope
+      // 'all' the dispatched strategy IS the granted one (the fallback reads
+      // `signalsByStrategy[sym][want]`, built from the same rows the
+      // allocator ranked), so that path is unchanged.
+      let markLruAnalysed = null
       try {
         const { fairShareSlots, markAnalyzed, fairShareLine, LAST_ANALYZED_KEY } =
           await import('./services/analyze-fair-share.js')
@@ -4142,8 +4211,10 @@ async function runLoop(db) {
         })
         if (fairShare.picked.length) {
           hotToAnalyze = fairShare.picked
-          setState(db, LAST_ANALYZED_KEY,
-            JSON.stringify(markAnalyzed(lastAnalyzed, fairShare.byStrategy.map(b => b.strategy))))
+          markLruAnalysed = (strategies) => {
+            const keys = [...new Set((strategies || []).filter(Boolean))]
+            if (keys.length) setState(db, LAST_ANALYZED_KEY, JSON.stringify(markAnalyzed(lastAnalyzed, keys)))
+          }
           const line = fairShareLine(fairShare)
           if (line) log(`Analyze slots (fair share): ${line}`)
         }
@@ -4160,15 +4231,49 @@ async function runLoop(db) {
       // the starved strategy stayed starved while the logs said otherwise.
       const slotStrategy = new Map((fairShare?.byStrategy || []).map(b => [b.symbol, b.strategy]))
       phase(`analyzing ${hotToAnalyze.join(', ')}`, 'analyze')
+      // Scope 'armed' only: among the signals this scan really produced for
+      // the symbol, dispatch one on a timeframe that is armed for it. The
+      // per-symbol winner (`signals[sym]`) is chosen by armed-STRATEGY then
+      // conviction and never looks at the timeframe, which is why US30 was
+      // analysed on 30m every pass while 12h/4d/1d/1w/3d were armed and 1d/1w
+      // were right there in the scan. Nothing is invented: if no candidate is
+      // on an armed timeframe this returns null, the old choice stands, and
+      // the backstop gate refuses it exactly as before.
+      // The picker ranks the way the scan does — armed STRATEGY first, then
+      // conviction — so it cannot hand the slot to a strategy the stage gate
+      // will block. `armedStrategyKeys` is the same list the scan was given.
+      const { armedPickerFor, takeArmedGateStats, armedGateWasteLine } =
+        await import('./services/armed-analysis-filter.js')
+      const armedPick = armedPickerFor(autotradeScope, { allowedTfs: armedAllowedTfs, matrix: armedMatrix, armedStrategyKeys })
+      const dispatchedStrategies = []
       for (const sym of hotToAnalyze) {
         try {
           const want = slotStrategy.get(sym)
-          const sig = (want && scanResult.signalsByStrategy?.[sym]?.[want]) || scanResult.signals[sym]
-          await dispatchSymbolSignal(db, s, symbols, sym, sig)
+          const fallback = (want && scanResult.signalsByStrategy?.[sym]?.[want]) || scanResult.signals[sym]
+          const candidates = [...new Set([
+            ...Object.values(scanResult.signalsByStrategy?.[sym] || {}),
+            ...(scanResult.signals[sym] ? [scanResult.signals[sym]] : []),
+          ])]
+          const armed = armedPick(sym, want || null, candidates)
+          if (armed && armed.signal !== fallback) {
+            log(`Armed scope pick: ${sym} — analysing ${armed.reason} instead of ${fallback?.strategy || '?'}@${fallback?.timeframe || '?'} (that cell cannot trade under the current arming)`)
+          }
+          const dispatched = armed?.signal || fallback
+          dispatchedStrategies.push(dispatched?.strategy || want || null)
+          await dispatchSymbolSignal(db, s, symbols, sym, dispatched)
         } catch (err) {
           log(`Analysis failed for ${sym}:`, err.message)
         }
       }
+      // The clock advances for what really ran (see the note above the
+      // allocator). A symbol that threw before dispatch stamps nothing.
+      if (markLruAnalysed) markLruAnalysed(dispatchedStrategies)
+      // The waste rate, printed rather than inferred from log archaeology.
+      // Take-and-reset: every counted analysis is reported exactly once, at
+      // worst one cycle late for the pending-signals retry path. Silent when
+      // nothing was discarded, so scope 'all' never sees it.
+      const wasteLine = armedGateWasteLine(takeArmedGateStats())
+      if (wasteLine) log(wasteLine)
     }
 
       } // end scanEnabled + symbols (scan+analyze branch)
