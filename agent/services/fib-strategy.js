@@ -89,6 +89,23 @@ export function tuningFor(symbol) {
 // Checked in this order (largest first); first timeframe with a valid
 // signal wins. All timeframes are eligible — none are excluded.
 const TIMEFRAMES = ['1mo', '1w', '1d', '4h', '1h', '30m', '15m', '5m']
+
+/**
+ * The timeframes a scan really produces: the classic set plus any custom
+ * ones the trader added (loop.js passes the stored `autotrade_timeframes`
+ * as `extraTimeframes`), unreadable labels dropped, longest first.
+ *
+ * EXPORTED SO NOBODY RE-TYPES IT. `scanSymbolFib` calls this to build its
+ * own scan set, and the armed-cell reachability diagnostic calls the same
+ * function to decide what is producible — a second copy of this list is
+ * exactly how armed-but-never-scanned cells came to exist. Behaviour is
+ * byte-for-byte the expression that was inline here before.
+ */
+export function scanTimeframeLadder(extraTimeframes = []) {
+  return [...new Set([...TIMEFRAMES, ...(extraTimeframes || [])])]
+    .filter(tf => tfMs(tf) > 0)
+    .sort((a, b) => tfMs(b) - tfMs(a))
+}
 // Position time cap by signal timeframe. Drives loop.js's style filter
 // (scalp ≤30m, day ≤480m, swing ≤7d, mid-term beyond) and the position
 // auto-expiry — a 1d fade is a multi-day swing, not a 180-minute day trade.
@@ -547,9 +564,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
 
   // Classic set plus any custom timeframes the trader added (e.g. 1.5h) —
   // a custom TF armed for autotrade must also be scanned, or it never fires.
-  const scanTfs = [...new Set([...TIMEFRAMES, ...(opts.extraTimeframes || [])])]
-    .filter(tf => tfMs(tf) > 0)
-    .sort((a, b) => tfMs(b) - tfMs(a))
+  const scanTfs = scanTimeframeLadder(opts.extraTimeframes)
 
   const stale = scanTfs.filter(tf => !cachedBars(symbolId, tf))
   if (stale.length > 0) {

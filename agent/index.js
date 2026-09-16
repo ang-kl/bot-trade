@@ -446,6 +446,20 @@ if (!getState(db, 'autopilot_boot_v1')) {
   console.log('[boot] Strategy Autopilot enabled — auto mode on every account, session-adaptive cadence')
 }
 
+// Armed cells the scan can never produce (see
+// services/armed-cell-reachability.js). Reported AFTER every seed that may
+// write `autotrade_matrix_json`, so it reads the matrix this process will
+// actually run with. Silent when there is nothing to report and silent under
+// scope 'all', where the finding is latent rather than live; the full picture
+// is always at GET /state/armed-cell-reachability.
+try {
+  const { readArmedCellReachability, armedCellBootLine } = await import('./services/armed-cell-reachability.js')
+  const line = armedCellBootLine(readArmedCellReachability(db, getState))
+  if (line) console.warn(line)
+} catch (e) {
+  console.warn('[boot] armed-cell reachability report failed (non-fatal):', e.message)
+}
+
 // ---------------------------------------------------------------------------
 // Express app
 // ---------------------------------------------------------------------------
