@@ -26,6 +26,39 @@
 // holds it. The evidence gate lets the book trade only where it is
 // hand-pinned or has earned its record, like every other strategy.
 //
+// THE HORIZON (PR-K, 16-09-2026, owner "finish the outstanding"; the owner's
+// first principle of 07-09-2026: "HORIZON IS THE DESIGN VARIABLE… book
+// decisions on the daily close only (trail, entries, exits), not per-minute").
+// A rank exit — the ranking's OPINION that a name left its band, flip-exit leg
+// included — respects two rules: it is evaluated once per UTC day, and never on
+// a position younger than `bookMinHoldHours`. Everything that is not a ranking
+// opinion still runs on EVERY pass: the broker's stop, the retry of an exit the
+// broker refused, the sweep for an exit decided on a previous day, the weekend
+// bank, the loss guardian and the equity stop.
+//
+// WHICH PATH ENFORCES WHAT — READ THIS BEFORE TRUSTING THE CODE BELOW.
+// `runMomentumBook` has TWO exit paths and only one of them carries accounts
+// today. `agent/config/momentum-account.json` ships `"accountId": "_all"`
+// (PR-B, 11-09-2026, owner principle 9), so `isMomentumAccount()` is true for
+// every ENABLED registry account and each one `continue`s into the momentum
+// account's daily pass long before the row-cursor code below is reached. As
+// shipped, the row-cursor path carries NO ACCOUNT AT ALL — it is dormant
+// defence for a config that names specific accounts, or for an account that is
+// disabled in the registry while still armed.
+//   • The MINIMUM HOLD is therefore enforced in BOTH places, and the one that
+//     actually stops a close today is `exitDroppedHoldings` in
+//     momentum-account.js. The shared rule lives in book-hold-age.js.
+//   • The DAILY CADENCE and its cursor below apply to the row-cursor path
+//     only. The momentum-account pass is already once-per-day by construction
+//     (its own lastRunMs cursor), so nothing there needed a second cursor.
+//   • `bookExitCadence: 'every_pass'` restores the pre-PR-K behaviour on both:
+//     the row-cursor cadence is lifted AND the minimum hold with it, from the
+//     running system, with no deploy.
+// The first draft of PR-K put both rules here only. They were on, configured,
+// documented and out of reach of what they guarded — CLAUDE.md failure mode
+// #3, found by the checker on 16-09-2026 and recorded here so the next reader
+// does not have to re-derive which path trades.
+//
 // Every broker call is injectable (deps) so the tests drive the whole cycle
 // against an in-memory DB with fake fills.
 // ---------------------------------------------------------------------------
@@ -37,12 +70,20 @@ import { directionFor, trendReadingFor } from './direction-policy.js'
 import { checkRegimeGate } from './regime-gate.js'
 import { recordDecision } from './decision-log.js'
 import { roundToDigits } from './trade-guard.js'
-import { isMomentumAccount, runMomentumAccountPass } from './momentum-account.js'
+import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDue, thresholdMs } from './momentum-account.js'
 import { bookCloseVolume } from './book-close-volume.js'
+// PR-K: the hold-age rule lives in its own module because the momentum-account
+// path enforces the SAME minimum hold and may not import this file (cycle).
+import { parseStamp, heldLongEnough as heldLongEnoughFor, heldHours, minHoldMsFor } from './book-hold-age.js'
+export { parseStamp }
 
 export const TSMOM_STRATEGY = 'tsmom_long'
 // A held name with no position is re-proposed at most this often per account.
 export const RECONCILE_EVERY_MS = 60 * 60_000
+// A flip whose exit was deferred is remembered for this long (PR-K). Longer
+// than any deferral the cadence can produce, short enough that a ranking
+// opinion from last week never enters a position today.
+export const PENDING_FLIP_TTL_MS = 3 * 24 * 60 * 60_000
 export const MOMENTUM_BOOK_CONFIG_KEY = 'momentum_book_json'
 export const MOMENTUM_BOOK_STATE_KEY = 'momentum_book_state_json'
 
@@ -53,9 +94,46 @@ export const DEFAULT_MOMENTUM_BOOK = Object.freeze({
   stopAtr: 3,              // initial and trailing stop: 3 × ATR(20) below the close
   maxPositionsPerAccount: 8,
   conviction: 8,           // the scan's autotrade threshold; the ranking's own conviction rides on the row
+  // PR-K (16-09-2026, owner "finish the outstanding"). THE HORIZON IS THE
+  // DESIGN VARIABLE (owner, 07-09-2026: "book decisions on the daily close
+  // only (trail, entries, exits), not per-minute"). Measured over 95 bot
+  // deals 09–11 Sep: positions held over 24 h netted −972, and the three
+  // largest single losses were this book's RANK exits firing intraday on
+  // positions entered for a weeks-long move. Two knobs, both revertible from
+  // the running system through POST /actions/momentum-book:
+  //   bookExitCadence 'daily'      — a rank exit is evaluated once per UTC
+  //                                  day, on the book's own day cursor
+  //   bookExitCadence 'every_pass' — the pre-PR-K behaviour, exactly
+  //   bookMinHoldHours            — a row younger than this is not rank-exited
+  // NEITHER touches the stop, the refused-exit retry or any protection guard.
+  // A rank exit is a RANKING OPINION; a stop is protection. Only the opinion
+  // moved.
+  //
+  // WHERE EACH KNOB BITES (checker, 16-09-2026 — the first draft of this PR
+  // enforced both only on the row-cursor path below, which carries NO account
+  // while agent/config/momentum-account.json says `"accountId": "_all"`):
+  //   bookMinHoldHours — enforced on BOTH paths: the momentum-account daily
+  //     pass (momentum-account.js exitDroppedHoldings — the path that trades
+  //     today) and the row-cursor path here.
+  //   bookExitCadence  — 'daily' vs 'every_pass' only governs the ROW-CURSOR
+  //     path's rank-exit cursor. The momentum-account path is already daily by
+  //     construction (its own lastRunMs cursor); on that path 'every_pass'
+  //     means only "lift the minimum hold", which is what the pre-PR-K
+  //     behaviour was there.
+  bookExitCadence: 'daily',
+  bookMinHoldHours: 24,
 })
 
 const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d)
+// A NUMBER, not something Number() will happily turn into 0 (checker MAJOR 2):
+// Number(null), Number(''), Number(false) and Number([]) are all 0 and finite,
+// so `clamp` would read a cleared UI field as "no minimum hold at all" — the
+// knob disabled by a blank box. Only a real number, or a string that is one,
+// counts; anything else falls back to the default.
+const clampNum = (v, lo, hi, d) => {
+  const n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN)
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d
+}
 
 export function momentumBookConfig(raw) {
   const r = raw && typeof raw === 'object' ? raw : {}
@@ -67,6 +145,15 @@ export function momentumBookConfig(raw) {
     stopAtr: clamp(r.stopAtr, 0.5, 10, d.stopAtr),
     maxPositionsPerAccount: Math.round(clamp(r.maxPositionsPerAccount, 1, 50, d.maxPositionsPerAccount)),
     conviction: Math.round(clamp(r.conviction, 1, 10, d.conviction)),
+    // PR-K: anything that is not the literal 'every_pass' is 'daily' — the
+    // ordered behaviour is the fail-safe direction for a knob that decides
+    // whether a weeks-horizon position is cut intraday.
+    bookExitCadence: r.bookExitCadence === 'every_pass' ? 'every_pass' : d.bookExitCadence,
+    // 0 disables the hold (a rank exit may fire on the first daily pass);
+    // nonsense — including null, '', false and [] — falls back to the
+    // default, never to 0. The ceiling is 168 h (7 days): a fat-fingered
+    // 7200 must not freeze this book's rank exits for a month.
+    bookMinHoldHours: clampNum(r.bookMinHoldHours, 0, 168, d.bookMinHoldHours),
   }
 }
 
@@ -159,11 +246,17 @@ export function loadBookState(db) {
         lastShadowRowId: Number(s.lastShadowRowId) || 0,
         lastRunMs: Number(s.lastRunMs) || 0,
         reconciledAt: s.reconciledAt && typeof s.reconciledAt === 'object' ? s.reconciledAt : {},
+        // PR-K: flips whose exit was deferred, waiting to enter the new side.
+        pendingFlips: s.pendingFlips && typeof s.pendingFlips === 'object' ? s.pendingFlips : {},
+        // PR-K: the book's rank-exit day cursor, ONE PER ACCOUNT — an account
+        // whose daily pass ran today must not consume another account's.
+        rankExitAt: s.rankExitAt && typeof s.rankExitAt === 'object' ? s.rankExitAt : {},
       }
     }
   } catch { /* fall through */ }
-  return { lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {} }
+  return { lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {} }
 }
+
 
 /**
  * One pass. `accounts` are the autopilot roster ({accountId,isLive}),
@@ -223,6 +316,29 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   const workingLimitFor = { get: (accountId, symbol) => { try { return workingLimit.get(accountId, symbol, TSMOM_STRATEGY) } catch { return null } } }
   summary.adopted = 0
   summary.reconciled = 0
+  // PR-K (16-09-2026): the rank exit's CADENCE and its minimum hold.
+  // The cadence clock is the momentum account's, not a new one — the same
+  // `dailyDue`/`thresholdMs` pair and the same `dailyRunAfterUtc` threshold
+  // (21:05 UTC by default, after the NY and FX day closes), so the book and
+  // the momentum account decide on ONE daily close, not two. What is NOT
+  // shared is the stored cursor: `momentum_account_state_json:<id>` is the
+  // momentum-account pass's own lastRunMs, and stamping it here would make
+  // either pass swallow the other's day. The book keeps its cursor in its own
+  // state blob, still one entry per account.
+  const maCfg = loadMomentumAccount(db)
+  const everyPass = cfg.bookExitCadence === 'every_pass'
+  /** The start of the book day containing `ms` (the last daily threshold to pass). */
+  const bookDayStart = (ms) => { const t = thresholdMs(ms, maCfg.dailyRunAfterUtc); return ms >= t ? t : t - 86_400_000 }
+  // THE MINIMUM HOLD, from book-hold-age.js — the SAME rule the momentum
+  // account's daily pass applies (age from the OLDEST of the row's entered_at
+  // and the trade's opened_at; 'every_pass' lifts it with the cadence, since
+  // "reconsidered on the next daily pass" needs a next daily pass to exist).
+  const heldLongEnough = (row) => heldLongEnoughFor(db, row, now, cfg)
+  const heldWhy = (row) => `held ${heldHours(db, row, now)}h < bookMinHoldHours ${cfg.bookMinHoldHours} — reconsidered on the next daily pass`
+  if (minHoldMsFor(cfg) > 0) summary.minHoldHours = cfg.bookMinHoldHours
+  summary.rankExitsDeferred = 0
+  state.rankExitAt = { ...(state.rankExitAt || {}) }
+  state.pendingFlips = { ...(state.pendingFlips || {}) }
 
   // RICHEST HEADROOM FIRST (owner § 7,453·B, 08-09-2026): the pool orders the
   // accounts, and an exhausted one takes no ENTRIES this pass — its exits,
@@ -291,26 +407,93 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     if (isMomentumAccount(db, accountId)) {
       try {
         const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted })
-        if (ma.ran) {
-          summary.entries += ma.entries; summary.exits += ma.exits
-          summary.momentumAccount = { account: accountId, entries: ma.entries, exits: ma.exits, universe: ma.universe }
-          for (const s of ma.skipped) summary.skipped.push(`${accountId} ${s}`)
+        // COUNT WHAT WENT OUT, not what the pass called itself (checker,
+        // 16-09-2026): the margin-exhausted branch returns `ran: false` AFTER
+        // sending its exits, so real closes were reported as zero — which is
+        // also what hid from this summary the fact that `accountId: "_all"`
+        // routes every account through here and none through the row-cursor
+        // path below.
+        summary.entries += ma.entries || 0
+        summary.exits += ma.exits || 0
+        summary.rankExitsDeferred += ma.rankExitsDeferred || 0
+        if (ma.ran || ma.exits || ma.entries || ma.rankExitsDeferred) {
+          summary.momentumAccount = { account: accountId, ran: !!ma.ran, entries: ma.entries, exits: ma.exits, rankExitsDeferred: ma.rankExitsDeferred || 0, universe: ma.universe, why: ma.why || null }
         }
+        for (const s of ma.skipped || []) summary.skipped.push(`${accountId} ${s}`)
       } catch (err) { summary.skipped.push(`${accountId}: momentum account pass failed — ${err.message}`) }
       continue
     }
 
+    // THE ROW-CURSOR EXIT PATH. Reminder from the header: while
+    // momentum-account.json says `"accountId": "_all"`, execution never
+    // reaches here — every enabled account returned at the `continue` above.
     // EXITS first: the ranking says the name left the band. The shadow rows
     // are read once through the cursor, so a close that FAILED (09-09-2026:
     // LLY.US, volume missing) is flagged on the row and retried every pass
     // until it goes — an exit the ranking called is not dropped on an error.
-    const acctExits = new Map(exits)
-    // A FLIP: this batch's `enter` on the other side of an open row exits
-    // that row first (checker's counterexample, 11-09-2026).
+    const acctExits = new Map()
+    // PR-K: is the book's rank-exit opinion due on this account today?
+    // 'every_pass' restores the pre-PR-K behaviour exactly: always due.
+    const rankExitDue = everyPass || dailyDue({ nowMs: now, lastRunMs: Number(state.rankExitAt?.[accountId]) || 0, afterUtc: maCfg.dailyRunAfterUtc, cadence: 'daily' })
+    const deferredFlips = new Set()
+    // A deferral is RECORDED here and only COUNTED after the exit set is
+    // complete (checker MINOR, 16-09-2026): block (2)'s refused-exit retry
+    // can re-admit a name block (1) held back, and counting both reported
+    // `rankExitsDeferred: 1` — with a "rank exit held" line — for a position
+    // that closed on the same pass. First reason per name wins.
+    const pendingDeferrals = new Map()
+    const deferRankExit = (symbol, why) => { if (!pendingDeferrals.has(symbol)) pendingDeferrals.set(symbol, why) }
+    // A DEFERRED FLIP IS REMEMBERED (checker MINOR, 16-09-2026). The shadow's
+    // `enter` row for the new side is consumed by `lastShadowRowId` on the
+    // pass that defers the flip, so "the reconcile pass will re-propose it"
+    // holds only while the shadow still HOLDS that name and its hourly
+    // throttle has elapsed — with shadow state absent, or inside the
+    // RECONCILE_EVERY_MS window, the new side was simply lost. The book now
+    // carries the intent on its own state and enters it on the same pass
+    // that finally sends the flip exit: a flip stays ONE pass, as PR-D built
+    // it, whether it happens today or at tomorrow's daily close.
+    const rememberFlip = (symbol, want) => {
+      deferredFlips.add(symbol)
+      state.pendingFlips[`${accountId}|${symbol}`] = { symbol, side: want.to, conviction: want.conviction ?? null, rankPct: want.rankPct ?? null, at: now }
+    }
+
+    // (1) THE RANKING'S OPINION — the name left its band, or this batch's
+    // `enter` is on the other side of an open row (a FLIP; the checker's
+    // counterexample, 11-09-2026). PR-K: an opinion is evaluated once per
+    // book day and never on a position younger than bookMinHoldHours. The
+    // position's STOP is not touched by either rule — it sits at the broker
+    // and is hit whenever price hits it; that is what bounds a position the
+    // book now carries to the evening.
+    const wantRankExit = new Map(exits)
     for (const [symbol, r] of enters) {
       const open = openRow.get(accountId, symbol)
-      if (open && (open.side === 'short' ? 'short' : 'long') !== r.side) acctExits.set(symbol, { symbol, flip: true, to: r.side })
+      if (open && (open.side === 'short' ? 'short' : 'long') !== r.side) wantRankExit.set(symbol, { symbol, flip: true, to: r.side, conviction: r.conviction, rankPct: r.rank_pct })
     }
+    for (const [symbol, want] of wantRankExit) {
+      const row = openRow.get(accountId, symbol)
+      if (!row) continue
+      if (!rankExitDue) {
+        deferRankExit(symbol, `cadence ${cfg.bookExitCadence}: rank exits are decided once per UTC day after ${maCfg.dailyRunAfterUtc}Z`)
+        // A flip whose exit waits must not enter the other side this pass, or
+        // the book holds BOTH sides of the name (owner principle 8's whole
+        // point is direction). tryEnter's open-row check already refuses it;
+        // this says so by name in the summary rather than by accident.
+        if (want?.flip) rememberFlip(symbol, want)
+        continue
+      }
+      if (!heldLongEnough(row)) {
+        deferRankExit(symbol, heldWhy(row))
+        if (want?.flip) rememberFlip(symbol, want)
+        continue
+      }
+      acctExits.set(symbol, want)
+    }
+
+    // (2) EVERY PASS, CADENCE OR NO CADENCE — an exit the broker REFUSED.
+    // 09-09-2026: LLY.US came back MARKET_CLOSED / volume missing. An owed
+    // exit that only retries once a day is an exit that may never go, and
+    // this is an order already sent, not a fresh opinion: neither the daily
+    // cadence nor the min hold may touch it.
     for (const r of db.prepare(`SELECT symbol FROM momentum_book WHERE status = 'open' AND account_id = ? AND note LIKE 'exit_pending:%'`).all(accountId)) {
       if (!acctExits.has(r.symbol)) acctExits.set(r.symbol, { symbol: r.symbol, retry: true })
     }
@@ -329,8 +512,35 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       const w = lastWord.get(r.symbol)
       if (!w || !(String(w.at) > String(r.entered_at || ''))) continue
       const rowSide = r.side === 'short' ? 'short' : 'long'
-      if (w.action === 'exit' || (w.action === 'enter' && w.side !== rowSide)) acctExits.set(r.symbol, { symbol: r.symbol, retry: true, owed: true, flip: w.action === 'enter' })
+      if (!(w.action === 'exit' || (w.action === 'enter' && w.side !== rowSide))) continue
+      // PR-K. This sweep reconstructs an exit from the ranking's last word,
+      // so it has to say WHICH DAY that word is from, or it would re-admit
+      // every deferred intraday exit one pass later and the cadence would be
+      // decoration (failure mode #3: a guard whose trigger is out of reach).
+      //   • a word from a PREVIOUS book day = an exit DECIDED on a past day
+      //     and never executed. It goes on EVERY pass, not only the daily
+      //     one — an owed exit that waits for 21:05 is an exit that may sit
+      //     owed for a day. The min hold still applies: the book day rolls
+      //     at 21:05, so "previous day" can be ninety minutes ago, and the
+      //     owner's floor on how long a position is held is not something a
+      //     clock boundary may lift.
+      //   • a word from TODAY = today's opinion. It waits for today's daily
+      //     pass and the min hold, exactly like the fresh rows above.
+      const decidedMs = parseStamp(w.at)
+      const fromPreviousDay = Number.isFinite(decidedMs) ? decidedMs < bookDayStart(now) : true
+      const row = openRow.get(accountId, r.symbol)
+      if (!fromPreviousDay && !rankExitDue) { deferRankExit(r.symbol, `cadence ${cfg.bookExitCadence}: today's rank exit waits for the daily pass after ${maCfg.dailyRunAfterUtc}Z`); continue }
+      if (row && !heldLongEnough(row)) { deferRankExit(r.symbol, heldWhy(row)); continue }
+      acctExits.set(r.symbol, { symbol: r.symbol, retry: true, owed: true, flip: w.action === 'enter' })
     }
+    // The exit set is final: count the deferrals that survived it, and drop
+    // the flip bookkeeping for any name block (2) or (3) admitted after all.
+    for (const [symbol, why] of pendingDeferrals) {
+      if (acctExits.has(symbol)) { deferredFlips.delete(symbol); delete state.pendingFlips[`${accountId}|${symbol}`]; continue }
+      summary.rankExitsDeferred++
+      summary.skipped.push(`${accountId} ${symbol}: rank exit held — ${why}`)
+    }
+
     for (const [symbol] of acctExits) {
       const row = openRow.get(accountId, symbol)
       if (!row) continue
@@ -351,7 +561,27 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         summary.skipped.push(`${accountId} ${symbol}: close failed — ${err.message}`)
       }
     }
+    // PR-K: the day's rank-exit pass has now run ON THIS ACCOUNT, whether or
+    // not anything was exited — stamp this account's own cursor so it runs
+    // once per book day and one account's pass never consumes another's.
+    // A close that FAILED is not forfeited by the stamp: the row carries the
+    // exit_pending flag and block (2) above retries it on EVERY pass.
+    if (rankExitDue && !everyPass) state.rankExitAt[accountId] = now
 
+
+    // A remembered flip whose old row is no longer open enters the other side
+    // in THIS pass (below, with the ordinary entries). The record is dropped
+    // whether the entry is then taken or refused: a refusal is the direction
+    // policy's answer, not something to re-ask every day.
+    const flipEntries = []
+    for (const [key, fl] of Object.entries(state.pendingFlips)) {
+      if (!key.startsWith(`${accountId}|`)) continue
+      if (!(now - Number(fl.at || 0) <= PENDING_FLIP_TTL_MS)) { delete state.pendingFlips[key]; summary.skipped.push(`${accountId} ${fl.symbol}: deferred flip entry expired (older than ${PENDING_FLIP_TTL_MS / 86_400_000}d)`); continue }
+      if (openRow.get(accountId, fl.symbol)) continue    // the old row is still open — the flip exit has not gone yet
+      delete state.pendingFlips[key]
+      if (enters.has(fl.symbol)) continue                 // this batch carries the enter row itself
+      flipEntries.push(fl)
+    }
 
     // ONE ENTRY ATTEMPT, shared by the shadow's fresh `enter` rows and the
     // reconcile pass below. Returns 'entered' | 'skipped' | 'capped'.
@@ -416,9 +646,22 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     // ENTRIES: one per symbol per account, capped, sized by the gate.
     let capped = false
     for (const [symbol, r] of enters) {
+      // PR-K: a flip whose exit was deferred does not enter the other side —
+      // the book is never left holding both sides. The shadow still holds the
+      // new side, so the reconcile pass below re-proposes it once the daily
+      // pass has actually exited the old row.
+      if (deferredFlips.has(symbol)) { summary.skipped.push(`${accountId} ${symbol}: flip entry waits for its flip exit (rank-exit cadence ${cfg.bookExitCadence})`); continue }
       if (!inScanScope(symbol)) { summary.skipped.push(`${accountId} ${symbol}: outside this account's scan universe (momentum-account name)`); continue }
       const out = await tryEnter(symbol, { side: r.side, conviction: r.conviction, rankPct: r.rank_pct, note: `entered on shadow row ${r.id}` })
       if (out === 'capped') { capped = true; break }
+    }
+    // The other leg of a flip deferred on an earlier pass, now that its exit
+    // has gone: same gates, same sizing, stated on the row.
+    for (const fl of flipEntries) {
+      if (capped) break
+      if (!inScanScope(fl.symbol)) { summary.skipped.push(`${accountId} ${fl.symbol}: outside this account's scan universe (momentum-account name)`); continue }
+      const out = await tryEnter(fl.symbol, { side: fl.side, conviction: fl.conviction, rankPct: fl.rankPct, note: `flip entry ${fl.side} after the deferred flip exit` })
+      if (out === 'capped') capped = true
     }
 
     // RECONCILE (owner "build it", 03-09-2026, §7,272·B): the shadow emits an
@@ -450,6 +693,10 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
 
   // TRAIL: every open book position, every pass — the stop only moves in the
   // trade's favour (up for a long, down for a short — PR-D).
+  // PR-K DELIBERATELY DOES NOT TOUCH THIS PASS. A stop is protection, not an
+  // opinion: it is what bounds a position the book now carries from a morning
+  // rank-out to the evening pass, so it keeps being maintained on every loop
+  // and the broker keeps holding it. Only the RANKING moved to daily.
   for (const row of db.prepare(`SELECT * FROM momentum_book WHERE status = 'open'`).all()) {
     const rowSide = row.side === 'short' ? 'short' : 'long'
     const acct = accounts.find(a => String(a.accountId) === String(row.account_id))
@@ -496,7 +743,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     } catch (err) { summary.skipped.push(`${row.symbol} trail: ${err.message}`) }
   }
 
-  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: maxId, lastRunMs: now, reconciledAt: state.reconciledAt || {} }))
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: maxId, lastRunMs: now, reconciledAt: state.reconciledAt || {}, rankExitAt: state.rankExitAt || {}, pendingFlips: state.pendingFlips || {} }))
   return summary
 }
 
@@ -517,8 +764,21 @@ export function momentumBookReport(db) {
     config: cfg,
     lastRunAt: state.lastRunMs ? new Date(state.lastRunMs).toISOString() : null,
     lastShadowRowId: state.lastShadowRowId,
+    // PR-K: when each account last ran its rank-exit pass, so "why is this
+    // still open?" has an answer that is read, not inferred.
+    rankExit: {
+      cadence: cfg.bookExitCadence,
+      minHoldHours: cfg.bookMinHoldHours,
+      minHoldAppliesTo: 'both paths (the momentum-account daily pass and the row-cursor path)',
+      cadenceAppliesTo: 'the row-cursor path only — the momentum-account daily pass is daily by construction',
+      // EMPTY IS THE NORMAL READING while momentum-account.json says "_all":
+      // every enabled account goes through the daily pass, so the row-cursor
+      // cursor below is never stamped. It is not "the daily pass never ran".
+      rowCursorLastPassAt: Object.fromEntries(Object.entries(state.rankExitAt || {}).map(([id, ms]) => [`…${String(id).slice(-4)}`, Number(ms) ? new Date(Number(ms)).toISOString() : null])),
+      pendingFlips: Object.keys(state.pendingFlips || {}).length,
+    },
     open: open.map(o => ({ account: `…${String(o.account_id).slice(-4)}`, symbol: o.symbol, side: o.side, entry: o.entry_price, stop: o.stop, atr: o.atr, enteredAt: o.entered_at, status: o.status })),
     closed: { n: pnl.length, wins: wins.length, winRate: pnl.length ? Math.round((wins.length / pnl.length) * 1000) / 10 : null, profitFactor: gl > 0 ? Math.round((wins.reduce((a, b) => a + b, 0) / gl) * 100) / 100 : (pnl.length ? null : 0), net: Math.round(pnl.reduce((a, b) => a + b, 0) * 100) / 100 },
-    note: 'Two-sided (PR-D): longs from the top band; shorts from the bottom band only at conviction ≥ the short floor (9/10 on the defaults) and never against an up-trend reading. Entries and exits come from the momentum shadow ranking; the stop is 3×ATR and only moves in the trade\'s favour; the keeper is paused on these positions.',
+    note: `Rank exits respect the horizon since PR-K: minimum hold ${cfg.bookMinHoldHours}h on both paths${cfg.bookExitCadence === 'every_pass' ? ' (LIFTED — bookExitCadence is "every_pass", the pre-PR-K restore)' : ', row-cursor cadence "daily"'} — the stop, a refused exit's retry and an exit owed from a previous day still run every pass. Two-sided (PR-D): longs from the top band; shorts from the bottom band only at conviction ≥ the short floor (9/10 on the defaults) and never against an up-trend reading. Entries and exits come from the momentum shadow ranking; the stop is 3×ATR and only moves in the trade's favour; the keeper is paused on these positions.`,
   }
 }

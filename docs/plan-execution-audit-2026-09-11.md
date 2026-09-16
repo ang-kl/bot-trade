@@ -1553,3 +1553,181 @@ could be confirmed. It could not, and it is withdrawn — see §14.2.
 - Open-position count and margin usage therefore run HIGHER than before at the
   same cadence — held winners keep their margin. The position cap
   (`maxOpenPositions` 5, the book's 8) is unchanged and still binds new entries.
+
+---
+
+## 15. Follow-up — PR-K, the momentum book stops cutting weeks-horizon positions intraday (built 16-09-2026, from the 09–11-09 statements)
+
+Dated follow-up per the plan's standing rule (owner principle 5, "the `.md`
+plans are checked"). Ordered by the owner ("finish the outstanding") off the
+measurement below. **This changes EXIT BEHAVIOUR on accounts that trade real
+money**, so it is config-driven, revertible by a single stored value, and the
+switch is named here with its storage key and the route that writes it.
+
+### 15.1 The measurement that ordered it
+
+Five broker statements, 95 bot deals, 09–11 Sep, grouped by hold time:
+
+| Hold | n | Net |
+|---|---|---|
+| under 15 min | 21 | −237 |
+| 15 min – 24 h | 58 | +1,057 |
+| **over 24 h** | **16** | **−972** |
+
+The three largest single losses were all the momentum book's **rank exits
+firing intraday** on positions entered for a weeks-long move: US30 and US2000
+(−1.24 % / −0.76 %, closed 09-09 18:39 SGT) and GER40 (−2.66 %).
+
+### 15.2 The authority
+
+The book's own first principle, stated by the owner 07-09-2026 and carried at
+the head of `agent/services/momentum-account.js`:
+
+> **HORIZON IS THE DESIGN VARIABLE… book decisions on the daily close only
+> (trail, entries, exits), not per-minute.**
+
+### 15.3 WHICH PATH TRADES — read this before the rest
+
+`runMomentumBook` has two exit paths, and **only one of them carries an account
+today**:
+
+| Path | Who it carries as shipped | Cadence before PR-K | What PR-K adds |
+|---|---|---|---|
+| `momentum-account.js` → `runMomentumAccountPass` → `exitDroppedHoldings` | **every enabled registry account** | already once per UTC day (its own `lastRunMs` cursor) | the **minimum hold**, and a fail-closed read of the ranking |
+| `momentum-book.js` row-cursor block | **no account at all** | every loop pass | daily cadence + per-account cursor, the minimum hold, flip bookkeeping |
+
+`agent/config/momentum-account.json` ships `"accountId": "_all"` (PR-B,
+11-09-2026, owner principle 9), so `isMomentumAccount()` is true for every
+ENABLED registry account and each one `continue`s into the daily pass before
+the row-cursor block is reached.
+
+**The first draft of this PR put both rules on the row-cursor path only.** They
+were on, configured, documented — and out of reach of every account that
+trades: CLAUDE.md failure mode #3 in its purest form, found by the checker on
+16-09-2026, whose repro closed a one-minute-old position with
+`note='rank exit (daily pass)'` while `rankExitsDeferred` read 0. The row-cursor
+work was kept (it is the correct behaviour if the config ever names specific
+accounts, or for an account disabled in the registry but still armed) but it is
+**dormant**, and nothing in the code, the report or this document may read as
+though it were live. `GET /state/momentum-book` names the field
+`rankExit.rowCursorLastPassAt` for that reason: empty is the normal reading,
+not "the daily pass never ran".
+
+### 15.4 What changed
+
+**On the path that trades (`exitDroppedHoldings`):**
+
+- A rank exit does not fire on a position younger than **`bookMinHoldHours`
+  (default 24)**. The row is reconsidered on the next daily pass; the skip is
+  counted in `rankExitsDeferred` and named in the pass summary.
+- The hold is measured from the **oldest** stamp describing the position — the
+  book row's `entered_at` *or* the trade's `opened_at` — so a position adopted
+  today after filling three days ago is not handed a fresh 24-hour shield.
+  (`agent/services/book-hold-age.js`, shared by both paths; it is its own module
+  because momentum-account.js may not import momentum-book.js — that cycle is
+  why `buildEntrySynth` is injected.)
+- **The fail-open is closed.** `loadShadowState` swallows a missing or corrupt
+  blob and returns `{ holdings: {} }`, which this pass read as "the ranking
+  holds nothing" — making **every** open book row a dropped holding and closing
+  the entire book. An unreadable ranking is not an instruction to close
+  everything: exits are now skipped with a stated reason. A ranking that reads
+  fine and holds nothing still exits, exactly as before.
+- Closes sent by the **margin-exhausted** branch are now counted: it returns
+  `ran: false` *after* sending its exits, and `runMomentumBook` only added
+  `ma.exits` when `ran` was true, so real closes were reported as zero. That is
+  also what kept the routing defect above invisible in the summary.
+
+**On the dormant row-cursor path:** the rank exit (flip-exit leg included) is
+evaluated once per UTC day on the book's own **per-account** cursor
+(`momentum_book_state_json.rankExitAt`), reusing `dailyDue()` / `thresholdMs()`
+and the same `dailyRunAfterUtc` threshold so the two paths share one daily
+close; the same minimum hold applies; and a flip whose exit is deferred is
+**remembered** (`pendingFlips`, 3-day TTL) so its entry happens in the same pass
+as its exit whenever that exit finally goes — the shadow's `enter` row is
+consumed by the cursor on the deferring pass, so without this the new side could
+be lost when the shadow's holdings are absent or inside the one-hour reconcile
+throttle.
+
+### 15.5 What deliberately did NOT change — it still runs on every pass
+
+A rank exit is a **ranking opinion**; a stop is **protection**. Only the
+opinion moved:
+
+- **The stop at the broker.** The trail pass is untouched: every open book row
+  is re-trailed on every loop and the broker keeps holding the stop. Pinned by a
+  test asserting the stop moves on the very pass that defers a rank exit.
+- **The retry of an exit the broker REFUSED** (`exit_pending:` — the 09-09
+  LLY.US case). An order already sent, not a fresh opinion: no cadence, no min
+  hold, retried every pass.
+- **The owed-exit sweep** for an exit decided on a previous book day. It fires
+  on every pass, not only the daily one.
+- Adoption, entries, the reconcile pass, the closed-trade sweep, the weekend
+  bank, the loss guardian, the equity stop, the naked-position guard and the
+  position cap — none of them is touched.
+
+### 15.6 The revert switch
+
+Both knobs live in the **existing book policy record**:
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `bookMinHoldHours` | `24` | a younger row is not rank-exited — **enforced on both paths** (0 disables the hold; ceiling 168 h) |
+| `bookExitCadence` | `'daily'` | rank exits once per UTC day — **row-cursor path only**; the daily pass is already daily |
+| `bookExitCadence` | `'every_pass'` | **the revert**: pre-PR-K behaviour on both paths (the cadence is lifted and the minimum hold with it) |
+
+- **Storage key:** `momentum_book_json` (`MOMENTUM_BOOK_CONFIG_KEY`).
+- **Route:** `POST /actions/momentum-book`, e.g.
+  `{"bookExitCadence":"every_pass"}`. It **merges from what is STORED** (this
+  repo's failure mode #5) and replies with the effective policy — exercised by a
+  real request in `agent/routes/config-merge-routes.test.js`, not by asserting
+  on the route's source text.
+- `'every_pass'` lifts the minimum hold by design: the hold means "reconsidered
+  on the NEXT DAILY PASS", and under `every_pass` there is none. One stored
+  value is therefore a true restore. Daily cadence *without* the hold is
+  `bookMinHoldHours: 0`.
+- Anything that is not the literal `'every_pass'` reads as `'daily'`, and a
+  malformed `bookMinHoldHours` — **including `null`, `''`, `false` and `[]`,
+  which `Number()` turns into a finite 0** — falls back to 24, never to 0. A
+  cleared UI field must not silently switch the floor off.
+
+### 15.7 The residual risk, stated plainly
+
+**A position the ranking drops inside its first 24 hours is carried to the next
+daily pass.** If the name keeps falling, the book no longer takes it off at the
+ranking's word; the loss can be larger than it would have been. What bounds it
+is **the stop** — 3 × ATR(20), trailed in the trade's favour on every loop pass
+and held at the broker — plus the weekend bank, the loss guardian and the equity
+stop, none of which this PR touches. That is the trade the measurement asks for.
+
+Known and accepted, with the reasoning:
+
+- **An exit the ranking called but the book never executed is still subject to
+  the minimum hold** (row-cursor path). The checker read the resulting delay —
+  up to `bookMinHoldHours` minus the row's age at the call — as an inconsistency
+  with the `exit_pending` retry, which bypasses both rules. The distinction kept
+  here is *attempted* versus *not attempted*: `exit_pending` means a close was
+  sent and the broker refused it, while an unexecuted word is still only an
+  opinion, and the owner's floor on holding time is exactly a rule about
+  opinions. Making it consistent the other way would let any word written
+  before 21:05 close a position minutes old, which is the behaviour this PR
+  exists to stop. It is also what the live path does. Revert per account with
+  `bookMinHoldHours: 0` if the owner wants the other reading.
+- **Open positions and margin usage run higher** between daily passes. The
+  position cap (`maxPositionsPerAccount` 8) is unchanged and still binds entries.
+- **A flip completes at the daily close**, so the book may hold the old side for
+  up to a day. It is never on both sides, and never on neither.
+
+### 15.8 What an operator sees on the first loop after deploy
+
+- Rank exits on the daily pass now **skip positions under 24 hours old**, with
+  `BTCUSD: rank exit held — held 3.4h < bookMinHoldHours 24 — reconsidered on
+  the next daily pass` in the pass summary and `rankExitsDeferred` non-zero in
+  the book summary. Nothing else about the daily pass changes.
+- If the shadow state is ever unreadable, the pass reports `shadow state
+  unreadable — no rank exits this pass` and closes nothing, where it previously
+  closed the whole book.
+- Stops keep moving on every pass (`trailed` unchanged); refused closes keep
+  retrying; exits owed from a previous day still go.
+- `GET /state/momentum-book` gains a `rankExit` block: the cadence, the hold,
+  which path each applies to, `rowCursorLastPassAt` (empty while the config says
+  `_all` — see §15.3) and the number of remembered flips.

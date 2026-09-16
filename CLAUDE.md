@@ -518,7 +518,20 @@ Measurement history — each line is a real run of the script, not a claim:
   verified by mutation — the first attempt did not match the code and
   proved nothing, the second applied 1→0 and turned seven named tests
   red — PR-J committed, PR-I's gate finished and #904 merged), so the
-  PR-I/PR-J report is **`№ 7,799`** by count. The count is by replies,
+  PR-I/PR-J report is **`№ 7,799`** by count. Three unstamped status lines
+  followed (`№ 7,800`–`№ 7,802`: the PR-K and PR-L makers launched on
+  worktrees from 70afd1d, PR-K reported complete), then four more
+  (`№ 7,803`–`№ 7,806`, 16-09 05:28–05:40 UTC: the PR-K checker launched,
+  the branch read clean, the checker's blocker confirmed independently —
+  `momentum-account.json` ships `accountId: "_all"`, so `isMomentumAccount`
+  is true for every enabled account and the `continue` at
+  `momentum-book.js:383` made the whole PR-K block unreachable). The report
+  of that finding was STAMPED `№ 7,804` and is **`№ 7,806`** by count —
+  behind by two, recorded here rather than silently carried. Three unstamped
+  lines followed it (`№ 7,807`–`№ 7,809`: the maker's rescope onto
+  `exitDroppedHoldings`, my own mutation of the live-path guard turning red
+  the end-to-end `_all` regression test, the gate launch), so the next
+  stamped reply is **`№ 7,810`**. The count is by replies,
   not by stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 

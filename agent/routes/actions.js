@@ -1062,12 +1062,16 @@ export default function actionsRouter(db, deps = {}) {
       const { momentumBookConfig, loadMomentumBook, MOMENTUM_BOOK_CONFIG_KEY } = await import('../services/momentum-book.js')
       const body = req.body || {}
       const merged = { ...loadMomentumBook(db) }
-      for (const k of ['enabled', 'timeframe', 'atrPeriod', 'stopAtr', 'maxPositionsPerAccount', 'conviction']) {
+      // PR-K (16-09-2026): bookExitCadence and bookMinHoldHours are the rank
+      // exit's horizon switches and are the REVERT path — the merge is from
+      // what is STORED (failure mode #5), so posting one knob never resets
+      // the others, and the reply is the effective policy.
+      for (const k of ['enabled', 'timeframe', 'atrPeriod', 'stopAtr', 'maxPositionsPerAccount', 'conviction', 'bookExitCadence', 'bookMinHoldHours']) {
         if (k in body) merged[k] = body[k]
       }
       const cfg = momentumBookConfig(merged)
       setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(cfg))
-      console.log(`[actions] momentum-book → enabled=${cfg.enabled} tf=${cfg.timeframe} atr=${cfg.atrPeriod} stopAtr=${cfg.stopAtr} maxPos=${cfg.maxPositionsPerAccount}`)
+      console.log(`[actions] momentum-book → enabled=${cfg.enabled} tf=${cfg.timeframe} atr=${cfg.atrPeriod} stopAtr=${cfg.stopAtr} maxPos=${cfg.maxPositionsPerAccount} rankExit=${cfg.bookExitCadence} minHold=${cfg.bookMinHoldHours}h`)
       res.json({ ok: true, effective: cfg })
     } catch (err) {
       console.error('[actions/momentum-book] error:', err.message)

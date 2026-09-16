@@ -36,7 +36,11 @@ import { getState, setState } from '../db.js'
 import { lotsToVolume } from '../lib/lot-sizing.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { notionalUsd } from '../lib/contracts.js'
-import { loadShadowState, loadMomentumShadow } from './momentum-shadow.js'
+import { loadMomentumShadow, MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
+// PR-K (16-09-2026): the minimum hold a rank exit must respect. Its own module
+// because momentum-book.js applies the SAME rule and importing it here would
+// close a cycle (that is why buildEntrySynth is injected).
+import { heldLongEnough, heldHours } from './book-hold-age.js'
 import { directionFor, trendReadingFor } from './direction-policy.js'
 import { checkRegimeGate } from './regime-gate.js'
 import { recordDecision } from './decision-log.js'
@@ -77,6 +81,27 @@ export function momentumAccountConfig(raw) {
 
 export function loadMomentumAccount(db) {
   try { return momentumAccountConfig(JSON.parse(getState(db, MOMENTUM_ACCOUNT_KEY) || 'null')) } catch { return momentumAccountConfig(null) }
+}
+
+/**
+ * The shadow's holdings, or NULL when the shadow state cannot be read.
+ *
+ * WHY THIS EXISTS (checker, 16-09-2026). `loadShadowState` swallows a missing
+ * or corrupt blob and returns `{ holdings: {} }`, and the daily pass read that
+ * as "the ranking holds nothing" — which makes EVERY open book row a dropped
+ * holding and closes the whole book. A ranking that cannot be read is not an
+ * instruction to close everything. An empty-but-READABLE holdings map is a
+ * real ranking and still exits rows, as before.
+ */
+export function shadowHoldingsOrNull(db) {
+  let raw = null
+  try { raw = getState(db, MOMENTUM_SHADOW_STATE_KEY) } catch { return null }
+  if (raw == null || String(raw).trim() === '') return null
+  let parsed = null
+  try { parsed = JSON.parse(raw) } catch { return null }
+  if (!parsed || typeof parsed !== 'object') return null
+  if (!parsed.holdings || typeof parsed.holdings !== 'object') return null
+  return parsed.holdings
 }
 
 /**
@@ -316,7 +341,7 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   const cfg = loadMomentumAccount(db)
   const accountId = String(acct.accountId)
   const state = loadMomentumAccountState(db, accountId)
-  const summary = { account: accountId, ran: false, entries: 0, exits: 0, skipped: [], universe: null }
+  const summary = { account: accountId, ran: false, entries: 0, exits: 0, rankExitsDeferred: 0, skipped: [], universe: null }
   if (!dailyDue({ nowMs: now, lastRunMs: state.lastRunMs, afterUtc: cfg.dailyRunAfterUtc, cadence: cfg.cadence })) {
     summary.why = 'not due (daily cadence)'
     return summary
@@ -328,7 +353,7 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   if (marginExhausted) {
     summary.why = 'margin exhausted — no entries this pass'
     summary.skipped.push('margin exhausted — no entries this pass')
-    summary.exits = await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary })
+    summary.exits = await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, bookCfg })
     return summary
   }
   summary.ran = true
@@ -339,16 +364,18 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   for (const u of Object.values(built.universe)) if (!u.ok) byReason[String(u.reason).split(':')[0]] = (byReason[String(u.reason).split(':')[0]] || 0) + 1
   summary.universe = { total: Object.keys(built.universe).length, tradable: tradable.length, byReason, equity: built.equity }
 
-  const held = (() => { try { return loadShadowState(db).holdings || {} } catch { return {} } })()
+  // NULL = the shadow state could not be read. Not "holds nothing" (checker,
+  // 16-09-2026): the exits below would close every open row on a corrupt blob.
+  const held = shadowHoldingsOrNull(db)
   const shadowCfg = loadMomentumShadow(db)
   // Best rank first: strongest longs (rank → 1) and weakest shorts (rank → 0)
   // sort by their own side's strength.
-  const wanted = Object.entries(held).filter(([s, h]) => (h?.side === 'long' || h?.side === 'short') && tradable.includes(String(s).toUpperCase()))
+  const wanted = Object.entries(held || {}).filter(([s, h]) => (h?.side === 'long' || h?.side === 'short') && tradable.includes(String(s).toUpperCase()))
     .map(([s, h]) => ({ symbol: String(s).toUpperCase(), side: h.side, rank: Number(h.entryRank) || 0, conviction: h.entryConviction ?? null }))
     .sort((a, b) => (b.side === 'short' ? 1 - b.rank : b.rank) - (a.side === 'short' ? 1 - a.rank : a.rank))
 
   // EXITS FIRST: the shadow no longer holds it (or holds the other side).
-  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held })
+  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held, bookCfg })
   // The open set is read AFTER the exits (checker item a): a same-day flip
   // has its long row exited above and its short entered below.
   const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
@@ -419,13 +446,32 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
  * full pass and the margin-exhausted pass (exits run regardless of
  * headroom). Returns the number of exits sent.
  */
-async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held = null }) {
-  const holdings = held || (() => { try { return loadShadowState(db).holdings || {} } catch { return {} } })()
+async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held = undefined, bookCfg = null }) {
+  const holdings = held === undefined ? shadowHoldingsOrNull(db) : held
+  // FAIL CLOSED (checker, 16-09-2026): an unreadable ranking closes nothing.
+  if (holdings == null) {
+    summary.skipped.push('shadow state unreadable — no rank exits this pass (a missing ranking is not an instruction to close the book)')
+    return 0
+  }
   const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
   let exits = 0
   for (const row of openRows) {
     const rowSide = row.side === 'short' ? 'short' : 'long'
     if (holdings[row.symbol]?.side === rowSide || holdings[String(row.symbol).toUpperCase()]?.side === rowSide) continue // still held on this side — keep (untradable-now names included)
+    // THE MINIMUM HOLD (PR-K, 16-09-2026 — THIS is the path that trades:
+    // `accountId: "_all"` routes every enabled account through the daily pass,
+    // so the row-cursor path in momentum-book.js carries none of them). The
+    // cadence half of PR-K is already satisfied here by construction — this
+    // function only runs inside the daily pass, on its own lastRunMs cursor —
+    // so what is added is the floor on how long a position is held before a
+    // RANKING OPINION may close it. The stop is untouched and still bounds the
+    // position; `bookExitCadence: 'every_pass'` (or bookMinHoldHours 0) lifts
+    // this, which is the pre-PR-K behaviour on this path exactly.
+    if (!heldLongEnough(db, row, now, bookCfg)) {
+      summary.rankExitsDeferred = (summary.rankExitsDeferred || 0) + 1
+      summary.skipped.push(`${row.symbol}: rank exit held — held ${heldHours(db, row, now)}h < bookMinHoldHours ${bookCfg?.bookMinHoldHours} — reconsidered on the next daily pass`)
+      continue
+    }
     try {
       if (row.position_id && deps.close) {
         // Same rule as the row-cursor exit (09-09-2026): no volume, no close.

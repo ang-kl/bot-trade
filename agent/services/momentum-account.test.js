@@ -12,7 +12,7 @@ import {
   momentumAccountConfig, loadMomentumAccount, isMomentumAccount, momentumAccountIds, momentumAccountStateKey, migrateLegacyPassCursor, ALL_ACCOUNTS, MOMENTUM_ACCOUNT_KEY, MOMENTUM_ACCOUNT_STATE_KEY, MOMENTUM_UNIVERSE_KEY,
   momentumUniverse, momentumUniverseSymbols, volTargetLots, dailyDue, thresholdMs, buildUniverse, runMomentumAccountPass, momentumAccountReport,
 } from './momentum-account.js'
-import { buildEntrySynth, loadMomentumBook, runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, TSMOM_STRATEGY } from './momentum-book.js'
+import { buildEntrySynth, loadMomentumBook, momentumBookConfig, runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, TSMOM_STRATEGY } from './momentum-book.js'
 import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 import { evaluateTrade } from './risk.js'
 import { evidenceGate } from './evidence-gate.js'
@@ -548,4 +548,129 @@ test('PR-D flip on the daily pass (checker items a, b): a long row whose shadow 
   assert.equal(r2.entries, 0); assert.ok(r2.skipped.some(s => /^BTCUSD: regime_block trend-in-quiet \(tsmom_long\)/.test(s)), JSON.stringify(r2.skipped))
   const { recentDecisions } = await import('./decision-log.js')
   assert.equal(recentDecisions(db2, { symbol: 'BTCUSD', stage: 'regime_gate' }).length, 1)
+})
+
+// ---------------------------------------------------------------------------
+// PR-K (16-09-2026) — THE MINIMUM HOLD ON THE PATH THAT ACTUALLY TRADES.
+//
+// The first draft of PR-K put the horizon rules on the ROW-CURSOR path in
+// momentum-book.js. `agent/config/momentum-account.json` ships
+// `"accountId": "_all"` (PR-B, owner principle 9), so `isMomentumAccount` is
+// true for every enabled account and `runMomentumBook` routes ALL of them to
+// the daily pass below, `continue`-ing before the row-cursor path is reached:
+// the rules were on, configured, documented and out of reach of what they
+// guarded — CLAUDE.md failure mode #3 exactly. These cases pin the rule where
+// the closes are actually sent.
+//
+// The CADENCE half needs nothing here: this pass already runs once per UTC day
+// on its own lastRunMs cursor. What was missing is the floor on how long a
+// position is held before a RANKING OPINION may close it.
+// ---------------------------------------------------------------------------
+
+function openBookRow(db, { accountId, symbol = 'BTCUSD', enteredAt, openedAt = null, positionId = 'pos-1' }) {
+  let tradeId = null
+  if (openedAt) {
+    tradeId = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, label_strategy, strategy, account_id, origin, ctrader_position_id, volume, opened_at) VALUES (?,'BUY','open',100,94,?,?,?,'bot_market_dispatch',?,1,?)`)
+      .run(symbol, TSMOM_STRATEGY, TSMOM_STRATEGY, accountId, positionId, openedAt).lastInsertRowid
+  }
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note) VALUES (?, ?, ?, ?, 'long', 100, 94, 1, 0.9, ?, 'open', 'test row')`)
+    .run(tradeId, accountId, symbol, positionId, enteredAt)
+  return tradeId
+}
+// The ranking holds nothing, so every open row is a dropped holding.
+const DROPPED = JSON.stringify({ holdings: {}, refused: {}, lastRunMs: 1, lastUniverse: 20 })
+
+test('PR-K: the daily pass does NOT rank-exit a position younger than bookMinHoldHours; the next day\'s pass does — under the shipped "_all" config, on the path that trades', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: '_all', volTargetPct: 10, maxPositions: 8 }))
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, DROPPED)
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))   // defaults: 24 h
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: MOM }, { getState, setState })
+  // Opened one minute before the daily pass — the checker's repro.
+  openBookRow(db, { accountId: MOM, enteredAt: new Date(DUE - 60_000).toISOString(), openedAt: '2026-09-07 21:29:00' })
+  const f = fakes()
+  const accounts = [{ accountId: MOM, isLive: false }]
+  const creds = (a) => ({ accountId: a.accountId })
+  let r = await runMomentumBook(db, { accounts, credsFor: creds, deps: { ...f.deps, symbolMap: { BTCUSD: 1 } }, now: DUE })
+  assert.equal(r.exits, 0, `a one-minute-old position is not rank-exited: ${JSON.stringify(r.skipped)}`)
+  assert.equal(f.calls.close.length, 0, 'nothing was closed')
+  assert.equal(r.rankExitsDeferred, 1, 'the deferral is counted where the summary can be read')
+  assert.ok(r.skipped.some(s => /BTCUSD: rank exit held — held 0\.0h < bookMinHoldHours 24/.test(s)), JSON.stringify(r.skipped))
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'open')
+  // The next daily pass, 24 h later: the opinion stands and the position goes.
+  r = await runMomentumBook(db, { accounts, credsFor: creds, deps: { ...f.deps, symbolMap: { BTCUSD: 1 } }, now: DUE + 86_400_000 })
+  assert.equal(r.exits, 1, `held long enough now: ${JSON.stringify(r.skipped)}`)
+  assert.equal(f.calls.close.length, 1)
+  assert.equal(db.prepare(`SELECT status, note FROM momentum_book`).get().note, 'rank exit (daily pass)')
+})
+
+test('PR-K: the hold is measured from the OLDEST stamp — a row adopted today for a trade filled three days ago is rank-exited today', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, DROPPED)
+  const bookCfg = momentumBookConfig({ enabled: true })
+  openBookRow(db, { accountId: MOM, enteredAt: new Date(DUE - 60_000).toISOString(), openedAt: '2026-09-04 09:00:00' })
+  const f = fakes()
+  const r = await runMomentumAccountPass(db, { acct: { accountId: MOM, isLive: false }, creds: {}, bookCfg, buildEntrySynth, deps: f.deps, now: DUE })
+  assert.equal(r.exits, 1, `the adoption stamp is not a new clock: ${JSON.stringify(r.skipped)}`)
+  assert.equal(r.rankExitsDeferred, 0)
+})
+
+test('PR-K: one stored value lifts the hold on this path too — bookExitCadence "every_pass" (and bookMinHoldHours 0) restore the pre-PR-K exit', async () => {
+  for (const [label, stored] of [['every_pass', { enabled: true, bookExitCadence: 'every_pass' }], ['minHold 0', { enabled: true, bookMinHoldHours: 0 }]]) {
+    const db = fresh()
+    setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+    setState(db, MOMENTUM_SHADOW_STATE_KEY, DROPPED)
+    openBookRow(db, { accountId: MOM, enteredAt: new Date(DUE - 60_000).toISOString(), openedAt: '2026-09-07 21:29:00' })
+    const f = fakes()
+    const r = await runMomentumAccountPass(db, { acct: { accountId: MOM, isLive: false }, creds: {}, bookCfg: momentumBookConfig(stored), buildEntrySynth, deps: f.deps, now: DUE })
+    assert.equal(r.exits, 1, `${label}: the one-minute-old row is closed exactly as before PR-K — ${JSON.stringify(r.skipped)}`)
+    assert.equal(f.calls.close.length, 1)
+  }
+})
+
+test('PR-K: an UNREADABLE shadow state closes nothing (it was closing the whole book); a readable-but-empty ranking still exits', async () => {
+  const bookCfg = momentumBookConfig({ enabled: true })
+  const old = new Date(DUE - 10 * 86_400_000).toISOString()
+  for (const blob of [null, '', 'not-json', '{"holdings":null}', '{}']) {
+    const db = fresh()
+    setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+    if (blob !== null) setState(db, MOMENTUM_SHADOW_STATE_KEY, blob)
+    openBookRow(db, { accountId: MOM, enteredAt: old, openedAt: '2026-08-28 09:00:00' })
+    const f = fakes()
+    const r = await runMomentumAccountPass(db, { acct: { accountId: MOM, isLive: false }, creds: {}, bookCfg, buildEntrySynth, deps: f.deps, now: DUE })
+    assert.equal(r.exits, 0, `${JSON.stringify(blob)}: a ranking that cannot be read is not an instruction to close everything`)
+    assert.equal(f.calls.close.length, 0)
+    assert.ok(r.skipped.some(s => /shadow state unreadable — no rank exits this pass/.test(s)), JSON.stringify(r.skipped))
+    assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'open')
+  }
+  // A ranking that reads fine and holds nothing is a real ranking: it exits.
+  const db = fresh()
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, DROPPED)
+  openBookRow(db, { accountId: MOM, enteredAt: old, openedAt: '2026-08-28 09:00:00' })
+  const f = fakes()
+  const r = await runMomentumAccountPass(db, { acct: { accountId: MOM, isLive: false }, creds: {}, bookCfg, buildEntrySynth, deps: f.deps, now: DUE })
+  assert.equal(r.exits, 1, JSON.stringify(r.skipped))
+})
+
+test('PR-K: closes sent by the MARGIN-EXHAUSTED branch are counted in the book summary (that branch returns ran:false after sending them)', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: '_all', volTargetPct: 10, maxPositions: 8 }))
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, DROPPED)
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: MOM }, { getState, setState })
+  openBookRow(db, { accountId: MOM, enteredAt: new Date(DUE - 10 * 86_400_000).toISOString(), openedAt: '2026-08-28 09:00:00' })
+  const f = fakes()
+  const r = await runMomentumBook(db, {
+    accounts: [{ accountId: MOM, isLive: false }],
+    credsFor: (a) => ({ accountId: a.accountId }),
+    deps: { ...f.deps, symbolMap: { BTCUSD: 1 }, marginHeadroom: () => 0 },
+    now: DUE,
+  })
+  assert.equal(f.calls.close.length, 1, 'the exit went out')
+  assert.equal(r.exits, 1, 'and the summary says so — a real close reported as zero is how the routing defect stayed invisible')
+  assert.equal(r.momentumAccount.ran, false)
 })
