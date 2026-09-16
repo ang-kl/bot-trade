@@ -35,6 +35,36 @@ export const DEFAULT_RULES = Object.freeze({
   // big winners (LLY sat at +17R) held ALL the margin hostage and armed
   // strategies couldn't get a fill (owner chose: cap + bank). 0/null disables.
   bankTriggerR: 4,
+  // PR-J (exit asymmetry, 11-09-2026). What FRACTION of the position the bank
+  // target takes. 1 = the whole position, which is exactly what this rule did
+  // before PR-J and is still the default HERE — the halving is switched on per
+  // account by managed-exit.js, and only for the families `takeAtRFamilies`
+  // scopes the take to, so a non-managed account and an out-of-scope family
+  // behave precisely as they did. < 1 turns the bank into a PARTIAL_EXIT that
+  // banks that fraction, moves the stop to at least breakeven and trails the
+  // remainder `bankTrailAtrMult` behind the peak.
+  bankFraction: 1,
+  bankTrailAtrMult: 1.5,
+  // PR-J: the time cap stops closing winners.
+  //
+  // MEASURED (five broker statements, 95 bot deals, 09–11 Sep): winners' median
+  // move +0.39%, losers' −0.76%, avg win ÷ avg loss 0.72 at a 51% win rate —
+  // expectancy negative BY CONSTRUCTION, because the winners were capped (at
+  // +1R by the take, or cut mid-move by this clock) while the losers ran to
+  // full 1–3% stops. Ten positions were closed in one batch at 21:31 SGT by
+  // this rule after 17–21h held, several of them in profit.
+  //
+  // So: a position at or above `timeCapHoldMinR` when its cap expires is NOT
+  // closed. Its stop is tightened to a trail and it leaves by that stop, by its
+  // target, or by invalidation. A position BELOW the threshold — and a position
+  // whose price cannot be read at all — still dies at the clock, with the same
+  // reason string it always had. `timeCapHoldWinners: false` restores the old
+  // behaviour exactly, and `timeCapMaxExtraHours` bounds the hold so "hold the
+  // winner" can never mean "hold forever".
+  timeCapHoldWinners: true,
+  timeCapHoldMinR: 0,
+  timeCapTrailAtrMult: 1.5,
+  timeCapMaxExtraHours: 72,
   // Managed-exit trail (owner "c1", 25-08-2026): trail the stop this many R
   // behind the PEAK favorable excursion, active from entry, tighten-only —
   // the trail_1R rule the gated-entry counterfactual measured at PF 1.82
@@ -95,6 +125,42 @@ function isTighter(side, oldSL, newSL) {
   return (side === 'short' || side === 'SELL') ? newSL < oldSL : newSL > oldSL
 }
 
+/** true for long/BUY, false for short/SELL. */
+function isLong(side) {
+  return !(side === 'short' || side === 'SELL')
+}
+
+/**
+ * The PRICE distance a PR-J trail sits behind the peak.
+ *
+ * `mult` multiplies the position's ATR when one was supplied by the caller,
+ * and the position's own initial risk (1R, a price distance too) when one was
+ * not. Both denominators are stated on purpose rather than hidden: the ATR is
+ * read from the profit keeper's in-memory cache, which is populated only when
+ * the keeper runs in adaptive mode and has seen this symbol, so a rule that
+ * could ONLY use ATR would silently not fire on everything else — a trigger
+ * out of reach of what it guards. The R fallback is always reachable.
+ *
+ * @param {{initial_risk:number|null}} pos
+ * @param {number} mult
+ * @param {number|null|undefined} atr
+ * @returns {{dist:number, basis:string}|null}
+ */
+function trailDistance(pos, mult, atr) {
+  const m = Number(mult)
+  if (!Number.isFinite(m) || m <= 0) return null
+  const a = Number(atr)
+  if (Number.isFinite(a) && a > 0) return { dist: m * a, basis: `${m}×ATR` }
+  const risk = Math.abs(Number(pos.initial_risk))
+  if (Number.isFinite(risk) && risk > 0) return { dist: m * risk, basis: `${m}R (no ATR)` }
+  return null
+}
+
+/** Peak-favourable price this position has traded to, in price terms. */
+function peakPriceOf(pos, peakR) {
+  return priceAtR(pos, peakR)
+}
+
 // ---------------------------------------------------------------------------
 // Main evaluator
 // ---------------------------------------------------------------------------
@@ -103,7 +169,9 @@ function isTighter(side, oldSL, newSL) {
  * Evaluate what the bot should do with an open position right now.
  *
  * Rule precedence (first match wins):
- *   1. Time cap expired              -> FULL_EXIT
+ *   1. Time cap expired              -> FULL_EXIT below timeCapHoldMinR (or
+ *                                       past the backstop); at or above it,
+ *                                       MOVE_SL to the cap trail, once (PR-J)
  *   2. Invalidation trigger breached -> FULL_EXIT   (price-based triggers only;
  *                                                    text triggers defer to LLM)
  *   3. Partial-exit window           -> PARTIAL_EXIT + trail SL to +0.5R
@@ -120,9 +188,13 @@ function isTighter(side, oldSL, newSL) {
  *   initial_risk:number|null, mfe_r:number|null, mae_r:number|null,
  *   be_moved:number|null, scaled_out:number|null,
  *   invalidation_trigger:string|null, time_cap_at:string|null,
+ *   time_cap_trail_at:string|null, bank_partial_at:string|null,
  *   created_at:string
  * }} pos
- * @param {{ currentPrice:number|null, now?:Date, rules?:object }} ctx
+ * @param {{ currentPrice:number|null, now?:Date, rules?:object,
+ *           atr?:number|null }} ctx  `atr` is optional: PR-J's two trails use
+ *   it when the caller has one and fall back to the position's own 1R distance
+ *   when it does not.
  */
 export function evaluatePosition(pos, ctx) {
   const now = ctx.now instanceof Date ? ctx.now : new Date()
@@ -162,16 +234,97 @@ export function evaluatePosition(pos, ctx) {
   // actually have. The cap is now evaluated first, and a missing price makes
   // it MORE urgent to honour, not less — a position nobody can price is
   // exactly the one that should not be left running past its deadline.
+  //
+  // PR-J (11-09-2026): what the cap does to a WINNER changed. A position at or
+  // above `timeCapHoldMinR` is trailed instead of closed — see DEFAULT_RULES
+  // for the measurement that ordered it. Everything above still holds: the cap
+  // is evaluated before the price gate, and a position nobody can price still
+  // dies at the clock, because `r` is null and null is not ≥ the threshold.
   if (pos.time_cap_at) {
     const capEarly = new Date(pos.time_cap_at)
     if (Number.isFinite(capEarly.getTime()) && now >= capEarly) {
-      return {
-        action: 'FULL_EXIT',
-        reason: `time_cap_expired (${pos.time_cap_at})`,
-        newSL: null,
-        exitFraction: 1,
-        updates,
-        metrics: { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade: minutesEarly },
+      const capMetrics = { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade: minutesEarly }
+      const holdWinners = rules.timeCapHoldWinners === true
+      const minR = Number.isFinite(Number(rules.timeCapHoldMinR)) ? Number(rules.timeCapHoldMinR) : 0
+      const wouldHold = holdWinners && r != null && r >= minR
+      // The backstop: holding a winner may extend the trade, never unbound it.
+      const extraH = Number(rules.timeCapMaxExtraHours)
+      const backstopAt = Number.isFinite(extraH) && extraH > 0
+        ? capEarly.getTime() + extraH * 3_600_000
+        : null
+      const backstopped = backstopAt != null && now.getTime() >= backstopAt
+
+      if (!wouldHold || backstopped) {
+        return {
+          action: 'FULL_EXIT',
+          // Unchanged for every case that used to reach here — a loser at the
+          // clock closes with exactly the string the ledger already carries.
+          reason: wouldHold
+            ? `time_cap_expired_backstop (${pos.time_cap_at} + ${extraH}h)`
+            : `time_cap_expired (${pos.time_cap_at})`,
+          newSL: null,
+          exitFraction: 1,
+          updates,
+          metrics: capMetrics,
+        }
+      }
+
+      // Winner at the cap. Stamp ONCE — the stamp is what stops this branch
+      // being re-decided every cycle; from the next pass the ordinary ladder
+      // (managed trail, breakeven, invalidation) governs the position and the
+      // backstop above is the only cap rule still watching it.
+      //
+      // THE HOLD IS NOT FREE, AND IT IS NOT UNCONDITIONAL (checker B1,
+      // 11-09-2026). The first version of this branch trailed at
+      // `peak − 1.5 × 1R` with no floor, so with the entry stop at −1R the
+      // move only tightened at peak ≥ 1.5R — while the measurement that
+      // ordered the PR describes winners of +0.39 % MEDIAN against 1–3 %
+      // stops, i.e. roughly +0.13R to +0.39R. Every position it was written
+      // about landed in 0 ≤ R < 1.5, was stamped, and was held at FULL
+      // ORIGINAL RISK for up to 72 hours: a realised +0.13R…+0.39R turned
+      // back into −1R of open risk, ten times over in the 21:31 batch.
+      //
+      // So the trail is FLOORED AT BREAKEVEN — the same floor the bank branch
+      // below already applies — and the hold is REFUSED when even that is not
+      // tighter than the stop the position already has: then the cap closes
+      // the position exactly as it did before this PR. A hold that cannot
+      // improve the stop is not a hold, it is an unpriced extension of risk.
+      if (!pos.time_cap_trail_at) {
+        const peakR = Math.max(newMfe ?? 0, r)
+        const td = trailDistance(pos, rules.timeCapTrailAtrMult, ctx.atr)
+        const long = isLong(pos.side)
+        // At LEAST breakeven. `r >= minR >= 0` on this path, so entry is a
+        // level the trade has actually reached.
+        let trailSL = pos.entry_price
+        if (td && Number.isFinite(Number(pos.entry_price))) {
+          const peak = peakPriceOf(pos, peakR)
+          const t = long ? peak - td.dist : peak + td.dist
+          trailSL = long ? Math.max(trailSL, t) : Math.min(trailSL, t)
+        }
+        // TIGHTEN-ONLY, the invariant every other tightener in this repo
+        // obeys: a cap that LOOSENED a stop would hand back more than the
+        // close it replaced. Note isTighter() answers true for a NULL stop,
+        // which is safe here only because of the breakeven floor above — a
+        // stop-less row gets a stop at entry, never at peak − 1.5R.
+        if (Number.isFinite(Number(trailSL)) && isTighter(pos.side, pos.current_sl, trailSL)) {
+          updates.time_cap_trail_at = now.toISOString()
+          return {
+            action: 'MOVE_SL',
+            reason: `time_cap_trailing (${pos.time_cap_at}, R=${r.toFixed(2)} ≥ ${minR}, stop → ${trailSL === pos.entry_price ? 'breakeven' : `${td ? td.basis : 'breakeven'} behind peak ${peakR.toFixed(2)}R`})`,
+            newSL: trailSL,
+            exitFraction: null,
+            updates,
+            metrics: capMetrics,
+          }
+        }
+        return {
+          action: 'FULL_EXIT',
+          reason: `time_cap_expired (${pos.time_cap_at})`,
+          newSL: null,
+          exitFraction: 1,
+          updates,
+          metrics: capMetrics,
+        }
       }
     }
   }
@@ -213,15 +366,57 @@ export function evaluatePosition(pos, ctx) {
   // Recycles margin into new setups instead of trailing a giant winner
   // forever. Checked before the partial so a gap straight through both
   // levels banks everything rather than scaling out of a done trade.
+  //
+  // PR-J (11-09-2026): with `bankFraction` < 1 the bank becomes a PARTIAL —
+  // half the position taken at the trigger, the stop moved to at least
+  // breakeven, the remainder trailed. The measurement is in DEFAULT_RULES: the
+  // whole-position take is what capped the winners at +1R while the losers ran
+  // to full stops. bankFraction 1 is still the default and still closes the
+  // whole position with the same reason string.
   if (rules.bankTriggerR > 0 && r >= rules.bankTriggerR) {
-    return {
-      action: 'FULL_EXIT',
-      reason: `bank_target_${rules.bankTriggerR}R (current R=${r.toFixed(2)})`,
-      newSL: null,
-      exitFraction: 1,
-      updates,
-      metrics: { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade },
+    const frac = Number(rules.bankFraction)
+    const fraction = Number.isFinite(frac) && frac > 0 && frac < 1 ? frac : 1
+    if (fraction >= 1) {
+      return {
+        action: 'FULL_EXIT',
+        reason: `bank_target_${rules.bankTriggerR}R (current R=${r.toFixed(2)})`,
+        newSL: null,
+        exitFraction: 1,
+        updates,
+        metrics: { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade },
+      }
     }
+    // ONE partial per position at this trigger, ever. Without the stamp the
+    // remainder sits above the trigger on the very next pass and is banked
+    // again, and again — a loop of ever smaller partials, each paying spread.
+    if (!pos.bank_partial_at) {
+      const peakR = Math.max(newMfe ?? 0, r)
+      const td = trailDistance(pos, rules.bankTrailAtrMult, ctx.atr)
+      const long = isLong(pos.side)
+      // At LEAST breakeven: banking part of a winner without moving the stop
+      // reduces the win and leaves the risk untouched.
+      let target = pos.entry_price
+      if (td) {
+        const peak = peakPriceOf(pos, peakR)
+        const t = long ? peak - td.dist : peak + td.dist
+        target = long ? Math.max(target, t) : Math.min(target, t)
+      }
+      const shouldTrail = isTighter(pos.side, pos.current_sl, target)
+      return {
+        action: 'PARTIAL_EXIT',
+        reason: `bank_partial_${rules.bankTriggerR}R ${Math.round(fraction * 100)}% (current R=${r.toFixed(2)}, remainder trails ${td ? td.basis : 'breakeven'})`,
+        newSL: shouldTrail ? target : pos.current_sl,
+        exitFraction: fraction,
+        // A partial the broker cannot size (below the minimum lot, or a step
+        // that floors it to zero) must NOT silently leave the position
+        // un-banked: before PR-J this trigger closed the whole position, and
+        // that is what the executor falls back to (checker M4).
+        fallbackFullExitIfUnfillable: true,
+        updates: { ...updates, scaled_out: 1, be_moved: 1, bank_partial_at: now.toISOString() },
+        metrics: { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade },
+      }
+    }
+    // Already banked: the remainder is the trail's to manage — fall through.
   }
 
   // --- 3. Partial-exit window --------------------------------------------

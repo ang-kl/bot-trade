@@ -197,7 +197,11 @@ test('lifecycle: long runs BE → partial → runner → stop-out', () => {
 // 2. Time-cap expiry
 // ---------------------------------------------------------------------------
 
-test('time cap: expired position closes with FULL_EXIT', () => {
+test('time cap: expired LOSING position closes with FULL_EXIT', () => {
+  // PR-J (11-09-2026): the cap now closes losers only — a position at or above
+  // timeCapHoldMinR is trailed instead (see the test below, and the
+  // measurement in position-manager.js DEFAULT_RULES). This case is the one
+  // the rule still owns, with its reason string unchanged.
   const db = mkDb()
   const stmts = prep(db)
   const now = new Date('2026-04-18T12:00:00Z')
@@ -205,7 +209,7 @@ test('time cap: expired position closes with FULL_EXIT', () => {
     time_cap_at: '2026-04-18T11:30:00Z', // 30 min past
   })
 
-  const res = tick(db, stmts, 3405, { now })[0].eval
+  const res = tick(db, stmts, 3390, { now })[0].eval // −0.5R
   assert.equal(res.action, 'FULL_EXIT')
   assert.match(res.reason, /time_cap_expired/)
 
@@ -213,6 +217,20 @@ test('time cap: expired position closes with FULL_EXIT', () => {
   assert.equal(row.status, 'closed', 'DB row marked closed')
   assert.equal(row.thesis_status, 'broken')
   assert.equal(row.last_check_action, 'PM:FULL_EXIT')
+})
+
+test('time cap: an expired position IN PROFIT is held and trailed, not closed (PR-J)', () => {
+  const db = mkDb()
+  const stmts = prep(db)
+  const now = new Date('2026-04-18T12:00:00Z')
+  const id = seedPosition(db, { time_cap_at: '2026-04-18T11:30:00Z' })
+
+  const res = tick(db, stmts, 3460, { now })[0].eval // +3R
+  assert.equal(res.action, 'MOVE_SL')
+  assert.match(res.reason, /time_cap_trailing/)
+  const row = readPos(db, id)
+  assert.equal(row.status, 'active', 'the winner stays open')
+  assert.equal(row.current_sl, 3430, 'peak 3R − 1.5R = +1.5R; tighter than the 3380 stop')
 })
 
 test('time cap: future cap does not fire', () => {

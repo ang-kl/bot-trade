@@ -22,6 +22,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { roundAmendPayload } from './loop.js'
 
 const loop = readFileSync(new URL('./loop.js', import.meta.url), 'utf8')
 const ws = readFileSync(new URL('./lib/ctrader-ws.js', import.meta.url), 'utf8')
@@ -84,6 +85,23 @@ test('the clearing semantics are recorded where the payload is built', () => {
     'the stop-only clear must WARN at runtime, not only in a comment')
 })
 
+/**
+ * Just the object literal handed to execAmendPosition in a branch.
+ *
+ * The raw-stop assertions below must look HERE and not at the whole branch:
+ * `roundAmendPayload({ stopLoss: eval_.newSL, … })` mentions the raw value on
+ * purpose — it is the input being rounded. What must never appear is the raw
+ * value in the PAYLOAD, which is the thing the broker receives.
+ */
+function amendPayload(branch) {
+  const start = branch.indexOf('execAmendPosition(')
+  assert.ok(start > 0, 'no execAmendPosition call in this branch — re-anchor')
+  const from = branch.indexOf('{', branch.indexOf('},', start))
+  const end = branch.indexOf('})', from)
+  assert.ok(from > 0 && end > from, 'amend payload not found — re-anchor')
+  return branch.slice(from, end)
+}
+
 test('MOVE_SL rounds the prices it sends to the symbol digits', () => {
   // Production 2026-08-26, every pass for ~43 minutes of log: `PM US2000:
   // MOVE_SL FAILED — Order price = 3101.801785714286 has more digits than
@@ -91,12 +109,52 @@ test('MOVE_SL rounds the prices it sends to the symbol digits', () => {
   // the keeper and loss-guardian round via roundToDigits but this executor
   // sent the raw value — so the stop never moved at all, silently, forever.
   const branch = moveSlBranch()
-  assert.match(branch, /roundToDigits/,
+  assert.match(branch, /roundAmendPayload\(/,
     'the executor must round SL/TP to the symbol digits before the amend')
   assert.match(branch, /stopLoss: sendSL/,
     'the amend payload must carry the ROUNDED stop, not the raw eval value')
-  assert.doesNotMatch(branch, /stopLoss: eval_\.newSL/,
+  assert.doesNotMatch(amendPayload(branch), /eval_\.newSL/,
     'the raw unrounded stop must no longer reach the payload')
+})
+
+// ---------------------------------------------------------------------------
+// PR-J / checker M3: the PARTIAL_EXIT branch amends the RUNNER leg with the
+// same kind of raw price arithmetic and did not round. It was unreachable on
+// managed accounts before PR-J (partialTriggerR Infinity); the +1R bank take
+// routes through it now, sending `peak − 1.5 × initial_risk` — the exact shape
+// that failed on 2026-08-26. Half banked, amend rejected, remainder left on its
+// pre-partial stop is a worse outcome than either rule alone.
+// ---------------------------------------------------------------------------
+
+function partialBranch() {
+  const start = loop.indexOf("if (action === 'PARTIAL_EXIT')")
+  assert.ok(start > 0, 'PARTIAL_EXIT branch not found — this test needs re-anchoring')
+  const end = loop.indexOf('return { summary: `closed ', start)
+  assert.ok(end > start, 'PARTIAL_EXIT branch end not found')
+  return loop.slice(start, end).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+}
+
+test('PARTIAL_EXIT rounds the runner leg it amends, and carries its target', () => {
+  const branch = partialBranch()
+  assert.match(branch, /roundAmendPayload\(/, 'the runner amend must round to the symbol digits')
+  assert.match(branch, /stopLoss: runnerSend\.stopLoss/, 'the payload carries the ROUNDED stop')
+  assert.doesNotMatch(amendPayload(branch), /eval_\.newSL/, 'the raw unrounded stop must not reach the payload')
+  assert.match(branch, /takeProfit: runnerSend\.takeProfit/, 'the runner keeps its target, rounded too')
+  assert.match(branch, /updatePositionSl\.run\(runnerSend\.stopLoss/, 'the DB records what was SENT')
+})
+
+test('roundAmendPayload: behaviour, not source — digits applied, absent digits pass through', () => {
+  // The production value from the 2026-08-26 log, at a 2-digit symbol.
+  assert.deepEqual(roundAmendPayload({ stopLoss: 3101.801785714286, takeProfit: 3150.123456, digits: 2 }),
+    { stopLoss: 3101.8, takeProfit: 3150.12 })
+  assert.deepEqual(roundAmendPayload({ stopLoss: 1.234567891, takeProfit: undefined, digits: 5 }),
+    { stopLoss: 1.23457, takeProfit: undefined })
+  // A failed digit lookup sends the values through unrounded rather than
+  // inventing a precision — a possible rejection beats a wrong price.
+  assert.deepEqual(roundAmendPayload({ stopLoss: 1.234567891, takeProfit: 2.5, digits: null }),
+    { stopLoss: 1.234567891, takeProfit: 2.5 })
+  assert.deepEqual(roundAmendPayload({ stopLoss: null, takeProfit: null, digits: 3 }),
+    { stopLoss: null, takeProfit: null })
 })
 
 test('MOVE_SL records the value it sent, not the unrounded intent', () => {

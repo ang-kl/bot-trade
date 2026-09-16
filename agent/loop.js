@@ -43,6 +43,8 @@ import { llmBlocked } from './lib/llm-switch.js'
 // version never fired on a day with deploys — see housekeeping-due.js.
 import { housekeepingDue, LAST_RUN_KEY } from './services/housekeeping-due.js'
 import { recordFxRates } from './services/fx-rates.js'
+import { roundToDigits } from './services/trade-guard.js'
+import { cachedAtrForSymbol } from './services/profit-keeper.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
 
@@ -1763,6 +1765,43 @@ export function brokerPositionVolume(brokerPositions, positionId) {
   return Number.isFinite(v) && v > 0 ? Math.round(v) : null
 }
 
+/**
+ * Round an amend payload to a symbol's own precision. PURE and exported, so
+ * the arithmetic is tested as behaviour rather than asserted from source.
+ *
+ * `digits` null (lookup failed) sends the values through unrounded — a
+ * possible rejection beats inventing a precision.
+ */
+export function roundAmendPayload({ stopLoss, takeProfit, digits }, round = roundToDigits) {
+  if (digits == null || !Number.isFinite(Number(digits))) return { stopLoss, takeProfit }
+  return {
+    stopLoss: stopLoss == null ? stopLoss : round(stopLoss, digits),
+    takeProfit: takeProfit === undefined || takeProfit === null ? takeProfit : round(takeProfit, digits),
+  }
+}
+
+/**
+ * The symbol's digit count from the broker's cached record, or null.
+ *
+ * Hoisted out of the MOVE_SL branch (checker M3): the PARTIAL_EXIT branch
+ * amends the runner leg with the SAME kind of raw price arithmetic and did NOT
+ * round. That path was unreachable on managed accounts before PR-J
+ * (partialTriggerR Infinity); the bank take now routes through it, sending
+ * `peak − 1.5 × initial_risk` — exactly the shape that failed in production on
+ * 2026-08-26 (`Order price = 3101.801785714286 has more digits than allowed
+ * (INVALID_REQUEST)`, the stop never moving at all). One helper, both sites.
+ */
+async function symbolDigitsFor(db, creds, symbol) {
+  try {
+    const { resolveSymbolId } = await import('./lib/ctrader-creds.js')
+    const symbolId = (await resolveSymbolId(db, { ...creds, ready: true }, symbol || '')).id
+    if (!symbolId) return null
+    const { getVolumeMeta } = await import('./lib/lot-sizing.js')
+    const meta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+    return meta?.digits ?? null
+  } catch { return null }
+}
+
 export async function executeBrokerAction(db, s, pos, eval_, source = 'position_manager') {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
@@ -1818,19 +1857,8 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // one price-bearing path that did not. Digits come from the cached
       // symbol record; if the lookup fails the raw value goes through as
       // before — a possible rejection beats inventing a precision.
-      let sendSL = eval_.newSL
-      let sendTp = keepTp
-      try {
-        const { resolveSymbolId } = await import('./lib/ctrader-creds.js')
-        const symbolId = (await resolveSymbolId(db, { host, clientId, clientSecret, accessToken, accountId, ready: true }, pos.symbol || '')).id
-        if (symbolId) {
-          const { getVolumeMeta } = await import('./lib/lot-sizing.js')
-          const { roundToDigits } = await import('./services/trade-guard.js')
-          const meta = await getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
-          sendSL = roundToDigits(sendSL, meta.digits)
-          if (sendTp !== undefined) sendTp = roundToDigits(sendTp, meta.digits)
-        }
-      } catch { /* digits unavailable — send unrounded rather than guess */ }
+      const moveDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
+      const { stopLoss: sendSL, takeProfit: sendTp } = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: keepTp, digits: moveDigits })
       const res = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         stopLoss: sendSL,
@@ -1968,11 +1996,30 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       const fraction = eval_.exitFraction ?? 0.5
       let closeUnits = Math.round(totalUnits * fraction)
       if (meta.stepVolume) closeUnits = Math.floor(closeUnits / meta.stepVolume) * meta.stepVolume
-      if (totalUnits <= 0 || closeUnits <= 0) return { skipped: true, reason: 'unknown_volume' }
-      // A partial that the broker would reject (below min lot) is skipped —
-      // the runner keeps its full size rather than erroring every tick.
-      if (meta.minVolume != null && closeUnits < meta.minVolume) {
-        return { skipped: true, reason: 'partial_below_min_volume' }
+      const unfillable = totalUnits <= 0 || closeUnits <= 0
+        ? 'unknown_volume'
+        : (meta.minVolume != null && closeUnits < meta.minVolume ? 'partial_below_min_volume' : null)
+      if (unfillable) {
+        // A partial the broker would reject is normally skipped — the runner
+        // keeps its full size rather than erroring every tick.
+        //
+        // NOT for a decision that asked for a full exit and was only SPLIT for
+        // better exit shape (checker M4). PR-J's bank take is that case: a
+        // 1000-unit position with a 1000-unit step floors to 0, and before
+        // PR-J it would have been closed WHOLE at the trigger. Skipping it
+        // silently reintroduces the margin-hostage case the bank rule exists
+        // to prevent, on exactly the smallest positions. The decision says
+        // which it is; nothing else infers it.
+        if (eval_.fallbackFullExitIfUnfillable) {
+          return executeBrokerAction(db, s, pos, {
+            ...eval_,
+            action: 'FULL_EXIT',
+            exitFraction: 1,
+            newSL: null,
+            reason: `${eval_.reason} | ${unfillable} → full exit`,
+          }, source)
+        }
+        return { skipped: true, reason: unfillable }
       }
 
       const closeRes = await execClosePosition({ host, clientId, clientSecret, accessToken, accountId }, {
@@ -2008,17 +2055,23 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         // current_tp; this one did not, and it fires immediately after every
         // partial — which the TP1-at-1R change (#738) made far more frequent.
         const runnerTp = Number(pos.current_tp) > 0 ? Number(pos.current_tp) : null
+        // ROUNDED, same as MOVE_SL (checker M3). This branch sent raw price
+        // arithmetic until PR-J and was unreachable on managed accounts; the
+        // bank take makes it reachable, with a stop computed as
+        // `peak − mult × distance` — the 2026-08-26 INVALID_REQUEST shape.
+        const partialDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
+        const runnerSend = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: runnerTp, digits: partialDigits })
         const amendRes = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
           positionId: ctx.positionId,
-          stopLoss: eval_.newSL,
-          takeProfit: runnerTp,
+          stopLoss: runnerSend.stopLoss,
+          takeProfit: runnerSend.takeProfit,
         })
         setState(db, 'api_ctrader_last_ok', new Date().toISOString())
         if (!amendRes.alreadyClosed) {
-          s.updatePositionSl.run(eval_.newSL, pos.id)
+          s.updatePositionSl.run(runnerSend.stopLoss, pos.id)
           recordPositionEvent(db, {
             accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
-            kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: eval_.newSL,
+            kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: runnerSend.stopLoss,
             reason: `${eval_.reason} | runner leg`, source,
           })
         }
@@ -2043,6 +2096,25 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 // scheduling changed. Exported standalone (db/s/pos/currentPrice/client all
 // passed in, no closure over runLoop state) so it's unit-testable in
 // isolation, same as evaluatePosition/executeBrokerAction.
+/**
+ * Persist PR-J's exit stamps for an action the broker actually took.
+ *
+ * Exported so both evaluators (this loop and fast-monitor) write them the same
+ * way — the 0016.HK lesson applied to persistence rather than to rules. An
+ * errored or skipped action stamps NOTHING, so the next pass re-decides.
+ */
+export function stampExitMarks(s, pos, eval_, outcome) {
+  const marks = eval_?.updates || {}
+  if (!marks.time_cap_trail_at && !marks.bank_partial_at) return false
+  if (!outcome || outcome.error || outcome.skipped) return false
+  s.stampPositionExitMarks.run(
+    marks.time_cap_trail_at ?? null,
+    marks.bank_partial_at ?? null,
+    pos.id,
+  )
+  return true
+}
+
 export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
   // Managed-exit trail (owner "c1" 25-08-2026; ONE SIMPLE SYSTEM 28-08-2026:
   // "proceed as plan", win-rate goal > 69%): on managed accounts the
@@ -2052,7 +2124,11 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // and fast-monitor.js) silences the same ladder — it silenced only here
   // until 0016.HK's bank_target_4R close, 2026-08-31.
   const rules = applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy })
-  const eval_ = evaluatePosition(pos, { currentPrice, rules })
+  // PR-J's cap trail and bank trail are ATR multiples. The ATR comes from the
+  // profit keeper's in-memory cache — a read, never a fetch — and is null
+  // whenever the keeper has not computed one for this symbol this bar, in
+  // which case the multiplier falls back to the position's own 1R distance.
+  const eval_ = evaluatePosition(pos, { currentPrice, rules, atr: cachedAtrForSymbol(db, pos.symbol) })
 
   // Persist MFE/MAE and any flag flips every loop, regardless of action.
   s.updatePositionMetrics.run(
@@ -2097,6 +2173,12 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
       return
     }
     const outcome = await executeBrokerAction(db, s, pos, eval_)
+    // PR-J stamps, written FROM THE OUTCOME (checker M4). Stamping before the
+    // broker answered meant a refused amend (MARKET_CLOSED is routine here) or
+    // a partial the broker would not size left the rule disarmed forever: the
+    // stamp said "this already happened" while the stop had not moved and the
+    // position had not banked. A stamp is a record of something that HAPPENED.
+    stampExitMarks(s, pos, eval_, outcome)
     let reasoning = eval_.reason
     let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
     if (outcome.error) {
@@ -2408,6 +2490,15 @@ export function prepareStatements(db) {
       SET mfe_r = ?, mae_r = ?,
           be_moved = MAX(COALESCE(be_moved, 0), COALESCE(?, 0)),
           scaled_out = MAX(COALESCE(scaled_out, 0), COALESCE(?, 0))
+      WHERE id = ?
+    `),
+
+    // PR-J exit-asymmetry stamps. COALESCE, not assignment: the first stamp
+    // stands, so a re-evaluation cannot re-arm either rule.
+    stampPositionExitMarks: db.prepare(`
+      UPDATE monitored_positions
+      SET time_cap_trail_at = COALESCE(time_cap_trail_at, ?),
+          bank_partial_at   = COALESCE(bank_partial_at, ?)
       WHERE id = ?
     `),
 

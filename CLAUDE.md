@@ -513,8 +513,13 @@ Measurement history — each line is a real run of the script, not a claim:
   **`№ 7,785`**; the PR-I checker report is **`№ 7,786`**. Three
   unstamped status lines followed (`№ 7,787`–`№ 7,789`: the two makers
   launched, PR-J built, PR-I's fix round verified), so the PR-I merge
-  report is **`№ 7,790`** by count. The count is by replies, not by
-  stamps (the 08-09 rule). A later re-measure that reads below this line
+  report is **`№ 7,790`** by count. Eight unstamped status lines followed
+  (`№ 7,791`–`№ 7,798`, 16-09 04:35–05:02 UTC: the PR-J fix round
+  verified by mutation — the first attempt did not match the code and
+  proved nothing, the second applied 1→0 and turned seven named tests
+  red — PR-J committed, PR-I's gate finished and #904 merged), so the
+  PR-I/PR-J report is **`№ 7,799`** by count. The count is by replies,
+  not by stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not

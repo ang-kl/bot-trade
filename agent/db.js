@@ -174,6 +174,13 @@ const TABLES = `
     thesis                TEXT,
     invalidation_trigger  TEXT,
     time_cap_at           TEXT,
+    -- PR-J (11-09-2026): when the time cap was reached on a position that was
+    -- IN PROFIT and therefore trailed instead of closed. Stamped once; its
+    -- presence is what stops the cap branch being re-decided every cycle.
+    time_cap_trail_at     TEXT,
+    -- PR-J: when the +1R take banked its fraction. One partial per position at
+    -- that trigger, ever — without it the remainder is re-banked every pass.
+    bank_partial_at       TEXT,
     initial_risk          REAL,
     mfe_r                 REAL DEFAULT 0,
     mae_r                 REAL DEFAULT 0,
@@ -1115,6 +1122,9 @@ export function initDB(dbPath) {
     ['paused',               'INTEGER DEFAULT 0'],
     ['invalidation_trigger', 'TEXT'],
     ['time_cap_at',          'TEXT'],
+    // PR-J exit-asymmetry stamps — see the CREATE TABLE above.
+    ['time_cap_trail_at',    'TEXT'],
+    ['bank_partial_at',      'TEXT'],
     ['initial_risk',         'REAL'],
     ['mfe_r',                'REAL DEFAULT 0'],
     ['mae_r',                'REAL DEFAULT 0'],

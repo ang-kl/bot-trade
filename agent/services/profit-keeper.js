@@ -149,6 +149,27 @@ export function writeAtrCache(symbolId, timeframe, { atr, bars }, now = Date.now
 /** Test seam — the cache is process-level, so a test must be able to clear it. */
 export function clearAtrCache() { ATR_CACHE.clear() }
 
+/**
+ * The cached ATR for a SYMBOL, or null.
+ *
+ * Added for PR-J, whose two trails are specified in ATR multiples. It is a
+ * READ of what the keeper has already fetched — never a fetch of its own, so
+ * it costs nothing on the monitor's path and can return null. Null is the
+ * normal case when the keeper is not in adaptive mode or has not seen this
+ * symbol this bar, and the caller falls back to the position's own 1R
+ * distance rather than skipping the rule.
+ */
+export function cachedAtrForSymbol(db, symbol, now = Date.now()) {
+  try {
+    const cfg = loadProfitKeeperConfig(db)
+    const map = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+    const id = map[String(symbol || '').toUpperCase()]
+    if (!id) return null
+    const hit = readAtrCache(id, cfg.atrTimeframe, now)
+    return Number(hit?.atr) > 0 ? Number(hit.atr) : null
+  } catch { return null }
+}
+
 export function atrFromBars(bars, period = 14) {
   if (!Array.isArray(bars) || bars.length < period + 1) return null
   const trs = []

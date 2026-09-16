@@ -27,6 +27,7 @@ import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
+import { cachedAtrForSymbol } from './profit-keeper.js'
 import { manageStageAllows } from './stage-matrix.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import { BoundedMap } from '../lib/bounded-map.js'
@@ -290,7 +291,13 @@ export async function runFastMonitor(db, creds, deps = {}) {
         // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
         // 0016.HK one minute after HK open — beating the managed trail the
         // slow loop would have applied 30s later. One ruleset, every evaluator.
-        const eval_ = evaluatePosition(pos, { currentPrice: mid, rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy }) })
+        const eval_ = evaluatePosition(pos, {
+          currentPrice: mid,
+          rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy }),
+          // Same cached ATR the slow monitor reads (PR-J). One ruleset, one
+          // trail basis, every evaluator — the 0016.HK lesson.
+          atr: cachedAtrForSymbol(db, pos.symbol),
+        })
         s.updatePositionMetrics.run(
           eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
           eval_.updates.mae_r ?? pos.mae_r ?? 0,
@@ -307,6 +314,8 @@ export async function runFastMonitor(db, creds, deps = {}) {
           continue
         }
         const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor')
+        // PR-J stamps from the OUTCOME, same helper as the slow monitor.
+        loopMod.stampExitMarks(s, pos, eval_, outcome)
         acted++
         const summary = outcome.error
           ? `${eval_.reason} | broker_error: ${outcome.error}`
