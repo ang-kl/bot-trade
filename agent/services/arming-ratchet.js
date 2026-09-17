@@ -19,11 +19,36 @@
 // list — which `armedTradeKeys` lets an explicit cell override.
 //
 // So a per-account cell is a ONE-WAY RATCHET. It can be turned off by two
-// automatic actors and turned back on by nobody but the owner. Twenty-four
-// cells across four accounts are already in that state, including `tsmom_long`
-// on the three accounts where the momentum book — the only family in this repo
-// with measured positive expectancy at its horizon — reports "not armed" and
-// cannot enter.
+// automatic actors and turned back on by nobody but the owner.
+//
+// HOW BIG IS IT — CORRECTED BY THIS MODULE'S OWN FIRST RUN (17-09-2026 03:50
+// UTC). The first draft of this header, and the PR that shipped it, read the
+// boot line's 24 `held` cells as the ratchet and named `tsmom_long` among
+// them. Both were wrong. The line this module actually printed says:
+//
+//   [arming] ratcheted off per account: 6 cell(s) across 3 account(s) — 3
+//   would not be disarmed again on today's own evidence, 2 have too few own
+//   closes to judge, 6 have no recorded reason … …3489: 2 (donchian_breakout,
+//   vwap_trend); …0058: 2 (…); …0949: 2 (…)
+//
+// `held` and `ratcheted` measure different things, and the difference is the
+// point of this module. `held` means "seeded before and not currently pinned
+// true", which includes strategies that are ALSO OFF GLOBALLY — where the
+// account agrees with the rest of the system and re-arming it alone would
+// change nothing. Of 24 held cells, six are genuine per-account refusals.
+//
+// AND `tsmom_long` IS NOT ONE OF THEM, which is the more useful finding.
+// `armedTradeKeys` returns armed when the cell is true, or when the cell is
+// unset and the global is armed. For the three accounts to read "not armed"
+// while no explicit-false `tsmom_long` cell appears against an armed global,
+// the GLOBAL must be off — the two accounts still running the book carry an
+// explicit true pin that overrides it. (Deduced from the two log lines plus
+// `armedTradeKeys`, not read from state: the state routes answer 401. It is
+// falsifiable the moment the bearer token returns.)
+//
+// So the momentum book's reach is ONE GLOBAL SWITCH, not five per-account
+// decisions — a smaller and safer action than the re-arm rule the PR
+// proposed, and still the owner's to take.
 //
 // WHAT THIS MODULE DOES, AND DELIBERATELY DOES NOT DO. It measures and
 // reports. It does not re-arm anything. Re-arming is a risk-control decision:
