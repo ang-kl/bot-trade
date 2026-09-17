@@ -385,22 +385,52 @@ export function completenessSpan(db, { cutoffMs = Date.parse('2026-09-11T00:00:0
   const incompleteAfter = db.prepare('SELECT COUNT(*) AS n FROM position_history_incomplete WHERE closed_at_ms >= ?').get(cutoffMs)
   const complete = after?.n || 0
   const refused = incompleteAfter?.n || 0
+
+  // WHY THE POST-CUTOFF RATE IS NOT 100%, SPLIT ON THE OPEN DATE.
+  //
+  // Production's first boundary read was 60 complete / 90 refused since the
+  // cutoff — 40%, where the arithmetic had suggested ~95%. The hypothesis is
+  // that `direction_reason` is recorded AT ENTRY: a position opened on 05-09
+  // and closed on 15-09 closes after the cutoff but was never given one, so
+  // the real boundary is an OPEN-date boundary measured here on close date.
+  //
+  // That is testable, so it is tested rather than asserted. If the hypothesis
+  // holds, nearly all of the post-cutoff refusals opened BEFORE the cutoff,
+  // and the rate climbs on its own as those positions finish closing out. If
+  // it does not hold, `openedAfter` will be large and something is still
+  // failing to record a reason on live entries — which is a defect, not
+  // history, and wants finding.
+  let openedBefore = 0, openedAfter = 0, openUnknown = 0
+  try {
+    for (const row of db.prepare(
+      'SELECT partial_json FROM position_history_incomplete WHERE closed_at_ms >= ?'
+    ).all(cutoffMs)) {
+      let opened = null
+      try { opened = Number(JSON.parse(row.partial_json)?.opened_at_ms) } catch { opened = null }
+      if (!Number.isFinite(opened)) openUnknown++
+      else if (opened < cutoffMs) openedBefore++
+      else openedAfter++
+    }
+  } catch { /* the split is diagnostic; its absence must not break the line */ }
+
   return {
     complete: span?.n || 0,
     earliest: span?.earliest ? new Date(span.earliest).toISOString() : null,
     latest: span?.latest ? new Date(span.latest).toISOString() : null,
     cutoff: new Date(cutoffMs).toISOString(),
-    // The number that matters: a complete record dated BEFORE the cutoff
-    // would falsify the deduction outright, so it is counted rather than
-    // assumed to be zero.
     completeBeforeCutoff: before?.n || 0,
     completeSinceCutoff: complete,
     refusedSinceCutoff: refused,
     completionRateSinceCutoffPct: complete + refused > 0
       ? Math.round((complete / (complete + refused)) * 1000) / 10
       : null,
+    // The split that settles it.
+    refusedSinceCutoffOpenedBeforeCutoff: openedBefore,
+    refusedSinceCutoffOpenedAfterCutoff: openedAfter,
+    refusedSinceCutoffOpenTimeUnknown: openUnknown,
   }
 }
+
 
 /** Record cpp-verify's answer. Written only from the verifier's reply. */
 export function recordVerdict(db, { accountId, positionId, state, disputes = [], host = null, at = null }) {
