@@ -483,3 +483,83 @@ test('wiring: momentum-book.js still gates its per-account pass on armedTradeKey
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /armedTradeKeys\(db, getState, accountId\)\.has\(TSMOM_STRATEGY\)/, 'the book reads the same overlay the pin writes')
 })
+
+// ---------------------------------------------------------------------------
+// `_reseed` (PR-V, owner order 17-09-2026): re-issue a pin the bare key has
+// already spent. The owner was shown the edge watchdog's fresh verdict on
+// tsmom_long (expectancy -$108.48, PF 0) and chose to arm the three accounts
+// anyway; these tests pin the mechanism that carries that out, including the
+// parts that must NOT change.
+// ---------------------------------------------------------------------------
+test('_reseed re-arms a cell whose bare key is already spent', () => {
+  const db = withAccounts(initDB(':memory:'), ['47790949'])
+  const file = join(mkdtempSync(join(tmpdir(), 'reseed-')), 'pins.json')
+
+  // First order: the bare key. Applied once.
+  writeFileSync(file, JSON.stringify({ _all: ['tsmom_long'] }))
+  assert.deepEqual(seedStrategyPinsFromConfig(db, io, { file }).applied, ['47790949:tsmom_long'])
+
+  // Something disarms it — the watchdog on that account's own record.
+  setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false, accountId: '47790949', actor: 'edge_watchdog' }, io)
+  assert.equal(armedTradeKeys(db, getState, '47790949').has('tsmom_long'), false)
+
+  // The bare key alone must NOT put it back — that is the #870 loop.
+  const held = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(held.applied, [])
+  assert.ok(held.held.includes('47790949:tsmom_long'))
+  assert.equal(armedTradeKeys(db, getState, '47790949').has('tsmom_long'), false)
+
+  // A `_reseed` entry is a FRESH order and does re-arm it.
+  writeFileSync(file, JSON.stringify({ _all: ['tsmom_long'], _reseed: ['47790949:tsmom_long:2'] }))
+  const again = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(again.applied, ['47790949:tsmom_long:2'])
+  assert.equal(armedTradeKeys(db, getState, '47790949').has('tsmom_long'), true)
+})
+
+test('_reseed is itself seed-once — a second disarm is not fought', () => {
+  const db = withAccounts(initDB(':memory:'), ['46130058'])
+  const file = join(mkdtempSync(join(tmpdir(), 'reseed-')), 'pins.json')
+  writeFileSync(file, JSON.stringify({ _reseed: ['46130058:tsmom_long:2'] }))
+  seedStrategyPinsFromConfig(db, io, { file })
+  assert.equal(armedTradeKeys(db, getState, '46130058').has('tsmom_long'), true)
+
+  setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false, accountId: '46130058', actor: 'edge_watchdog' }, io)
+  const r = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(r.applied, [], 'the re-order is spent too — an arm that reasserts every boot is a guard that can never hold')
+  assert.equal(armedTradeKeys(db, getState, '46130058').has('tsmom_long'), false)
+})
+
+test('_reseed does NOT suppress _all for that account — future strategies still inherit', () => {
+  // A per-id KEY would suppress `_all` for that id, quietly stopping the
+  // account inheriting anything added later. `_reseed` is appended after the
+  // `_all` expansion precisely so it cannot do that.
+  const db = withAccounts(initDB(':memory:'), ['43097342'])
+  const file = join(mkdtempSync(join(tmpdir(), 'reseed-')), 'pins.json')
+  writeFileSync(file, JSON.stringify({ _all: ['rsi2_reversion', 'vwap_trend'], _reseed: ['43097342:tsmom_long:2'] }))
+  const r = seedStrategyPinsFromConfig(db, io, { file })
+  const armed = armedTradeKeys(db, getState, '43097342')
+  for (const k of ['rsi2_reversion', 'vwap_trend', 'tsmom_long']) assert.ok(armed.has(k), `${k} armed`)
+  assert.ok(r.applied.includes('43097342:tsmom_long:2'))
+})
+
+test('a malformed _reseed entry is named and skipped, the good ones still land', () => {
+  const db = withAccounts(initDB(':memory:'), ['47790949'])
+  const file = join(mkdtempSync(join(tmpdir(), 'reseed-')), 'pins.json')
+  writeFileSync(file, JSON.stringify({ _reseed: ['nostrategy', 42, '47790949:not_a_strategy:2', '47790949:tsmom_long:2'] }))
+  const r = seedStrategyPinsFromConfig(db, io, { file })
+  assert.ok(r.skipped.some(s => /needs <accountId>:<strategy>/.test(s)))
+  assert.ok(r.skipped.some(s => /not a string/.test(s)))
+  assert.ok(r.skipped.some(s => /unknown strategy 'not_a_strategy'/.test(s)))
+  assert.deepEqual(r.applied, ['47790949:tsmom_long:2'])
+})
+
+test('the checked-in file carries the owner order for the three accounts', () => {
+  const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
+  assert.ok(Array.isArray(cfg._reseed))
+  for (const id of ['47790949', '46130058', '43097342']) {
+    assert.ok(cfg._reseed.includes(`${id}:tsmom_long:2`), `${id} re-armed by the 17-09 order`)
+  }
+  // The override is on the record, with the number the owner was shown.
+  assert.match(cfg._reseed_note, /108\.48/)
+  assert.match(cfg._reseed_note, /DELIBERATE OVERRIDE/)
+})
