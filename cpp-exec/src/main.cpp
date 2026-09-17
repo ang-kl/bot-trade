@@ -961,9 +961,32 @@ int main(int argc, char** argv) {
       // has already stopped, joined and destroyed — a use-after-free. The
       // liveFeed* cache below is racy for the same reason.
       std::lock_guard<std::mutex> restart(connectMtx);
+      // WHICH ACCOUNT IS "PRIMARY" IS NOT THE FEED'S BUSINESS. Measured
+      // 17-09 at 13:37-13:51, after PR-AB shipped: "spot feed kept" appeared,
+      // but "(re)started" still fired constantly — three times inside 1.2
+      // seconds. The read-back criterion written before the deploy said an
+      // input classified as stable must in fact be changing, and which one is
+      // the next measurement. It is this one.
+      //
+      // exec-engine.js sends `accountId: creds.accountId` — the PRIMARY, which
+      // varies by CALL SITE — while `accountIds` carries the union of every
+      // account the session serves. Treating a primary change as a restart
+      // rebuilt the feed on most pushes, and every rebuild is a recorder GAP:
+      // exactly the cost PR-AB existed to remove, re-entering through a field
+      // I classified wrong.
+      //
+      // The feed authenticates under ONE account and its subscription lives
+      // there; it keeps delivering regardless of who Node calls primary. What
+      // DOES matter is whether that account is still authorized at all — if
+      // Node stops naming it, the subscription is on borrowed time and the
+      // feed must be rebuilt under an account that is.
+      bool feedAccountStillAuthorized = (liveFeedAccountId == accountId);
+      for (long long id : extraIds) {
+        if (id == liveFeedAccountId) feedAccountStillAuthorized = true;
+      }
       bool feedInputsChanged = !spotFeed
           || useHost != liveFeedHost
-          || accountId != liveFeedAccountId
+          || !feedAccountStillAuthorized
           || vpoSymbolIds != liveFeedVpoSymbolIds
           || trailTickEnabled != liveFeedTrailEnabled
           || depthFeedEnabled != liveFeedDepthEnabled
