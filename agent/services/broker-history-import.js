@@ -29,8 +29,8 @@
 // ---------------------------------------------------------------------------
 
 import { stampRealisedAudit } from './trade-consistency.js'
+import { pageDeals } from '../lib/deal-paging.js'
 
-const WEEK = 7 * 24 * 3_600_000
 const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
 
 function log(...args) {
@@ -41,16 +41,25 @@ const iso = (ms) => (ms == null ? null : new Date(Number(ms)).toISOString().repl
 const r2 = (v) => (v == null ? null : Math.round(Number(v) * 100) / 100)
 
 /**
- * Page the broker's deal list across a window. cTrader caps one request at a
- * week, so this walks week by week exactly like /actions/broker-history.
+ * Page the broker's deal list across a window.
+ *
+ * THIS USED TO TRUNCATE IN SILENCE. It walked week by week — cTrader's window
+ * cap — but never read `hasMore`, which is the RESPONSE cap (wsGetDeals sends
+ * maxRows 500). A week with more than 500 deals came back short, with no
+ * error and no flag, and the import then reported a clean pass over a partial
+ * record. The walk now lives in lib/deal-paging.js and follows both limits.
+ *
+ * Kept returning a bare array so the existing callers and tests are unchanged;
+ * `fetchDealsPaged` below is the same walk with the completeness reported,
+ * and is what anything making a judgement about the data should call.
  */
 export async function fetchDeals(getDeals, fromMs, toMs) {
-  const deals = []
-  for (let t0 = fromMs; t0 < toMs; t0 += WEEK) {
-    const chunk = await getDeals(t0, Math.min(t0 + WEEK, toMs))
-    deals.push(...(chunk?.deal || []))
-  }
-  return deals
+  return (await pageDeals(getDeals, fromMs, toMs)).deals
+}
+
+/** The same walk, with `complete` — see lib/deal-paging.js. */
+export async function fetchDealsPaged(getDeals, fromMs, toMs, opts) {
+  return pageDeals(getDeals, fromMs, toMs, opts)
 }
 
 /**
@@ -443,7 +452,8 @@ export async function importBrokerHistory(db, { days = 30, nowMs = Date.now(), d
   if (!deps?.getDeals) throw new Error('importBrokerHistory needs deps.getDeals')
   const span = Math.min(190, Math.max(1, Number(days) || 30))
   const from = nowMs - span * 24 * 3_600_000
-  const deals = await fetchDeals(deps.getDeals, from, nowMs)
+  const pull = await fetchDealsPaged(deps.getDeals, from, nowMs)
+  const deals = pull.deals
   const symbolIds = [...new Set(deals.map(d => d.symbolId).filter(v => v != null))]
   let symMeta = {}
   if (symbolIds.length && deps.getSymbolMeta) {
@@ -456,6 +466,11 @@ export async function importBrokerHistory(db, { days = 30, nowMs = Date.now(), d
   // Correct the local rows' fill prices from the broker's, now that this
   // window's deals are linked. See the header above reconcileTradePricesToBroker.
   const priceFix = reconcileTradePricesToBroker(db)
-  log(`${span}d: ${deals.length} deals → ${result.seen} closes · ${result.inserted} new · ${result.unmatched} with no local trade row · ${priceFix.corrected} fill prices corrected`)
-  return { days: span, from: iso(from), to: iso(nowMs), deals: deals.length, ...result, priceFix }
+  // An incomplete pull is SAID, not swallowed. The rows that did arrive are
+  // still worth keeping — they are the broker's own — but a caller reading
+  // this as "30 days of history" when it is part of 30 days would draw
+  // conclusions from a gap it cannot see.
+  const truncation = pull.complete ? '' : ` — PULL INCOMPLETE (${pull.reason}), this is PART of the window`
+  log(`${span}d: ${deals.length} deals → ${result.seen} closes · ${result.inserted} new · ${result.unmatched} with no local trade row · ${priceFix.corrected} fill prices corrected${truncation}`)
+  return { days: span, from: iso(from), to: iso(nowMs), deals: deals.length, complete: pull.complete, pages: pull.pages, ...(pull.complete ? {} : { truncatedReason: pull.reason }), ...result, priceFix }
 }
