@@ -10,7 +10,8 @@ import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import { contractSize } from './contracts.js'
 import {
-  rememberLotSize, unitsPerLot, lotsFromUnits, lotSizeParity,
+  rememberLotSize, rememberVolumeMeta, brokerMinLots,
+  unitsPerLot, lotsFromUnits, lotSizeParity,
   LOT_SIZE_KEY, CENTS_PER_UNIT,
 } from './lot-size-registry.js'
 import { brokerVolumeToLots } from '../services/reconciler.js'
@@ -167,8 +168,47 @@ test('explicitly named symbols are deduped and case-folded', () => {
   assert.equal(p.rows[0].symbol, '0003.HK')
 })
 
-test('the registry key holds a plain symbol map', () => {
+test('the registry key holds a symbol map of broker volume records', () => {
+  // The shape changed on purpose when the broker's MINIMUM joined the lot
+  // size (17-09). It is asserted here because the map is persisted state: a
+  // silent shape change is how a deployed database stops being readable.
   const db = fresh()
   rememberLotSize(db, '0003.HK', 6_000)
-  assert.deepEqual(JSON.parse(getState(db, LOT_SIZE_KEY)), { '0003.HK': 6_000 })
+  assert.deepEqual(JSON.parse(getState(db, LOT_SIZE_KEY)), {
+    '0003.HK': { lotSize: 6_000, minVolume: null, stepVolume: null },
+  })
+})
+
+test('a legacy bare-number entry is still read, and is not a claimed minimum', () => {
+  // EVERY DEPLOYED DATABASE CARRIES THE OLD SHAPE. A migration that dropped
+  // it would throw away the one thing this module exists to keep, so the
+  // reader accepts both. The legacy entry knows a lot size and NOT a minimum,
+  // and must say so rather than implying one.
+  const db = fresh()
+  setState(db, LOT_SIZE_KEY, JSON.stringify({ '0003.HK': 6_000 }))
+  assert.equal(unitsPerLot(db, '0003.HK').source, 'broker')
+  assert.equal(unitsPerLot(db, '0003.HK').lotSize, 6_000)
+  const m = brokerMinLots(db, '0003.HK')
+  assert.equal(m.minLots, null)
+  assert.equal(m.source, 'unknown')
+  assert.equal(m.lotSize, 6_000, 'the lot size survives; only the minimum is unknown')
+})
+
+test('the broker minimum is recorded in lots, and a later lotSize-only write keeps it', () => {
+  const db = fresh()
+  rememberVolumeMeta(db, '0003.HK', { lotSize: 6_000, minVolume: 60_000, stepVolume: 6_000 })
+  const m = brokerMinLots(db, '0003.HK')
+  assert.equal(m.minLots, 10, '60,000 / 6,000 = 10 lots is the smallest order the broker accepts')
+  assert.equal(m.source, 'broker')
+
+  // The legacy call must not erase a known minimum with nothing.
+  assert.equal(rememberLotSize(db, '0003.HK', 6_000), false, 'nothing changed, so nothing is written')
+  assert.equal(brokerMinLots(db, '0003.HK').minLots, 10)
+})
+
+test('brokerMinLots never invents a minimum for a symbol the broker never described', () => {
+  const db = fresh()
+  const m = brokerMinLots(db, 'NEVER.SEEN')
+  assert.equal(m.minLots, null)
+  assert.equal(m.source, 'unknown')
 })

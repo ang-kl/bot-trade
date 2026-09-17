@@ -64,6 +64,34 @@ function readMap(db) {
   } catch { return {} }
 }
 
+const posNum = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null }
+
+/**
+ * Normalise one stored entry.
+ *
+ * TWO SHAPES LIVE IN THIS MAP AND BOTH ARE VALID. Until the broker's minimum
+ * was recorded, an entry was a bare number — the lotSize. It is now a record
+ * `{lotSize, minVolume, stepVolume}`. Every deployed database carries the old
+ * shape, so the reader accepts both rather than a migration step that could
+ * drop the very knowledge this file exists to keep. A legacy entry reports its
+ * minimum as `null`, which is the honest answer: the broker never told us.
+ *
+ * @returns {{lotSize:number, minVolume:number|null, stepVolume:number|null}|null}
+ */
+function entryOf(map, s) {
+  const v = map?.[s]
+  if (v == null) return null
+  if (typeof v === 'number') {
+    const lotSize = posNum(v)
+    return lotSize ? { lotSize, minVolume: null, stepVolume: null } : null
+  }
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    const lotSize = posNum(v.lotSize)
+    return lotSize ? { lotSize, minVolume: posNum(v.minVolume), stepVolume: posNum(v.stepVolume) } : null
+  }
+  return null
+}
+
 /**
  * Record what the broker says one lot of `symbol` is.
  *
@@ -76,16 +104,72 @@ function readMap(db) {
  * @returns {boolean} whether anything was stored
  */
 export function rememberLotSize(db, symbol, lotSize) {
+  return rememberVolumeMeta(db, symbol, { lotSize })
+}
+
+/**
+ * Record the broker's own volume declaration for `symbol`: what one lot is,
+ * and the SMALLEST ORDER IT WILL ACCEPT.
+ *
+ * WHY THE MINIMUM BELONGS HERE, WITH THE LOT SIZE. `getVolumeMeta` returns
+ * `lotSize`, `minVolume`, `maxVolume` and `stepVolume` together, on every
+ * order. Until now the order path recorded the lotSize and threw the rest
+ * away — the exact pattern this module's header describes for lotSize itself
+ * ("used to place the order and then thrown away"). The consequence was
+ * measured on 17-09: the risk gate sized against a GLOBAL assumed minimum of
+ * 0.01 lots, approved, and the executor then refused the order because the
+ * broker's real minimum for that symbol was higher. Ten of seventeen
+ * approvals died that way in one cycle.
+ *
+ * A known field is never overwritten with nothing: passing only a lotSize
+ * (the legacy call) keeps a minimum already on record.
+ *
+ * @param {{lotSize?:number, minVolume?:number|null, stepVolume?:number|null}} meta
+ * @returns {boolean} whether anything was stored
+ */
+export function rememberVolumeMeta(db, symbol, meta = {}) {
   const s = clean(symbol)
-  const n = Number(lotSize)
-  if (!s || !Number.isFinite(n) || n <= 0) return false
+  if (!s) return false
+  const lotSize = posNum(meta?.lotSize)
+  const minVolume = posNum(meta?.minVolume)
+  const stepVolume = posNum(meta?.stepVolume)
   try {
     const map = readMap(db)
-    if (map[s] === n) return false          // unchanged; skip the write
-    map[s] = n
+    const prev = entryOf(map, s)
+    // A lot size is required to hold an entry at all: a minimum expressed in
+    // protocol units means nothing without the divisor that turns it into lots.
+    const nextLot = lotSize ?? prev?.lotSize ?? null
+    if (!nextLot) return false
+    const next = {
+      lotSize: nextLot,
+      minVolume: minVolume ?? prev?.minVolume ?? null,
+      stepVolume: stepVolume ?? prev?.stepVolume ?? null,
+    }
+    if (prev && prev.lotSize === next.lotSize && prev.minVolume === next.minVolume && prev.stepVolume === next.stepVolume) {
+      return false                          // unchanged; skip the write
+    }
+    map[s] = next
     setState(db, LOT_SIZE_KEY, JSON.stringify(map))
     return true
   } catch { return false }
+}
+
+/**
+ * The smallest order the broker will accept for `symbol`, IN LOTS.
+ *
+ * `null` when the broker has never told us — and null must never be read as
+ * "no minimum". Every caller falls back to its configured assumption and says
+ * so, the same discipline `fundable-universe.js` states for an unjudged name:
+ * unknown is not a block, and it is not a licence either.
+ *
+ * @returns {{minLots:number|null, source:'broker'|'unknown', minVolume:number|null, lotSize:number|null}}
+ */
+export function brokerMinLots(db, symbol) {
+  const e = entryOf(readMap(db), clean(symbol))
+  if (!e || !e.minVolume) {
+    return { minLots: null, source: 'unknown', minVolume: null, lotSize: e?.lotSize ?? null }
+  }
+  return { minLots: e.minVolume / e.lotSize, source: 'broker', minVolume: e.minVolume, lotSize: e.lotSize }
 }
 
 /**
@@ -99,9 +183,8 @@ export function rememberLotSize(db, symbol, lotSize) {
  */
 export function unitsPerLot(db, symbol) {
   const s = clean(symbol)
-  const map = readMap(db)
-  const lotSize = Number(map[s])
-  if (Number.isFinite(lotSize) && lotSize > 0) {
+  const lotSize = entryOf(readMap(db), s)?.lotSize ?? null
+  if (lotSize) {
     return { unitsPerLot: lotSize / CENTS_PER_UNIT, source: 'broker', lotSize }
   }
   return { unitsPerLot: contractSize(s) || 1, source: 'table', lotSize: null }
@@ -146,8 +229,8 @@ export function lotSizeParity(db, symbols = null) {
     : Object.keys(map)
 
   const rows = names.map((symbol) => {
-    const lotSize = Number(map[symbol])
-    const known = Number.isFinite(lotSize) && lotSize > 0
+    const lotSize = entryOf(map, symbol)?.lotSize ?? null
+    const known = lotSize != null
     const broker = known ? lotSize / CENTS_PER_UNIT : null
     const table = contractSize(symbol) || 1
     const disagrees = known && broker !== table

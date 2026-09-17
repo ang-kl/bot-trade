@@ -574,8 +574,14 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // lets an ADOPTED position be converted with the same number the order was
     // placed with. See lib/lot-size-registry.js.
     try {
-      const { rememberLotSize } = await import('./lib/lot-size-registry.js')
-      rememberLotSize(db, symbol, meta.lotSize)
+      const { rememberVolumeMeta } = await import('./lib/lot-size-registry.js')
+      // AND THE BROKER'S MINIMUM, which was fetched here on every order and
+      // thrown away — the same fate this registry was built to end for the
+      // lot size. Measured 17-09: the risk gate sized against a GLOBAL
+      // assumed 0.01-lot minimum, approved, and this line then refused the
+      // order because the symbol's real minimum was higher. Recording it is
+      // what lets the gate refuse BEFORE it spends an approval.
+      rememberVolumeMeta(db, symbol, meta)
     } catch { /* non-fatal: sizing must never fail on bookkeeping */ }
     sized = lotsToVolume(volLots, meta)
     if (sized.belowMin) {
