@@ -87,3 +87,53 @@ test('POST /connect rebuilds the spot feed only when an input the feed reads has
   assert.doesNotMatch(feed, /acctAuth\.set\("accessToken", accessToken_\)/,
     'and never the unlocked member, which would both race and ignore a rotation')
 })
+
+test('cpp-verify never holds its session map across a broker round trip — /health must answer while a verify is in flight', () => {
+  // WHY A SOURCE PIN. Same shape as the /connect pins above: the decision
+  // lives in HTTP route lambdas over main()'s locals, so no C++ unit test
+  // reaches it without running the server against a broker.
+  //
+  // THE COST IF IT REGRESSES. A /verify walks pages with a 30 s ceiling each
+  // and a /connect authorizes N accounts at 20 s each. Held under the map's
+  // mutex, either one blocks GET /health — Railway's probe times out and
+  // restarts a service that is working perfectly. The guard out of reach of
+  // what it guards, one layer up.
+  const main = src('../../cpp-verify/src/main.cpp')
+
+  assert.match(main, /std::map<std::string, std::shared_ptr<verify::VerifySession>> g_sessions/,
+    'sessions are SHARED: /verify keeps its session alive while a concurrent /connect replaces the map entry')
+  assert.doesNotMatch(main, /std::map<std::string, std::unique_ptr<verify::VerifySession>> g_sessions/,
+    'a unique_ptr here is a use-after-free whenever the two overlap')
+
+  // /verify: copy the pointer under the lock, fetch outside it.
+  assert.match(main, /session = it->second;\s*\}\s*[\s\S]{0,200}verify::DealFetch fetch = session->deals\(/,
+    'the deal fetch happens after the lock_guard scope has closed')
+
+  // /connect: authorize outside the lock, install the ready session under it.
+  assert.match(main, /for \(long long id : want\) \{[\s\S]{0,400}slot->connect\(id\)[\s\S]{0,400}std::lock_guard<std::mutex> lk\(g_mtx\);\s*g_sessions\[host\] = slot;/,
+    'accounts are authorized before the map is locked, not while holding it')
+})
+
+test('cpp-verify links no order-writing code — the read-only guarantee is structural', () => {
+  // The service exists so that nothing certifies its own work. That claim
+  // rests entirely on what the binary contains: if the execution engine is
+  // linked in, "read-only" becomes a promise about routing that any later
+  // change can quietly break. CI greps the built binary for the symbols; this
+  // pins the link line that produces it.
+  // The Makefile's comments are `#`, which the JS/C++ stripper above leaves
+  // alone — and this test caught itself on that: the comment explaining that
+  // engine.cpp is absent contains the word `engine.cpp`. A source assertion
+  // matching its own prose is CLAUDE.md failure mode #2, so strip properly.
+  const mkStrip = (t) => t.replace(/^\s*#.*$/gm, '')
+  const mk = mkStrip(readFileSync(new URL('../../cpp-verify/Makefile', import.meta.url), 'utf8'))
+  assert.match(mk, /SHARED\s*:=\s*\.\.\/cpp-exec\/src\/ws_client\.cpp \.\.\/cpp-exec\/src\/http_server\.cpp\s*$/m,
+    'only the transport is borrowed from cpp-exec')
+  assert.doesNotMatch(mk, /engine\.cpp|order_guard\.cpp|trail_engine\.cpp|vpo_dispatcher\.cpp/,
+    'and never the execution engine or anything that can place, amend or close')
+
+  // The session itself implements three broker messages and no more.
+  const sess = src('../../cpp-verify/src/verify_session.cpp')
+  const reqTypes = [...sess.matchAll(/constexpr int k\w+Req = (\d+);/g)].map((m) => m[1]).sort()
+  assert.deepEqual(reqTypes, ['2100', '2102', '2133'],
+    'app auth, account auth, deal list — a fourth request type here needs a very good reason')
+})

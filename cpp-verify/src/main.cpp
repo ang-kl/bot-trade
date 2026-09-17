@@ -1,0 +1,235 @@
+// cpp-verify/src/main.cpp — the read-only verifier's HTTP surface.
+//
+// THREE ROUTES AND NOTHING ELSE:
+//   GET  /health   public (Railway's probe sends no headers)
+//   POST /connect  bearer; adds or refreshes a broker session FOR A HOST
+//   POST /verify   bearer; re-fetches a position's deals and answers a verdict
+//
+// There is no route that writes to a broker because there is no code in this
+// binary that can: the Makefile links verify_session.cpp and verdict.cpp, not
+// cpp-exec's engine.
+//
+// CTRADER_HOST IS NOT READ HERE, DELIBERATELY. cpp-exec and cpp-acct each pin
+// one host from that variable. The owner's requirement is ONE verifier for
+// demo and live, so the host arrives per request and sessions are held in a
+// map keyed by host. If CTRADER_HOST is set on this service it is ignored,
+// and /health says so, because a silently-ignored variable is worse than a
+// refused one.
+#include <algorithm>
+#include <cstdlib>
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "../../cpp-exec/src/http_server.hpp"
+#include "../../cpp-exec/src/json.hpp"
+#include "verdict.hpp"
+#include "verify_session.hpp"
+
+namespace {
+
+// SHARED, NOT UNIQUE, AND THE LOCK IS NOT HELD ACROSS THE FETCH. /verify
+// can sit on a broker socket for tens of seconds per page; holding g_mtx for
+// that would block GET /health, whose whole job is to answer Railway's probe
+// in time. So the handler copies the shared_ptr under the lock and releases
+// it before any network call — and the pointer must be SHARED, because a
+// concurrent /connect replacing the map entry would otherwise free the
+// session out from under a fetch in progress. That is the same use-after-free
+// shape the cpp-exec /connect audit found (PR-AD's predecessor), avoided here
+// by construction rather than by hoping the two never overlap.
+std::mutex g_mtx;
+std::map<std::string, std::shared_ptr<verify::VerifySession>> g_sessions;  // host -> session
+std::map<std::string, std::vector<long long>> g_accounts;                  // host -> authorized
+
+std::string env(const char* k, const std::string& dflt = "") {
+  const char* v = std::getenv(k);
+  return (v && *v) ? std::string(v) : dflt;
+}
+
+long long i64(const jsn::Value& v) {
+  if (v.isNumber()) return static_cast<long long>(v.asNumber(0));
+  if (v.isString()) { try { return std::stoll(v.asString()); } catch (...) { return 0; } }
+  return 0;
+}
+
+// A keeper field that is ABSENT stays absent — it is never read as 0. This
+// one helper is why: `Number(null) === 0` is the JS shape of the same bug and
+// it has cost this project three separate defects (lot-size-registry.js).
+std::optional<double> optNum(const jsn::Value& o, const std::string& key) {
+  const auto& v = o.get(key);
+  if (v.isNumber()) return v.asNumber(0);
+  if (v.isString() && !v.asString().empty()) {
+    try { return std::stod(v.asString()); } catch (...) { return std::nullopt; }
+  }
+  return std::nullopt;
+}
+
+template <typename T>
+std::optional<T> optAs(const jsn::Value& o, const std::string& key) {
+  auto d = optNum(o, key);
+  if (!d) return std::nullopt;
+  return static_cast<T>(*d);
+}
+
+HttpResponse jsonRes(int status, const std::string& body) { return {status, body}; }
+
+HttpResponse errRes(int status, const std::string& msg) {
+  jsn::Value o{jsn::Object{}};
+  o.set("error", msg);
+  return {status, jsn::dump(o)};
+}
+
+} // namespace
+
+int main() {
+  const int port = std::atoi(env("PORT", "8080").c_str());
+  const std::string secret = env("EXEC_SECRET");
+  if (secret.empty()) {
+    std::fprintf(stderr, "[verify] EXEC_SECRET not set — refusing to start\n");
+    return 2;
+  }
+  const bool hostPinIgnored = !env("CTRADER_HOST").empty();
+  std::fprintf(stderr,
+               "[verify] cpp-verify starting on :%d — read-only (app auth, "
+               "account auth, deal list); sessions are per host%s\n",
+               port, hostPinIgnored ? "; CTRADER_HOST is set and IGNORED" : "");
+
+  HttpServer server(port, secret);
+
+  server.route("GET", "/health", [&](const HttpRequest&) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    jsn::Value o{jsn::Object{}};
+    o.set("ok", true);
+    o.set("service", std::string("cpp-verify"));
+    o.set("readOnly", true);
+    o.set("hostPinIgnored", hostPinIgnored);
+    jsn::Array hosts;
+    for (const auto& [host, sess] : g_sessions) {
+      jsn::Value h{jsn::Object{}};
+      h.set("host", host);
+      h.set("open", sess->isOpen());
+      jsn::Array accts;
+      for (long long id : g_accounts[host]) accts.push_back(jsn::Value(static_cast<double>(id)));
+      h.set("accounts", jsn::Value(std::move(accts)));
+      hosts.push_back(h);
+    }
+    o.set("sessions", jsn::Value(std::move(hosts)));
+    return jsonRes(200, jsn::dump(o));
+  });
+
+  server.route("POST", "/connect", [&](const HttpRequest& req) {
+    auto body = jsn::parse(req.body);
+    if (!body || !body->isObject()) return errRes(400, "body must be a JSON object");
+    const std::string host = body->get("host").asString();
+    if (host.empty()) return errRes(400, "host is required — this service holds no default");
+
+    std::vector<long long> want;
+    long long primary = i64(body->get("accountId"));
+    if (primary) want.push_back(primary);
+    for (const auto& v : body->get("accountIds").asArray()) {
+      long long id = i64(v);
+      if (id && std::find(want.begin(), want.end(), id) == want.end()) want.push_back(id);
+    }
+    if (want.empty()) return errRes(400, "no account ids");
+
+    // BUILT AND AUTHORIZED OUTSIDE THE LOCK. Each account auth is a broker
+    // round trip with a 20 s ceiling, so authorizing four accounts under
+    // g_mtx could hold it for over a minute — long enough for Railway's
+    // /health probe to time out and restart a service that is working fine.
+    // The session is installed into the map only once it is ready.
+    //
+    // A new session per /connect for this host: credentials may have been
+    // rotated, and this service holds no open orders or subscriptions, so a
+    // rebuild costs nothing. (cpp-exec cannot say that — a feed rebuild there
+    // costs a recorder gap, which is what PR-AB/PR-AD were about.)
+    auto slot = std::make_shared<verify::VerifySession>(host,
+                                                        body->get("clientId").asString(),
+                                                        body->get("clientSecret").asString(),
+                                                        body->get("accessToken").asString());
+    std::vector<long long> ok;
+    jsn::Array results;
+    for (long long id : want) {
+      bool good = slot->connect(id);
+      if (good) ok.push_back(id);
+      jsn::Value r{jsn::Object{}};
+      r.set("accountId", static_cast<double>(id));
+      r.set("authorized", good);
+      if (!good) r.set("error", slot->lastError());
+      results.push_back(r);
+    }
+    {
+      std::lock_guard<std::mutex> lk(g_mtx);
+      g_sessions[host] = slot;
+      g_accounts[host] = ok;
+    }
+
+    jsn::Value o{jsn::Object{}};
+    o.set("host", host);
+    o.set("authorized", static_cast<double>(ok.size()));
+    o.set("requested", static_cast<double>(want.size()));
+    o.set("accounts", jsn::Value(std::move(results)));
+    return jsonRes(ok.empty() ? 502 : 200, jsn::dump(o));
+  });
+
+  server.route("POST", "/verify", [&](const HttpRequest& req) {
+    auto body = jsn::parse(req.body);
+    if (!body || !body->isObject()) return errRes(400, "body must be a JSON object");
+    const std::string host = body->get("host").asString();
+    long long accountId = i64(body->get("accountId"));
+    long long fromMs = i64(body->get("fromMs"));
+    long long toMs = i64(body->get("toMs"));
+    const auto& rj = body->get("record");
+    if (host.empty() || !accountId || !fromMs || !toMs || !rj.isObject()) {
+      return errRes(400, "host, accountId, fromMs, toMs and record are all required");
+    }
+
+    verify::KeeperRecord rec;
+    rec.positionId = i64(rj.get("positionId"));
+    if (!rec.positionId) return errRes(400, "record.positionId is required");
+    rec.symbolId = optAs<long long>(rj, "symbolId");
+    rec.tradeSide = optAs<int>(rj, "tradeSide");
+    rec.volume = optAs<long long>(rj, "volume");
+    rec.entryPrice = optNum(rj, "entryPrice");
+    rec.exitPrice = optNum(rj, "exitPrice");
+    rec.netPnl = optNum(rj, "netPnl");
+    rec.openedAtMs = optAs<long long>(rj, "openedAtMs");
+    rec.closedAtMs = optAs<long long>(rj, "closedAtMs");
+
+    std::shared_ptr<verify::VerifySession> session;
+    {
+      std::lock_guard<std::mutex> lk(g_mtx);
+      auto it = g_sessions.find(host);
+      if (it == g_sessions.end()) return errRes(409, "no session for host " + host + " — POST /connect first");
+      const auto& authed = g_accounts[host];
+      if (std::find(authed.begin(), authed.end(), accountId) == authed.end()) {
+        // I17: never answer for an account this session was not authorized
+        // on. Reading one account's history under another's authorization is
+        // the leak this check exists to make impossible.
+        return errRes(403, "account " + std::to_string(accountId) + " is not authorized on " + host);
+      }
+      session = it->second;
+    }
+    // g_mtx released. The session serializes its own requests internally.
+    verify::DealFetch fetch = session->deals(accountId, fromMs, toMs);
+
+    verify::Verdict v = verify::judge(rec, fetch);
+    auto o = jsn::parse(verify::verdictJson(v));
+    jsn::Value out = o ? *o : jsn::Value{jsn::Object{}};
+    out.set("host", host);
+    out.set("accountId", static_cast<double>(accountId));
+    out.set("positionId", static_cast<double>(rec.positionId));
+    out.set("fetchPages", static_cast<double>(fetch.pages));
+    out.set("fetchComplete", fetch.complete);
+    return jsonRes(200, jsn::dump(out));
+  });
+
+  if (!server.run()) {
+    std::fprintf(stderr, "[verify] bind/listen failed on :%d\n", port);
+    return 1;
+  }
+  return 0;
+}
