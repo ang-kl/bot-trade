@@ -360,6 +360,48 @@ export function backfillPositionHistory(db, { sinceMs = 0, limit = 5000 } = {}) 
   return out
 }
 
+/**
+ * WHERE THE CLEAN DATA ACTUALLY BEGINS — measured, not deduced.
+ *
+ * The deduction is sound as far as it goes: `direction_reason` is required,
+ * and 8eb4e75 (11-09-2026) introduced it in every producer at once, so no
+ * position closed before that date can be complete. What the deduction does
+ * NOT establish is the other half of the claim — that everything AFTER it is
+ * complete. Production said otherwise on the first run: 63 records carried a
+ * direction_reason and only 60 were whole, so three post-cutoff positions
+ * still failed on something else.
+ *
+ * So this reports the span and the post-cutoff rate from the rows themselves.
+ * A claim about where good data starts is exactly the kind of claim that
+ * should be read off the data rather than argued from a commit date.
+ */
+export function completenessSpan(db, { cutoffMs = Date.parse('2026-09-11T00:00:00Z') } = {}) {
+  const span = db.prepare(`
+    SELECT MIN(closed_at_ms) AS earliest, MAX(closed_at_ms) AS latest, COUNT(*) AS n
+      FROM position_history
+  `).get()
+  const before = db.prepare('SELECT COUNT(*) AS n FROM position_history WHERE closed_at_ms < ?').get(cutoffMs)
+  const after = db.prepare('SELECT COUNT(*) AS n FROM position_history WHERE closed_at_ms >= ?').get(cutoffMs)
+  const incompleteAfter = db.prepare('SELECT COUNT(*) AS n FROM position_history_incomplete WHERE closed_at_ms >= ?').get(cutoffMs)
+  const complete = after?.n || 0
+  const refused = incompleteAfter?.n || 0
+  return {
+    complete: span?.n || 0,
+    earliest: span?.earliest ? new Date(span.earliest).toISOString() : null,
+    latest: span?.latest ? new Date(span.latest).toISOString() : null,
+    cutoff: new Date(cutoffMs).toISOString(),
+    // The number that matters: a complete record dated BEFORE the cutoff
+    // would falsify the deduction outright, so it is counted rather than
+    // assumed to be zero.
+    completeBeforeCutoff: before?.n || 0,
+    completeSinceCutoff: complete,
+    refusedSinceCutoff: refused,
+    completionRateSinceCutoffPct: complete + refused > 0
+      ? Math.round((complete / (complete + refused)) * 1000) / 10
+      : null,
+  }
+}
+
 /** Record cpp-verify's answer. Written only from the verifier's reply. */
 export function recordVerdict(db, { accountId, positionId, state, disputes = [], host = null, at = null }) {
   if (!['unverified', 'verified', 'disputed', 'absent'].includes(state)) return { ok: false, reason: `bad_state: ${state}` }
