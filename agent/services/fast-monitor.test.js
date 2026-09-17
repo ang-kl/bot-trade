@@ -205,7 +205,7 @@ test('cadence gate: a fast ticker with no skips does not multiply traffic', () =
 // interval, measured, recorded and beaten as its own controller.
 // ---------------------------------------------------------------------------
 import { initDB, getState } from '../db.js'
-import { startFastMonitor, rollingMax, bandOverran, PASS_RECORD_KEY } from './fast-monitor.js'
+import { startFastMonitor, rollingMax, bandOverran, PASS_RECORD_KEY, withBudget } from './fast-monitor.js'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
@@ -257,4 +257,49 @@ test('a band inside its cadence beats ok and records overran:false', async () =>
   assert.equal(rec.band.overran, false)
   const pb = beats.filter(b => b.name === 'protection_band')
   assert.ok(pb.length >= 1); assert.equal(pb[0].ok, true); assert.equal(pb[0].error, null)
+})
+
+// ---------------------------------------------------------------------------
+// EVERY BAND JOB HAS A BUDGET, INCLUDING THE PROTECTION AUDIT (17-09-2026).
+//
+// The audit was the one job outside `withBudget`, and it became the one job
+// that can block on the broker: since the protection applier re-reads each
+// position LIVE before amending, a pass opens WS sessions serially, and
+// `wsReconcile` is `withRetry(..., 2)` at a 25s timeout with 2s/4s backoff —
+// 81s worst case for a single read. One hung apply parked the whole band,
+// flipped `protection_band` red, and — because the audit runs AFTER the keeper
+// and the guardian — delayed the next pass's stop ratchet.
+//
+// A source scan, and a last resort: the alternative is a test that waits out a
+// real 45-second budget. Comments are stripped first, because the block above
+// the call explains the budget and names it.
+// ---------------------------------------------------------------------------
+
+test('the protection audit runs under the same band budget as every other job', async () => {
+  const fs = await import('node:fs')
+  const url = await import('node:url')
+  const src = fs.readFileSync(url.fileURLToPath(new URL('./fast-monitor.js', import.meta.url)), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n')
+  assert.equal(src.includes('// withBudget'), false, 'comment stripper works')
+
+  const i = src.indexOf('runProtectionAuditAllAccounts(db, creds, deps)')
+  assert.ok(i > 0, "the audit call is gone — this test's anchor is with it")
+  // The call must sit inside a withBudget(...) invocation, not merely near one.
+  const before = src.slice(Math.max(0, i - 400), i)
+  assert.match(before, /withBudget\(\s*'protection_audit'/,
+    'the protection audit must be wrapped, or one hung broker read parks the whole band')
+  // And the budget must actually be observed, not discarded.
+  const after = src.slice(i, i + 400)
+  assert.match(after, /paRes\.error/, 'a budget whose timeout is ignored is not a budget')
+})
+
+test('withBudget really does abandon a wait that overruns', async () => {
+  // The property the scan above depends on. Without this, the scan pins a call
+  // to a function that might not bound anything.
+  const t0 = Date.now()
+  const res = await withBudget('never', 40, () => new Promise(() => {}))
+  assert.equal(res.timedOut, true)
+  assert.match(res.error.message, /exceeded its/)
+  assert.ok(Date.now() - t0 < 2000)
 })

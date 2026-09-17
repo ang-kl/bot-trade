@@ -956,25 +956,76 @@ export async function setExecGuard(creds, cfg) {
  * `clearTakeProfit` to say the clearing is deliberate. Forgetting the key is
  * now a loud throw at the call site instead of a target that silently
  * disappears at the broker. A new call site cannot repeat this by omission.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * AND NOW IN BOTH DIRECTIONS (17-09-2026, second review).
+ *
+ * This guard was half a guard. "Amend replaces protection" is symmetric — an
+ * absent stopLoss is "no stop loss", not "leave it alone" — but only the
+ * stop-only direction threw. Verified before the change:
+ *   `{positionId: 1, stopLoss: 100}`   -> throws
+ *   `{positionId: 1, takeProfit: 200}` -> passes silently
+ * and the silent one is the WORSE half: a lost target is upside forgone, a
+ * lost stop is unbounded downside on a live position.
+ *
+ * It was reachable. The targetless alert's one-tap Set-TP button routes to
+ * `position-protect.js`, which built `{positionId, takeProfit}` with no stop —
+ * so one tap on a button offered BECAUSE the position still had its stop would
+ * have taken that position naked. The alert's own premise is that these
+ * positions have stops.
+ *
+ * Same contract, mirrored: a target-only amend must pass `stopLoss` — a number
+ * to keep, or null/undefined-with-`clearStopLoss` to say the clearing is
+ * deliberate.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 export function assertAmendIntent(args) {
+  // WHAT COUNTS AS "CONSIDERED" IS WHAT `hasSl`/`hasTp` ACTUALLY TEST
+  // (17-09-2026, third review). This asked only whether the KEY was present,
+  // which catches an omitted argument and misses the shape a ternary or a
+  // variable really produces. Verified against the live rule at
+  // ctrader-ws.js's `typeof x === 'number' && x > 0`:
+  //
+  //   {stopLoss: undefined, takeProfit: 1.09}  -> key present, guard passed
+  //   {stopLoss: 0,         takeProfit: 1.09}  -> key present, guard passed
+  //   {stopLoss: NaN,       takeProfit: 1.09}  -> key present, guard passed
+  //
+  // All three reach the broker as a target-only amend, and amend replaces: the
+  // stop is cleared. So a leg counts as considered only when it is a finite
+  // positive number — a value the broker will actually hold — or an EXPLICIT
+  // null, which is this module's way of saying "the caller looked and there is
+  // none". `undefined`, 0 and NaN are none of those; they are a bug upstream.
+  const considered = (k) => {
+    if (!Object.prototype.hasOwnProperty.call(args ?? {}, k)) return false
+    const v = args[k]
+    if (v === null) return true // "I looked, there is none"
+    return typeof v === 'number' && Number.isFinite(v) && v > 0
+  }
   const sendingSl = Number(args?.stopLoss) > 0
-  const consideredTp = Object.prototype.hasOwnProperty.call(args ?? {}, 'takeProfit')
-  const clearing = args?.clearTakeProfit === true
-  if (sendingSl && !consideredTp && !clearing) {
+  const sendingTp = Number(args?.takeProfit) > 0
+  if (sendingSl && !considered('takeProfit') && args?.clearTakeProfit !== true) {
     throw new Error(
       'amendPosition: a stop-only amend CLEARS the take profit at the broker. ' +
       'Pass takeProfit (the value to keep, or null if the position has none), ' +
       'or clearTakeProfit: true if dropping the target is intended.'
     )
   }
+  if (sendingTp && !considered('stopLoss') && args?.clearStopLoss !== true) {
+    throw new Error(
+      'amendPosition: a target-only amend CLEARS the stop loss at the broker. ' +
+      'Pass stopLoss (the value to keep, or null if the position has none), ' +
+      'or clearStopLoss: true if dropping the stop is intended.'
+    )
+  }
   const out = { ...(args ?? {}) }
-  // Never reaches the broker: an assertion of intent, not a protocol field.
+  // Never reach the broker: assertions of intent, not protocol fields.
   delete out.clearTakeProfit
-  // `takeProfit: null` means "the caller looked and there is no target".
-  // wsAmendPosition already treats a non-positive value as absent, so this
-  // only has to stop a stated null being mistaken for forgetfulness.
+  delete out.clearStopLoss
+  // `takeProfit: null` / `stopLoss: null` mean "the caller looked and there is
+  // none". wsAmendPosition already treats a non-positive value as absent, so
+  // this only has to stop a stated null being mistaken for forgetfulness.
   if (out.takeProfit == null) delete out.takeProfit
+  if (out.stopLoss == null) delete out.stopLoss
   return out
 }
 

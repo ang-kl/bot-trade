@@ -67,6 +67,7 @@
 
 import { getState, setState } from '../db.js'
 import { nextCloseInfo } from './symbol-hours.js'
+import { makeBookHeldCheck } from './book-held.js'
 
 /**
  * Symbols whose reopen gap has actually cost more than 1R, plus the classes
@@ -136,19 +137,22 @@ export function bookExemptOn(db) {
 }
 
 /**
- * Position ids (as strings) that an OPEN momentum-book row points at on this
- * account. 'exit_sent' counts as held: the book has already decided that
- * position's fate and a second close would race it.
+ * THE BOOK EXEMPTION LIVES IN `book-held.js` NOW (16-09-2026, review).
+ *
+ * The local copy asked only `position_id`, filtering `IS NOT NULL`. A book row
+ * opened through the resting-limit path — the one the book uses when the market
+ * is closed — has a NULL `position_id` that nothing backfills, so it was NOT in
+ * the held set and this sweep would have CLOSED it: a momentum runner banked
+ * ahead of a weekend, against the book's whole premise that the trail is the
+ * exit. The hole was invisible because the exemption visibly works on every row
+ * that DOES carry a position id (production 16-09: "left 0005.HK (position
+ * 241443989) to the momentum book's stop").
+ *
+ * The shared rule asks by trade id too, resolving the trade from
+ * `trades.ctrader_position_id` because this sweep sees only a broker snapshot.
+ * Re-exported so callers and tests that name it keep working.
  */
-export function bookHeldPositionIds(db, accountId) {
-  const held = new Set()
-  try {
-    const rows = db.prepare(`SELECT position_id FROM momentum_book WHERE account_id = ? AND status IN ('open', 'exit_sent') AND position_id IS NOT NULL`)
-      .all(String(accountId))
-    for (const r of rows) held.add(String(r.position_id))
-  } catch { /* table absent on a fresh db — nothing held */ }
-  return held
-}
+export { bookHeldPositionIds } from './book-held.js'
 
 /**
  * Sweep broker positions ahead of a long closure. `positions` are the raw
@@ -165,7 +169,17 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
   const gapCfg = loadGapProneConfig(db)
   const closePosition = deps?.closePosition || (await import('../lib/exec-engine.js')).closePosition
   const wsGetSpotOnce = deps?.wsGetSpotOnce || (await import('../lib/ctrader-ws.js')).wsGetSpotOnce
-  const held = bookExemptOn(db) ? bookHeldPositionIds(db, creds?.accountId) : new Set()
+  // SCOPE, STATED RATHER THAN INHERITED (17-09-2026, second review). The old
+  // local helper did `String(accountId)`, so an ABSENT accountId became the
+  // string "undefined", matched no row, and exempted nothing. Passing `null` to
+  // the shared rule means "every account" — the opposite default, arrived at by
+  // accident, on the one guard whose job is to CLOSE before a gap. Latent
+  // (`getCtraderCreds` always sets accountId) and in the conservative direction
+  // for the book, but "exempt everything" is not a default to reach silently.
+  // No account, no exemption: sweep normally.
+  const bookHolds = (bookExemptOn(db) && creds?.accountId != null)
+    ? makeBookHeldCheck(db, creds.accountId)
+    : () => false
 
   for (const p of positions || []) {
     const td = p.tradeData || {}
@@ -178,7 +192,7 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
 
     // Book-held: the book's trailed stop is the exit, across closures too.
     // Recorded so the loop can say WHY a position in profit was not banked.
-    if (held.has(String(p.positionId))) {
+    if (bookHolds(p.positionId)) {
       exempt.push({ symbol, positionId: p.positionId })
       continue
     }

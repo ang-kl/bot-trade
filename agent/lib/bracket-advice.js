@@ -33,18 +33,27 @@ const HVN_MIN_BARS = 30
 
 /**
  * The volume-structure TP candidate, or null when there is none worth
- * offering. Direction comes from the stop (same rule as the caller). The
+ * offering.
+ *
+ * DIRECTION. By default it is inferred from the stop — at ORDER time the stop
+ * is always on the risk side of entry, so `sl < entry` is a long and the
+ * inference is sound for every caller that advises on a bracket about to be
+ * sent. It is NOT sound for a position already running: the moment a stop is
+ * ratcheted past entry (break-even lock, chandelier, MOVE_SL) the inference
+ * INVERTS. Callers holding a live position pass `long` explicitly and the
+ * inference is skipped; see tp-suggest.js, which is exactly that case.
+ * The
  * candidate is the near edge of the FIRST HVN strictly beyond entry in the
  * trade direction, at least one bucket-step clear of entry (a target inside
  * the entry's own node is noise). Suppressed — never adjusted — when its R
  * multiple falls below the strategy's floor or above the inflation cap.
  */
-function hvnTakeProfit({ entry, sl, bars, digits, rrFloor, minPocFraction }) {
+function hvnTakeProfit({ entry, sl, bars, digits, rrFloor, minPocFraction, long: longOverride = null }) {
   try {
     if (!Array.isArray(bars) || bars.length < HVN_MIN_BARS) return null
     const slDistance = Math.abs(entry - sl)
     if (!(slDistance > 0)) return null
-    const long = sl < entry
+    const long = typeof longOverride === 'boolean' ? longOverride : sl < entry
     const nodes = hvnNodes(bars, minPocFraction != null ? { minPocFraction } : {})
     if (!nodes.length) return null
     const step = nodes[0].nearEdgeHi - nodes[0].nearEdgeLo > 0
@@ -75,8 +84,8 @@ function hvnTakeProfit({ entry, sl, bars, digits, rrFloor, minPocFraction }) {
  * discipline as the advice path: below the floor or beyond the inflation cap
  * returns null, never an adjusted number.
  */
-export function hvnTargetPrice({ entry, sl, bars, digits, rrFloor, minPocFraction }) {
-  const hit = hvnTakeProfit({ entry, sl, bars, digits, rrFloor, minPocFraction })
+export function hvnTargetPrice({ entry, sl, bars, digits, rrFloor, minPocFraction, long = null }) {
+  const hit = hvnTakeProfit({ entry, sl, bars, digits, rrFloor, minPocFraction, long })
   return hit ? hit.price : null
 }
 

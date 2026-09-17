@@ -77,6 +77,8 @@
 //     the exit is a fact worth having on record even when it is not a fault.
 // ─────────────────────────────────────────────────────────────────────────────
 import { getState, setState } from '../db.js'
+import { makeBookHeldCheck } from './book-held.js'
+import { normPosId } from '../lib/pos-id.js'
 
 /** Alert at most this often per position, so a persistent gap does not spam. */
 const MUTE_MS = Math.max(60_000, Number(process.env.NAKED_ALERT_MUTE_MS) || 3600_000)
@@ -199,26 +201,97 @@ const TARGET_STATE_KEY = 'targetless_position_alerts_json'
 const LOG_STATE_KEY = 'protection_log_writes_json'
 const LAST_AUDIT_KEY = 'protection_audit_last_json'
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE APPLY WINDOW IS ITS OWN MAP, AND THAT IS THE WHOLE FIX (16-09-2026).
+//
+// Measured in production: `17 targetless` on every pass, stable for 4.5 days,
+// with exactly ONE `target SET` line across 12-09 → 16-09. The applier worked;
+// it almost never got to run.
+//
+// Why: `lastTargetAlerts` was doing two jobs at once — "do not re-alert this
+// position for 6h" AND "do not re-attempt a target on this position for 6h" —
+// while TWO callers stamp it at very different rates. The fast monitor's
+// runProtectionAuditAllAccounts pass runs every ~60s and was never given an
+// applier (no production caller set `deps.auditOpts`; grep found it only in
+// tests). The loop pass, which DOES carry suggestTarget/applyTarget, runs every
+// ~3–5 min. So whenever a 6-hour window expired, the 60-second path that COULD
+// NOT apply consumed it first, and the path that could found everything muted.
+// A guard whose trigger is out of reach of what it guards.
+//
+// Splitting the maps makes the invariant structural rather than a matter of
+// which caller happens to win a race:
+//
+//   A FINDING ELIGIBLE FOR A TARGET CANNOT BE MUTED BY A PASS THAT COULD NOT
+//   HAVE APPLIED ONE.
+//
+// Only a pass holding an `applyTarget` ever stamps this map, and it stamps only
+// the findings it actually worked. A pass with no applier leaves it untouched,
+// so it cannot consume the next pass's window. The alert map keeps its own job
+// and its own cadence, unchanged.
+//
+// Stamped on ATTEMPT, not on success: a bar fetch plus an amend per position
+// per window is the cost this bounds, and a persistently refused amend must not
+// become a 60-second retry storm against the broker.
+// ─────────────────────────────────────────────────────────────────────────────
+const APPLY_STATE_KEY = 'targetless_apply_attempts_json'
+/**
+ * How long a TRANSIENT refusal waits before the position is tried again.
+ *
+ * The claim is stamped BEFORE the amend, which is what closes the two-pass
+ * race — but it meant a sixty-second WS blip muted a position for the full six
+ * hours. Measured in the review's cost run: three positions refused on a read
+ * failure, all three then unreachable for six hours, because the prune only
+ * clears a stamp once the position stops being targetless and a refused
+ * position stays targetless.
+ *
+ * So the window is reason-dependent. A refusal the broker will still give the
+ * same answer to tomorrow — it already holds a target, the read says another
+ * position, the stop is on the wrong side — keeps the full window. A refusal
+ * that is about REACHING the broker gets this one instead: long enough not to
+ * be a retry storm, short enough that a blip is not a working day.
+ */
+const TARGET_APPLY_RETRY_MS = Math.max(
+  60_000, Number(process.env.TARGET_APPLY_RETRY_MS) || 5 * 60_000,
+)
+/**
+ * Most positions one pass will work.
+ *
+ * LOWERED FROM 3 TO 1 UNTIL IT IS MEASURED (17-09-2026, third review). The
+ * original 3 was a latency estimate made BEFORE the applier grew a live
+ * pre-amend broker read, and the review measured what that costs: the work is
+ * serial and additive, `maxConcurrent` 1, elapsed = the sum. Each apply opens a
+ * fresh WS session, and `wsReconcile` is `withRetry(..., 2)` at a 25s timeout
+ * with 2s/4s backoff — 81s worst case for ONE read. At 4 accounts × 3 that is
+ * twelve live reads inside a 60s band.
+ *
+ * One per account per pass still clears a 17-position backlog inside twenty
+ * minutes, on positions that have been targetless for days. The band budget in
+ * fast-monitor.js is the hard stop; this is the part that keeps it from being
+ * needed. Raise it when someone has measured a real pass, not before.
+ */
+export const MAX_APPLY_PER_PASS = Math.max(1, Number(process.env.TARGET_APPLY_MAX_PER_PASS) || 1)
+const TARGET_APPLY_MUTE_MS = Math.max(
+  60_000, Number(process.env.TARGET_APPLY_MUTE_MS) || 6 * 3600_000,
+)
+
 /** How often one position+kind may re-enter action_log. See the write loop. */
 const LOG_MUTE_MS = Math.max(60_000, Number(process.env.PROTECTION_LOG_MUTE_MS) || 3600_000)
 
 /**
- * Position ids (strings) held by an open momentum-book row — on one account
- * when `accountId` is given, across all accounts otherwise (the primary pass
- * runs with the selected account, the per-account pass with each). 'exit_sent'
- * counts as held: the book has decided that position's fate. A fresh db with
- * no table holds nothing.
+ * THE BOOK EXEMPTION LIVES IN `book-held.js` NOW (16-09-2026, review).
+ *
+ * This module and `weekend-bank.js` each carried their own copy of the same
+ * query, and the copies were one commit from diverging: this one was corrected
+ * to ask by trade id as well (a book row whose `position_id` is still NULL —
+ * the resting-limit path — is otherwise not exempt at all), while the weekend
+ * bank's copy kept the hole and would have CLOSED that runner ahead of a
+ * weekend. One rule, one place; see book-held.js for the rule and the
+ * measurements on both sides.
+ *
+ * Re-exported so callers and tests that name these keep working and there is
+ * still exactly one definition behind them.
  */
-export function bookHeldPositionIds(db, accountId = null) {
-  const held = new Set()
-  try {
-    const rows = accountId != null
-      ? db.prepare(`SELECT position_id FROM momentum_book WHERE account_id = ? AND status IN ('open', 'exit_sent') AND position_id IS NOT NULL`).all(String(accountId))
-      : db.prepare(`SELECT position_id FROM momentum_book WHERE status IN ('open', 'exit_sent') AND position_id IS NOT NULL`).all()
-    for (const r of rows) held.add(String(r.position_id))
-  } catch { /* table absent — nothing held */ }
-  return held
-}
+export { bookHeldPositionIds, bookHeldTradeIds, makeBookHeldCheck } from './book-held.js'
 
 /**
  * Each account is audited against its OWN broker snapshot, so each needs its
@@ -248,14 +321,28 @@ const muteKeyFor = (accountId, key) =>
   (accountId == null || accountId === '' ? key : `acct:${accountId}:${key}`)
 
 /**
- * Run the audit, record it, and alert on anything newly unprotected.
+ * Run the audit, record it, apply targets where it may, and alert on anything
+ * newly unprotected.
  *
  * Never throws: a protection AUDIT that can crash the loop would remove more
  * safety than it adds.
+ *
+ * @param {object} opts
+ * @param {Function|null} opts.suggestTarget  (finding) => {tp, basis}|null
+ * @param {Function|null} opts.applyTarget    (finding, suggestion) => {ok}
+ * @param {number} opts.applyMuteMs   how long before the same position may be
+ *   re-attempted. Its OWN window, stamped only by a pass holding an applier —
+ *   see APPLY_STATE_KEY.
+ * @param {Set<string>|string[]|null} opts.applyExcludeIds  position ids whose
+ *   repair belongs to another path in this same sweep (target-restore puts back
+ *   the target the bot RECORDED, which beats a fresh structural guess). Excluded
+ *   so one pass never sends two amends to one position.
  */
 export async function runProtectionAudit(db, openRows, brokerPositions, {
   nowMs = Date.now(), sendMessage = null, muteMs = MUTE_MS, targetMuteMs = TARGET_MUTE_MS,
   logMuteMs = LOG_MUTE_MS, accountId = null, suggestTarget = null, applyTarget = null,
+  applyMuteMs = TARGET_APPLY_MUTE_MS, applyExcludeIds = null,
+  maxApplyPerPass = MAX_APPLY_PER_PASS,
 } = {}) {
   try {
     const audit = auditProtection(openRows, brokerPositions)
@@ -309,79 +396,267 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       } catch { /* a failed alert must not lose the audit */ }
     }
 
+    // ── THE THREE LOAD-BEARING EXEMPTIONS, IN ONE PLACE ──
+    //
+    // Hoisted out of the Telegram branch along with the apply loop below, so
+    // they are evaluated once and asked by the applier, the alert lines, the
+    // buttons and the stdout breakdown from the same answer. They are:
+    //
+    //  · A HUMAN'S OWN POSITION — the owner's hand-placed trade. Choosing an
+    //    exit for it would be the bot overruling a decision it was never asked
+    //    about. NEVER touched.
+    //
+    //    `external` AND `manual` (16-09-2026, review). Every other guard in
+    //    this system pairs the two as "the human's own" — profit-keeper.js and
+    //    loss-guardian.js both do — and this one did not, so a position the
+    //    owner placed through the bot's manual route was amended while the
+    //    identical position placed at the broker was not. The distinction the
+    //    old test drew is about which DOOR the order came through, which is
+    //    not a fact about whose decision the exit is. Matched
+    //    case-insensitively: `reconciler.js` writes lowercase today, so an
+    //    upper- or mixed-case `source` is latent rather than live, but an
+    //    exemption that turns on the casing of a string column is not one to
+    //    leave sharp.
+    //  · a momentum-book row (09-09-2026) — exits by the trail, never by a
+    //    target. The right tail is the whole edge (plan principle 2), and a
+    //    1.5R floor on a position meant to run for weeks caps exactly that.
+    //    Measured: three 0005.HK rows on ACCT-DEMO-1/2/3 were given a target
+    //    at 09:36 SGT with nothing on stdout to say so. Reported, never
+    //    amended — the same shape as the weekend bank's exemption (#851).
+    //
+    //    ASKED BY POSITION ID *AND* TRADE ID (16-09-2026, review), because the
+    //    position-id question fails OPEN on a book row whose `position_id` is
+    //    still NULL — the resting-limit path. See bookHeldTradeIds above.
+    //  · no computable suggestion — no target is better than an invented one.
+    //    Checked in the apply loop, where the suggestion is in hand.
+    //
+    // MAKING THE APPLIER REACHABLE MUST NOT MAKE IT REACH THESE. The first two
+    // are decided before a suggestion is even requested, so an exempt position
+    // costs no bar fetch and can reach no amend by any path.
+    const HUMAN_SOURCES = new Set(['external', 'manual'])
+    const humanOwned = (f) => HUMAN_SOURCES.has(String(f.source || '').trim().toLowerCase())
+    // SCOPE NOTE, STATED IN BOTH PLACES (17-09-2026, third review).
+    // `accountId` defaults to null here, and null means "ask across every
+    // account" — so an unscoped audit pass treats a book row on ANY account as
+    // held. That is the conservative direction for THIS guard (the cost of
+    // over-exempting is a position that keeps its stop and gains no target),
+    // and it is the OPPOSITE of the choice weekend-bank.js makes with the same
+    // helper, where over-exempting means not closing before a gap. Two guards,
+    // two costs, two defaults — written down in both files so the difference
+    // reads as a decision rather than an inconsistency.
+    const bookHolds = makeBookHeldCheck(db, accountId)
+    const bookHeldFinding = (f) => bookHolds(f.positionId, f.tradeId)
+    const excluded = applyExcludeIds instanceof Set
+      ? applyExcludeIds
+      : new Set((applyExcludeIds || []).map(String))
+    const applyEligible = (f) =>
+      !humanOwned(f) &&
+      !bookHeldFinding(f) &&
+      !excluded.has(String(f.positionId))
+
+    // Owner 01-08: propose a concrete price with a one-tap Set-TP button
+    // instead of only pointing at the curl. Memoised per finding so a position
+    // that is both applied and alerted in the same pass fetches bars ONCE, and
+    // so an exempt position never fetches them at all.
+    const suggestions = new Map()
+    const getSuggestion = async (f) => {
+      if (suggestions.has(f)) return suggestions.get(f)
+      let s = null
+      if (typeof suggestTarget === 'function') {
+        try {
+          const r = await suggestTarget(f)
+          if (r && Number(r.tp) > 0) s = r
+        } catch { /* a failed suggestion must not lose the alert */ }
+      }
+      suggestions.set(f, s)
+      return s
+    }
+
+    // ── APPLY IT, DON'T ONLY ASK (owner, 04-08-2026: "SO MANY POSITIONS WITH
+    // NO TARGET SET") ──
+    //
+    // OUT OF THE TELEGRAM BRANCH (16-09-2026). This loop used to be nested
+    // inside `if (targetDue.length && typeof sendMessage === 'function')`, so
+    // with TELEGRAM_BOT_TOKEN unset the bot set no targets at all. Setting
+    // protection is not a notification; §43 asks protection to have its own
+    // functioning path, and one that depends on a chat token is not one.
+    //
+    // ON ITS OWN MUTE MAP, so a pass with no applier cannot consume the window
+    // of the pass that has one — see APPLY_STATE_KEY above for the measurement.
+    //
+    // STILL BOUNDED THE SAME WAY: only positions the bot owns, only where a
+    // suggestion actually computed, never a book row, never an external one.
+    // And a take profit can only ever close in profit, so the worst case is a
+    // suboptimal exit, never a loss the position would not otherwise have taken.
+    const applied = new Map()
+    const applyFailed = new Set()
+    const noSuggestion = new Set()
+    const deferred = new Set()
+    const applyMuteKey = muteKeyFor(accountId, APPLY_STATE_KEY)
+
+    // ── ONE POSITION, ONE AMEND. THE CLAIM IS THE LOCK (16-09-2026, review) ──
+    //
+    // The first draft read the mute map once, computed the whole due list from
+    // that snapshot, stamped into the in-memory object and persisted only at
+    // the end of the pass. Two doors to a double amend, both measured:
+    //
+    //  · TWO PASSES. The ~60s sweep and the loop's pass interleave on the
+    //    `await` inside getSuggestion. Both read an empty window, both amend:
+    //    `['loop:P1','sweep:P1']`. This PR is what opened that door — before
+    //    it, the sweep had no applier to race with.
+    //  · TWO ROWS, ONE PASS. Two `monitored_positions` rows carrying the same
+    //    `ctrader_position_id` produce two findings with the same positionId,
+    //    both measured against the pre-pass map, so both amend. This repo
+    //    ships `findOpenDuplicates` and `duplicate-watch` precisely because
+    //    duplicate open rows happen.
+    //
+    // `claimApply` is the fix and it is deliberately SYNCHRONOUS end to end:
+    // read, test, stamp and persist with no `await` anywhere inside it.
+    // better-sqlite3 is synchronous, so a read-modify-write with no suspension
+    // point cannot interleave with another pass in this process — the claim is
+    // durable BEFORE the amend is attempted, not after it returns. A failed
+    // write returns false and no amend follows: no claim, no amend.
+    const claimApply = (pid) => {
+      const m = readMap(applyMuteKey)
+      const last = Number(m[pid] || 0)
+      if (last > 0 && (nowMs - last) < applyMuteMs) return false
+      m[pid] = nowMs
+      try { setState(db, applyMuteKey, JSON.stringify(m)) } catch { return false }
+      return true
+    }
+    // Shorten a claim already made, for a refusal that is about reaching the
+    // broker rather than about the position. Rewinding the stamp rather than
+    // deleting it keeps the window bounded: the next attempt is
+    // TARGET_APPLY_RETRY_MS away, not on the next 60-second pass.
+    const backOffApply = (pid) => {
+      const m = readMap(applyMuteKey)
+      m[pid] = nowMs - Math.max(0, applyMuteMs - TARGET_APPLY_RETRY_MS)
+      try { setState(db, applyMuteKey, JSON.stringify(m)) } catch { /* non-fatal */ }
+    }
+
+    if (typeof applyTarget === 'function') {
+      // Belt and braces on door 2: the claim already rejects the second row of
+      // a duplicate pair (its stamp is `nowMs`, so the window test is 0 < w),
+      // but that makes correctness depend on `applyMuteMs > 0`, which is a
+      // caller's argument. The explicit set does not.
+      const seen = new Set()
+      let workedThisPass = 0
+      for (const f of audit.targetless) {
+        if (!applyEligible(f)) continue
+        const pid = String(f.positionId)
+        if (seen.has(pid)) continue
+        // A FRESH-BOOT BAND, NOT A FRESH-BOOT STALL (review). Nothing is
+        // stamped at boot, so pass one would otherwise run a bar fetch plus an
+        // amend for every targetless position, sequentially, per account — at
+        // 2–4s a round trip, 17 of them blow past the fast monitor's 60s band
+        // and park `protection_band` at ok:false. The work is spread over
+        // passes instead; the window only ever delays a repair, and the
+        // positions in question have been targetless for days.
+        if (workedThisPass >= maxApplyPerPass) { deferred.add(f); continue }
+        if (!claimApply(pid)) continue
+        seen.add(pid)
+        workedThisPass++
+        const s = await getSuggestion(f)
+        if (!s) { noSuggestion.add(f); continue }
+        try {
+          const r = await applyTarget(f, s)
+          if (r && r.ok) {
+            applied.set(f, s)
+            // The Telegram line was the only record. A target that appears
+            // on a position must be attributable from the log too.
+            console.log(`[protection] ${accountId ?? '?'}: target SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp} (${s.basis})`)
+          } else {
+            applyFailed.add(f)
+            // `retryable` marks a refusal about REACHING the broker. The
+            // applier is the only layer that can tell those apart, so it says
+            // so rather than leaving this one to parse an error string.
+            if (r && r.retryable) backOffApply(pid)
+          }
+        } catch {
+          // A throw is always transient from here: nothing was established
+          // about the position, so nothing justifies a six-hour silence.
+          applyFailed.add(f)
+          backOffApply(pid)
+        }
+      }
+    }
+
+    // ── WHAT CLASS IS EACH TARGETLESS POSITION? ──
+    //
+    // Production logged `17 targetless` every pass for 4.5 days and nothing
+    // else. That number cannot distinguish a momentum-book row holding no
+    // target BY DESIGN from a position that lost its target and should get one
+    // back, so nobody reading the log could tell whether it was a standing fact
+    // or a standing fault — which is exactly how it sat for days. The breakdown
+    // already existed in memory and went only to Telegram.
+    if (audit.targetless.length) {
+      const counts = new Map()
+      const bump = (k) => counts.set(k, (counts.get(k) || 0) + 1)
+      //
+      // EVERY CLASS NAMES WHAT THIS PASS DID, NOT WHAT ANOTHER PASS MIGHT DO
+      // (16-09-2026, review). The `excluded` class used to read "book target
+      // restored elsewhere", asserting an outcome this function cannot observe
+      // — measured against the real target-restore, it said that over 0-of-3
+      // repairs with the restore switched off, 0-of-1 with a NULL entry_price
+      // and 0-of-1 with a recorded target on the wrong side of entry, three of
+      // which are PERMANENT starvation rather than delay. The sweep now only
+      // defers a position that target-restore will actually act on (it asks
+      // `restoreEnabled` and `planTargetRestore` directly), and the class says
+      // "deferred to" — the routing, which is true — with the OUTCOME logged
+      // by the sweep after the restore has run.
+      for (const f of audit.targetless) {
+        if (humanOwned(f)) bump(`${String(f.source || 'unknown').toLowerCase()} (left alone — the human's own)`)
+        else if (bookHeldFinding(f)) bump('momentum-book (trail only)')
+        else if (excluded.has(String(f.positionId))) bump('bot-owned (deferred to target-restore)')
+        else if (applied.has(f)) bump('bot-owned (target applied)')
+        else if (applyFailed.has(f)) bump('bot-owned (apply refused)')
+        else if (noSuggestion.has(f)) bump('bot-owned (no target computable)')
+        else if (deferred.has(f)) bump('bot-owned (over this pass’s work cap)')
+        else if (typeof applyTarget !== 'function') bump('bot-owned (NO APPLIER WIRED)')
+        else bump('bot-owned (apply window not yet due)')
+      }
+      const parts = [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([k, n]) => `${n} ${k}`)
+      console.log(`[protection] ${accountId ?? '?'}: ${audit.targetless.length} targetless — ${parts.join(', ')}`)
+    }
+
     // Separate message, no siren: a stop is in place, so this is a management
     // gap rather than an emergency. Batched into one so a book with several
     // targetless positions produces one line per position, not one alert each.
     if (targetDue.length && typeof sendMessage === 'function') {
-      // Owner 01-08: propose a concrete price with a one-tap Set-TP button
-      // instead of only pointing at the curl. The suggestion is computed HERE,
-      // only for alerts actually going out (≤ once per position per 6h mute),
-      // so the underlying bar fetch is rare. A null suggestion degrades to the
-      // original instruction-only line — the alert never waits on structure.
-      const suggestions = new Map()
-      if (typeof suggestTarget === 'function') {
-        for (const f of targetDue) {
-          try {
-            const s = await suggestTarget(f)
-            if (s && Number(s.tp) > 0) suggestions.set(f, s)
-          } catch { /* a failed suggestion must not lose the alert */ }
-        }
-      }
-      // APPLY IT, DON'T ONLY ASK (owner, 04-08-2026: "SO MANY POSITIONS WITH
-      // NO TARGET SET"). §43 says protection must have its own functioning
-      // path; a target that exists only if a human taps a Telegram button is
-      // not one, and the owner's own policy has required a TP at order time
-      // since #23 — an adopted position is the same position, arriving by a
-      // different door.
-      //
-      // BOUNDED DELIBERATELY. Only positions the bot owns: `source === 'external'`
-      // is the owner's own hand-placed trade, and choosing an exit for it would
-      // be the bot overruling a human decision it was never asked about. Only
-      // when a suggestion actually computed — no target is better than an
-      // invented one. And a TP can only ever close in profit, so the worst case
-      // is a suboptimal exit, never a loss the position would not otherwise
-      // have taken.
-      //
-      // AND NOT THE MOMENTUM BOOK'S ROWS (09-09-2026). A book row exits by the
-      // trail, never by a target — the right tail is the whole edge (plan
-      // principle 2), and a 1.5R floor on a position meant to run for weeks
-      // caps exactly that. Measured: the three 0005.HK rows on ACCT-DEMO-1/2/3
-      // were given a target at 09:36 SGT, six minutes after the HK open put
-      // hourly bars under the suggester, with nothing on stdout to say so.
-      // Same shape as the weekend bank's exemption (#851): the row still
-      // shows in the audit and the alert, it is just never amended here.
-      const bookHeld = bookHeldPositionIds(db, accountId)
-      const applied = new Map()
-      if (typeof applyTarget === 'function') {
-        for (const f of targetDue) {
-          if (f.source === 'external') continue
-          if (bookHeld.has(String(f.positionId))) continue
-          const s = suggestions.get(f)
-          if (!s || !(Number(s.tp) > 0)) continue
-          try {
-            const r = await applyTarget(f, s)
-            if (r && r.ok) {
-              applied.set(f, s)
-              // The Telegram line was the only record. A target that appears
-              // on a position must be attributable from the log too.
-              console.log(`[protection] ${accountId ?? '?'}: target SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp} (${s.basis})`)
-            }
-          } catch { /* a failed amend must not lose the alert — it still tells the owner */ }
-        }
+      // A null suggestion degrades to the instruction-only line — the alert
+      // never waits on structure. Exempt findings are not asked for one: the
+      // line already says why they are left alone, and a suggestion there would
+      // only mint a button that must never be offered.
+      for (const f of targetDue) {
+        if (applyEligible(f)) await getSuggestion(f)
       }
       const lines = targetDue.map(f => {
         const s = suggestions.get(f)
         if (applied.has(f)) return `· ${f.symbol} (position ${f.positionId}) — TP SET to ${s.tp} (${s.basis})`
-        if (bookHeld.has(String(f.positionId))) return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target · momentum-book row, exits by trail, left alone`
-        return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${f.source === 'external' ? ' · opened outside the bot, left alone' : ''}` +
+        if (bookHeldFinding(f)) return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target · momentum-book row, exits by trail, left alone`
+        return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${humanOwned(f) ? ' · opened outside the bot, left alone' : ''}` +
           (s ? `\n  suggested TP ${s.tp} (${s.basis})` : '')
       })
       // One button row per suggested position. callback_data is capped at 64
       // bytes by Telegram — `prottp|<id>|<price>` fits comfortably.
       // No button for a target already set — offering to do what was just done
       // is how an operator learns to distrust the buttons.
+      //
+      // `suggestions` now memoises MISSES as null too, so the test is the
+      // VALUE, not `.has()` — `.has()` would mint a button for a finding whose
+      // suggester returned nothing and then read `.tp` off null.
+      //
+      // The `applyEligible` term is an EQUIVALENT MUTANT today and is stated as
+      // one rather than defended as a pinned guard (review: deleting it leaves
+      // every test green). It cannot change the output while exempt findings
+      // are never asked for a suggestion, so `suggestions.get(f)` is already
+      // falsy for all of them. It is kept because a button is the same amend by
+      // another door and this is the last line before one, but nothing here
+      // claims a test proves it.
       const buttons = targetDue
-        .filter(f => suggestions.has(f) && !applied.has(f) && !bookHeld.has(String(f.positionId)))
+        .filter(f => suggestions.get(f) && !applied.has(f) && applyEligible(f))
         .map(f => [{ text: `Set TP ${suggestions.get(f).tp} on ${f.symbol}`, callback_data: `prottp|${f.positionId}|${suggestions.get(f).tp}` }])
       try {
         await sendMessage(
@@ -400,6 +675,38 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     }
     prune(lastAlerts, audit.naked)
     prune(lastTargetAlerts, audit.targetless)
+
+    // ── THE APPLY WINDOW IS PRUNED ONLY BY EVIDENCE (16-09-2026, review) ──
+    //
+    // The generic prune above drops every stamp whose position is absent from
+    // THIS pass's findings. For the alert maps that is right. For the apply
+    // window it is a retry storm: a position missing from the broker SNAPSHOT
+    // is `unmatched` — checked against nothing, repaired by nobody — and
+    // dropping its stamp hands back the whole six-hour window. Measured on one
+    // account with 17 targetless positions: a stable snapshot costs 17 fetches
+    // and 17 amends an hour; a snapshot flickering every other pass turned that
+    // into 510 of each, against a permanently refused amend. `rec?.position ||
+    // []` upstream has no completeness check, so an empty snapshot is exactly
+    // the shape this has to survive.
+    //
+    // So a stamp is dropped only when the snapshot PROVES the repair landed:
+    // the position is IN the broker snapshot and no longer in `targetless`.
+    // Absent from the snapshot proves nothing and keeps its stamp. Expired
+    // stamps are swept on age so the map still cannot grow without bound.
+    {
+      const brokerIds = new Set(
+        (brokerPositions || []).map(p => p?.positionId).filter(v => v != null).map(String))
+      const stillTargetless = new Set(audit.targetless.map(f => String(f.positionId)))
+      const persisted = readMap(applyMuteKey)
+      for (const k of Object.keys(persisted)) {
+        // Verified repaired — a position that loses its target AGAIN is a fault
+        // to act on at once, not one to sit out the rest of an old window.
+        if (brokerIds.has(k) && !stillTargetless.has(k)) { delete persisted[k]; continue }
+        const t = Number(persisted[k] || 0)
+        if (!(t > 0) || (nowMs - t) > applyMuteMs * 4) delete persisted[k]
+      }
+      try { setState(db, applyMuteKey, JSON.stringify(persisted)) } catch { /* non-fatal */ }
+    }
     // Same bound for the log mutes, but keyed `KIND|positionId`, so drop any
     // key whose finding is no longer present in THIS pass — a position that
     // gets its stop back should log immediately if it ever loses it again.
@@ -428,11 +735,20 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       }))
     } catch { /* non-fatal */ }
 
-    return { ...audit, alerted: due.length, targetAlerted: targetDue.length }
+    return {
+      ...audit,
+      alerted: due.length,
+      targetAlerted: targetDue.length,
+      // How many targets this pass actually put on the broker. The old return
+      // said only how many were ALERTED — which is how "the applier is wired"
+      // and "the applier ran" stayed indistinguishable from the caller's side
+      // for 4.5 days.
+      targetsApplied: applied.size,
+    }
   } catch (err) {
     return {
       naked: [], targetless: [], phantom: [], tpDrift: [], checked: 0, unmatched: 0,
-      alerted: 0, targetAlerted: 0, error: err.message,
+      alerted: 0, targetAlerted: 0, targetsApplied: 0, error: err.message,
     }
   }
 }
@@ -719,10 +1035,11 @@ const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
 
 /**
  * @returns {{accounts:number, naked:number, targetless:number, phantom:number,
+ *            targetsRestored:number, targetsSet:number,
  *            errors:string[], unauditable:string[]}}
  */
 export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -802,8 +1119,84 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       if (process.env.TELEGRAM_BOT_TOKEN) {
         sendMessage = (await import('./telegram.js')).sendMessage
       }
+      // ── GIVE THIS PATH THE APPLIER (16-09-2026) ──
+      //
+      // This sweep runs from the fast monitor every ~60s and reaches EVERY
+      // enabled account; the loop pass that carried the suggester/applier runs
+      // every ~3–5 min and only on accounts the loop reaches. No production
+      // caller ever set `deps.auditOpts` — grep found it in tests only — so
+      // this, the faster and wider of the two paths, was calling the audit
+      // with no way to act on what it found, while still burning the shared
+      // mute window. §43: protection must have its own functioning path, and
+      // this IS the second path. It had the fact and not the hand.
+      //
+      // Everything the suggester needs is already here: `creds` is scoped to
+      // THIS account (so the bar fetch and the amend can never land on
+      // another), and `positions` is the raw broker snapshot with `tradeData`
+      // intact, which `brokerSl` above has already flattened away.
+      //
+      // ONE PASS, ONE AMEND PER POSITION. `restoreMissingTargets` below puts
+      // back the target the bot itself RECORDED, which is a more faithful
+      // repair than a fresh structural suggestion — so any position it will
+      // handle is excluded here rather than amended twice in the same sweep
+      // with the second write silently overwriting the first.
+      //
+      // ASK WHAT RESTORE WILL ACTUALLY DO, NOT WHETHER A NUMBER IS PRESENT
+      // (16-09-2026, review). This set was built from `current_tp > 0` alone,
+      // which is not the same question. Measured against the real
+      // target-restore: with the restore switched off it starved 3 of 3; with
+      // a NULL `entry_price`, 1 of 1; with a recorded target on the wrong side
+      // of entry, 1 of 1 — and all three are PERMANENT, not a delay, because
+      // nothing about them changes on the next sweep. So the exclusion now
+      // runs restore's own two exported deciders, `restoreEnabled` and
+      // `planTargetRestore`. A position restore will not repair is not deferred
+      // to it; the structural applier takes it instead of nobody taking it.
+      // A partially-injected `deps.targetRestore` overlays the real module
+      // rather than replacing it, so a test that stubs only
+      // `restoreMissingTargets` still gets the real deciders — the alternative
+      // is a stub silently changing which repair path a position takes.
+      const restoreMod = { ...(await import('./target-restore.js')), ...(deps.targetRestore || {}) }
+      const slByPosition = new Map(brokerSl.map(p => [String(p.positionId), p.stopLoss]))
+      const restoreOn = restoreMod.restoreEnabled(db)
+      const restorable = new Set(
+        !restoreOn ? [] : openRows
+          .filter(r => r.ctrader_position_id != null &&
+            restoreMod.planTargetRestore(r, { brokerSl: slByPosition.get(String(r.ctrader_position_id)) ?? null }).action === 'restore')
+          .map(r => String(r.ctrader_position_id)),
+      )
+      const { makeTargetSuggester, makeTargetApplier } = deps.tpSuggest ?? await import('./tp-suggest.js')
       const prot = await runProtectionAudit(db, openRows, brokerSl, {
-        sendMessage, accountId: id, ...(deps.auditOpts || {}),
+        sendMessage,
+        accountId: id,
+        suggestTarget: makeTargetSuggester(db, creds, positions),
+        applyTarget: makeTargetApplier(db, creds, {
+          // THE STOP IS RE-READ LIVE IMMEDIATELY BEFORE EACH AMEND.
+          //
+          // NOT THROUGH `exec.reconcile` (17-09-2026, second review). The first
+          // version injected exactly that — the same function that produced
+          // `positions` above — and in cpp mode, which production runs, it
+          // serves the sidecar's `lastReconcileJson`: a string refreshed only
+          // by the sidecar's own 30-second loop and never by an amend. So the
+          // "fresh" read returned the snapshot it was checking, the "the stop
+          // moved" branch could not fire, and a stop ratcheted by the profit
+          // keeper earlier in the SAME 60-second band was written back wider.
+          // The identity write of a cache is not the identity write of the
+          // broker; `lib/fill-anchor.test.js` pins this same rule for fills.
+          //
+          // `wsReconcile` queries the broker. Injectable for tests, so no test
+          // has to reach a real socket — but the production default is the live
+          // path on both engines.
+          readPosition: async (finding) => {
+            const wsReconcile = deps.wsReconcile
+              ?? (await import('../lib/ctrader-ws.js')).wsReconcile
+            const fresh = await wsReconcile(
+              creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId)
+            return (fresh?.position || [])
+              .find(p => normPosId(p?.positionId) === normPosId(finding.positionId)) || null
+          },
+        }),
+        applyExcludeIds: restorable,
+        ...(deps.auditOpts || {}),
       })
       out.accounts++
       if (obliged.has(String(id))) reachedObliged++
@@ -811,6 +1204,10 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       out.targetless += prot.targetless.length
       out.phantom += prot.phantom.length
       out.tpDrift += (prot.tpDrift || []).length
+      // Distinct from `targetsRestored`: that is the book's own recorded target
+      // put back, this is a fresh structural target on a position that never
+      // had one. Counting them together would hide which repair is running.
+      out.targetsSet += prot.targetsApplied || 0
 
       // MAKE THE BOOK STOP LYING. A phantom is our record disagreeing with the
       // broker's, and this module already calls that the more dangerous state
@@ -835,9 +1232,8 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       // broker's stop and the recorded target would be the shape this repo
       // keeps paying for.
       try {
-        const { restoreMissingTargets } = deps.targetRestore ?? await import('./target-restore.js')
         const rowsById = new Map(openRows.map(r => [String(r.ctrader_position_id), r]))
-        const fix = await restoreMissingTargets(db, creds, prot.targetless, rowsById, {
+        const fix = await restoreMod.restoreMissingTargets(db, creds, prot.targetless, rowsById, {
           ...(deps.restoreOpts || {}),
           notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
         })
@@ -845,6 +1241,16 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
         for (const e of fix.errors) out.errors.push(`${id}: target restore — ${e}`)
         if (fix.restored) console.log(`[protection] ${id}: restored ${fix.restored} take profit(s) from the book`)
         for (const sk of fix.skipped) console.log(`[protection] ${id}: target NOT restored — ${sk}`)
+        // CLOSE THE LOOP THE BREAKDOWN OPENED (16-09-2026, review). The audit's
+        // stdout line reports N positions "deferred to target-restore" — the
+        // routing, which it can know. What it cannot know is the OUTCOME, and
+        // the first draft asserted one. This is the other half: how many of
+        // the deferred set restore actually repaired, printed after it ran, so
+        // the pair of lines is complete and neither one over-claims.
+        if (restorable.size) {
+          const stillOpen = restorable.size - fix.restored
+          console.log(`[protection] ${id}: ${restorable.size} deferred to target-restore — ${fix.restored} restored, ${Math.max(0, stillOpen)} still without a target`)
+        }
       } catch (err) {
         // A failed repair must never take down the audit that found the fault.
         out.errors.push(`${id}: target restore failed — ${err?.message || err}`)
