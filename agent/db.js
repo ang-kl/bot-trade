@@ -711,6 +711,16 @@ const TABLES = `
     exit_ms       INTEGER,
     gross_r       REAL,
     net_r         REAL,
+    -- PR-L (16-09-2026): the cost model THIS trade was charged, carried from
+    -- the sidecar's ledger. NULL/0 on every row written before PR-L, which is
+    -- the truth about them: they were closed spread-only. The shadow view's
+    -- sensitivity line strips this back off before re-pricing, so a trade can
+    -- never be charged twice or read as if it were closed under another model.
+    cost_class    TEXT,
+    commission_wire REAL,
+    commission_bps REAL,
+    slippage_wire REAL,
+    slippage_bps  REAL,
     UNIQUE(side, boot_id, seq)
   );
   CREATE INDEX IF NOT EXISTS idx_tick_shadow_side_profile ON tick_shadow_trades(side, profile_hash, exit_ms);
@@ -1419,6 +1429,16 @@ export function initDB(dbPath) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN account_id TEXT`);
     }
   }
+
+  // PR-L (16-09-2026): the shadow ledger's per-trade cost provenance on an
+  // existing database. The 236 trades already recorded stay NULL — they were
+  // closed under commission 0 / slippage 0 and must keep saying so.
+  try {
+    const shadowCols = new Set(db.prepare(`PRAGMA table_info(tick_shadow_trades)`).all().map(c => c.name));
+    for (const [col, type] of [['cost_class', 'TEXT'], ['commission_wire', 'REAL'], ['commission_bps', 'REAL'], ['slippage_wire', 'REAL'], ['slippage_bps', 'REAL']]) {
+      if (!shadowCols.has(col)) db.exec(`ALTER TABLE tick_shadow_trades ADD COLUMN ${col} ${type}`);
+    }
+  } catch { /* table absent on an old schema */ }
 
   // §70.9 TRADE LINEAGE. Until 2026-08-04 an approval and the trade it
   // produced were associated only by symbol, side and rough timing — which is

@@ -51,7 +51,8 @@ import { getState } from '../db.js'
 import { engineStatusFor, writeEngineStatus } from './entry-mode.js'
 import { VALIDATION_STAGES } from '../lib/entry-contracts.js'
 import { profileHashFull, normalizeParams, PROFILE_ID } from '../lib/tick-strategy.js'
-import { shadowPortfolio } from './tick-shadow.js'
+import { shadowPortfolio, sideCostSchedule } from './tick-shadow.js'
+import { loadRepoSchedule, normalizeSchedule, rowChargedUnder, scheduleHash } from '../lib/tick-cost-schedule.js'
 import { TICK_PRODUCER } from './entry-ledger.js'
 import { realisedRR } from './trade-consistency.js'
 
@@ -123,8 +124,31 @@ export function tradedTickEvidence(db, accountId) {
  * trade count is refused too). Pure: reads nothing, writes nothing, so the
  * research route can report a verdict without moving the stage.
  */
-export function replayChecks(trial, replay) {
+export function replayChecks(trial, replay, { schedule = null } = {}) {
   const s = trial?.summary || {}
+  // PR-L (checker, on §16.7): a trial replayed at ZERO cost cannot pass. The
+  // replayer records what it charged on the trial's own sim — the class it
+  // resolved (`costSource: 'class'`, not the schedule's fallback and not
+  // 'none') and the four cost terms.
+  //
+  // ROUND-TWO CHECKER, MAJOR 2: `charged` was `> 0` and nothing more, so
+  // `commissionBpsPerSide: 1e-12` cleared the rung and a trial at 1e-9
+  // promoted an account end to end. The trial's `sim` arrives from OUTSIDE —
+  // `body.sim.costs` wins over the repo default in researchPlan, and POST
+  // /actions/tick-trials imports JSON produced off-box. The shadow rung pins
+  // to scheduleHash(repo); this one now pins the same way: the sim's four
+  // cost terms must EQUAL the repo schedule's row for the class it claims.
+  const sim = trial?.sim || {}
+  const repo = schedule || loadRepoSchedule()
+  const term = (k) => Number(sim[k]) || 0
+  const charged = term('commissionWirePerSide') > 0 || term('commissionBpsPerSide') > 0
+    || term('slippageWirePerSide') > 0 || term('slippageBpsPerSide') > 0
+    || term('commissionPerSide') > 0 || term('slippage') > 0
+  const matches = rowChargedUnder({
+    cost_class: sim.costClass,
+    commission_wire: term('commissionWirePerSide'), commission_bps: term('commissionBpsPerSide'),
+    slippage_wire: term('slippageWirePerSide'), slippage_bps: term('slippageBpsPerSide'),
+  }, repo)
   const test = (trial?.blocks || []).find(b => b.name === 'test') || null
   const testLower = test && !test.withheld && typeof test.expectancyLowerR === 'number' && Number.isFinite(test.expectancyLowerR) ? test.expectancyLowerR : null
   const pf = typeof s.profitFactor === 'number' && Number.isFinite(s.profitFactor) ? s.profitFactor : null
@@ -135,6 +159,12 @@ export function replayChecks(trial, replay) {
     maxDrawdownR: { observed: Number(s.maxDrawdownR ?? Infinity), max: replay.maxDrawdownR, ok: Number(s.maxDrawdownR ?? Infinity) <= replay.maxDrawdownR },
     testTrades: { observed: testTrades, min: replay.minTestTrades, ok: testTrades != null && testTrades >= replay.minTestTrades, block: 'test', withheld: !!(test && test.withheld) },
     expectancyLowerR: { observed: testLower, min: replay.minExpectancyLowerR, ok: testLower != null && testLower >= replay.minExpectancyLowerR, block: 'test', withheld: !!(test && test.withheld) },
+    costModel: {
+      observed: sim.costSource ?? 'unrecorded', costClass: sim.costClass ?? null, charged,
+      schedule: matches.ok ? 'repo' : matches.reason, repoHash: Object.keys(repo.classes || {}).length ? scheduleHash(repo) : null,
+      ok: sim.costSource === 'class' && charged === true && matches.ok === true,
+      note: 'a trial replayed at zero cost, at a schedule that is not this repo\'s, or charged the fallback because its symbol id was never classified, cannot pass the replay rung',
+    },
   }
   const failed = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k)
   return { ok: failed.length === 0, failed, checks }
@@ -152,7 +182,12 @@ function trialById(db, trialId) {
   let r = null
   try { r = db.prepare('SELECT * FROM tick_trials WHERE trial_id = ?').get(String(trialId)) } catch { r = null }
   if (!r) return null
-  return { trialId: r.trial_id, at: r.at, strategyId: r.strategy_id, version: r.version, profileHash: r.profile_hash, params: JSON.parse(r.params_json), summary: JSON.parse(r.summary_json), blocks: JSON.parse(r.blocks_json) }
+  // PR-L: `sim` is read back too — the replay rung judges the cost model the
+  // trial was replayed at, and it was being dropped on the way out of the
+  // ledger, so the check would have read 'unrecorded' on every stored trial.
+  let sim = null
+  try { sim = JSON.parse(r.sim_json) } catch { sim = null }
+  return { trialId: r.trial_id, at: r.at, strategyId: r.strategy_id, version: r.version, profileHash: r.profile_hash, params: JSON.parse(r.params_json), sim, summary: JSON.parse(r.summary_json), blocks: JSON.parse(r.blocks_json) }
 }
 
 /** Shadow signals rung on the account's side under a profile since a time. */
@@ -261,7 +296,17 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
       // percentile of bootstrapped expectancy, the closed-equity drawdown,
       // and the share of trades that were marked at a reset or lost to a
       // restart rather than closed by the rule.
-      const pf = shadowPortfolio(db, { side, profilePrefix: prefix, sinceMs: Date.parse(since.replace(' ', 'T') + 'Z') })
+      // ROUND-TWO CHECKER, BLOCKER 1/2: the verdict is computed ONLY over rows
+      // the sidecar's book demonstrably charged THE SCHEDULE IT REPORTED —
+      // each row's four recorded cost terms equal to that schedule's class
+      // row, and each row's own netR consistent with them. That is the path
+      // from the verdict back to what a book actually subtracted; the four
+      // /health checks below prove only what the sidecar SAID.
+      let sim = null
+      try { sim = JSON.parse(getState(db, `${side}_tick_json`) || 'null')?.status?.shadowPortfolio?.sim ?? null } catch { sim = null }
+      const sidecarCosts = sim && sim.costs && typeof sim.costs === 'object' ? sim.costs : null
+      const chargedUnder = sidecarCosts ? normalizeSchedule(sidecarCosts) : null
+      const pf = shadowPortfolio(db, { side, profilePrefix: prefix, sinceMs: Date.parse(since.replace(' ', 'T') + 'Z'), chargedUnder })
       const checks = {
         signals: { observed: ev.signals, min: th.shadow.minSignals, ok: ev.signals >= th.shadow.minSignals },
         hours: { observed: ev.hours, min: th.shadow.minHours, ok: ev.hours >= th.shadow.minHours },
@@ -272,13 +317,88 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
         maxDrawdownR: { observed: pf.maxDrawdownR, max: th.shadow.maxDrawdownR, ok: pf.maxDrawdownR <= th.shadow.maxDrawdownR },
         resetSharePct: { observed: pf.resetSharePct, max: th.shadow.maxResetSharePct, ok: pf.resetSharePct != null && pf.resetSharePct <= th.shadow.maxResetSharePct },
       }
-      let sim = null
-      try { sim = JSON.parse(getState(db, `${side}_tick_json`) || 'null')?.status?.shadowPortfolio?.sim ?? null } catch { sim = null }
-      const portfolio = { trades: pf.trades, losses: pf.losses, netR: pf.netR, profitFactor: pf.profitFactor, expectancyLowerR: pf.expectancyLowerR, maxDrawdownR: pf.maxDrawdownR, maxConcurrentOpen: pf.maxConcurrentOpen, exits: pf.exits, resets: pf.resets, lost: pf.lost, resetSharePct: pf.resetSharePct, hours: pf.hours, symbols: pf.symbols }
+      // PR-L: the COST SCHEDULE that produced this verdict, on the record.
+      // The sidecar echoes the schedule its books run at inside `sim.costs`;
+      // the hash of that is what pins the verdict to one cost model, and the
+      // repo's own hash beside it makes a drift between the two visible
+      // instead of implied. A sidecar that reports no sim leaves the hash
+      // NULL and says so — never the repo's, which it may not be running.
+      const repoSchedule = loadRepoSchedule()
+      const repoHash = Object.keys(repoSchedule.classes).length ? scheduleHash(repoSchedule) : null
+      const costSchedule = {
+        hash: sidecarCosts ? scheduleHash(sidecarCosts) : null,
+        source: sidecarCosts ? 'sidecar_reported_sim' : (sim ? 'sidecar_sim_without_costs' : 'sidecar_sim_unavailable'),
+        fallbackClass: sidecarCosts ? normalizeSchedule(sidecarCosts).fallbackClass : null,
+        classes: sidecarCosts ? normalizeSchedule(sidecarCosts).classes : null,
+        symbolsPriced: sidecarCosts && sidecarCosts.symbolClass && typeof sidecarCosts.symbolClass === 'object' ? Object.keys(sidecarCosts.symbolClass).length : 0,
+        repoHash,
+        matchesRepo: sidecarCosts != null && repoHash != null ? scheduleHash(sidecarCosts) === repoHash : null,
+      }
+      const portfolio = { costAudit: pf.costAudit, trades: pf.trades, losses: pf.losses, netR: pf.netR, profitFactor: pf.profitFactor, expectancyLowerR: pf.expectancyLowerR, maxDrawdownR: pf.maxDrawdownR, maxConcurrentOpen: pf.maxConcurrentOpen, exits: pf.exits, resets: pf.resets, lost: pf.lost, resetSharePct: pf.resetSharePct, hours: pf.hours, symbols: pf.symbols }
       // Provenance (plan §7): the sim the book ran at, the sidecar boots the
       // trades came from, the window's switches — on the record, not implied.
-      const provenance = { sim, bootIds: pf.bootIds, window: { since, pinnedAt, switches: win.switches }, costsNote: sim && (Number(sim.slippage) > 0 || Number(sim.commissionPerSide) > 0) ? 'owner-set slippage/commission' : 'spread-only costs (slippage and commission 0)' }
+      const anyCharged = costSchedule.classes
+        ? Object.values(costSchedule.classes).some(c => c.commissionWirePerSide > 0 || c.commissionBpsPerSide > 0 || c.slippageWirePerSide > 0 || c.slippageBpsPerSide > 0)
+        : false
+      const charged = anyCharged || Number(sim?.slippage) > 0 || Number(sim?.commissionPerSide) > 0
+      // CHECKER BLOCKER 1 + 2: four BLOCKING checks, so the schedule is not
+      // merely recorded NEXT TO the verdict but stands between the evidence
+      // and the stage. Each has its own name in `failed`.
+      //   scheduleKnown   — the sidecar told us what it charges, at all
+      //   scheduleCharged — what it charges is not zero
+      //   scheduleMatchesRepo — it is the schedule this repo holds, not a drift
+      //   symbolMap       — it prices at least one symbol, and prices the SAME
+      //                     symbols the keeper last pushed (a stale map hashes
+      //                     identically, because the map is not in the hash)
+      const costMap = sideCostSchedule(db, side)
+      const sidecarMap = sidecarCosts && sidecarCosts.symbolClass && typeof sidecarCosts.symbolClass === 'object' ? sidecarCosts.symbolClass : {}
+      const pushedMap = costMap.symbolClass || {}
+      const mapKeys = Object.keys(sidecarMap)
+      const mapAgrees = mapKeys.length > 0 && mapKeys.length === Object.keys(pushedMap).length
+        && mapKeys.every(k => String(pushedMap[k] || '') === String(sidecarMap[k]))
+      const costChecks = {
+        costScheduleKnown: { observed: costSchedule.source, expected: 'sidecar_reported_sim', ok: costSchedule.source === 'sidecar_reported_sim' && costSchedule.hash != null },
+        costScheduleCharged: { observed: charged, expected: true, ok: charged === true },
+        costScheduleMatchesRepo: { observed: costSchedule.matchesRepo, sidecar: costSchedule.hash, repo: costSchedule.repoHash, ok: costSchedule.matchesRepo === true },
+        costSymbolMap: { observed: costSchedule.symbolsPriced, pushed: Object.keys(pushedMap).length, agrees: mapAgrees, ok: costSchedule.symbolsPriced > 0 && mapAgrees },
+        // The one that reaches the books. The four above are the sidecar's
+        // self-declaration and the keeper comparing its map to its own; this
+        // one says every row the verdict rests on carries that schedule's own
+        // numbers and spent them. Without it, six rows with `cost_class:'fx'`
+        // and four zero cost terms passed the whole gate.
+        costRowsCharged: {
+          observed: pf.costAudit.charged, closed: pf.costAudit.closed,
+          preCostModel: pf.costAudit.preCostModel, refused: pf.costAudit.refused,
+          min: th.shadow.minTrades,
+          // An EMPTY window is not a cost-model problem — there is simply no
+          // evidence yet, and `trades` below says so. This check speaks only
+          // when closed rows exist: then the bar must be met by rows that
+          // were demonstrably charged, not by rows that merely claim a class.
+          ok: (pf.costAudit.closed ?? 0) === 0 || (pf.costAudit.charged ?? 0) >= th.shadow.minTrades,
+        },
+      }
+      Object.assign(checks, costChecks)
+      const provenance = {
+        sim, bootIds: pf.bootIds, window: { since, pinnedAt, switches: win.switches },
+        // PR-L: the schedule this verdict was earned under, so a verdict can
+        // never be read as if it had been earned under another one.
+        costSchedule,
+        costSensitivity: pf.costSensitivity ?? null,
+        costsNote: charged
+          ? `per-symbol-class cost schedule ${costSchedule.hash || '(unhashable)'}${costSchedule.matchesRepo === false ? ' — DIFFERS from the repo schedule ' + costSchedule.repoHash : ''}`
+          : 'spread-only costs (no per-class schedule and no absolute slippage/commission) — this profit factor is an upper bound',
+      }
       const failed = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k)
+      const costFailed = failed.filter(k => k in costChecks)
+      if (costFailed.length) {
+        return {
+          ok: false, reason: 'shadow_cost_model_unproven', failed, costFailed, checks,
+          note: 'the shadow figures cannot be shown to have been earned under a charged cost model, so they cannot move the stage. ' +
+            `In this window: ${pf.costAudit.closed} closed row(s), of which ${pf.costAudit.charged ?? 0} were charged the schedule the sidecar reports; ` +
+            `${pf.costAudit.preCostModel} predate the cost model entirely, and ${pf.costAudit.lostRestart} open trade(s) were lost to a restart and have no result.`,
+          evidence: { signals: ev, portfolio, provenance },
+        }
+      }
       if (failed.length) return { ok: false, reason: 'shadow_below_threshold', failed, checks, evidence: { signals: ev, portfolio, provenance } }
       record.evidence = { side, since, signals: ev, portfolio, provenance, checks }
       next.validationStage = 'SHADOW_PASSED'

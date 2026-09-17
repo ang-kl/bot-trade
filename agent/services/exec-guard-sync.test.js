@@ -8,9 +8,9 @@
 // real diff — an in-sync sidecar gets no traffic.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { initDB, setState } from '../db.js'
+import { initDB, setState, getState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { desiredGuardFor, guardDiffers, syncExecGuard, resolveTickSymbolIds, tickSymbolNames, _resetTickResolveLogForTests } from './exec-guard-sync.js'
+import { desiredGuardFor, guardDiffers, syncExecGuard, resolveTickSymbolIds, tickSymbolNames, tickSymbolClassMap, TICK_COST_MAP_KEY, _resetTickResolveLogForTests, _resetTickClassLogForTests } from './exec-guard-sync.js'
 import { trippedKey } from './equity-stop.js'
 import { fxDayOpenMs } from '../lib/volume-structure.js'
 
@@ -34,7 +34,25 @@ test('derivation truth table: stored guard, 5A halt, equity trips per side', asy
   assert.ok(Object.values(g0.entryEpochs).every(e => e === 0))
   assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord', 'tickShadow', 'tickShadowSim', 'tickEntryAccounts'])
   assert.deepEqual(g0.tickEntryAccounts, [], 'P6b: nobody places tick entries by default')
-  assert.deepEqual(g0.tickShadowSim, { latencyMs: 250, slippage: 0, commissionPerSide: 0, targetR: 3, minTargetToCost: 3, maxHoldEvents: 0, maxHoldMs: 21600000 }, 'P6a: the repo\'s shadow sim rides the guard push')
+  {
+    const { costs, ...flat } = g0.tickShadowSim
+    assert.deepEqual(flat, { latencyMs: 250, slippage: 0, commissionPerSide: 0, targetR: 3, minTargetToCost: 3, maxHoldEvents: 0, maxHoldMs: 21600000 }, 'P6a: the repo\'s shadow sim rides the guard push')
+    // PR-L: with RECORDING OFF there are no books, so the schedule is CLEARED
+    // — an empty object, which main.cpp full-replaces to nothing. Leaving it
+    // alone let a stale map stay installed while /health echoed a
+    // legitimate-looking hash onto the evidence record (checker finding 6).
+    assert.deepEqual(costs, { classes: {}, symbolClass: {}, fallbackClass: '' }, 'recording off clears the schedule rather than leaving a stale one')
+    // the repo's own schedule, which the push carries once recording is on
+    const { loadTickShadowSim } = await import('./exec-guard-sync.js')
+    const repo = loadTickShadowSim().costs
+    assert.deepEqual(Object.keys(repo.classes).sort(), ['commodity', 'crypto', 'fx', 'index_cfd', 'stock_hk', 'stock_us'])
+    assert.equal(repo.fallbackClass, 'stock_hk', 'an unclassified symbol is charged the dearest class')
+    assert.equal(repo.classes.stock_hk.commissionBpsPerSide, 15, 'MEASURED from the owner\'s statements')
+    assert.equal(repo.classes.stock_us.commissionWirePerSide, 2000, 'MEASURED as a flat $0.02/share, not a rate')
+    assert.equal(repo.classes.stock_us.commissionBpsPerSide, 0)
+    // the legacy global pair stays 0 — it ADDS to the class row
+    assert.equal(g0.tickShadowSim.slippage, 0); assert.equal(g0.tickShadowSim.commissionPerSide, 0)
+  }
   assert.equal(g0.tickRecord, false, 'P3a: recording is off unless an account asks')
   {
     const { requestEntryMode } = await import('./entry-mode.js')
@@ -231,6 +249,33 @@ test('P3a: an account in RECORD switches its side on; the names resolve to ids p
   })
   assert.equal(out.pushed, true)
   assert.equal(pushes[0].tickRecord, true); assert.deepEqual(pushes[0].tickSymbolIds, [1, 41])
+  // PR-L: the cost schedule travels WITH the symbols it prices — the keeper
+  // is the only place that has both the name and this side's id, so the
+  // id → class map is built here and stored per side for the shadow view.
+  assert.deepEqual(pushes[0].tickShadowSim.costs.symbolClass, { 1: 'fx', 41: 'commodity' }, 'EURUSD is fx, XAUUSD is a commodity')
+  assert.equal(pushes[0].tickShadowSim.costs.fallbackClass, 'stock_hk')
+  assert.equal('tickCostUnclassified' in pushes[0], false, 'both names classified')
+  {
+    const stored = JSON.parse(getState(db, TICK_COST_MAP_KEY)).cpp_exec_demo
+    assert.deepEqual(stored.symbolClass, { 1: 'fx', 41: 'commodity' })
+    assert.match(stored.hash, /^[0-9a-f]{16}$/)
+    assert.deepEqual(stored.unclassified, [])
+  }
+  // a name outside the taxonomy is REPORTED and charged the fallback — it is
+  // not left out of the map and silently charged nothing.
+  _resetTickClassLogForTests()
+  const cls = tickSymbolClassMap([{ name: 'AAPL.US', id: 5 }, { name: 'SIE.DE', id: 6 }], pushes[0].tickShadowSim.costs, { name: 'cpp_exec_demo' })
+  assert.deepEqual(cls.symbolClass, { 5: 'stock_us' })
+  assert.deepEqual(cls.unclassified, ['SIE.DE'])
+  assert.equal(cls.fallbackClass, 'stock_hk')
+  // a sidecar running a different schedule is a difference the probe pushes
+  const withCosts = { ...desired, tickShadowSim: pushes[0].tickShadowSim }
+  const reportedSim = { ...pushes[0].tickShadowSim }
+  assert.equal(guardDiffers(withCosts, { ...base, tick: { recording: true, subscribed: [1, 41], shadowSim: reportedSim } }), false, 'same schedule: converged')
+  const drifted = { ...reportedSim, costs: { ...reportedSim.costs, classes: { ...reportedSim.costs.classes, fx: { commissionBpsPerSide: 99, slippageBpsPerSide: 0 } } } }
+  assert.equal(guardDiffers(withCosts, { ...base, tick: { recording: true, subscribed: [1, 41], shadowSim: drifted } }), true, 'a different cost schedule is pushed')
+  const unmapped = { ...reportedSim, costs: { ...reportedSim.costs, symbolClass: {} } }
+  assert.equal(guardDiffers(withCosts, { ...base, tick: { recording: true, subscribed: [1, 41], shadowSim: unmapped } }), true, 'a sidecar pricing no symbol is pushed')
   const again = await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, {
     reportedGuard: base, reportedTick: { recording: true, subscribed: [1, 41] }, creds: { ready: true }, now, resolveSymbolId: resolve,
   })
@@ -285,4 +330,43 @@ test('P6b / PR-B: tickEntryAccounts lists every enabled account on the side whos
   assert.equal(guardDiffers(desired, reported), true, 'sidecar places for 0, keeper wants 1 → push')
   assert.equal(guardDiffers(desired, { ...reported, tick: { ...reported.tick, entry: { accounts: 1, places: true } } }), false)
   assert.equal(guardDiffers({ ...desired, tickEntryAccounts: [] }, { ...reported, tick: { ...reported.tick, entry: { accounts: 1, places: true } } }), true, 'sidecar still places for 1 after the account left → push clears it')
+})
+
+// CHECKER BLOCKER 2: an empty symbolClass is not "no opinion" — main.cpp
+// full-replaces it, so every book then charges the fallback (15 bps HK), the
+// cost screen refuses nearly every signal, and the shadow stops recording.
+// Worse, it OVERWRITES a correct map the sidecar already holds. Both ways in
+// are reachable and silent: `tick_symbols_json` empty is the documented
+// default, and creds that are not ready resolve nothing.
+test('PR-L: a push with no resolved symbol OMITS the cost schedule rather than sending an empty map', async () => {
+  const db = withAccounts(initDB(':memory:'))
+  const { requestTickObservation } = await import('./entry-mode.js')
+  requestTickObservation(db, '111', 'SHADOW')
+  const side = { name: 'cpp_exec_demo', isLive: false }
+  const now = Date.now()
+  const base = { halt: false, haltAccountCount: 0, entryEpochs: { 111: 0, 333: 0 } }
+  const resolve = async (_db, _creds, name) => ({ id: name === 'EURUSD' ? 1 : 41, source: 'account' })
+  _resetTickResolveLogForTests(); _resetTickClassLogForTests()
+
+  // (a) the documented default: tick_symbols_json empty → nothing resolves
+  setState(db, 'tick_symbols_json', JSON.stringify([]))
+  const pushes = []
+  const exec = { setExecGuard: async (_c, cfg) => { pushes.push(cfg); return { ok: true } } }
+  const r1 = await syncExecGuard(db, exec, side, { reportedGuard: base, reportedTick: { recording: false, subscribed: [] }, creds: { ready: true }, now, resolveSymbolId: resolve, force: true })
+  assert.equal(r1.pushed, true)
+  assert.equal('costs' in pushes[0].tickShadowSim, false, 'no resolved symbol → the schedule is not pushed at all')
+  assert.match(r1.desired.tickCostUnpriced, /no symbol resolved/)
+  assert.equal(getState(db, TICK_COST_MAP_KEY), null, 'and nothing is stored as if it had been')
+
+  // (b) creds not ready — same path, and it must NOT overwrite a good map the
+  //     sidecar is already holding
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD', 'XAUUSD']))
+  const good = await syncExecGuard(db, exec, side, { reportedGuard: base, reportedTick: { recording: false, subscribed: [] }, creds: { ready: true }, now, resolveSymbolId: resolve, force: true })
+  assert.deepEqual(good.desired.tickShadowSim.costs.symbolClass, { 1: 'fx', 41: 'commodity' })
+  const stored = JSON.parse(getState(db, TICK_COST_MAP_KEY)).cpp_exec_demo
+  const r2 = await syncExecGuard(db, exec, side, { reportedGuard: base, reportedTick: { recording: true, subscribed: [1, 41], shadowSim: good.desired.tickShadowSim }, creds: { ready: false }, now, resolveSymbolId: resolve, force: true })
+  assert.equal('costs' in r2.desired.tickShadowSim, false, 'unready creds must not push an empty map over a good one')
+  assert.deepEqual(JSON.parse(getState(db, TICK_COST_MAP_KEY)).cpp_exec_demo, stored, 'the stored map is untouched')
+  // and a push carrying no schedule is never a DIFFERENCE, so it does not flap
+  assert.equal(guardDiffers(r2.desired, { ...base, tick: { recording: true, subscribed: [1, 41], shadowSim: good.desired.tickShadowSim } }), false)
 })

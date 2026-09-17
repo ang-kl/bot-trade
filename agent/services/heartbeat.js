@@ -953,16 +953,22 @@ export async function pullTickShadow(db, exec, side) {
   const cur = cursors[side.name] || { bootId: '', lastSeq: 0 }
   const pulled = await exec.pullSidecarShadow({ after: cur.lastSeq, bootId: cur.bootId, ...(side.base ? { base: side.base } : {}) })
   if (!pulled) return null
+  // PR-L: the cost model the sidecar charged this trade rides on the row —
+  // cost_class/commission_bps/slippage_bps. A sidecar that predates PR-L
+  // sends none and the columns stay NULL, which is the truth about those
+  // trades (spread-only), not a gap to fill in with today's schedule.
   const ins = db.prepare(`INSERT OR IGNORE INTO tick_shadow_trades
-      (side, boot_id, seq, symbol_id, profile_hash, trade_side, signal_seq, entry_seq, exit_seq, entry, exit, stop, target, stop_distance, reason, hold_events, hold_ms, entry_ms, exit_ms, gross_r, net_r)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (side, boot_id, seq, symbol_id, profile_hash, trade_side, signal_seq, entry_seq, exit_seq, entry, exit, stop, target, stop_distance, reason, hold_events, hold_ms, entry_ms, exit_ms, gross_r, net_r, cost_class, commission_wire, commission_bps, slippage_wire, slippage_bps)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   let inserted = 0
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null)
   for (const t of pulled.trades) {
     if (!t || !Number.isFinite(Number(t.seq))) continue
     const r = ins.run(side.name, pulled.bootId, Number(t.seq), num(t.symbolId), t.profile != null ? String(t.profile).slice(0, 64) : null, t.side != null ? String(t.side) : null,
       num(t.signalSeq), num(t.entrySeq), num(t.exitSeq), num(t.entry), num(t.exit), num(t.stop), num(t.target), num(t.stopDistance),
-      t.reason != null ? String(t.reason).slice(0, 32) : null, num(t.holdEvents), num(t.holdMs), num(t.entryMs), num(t.exitMs), num(t.grossR), num(t.netR))
+      t.reason != null ? String(t.reason).slice(0, 32) : null, num(t.holdEvents), num(t.holdMs), num(t.entryMs), num(t.exitMs), num(t.grossR), num(t.netR),
+      t.costClass ? String(t.costClass).slice(0, 32) : null,
+      num(t.commissionWirePerSide), num(t.commissionBpsPerSide), num(t.slippageWirePerSide), num(t.slippageBpsPerSide))
     inserted += r.changes
   }
   if (cur.bootId && pulled.bootId !== cur.bootId) {
@@ -971,7 +977,7 @@ export async function pullTickShadow(db, exec, side) {
     // instead of pretending it never traded (Statistics auditor, 11-09-2026).
     let lostOpen = 0
     try { lostOpen = Number(JSON.parse(getState(db, `${side.name}_tick_json`) || 'null')?.status?.shadowPortfolio?.open) || 0 } catch { lostOpen = 0 }
-    for (let i = 0; i < lostOpen; i++) ins.run(side.name, cur.bootId, 1_000_000_000 + i, null, null, null, null, null, null, null, null, null, null, null, 'lost_restart', null, null, null, Date.now(), null, null)
+    for (let i = 0; i < lostOpen; i++) ins.run(side.name, cur.bootId, 1_000_000_000 + i, null, null, null, null, null, null, null, null, null, null, null, 'lost_restart', null, null, null, Date.now(), null, null, null, null, null, null, null)
     console.log(`[tick] ${side.name} shadow ledger restarted (boot ${cur.bootId} → ${pulled.bootId}); ${pulled.trades.length} trade(s) re-read, ${lostOpen} open trade(s) lost`)
   }
   if (inserted > 0) console.log(`[tick] ${side.name} shadow portfolio: ${inserted} closed trade(s) recorded (ledger seq ${pulled.latestSeq}, ${pulled.total} this boot)`)

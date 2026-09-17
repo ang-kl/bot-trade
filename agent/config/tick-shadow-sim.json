@@ -1,10 +1,65 @@
 {
-  "_note": "P6a (plan §7): the shadow portfolio's fill costs, pushed to the demo sidecar as /config tickShadowSim and applied to books created after the push. Prices are the feed's integer wire units and one number serves every symbol, so a non-zero slippage or commission here is a deliberate, owner-set pessimism, not a schedule; leave 0 to record spread-only costs and say so. Recorded in every SHADOW_PASSED evidence record.",
+  "_note": "P6a (plan §7): the shadow portfolio's fill costs, pushed to the demo sidecar as /config tickShadowSim and applied to books created after the push; recorded in every SHADOW_PASSED evidence record. PR-L (16-09-2026, docs/plan-execution-audit-2026-09-11.md §16) REPLACED the single flat pair (commissionPerSide 0, slippage 0 for every symbol) with the per-class schedule in `costs`, because 236 shadow trades had already accumulated toward the SHADOW_PASSED bar under spread-only costs and that overstates the profit factor. Each class row carries BOTH an absolute wire term and a bps term, and the cost per side is commissionWirePerSide + commissionBpsPerSide x price / 10000. Both are needed because the broker charges two different shapes: HK stock and FX are proportional to price (bps), US stock is a flat $0.02 PER SHARE per side (wire). A wire unit is 1e-5 of the symbol's own price for EVERY cTrader symbol (cpp-exec/src/tick_recorder.hpp), so 2000 wire units = $0.02 of price. COMMISSION is never rounded (it is subtracted as a real number before the R division); SLIPPAGE rounds to whole wire units AWAY FROM ZERO, so a non-zero slippage never becomes a free fill on a cheap symbol. The class of a symbol is derived from the repo's existing taxonomy (services/strategy-asset-cross.js assetClassOf, wrapped by lib/tick-cost-schedule.js costClassOf, plus that module's crypto-base and index-name lists); exec-guard-sync resolves the tick universe's names to this side's symbol ids and pushes the id->class map, a name that does not classify is REPORTED and charged `fallbackClass` (the dearest class), and a push with NO resolved symbol is omitted entirely rather than sent as an empty map. The top-level `slippage` / `commissionPerSide` are the legacy global absolute wire terms and still ADD on top of the class row; they stay 0.",
+  "_sources": "MEASUREMENT BASIS: agent/seed-statements/*.csv, three accounts, dated 21-08-2026. 683 deal rows parse; 9 are undecidable (no price move or no gross), leaving 674. Per deal: gross USD = Net USD - Commissions; USD per price unit = |gross| / |entry - close|; round-trip commission in price units = |Commissions| / that; per side = half; bps = 10000 x (per side / entry price). Per-class n is stated in each row's _commissionSource and is the n of that class's DECIDABLE deals, with the charged/zero split named. Commission figures are MEASURED, but note the UNIT each class is really charged in: US stock is a flat per-share fee, FX and XAUUSD are a flat $3.50 PER LOT per side, HK stock is genuinely a rate. A per-lot fee and a per-deal minimum cannot be expressed in this cost model — the shadow book is size-free by design — so where a class's true unit is per-lot the bps figure is an APPROXIMATION whose per-instrument error is stated in that class's _commissionSource. slippageBpsPerSide is a PLACEHOLDER, not a measurement: the statements carry no intent-vs-fill pair, so nothing in this repo measures adverse fill drift, and 0.5 bps per side is a conservative placeholder awaiting the owner's real figure. Do not read it as measured. agent/lib/tick-cost-schedule.test.js pins every value below by NUMBER, not by the prose here.",
   "latencyMs": 250,
   "slippage": 0,
   "commissionPerSide": 0,
   "targetR": 3,
   "minTargetToCost": 3,
   "maxHoldEvents": 0,
-  "maxHoldMs": 21600000
+  "maxHoldMs": 21600000,
+  "costs": {
+    "fallbackClass": "stock_hk",
+    "_fallbackNote": "an unclassified symbol is charged the DEAREST schedule and reported by name — a symbol nobody classified must not pass the evidence bar by being charged nothing. Note the consequence: a book charged the fallback will refuse most signals on the cost screen, so a side whose symbol map failed to resolve records little or nothing. That is why SHADOW_PASSED refuses when the sidecar priced no symbol.",
+    "classes": {
+      "stock_us": {
+        "commissionWirePerSide": 2000,
+        "commissionBpsPerSide": 0,
+        "slippageWirePerSide": 0,
+        "slippageBpsPerSide": 0.5,
+        "_commissionSource": "MEASURED, and measured as a FLAT PER-SHARE FEE, not a rate: 2000 wire units = $0.02 of price per side. 60 decidable US-stock deals, all charged; 56 land in 0.0199-0.0205 price units per side, from DOW.US at $29.84 to LLY.US at $1,222 — the same two cents across a 41x price range. In bps the CV of these deals is 0.975; in price units 0.58, and 0.06 excluding four outliers. THE FOUR OUTLIERS ARE A MINIMUM CHARGE, NOT MULTI-FILLS. An earlier draft of this file said they 'are multiples of $0.02 and read as multi-fill deals'; that was a guess published as a finding and it is FALSE. Measured: TSLA 0.2 lots, LHX 0.3, LLY 0.3, AVGO 0.8 — the four SMALLEST quantities in the sample, each paying exactly $0.04 round trip, where $0.02 x quantity would be $0.008-$0.032. They pay MORE than the per-share fee, not a multiple of it: the broker charges a minimum of $0.02 per side. Model fit over the 60 charged deals (commissions quoted to the cent, 2c tolerance): flat per-share with no minimum 57/60, flat per-share WITH a $0.02/side minimum 60/60. THE MINIMUM IS NOT MODELLED HERE, and cannot be: it depends on the number of shares, and the shadow book is deliberately size-free (it records price units and R; each account sizes its own projection). So this schedule UNDERCHARGES a very small tick position — at 1 share or fewer the real fee is $0.02/side regardless. The direction is known and stated rather than hidden. An earlier draft also quoted 'median 0.646 bps' for this class; that was the midpoint of a BIMODAL sample (24 DOW.US rows at 6.0-6.8 bps because DOW is a $30 stock, 36 rows at 0.16-0.72) and seven more DOW.US rows would have moved it tenfold.",
+        "_slippageSource": "PLACEHOLDER (0.5 bps per side) — not measured; see _sources."
+      },
+      "stock_hk": {
+        "commissionWirePerSide": 0,
+        "commissionBpsPerSide": 15.0,
+        "slippageWirePerSide": 0,
+        "slippageBpsPerSide": 0.5,
+        "_commissionSource": "MEASURED as a RATE: 20 decidable HK-stock deals, all charged, median 15.0044 bps per side, every one of six names inside 14.33-16.03 (CV 0.022 in bps against 0.741 in price units — proportional, not per-share). Names: 0003.HK 14.98, 0005.HK 14.99, 9618.HK 15.00, 2020.HK 15.00, 0066.HK 15.01, 0016.HK 15.29. This is the class the owner's 9618.HK deal came from: 115.49 USD of commission against a 388.64 USD gain.",
+        "_slippageSource": "PLACEHOLDER (0.5 bps per side) — not measured; see _sources."
+      },
+      "index_cfd": {
+        "commissionWirePerSide": 0,
+        "commissionBpsPerSide": 0,
+        "slippageWirePerSide": 0,
+        "slippageBpsPerSide": 0.5,
+        "_commissionSource": "MEASURED ZERO: all 186 decidable index-CFD deals carry Commissions 0.00 — a genuine zero, not an empty cell (NAS100, US30, US500, GER40, UK100, FRA40, JPN225, AUS200, US2000, CN50, VIX, USDX, EURX, JPYX). The cost is in the spread, which the book already pays by filling at the executable side.",
+        "_slippageSource": "PLACEHOLDER (0.5 bps per side) — not measured; see _sources."
+      },
+      "fx": {
+        "commissionWirePerSide": 0,
+        "commissionBpsPerSide": 0.35,
+        "slippageWirePerSide": 0,
+        "slippageBpsPerSide": 0.5,
+        "_commissionSource": "MEASURED as a FLAT FEE PER LOT, approximated here as a rate. The broker charges $3.50 per lot per side: measured over 62 charged FX deals, median $3.5021 per lot per side, CV 0.034. 0.35 bps IS that fee divided by a 100,000-unit lot — but that division is exact only for a USD-BASE pair. Measured per pair: USDJPY 0.354, USDCAD 0.355, EURUSD 0.303, GBPUSD 0.260, NZDUSD 0.595. So 0.35 OVERCHARGES GBP-base pairs by about 35% and UNDERCHARGES NZD-base pairs by about 41%. A per-lot fee cannot be expressed in this cost model, which works in price units and never sees a lot size, so the rate is the available approximation and its per-pair error is stated rather than implied. Pessimistic side: of 235 decidable FX deals 181 were charged nothing and 54 were charged; the charged plan is taken because an evidence bar must not assume the cheaper one.",
+        "_slippageSource": "PLACEHOLDER (0.5 bps per side) — not measured; see _sources."
+      },
+      "commodity": {
+        "commissionWirePerSide": 0,
+        "commissionBpsPerSide": 0.08,
+        "slippageWirePerSide": 0,
+        "slippageBpsPerSide": 0.5,
+        "_commissionSource": "NARROW SAMPLE AND A UNIT APPROXIMATION — read it as a conservative non-zero placeholder with a measured origin, not a class measurement. 73 decidable commodity deals: 67 charged nothing (NatGas, Copper, Corn, XAGUSD, XPTUSD, XPDUSD, USOIL, UKOIL all 0.00) and the ONLY six charged are XAUUSD. Those six are a FLAT $3.5000 per lot per side, CV 0.0000 — i.e. $0.035 per ounce, not a rate. 0.08 bps only reproduces that because gold sat near $4,245 in these statements; at $6,000 the same 0.08 bps overcharges by about 41%, and at $3,000 it undercharges. n=6 on one symbol cannot speak for a class in any case, so 0.08 is carried because it is non-zero and small rather than because six gold deals settle what NatGas costs. If the owner trades metals at size this needs re-measuring.",
+        "_slippageSource": "PLACEHOLDER (0.5 bps per side) — not measured; see _sources."
+      },
+      "crypto": {
+        "commissionWirePerSide": 0,
+        "commissionBpsPerSide": 0,
+        "slippageWirePerSide": 0,
+        "slippageBpsPerSide": 0.5,
+        "_commissionSource": "MEASURED ZERO: all 100 decidable crypto deals carry Commissions 0.00 — a genuine zero (BTCUSD, ETHUSD, SOLUSD, XRPUSD, LTCUSD, DOGEUSD, ADAUSD, BNBUSD). The cost is the spread, which is wide and already paid at the executable side. Note DOGEUSD at 0.06851: the slippage placeholder on a symbol that cheap is below one wire unit, so it rounds AWAY FROM ZERO to 1 — an overstatement, which is the safe direction.",
+        "_slippageSource": "PLACEHOLDER (0.5 bps per side) — not measured; see _sources."
+      }
+    }
+  }
 }

@@ -1258,6 +1258,34 @@ int main(int argc, char** argv) {
       if (sj.get("minTargetToCost").isNumber()) next.minTargetToCost = sj.get("minTargetToCost").asNumber();
       if (sj.get("maxHoldEvents").isNumber()) next.maxHoldEvents = static_cast<int>(sj.get("maxHoldEvents").asNumber());
       if (sj.get("maxHoldMs").isNumber()) next.maxHoldMs = static_cast<long long>(sj.get("maxHoldMs").asNumber());
+      // PR-L: the per-symbol-class cost schedule (agent/config/tick-shadow-sim.json
+      // `costs`, agent/lib/tick-cost-schedule.js). FULL REPLACE, declarative
+      // like haltAccounts: a class or a symbol the keeper stops sending is
+      // gone, never a stale row left charging — including the whole schedule
+      // (checker finding 6: without a clear path
+      // a stale map stayed installed and /health went on echoing a
+      // legitimate-looking hash onto the evidence record). A push that simply
+      // omits `costs` leaves the schedule alone, which is what the keeper does
+      // when it has no resolved symbol to price. An EMPTY object (`"costs":
+      // {}`) is the clear: no classes, no symbol map, nothing charged.
+      if (sj.get("costs").isObject()) {
+        const auto& cj = sj.get("costs");
+        tick::ShadowCostSchedule sch;
+        sch.fallbackClass = cj.get("fallbackClass").asString();
+        for (const auto& [name, val] : cj.get("classes").asObject()) {
+          tick::ShadowCost c;
+          c.commissionWirePerSide = val.get("commissionWirePerSide").asNumber(0);
+          c.commissionBpsPerSide = val.get("commissionBpsPerSide").asNumber(0);
+          c.slippageWirePerSide = val.get("slippageWirePerSide").asNumber(0);
+          c.slippageBpsPerSide = val.get("slippageBpsPerSide").asNumber(0);
+          sch.classes[name] = c;
+        }
+        for (const auto& [id, val] : cj.get("symbolClass").asObject()) {
+          const long long sid = std::strtoll(id.c_str(), nullptr, 10);
+          if (sid > 0 && val.isString()) sch.symbolClass[sid] = val.asString();
+        }
+        next.costs = sch;
+      }
       if (next.json() != tickSim.json()) { tickSim = next; logLine("tick shadow sim: " + tickSim.json() + " (keeper's push; applies to new books)"); }
     }
     // P6b: the accounts in TICK_MOMENTUM on this executor — FULL REPLACE,

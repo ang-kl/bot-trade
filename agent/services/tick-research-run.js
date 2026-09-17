@@ -42,6 +42,8 @@ import { simulate } from '../lib/tick-replay-sim.js'
 import { normalizeParams } from '../lib/tick-strategy.js'
 import { trialIdFor, importTickTrial } from './tick-research.js'
 import { loadThresholds, replayChecks } from './tick-validation.js'
+import { loadRepoSchedule, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
+import { getState } from '../db.js'
 
 export const SEGMENTS_ENV = 'TICK_SEGMENTS_DIR'
 export const NO_SEGMENTS_WHERE = 'the sealed segments are on the demo sidecar volume (cpp-exec, TICK_SPOOL_PATH); set TICK_SEGMENTS_DIR on the keeper to a directory holding seg-*.tks files, or run scripts/tick-research.mjs beside the spool and POST /actions/tick-trials'
@@ -135,13 +137,22 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
  * exposure, never summed). Plan §7: the test block is withheld unless
  * sim.includeTest is set — the owner's one confirmation run.
  */
-export function runTrials({ bySymbol, manifestBase }, { stageA = false, params = {}, sim = {} } = {}) {
+export function runTrials({ bySymbol, manifestBase }, { stageA = false, params = {}, sim = {}, symbolClass = null } = {}) {
   const grid = stageA ? stageAGrid() : [params]
   const trials = []
   for (const g of grid) {
     const p = normalizeParams({ ...params, ...g })
     for (const [symbolId, list] of bySymbol) {
-      const r = simulate(list, p, sim)
+      // PR-L: the cost class for THIS symbol id, from the keeper's pushed map.
+      // When the id is NOT in the map the schedule is left off entirely rather
+      // than charging the dearest fallback: a research run must still produce
+      // a readable trial, and the trial then records costSource 'none', which
+      // replayChecks REFUSES. Charging the fallback instead made the cost
+      // screen reject every signal, so the run produced no trades at all and
+      // said nothing about why.
+      const cls = symbolClass && symbolClass[String(symbolId)]
+      const symSim = cls ? { ...sim, costClass: cls } : { ...sim, costs: null, costClass: null }
+      const r = simulate(list, p, symSim)
       const trial = { strategyId: r.strategyId, strategyVersion: r.strategyVersion, profileHash: r.profileHash, params: r.params, sim: r.sim, manifest: { ...manifestBase, symbolId, symbolEvents: list.length }, summary: r.summary, blocks: r.blocks, rejected: r.rejected }
       trial.trialId = trialIdFor(trial)
       trials.push(trial)
@@ -152,10 +163,40 @@ export function runTrials({ bySymbol, manifestBase }, { stageA = false, params =
 
 const plain = (v) => v && typeof v === 'object' && !Array.isArray(v) ? v : {}
 
+/**
+ * PR-L: the cost schedule a replay trial should be charged, and the symbol
+ * id → class map to charge it by. The schedule is the repo's; the map is the
+ * union of what the keeper last pushed per side (a segment's symbol ids are
+ * that side's ids, and the two sides do not collide in practice — where they
+ * would, the first side's class wins and the trial records which class it
+ * used, so the choice is auditable rather than hidden).
+ */
+export function replayCostContext(db) {
+  const costSchedule = loadRepoSchedule()
+  const symbolClass = {}
+  try {
+    const stored = JSON.parse(getState(db, TICK_COST_MAP_KEY) || '{}') || {}
+    for (const side of Object.values(stored)) {
+      for (const [id, cls] of Object.entries(side?.symbolClass || {})) if (!symbolClass[id]) symbolClass[id] = cls
+    }
+  } catch { /* no map pushed yet — every trial then reads costSource 'fallback' and cannot pass */ }
+  return { costSchedule, symbolClass }
+}
+
 /** The request body, normalised once (shared by the in-thread action and the job). */
-export function researchPlan(body = {}) {
+export function researchPlan(body = {}, { costSchedule = null, symbolClass = null } = {}) {
   const sim = { ...plain(body.sim) }
   if (body.includeTest === true) sim.includeTest = true
+  // PR-L (checker, on §16.7): a replay trial used to default `sim` to {} —
+  // zero cost — so REPLAY_PASSED could be cleared at no cost while
+  // SHADOW_PASSED is now charged. Both rungs of the ladder were free. The
+  // schedule now rides the plan, and runTrials resolves the CLASS per symbol
+  // id from the map the keeper pushed to the sidecar (a trial knows only the
+  // symbol ID, never the name). A body that names its own `costs` wins, so a
+  // deliberate zero-cost research run is still possible — it just cannot pass
+  // the stage, because replayChecks refuses an uncharged trial.
+  if (!sim.costs && costSchedule && Object.keys(costSchedule.classes || {}).length) sim.costs = costSchedule
+  const symbolClassMap = symbolClass && typeof symbolClass === 'object' ? symbolClass : null
   const rawNote = body.note == null ? null : String(body.note)
   const noteTruncated = rawNote != null && rawNote.length > NOTE_MAX
   return {
@@ -164,6 +205,7 @@ export function researchPlan(body = {}) {
     params: plain(body.params),
     sim,
     onlySymbol: body.symbol != null && Number.isFinite(Number(body.symbol)) ? Number(body.symbol) : null,
+    symbolClass: symbolClassMap,
     note: rawNote == null ? null : rawNote.slice(0, NOTE_MAX),
     noteTruncated,
   }
@@ -178,7 +220,7 @@ export function researchPlan(body = {}) {
 export function replayFiles(files, plan, replayThresholds) {
   const loaded = loadSegments(files, { onlySymbol: plan.onlySymbol })
   if (!loaded.manifestBase.events) return null
-  const trials = runTrials(loaded, { stageA: plan.stageA, params: plan.params, sim: plan.sim })
+  const trials = runTrials(loaded, { stageA: plan.stageA, params: plan.params, sim: plan.sim, symbolClass: plan.symbolClass })
   return { manifest: loaded.manifestBase, trials: trials.map(t => ({ trial: t, verdict: replayChecks(t, replayThresholds) })) }
 }
 
@@ -222,7 +264,7 @@ function admit(segmentsDir, { maxRecords = MAX_RECORDS } = {}) {
 export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS } = {}) {
   const a = admit(segmentsDir, { maxRecords })
   if (a.refuse) return a.refuse
-  const plan = researchPlan(body)
+  const plan = researchPlan(body, replayCostContext(db))
   const th = thresholds || loadThresholds()
   const replayed = replayFiles(a.files, plan, th.replay)
   if (!replayed) return { status: 409, body: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }
@@ -273,7 +315,7 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   }
   const a = admit(segmentsDir, { maxRecords })
   if (a.refuse) return a.refuse
-  const plan = researchPlan(body)
+  const plan = researchPlan(body, replayCostContext(db))
   const th = thresholds || loadThresholds()
   const j = { jobId: randomUUID().slice(0, 12), state: 'running', startedAt: now.toISOString(), finishedAt: null, segmentsDir: a.dir, segments: a.files.length, records: a.records, plan: { stageA: plan.stageA, dryRun: plan.dryRun, params: plan.params, sim: plan.sim, onlySymbol: plan.onlySymbol, noteTruncated: plan.noteTruncated }, result: null, error: null, worker: null, db, importTrial }
   let worker

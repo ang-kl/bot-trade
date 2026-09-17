@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -50,7 +51,103 @@ static ShadowSim simFrom(const jsn::Value& j) {
   s.minTargetToCost = j.get("minTargetToCost").asNumber(3);
   s.maxHoldEvents = static_cast<int>(j.get("maxHoldEvents").asNumber(0));
   s.maxHoldMs = static_cast<long long>(j.get("maxHoldMs").asNumber(6LL * 3600 * 1000));
+  // PR-L: the per-class cost schedule, read exactly as main.cpp reads it off
+  // /config tickShadowSim.
+  if (j.get("costs").isObject()) {
+    const auto& cj = j.get("costs");
+    s.costs.fallbackClass = cj.get("fallbackClass").asString();
+    for (const auto& [name, val] : cj.get("classes").asObject()) {
+      ShadowCost c;
+      c.commissionWirePerSide = val.get("commissionWirePerSide").asNumber(0);
+      c.commissionBpsPerSide = val.get("commissionBpsPerSide").asNumber(0);
+      c.slippageWirePerSide = val.get("slippageWirePerSide").asNumber(0);
+      c.slippageBpsPerSide = val.get("slippageBpsPerSide").asNumber(0);
+      s.costs.classes[name] = c;
+    }
+    for (const auto& [id, val] : cj.get("symbolClass").asObject()) {
+      const long long sid = std::strtoll(id.c_str(), nullptr, 10);
+      if (sid > 0 && val.isString()) s.costs.symbolClass[sid] = val.asString();
+    }
+  }
   return s;
+}
+
+// PR-L: a US stock and an FX pair must pay DIFFERENT costs for the same
+// nominal move — the defect the flat number had. Both books are given the
+// same schedule and the same wire prices; only the symbol id differs.
+static void test_per_class_costs_differ_by_symbol() {
+  ShadowSim sim;
+  sim.costs.fallbackClass = "stock_hk";
+  // the repo's two SHAPES: US stock is a flat $0.02/share (2000 wire units),
+  // HK stock and FX are proportional (bps).
+  sim.costs.classes["stock_us"] = ShadowCost{2000, 0, 0, 0.5};
+  sim.costs.classes["fx"] = ShadowCost{0, 0.35, 0, 0.5};
+  sim.costs.classes["stock_hk"] = ShadowCost{0, 15.0, 0, 0.5};
+  sim.costs.symbolClass[11] = "stock_us";
+  sim.costs.symbolClass[22] = "fx";
+  ShadowBook us(sim, 64, 11, "h"), fx(sim, 64, 22, "h"), unknown(sim, 64, 99, "h");
+  assert(us.costClass() == "stock_us" && fx.costClass() == "fx");
+  // an id the keeper never classified is charged the FALLBACK, the dearest row
+  assert(unknown.costClass() == "stock_hk" && unknown.cost().commissionBpsPerSide == 15.0);
+  const double price = 1000000.0;   // the same wire price on both books
+  assert(std::fabs(us.commAt(price) - 2000.0) < 1e-9 && std::fabs(fx.commAt(price) - 35.0) < 1e-9);
+  assert(us.commAt(price) != fx.commAt(price) && "a US stock and an FX pair must not pay the same commission");
+  assert(us.slipAt(price) == 50 && fx.slipAt(price) == 50);
+  // the FLAT term does not move with price; the bps term does — the whole
+  // reason a class row carries both.
+  assert(std::fabs(us.commAt(2 * price) - 2000.0) < 1e-9);
+  assert(std::fabs(fx.commAt(2 * price) - 70.0) < 1e-9);
+  // COMMISSION IS NOT QUANTISED (checker finding 4): a sub-wire-unit
+  // commission still bites instead of rounding to a free trade.
+  ShadowSim cheapSim; cheapSim.costs.fallbackClass = "crypto";
+  cheapSim.costs.classes["crypto"] = ShadowCost{0, 0.5, 0, 0.5};
+  ShadowBook cheap(cheapSim, 64, 1, "h");
+  const double dogePrice = 6851.0;   // DOGEUSD at 0.06851, in wire units
+  assert(cheap.commAt(dogePrice) > 0.34 && cheap.commAt(dogePrice) < 0.35);
+  // SLIPPAGE must shift an integer price, so it rounds — AWAY FROM ZERO, so a
+  // non-zero slippage is never a free fill on a cheap symbol.
+  assert(cheap.slipAt(dogePrice) == 1);
+  assert(wireCostInt(0, 0.5, dogePrice) == 1 && costExact(0, 0.5, dogePrice) < 0.35);
+  assert(wireCostInt(0, 0, dogePrice) == 0 && "a zero cost stays zero");
+  // the global absolute fields still add on top of the class row
+  ShadowSim plus = sim; plus.commissionPerSide = 7; plus.slippage = 3;
+  ShadowBook both(plus, 64, 22, "h");
+  assert(std::fabs(both.commAt(price) - 42.0) < 1e-9 && both.slipAt(price) == 53);
+  // no schedule at all → the old behaviour, exactly
+  ShadowSim bare;
+  ShadowBook flat(bare, 64, 11, "h");
+  assert(flat.costClass().empty() && flat.commAt(price) == 0 && flat.slipAt(price) == 0);
+  std::puts("test_tick_shadow: per-class costs differ by symbol, and a cheap symbol is not free");
+}
+
+// ROUND-TWO: the COST SCREEN must see the per-class commission. Removing the
+// commission term from `offer`'s cost used to change nothing any test could
+// see — and the screen is the whole mechanism behind PR-L's headline finding,
+// that an HK-stock signal at a 3R target cannot clear a 31 bps round trip.
+static void test_cost_screen_uses_the_class_commission() {
+  ShadowSim sim;
+  sim.targetR = 3; sim.minTargetToCost = 3;
+  sim.costs.classes["index_cfd"] = ShadowCost{0, 0, 0, 0.5};
+  sim.costs.classes["stock_hk"] = ShadowCost{0, 15.0, 0, 0.5};
+  sim.costs.classes["stock_us"] = ShadowCost{2000, 0, 0, 0.5};
+  sim.costs.fallbackClass = "stock_hk";
+  sim.costs.symbolClass[1] = "index_cfd";
+  sim.costs.symbolClass[2] = "stock_hk";
+  sim.costs.symbolClass[3] = "stock_us";
+  // one quote, one stop distance, three books. NAS100-scale price, 5-point stop.
+  TickSignal sg; sg.side = "BUY"; sg.seq = 5; sg.recvMs = 1000;
+  sg.bid = 2914200; sg.ask = 2914300; sg.stopDistance = 500;
+  ShadowBook cheap(sim, 64, 1, "h"), dear(sim, 64, 2, "h"), flatFee(sim, 64, 3, "h");
+  assert(cheap.offer(sg) && "index CFD: spread-only, a 3R target clears the screen");
+  assert(!dear.offer(sg) && dear.rejected().cost == 1 && "HK stock at 15 bps per side cannot clear a 3R target");
+  assert(!flatFee.offer(sg) && flatFee.rejected().cost == 1 && "a flat $0.02/share on a 29,142-point index is refused too");
+  // and the refusal is the COMMISSION, not the spread: the same book with the
+  // commission removed from its class accepts the very same signal
+  ShadowSim noComm = sim;
+  noComm.costs.classes["stock_hk"] = ShadowCost{0, 0, 0, 0.5};
+  ShadowBook freed(noComm, 64, 2, "h");
+  assert(freed.offer(sg) && "with the class commission gone the same signal clears — so the screen reads it");
+  std::puts("test_tick_shadow: the cost screen reads the per-class commission");
 }
 
 static void test_agrees_with_the_replayer() {
@@ -97,6 +194,13 @@ static void test_agrees_with_the_replayer() {
       assert(std::fabs(g.grossR - w.get("grossR").asNumber(0)) < 1e-9);
       assert(std::fabs(g.netR - w.get("netR").asNumber(0)) < 1e-9);
       assert(g.symbolId == 7 && g.profileHash == hash);
+      // PR-L: the cost model the trade was charged travels ON the trade, and
+      // must be the replayer's for this case — not "close enough".
+      assert(g.costClass == w.get("costClass").asString());
+      assert(std::fabs(g.commissionWirePerSide - w.get("commissionWirePerSide").asNumber(0)) < 1e-12);
+      assert(std::fabs(g.commissionBpsPerSide - w.get("commissionBpsPerSide").asNumber(0)) < 1e-12);
+      assert(std::fabs(g.slippageWirePerSide - w.get("slippageWirePerSide").asNumber(0)) < 1e-12);
+      assert(std::fabs(g.slippageBpsPerSide - w.get("slippageBpsPerSide").asNumber(0)) < 1e-12);
     }
     assert(book.open().has_value() == cs.get("openAtEnd").asBool(false));
     assert(book.rejected().cost == static_cast<uint64_t>(cs.get("rejected").get("cost").asNumber(0)));
@@ -174,6 +278,8 @@ static void test_ledger_cursor_and_threads() {
 
 int main() {
   test_agrees_with_the_replayer();
+  test_per_class_costs_differ_by_symbol();
+  test_cost_screen_uses_the_class_commission();
   test_cost_screen_and_busy_book();
   test_reset_marks_never_drops();
   test_ledger_cursor_and_threads();

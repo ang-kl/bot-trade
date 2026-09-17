@@ -30,7 +30,12 @@
      "holdEvents": 107,
      "holdMs": 5350,
      "grossR": -1,
-     "netR": -1
+     "netR": -1,
+     "costClass": "",
+     "commissionWirePerSide": 0,
+     "commissionBpsPerSide": 0,
+     "slippageWirePerSide": 0,
+     "slippageBpsPerSide": 0
     }
    ],
    "openAtEnd": true
@@ -64,7 +69,12 @@
      "holdEvents": 40,
      "holdMs": 2000,
      "grossR": -0.15,
-     "netR": -0.2
+     "netR": -0.2,
+     "costClass": "",
+     "commissionWirePerSide": 2,
+     "commissionBpsPerSide": 0,
+     "slippageWirePerSide": 1,
+     "slippageBpsPerSide": 0
     },
     {
      "side": "SELL",
@@ -80,7 +90,186 @@
      "holdEvents": 40,
      "holdMs": 2050,
      "grossR": 1.0189,
-     "netR": 0.9434
+     "netR": 0.9434,
+     "costClass": "",
+     "commissionWirePerSide": 2,
+     "commissionBpsPerSide": 0,
+     "slippageWirePerSide": 1,
+     "slippageBpsPerSide": 0
+    }
+   ],
+   "openAtEnd": false
+  },
+  {
+   "sim": {
+    "latencyMs": 250,
+    "slippage": 0,
+    "commissionPerSide": 0,
+    "targetR": 3,
+    "minTargetToCost": 1,
+    "maxHoldEvents": 40,
+    "maxHoldMs": 21600000,
+    "costs": {
+     "fallbackClass": "stock_hk",
+     "classes": {
+      "stock_us": {
+       "commissionWirePerSide": 2000,
+       "commissionBpsPerSide": 0,
+       "slippageWirePerSide": 0,
+       "slippageBpsPerSide": 0.5
+      },
+      "stock_hk": {
+       "commissionWirePerSide": 0,
+       "commissionBpsPerSide": 15,
+       "slippageWirePerSide": 0,
+       "slippageBpsPerSide": 0.5
+      },
+      "fx": {
+       "commissionWirePerSide": 0,
+       "commissionBpsPerSide": 0.35,
+       "slippageWirePerSide": 0,
+       "slippageBpsPerSide": 0.5
+      }
+     },
+     "symbolClass": {
+      "7": "fx"
+     }
+    },
+    "costClass": "fx"
+   },
+   "rejected": {
+    "cost": 0,
+    "noFill": 0
+   },
+   "trades": [
+    {
+     "side": "BUY",
+     "signalSeq": 118,
+     "entrySeq": 123,
+     "exitSeq": 163,
+     "entry": 100094,
+     "exit": 100074,
+     "stop": 100014,
+     "target": 100334,
+     "stopDistance": 80,
+     "reason": "hold_events",
+     "holdEvents": 40,
+     "holdMs": 2000,
+     "grossR": -0.25,
+     "netR": -0.3376,
+     "costClass": "fx",
+     "commissionWirePerSide": 0,
+     "commissionBpsPerSide": 0.35,
+     "slippageWirePerSide": 0,
+     "slippageBpsPerSide": 0.5
+    },
+    {
+     "side": "SELL",
+     "signalSeq": 284,
+     "entrySeq": 289,
+     "exitSeq": 330,
+     "entry": 99933,
+     "exit": 99887,
+     "stop": 99986,
+     "target": 99774,
+     "stopDistance": 53,
+     "reason": "hold_events",
+     "holdEvents": 40,
+     "holdMs": 2050,
+     "grossR": 0.8679,
+     "netR": 0.736,
+     "costClass": "fx",
+     "commissionWirePerSide": 0,
+     "commissionBpsPerSide": 0.35,
+     "slippageWirePerSide": 0,
+     "slippageBpsPerSide": 0.5
+    }
+   ],
+   "openAtEnd": false
+  },
+  {
+   "sim": {
+    "latencyMs": 250,
+    "slippage": 0,
+    "commissionPerSide": 0,
+    "targetR": 3,
+    "minTargetToCost": 1,
+    "maxHoldEvents": 40,
+    "maxHoldMs": 21600000,
+    "costClass": "fx",
+    "costs": {
+     "fallbackClass": "stock_hk",
+     "classes": {
+      "stock_us": {
+       "commissionWirePerSide": 2000,
+       "commissionBpsPerSide": 0,
+       "slippageWirePerSide": 0,
+       "slippageBpsPerSide": 0.5
+      },
+      "stock_hk": {
+       "commissionWirePerSide": 0,
+       "commissionBpsPerSide": 15,
+       "slippageWirePerSide": 0,
+       "slippageBpsPerSide": 0.5
+      },
+      "fx": {
+       "commissionWirePerSide": 3,
+       "commissionBpsPerSide": 0.2,
+       "slippageWirePerSide": 1,
+       "slippageBpsPerSide": 0.5
+      }
+     },
+     "symbolClass": {
+      "7": "fx"
+     }
+    }
+   },
+   "rejected": {
+    "cost": 0,
+    "noFill": 0
+   },
+   "trades": [
+    {
+     "side": "BUY",
+     "signalSeq": 118,
+     "entrySeq": 123,
+     "exitSeq": 163,
+     "entry": 100095,
+     "exit": 100073,
+     "stop": 100015,
+     "target": 100335,
+     "stopDistance": 80,
+     "reason": "hold_events",
+     "holdEvents": 40,
+     "holdMs": 2000,
+     "grossR": -0.275,
+     "netR": -0.4,
+     "costClass": "fx",
+     "commissionWirePerSide": 3,
+     "commissionBpsPerSide": 0.2,
+     "slippageWirePerSide": 1,
+     "slippageBpsPerSide": 0.5
+    },
+    {
+     "side": "SELL",
+     "signalSeq": 284,
+     "entrySeq": 289,
+     "exitSeq": 330,
+     "entry": 99932,
+     "exit": 99888,
+     "stop": 99985,
+     "target": 99773,
+     "stopDistance": 53,
+     "reason": "hold_events",
+     "holdEvents": 40,
+     "holdMs": 2050,
+     "grossR": 0.8302,
+     "netR": 0.6416,
+     "costClass": "fx",
+     "commissionWirePerSide": 3,
+     "commissionBpsPerSide": 0.2,
+     "slippageWirePerSide": 1,
+     "slippageBpsPerSide": 0.5
     }
    ],
    "openAtEnd": false
