@@ -2549,6 +2549,21 @@ export default function stateRouter(db) {
   })
   // P6a: the shadow portfolio per side and profile — the sidecar's closed
   // shadow trades in R, each account's projection with its own risk budget.
+  // POSITION HISTORY (owner, 17-09-2026): the closed-position record, and —
+  // just as importantly — what could NOT be recorded. `missingFields` is
+  // ranked descending, so the first entry names what this system most often
+  // fails to record about its own trades. A view that showed only the clean
+  // table would be the reporting defect CLAUDE.md keeps finding: healthy
+  // because the thing it measures never reached it.
+  router.get('/position-history', async (req, res) => {
+    try {
+      const { positionHistoryView } = await import('../services/position-history.js')
+      const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100))
+      res.json(positionHistoryView(db, { limit, accountId: req.query.account ?? null }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   router.get('/tick-shadow', async (_req, res) => {
     try {
       const { tickShadowView } = await import('../services/tick-shadow.js')

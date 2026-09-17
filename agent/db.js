@@ -1696,6 +1696,111 @@ export function initDB(dbPath) {
   END;
   `);
 
+  // ---------------------------------------------------------------------------
+  // POSITION HISTORY (owner, 17-09-2026): one complete record per CLOSED
+  // position, joining what the bot decided, what it did while the position
+  // was open, and what the broker finally reported — so "what worked and what
+  // did not" can be answered from this repository instead of by downloading a
+  // statement per account.
+  //
+  // WHY A NEW TABLE RATHER THAN MORE COLUMNS ON `trades`. Every existing
+  // reader of `trades` (perf-ledger, edge-health, the metrics snapshot, the
+  // lessons tuner) counts rows without filtering on source — the same reason
+  // `broker_deals` is kept separate. This table is derived and additive: it
+  // is rebuilt from its sources and nothing keys risk off it.
+  //
+  // COMPLETENESS IS A GATE, NOT A COERCION (the owner's rule: no null field).
+  // A record missing any required field does NOT land here with blanks — it
+  // goes to `position_history_incomplete` with `missing_json` naming every
+  // field that was absent and why the gate refused. Two streams, so a query
+  // over this table is a query over records that are actually whole, and the
+  // refused ones stay visible instead of being silently dropped or filled in.
+  //
+  // `verification_state` is cpp-verify's answer, never ours:
+  //   unverified — not checked yet, or the broker fetch was incomplete
+  //   verified   — every field agreed with the broker's own deals
+  //   disputed   — at least one field disagreed; `disputes_json` names which
+  //   absent     — the broker reports no such position in the window
+  // It is written only by the verifier's reply, so a record cannot certify
+  // itself. Nothing here is recomputed from a price move: the broker's
+  // figures are copied.
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS position_history (
+    account_id          TEXT NOT NULL,
+    ctrader_position_id TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    symbol_id           INTEGER,
+    trade_id            INTEGER,
+
+    -- WHAT THE BOT DECIDED, at entry
+    direction           TEXT NOT NULL,
+    direction_reason    TEXT NOT NULL,
+    strategy            TEXT NOT NULL,
+    family              TEXT,
+    timeframe           TEXT,
+    origin              TEXT NOT NULL,
+    risk_event_id       INTEGER,
+    conviction          REAL,
+    planned_entry       REAL NOT NULL,
+    planned_sl          REAL NOT NULL,
+    planned_tp          REAL,
+    planned_r           REAL,
+    risk_dist           REAL NOT NULL,
+    planned_hold_min    INTEGER,
+    exit_rule           TEXT,
+
+    -- WHAT THE BROKER REPORTED (copied, never recomputed)
+    entry_price         REAL NOT NULL,
+    exit_price          REAL NOT NULL,
+    volume              REAL NOT NULL,
+    opened_at_ms        INTEGER NOT NULL,
+    closed_at_ms        INTEGER NOT NULL,
+    hold_ms             INTEGER NOT NULL,
+    gross_pnl           REAL NOT NULL,
+    commission          REAL NOT NULL,
+    swap                REAL NOT NULL,
+    net_pnl             REAL NOT NULL,
+    realised_r          REAL NOT NULL,
+
+    -- WHAT HAPPENED WHILE IT WAS OPEN
+    close_reason        TEXT NOT NULL,
+    sl_moves            INTEGER NOT NULL,
+    tp_moves            INTEGER NOT NULL,
+    scale_outs          INTEGER NOT NULL,
+    events_json         TEXT NOT NULL,
+
+    -- PROVENANCE AND VERIFICATION
+    sources_json        TEXT NOT NULL,   -- which table each group came from
+    verification_state  TEXT NOT NULL DEFAULT 'unverified'
+                          CHECK(verification_state IN ('unverified','verified','disputed','absent')),
+    verified_at         TEXT,
+    verifier_host       TEXT,
+    disputes_json       TEXT,
+
+    built_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (account_id, ctrader_position_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_pos_hist_closed ON position_history(closed_at_ms DESC);
+  CREATE INDEX IF NOT EXISTS idx_pos_hist_verify ON position_history(verification_state, closed_at_ms DESC);
+  CREATE INDEX IF NOT EXISTS idx_pos_hist_strategy ON position_history(strategy, closed_at_ms DESC);
+
+  -- The refused stream. Same identity, no pretence of completeness: whatever
+  -- was built is kept as JSON so the gap is inspectable, and missing_json
+  -- says exactly which required fields were absent. A record here is a
+  -- MEASUREMENT of what this system cannot yet record about its own trades.
+  CREATE TABLE IF NOT EXISTS position_history_incomplete (
+    account_id          TEXT NOT NULL,
+    ctrader_position_id TEXT NOT NULL,
+    symbol              TEXT,
+    closed_at_ms        INTEGER,
+    missing_json        TEXT NOT NULL,
+    partial_json        TEXT NOT NULL,
+    built_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (account_id, ctrader_position_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_pos_hist_inc_closed ON position_history_incomplete(closed_at_ms DESC);
+  `);
+
   // STOP BEYOND ENTRY ⇒ be_moved (02-09-2026). be_moved was set only by the
   // explicit break-even step (position-manager rule 5, trade-guard's BE) —
   // a TRAIL that carried the stop through entry left the flag at 0. Measured
