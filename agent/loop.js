@@ -5439,6 +5439,11 @@ async function runLoop(db) {
       // Phase-flag tracer rows: tiny, but unbounded is unbounded. 90 days
       // matches risk_events — flips older than that are history, not evidence.
       try { db.prepare("DELETE FROM phase_flag_trace WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
+      // PR-S arming decisions, same 90 days and the same reasoning. Kept
+      // deliberately LONGER than a log window, because the whole point of the
+      // ledger is to answer a question weeks after the disarm — the 17-09
+      // investigation failed at roughly one hour.
+      try { db.prepare("DELETE FROM arming_log WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
       // RETURN THE FREED PAGES TO THE FILESYSTEM.
       //
       // Every prune above works, and every one of them has worked for months.

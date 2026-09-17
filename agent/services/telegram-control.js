@@ -39,6 +39,7 @@ import { getState, setState } from '../db.js'
 import { loadGlobalGuards, evaluateGlobalGuards } from './global-guards.js'
 import { setPhaseFlag } from './phase-audit.js'
 import * as notify from './telegram-digest.js'
+import { recordArmingChange } from './arming-log.js'
 
 const TG_API = 'https://api.telegram.org'
 
@@ -382,8 +383,15 @@ export async function pollTelegramCommands(db, deps = {}) {
             const [, strat, sym, tf] = parts
             const read = (k) => { try { return JSON.parse(getState(db, k) || 'null') } catch { return null } }
             const enabled = new Set(read('enabled_strategies_json') || ['fib_618_fade'])
+            // PR-S: the Telegram arm is an arming change like any other.
+            const wasArmed = enabled.has(strat)
             enabled.add(strat)
             setState(db, 'enabled_strategies_json', JSON.stringify([...enabled]))
+            recordArmingChange(db, {
+              scope: null, kind: 'strategy', key: strat, stage: 'trade', from: wasArmed, to: true,
+              actor: 'telegram', reason: `armed from the Telegram inline button on ${sym} ${tf}`,
+              evidence: { symbol: sym, timeframe: tf, via: 'callback_query' },
+            })
             const matrix = read('autotrade_matrix_json') || {}
             matrix[sym.toUpperCase()] = [...new Set([...(matrix[sym.toUpperCase()] || []), tf])]
             setState(db, 'autotrade_matrix_json', JSON.stringify(matrix))
@@ -509,8 +517,15 @@ export async function pollTelegramCommands(db, deps = {}) {
         } else {
           const read = (k) => { try { return JSON.parse(getState(db, k) || 'null') } catch { return null } }
           const enabled = new Set(read('enabled_strategies_json') || ['fib_618_fade'])
+          // PR-S: the Telegram arm is an arming change like any other.
+          const wasArmed = enabled.has(strat)
           enabled.add(strat)
           setState(db, 'enabled_strategies_json', JSON.stringify([...enabled]))
+          recordArmingChange(db, {
+            scope: null, kind: 'strategy', key: strat, stage: 'trade', from: wasArmed, to: true,
+            actor: 'telegram', reason: `/arm ${strat} ${sym.toUpperCase()} ${tf}`,
+            evidence: { symbol: sym.toUpperCase(), timeframe: tf, via: 'command' },
+          })
           const matrix = read('autotrade_matrix_json') || {}
           matrix[sym.toUpperCase()] = [...new Set([...(matrix[sym.toUpperCase()] || []), tf])]
           setState(db, 'autotrade_matrix_json', JSON.stringify(matrix))

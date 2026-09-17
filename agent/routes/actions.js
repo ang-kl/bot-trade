@@ -3116,21 +3116,27 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/cup-handle-toggle', (req, res) => {
     const on = !!req.body?.on
+    // CAPTURED BEFORE THE FLAG WRITE (checker, 17-09-2026). The first version
+    // read `was` from the parsed list further down — but `enabledStrategies`
+    // ALSO honours `cup_handle_enabled`, and that flag is set on the next
+    // line, so `was` was not the value any reader had seen. Measured through
+    // the real router: a genuine disarm wrote NO row, and a no-op wrote a
+    // fabricated arm row. This reads the same source every other caller reads.
+    const wasOn = enabledStrategies(db, getState).some(s => s.key === 'cup_handle')
     setState(db, 'cup_handle_enabled', on ? 'true' : 'false')
+    recordArmingChange(db, {
+      scope: null, kind: 'strategy', key: 'cup_handle', stage: 'trade', from: wasOn, to: on,
+      actor: 'owner_route', reason: 'POST /actions/cup-handle-toggle',
+      evidence: { route: '/actions/cup-handle-toggle' },
+    })
     // Keep the registry-era state consistent so the two switches never fight.
     try {
       const cur = JSON.parse(getState(db, 'enabled_strategies_json') || 'null')
       if (Array.isArray(cur)) {
         const keys = new Set(cur.filter(k => STRATEGY_KEYS.includes(k)))
-        const was = keys.has('cup_handle')
         if (on) keys.add('cup_handle'); else keys.delete('cup_handle')
         // fib is a normal toggle now — do not force it back in
         setState(db, 'enabled_strategies_json', JSON.stringify(STRATEGY_KEYS.filter(k => keys.has(k))))
-        recordArmingChange(db, {
-          scope: null, kind: 'strategy', key: 'cup_handle', stage: 'trade', from: was, to: on,
-          actor: 'owner_route', reason: 'POST /actions/cup-handle-toggle',
-          evidence: { route: '/actions/cup-handle-toggle' },
-        })
       }
     } catch { /* corrupt list — leave it; enabledStrategies() falls back safely */ }
     res.json({ on: getState(db, 'cup_handle_enabled') === 'true' })
@@ -3624,7 +3630,18 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/fib-rsi-filter', (req, res) => {
     const on = req.body?.on === true
+    // PR-S (checker, 17-09-2026): these are the SAME filter trade cells the
+    // adaptive breaker records when it arms one. Leaving the owner's own
+    // toggle unrecorded would have made a 'disagrees' verdict on a filter cell
+    // routine — training a reader to ignore the field that exists to catch an
+    // unrecorded writer.
+    const wasOnRSI = getState(db, 'fib_rsi_filter') === 'true'
     setState(db, 'fib_rsi_filter', on ? 'true' : 'false')
+    recordArmingChange(db, {
+      scope: null, kind: 'filter', key: 'rsi', stage: 'trade', from: wasOnRSI, to: on,
+      actor: 'owner_route', reason: 'POST /actions/fib-rsi-filter',
+      evidence: { route: '/actions/fib-rsi-filter', stateKey: 'fib_rsi_filter' },
+    })
     console.log(`[actions] fib RSI filter ${on ? 'enabled' : 'disabled'}`)
     res.json({ ok: true, on })
   })
@@ -3744,7 +3761,18 @@ export default function actionsRouter(db, deps = {}) {
   // POST /actions/fib-vwap-filter — leg-anchored VWAP confluence gate.
   router.post('/fib-vwap-filter', (req, res) => {
     const on = req.body?.on === true
+    // PR-S (checker, 17-09-2026): these are the SAME filter trade cells the
+    // adaptive breaker records when it arms one. Leaving the owner's own
+    // toggle unrecorded would have made a 'disagrees' verdict on a filter cell
+    // routine — training a reader to ignore the field that exists to catch an
+    // unrecorded writer.
+    const wasOnVWAP = getState(db, 'fib_vwap_filter') === 'true'
     setState(db, 'fib_vwap_filter', on ? 'true' : 'false')
+    recordArmingChange(db, {
+      scope: null, kind: 'filter', key: 'vwap', stage: 'trade', from: wasOnVWAP, to: on,
+      actor: 'owner_route', reason: 'POST /actions/fib-vwap-filter',
+      evidence: { route: '/actions/fib-vwap-filter', stateKey: 'fib_vwap_filter' },
+    })
     console.log(`[actions] fib VWAP filter ${on ? 'enabled' : 'disabled'}`)
     res.json({ ok: true, on })
   })
@@ -3752,7 +3780,18 @@ export default function actionsRouter(db, deps = {}) {
   // POST /actions/fib-fvg-filter — unfilled fair-value-gap confluence gate.
   router.post('/fib-fvg-filter', (req, res) => {
     const on = req.body?.on === true
+    // PR-S (checker, 17-09-2026): these are the SAME filter trade cells the
+    // adaptive breaker records when it arms one. Leaving the owner's own
+    // toggle unrecorded would have made a 'disagrees' verdict on a filter cell
+    // routine — training a reader to ignore the field that exists to catch an
+    // unrecorded writer.
+    const wasOnFVG = getState(db, 'fib_fvg_filter') === 'true'
     setState(db, 'fib_fvg_filter', on ? 'true' : 'false')
+    recordArmingChange(db, {
+      scope: null, kind: 'filter', key: 'fvg', stage: 'trade', from: wasOnFVG, to: on,
+      actor: 'owner_route', reason: 'POST /actions/fib-fvg-filter',
+      evidence: { route: '/actions/fib-fvg-filter', stateKey: 'fib_fvg_filter' },
+    })
     console.log(`[actions] fib FVG filter ${on ? 'enabled' : 'disabled'}`)
     res.json({ ok: true, on })
   })

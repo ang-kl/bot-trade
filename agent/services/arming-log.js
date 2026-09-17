@@ -14,11 +14,17 @@
 // behind. Either way the panel and the mechanism disagree, and the mechanism
 // is the one that acted.
 //
-// WHAT IT RECORDS. `stage-matrix.js writeCell` is the single chokepoint for
-// every per-account overlay write, and the global trade branch is the only
-// other writer. Both now call `recordArmingChange`, which writes one row
-// carrying the scope, the cell, the value it moved FROM and TO, the actor that
-// moved it, and that actor's stated reason with its own figures.
+// WHAT IT RECORDS. `stage-matrix.js writeCell` is the chokepoint for most
+// per-account overlay writes, but NOT all of them — an earlier draft of this
+// comment said "the single chokepoint … and the global trade branch is the
+// only other writer", and the checker counted eleven writers (17-09-2026).
+// Every one of them now calls `recordArmingChange`: writeCell, both global
+// branches of setStage, the held path and the set path of
+// disarmStrategyEverywhere, BOTH branches of unpinTradeStageEverywhere,
+// migrateTradeOverlay, the autopilot's own list write, the two route list
+// writers, the three legacy filter routes, the two Telegram arm paths and the
+// rsi2 boot seed. `agent/services/arming-log.test.js` holds the census and
+// fails when a new `enabled_strategies_json` writer appears without one.
 //
 // FOUR RULES, each of which a test pins:
 //
@@ -26,7 +32,10 @@
 //     they are not changing, every cycle and every boot. Recording those would
 //     bury the four writes a year that matter under tens of thousands that do
 //     not — the ledger would exist and be useless, which is worse than absent
-//     because it looks like evidence. `from === to` writes nothing.
+//     because it looks like evidence. `from === to` writes nothing, AND a
+//     `held` row that repeats the last held row on the same cell writes
+//     nothing: the held exemption below reopened this exact door, measured at
+//     ~10,000 rows/day/strategy before it was closed.
 //
 //  2. A HELD DECISION IS ALSO A REASON. "Why is this still armed" has the same
 //     standing as "why is this off": an owner pin that blocked a disarm is
@@ -53,7 +62,13 @@ export const ARMING_ACTORS = Object.freeze([
   'strategy_autopilot', // services/strategy-autopilot.js — nightly backtest arming
   'boot_seed',          // seedStrategyPinsFromConfig and friends — the repo's declared pins
   'owner_route',        // POST /actions/stage-matrix, /actions/strategies — a human
-  'migration',          // migrateTradeOverlay — a shape change, never an intent change
+  // migrateTradeOverlay. An earlier comment here called this "a shape change,
+  // never an intent change" — false, and the checker proved it (17-09-2026):
+  // converting a wholesale list into explicit cells creates HAND PINS, and a
+  // hand pin is what exempts a cell from the breaker and the watchdog. The
+  // effective arming does not move; the authority over it does.
+  'migration',
+  'telegram',           // services/telegram-control.js — /arm and the inline arm button
 ])
 
 /** Cell values as the ledger stores them: a cell that was never written is 'unset', not 'false'. */
@@ -74,9 +89,38 @@ export function recordArmingChange(db, { scope = null, kind, key, stage, from, t
   const fromV = asValue(from)
   const toV = asValue(to)
   // RULE 1. A rewrite that changes nothing is not a decision. `held` rows are
-  // exempt: they record a decision NOT to change, which by definition has
-  // from === to and is the whole point of rule 2.
+  // exempt from the from===to test: they record a decision NOT to change,
+  // which by definition has from === to and is the whole point of rule 2.
   if (decision !== 'held' && fromV === toV) return null
+  const evidenceJson = evidence == null ? null : JSON.stringify(evidence)
+  // ...BUT THE HELD EXEMPTION REOPENED THE DOOR RULE 1 EXISTS TO SHUT
+  // (checker, 17-09-2026, measured). The edge watchdog stamps its once-per-
+  // trade marker only AFTER a real disarm (edge-watchdog.js: `if
+  // (scopes.length === 0) continue` sits above the stamp). Once a strategy is
+  // off globally and every remaining scope is a hand pin, nothing changes,
+  // nothing is stamped, and the block re-runs every loop cycle — one held row
+  // per pinned account per cycle, measured at 63 rows from 21 cycles and
+  // projecting to ~10,000 rows/day/strategy on the 1-minute production loop.
+  // The header above promised exactly this would not happen; it was wrong.
+  //
+  // A held DECISION is worth recording. Held STATE is not: the second
+  // identical held row carries no information the first does not. So a held
+  // row is written only when it differs from the last held row on this cell —
+  // a new actor, a changed reason, or changed evidence (i.e. the verdict
+  // moved). The steady state writes one row and then nothing.
+  if (decision === 'held') {
+    try {
+      const last = db.prepare(`
+        SELECT actor, reason, evidence_json FROM arming_log
+        WHERE scope = ? AND kind = ? AND key = ? AND stage = ? AND decision = 'held'
+        ORDER BY id DESC LIMIT 1
+      `).get(scope == null ? 'global' : String(scope), String(kind), String(key), String(stage))
+      if (last
+        && last.actor === String(actor || 'unattributed')
+        && (last.reason ?? null) === (reason == null ? null : String(reason))
+        && (last.evidence_json ?? null) === evidenceJson) return null
+    } catch { /* table absent — fall through to the insert, which counts the failure */ }
+  }
   try {
     const r = db.prepare(`
       INSERT INTO arming_log (scope, kind, key, stage, from_value, to_value, decision, actor, reason, evidence_json)
@@ -87,7 +131,7 @@ export function recordArmingChange(db, { scope = null, kind, key, stage, from, t
       fromV, toV, String(decision),
       String(actor || 'unattributed'),
       reason == null ? null : String(reason),
-      evidence == null ? null : JSON.stringify(evidence),
+      evidenceJson,
     )
     return Number(r.lastInsertRowid)
   } catch {
@@ -140,12 +184,30 @@ function row(r) {
  *                  the ledger detecting its own blind spot.
  */
 export function whyCell(db, { scope = null, kind = 'strategy', key, stage = 'trade', current = undefined } = {}) {
-  const rows = armingHistory(db, { scope, kind, key, stage, limit: 50 })
-  const lastSet = rows.find(r => r.decision !== 'held') || null
-  const lastHeld = rows.find(r => r.decision === 'held') || null
+  // SELECTED IN SQL, NOT FILTERED FROM A WINDOW (checker, 17-09-2026). This
+  // read the newest 50 rows and picked the first non-held one out of them, so
+  // 50 held rows on the same cell pushed the `set` row that explains it out of
+  // the window and the answer became 'unrecorded' — for a cell the ledger HAD
+  // recorded, with a note asserting no row existed. A confident wrong answer
+  // to the one question this module exists to answer.
+  const pick = (heldOnly) => {
+    try {
+      const r = db.prepare(`
+        SELECT * FROM arming_log
+        WHERE scope = ? AND kind = ? AND key = ? AND stage = ? AND decision ${heldOnly ? '=' : '!='} 'held'
+        ORDER BY id DESC LIMIT 1
+      `).get(scope == null ? 'global' : String(scope), String(kind), String(key), String(stage))
+      return r ? row(r) : null
+    } catch { return null }
+  }
+  const lastSet = pick(false)
+  const lastHeld = pick(true)
   const cur = asValue(current)
+  // `current` omitted means nobody checked the cell, so no verdict about the
+  // cell can be earned. Saying 'recorded' there would be a verdict nothing
+  // verified — the caller gets 'unverified' and the row, and can decide.
   let verdict = 'unrecorded'
-  if (lastSet) verdict = lastSet.to === cur || current === undefined ? 'recorded' : 'disagrees'
+  if (lastSet) verdict = current === undefined ? 'unverified' : (lastSet.to === cur ? 'recorded' : 'disagrees')
   return {
     scope: scope == null ? 'global' : String(scope), kind, key, stage,
     current: cur, verdict, lastSet, lastHeld,
@@ -153,7 +215,9 @@ export function whyCell(db, { scope = null, kind = 'strategy', key, stage = 'tra
       ? 'no ledger row explains this cell — it was written before the arming ledger existed, or by a path that does not record. This is not evidence that nobody changed it.'
       : verdict === 'disagrees'
         ? 'the cell does not hold the value the last recorded decision set — something wrote it without recording, and that writer is the defect to find'
-        : null,
+        : verdict === 'unverified'
+          ? 'a decision is on record, but the caller did not supply the cell\'s current value, so nothing here confirms the cell still holds it'
+          : null,
   }
 }
 

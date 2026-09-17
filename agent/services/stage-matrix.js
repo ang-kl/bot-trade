@@ -170,6 +170,14 @@ export function unpinTradeStageEverywhere(db, { getState, setState }, key, { act
     const legacy = readJson(db, getState, acctEnabledKey(acct))
     if (Array.isArray(legacy) && legacy.includes(key)) {
       setState(db, acctEnabledKey(acct), JSON.stringify(legacy.filter(k => k !== key)))
+      // PR-S (checker, 17-09-2026): the overlay branch above recorded and this
+      // one did not — an un-migrated account's arming went from true to
+      // following-the-global with no row, from a path BOTH owner kill switches
+      // reach. Measured: armedTradeKeys true before, false after, ledger empty.
+      recordArmingChange(db, {
+        scope: acct, kind: 'strategy', key, stage: 'trade', from: true, to: undefined,
+        actor, reason: `${reason} (legacy wholesale list)`,
+      })
       changed = true
     }
     if (changed) touched.push(acct)
@@ -259,13 +267,32 @@ export function migrateTradeOverlay(db, { getState, setState }, accountId) {
   const stored = readJson(db, getState, acctMatrixKey(acct)) || {}
   stored.strategy = stored.strategy || {}
   let pinned = 0
+  const pinnedKeys = []
   for (const key of STRATEGY_KEYS) {
     // An existing explicit cell is the owner's newer word — never overwrite it.
     if (typeof stored.strategy[key]?.trade === 'boolean') continue
     stored.strategy[key] = { ...stored.strategy[key], trade: armed.has(key) }
+    pinnedKeys.push(key)
     pinned++
   }
   setState(db, acctMatrixKey(acct), JSON.stringify(stored))
+  // PR-S (checker, 17-09-2026): this is NOT the no-op the ledger's first draft
+  // assumed. Effective arming does not move — the wholesale list meant the same
+  // thing — but the AUTHORITY over it does: an explicit cell is a hand pin, and
+  // a hand pin is what exempts a cell from the breaker and the watchdog
+  // (`isHandPinned`). Measured: isHandPinned false → true across the migration
+  // with no row. `from` and `to` are the same value on purpose, so `decision:
+  // 'held'` carries it past rule 1 — the row exists to record the change of
+  // authority, which rule 1 cannot see because the boolean did not move.
+  for (const key of pinnedKeys) {
+    recordArmingChange(db, {
+      scope: acct, kind: 'strategy', key, stage: 'trade',
+      from: armed.has(key), to: armed.has(key), decision: 'held',
+      actor: 'migration',
+      reason: 'legacy wholesale list converted to explicit cells — this cell is now a hand pin and is exempt from the breaker and the watchdog',
+      evidence: { migratedFrom: 'acct_enabled_list', nowHandPinned: true },
+    })
+  }
   // Drop the legacy list only AFTER the pins are written, so a crash between
   // the two leaves the account on the old-but-correct path rather than on the
   // global list it was deliberately diverging from.

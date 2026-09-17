@@ -30,6 +30,7 @@ import { getState as dbGetState, setState as dbSetState } from '../db.js'
 import { tfMs } from '../lib/timeframes.js'
 import { enabledStrategies } from './strategies.js'
 import { SEED_BAR } from './edge-bars.js'
+import { recordArmingChange } from './arming-log.js'
 
 export const RSI2_SEED_FLAG = 'rsi2_go_seed_v1'
 export const RSI2_KEY = 'rsi2_reversion'
@@ -120,6 +121,16 @@ export function seedRsi2GoCombos(db, io = {}) {
   }
 
   setState(db, 'enabled_strategies_json', JSON.stringify(enabled))
+  // PR-S: a boot seed that arms a strategy is an arming change. `addedStrategy`
+  // is already the "this seed actually added it" flag, so the ledger row lands
+  // only on the boot that changed something.
+  if (addedStrategy) {
+    recordArmingChange(db, {
+      scope: null, kind: 'strategy', key: 'rsi2_reversion', stage: 'trade', from: false, to: true,
+      actor: 'boot_seed', reason: note || 'rsi2 baseline seed armed rsi2_reversion at boot',
+      evidence: { seed: 'rsi2-seed.js', scope, addedCombos },
+    })
+  }
   if (matrixSeeded) setState(db, 'autotrade_matrix_json', JSON.stringify(matrix))
   setState(db, RSI2_SEED_FLAG, new Date().toISOString())
 

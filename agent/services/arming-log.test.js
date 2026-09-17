@@ -11,7 +11,7 @@ import { join } from 'node:path'
 
 import { initDB, getState, setState } from '../db.js'
 import { recordArmingChange, armingHistory, whyCell, armingLogView, ARMING_ACTORS, _resetArmingWriteFailuresForTests } from './arming-log.js'
-import { setStage, disarmStrategyEverywhere, unpinTradeStageEverywhere, armedTradeKeys } from './stage-matrix.js'
+import { setStage, disarmStrategyEverywhere, unpinTradeStageEverywhere, armedTradeKeys, migrateTradeOverlay } from './stage-matrix.js'
 
 const io = { getState, setState }
 function freshDb() {
@@ -119,6 +119,85 @@ test('an unpin is a change to unset, not to false', () => {
   assert.equal(r.actor, 'owner_route')
 })
 
+// ---------------------------------------------------------------------------
+// The checker's findings (17-09-2026). Each of these went red before its fix.
+// ---------------------------------------------------------------------------
+
+test('B1: a held decision repeated every cycle is recorded ONCE, not every cycle', () => {
+  const db = freshDb()
+  db.prepare('INSERT INTO accounts (account_id, is_live, enabled) VALUES (?, 0, 1)').run('4101')
+  setStage(db, { kind: 'strategy', key: 'rsi2_reversion', stage: 'trade', on: true, accountId: '4101', actor: 'owner_route' }, io)
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: true, accountId: '4101', actor: 'owner_route' }, io)
+
+  // The edge watchdog stamps its once-per-trade marker only after a REAL
+  // disarm, so when every remaining scope is a hand pin the block re-runs every
+  // loop cycle. Measured before the fix: one held row per pinned account per
+  // cycle, ~10,000 rows/day/strategy at the production interval.
+  const opts = { exemptHandPinned: true, actor: 'edge_watchdog', reason: 'no edge: PF 0.49 over 31 closes', evidence: { profitFactor: 0.49, trades: 31 } }
+  for (let i = 0; i < 20; i++) disarmStrategyEverywhere(db, io, 'rsi2_reversion', opts)
+
+  const held = armingHistory(db, { scope: '4101', key: 'rsi2_reversion' }).filter(r => r.decision === 'held')
+  assert.equal(held.length, 1, `20 identical cycles must leave ONE held row, left ${held.length}`)
+
+  // …but a CHANGED verdict is news and is recorded.
+  disarmStrategyEverywhere(db, io, 'rsi2_reversion', { ...opts, reason: 'no edge: PF 0.31 over 44 closes', evidence: { profitFactor: 0.31, trades: 44 } })
+  const after = armingHistory(db, { scope: '4101', key: 'rsi2_reversion' }).filter(r => r.decision === 'held')
+  assert.equal(after.length, 2, 'a moved verdict is a new decision')
+  assert.match(after[0].reason, /PF 0\.31/)
+})
+
+test('B2: held rows can never bury the set row that explains the cell', () => {
+  const db = freshDb()
+  recordArmingChange(db, { scope: '4102', kind: 'strategy', key: 'tsmom_long', stage: 'trade', from: true, to: false, actor: 'adaptive_breaker', reason: 'loss streak 4 >= 3' })
+  // Far more than the 50-row window the first version read. Each is a distinct
+  // held decision (different evidence), so the dedupe above does not hide them.
+  for (let i = 0; i < 80; i++) {
+    recordArmingChange(db, { scope: '4102', kind: 'strategy', key: 'tsmom_long', stage: 'trade', from: true, to: true, decision: 'held', actor: 'edge_watchdog', reason: `cycle ${i}` })
+  }
+  const why = whyCell(db, { scope: '4102', key: 'tsmom_long', current: false })
+  assert.equal(why.verdict, 'recorded', 'the explanation is still found — it is selected in SQL, not filtered from a window')
+  assert.equal(why.lastSet.actor, 'adaptive_breaker')
+  assert.match(why.lastSet.reason, /streak 4/)
+})
+
+test('whyCell without the current value says so rather than claiming a verdict', () => {
+  const db = freshDb()
+  recordArmingChange(db, { scope: '4103', kind: 'strategy', key: 'tsmom_long', stage: 'trade', from: false, to: true, actor: 'owner_route' })
+  const why = whyCell(db, { scope: '4103', key: 'tsmom_long' })
+  assert.equal(why.verdict, 'unverified')
+  assert.match(why.note, /did not supply the cell's current value/)
+})
+
+test('M-a: unpinning an un-migrated account records, and the legacy list is an arming change', () => {
+  const db = freshDb()
+  // An account still on the legacy wholesale list, armed for a strategy the
+  // global list does not carry: effectively armed by the list alone.
+  setState(db, 'acct:4104:enabled_strategies_json', JSON.stringify(['vwap_trend']))
+  setState(db, 'enabled_strategies_json', JSON.stringify(['rsi2_reversion']))
+  assert.equal(armedTradeKeys(db, getState, '4104').has('vwap_trend'), true)
+
+  unpinTradeStageEverywhere(db, io, 'vwap_trend')
+  assert.equal(armedTradeKeys(db, getState, '4104').has('vwap_trend'), false, 'the unpin disarmed it')
+  const rows = armingHistory(db, { scope: '4104', key: 'vwap_trend' })
+  assert.equal(rows.length, 1, 'and the ledger says so — before the fix this branch recorded nothing')
+  assert.equal(rows[0].to, 'unset')
+})
+
+test('M-b: the overlay migration records that the cell became a hand pin', () => {
+  const db = freshDb()
+  setState(db, 'acct:4105:enabled_strategies_json', JSON.stringify(['rsi2_reversion']))
+  // Effective arming does not move across the migration — but the AUTHORITY
+  // does: an explicit cell is a hand pin, and a hand pin outvotes both the
+  // breaker and the watchdog. Rule 1 cannot see it, because the boolean is
+  // unchanged, which is why it is written as a `held` decision.
+  migrateTradeOverlay(db, io, '4105')
+  const rows = armingHistory(db, { scope: '4105', key: 'rsi2_reversion' })
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].actor, 'migration')
+  assert.equal(rows[0].evidence.nowHandPinned, true)
+  assert.match(rows[0].reason, /exempt from the breaker and the watchdog/)
+})
+
 test('the view reports an actor it does not know rather than hiding it', () => {
   const db = freshDb()
   recordArmingChange(db, { scope: null, kind: 'strategy', key: 'vwap_trend', stage: 'trade', from: true, to: false, actor: 'some_new_path' })
@@ -136,21 +215,140 @@ test('the view reports an actor it does not know rather than hiding it', () => {
 // healthy. This test reads the production call sites and fails if any of them
 // stops naming an actor.
 // ---------------------------------------------------------------------------
-const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+// COMMENTS ARE STRIPPED INCLUDING TRAILING ONES (checker, 17-09-2026). The
+// first version only matched line comments that BEGIN a line, so replacing the
+// watchdog's real attribution with `neverZero: true, // actor: 'edge_watchdog'`
+// left it with no actor at all and the suite green — CLAUDE.md failure mode #2,
+// live in the test written to prevent it.
+const stripComments = (s) => s
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+
+/**
+ * The text of ONE call to `fn` starting at `from`, delimited by matching
+ * parentheses.
+ *
+ * WHY NOT A REGEX (checker, 17-09-2026). The first version used
+ * `fn\(...[\s\S]*?actor: 'x'` — an unbounded lazy span. When the intended
+ * `actor:` was deleted the match simply walked forward to the next occurrence
+ * of the same string elsewhere in the file, so deleting the BREAKER'S DISARM
+ * attribution — the exact site whose absence caused the 17-09 investigation —
+ * left all eleven tests green. A pin that survives the mutation it exists to
+ * catch is not a pin.
+ */
+function callBlock(src, fn, from = 0) {
+  const start = src.indexOf(fn + '(', from)
+  if (start === -1) return null
+  // A DECLARATION IS NOT A CALL. `export function disarmStrategyEverywhere(…
+  // actor = 'unattributed' …)` is where the default is DEFINED; treating it as
+  // a call site made the test demand the definition not have a default, which
+  // is the opposite of the intent.
+  if (/\bfunction\s+$/.test(src.slice(Math.max(0, start - 30), start))) {
+    let j = src.indexOf('(', start); let d = 0
+    for (; j < src.length; j++) { if (src[j] === '(') d++; else if (src[j] === ')') { d--; if (d === 0) break } }
+    return callBlock(src, fn, j + 1)
+  }
+  let i = src.indexOf('(', start)
+  let depth = 0
+  for (; i < src.length; i++) {
+    if (src[i] === '(') depth++
+    else if (src[i] === ')') { depth--; if (depth === 0) return { text: src.slice(start, i + 1), end: i + 1 } }
+  }
+  return null
+}
+
+/** Every call to `fn` in `src`, each as its own bounded block. */
+function allCalls(src, fn) {
+  const out = []
+  let from = 0
+  for (;;) {
+    const b = callBlock(src, fn, from)
+    if (!b) return out
+    out.push(b.text)
+    from = b.end
+  }
+}
 
 test('every production caller that can change an arming cell names its actor', () => {
+  // Each row is ONE bounded call that must carry the actor. Deleting the actor
+  // from any of them fails this test and cannot be satisfied by another call
+  // elsewhere in the same file.
   const sites = [
-    ['services/adaptive-breaker.js', /disarmStrategyEverywhere\(db, io, key, \{[\s\S]*?actor: 'adaptive_breaker'/],
-    ['services/adaptive-breaker.js', /setStage\(db, \{[\s\S]*?actor: 'adaptive_breaker'/],
-    ['services/edge-watchdog.js', /disarmStrategyEverywhere\(db, io, key, \{[\s\S]*?actor: 'edge_watchdog'/],
-    ['services/stage-matrix.js', /setStage\(db, \{[\s\S]*?actor: 'boot_seed'/],
-    ['services/strategy-autopilot.js', /recordArmingChange\(db, \{[\s\S]*?actor: 'strategy_autopilot'/],
-    ['routes/actions.js', /setStage\(db, \{[\s\S]*?actor: 'owner_route'/],
+    ['services/adaptive-breaker.js', 'disarmStrategyEverywhere', "actor: 'adaptive_breaker'"],
+    ['services/adaptive-breaker.js', 'setStage', "actor: 'adaptive_breaker'"],
+    ['services/edge-watchdog.js', 'disarmStrategyEverywhere', "actor: 'edge_watchdog'"],
+    ['services/stage-matrix.js', 'setStage', "actor: 'boot_seed'"],
+    ['services/stage-matrix.js', 'recordArmingChange', "actor: 'migration'"],
+    ['services/strategy-autopilot.js', 'recordArmingChange', "actor: 'strategy_autopilot'"],
+    ['services/telegram-control.js', 'recordArmingChange', "actor: 'telegram'"],
+    ['services/rsi2-seed.js', 'recordArmingChange', "actor: 'boot_seed'"],
+    ['routes/actions.js', 'setStage', "actor: 'owner_route'"],
+    ['routes/actions.js', 'recordArmingChange', "actor: 'owner_route'"],
   ]
-  for (const [file, re] of sites) {
+  for (const [file, fn, actor] of sites) {
     const src = stripComments(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))
-    assert.match(src, re, `${file} must name its arming actor`)
+    const calls = allCalls(src, fn)
+    assert.ok(calls.length > 0, `${file}: found no ${fn}( call at all — the scan broke, which would make this test pass on nothing`)
+    assert.ok(calls.some(c => c.includes(actor)), `${file}: no ${fn}( call carries ${actor}`)
   }
+})
+
+test('every call that writes an arming cell carries an actor — none takes the default', () => {
+  // The site list above says "at least one call names the actor". This one is
+  // the complement: NO call may be left without one. Between them, deleting an
+  // actor from any single call site is caught.
+  const FILES = [
+    'services/adaptive-breaker.js', 'services/edge-watchdog.js', 'services/stage-matrix.js',
+    'services/strategy-autopilot.js', 'services/telegram-control.js', 'services/rsi2-seed.js',
+    'routes/actions.js',
+  ]
+  let checked = 0
+  for (const file of FILES) {
+    const src = stripComments(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))
+    for (const fn of ['recordArmingChange', 'disarmStrategyEverywhere']) {
+      for (const call of allCalls(src, fn)) {
+        // Three forms carry an actor and all three count: a literal
+        // (`actor: 'edge_watchdog'`), a variable (`actor,` — stage-matrix.js
+        // defines the forwarding and passes its own parameter through), and
+        // the spread of the attribution object setStage builds
+        // (`...attribution`, which is `{ actor, reason, evidence }`). What
+        // must not appear is a call carrying none of them, because that one
+        // silently records 'unattributed' forever while looking healthy.
+        assert.match(call, /actor[,:]|\.\.\.attribution/, `${file}: a ${fn}( call takes the default actor:\n${call.slice(0, 400)}`)
+        checked++
+      }
+    }
+  }
+  assert.ok(checked >= 10, `expected to inspect the production arming calls, inspected ${checked}`)
+})
+
+test('a new writer of the global arming list must record — the census', () => {
+  // THE CENSUS (checker, 17-09-2026). Six writers of `enabled_strategies_json`
+  // and the filter state keys were missed by the first draft: both Telegram arm
+  // paths, the rsi2 boot seed, and the three legacy filter routes. Each one
+  // guarantees a later 'disagrees' verdict pointing at a phantom defect.
+  //
+  // This test is the thing that would have caught them. It counts the files
+  // that write an arming state key and requires each to import the ledger. A
+  // new writer in a new file fails here rather than in six weeks, in a log.
+  const ARMING_KEYS = /'(enabled_strategies_json|cup_handle_enabled|fib_(rsi|vwap|fvg)_filter)'/
+  const WRITE = /setState\(\s*db\s*,\s*('(?:enabled_strategies_json|cup_handle_enabled|fib_(?:rsi|vwap|fvg)_filter)'|[A-Za-z_$][\w$]*)/
+  const files = [
+    'services/stage-matrix.js', 'services/strategy-autopilot.js', 'services/telegram-control.js',
+    'services/rsi2-seed.js', 'routes/actions.js', 'services/adaptive-breaker.js', 'services/edge-watchdog.js',
+  ]
+  const writers = []
+  for (const file of files) {
+    const src = stripComments(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))
+    if (!ARMING_KEYS.test(src)) continue
+    if (!WRITE.test(src)) continue
+    writers.push(file)
+    assert.match(
+      src, /from '\.\.?\/(?:services\/)?arming-log\.js'/,
+      `${file} writes an arming state key but does not import arming-log.js — every writer records, or the ledger answers 'unrecorded' for a cell something did change`,
+    )
+  }
+  assert.ok(writers.length >= 5, `expected to find the arming writers, found ${writers.length}: ${writers.join(', ')}`)
 })
 
 test('every actor the production call sites use is declared in ARMING_ACTORS', () => {
