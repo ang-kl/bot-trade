@@ -567,14 +567,40 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
   } else if ('_all' in cfg) {
     out.skipped.push('_all: malformed')
   }
+  // `_reseed` (PR-V, owner order 17-09-2026): entries "<accountId>:<strategy>[:token]"
+  // that issue a FRESH seed order for a cell the bare key has already spent.
+  //
+  // Needed because the seed-once record is keyed on the strategy, so once a
+  // pin has been applied and later disarmed, this file can never put it back —
+  // which is correct as a default (it is what stops the #870 re-pin loop) and
+  // is exactly why an explicit re-order needs its own identity. The whole
+  // string is the identity, so `tsmom_long:2` is a different order from
+  // `tsmom_long` and is likewise applied at most once.
+  //
+  // Appended AFTER the per-id and `_all` entries so it cannot displace them:
+  // a per-id key suppresses `_all` for that id, and re-arming one cell must
+  // not quietly stop an account inheriting future strategies.
+  if (Array.isArray(cfg._reseed)) {
+    for (const item of cfg._reseed) {
+      if (typeof item !== 'string') { out.skipped.push(`${JSON.stringify(item)}: _reseed entry is not a string`); continue }
+      const [acct, strategy, ...rest] = item.split(':')
+      if (!acct || !strategy) { out.skipped.push(`${item}: _reseed entry needs <accountId>:<strategy>`); continue }
+      entries.push([acct, [rest.length ? `${strategy}:${rest.join(':')}` : strategy]])
+    }
+  } else if ('_reseed' in cfg) {
+    out.skipped.push('_reseed: malformed')
+  }
   for (const [accountId, keys] of entries) {
     if (!/^[0-9]+$/.test(accountId) || !Array.isArray(keys)) { out.skipped.push(`${accountId}: malformed`); continue }
     const done = new Set(Array.isArray(seeded[accountId]) ? seeded[accountId] : [])
-    for (const key of keys) {
+    for (const entry of keys) {
+      // A `_reseed` entry carries a token after the strategy (`tsmom_long:2`).
+      // The token is the seed RECORD's identity; the strategy is what is armed.
+      const key = String(entry).split(':')[0]
       if (!STRATEGY_KEYS.includes(key)) { out.skipped.push(`${accountId}: unknown strategy '${key}'`); continue }
-      const tag = `${accountId}:${key}`
+      const tag = `${accountId}:${entry}`
       const pinned = isHandPinned(db, getState, accountId, key)
-      if (done.has(key)) { (pinned ? out.unchanged : out.held).push(tag); continue }
+      if (done.has(entry)) { (pinned ? out.unchanged : out.held).push(tag); continue }
       if (pinned) { out.unchanged.push(tag) } else {
         setStage(db, {
           kind: 'strategy', key, stage: 'trade', on: true, accountId,
@@ -584,7 +610,7 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
         out.applied.push(tag)
         log(`[boot] strategy pin …${accountId.slice(-4)}: ${key} ON for Auto Trade & Open (from config/strategy-pins.json)`)
       }
-      done.add(key); dirty = true
+      done.add(entry); dirty = true
     }
     seeded[accountId] = [...done]
   }

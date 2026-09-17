@@ -713,3 +713,76 @@ test('the pnl_reconcile heartbeat can actually fail: ok keys on overdue never-tr
   assert.match(src, /const unreached = st\.unresolved >= 0 && st\.neverTriedOverdue > 0/)
   assert.doesNotMatch(block, /ok: st\.unresolved >= 0,/, 'the old predicate — a count compared to zero — must be gone')
 })
+
+// ---------------------------------------------------------------------------
+// pnlGapBreakdown (PR-W, owner order 17-09-2026 "fix the 20 unknown P&L").
+//
+// The production line read "20 closed trade(s) still missing net_pnl … deal
+// history had no matching close" every cycle. The count was a bare
+// COUNT(*) WHERE net_pnl IS NULL with no qualification, so it included rows
+// sweepUnresolvable had already written off — and the sentence asserted
+// broker coverage for rows nobody had asked the broker about.
+// ---------------------------------------------------------------------------
+import { pnlGapBreakdown } from './pnl-backfill.js'
+
+function gapDb() {
+  const db = initDB(':memory:')
+  db.exec(`INSERT INTO trades (id, symbol, status, closed_at, net_pnl, account_id, pnl_attempts, pnl_unresolvable) VALUES
+    (901, 'GBPJPY',  'closed', datetime('now','-40 days'), NULL, '111', 42, 1),
+    (902, 'GBPCNH',  'closed', datetime('now','-40 days'), NULL, '111', 42, 1),
+    (903, '0066.HK', 'closed', datetime('now','-40 days'), NULL, '111', 42, 1),
+    (904, 'EURUSD',  'closed', datetime('now','-2 hours'), NULL, '111',  3, 0),
+    (905, 'NAS100',  'closed', datetime('now','-2 hours'), NULL, '111',  0, 0),
+    (906, 'BTCUSD',  'closed', datetime('now','-10 seconds'), NULL, '111', 0, 0),
+    (907, 'AAPL.US', 'closed', datetime('now','-1 hours'), -12.5, '111', 1, 0)`)
+  return db
+}
+
+test('pnlGapBreakdown separates written-off rows from rows still worth repairing', () => {
+  const g = pnlGapBreakdown(gapDb())
+  assert.equal(g.total, 6, 'every closed row with no P&L — the ledger is honestly this incomplete')
+  assert.equal(g.writtenOff, 3, 'the three the broker has no history for, already given up on with a reason')
+  assert.equal(g.live, 3, 'and only these are still repairable — the number the old line should have printed')
+})
+
+test('a row nobody has asked about says nothing about broker coverage', () => {
+  const g = pnlGapBreakdown(gapDb())
+  // 905 (2h, never tried) and 906 (10s, never tried) have pnl_attempts = 0.
+  assert.equal(g.neverTried, 2)
+  // …but only the 2-hour-old one is OVERDUE: a row closed seconds ago is not a
+  // failure, the paced pass may simply not have reached it.
+  assert.equal(g.neverTriedOverdue, 1)
+  // Exactly one row was actually asked for and came back empty. That is the
+  // only row the phrase "deal history had no matching close" was ever true of.
+  assert.equal(g.attempted, 1)
+})
+
+test('all-written-off reads as nothing left to repair, not as a broken repair', () => {
+  const db = initDB(':memory:')
+  db.exec(`INSERT INTO trades (id, symbol, status, closed_at, net_pnl, account_id, pnl_attempts, pnl_unresolvable) VALUES
+    (911, 'GBPJPY', 'closed', datetime('now','-40 days'), NULL, '111', 42, 1),
+    (912, 'GBPCNH', 'closed', datetime('now','-40 days'), NULL, '111', 42, 1)`)
+  const g = pnlGapBreakdown(db)
+  assert.equal(g.total, 2)
+  assert.equal(g.live, 0, 'the repair has finished; the ledger is incomplete and says so')
+  assert.equal(g.writtenOff, 2)
+})
+
+test('an empty ledger is zero everywhere, not an error', () => {
+  const g = pnlGapBreakdown(initDB(':memory:'))
+  assert.equal(g.total, 0)
+  assert.equal(g.live, 0)
+  assert.equal(g.error, false)
+})
+
+test('the loop prints the breakdown, not the bare count', () => {
+  // CLAUDE.md failure mode #4: the helper is invisible from here and a
+  // refactor drops the call in silence, restoring the misleading line.
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+  assert.match(src, /pnlGapBreakdown\(db\)/)
+  assert.match(src, /still repairable/)
+  assert.match(src, /never attempted/)
+  assert.doesNotMatch(src, /\$\{gapBefore\} closed trade\(s\) still missing net_pnl/,
+    'the old unqualified sentence must be gone, not merely supplemented')
+})
