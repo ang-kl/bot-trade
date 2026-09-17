@@ -107,3 +107,24 @@ test('the PM log line names the account, the row and the trade', () => {
     'no PM line may print the bare symbol — that is what made ABBV unreadable')
   assert.match(stripped, /duplicatePositionLine\(db\)/, 'and the loop reports real duplicates')
 })
+
+test('the duplicate report rides on a per-cycle phase, not the 8-hourly housekeeping band', () => {
+  // PR-X SHIPPED THIS BLOCK INSIDE `if (housekeepingDue(...))`, whose cadence
+  // is an EIGHT-HOUR persisted wall clock. The hourly throttle around it was
+  // therefore a ceiling inside an eight-hour gate, and the comment above it
+  // claimed "hourly" — a report that cannot arrive at the rate it advertises.
+  // Measured 17-09 08:57 UTC on deploy 4f349da5: the arming-ratchet line (a
+  // per-cycle phase, same throttle) printed three minutes after boot; this one
+  // had not printed at all.
+  //
+  // The presence pin above stayed green through both placements, which is why
+  // it needed this one: ORDER is the property, not existence.
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+  const call = stripped.indexOf('duplicatePositionLine(db)')
+  const band = stripped.indexOf('housekeepingDue(')
+  assert.ok(call > 0, 'the loop still calls duplicatePositionLine')
+  assert.ok(band > 0, 'the housekeeping band is still gated by housekeepingDue')
+  assert.ok(call < band,
+    'duplicatePositionLine must be called BEFORE the housekeeping gate — inside it the line is 8-hourly, not hourly')
+})
