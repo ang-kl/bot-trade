@@ -2516,6 +2516,17 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // PR-T: the cells each account refuses while the strategy is armed
+  // globally — the one-way ratchet the breaker and the watchdog create and
+  // nothing automatic undoes. Reports; arms nothing.
+  router.get('/arming-ratchet', async (_req, res) => {
+    try {
+      const { armingRatchetReport } = await import('../services/arming-ratchet.js')
+      res.json(armingRatchetReport(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // PR-S: who armed or disarmed a strategy cell, and why. `?key=` narrows to
   // one strategy, `?scope=` to one account (or 'global'); `?why=1` with a key
   // and scope answers the single question this exists for — why is THIS cell

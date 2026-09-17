@@ -4894,6 +4894,25 @@ async function runLoop(db) {
         })
         if (ew.actions?.length) log(`Edge watchdog: disarmed ${ew.actions.map(a => `${a.strategy} (exp $${a.expectancy}, PF ${a.profitFactor ?? '∞'}, scopes ${a.scopes.join('/')}${a.heldPinned?.length ? `, held pins ${a.heldPinned.join('/')}` : ''})`).join(', ')}`)
         await hbeat(db, 'edge_watchdog')
+        // PR-T (17-09-2026): what the watchdog and the breaker have left
+        // behind. Their disarms write per-account cells that NOTHING
+        // automatic ever writes back — the boot seed is the only true-writer
+        // and it is seed-once by design — so the cells only accumulate.
+        // Printed here, right after the actor that creates them, and printed
+        // to stdout because the state routes need a bearer token that has
+        // been the standing blocker since 07-09: a report the owner cannot
+        // read is the same shape as a guard that cannot fire.
+        //
+        // Throttled to once an hour: it is a standing condition, not an
+        // event, and a standing condition logged every cycle stops being read.
+        try {
+          const lastAt = Number(getState(db, 'arming_ratchet_logged_ms') || 0)
+          if (!Number.isFinite(lastAt) || Date.now() - lastAt > 60 * 60 * 1000) {
+            const { armingRatchetLine } = await import('./services/arming-ratchet.js')
+            const line = armingRatchetLine(db)
+            if (line) { log(line); setState(db, 'arming_ratchet_logged_ms', String(Date.now())) }
+          }
+        } catch { /* a report must never break the pass it rides on */ }
       } catch (err) {
         log(`Edge watchdog failed (non-fatal): ${err.message}`)
         await hbeat(db, 'edge_watchdog', false, err.message)
