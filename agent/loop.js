@@ -5519,6 +5519,28 @@ async function runLoop(db) {
             return { ...out, exhaustedRows: exhaustedRows.length, exhaustedAccounts: accounts, minAttempts: LIVE_GAP_MAX_ATTEMPTS }
           },
         },
+        // POSITION HISTORY SWEEP (owner, 17-09-2026). The close-triggered
+        // capture is the fast path; this is the sweep behind it, so a
+        // position whose capture was missed — a restart, a broker row that
+        // arrived late — is still built rather than lost. Incremental: it
+        // rebuilds the last 30 days, which is cheap and self-correcting, and
+        // it costs no broker call because every source is already local.
+        //
+        // It reports what it could NOT build, by field, and that number is
+        // the point: it names what this system still does not record about
+        // its own trades. A sweep that only counted successes would be the
+        // reporting defect this repo keeps finding.
+        {
+          name: 'position-history',
+          run: async () => {
+            const { backfillPositionHistory } = await import('./services/position-history.js')
+            const out = backfillPositionHistory(db, { sinceMs: Date.now() - 30 * 86400_000 })
+            const worst = Object.entries(out.missingCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
+            log(`[position-history] ${out.complete} complete · ${out.incomplete} incomplete of ${out.seen} closed position(s)` +
+                (worst.length ? ` — most often missing: ${worst.map(([f, n]) => `${f} (${n})`).join(', ')}` : ''))
+            return out
+          },
+        },
       ], { log })
       // SAY WHAT WAS WRITTEN OFF, row by row. This is the one place the
       // system stops waiting for money data, so it must never be something
