@@ -33,11 +33,23 @@ test('POST /connect rebuilds the spot feed only when an input the feed reads has
   const main = src('../../cpp-exec/src/main.cpp')
   assert.match(main, /bool feedInputsChanged = !spotFeed/,
     'the restart is gated on a comparison, not taken unconditionally')
-  for (const input of ['useHost != liveFeedHost', 'accountId != liveFeedAccountId',
+  for (const input of ['useHost != liveFeedHost', '!feedAccountStillAuthorized',
     'vpoSymbolIds != liveFeedVpoSymbolIds', 'trailTickEnabled != liveFeedTrailEnabled',
     'depthFeedEnabled != liveFeedDepthEnabled']) {
-    assert.ok(main.includes(input), `a change in ${input.split(' ')[0]} must still force a restart`)
+    assert.ok(main.includes(input), `a change in ${input} must still force a restart`)
   }
+
+  // PR-AD: the PRIMARY account is NOT restart-worthy, and this is the pin that
+  // says so. exec-engine.js sends `accountId: creds.accountId`, which varies by
+  // call site, so comparing it rebuilt the feed on most pushes and charged the
+  // recorder a gap each time (measured 17-09 13:37, three restarts in 1.2s).
+  // What is restart-worthy is the feed's account losing authorization.
+  assert.doesNotMatch(main, /accountId != liveFeedAccountId/,
+    'the primary account must not be compared directly — that is the churn PR-AD removed')
+  assert.match(main, /bool feedAccountStillAuthorized = \(liveFeedAccountId == accountId\);/,
+    'authorization starts at the primary')
+  assert.match(main, /for \(long long id : extraIds\) \{[\s\S]{0,120}feedAccountStillAuthorized = true;/,
+    'and the union of accountIds counts too, or a non-primary feed restarts forever')
   assert.match(main, /live->updateCredentials\(clientId, clientSecret, accessToken\)/,
     'and the unchanged case refreshes credentials in place instead')
   assert.match(main, /liveFeedHost = useHost;/,
