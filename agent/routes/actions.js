@@ -48,6 +48,25 @@ export function manualOrderStrategy(raw) {
 }
 
 /**
+ * PR-AL (owner principle 8): the direction reason a MANUAL order carries.
+ *
+ * `directionReasonFor`'s header refuses an invented reason — "long because
+ * the strategy is a long strategy" is the tautology principle 4 is aimed at.
+ * This is not that. On a manual order the cause of the side genuinely IS a
+ * human choosing it, and saying so is a fact about the entry, not an
+ * inference dressed as one. The trader's own words are preferred when the
+ * pad sends them; the marker is the honest fallback, and it is prefixed
+ * `manual:` so no attribution query can mistake it for a strategy's reading.
+ *
+ * Length-bounded because it is operator input landing in proposal_json.
+ */
+export function manualDirectionReason(raw, side) {
+  const v = String(raw ?? '').trim().replace(/\s+/g, ' ')
+  if (v) return `manual:${v.slice(0, 120)}`
+  return String(side).toUpperCase() === 'SELL' ? 'manual:operator_chose_short' : 'manual:operator_chose_long'
+}
+
+/**
  * PR-E (owner principle 4, 11-09-2026): the ledger write for
  * POST /actions/manual-order — the order pad's only live entry button and,
  * until this, the one entry path that wrote no strategy, no risk_event_id
@@ -5683,7 +5702,9 @@ export default function actionsRouter(db, deps = {}) {
       const wItem = symbols.find(s => (typeof s === 'string' ? s : s.symbol) === analysis.symbol) || {}
       const requestedVol = (typeof wItem === 'object' ? wItem.maxVolume : null) || 0.01
 
-      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
+      // PR-AL: the analysis's own synthesis states why the side was chosen;
+      // it rides into proposal_json instead of being dropped at execution.
+      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, direction_reason: synth.direction_reason ?? null, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
       // This route places against the same `accountId` it read above, so
       // naming it here is what makes the gate and the order agree rather
       // than agreeing by coincidence.
@@ -5829,7 +5850,7 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/manual-order', async (req, res) => {
     try {
-      const { symbol: rawSymbol, side: rawSide, lots, sl, tp, account, strategy: rawStrategy } = req.body || {}
+      const { symbol: rawSymbol, side: rawSide, lots, sl, tp, account, strategy: rawStrategy, directionReason: rawDirectionReason } = req.body || {}
       const symbol = (rawSymbol || '').toUpperCase().trim()
       const side = String(rawSide || '').toUpperCase()
       // PR-E (owner principle 4): the order pad's strategy, when the trader
@@ -5875,6 +5896,9 @@ export default function actionsRouter(db, deps = {}) {
         tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
         requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
         strategy: 'manual',
+        // PR-AL: the one entry path with no upstream signal to read a reason
+        // from states its own — see manualDirectionReason.
+        direction_reason: manualDirectionReason(rawDirectionReason, side),
         conviction: null,
         source: 'manual',
         accountId: creds?.accountId ?? null,
