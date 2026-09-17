@@ -512,6 +512,11 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     const proposal = {
       symbol,
       side,
+      // PR-AL (owner principle 8): fib-strategy states the level it reacted
+      // to when it picks the side; that reason rides into proposal_json here
+      // rather than being dropped, so a filled pending order's position can
+      // say why it took its direction.
+      direction_reason: signal.direction_reason ?? null,
       entry: signal.entry,
       sl: signal.sl,
       tp1: signal.tp1,

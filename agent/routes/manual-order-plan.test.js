@@ -11,7 +11,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
-import { recordManualOrderTrade, MANUAL_ORDER_STRATEGY, manualOrderStrategy } from './actions.js'
+import { recordManualOrderTrade, MANUAL_ORDER_STRATEGY, manualOrderStrategy, manualDirectionReason } from './actions.js'
 import { STRATEGY_KEYS } from '../services/strategies.js'
 import { persistRiskEvent } from '../services/risk.js'
 import { encodeLabel, LABEL_VERSION } from '../lib/trade-labels.js'
@@ -89,4 +89,41 @@ test('m3: only a registry key is recorded as the strategy; anything else is manu
   assert.equal(manualOrderStrategy(''), MANUAL_ORDER_STRATEGY)
   assert.equal(manualOrderStrategy(null), MANUAL_ORDER_STRATEGY)
   assert.equal(manualOrderStrategy({ toString: () => 'va_breakout' }), 'va_breakout')
+})
+
+// ---------------------------------------------------------------------------
+// PR-AL (owner principle 8). Every other entry path reads its direction
+// reason off the signal that chose the side. The manual pad has no signal —
+// a human chose it — so it states that, and states it as a fact rather than
+// inferring one. The reason is what makes a manual position completable:
+// `direction_reason` is a required field of position_history, so without it
+// every manual entry is refused into the incomplete stream permanently.
+// ---------------------------------------------------------------------------
+test('PR-AL: a manual order states an operator reason, and prefers the trader\'s words', () => {
+  assert.equal(manualDirectionReason(null, 'SELL'), 'manual:operator_chose_short')
+  assert.equal(manualDirectionReason('', 'BUY'), 'manual:operator_chose_long')
+  assert.equal(manualDirectionReason('   ', 'buy'), 'manual:operator_chose_long')
+  // the trader's own words win, normalised and prefixed so no attribution
+  // query can mistake them for a strategy's reading
+  assert.equal(manualDirectionReason('earnings  gap\nfade', 'SELL'), 'manual:earnings gap fade')
+  // operator input landing in proposal_json is length-bounded
+  assert.equal(manualDirectionReason('x'.repeat(500), 'BUY').length, 'manual:'.length + 120)
+})
+
+test('PR-AL: the manual route and its sibling route proposal carry direction_reason (comment-stripped pin)', () => {
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const src = strip(readFileSync(new URL('./actions.js', import.meta.url), 'utf8'))
+  const start = src.indexOf("router.post('/manual-order'")
+  const route = src.slice(start, src.indexOf('\n  router.', start + 1))
+  assert.ok(route.includes('direction_reason: manualDirectionReason(rawDirectionReason, side)'),
+    'the manual proposal states its own reason')
+  // /actions/execute-trade builds its proposal from a STORED analysis whose
+  // synthesis already carries one — it must not drop it on the way to the
+  // gate. (Its proposal's own `source` is 'execute_analysis'.)
+  const ea = src.indexOf("router.post('/execute-trade'")
+  assert.ok(ea > 0, 'execute-trade route found')
+  const eaRoute = src.slice(ea, src.indexOf('\n  router.', ea + 1))
+  assert.ok(eaRoute.includes("source: 'execute_analysis'"), 'the right proposal is in view')
+  assert.ok(/direction_reason:\s*synth\.direction_reason/.test(eaRoute),
+    "execute-trade passes the analysis's own reason through")
 })

@@ -638,3 +638,32 @@ test('PR-E: placement stamps pending_orders.strategy', async () => {
   assert.equal(res.placed, 1)
   assert.equal(db.prepare(`SELECT strategy FROM pending_orders`).get().strategy, 'fib_618_fade')
 })
+
+// ---------------------------------------------------------------------------
+// PR-AL (owner principle 8): fib-strategy states the level it reacted to when
+// it picks the side (fib-strategy.js: `fib:<up|down>_leg_retrace@<level>`).
+// This path built its own proposal and dropped it, so a filled pending order
+// produced a position that could never say why it took its direction.
+// ---------------------------------------------------------------------------
+test("PR-AL: the signal's direction_reason rides into the proposal", async () => {
+  const db = freshDb()
+  const signal = { ...SIGNAL, direction_reason: 'fib:up_leg_retrace@1.09876' }
+  const { deps } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal }] })
+  const seen = []
+  deps.risk.evaluateTrade = (_db, proposal) => { seen.push(proposal); return { approved: true, adjusted_volume: 0.05 } }
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].direction_reason, 'fib:up_leg_retrace@1.09876')
+})
+
+// Absent stays absent: a reason back-derived from the side would be the
+// tautology principle 4 is aimed at, and `directionReasonFor` refuses it.
+test('PR-AL: a signal with no reason records null, not an invented one', async () => {
+  const db = freshDb()
+  const { deps } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  const seen = []
+  deps.risk.evaluateTrade = (_db, proposal) => { seen.push(proposal); return { approved: true, adjusted_volume: 0.05 } }
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].direction_reason, null)
+})

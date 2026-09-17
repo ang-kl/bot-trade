@@ -375,3 +375,34 @@ test("03-09-2026: the id is THIS ACCOUNT's — a non-primary account whose symbo
   assert.equal(primary.placed, true)
   assert.equal(f.placed[1].symbolId, 7)
 })
+
+// PR-AL (owner principle 8). The synth states why the side was chosen; this
+// path built its own proposal and dropped the field one line before it would
+// have been stored in proposal_json. A resting limit that fills produces a
+// position, and that position could then never say why it was long.
+test('PR-AL: the synth\'s direction_reason rides into the proposal', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+  const f = fakes()
+  const seen = []
+  f.risk.persistRiskEvent = (_db, proposal) => { seen.push(proposal); return 1 }
+  await placeClosedMarketLimit(db, CREDS, 'US30', { ...SYNTH, direction_reason: 'rsi2:close>sma200,rsi2<10' }, f)
+  // Two rows are written on a placement (the gate's verdict, then the
+  // placement record); both are the same proposal, so both must carry it.
+  assert.ok(seen.length >= 1)
+  for (const p of seen) assert.equal(p.direction_reason, 'rsi2:close>sma200,rsi2<10')
+})
+
+// ABSENT IS NOT A REASON. A synth that states none records null — never a
+// reason back-derived from the side, which is the tautology principle 4 is
+// aimed at and which `directionReasonFor` refuses to read.
+test('PR-AL: a synth with no reason records null, not an invented one', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+  const f = fakes()
+  const seen = []
+  f.risk.persistRiskEvent = (_db, proposal) => { seen.push(proposal); return 1 }
+  await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, f)
+  assert.ok(seen.length >= 1)
+  for (const p of seen) assert.equal(p.direction_reason, null)
+})

@@ -269,6 +269,12 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   // SAME risk gate as a market order — a resting limit can't bypass risk.
   const proposal = {
     symbol, side,
+    // PR-AL (owner principle 8): the reason the strategy gave for this SIDE
+    // travels into proposal_json, exactly as it does on the market path
+    // (loop.js). Dropping it here is what made a resting limit's position
+    // unable to say why it was long — the field was computed upstream and
+    // thrown away one line before it would have been stored.
+    direction_reason: synth.direction_reason ?? null,
     entry: synth.entry ?? null, sl: synth.sl ?? null,
     tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
     requestedVolume: opts.requestedVolume ?? null,
