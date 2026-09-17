@@ -333,3 +333,20 @@ test('the view reports the refused stream beside the clean one, never the clean 
   assert.equal(v.incomplete, 1)
   assert.deepEqual(v.missingFields, [{ field: 'direction_reason', n: 1 }])
 })
+
+test('the history is built ONCE AT BOOT, not only on the 8-hourly band', () => {
+  // WHY THIS PIN EXISTS. The housekeeping sweep alone means the first record
+  // appears up to eight hours after a deploy — and the owner's ask is to read
+  // two months of history NOW. A feature that is correct but silent for eight
+  // hours is indistinguishable, to the person waiting, from one that does not
+  // work. Measured 17-09 17:07 UTC: 34 minutes after the deploy carrying the
+  // sweep, no [position-history] line had appeared, because the band was not
+  // due — which is what prompted this.
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const index = strip(readFileSync(new URL('../index.js', import.meta.url), 'utf8'))
+  assert.match(index, /backfillPositionHistory\(db, \{ sinceMs: Date\.now\(\) - 90 \* 86400_000 \}\)/,
+    'boot builds the catch-up window, wider than the sweep\'s 30 days')
+  assert.match(index, /\[boot\] position history: \$\{ph\.complete\} complete · \$\{ph\.incomplete\} incomplete/,
+    'and prints the incomplete count beside the complete one, never alone')
+  assert.match(index, /most often missing/, 'with the ranked field list that says what is not recorded')
+})
