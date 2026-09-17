@@ -3213,7 +3213,31 @@ async function runLoop(db) {
                 if (gapBefore === 0) {
                   log('P&L backfill: no gap this cycle — every closed trade already has realized P&L')
                 } else {
-                  log(`P&L backfill: ${gapBefore} closed trade(s) still missing net_pnl after trying ${targets.length - skipped}/${targets.length} account(s) [${targets.join(', ')}]${skipped ? `, ${skipped} paced off` : ''} — deal history had no matching close`)
+                  // SPLIT BY WHAT CAN STILL BE DONE (17-09-2026). This used to
+                  // print the bare `gapBefore` — every closed row with a NULL
+                  // net_pnl, including the ones sweepUnresolvable has already
+                  // written off with a reason. So it read "20 still missing …
+                  // deal history had no matching close" every cycle for days,
+                  // which a reader cannot tell from a broken repair, and which
+                  // asserted something about BROKER COVERAGE for rows nobody
+                  // had asked the broker about.
+                  const { pnlGapBreakdown } = await import('./services/pnl-backfill.js')
+                  const g = pnlGapBreakdown(db)
+                  const tried = `after trying ${targets.length - skipped}/${targets.length} account(s) [${targets.join(', ')}]${skipped ? `, ${skipped} paced off` : ''}`
+                  if (g.error) {
+                    log(`P&L backfill: ${gapBefore} closed trade(s) missing net_pnl ${tried} — the gap could not be broken down (state unreadable), so which are still repairable is UNKNOWN`)
+                  } else if (g.live === 0) {
+                    // Not a failure: the ledger is honestly incomplete and the
+                    // system has stopped pretending otherwise.
+                    log(`P&L backfill: nothing left to repair — ${g.total} closed trade(s) have no realised P&L and all ${g.writtenOff} are written off with a reason (broker has no deal history past the horizon). They stay unknown, never zero.`)
+                  } else {
+                    const parts = [`${g.live} still repairable`]
+                    if (g.attempted > 0) parts.push(`${g.attempted} asked for and the broker had no matching close`)
+                    // The honest half: these say nothing about the broker.
+                    if (g.neverTried > 0) parts.push(`${g.neverTried} never attempted${g.neverTriedOverdue > 0 ? ` (${g.neverTriedOverdue} overdue — the repair is not reaching them, which is ours, not coverage)` : ''}`)
+                    if (g.writtenOff > 0) parts.push(`${g.writtenOff} already written off`)
+                    log(`P&L backfill: ${g.total} closed trade(s) missing net_pnl ${tried} — ${parts.join('; ')}${g.oldestLive ? `; oldest repairable closed ${g.oldestLive}` : ''}`)
+                  }
                 }
               }
             }

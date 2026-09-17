@@ -708,6 +708,63 @@ export function exhaustedTradeIds(db, { minAttempts = 6, accountId = null, limit
  * visible as a stalled controller rather than only as a daily-loss veto
  * firing hours later — the same "silence is not health" lesson as §43.
  */
+/**
+ * The unresolved-P&L gap, SPLIT BY WHAT CAN STILL BE DONE ABOUT IT.
+ *
+ * WHY (measured 15-09-2026, production, and again on the owner's uploaded log
+ * 17-09): the loop printed
+ *
+ *   "P&L backfill: 20 closed trade(s) still missing net_pnl … — deal history
+ *    had no matching close"
+ *
+ * every cycle, from a bare `COUNT(*) WHERE status='closed' AND net_pnl IS NULL`
+ * with no qualification at all (loop.js). That count includes rows this system
+ * has ALREADY and CORRECTLY given up on: `pnl_unresolvable = 1` rows written
+ * off by sweepUnresolvable because the broker has no deal history for them
+ * past the horizon. `backfillClosedPnl` excludes exactly those rows from
+ * `liveGap` so they stop pacing the retries — and then the log reported them
+ * anyway, as though 20 repairable holes remained.
+ *
+ * So the panel and the mechanism disagreed, and the panel was the wrong one.
+ * A reader seeing "20 still missing" every cycle for days cannot tell a broken
+ * repair from a repair that finished and a ledger that is honestly incomplete.
+ *
+ * AND THE SENTENCE WAS FALSE FOR PART OF THE SET. "deal history had no
+ * matching close" is a claim about the BROKER. For a row with
+ * `pnl_attempts = 0` nobody has asked the broker anything — that row is
+ * evidence about US, not about coverage. This module's own comment already
+ * says so ("Reporting one number for both is how the earlier 'deal history had
+ * no matching close' log blamed coverage for what was an account-scoping
+ * bug") — the lesson was applied inside the helper and not to the line that
+ * prints.
+ *
+ * `total` is the raw count, kept so the ledger's real incompleteness is never
+ * hidden by the split.
+ */
+export function pnlGapBreakdown(db, { overdueMin = 15 } = {}) {
+  const zero = { total: 0, writtenOff: 0, live: 0, neverTried: 0, neverTriedOverdue: 0, attempted: 0, oldestLive: null, error: false }
+  try {
+    const total = db.prepare(
+      `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL`
+    ).get()?.n || 0
+    if (total === 0) return zero
+    const live = pnlReconciliationState(db, { overdueMin })
+    if (live.unresolved < 0) return { ...zero, total, error: true }
+    return {
+      total,
+      // Rows the system has finished with, on the record, with a reason.
+      writtenOff: Math.max(0, total - live.unresolved),
+      live: live.unresolved,
+      neverTried: live.neverTried,
+      neverTriedOverdue: live.neverTriedOverdue,
+      // Only THESE justify a statement about broker coverage.
+      attempted: Math.max(0, live.unresolved - live.neverTried),
+      oldestLive: live.oldestClosedAt,
+      error: false,
+    }
+  } catch { return { ...zero, error: true } }
+}
+
 export function pnlReconciliationState(db, { accountId = null, overdueMin = 15 } = {}) {
   try {
     const scope = accountId == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
