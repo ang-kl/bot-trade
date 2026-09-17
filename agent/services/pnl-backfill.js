@@ -28,8 +28,8 @@
 import { normPosId } from '../lib/pos-id.js'
 import { stampRealisedAudit } from './trade-consistency.js'
 import { DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
+import { pageDeals } from '../lib/deal-paging.js'
 
-const WEEK_MS = 7 * 24 * 3_600_000
 
 /**
  * Should this loop cycle run the P&L backfill? Any reconcile path that can
@@ -288,10 +288,17 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     getDeals = (t0, t1) => wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1)
   }
 
-  const deals = []
-  for (let t0 = from; t0 < now; t0 += WEEK_MS) {
-    const chunk = await getDeals(t0, Math.min(t0 + WEEK_MS, now))
-    deals.push(...((chunk && chunk.deal) || []))
+  // THIS LOOP USED TO TRUNCATE SILENTLY, and of the three deal pulls in this
+  // repo it is the one that matters most: its output is MONEY. It walked
+  // week by week (cTrader's window cap) but never read `hasMore` (the
+  // response cap, maxRows 500), so any week with more than 500 deals came
+  // back short with no error — and a net P&L summed over a partial set is
+  // wrong while looking exactly like a right one. lib/deal-paging.js follows
+  // both limits and reports whether the walk finished.
+  const pull = await pageDeals(getDeals, from, now)
+  const deals = pull.deals
+  if (!pull.complete) {
+    console.warn(`[pnl-backfill] deal pull INCOMPLETE (${pull.reason}) after ${pull.pages} page(s) — figures below cover PART of the window`)
   }
 
   // PERSIST THE EVIDENCE. Best-effort, and deliberately after the fetch rather

@@ -37,6 +37,7 @@
 import { randomBytes } from 'node:crypto'
 import { admitEntry, engineStatusFor } from './entry-mode.js'
 import { labelIntentId } from '../lib/trade-labels.js'
+import { pageDeals } from '../lib/deal-paging.js'
 
 export const INTENT_STATES = Object.freeze(['RESERVED', 'DISPATCHING', 'SENT', 'ACCEPTED', 'FILLED', 'REJECTED', 'UNKNOWN', 'RELEASED', 'EXPIRED'])
 export const OPEN_STATES = Object.freeze(['RESERVED', 'DISPATCHING', 'SENT', 'UNKNOWN'])
@@ -535,24 +536,19 @@ export async function settleUnknownsFromDealHistory(db, { accountId, getDeals, n
   if (!oldest?.n) return { checked: 0, filled: [], stillUnknown: 0, noted: 0, pulled: 0, skipped: 'no_unknown' }
   const oldestMs = Date.parse(oldest.at)
   const fromMs = (Number.isFinite(oldestMs) ? oldestMs : now) - DEAL_WINDOW_SLACK_MS
-  const WEEK_MS = 7 * 24 * 60 * 60 * 1000
-  const deals = []
-  let pages = 0, truncated = false
-  for (let t0 = fromMs; t0 < now && !truncated; t0 += WEEK_MS) {
-    let from = t0
-    const to = Math.min(t0 + WEEK_MS, now)
-    for (;;) {
-      if (pages >= maxPages) { truncated = true; break }
-      const chunk = await getDeals(from, to)
-      pages++
-      const page = (chunk && chunk.deal) || []
-      deals.push(...page)
-      if (!chunk?.hasMore) break
-      const last = page.reduce((m, d) => Math.max(m, dealMs(d) ?? 0), 0)
-      if (!(last > from)) { truncated = true; break } // a page that does not advance cannot be followed
-      from = last + 1
-    }
-  }
+  // THE WALK MOVED TO lib/deal-paging.js, which this loop was the model for —
+  // the other two callers in the repo never read `hasMore` at all. Two things
+  // changed in the move, both fixes:
+  //
+  //   - the cursor lands ON the last deal's timestamp instead of `last + 1`,
+  //     so deals sharing that millisecond (a partial fill) are no longer
+  //     skipped; the overlap is dropped by dealId instead;
+  //   - the page budget is per WINDOW rather than per walk, so one busy week
+  //     early in a long span no longer starves every week after it.
+  const pull = await pageDeals(getDeals, fromMs, now, { maxPages })
+  const deals = pull.deals
+  const pages = pull.pages
+  const truncated = !pull.complete
   const coverage = truncated ? null : { fromMs, toMs: now }
   const r = resolveUnknownFromDeals(db, { accountId: id, deals, coverage, now, sentTimeoutMs })
   return { ...r, pulled: deals.length, pages, truncated, coverage: coverage ? { from: iso(fromMs), to: iso(now) } : null }

@@ -415,7 +415,11 @@ test('PR-E settle: pulls once per pass only when an UNKNOWN exists, follows hasM
     return { deal: [deal({ dealId: 21, orderId: 621, positionId: 21, symbolId: 2, executionTimestamp: t0 + 20 * 60_000 + 2000 })], hasMore: false }
   }
   r = await settleUnknownsFromDealHistory(db, { accountId: DEMO, getDeals: paged, now: t0 + 30 * 60_000 })
-  assert.equal(pages.length, 2); assert.equal(pages[1][0], t0 + 20 * 60_000 + 501, 'the second page starts after the first page\'s last deal')
+  // The cursor lands ON the last deal's timestamp, not past it. It used to be
+  // `last + 1`, which skipped every deal sharing that millisecond — i.e. the
+  // rest of a partial fill — and skipping is invisible where a duplicate is
+  // not. lib/deal-paging.js drops the overlap by dealId instead.
+  assert.equal(pages.length, 2); assert.equal(pages[1][0], t0 + 20 * 60_000 + 500, 'the second page resumes AT the first page\'s last deal, so nothing sharing its millisecond is skipped')
   assert.equal(r.pages, 2); assert.deepEqual(r.filled.map(f => f.positionId), ['21']); assert.equal(row(db, id2).state, 'FILLED')
   // B1: hasMore forever → truncated, coverage null, the intent stays UNKNOWN even past the age floor
   const id3 = unknownIntent(db, { now: t0 + 40 * 60_000, symbolId: 4, symbol: 'USDJPY' })
