@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <string>
 
-#include "../../../cpp-exec/src/tests/fake_broker.hpp"
+#include "fake_broker.hpp"
 #include "../verify_session.hpp"
 
 namespace {
