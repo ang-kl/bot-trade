@@ -14,7 +14,8 @@ import path from 'node:path'
 import { initDB, getState } from '../db.js'
 import {
   auditProtection, dueForAlert, runProtectionAudit,
-  lastProtectionAudit, recordAuditUnavailable, bookHeldPositionIds,
+  lastProtectionAudit, recordAuditUnavailable, bookHeldPositionIds, bookHeldTradeIds,
+  MAX_APPLY_PER_PASS,
 } from './naked-position-guard.js'
 
 const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'naked-')), 'agent.db'))
@@ -936,4 +937,640 @@ test('an applied target is written to stdout, not only to Telegram', async () =>
     })
   } finally { console.log = orig }
   assert.ok(lines.some(l => /\[protection\] A: target SET on USDBRL \(position P11\) — TP 5\.4 \(HVN volume node, 2\.1R\)/.test(l)), lines.join('\n'))
+})
+
+// ---------------------------------------------------------------------------
+// THE APPLIER COULD NOT REACH THE POSITIONS IT WAS BUILT FOR (16-09-2026)
+//
+// Measured in production: `17 targetless` on every pass, stable for 4.5 days,
+// and exactly ONE `target SET` line across 12-09 → 16-09. The applier worked.
+// It almost never got to run, for two independent reasons:
+//
+//  1. ONE MUTE MAP, TWO CALLERS AT DIFFERENT RATES. `lastTargetAlerts` gated
+//     both alerting and applying. runProtectionAuditAllAccounts (fast monitor,
+//     ~60s, no applier — no production caller set deps.auditOpts) consumed the
+//     6-hour window before the loop pass (~3–5 min, WITH the applier) could.
+//  2. THE APPLY LOOP WAS INSIDE THE TELEGRAM BRANCH, so with no bot token it
+//     did not exist. Setting protection is not a notification.
+//
+// The invariant these pin: A FINDING ELIGIBLE FOR A TARGET CANNOT BE MUTED BY
+// A PASS THAT COULD NOT HAVE APPLIED ONE.
+// ---------------------------------------------------------------------------
+
+test('THE PRODUCTION DEFECT: the fast pass running first no longer starves the applier', async () => {
+  // End to end, in the order production ran it. Pass 1 is the fast monitor's
+  // sweep before this fix reached it: it alerts and mutes, it cannot apply.
+  // Pass 2, three minutes later, is the loop pass that CAN. Before the split
+  // it found the window consumed and applied nothing for six hours.
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const applied = []
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs: t0, accountId: 'A', sendMessage: async () => {},
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    // no applyTarget — the fast path as it was
+  })
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs: t0 + 3 * 60_000, accountId: 'A', sendMessage: async () => {},
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f, s) => { applied.push([f.positionId, s.tp]); return { ok: true } },
+  })
+  assert.deepEqual(applied, [['P1', 5.4]], 'the pass that CAN apply is not muted by the pass that cannot')
+})
+
+test('a pass with no applier leaves the apply window untouched', async () => {
+  // The invariant, read straight off the state. The alert map is stamped (it
+  // did alert); the apply map must not be, because nothing could be applied.
+  const db = initDB(':memory:')
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs: 1000, accountId: 'A', sendMessage: async () => {},
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+  })
+  assert.deepEqual(
+    JSON.parse(getState(db, 'acct:A:targetless_position_alerts_json') || '{}'),
+    { P1: 1000 }, 'the ALERT window was consumed — an alert did go out')
+  assert.deepEqual(
+    JSON.parse(getState(db, 'acct:A:targetless_apply_attempts_json') || '{}'),
+    {}, 'the APPLY window was not')
+})
+
+test('a pass WITH an applier stamps the apply window, and the next one waits', async () => {
+  // The other half: the window has to bound something, or a refused amend
+  // becomes a sixty-second retry storm against the broker.
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const applied = []
+  const run = (nowMs) => runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs, accountId: 'A', sendMessage: async () => {},
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { applied.push(f.positionId); return { ok: false, error: 'broker said no' } },
+  })
+  await run(t0)
+  await run(t0 + 60_000)
+  await run(t0 + 3 * 3600_000)
+  assert.deepEqual(applied, ['P1'], 'one attempt inside the window')
+  await run(t0 + 7 * 3600_000)
+  assert.deepEqual(applied, ['P1', 'P1'], 'and it is retried once the window expires')
+})
+
+test('the applier runs with NO sendMessage at all — protection is not a notification', async () => {
+  // TELEGRAM_BOT_TOKEN unset is the production configuration this has to
+  // survive: the apply loop used to be nested inside the sendMessage branch,
+  // so a missing chat token meant no target was ever set.
+  const db = initDB(':memory:')
+  const applied = []
+  const r = await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f, s) => { applied.push([f.positionId, s.tp]); return { ok: true } },
+  })
+  assert.deepEqual(applied, [['P1', 5.4]])
+  assert.equal(r.targetsApplied, 1)
+})
+
+test('a sendMessage that THROWS does not cost the target either', async () => {
+  const db = initDB(':memory:')
+  const applied = []
+  const r = await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A',
+    sendMessage: async () => { throw new Error('telegram 502') },
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+  })
+  assert.deepEqual(applied, ['P1'], 'the amend already happened before the alert was attempted')
+  assert.equal(r.targetsApplied, 1)
+})
+
+test('WITHOUT TELEGRAM the exemptions still hold: external and book rows are untouched', async () => {
+  // Hoisting the apply loop out of the alert branch is exactly the change that
+  // could have dropped the guards that lived beside it.
+  const db = initDB(':memory:')
+  bookRow(db, 'PB1')
+  const applied = []
+  await runProtectionAudit(db,
+    [targetlessRow('PB1', '0005.HK'), { ...targetlessRow('PX1', 'GBPAUD', { source: 'external' }), id: 2 }],
+    [targetlessPos('PB1', '0005.HK'), targetlessPos('PX1', 'GBPAUD')], {
+      accountId: 'A', // no sendMessage
+      suggestTarget: async () => ({ tp: 999, basis: 'HVN' }),
+      applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+    })
+  assert.deepEqual(applied, [], 'neither exemption may be reached by the hoisted loop')
+})
+
+test('an exempt position is never even asked for a suggestion', async () => {
+  // The bar fetch is the expensive half and the amend is the dangerous half.
+  // A book row must reach neither.
+  const db = initDB(':memory:')
+  bookRow(db, 'PB2')
+  const asked = []
+  await runProtectionAudit(db, [targetlessRow('PB2', '0005.HK')], [targetlessPos('PB2', '0005.HK')], {
+    accountId: 'A',
+    sendMessage: async () => {},
+    suggestTarget: async (f) => { asked.push(f.positionId); return { tp: 175, basis: 'HVN' } },
+    applyTarget: async () => ({ ok: true }),
+  })
+  assert.deepEqual(asked, [], 'no structure fetched for a position that can never be amended')
+})
+
+test('applyExcludeIds hands the position to target-restore instead of amending it twice', async () => {
+  const db = initDB(':memory:')
+  const applied = []
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A',
+    sendMessage: async () => {},
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+    applyExcludeIds: new Set(['P1']),
+  })
+  assert.deepEqual(applied, [], 'the recorded target is the more faithful repair; one amend per pass')
+})
+
+test('the suggestion is fetched ONCE for a position that is both applied and alerted', async () => {
+  const db = initDB(':memory:')
+  let calls = 0
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A',
+    sendMessage: async () => {},
+    suggestTarget: async () => { calls++; return { tp: 5.4, basis: 'HVN' } },
+    applyTarget: async () => ({ ok: true }),
+  })
+  assert.equal(calls, 1)
+})
+
+test('a suggester that returns nothing mints no button and reads no .tp off null', async () => {
+  // The memo now stores MISSES as null too, so a `.has()` test would offer a
+  // Set-TP button for a position that has no suggested price.
+  const db = initDB(':memory:')
+  const sent = []
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A',
+    sendMessage: async (m, opts) => { sent.push([m, opts]) },
+    suggestTarget: async () => null,
+    applyTarget: async () => ({ ok: true }),
+  })
+  assert.equal(sent[0][1], undefined, 'no button without a price')
+  assert.ok(!/suggested TP/.test(sent[0][0]))
+})
+
+// ---------------------------------------------------------------------------
+// THE CLASS BREAKDOWN ON STDOUT
+//
+// Production logged `17 targetless` every pass and nothing else. That number
+// cannot tell a momentum-book row holding no target BY DESIGN from a position
+// that lost its target and should get one back — which is how it sat for days.
+// ---------------------------------------------------------------------------
+
+const captureLog = async (fn) => {
+  const lines = []
+  const orig = console.log
+  console.log = (...a) => { lines.push(a.join(' ')) }
+  try { await fn() } finally { console.log = orig }
+  return lines
+}
+
+test('the class breakdown reports the REAL counts, beside the bare total', async () => {
+  const db = initDB(':memory:')
+  bookRow(db, 'C1')
+  bookRow(db, 'C2', 'A', 'MSFT.US')
+  const rows = [
+    { ...targetlessRow('C1', '0005.HK'), id: 1 },
+    { ...targetlessRow('C2', 'MSFT.US'), id: 2 },
+    { ...targetlessRow('C3', 'GBPAUD', { source: 'external' }), id: 3 },
+    { ...targetlessRow('C4', 'USDBRL'), id: 4 },
+  ]
+  const pos = rows.map(r => targetlessPos(r.ctrader_position_id, r.symbol))
+  const lines = await captureLog(() => runProtectionAudit(db, rows, pos, {
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => ({ ok: true }),
+  }))
+  const line = lines.find(l => /targetless —/.test(l))
+  assert.ok(line, lines.join('\n'))
+  assert.match(line, /^\[protection\] A: 4 targetless — /)
+  assert.match(line, /2 momentum-book \(trail only\)/)
+  assert.match(line, /1 external \(left alone — the human's own\)/)
+  assert.match(line, /1 bot-owned \(target applied\)/)
+})
+
+test('the breakdown names a pass that has NO APPLIER WIRED — the defect, visible in the log', async () => {
+  // The whole reason this line exists. 17 targetless with no applier reachable
+  // is a standing fault; 17 targetless that are all book rows is a standing
+  // fact. The log could not tell them apart.
+  const db = initDB(':memory:')
+  const lines = await captureLog(() => runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A', sendMessage: async () => {},
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+  }))
+  assert.ok(lines.some(l => /1 targetless — 1 bot-owned \(NO APPLIER WIRED\)/.test(l)), lines.join('\n'))
+})
+
+test('the breakdown separates a refused amend from an uncomputable target', async () => {
+  const db = initDB(':memory:')
+  const lines = await captureLog(() => runProtectionAudit(db,
+    [targetlessRow('D1', 'USDBRL'), { ...targetlessRow('D2', 'EURUSD'), id: 2 }],
+    [targetlessPos('D1', 'USDBRL'), targetlessPos('D2', 'EURUSD')], {
+      accountId: 'A',
+      // The default cap is 1; this test is about classification, not the cap.
+      maxApplyPerPass: 2,
+      suggestTarget: async (f) => (f.positionId === 'D1' ? { tp: 5.4, basis: 'HVN' } : null),
+      applyTarget: async () => ({ ok: false, error: 'broker said no' }),
+    }))
+  const line = lines.find(l => /targetless —/.test(l))
+  assert.match(line, /1 bot-owned \(apply refused\)/)
+  assert.match(line, /1 bot-owned \(no target computable\)/)
+})
+
+test('no targetless positions, no breakdown line', async () => {
+  const db = initDB(':memory:')
+  const lines = await captureLog(() => runProtectionAudit(db,
+    [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 1600 }],
+    { accountId: 'A', sendMessage: async () => {} }))
+  assert.ok(!lines.some(l => /targetless —/.test(l)), lines.join('\n'))
+})
+
+test('the apply window is pruned when the position stops being targetless', async () => {
+  // A position that loses its target TWICE is a fault to act on, not one to
+  // sit out a six-hour window left over from the first time.
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const applied = []
+  const opts = (nowMs) => ({
+    nowMs, accountId: 'A', sendMessage: async () => {},
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+  })
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], opts(t0))
+  // Target now present at the broker — the finding is gone.
+  await runProtectionAudit(db, [targetlessRow()], [{ ...targetlessPos(), takeProfit: 5.4 }], opts(t0 + 60_000))
+  assert.deepEqual(JSON.parse(getState(db, 'acct:A:targetless_apply_attempts_json') || '{}'), {})
+  // It goes missing again a minute later: acted on at once, not in six hours.
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], opts(t0 + 120_000))
+  assert.deepEqual(applied, ['P1', 'P1'])
+})
+
+// ---------------------------------------------------------------------------
+// THE REVIEW ROUND (16-09-2026). Every one of these is a defect the first draft
+// of this change shipped, each reproduced before it was fixed.
+// ---------------------------------------------------------------------------
+
+test('BLOCKER: a book row whose position_id is still NULL is STILL exempt', async () => {
+  // `momentum_book.position_id` is written once at insert and is NULL whenever
+  // the trade had no broker position id yet — the resting-limit path the book
+  // uses at closed markets. Nothing backfills it. The exemption keyed only off
+  // position_id therefore failed OPEN, and `momentum-account.js` clears
+  // `current_tp` on exactly these rows so target-restore does not cover them
+  // either: a momentum runner capped at a 1.5R floor, by the fix meant to help.
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
+              VALUES (77, 'A', '0005.HK', NULL, 'long', 160, 159.642, '2026-09-08T01:33:00Z', 'open')`).run()
+  const applied = []
+  const lines = await captureLog(() => runProtectionAudit(db,
+    [{ ...targetlessRow('PN1', '0005.HK'), trade_id: 77 }], [targetlessPos('PN1', '0005.HK')], {
+      accountId: 'A',
+      suggestTarget: async () => ({ tp: 175, basis: '1.5R floor from entry' }),
+      applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+    }))
+  assert.deepEqual(applied, [], 'the trade_id key must catch what the position_id key misses')
+  assert.ok(lines.some(l => /1 momentum-book \(trail only\)/.test(l)), lines.join('\n'))
+})
+
+test('the trade_id key is scoped by account, like the position_id key', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
+              VALUES (77, 'B', '0005.HK', NULL, 'long', 160, 159.642, '2026-09-08T01:33:00Z', 'open')`).run()
+  const applied = []
+  await runProtectionAudit(db, [{ ...targetlessRow('PN2', '0005.HK'), trade_id: 77 }], [targetlessPos('PN2', '0005.HK')], {
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 175, basis: 'HVN' }),
+    applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+  })
+  assert.deepEqual(applied, ['PN2'], "another account's book row is another position")
+})
+
+test('a closed book row with a NULL position_id does not shield anything', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
+              VALUES (77, 'A', '0005.HK', NULL, 'long', 160, 159.642, '2026-09-08T01:33:00Z', 'closed')`).run()
+  const applied = []
+  await runProtectionAudit(db, [{ ...targetlessRow('PN3', '0005.HK'), trade_id: 77 }], [targetlessPos('PN3', '0005.HK')], {
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 175, basis: 'HVN' }),
+    applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+  })
+  assert.deepEqual(applied, ['PN3'], 'the book has let this one go')
+})
+
+test('bookHeldTradeIds: only open/exit_sent rows, scoped when asked', () => {
+  const db = initDB(':memory:')
+  const ins = (tid, acct, status) => db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
+              VALUES (?, ?, 'X', NULL, 'long', 1, 0.9, 'now', ?)`).run(tid, acct, status)
+  ins(1, 'A', 'open'); ins(2, 'A', 'exit_sent'); ins(3, 'A', 'closed'); ins(4, 'B', 'open')
+  assert.deepEqual([...bookHeldTradeIds(db, 'A')].sort(), ['1', '2'])
+  assert.deepEqual([...bookHeldTradeIds(db)].sort(), ['1', '2', '4'])
+})
+
+test("BLOCKER: two passes racing on the same position amend it ONCE", async () => {
+  // Door 1. The ~60s sweep and the loop's pass interleave on the await inside
+  // getSuggestion; before the claim was made durable-before-amend, both read an
+  // empty window and both amended. This PR is what opened that door — before
+  // it, the sweep had no applier to race with.
+  const db = initDB(':memory:')
+  const amends = []
+  const slowSuggest = (tag) => async () => {
+    await new Promise(r => setTimeout(r, tag === 'loop' ? 20 : 5))
+    return { tp: 5.4, basis: 'HVN' }
+  }
+  const pass = (tag) => runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A',
+    suggestTarget: slowSuggest(tag),
+    applyTarget: async (f) => { amends.push(`${tag}:${f.positionId}`); return { ok: true } },
+  })
+  await Promise.all([pass('loop'), pass('sweep')])
+  assert.equal(amends.length, 1, `one position, one amend — got ${JSON.stringify(amends)}`)
+})
+
+test('BLOCKER: two monitored rows with the SAME position id amend it once', async () => {
+  // Door 2. `findOpenDuplicates` and `duplicate-watch` exist because duplicate
+  // open rows happen; the due list was computed against the pre-pass map, so
+  // both rows passed the window test.
+  const db = initDB(':memory:')
+  const amends = []
+  const r = await runProtectionAudit(db,
+    [{ ...targetlessRow(), id: 1 }, { ...targetlessRow(), id: 2 }],
+    [targetlessPos()], {
+      accountId: 'A',
+      suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+      applyTarget: async (f) => { amends.push(f.positionId); return { ok: true } },
+    })
+  assert.deepEqual(amends, ['P1'])
+  assert.equal(r.targetsApplied, 1)
+})
+
+test('the duplicate guard does not depend on the mute window being non-zero', async () => {
+  // The claim alone would reject the second row only because 0 < applyMuteMs.
+  // With the window at zero that argument disappears; the explicit set does not.
+  const db = initDB(':memory:')
+  const amends = []
+  await runProtectionAudit(db,
+    [{ ...targetlessRow(), id: 1 }, { ...targetlessRow(), id: 2 }],
+    [targetlessPos()], {
+      accountId: 'A', applyMuteMs: 0,
+      suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+      applyTarget: async (f) => { amends.push(f.positionId); return { ok: true } },
+    })
+  assert.deepEqual(amends, ['P1'])
+})
+
+test('the claim is persisted BEFORE the amend, not after the pass', async () => {
+  const db = initDB(':memory:')
+  let stampAtAmendTime = null
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs: 5000, accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => {
+      stampAtAmendTime = JSON.parse(getState(db, 'acct:A:targetless_apply_attempts_json') || '{}')
+      return { ok: true }
+    },
+  })
+  assert.deepEqual(stampAtAmendTime, { P1: 5000 }, 'a claim that lands after the amend excludes nobody')
+})
+
+test('a claim that cannot be written means no amend at all', async () => {
+  const db = initDB(':memory:')
+  const amends = []
+  const realPrepare = db.prepare.bind(db)
+  db.prepare = (sql) => {
+    if (/INSERT INTO agent_state|REPLACE INTO agent_state|UPDATE agent_state/i.test(sql)) throw new Error('disk full')
+    return realPrepare(sql)
+  }
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { amends.push(f.positionId); return { ok: true } },
+  })
+  assert.deepEqual(amends, [], 'no claim, no amend')
+})
+
+test('MAJOR: an empty/partial broker snapshot does NOT hand back the apply window', async () => {
+  // A position absent from the snapshot is `unmatched` — checked against
+  // nothing, repaired by nobody. Pruning its stamp handed back the whole
+  // six-hour window; measured, a snapshot flickering every other pass turned
+  // 17 fetches and 17 amends an hour into 510 of each.
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const amends = []
+  const run = (nowMs, broker) => runProtectionAudit(db, [targetlessRow()], broker, {
+    nowMs, accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { amends.push(f.positionId); return { ok: false, error: 'broker said no' } },
+  })
+  await run(t0, [targetlessPos()])
+  await run(t0 + 60_000, [])                 // snapshot flickers out
+  await run(t0 + 120_000, [targetlessPos()]) // and back
+  assert.deepEqual(amends, ['P1'], 'the refused amend is not retried a minute later')
+  assert.deepEqual(
+    JSON.parse(getState(db, 'acct:A:targetless_apply_attempts_json') || '{}'), { P1: t0 })
+})
+
+test('the window IS handed back when the snapshot proves the target landed', async () => {
+  // The other side of the same rule: evidence, not absence.
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const amends = []
+  const run = (nowMs, broker) => runProtectionAudit(db, [targetlessRow()], broker, {
+    nowMs, accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { amends.push(f.positionId); return { ok: true } },
+  })
+  await run(t0, [targetlessPos()])
+  await run(t0 + 60_000, [{ ...targetlessPos(), takeProfit: 5.4 }]) // verified repaired
+  assert.deepEqual(JSON.parse(getState(db, 'acct:A:targetless_apply_attempts_json') || '{}'), {})
+  await run(t0 + 120_000, [targetlessPos()]) // lost again
+  assert.deepEqual(amends, ['P1', 'P1'], 'losing a target twice is acted on at once')
+})
+
+test('a long-expired stamp is swept on age, so the map cannot grow without bound', async () => {
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs: t0, accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => ({ ok: false }),
+  })
+  // The position vanishes from the book and the broker entirely.
+  await runProtectionAudit(db, [], [], { nowMs: t0 + 40 * 3600_000, accountId: 'A' })
+  assert.deepEqual(JSON.parse(getState(db, 'acct:A:targetless_apply_attempts_json') || '{}'), {})
+})
+
+test('MINOR: a manual position is the human’s own and is never amended', async () => {
+  // profit-keeper.js and loss-guardian.js both pair manual with external. This
+  // guard did not, so a position the owner placed through the bot was amended
+  // while the identical one placed at the broker was not.
+  const db = initDB(':memory:')
+  const applied = []
+  const lines = await captureLog(() => runProtectionAudit(db,
+    [targetlessRow('PM1', 'GBPAUD', { source: 'manual' })], [targetlessPos('PM1', 'GBPAUD')], {
+      accountId: 'A',
+      suggestTarget: async () => ({ tp: 2.1, basis: 'HVN' }),
+      applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+    }))
+  assert.deepEqual(applied, [])
+  assert.ok(lines.some(l => /1 manual \(left alone — the human's own\)/.test(l)), lines.join('\n'))
+})
+
+test('source matching is case- and whitespace-insensitive', async () => {
+  const db = initDB(':memory:')
+  const applied = []
+  for (const src of ['External', ' EXTERNAL ', 'Manual']) {
+    await runProtectionAudit(db, [targetlessRow('PC' + src.length, 'GBPAUD', { source: src })],
+      [targetlessPos('PC' + src.length, 'GBPAUD')], {
+        accountId: 'A',
+        suggestTarget: async () => ({ tp: 2.1, basis: 'HVN' }),
+        applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
+      })
+  }
+  assert.deepEqual(applied, [], 'an exemption must not turn on the casing of a text column')
+})
+
+test('a pass works at most maxApplyPerPass positions, and the rest are named', async () => {
+  // At 2–4s a round trip, an unbounded first pass over 17 positions overruns
+  // the fast monitor's 60s band and parks protection_band at ok:false.
+  const db = initDB(':memory:')
+  const rows = [], pos = []
+  for (let i = 0; i < 7; i++) {
+    rows.push({ ...targetlessRow('Q' + i, 'SYM' + i), id: i + 1 })
+    pos.push(targetlessPos('Q' + i, 'SYM' + i))
+  }
+  const amends = []
+  const lines = await captureLog(() => runProtectionAudit(db, rows, pos, {
+    accountId: 'A', maxApplyPerPass: 2,
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { amends.push(f.positionId); return { ok: true } },
+  }))
+  assert.deepEqual(amends, ['Q0', 'Q1'])
+  const line = lines.find(l => /targetless —/.test(l))
+  assert.match(line, /5 bot-owned \(over this pass’s work cap\)/)
+})
+
+test('the cap spreads the work across passes rather than dropping it', async () => {
+  const db = initDB(':memory:')
+  const rows = [], pos = []
+  for (let i = 0; i < 4; i++) {
+    rows.push({ ...targetlessRow('S' + i, 'SYM' + i), id: i + 1 })
+    pos.push(targetlessPos('S' + i, 'SYM' + i))
+  }
+  const amends = []
+  const opts = { accountId: 'A', maxApplyPerPass: 2,
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { amends.push(f.positionId); return { ok: true } } }
+  await runProtectionAudit(db, rows, pos, { ...opts, nowMs: 1000 })
+  await runProtectionAudit(db, rows, pos, { ...opts, nowMs: 2000 })
+  assert.deepEqual(amends, ['S0', 'S1', 'S2', 'S3'])
+})
+
+test('the deferred class never claims an outcome target-restore did not deliver', async () => {
+  const db = initDB(':memory:')
+  const lines = await captureLog(() => runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => ({ ok: true }),
+    applyExcludeIds: new Set(['P1']),
+  }))
+  const line = lines.find(l => /targetless —/.test(l))
+  assert.match(line, /1 bot-owned \(deferred to target-restore\)/)
+  assert.ok(!/restored/.test(line), 'the audit cannot observe what restore will do')
+})
+
+// ---------------------------------------------------------------------------
+// A SIXTY-SECOND BLIP IS NOT A SIX-HOUR SILENCE (17-09-2026, third review).
+//
+// The claim is stamped BEFORE the amend — that is what closes the two-pass race
+// — but it meant a transient WS failure muted a position for the full window.
+// Measured in the review's cost run: three positions refused on a read failure,
+// all three unreachable for six hours, because the prune only clears a stamp
+// once the position stops being targetless and a refused position stays
+// targetless. So the window is now reason-dependent.
+// ---------------------------------------------------------------------------
+
+test('a RETRYABLE refusal shortens the window instead of burning it', async () => {
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const tries = []
+  const run = (nowMs, result) => runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs, accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => { tries.push(nowMs); return result },
+  })
+  await run(t0, { ok: false, retryable: true, error: 'could not re-read the position' })
+  await run(t0 + 60_000, { ok: true })            // still inside the short window
+  assert.deepEqual(tries, [t0], 'not retried a minute later — that would be the storm')
+  await run(t0 + 6 * 60_000, { ok: true })        // past the 5-minute retry window
+  assert.deepEqual(tries, [t0, t0 + 6 * 60_000], 'and retried once it expires, not in six hours')
+})
+
+test('a NON-retryable refusal keeps the full window', async () => {
+  // "It already holds a target", "the read says another position", "the target
+  // is on the wrong side" — the broker gives the same answer tomorrow.
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const tries = []
+  const run = (nowMs) => runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs, accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => { tries.push(nowMs); return { ok: false, error: 'already holds a take profit at 5.9' } },
+  })
+  await run(t0)
+  await run(t0 + 6 * 60_000)
+  await run(t0 + 3 * 3600_000)
+  assert.deepEqual(tries, [t0])
+  await run(t0 + 7 * 3600_000)
+  assert.equal(tries.length, 2, 'the full window still applies where the answer is settled')
+})
+
+test('an applyTarget that THROWS is transient — nothing was established', async () => {
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const tries = []
+  const run = (nowMs, throwIt) => runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs, accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => { tries.push(nowMs); if (throwIt) throw new Error('network'); return { ok: true } },
+  })
+  await run(t0, true)
+  await run(t0 + 6 * 60_000, false)
+  assert.deepEqual(tries, [t0, t0 + 6 * 60_000])
+})
+
+test('the backed-off window is still a WINDOW — the race stays closed inside it', async () => {
+  // Rewinding the stamp must not be the same as deleting it.
+  const db = initDB(':memory:')
+  const t0 = 1_800_000_000_000
+  const tries = []
+  const pass = (nowMs) => runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    nowMs, accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => { tries.push(nowMs); return { ok: false, retryable: true, error: 'ws timeout' } },
+  })
+  await pass(t0)
+  await Promise.all([pass(t0 + 30_000), pass(t0 + 30_000)])
+  assert.deepEqual(tries, [t0], 'two concurrent passes inside the short window still amend nothing')
+})
+
+test('the default work cap is ONE per pass', async () => {
+  // Lowered from 3 until the band cost is measured: each apply now opens a
+  // live WS read, serially, inside a 60-second band.
+  const db = initDB(':memory:')
+  const rows = [], pos = []
+  for (let i = 0; i < 4; i++) {
+    rows.push({ ...targetlessRow('Z' + i, 'SYM' + i), id: i + 1 })
+    pos.push(targetlessPos('Z' + i, 'SYM' + i))
+  }
+  const amends = []
+  await runProtectionAudit(db, rows, pos, {
+    accountId: 'A', // maxApplyPerPass not passed — the default is the subject
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f) => { amends.push(f.positionId); return { ok: true } },
+  })
+  assert.deepEqual(amends, ['Z0'])
+  assert.equal(MAX_APPLY_PER_PASS, 1)
 })

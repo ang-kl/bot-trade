@@ -83,3 +83,94 @@ test('the two rows that feed the fallback actually SELECT current_tp', () => {
       `${rel} reads r.current_tp but never selects it`)
   }
 })
+
+// ---------------------------------------------------------------------------
+// THE MIRROR, AND A WIDER NET (17-09-2026, third review).
+//
+// This file exists because "a call site that forgot would throw during a live
+// stop move". Everything above it scans for take-profit intent only — yet
+// `assertAmendIntent` is now symmetric, and the stop half is the HIGHER-RISK
+// one: a forgotten take profit is upside forgone, a forgotten stop is unbounded
+// downside on a live position.
+//
+// The file list was also the four sites measured wrong on 2026-08-22. Five more
+// modules call amendPosition and none were scanned: the two that write
+// protection on adopted positions (tp-suggest, target-restore), the shared door
+// behind the HTTP route and the Telegram button (position-protect), and the two
+// book paths (restrategize, momentum-book).
+// ---------------------------------------------------------------------------
+
+/**
+ * Every amend call, however it is reached. The original `amendCalls` matches
+ * `amendPosition(` only; five of the nine sites below call it through an
+ * injected local (`amend(...)`, `deps.amend(...)`), which is exactly how they
+ * stayed outside this file's net.
+ */
+function anyAmendCalls(code) {
+  const out = []
+  const re = /(?:deps\.|exec\.)?(?:exec)?[aA]mendPosition\(|\bamend\(/g
+  let m
+  while ((m = re.exec(code))) out.push(code.slice(m.index, m.index + 420))
+  return out
+}
+
+/**
+ * A call that passes a PRE-BUILT object (`amend(creds, args)`) carries no legs
+ * at the call site, so the slice cannot answer for it. Rather than pretend, the
+ * scan says so and falls back to asking whether the FILE sets that leg at all —
+ * a weaker claim, stated as one.
+ */
+const passesPrebuiltObject = (call) => /amend(?:Position)?\(\s*[A-Za-z_$][\w$]*\s*,\s*[A-Za-z_$][\w$]*\s*\)/.test(call)
+
+const legPresent = (call, fileSrc, re) => (passesPrebuiltObject(call) ? re.test(fileSrc) : re.test(call))
+
+const ALL_SITES = [
+  ['./services/profit-keeper.js', 'the SL ratchet'],
+  ['./services/loss-guardian.js', 'the protective stop on a naked position'],
+  ['./services/trade-guard.js', 'the break-even / trailing move'],
+  ['./services/tp-suggest.js', 'the target applied to an adopted position'],
+  ['./services/target-restore.js', 'the recorded target put back'],
+  ['./services/position-protect.js', 'the HTTP route and the Telegram button'],
+  ['./services/restrategize.js', 'the re-bracket'],
+  ['./services/momentum-book.js', "the book's trail"],
+  ['./loop.js', 'the strategy loop'],
+]
+
+for (const [rel, what] of ALL_SITES) {
+  test(`${rel} — ${what} states its STOP-LOSS intent too`, () => {
+    const src = read(rel)
+    const calls = anyAmendCalls(src)
+    assert.ok(calls.length > 0, `no amend call found in ${rel} — this test's anchor is gone`)
+    for (const call of calls) {
+      assert.ok(legPresent(call, src, /stopLoss|clearStopLoss/),
+        `an amend call in ${rel} states no stop-loss intent — amend REPLACES, so it would clear the stop (and now throws)`)
+    }
+  })
+
+  test(`${rel} — ${what} states its take-profit intent`, () => {
+    const src = read(rel)
+    for (const call of anyAmendCalls(src)) {
+      assert.ok(legPresent(call, src, /takeProfit|clearTakeProfit/),
+        `an amend call in ${rel} states no take-profit intent`)
+    }
+  })
+}
+
+test('the scan can actually fail — both halves, proven on a synthetic call', () => {
+  // A scan whose assertion cannot go red is the failure this file warns about.
+  const tpOnly = anyAmendCalls(strip('await amendPosition(creds, { positionId: 1, takeProfit: 2 })'))
+  assert.equal(tpOnly.length, 1)
+  assert.ok(!/stopLoss|clearStopLoss/.test(tpOnly[0]), 'the stop half would have caught this')
+
+  const slOnly = anyAmendCalls(strip('await amendPosition(creds, { positionId: 1, stopLoss: 2 })'))
+  assert.equal(slOnly.length, 1)
+  assert.ok(!/takeProfit|clearTakeProfit/.test(slOnly[0]), 'the target half would have caught this')
+
+  // An injected-local call is seen too, or five of the nine files are vacuous.
+  assert.equal(anyAmendCalls(strip('await amend(creds, { positionId: 1, stopLoss: 2 })')).length, 1)
+  // The pre-built-object fallback is recognised as such, not silently passed.
+  assert.equal(passesPrebuiltObject('amend(creds, args)'), true)
+  assert.equal(passesPrebuiltObject('amend(creds, { stopLoss: 1 })'), false)
+  // And the comment stripper still works, or every scan above is vacuous.
+  assert.ok(!strip('// amendPosition(creds, { stopLoss: 1 })').includes('amendPosition'))
+})

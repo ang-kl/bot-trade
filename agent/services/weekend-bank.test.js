@@ -208,3 +208,117 @@ test('book exemption: the loop says why a winner was not banked', () => {
   assert.match(src, /wb\.exempt\?\.length\) log\(/)
   assert.match(src, /book rows are exempt from the sweep/)
 })
+
+// ---------------------------------------------------------------------------
+// THE NULL-position_id HOLE (16-09-2026, review) — the test that could not
+// exist while the rule was a local query.
+//
+// `momentum_book.position_id` is written once at insert and is NULL for the
+// resting-limit-then-fill path the book uses at closed markets. Nothing
+// backfills it. The local `bookHeldPositionIds` filtered `IS NOT NULL`, so
+// that row was not in the held set and this sweep would have CLOSED a momentum
+// runner ahead of a weekend — against the book's whole premise that the trail
+// is the exit. It stayed invisible because the exemption visibly works on every
+// row that DOES carry a position id.
+// ---------------------------------------------------------------------------
+
+/** A book row from the resting-limit path: a trade, but no position id yet. */
+function bookRowNoPositionId(db, accountId, tradeId, symbol = 'GD.US', status = 'open') {
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status)
+              VALUES (?, ?, ?, NULL, 'long', 362.43, 345.46, 5.6, 1, '2026-07-16T13:33:00Z', ?)`)
+    .run(tradeId, String(accountId), symbol, status)
+}
+
+/** The trade the book opened, carrying the broker position id the book lacks. */
+function tradeFor(db, accountId, positionId, symbol = 'GD.US') {
+  return db.prepare('INSERT INTO trades (symbol,side,status,account_id,ctrader_position_id) VALUES (?,?,?,?,?)')
+    .run(symbol, 'long', 'open', String(accountId), String(positionId)).lastInsertRowid
+}
+
+test('THE HOLE: a book row with a NULL position_id is exempt from the weekend bank', async () => {
+  const db = bankDb()
+  const tid = tradeFor(db, CREDS.accountId, 777)
+  bookRowNoPositionId(db, CREDS.accountId, tid)
+  const closed = []
+  const r = await runWeekendBank(db, CREDS, [POS(777)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [], 'a momentum runner must not be banked ahead of a weekend')
+  assert.deepEqual(r.exempt, [{ symbol: 'GD.US', positionId: 777 }], 'and the skip is recorded with its reason')
+})
+
+test('the NULL-position_id exemption is per account too', async () => {
+  const db = bankDb()
+  const tid = tradeFor(db, '46130058', 888)
+  bookRowNoPositionId(db, '46130058', tid)
+  const closed = []
+  await runWeekendBank(db, CREDS, [POS(888)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [888], "another account's book row is another position")
+})
+
+test('a CLOSED book row with a NULL position_id shields nothing', async () => {
+  const db = bankDb()
+  const tid = tradeFor(db, CREDS.accountId, 999)
+  bookRowNoPositionId(db, CREDS.accountId, tid, 'GD.US', 'closed')
+  const closed = []
+  await runWeekendBank(db, CREDS, [POS(999)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [999], 'the book has let this one go')
+})
+
+test('the toggle still switches the WHOLE exemption off, trade-id half included', async () => {
+  const db = bankDb()
+  const tid = tradeFor(db, CREDS.accountId, 1111)
+  bookRowNoPositionId(db, CREDS.accountId, tid)
+  setState2(db, 'weekend_bank_book_exempt', 'false')
+  const closed = []
+  await runWeekendBank(db, CREDS, [POS(1111)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [1111])
+})
+
+test('a position with no trade row at all is still bankable — no exemption by accident', async () => {
+  const db = bankDb()
+  const tid = tradeFor(db, CREDS.accountId, 1212)
+  bookRowNoPositionId(db, CREDS.accountId, tid)
+  const closed = []
+  // 1313 is a different position; the book's held trade must not shield it.
+  await runWeekendBank(db, CREDS, [POS(1313)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [1313])
+})
+
+test('WIRING: the weekend bank uses the shared rule, not a local query', async () => {
+  // The defect being pinned is a rule that existed in two files with two
+  // definitions, one of them wrong. A source test is the last resort and this
+  // is its case: "which module answers this question" is invisible from the
+  // behaviour once both give the same answer. Comments are stripped first —
+  // `book-held` appears in prose in both files.
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const url = await import('node:url')
+  const dir = path.dirname(url.fileURLToPath(import.meta.url))
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n')
+  assert.equal(strip('x // book-held.js').includes('book-held'), false, 'comment stripper works')
+
+  for (const f of ['weekend-bank.js', 'naked-position-guard.js']) {
+    const src = strip(fs.readFileSync(path.join(dir, f), 'utf8'))
+    assert.match(src, /from '\.\/book-held\.js'/, `${f} must import the shared rule`)
+    assert.ok(!/SELECT\s+(position_id|trade_id)\s+FROM\s+momentum_book/.test(src),
+      `${f} still carries its own copy of the book-held query`)
+  }
+  // And the shared module is the only place the query lives.
+  const shared = strip(fs.readFileSync(path.join(dir, 'book-held.js'), 'utf8'))
+  assert.match(shared, /SELECT position_id FROM momentum_book/)
+  assert.match(shared, /SELECT trade_id FROM momentum_book/)
+})
+
+test('NO ACCOUNT, NO EXEMPTION: an absent accountId must not exempt everything', async () => {
+  // The old local helper did `String(accountId)`, so an absent id became the
+  // string "undefined", matched nothing, and exempted nothing. Handing `null`
+  // to the shared rule means "every account" — the opposite default, reached by
+  // accident, on the one guard whose job is to CLOSE before a gap.
+  const db = bankDb()
+  bookRow(db, CREDS.accountId, 1414)
+  const closed = []
+  const { accountId, ...noAccount } = CREDS
+  assert.ok(accountId, 'the fixture does carry one; this test removes it')
+  await runWeekendBank(db, noAccount, [POS(1414)], { deps: fakeDeps(closed), now: FRI_2030 })
+  assert.deepEqual(closed, [1414], 'sweep normally rather than exempting the whole book')
+})

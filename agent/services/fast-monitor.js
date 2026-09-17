@@ -552,10 +552,23 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
   // its own overlap guard, and it is where the loop's watchdog lives — so it
   // keeps auditing precisely when the loop is the thing that broke. §70.7:
   // the five-minute loop is never the sole position protector.
+  //
+  // UNDER THE SAME BUDGET AS EVERY OTHER BAND JOB (17-09-2026, third review).
+  // It was the one job without one, and it became the one job that can block on
+  // the broker: since the applier re-reads each position LIVE before amending,
+  // a pass can open several WS sessions, serially. `wsReconcile` is
+  // `withRetry(..., 2)` at a 25s timeout with 2s/4s backoff — 81s worst case
+  // for a single read — so one hung apply parked the whole band, flipped
+  // `protection_band` red, and because this block runs AFTER the keeper and the
+  // guardian, delayed the next pass's stop ratchet. Protection having its own
+  // path (§43) is not protection having an unbounded one.
   try {
     if (creds?.ready) {
       const { runProtectionAuditAllAccounts } = await import('./naked-position-guard.js')
-      const pa = await runProtectionAuditAllAccounts(db, creds, deps)
+      const paRes = await withBudget('protection_audit', 45_000,
+        () => runProtectionAuditAllAccounts(db, creds, deps))
+      if (paRes.error) throw paRes.error
+      const pa = paRes.value
       if (pa.naked || pa.targetless || pa.phantom) {
         console.warn(`[fast-monitor] protection audit: ${pa.naked} naked, ${pa.targetless} targetless, ${pa.phantom} stop disagreement(s) across ${pa.accounts} account(s)`)
       }
