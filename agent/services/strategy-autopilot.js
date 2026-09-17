@@ -25,6 +25,7 @@ import { backtestStageStrategies } from './stage-matrix.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { ARM_BAR } from './edge-bars.js'
 import { persistSweepHistogram } from './divergence.js'
+import { recordArmingChange } from './arming-log.js'
 
 const RUN_EVERY_MS = 22 * 3600_000 // legacy default (fallback only)
 const BUSY_MS = 10 * 60_000        // US session — the action window
@@ -456,6 +457,12 @@ export function applyChanges(db, changes, opts = {}) {
     m[sym] = m[sym].filter(x => x !== tf)
     if (m[sym].length === 0) delete m[sym]
   }
+  // PR-S: the autopilot arms the GLOBAL list directly rather than through
+  // setStage, so its writes would have been the ledger's blind spot — and it
+  // is the actor that RE-ARMS what the breaker and the watchdog retired, which
+  // makes it exactly the one an arming history must not omit. Captured before
+  // the mutation, recorded after the write lands.
+  const armedBefore = new Set(enabled)
   for (const c of changes.arm) {
     if (c.kind === 'strategy') enabled.add(c.strategy)
     if (c.kind === 'matrix') addTf(autoM, c.symbol, c.timeframe)
@@ -466,6 +473,15 @@ export function applyChanges(db, changes, opts = {}) {
     if (c.kind === 'pending') dropTf(pendM, c.symbol, c.timeframe)
   }
   setState(db, 'enabled_strategies_json', JSON.stringify([...enabled]))
+  for (const c of changes.arm) {
+    if (c.kind !== 'strategy' || armedBefore.has(c.strategy)) continue
+    recordArmingChange(db, {
+      scope: null, kind: 'strategy', key: c.strategy, stage: 'trade', from: false, to: true,
+      actor: 'strategy_autopilot',
+      reason: c.why || c.reason || 'nightly backtest arming',
+      evidence: { change: c },
+    })
+  }
   setState(db, 'autotrade_matrix_json', Object.keys(autoM).length ? JSON.stringify(autoM) : null)
   setState(db, 'pending_matrix_json', Object.keys(pendM).length ? JSON.stringify(pendM) : null)
   // TWO-WAY, since 05-08-2026. It used to be `if (…length) setState(…, 'true')`

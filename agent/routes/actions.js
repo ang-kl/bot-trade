@@ -22,6 +22,7 @@ import { amendPosition as execAmendPosition, closePosition as execClosePosition,
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
 import { setStage, accountStageTallies, unpinTradeStageEverywhere } from '../services/stage-matrix.js'
+import { recordArmingChange } from '../services/arming-log.js'
 import { loadManualGuards, checkAddCap, inheritedBracket, mirroredBracket, isDuplicateCall } from '../services/manual-position-guards.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
@@ -2833,7 +2834,18 @@ export default function actionsRouter(db, deps = {}) {
     }
     const on = new Set(requested)
     const keys = STRATEGY_KEYS.filter(k => on.has(k)) // registry order
+    // PR-S: captured before the write — this route replaces the whole list,
+    // so the only way to know which cells it MOVED is to diff it.
+    const wasOn = new Set(enabledStrategies(db, getState).map(s => s.key))
     setState(db, 'enabled_strategies_json', JSON.stringify(keys))
+    for (const k of STRATEGY_KEYS) {
+      if (on.has(k) === wasOn.has(k)) continue
+      recordArmingChange(db, {
+        scope: null, kind: 'strategy', key: k, stage: 'trade', from: wasOn.has(k), to: on.has(k),
+        actor: 'owner_route', reason: 'POST /actions/strategies set the global enabled list',
+        evidence: { route: '/actions/strategies', requested },
+      })
+    }
     // Back-compat: the old cup-handle toggle reads this flag.
     setState(db, 'cup_handle_enabled', on.has('cup_handle') ? 'true' : 'false')
     // A GLOBAL OFF IS A KILL SWITCH (owner "go", 02-09-2026): every strategy
@@ -3008,7 +3020,15 @@ export default function actionsRouter(db, deps = {}) {
     try {
       // accountId writes THAT account's overlay and nothing else; absent, the
       // global matrix — byte-identical to the behaviour before overlays.
-      const matrix = setStage(db, { kind, key, stage, on: on === true, accountId }, { getState, setState })
+      // PR-S: a human flipped this cell. Recorded as such, so an automatic
+      // disarm and the owner's own word are never confused for each other in
+      // the ledger — the distinction is the whole reason the hand-pin
+      // exemption exists.
+      const matrix = setStage(db, {
+        kind, key, stage, on: on === true, accountId,
+        actor: 'owner_route', reason: 'POST /actions/stage-matrix',
+        evidence: { route: '/actions/stage-matrix', accountId: accountId == null ? null : String(accountId) },
+      }, { getState, setState })
       // A GLOBAL OFF IS A KILL SWITCH (owner "go", 02-09-2026): the owner
       // turning a strategy's trade stage off globally also clears its
       // per-account pins, because pins win at the gate and a pinned account
@@ -3102,9 +3122,15 @@ export default function actionsRouter(db, deps = {}) {
       const cur = JSON.parse(getState(db, 'enabled_strategies_json') || 'null')
       if (Array.isArray(cur)) {
         const keys = new Set(cur.filter(k => STRATEGY_KEYS.includes(k)))
+        const was = keys.has('cup_handle')
         if (on) keys.add('cup_handle'); else keys.delete('cup_handle')
         // fib is a normal toggle now — do not force it back in
         setState(db, 'enabled_strategies_json', JSON.stringify(STRATEGY_KEYS.filter(k => keys.has(k))))
+        recordArmingChange(db, {
+          scope: null, kind: 'strategy', key: 'cup_handle', stage: 'trade', from: was, to: on,
+          actor: 'owner_route', reason: 'POST /actions/cup-handle-toggle',
+          evidence: { route: '/actions/cup-handle-toggle' },
+        })
       }
     } catch { /* corrupt list — leave it; enabledStrategies() falls back safely */ }
     res.json({ on: getState(db, 'cup_handle_enabled') === 'true' })

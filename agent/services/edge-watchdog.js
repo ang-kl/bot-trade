@@ -184,7 +184,15 @@ export function runEdgeWatchdog(db, { notify } = {}) {
       // `_all` pins on every account a pin that always held left the
       // watchdog unable to disarm anything.
       const ownVerdictScopes = accountsWithOwnNoEdge(db, key, cfg)
-      const scopes = disarmStrategyEverywhere(db, io, key, { neverZero: false, exemptHandPinned: true, ownVerdictScopes })
+      const scopes = disarmStrategyEverywhere(db, io, key, {
+        neverZero: false, exemptHandPinned: true, ownVerdictScopes,
+        // PR-S: the decay figures travel with the write, so a later reader
+        // can see WHICH measurement retired the strategy rather than only
+        // that something did.
+        actor: 'edge_watchdog',
+        reason: `no edge: expectancy ${Number(e.expectancy).toFixed(2)}, PF ${Number(pf).toFixed(2)} over ${e.trades} closes`,
+        evidence: { expectancy: e.expectancy, profitFactor: pf, winRate: e.winRate, trades: e.trades, net: e.net, ownVerdictScopes },
+      })
       const heldPinned = [...(scopes.held || [])]
       if (scopes.length === 0) continue
       setState(db, seenKey, String(e.newestId))

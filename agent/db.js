@@ -511,6 +511,29 @@ const TABLES = `
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- PR-S (17-09-2026): WHO armed or disarmed a strategy cell, and WHY.
+  -- The overlay cell is a bare boolean, so on 17-09 the question "why is
+  -- tsmom_long not armed on three accounts" had no answer that outlived the
+  -- log window. Written by services/arming-log.js from stage-matrix.js's
+  -- single write chokepoint; only writes that CHANGED a cell become rows
+  -- (plus decision='held' rows, where an owner pin blocked a disarm — that is
+  -- a decision too). Never blocks the write it describes.
+  CREATE TABLE IF NOT EXISTS arming_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    at           TEXT NOT NULL DEFAULT (datetime('now')),
+    scope        TEXT NOT NULL,   -- 'global' | account id
+    kind         TEXT NOT NULL,   -- 'strategy' | 'filter'
+    key          TEXT NOT NULL,   -- strategy or filter key
+    stage        TEXT NOT NULL,   -- scan | backtest | trade | manage
+    from_value   TEXT NOT NULL,   -- 'true' | 'false' | 'unset' — an absent cell is not a false one
+    to_value     TEXT NOT NULL,
+    decision     TEXT NOT NULL,   -- 'set' | 'held' (a pin outvoted a disarm verdict)
+    actor        TEXT NOT NULL,   -- see ARMING_ACTORS; an unlisted actor is recorded and reported
+    reason       TEXT,
+    evidence_json TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_arming_log_cell ON arming_log(scope, kind, key, stage, id DESC);
+
   -- P10 (2026-07-26): the tweak journal's only recoverable source.
   -- monitored_positions keeps current flags (be_moved, scaled_out) and the
   -- LATEST review, not a timeline; action_log is a generic HTTP log;

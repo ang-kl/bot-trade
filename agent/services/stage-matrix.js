@@ -27,6 +27,7 @@
 
 import { readFileSync } from 'node:fs'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from './strategies.js'
+import { recordArmingChange } from './arming-log.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
 export const STAGES = ['scan', 'backtest', 'trade', 'manage']
@@ -142,7 +143,7 @@ export function stageOverlayKeys(db, getState, accountId) {
  *
  * @returns {string[]} account ids whose pin was actually removed
  */
-export function unpinTradeStageEverywhere(db, { getState, setState }, key) {
+export function unpinTradeStageEverywhere(db, { getState, setState }, key, { actor = 'owner_route', reason = 'global kill switch cleared the per-account pins' } = {}) {
   const ids = new Set()
   try { for (const r of db.prepare(`SELECT account_id FROM accounts`).all()) ids.add(String(r.account_id)) } catch { /* no registry */ }
   try {
@@ -156,9 +157,14 @@ export function unpinTradeStageEverywhere(db, { getState, setState }, key) {
     let changed = false
     const overlay = readJson(db, getState, acctMatrixKey(acct))
     if (overlay?.strategy?.[key] && typeof overlay.strategy[key].trade === 'boolean') {
+      const before = overlay.strategy[key].trade
       delete overlay.strategy[key].trade
       if (!Object.keys(overlay.strategy[key]).length) delete overlay.strategy[key]
       setState(db, acctMatrixKey(acct), JSON.stringify(overlay))
+      // PR-S: an unpin is a real arming change — the cell stops being the
+      // owner's word and starts following the global again. `to: undefined`
+      // records it as 'unset', which is not the same fact as 'false'.
+      recordArmingChange(db, { scope: acct, kind: 'strategy', key, stage: 'trade', from: before, to: undefined, actor, reason })
       changed = true
     }
     const legacy = readJson(db, getState, acctEnabledKey(acct))
@@ -314,18 +320,31 @@ export function loadStageMatrix(db, getState, accountId = null) {
  * Flip one cell. Trade-stage writes go to the LEGACY keys (single source of
  * truth); scan/backtest/manage go to stage_matrix_json.
  * Throws on unknown kind/key/stage or filter+manage (no such cell).
+ *
+ * PR-S (17-09-2026): `actor` and `reason` travel WITH the write. They are not
+ * optional decoration — they are the only durable record of why a cell holds
+ * the value it holds, and without them the answer to "why is this strategy off
+ * on this account" lives in a log line that scrolls away. `actor` defaults to
+ * 'unattributed' so no caller can be broken by the change, and
+ * `stage-matrix.test.js` pins that every production caller supplies a real
+ * one: a default nobody is forced off is a default everybody keeps.
  */
-export function setStage(db, { kind, key, stage, on, accountId = null }, { getState, setState }) {
+export function setStage(db, { kind, key, stage, on, accountId = null, actor = 'unattributed', reason = null, evidence = null }, { getState, setState }) {
   // With an accountId every write lands in that account's OVERLAY and nothing
   // else moves: the global matrix, and every other account, are untouched.
   const acct = accountId == null ? null : String(accountId)
   if (!STAGES.includes(stage)) throw new Error(`unknown stage '${stage}' — valid: ${STAGES.join(', ')}`)
   const flag = on === true
+  const attribution = { actor, reason, evidence }
 
   if (kind === 'strategy') {
     if (!STRATEGY_KEYS.includes(key)) throw new Error(`unknown strategy '${key}' — valid: ${STRATEGY_KEYS.join(', ')}`)
     if (stage === 'trade') {
       const enabled = armedTradeKeys(db, getState, acct)
+      // Captured BEFORE the mutation below: on the global branch the "cell" is
+      // membership of this list, and there is no stored cell to read it back
+      // from afterwards.
+      const wasArmed = enabled.has(key)
       if (flag) enabled.add(key); else enabled.delete(key)
       const keys = STRATEGY_KEYS.filter(k => enabled.has(k)) // registry order
       // NOTE: a global OFF here does NOT clear per-account pins. The owner's
@@ -343,15 +362,18 @@ export function setStage(db, { kind, key, stage, on, accountId = null }, { getSt
         // first so the other fourteen cells keep the value they had, then pin
         // just this one.
         migrateTradeOverlay(db, { getState, setState }, acct)
-        writeCell(db, { getState, setState }, acct, 'strategy', key, 'trade', flag)
+        writeCell(db, { getState, setState }, acct, 'strategy', key, 'trade', flag, attribution)
         return loadStageMatrix(db, getState, acct)
       }
       setState(db, 'enabled_strategies_json', JSON.stringify(keys))
       // Back-compat: the old cup-handle toggle reads this flag.
       setState(db, 'cup_handle_enabled', enabled.has('cup_handle') ? 'true' : 'false')
+      // The global list is not a stored cell, so its before/after is the
+      // membership captured above — recorded here rather than in writeCell.
+      recordArmingChange(db, { scope: null, kind: 'strategy', key, stage: 'trade', from: wasArmed, to: flag, ...attribution })
       return loadStageMatrix(db, getState)
     }
-    writeCell(db, { getState, setState }, acct, 'strategy', key, stage, flag)
+    writeCell(db, { getState, setState }, acct, 'strategy', key, stage, flag, attribution)
     return loadStageMatrix(db, getState, acct)
   }
 
@@ -361,26 +383,37 @@ export function setStage(db, { kind, key, stage, on, accountId = null }, { getSt
     if (stage === 'manage') throw new Error('filters have no Live Tweak & Close cell')
     if (stage === 'trade') {
       if (acct) {
-        writeCell(db, { getState, setState }, acct, 'filter', key, 'trade', flag)
+        writeCell(db, { getState, setState }, acct, 'filter', key, 'trade', flag, attribution)
         return loadStageMatrix(db, getState, acct)
       }
+      const wasOn = filterTradeDefault(getState(db, def.stateKey), def.key)
       setState(db, def.stateKey, flag ? 'true' : 'false')
+      recordArmingChange(db, { scope: null, kind: 'filter', key, stage: 'trade', from: wasOn, to: flag, ...attribution })
       return loadStageMatrix(db, getState)
     }
-    writeCell(db, { getState, setState }, acct, 'filter', key, stage, flag)
+    writeCell(db, { getState, setState }, acct, 'filter', key, stage, flag, attribution)
     return loadStageMatrix(db, getState, acct)
   }
 
   throw new Error(`unknown kind '${kind}' — valid: strategy, filter`)
 }
 
-/** Write ONE cell into the global matrix, or into an account's overlay. */
-function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag) {
+/**
+ * Write ONE cell into the global matrix, or into an account's overlay.
+ *
+ * PR-S: this is the single chokepoint for every stored cell, so the ledger
+ * row is written here and nowhere else. The previous value is read from the
+ * same `stored` object the write is about to replace — `undefined` when the
+ * cell has never been written, which the ledger keeps distinct from `false`.
+ */
+function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag, attribution = {}) {
   const target = accountId == null ? STATE_KEY : acctMatrixKey(accountId)
   const stored = readJson(db, getState, target) || {}
   stored[kind] = stored[kind] || {}
+  const before = stored[kind][key]?.[stage]
   stored[kind][key] = { ...stored[kind][key], [stage]: flag }
   setState(db, target, JSON.stringify(stored))
+  recordArmingChange(db, { scope: accountId, kind, key, stage, from: before, to: flag, ...attribution })
 }
 
 /**
@@ -405,7 +438,7 @@ function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag
  *
  * @returns {string[]} scopes changed: 'global' and/or account ids.
  */
-export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinned = false, ownVerdictScopes = [] } = {}) {
+export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinned = false, ownVerdictScopes = [], actor = 'unattributed', reason = null, evidence = null } = {}) {
   const { getState } = io
   const changed = []
   const held = []
@@ -435,9 +468,21 @@ export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exempt
     // environment the account is. The global list is never a pin.
     if (exemptHandPinned && scope != null && !own.has(scope)) {
       const cell = readJson(db, getState, acctMatrixKey(scope))?.strategy?.[key]?.trade
-      if (cell === true) { held.push(scope); continue }
+      if (cell === true) {
+        held.push(scope)
+        // PR-S rule 2: a pin that outvoted a verdict is a DECISION, and "why
+        // is this still armed" is the same question as "why is this off".
+        // Recorded with the verdict it held against, so the owner can see
+        // what their pin is costing rather than only that it exists.
+        recordArmingChange(db, {
+          scope, kind: 'strategy', key, stage: 'trade', from: true, to: true, decision: 'held',
+          actor, reason: reason ? `${reason} — HELD by the owner's pin on this account` : 'held by the owner\'s pin on this account',
+          evidence: { ...(evidence || {}), heldBy: 'hand_pin', ownVerdictScope: false },
+        })
+        continue
+      }
     }
-    setStage(db, { kind: 'strategy', key, stage: 'trade', on: false, accountId: scope }, io)
+    setStage(db, { kind: 'strategy', key, stage: 'trade', on: false, accountId: scope, actor, reason, evidence }, io)
     changed.push(scope == null ? 'global' : scope)
   }
   if (exemptHandPinned) changed.held = held
@@ -504,7 +549,11 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
       const pinned = isHandPinned(db, getState, accountId, key)
       if (done.has(key)) { (pinned ? out.unchanged : out.held).push(tag); continue }
       if (pinned) { out.unchanged.push(tag) } else {
-        setStage(db, { kind: 'strategy', key, stage: 'trade', on: true, accountId }, { getState, setState })
+        setStage(db, {
+          kind: 'strategy', key, stage: 'trade', on: true, accountId,
+          actor: 'boot_seed', reason: 'declared in agent/config/strategy-pins.json',
+          evidence: { file: 'agent/config/strategy-pins.json', seededOnce: true },
+        }, { getState, setState })
         out.applied.push(tag)
         log(`[boot] strategy pin …${accountId.slice(-4)}: ${key} ON for Auto Trade & Open (from config/strategy-pins.json)`)
       }

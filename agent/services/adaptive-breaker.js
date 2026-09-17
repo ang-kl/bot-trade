@@ -138,7 +138,15 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
         // left the breaker unable to disarm anything. Measured per account
         // on that account's closes only; the others' pins still hold.
         const ownVerdictScopes = accountsWithOwnStreak(db, key, cfg.streak)
-        const scopes = disarmStrategyEverywhere(db, io, key, { exemptHandPinned: true, ownVerdictScopes })
+        const scopes = disarmStrategyEverywhere(db, io, key, {
+          exemptHandPinned: true, ownVerdictScopes,
+          // PR-S: the figures that drove this, on the row. A disarm whose
+          // reason lives only in a log line is one the next investigation
+          // cannot confirm — which is exactly what happened on 17-09.
+          actor: 'adaptive_breaker',
+          reason: `loss streak ${streak} >= ${cfg.streak}`,
+          evidence: { streak, threshold: cfg.streak, ownVerdictScopes },
+        })
         const heldPinned = [...(scopes.held || [])]
         action = { strategy: key, streak, did: 'disarmed_strategy', scopes: [...scopes], heldPinned, ownVerdictScopes }
         // The autopilot honours a cool-off after a live disarm (02-09-2026):
@@ -151,7 +159,12 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
         // armed rather than going idle.
         const nextFilter = FILTER_DEFS.find(f => !matrix.filters.find(x => x.key === f.key)?.stages.trade)
         if (nextFilter) {
-          setStage(db, { kind: 'filter', key: nextFilter.key, stage: 'trade', on: true }, io)
+          setStage(db, {
+            kind: 'filter', key: nextFilter.key, stage: 'trade', on: true,
+            actor: 'adaptive_breaker',
+            reason: `loss streak ${streak} on ${key}, which is the last armed strategy — tightening entries instead of going dark`,
+            evidence: { streak, threshold: cfg.streak, strategy: key },
+          }, io)
           action = { strategy: key, streak, did: 'armed_filter', filter: nextFilter.key }
         } else {
           action = { strategy: key, streak, did: 'held_last_strategy' }

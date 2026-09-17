@@ -2516,6 +2516,26 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // PR-S: who armed or disarmed a strategy cell, and why. `?key=` narrows to
+  // one strategy, `?scope=` to one account (or 'global'); `?why=1` with a key
+  // and scope answers the single question this exists for — why is THIS cell
+  // in the state it is in — including the honest 'unrecorded' verdict for a
+  // cell written before the ledger existed.
+  router.get('/arming-log', async (req, res) => {
+    try {
+      const { armingLogView, whyCell } = await import('../services/arming-log.js')
+      const scope = req.query.scope === undefined ? undefined : (req.query.scope === 'global' ? null : String(req.query.scope))
+      const key = req.query.key === undefined ? undefined : String(req.query.key)
+      if (req.query.why && key) {
+        const { armedTradeKeys } = await import('../services/stage-matrix.js')
+        const current = armedTradeKeys(db, getState, scope ?? null).has(key)
+        return res.json(whyCell(db, { scope: scope ?? null, kind: 'strategy', key, stage: 'trade', current }))
+      }
+      res.json(armingLogView(db, { limit: Number(req.query.limit) || 200, scope, key }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // P6a: the shadow portfolio per side and profile — the sidecar's closed
   // shadow trades in R, each account's projection with its own risk budget.
   router.get('/tick-shadow', async (_req, res) => {
