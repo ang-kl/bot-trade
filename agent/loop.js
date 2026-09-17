@@ -4960,6 +4960,20 @@ async function runLoop(db) {
             if (line) { log(line); setState(db, 'arming_ratchet_logged_ms', String(Date.now())) }
           }
         } catch { /* a report must never break the pass it rides on */ }
+        // PR-AA: the OTHER half of the same picture. The ratchet above reports
+        // cells the automatic actors turned OFF; this reports the cells a
+        // human turned ON and what they are costing. Both are standing
+        // conditions, both ride this per-cycle phase beside the actor that
+        // creates them, both throttled to the hour — and deliberately NOT on
+        // the housekeeping band, which is eight-hourly (the PR-Y defect).
+        try {
+          const lastPin = Number(getState(db, 'hand_pin_logged_ms') || 0)
+          if (!Number.isFinite(lastPin) || Date.now() - lastPin > 60 * 60 * 1000) {
+            const { handPinLine } = await import('./services/hand-pin-watch.js')
+            const line = handPinLine(db)
+            if (line) { log(line); setState(db, 'hand_pin_logged_ms', String(Date.now())) }
+          }
+        } catch { /* a report must never break the pass it rides on */ }
         // PR-X: (account, symbol) pairs holding more than one active row. Every
         // such row is evaluated and exited SEPARATELY by the position manager,
         // which is why one symbol can log the same FULL_EXIT several times in
