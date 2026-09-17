@@ -1,0 +1,8 @@
+{
+  "_note": "OWNER ORDER (17-09-2026, 13:1x SGT): \"arm tsmom_long globally\". The global list (agent_state enabled_strategies_json) is the switch that decides which strategies an account trades when it carries no explicit cell of its own; armedTradeKeys lets a per-account cell override it, which is why the two accounts already running the momentum book kept running it while the other three did not. tsmom_long carries defaultOn:false in the registry, so unless this list names it the strategy is off everywhere that has no explicit true pin. The route that would normally do this (POST /actions/strategies) needs the bearer token, which has answered 401 since 07-09, so the order is carried out from the repo instead — the same way the momentum account, the strategy pins and the watchlist additions are.",
+  "_seedOnce": "Each key is applied AT MOST ONCE, recorded per key. This is deliberate and it matters: if the edge watchdog or the adaptive breaker later disarms one of these on measured evidence, the next boot must NOT put it back. An arm that reasserts itself every boot is a guard whose trigger can never hold — the exact shape CLAUDE.md failure mode #3 names. The owner ordered an ARM, not an exemption from the risk controls. To arm again after a disarm, bump the key's entry (see _reseed) or use the route once the token returns.",
+  "_reseed": "Appending a suffix after a colon makes a NEW seed record for the same strategy — e.g. \"tsmom_long:2\" re-arms tsmom_long once more without disturbing the first record. The suffix is stripped before the key is used.",
+  "arm": [
+    "tsmom_long"
+  ]
+}

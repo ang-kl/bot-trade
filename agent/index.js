@@ -360,6 +360,28 @@ try {
   } catch (err) {
     console.error(`[boot] watchlist additions seed failed (non-fatal): ${err.message}`)
   }
+  // PR-U: owner order 17-09-2026 "arm tsmom_long globally". The global list is
+  // what an account trades when it carries no explicit cell of its own, and
+  // tsmom_long is defaultOn:false — so this is the switch that decides whether
+  // the momentum book can enter on the three accounts that read "not armed".
+  // Seed-once per entry, so a later evidence-based disarm is not fought.
+  //
+  // PLACED AFTER the watchlist seed, not inside the horizons -> momentum ->
+  // pins -> watchlist chain, because those four pin each other's ADJACENCY by
+  // a bounded source regex (watchlists.test.js allows 700 characters between
+  // the pins seed and the watchlist seed). Inserting here broke that budget
+  // while the ordering it protects still held. This seed has no ordering
+  // dependency on any of them — it writes the global list, they write
+  // per-account cells and watchlists — so it moves rather than widening
+  // somebody else's guard to fit it.
+  try {
+    const { seedGlobalStrategiesFromConfig } = await import('./services/global-strategy-seed.js')
+    const gs = seedGlobalStrategiesFromConfig(db, { getState, setState }, { log: (m) => console.log(m) })
+    if (gs.error) console.error(`[boot] global strategy arm: ${gs.error}`)
+    else console.log(`[boot] global strategy arm: ${gs.armed.length} armed${gs.armed.length ? ` (${gs.armed.join(' ')})` : ''}, ${gs.present.length} already on, ${gs.seeded.length} seeded before and since disarmed (left off, by design)${gs.skipped.length ? `, skipped: ${gs.skipped.join('; ')}` : ''} (config/global-strategies.json)`)
+  } catch (err) {
+    console.error(`[boot] global strategy arm failed (non-fatal): ${err.message}`)
+  }
   // P3b: the owner's tick-observation declaration from the repo (11-09-2026,
   // "ACCT-DEMO-3 records first"), seeded once per file content, same rule
   // as the pins. The recorder itself records only on a sidecar started
