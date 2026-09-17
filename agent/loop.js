@@ -4954,6 +4954,30 @@ async function runLoop(db) {
             if (line) { log(line); setState(db, 'arming_ratchet_logged_ms', String(Date.now())) }
           }
         } catch { /* a report must never break the pass it rides on */ }
+        // PR-X: (account, symbol) pairs holding more than one active row. Every
+        // such row is evaluated and exited SEPARATELY by the position manager,
+        // which is why one symbol can log the same FULL_EXIT several times in
+        // a cycle — the behaviour the owner's 15-09 log showed for ABBV.US.
+        // Silent when there are none, which is itself the answer "one position
+        // per account". Hourly: a standing condition, not an event.
+        //
+        // IT RIDES HERE, ON A PER-CYCLE PHASE, AND NOT ON THE HOUSEKEEPING
+        // BAND WHERE PR-X FIRST PUT IT. That band is an EIGHT-HOUR wall clock
+        // (housekeepingDue), so an hourly throttle inside it is not a cadence
+        // of an hour — it is a cadence of eight, and the comment above it said
+        // "hourly" while the code could not deliver one. Measured 17-09 at
+        // 08:57 UTC: the arming-ratchet line (this phase) had printed within
+        // three minutes of deploy; the duplicate line had not printed at all,
+        // because the band had not come round. CLAUDE.md failure mode #3: a
+        // guard whose trigger is out of reach of what it guards.
+        try {
+          const lastDup = Number(getState(db, 'dup_positions_logged_ms') || 0)
+          if (!Number.isFinite(lastDup) || Date.now() - lastDup > 60 * 60 * 1000) {
+            const { duplicatePositionLine } = await import('./services/position-row-audit.js')
+            const line = duplicatePositionLine(db)
+            if (line) { log(line); setState(db, 'dup_positions_logged_ms', String(Date.now())) }
+          }
+        } catch { /* a report must never break the pass it rides on */ }
       } catch (err) {
         log(`Edge watchdog failed (non-fatal): ${err.message}`)
         await hbeat(db, 'edge_watchdog', false, err.message)
@@ -5504,20 +5528,6 @@ async function runLoop(db) {
       // ledger is to answer a question weeks after the disarm — the 17-09
       // investigation failed at roughly one hour.
       try { db.prepare("DELETE FROM arming_log WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
-      // PR-X: (account, symbol) pairs holding more than one active row. Every
-      // such row is evaluated and exited SEPARATELY by the position manager,
-      // which is why one symbol can log the same FULL_EXIT several times in a
-      // cycle — the behaviour the owner's 15-09 log showed for ABBV.US.
-      // Silent when there are none, which is itself the answer "one position
-      // per account". Hourly: a standing condition, not an event.
-      try {
-        const lastDup = Number(getState(db, 'dup_positions_logged_ms') || 0)
-        if (!Number.isFinite(lastDup) || Date.now() - lastDup > 60 * 60 * 1000) {
-          const { duplicatePositionLine } = await import('./services/position-row-audit.js')
-          const line = duplicatePositionLine(db)
-          if (line) { log(line); setState(db, 'dup_positions_logged_ms', String(Date.now())) }
-        }
-      } catch { /* a report must never break the pass it rides on */ }
       // RETURN THE FREED PAGES TO THE FILESYSTEM.
       //
       // Every prune above works, and every one of them has worked for months.
