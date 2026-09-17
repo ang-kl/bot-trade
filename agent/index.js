@@ -404,6 +404,29 @@ try {
   } catch (err) {
     console.error(`[boot] entry-mode policy seed failed (non-fatal): ${err.message}`)
   }
+  // POSITION HISTORY, BUILT ONCE AT BOOT (owner, 17-09-2026). The sweep also
+  // runs in the 8-hourly housekeeping band, but that band is not due for up to
+  // eight hours after a deploy — and the owner's actual ask is to be able to
+  // read two months of history NOW, not on the next housekeeping pass. So the
+  // first build happens here.
+  //
+  // It costs no broker call: every source is already local. The window is 90
+  // days rather than the sweep's 30, because this is the catch-up pass.
+  //
+  // WHAT IT PRINTS IS THE POINT. The `incomplete` count is two months of
+  // trades this system could not fully describe, and the ranked field list
+  // names what it still does not record about its own trading. A boot line
+  // reporting only the successes would be the reporting defect this repo
+  // keeps finding.
+  try {
+    const { backfillPositionHistory } = await import('./services/position-history.js')
+    const ph = backfillPositionHistory(db, { sinceMs: Date.now() - 90 * 86400_000 })
+    const worst = Object.entries(ph.missingCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 5)
+    console.log(`[boot] position history: ${ph.complete} complete · ${ph.incomplete} incomplete of ${ph.seen} closed position(s) in 90 days` +
+      (worst.length ? ` — most often missing: ${worst.map(([f, n]) => `${f} (${n})`).join(', ')}` : ''))
+  } catch (err) {
+    console.error(`[boot] position history build failed (non-fatal): ${err.message}`)
+  }
   const bf = backfillAccountIds(db)
   if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
   // Fold the retired per-account autotrade flags into accounts.mode, so
