@@ -43,6 +43,28 @@ test('POST /connect rebuilds the spot feed only when an input the feed reads has
   assert.match(main, /liveFeedHost = useHost;/,
     'the remembered inputs are restamped when a feed IS built, or the next compare is against stale state')
 
+  // CODEX P1: HttpServer runs every request on its own detached thread
+  // (http_server.cpp:54), so two /connect calls race. If the comparison and
+  // the unchanged path run outside connectMtx, request A can borrow
+  // spotFeed.get(), release vpoMtx, and call updateCredentials() on an object
+  // request B has stopped, joined and destroyed. connectMtx must be taken
+  // BEFORE the comparison, and exactly once (it is not recursive).
+  const lockAt = main.indexOf('std::lock_guard<std::mutex> restart(connectMtx)')
+  const compareAt = main.indexOf('bool feedInputsChanged = !spotFeed')
+  assert.ok(lockAt > 0 && compareAt > 0)
+  assert.ok(lockAt < compareAt,
+    'connectMtx is held before the live feed is inspected — otherwise a concurrent /connect is a use-after-free')
+  assert.equal((main.match(/std::lock_guard<std::mutex> restart\(connectMtx\)/g) || []).length, 1,
+    'and taken exactly once: connectMtx is not recursive, so a second acquire deadlocks /connect')
+
+  // CODEX P2: the feed must be built for the SAME host the engine was given.
+  // `host.empty() ? "live…" : host` sent a demo-pinned sidecar's feed to LIVE
+  // whenever /connect omitted host, and caching useHost would have frozen it.
+  assert.match(main, /^\s*useHost, clientId, clientSecret, accessToken, accountId,$/m,
+    'the SpotFeed is constructed with useHost')
+  assert.doesNotMatch(main, /host\.empty\(\) \? "live\.ctraderapi\.com" : host, clientId, clientSecret, accessToken, accountId,/,
+    'and never with the raw/defaulted host, which split-brained the feed from the engine')
+
   // The feed must actually read the refreshed values, under the lock — a
   // setter nothing consults is the "repair that nothing calls" shape.
   const feed = src('../../cpp-exec/src/spot_feed.cpp')

@@ -953,6 +953,14 @@ int main(int argc, char** argv) {
       // HOST and ACCOUNT ID are baked into a live subscription, so a change to
       // either is a real restart. Client id / secret / token are read only at
       // the NEXT connect, so they go in place.
+      // CODEX P1 (17-09-2026), verified: HttpServer runs every request on its
+      // own detached thread (http_server.cpp:54), so two /connect calls race.
+      // The comparison and the unchanged path MUST be under connectMtx with
+      // the restart path, or request A can borrow spotFeed.get() under vpoMtx,
+      // release it, and then call updateCredentials() on an object request B
+      // has already stopped, joined and destroyed — a use-after-free. The
+      // liveFeed* cache below is racy for the same reason.
+      std::lock_guard<std::mutex> restart(connectMtx);
       bool feedInputsChanged = !spotFeed
           || useHost != liveFeedHost
           || accountId != liveFeedAccountId
@@ -979,7 +987,6 @@ int main(int argc, char** argv) {
       // backoff. Health timeouts read as a dead process and Railway restarts
       // it, with no crash to explain why. So: take the old feed OUT under the
       // lock, release, then stop and join it with nothing held.
-      std::lock_guard<std::mutex> restart(connectMtx);
       std::unique_ptr<SpotFeed> retiring;
       std::thread retiringThread;
       {
@@ -997,7 +1004,15 @@ int main(int argc, char** argv) {
       vpo::VpoDispatcher* dispatcherPtr = vpoDispatcher.get();
       TrailEngine* trailPtr = trailTickEnabled ? &trailEngine : nullptr;
       spotFeed = std::make_unique<SpotFeed>(
-          host.empty() ? "live.ctraderapi.com" : host, clientId, clientSecret, accessToken, accountId,
+          // CODEX P2 (17-09-2026), verified: this said
+          // `host.empty() ? "live.ctraderapi.com" : host` while the engine
+          // above was given `useHost` = effectiveConnectHost(pinnedHost, host).
+          // On a DEMO-pinned sidecar whose /connect omits `host`, the engine
+          // went to demo and this feed went to LIVE — a pre-existing split
+          // brain. Caching useHost would have frozen it, because every later
+          // push naming demo would then compare equal and never repair the
+          // feed. One host, the pinned one, for both.
+          useHost, clientId, clientSecret, accessToken, accountId,
           vpoSymbolIds,
           [dispatcherPtr, trailPtr](long long symbolId, double bid, double ask) {
             if (dispatcherPtr) dispatcherPtr->onTick(symbolId, bid, ask);
