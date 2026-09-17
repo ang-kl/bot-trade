@@ -17,3 +17,39 @@ test('the sidecar ignores SIGPIPE at startup — a peer hang-up under a write is
   // the plain-TCP transport already refuses the signal per write
   assert.match(src('../../cpp-exec/src/ws_client.cpp'), /::send\(fd, [^;]*MSG_NOSIGNAL\)/)
 })
+
+test('POST /connect rebuilds the spot feed only when an input the feed reads has changed (17-09-2026 self-inflicted recorder gaps)', () => {
+  // MEASURED on the demo sidecar, two restarts inside three minutes:
+  //   10:01:25  credentials updated via /connect … → spot feed (re)started
+  //   10:04:05  credentials updated via /connect … → spot feed (re)started
+  //                                                → subscribed to 53 symbol(s)
+  // The teardown was unconditional, and with a tick recorder configured that
+  // is every push. A fresh SpotFeed starts at generation 1 and the recorder
+  // writes a GAP on any generation change, so a credential rotation cost a
+  // hole in the tick record — the record TM-40 gates tick entries on.
+  //
+  // No C++ unit test can pin this: the decision lives in an HTTP route
+  // lambda over main()'s locals, reachable only by running the server.
+  const main = src('../../cpp-exec/src/main.cpp')
+  assert.match(main, /bool feedInputsChanged = !spotFeed/,
+    'the restart is gated on a comparison, not taken unconditionally')
+  for (const input of ['useHost != liveFeedHost', 'accountId != liveFeedAccountId',
+    'vpoSymbolIds != liveFeedVpoSymbolIds', 'trailTickEnabled != liveFeedTrailEnabled',
+    'depthFeedEnabled != liveFeedDepthEnabled']) {
+    assert.ok(main.includes(input), `a change in ${input.split(' ')[0]} must still force a restart`)
+  }
+  assert.match(main, /live->updateCredentials\(clientId, clientSecret, accessToken\)/,
+    'and the unchanged case refreshes credentials in place instead')
+  assert.match(main, /liveFeedHost = useHost;/,
+    'the remembered inputs are restamped when a feed IS built, or the next compare is against stale state')
+
+  // The feed must actually read the refreshed values, under the lock — a
+  // setter nothing consults is the "repair that nothing calls" shape.
+  const feed = src('../../cpp-exec/src/spot_feed.cpp')
+  assert.match(feed, /std::lock_guard<std::mutex> lk\(credsMtx_\);[\s\S]{0,200}useClientId = clientId_/,
+    'connectAuthSubscribe snapshots the credentials under credsMtx_')
+  assert.match(feed, /appAuth\.set\("clientId", useClientId\)/)
+  assert.match(feed, /acctAuth\.set\("accessToken", useAccessToken\)/)
+  assert.doesNotMatch(feed, /acctAuth\.set\("accessToken", accessToken_\)/,
+    'and never the unlocked member, which would both race and ignore a rotation')
+})

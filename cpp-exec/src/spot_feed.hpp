@@ -96,6 +96,30 @@ public:
   // identify what is traded, same reasoning as the accounts redaction).
   std::vector<std::pair<long long, long long>> lastTickBySymbol();
 
+  // Refresh the credentials the NEXT connect will use, without disturbing
+  // the live one.
+  //
+  // WHY THIS EXISTS. Every POST /connect used to tear this feed down and
+  // build a new one, and with the tick recorder enabled that teardown was
+  // unconditional. A new SpotFeed starts at generation 1, and the recorder
+  // writes a GAP on every generation change (tick_recorder.cpp) — so a
+  // CREDENTIAL ROTATION, which this feed's live connection does not care
+  // about at all, cost a hole in the tick record and a 53-symbol
+  // resubscribe. Measured 17-09: two feed restarts inside three minutes,
+  // neither of them caused by anything the feed depends on.
+  //
+  // An already-authenticated WS session stays authenticated when the token
+  // behind it rotates; only the next connect needs the new one. So the new
+  // credentials are stored and the socket is left alone.
+  //
+  // Host and accountId are deliberately NOT updatable: both are baked into a
+  // live subscription, so changing either is a real restart and the caller
+  // must rebuild the feed.
+  //
+  // @returns whether anything actually changed.
+  bool updateCredentials(const std::string& clientId, const std::string& clientSecret,
+                         const std::string& accessToken);
+
   // Optional decision ring (invariant 1): connect/drop transitions are
   // decisions worth persisting. Non-owning; null = disabled. Set before the
   // feed thread starts.
@@ -119,8 +143,13 @@ private:
   void runOnce();
   bool connectAuthSubscribe();
 
-  std::string host_, clientId_, clientSecret_, accessToken_;
+  std::string host_;
   long long accountId_;
+  // Guarded by credsMtx_: written by updateCredentials() on the HTTP thread,
+  // read by connectAuthSubscribe() on the feed thread. host_ and accountId_
+  // are const-after-construction and need no lock.
+  mutable std::mutex credsMtx_;
+  std::string clientId_, clientSecret_, accessToken_;
   std::vector<long long> symbolIds_;
   SpotTickCallback onTick_;
   CtraderWs ws_;

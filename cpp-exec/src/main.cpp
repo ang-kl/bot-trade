@@ -406,6 +406,16 @@ int main(int argc, char** argv) {
   std::vector<long long> vpoSymbolIds;
   std::unique_ptr<SpotFeed> spotFeed;
   std::thread spotFeedThread;
+  // The inputs the LIVE feed was constructed from. /connect compares against
+  // these to decide whether a push actually requires a new feed, instead of
+  // rebuilding on every push and charging the tick recorder a gap for it.
+  // Only ever touched on the HTTP thread, under connectMtx.
+  std::string liveFeedHost;
+  long long liveFeedAccountId = 0;
+  std::vector<long long> liveFeedVpoSymbolIds;
+  bool liveFeedTrailEnabled = false;
+  bool liveFeedDepthEnabled = false;
+  bool liveFeedRecorderAttached = false;
   // vpoMtx guards the spotFeed/spotFeedThread HANDLES only — every holder must
   // release it in bounded time, because GET /health takes it too. It is NOT
   // the thing that serialises /connect: HttpServer runs a detached thread per
@@ -871,7 +881,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder, &tickWorkers](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder, &tickWorkers, &liveFeedHost, &liveFeedAccountId, &liveFeedVpoSymbolIds, &liveFeedTrailEnabled, &liveFeedDepthEnabled, &liveFeedRecorderAttached](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -925,6 +935,44 @@ int main(int argc, char** argv) {
     // P3a: a configured tick recorder needs the feed too, even with no VPO
     // strategy and no tick trail — it records whatever the feed carries.
     if ((vpoDispatcher && !vpoSymbolIds.empty()) || trailTickEnabled || tickRecorder) {
+      // A RESTART ONLY WHEN SOMETHING THE FEED DEPENDS ON CHANGED.
+      //
+      // This teardown used to be unconditional on every /connect, and with a
+      // tick recorder configured that is every single push. A fresh SpotFeed
+      // starts at generation 1 and the recorder writes a GAP on any
+      // generation change (tick_recorder.cpp), so a CREDENTIAL ROTATION —
+      // which the feed's live, already-authenticated connection does not care
+      // about — cost a hole in the tick record plus a full resubscribe.
+      // Measured 17-09 on the demo sidecar: two restarts inside three
+      // minutes, neither caused by an input this feed reads.
+      //
+      // That matters beyond tidiness: the shadow evidence P6c is gated on
+      // (TM-40) refuses entries on a recorder gap, so self-inflicted gaps
+      // degrade the very record the tick programme is waiting for.
+      //
+      // HOST and ACCOUNT ID are baked into a live subscription, so a change to
+      // either is a real restart. Client id / secret / token are read only at
+      // the NEXT connect, so they go in place.
+      bool feedInputsChanged = !spotFeed
+          || useHost != liveFeedHost
+          || accountId != liveFeedAccountId
+          || vpoSymbolIds != liveFeedVpoSymbolIds
+          || trailTickEnabled != liveFeedTrailEnabled
+          || depthFeedEnabled != liveFeedDepthEnabled
+          || (tickRecorder != nullptr) != liveFeedRecorderAttached;
+      if (!feedInputsChanged) {
+        SpotFeed* live = nullptr;
+        { std::lock_guard<std::mutex> lk(vpoMtx); live = spotFeed.get(); }
+        if (live) {
+          const bool rotated = live->updateCredentials(clientId, clientSecret, accessToken);
+          if (trailTickEnabled) live->ensureSymbols(trailEngine.symbolIds());
+          logLine(std::string("spot feed kept — ") +
+                  (rotated ? "credentials refreshed in place for the next reconnect"
+                           : "nothing the feed reads has changed") +
+                  "; no resubscribe, no recorder gap");
+          return {200, "{\"ok\":true}"};
+        }
+      }
       // Audit C2: the old shape held vpoMtx across stop() + join(), so
       // GET /health — which takes the same mutex for depthBookEntries — blocked
       // behind a thread join that could take as long as the feed's reconnect
@@ -973,6 +1021,12 @@ int main(int argc, char** argv) {
       if (trailPtr) spotFeed->ensureSymbols(trailEngine.symbolIds());
       SpotFeed* feedPtr = spotFeed.get();
       spotFeedThread = std::thread([feedPtr] { feedPtr->runLoop(); });
+      liveFeedHost = useHost;
+      liveFeedAccountId = accountId;
+      liveFeedVpoSymbolIds = vpoSymbolIds;
+      liveFeedTrailEnabled = trailTickEnabled;
+      liveFeedDepthEnabled = depthFeedEnabled;
+      liveFeedRecorderAttached = (tickRecorder != nullptr);
       logLine("spot feed (re)started: " + std::to_string(vpoSymbolIds.size()) + " VPO symbol(s)" +
               (trailPtr ? " + trail engine fan-out" : ""));
     }

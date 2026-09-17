@@ -80,10 +80,26 @@ SpotFeed::SpotFeed(std::string host, std::string clientId, std::string clientSec
                    std::string accessToken, long long accountId,
                    std::vector<long long> symbolIds, SpotTickCallback onTick,
                    bool depthEnabled)
-    : host_(std::move(host)), clientId_(std::move(clientId)),
-      clientSecret_(std::move(clientSecret)), accessToken_(std::move(accessToken)),
-      accountId_(accountId), symbolIds_(std::move(symbolIds)), onTick_(std::move(onTick)),
+    : host_(std::move(host)), accountId_(accountId),
+      clientId_(std::move(clientId)), clientSecret_(std::move(clientSecret)),
+      accessToken_(std::move(accessToken)),
+      symbolIds_(std::move(symbolIds)), onTick_(std::move(onTick)),
       depthEnabled_(depthEnabled) {}
+
+bool SpotFeed::updateCredentials(const std::string& clientId, const std::string& clientSecret,
+                                 const std::string& accessToken) {
+  std::lock_guard<std::mutex> lk(credsMtx_);
+  // An EMPTY field is "not supplied", never "clear it". /connect validates
+  // clientId and accessToken as required, but clientSecret is optional there,
+  // and a blank arriving here must not silently un-authenticate the next
+  // reconnect — that failure would surface minutes later as a feed that
+  // cannot come back, with nothing pointing at this call.
+  bool changed = false;
+  if (!clientId.empty() && clientId != clientId_) { clientId_ = clientId; changed = true; }
+  if (!clientSecret.empty() && clientSecret != clientSecret_) { clientSecret_ = clientSecret; changed = true; }
+  if (!accessToken.empty() && accessToken != accessToken_) { accessToken_ = accessToken; changed = true; }
+  return changed;
+}
 
 size_t SpotFeed::depthEntriesTotal() {
   std::lock_guard<std::mutex> lk(depthMtx_);
@@ -165,8 +181,15 @@ bool SpotFeed::connectAuthSubscribe() {
     return false;
   }
   jsn::Value appAuth{jsn::Object{}};
-  appAuth.set("clientId", clientId_);
-  appAuth.set("clientSecret", clientSecret_);
+  // Snapshot under the lock: updateCredentials() may be writing these from
+  // the HTTP thread while this runs on the feed thread.
+  std::string useClientId, useClientSecret, useAccessToken;
+  {
+    std::lock_guard<std::mutex> lk(credsMtx_);
+    useClientId = clientId_; useClientSecret = clientSecret_; useAccessToken = accessToken_;
+  }
+  appAuth.set("clientId", useClientId);
+  appAuth.set("clientSecret", useClientSecret);
   if (!sendAndWait(ws_, kAppAuthReq, appAuth, kAppAuthRes)) {
     logLine("app auth failed");
     ws_.close();
@@ -174,7 +197,7 @@ bool SpotFeed::connectAuthSubscribe() {
   }
   jsn::Value acctAuth{jsn::Object{}};
   acctAuth.set("ctidTraderAccountId", accountId_);
-  acctAuth.set("accessToken", accessToken_);
+  acctAuth.set("accessToken", useAccessToken);
   if (!sendAndWait(ws_, kAccountAuthReq, acctAuth, kAccountAuthRes)) {
     logLine("account auth failed");
     ws_.close();
