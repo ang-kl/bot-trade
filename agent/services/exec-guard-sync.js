@@ -28,7 +28,8 @@
 // ---------------------------------------------------------------------------
 
 import { readFileSync } from 'node:fs'
-import { getState } from '../db.js'
+import { getState, setState } from '../db.js'
+import { classifyUniverse, normalizeSchedule, scheduleHash, TICK_COST_MAP_KEY, TICK_SHADOW_SIM_FILE } from '../lib/tick-cost-schedule.js'
 import { engineStatusFor, acknowledgeEntryEpochs } from './entry-mode.js'
 import { alreadyTrippedToday } from './equity-stop.js'
 import { loadGlobalGuards } from './global-guards.js'
@@ -46,20 +47,48 @@ import { fxDayOpenMs } from '../lib/volume-structure.js'
  * @returns {{halt:boolean, requireBracket?:boolean, requireTarget?:boolean,
  *            maxOrderVolume?:number, haltAccounts:number[]}}
  */
-export const TICK_SHADOW_SIM_FILE = new URL('../config/tick-shadow-sim.json', import.meta.url)
+// Re-exported from lib/tick-cost-schedule.js, where the schedule lives, so
+// existing importers of these two names keep working.
+export { TICK_SHADOW_SIM_FILE, TICK_COST_MAP_KEY }
 export const SIM_KEYS = Object.freeze(['latencyMs', 'slippage', 'commissionPerSide', 'targetR', 'minTargetToCost', 'maxHoldEvents', 'maxHoldMs'])
-/** The repo's shadow sim (numbers only; a missing or unreadable file → null, nothing pushed). */
+/**
+ * The repo's shadow sim: the numeric fields, plus PR-L's per-symbol-class
+ * cost schedule (`costs`). A missing or unreadable file → null, nothing
+ * pushed. The schedule is normalised here, so a class name the config
+ * invents is dropped rather than pushed to the sidecar.
+ */
 export function loadTickShadowSim(file = TICK_SHADOW_SIM_FILE) {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8'))
     const out = {}
     for (const k of SIM_KEYS) if (Number.isFinite(Number(raw?.[k]))) out[k] = Number(raw[k])
+    const costs = normalizeSchedule(raw?.costs)
+    if (Object.keys(costs.classes).length) out.costs = { ...costs, symbolClass: {} }
     return Object.keys(out).length ? out : null
   } catch { return null }
 }
+function sameCosts(a, b) {
+  // `a` absent means this push carries no opinion on the schedule (no symbol
+  // resolved) — nothing to converge, so it is never a difference.
+  if (!a) return true
+  if (!b || typeof b !== 'object') return false
+  if (String(a.fallbackClass || '') !== String(b.fallbackClass || '')) return false
+  const ac = a.classes || {}, bc = b.classes || {}
+  if (Object.keys(ac).length !== Object.keys(bc).length) return false
+  for (const [name, c] of Object.entries(ac)) {
+    const o = bc[name]
+    if (!o) return false
+    if (Number(o.commissionBpsPerSide) !== Number(c.commissionBpsPerSide)) return false
+    if (Number(o.slippageBpsPerSide) !== Number(c.slippageBpsPerSide)) return false
+  }
+  const am = a.symbolClass || {}, bm = b.symbolClass || {}
+  if (Object.keys(am).length !== Object.keys(bm).length) return false
+  for (const [id, cls] of Object.entries(am)) if (String(bm[id] || '') !== String(cls)) return false
+  return true
+}
 function sameSim(a, b) {
   for (const k of SIM_KEYS) { if (a[k] == null) continue; if (Number(b[k]) !== Number(a[k])) return false }
-  return true
+  return sameCosts(a.costs, b.costs)
 }
 
 export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now()) {
@@ -168,6 +197,17 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
     }
     out.tickEntryAccounts.sort((a, b) => a - b)
   } catch { /* no accounts table — recording stays off, nothing places */ }
+  // PR-L: the cost schedule is only meaningful beside the symbols it prices,
+  // and the id → class map is filled in syncExecGuard (the only place a name
+  // resolves to an id). With recording off there are no books to price, so
+  // the schedule is CLEARED — an empty object, which main.cpp full-replaces
+  // to nothing. Leaving it alone was checker finding 6: the sidecar kept a
+  // stale map while /health went on echoing a legitimate-looking hash onto
+  // the evidence record, and `sameCosts` never noticed because the keeper
+  // had stopped sending anything to compare.
+  if (!out.tickRecord && out.tickShadowSim && out.tickShadowSim.costs) {
+    out.tickShadowSim = { ...out.tickShadowSim, costs: { classes: {}, symbolClass: {}, fallbackClass: '' } }
+  }
   return out
 }
 
@@ -181,18 +221,26 @@ export function tickSymbolNames(db) {
 
 // Unresolvable names are logged once per (side, name), not per probe.
 const unresolvedLogged = new Set()
-/** Resolve the tick symbol names to this side's ids (unknown names skipped). */
-export async function resolveTickSymbolIds(db, creds, side, { resolveSymbolId = null } = {}) {
+/**
+ * Resolve the tick symbol names to this side's ids, keeping the NAME beside
+ * each id — PR-L needs it to classify the symbol for the cost schedule, and
+ * the shadow ledger only ever carries ids. Unknown names are skipped and
+ * logged once per (side, name), as before.
+ */
+export async function resolveTickSymbols(db, creds, side, { resolveSymbolId = null } = {}) {
   const names = tickSymbolNames(db)
   if (!names.length || !creds?.ready) return []
   const resolve = resolveSymbolId || (await import('../lib/ctrader-creds.js')).resolveSymbolId
-  const ids = []
+  const out = []
+  const seen = new Set()
   for (const name of names) {
     try {
       const r = await resolve(db, creds, name)
       const id = Number(r?.id ?? r?.symbolId ?? r) // resolveSymbolId → { id, source }
-      if (Number.isFinite(id) && id > 0) ids.push(id)
-      else throw new Error('no id')
+      if (!Number.isFinite(id) || id <= 0) throw new Error('no id')
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push({ name, id })
     } catch (err) {
       const key = `${side?.name || 'exec'}:${name}`
       if (!unresolvedLogged.has(key)) {
@@ -201,8 +249,38 @@ export async function resolveTickSymbolIds(db, creds, side, { resolveSymbolId = 
       }
     }
   }
-  return [...new Set(ids)].sort((a, b) => a - b)
+  return out.sort((a, b) => a.id - b.id)
 }
+
+/** The ids alone, for callers that do not need the names. */
+export async function resolveTickSymbolIds(db, creds, side, opts = {}) {
+  return (await resolveTickSymbols(db, creds, side, opts)).map(s => s.id)
+}
+
+// PR-L: the names the sidecar is asked to carry, classified for the cost
+// schedule. A name that does not classify is charged the schedule's
+// fallbackClass — the MOST expensive row — and is REPORTED by name, never
+// silently absorbed. `unclassifiedLogged` keeps the warning to once per
+// (side, name) for the same reason the resolver does.
+const unclassifiedLogged = new Set()
+export function tickSymbolClassMap(resolved, schedule, side = null) {
+  const byName = classifyUniverse(resolved.map(s => s.name), schedule)
+  const symbolClass = {}
+  for (const { name, id } of resolved) {
+    const cls = byName.map[String(name).toUpperCase()]
+    if (cls) symbolClass[String(id)] = cls
+  }
+  if (byName.unclassified.length) {
+    for (const name of byName.unclassified) {
+      const key = `${side?.name || 'exec'}:${name}`
+      if (unclassifiedLogged.has(key)) continue
+      unclassifiedLogged.add(key)
+      console.warn(`[tick] ${side?.name || 'exec'}: symbol ${name} has no cost class — charged the fallback schedule (${byName.fallbackClass || 'none'}); add it to lib/tick-cost-schedule.js costClassOf or the config's classes`)
+    }
+  }
+  return { symbolClass, unclassified: byName.unclassified, fallbackClass: byName.fallbackClass }
+}
+export function _resetTickClassLogForTests() { unclassifiedLogged.clear() }
 export function _resetTickResolveLogForTests() { unresolvedLogged.clear() }
 
 /**
@@ -247,6 +325,10 @@ export function guardDiffers(desired, reported) {
   // a count that differs from the desired list is a push (the list itself
   // is redacted from /health, so the count is the comparable fact).
   if (tick && tick.entry && typeof tick.entry === 'object' && Array.isArray(desired.tickEntryAccounts) && Number.isFinite(Number(tick.entry.accounts)) && Number(tick.entry.accounts) !== desired.tickEntryAccounts.length) return true
+  // PR-L: the per-class cost schedule is compared with the rest of the sim.
+  // A sidecar that predates PR-L reports no `costs` at all and so reads as a
+  // difference on every probe — harmless (the push is idempotent) and it
+  // stops as soon as that sidecar is redeployed.
   if (tick && desired.tickShadowSim && tick.shadowSim && typeof tick.shadowSim === 'object' && !sameSim(desired.tickShadowSim, tick.shadowSim)) return true
   if (tick && Array.isArray(desired.tickSymbolIds) && desired.tickSymbolIds.length && Array.isArray(tick.subscribed)) {
     const have = new Set(tick.subscribed.map(Number))
@@ -273,7 +355,47 @@ export async function syncExecGuard(db, exec, side, { reportedGuard = null, cred
     // P3a: the tick symbols ride on the same push, resolved to this side's
     // ids; only asked for when recording is wanted (nothing to carry otherwise).
     if (desired.tickRecord && creds) {
-      try { desired.tickSymbolIds = await resolveTickSymbolIds(db, creds, side, { resolveSymbolId }) } catch { desired.tickSymbolIds = [] }
+      let resolved = []
+      try { resolved = await resolveTickSymbols(db, creds, side, { resolveSymbolId }) } catch { resolved = [] }
+      desired.tickSymbolIds = resolved.map(s => s.id)
+      // PR-L: the cost schedule travels with the symbols it prices. The
+      // sidecar's books look the class up by symbol id, so the map is built
+      // here — the only place that has both the name and this side's id.
+      if (desired.tickShadowSim?.costs) {
+        const cls = tickSymbolClassMap(resolved, desired.tickShadowSim.costs, side)
+        if (!Object.keys(cls.symbolClass).length) {
+          // CHECKER BLOCKER 2. `resolveTickSymbols` returns [] when
+          // tick_symbols_json is empty (the documented default) OR when the
+          // creds are not ready — and an empty symbolClass is not "no
+          // opinion", it is a FULL REPLACE that leaves every book charged the
+          // fallback (15 bps HK), which the cost screen then refuses. Worse,
+          // it overwrites a CORRECT map the sidecar already holds. So the
+          // schedule is omitted from this push entirely: the sidecar keeps
+          // what it has, and SHADOW_PASSED refuses separately on
+          // `costSymbolsPriced` if what it has prices nothing.
+          const { costs, ...flat } = desired.tickShadowSim
+          void costs
+          desired.tickShadowSim = flat
+          desired.tickCostUnpriced = resolved.length ? 'no resolved symbol classified' : 'no symbol resolved on this side'
+          const key = `${side?.name || 'exec'}:unpriced`
+          if (!unclassifiedLogged.has(key)) {
+            unclassifiedLogged.add(key)
+            console.warn(`[tick] ${side?.name || 'exec'}: no symbol resolved to a cost class — the cost schedule is NOT pushed (an empty map would charge every book the fallback and overwrite a good one); SHADOW_PASSED refuses while the sidecar prices no symbol`)
+          }
+        } else {
+          desired.tickShadowSim = { ...desired.tickShadowSim, costs: { ...desired.tickShadowSim.costs, symbolClass: cls.symbolClass } }
+          if (cls.unclassified.length) desired.tickCostUnclassified = cls.unclassified
+          // Stored per side so the shadow view can price a ledger row whose
+          // own cost_class is absent, and so the evidence gate can compare
+          // the sidecar's map against the one the keeper actually pushed.
+          try {
+            let map = {}
+            try { map = JSON.parse(getState(db, TICK_COST_MAP_KEY) || '{}') || {} } catch { map = {} }
+            map[side?.name || 'exec'] = { at: new Date().toISOString(), hash: scheduleHash(desired.tickShadowSim.costs), ...desired.tickShadowSim.costs, unclassified: cls.unclassified }
+            setState(db, TICK_COST_MAP_KEY, JSON.stringify(map))
+          } catch { /* best effort — the view falls back to the fallback class */ }
+        }
+      }
     }
     if (reportedTick && reportedGuard && typeof reportedGuard === 'object' && !('tick' in reportedGuard)) reportedGuard = { ...reportedGuard, tick: reportedTick }
     // AUDIT 11-09-2026 (plan §3.6): the sidecar's echoed epochs are the

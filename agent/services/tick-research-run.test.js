@@ -99,6 +99,12 @@ test('over a segment directory the action replays the stage-A grid, imports each
   assert.equal(r.body.trials.length, 12); assert.equal(r.body.inserted, 12); assert.equal(count(), 12)
   assert.equal(new Set(r.body.trialIds).size, 12); assert.ok(r.body.trials.every(t => t.imported && t.symbolId === 7 && t.replay && Array.isArray(t.replay.failed)))
   assert.deepEqual(r.body.passing, [], 'nothing on a 2-trade fixture clears 40 trades')
+  // PR-L: symbol 7 is in no pushed cost map, so the trial is replayed
+  // UNCHARGED and the replay rung refuses it on `costModel` — it is not
+  // silently passed, and it is not silently emptied by the fallback's cost
+  // screen either (the trades are still there to read).
+  assert.ok(r.body.trials.every(t => t.replay.failed.includes('costModel')), 'an unclassified symbol cannot clear the replay rung')
+  assert.equal(r.body.trials[0].replay.checks.costModel.observed, 'none')
   assert.deepEqual(r.body.manifest.files, ['seg-000001.tks'])
   const row = db.prepare('SELECT note, manifest_json FROM tick_trials WHERE trial_id = ?').get(r.body.trialIds[0])
   assert.match(row.note, /stage-A grid via POST \/actions\/tick-research/); assert.equal(JSON.parse(row.manifest_json).symbolId, 7)
@@ -218,4 +224,43 @@ test('M-1: the job runs in a worker — 202 with a job id, the event loop stays 
   const bad = startTickResearchJob(db, {}, { segmentsDir: dir, workerFile: new URL('./does-not-exist-worker.js', import.meta.url) })
   if (bad.status === 202) { const bj = await waitDone(bad.body.jobId); assert.equal(bj.state, 'failed') } else assert.equal(bad.status, 500)
   assert.equal(tickResearchJobsView().running, null)
+})
+
+// CHECKER, on §16.7: `researchPlan` defaulted `sim` to {} — zero cost — so
+// REPLAY_PASSED could be cleared free while SHADOW_PASSED is charged. Both
+// rungs of the evidence ladder were free. The schedule now rides the plan and
+// the class is resolved per symbol id from the map the keeper pushed.
+test('PR-L: a replay trial is charged the repo schedule by the keeper\'s symbol map, and records what it was charged', async () => {
+  const { researchPlan, replayCostContext } = await import('./tick-research-run.js')
+  const { TICK_COST_MAP_KEY, loadRepoSchedule, scheduleHash } = await import('../lib/tick-cost-schedule.js')
+  const { setState: put } = await import('../db.js')
+  const mk = initDB
+  const db = mk(':memory:')
+  // no map pushed yet: the schedule is there, the symbol map is empty
+  const bare = researchPlan({}, replayCostContext(db))
+  assert.equal(scheduleHash(bare.sim.costs), scheduleHash(loadRepoSchedule()), 'the repo schedule defaults in')
+  assert.deepEqual(bare.symbolClass, {}, 'and no symbol is classified until the keeper pushes a map')
+
+  // the keeper's map, across both sides, unioned
+  put(db, TICK_COST_MAP_KEY, JSON.stringify({
+    cpp_exec_demo: { symbolClass: { 7: 'fx', 9: 'stock_us' } },
+    cpp_exec: { symbolClass: { 11: 'crypto' } },
+  }))
+  const plan = researchPlan({}, replayCostContext(db))
+  assert.deepEqual(plan.symbolClass, { 7: 'fx', 9: 'stock_us', 11: 'crypto' })
+
+  // and a trial over a classified symbol is CHARGED and says so
+  const dir = mkdtempSync(join(tmpdir(), 'tick-cost-'))
+  writeFileSync(join(dir, 'seg-000001.tks'), fixtureSegment())
+  const r = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, symbol: 7 }, { segmentsDir: dir })
+  const t = r.body.trials[0]
+  assert.equal(t.symbolId, 7)
+  assert.equal(r.body.trials.length, 1)
+  const stored = db.prepare('SELECT sim_json FROM tick_trials WHERE trial_id = ?').get(t.trialId)
+  const sim = JSON.parse(stored.sim_json)
+  assert.equal(sim.costClass, 'fx', 'the trial records the class it was charged')
+  assert.equal(sim.costSource, 'class')
+  assert.equal(sim.commissionBpsPerSide, 0.35)
+  assert.equal(t.replay.checks.costModel.ok, true, 'a charged, classified trial clears the cost rung')
+  assert.ok(!t.replay.failed.includes('costModel'))
 })

@@ -10,6 +10,55 @@ namespace tick {
 
 static double round4(double x) { return std::round(x * 1e4) / 1e4; }
 
+// PR-L: the replayer's costExact / wireCostInt, behaviour for behaviour —
+// agent/lib/tick-cost-schedule.js. Math.round on a positive value is llround
+// on a positive value, and both floor the result at 1 when the exact cost is
+// above zero, so a non-zero slippage never rounds away to a free fill.
+double costExact(double wirePerSide, double bps, double price) {
+  const double flat = std::isfinite(wirePerSide) ? wirePerSide : 0.0;
+  const double prop = (std::isfinite(bps) && std::isfinite(price) && bps > 0 && price > 0) ? bps * price / 10000.0 : 0.0;
+  return flat + prop;
+}
+
+long long wireCostInt(double wirePerSide, double bps, double price) {
+  const double exact = costExact(wirePerSide, bps, price);
+  if (!(exact > 0)) return 0;
+  const long long r = std::llround(exact);
+  return r < 1 ? 1 : r;
+}
+
+std::string ShadowCostSchedule::classFor(long long symbolId) const {
+  auto it = symbolClass.find(symbolId);
+  if (it != symbolClass.end() && classes.count(it->second)) return it->second;
+  if (!fallbackClass.empty() && classes.count(fallbackClass)) return fallbackClass;
+  return std::string();
+}
+
+ShadowCost ShadowCostSchedule::costFor(long long symbolId) const {
+  const std::string c = classFor(symbolId);
+  if (c.empty()) return ShadowCost{};
+  return classes.at(c);
+}
+
+jsn::Value ShadowCostSchedule::json() const {
+  jsn::Value v{jsn::Object{}};
+  v.set("fallbackClass", fallbackClass);
+  jsn::Value cs{jsn::Object{}};
+  for (const auto& [name, c] : classes) {
+    jsn::Value one{jsn::Object{}};
+    one.set("commissionWirePerSide", c.commissionWirePerSide);
+    one.set("commissionBpsPerSide", c.commissionBpsPerSide);
+    one.set("slippageWirePerSide", c.slippageWirePerSide);
+    one.set("slippageBpsPerSide", c.slippageBpsPerSide);
+    cs.set(name, std::move(one));
+  }
+  v.set("classes", std::move(cs));
+  jsn::Value sm{jsn::Object{}};
+  for (const auto& [id, name] : symbolClass) sm.set(std::to_string(id), name);
+  v.set("symbolClass", std::move(sm));
+  return v;
+}
+
 std::string ShadowSim::json() const {
   jsn::Value v{jsn::Object{}};
   v.set("latencyMs", static_cast<double>(latencyMs));
@@ -19,11 +68,20 @@ std::string ShadowSim::json() const {
   v.set("minTargetToCost", minTargetToCost);
   v.set("maxHoldEvents", static_cast<double>(maxHoldEvents));
   v.set("maxHoldMs", static_cast<double>(maxHoldMs));
+  v.set("costs", costs.json());
   return jsn::dump(v);
 }
 
+static ShadowCost effectiveCost(const ShadowSim& sim, long long symbolId) {
+  ShadowCost c = sim.costs.costFor(symbolId);
+  c.commissionWirePerSide += static_cast<double>(sim.commissionPerSide);
+  c.slippageWirePerSide += static_cast<double>(sim.slippage);
+  return c;
+}
+
 ShadowBook::ShadowBook(ShadowSim sim, int rangeEvents, long long symbolId, std::string profileHash)
-  : sim_(sim), maxHoldEvents_(sim.maxHoldEvents > 0 ? sim.maxHoldEvents : 4 * rangeEvents),
+  : sim_(sim), cost_(effectiveCost(sim, symbolId)), costClass_(sim.costs.classFor(symbolId)),
+    maxHoldEvents_(sim.maxHoldEvents > 0 ? sim.maxHoldEvents : 4 * rangeEvents),
     symbolId_(symbolId), hash_(std::move(profileHash)) {}
 
 std::optional<ShadowTrade> ShadowBook::onQuote(const StrategyQuote& q) {
@@ -37,26 +95,28 @@ std::optional<ShadowTrade> ShadowBook::onQuote(const StrategyQuote& q) {
     std::optional<long long> exit;
     std::string reason;
     if (o.side == "BUY") {
-      if (q.bid <= o.stop) { exit = q.bid - sim_.slippage; reason = "stop"; }
-      else if (q.bid >= o.target) { exit = q.bid - sim_.slippage; reason = "target"; }
+      if (q.bid <= o.stop) { exit = q.bid - slipAt(static_cast<double>(q.bid)); reason = "stop"; }
+      else if (q.bid >= o.target) { exit = q.bid - slipAt(static_cast<double>(q.bid)); reason = "target"; }
     } else {
-      if (q.ask >= o.stop) { exit = q.ask + sim_.slippage; reason = "stop"; }
-      else if (q.ask <= o.target) { exit = q.ask + sim_.slippage; reason = "target"; }
+      if (q.ask >= o.stop) { exit = q.ask + slipAt(static_cast<double>(q.ask)); reason = "stop"; }
+      else if (q.ask <= o.target) { exit = q.ask + slipAt(static_cast<double>(q.ask)); reason = "target"; }
     }
     if (!exit && (o.tradableSeen >= maxHoldEvents_ || q.recvMs - o.entryMs >= static_cast<uint64_t>(sim_.maxHoldMs))) {
-      exit = o.side == "BUY" ? q.bid - sim_.slippage : q.ask + sim_.slippage;
+      exit = o.side == "BUY" ? q.bid - slipAt(static_cast<double>(q.bid)) : q.ask + slipAt(static_cast<double>(q.ask));
       reason = o.tradableSeen >= maxHoldEvents_ ? "hold_events" : "hold_clock";
     }
     if (exit) {
       const long long gross = o.side == "BUY" ? *exit - o.entry : o.entry - *exit;
-      const long long net = gross - 2 * sim_.commissionPerSide;
+      const double net = static_cast<double>(gross) - (commAt(static_cast<double>(o.entry)) + commAt(static_cast<double>(*exit)));
       ShadowTrade t;
       t.symbolId = symbolId_; t.side = o.side; t.signalSeq = o.signalSeq; t.entrySeq = o.entrySeq; t.exitSeq = q.seq;
       t.entry = o.entry; t.exit = *exit; t.stop = o.stop; t.target = o.target; t.stopDistance = o.stopDistance;
       t.reason = reason; t.holdEvents = o.tradableSeen; t.holdMs = q.recvMs - o.entryMs; t.entryMs = o.entryMs; t.exitMs = q.recvMs;
       t.grossR = round4(static_cast<double>(gross) / static_cast<double>(o.stopDistance));
-      t.netR = round4(static_cast<double>(net) / static_cast<double>(o.stopDistance));
+      t.netR = round4(net / static_cast<double>(o.stopDistance));
       t.profileHash = hash_;
+      t.costClass = costClass_;
+      recordCostModel(t);
       closed = t;
       open_.reset();
     }
@@ -64,7 +124,7 @@ std::optional<ShadowTrade> ShadowBook::onQuote(const StrategyQuote& q) {
   // 2. fill a pending signal at the first tradable event past the latency
   if (pending_ && !open_ && ok && q.recvMs >= pending_->recvMs + static_cast<uint64_t>(sim_.latencyMs)) {
     const TickSignal& p = *pending_;
-    const long long entry = p.side == "BUY" ? q.ask + sim_.slippage : q.bid - sim_.slippage;
+    const long long entry = p.side == "BUY" ? q.ask + slipAt(static_cast<double>(q.ask)) : q.bid - slipAt(static_cast<double>(q.bid));
     const double tgt = sim_.targetR * static_cast<double>(p.stopDistance);
     ShadowOpen o;
     o.side = p.side; o.signalSeq = p.seq; o.entrySeq = q.seq; o.entry = entry; o.stopDistance = p.stopDistance;
@@ -87,16 +147,18 @@ std::optional<ShadowTrade> ShadowBook::onQuote(const StrategyQuote& q) {
 std::optional<ShadowTrade> ShadowBook::markAtLast(const std::string& reason) {
   if (!open_ || !haveLast_) { open_.reset(); pending_.reset(); return std::nullopt; }
   const ShadowOpen& o = *open_;
-  const long long exit = o.side == "BUY" ? last_.bid - sim_.slippage : last_.ask + sim_.slippage;
+  const long long exit = o.side == "BUY" ? last_.bid - slipAt(static_cast<double>(last_.bid)) : last_.ask + slipAt(static_cast<double>(last_.ask));
   const long long gross = o.side == "BUY" ? exit - o.entry : o.entry - exit;
-  const long long net = gross - 2 * sim_.commissionPerSide;
+  const double net = static_cast<double>(gross) - (commAt(static_cast<double>(o.entry)) + commAt(static_cast<double>(exit)));
   ShadowTrade t;
   t.symbolId = symbolId_; t.side = o.side; t.signalSeq = o.signalSeq; t.entrySeq = o.entrySeq; t.exitSeq = last_.seq;
   t.entry = o.entry; t.exit = exit; t.stop = o.stop; t.target = o.target; t.stopDistance = o.stopDistance;
   t.reason = reason; t.holdEvents = o.tradableSeen; t.holdMs = last_.recvMs >= o.entryMs ? last_.recvMs - o.entryMs : 0; t.entryMs = o.entryMs; t.exitMs = last_.recvMs;
   t.grossR = round4(static_cast<double>(gross) / static_cast<double>(o.stopDistance));
-  t.netR = round4(static_cast<double>(net) / static_cast<double>(o.stopDistance));
+  t.netR = round4(net / static_cast<double>(o.stopDistance));
   t.profileHash = hash_;
+  t.costClass = costClass_;
+  recordCostModel(t);
   open_.reset(); pending_.reset();
   return t;
 }
@@ -104,7 +166,10 @@ std::optional<ShadowTrade> ShadowBook::markAtLast(const std::string& reason) {
 bool ShadowBook::offer(const TickSignal& sig) {
   // 3. a signal while a trade is open or pending is not taken
   if (open_ || pending_) { rejected_.noFill++; return false; }
-  const double cost = static_cast<double>(sig.ask - sig.bid) + 2.0 * static_cast<double>(sim_.commissionPerSide) + 2.0 * static_cast<double>(sim_.slippage);
+  // The screen prices the round trip at the signal's MID — one price for both
+  // ends, the replayer's rule (lib/tick-replay-sim.js step 3).
+  const double mid = static_cast<double>(sig.bid + sig.ask) / 2.0;
+  const double cost = static_cast<double>(sig.ask - sig.bid) + 2.0 * commAt(mid) + 2.0 * static_cast<double>(slipAt(mid));
   const double target = sim_.targetR * static_cast<double>(sig.stopDistance);
   if (cost > 0 && target / cost < sim_.minTargetToCost) { rejected_.cost++; return false; }
   pending_ = sig;
@@ -161,6 +226,12 @@ jsn::Value ShadowLedger::tradeJson(long long seq, const ShadowTrade& t) {
   v.set("grossR", t.grossR);
   v.set("netR", t.netR);
   v.set("profile", t.profileHash);
+  // PR-L: the cost model this trade was charged, carried to the keeper.
+  v.set("costClass", t.costClass);
+  v.set("commissionWirePerSide", t.commissionWirePerSide);
+  v.set("commissionBpsPerSide", t.commissionBpsPerSide);
+  v.set("slippageWirePerSide", t.slippageWirePerSide);
+  v.set("slippageBpsPerSide", t.slippageBpsPerSide);
   return v;
 }
 

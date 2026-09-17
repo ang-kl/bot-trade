@@ -15,11 +15,21 @@
 // What this never does: read a bar-strategy record, size from the global
 // balance key, or lower a threshold. A profile is judged only on trades
 // closed under that profile.
+//
+// PR-L (16-09-2026, docs/plan-execution-audit-2026-09-11.md §16): the view
+// also carries a COST-SENSITIVITY line — the portfolio's profit factor at
+// 0 x, 1 x and 2 x the per-symbol-class cost schedule
+// (agent/config/tick-shadow-sim.json, lib/tick-cost-schedule.js). The 236
+// shadow trades already on record were closed spread-only, so their 1 x row
+// is NOT their recorded profit factor; it is what they would have earned
+// under the schedule, which is the number the owner needs before switching
+// anything on.
 // ---------------------------------------------------------------------------
 import { getState } from '../db.js'
 import { loadRiskConfig, riskBudgetUsd } from './risk.js'
 import { engineStatusFor } from './entry-mode.js'
 import { expectancyLowerR } from '../lib/tick-replay-sim.js'
+import { costSensitivity, loadRepoSchedule, rowChargedUnder, rowIsCosted, scheduleHash, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 
 export const SIDES = Object.freeze(['cpp_exec_demo', 'cpp_exec'])
 
@@ -99,6 +109,70 @@ export function portfolioStats(rows) {
   }
 }
 
+/**
+ * ROUND-TWO CHECKER, MINOR 3: the row populations, counted ONCE and never
+ * added across different denominators. A `lost_restart` row is not a closed
+ * trade and never was one; reporting "3 of 7" by adding judged closes to
+ * every-row-minus-costed was two populations in one fraction.
+ *
+ *   rows        every row in the window
+ *   lostRestart rows with no result (an open trade a sidecar restart took)
+ *   closed      rows with a result — the only ones a verdict can rest on
+ *   charged     closed rows demonstrably charged `schedule` (rowChargedUnder)
+ *   refused     closed rows that were not, by reason
+ */
+export function costAudit(allRows, schedule = null) {
+  const charged = []
+  const refused = {}
+  let lostRestart = 0, closed = 0
+  for (const t of allRows || []) {
+    if ((t.reason || '') === 'lost_restart') { lostRestart++; continue }
+    closed++
+    if (!schedule) continue
+    const v = rowChargedUnder(t, schedule)
+    if (v.ok) charged.push(t)
+    else refused[v.reason] = (refused[v.reason] || 0) + 1
+  }
+  return {
+    charged,
+    summary: {
+      rows: (allRows || []).length, closed, lostRestart,
+      charged: schedule ? charged.length : null,
+      refused: schedule ? refused : null,
+      preCostModel: (allRows || []).filter(t => (t.reason || '') !== 'lost_restart' && !rowIsCosted(t)).length,
+      scheduleHash: schedule ? scheduleHash(schedule) : null,
+      note: schedule
+        ? 'a closed row counts as evidence only when its recorded cost terms equal this schedule\'s class row AND its own netR is consistent with them — the book\'s arithmetic, not the sidecar\'s declaration'
+        : 'no schedule asked for: every closed row is shown, none is treated as evidence',
+    },
+  }
+}
+
+/**
+ * PR-L: the cost schedule in force for a side, and the symbol id → class map
+ * the keeper resolved when it last pushed it. The schedule itself is the
+ * repo's (the file is the source of truth); the map is stored per side at
+ * push time because a shadow ledger row carries a symbol ID and no name.
+ * `mapped:false` says the keeper has not pushed yet — every row then prices
+ * at the fallback class, which the line reports as `viaFallback`.
+ */
+export function sideCostSchedule(db, side, { file = undefined } = {}) {
+  const schedule = loadRepoSchedule(file)
+  let stored = null
+  try { stored = (JSON.parse(getState(db, TICK_COST_MAP_KEY) || '{}') || {})[side] || null } catch { stored = null }
+  const symbolClass = stored && stored.symbolClass && typeof stored.symbolClass === 'object' ? stored.symbolClass : {}
+  return {
+    schedule,
+    symbolClass,
+    mapped: Object.keys(symbolClass).length > 0,
+    pushedAt: stored?.at ?? null,
+    unclassified: Array.isArray(stored?.unclassified) ? stored.unclassified : [],
+    pushedHash: stored?.hash ?? null,
+    repoHash: Object.keys(schedule.classes).length ? scheduleHash(schedule) : null,
+    classOfSymbol: (symbolId) => (symbolId == null ? null : symbolClass[String(symbolId)] || null),
+  }
+}
+
 /** The account's own R in dollars: its stamped balance (scoped key only) × its own per-trade risk. */
 export function accountRiskPerTrade(db, accountId) {
   const raw = getState(db, `acct:${String(accountId)}:account_balance_usd`)
@@ -110,9 +184,23 @@ export function accountRiskPerTrade(db, accountId) {
 }
 
 /** One side's portfolio for one profile since a time, plus each account's projection. */
-export function shadowPortfolio(db, { side, profilePrefix = null, sinceMs = null } = {}) {
-  const trades = rows(db, { side, profilePrefix, sinceMs })
+export function shadowPortfolio(db, { side, profilePrefix = null, sinceMs = null, chargedUnder = null } = {}) {
+  const allTrades = rows(db, { side, profilePrefix, sinceMs })
+  // ROUND-TWO CHECKER, BLOCKER 1/2: the evidence read (`chargedUnder`) keeps
+  // only rows the sidecar's book DEMONSTRABLY charged that schedule — class
+  // known, four terms equal to the schedule's class row, and the row's own
+  // netR consistent with its own grossR under them. A string-emptiness test
+  // on `cost_class` was not that, and six all-zero rows passed it.
+  const audit = costAudit(allTrades, chargedUnder)
+  const trades = chargedUnder ? audit.charged : allTrades
   const stats = portfolioStats(trades)
+  // PR-L (plan §16): what this portfolio's profit factor would be at 0 ×, 1 ×
+  // and 2 × the cost schedule. An evidence bar that moves under a plausible
+  // cost assumption is what the owner needs to see BEFORE switching anything
+  // on — and every one of the trades recorded before PR-L was closed
+  // spread-only, so their 1 × row is not their recorded profit factor.
+  const cost = sideCostSchedule(db, side)
+  const sensitivity = { ...costSensitivity(allTrades, cost.schedule, cost.classOfSymbol), symbolMapPushedAt: cost.pushedAt, symbolMapped: cost.mapped, unclassifiedSymbols: cost.unclassified }
   let accounts = []
   try {
     const env = side === 'cpp_exec' ? 1 : 0
@@ -128,7 +216,8 @@ export function shadowPortfolio(db, { side, profilePrefix = null, sinceMs = null
       }
     })
   } catch { accounts = [] }
-  return { side, profile: profilePrefix, since: sinceMs != null ? new Date(sinceMs).toISOString() : null, ...stats, accounts, projectionNote: 'a 1R rescale of the R series by each account\'s own risk budget — ignores minimum lots, margin, per-symbol caps and the position cap; a display, not evidence', recent: trades.slice(-20).map(t => ({ at: t.at, symbolId: t.symbol_id, side: t.trade_side, reason: t.reason, netR: t.net_r, holdEvents: t.hold_events, holdMs: t.hold_ms, exitAt: t.exit_ms != null ? new Date(Number(t.exit_ms)).toISOString() : null })) }
+  return { side, profile: profilePrefix, since: sinceMs != null ? new Date(sinceMs).toISOString() : null, ...stats,
+    costAudit: audit.summary, costSensitivity: sensitivity, accounts, projectionNote: 'a 1R rescale of the R series by each account\'s own risk budget — ignores minimum lots, margin, per-symbol caps and the position cap; a display, not evidence', recent: trades.slice(-20).map(t => ({ at: t.at, symbolId: t.symbol_id, side: t.trade_side, reason: t.reason, netR: t.net_r, holdEvents: t.hold_events, holdMs: t.hold_ms, exitAt: t.exit_ms != null ? new Date(Number(t.exit_ms)).toISOString() : null })) }
 }
 
 /** GET /state/tick-shadow: every side, every profile seen, the sidecar's own counters. */

@@ -12,6 +12,7 @@
 // fill only events at or after it. Results are R multiples of the signal's
 // stop distance, net of costs, with chronological blocks and a purge
 // between them.
+import { costClassOf, costExact, costsForClass, wireCostInt } from './tick-cost-schedule.js'
 import { TickMomentumOracle, normalizeParams, profileHash, STRATEGY_ID, STRATEGY_VERSION } from './tick-strategy.js'
 
 export const DEFAULT_SIM = Object.freeze({
@@ -22,8 +23,19 @@ export const DEFAULT_SIM = Object.freeze({
   // reported as such (sim.latencySource) so a trial cannot read as measured.
   latencyMs: 250,
   latencyPercentile: 0.9,
-  slippage: 0,                // adverse slippage per fill, wire units
-  commissionPerSide: 0,       // per fill, wire units of price
+  slippage: 0,                // global absolute slippage per fill, wire units — ADDS to the class row
+  commissionPerSide: 0,       // global absolute commission per fill, wire units — ADDS to the class row
+  // PR-L: the per-symbol-class cost schedule (lib/tick-cost-schedule.js).
+  // `costs` is { classes, fallbackClass }, each class carrying an absolute
+  // wire term AND a bps term per side — the broker charges both shapes (US
+  // stock is a flat $0.02 per share, HK stock and FX are proportional), and
+  // a cTrader wire unit is 1e-5 of the symbol's own price for every symbol. `symbol`
+  // (a name) or `costClass` (a class directly) says which row to charge; an
+  // unclassified symbol is charged the schedule's fallbackClass and SAYS so
+  // on the result (sim.costSource).
+  costs: null,
+  symbol: null,
+  costClass: null,
   targetR: 3,                 // gross target as a multiple of the stop distance
   minTargetToCost: 3,         // screening: target / round-trip cost (spread + 2·commission + 2·slippage)
   maxHoldEvents: null,        // default 4 × rangeEvents
@@ -70,6 +82,27 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   s.latencySource = latency.source
   const purgeEvents = s.purgeEvents ?? Math.max(p.rangeEvents + p.momentumEvents, maxHoldEvents)
   s.purgeEvents = purgeEvents
+  // PR-L: resolve the per-class cost ONCE — `simulate` runs one symbol, so
+  // one class holds for the whole run. The absolute wire-unit fields add on
+  // top, so a sim with no schedule behaves exactly as it did before.
+  const row = costsForClass(s.costs || { classes: {}, fallbackClass: null }, s.costClass ?? (s.symbol ? costClassOf(s.symbol) : null))
+  s.costClass = row.class
+  s.costSource = row.source
+  // ROUND-TWO CHECKER, MINOR 4: the EFFECTIVE terms — the class row with the
+  // legacy global absolute fields folded in ONCE. Charging `global + class`
+  // while reporting only the class row let the two drift apart, and the
+  // `reprice@1 === recorded netR` invariant held only while both globals
+  // were 0. cpp-exec/src/tick_shadow.cpp folds the same way at construction.
+  s.commissionWirePerSide = row.commissionWirePerSide + (Number(s.commissionPerSide) || 0)
+  s.commissionBpsPerSide = row.commissionBpsPerSide
+  s.slippageWirePerSide = row.slippageWirePerSide + (Number(s.slippage) || 0)
+  s.slippageBpsPerSide = row.slippageBpsPerSide
+  // Slippage shifts an INTEGER price, so it rounds — away from zero, so a
+  // non-zero slippage never becomes a free fill on a cheap symbol. Commission
+  // is EXACT (a double) and subtracted before the R division, so a sub-wire
+  // commission still bites. cpp-exec/src/tick_shadow.cpp does the same.
+  const slipAt = (price) => wireCostInt(s.slippageWirePerSide, s.slippageBpsPerSide, price)
+  const commAt = (price) => costExact(s.commissionWirePerSide, s.commissionBpsPerSide, price)
   const oracle = new TickMomentumOracle(p)
   const trades = []
   const rejected = { cost: 0, noFill: 0 }
@@ -83,26 +116,26 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
       open.tradableSeen++
       let exit = null, reason = null
       if (open.side === 'BUY') {
-        if (q.bid <= open.stop) { exit = q.bid - s.slippage; reason = 'stop' }
-        else if (q.bid >= open.target) { exit = q.bid - s.slippage; reason = 'target' }
+        if (q.bid <= open.stop) { exit = q.bid - slipAt(q.bid); reason = 'stop' }
+        else if (q.bid >= open.target) { exit = q.bid - slipAt(q.bid); reason = 'target' }
       } else {
-        if (q.ask >= open.stop) { exit = q.ask + s.slippage; reason = 'stop' }
-        else if (q.ask <= open.target) { exit = q.ask + s.slippage; reason = 'target' }
+        if (q.ask >= open.stop) { exit = q.ask + slipAt(q.ask); reason = 'stop' }
+        else if (q.ask <= open.target) { exit = q.ask + slipAt(q.ask); reason = 'target' }
       }
       if (!exit && (open.tradableSeen >= maxHoldEvents || q.recvMs - open.entryMs >= s.maxHoldMs)) {
-        exit = open.side === 'BUY' ? q.bid - s.slippage : q.ask + s.slippage
+        exit = open.side === 'BUY' ? q.bid - slipAt(q.bid) : q.ask + slipAt(q.ask)
         reason = open.tradableSeen >= maxHoldEvents ? 'hold_events' : 'hold_clock'
       }
       if (exit != null) {
         const gross = open.side === 'BUY' ? exit - open.entry : open.entry - exit
-        const net = gross - 2 * s.commissionPerSide
+        const net = gross - (commAt(open.entry) + commAt(exit))
         trades.push({ side: open.side, signalSeq: open.signal.seq, entrySeq: open.entrySeq, exitSeq: q.seq, entry: open.entry, exit, stop: open.stop, target: open.target, stopDistance: open.signal.stopDistance, reason, holdEvents: open.tradableSeen, holdMs: q.recvMs - open.entryMs, grossR: +(gross / open.signal.stopDistance).toFixed(4), netR: +(net / open.signal.stopDistance).toFixed(4), entryIdx: open.entryIdx, exitIdx: i })
         open = null
       }
     }
     // 2. fill a pending signal at the first tradable event past the latency
     if (pending && !open && tradable(q) && q.recvMs >= pending.recvMs + s.latencyMs) {
-      const entry = pending.side === 'BUY' ? q.ask + s.slippage : q.bid - s.slippage
+      const entry = pending.side === 'BUY' ? q.ask + slipAt(q.ask) : q.bid - slipAt(q.bid)
       const stop = pending.side === 'BUY' ? entry - pending.stopDistance : entry + pending.stopDistance
       const target = pending.side === 'BUY' ? entry + s.targetR * pending.stopDistance : entry - s.targetR * pending.stopDistance
       open = { side: pending.side, signal: pending, entry, stop, target, entryIdx: i, entrySeq: q.seq, entryMs: q.recvMs, tradableSeen: 0 }
@@ -111,7 +144,10 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
     // 3. the strategy sees the event AFTER the trade management (no lookahead on its own fill)
     const sig = planted ? (planted.get(q.seq) || null) : oracle.feed(q)
     if (sig && !open && !pending) {
-      const cost = (sig.ask - sig.bid) + 2 * s.commissionPerSide + 2 * s.slippage
+      // The screen prices the round trip at the signal's MID — one price for
+      // both ends, so the same number reaches the sidecar's ShadowBook.
+      const mid = (sig.bid + sig.ask) / 2
+      const cost = (sig.ask - sig.bid) + 2 * commAt(mid) + 2 * slipAt(mid)
       const target = s.targetR * sig.stopDistance
       if (cost > 0 && target / cost < s.minTargetToCost) { rejected.cost++; continue }
       pending = sig
@@ -127,9 +163,9 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
     for (let i = events.length - 1; i >= 0; i--) {
       const q = events[i]
       if (!tradable(q)) continue
-      const exit = open.side === 'BUY' ? q.bid - s.slippage : q.ask + s.slippage
+      const exit = open.side === 'BUY' ? q.bid - slipAt(q.bid) : q.ask + slipAt(q.ask)
       const gross = open.side === 'BUY' ? exit - open.entry : open.entry - exit
-      const net = gross - 2 * s.commissionPerSide
+      const net = gross - (commAt(open.entry) + commAt(exit))
       trades.push({ side: open.side, signalSeq: open.signal.seq, entrySeq: open.entrySeq, exitSeq: q.seq, entry: open.entry, exit, stop: open.stop, target: open.target, stopDistance: open.signal.stopDistance, reason: 'data_end', holdEvents: open.tradableSeen, holdMs: q.recvMs - open.entryMs, grossR: +(gross / open.signal.stopDistance).toFixed(4), netR: +(net / open.signal.stopDistance).toFixed(4), entryIdx: open.entryIdx, exitIdx: i })
       break
     }
