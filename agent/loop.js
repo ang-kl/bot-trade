@@ -2130,6 +2130,23 @@ export function stampExitMarks(s, pos, eval_, outcome) {
   return true
 }
 
+/**
+ * PR-X: the account, the row and the trade on every PM line.
+ *
+ * WHY. The owner's 15-09 log showed `PM ABBV.US: FULL_EXIT FAILED` four times
+ * a cycle against once each for UNH.US and COST.US, and NOTHING in the line
+ * could distinguish "ABBV is held on four accounts" from "four rows point at
+ * one position". `monitored_positions` carries `account_id` and `trade_id`;
+ * the line dropped both. A repeated line that cannot say which account it is
+ * about is not a log, it is a rumour — and it cost a wrong diagnosis before
+ * this was written.
+ */
+export function posTag(pos) {
+  const acct = pos?.account_id == null ? 'unscoped' : `…${String(pos.account_id).slice(-4)}`
+  const trade = pos?.trade_id == null ? 'no-trade' : `t${pos.trade_id}`
+  return `${pos?.symbol} [${acct} row${pos?.id} ${trade}]`
+}
+
 export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
   // Managed-exit trail (owner "c1" 25-08-2026; ONE SIMPLE SYSTEM 28-08-2026:
   // "proceed as plan", win-rate goal > 69%): on managed accounts the
@@ -2169,7 +2186,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
         eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
         pos.id
       )
-      log(`PM ${pos.symbol}: ${eval_.action} (external, observe-only) — ${eval_.reason}`)
+      log(`PM ${posTag(pos)}: ${eval_.action} (external, observe-only) — ${eval_.reason}`)
       return
     }
     // Stage-matrix "Live Tweak & Close" gate: when the position's
@@ -2184,7 +2201,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
         eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
         pos.id
       )
-      log(`PM ${pos.symbol}: ${eval_.action} suppressed — Live Tweak & Close is off for ${pos.strategy || 'unlabelled'}`)
+      log(`PM ${posTag(pos)}: ${eval_.action} suppressed — Live Tweak & Close is off for ${pos.strategy || 'unlabelled'}`)
       return
     }
     const outcome = await executeBrokerAction(db, s, pos, eval_)
@@ -2198,13 +2215,13 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
     let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
     if (outcome.error) {
       reasoning = `${reasoning} | broker_error: ${outcome.error}`
-      log(`PM ${pos.symbol}: ${eval_.action} FAILED — ${outcome.error}`)
+      log(`PM ${posTag(pos)}: ${eval_.action} FAILED — ${outcome.error}`)
     } else if (outcome.skipped) {
       reasoning = `${reasoning} | intent_only: ${outcome.reason}`
-      log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason} (intent-only, ${outcome.reason})`)
+      log(`PM ${posTag(pos)}: ${eval_.action} — ${eval_.reason} (intent-only, ${outcome.reason})`)
     } else {
       reasoning = `${reasoning} | broker: ${outcome.summary}`
-      log(`PM ${pos.symbol}: ${eval_.action} — ${outcome.summary}`)
+      log(`PM ${posTag(pos)}: ${eval_.action} — ${outcome.summary}`)
       if (outcome.closedRemotely) thesisStatus = 'broken'
     }
     s.updatePositionCheck.run(
@@ -5487,6 +5504,20 @@ async function runLoop(db) {
       // ledger is to answer a question weeks after the disarm — the 17-09
       // investigation failed at roughly one hour.
       try { db.prepare("DELETE FROM arming_log WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
+      // PR-X: (account, symbol) pairs holding more than one active row. Every
+      // such row is evaluated and exited SEPARATELY by the position manager,
+      // which is why one symbol can log the same FULL_EXIT several times in a
+      // cycle — the behaviour the owner's 15-09 log showed for ABBV.US.
+      // Silent when there are none, which is itself the answer "one position
+      // per account". Hourly: a standing condition, not an event.
+      try {
+        const lastDup = Number(getState(db, 'dup_positions_logged_ms') || 0)
+        if (!Number.isFinite(lastDup) || Date.now() - lastDup > 60 * 60 * 1000) {
+          const { duplicatePositionLine } = await import('./services/position-row-audit.js')
+          const line = duplicatePositionLine(db)
+          if (line) { log(line); setState(db, 'dup_positions_logged_ms', String(Date.now())) }
+        }
+      } catch { /* a report must never break the pass it rides on */ }
       // RETURN THE FREED PAGES TO THE FILESYSTEM.
       //
       // Every prune above works, and every one of them has worked for months.
