@@ -96,7 +96,7 @@ function capped(g, limit) {
  * The provenance block is NOT optional and NOT separable: it is attached here,
  * beside the figures, for the reason the header gives.
  */
-export function partialAnalysis(db, { now = Date.now(), limit = 20 } = {}) {
+export function partialAnalysis(db, { now = Date.now(), limit = 20, measuredCleanDataStart = null } = {}) {
   const raw = db.prepare(`
     SELECT account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json
       FROM position_history_incomplete
@@ -133,7 +133,23 @@ export function partialAnalysis(db, { now = Date.now(), limit = 20 } = {}) {
     coveredPeriod: closed.length
       ? { earliest: new Date(closed[0]).toISOString(), latest: new Date(closed[closed.length - 1]).toISOString() }
       : null,
-    cleanDataCutoff: CLEAN_DATA_CUTOFF,
+    // TWO DIFFERENT CLAIMS, KEPT APART. The cutoff is the EARLIEST DATE a
+    // complete record could exist — deduced from when the field was
+    // introduced. `measuredFirstCompleteRecord` is where one actually does.
+    // Production's first read put them three days apart (11-09 vs 14-09), and
+    // printing only the deduced date next to real figures invites it to be
+    // read as the measurement.
+    //
+    // It arrives as an ARGUMENT rather than a query, because this module must
+    // not read `position_history` — see rule 3 in the header, and the source
+    // assertion that pins it.
+    cleanDataCutoff: {
+      ...CLEAN_DATA_CUTOFF,
+      measuredFirstCompleteRecord: measuredCleanDataStart,
+      note: measuredCleanDataStart
+        ? 'the cutoff is the earliest date a complete record COULD exist; measuredFirstCompleteRecord is where one actually does'
+        : 'no measured first complete record was supplied by the caller',
+    },
   }
 
   return {

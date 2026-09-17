@@ -206,3 +206,61 @@ test('boot prints the boundary and the stamped partial line — both readable wi
   const state = strip(readFileSync(new URL('../routes/state.js', import.meta.url), 'utf8'))
   assert.match(state, /router\.get\('\/position-history-partial'/)
 })
+
+test('the post-cutoff refusals are split on OPEN date, which is what explains the rate', () => {
+  // Production read 60 complete / 90 refused since the cutoff — 40%, where
+  // arithmetic had suggested ~95%. The hypothesis: `direction_reason` is
+  // recorded AT ENTRY, so a position opened before the cutoff and closed
+  // after it can never be complete, and the real boundary is an open-date
+  // one measured on close date.
+  //
+  // The split is what settles it, so it must actually distinguish the two
+  // cases rather than reporting a plausible constant.
+  const db = fresh()
+  const cutoff = Date.parse('2026-09-11T00:00:00Z')
+  const inc = (pid, openedAt, closedAt) => {
+    db.prepare(`
+      INSERT INTO position_history_incomplete (account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json)
+      VALUES (?, ?, 'EURUSD', ?, '["direction_reason"]', ?)
+    `).run(ACCT, String(pid), closedAt, JSON.stringify({ opened_at_ms: openedAt, closed_at_ms: closedAt }))
+  }
+  inc(1, Date.parse('2026-09-05T00:00:00Z'), Date.parse('2026-09-15T00:00:00Z')) // opened before, closed after
+  inc(2, Date.parse('2026-09-06T00:00:00Z'), Date.parse('2026-09-16T00:00:00Z')) // ditto
+  inc(3, Date.parse('2026-09-13T00:00:00Z'), Date.parse('2026-09-16T00:00:00Z')) // opened AFTER — a live gap
+  db.prepare(`
+    INSERT INTO position_history_incomplete (account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json)
+    VALUES (?, '4', 'EURUSD', ?, '["direction_reason"]', ?)
+  `).run(ACCT, Date.parse('2026-09-16T00:00:00Z'), JSON.stringify({ closed_at_ms: 1 })) // no open time
+
+  const span = completenessSpan(db, { cutoffMs: cutoff })
+  assert.equal(span.refusedSinceCutoff, 4)
+  assert.equal(span.refusedSinceCutoffOpenedBeforeCutoff, 2, 'history: the entry predates the field')
+  assert.equal(span.refusedSinceCutoffOpenedAfterCutoff, 1, 'a live gap — an entry made after the field existed, still with no reason')
+  assert.equal(span.refusedSinceCutoffOpenTimeUnknown, 1, 'and an unknown open time is its own bucket, not folded into either')
+})
+
+test('the stamp keeps the deduced cutoff and the measured first record apart', () => {
+  // Production put them three days apart (11-09 deduced, 14-09 measured).
+  // Printing only the deduced date beside real figures invites it to be read
+  // as the measurement.
+  const db = fresh()
+  refused(db, { pid: 1 })
+  const r = partialAnalysis(db, { measuredCleanDataStart: '2026-09-14T13:35:03.183Z' })
+  assert.equal(r.provenance.cleanDataCutoff.date, '2026-09-11', 'the deduced boundary')
+  assert.equal(r.provenance.cleanDataCutoff.measuredFirstCompleteRecord, '2026-09-14T13:35:03.183Z')
+  assert.match(r.provenance.cleanDataCutoff.note, /earliest date a complete record COULD exist/)
+
+  const none = partialAnalysis(db)
+  assert.equal(none.provenance.cleanDataCutoff.measuredFirstCompleteRecord, null)
+  assert.match(none.provenance.cleanDataCutoff.note, /no measured first complete record/,
+    'and absence is stated, not left to look like 11-09')
+})
+
+test('boot prints the open-date split beside the rate', () => {
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const index = strip(readFileSync(new URL('../index.js', import.meta.url), 'utf8'))
+  assert.match(index, /refusedSinceCutoffOpenedBeforeCutoff\} OPENED before the cutoff/)
+  assert.match(index, /opened after \(a live gap if this is large\)/)
+  assert.match(index, /measuredCleanDataStart: span\.earliest/,
+    'and the measured start reaches the stamp without the partial module querying the clean table')
+})

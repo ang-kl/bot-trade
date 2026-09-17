@@ -437,14 +437,18 @@ try {
     console.log(`[boot] clean-data boundary: ${span.complete} complete record(s), span ${span.earliest ?? '—'} → ${span.latest ?? '—'} · ` +
       `${span.completeBeforeCutoff} before the ${span.cutoff.slice(0, 10)} cutoff (expected 0) · ` +
       `since the cutoff ${span.completeSinceCutoff} complete / ${span.refusedSinceCutoff} refused` +
-      (span.completionRateSinceCutoffPct != null ? ` = ${span.completionRateSinceCutoffPct}% complete` : ''))
+      (span.completionRateSinceCutoffPct != null ? ` = ${span.completionRateSinceCutoffPct}% complete` : '') +
+      ` · of those refusals ${span.refusedSinceCutoffOpenedBeforeCutoff} OPENED before the cutoff (expected: most — the reason is recorded at entry), ` +
+      `${span.refusedSinceCutoffOpenedAfterCutoff} opened after (a live gap if this is large), ${span.refusedSinceCutoffOpenTimeUnknown} open time unknown`)
 
     // THE PARTIAL ANALYSIS (owner, 18-09-2026). Stamped with the moment it
     // was produced and led by its own warning, because a figure from refused
     // records looks exactly like a figure from whole ones — and the proper
     // analysis, when it runs, will disagree with it.
     const { partialAnalysis, partialAnalysisLine } = await import('./services/position-history-partial.js')
-    const pa = partialAnalysis(db)
+    // The measured boundary is handed in, so the stamp can show where clean
+    // data ACTUALLY starts beside the date the deduction allows.
+    const pa = partialAnalysis(db, { measuredCleanDataStart: span.earliest })
     if (pa.provenance.records > 0) console.log(partialAnalysisLine(pa))
   } catch (err) {
     console.error(`[boot] position history build failed (non-fatal): ${err.message}`)
