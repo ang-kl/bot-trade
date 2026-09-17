@@ -12,6 +12,27 @@ TEST_SRC := $(wildcard src/tests/*.cpp)
 # Tests link against everything except the production entrypoint.
 LIB_SRC  := $(filter-out src/main.cpp,$(SRC))
 
+# HEADER DEPENDENCIES (16-09-2026). Until this line every rule listed only
+# .cpp prerequisites, so a change to a HEADER rebuilt nothing and `make test`
+# re-ran stale binaries and reported green. Measured at the time:
+# `touch src/tick_shadow.hpp && make test` planned ZERO recompiles, and a
+# mutation that deleted the shadow book's per-class commission — a function
+# that lives in tick_shadow.hpp — reported "all passed", rc=0, while `grep -c`
+# confirmed the edit had landed. That is a gate that cannot go red, on code it
+# did not compile: this repo's recurring failure mode at the build level.
+#
+# WHY A WILDCARD AND NOT `-MMD -MP`. Each binary here is built by ONE compiler
+# invocation over the test file plus every library source (no object files),
+# and with several inputs and a single `-o`, `-MMD` writes ONE depfile that
+# each translation unit OVERWRITES in turn — measured: the resulting
+# `bin/x.d` listed only the LAST source's headers. A dependency file that
+# silently covers one file in twenty is the same defect wearing a seatbelt.
+# Because the build already recompiles every TU for every binary, precise
+# dependencies buy nothing here; correctness does. This wildcard is
+# re-evaluated on every run, so a newly added header is picked up with no
+# bootstrap step and nothing to regenerate.
+HDRS     := $(wildcard src/*.hpp) $(wildcard src/tests/*.hpp)
+
 BIN       := bin/cpp-exec
 # Each tests/*.cpp defines its own main, so every test file gets its own binary.
 TEST_BINS := $(patsubst src/tests/%.cpp,bin/%,$(TEST_SRC))
@@ -27,18 +48,18 @@ TSAN_BINS  := $(addprefix bin/tsan/,$(TSAN_TESTS))
 
 all: $(BIN)
 
-$(BIN): $(SRC)
+$(BIN): $(SRC) $(HDRS)
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(SRC) -o $@ $(LDFLAGS) $(LDLIBS)
 
-bin/%: src/tests/%.cpp $(LIB_SRC)
+bin/%: src/tests/%.cpp $(LIB_SRC) $(HDRS)
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $< $(LIB_SRC) -o $@ $(LDFLAGS) $(LDLIBS)
 
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do ./$$t; done
 
-bin/tsan/%: src/tests/%.cpp $(LIB_SRC)
+bin/tsan/%: src/tests/%.cpp $(LIB_SRC) $(HDRS)
 	@mkdir -p bin/tsan
 	$(CXX) $(CXXFLAGS) -g -fsanitize=thread $< $(LIB_SRC) -o $@ $(LDFLAGS) $(LDLIBS)
 
