@@ -3379,6 +3379,54 @@ async function runLoop(db) {
           }
           log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders`)
 
+          // EVERY CLOSE IS QUEUED FOR CAPTURE (owner, 17-09-2026). Not built
+          // here: the broker's deal history does not carry the closing deal
+          // the instant the position leaves the open list, so a record built
+          // now would have no broker figures and be refused by the
+          // completeness gate — a refusal caused by OUR timing rather than by
+          // a real gap. The queue is durable, so a redeploy seconds after a
+          // close does not lose it.
+          try {
+            const { enqueueCapture } = await import('./services/position-capture.js')
+            for (const c of result.closedDetected || []) {
+              enqueueCapture(db, { accountId, positionId: c.positionId, symbol: c.symbol })
+            }
+          } catch (err) {
+            log(`Position capture enqueue failed: ${err.message}`)
+          }
+
+          // ...and drained here, in the same block, because this is where the
+          // account's credentials are in scope. A capture that is due pulls
+          // THAT position's deal window (not "the last N days"), builds the
+          // record, appends it to the volume archive and offers it to
+          // cpp-verify.
+          //
+          // The verifier is OPTIONAL and its absence is visible rather than
+          // silent: until VERIFY_URL is set every record stays `unverified`,
+          // which is precisely what it is. Nothing here decides a verdict on
+          // the verifier's behalf — that would re-introduce the
+          // self-certification the separate service exists to prevent.
+          try {
+            const { drainCaptureQueue } = await import('./services/position-capture.js')
+            const { verifyClient } = await import('./lib/verify-client.js')
+            const verifier = verifyClient()
+            const drain = await drainCaptureQueue(db, {
+              getDeals: async (t0, t1) => {
+                const { wsGetDeals } = await import('./lib/ctrader-ws.js')
+                return wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1)
+              },
+              verify: verifier ? (record) => verifier(record, { host }) : null,
+            })
+            if (drain.due) {
+              log(`Position capture: ${drain.captured} captured · ${drain.archived} archived · ${drain.verified} verified · ${drain.incomplete} still incomplete` +
+                  (drain.gaveUp ? ` · ${drain.gaveUp} GAVE UP` : '') +
+                  (verifier ? '' : ' (verifier unconfigured — records stay unverified)'))
+              for (const e of drain.errors) log(`Position capture error: ${e}`)
+            }
+          } catch (err) {
+            log(`Position capture drain failed: ${err.message}`)
+          }
+
           // Ledger resyncs are bookkeeping, not tampering — logged, never
           // alerted. Named per position on purpose: a row that keeps needing
           // a resync means something is writing a stop the broker rejects,

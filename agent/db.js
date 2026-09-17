@@ -1801,6 +1801,39 @@ export function initDB(dbPath) {
   CREATE INDEX IF NOT EXISTS idx_pos_hist_inc_closed ON position_history_incomplete(closed_at_ms DESC);
   `);
 
+  // THE CLOSE-TRIGGERED CAPTURE QUEUE (owner, 17-09-2026: "every position
+  // close, and after 30 seconds should have the whole closed position
+  // history"). A close is detected by the reconciler; the record cannot be
+  // built at that instant because the broker's deal history needs a moment to
+  // settle, so the position is ENQUEUED with a due time and drained later.
+  //
+  // WHY A TABLE AND NOT A setTimeout. A timer dies with the process. A
+  // position closed 20 seconds before a redeploy would simply never be
+  // captured, and nothing would say so — the failure would look identical to
+  // a position that was captured fine. The queue is durable, it survives a
+  // restart, and a row that keeps failing stays visible with its last error
+  // rather than disappearing.
+  //
+  // `state` is the honest part: `gave_up` rows are NOT deleted. A capture
+  // this system could not complete is a fact worth counting, and deleting it
+  // would make the queue look permanently healthy.
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS position_capture_queue (
+    account_id   TEXT NOT NULL,
+    position_id  TEXT NOT NULL,
+    symbol       TEXT,
+    due_at_ms    INTEGER NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    state        TEXT NOT NULL DEFAULT 'pending'
+                   CHECK(state IN ('pending','captured','gave_up')),
+    last_error   TEXT,
+    enqueued_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    settled_at   TEXT,
+    PRIMARY KEY (account_id, position_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_pos_capture_due ON position_capture_queue(state, due_at_ms);
+  `);
+
   // STOP BEYOND ENTRY ⇒ be_moved (02-09-2026). be_moved was set only by the
   // explicit break-even step (position-manager rule 5, trade-guard's BE) —
   // a TRAIL that carried the stop through entry left the flag at 0. Measured

@@ -2564,6 +2564,18 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // The capture queue behind the record: what is waiting, what was captured,
+  // and — the part worth reading — what this system GAVE UP on, named with
+  // the reason. Those rows are closed trades it could not describe.
+  router.get('/position-capture', async (_req, res) => {
+    try {
+      const { captureQueueView } = await import('../services/position-capture.js')
+      const { verifierStatus } = await import('../lib/verify-client.js')
+      res.json({ ...captureQueueView(db), verifier: verifierStatus() })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   router.get('/tick-shadow', async (_req, res) => {
     try {
       const { tickShadowView } = await import('../services/tick-shadow.js')
