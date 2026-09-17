@@ -32,6 +32,7 @@
 #pragma once
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -42,9 +43,38 @@
 
 namespace tick {
 
-// Mirrors agent/lib/tick-replay-sim.js DEFAULT_SIM. Prices are wire units
-// (the feed's integer bid/ask), so slippage and commission are wire units
-// per side too; 0 by default, as in the replayer.
+// PR-L: the per-symbol-class cost schedule, the mirror of
+// agent/lib/tick-cost-schedule.js. A class row carries BOTH an absolute wire
+// term and a bps term per side, because the broker charges two shapes: US
+// stock is a flat $0.02 PER SHARE (2000 wire units, a wire unit being 1e-5 of
+// price for every cTrader symbol), while HK stock and FX are proportional to
+// price. One unit alone misprices the other — measured over the owner's own
+// statements, US stock has CV 0.58 in price units against 0.975 in bps, and
+// HK stock the reverse. Cost per side is
+//   commissionWirePerSide + commissionBpsPerSide × price / 10000.
+struct ShadowCost {
+  double commissionWirePerSide = 0;   // absolute, wire units (US stock: a flat $0.02/share = 2000)
+  double commissionBpsPerSide = 0;    // proportional (HK stock, FX)
+  double slippageWirePerSide = 0;
+  double slippageBpsPerSide = 0;
+};
+
+struct ShadowCostSchedule {
+  std::map<std::string, ShadowCost> classes;      // class name → the four terms per side
+  std::map<long long, std::string> symbolClass;   // symbolId → class name (pushed by the keeper)
+  std::string fallbackClass;                      // charged when a symbol does not classify
+  // The class this symbol is charged at — the mapped one, else the fallback,
+  // else empty (no schedule at all: the absolute fields alone, as before).
+  std::string classFor(long long symbolId) const;
+  ShadowCost costFor(long long symbolId) const;
+  jsn::Value json() const;
+  bool empty() const { return classes.empty(); }
+};
+
+// Mirrors agent/lib/tick-replay-sim.js DEFAULT_SIM. `slippage` and
+// `commissionPerSide` are the LEGACY GLOBAL absolute wire terms per side; they
+// are folded into the book's effective cost row at construction and add on top
+// of the class row. Both are 0 by default, as in the replayer.
 struct ShadowSim {
   long long latencyMs = 250;
   long long slippage = 0;
@@ -53,8 +83,18 @@ struct ShadowSim {
   double minTargetToCost = 3.0;
   int maxHoldEvents = 0;               // 0 → 4 × rangeEvents (the replayer's default)
   long long maxHoldMs = 6LL * 3600 * 1000;
+  ShadowCostSchedule costs;
   std::string json() const;
 };
+
+// The two cost rules, mirroring agent/lib/tick-cost-schedule.js exactly.
+// costExact is the unrounded per-side cost (commission uses it and is never
+// quantised — rounding re-created the zero-cost bug on cheap symbols:
+// DOGEUSD at 0.06851 is 6,851 wire units and 0.5 bps of that is 0.34).
+// wireCostInt is for a term that must shift an INTEGER price (slippage) and
+// rounds AWAY FROM ZERO, so a non-zero slippage is never a free fill.
+double costExact(double wirePerSide, double bps, double price);
+long long wireCostInt(double wirePerSide, double bps, double price);
 
 struct ShadowTrade {
   long long symbolId = 0;
@@ -67,6 +107,14 @@ struct ShadowTrade {
   uint64_t entryMs = 0, exitMs = 0;
   double grossR = 0, netR = 0;         // rounded to 4 dp, the replayer's toFixed(4)
   std::string profileHash;
+  // PR-L: the cost model THIS trade was charged, on the row — so the keeper's
+  // sensitivity line can strip it back off and re-price, and so the evidence
+  // gate can prove the row was charged the schedule the sidecar reports,
+  // rather than believing the report. Empty class + zeros = the pre-PR-L
+  // spread-only model, which is the truth about every trade closed before it.
+  std::string costClass;
+  double commissionWirePerSide = 0, commissionBpsPerSide = 0;
+  double slippageWirePerSide = 0, slippageBpsPerSide = 0;
 };
 
 struct ShadowOpen {
@@ -104,6 +152,23 @@ public:
   const std::optional<ShadowOpen>& open() const { return open_; }
   bool hasPending() const { return pending_.has_value(); }
   const ShadowSim& sim() const { return sim_; }
+  // PR-L: the cost row this book charges, resolved once at construction from
+  // the schedule and this book's symbol.
+  const ShadowCost& cost() const { return cost_; }
+  const std::string& costClass() const { return costClass_; }
+  // ROUND-TWO CHECKER, MINOR 4: `cost_` is the EFFECTIVE cost this book
+  // charges — the class row with the sim's global absolute terms already
+  // folded in at construction. Charging `global + class` while RECORDING
+  // only the class row meant the keeper stripped less slippage than the book
+  // had added, so `reprice@1 === recorded netR` — an invariant this repo
+  // pins — held only while both globals were 0. Folding once means the
+  // number charged and the number recorded cannot drift apart.
+  long long slipAt(double price) const { return wireCostInt(cost_.slippageWirePerSide, cost_.slippageBpsPerSide, price); }
+  double commAt(double price) const { return costExact(cost_.commissionWirePerSide, cost_.commissionBpsPerSide, price); }
+  void recordCostModel(ShadowTrade& t) const {
+    t.commissionWirePerSide = cost_.commissionWirePerSide; t.commissionBpsPerSide = cost_.commissionBpsPerSide;
+    t.slippageWirePerSide = cost_.slippageWirePerSide; t.slippageBpsPerSide = cost_.slippageBpsPerSide;
+  }
   // Mark the open trade at the LAST executable side seen and close it with
   // the given reason ('reset' on a switch-off) — the replayer's data_end
   // rule: an unclosed trade must not vanish from the ledger (Statistics
@@ -114,6 +179,8 @@ public:
 
 private:
   ShadowSim sim_;
+  ShadowCost cost_;
+  std::string costClass_;
   int maxHoldEvents_;
   long long symbolId_;
   std::string hash_;

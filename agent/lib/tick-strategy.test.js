@@ -117,18 +117,47 @@ const SHADOW_EXPECTED = new URL('../../cpp-exec/src/tests/fixtures/tick_shadow_e
 test('the checked-in shadow-book expectations match the replayer over the fixture (REGEN=1 rewrites them)', async () => {
   const { simulate } = await import('./tick-replay-sim.js')
   const events = buildFixture()
+  // PR-L: cases 3 and 4 drive the PER-CLASS schedule with symbol id 7 (the id
+  // the C++ test's book is built with) mapped to each of the two cost SHAPES
+  // the broker actually charges — fx (proportional, bps) and stock_us (a flat
+  // per-share wire term) — so the fixture pins both conversions.
+  const schedule = {
+    fallbackClass: 'stock_hk',
+    classes: {
+      stock_us: { commissionWirePerSide: 2000, commissionBpsPerSide: 0, slippageWirePerSide: 0, slippageBpsPerSide: 0.5 },
+      stock_hk: { commissionWirePerSide: 0, commissionBpsPerSide: 15, slippageWirePerSide: 0, slippageBpsPerSide: 0.5 },
+      fx: { commissionWirePerSide: 0, commissionBpsPerSide: 0.35, slippageWirePerSide: 0, slippageBpsPerSide: 0.5 },
+    },
+    symbolClass: { 7: 'fx' },
+  }
   const sims = [
     { latencyMs: 250, slippage: 0, commissionPerSide: 0, targetR: 3, minTargetToCost: 3, maxHoldMs: 6 * 3600_000 },
     { latencyMs: 250, slippage: 1, commissionPerSide: 2, targetR: 3, minTargetToCost: 1, maxHoldEvents: 40, maxHoldMs: 6 * 3600_000 },
+    { latencyMs: 250, slippage: 0, commissionPerSide: 0, targetR: 3, minTargetToCost: 1, maxHoldEvents: 40, maxHoldMs: 6 * 3600_000, costs: schedule, costClass: 'fx' },
+    // PR-L: all FOUR cost terms at once — a wire commission, a bps commission,
+    // a wire slippage and a bps slippage — so the fixture pins both shapes of
+    // the conversion across the two engines. The magnitudes are fixture-sized,
+    // not the repo's: the real stock_us term (2000 wire = $0.02/share) is 20
+    // bps of this fixture's ~1.0 price and the cost screen refuses every
+    // signal under it, which closes no trade and would pin nothing. The repo's
+    // own numbers are pinned by value in lib/tick-cost-schedule.test.js.
+    // The class is NAMED on both sides (JS by costClass, C++ by symbolClass[7])
+    // and the fallback is a DIFFERENT, dearer class — so if either engine fell
+    // through to the fallback the two would disagree and the fixture would go
+    // red. Round two, NIT 1: the earlier version named a class that was not in
+    // `classes`, so JS resolved via fallbackClass while C++ resolved via the
+    // symbol map and they agreed only because the fallback happened to match.
+    { latencyMs: 250, slippage: 0, commissionPerSide: 0, targetR: 3, minTargetToCost: 1, maxHoldEvents: 40, maxHoldMs: 6 * 3600_000, costClass: 'fx',
+      costs: { fallbackClass: 'stock_hk', classes: { ...schedule.classes, fx: { commissionWirePerSide: 3, commissionBpsPerSide: 0.2, slippageWirePerSide: 1, slippageBpsPerSide: 0.5 } }, symbolClass: { 7: 'fx' } } },
   ]
   const cases = sims.map(sim => {
     const r = simulate(events, PARAMS, sim)
-    return { sim: { ...sim, maxHoldEvents: sim.maxHoldEvents ?? 0 }, rejected: r.rejected, trades: r.trades.filter(t => t.reason !== 'data_end').map(t => ({ side: t.side, signalSeq: t.signalSeq, entrySeq: t.entrySeq, exitSeq: t.exitSeq, entry: t.entry, exit: t.exit, stop: t.stop, target: t.target, stopDistance: t.stopDistance, reason: t.reason, holdEvents: t.holdEvents, holdMs: t.holdMs, grossR: t.grossR, netR: t.netR })), openAtEnd: r.trades.some(t => t.reason === 'data_end') }
+    return { sim: { ...sim, maxHoldEvents: sim.maxHoldEvents ?? 0 }, rejected: r.rejected, trades: r.trades.filter(t => t.reason !== 'data_end').map(t => ({ side: t.side, signalSeq: t.signalSeq, entrySeq: t.entrySeq, exitSeq: t.exitSeq, entry: t.entry, exit: t.exit, stop: t.stop, target: t.target, stopDistance: t.stopDistance, reason: t.reason, holdEvents: t.holdEvents, holdMs: t.holdMs, grossR: t.grossR, netR: t.netR, costClass: r.sim.costClass ?? '', commissionWirePerSide: r.sim.commissionWirePerSide, commissionBpsPerSide: r.sim.commissionBpsPerSide, slippageWirePerSide: r.sim.slippageWirePerSide, slippageBpsPerSide: r.sim.slippageBpsPerSide })), openAtEnd: r.trades.some(t => t.reason === 'data_end') }
   })
   const text = JSON.stringify({ profileHash: profileHash(PARAMS), cases }, null, 1)
   if (process.env.REGEN === '1' || !existsSync(SHADOW_EXPECTED)) writeFileSync(SHADOW_EXPECTED, text + '\n')
   assert.equal(readFileSync(SHADOW_EXPECTED, 'utf8').trim(), text, 'shadow expectations drifted: run with REGEN=1 and re-check the C++ test')
-  assert.ok(cases.some(c => c.trades.length > 0), 'the fixture must close at least one shadow trade under some setting')
+  for (const [i, c] of cases.entries()) assert.ok(c.trades.length > 0, `case ${i} closed no shadow trade — it pins nothing`)
 })
 
 // P5: the engine record pins the FULL sha256; the sidecar and the trial

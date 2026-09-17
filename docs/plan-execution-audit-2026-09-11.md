@@ -1554,180 +1554,326 @@ could be confirmed. It could not, and it is withdrawn — see §14.2.
   same cadence — held winners keep their margin. The position cap
   (`maxOpenPositions` 5, the book's 8) is unchanged and still binds new entries.
 
----
+## 16. Follow-up — PR-L, the tick shadow's cost model stops being zero (16-09-2026)
 
-## 15. Follow-up — PR-K, the momentum book stops cutting weeks-horizon positions intraday (built 16-09-2026, from the 09–11-09 statements)
+**This only TIGHTENS the evidence bar. It places no order and changes no
+trading rule.** It changes what `SHADOW_PASSED` and `REPLAY_PASSED` mean, which
+is why every number below says whether it was measured or assumed, and why
+§16.4 says exactly what happens to evidence already recorded.
 
-Dated follow-up per the plan's standing rule (owner principle 5, "the `.md`
-plans are checked"). Ordered by the owner ("finish the outstanding") off the
-measurement below. **This changes EXIT BEHAVIOUR on accounts that trade real
-money**, so it is config-driven, revertible by a single stored value, and the
-switch is named here with its storage key and the route that writes it.
+### 16.1 Why zero was a problem, given 236 closed shadow trades
 
-### 15.1 The measurement that ordered it
+`agent/config/tick-shadow-sim.json` carried `commissionPerSide: 0` and
+`slippage: 0` for every symbol, and said so in its own `_note`: "leave 0 to
+record spread-only costs". Meanwhile the demo sidecar has recorded 4.59 M
+events and the shadow portfolio has closed **236 trades** — evidence heading
+for the `SHADOW_PASSED` bar in `agent/config/tick-validation.json` (200
+signals / 48 h / 30 trades / 8 losses / PF ≥ 1.3 / expectancy lower bound ≥ 0 /
+max DD 8 R / resets ≤ 20 %).
 
-Five broker statements, 95 bot deals, 09–11 Sep, grouped by hold time:
+A profit factor computed with commission 0 is an **upper bound**, not an
+estimate, and the owner's own statements say the gap is not small: one 9618.HK
+deal paid **115.49 USD of commission against a 388.64 USD gain** (30 % of the
+gross), and one account paid 137.75 USD of commission across three days on 656
+USD of realised profit.
 
-| Hold | n | Net |
+### 16.2 Two rounds of the SAME defect, one layer apart
+
+**Round one.** The first draft measured the costs, pushed them, hashed them,
+wrote the hash onto every `SHADOW_PASSED` record — and computed the verdict
+from the recorded `net_r` column without reading any of it. A sidecar running
+a deliberately drifted schedule still promoted the account.
+
+**Round two, one layer down.** The fix added four checks and a
+`cost_class IS NOT NULL` filter. A second checker then verified this: **six
+rows carrying `cost_class: 'fx'` and all four cost terms ZERO**, with the
+sidecar honestly echoing the repo schedule and a matching symbol map, passed
+all four checks and reached `SHADOW_PASSED`. `'not_a_class'` passed. A single
+space `' '` passed both the SQL `<> ''` and the predicate. The four checks
+proved what the sidecar **said**; the filter proved a string was non-empty;
+nothing reached back to what any book had **subtracted**.
+
+And it is not an adversarial case. `main.cpp` applies a pushed sim to **new
+books only** — books already open keep the cost resolved at construction — so
+for the whole window after any schedule push, `/health` declares the new
+schedule while closing trades were charged the old one.
+
+**A fifth check now reaches the books.** A closed row counts as evidence only
+when all three hold:
+
+1. its class is one this repo prices and the schedule has that class;
+2. its four recorded cost terms **equal** that class row — the book writes
+   what it resolved, so this is the book's own arithmetic, not a declaration
+   about it;
+3. its own `netR` is arithmetically consistent with its own `grossR` under
+   those terms — a row whose cost fields were filled in without being spent
+   fails here even if 1 and 2 pass.
+
+A row closed under the previous schedule fails (2) and falls out of the
+evidence rather than being counted under a model it never paid.
+
+### 16.2.1 The five checks, and what each one can and cannot see
+
+| check | refuses when | proves |
 |---|---|---|
-| under 15 min | 21 | −237 |
-| 15 min – 24 h | 58 | +1,057 |
-| **over 24 h** | **16** | **−972** |
+| `costScheduleKnown` | no sim reported | the sidecar's declaration |
+| `costScheduleCharged` | the declared schedule is all zeros | " |
+| `costScheduleMatchesRepo` | its hash is not the repo's | " |
+| `costSymbolMap` | it prices no symbol, or its map ≠ the keeper's pushed map | the keeper compared to itself |
+| **`costRowsCharged`** | **the bar is not met by rows the books demonstrably charged it** | **what the books subtracted** |
 
-The three largest single losses were all the momentum book's **rank exits
-firing intraday** on positions entered for a weeks-long move: US30 and US2000
-(−1.24 % / −0.76 %, closed 09-09 18:39 SGT) and GER40 (−2.66 %).
+The first four are the sidecar's word and the keeper's own bookkeeping. Only
+the fifth crosses from the declaration to the arithmetic, and it is the one
+the round-two case needed.
 
-### 15.2 The authority
+`costRowsCharged` stays silent on an empty window — nothing has traded yet,
+and the ordinary `trades` check says so. It speaks only once closed rows
+exist.
 
-The book's own first principle, stated by the owner 07-09-2026 and carried at
-the head of `agent/services/momentum-account.js`:
+### 16.2.3 The round-one checks, for the record
 
-> **HORIZON IS THE DESIGN VARIABLE… book decisions on the daily close only
-> (trail, entries, exits), not per-minute.**
+The round-one checks, for completeness — see §16.2.1 for why they were not
+enough on their own:
 
-### 15.3 WHICH PATH TRADES — read this before the rest
+| check | refuses when |
+|---|---|
+| `costScheduleKnown` | the sidecar reports no sim, so what it charged is unknown. The repo's schedule is never stamped on a verdict the sidecar may not have earned under it. |
+| `costScheduleCharged` | the schedule it reports is all zeros — spread-only. |
+| `costScheduleMatchesRepo` | its hash is not the repo's. |
+| `costSymbolMap` | it prices **no** symbol, or its symbol map is not the one the keeper pushed. A stale map hashes identically, because the map is deliberately not part of the schedule's identity — so only this check can see it. |
 
-`runMomentumBook` has two exit paths, and **only one of them carries an account
-today**:
+The verdict is computed over **charged rows only**
+(`shadowPortfolio(..., chargedUnder: <the schedule the sidecar reported>)`).
+The 236 rows already on the ledger carry no cost class and contribute nothing.
+Refusal reason: `shadow_cost_model_unproven`, with `costFailed` naming which
+checks failed and `refused` counting the rows by reason.
 
-| Path | Who it carries as shipped | Cadence before PR-K | What PR-K adds |
-|---|---|---|---|
-| `momentum-account.js` → `runMomentumAccountPass` → `exitDroppedHoldings` | **every enabled registry account** | already once per UTC day (its own `lastRunMs` cursor) | the **minimum hold**, and a fail-closed read of the ranking |
-| `momentum-book.js` row-cursor block | **no account at all** | every loop pass | daily cadence + per-account cursor, the minimum hold, flip bookkeeping |
+**Both rungs were free.** The replay rung had the same hole one step earlier —
+`researchPlan` defaulted `sim` to `{}`, so `REPLAY_PASSED` could be cleared at
+zero cost. `replayChecks` gains a blocking `costModel` check — which, after round two,
+pins to `scheduleHash(repo)` the same way the shadow rung does, because
+`charged` alone was `> 0` and **`commissionBpsPerSide: 1e-12` cleared it**
+while a trial at `1e-9` promoted an account end to end. A trial's `sim`
+arrives from outside (`body.sim` wins over the repo default, and
+`POST /actions/tick-trials` imports JSON produced off-box), so "some cost" was
+never the test. The schedule now rides the research plan: `replayCostContext(db)` hands it the repo
+schedule plus the symbol-id → class map the keeper pushed, and `runTrials`
+charges each symbol its own class. A symbol id that is in no pushed map is
+replayed **uncharged** rather than charged the dearest fallback — a research
+run must still produce a readable trial — and the trial then records
+`costSource: 'none'`, which the rung refuses.
 
-`agent/config/momentum-account.json` ships `"accountId": "_all"` (PR-B,
-11-09-2026, owner principle 9), so `isMomentumAccount()` is true for every
-ENABLED registry account and each one `continue`s into the daily pass before
-the row-cursor block is reached.
+### 16.3 Why a class carries BOTH a wire term and a bps term
 
-**The first draft of this PR put both rules on the row-cursor path only.** They
-were on, configured, documented — and out of reach of every account that
-trades: CLAUDE.md failure mode #3 in its purest form, found by the checker on
-16-09-2026, whose repro closed a one-minute-old position with
-`note='rank exit (daily pass)'` while `rankExitsDeferred` read 0. The row-cursor
-work was kept (it is the correct behaviour if the config ever names specific
-accounts, or for an account disabled in the registry but still armed) but it is
-**dormant**, and nothing in the code, the report or this document may read as
-though it were live. `GET /state/momentum-book` names the field
-`rankExit.rowCursorLastPassAt` for that reason: empty is the normal reading,
-not "the daily pass never ran".
+A cTrader wire unit is **1e-5 of the symbol's own price for EVERY symbol** —
+`cpp-exec/src/tick_recorder.hpp` ("Prices are cTrader wire units (1e-5)") and
+`spot_feed.cpp`'s `kPointsPerPrice = 100000`. There is no per-symbol digit
+scaling to key off, so an absolute number alone cannot be shared across
+symbols: `slippage: 1` is 0.001 % of EURUSD and 3e-8 % of NAS100.
 
-### 15.4 What changed
+But measuring the statements says the broker charges **two different shapes**,
+and one unit misprices the other:
 
-**On the path that trades (`exitDroppedHoldings`):**
+- **HK stock and FX are proportional.** In bps their spread is tight — HK CV
+  **0.022** across 20 deals and six names; in absolute price units, CV 0.741.
+- **US stock is a flat $0.02 PER SHARE per side.** 56 of 60 deals land in
+  0.0199–0.0205 price units, from DOW.US at **$29.84** to LLY.US at **$1,222** —
+  the same two cents across a 41× price range. In bps those same deals run
+  0.16 → 6.80, CV **0.975**.
 
-- A rank exit does not fire on a position younger than **`bookMinHoldHours`
-  (default 24)**. The row is reconsidered on the next daily pass; the skip is
-  counted in `rankExitsDeferred` and named in the pass summary.
-- The hold is measured from the **oldest** stamp describing the position — the
-  book row's `entered_at` *or* the trade's `opened_at` — so a position adopted
-  today after filling three days ago is not handed a fresh 24-hour shield.
-  (`agent/services/book-hold-age.js`, shared by both paths; it is its own module
-  because momentum-account.js may not import momentum-book.js — that cycle is
-  why `buildEntrySynth` is injected.)
-- **The fail-open is closed.** `loadShadowState` swallows a missing or corrupt
-  blob and returns `{ holdings: {} }`, which this pass read as "the ranking
-  holds nothing" — making **every** open book row a dropped holding and closing
-  the entire book. An unreadable ranking is not an instruction to close
-  everything: exits are now skipped with a stated reason. A ranking that reads
-  fine and holds nothing still exits, exactly as before.
-- Closes sent by the **margin-exhausted** branch are now counted: it returns
-  `ran: false` *after* sending its exits, and `runMomentumBook` only added
-  `ma.exits` when `ran` was true, so real closes were reported as zero. That is
-  also what kept the routing defect above invisible in the summary.
+So a class row is
+`cost = commissionWirePerSide + commissionBpsPerSide × price / 10000`, and the
+replayer (`agent/lib/tick-cost-schedule.js`) and the sidecar's ShadowBook
+(`cpp-exec/src/tick_shadow.cpp`) apply exactly that, pinned against each other
+by `tick_shadow_expected.json` — which now carries four cases covering both
+shapes and all four cost terms.
 
-**On the dormant row-cursor path:** the rank exit (flip-exit leg included) is
-evaluated once per UTC day on the book's own **per-account** cursor
-(`momentum_book_state_json.rankExitAt`), reusing `dailyDue()` / `thresholdMs()`
-and the same `dailyRunAfterUtc` threshold so the two paths share one daily
-close; the same minimum hold applies; and a flip whose exit is deferred is
-**remembered** (`pendingFlips`, 3-day TTL) so its entry happens in the same pass
-as its exit whenever that exit finally goes — the shadow's `enter` row is
-consumed by the cursor on the deferring pass, so without this the new side could
-be lost when the shadow's holdings are absent or inside the one-hour reconcile
-throttle.
+**Quantisation.** Rounding the cost to whole wire units re-created the very bug
+this PR removes: DOGEUSD traded at 0.06851 is 6,851 wire units, and 0.5 bps of
+that is 0.343, which rounds to **0** — `netR === grossR`, free again, on seven
+real deals in the owner's own statements. Two rules now, identical in both
+engines: **commission is never quantised** (subtracted as a real number before
+the R division), and **slippage rounds away from zero** (it has to shift an
+integer price, and a non-zero slippage must never become a free fill). Rounding
+away from zero overstates the cost on very cheap symbols, which is the safe
+direction for an evidence bar, and it is stated rather than hidden.
 
-### 15.5 What deliberately did NOT change — it still runs on every pass
+### 16.4 Where each number came from — measured, narrow, or placeholder
 
-A rank exit is a **ranking opinion**; a stop is **protection**. Only the
-opinion moved:
+**Basis**: `agent/seed-statements/*.csv`, three accounts, dated 21-08-2026.
+**683 deal rows parse; 9 are undecidable** (no price move or no gross), leaving
+674. Per deal: `gross USD = Net USD − Commissions`; `USD per price unit =
+|gross| / |entry − close|`; round-trip commission in price units =
+`|Commissions| / that`; per side = half.
 
-- **The stop at the broker.** The trail pass is untouched: every open book row
-  is re-trailed on every loop and the broker keeps holding the stop. Pinned by a
-  test asserting the stop moves on the very pass that defers a rank exit.
-- **The retry of an exit the broker REFUSED** (`exit_pending:` — the 09-09
-  LLY.US case). An order already sent, not a fresh opinion: no cadence, no min
-  hold, retried every pass.
-- **The owed-exit sweep** for an exit decided on a previous book day. It fires
-  on every pass, not only the daily one.
-- Adoption, entries, the reconcile pass, the closed-trade sweep, the weekend
-  bank, the loss guardian, the equity stop, the naked-position guard and the
-  position cap — none of them is touched.
+| class | per side | shape | n (decidable) | reading |
+|---|---|---|---|---|
+| `stock_us` | **2000 wire** ($0.02/share) | flat | 60, all charged | **MEASURED.** 56 inside 0.0199–0.0205 price units. |
+| `stock_hk` | **15.0 bps** | rate | 20, all charged | **MEASURED.** median 15.0044, six names inside 14.33–16.03. |
+| `fx` | **0.35 bps** | rate | 235; 54 charged, 181 free | **MEASURED, pessimistic side.** median 0.3556 of the charged plan. |
+| `commodity` | **0.08 bps** | rate | 73; **6 charged, all XAUUSD** | **NARROW SAMPLE.** Not a class measurement. |
+| `index_cfd` | **0** | — | 186, all zero | **MEASURED ZERO** (a genuine zero, not an empty cell). |
+| `crypto` | **0** | — | 100, all zero | **MEASURED ZERO.** |
+| slippage, every class | **0.5 bps** | rate | — | **PLACEHOLDER. Not measured.** |
 
-### 15.6 The revert switch
+**The unit each class is really charged in** (round two). Three of the six are
+not rates at all, and saying "MEASURED as a RATE" was mis-identifying the fee:
 
-Both knobs live in the **existing book policy record**:
+- **US stock: a flat $0.02 per share per side**, plus a **$0.02/side minimum**.
+  Model fit over the 60 charged deals, commissions quoted to the cent, 2c
+  tolerance: per-share with no minimum **57/60**, per-share **with** the
+  minimum **60/60**.
+- **FX: a flat $3.50 per lot per side** — 62 charged deals, median $3.5021,
+  CV 0.034.
+- **XAUUSD: a flat $3.5000 per lot per side**, CV 0.0000 — i.e. $0.035/oz.
 
-| Knob | Default | Meaning |
-|---|---|---|
-| `bookMinHoldHours` | `24` | a younger row is not rank-exited — **enforced on both paths** (0 disables the hold; ceiling 168 h) |
-| `bookExitCadence` | `'daily'` | rank exits once per UTC day — **row-cursor path only**; the daily pass is already daily |
-| `bookExitCadence` | `'every_pass'` | **the revert**: pre-PR-K behaviour on both paths (the cadence is lifted and the minimum hold with it) |
+**Neither a per-lot fee nor a per-deal minimum can be expressed in this cost
+model, and that is by design**: the shadow book is size-free — it records
+price units and R, and each account sizes its own projection — so it never
+sees a lot count. The bps figures are therefore approximations of a per-lot
+fee, and their error is now stated per class instead of implied:
 
-- **Storage key:** `momentum_book_json` (`MOMENTUM_BOOK_CONFIG_KEY`).
-- **Route:** `POST /actions/momentum-book`, e.g.
-  `{"bookExitCadence":"every_pass"}`. It **merges from what is STORED** (this
-  repo's failure mode #5) and replies with the effective policy — exercised by a
-  real request in `agent/routes/config-merge-routes.test.js`, not by asserting
-  on the route's source text.
-- `'every_pass'` lifts the minimum hold by design: the hold means "reconsidered
-  on the NEXT DAILY PASS", and under `every_pass` there is none. One stored
-  value is therefore a true restore. Daily cadence *without* the hold is
-  `bookMinHoldHours: 0`.
-- Anything that is not the literal `'every_pass'` reads as `'daily'`, and a
-  malformed `bookMinHoldHours` — **including `null`, `''`, `false` and `[]`,
-  which `Number()` turns into a finite 0** — falls back to 24, never to 0. A
-  cleared UI field must not silently switch the floor off.
+| class | approximation error |
+|---|---|
+| `fx` | exact for USD-base pairs; **overcharges GBP-base ~35%, undercharges NZD-base ~41%** (measured: USDJPY 0.354, USDCAD 0.355, EURUSD 0.303, GBPUSD 0.260, NZDUSD 0.595) |
+| `commodity` | 0.08 bps reproduces $0.035/oz only near the $4,245 gold of these statements; **at $6,000 it overcharges ~41%** |
+| `stock_us` | the per-share term is exact; the **minimum is not modelled, so the schedule UNDERCHARGES very small positions** — at one share or fewer the real fee is $0.02/side regardless |
 
-### 15.7 The residual risk, stated plainly
+Every one of those directions is known and written down rather than hidden.
 
-**A position the ranking drops inside its first 24 hours is carried to the next
-daily pass.** If the name keeps falling, the book no longer takes it off at the
-ranking's word; the loss can be larger than it would have been. What bounds it
-is **the stop** — 3 × ATR(20), trailed in the trade's favour on every loop pass
-and held at the broker — plus the weekend bank, the loss guardian and the equity
-stop, none of which this PR touches. That is the trade the measurement asks for.
+**A correction to this document and to the config, round two.** The config said
+the four `stock_us` outliers *"are multiples of $0.02 and read as multi-fill
+deals"*. **That was a guess published as a finding, and it is false.** The four
+are TSLA 0.2 lots, LHX 0.3, LLY 0.3, AVGO 0.8 — the four **smallest**
+quantities in the sample, each paying **exactly $0.04 round trip**, where
+$0.02 × quantity would be $0.008–$0.032. They pay *more* than the per-share
+fee, not a multiple of it: they are hitting the minimum. A multi-fill
+explanation predicts the **largest** deals, not the smallest. The per-share
+conclusion and the 2000-wire figure are unaffected and were independently
+re-derived; only the stated mechanism was wrong. It is retracted in the config
+text, and `tick-cost-schedule.test.js` now pins the retraction so the wrong
+mechanism cannot quietly come back.
 
-Known and accepted, with the reasoning:
+Three earlier honesty corrections, also in the config text:
 
-- **An exit the ranking called but the book never executed is still subject to
-  the minimum hold** (row-cursor path). The checker read the resulting delay —
-  up to `bookMinHoldHours` minus the row's age at the call — as an inconsistency
-  with the `exit_pending` retry, which bypasses both rules. The distinction kept
-  here is *attempted* versus *not attempted*: `exit_pending` means a close was
-  sent and the broker refused it, while an unexecuted word is still only an
-  opinion, and the owner's floor on holding time is exactly a rule about
-  opinions. Making it consistent the other way would let any word written
-  before 21:05 close a position minutes old, which is the behaviour this PR
-  exists to stop. It is also what the live path does. Revert per account with
-  `bookMinHoldHours: 0` if the owner wants the other reading.
-- **Open positions and margin usage run higher** between daily passes. The
-  position cap (`maxPositionsPerAccount` 8) is unchanged and still binds entries.
-- **A flip completes at the daily close**, so the book may hold the old side for
-  up to a day. It is never on both sides, and never on neither.
+- **`stock_us` was quoted as "median 0.646 bps" in the first draft. That was
+  wrong** — it was the midpoint of a bimodal sample (24 DOW.US rows at 6.0–6.8
+  bps *because DOW is a $30 stock*, 36 rows at 0.16–0.72), and seven more
+  DOW.US rows would have moved the "measured" figure tenfold. The fee is per
+  share; modelling it as a rate was modelling the wrong thing.
+- **`commodity: 0.08` is n = 6 on one symbol.** It is carried because it is
+  non-zero and small, not because six gold deals settle what NatGas costs, and
+  the config says so in those words.
+- **Slippage is a placeholder in every class.** The statements carry no
+  intent-vs-fill pair. One documented placeholder, not six invented ones.
 
-### 15.8 What an operator sees on the first loop after deploy
+`agent/lib/tick-cost-schedule.test.js` pins all 24 numbers **by value**. The
+first draft asserted only that the prose contained the word "MEASURED", and a
+checker moved `commodity` from 0.08 to 0 with the whole suite still green.
 
-- Rank exits on the daily pass now **skip positions under 24 hours old**, with
-  `BTCUSD: rank exit held — held 3.4h < bookMinHoldHours 24 — reconsidered on
-  the next daily pass` in the pass summary and `rankExitsDeferred` non-zero in
-  the book summary. Nothing else about the daily pass changes.
-- If the shadow state is ever unreadable, the pass reports `shadow state
-  unreadable — no rank exits this pass` and closes nothing, where it previously
-  closed the whole book.
-- Stops keep moving on every pass (`trailed` unchanged); refused closes keep
-  retrying; exits owed from a previous day still go.
-- `GET /state/momentum-book` gains a `rankExit` block: the cadence, the hold,
-  which path each applies to, `rowCursorLastPassAt` (empty while the config says
-  `_all` — see §15.3) and the number of remembered flips.
+### 16.5 What happens to the evidence already recorded
+
+**Nothing is silently re-judged, and nothing already recorded is re-scored.**
+
+- The 236 closed shadow trades keep their recorded `net_r`. They carry NULL in
+  `cost_class` / `commission_wire` / `commission_bps` / `slippage_wire` /
+  `slippage_bps`, which is the truth about them: closed spread-only. They are
+  **excluded from the SHADOW_PASSED verdict** — not re-priced, not discounted,
+  simply not evidence for a cost model they never paid. The view reports them
+  as `uncostedTrades` so the exclusion is visible rather than a quiet gap.
+- Any `SHADOW_PASSED` record written before this PR carries no
+  `provenance.costSchedule`. Read it as earned under the spread-only model.
+- The schedule applies to books created **after** the push (the existing P6a
+  rule), so no open shadow trade is re-priced mid-flight. In practice: the
+  demo sidecar starts charging at the next shadow re-warm, and the bar becomes
+  reachable again only after 30 charged trades and 8 charged losses close.
+
+### 16.6 The sensitivity result
+
+`/state/tick-shadow` carries `costSensitivity` per side and per profile: profit
+factor, net R and average R at **0 ×, 1 × and 2 ×** the schedule, each trade
+re-priced from its recorded fill prices with its own slippage stripped first.
+The class comes from the **row's own** `cost_class` where it has one and only
+otherwise from the keeper's current symbol map, and a disagreement between the
+two is counted as `classDisagreements` — a symbol id re-mapped between the
+trade and the read is exactly where a silent re-price lies.
+
+Round-trip cost as a fraction of R, at a stop of 20 bps of price:
+
+| class | cost per round trip | EURUSD | NAS100 | AAPL.US | 0700.HK | DOGEUSD |
+|---|---|---|---|---|---|---|
+| `index_cfd` / `crypto` | 1.0 bps | 0.050 R | 0.050 | 0.050 | 0.050 | 0.050 |
+| `commodity` | 1.16 bps | 0.058 | 0.058 | 0.058 | 0.058 | 0.058 |
+| `fx` | 1.70 bps | 0.085 | 0.085 | 0.085 | 0.085 | 0.085 |
+| `stock_hk` | 31.0 bps | — | — | — | **1.550 R** | — |
+| `stock_us` | flat $0.02 + 1 bps | — | — | **0.115 R** | — | — |
+
+Two findings the owner should see:
+
+1. **HK stock is not a haircut, it is the trade.** A 31-bps round trip eats
+   1.55 R at a 20-bps stop, so a 3 R target cannot clear it and the
+   `minTargetToCost` screen (3) will now refuse most HK-stock signals outright
+   rather than record them as profitable. That is what the 9618.HK deal —
+   115.49 USD on a 388.64 USD gain — was already saying.
+2. **The US-stock fee scales with the SHARE PRICE, not the trade.** The same
+   $0.02 is 0.115 R on AAPL at $310 and would be 1.2 R on a $30 stock at the
+   same 20-bps stop. A tick strategy on cheap US names is not viable at these
+   fees, and that is now visible in the schedule instead of being averaged away
+   by a class-wide bps figure.
+
+The live per-trade figures come from `/state/tick-shadow`; they could not be
+computed here, because this worktree has no copy of the demo sidecar's ledger.
+The table above is arithmetic on the schedule and does not need it.
+
+### 16.7 What an operator sees on the first loop after deploy
+
+- The guard push carries `tickShadowSim.costs` with the six classes and an
+  `id → class` map, **only when at least one symbol resolved**. With none
+  resolved the schedule is omitted entirely — an empty map is a full replace
+  that would charge every book the 15-bps fallback and overwrite a correct map
+  the sidecar already holds. With recording OFF the schedule is **cleared**
+  (`costs: {}`), so no stale map survives a switch off and back.
+- A symbol name that does not classify is logged once per side and charged the
+  fallback: `symbol X has no cost class — charged the fallback schedule`.
+- `SHADOW_PASSED` refuses with `shadow_cost_model_unproven` until the demo
+  sidecar is redeployed with this build and has closed enough rows that were
+  **demonstrably charged** the schedule it reports — not rows that merely
+  carry a class name. That is expected and it is the point.
+- **Right after any schedule push**, books already open keep closing under the
+  old schedule; those rows fail `cost_terms_differ` and drop out of the
+  evidence until the books re-warm. The refusal names the count and the
+  reason, so the window is visible rather than a silent stall.
+- `REPLAY_PASSED` refuses any trial whose `sim` shows `costSource` other than
+  `class`, so a research run on a symbol the keeper has never mapped cannot
+  clear the rung.
+- The shadow portfolio's profit factor **falls** from the next re-warm onward,
+  and HK-stock signals begin being refused by the cost screen
+  (`rejectedCost` rises). Neither is a regression.
+
+### 16.8 What this PR does NOT close
+
+- **The slippage placeholder.** 0.5 bps per side is a number nobody measured.
+  Until the owner supplies a real intent-vs-fill figure, the 0 × / 1 × / 2 ×
+  spread in §16.6 is the honest way to read the bar.
+- **`commodity` at n = 6.** One symbol cannot speak for a class. If the owner
+  trades metals at size this needs re-measuring.
+- **The six-letter FX rule.** `costClassOf` classifies any six-letter name as
+  FX unless it matches the crypto-base list. BNBUSD was silently FX until this
+  PR; the next such pair will be too. The statements-derived test catches the
+  ones the owner has actually traded, not the ones they might.
+- **The per-deal minimum and the per-lot fee.** Both fit the statements better
+  than the rate this schedule charges (60/60 vs 57/60 for the US minimum), and
+  neither can be modelled while the shadow book is size-free. Closing this
+  needs the book to carry a size, which is a larger change than a cost table.
+- **A class whose every term is zero cannot produce evidence.** `index_cfd`
+  and `crypto` have zero commission and clear the "charged" checks only on the
+  0.5 bps slippage placeholder. If the owner sets that placeholder to zero,
+  those two classes become uncharged and no trial or shadow trade on them can
+  pass a rung. That is arguably correct — a zero-cost class yields zero-cost
+  evidence — but it is a coupling worth knowing about before editing the
+  placeholder.
+- **The C++ build gate had no header dependencies.** Found in round two and
+  fixed as its own commit ahead of this one, because it is repo-wide and not
+  PR-L's: `make -C cpp-exec test` rebuilt nothing on a header change and
+  re-ran stale binaries, so any such result quoted before that commit — mine
+  included — was vacuous.

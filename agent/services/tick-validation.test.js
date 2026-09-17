@@ -9,7 +9,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { initDB } from '../db.js'
+import { initDB, setState, getState } from '../db.js'
+import { loadRepoSchedule, scheduleHash, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 import { upsertAccount, getAccountState, setAccountState } from './account-registry.js'
 import { engineStatusFor, requestTickObservation, ENGINE_STATUS_KEY } from './entry-mode.js'
 import { importTickTrial } from './tick-research.js'
@@ -19,6 +20,9 @@ import { simulate } from '../lib/tick-replay-sim.js'
 import { buildFixture } from '../lib/tick-strategy.test.js'
 
 const DEMO = '46979908', LIVE = '42993489'
+// PR-L: the cost model a charged trial records — the replay rung refuses a
+// trial that was replayed at zero cost.
+const CHARGED = { latencyMs: 250, costSource: 'class', costClass: 'fx', commissionWirePerSide: 0, commissionBpsPerSide: 0.35, slippageWirePerSide: 0, slippageBpsPerSide: 0.5 }
 const TH = { replay: { minTrades: 30, minProfitFactor: 1.3, maxDrawdownR: 10, minExpectancyLowerR: 0, minTestTrades: 10 }, shadow: { minSignals: 20, minHours: 24, minTrades: 5, minLosses: 2, minProfitFactor: 1.2, minExpectancyLowerR: -1, maxDrawdownR: 6, maxResetSharePct: 20 }, traded: { minTrades: 3, minProfitFactor: 1.2, maxDrawdownR: 10 } }
 
 function fresh() {
@@ -27,20 +31,40 @@ function fresh() {
   upsertAccount(db, { accountId: LIVE, isLive: true })
   return db
 }
-function trial(db, { params = DEFAULT_PARAMS, trades = 40, profitFactor = 1.6, testNetR = 3, testLowerR = 0.2, testWithheld = false, maxDrawdownR = 4, trialId = null } = {}) {
+function trial(db, { params = DEFAULT_PARAMS, trades = 40, profitFactor = 1.6, testNetR = 3, testLowerR = 0.2, testWithheld = false, maxDrawdownR = 4, trialId = null, uncharged = false } = {}) {
   const testBlock = testWithheld ? { name: 'test', withheld: true, trades: null } : { name: 'test', trades: 10, netR: testNetR, expectancyLowerR: testLowerR }
   const t = {
     trialId, strategyId: 'tick_momentum_breakout', strategyVersion: 'v1', profileHash: profileHash(params), params: normalizeParams(params),
-    sim: { latencyMs: 250 }, manifest: { segments: 1 }, summary: { trades, profitFactor, maxDrawdownR, netR: testNetR + 2 },
+    // PR-L: a trial must record the cost model it was replayed at — the
+    // replay rung refuses a zero-cost trial. `uncharged` builds the old shape.
+    sim: uncharged ? { latencyMs: 250 } : { latencyMs: 250, costSource: 'class', costClass: 'fx', commissionWirePerSide: 0, commissionBpsPerSide: 0.35, slippageWirePerSide: 0, slippageBpsPerSide: 0.5 },
+    manifest: { segments: 1 }, summary: { trades, profitFactor, maxDrawdownR, netR: testNetR + 2 },
     blocks: [{ name: 'train', trades: 20, netR: 1 }, { name: 'validation', trades: 10, netR: 1 }, testBlock],
   }
   const r = importTickTrial(db, t)
   assert.equal(r.ok, true)
   return r.trialId
 }
-function shadowTrade(db, { side = 'cpp_exec_demo', seq, profile, netR, exitMs, reason = 'target', symbolId = 1 }) {
-  db.prepare(`INSERT INTO tick_shadow_trades (side, boot_id, seq, symbol_id, profile_hash, trade_side, reason, net_r, gross_r, exit_ms) VALUES (?, 'b1', ?, ?, ?, 'BUY', ?, ?, ?, ?)`)
-    .run(side, seq, symbolId, profile, reason, netR, netR, exitMs)
+// PR-L: a shadow row counts toward SHADOW_PASSED only when the sidecar's book
+// PRICED it — `cost_class` is the marker. `costClass: null` builds a pre-PR-L
+// row, the shape of the 236 already on record.
+function shadowTrade(db, { side = 'cpp_exec_demo', seq, profile, netR, exitMs, reason = 'target', symbolId = 1, costClass = 'fx' }) {
+  db.prepare(`INSERT INTO tick_shadow_trades (side, boot_id, seq, symbol_id, profile_hash, trade_side, reason, net_r, gross_r, exit_ms, cost_class, commission_wire, commission_bps, slippage_wire, slippage_bps)
+              VALUES (?, 'b1', ?, ?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(side, seq, symbolId, profile, reason, netR, netR, exitMs, costClass,
+         costClass ? 0 : null, costClass ? 0.35 : null, costClass ? 0 : null, costClass ? 0.5 : null)
+}
+
+// PR-L: the sidecar's reported sim — what the evidence gate reads to prove the
+// verdict rests on a charged cost model. Defaults to the repo's own schedule
+// and a symbol map matching the one the keeper pushed.
+function sidecarCosts(db, { side = 'cpp_exec_demo', symbolClass = { 1: 'fx' }, schedule = null } = {}) {
+  const sch = schedule || loadRepoSchedule()
+  setState(db, `${side}_tick_json`, JSON.stringify({ at: 'x', status: { shadowPortfolio: { sim: { latencyMs: 250, slippage: 0, commissionPerSide: 0, costs: { ...sch, symbolClass } } } } }))
+  const map = {}
+  try { Object.assign(map, JSON.parse(getState(db, TICK_COST_MAP_KEY) || '{}')) } catch { /* fresh */ }
+  map[side] = { at: new Date().toISOString(), hash: scheduleHash(sch), ...sch, symbolClass, unclassified: [] }
+  setState(db, TICK_COST_MAP_KEY, JSON.stringify(map))
 }
 function signal(db, { side = 'cpp_exec_demo', at, profile, symbolId = 1, seq }) {
   db.prepare(`INSERT INTO cpp_decisions (at, side, boot_id, seq, ts_ms, component, kind, symbol_id, code, detail) VALUES (?, ?, 'b1', ?, ?, 'tick', 'signal', ?, 'BUY', ?)`)
@@ -91,7 +115,7 @@ test('PR-H replay stage against the file\'s exact numbers: 40 trades / PF 1.3 / 
   const th = loadThresholds()
   const db = fresh()
   const pass = trial(db, { trades: 40, profitFactor: 1.3, maxDrawdownR: 8, testLowerR: 0, trialId: 'pass' })
-  assert.deepEqual(replayChecks({ summary: { trades: 40, profitFactor: 1.3, maxDrawdownR: 8 }, blocks: [{ name: 'test', trades: 10, expectancyLowerR: 0 }] }, th.replay).failed, [])
+  assert.deepEqual(replayChecks({ sim: CHARGED, summary: { trades: 40, profitFactor: 1.3, maxDrawdownR: 8 }, blocks: [{ name: 'test', trades: 10, expectancyLowerR: 0 }] }, th.replay).failed, [])
   for (const [name, over] of Object.entries({ trades: { trades: 39 }, profitFactor: { profitFactor: 1.29 }, maxDrawdownR: { maxDrawdownR: 8.01 }, expectancyLowerR: { testLowerR: -0.01 } })) {
     const dbx = fresh()
     const id = trial(dbx, { trades: 40, profitFactor: 1.3, maxDrawdownR: 8, testLowerR: 0, ...over, trialId: `fail-${name}` })
@@ -111,9 +135,9 @@ test('PR-H replay stage against the file\'s exact numbers: 40 trades / PF 1.3 / 
   const ro = importTickValidation(dbo, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: o } })
   assert.equal(ro.ok, false); assert.deepEqual(ro.failed, ['expectancyLowerR'], 'net R on the test block is not the bar any more')
   // an Infinity / null profit factor (no losing trade) cannot pass a floor
-  assert.deepEqual(replayChecks({ summary: { trades: 40, profitFactor: null, maxDrawdownR: 0 }, blocks: [{ name: 'test', trades: 10, expectancyLowerR: 1 }] }, th.replay).failed, ['profitFactor'])
+  assert.deepEqual(replayChecks({ sim: CHARGED, summary: { trades: 40, profitFactor: null, maxDrawdownR: 0 }, blocks: [{ name: 'test', trades: 10, expectancyLowerR: 1 }] }, th.replay).failed, ['profitFactor'])
   // a block marked withheld that nonetheless carries a figure (a hand-edited import) is still withheld: the flag wins over the number
-  assert.deepEqual(replayChecks({ summary: { trades: 40, profitFactor: 2, maxDrawdownR: 0 }, blocks: [{ name: 'test', trades: 10, withheld: true, expectancyLowerR: 1 }] }, th.replay).failed, ['testTrades', 'expectancyLowerR'])
+  assert.deepEqual(replayChecks({ sim: CHARGED, summary: { trades: 40, profitFactor: 2, maxDrawdownR: 0 }, blocks: [{ name: 'test', trades: 10, withheld: true, expectancyLowerR: 1 }] }, th.replay).failed, ['testTrades', 'expectancyLowerR'])
   // checker M-3: the test block's SAMPLE — blocks are cut by event index, so a two-trade block (bootstrap over two numbers) and a zero-trade block with a pasted figure must not pass; a block with no trade count is refused too
   for (const [name, block] of Object.entries({ twoTrades: { name: 'test', trades: 2, netR: 0.2, expectancyLowerR: 0.1 }, zeroWithFigure: { name: 'test', trades: 0, expectancyLowerR: 0.5 }, nineTrades: { name: 'test', trades: 9, expectancyLowerR: 0.5 }, noCount: { name: 'test', expectancyLowerR: 0.5 }, stringCount: { name: 'test', trades: '12', expectancyLowerR: 0.5 } })) {
     const dbs = fresh()
@@ -206,6 +230,7 @@ test('SHADOW_PASSED counts only signals rung under the pinned profile on the acc
   signal(db, { at: '2026-09-10 00:00:00', profile: prefix, seq: 1 })
   requestTickObservation(db, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
   db.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db)
   const r0 = importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
   assert.equal(r0.ok, false); assert.equal(r0.reason, 'shadow_below_threshold'); assert.equal(r0.evidence.signals.signals, 0)
   // 25 signals under the profile across 30 h, plus 5 under another profile and 3 on the live side
@@ -231,12 +256,24 @@ test('SHADOW_PASSED counts only signals rung under the pinned profile on the acc
   assert.equal(r.record.evidence.portfolio.trades, 6); assert.equal(r.record.evidence.portfolio.netR, 3.5); assert.equal(r.record.evidence.portfolio.losses, 3)
   assert.equal(r.record.evidence.portfolio.profitFactor, +(6.5 / 3).toFixed(3))
   assert.ok(r.record.evidence.provenance && Array.isArray(r.record.evidence.provenance.window.switches), 'the window and its switches are on the record')
-  assert.match(r.record.evidence.provenance.costsNote, /spread-only/)
+  assert.match(r.record.evidence.provenance.costsNote, /per-symbol-class cost schedule [0-9a-f]{16}/)
+  // PR-L: the schedule this verdict was earned under is on the record, AND
+  // the four cost checks that let it get there are in `checks`.
+  assert.match(r.record.evidence.provenance.costSchedule.hash, /^[0-9a-f]{16}$/)
+  assert.equal(r.record.evidence.provenance.costSchedule.matchesRepo, true)
+  assert.ok(r.record.evidence.provenance.costSensitivity, 'the sensitivity line rides the evidence record')
+  for (const k of ['costScheduleKnown', 'costScheduleCharged', 'costScheduleMatchesRepo', 'costSymbolMap', 'costRowsCharged']) {
+    assert.equal(r.record.evidence.checks[k].ok, true, `${k} must be a check that PASSED, not a note`)
+  }
+  assert.equal(r.record.evidence.portfolio.costAudit.charged, 6, 'the verdict rests on six rows the book demonstrably charged')
+  assert.equal(r.record.evidence.portfolio.costAudit.preCostModel, 0)
+  assert.equal(r.record.evidence.checks.costRowsCharged.ok, true)
   // a book with no losing trade has an UNDEFINED profit factor and cannot pass any floor
   const db3 = fresh(); const g3 = trial(db3)
   importTickValidation(db3, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g3 }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
   requestTickObservation(db3, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
   db3.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db3)
   for (let i = 0; i < 26; i++) signal(db3, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
   signal(db3, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
   for (let i = 0; i < 6; i++) shadowTrade(db3, { seq: 10 + i, profile: prefix, netR: 0.01, exitMs: T0 + (i + 1) * 3_600_000 })
@@ -257,6 +294,7 @@ test('SHADOW_PASSED counts only signals rung under the pinned profile on the acc
   importTickValidation(db2, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g2 }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
   requestTickObservation(db2, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
   db2.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db2)
   for (let i = 0; i < 26; i++) signal(db2, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
   signal(db2, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
   for (const [i, r] of [4, 4, -1, -1, -1, -1, -1, -1, -1, 6].entries()) shadowTrade(db2, { seq: 10 + i, profile: prefix, netR: r, exitMs: T0 + (i + 1) * 3_600_000 })
@@ -274,6 +312,7 @@ test('PR-H shadow and traded stages against the file\'s exact numbers: a boundar
     assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g }, now: new Date('2026-09-10T00:00:00Z') }).ok, true)
     requestTickObservation(db, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
     db.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db)
     return db
   }
   // 200 signals over 50 h (one per 15 min); 30 trades = 7 × [+1, +1, +1, −1] + [+1, +1]: 8 losses, PF 22/8, DD 1R, lower bound > 0, no resets
@@ -327,6 +366,7 @@ test('PR-H: an account already in SHADOW when the profile is pinned (the seeded 
   // boot seeds SHADOW before any evidence exists
   requestTickObservation(db, DEMO, 'SHADOW', { actor: 'config/tick-observation.json', now: new Date('2026-09-10T00:00:00Z') })
   db.prepare(`UPDATE action_log SET at = '2026-09-10 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db)
   // a refused pin (weak trial) writes no window row
   const weak = trial(db, { trades: 10, trialId: 'weak' })
   assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: weak } }).ok, false)
@@ -351,6 +391,7 @@ test('PR-H: an account already in SHADOW when the profile is pinned (the seeded 
   const db2 = fresh()
   requestTickObservation(db2, DEMO, 'SHADOW', { now: new Date('2026-09-10T00:00:00Z') })
   db2.prepare(`UPDATE action_log SET at = '2026-09-10 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db2)
   const g2 = trial(db2)
   importTickValidation(db2, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g2 }, now: pinAt })
   requestTickObservation(db2, DEMO, 'OFF', { now: new Date('2026-09-11T06:00:00Z') })
@@ -363,6 +404,7 @@ test('PR-H: an account already in SHADOW when the profile is pinned (the seeded 
   const db5 = fresh()
   requestTickObservation(db5, DEMO, 'SHADOW', { now: new Date('2026-09-10T00:00:00Z') })
   db5.prepare(`UPDATE action_log SET at = '2026-09-10 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db5)
   const g5 = trial(db5)
   const pin5 = new Date('2026-09-11T00:00:00.100Z')
   assert.equal(importTickValidation(db5, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g5 }, now: pin5 }).ok, true)
@@ -460,4 +502,260 @@ test('the importer never reads strategy pins, the evidence gate or a bar-strateg
   assert.match(state, /router\.get\('\/tick-signals'/)
   assert.match(state, /tickReadinessView\(db\)/)
   assert.match(state, /tickSignalsView\(db/)
+})
+
+// PR-L (docs/plan-execution-audit-2026-09-11.md §16): every SHADOW_PASSED
+// record must carry the COST SCHEDULE that produced it, so a verdict earned
+// under one cost model can never be read as if it were earned under another.
+test('PR-L: a SHADOW_PASSED record carries the cost schedule the sidecar ran, hashed, with the repo\'s hash beside it', () => {
+  const db = fresh()
+  const good = trial(db)
+  const prefix = profileHash(DEFAULT_PARAMS)
+  importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: good }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
+  requestTickObservation(db, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
+  db.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db)
+  for (let i = 0; i < 26; i++) signal(db, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
+  signal(db, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
+  const T0 = Date.parse('2026-09-11T00:00:00Z')
+  for (const [i, r] of [2, -1, 3, -1, 1.5, -1].entries()) shadowTrade(db, { seq: 10 + i, profile: prefix, netR: r, exitMs: T0 + (i + 1) * 3_600_000, reason: r > 0 ? 'target' : 'stop' })
+
+  // the sidecar reports the schedule its books run at, inside the sim — and
+  // the keeper's pushed map must AGREE with it (a stale map hashes identically)
+  const repo = loadRepoSchedule()
+  sidecarCosts(db, { symbolClass: { 1: 'fx', 2: 'stock_us' } })
+  const r = importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const cs = r.record.evidence.provenance.costSchedule
+  assert.equal(cs.source, 'sidecar_reported_sim')
+  assert.equal(cs.hash, scheduleHash(repo))
+  assert.equal(cs.repoHash, scheduleHash(repo))
+  assert.equal(cs.matchesRepo, true, 'the sidecar is running the repo\'s schedule')
+  assert.equal(cs.symbolsPriced, 2)
+  assert.equal(cs.fallbackClass, 'stock_hk')
+  assert.equal(cs.classes.stock_hk.commissionBpsPerSide, 15)
+  assert.match(r.record.evidence.provenance.costsNote, /per-symbol-class cost schedule [0-9a-f]{16}/)
+
+  // a sidecar running a DIFFERENT schedule is caught, not averaged in
+  const db2 = fresh()
+  const g2 = trial(db2)
+  importTickValidation(db2, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g2 }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
+  requestTickObservation(db2, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
+  db2.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+  sidecarCosts(db2)
+  for (let i = 0; i < 26; i++) signal(db2, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
+  signal(db2, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
+  for (const [i, x] of [2, -1, 3, -1, 1.5, -1].entries()) shadowTrade(db2, { seq: 10 + i, profile: prefix, netR: x, exitMs: T0 + (i + 1) * 3_600_000, reason: x > 0 ? 'target' : 'stop' })
+  const drifted = { fallbackClass: 'fx', classes: { fx: { commissionBpsPerSide: 0.01, slippageBpsPerSide: 0 } } }
+  sidecarCosts(db2, { schedule: drifted })
+  // CHECKER BLOCKER 1: a sidecar running a schedule that is NOT the repo's
+  // must not promote the account. Before this it did — the note said
+  // "DIFFERS" and the very next assertion was that the stage moved anyway.
+  const r2 = importTickValidation(db2, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+  assert.equal(r2.ok, false, JSON.stringify(r2.checks))
+  assert.equal(r2.reason, 'shadow_cost_model_unproven')
+  assert.deepEqual(r2.costFailed, ['costScheduleMatchesRepo', 'costRowsCharged'],
+    'the rows were charged the repo schedule, so a drifted one also fails the per-row check')
+  assert.equal(r2.checks.costScheduleMatchesRepo.observed, false)
+  assert.notEqual(r2.checks.costScheduleMatchesRepo.sidecar, scheduleHash(repo))
+  assert.equal(engineStatusFor(db2, DEMO).validationStage, 'REPLAY_PASSED', 'nothing moved')
+})
+
+// CHECKER BLOCKER 1, the four refusals in full. Each is its own named check,
+// so a verdict that cannot be shown to rest on charged costs cannot arm
+// anything — the schedule stands BETWEEN the evidence and the stage, it is
+// not merely recorded beside it.
+test('PR-L: SHADOW_PASSED refuses when the cost model cannot be proved — unknown, uncharged, drifted, unmapped, or built on pre-PR-L rows', () => {
+  const prefix = profileHash(DEFAULT_PARAMS)
+  const T0 = Date.parse('2026-09-11T00:00:00Z')
+  const build = ({ costClass = 'fx' } = {}) => {
+    const db = fresh()
+    const g = trial(db)
+    importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
+    requestTickObservation(db, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
+    db.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+    for (let i = 0; i < 26; i++) signal(db, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
+    signal(db, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
+    for (const [i, x] of [2, -1, 3, -1, 1.5, -1].entries()) shadowTrade(db, { seq: 10 + i, profile: prefix, netR: x, exitMs: T0 + (i + 1) * 3_600_000, reason: x > 0 ? 'target' : 'stop', costClass })
+    return db
+  }
+  const go = (db) => importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+
+  // 1. the sidecar reports no sim at all — the repo's schedule is NEVER
+  //    stamped on a verdict the sidecar may not have earned under it
+  const dbA = build()
+  const rA = go(dbA)
+  assert.equal(rA.ok, false); assert.equal(rA.reason, 'shadow_cost_model_unproven')
+  assert.deepEqual(rA.costFailed, ['costScheduleKnown', 'costScheduleCharged', 'costScheduleMatchesRepo', 'costSymbolMap', 'costRowsCharged'])
+  assert.equal(rA.checks.costScheduleKnown.observed, 'sidecar_sim_unavailable')
+  assert.equal(engineStatusFor(dbA, DEMO).validationStage, 'REPLAY_PASSED')
+
+  // 2. the sidecar reports a sim with an ALL-ZERO schedule — spread-only
+  const dbB = build()
+  sidecarCosts(dbB, { schedule: { fallbackClass: 'fx', classes: { fx: { commissionWirePerSide: 0, commissionBpsPerSide: 0, slippageWirePerSide: 0, slippageBpsPerSide: 0 } } } })
+  const rB = go(dbB)
+  assert.equal(rB.ok, false); assert.ok(rB.costFailed.includes('costScheduleCharged'))
+
+  // 3. the schedule is right but it PRICES NO SYMBOL (checker BLOCKER 2: an
+  //    empty map makes every book charge the fallback and record nothing)
+  const dbC = build()
+  sidecarCosts(dbC, { symbolClass: {} })
+  const rC = go(dbC)
+  assert.equal(rC.ok, false); assert.deepEqual(rC.costFailed, ['costSymbolMap'])
+  assert.equal(rC.checks.costSymbolMap.observed, 0)
+
+  // 4. the sidecar's map is STALE — it does not match what the keeper pushed.
+  //    The schedule hash is identical (the map is not in the hash), so only
+  //    this check catches it.
+  //    The map has the SAME NUMBER of symbols — only the CLASS of one of them
+  //    differs — so neither the hash nor a count can see it. Charging an FX
+  //    pair as a 15-bps HK stock is a 43x cost error on that symbol.
+  const dbD = build()
+  sidecarCosts(dbD, { symbolClass: { 1: 'fx', 2: 'index_cfd' } })
+  const stale = JSON.parse(getState(dbD, TICK_COST_MAP_KEY))
+  stale.cpp_exec_demo.symbolClass = { 1: 'stock_hk', 2: 'index_cfd' }
+  setState(dbD, TICK_COST_MAP_KEY, JSON.stringify(stale))
+  const rD = go(dbD)
+  assert.equal(rD.ok, false); assert.deepEqual(rD.costFailed, ['costSymbolMap'])
+  assert.equal(rD.checks.costSymbolMap.agrees, false)
+  assert.equal(rD.checks.costSymbolMap.observed, 2, 'the sidecar prices two symbols…')
+  assert.equal(rD.checks.costSymbolMap.pushed, 2, '…and the keeper pushed two: a count cannot see this')
+  assert.equal(rD.checks.costScheduleMatchesRepo.ok, true, 'and neither can the hash — the map is not part of it')
+  // the same map, in agreement, passes — so the refusal is the drift and
+  // nothing else
+  const dbD2 = build()
+  sidecarCosts(dbD2, { symbolClass: { 1: 'fx', 2: 'index_cfd' } })
+  assert.equal(go(dbD2).ok, true)
+
+  // 5. THE SCENARIO THAT ARMED REAL MONEY: everything about the schedule is
+  //    right, but the trades are pre-PR-L rows with no cost class. They were
+  //    closed spread-only and must not reach the bar.
+  const dbE = build({ costClass: null })
+  sidecarCosts(dbE)
+  const rE = go(dbE)
+  assert.equal(rE.ok, false)
+  assert.equal(rE.reason, 'shadow_cost_model_unproven')
+  assert.deepEqual(rE.costFailed, ['costRowsCharged'], 'the schedule is proved; the ROWS were never charged it')
+  assert.equal(rE.checks.trades.observed, 0, 'six pre-cost-model rows count as zero charged trades')
+  assert.equal(rE.checks.costRowsCharged.observed, 0)
+  assert.equal(rE.checks.costRowsCharged.preCostModel, 6)
+  assert.deepEqual(rE.checks.costRowsCharged.refused, { no_cost_class: 6 })
+  assert.equal(engineStatusFor(dbE, DEMO).validationStage, 'REPLAY_PASSED')
+
+  // …and the same book WITH a cost class passes, so the refusal is the cost
+  // model and nothing else
+  const dbF = build()
+  sidecarCosts(dbF)
+  assert.equal(go(dbF).ok, true)
+})
+
+// ROUND-TWO CHECKER, BLOCKER 1 + 2, verbatim. Six rows carrying
+// `cost_class: 'fx'` and FOUR ZERO COST TERMS, with the sidecar echoing the
+// real repo schedule and a matching symbol map, passed all four /health
+// checks and reached SHADOW_PASSED. The checks proved what the sidecar SAID;
+// nothing reached back to what any book had SUBTRACTED.
+//
+// It is not an adversarial case: main.cpp applies a pushed sim to NEW BOOKS
+// only, so for the whole window after any push /health declares the new
+// schedule while books opened earlier keep closing under the old one.
+test('PR-L: a row that CLAIMS a class but was charged nothing cannot pass, however honest the sidecar\'s declaration', () => {
+  const prefix = profileHash(DEFAULT_PARAMS)
+  const T0 = Date.parse('2026-09-11T00:00:00Z')
+  const fx = loadRepoSchedule().classes.fx
+  const build = (terms) => {
+    const db = fresh()
+    const g = trial(db)
+    importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: g }, thresholds: TH, now: new Date('2026-09-10T00:00:00Z') })
+    requestTickObservation(db, DEMO, 'SHADOW', { now: new Date('2026-09-11T00:00:00Z') })
+    db.prepare(`UPDATE action_log SET at = '2026-09-11 00:00:00' WHERE path = '/actions/tick-observation'`).run()
+    for (let i = 0; i < 26; i++) signal(db, { at: `2026-09-11 ${String(Math.floor(i * 0.95)).padStart(2, '0')}:00:00`, profile: prefix, seq: 10 + i })
+    signal(db, { at: '2026-09-12 07:00:00', profile: prefix, seq: 40 })
+    for (const [i, x] of [2, -1, 3, -1, 1.5, -1].entries()) {
+      db.prepare(`INSERT INTO tick_shadow_trades (side, boot_id, seq, symbol_id, profile_hash, trade_side, reason, net_r, gross_r, exit_ms, cost_class, commission_wire, commission_bps, slippage_wire, slippage_bps)
+                  VALUES ('cpp_exec_demo', 'b1', ?, 1, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(10 + i, prefix, x > 0 ? 'target' : 'stop', x, x, T0 + (i + 1) * 3_600_000,
+             terms.cost_class, terms.commission_wire, terms.commission_bps, terms.slippage_wire, terms.slippage_bps)
+    }
+    sidecarCosts(db)   // the sidecar honestly declares the repo schedule
+    return db
+  }
+  const go = (db) => importTickValidation(db, { accountId: DEMO, stage: 'SHADOW_PASSED', thresholds: TH })
+
+  // THE CASE THE CHECKER VERIFIED: the class is real, the terms are zero.
+  const zeroTerms = build({ cost_class: 'fx', commission_wire: 0, commission_bps: 0, slippage_wire: 0, slippage_bps: 0 })
+  const rz = go(zeroTerms)
+  assert.equal(rz.ok, false, 'a row charged nothing is not evidence for a schedule')
+  assert.equal(rz.reason, 'shadow_cost_model_unproven')
+  assert.deepEqual(rz.costFailed, ['costRowsCharged'])
+  // the four declaration checks all still pass — which is the point: they
+  // never could have caught this, and the fifth is what does
+  for (const k of ['costScheduleKnown', 'costScheduleCharged', 'costScheduleMatchesRepo', 'costSymbolMap']) {
+    assert.equal(rz.checks[k].ok, true, `${k} proves the sidecar's declaration, not the rows`)
+  }
+  assert.deepEqual(rz.checks.costRowsCharged.refused, { cost_terms_differ: 6 })
+  assert.equal(engineStatusFor(zeroTerms, DEMO).validationStage, 'REPLAY_PASSED', 'nothing armed')
+
+  // a class string that is not a class this repo prices
+  const bogus = build({ cost_class: 'not_a_class', commission_wire: 0, commission_bps: 0.35, slippage_wire: 0, slippage_bps: 0.5 })
+  assert.deepEqual(go(bogus).checks.costRowsCharged.refused, { unknown_cost_class: 6 })
+  // …and a single space, which passed both the SQL `<> ''` and the predicate
+  const blank = build({ cost_class: ' ', commission_wire: 0, commission_bps: 0.35, slippage_wire: 0, slippage_bps: 0.5 })
+  assert.deepEqual(go(blank).checks.costRowsCharged.refused, { no_cost_class: 6 })
+
+  // THE NON-ADVERSARIAL CASE: books opened under the PREVIOUS schedule keep
+  // closing after a push. Their rows carry the old terms; they fall out of
+  // the evidence instead of being counted under a model they never paid.
+  const oldSchedule = build({ cost_class: 'fx', commission_wire: 0, commission_bps: 0.2, slippage_wire: 0, slippage_bps: 0.5 })
+  const ro = go(oldSchedule)
+  assert.equal(ro.ok, false)
+  assert.deepEqual(ro.checks.costRowsCharged.refused, { cost_terms_differ: 6 })
+
+  // and the SAME book with the schedule's own terms, actually spent, passes
+  const real = build({ cost_class: 'fx', commission_wire: fx.commissionWirePerSide, commission_bps: fx.commissionBpsPerSide, slippage_wire: fx.slippageWirePerSide, slippage_bps: fx.slippageBpsPerSide })
+  assert.equal(go(real).ok, true, 'so the refusal is the cost model and nothing else')
+})
+
+// CHECKER, on §16.7: both rungs were free. The replay rung now refuses a
+// trial replayed at zero cost instead of passing it silently.
+test('PR-L: REPLAY_PASSED refuses a trial replayed at ZERO cost, or one charged the fallback because its symbol was never classified', () => {
+  const db = fresh()
+  const zero = trial(db, { uncharged: true, trialId: 'zero-cost' })
+  const r = importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: zero }, thresholds: TH })
+  assert.equal(r.ok, false); assert.equal(r.reason, 'replay_below_threshold')
+  assert.deepEqual(r.failed, ['costModel'])
+  assert.equal(r.checks.costModel.observed, 'unrecorded')
+  assert.equal(r.checks.costModel.charged, false)
+  assert.equal(engineStatusFor(db, DEMO).validationStage, 'UNVALIDATED', 'nothing pinned')
+  // a trial whose symbol never classified was charged the schedule's FALLBACK,
+  // not its own class — that is not evidence for the instrument it replayed
+  const summary = { trades: 40, profitFactor: 1.6, maxDrawdownR: 4 }
+  const blocks = [{ name: 'test', trades: 10, expectancyLowerR: 0.2 }]
+  const fb = replayChecks({ sim: { ...CHARGED, costSource: 'fallback_unclassified' }, summary, blocks }, TH.replay)
+  assert.deepEqual(fb.failed, ['costModel'])
+
+  // ROUND-TWO CHECKER, MAJOR 2: the rung must pin to the REPO schedule, not
+  // merely to "some cost > 0". A trial's sim arrives from outside — body.sim
+  // wins over the repo default, and POST /actions/tick-trials imports JSON
+  // produced off-box — so a homeopathic figure used to clear it.
+  for (const bps of [1e-12, 1e-9, 0.0001, 0.34]) {
+    const tiny = replayChecks({ sim: { ...CHARGED, commissionBpsPerSide: bps }, summary, blocks }, TH.replay)
+    assert.deepEqual(tiny.failed, ['costModel'], `${bps} bps must not clear the rung`)
+    assert.equal(tiny.checks.costModel.charged, true, 'it IS charged something — that was the whole hole')
+    assert.equal(tiny.checks.costModel.schedule, 'cost_terms_differ', 'but it is not this repo\'s schedule')
+  }
+  // a class this repo does not price, and a class absent from the schedule
+  assert.deepEqual(replayChecks({ sim: { ...CHARGED, costClass: 'not_a_class' }, summary, blocks }, TH.replay).failed, ['costModel'])
+  // the repo's own fx row clears it, and the check names the hash it pinned to
+  const good = replayChecks({ sim: CHARGED, summary, blocks }, TH.replay)
+  assert.deepEqual(good.failed, [])
+  assert.equal(good.checks.costModel.schedule, 'repo')
+  assert.equal(good.checks.costModel.repoHash, scheduleHash(loadRepoSchedule()))
+  // and every OTHER priced class clears it too, on its own numbers
+  for (const [cls, row] of Object.entries(loadRepoSchedule().classes)) {
+    const r2 = replayChecks({ sim: { latencyMs: 250, costSource: 'class', costClass: cls, ...row }, summary, blocks }, TH.replay)
+    assert.deepEqual(r2.failed, [], `${cls} charged at its own schedule row must pass`)
+  }
+  // and a charged, classified trial passes
+  const ok = trial(db, { trialId: 'charged' })
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: ok }, thresholds: TH }).ok, true)
 })
