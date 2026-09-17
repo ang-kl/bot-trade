@@ -137,3 +137,42 @@ test('cpp-verify links no order-writing code — the read-only guarantee is stru
   assert.deepEqual(reqTypes, ['2100', '2102', '2133'],
     'app auth, account auth, deal list — a fourth request type here needs a very good reason')
 })
+
+// ---------------------------------------------------------------------------
+// PR-AM: cpp-verify declares its own build, because the repo root's config
+// belongs to a different service.
+//
+// MEASURED 17-09-2026 19:23 UTC, and this is the whole reason the file exists.
+// cpp-verify's build context must be the REPO ROOT — its Makefile borrows
+// ws_client.cpp and http_server.cpp from cpp-exec (pinned above), so a context
+// of /cpp-verify cannot resolve them and every build failed on
+// `"/cpp-exec/src": not found`.
+//
+// Moving the root to `/` fixed the build and broke the deploy in a worse way:
+// the repo root carries `railway.json` and `Dockerfile` belonging to the NODE
+// service, so Railway built the trading agent and ran it on the verifier's
+// service, where it crash-looped on `AGENT_SECRET env var is required`. A
+// green build of the wrong application — CLAUDE.md failure mode #3, one layer
+// down: the stage reported healthy because what it measured was never the
+// thing in question.
+//
+// So cpp-verify carries its own config, pointed at by the service's
+// config-file setting. Root stays `/` for the shared transport; the builder
+// and the Dockerfile are named here rather than inherited.
+// ---------------------------------------------------------------------------
+test('cpp-verify pins its own builder and Dockerfile, not the repo root service\'s', () => {
+  const cfg = JSON.parse(readFileSync(new URL('../../cpp-verify/railway.json', import.meta.url), 'utf8'))
+  assert.equal(cfg.build?.builder, 'DOCKERFILE',
+    'RAILPACK auto-detection is what picked up the root Node image; the builder is stated')
+  assert.equal(cfg.build?.dockerfilePath, 'cpp-verify/Dockerfile',
+    'relative to the REPO ROOT, because that is this service\'s build context')
+  assert.equal(cfg.deploy?.healthcheckPath, '/health',
+    'a deploy that never serves must fail the healthcheck rather than sit there')
+
+  // The root config is a DIFFERENT service's and must not be what cpp-verify
+  // reads — if these two ever agree on dockerfilePath, the root one is being
+  // inherited again and the verifier is building the agent.
+  const root = JSON.parse(readFileSync(new URL('../../railway.json', import.meta.url), 'utf8'))
+  assert.notEqual(root.build?.dockerfilePath, cfg.build?.dockerfilePath,
+    'the root Dockerfile builds the Node agent — the verifier must never resolve to it')
+})
