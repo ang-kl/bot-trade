@@ -49,7 +49,8 @@ test('the measured 17-09 case: three accounts pinned, no own closes yet — repo
 
   const line = handPinLine(db)
   assert.match(line, /3 across 3 account\(s\)/)
-  assert.match(line, /NOT YET JUDGEABLE/)
+  assert.match(line, /3 owner override\(s\)/, 'and says WHO pinned them, not just how many cells are true')
+  assert.match(line, /not yet judgeable on edge/)
   assert.match(line, /exempt from the POOLED verdict, never from the account's own/,
     'the line states WHY the pin holds, so nobody reads silence as approval')
 })
@@ -96,7 +97,7 @@ test('a pinned cell that is winning reports as holding, with the distance to the
   assert.equal(r.wouldDisarmToday, 0)
   assert.equal(r.losing, 0)
   assert.ok(r.rows[0].expectancy > 0)
-  assert.match(handPinLine(db), /holding — 3 more loss\(es\) would end it on streak/)
+  assert.match(handPinLine(db), /holding, 3 more loss\(es\) would end it on streak/)
 })
 
 test('an ABSENT cell is not a hand pin — it inherits the global list', () => {
@@ -144,4 +145,52 @@ test('the loop reports hand pins on a per-cycle phase, not the 8-hourly housekee
   const band = stripped.indexOf('housekeepingDue(')
   assert.ok(call > 0, 'the loop calls handPinLine')
   assert.ok(call < band, 'and calls it BEFORE the housekeeping gate, so the hourly throttle is the real cadence')
+})
+
+test('THE INVARIANT: no cell counted as would-be-disarmed may print as not-yet-judgeable', () => {
+  // THIS IS THE TEST THE FIRST VERSION NEEDED AND DID NOT HAVE.
+  //
+  // Shipped 17-09 and measured in production the same hour: five cells with
+  // 5-7 loss streaks printed "NOT YET JUDGEABLE" while the same line counted
+  // them among the six that would be disarmed right now. The summary was
+  // right; the detail contradicted it. Every per-cell assertion in this file
+  // stayed green, because each one checked a single cell in a shape where the
+  // two branches could not collide.
+  //
+  // The collision needs a cell that is BOTH un-judgeable on edge (too few
+  // closes) AND already past a disarm predicate (the streak, which has no
+  // minimum sample). That is not an edge case — it is what a freshly pinned
+  // losing strategy looks like.
+  const db = freshDb()
+  addAccount(db, '47790949')
+  pin(db, '47790949', 'tsmom_long')
+  closes(db, '47790949', 'tsmom_long', [-10, -10, -10, -10, -10, -10])
+
+  const r = handPinReport(db)
+  assert.equal(r.rows[0].judgeable, false, '6 closes cannot judge an edge')
+  assert.equal(r.rows[0].wouldDisarmToday, true, 'but a 6-loss streak is already past the predicate')
+  assert.equal(r.wouldDisarmToday, 1)
+
+  const line = handPinLine(db)
+  assert.match(line, /WOULD BE DISARMED NOW on its own 6-loss streak/)
+  assert.doesNotMatch(line, /not yet judgeable/i,
+    'a cell whose verdict has already arrived must never read as one that cannot be judged')
+})
+
+test('provenance is reported, and unrecorded is never folded into seeded', () => {
+  // The first version counted every explicitly-true cell as a hand pin and
+  // reported 70 where the owner had made 3 decisions. It fetched the ledger
+  // row and then never read the actor.
+  const db = freshDb()
+  addAccount(db, '47790949')
+  pin(db, '47790949', 'tsmom_long')                       // actor: owner
+  setStage(db, { kind: 'strategy', key: 'rsi2_reversion', stage: 'trade', on: true, accountId: '47790949', actor: 'boot_seed' }, io)
+
+  const r = handPinReport(db)
+  assert.equal(r.total, 2)
+  assert.equal(r.ownerPins, 1, 'one deliberate override')
+  assert.equal(r.seededPins, 1, 'one seeded by the boot config')
+  assert.equal(r.unrecordedPins, 0)
+  assert.match(handPinLine(db), /1 owner override\(s\), 1 seeded, 0 of unrecorded provenance/)
+  assert.match(handPinLine(db), /\[owner\]/, 'and the owner\'s own pin is marked in the detail')
 })

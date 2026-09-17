@@ -98,6 +98,7 @@ export function handPinVerdict(db, accountId, strategy, cfg) {
   const edge = strategyRollingEdge(db, strategy, cfg.edge.window, { accountId, ownOnly: true })
   const { streak } = strategyLossStreak(db, strategy, 12, { accountId })
 
+  const why = whyCell(db, { scope: accountId, kind: 'strategy', key: strategy, stage: 'trade', current: true })
   const judgeable = edge.trades >= cfg.edge.minTrades
   const noEdge = judgeable && edge.expectancy < 0 && edge.profitFactor != null && edge.profitFactor < cfg.edge.pfFloor
   const streakHit = streak >= cfg.breaker.streak
@@ -121,9 +122,24 @@ export function handPinVerdict(db, accountId, strategy, cfg) {
     // Who pinned it and why, from the PR-S ledger. `unrecorded` is honest:
     // a cell pinned before the ledger existed has no row, and saying so beats
     // implying nobody decided it.
-    why: whyCell(db, { scope: accountId, kind: 'strategy', key: strategy, stage: 'trade', current: true }),
+    why,
+    // WHO PINNED IT, WHICH IS THE WHOLE POINT AND WHICH THE FIRST VERSION
+    // IGNORED. It fetched `why` and then never read the actor, so every
+    // explicitly-true cell counted as a "hand pin" — including the ones the
+    // BOOT SEED writes from strategy-pins.json. Measured 17-09 at 10:03: the
+    // line reported 70 pins across 7 accounts when the owner's actual
+    // overrides numbered 3. A report that buries three decisions under
+    // seventy is not a report.
+    //
+    // UNRECORDED IS NOT "SEEDED". A cell pinned before the ledger existed has
+    // no row, and guessing it was automatic would hide exactly the kind of
+    // old owner decision this is for. It gets its own bucket and says so.
+    pinnedBy: why.lastSet?.actor ?? 'unrecorded',
   }
 }
+
+/** An owner's deliberate override, as opposed to a seeded or unattributed pin. */
+export const isOwnerPin = (row) => row.pinnedBy === 'owner'
 
 /** Every pinned cell on an enabled account, with its own-evidence verdict. */
 export function handPinReport(db) {
@@ -148,6 +164,9 @@ export function handPinReport(db) {
     wouldDisarmToday: rows.filter(r => r.wouldDisarmToday).length,
     evidenceThin: rows.filter(r => !r.judgeable).length,
     losing: rows.filter(r => r.judgeable && r.expectancy != null && r.expectancy < 0).length,
+    ownerPins: rows.filter(isOwnerPin).length,
+    seededPins: rows.filter(r => r.pinnedBy !== 'owner' && r.pinnedBy !== 'unrecorded').length,
+    unrecordedPins: rows.filter(r => r.pinnedBy === 'unrecorded').length,
     rows, byAccount, cfg,
   }
 }
@@ -163,22 +182,40 @@ export function handPinLine(db) {
   // Worst first: a pin whose verdict has already arrived, then one losing but
   // not yet judgeable, then the rest. A reader who stops after the first
   // clause has still read the part that costs money.
+  // THE VERDICT IS CHECKED BEFORE JUDGEABILITY, AND THAT ORDER IS THE FIX.
+  //
+  // The first version asked `!judgeable` first, so a cell with a 6-loss streak
+  // and 6 own closes printed "NOT YET JUDGEABLE" while being counted in the
+  // would-be-disarmed total two clauses earlier. Measured 17-09 at 10:03:
+  // five of the six at-risk cells read as reassurance. The summary was right
+  // and the detail contradicted it, which is worse than either being wrong —
+  // a reader who trusts the per-cell text is misled by the part that names
+  // the account.
+  //
+  // The streak predicate needs NO minimum sample, so "not enough closes to
+  // judge an edge" and "already meets a disarm rule" are not alternatives.
+  // Any cell that would be disarmed now says so first, in those words.
   const rank = (row) => (row.wouldDisarmToday ? 0 : (!row.judgeable ? 1 : 2))
   const detail = [...r.rows]
     .sort((a, b) => rank(a) - rank(b) || (a.expectancy ?? 0) - (b.expectancy ?? 0))
     .slice(0, 8)
     .map((row) => {
       const acct = `…${row.accountId.slice(-4)}`
-      if (!row.judgeable) {
-        return `${acct}:${row.strategy} ${row.trades}/${r.cfg.edge.minTrades} own closes — NOT YET JUDGEABLE${row.streak > 0 ? `, ${row.streak} loss streak` : ''}`
-      }
+      const who = row.pinnedBy === 'owner' ? ' [owner]' : (row.pinnedBy === 'unrecorded' ? ' [unrecorded]' : '')
       const pf = row.profitFactor == null ? '∞' : row.profitFactor
-      const verdict = row.wouldDisarmToday
-        ? (row.noEdge ? 'WOULD BE DISARMED NOW on its own no-edge verdict' : `WOULD BE DISARMED NOW on its own ${row.streak}-loss streak`)
-        : `holding — ${row.distance.lossesToStreak} more loss(es) would end it on streak`
-      return `${acct}:${row.strategy} ${row.trades} closes exp $${row.expectancy} PF ${pf} net $${row.net} — ${verdict}`
+      if (row.wouldDisarmToday) {
+        const because = row.noEdge
+          ? `its own no-edge verdict (${row.trades} closes, exp $${row.expectancy}, PF ${pf}, net $${row.net})`
+          : `its own ${row.streak}-loss streak (${row.trades} own close(s))`
+        return `${acct}:${row.strategy}${who} — WOULD BE DISARMED NOW on ${because}`
+      }
+      if (!row.judgeable) {
+        return `${acct}:${row.strategy}${who} ${row.trades}/${r.cfg.edge.minTrades} own closes — not yet judgeable on edge${row.streak > 0 ? `, ${row.streak} loss streak` : ''}`
+      }
+      return `${acct}:${row.strategy}${who} ${row.trades} closes exp $${row.expectancy} PF ${pf} net $${row.net} — holding, ${row.distance.lossesToStreak} more loss(es) would end it on streak`
     })
     .join('; ')
 
-  return `[arming] hand-pinned cells: ${r.total} across ${r.accounts} account(s) — ${r.wouldDisarmToday} would be disarmed right now on their own evidence, ${r.evidenceThin} have too few own closes to judge, ${r.losing} are judgeable and losing. A hand pin is exempt from the POOLED verdict, never from the account's own. ${detail}`
+  const prov = `${r.ownerPins} owner override(s), ${r.seededPins} seeded, ${r.unrecordedPins} of unrecorded provenance`
+  return `[arming] pinned cells: ${r.total} across ${r.accounts} account(s) (${prov}) — ${r.wouldDisarmToday} would be disarmed right now on their own evidence, ${r.evidenceThin} have too few own closes to judge an edge, ${r.losing} are judgeable and losing. A pin is exempt from the POOLED verdict, never from the account's own. ${detail}`
 }
