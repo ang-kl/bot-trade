@@ -2576,6 +2576,19 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // THE PARTIAL ANALYSIS (owner, 18-09-2026): what the REFUSED records can
+  // support, and nothing more. The provenance block — when it was generated,
+  // that the basis is INCOMPLETE_RECORDS, which fields were absent, where
+  // clean data begins — is attached by the same function that computes the
+  // figures, so this route cannot answer with numbers and no caveat.
+  router.get('/position-history-partial', async (_req, res) => {
+    try {
+      const { partialAnalysis } = await import('../services/position-history-partial.js')
+      res.json(partialAnalysis(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   router.get('/tick-shadow', async (_req, res) => {
     try {
       const { tickShadowView } = await import('../services/tick-shadow.js')

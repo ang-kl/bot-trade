@@ -424,6 +424,28 @@ try {
     const worst = Object.entries(ph.missingCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 5)
     console.log(`[boot] position history: ${ph.complete} complete · ${ph.incomplete} incomplete of ${ph.seen} closed position(s) in 90 days` +
       (worst.length ? ` — most often missing: ${worst.map(([f, n]) => `${f} (${n})`).join(', ')}` : ''))
+
+    // WHERE THE CLEAN DATA ACTUALLY BEGINS, read off the rows. The claim
+    // "clean data starts 11-09" is deductively sound in one direction only —
+    // direction_reason did not exist before 8eb4e75, so nothing earlier can
+    // be complete — but production's first run showed 63 records with a
+    // reason and 60 whole, i.e. three post-cutoff positions still failing.
+    // `completeBeforeCutoff` must be 0; if it ever is not, the deduction is
+    // wrong and this line is how that gets noticed.
+    const { completenessSpan } = await import('./services/position-history.js')
+    const span = completenessSpan(db)
+    console.log(`[boot] clean-data boundary: ${span.complete} complete record(s), span ${span.earliest ?? '—'} → ${span.latest ?? '—'} · ` +
+      `${span.completeBeforeCutoff} before the ${span.cutoff.slice(0, 10)} cutoff (expected 0) · ` +
+      `since the cutoff ${span.completeSinceCutoff} complete / ${span.refusedSinceCutoff} refused` +
+      (span.completionRateSinceCutoffPct != null ? ` = ${span.completionRateSinceCutoffPct}% complete` : ''))
+
+    // THE PARTIAL ANALYSIS (owner, 18-09-2026). Stamped with the moment it
+    // was produced and led by its own warning, because a figure from refused
+    // records looks exactly like a figure from whole ones — and the proper
+    // analysis, when it runs, will disagree with it.
+    const { partialAnalysis, partialAnalysisLine } = await import('./services/position-history-partial.js')
+    const pa = partialAnalysis(db)
+    if (pa.provenance.records > 0) console.log(partialAnalysisLine(pa))
   } catch (err) {
     console.error(`[boot] position history build failed (non-fatal): ${err.message}`)
   }
