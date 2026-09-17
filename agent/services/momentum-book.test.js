@@ -1129,3 +1129,306 @@ test('considered-vs-ran is counted across a mix of armed, unarmed and throwing a
   assert.equal(rAll.notArmed + rAll.armCheckFailed, 0)
   assert.ok(!rAll.skipped.some(s => /^considered /.test(s)), 'nothing dropped → no roll-up line')
 })
+
+// ---------------------------------------------------------------------------
+// PR-P (16-09-2026): the PER-ACCOUNT ENTRY BRAKE, wired.
+//
+// The arithmetic is pinned in book-open-drawdown.test.js. What is pinned here
+// is that something CALLS it — on both entry paths — and that nothing on the
+// EXIT side does. A repair nothing calls is dead (CLAUDE.md), and a brake that
+// slowed an exit would be worse than no brake at all.
+// ---------------------------------------------------------------------------
+
+/** Two open, marked-at-their-stops book rows on `account`, with a real trade and plan behind each. */
+function bleedingBook(db, account, { symbols = ['BTCUSD', 'NATGAS'], entry = 100, risk = 10, mark = 90, at = Date.now() } = {}) {
+  const marks = {}
+  for (const symbol of symbols) {
+    const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,'BUY','open',?,?,?,?,?,'bot_market_dispatch',?, datetime('now','-5 days'))`)
+      .run(symbol, entry, entry - risk, TSMOM_STRATEGY, TSMOM_STRATEGY, account, `pos-${symbol}-${account}`).lastInsertRowid
+    db.prepare(`INSERT INTO trade_plans (trade_id, account_id, symbol, side, risk_dist) VALUES (?,?,?,'long',?)`).run(t, account, symbol, risk)
+    db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entered_at, status) VALUES (?,?,?,?, 'long', ?, ?, 2, datetime('now','-5 days'), 'open')`)
+      .run(t, account, symbol, `pos-${symbol}-${account}`, entry, entry - risk)
+    marks[`${account}|${symbol}`] = { c: mark, at }
+  }
+  return marks
+}
+
+test('PR-P row-cursor path: a bleeding account takes NO new book entry, by name and reason — and its rank EXIT still goes', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  // Two rows at their stops on DEMO → 100% of the risk put up, over the
+  // default 50% limit and the default 2-row minimum.
+  const marks = bleedingBook(db, DEMO)
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  // One fresh name to enter, and one open name the ranking wants OUT of.
+  shadowRow(db, { symbol: 'XAUUSD', action: 'enter' })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit' })
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: { ...f.deps, symbolMap: { BTCUSD: 1, NATGAS: 2, XAUUSD: 3 } } })
+  // ENTRIES: refused, once, with a reason an operator reads.
+  assert.equal(r.entries, 0, 'no new exposure on a bleeding account')
+  assert.equal(f.calls.autoTrade.length, 0)
+  assert.equal(r.entriesBraked, 1)
+  const line = r.skipped.find(s => s.startsWith(`${DEMO}: open book drawdown`))
+  assert.ok(line, `the refusal is named: ${JSON.stringify(r.skipped)}`)
+  assert.match(line, /100% of the risk put up \(>= 50%\) across 2 of 2 carried row\(s\), coverage 100%/)
+  assert.equal(r.skipped.filter(s => /open book drawdown/.test(s)).length, 1, 'one line per braked account, not one per symbol')
+  // EXITS: completely untouched. The ranking's exit on BTCUSD went to the broker.
+  assert.equal(r.exits, 1, 'the brake is on ENTRIES only')
+  assert.deepEqual(f.calls.close.map(c => c.positionId), [`pos-BTCUSD-${DEMO}`])
+  assert.equal(db.prepare(`SELECT status FROM momentum_book WHERE symbol = 'BTCUSD'`).get().status, 'exit_sent')
+  // And the trail still ran on both rows — a stop is protection, not an opinion.
+  assert.ok(r.trailed >= 1, `the stop kept being maintained: trailed ${r.trailed}`)
+})
+
+test('PR-P: the same book with the brake OFF enters — so the refusal above was the brake and not some other gate', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ ...EVERY_PASS, bookDrawdownOn: false }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  const marks = bleedingBook(db, DEMO)
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  shadowRow(db, { symbol: 'XAUUSD', action: 'enter' })
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: { ...f.deps, symbolMap: { BTCUSD: 1, NATGAS: 2, XAUUSD: 3 } } })
+  assert.equal(r.entries, 1, 'with the brake off the identical book takes the entry')
+  assert.equal(r.entriesBraked, undefined)
+})
+
+test('PR-P: THE INPUT ARRIVES — the trail pass writes the mark the brake reads, and drops it when the row closes', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  const one = [{ accountId: DEMO, isLive: false }]
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: 1_000 })
+  const after = JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY))
+  const key = `${DEMO}|BTCUSD`
+  // The mark is the SAME bar close the trail prices its stop from — one price,
+  // not a second feed that can drift from the first.
+  assert.equal(after.marks[key].c, f.bars[f.bars.length - 1].c, 'the trail pass wrote the mark')
+  assert.equal(after.marks[key].at, 1_000, 'stamped, so staleness is a fact and not a guess')
+  // A closed row's mark is dropped: a position that is gone must never keep
+  // weighing on the account's reading.
+  db.prepare(`UPDATE momentum_book SET status = 'closed' WHERE symbol = 'BTCUSD'`).run()
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: 2_000 })
+  assert.deepEqual(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks, {}, 'closed rows leave no mark behind')
+})
+
+test('PR-P: a row the broker could not be reached for KEEPS its last mark — an outage must not read as "no price"', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  const one = [{ accountId: DEMO, isLive: false }]
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: 1_000 })
+  const first = JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks[`${DEMO}|BTCUSD`]
+  assert.ok(first?.c > 0)
+  // Next pass: bars throw. The row is still open, so its mark stands.
+  await runMomentumBook(db, { accounts: one, credsFor, deps: { ...f.deps, bars: async () => { throw new Error('broker unreachable') } }, now: 2_000 })
+  assert.deepEqual(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks[`${DEMO}|BTCUSD`], first)
+})
+
+test('PR-P: the report shows the number measured NEXT TO the number it is compared with, per account', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  const marks = bleedingBook(db, DEMO)
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  const rep = momentumBookReport(db)
+  const cell = rep.entryBrake.accounts[`…${DEMO.slice(-4)}`]
+  assert.equal(cell.blocking, true)
+  assert.equal(cell.drawdownPct, 100)
+  assert.equal(cell.limitPct, 50, 'the limit is printed beside the reading, not left to be looked up')
+  assert.equal(cell.measured, 2)
+  assert.equal(cell.rows, 2)
+  assert.equal(rep.config.bookDrawdownPct, 50)
+})
+
+test('PR-P MAJOR 2: a price fetch that fails on every pass does NOT quietly retire the brake — it blocks and says so, every pass', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  const T0 = Date.UTC(2026, 8, 16, 12, 0)
+  const marks = bleedingBook(db, DEMO, { at: T0 })
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  shadowRow(db, { symbol: 'XAUUSD', action: 'enter' })
+  const one = [{ accountId: DEMO, isLive: false }]
+  const dead = { symbolMap: { BTCUSD: 1, NATGAS: 2, XAUUSD: 3 }, bars: async () => { throw new Error('broker unreachable') },
+    spot: async () => null, amend: async () => ({}), close: async () => ({}), positionVolume: async () => 1000,
+    phasesOn: () => true, mayTrade: () => ({ ok: true, item: null }), autoTrade: async () => null }
+  // Marks still fresh: blocked on drawdown.
+  let r = await runMomentumBook(db, { accounts: one, credsFor, deps: dead, now: T0 })
+  assert.equal(r.entriesBraked, 1)
+  assert.ok(r.skipped.some(s => /open book drawdown/.test(s)))
+  // The marks were carried forward, not lost, by the failing trail pass.
+  assert.equal(Object.keys(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks).length, 2)
+  // 192 h later every fetch has still failed, so the marks are past the TTL.
+  // The first draft went from blocking to OPEN here, with no log line and no
+  // summary entry — the closed-trade brakes cannot cover that gap by
+  // construction, so this is the whole guard silently retiring itself.
+  const later = T0 + 192 * 3_600_000
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps: dead, now: later })
+  assert.equal(r.entriesBraked, 1, 'still braked when it goes blind')
+  assert.equal(r.entries, 0)
+  const unreadable = r.skipped.find(s => /open book UNREADABLE/.test(s))
+  assert.ok(unreadable, `the blindness is named: ${JSON.stringify(r.skipped)}`)
+  assert.match(unreadable, /2 of 2 carried row\(s\) unread, coverage 0%/)
+  assert.match(unreadable, /2× stale — bars unavailable: broker unreachable/, 'the CAUSE travels end to end, from the trail pass to the log line')
+  assert.match(unreadable, /oldest stale price 192 h/)
+  assert.ok(r.skipped.some(s => /row\(s\) unread/.test(s)), 'and a notice line names the coverage every pass')
+  assert.match(r.skipped[0], /^entry brake: 1 of 1 account\(s\) taking no new book entries/, 'the roll-up survives skipped.slice(0, 4)')
+})
+
+test('PR-P: unread rows are named even when the brake lets the entry through', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true, bookDrawdownMinCoveragePct: 0 }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  // Two rows, one marked well above entry, one never marked at all.
+  const marks = bleedingBook(db, DEMO, { mark: 130 })
+  delete marks[`${DEMO}|NATGAS`]
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  shadowRow(db, { symbol: 'XAUUSD', action: 'enter' })
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: { ...f.deps, symbolMap: { BTCUSD: 1, NATGAS: 2, XAUUSD: 3 } } })
+  assert.equal(r.entriesBraked, undefined, 'not blocked — coverage judging is off and the readable row is in profit')
+  assert.equal(r.entries, 1)
+  const notice = r.skipped.find(s => /row\(s\) unread/.test(s))
+  assert.ok(notice, `the blind spot is named anyway: ${JSON.stringify(r.skipped)}`)
+  assert.match(notice, /1 of 2 carried row\(s\) unread, coverage 50%/)
+  assert.match(notice, /1× never marked/, 'the cause, not just the count')
+  assert.ok(!r.skipped.some(s => /^entry brake: /.test(s)), 'nothing braked → no roll-up')
+})
+
+test('PR-P MINOR 3: the mark carries the BAR\'s own epoch when the feed supplies one', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  // Real trendbars carry `t` in epoch ms (ctrader-ws.js: utcTimestampInMinutes × 60000).
+  const barOpen = Date.UTC(2026, 8, 16, 0, 0)
+  const realBars = f.bars.map((b, i) => ({ ...b, t: barOpen - (f.bars.length - 1 - i) * 86_400_000 }))
+  const one = [{ accountId: DEMO, isLive: false }]
+  await runMomentumBook(db, { accounts: one, credsFor, deps: { ...f.deps, bars: async () => realBars }, now: 1_000 })
+  const m = JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks[`${DEMO}|BTCUSD`]
+  assert.equal(m.bt, barOpen, 'the bar\'s own stamp, so a frozen feed cannot pass as fresh')
+  assert.equal(m.at, 1_000, 'and the fetch clock alongside it')
+  // The fixture's index-style `t` is NOT a plausible epoch and must not be
+  // written as one — it would read as 1970 and mark every row stale forever.
+  const db2 = fresh()
+  setState(db2, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db2, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db2, { symbol: 'BTCUSD', action: 'enter' })
+  const g = fakes()
+  await runMomentumBook(db2, { accounts: one, credsFor, deps: g.deps, now: 1_000 })
+  assert.equal(JSON.parse(getState(db2, MOMENTUM_BOOK_STATE_KEY)).marks[`${DEMO}|BTCUSD`].bt, undefined)
+})
+
+test('PR-P MAJOR 1: the book rank-exits a bleeding account and the brake DOES NOT go quiet on the next pass', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  // Stamped on the TEST clock, not the wall clock: this case drives `now`
+  // explicitly, and a mark stamped decades ahead of `now` is correctly not a
+  // reading any more (checker MINOR 4).
+  const marks = bleedingBook(db, DEMO, { at: 0 })
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  // The ranking wants OUT of both names, and offers a fresh one.
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit' })
+  shadowRow(db, { symbol: 'NATGAS', action: 'exit' })
+  const f = fakes()
+  const one = [{ accountId: DEMO, isLive: false }]
+  const deps = { ...f.deps, symbolMap: { BTCUSD: 1, NATGAS: 2, XAUUSD: 3 } }
+  let r = await runMomentumBook(db, { accounts: one, credsFor, deps, now: 1_000 })
+  assert.equal(r.exits, 2, 'both exits were SENT')
+  assert.equal(r.entriesBraked, 1)
+  assert.deepEqual(db.prepare(`SELECT DISTINCT status FROM momentum_book`).all().map(x => x.status), ['exit_sent'],
+    'sent, not confirmed — the rows are still carried')
+  // NEXT PASS. Reading `status = 'open'` alone gave `rows: 0`, which took the
+  // "nothing to be blind about" carve-out: block false, reason null, notice
+  // null — no line anywhere — at the exact moment the book had just decided
+  // this account's positions were bad.
+  shadowRow(db, { symbol: 'XAUUSD', action: 'enter' })
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps, now: 2_000 })
+  assert.equal(r.entriesBraked, 1, 'still braked while the closes are in flight')
+  assert.equal(r.entries, 0)
+  assert.equal(f.calls.autoTrade.length, 0)
+  const line = r.skipped.find(s => /open book drawdown/.test(s))
+  assert.ok(line, `and it still says why: ${JSON.stringify(r.skipped)}`)
+  assert.match(line, /across 2 of 2 carried row\(s\)/)
+  // The marks survived for rows the trail pass no longer walks (it selects
+  // `open` only, and must keep doing so — trailing an exited row is exit
+  // behaviour).
+  assert.equal(Object.keys(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks).length, 2)
+  // A CONFIRMED close drops out: the trade closes, the row becomes 'closed',
+  // the mark goes with it and the account is judged on what is left.
+  db.prepare(`UPDATE trades SET status = 'closed' WHERE account_id = ?`).run(DEMO)
+  r = await runMomentumBook(db, { accounts: one, credsFor, deps, now: 3_000 })
+  assert.equal(r.entriesBraked, undefined, 'nothing carried, nothing to brake')
+  assert.deepEqual(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks, {}, 'a confirmed close leaves no mark behind')
+})
+
+test('PR-P MAJOR 2: a symbol the trail cannot resolve is named as the cause, not counted as a bare "unmarked"', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  bleedingBook(db, DEMO)
+  const f = fakes()
+  // NATGAS does not resolve on this account. The trail's `continue` used to
+  // be completely silent, so the operator saw "1 unmarked" and had no way to
+  // tell a permanent mapping fault from a one-pass broker outage.
+  const deps = { ...f.deps, symbolMap: { BTCUSD: 1 } }
+  const one = [{ accountId: DEMO, isLive: false }]
+  await runMomentumBook(db, { accounts: one, credsFor, deps, now: 1_000 })
+  const st = JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY))
+  assert.equal(st.markFail[`${DEMO}|NATGAS`], 'symbol does not resolve on this account')
+  const r = await runMomentumBook(db, { accounts: one, credsFor, deps, now: 2_000 })
+  const line = r.skipped.find(s => /carried row\(s\) unread/.test(s))
+  assert.ok(line, `the cause reaches the log: ${JSON.stringify(r.skipped)}`)
+  assert.match(line, /1× symbol does not resolve on this account/)
+})
+
+test('PR-P: the roll-up counts accounts the pass RAN on, not accounts handed in', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  // DEMO is armed and bleeding; LIVE is handed in but never armed, so the
+  // brake is never consulted for it. Counting it in the denominator makes the
+  // ratio read better than it is — "1 of 2" when every account that actually
+  // ran is braked (checker MINOR 2).
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  const marks = bleedingBook(db, DEMO)
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  shadowRow(db, { symbol: 'XAUUSD', action: 'enter' })
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: { ...f.deps, symbolMap: { BTCUSD: 1, NATGAS: 2, XAUUSD: 3 } } })
+  assert.equal(r.considered, 2)
+  assert.equal(r.accounts, 1, 'only one account ran')
+  assert.equal(r.entriesBraked, 1)
+  const roll = r.skipped.find(s => /^entry brake: /.test(s))
+  assert.match(roll, /^entry brake: 1 of 1 account\(s\) taking no new book entries/, 'denominator is the accounts that RAN')
+  assert.doesNotMatch(roll, /1 of 2/, 'not the accounts handed in')
+})
+
+test('PR-P: a row the TRAIL closes (its trade went away while the row was open) drops its mark in the same pass', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  const one = [{ accountId: DEMO, isLive: false }]
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: 1_000 })
+  assert.ok(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks[`${DEMO}|BTCUSD`])
+  // The reconciler closes the trade. The row is still 'open', so the trail
+  // pass is what notices and flips it — and the mark must go with it, or a
+  // position that no longer exists keeps weighing on the account's reading.
+  db.prepare(`UPDATE trades SET status = 'closed' WHERE account_id = ?`).run(DEMO)
+  await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(db.prepare(`SELECT status FROM momentum_book WHERE symbol = 'BTCUSD'`).get().status, 'closed')
+  // The mark is gone because the CARRY predicate excludes any row whose trade
+  // is closed — one rule, one place. (The first draft also deleted the mark
+  // inside the trail's close branch; that line was unreachable for exactly
+  // this reason and was removed rather than left as decoration.)
+  assert.deepEqual(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks, {}, 'a closed trade leaves no mark behind')
+})

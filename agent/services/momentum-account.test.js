@@ -117,6 +117,10 @@ function fakes({ fill = true, equity = 100_000 } = {}) {
 }
 const DUE = Date.UTC(2026, 8, 7, 21, 30)   // 21:30 UTC, past the 21:05 threshold
 const NOT_DUE = Date.UTC(2026, 8, 7, 12, 0)
+// PR-O: an entry stamp relative to DUE, not to the wall clock — a row stamped
+// `datetime('now')` is in the FUTURE relative to DUE and would be held back by
+// the minimum hold, hiding whether the exit ran at all.
+const FIVE_DAYS_BEFORE_DUE = new Date(DUE - 5 * 86_400_000).toISOString()
 
 test('buildUniverse: unknown names are reported, unaffordable names are excluded with the reason, tradable names carry their vol-target size', async () => {
   const db = fresh()
@@ -319,7 +323,16 @@ test('wiring pins (comments stripped): the size rides both dispatch paths, the g
   assert.match(risk, /if \(volTargetSized && momentumAcct && proposal\.strategy === MOMENTUM_STRATEGY\)/, 'the gate honours the size only on a momentum account for tsmom')
   assert.doesNotMatch(risk, /momentum_account_only:/, 'PR-B: the one-system veto is gone from the gate')
   const book = strip(readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8'))
-  assert.match(book, /if \(isMomentumAccount\(db, accountId\)\) \{[\s\S]*runMomentumAccountPass\(db, \{ acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted \}\)/, 'the book must route the momentum account to the daily pass WITH its margin state')
+  assert.match(book, /if \(isMomentumAccount\(db, accountId\)\) \{[\s\S]*runMomentumAccountPass\(db, \{ acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted, entryBrake \}\)/, 'the book must route the momentum account to the daily pass WITH its margin state AND its entry brake (PR-P)')
+  // PR-P: the brake is computed ONCE per account, above the momentum-account
+  // branch, so both entry paths read the same verdict. If this moves below
+  // the `continue`, the path that actually trades stops being braked — the
+  // exact shape of the defect PR-K's first draft shipped.
+  assert.match(book, /const entryBrake = bookEntryBrake\(db, \{ accountId, marks: state\.marks, markFail: state\.markFail, bookCfg: cfg, now \}\)[\s\S]*if \(isMomentumAccount\(db, accountId\)\)/, 'the entry brake must be computed before the momentum-account branch')
+  // PR-P (checker MAJOR 1): the brake must measure the CARRIED set, not just
+  // `open` — an exit that has been sent is exposure the account still holds.
+  const dd = strip(readFileSync(new URL('./book-open-drawdown.js', import.meta.url), 'utf8'))
+  assert.match(dd, /WHERE b\.status IN \('open', 'exit_sent'\) AND b\.account_id = \?/, 'the brake reads the carried set')
 })
 
 test('scope: a shadow row for a momentum-universe name is NOT taken by a row-cursor account outside its scan universe; the momentum account still takes it', async () => {
@@ -673,4 +686,73 @@ test('PR-K: closes sent by the MARGIN-EXHAUSTED branch are counted in the book s
   assert.equal(f.calls.close.length, 1, 'the exit went out')
   assert.equal(r.exits, 1, 'and the summary says so — a real close reported as zero is how the routing defect stayed invisible')
   assert.equal(r.momentumAccount.ran, false)
+})
+
+// ---------------------------------------------------------------------------
+// PR-P (16-09-2026): the per-account entry brake ON THE PATH THAT TRADES.
+// `accountId: "_all"` routes every enabled account through this daily pass, so
+// a brake enforced only on the row-cursor path would be on, configured and out
+// of reach of what it guards — the exact defect PR-K's first draft shipped.
+// ---------------------------------------------------------------------------
+test('PR-P: a bleeding momentum account takes NO entry on its daily pass, by reason — while its rank EXITS still go', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: MOM }, { getState, setState })
+  // The shadow holds BTCUSD (a candidate) and no longer holds AAA or BBB,
+  // which the account IS holding — so this pass owes two exits and one entry.
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  const marks = {}
+  for (const symbol of ['AAA', 'BBB']) {
+    const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,'BUY','open',100,90,?,?,?,'bot_market_dispatch',?, ?)`)
+      .run(symbol, TSMOM_STRATEGY, TSMOM_STRATEGY, MOM, `pos-${symbol}`, FIVE_DAYS_BEFORE_DUE).lastInsertRowid
+    db.prepare(`INSERT INTO trade_plans (trade_id, account_id, symbol, side, risk_dist) VALUES (?,?,?,'long',10)`).run(t, MOM, symbol)
+    db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entered_at, status) VALUES (?,?,?,?, 'long', 100, 90, 2, ?, 'open')`)
+      .run(t, MOM, symbol, `pos-${symbol}`, FIVE_DAYS_BEFORE_DUE)
+    marks[`${MOM}|${symbol}`] = { c: 90, at: DUE }     // both at their stops → 100%
+  }
+  setState(db, 'momentum_book_state_json', JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts: [{ accountId: MOM, isLive: false }], credsFor: () => ({ accountId: MOM }), deps: f.deps, now: DUE })
+  assert.equal(r.entries, 0, 'the DAILY PASS took no new exposure')
+  assert.equal(f.calls.autoTrade.length, 0)
+  assert.equal(r.entriesBraked, 1)
+  const line = r.skipped.find(s => /open book drawdown/.test(s))
+  assert.ok(line, `the refusal is named: ${JSON.stringify(r.skipped)}`)
+  assert.match(line, /100% of the risk put up \(>= 50%\) across 2 of 2 carried row\(s\), coverage 100%/)
+  // EXITS ARE UNTOUCHED: both dropped holdings were closed at the broker on
+  // the same pass the entry was refused.
+  assert.equal(r.exits, 2, 'the brake never delays an exit')
+  assert.deepEqual(f.calls.close.map(c => c.positionId).sort(), ['pos-AAA', 'pos-BBB'])
+  // The refusal is in the account's own durable record, not only in the loop log.
+  // The refusal is in the account's own DURABLE record. It is not pushed to
+  // `summary.skipped` from inside the daily pass any more: that function
+  // returns early on `not due`, which is most passes, so a line emitted there
+  // would appear once a day. momentum-book.js owns the loop lines; this owns
+  // the daily record.
+  const lastPass = JSON.parse(getState(db, momentumAccountStateKey(MOM))).lastPass
+  assert.match(lastPass.entryBrake.reason, /open book drawdown/, 'the daily pass records why it added nothing')
+  assert.equal(lastPass.entryBrake.read.drawdownPct, 100)
+})
+
+test('PR-O control: the identical bleeding account with the brake OFF takes the entry', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true, bookDrawdownOn: false }))
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD'] }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: MOM }, { getState, setState })
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+  const marks = {}
+  for (const symbol of ['AAA', 'BBB']) {
+    const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,'BUY','open',100,90,?,?,?,'bot_market_dispatch',?, ?)`)
+      .run(symbol, TSMOM_STRATEGY, TSMOM_STRATEGY, MOM, `pos-${symbol}`, FIVE_DAYS_BEFORE_DUE).lastInsertRowid
+    db.prepare(`INSERT INTO trade_plans (trade_id, account_id, symbol, side, risk_dist) VALUES (?,?,?,'long',10)`).run(t, MOM, symbol)
+    db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entered_at, status) VALUES (?,?,?,?, 'long', 100, 90, 2, ?, 'open')`)
+      .run(t, MOM, symbol, `pos-${symbol}`, FIVE_DAYS_BEFORE_DUE)
+    marks[`${MOM}|${symbol}`] = { c: 90, at: DUE }
+  }
+  setState(db, 'momentum_book_state_json', JSON.stringify({ lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks }))
+  const f = fakes()
+  const r = await runMomentumBook(db, { accounts: [{ accountId: MOM, isLive: false }], credsFor: () => ({ accountId: MOM }), deps: f.deps, now: DUE })
+  assert.equal(r.entries, 1, 'the refusal above was the brake, not some other gate')
+  assert.deepEqual(f.calls.autoTrade.map(c => c.symbol), ['BTCUSD'])
 })

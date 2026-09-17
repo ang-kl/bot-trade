@@ -59,6 +59,38 @@
 // #3, found by the checker on 16-09-2026 and recorded here so the next reader
 // does not have to re-derive which path trades.
 //
+// THE PER-ACCOUNT ENTRY BRAKE (PR-P, 16-09-2026, after PR-O armed
+// `tsmom_long` on all seven enabled accounts). Every automatic brake a book
+// entry passes through counts CLOSED trades — adaptive-breaker 3,
+// edge-watchdog 15, strategy-verdicts 30 (the last of these IS on the path
+// already: autoTrade → the risk gate → risk.js clause 5b, where under 30
+// closes it returns `pending`, never a refusal). On a book that holds for
+// 10–60 days none of them can fire inside the horizon they bound, and the
+// pooled watchdog verdict is exempt on every armed account because arming IS
+// `isHandPinned`. book-open-drawdown.js measures instead what the account is
+// holding right now: the open mark-to-market of its OWN book rows as a
+// percentage of the risk those rows put up at entry, marked from the trail
+// pass's own bar closes. At or above `bookDrawdownPct` (50 by default, over
+// `bookDrawdownMinRows` 2+ rows) the account takes NO NEW book entries; it
+// needs zero closes and can fire within one loop pass of the account's second
+// position going half a stop under water.
+//
+// IT ALSO REFUSES WHEN IT CANNOT SEE. If fewer than
+// `bookDrawdownMinCoveragePct` (60 %) of the account's open rows can be
+// priced, the account is blocked for BLINDNESS rather than passed on
+// whatever minority could be read — because if the unreadable rows are the
+// bleeding ones, the healthy remainder becomes the reading. And whenever
+// anything is unread, block or no block, a line naming the coverage goes
+// into `summary.skipped` on EVERY pass: a brake that is blind must not be a
+// brake that is quiet. Both are the checker's MAJORs of 16-09-2026; the full
+// argument, including why failing closed is the right direction here, is in
+// book-open-drawdown.js's header.
+//
+// It is computed ONCE per account here and handed to BOTH entry paths, so the
+// two cannot disagree. It gates ENTRIES only — the stop, the rank exits, the
+// `exit_pending` retry, the owed-exit sweep and the weekend bank never read
+// it, and blocking an entry can only reduce exposure.
+//
 // Every broker call is injectable (deps) so the tests drive the whole cycle
 // against an in-memory DB with fake fills.
 // ---------------------------------------------------------------------------
@@ -75,6 +107,12 @@ import { bookCloseVolume } from './book-close-volume.js'
 // PR-K: the hold-age rule lives in its own module because the momentum-account
 // path enforces the SAME minimum hold and may not import this file (cycle).
 import { parseStamp, heldLongEnough as heldLongEnoughFor, heldHours, minHoldMsFor } from './book-hold-age.js'
+// PR-P (16-09-2026): the per-account ENTRY brake, measured on open
+// mark-to-market. Its own module for the same reason as book-hold-age.js —
+// the momentum-account path enforces the SAME rule and may not import this
+// file (cycle). See that file's header for why the existing closed-trade
+// brakes (3 / 15 / 30 closes) cannot reach a 10–60 day horizon.
+import { bookDrawdownConfig, bookEntryBrake, markKey, DEFAULT_BOOK_DRAWDOWN, MIN_PLAUSIBLE_EPOCH_MS } from './book-open-drawdown.js'
 export { parseStamp }
 
 export const TSMOM_STRATEGY = 'tsmom_long'
@@ -122,6 +160,10 @@ export const DEFAULT_MOMENTUM_BOOK = Object.freeze({
   //     behaviour was there.
   bookExitCadence: 'daily',
   bookMinHoldHours: 24,
+  // PR-P (16-09-2026): the per-account entry brake. Four knobs, defined and
+  // documented in book-open-drawdown.js, spread here so the book has ONE
+  // config object and ONE merge route.
+  ...DEFAULT_BOOK_DRAWDOWN,
 })
 
 const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d)
@@ -154,6 +196,9 @@ export function momentumBookConfig(raw) {
     // default, never to 0. The ceiling is 168 h (7 days): a fat-fingered
     // 7200 must not freeze this book's rank exits for a month.
     bookMinHoldHours: clampNum(r.bookMinHoldHours, 0, 168, d.bookMinHoldHours),
+    // PR-P: the entry brake's knobs, clamped by their own module so the rule
+    // and its validation never live in two places.
+    ...bookDrawdownConfig(r),
   }
 }
 
@@ -251,10 +296,21 @@ export function loadBookState(db) {
         // PR-K: the book's rank-exit day cursor, ONE PER ACCOUNT — an account
         // whose daily pass ran today must not consume another account's.
         rankExitAt: s.rankExitAt && typeof s.rankExitAt === 'object' ? s.rankExitAt : {},
+        // PR-P: the last close the TRAIL pass saw for each carried row,
+        // `<accountId>|<SYMBOL>` → { c, at, bt? } — `c` the close, `at` the
+        // pass clock, `bt` the BAR's own epoch when the feed supplied a
+        // plausible one. The entry brake's only price input.
+        // It lives here rather than in a new column because momentum_book's
+        // schema is agent/db.js's and this needs no migration; it is rebuilt
+        // from the trail pass every loop, so a lost blob costs one pass.
+        marks: s.marks && typeof s.marks === 'object' ? s.marks : {},
+        // PR-P: why a carried row could not be freshly marked, same keys as
+        // `marks`. The brake names the CAUSE, not just the count.
+        markFail: s.markFail && typeof s.markFail === 'object' ? s.markFail : {},
       }
     }
   } catch { /* fall through */ }
-  return { lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {} }
+  return { lastShadowRowId: 0, lastRunMs: 0, reconciledAt: {}, rankExitAt: {}, pendingFlips: {}, marks: {}, markFail: {} }
 }
 
 
@@ -388,6 +444,43 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     const marginExhausted = headroom != null && headroom <= 0
     if (marginExhausted) summary.skipped.push(`${accountId}: margin exhausted (headroom $${headroom.toFixed(2)}) — no entries this pass`)
 
+    // PR-P (16-09-2026): THE PER-ACCOUNT ENTRY BRAKE, on the book's own
+    // horizon. Every automatic brake `tsmom_long` passes through today reads
+    // CLOSED trades — 3 for the adaptive breaker, 15 for the edge watchdog,
+    // 30 for the strategy verdict the risk gate applies at risk.js clause 5b
+    // — and this book holds a position for 10 to 60 DAYS, so none of them can
+    // fire inside the horizon they are meant to bound. This one reads the
+    // positions the account is ALREADY holding, marked from the trail pass's
+    // own bars, and needs no closes at all. Computed ONCE per account here,
+    // and handed to BOTH entry paths, so the two can never disagree about
+    // whether this account may add exposure.
+    //
+    // It is evaluated for every account whether or not the margin brake
+    // already fired, because the two are different facts and the summary is
+    // what an operator reads. It gates ENTRIES only — the exits below it, the
+    // stop, the exit_pending retry and the owed-exit sweep never consult it.
+    // BOTH LINES ARE PUSHED HERE, for EVERY account, on EVERY pass — not by
+    // the path the account happens to take (checker MAJOR 2). The daily pass
+    // returns early on `not due`, which is most passes for most accounts, so
+    // a reason emitted from inside it would appear once a day; and the first
+    // draft emitted nothing at all unless the brake BLOCKED, which made the
+    // blind case the silent case. `notice` is present whenever anything on
+    // the account could not be read, block or no block.
+    const entryBrake = bookEntryBrake(db, { accountId, marks: state.marks, markFail: state.markFail, bookCfg: cfg, now })
+    // ONE LINE PER ACCOUNT (checker MINOR 1, second round). The block reason
+    // already carries the unread phrase, so emitting the notice alongside it
+    // cost a blind account two lines to say one thing — and with seven armed
+    // accounts that filled `skipped.slice(0, 4)` twice over, pushing every
+    // other reason (margin exhausted, not armed, per-symbol skips) out of the
+    // log entirely. `notice` is null whenever `reason` is set.
+    if (entryBrake.block) {
+      summary.entriesBraked = (summary.entriesBraked || 0) + 1
+      if (/UNREADABLE/.test(entryBrake.reason)) summary.entriesBrakedBlind = (summary.entriesBrakedBlind || 0) + 1
+      summary.skipped.push(`${accountId}: ${entryBrake.reason}`)
+    } else if (entryBrake.notice) {
+      summary.skipped.push(`${accountId}: ${entryBrake.notice}`)
+    }
+
     // ADOPTION RUNS FOR EVERY ACCOUNT, the momentum account included
     // (measured 08-09-2026 21:32 SGT: four MSFT.US limits filled at the US
     // open; the three row-cursor accounts adopted theirs with the trailing
@@ -430,7 +523,10 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     // bottom still covers every open book row, these included.
     if (isMomentumAccount(db, accountId)) {
       try {
-        const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted })
+        // PR-P: the SAME brake object the row-cursor path below uses, computed
+        // once above. Passing the verdict rather than the marks is what makes
+        // "one brake, not two" true in code and not only in the comment.
+        const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted, entryBrake })
         // COUNT WHAT WENT OUT, not what the pass called itself (checker,
         // 16-09-2026): the margin-exhausted branch returns `ran: false` AFTER
         // sending its exits, so real closes were reported as zero — which is
@@ -614,6 +710,13 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     // reading), and its reason rides the synth as direction_reason.
     const tryEnter = async (symbol, { side = 'long', conviction = null, rankPct = null, note }) => {
       if (marginExhausted) return 'capped'
+      // PR-P. 'capped', not 'skipped': the caller stops offering this account
+      // names for the rest of the pass, exactly as the margin brake and
+      // maxPositionsPerAccount do. The reason was pushed to summary.skipped
+      // once above, per account, rather than once per symbol — a brake that
+      // prints forty identical lines pushes every other reason out of the
+      // four the loop logs.
+      if (entryBrake.block) return 'capped'
       if (openRow.get(accountId, symbol)) return 'skipped'
       // A short's conviction must be a NUMBER (checker item h): no fallback
       // to the book's default for the side that needs the 9/10 floor.
@@ -721,8 +824,40 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   // opinion: it is what bounds a position the book now carries from a morning
   // rank-out to the evening pass, so it keeps being maintained on every loop
   // and the broker keeps holding it. Only the RANKING moved to daily.
+  // PR-P: the marks the entry brake reads on the NEXT pass, and WHY a row
+  // could not be freshly marked when it could not. Rebuilt from the rows the
+  // book still CARRIES — `open` AND `exit_sent`, the same status set
+  // momentumBookReport and momentumAccountReport use — so a closed position's
+  // price can never keep weighing on an account's reading, and a row whose
+  // bars failed this pass keeps its last honest mark instead of silently
+  // becoming "unmarked".
+  //
+  // `exit_sent` IS STILL CARRIED EXPOSURE (checker MAJOR 1, 16-09-2026): the
+  // close has been SENT, not confirmed, and the row only becomes `closed`
+  // when a later pass sees the trade gone. Reading only `open` meant the
+  // brake went blind on the pass AFTER the book decided an account's
+  // positions were bad — it rank-exited two rows and the account's reading
+  // dropped to `rows: 0`, which took the "nothing to be blind about"
+  // carve-out and emitted NO line at all. The carry below is deliberately
+  // OUTSIDE the trail loop, which still selects `open` only: an `exit_sent`
+  // row keeps the last mark it had while open, and nothing about the exit
+  // path — no amend, no stop, no retry — is touched by this.
+  const prevMarks = state.marks || {}
+  const markFail = {}
+  const nextMarks = {}
+  // The SAME predicate the brake reads (book-open-drawdown.js OPEN_ROWS_SQL):
+  // a row whose trade is closed is not exposure whatever its own status says,
+  // and nothing in this repo ever moves a row out of 'exit_sent'. Carrying a
+  // mark for one would keep a dead position weighing on the account for ever.
+  for (const r of db.prepare(`SELECT account_id, symbol FROM momentum_book
+                               WHERE status IN ('open', 'exit_sent')
+                                 AND COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open') <> 'closed'`).all()) {
+    const k = markKey(r.account_id, r.symbol)
+    if (prevMarks[k]) nextMarks[k] = prevMarks[k]
+  }
   for (const row of db.prepare(`SELECT * FROM momentum_book WHERE status = 'open'`).all()) {
     const rowSide = row.side === 'short' ? 'short' : 'long'
+    const mk = markKey(row.account_id, row.symbol)
     const acct = accounts.find(a => String(a.accountId) === String(row.account_id))
     const creds = acct ? credsFor(acct) : null
     const symbolId = creds && deps.symbolIdFor
@@ -732,13 +867,43 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     const t = row.trade_id != null ? db.prepare(`SELECT status FROM trades WHERE id = ?`).get(row.trade_id) : null
     if (t && t.status === 'closed') {
       db.prepare(`UPDATE momentum_book SET status = 'closed', exited_at = COALESCE(exited_at, ?), note = COALESCE(note, '') || ' | trade closed' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
+      // No mark to drop here: the carry above already excludes any row whose
+      // TRADE is closed, which is the same condition this branch fires on. A
+      // `delete nextMarks[mk]` sat here in the first draft of this fix and was
+      // unreachable — a line no mutation could turn red, which is this repo's
+      // definition of decoration. The carry predicate is the single place the
+      // rule lives.
       continue
     }
-    if (!creds || symbolId == null || !deps.bars) continue
+    // Still carried: its previous mark stands (carried above) until a fresher
+    // one is read. A pass that cannot reach the broker must not read as "this
+    // position has no price" — that is the shape of a guard going quiet on an
+    // outage. WHY it could not be re-read is recorded, because the remedy for
+    // "this symbol does not resolve on this account" is nothing like the
+    // remedy for "the broker was down for one pass" and the operator cannot
+    // tell them apart from a count (checker MAJOR 2).
+    if (!creds || symbolId == null || !deps.bars) {
+      markFail[mk] = !acct ? 'account not in this pass' : !creds ? 'no credentials this pass' : symbolId == null ? 'symbol does not resolve on this account' : 'no bars reader'
+      continue
+    }
     try {
       const bars = await deps.bars(creds, symbolId)
       const atr = atrOf(bars, cfg.atrPeriod)
       const close = Number(bars[bars.length - 1]?.c)
+      // PR-P: the mark. The same bar close the trail below prices its stop
+      // from — one price, one horizon, no second feed to drift from the first.
+      // TWO STAMPS, and the brake prefers the first (checker MINOR 3): `bt`
+      // is the BAR's own epoch (ctrader-ws.js builds `t` from
+      // utcTimestampInMinutes), `at` is the pass clock. Stamping the fetch
+      // time alone meant a feed that kept answering with the same frozen bar
+      // was never stale to the brake — staleness could only fire when the
+      // fetch FAILED. A bar `t` that is not a plausible epoch (the tests'
+      // index, a zeroed field) is not written, and the brake falls back to
+      // `at` for that row and says so in the read.
+      if (close > 0) {
+        const bt = Number(bars[bars.length - 1]?.t)
+        nextMarks[mk] = Number.isFinite(bt) && bt >= MIN_PLAUSIBLE_EPOCH_MS ? { c: close, at: now, bt } : { c: close, at: now }
+      }
       const raw = trailStop({ prevStop: row.stop, close, atr, stopAtr: cfg.stopAtr, side: rowSide })
       // Measured 04-09-2026 (Railway logs, every minute since adoption): the
       // amend sent the raw float — 1053.4199999999998 on LLY.US, 344.358 on
@@ -764,7 +929,12 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         }
         summary.trailed++
       }
-    } catch (err) { summary.skipped.push(`${row.symbol} trail: ${err.message}`) }
+    } catch (err) {
+      // PR-P: the trail already names this one; the brake needs the same fact
+      // in a form it can put next to the row it could not price.
+      markFail[mk] = `bars unavailable: ${String(err.message).slice(0, 60)}`
+      summary.skipped.push(`${row.symbol} trail: ${err.message}`)
+    }
   }
 
   // THE ROLL-UP GOES FIRST, because the only place this summary is printed
@@ -772,13 +942,29 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   // that arrives fifth is a count nobody reads. It is unshifted only when
   // accounts were actually dropped, so a clean pass keeps its log line
   // unchanged. Nothing else in the summary is reordered or redefined.
+  // PR-P: the entry brake's own roll-up, for the same reason the count below
+  // has one — loop.js prints `mb.skipped.slice(0, 4)`, and with seven armed
+  // accounts the per-account lines alone can fill that window and still not
+  // say how many accounts are affected. Unshifted only when something was
+  // braked, so a clean pass keeps its log line unchanged. It goes in BEFORE
+  // the considered roll-up so that one stays at [0].
+  if (summary.entriesBraked) {
+    // The denominator is the accounts the pass actually RAN on (checker
+    // MINOR 2): `considered` counts accounts handed in, including ones
+    // dropped before the brake was ever consulted, which makes the ratio
+    // read better than it is. The blind count rides along because it is the
+    // half an operator has to act on, and with seven accounts the per-account
+    // lines below can fall outside the four the loop prints.
+    const blind = summary.entriesBrakedBlind ? `, ${summary.entriesBrakedBlind} because the book cannot be priced` : ''
+    summary.skipped.unshift(`entry brake: ${summary.entriesBraked} of ${summary.accounts} account(s) taking no new book entries${blind} — see the per-account lines`)
+  }
   if (summary.accounts < summary.considered) {
     const why = []
     if (summary.notArmed) why.push(`${summary.notArmed} not armed for ${TSMOM_STRATEGY}`)
     if (summary.armCheckFailed) why.push(`${summary.armCheckFailed} arm check failed`)
     summary.skipped.unshift(`considered ${summary.considered} account(s), ran on ${summary.accounts}${why.length ? ` — ${why.join(', ')}` : ''}`)
   }
-  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: maxId, lastRunMs: now, reconciledAt: state.reconciledAt || {}, rankExitAt: state.rankExitAt || {}, pendingFlips: state.pendingFlips || {} }))
+  setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: maxId, lastRunMs: now, reconciledAt: state.reconciledAt || {}, rankExitAt: state.rankExitAt || {}, pendingFlips: state.pendingFlips || {}, marks: nextMarks, markFail }))
   return summary
 }
 
@@ -812,6 +998,24 @@ export function momentumBookReport(db) {
       rowCursorLastPassAt: Object.fromEntries(Object.entries(state.rankExitAt || {}).map(([id, ms]) => [`…${String(id).slice(-4)}`, Number(ms) ? new Date(Number(ms)).toISOString() : null])),
       pendingFlips: Object.keys(state.pendingFlips || {}).length,
     },
+    // PR-P: the entry brake AS READ RIGHT NOW, per account that holds open
+    // rows — not "is it configured on". A guard is worth reading only if the
+    // number it measures is visible next to the number it is compared with,
+    // so `drawdownPct` and `limitPct` sit side by side, and the rows it could
+    // NOT measure are counted rather than folded into a healthy-looking
+    // average (failure mode #3: the panel that reports healthy because the
+    // input never reached it).
+    entryBrake: (() => {
+      // `open` here is already the carried set ('open' + 'exit_sent'), which
+      // is the same set the brake measures (checker MAJOR 1).
+      const ids = [...new Set(open.map(o => String(o.account_id)))]
+      const out = {}
+      for (const id of ids) {
+        const b = bookEntryBrake(db, { accountId: id, marks: state.marks, markFail: state.markFail, bookCfg: cfg })
+        out[`…${id.slice(-4)}`] = { blocking: b.block, ...b.read }
+      }
+      return { note: 'Open mark-to-market on this account\'s own book rows, as a percentage of the risk they put up at entry. At or above limitPct the account takes no NEW book entries. It ALSO refuses when coveragePct (rows it can price / rows open) is under minCoveragePct — a reading built on a minority of the book is not the book\'s reading — and whatever it cannot read is named in the loop log every pass, blocking or not. Exits, stops and the owed-exit retry never consult it. ageBasis says whether staleness was measured on the bar\'s own stamp or on the fetch clock.', accounts: out }
+    })(),
     open: open.map(o => ({ account: `…${String(o.account_id).slice(-4)}`, symbol: o.symbol, side: o.side, entry: o.entry_price, stop: o.stop, atr: o.atr, enteredAt: o.entered_at, status: o.status })),
     closed: { n: pnl.length, wins: wins.length, winRate: pnl.length ? Math.round((wins.length / pnl.length) * 1000) / 10 : null, profitFactor: gl > 0 ? Math.round((wins.reduce((a, b) => a + b, 0) / gl) * 100) / 100 : (pnl.length ? null : 0), net: Math.round(pnl.reduce((a, b) => a + b, 0) * 100) / 100 },
     note: `Rank exits respect the horizon since PR-K: minimum hold ${cfg.bookMinHoldHours}h on both paths${cfg.bookExitCadence === 'every_pass' ? ' (LIFTED — bookExitCadence is "every_pass", the pre-PR-K restore)' : ', row-cursor cadence "daily"'} — the stop, a refused exit's retry and an exit owed from a previous day still run every pass. Two-sided (PR-D): longs from the top band; shorts from the bottom band only at conviction ≥ the short floor (9/10 on the defaults) and never against an up-trend reading. Entries and exits come from the momentum shadow ranking; the stop is 3×ATR and only moves in the trade's favour; the keeper is paused on these positions.`,

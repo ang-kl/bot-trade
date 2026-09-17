@@ -337,7 +337,7 @@ export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
  * `bookCfg` is the book's own config (timeframe, atrPeriod, stopAtr);
  * `buildEntrySynth` is injected from momentum-book.js to avoid the cycle.
  */
-export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEntrySynth, deps = {}, now = Date.now(), log = () => {}, marginExhausted = false }) {
+export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEntrySynth, deps = {}, now = Date.now(), log = () => {}, marginExhausted = false, entryBrake = null }) {
   const cfg = loadMomentumAccount(db)
   const accountId = String(acct.accountId)
   const state = loadMomentumAccountState(db, accountId)
@@ -387,7 +387,42 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   const tradeRowFor = db.prepare(`SELECT id, ctrader_position_id, entry_price, sl_price FROM trades WHERE symbol = ? AND account_id = ? AND label_strategy = ? AND status = 'open' ORDER BY id DESC LIMIT 1`)
   const workingLimit = db.prepare(`SELECT id FROM pending_orders WHERE account_id = ? AND symbol = ? AND status = 'working' AND strategy = ? LIMIT 1`)
   let open = openSyms.size
+  // PR-P (16-09-2026): THE PER-ACCOUNT ENTRY BRAKE, decided in
+  // momentum-book.js by book-open-drawdown.js and handed in here. THIS is the
+  // path that trades — `accountId: "_all"` routes every enabled account
+  // through this daily pass — so a brake enforced only on the row-cursor path
+  // would be on, configured and out of reach of what it guards (failure mode
+  // #3, the exact defect the checker found in PR-K's first draft).
+  //
+  // WHEN IT WAS MEASURED (corrected, checker MINOR 5 — the first draft's
+  // comment here claimed the opposite of what the code does, and this repo's
+  // history is that a false comment gets believed later). The verdict is
+  // computed in momentum-book.js ABOVE the `isMomentumAccount` branch, so it
+  // reads the account's open rows BEFORE `exitDroppedHoldings` has run on
+  // this pass — the book as it stood at the start of the pass, exits
+  // included. That is the conservative direction (an account that is about to
+  // exit its losers is still judged on having held them) and it is the order
+  // the tests exercise: the same pass that refuses the entry sends both
+  // exits. The ORDER is deliberate; only the comment was wrong.
+  //
+  // The brake never reads or delays an exit. A braked account still exits,
+  // still trails, still retries an owed exit — it only stops ADDING.
+  //
+  // The REASON and the NOTICE are pushed by momentum-book.js for every
+  // account on every pass, not here: this function returns early on `not due`
+  // — which is most passes for most accounts — so a line emitted from here
+  // would appear once a day. It is recorded in this account's own durable
+  // state below instead, so the daily record says why it added nothing.
+  //
+  // `entryBrake` null = no brake was computed by the caller (a direct test
+  // call). Unknown is not a breach; the pass runs as before.
+  if (entryBrake?.block) {
+    summary.entryBraked = true
+    summary.entryBrakeReason = entryBrake.reason || null
+    summary.entryBrakeRead = entryBrake.read || null
+  }
   for (const w of wanted) {
+    if (entryBrake?.block) break
     if (open >= cfg.maxPositions) { summary.skipped.push(`at maxPositions ${cfg.maxPositions}`); break }
     if (openSyms.has(w.symbol)) continue
     try { if (workingLimit.get(accountId, w.symbol, TSMOM_STRATEGY)) { summary.skipped.push(`${w.symbol}: limit already working`); continue } } catch { /* no table */ }
@@ -435,7 +470,9 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
 
   setState(db, momentumAccountStateKey(accountId), JSON.stringify({
     lastRunMs: now, universeBuiltAt: new Date(now).toISOString(), universe: built.universe,
-    lastPass: { at: new Date(now).toISOString(), entries: summary.entries, exits: summary.exits, skipped: summary.skipped.slice(0, 20), universe: summary.universe },
+    // PR-P: the brake is part of the daily record, not only of the loop log —
+    // "why did this account add nothing today?" must have a durable answer.
+    lastPass: { at: new Date(now).toISOString(), entries: summary.entries, exits: summary.exits, skipped: summary.skipped.slice(0, 20), universe: summary.universe, entryBrake: summary.entryBraked ? { reason: summary.entryBrakeReason, read: summary.entryBrakeRead } : null },
   }))
   return summary
 }

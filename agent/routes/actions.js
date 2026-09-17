@@ -1066,12 +1066,17 @@ export default function actionsRouter(db, deps = {}) {
       // exit's horizon switches and are the REVERT path — the merge is from
       // what is STORED (failure mode #5), so posting one knob never resets
       // the others, and the reply is the effective policy.
-      for (const k of ['enabled', 'timeframe', 'atrPeriod', 'stopAtr', 'maxPositionsPerAccount', 'conviction', 'bookExitCadence', 'bookMinHoldHours']) {
+      // PR-P (16-09-2026): bookDrawdownOn / bookDrawdownPct /
+      // bookDrawdownMinRows / bookDrawdownMinCoveragePct /
+      // bookMarkMaxAgeHours are the per-account entry brake's knobs. They merge here like every other knob — this is a RISK
+      // control, and posting `{ stopAtr: 4 }` must never reset it.
+      for (const k of ['enabled', 'timeframe', 'atrPeriod', 'stopAtr', 'maxPositionsPerAccount', 'conviction', 'bookExitCadence', 'bookMinHoldHours',
+        'bookDrawdownOn', 'bookDrawdownPct', 'bookDrawdownMinRows', 'bookDrawdownMinCoveragePct', 'bookMarkMaxAgeHours']) {
         if (k in body) merged[k] = body[k]
       }
       const cfg = momentumBookConfig(merged)
       setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(cfg))
-      console.log(`[actions] momentum-book → enabled=${cfg.enabled} tf=${cfg.timeframe} atr=${cfg.atrPeriod} stopAtr=${cfg.stopAtr} maxPos=${cfg.maxPositionsPerAccount} rankExit=${cfg.bookExitCadence} minHold=${cfg.bookMinHoldHours}h`)
+      console.log(`[actions] momentum-book → enabled=${cfg.enabled} tf=${cfg.timeframe} atr=${cfg.atrPeriod} stopAtr=${cfg.stopAtr} maxPos=${cfg.maxPositionsPerAccount} rankExit=${cfg.bookExitCadence} minHold=${cfg.bookMinHoldHours}h entryBrake=${cfg.bookDrawdownOn ? `${cfg.bookDrawdownPct}% of risk over ${cfg.bookDrawdownMinRows}+ rows, coverage ${cfg.bookDrawdownMinCoveragePct}%` : 'OFF'}`)
       res.json({ ok: true, effective: cfg })
     } catch (err) {
       console.error('[actions/momentum-book] error:', err.message)
