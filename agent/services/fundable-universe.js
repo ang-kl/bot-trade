@@ -27,6 +27,7 @@ import { getState, setState } from '../db.js'
 import { readWatchlist } from './watchlists.js'
 import { loadRiskConfig, riskBudgetUsd, requiredMargin, marginRateFor, getAccountBalance, getAccountLeverage, accountMarginPool } from './risk.js'
 import { usdLossPerLot } from '../lib/contracts.js'
+import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
 
 export const FUNDABLE_KEY = (accountId) => `acct:${accountId}:fundable_universe_json`
 export const FUNDABLE_LAST_KEY = 'fundable_universe_last_json'
@@ -161,6 +162,13 @@ export async function buildFundableUniverse(db, { accountId, creds, deps = {}, n
       if (sid == null) { row = planFundability({ symbol, price: null }); row.reason = 'unknown_symbol'; row.verdict = 'unknown' } else {
         const meta = deps.volumeMeta ? await withTimeout(deps.volumeMeta(creds, sid), callTimeoutMs, `${symbol} lot meta`) : null
         const minLot = meta && meta.lotSize > 0 && meta.minVolume > 0 ? meta.minVolume / meta.lotSize : (meta ? Number(cfg.minLotSize) || 0.01 : null)
+        // THE DAILY PLANNER IS THE CHEAPEST PLACE TO LEARN THE WHOLE
+        // WATCHLIST'S MINIMUMS. It already asks the broker for volume meta on
+        // every name once a day; the order path only ever learns a symbol the
+        // account has actually traded. Recording here is what gives the risk
+        // gate a true minimum for a name BEFORE its first order, instead of
+        // after the first refusal.
+        if (meta) { try { rememberVolumeMeta(db, symbol, meta) } catch { /* learning must never fail a build */ } }
         // The scan's last price first — no broker call — then a spot quote
         // only for a name the scan never priced.
         let price = deps.lastScanPrice ? deps.lastScanPrice(symbol) : lastScanPrice(db, symbol)

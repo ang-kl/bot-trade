@@ -40,7 +40,7 @@ import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 import { accountEconomics } from './config-controller.js'
-import { unitsPerLot as unitsPerLotFromRegistry } from '../lib/lot-size-registry.js'
+import { unitsPerLot as unitsPerLotFromRegistry, brokerMinLots } from '../lib/lot-size-registry.js'
 import { isMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './momentum-account.js'
 import { strategyVerdict } from './strategy-verdicts.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
@@ -1919,6 +1919,23 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // (owner 2026-07-17: the old hardcoded 0.01 fallback was silently
   // compressing every trade below the configured risk budget). Without a
   // balance the risk formula can't run, so no-cap falls back to minLotSize.
+  // THE SMALLEST ORDER THIS BROKER WILL ACCEPT FOR THIS SYMBOL.
+  //
+  // `config.minLotSize` is a GLOBAL ASSUMPTION (0.01 by default), not the
+  // broker's answer, and the two are not the same number for every symbol.
+  // Measured 17-09 from /health: 17 approvals, 11 refused downstream, 10 of
+  // them `below_min_volume` — the gate sized against 0.01, approved, and the
+  // executor then refused the order because the real minimum was higher.
+  // Every one of those cost an approval slot and produced no trade.
+  //
+  // The broker's own declaration is recorded by the order path and by the
+  // daily fundable-universe build (lib/lot-size-registry.js). UNKNOWN IS NOT
+  // A LICENCE: a symbol the broker has never described falls back to the
+  // configured assumption and behaves exactly as it does today.
+  const bMin = brokerMinLots(db, proposal.symbol)
+  const effMinLots = bMin.minLots ?? config.minLotSize
+  if (bMin.source === 'broker') checks.broker_min_lots = effMinLots
+
   const reqVol = Number(proposal.requestedVolume)
   const hasCap = Number.isFinite(reqVol) && reqVol > 0
   let sizingFloor = hasCap ? reqVol : config.minLotSize
@@ -1963,9 +1980,9 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     if (ddFactor < 1) checks.derisked = { factor: ddFactor, window_h: config.deriskWindowHours }
     checks.risk_based_volume = risked.volume
     checks.risk_based_usd = risked.usdRisk
-    if (risked.volume < config.minLotSize) {
+    if (risked.volume < effMinLots) {
       return veto(
-        `insufficient_equity min_lot=${config.minLotSize} computed=${risked.volume} ${risked.note}`,
+        `insufficient_equity min_lot=${effMinLots}${bMin.source === 'broker' ? ' (broker)' : ''} computed=${risked.volume} ${risked.note}`,
         checks, proposal,
       )
     }
@@ -1995,8 +2012,22 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   if (kellyVol === 0 && !config.allowNegativeExpectancyOverride) {
     return veto(`negative_expectancy ${kellyNote}`, checks, proposal)
   }
-  // Never ship below broker minimum.
-  const finalVolume = Math.max(config.minLotSize, kellyVol || sizingFloor)
+  // Never ship below the broker's minimum — and that comment is now true.
+  //
+  // It previously floored at `config.minLotSize` while CLAIMING to floor at
+  // the broker's minimum, which is how an order could pass this line and be
+  // refused at the transport for being too small.
+  //
+  // THE FLOOR ONLY RISES TO THE BROKER'S MINIMUM WHERE THE BUDGET HAS
+  // ALREADY BEEN SHOWN TO COVER IT. With a balance the check above has
+  // returned `insufficient_equity` unless the risk-based size already reached
+  // `effMinLots`, so flooring there spends at most the per-trade budget.
+  // Without a balance no budget was computed and nothing has been validated,
+  // so the floor stays at the configured assumption exactly as before —
+  // raising a position to a larger broker minimum on an unvalidated budget
+  // would INCREASE risk, which is not this change's business.
+  const floorLots = balance != null ? effMinLots : config.minLotSize
+  const finalVolume = Math.max(floorLots, kellyVol || sizingFloor)
 
   // ---- 11. Margin-headroom gate (AGGREGATE, shrink-to-fit) ---------------
   // The new position PLUS the margin already locked by every open position
@@ -2060,11 +2091,11 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     if (shareCap < headroom) checks.margin_headroom_share = { share: Number(share.toFixed(4)), capUsd: Number(shareCap.toFixed(2)) }
     if (marginRequired > shareCap && shareCap < headroom) {
       const shrunk = Math.floor(volume * (shareCap / marginRequired) * 100) / 100
-      if (shrunk < config.minLotSize) {
+      if (shrunk < effMinLots) {
         checks.margin_required_usd = Number(marginRequired.toFixed(2))
         checks.margin_total_usd = Number((usedMargin + marginRequired).toFixed(2))
         return veto(
-          `insufficient_margin share: new=${marginRequired.toFixed(2)} > ${(share * 100).toFixed(0)}% of headroom ${headroom.toFixed(2)} (=${shareCap.toFixed(2)}) leverage=${leverage} · shrunk_to=${shrunk} below min_lot=${config.minLotSize}`,
+          `insufficient_margin share: new=${marginRequired.toFixed(2)} > ${(share * 100).toFixed(0)}% of headroom ${headroom.toFixed(2)} (=${shareCap.toFixed(2)}) leverage=${leverage} · shrunk_to=${shrunk} below min_lot=${effMinLots}`,
           checks, proposal,
         )
       }
@@ -2079,11 +2110,11 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       // Shrink proportionally to whatever margin IS available, floored to
       // the same 0.01-lot granularity computeRiskBasedVolume uses.
       const shrunk = Math.floor(volume * (headroom / marginRequired) * 100) / 100
-      if (shrunk < config.minLotSize) {
+      if (shrunk < effMinLots) {
         checks.margin_required_usd = Number(marginRequired.toFixed(2))
         checks.margin_total_usd = Number((usedMargin + marginRequired).toFixed(2))
         return veto(
-          `insufficient_margin total=${(usedMargin + marginRequired).toFixed(2)} (used=${usedMargin.toFixed(2)} + new=${marginRequired.toFixed(2)}) cap=${marginCap.toFixed(2)} leverage=${leverage} · shrunk_to=${shrunk} below min_lot=${config.minLotSize}`,
+          `insufficient_margin total=${(usedMargin + marginRequired).toFixed(2)} (used=${usedMargin.toFixed(2)} + new=${marginRequired.toFixed(2)}) cap=${marginCap.toFixed(2)} leverage=${leverage} · shrunk_to=${shrunk} below min_lot=${effMinLots}`,
           checks, proposal,
         )
       }
@@ -2121,10 +2152,10 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       if (x > xCap && x < NOTIONAL_VALUATION_FAILURE_X) {
         const before = volume
         const shrunk = Math.floor(volume * (xCap / x) * 100) / 100
-        if (shrunk < config.minLotSize) {
+        if (shrunk < effMinLots) {
           return veto(
             `notional_exposure_exceeded: ${proposal.symbol} ${volume} lots = $${notional.toFixed(0)} notional, ` +
-            `${x.toFixed(1)}x the $${balance.toFixed(0)} balance (ceiling ${xCap}x) · shrunk_to=${shrunk} below min_lot=${config.minLotSize}`,
+            `${x.toFixed(1)}x the $${balance.toFixed(0)} balance (ceiling ${xCap}x) · shrunk_to=${shrunk} below min_lot=${effMinLots}`,
             checks, proposal,
           )
         }
