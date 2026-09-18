@@ -593,6 +593,17 @@ Measurement history — each line is a real run of the script, not a claim:
   is **`№ 7,936`** by count plus any unstamped line made after this
   ledger. The count is by replies, not by stamps. A later re-measure that
   reads below this line is missing these, not correcting them.
+- 2026-09-18 22:15 UTC, **same remote container, PARTIAL corpus**: seven
+  unstamped status lines followed the ledger above, so the E·1–E·3 report
+  was stamped **`№ 7,943`** (21:46 SGT, #956 open); then `№ 7,953` (merge
+  and deploy read-back), `№ 7,954`–`№ 7,956` (the three stop-floor
+  read-backs: nothing reached the gate), `№ 7,958` (the deck made
+  downloadable), the first-principles audit **`№ 7,967`** (05:50 SGT
+  19-09; eight unstamped lines before it), then the owner's four tasks:
+  five unstamped lines followed (the missing logs, the logs read, two
+  verification lines, the restart cause), so the next stamped reply is
+  **`№ 7,973`**. The count is by replies, not by stamps. A later re-measure
+  that reads below this line is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
