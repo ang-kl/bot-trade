@@ -277,6 +277,10 @@ export async function pingSidecar({ timeoutMs = 5_000, base = execBaseFor() } = 
       // null means "the sidecar did not tell us", which is NOT the same as
       // "the sidecar has no accounts" — rosterDrift now honours that difference.
       accounts: Array.isArray(body?.accounts) ? body.accounts : null,
+      // B2 (18-09-2026): the accounts the keeper REQUESTED that the session
+      // could not authorise — the token does not cover them. null = an older
+      // sidecar that does not report it; [] = nothing refused.
+      refusedAccounts: Array.isArray(body?.refusedAccounts) ? body.refusedAccounts : null,
       // Feed/guard/ring truth (2026-08-31 supervision plan). All nullable:
       // an older sidecar simply doesn't report them, and the probe treats
       // null as "not told", never as a verdict.

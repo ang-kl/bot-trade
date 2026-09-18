@@ -1705,3 +1705,34 @@ test('PR-AX: the trail STILL selects open alone — the sweep must not become a 
   assert.match(code, /FROM momentum_book WHERE status = 'exit_sent'/,
     'and the reclassification is its own query')
 })
+
+
+// ---------------------------------------------------------------------------
+// B3 (18-09-2026): the trail loop's own blind spot. PR-AZ retired exit_sent
+// rows on three terminal states; the branch that retires OPEN rows still read
+// `= 'closed'`, so an open row whose trade was de-duplicated to `rejected` (or
+// cancelled before a fill) was trailed as a live position for ever.
+// ---------------------------------------------------------------------------
+
+for (const st of ['rejected', 'cancelled']) {
+  test(`B3: an OPEN book row whose trade is ${st} is retired by the trail loop, note says which state, and it is not trailed`, async () => {
+    const { db, f, id, tradeId } = await bookRowInState('open')
+    db.prepare(`UPDATE trades SET status = ? WHERE id = ?`).run(st, tradeId)
+    const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+    const row = bookRow(db, id)
+    assert.equal(row.status, 'closed', `${st} is terminal for a book row`)
+    assert.match(db.prepare('SELECT note FROM momentum_book WHERE id = ?').get(id).note, new RegExp(`trade ${st}`))
+    assert.equal(row.trail_checked_at, null, 'a retired row is not trailed')
+    assert.equal(r.trailed, 0)
+    assert.equal(f.calls.amend.length, 0, 'no stop amend for a position that does not exist')
+  })
+}
+
+test('B3: an OPEN row whose trade is in flight (submitting / unconfirmed) is NOT retired', async () => {
+  for (const st of ['submitting', 'unconfirmed']) {
+    const { db, f, id, tradeId } = await bookRowInState('open')
+    db.prepare(`UPDATE trades SET status = ? WHERE id = ?`).run(st, tradeId)
+    await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+    assert.equal(bookRow(db, id).status, 'open', `${st} is in flight, not terminal`)
+  }
+})

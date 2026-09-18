@@ -454,3 +454,62 @@ every diff, the mutation counts, the CLAUDE.md serial ledger written back with
 each PR, last-4 account ids only, no model identifiers, P7 for anything
 external. The working branch is `claude/handover-outstanding-file-1ktjs7`,
 restarted on `main` after every squash-merge.
+
+## 9. Checkpoint — 18-09-2026 18:02 SGT (owner: "list the work to be done so we know as a checkpoint")
+
+Written so a fresh session, another agent or Codex can pick up without this
+conversation. Main was `8fbb437` at the checkpoint; the branch is
+`claude/handover-outstanding-file-1ktjs7`, restarted on `main` after every
+squash-merge.
+
+### 9.1 Done 16–18 Sep (merged and deployed, each read back from the Railway log)
+
+| PR | What | Read-back |
+|---|---|---|
+| #943 PR-AU | re-verify cap gives back attempts spent against a verifier that could not answer | armed backlog non-zero |
+| #944 PR-AV | the book's trail writes ATR + a note on every pass it reaches | `trailNote` on every open row |
+| #945 PR-AW | cpp-verify: money by `moneyDigits`, timestamps ±1 s, volume as a double (contract 2) | 10 unit-only disputes cleared |
+| #946 PR-AX | `exit_sent` book rows whose trade closed are reclassified | `N exit_sent row(s) reclassified closed` |
+| #947 PR-AY | a verdict carries its contract version; stale disputes are re-asked once | 8 disputed re-asked under contract 2 |
+| #948 PR-AZ | terminal is closed / rejected / cancelled, not `closed` alone | — |
+| #949 | **fix the exits**: reconciler attributes bot closes from `position_events` / the book's `exit_sent`; a winner whose stop already sits past breakeven is HELD at its cap (`time_cap_held`), not closed; verifier compares volume in lots via `lotSize` (contract 3) | first `verified` record ever (XPTUSD); 0 new closes yet |
+| #950 | keeper `armR 0.5`: the arm never fires before +0.5R of the position's own risk, both modes | `/state/profit-keeper armR: 0.5`; first arm decision not yet printed |
+| #951 | keeper truth: the record carries the broker's fill volume + fill time; `reconcileTradePricesToBroker` writes both back to `trades` | `corrected 633 close time(s) and 260 fill volume(s)`; all 60 records rebuilt → unverified |
+
+### 9.2 Built after the checkpoint on the owner's "build B·1 to B·6" (this PR + the next)
+
+- **B1** — the re-verify cap counts asks of ONE record: `position_history.rebuilt_at`
+  is stamped when a rebuild moves the watched figures; a record rebuilt after
+  its last ask is eligible past the cap and its count restarts at 1. The
+  migration backfills the 18 …0949 records #951's boot rebuild reset.
+- **B3** — the trail loop retires an OPEN book row on all three terminal trade
+  states (`BOOK_TERMINAL_TRADE_STATES`), the brake's `OPEN_ROWS_SQL` agrees.
+- **B4** — `opposing_leg_cross_account`: an opposite-side position on the same
+  symbol on another account vetoes the entry; `allowCrossAccountHedge: true`
+  admits it deliberately.
+- **B5** — `getAccountBalance(db, accountId)` for a NAMED account reads only its
+  own key: a stamped 0 is a reading, an absent stamp is null, never the shared
+  global. `sizingBalance` treats a stamped 0 as the account's own.
+- **B6** — the verifier drain reads an unknown symbol's `lotSize` from the
+  broker once (`lotSizeFor`), remembers it, and sends it; a failed read sends
+  nothing.
+- **B2** (separate PR, C++ + Node) — the live sidecar's `/health` reports the
+  accounts the token was REFUSED for; the heartbeat treats tried-and-refused
+  as not-drift (one warning on change, not an error every 2 minutes); the
+  registry names them unauthorised.
+
+### 9.3 Open on the owner's side (unchanged from §8, restated)
+
+1. Task #6: close the two XRPUSD demo positions, cancel the MSFT.US limits.
+2. P6c: the tick switch-on on a named account (typed order) → P6d 24 h soak.
+3. SPX500 / USOIL / UKOIL unresolvable on the demo side; `TICK_SPOOL_PATH` on
+   the live sidecar (Railway variable).
+4. The bearer token for the state routes (read-backs are log-derived without it).
+
+### 9.4 Read-backs still owed (watching, no action)
+
+- First `<source>: <reason>` close and first `time_cap_held` under #949; first
+  keeper arm line under `armR 0.5`; the 60 records' re-verdicts under contract
+  3 with the corrected figures (18 of them only after B1 lands).
+- Test-fixture temp-dir leak (57k dirs filled the container disk four times)
+  — a scripts/test hygiene PR, no production effect.

@@ -88,6 +88,10 @@ test('contamination: balance and leverage resolve per-account (M1c seam)', () =>
   // B carries its own stamped equity — a small $1,000 account at 1:200.
   setState(db, 'acct:B:account_balance_usd', '1000')
   setState(db, 'acct:B:account_leverage', '200')
+  // B5 (18-09-2026): a named account reads ONLY its own key, so A carries its
+  // own stamp too — the same numbers the legacy global held.
+  setState(db, 'acct:A:account_balance_usd', '10000')
+  setState(db, 'acct:A:account_leverage', '100')
 
   // The owner's two-tier floor (07-08) is switched OFF here on purpose: this
   // test is about per-account SCOPING, not about the cap policy, and plain 3%

@@ -2075,6 +2075,12 @@ export default function stateRouter(db) {
         }
       } catch { /* no scan cache — every margin cell is a dash */ }
 
+      // B2 (18-09-2026): which enabled accounts a sidecar's broker token could
+      // not authorise (the heartbeat records them per side, once per change).
+      const tokenRefused = new Set()
+      for (const k of ['cpp_exec_refused_accounts_json', 'cpp_exec_demo_refused_accounts_json']) {
+        try { for (const id of JSON.parse(getState(db, k) || '[]')) tokenRefused.add(String(id)) } catch { /* unreadable → not marked */ }
+      }
       const accounts = listAccounts(db).map(a => {
         const rawItems = readWatchlist(db, a.account_id)
         const lev = getAccountLeverage(db, riskCfg, a.account_id)
@@ -2105,6 +2111,8 @@ export default function stateRouter(db) {
           isSelected: selected != null && String(a.account_id) === String(selected),
           isLive: a.is_live === 1,
           enabled: a.enabled === 1,
+          // B2: enabled here, refused by the broker token — the sidecar tried.
+          tokenRefused: tokenRefused.has(String(a.account_id)),
           mode: a.mode,
           leverage: lev,
           inherited: !hasOwnWatchlist(db, a.account_id),

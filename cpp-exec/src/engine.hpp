@@ -139,6 +139,12 @@ public:
 
   // The full authorized-account roster (primary first). For /health.
   std::vector<long long> accountIds();
+  // B2 (18-09-2026): the accounts the keeper REQUESTED that this session
+  // could not authorize (the token does not cover them). Empty before a
+  // session exists — nothing has been refused yet, only not tried. Node's
+  // roster-drift check reads it so "requested, tried, refused" is not
+  // re-pushed and logged as a correction every probe.
+  std::vector<long long> refusedAccountIds();
 
   // Connect, start the reader, authApp + authAccount for every account.
   // Serialized with setCredentials by mtx_; the reader needs no lock, so the

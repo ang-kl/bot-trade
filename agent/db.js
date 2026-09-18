@@ -1891,6 +1891,17 @@ export function initDB(dbPath) {
     if (cols.size && !cols.has('verifier_version')) {
       db.exec('ALTER TABLE position_history ADD COLUMN verifier_version INTEGER');
     }
+    // B1 (18-09-2026): WHEN a rebuild moved the record's watched figures.
+    // The re-verify cap counts asks of ONE record; a record that changed
+    // after its last ask has been asked zero times. The backfill stamps the
+    // rows that were reset by #951's boot rebuild before this column
+    // existed: `unverified` with a verifier_version is exactly "had a
+    // verdict, then rebuilt" (the reset clears the verdict, not the version).
+    if (cols.size && !cols.has('rebuilt_at')) {
+      db.exec('ALTER TABLE position_history ADD COLUMN rebuilt_at TEXT');
+      db.exec(`UPDATE position_history SET rebuilt_at = built_at
+                WHERE rebuilt_at IS NULL AND verification_state = 'unverified' AND verifier_version IS NOT NULL`);
+    }
   }
 
   // PR-AU: give back the attempts spent against a verifier that could not

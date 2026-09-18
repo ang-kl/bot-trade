@@ -107,6 +107,7 @@ function seedDb() {
   const dir = mkdtempSync(join(tmpdir(), 'risk-reassess-'))
   const db = initDB(join(dir, 'test.db'))
   setState(db, 'account_balance_usd', '1000')
+  setState(db, 'acct:46130058:account_balance_usd', '1000') // B5
   setState(db, 'watchlist_json', '["BTCUSD","EURUSD","XAUUSD"]')
   const t = db.prepare(
     `INSERT INTO trades (symbol, side, status, net_pnl, gross_pnl, account_id)

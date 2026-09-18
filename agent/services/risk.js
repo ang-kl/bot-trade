@@ -356,6 +356,10 @@ export const DEFAULT_RISK_CONFIG = {
                                    // instant re-entry into the same broken
                                    // level after a stop-out.
   maxOpenPositions: 5,             // Hard cap on concurrent positions.
+  allowCrossAccountHedge: false,   // B4: an opposite-side position on the same
+                                   // symbol on ANOTHER account vetoes the entry
+                                   // (opposing_leg_cross_account). true admits it.
+
   equityStopPct: null,             // Daily-drawdown EQUITY STOP: when today's
                                    // realized PnL breaches -(balance × pct),
                                    // the loop closes every open bot position
@@ -604,7 +608,22 @@ export function getAccountBalance(db, accountId = null) {
   // No account named now means THE SELECTED ACCOUNT, which is what "the
   // account" meant in the single-account era anyway. The legacy key survives
   // only as the last resort, for a database that has no selected account.
-  const resolved = accountId != null ? accountId : getState(db, 'ctrader_account_id')
+  // B5 (18-09-2026, named in #891 and left for the owner's word, now
+  // ordered): an account NAMED BY THE CALLER reads ITS OWN key and nothing
+  // else. A stamped 0 is a reading — an unfunded account has no budget — and
+  // an absent stamp is null, never the shared global (which is "whatever
+  // account refreshed it last"). The 25 callers that size, pool margin or
+  // cap on this number all pass the account they mean; falling through to
+  // another account's balance here multiplied every risk percentage by the
+  // ratio between two accounts, invisibly. The selected-account path (no
+  // account named) keeps its single-account-era fallback.
+  if (accountId != null) {
+    const raw = getState(db, `acct:${accountId}:account_balance_usd`)
+    if (raw == null || raw === '') return null
+    const scoped = Number(raw)
+    return Number.isFinite(scoped) && scoped >= 0 ? scoped : null
+  }
+  const resolved = getState(db, 'ctrader_account_id')
   if (resolved != null) {
     const scoped = Number(getState(db, `acct:${resolved}:account_balance_usd`))
     if (Number.isFinite(scoped) && scoped > 0) return scoped
@@ -1276,6 +1295,34 @@ export function openPositionsForAccount(db, acct, { countOnly = false } = {}) {
     .all(acct, acct)
 }
 
+/**
+ * B4: the newest ACTIVE position on `symbol` held by ANOTHER account in the
+ * opposite direction to `side`, or null. Rows with no account stamp cannot be
+ * placed on another account and are not counted. Sides are normalised so
+ * long/BUY and short/SELL compare.
+ */
+export function crossAccountOpposingLeg(db, acct, symbol, side) {
+  const want = normSide(side)
+  if (!want || !symbol) return null
+  const opposite = want === 'long' ? 'short' : 'long'
+  const rows = db.prepare(`
+    SELECT mp.account_id, mp.side, mp.entry_price, mp.strategy, t.opened_at
+      FROM monitored_positions mp
+      LEFT JOIN trades t ON t.id = mp.trade_id
+     WHERE mp.status = 'active' AND mp.symbol = ?
+       AND mp.account_id IS NOT NULL AND (? IS NULL OR mp.account_id <> ?)
+     ORDER BY mp.id DESC
+  `).all(String(symbol), acct == null ? null : String(acct), acct == null ? null : String(acct))
+  return rows.find(r => normSide(r.side) === opposite) || null
+}
+
+function normSide(side) {
+  const s = String(side || '').toLowerCase()
+  if (s === 'long' || s === 'buy') return 'long'
+  if (s === 'short' || s === 'sell') return 'short'
+  return null
+}
+
 /** `max_positions`: the account's open-position cap. Cap value unchanged (owner, 11-09-2026). */
 export function maxPositionsVerdict(openPositions, config) {
   const n = openPositions.length
@@ -1646,6 +1693,26 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       `duplicate_symbol existing_side=${existingSameSymbol.side} entry=${existingSameSymbol.entry_price ?? 'na'} opened=${existingSameSymbol.opened_at ?? 'na'} strat=${stratOf} lastcheck=${existingSameSymbol.lastCheckAt ?? 'na'}`,
       checks, proposal,
     )
+  }
+
+  // ---- 4b. OPPOSING LEG ON ANOTHER ACCOUNT (B4, 18-09-2026) ---------------
+  //
+  // Measured 18-09-2026: …0949 short and …9908 long on the same symbol at
+  // once. The duplicate gate above is per account, so nothing saw it. Across
+  // the accounts that is a hedge that cancels itself and pays two spreads and
+  // two swaps for a net exposure of zero — direction is the trade (owner
+  // principle 8), and opposite directions on one name are not two opinions,
+  // they are none. Refused by default; `allowCrossAccountHedge: true` in the
+  // risk config admits it deliberately. Same-side legs on two accounts are
+  // NOT this gate's business (that is exposure, checked further down).
+  if (config.allowCrossAccountHedge !== true) {
+    const opp = crossAccountOpposingLeg(db, acct, proposal.symbol, proposal.side)
+    if (opp) {
+      return veto(
+        `opposing_leg_cross_account existing_account=…${String(opp.account_id).slice(-4)} existing_side=${opp.side} entry=${opp.entry_price ?? 'na'} opened=${opp.opened_at ?? 'na'} strat=${opp.strategy || 'na'}`,
+        checks, proposal,
+      )
+    }
   }
 
   // ---- 4a. HARD CEILING on positions per symbol ---------------------------

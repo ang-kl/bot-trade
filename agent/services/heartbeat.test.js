@@ -1531,3 +1531,62 @@ test('protection_band declares the pass record as its effect, and a written reco
   setState(db, 'fast_monitor_pass_json', JSON.stringify({ at: new Date(nowMs - 600_000).toISOString() }))
   assert.equal(effectRecord(db, 'protection_band', { nowMs }).fresh, false, '10 minutes is past the 4-minute limit')
 })
+
+
+// ---------------------------------------------------------------------------
+// B2 (18-09-2026): tried-and-refused is not drift. Measured on the live
+// sidecar: the token does not cover …2148 / …9009, the sidecar reported 1/3
+// with both refused, and the heartbeat re-pushed the same roster every ~2
+// minutes logging each push as a "correction" at error level.
+// ---------------------------------------------------------------------------
+
+test('rosterDrift: an account the sidecar tried and was refused is not missing, and is reported as refused', () => {
+  const d = rosterDrift([42993489], ['42993489', '43002148', '43069009'], [43002148, 43069009])
+  assert.equal(d.drifted, false, 'nothing to push — pushing again cannot change what the token authorises')
+  assert.deepEqual(d.missing, [])
+  assert.deepEqual(d.refused, ['43002148', '43069009'])
+  // A refused account the registry no longer wants is not reported.
+  assert.deepEqual(rosterDrift([1], ['1'], [2]).refused, [])
+  // A genuinely missing account (not tried) still drifts; an older sidecar reporting nothing behaves as before.
+  assert.equal(rosterDrift([1], ['1', '2'], []).drifted, true)
+  assert.equal(rosterDrift([1], ['1', '2'], null).drifted, true)
+})
+
+test('probeCppExec: refused accounts are not re-pushed, are said ONCE, and land in state for the accounts view', async () => {
+  const db = initDB(':memory:')
+  db.exec(`CREATE TABLE IF NOT EXISTS accounts (
+    account_id TEXT PRIMARY KEY, is_live INTEGER, enabled INTEGER, mode TEXT)`)
+  for (const id of ['42993489', '43002148', '43069009']) {
+    db.prepare('INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES (?,?,?,?)').run(id, 0, 1, 'active')
+  }
+  setState(db, 'ctrader_account_id', '42993489')
+  setState(db, 'ctrader_is_live', 'false')
+  setState(db, 'ctrader_access_token', 'tok')
+  let pushes = 0
+  const warns = []
+  const origWarn = console.warn
+  console.warn = (...a) => { warns.push(a.join(' ')) }
+  try {
+    const exec = {
+      execEngineMode: () => 'cpp',
+      pingSidecar: async () => ({
+        ok: true, mode: 'cpp', connected: true, hasCredentials: true,
+        accounts: [42993489], refusedAccounts: [43002148, 43069009], lastReconcileAt: T0.getTime(),
+      }),
+      pushSidecarSession: async () => { pushes++; return true },
+    }
+    const r1 = await probeCppExec(db, { exec, now: T0 })
+    assert.equal(r1.ok, true)
+    assert.equal(pushes, 0, 'not re-pushed as drift')
+    assert.equal(warns.filter(w => /does not authorise 2 enabled account/.test(w)).length, 1, 'said once, naming the count')
+    assert.deepEqual(JSON.parse(getState(db, 'cpp_exec_refused_accounts_json')), ['43002148', '43069009'])
+    await probeCppExec(db, { exec, now: new Date(T0.getTime() + 120_000) })
+    assert.equal(pushes, 0)
+    assert.equal(warns.filter(w => /does not authorise/.test(w)).length, 1, 'the second probe does not repeat it')
+    // The token now covers them: said once more, key cleared to [].
+    exec.pingSidecar = async () => ({ ok: true, mode: 'cpp', connected: true, hasCredentials: true, accounts: [42993489, 43002148, 43069009], refusedAccounts: [], lastReconcileAt: T0.getTime() })
+    await probeCppExec(db, { exec, now: new Date(T0.getTime() + 240_000) })
+    assert.equal(warns.filter(w => /authorised again/.test(w)).length, 1)
+    assert.deepEqual(JSON.parse(getState(db, 'cpp_exec_refused_accounts_json')), [])
+  } finally { console.warn = origWarn }
+})

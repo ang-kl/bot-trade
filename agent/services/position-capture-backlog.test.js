@@ -13,6 +13,9 @@ import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
 import { enqueueVerifyBacklog, MAX_REVERIFY, REVERIFY_BATCH, resetBacklogReports } from './position-capture.js'
 import { VERDICT_CONTRACT_VERSION } from '../lib/verify-contract.js'
+import { initDB as realInitDB } from '../db.js'
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
 
 function db () {
   const d = new Database(':memory:')
@@ -21,7 +24,7 @@ function db () {
       account_id TEXT NOT NULL, ctrader_position_id TEXT NOT NULL,
       symbol TEXT, closed_at_ms INTEGER,
       verification_state TEXT NOT NULL DEFAULT 'unverified',
-      verifier_version INTEGER,
+      verifier_version INTEGER, rebuilt_at TEXT, built_at TEXT,
       PRIMARY KEY (account_id, ctrader_position_id)
     );
     CREATE TABLE position_capture_queue (
@@ -324,4 +327,58 @@ test('accounts are reported independently — one going quiet must not silence a
   d.prepare('INSERT INTO position_capture_queue (account_id, position_id, due_at_ms, state, attempts, reverify_attempts) VALUES (?,?,?,?,?,?)')
     .run('A2', 'x1', 1, 'captured', 0, MAX_REVERIFY)
   assert.ok(enqueueVerifyBacklog(d, { accountId: 'A2' }).report, 'A2 has never reported before')
+})
+
+
+// ---------------------------------------------------------------------------
+// B1 (18-09-2026): the cap counts asks of ONE record. #951's boot rebuild
+// moved volume and close time on 18 …0949 records that were already at the
+// cap; without this they could never be asked about what they now say.
+// ---------------------------------------------------------------------------
+
+test('B1: a record rebuilt AFTER its last ask is eligible past the cap, and its count restarts at 1', () => {
+  const d = db()
+  hist(d, 'p1', 'unverified', 1000, VERDICT_CONTRACT_VERSION)
+  q(d, 'p1', 'captured', 3)                                    // at the cap …
+  d.prepare(`UPDATE position_capture_queue SET settled_at = '2026-09-18T07:00:00.000Z' WHERE position_id = 'p1'`).run()
+  d.prepare(`UPDATE position_history SET rebuilt_at = '2026-09-18T08:20:00.000Z' WHERE ctrader_position_id = 'p1'`).run() // … rebuilt after
+  const out = enqueueVerifyBacklog(d, { accountId: 'A1', now: 5 })
+  assert.equal(out.armed, 1, 'asked again about the record as it now stands')
+  assert.equal(d.prepare(`SELECT reverify_attempts, state FROM position_capture_queue WHERE position_id = 'p1'`).get().reverify_attempts, 1)
+  assert.equal(out.blockedByAttempts, 0, 'not counted as capped')
+})
+
+test('B1: a record rebuilt BEFORE its last ask stays capped — the rebuild was already asked about', () => {
+  const d = db()
+  hist(d, 'p2', 'unverified', 1000, VERDICT_CONTRACT_VERSION)
+  q(d, 'p2', 'captured', 3)
+  d.prepare(`UPDATE position_capture_queue SET settled_at = '2026-09-18T09:00:00.000Z' WHERE position_id = 'p2'`).run()
+  d.prepare(`UPDATE position_history SET rebuilt_at = '2026-09-18T08:20:00.000Z' WHERE ctrader_position_id = 'p2'`).run()
+  const out = enqueueVerifyBacklog(d, { accountId: 'A1', now: 5 })
+  assert.equal(out.armed, 0)
+  assert.equal(out.blockedByAttempts, 1)
+})
+
+test('B1: the migration backfills rebuilt_at only for records that HAD a verdict and were reset (unverified + verifier_version)', () => {
+  const { mkdtempSync } = require('node:fs'); const { tmpdir } = require('node:os'); const { join } = require('node:path')
+  const file = join(mkdtempSync(join(tmpdir(), 'b1-')), 'agent.db')
+  let real = realInitDB(file)
+  const cols = () => real.prepare(`PRAGMA table_info(position_history)`).all().map(c => c.name)
+  assert.ok(cols().includes('rebuilt_at'), 'the column exists on a fresh schema')
+  // Recreate the pre-B1 state: drop the column, seed the three shapes, reopen.
+  real.exec(`ALTER TABLE position_history DROP COLUMN rebuilt_at`)
+  const ins = (pid, state, ver) => real.prepare(`INSERT INTO position_history (account_id, ctrader_position_id, symbol, direction, direction_reason, strategy, origin,
+        planned_entry, planned_sl, risk_dist, entry_price, exit_price, volume, opened_at_ms, closed_at_ms, hold_ms, gross_pnl, commission, swap, net_pnl, realised_r,
+        close_reason, sl_moves, tp_moves, scale_outs, events_json, sources_json, verification_state, verifier_version)
+      VALUES ('A1', ?, 'EURUSD', 'long', 'r', 's', 'scan_dispatch', 1, 0.9, 0.1, 1, 1, 1, 1, 2, 1, 0, 0, 0, 0, 0, 'x', 0, 0, 0, '[]', '{}', ?, ?)`).run(pid, state, ver)
+  ins('reset', 'unverified', 3)      // had a verdict, then rebuilt → backfilled
+  ins('never', 'unverified', null)   // never answered → not backfilled
+  ins('kept', 'disputed', 3)         // still carries its verdict → not backfilled
+  real.close()
+  real = realInitDB(file)
+  const row = (pid) => real.prepare(`SELECT rebuilt_at FROM position_history WHERE ctrader_position_id = ?`).get(pid).rebuilt_at
+  assert.ok(row('reset'), 'reset by a rebuild → stamped')
+  assert.equal(row('never'), null)
+  assert.equal(row('kept'), null)
+  real.close()
 })

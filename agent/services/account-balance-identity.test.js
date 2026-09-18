@@ -42,3 +42,18 @@ test('leverage resolves the same way', () => {
   assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), 200)
   assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG, '43097342'), 25)
 })
+
+
+// B5 (18-09-2026): an account NAMED by the caller reads only its own key.
+test('B5: a named account with no stamp returns null — never the shared global', () => {
+  setState(db, 'ctrader_account_id', '47790949')
+  setState(db, 'acct:47790949:account_balance_usd', '48921.88')
+  setState(db, 'account_balance_usd', '48921.88')
+  assert.equal(getAccountBalance(db, '43097342'), null, 'no stamp for …7342 → null, not …0949\'s 48,921.88')
+})
+
+test('B5: a named account stamped 0 reads 0 — an unfunded account has no budget', () => {
+  setState(db, 'acct:43002148:account_balance_usd', '0')
+  setState(db, 'account_balance_usd', '45837.59')
+  assert.equal(getAccountBalance(db, '43002148'), 0)
+})

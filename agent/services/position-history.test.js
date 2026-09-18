@@ -361,10 +361,16 @@ test('the history is built ONCE AT BOOT, not only on the 8-hourly band', () => {
 test('keeper truth: the closing deal\'s time beats the detection stamp, and the hold follows it', () => {
   const db = fresh()
   seedComplete(db)
+  capturePosition(db, { accountId: ACCT, positionId: PID })      // the record as first captured
+  assert.equal(db.prepare(`SELECT rebuilt_at FROM position_history WHERE ctrader_position_id = ?`).get(PID).rebuilt_at, null, 'a first build is not a rebuild')
   const brokerClose = CLOSE_MS - 274_000                           // DOW.US: detected 274 s late
   db.prepare(`UPDATE broker_deals SET closed_at = ? WHERE position_id = ?`).run(new Date(brokerClose).toISOString(), PID)
   const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
   assert.equal(record.closed_at_ms, brokerClose, 'the fill time, not when we noticed')
+  // B1: a rebuild that moved the figures stamps rebuilt_at (the re-verify cap reads it)
+  const cap = capturePosition(db, { accountId: ACCT, positionId: PID })
+  assert.equal(cap.reverified, true)
+  assert.ok(db.prepare(`SELECT rebuilt_at FROM position_history WHERE ctrader_position_id = ?`).get(PID).rebuilt_at, 'rebuilt_at stamped when figures moved')
   assert.equal(record.hold_ms, brokerClose - OPEN_MS, 'hold recomputed from the corrected close')
   assert.equal(JSON.parse(record.sources_json).closed_at, 'broker_deals')
 })

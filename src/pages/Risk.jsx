@@ -1123,6 +1123,12 @@ export default function Risk() {
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Max open positions${mark('maxOpenPositions')}`} anchor="maxOpenPositions" applied={appliedKeys.has('maxOpenPositions')} unit="pos" value={risk.maxOpenPositions} onChange={v => setRisk(r => ({ ...r, maxOpenPositions: v }))}
                     recommend="5 concurrent positions." />
+                  {/* B4 (18-09-2026): an opposite-side position on the same symbol on ANOTHER
+                      account vetoes the entry (opposing_leg_cross_account) unless this is on. */}
+                  <div id="risk-allowCrossAccountHedge" className="flex items-center justify-between text-(length:--fs-body)">
+                    <span className="text-[var(--color-text-sub)]" title="Off: an opposite-side position on the same symbol on another account vetoes the entry (a self-cancelling hedge paying two spreads). On: admit it deliberately.">Allow opposite leg on another account{mark('allowCrossAccountHedge')}</span>
+                    <Pill on={!!risk.allowCrossAccountHedge} label="On" offLabel="Off" onClick={() => setRisk(r => ({ ...r, allowCrossAccountHedge: !r.allowCrossAccountHedge }))} />
+                  </div>
                   <Field label={`Max per symbol${mark('maxPositionsPerSymbol')}`} anchor="maxPositionsPerSymbol" applied={appliedKeys.has('maxPositionsPerSymbol')} unit="pos" value={risk.maxPositionsPerSymbol} onChange={v => setRisk(r => ({ ...r, maxPositionsPerSymbol: v }))}
                     hint="HARD CEILING on SIMULTANEOUS exposure to one symbol on one account — open positions, orders submitted but not yet reconciled, and limit orders resting at the broker, yours included. Concurrent, never cumulative: a symbol traded and closed all week counts zero today. Not a permission — the one-per-symbol gate still refuses the second on the normal path. This is the backstop every OTHER submitter must obey."
                     recommend="3. On 04-08-2026 one DOW.US signal left thirteen limit orders resting at 29.84 over 82 minutes; they filled together in 89 milliseconds and cost $1,615." />
@@ -1177,7 +1183,7 @@ export default function Risk() {
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
-                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'marginRateStock', 'marginRateIndex', 'marginRateCommodity', 'marginRateCrypto', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'htfFreshnessMin', 'maxOpenPositions', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
+                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'marginRateStock', 'marginRateIndex', 'marginRateCommodity', 'marginRateCrypto', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'htfFreshnessMin', 'maxOpenPositions', 'allowCrossAccountHedge', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
               }}>Save bot risk</Button></span>
             </div>

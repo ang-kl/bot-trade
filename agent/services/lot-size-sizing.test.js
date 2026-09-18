@@ -62,6 +62,7 @@ function fresh() {
   setState(db, 'account_balance_usd', '10000')
   setState(db, 'account_leverage', '100')
   setState(db, 'ctrader_account_id', 'A')
+  setState(db, 'acct:A:account_balance_usd', '10000') // B5: a named account reads only its own key
   return db
 }
 // A DOGEUSD proposal shaped like the real burn-in short, at the 3.05 floor.

@@ -14,6 +14,7 @@ int main() {
     ExecEngine e;
     assert(!e.hasCredentials());
     assert(e.accountIds().empty());
+    assert(e.refusedAccountIds().empty()); // B2: nothing refused before a session exists
   }
 
   // Roster assembly: primary first, extras appended, duplicates dropped.

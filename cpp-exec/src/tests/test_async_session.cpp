@@ -304,6 +304,10 @@ static void test_auth_family_errors_skip_an_extra_account_but_kill_the_session_o
   assert(e.isConnected());
   const auto ids = e.accountIds();
   assert(ids.size() == 1 && ids[0] == 4002);
+  // B2: the refused extra is reported as such — requested, tried, not
+  // authorised — so the keeper's drift check can stop re-pushing it.
+  const auto refused = e.refusedAccountIds();
+  assert(refused.size() == 1 && refused[0] == 4003);
   // (b) a session-level auth error with nothing in flight kills the session —
   // the reader closes its own socket; nothing else has to notice first.
   broker.send(FakeBroker::pushFrame(pt::ERROR_RES, errorPayload("CH_ACCESS_TOKEN_EXPIRED")));

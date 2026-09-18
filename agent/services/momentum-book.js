@@ -114,6 +114,15 @@ import { parseStamp, heldLongEnough as heldLongEnoughFor, heldHours, minHoldMsFo
 // file (cycle). See that file's header for why the existing closed-trade
 // brakes (3 / 15 / 30 closes) cannot reach a 10–60 day horizon.
 import { bookDrawdownConfig, bookEntryBrake, markKey, DEFAULT_BOOK_DRAWDOWN, MIN_PLAUSIBLE_EPOCH_MS } from './book-open-drawdown.js'
+
+/**
+ * Trade states that END a book row's claim to be a position (PR-AZ + B3,
+ * 18-09-2026). The vocabulary is the schema's (db.js CHECK on trades.status):
+ * open / closed / cancelled / rejected / submitting / unconfirmed. Named, not
+ * `<> 'open'`: `submitting` and `unconfirmed` are IN FLIGHT and must never
+ * retire a row. One set for both loops, so they cannot disagree again.
+ */
+export const BOOK_TERMINAL_TRADE_STATES = new Set(['closed', 'rejected', 'cancelled'])
 export { parseStamp }
 
 export const TSMOM_STRATEGY = 'tsmom_long'
@@ -904,7 +913,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
                                     COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open') AS tstatus
                                FROM momentum_book WHERE status = 'exit_sent'
                               AND COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open')
-                                  IN ('closed', 'rejected', 'cancelled')`).all()
+                                  IN (${[...BOOK_TERMINAL_TRADE_STATES].map(x => `'${x}'`).join(', ')})`).all()
     for (const r of done) {
       db.prepare(`UPDATE momentum_book SET status = 'closed', exited_at = COALESCE(exited_at, ?), note = COALESCE(note, '') || ' | trade ' || ? WHERE id = ?`)
         .run(new Date(now).toISOString(), r.tstatus, r.id)
@@ -921,7 +930,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   // mark for one would keep a dead position weighing on the account for ever.
   for (const r of db.prepare(`SELECT account_id, symbol FROM momentum_book
                                WHERE status IN ('open', 'exit_sent')
-                                 AND COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open') <> 'closed'`).all()) {
+                                 AND COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open') NOT IN ('closed', 'rejected', 'cancelled')`).all()) {
     const k = markKey(r.account_id, r.symbol)
     if (prevMarks[k]) nextMarks[k] = prevMarks[k]
   }
@@ -961,10 +970,16 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     const symbolId = creds && deps.symbolIdFor
       ? await deps.symbolIdFor(creds, row.symbol)
       : deps.symbolMap?.[String(row.symbol).toUpperCase()]
-    // A closed trade closes the book row; the reconciler is the authority on the close.
+    // A TERMINAL trade closes the book row; the reconciler is the authority
+    // on the close. B3 (18-09-2026): terminal is closed, rejected AND
+    // cancelled — the same three PR-AZ enumerated for exit_sent rows. This
+    // branch read `= 'closed'` alone, so an OPEN book row whose trade the
+    // reconciler de-duplicated to `rejected` (or whose order was cancelled
+    // before it filled) kept being trailed as a live position for ever: the
+    // blind spot PR-AZ removed on one loop, still open on the other.
     const t = row.trade_id != null ? db.prepare(`SELECT status FROM trades WHERE id = ?`).get(row.trade_id) : null
-    if (t && t.status === 'closed') {
-      db.prepare(`UPDATE momentum_book SET status = 'closed', exited_at = COALESCE(exited_at, ?), note = COALESCE(note, '') || ' | trade closed' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
+    if (t && BOOK_TERMINAL_TRADE_STATES.has(t.status)) {
+      db.prepare(`UPDATE momentum_book SET status = 'closed', exited_at = COALESCE(exited_at, ?), note = COALESCE(note, '') || ' | trade ' || ? WHERE id = ?`).run(new Date(now).toISOString(), t.status, row.id)
       // No mark to drop here: the carry above already excludes any row whose
       // TRADE is closed, which is the same condition this branch fires on. A
       // `delete nextMarks[mk]` sat here in the first draft of this fix and was

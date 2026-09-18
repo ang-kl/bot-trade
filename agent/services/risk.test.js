@@ -20,8 +20,7 @@ import {
   marginRateFor,
   portfolioMarginStatus,
   evaluateCommissionCost,
-  evaluateSlippageDrift, fxDayOpenMs, HARD_MIN_RR, expectancyVerdict, strategyPerfStats
-} from './risk.js'
+  evaluateSlippageDrift, fxDayOpenMs, HARD_MIN_RR, expectancyVerdict, strategyPerfStats, crossAccountOpposingLeg } from './risk.js'
 
 // Helpers ------------------------------------------------------------------
 
@@ -1780,7 +1779,11 @@ test('strategyPerfStats: scoped to the account being evaluated (02-09-2026) — 
 // that anyone who later changes the resolver lands here and reads why.
 // ---------------------------------------------------------------------------
 
-test('CHARACTERISATION: an unstamped account inherits the global balance — a known, deliberate trap', () => {
+test('B5 (18-09-2026): an unstamped account named by the caller reads NULL — the trap the characterisation above pinned is closed', () => {
+  // The test that sat here asserted the trap as-is ("so a future change that
+  // fixes it fails HERE and forces the reader to this comment"). This is that
+  // change: owner order 18-09-2026 ("build B·5"), the sizing change #891
+  // named and left for the owner's word.
   const db = freshDB()
   const put = db.prepare(
     `INSERT INTO agent_state (key, value) VALUES (?, ?)
@@ -1790,23 +1793,17 @@ test('CHARACTERISATION: an unstamped account inherits the global balance — a k
   put.run('account_balance_usd', '35319.8')
   put.run('acct:47790949:account_balance_usd', '45312.41')
 
-  // Its own stamped balance wins — this half is correct.
+  // Its own stamped balance wins — unchanged.
   assert.equal(getAccountBalance(db, '47790949'), 45312.41)
-
-  // These two are the production symptom, asserted as-is so a future change
-  // that fixes it fails HERE and forces the reader to this comment.
-  assert.equal(getAccountBalance(db, '43002148'), 35319.8,
-    'CURRENT behaviour: unstamped account reports the selected account\'s balance')
-  assert.equal(getAccountBalance(db, '43069009'), 35319.8)
-  assert.equal(getAccountBalance(db, '43002148'), getAccountBalance(db, '43069009'),
-    'two unrelated accounts agreeing exactly is the tell')
-
-  // The safety consequence, made explicit: a % cap computed off this number
-  // is priced against equity the account does not have.
-  const capOnTruth = effectiveCapUsd({ maxLossPctOfBalance: 3 }, 688.17)     // its real balance
-  const capOnGlobal = effectiveCapUsd({ maxLossPctOfBalance: 3 }, 35319.8)   // what it actually gets
-  assert.ok(capOnGlobal > capOnTruth * 40,
-    'the inherited cap is ~51x too permissive — it can never bind on a small account')
+  // An unstamped account is unknown, not the selected account's number.
+  assert.equal(getAccountBalance(db, '43002148'), null, 'no stamp → null, never 35,319.8')
+  assert.equal(getAccountBalance(db, '43069009'), null)
+  // The selected-account path (no account named) keeps the single-account-era fallback.
+  assert.equal(getAccountBalance(db), 35319.8)
+  // The safety consequence the old test priced: a % cap on an unknown balance
+  // is now NO cap (nothing to size against), not a cap priced off equity the
+  // account does not have.
+  assert.equal(effectiveCapUsd({ maxLossPctOfBalance: 3 }, getAccountBalance(db, '43002148')), null)
 })
 
 // ---------------------------------------------------------------------------
@@ -1922,4 +1919,45 @@ test('margin gate — SHARE: a new position takes at most a third of the headroo
   const tiny = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: null }), { ...share, maxPositionHeadroomShare: 0.001 })
   assert.equal(tiny.approved, false)
   assert.match(tiny.veto_reason, /^insufficient_margin share: /)
+})
+
+
+// ---------------------------------------------------------------------------
+// B4 (18-09-2026): an opposing leg on ANOTHER account. Measured …0949 short /
+// …9908 long on one symbol at once — a self-cancelling hedge paying two
+// spreads. The per-account duplicate gate cannot see it.
+// ---------------------------------------------------------------------------
+
+function insertOpenPositionOn(db, accountId, symbol, side) {
+  db.prepare(`INSERT INTO monitored_positions (symbol, side, status, account_id, entry_price, strategy) VALUES (?, ?, 'active', ?, 1.1, 'vwap_trend')`)
+    .run(symbol, side, accountId)
+}
+
+test('B4: an opposite-side position on the same symbol on ANOTHER account vetoes, naming the account and side', () => {
+  const db = freshDB()
+  insertOpenPositionOn(db, '46979908', 'EURUSD', 'long')
+  const res = evaluateTrade(db, goodProposal({ accountId: '47790949', side: 'short', entry: 1.1000, sl: 1.1030, tp1: 1.0895 }))
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /^opposing_leg_cross_account existing_account=…9908 existing_side=long/)
+})
+
+test('B4: the SAME side on another account is not this gate\'s business, and the hedge is admitted when the owner allows it', () => {
+  const db = freshDB()
+  insertOpenPositionOn(db, '46979908', 'EURUSD', 'long')
+  const same = evaluateTrade(db, goodProposal({ accountId: '47790949', side: 'long' }))
+  assert.doesNotMatch(String(same.veto_reason || ''), /opposing_leg_cross_account/)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('risk_config_json', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+    .run(JSON.stringify({ allowCrossAccountHedge: true }))
+  const allowed = evaluateTrade(db, goodProposal({ accountId: '47790949', side: 'short', entry: 1.1000, sl: 1.1030, tp1: 1.0895 }))
+  assert.doesNotMatch(String(allowed.veto_reason || ''), /opposing_leg_cross_account/, 'the knob admits it deliberately')
+})
+
+test('B4: a row with no account stamp, or on the SAME account, is not an opposing leg on another account', () => {
+  const db = freshDB()
+  db.prepare(`INSERT INTO monitored_positions (symbol, side, status) VALUES ('GBPUSD', 'long', 'active')`).run()   // unstamped
+  insertOpenPositionOn(db, '47790949', 'GBPUSD', 'long')                                                          // same account
+  const res = evaluateTrade(db, goodProposal({ accountId: '47790949', symbol: 'GBPUSD', side: 'short', entry: 1.1000, sl: 1.1030, tp1: 1.0895 }))
+  assert.doesNotMatch(String(res.veto_reason || ''), /opposing_leg_cross_account/)
+  assert.equal(crossAccountOpposingLeg(db, '47790949', 'GBPUSD', 'short'), null)
+  assert.equal(crossAccountOpposingLeg(db, '47790949', 'GBPUSD', 'SELL'), null, 'BUY/SELL spelling normalised')
 })
