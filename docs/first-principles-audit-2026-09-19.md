@@ -565,3 +565,24 @@ after deploy, recorded in §L of this file as it happens.
   the other nine. The remaining notes (a dropped key is recorded in the
   seed record, not the change stamps; the global reset:true path was
   already unstamped) are carried, not fixed.
+- 19-09-2026 07:43 SGT: Wave 4a merged as #961 (0c0fbff); deployed 07:43
+  SGT. Read-back exact: "risk config: applied — 9 override(s) reset to
+  default (…), 37 pinned default(s) pruned, 1 retired key(s) dropped, 8
+  owner override(s) kept (…)"; `/state/risk-matrix` shows the raw store
+  holding exactly the eight kept keys; effective maxOpenPositions 5,
+  cooldownMinutes 60, perTradeRiskPct 0.01, dailyLossLimit 150.
+- 19-09-2026 08:0x SGT: **Wave 6 built** (this PR) — §K items 18–19.
+  `docs/first-principles.md` carries the 07-09 trading-system principles
+  and the 11-09 machine principles side by side, the A·5/B·9 reconciliation
+  in one sentence, and a status table that points at this file's §L rather
+  than restating it. Seventeen plan, audit and investigation documents dated
+  before 05-09 moved to `docs/archive/` with an index (`git mv`, links in
+  the three living plan documents repointed); kept in `docs/` because code
+  or the UI still cites them as a living spec or contract: `ui-spec.md`,
+  `ui-m3-compact-contract.md`, `cockpit-data-endpoint-spec.md`,
+  `position-write-authority.md`, `prior-cohort-watch.md` (the widening
+  criterion the Evidence rows print), and the generated
+  `ui-control-inventory.md` (the one document a test reads by path). Code
+  comments citing the old paths were left as they are: the file is the
+  same, one directory down, and the archive index says so. Waves 4b and 5
+  are in build in parallel (three makers); their entries follow.

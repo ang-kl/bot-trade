@@ -18,7 +18,7 @@ The second half of the verdict is about evidence, not code. **No claim in any of
 
 Ranking: can it place, size or fail to protect real money today, and how silently. One UNVERIFIABLE item outranks all ten and is listed first because it is the one thing a single authenticated read would settle.
 
-**0 (UNVERIFIABLE, above the list).** `docs/one-simple-system.md` P5a stage 2. Code defaults are stage 1 (`agent/services/earned-floor.js:42-46` `demoOnly:true, riskScale:0.5, minSample:15, minE:0.15`, confirmed); stage 2 was ordered and applied via `POST /actions/earned-floor` (`agent/routes/actions.js:537-556`) into runtime state. Closes with one `GET /state/earned-floor` once the bearer token is recovered.
+**0 (UNVERIFIABLE, above the list).** `docs/archive/one-simple-system.md` P5a stage 2. Code defaults are stage 1 (`agent/services/earned-floor.js:42-46` `demoOnly:true, riskScale:0.5, minSample:15, minE:0.15`, confirmed); stage 2 was ordered and applied via `POST /actions/earned-floor` (`agent/routes/actions.js:537-556`) into runtime state. Closes with one `GET /state/earned-floor` once the bearer token is recovered.
 
 | # | Document | Claim | Code gap (confirmed at HEAD unless marked) | What closes it |
 |---|---|---|---|---|
@@ -369,7 +369,7 @@ Columns: Sec = the investigator's subsection; Where = the code/component cell as
 | Sec | Item | Where | Verdict | Note |
 |---|---|---|---|---|
 |  | §0 "switching accounts is abandonment" — sweepMonitoredPositi… | agent/db.js sweep helper; agent/routes/actions.… | EXECUTED | A1 landed (the doc's own §7.4 cites PR #455). The characterisation test name… |
-|  | A1 stop the switch abandoning positions | agent/account-switch-retains.test.js, agent/mul… | EXECUTED | Reinforced later by docs/multi-account-exit-routing-2026-07-30.md and the acc… |
+|  | A1 stop the switch abandoning positions | agent/account-switch-retains.test.js, agent/mul… | EXECUTED | Reinforced later by docs/archive/multi-account-exit-routing-2026-07-30.md and the acc… |
 |  | A2 enforce accounts.mode at scan / analyse / entry / pending;… | agent/services/account-capabilities.js:41 MODES… | EXECUTED | Stronger than the plan: registered was added, and the enabled=0-beside-a-MANA… |
 |  | The ENTER capability ("the money switch") | Superseded and hardened: agent/services/entry-m… | SUPERSEDED | By the tick-momentum programme P1b/P2a (#879, #881). |
 |  | A3 pause disposition for pendings — owner's supervised-drain… | agent/services/entry-drain.js (drainEntryOrders… | PARTIAL | The audit record and per-account routing exist. But the shipped disposition i… |
