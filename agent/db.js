@@ -397,7 +397,15 @@ const TABLES = `
     side         TEXT NOT NULL DEFAULT 'long',
     entry_price  REAL,
     stop         REAL,
+    -- The LAST ATR the trail computed for this row, and when it last ran.
+    -- Both are written on EVERY pass that reaches the computation, not only
+    -- on a pass that moved the stop (PR-AV). Before that they were written
+    -- inside the trailImproves branch only, so a row whose 3-ATR trail sat
+    -- wider than its current stop -- the correct, common case -- kept a NULL
+    -- atr for ever and read exactly like a row the trail never reached.
     atr          REAL,
+    trail_checked_at TEXT,
+    trail_note   TEXT,            -- why the stop did not move, in the operator's words
     entry_rank   REAL,
     entered_at   TEXT NOT NULL,
     exited_at    TEXT,
@@ -1211,6 +1219,16 @@ export function initDB(dbPath) {
     if (!tColNames.has(col)) {
       db.exec(`ALTER TABLE trades ADD COLUMN ${col} ${type}`);
     }
+  }
+
+  // momentum_book: the trail's own record of its last run, for DBs created
+  // before PR-AV. Without these a reader cannot tell "the ratchet has never
+  // reached this row" from "the ratchet ran and correctly declined to move a
+  // stop already tighter than 3 ATRs" -- the two conditions that `atr NULL`
+  // collapsed into one.
+  const mbColNames = new Set(db.prepare("PRAGMA table_info(momentum_book)").all().map(c => c.name));
+  for (const [col, type] of [['trail_checked_at', 'TEXT'], ['trail_note', 'TEXT']]) {
+    if (!mbColNames.has(col)) db.exec(`ALTER TABLE momentum_book ADD COLUMN ${col} ${type}`);
   }
 
   // controller_heartbeats: the controller's own account of its last run
