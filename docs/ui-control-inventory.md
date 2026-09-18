@@ -60,7 +60,7 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `4be4710` · 119 action call sites · 93 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `b4ef937` · 119 action call sites · 93 state routes read.
 
 Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -169,22 +169,22 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 101 | `src/pages/Tune.jsx:2263` | Worked example | `/actions/closed-market-limits` | `closed_market_limits_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 102 | `src/pages/Tune.jsx:2280` | Worked example | `/actions/profit-keeper` | `profit_keeper_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 103 | `src/pages/Tune.jsx:2286` | Profit Keeper | `/actions/profit-keeper` | `profit_keeper_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 104 | `src/pages/Tune.jsx:2599` | (inline) | `/actions/cup-screener` | executes | poll `/state/job/` (background job) (heuristic) | WIRED |
-| 105 | `src/pages/Tune.jsx:3012` | (inline) | `/actions/instrument-tree` | dynamic key(s) — per-account/overlay write, via setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 106 | `src/pages/Tune.jsx:3455` | (inline) | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
-| 107 | `src/pages/Tune.jsx:3463` | (inline) | `/actions/arm-benchmarks` | `arm_benchmarks_json` ✓, via setState(db, …) | `/state/arm-benchmarks` | WIRED |
-| 108 | `src/pages/Tune.jsx:3486` | (inline) | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
-| 109 | `src/pages/Tune.jsx:3494` | (inline) | `/actions/arm-benchmarks` | `arm_benchmarks_json` ✓, via setState(db, …) | `/state/arm-benchmarks` | WIRED |
-| 110 | `src/pages/Tune.jsx:3495` | (inline) | `/actions/scan-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 111 | `src/pages/Tune.jsx:3496` | (inline) | `/actions/analyze-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 112 | `src/pages/Tune.jsx:3497` | (inline) | `/actions/autotrade-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 113 | `src/pages/Tune.jsx:3520` | (inline) | `/actions/pending-mode` | `pending_matrix_json` ✓, `pending_mode_enabled` ✓, via setState(db, …) | `/state/config`, `/state/health` | WIRED |
-| 114 | `src/pages/Tune.jsx:3764` | Preset imported | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
-| 115 | `src/pages/Tune.jsx:3765` | Preset imported | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
-| 116 | `src/pages/Tune.jsx:3766` | Preset imported | `/actions/fib-rsi-filter` | `fib_rsi_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-rsi-filter` | WIRED |
-| 117 | `src/pages/Tune.jsx:3767` | Preset imported | `/actions/fib-vwap-filter` | `fib_vwap_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-vwap-filter` | WIRED |
-| 118 | `src/pages/Tune.jsx:3768` | Preset imported | `/actions/fib-fvg-filter` | `fib_fvg_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-fvg-filter` | WIRED |
-| 119 | `src/pages/Tune.jsx:3769` | Preset imported | `/actions/symbols` | `autopilot_symbols_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), writeWatchlist(db, …) | `/state/health`, `/state/config`, `/state/market-hours` | WIRED |
+| 104 | `src/pages/Tune.jsx:2600` | (inline) | `/actions/cup-screener` | executes | poll `/state/job/` (background job) (heuristic) | WIRED |
+| 105 | `src/pages/Tune.jsx:3013` | (inline) | `/actions/instrument-tree` | dynamic key(s) — per-account/overlay write, via setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 106 | `src/pages/Tune.jsx:3456` | (inline) | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
+| 107 | `src/pages/Tune.jsx:3464` | (inline) | `/actions/arm-benchmarks` | `arm_benchmarks_json` ✓, via setState(db, …) | `/state/arm-benchmarks` | WIRED |
+| 108 | `src/pages/Tune.jsx:3487` | (inline) | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
+| 109 | `src/pages/Tune.jsx:3495` | (inline) | `/actions/arm-benchmarks` | `arm_benchmarks_json` ✓, via setState(db, …) | `/state/arm-benchmarks` | WIRED |
+| 110 | `src/pages/Tune.jsx:3496` | (inline) | `/actions/scan-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 111 | `src/pages/Tune.jsx:3497` | (inline) | `/actions/analyze-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 112 | `src/pages/Tune.jsx:3498` | (inline) | `/actions/autotrade-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 113 | `src/pages/Tune.jsx:3521` | (inline) | `/actions/pending-mode` | `pending_matrix_json` ✓, `pending_mode_enabled` ✓, via setState(db, …) | `/state/config`, `/state/health` | WIRED |
+| 114 | `src/pages/Tune.jsx:3765` | Preset imported | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
+| 115 | `src/pages/Tune.jsx:3766` | Preset imported | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
+| 116 | `src/pages/Tune.jsx:3767` | Preset imported | `/actions/fib-rsi-filter` | `fib_rsi_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-rsi-filter` | WIRED |
+| 117 | `src/pages/Tune.jsx:3768` | Preset imported | `/actions/fib-vwap-filter` | `fib_vwap_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-vwap-filter` | WIRED |
+| 118 | `src/pages/Tune.jsx:3769` | Preset imported | `/actions/fib-fvg-filter` | `fib_fvg_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-fvg-filter` | WIRED |
+| 119 | `src/pages/Tune.jsx:3770` | Preset imported | `/actions/symbols` | `autopilot_symbols_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), writeWatchlist(db, …) | `/state/health`, `/state/config`, `/state/market-hours` | WIRED |
 
 ### State routes read by src/ (GET)
 

@@ -539,3 +539,47 @@ test('symbols are independent — one cached entry does not answer for another',
   writeAtrCache(11, '1h', { atr: 0.9, bars: [] }, 0)
   assert.equal(readAtrCache(12, '1h', 0), null)
 })
+
+// ---- armR (owner order 18-09-2026: "set the arm to +0.5R") -----------------
+// The arm is max(the mode's own threshold, armR × the position's 1R in
+// dollars). NATGAS fixture: 1 lot × unitsPerLot 100 → initial_risk 2.00 is
+// 1R = $200, so armR 0.5 demands $100 of peak profit.
+
+test('armR raises the ADAPTIVE arm above the ATR/balance threshold when the position risk is on record', () => {
+  const cfg = { ...ADAPTIVE, armR: 0.5 }
+  // $57.95 clears the $50 balance floor but not 0.5R = $100 → not armed.
+  const below = decideProfitKeeper(cfg, { ...NATGAS, price: 2.30, peak: 0, currentSl: null, atr: 0.05, balance: 50_000, initialRisk: 2.0 })
+  assert.equal(below.action, null, `not armed under 0.5R: ${JSON.stringify(below.action)}`)
+  assert.equal(below.riskUsd, 200)
+  // $107.95 ≥ $100 → armed, chandelier appears.
+  const above = decideProfitKeeper(cfg, { ...NATGAS, price: 1.80, peak: 0, currentSl: null, atr: 0.05, balance: 50_000, initialRisk: 2.0 })
+  assert.ok(above.action?.sl != null, `armed at +0.5R: ${JSON.stringify(above.action)}`)
+})
+
+test('armR raises the FIXED arm above armProfitUsd the same way', () => {
+  const cfg = { ...CFG, armR: 0.5 }
+  const below = decideProfitKeeper(cfg, { ...NATGAS, price: 2.30, peak: 60, currentSl: null, initialRisk: 2.0 })
+  assert.equal(below.action, null, 'peak $60 ≥ $50 but < 0.5R = $100 → not armed')
+  const above = decideProfitKeeper(cfg, { ...NATGAS, price: 2.30, peak: 110, currentSl: null, initialRisk: 2.0 })
+  assert.ok(above.action != null, 'peak $110 ≥ $100 → armed')
+})
+
+test('armR never LOWERS the arm, and a position with no risk on record keeps the mode threshold', () => {
+  // 1R = $20 → 0.5R = $10, below the $50 floor: the floor still governs.
+  const small = decideProfitKeeper({ ...ADAPTIVE, armR: 0.5 }, { ...NATGAS, price: 2.50, peak: 0, currentSl: null, atr: 0.05, balance: 50_000, initialRisk: 0.2 })
+  assert.equal(small.action, null, '$37.95 < $50 floor — the R term did not lower the arm')
+  // No initial_risk (adopted / manual row): exactly the pre-armR behaviour.
+  const none = decideProfitKeeper({ ...ADAPTIVE, armR: 0.5 }, { ...NATGAS, price: 2.30, peak: 0, currentSl: null, atr: 0.05, balance: 50_000, initialRisk: null })
+  assert.ok(none.action?.sl != null, 'armed at $57.95 ≥ $50 as before')
+  assert.equal(none.riskUsd, null)
+  // armR null/0 switches the term off.
+  const off = decideProfitKeeper({ ...ADAPTIVE, armR: 0 }, { ...NATGAS, price: 2.30, peak: 0, currentSl: null, atr: 0.05, balance: 50_000, initialRisk: 2.0 })
+  assert.ok(off.action?.sl != null)
+})
+
+test('armR ships at 0.5 by default (owner, 18-09-2026) and the stored config merges over it', () => {
+  assert.equal(DEFAULT_PROFIT_KEEPER.armR, 0.5)
+  const db = initDB(':memory:')
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', armProfitUsd: 50 }))
+  assert.equal(loadProfitKeeperConfig(db).armR, 0.5, 'a stored config written before armR existed still gets the default')
+})
