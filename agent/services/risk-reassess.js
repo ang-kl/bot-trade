@@ -53,6 +53,7 @@ export const PROPOSABLE = {
   symbolCooldownMinutes: { min: 0,   max: 4320, kind: 'int',      label: 'Per-symbol cooldown' },
   minRR:              { min: 1,      max: 5,    kind: 'number',   label: 'Minimum reward:risk' },
   minSLDistancePct:   { min: 0.02,   max: 2,    kind: 'number',   label: 'Minimum stop distance (%)' },
+  minStopAtrMult:     { min: 0,      max: 5,    kind: 'number',   label: 'Minimum stop (hourly ATR multiples)' },
   maxCurrencyExposure: { min: 1,     max: 10,   kind: 'int',      label: 'Max positions per currency' },
   maxClusterExposure: { min: 1,      max: 10,   kind: 'int',      label: 'Max positions per cluster' },
   maxAccountsPerSymbol: { min: 0,     max: 10,   kind: 'int',      label: 'Max accounts per symbol (book-wide)' },

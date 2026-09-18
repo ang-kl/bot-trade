@@ -538,6 +538,41 @@ squash-merge.
     re-asked for 15 minutes (`fx_leg_attempts_json`), so a weekend no
     longer costs a spot request and a log line per cycle.
 
+- **E·1 – E·3** (the 18-09 statement analysis, §7,925·E; owner: "build E·1
+  to E·3, merge when green"), one PR:
+  - E·1 hourly-ATR stop floor — risk knob `minStopAtrMult` (default 1.0;
+    Risk › Stop Loss & Take Profit, proposable, compare row). In
+    `evaluateTrade`, before the R:R check and before sizing, a stop closer
+    to entry than `mult × hourly ATR` is WIDENED to the floor; the R:R is
+    judged and the volume sized on the widened stop; the approval carries
+    `stop_override {sl, from, atr1h, mult, source}` and every order path
+    (loop autoTrade, pending fills, closed-market limits, the two manual
+    routes) sends it. ATR sources are registered, not imported
+    (`lib/stop-floor.js`): the scan's cached 1h bars first (`scan_1h`,
+    every scanned symbol, fresh a full bar), the keeper's ATR cache second.
+    No ATR → `checks.stop_floor = 'no_atr'`, no floor, gate unchanged. The
+    NatGas and 21:31-open fills the statements showed stopped inside the
+    hour's range are the target.
+  - E·2 shared-signal risk split — knob `sharedSignalRiskSplit` ('equal' |
+    'off', default 'equal'). The dispatcher counts, once per signal, the
+    accounts that pass the two cycle-level gates (margin pool, account
+    pre-gate) and hands `sharedAccounts = N` to every dispatch of that
+    signal; the gate scales the per-trade budget by 1/N
+    (`checks.shared_signal`, sizing note). A later per-symbol skip leaves
+    survivors at 1/N of a slightly larger N — less risk, never more. Single
+    -account dispatches (routes, book, validation fills) carry no count.
+  - E·3 not-the-bot money named — every perf-ledger window carries
+    `external {n, net, byOrigin, unattributed}`: closes whose stamped
+    origin is outside `CLEAN_BOT_ORIGINS` (the TradingView channel and iOS
+    deals on …0949 were −937 of its −2,282) and the rows with no origin
+    stamped. The Performance account card prints "not the bot (30d): N
+    closes · net" when N > 0. Whether that channel should trade on the
+    selected account stays the owner's call (§9.3).
+  Tests: `lib/stop-floor.test.js` (maths, source order, wiring pins),
+  risk.test.js E·1 ×3 / E·2 ×1, perf-ledger.test.js E·3. Mutations: the
+  override dropped, the split forced to 1, the external filter widened,
+  the widening itself removed — each red, restored.
+
 ### 9.3 Open on the owner's side (unchanged from §8, restated)
 
 1. Task #6: close the two XRPUSD demo positions, cancel the MSFT.US limits.

@@ -5677,7 +5677,7 @@ export default function actionsRouter(db, deps = {}) {
         return res.status(400).json({ error: 'No entry price in analysis — cannot execute' })
       }
       const entry = synth.entry ?? synth.entry_price ?? analysis.entry_price
-      const sl = synth.sl ?? synth.sl_price ?? analysis.sl_price
+      let sl = synth.sl ?? synth.sl_price ?? analysis.sl_price
       const tp1 = synth.tp1 ?? synth.tp1_price ?? analysis.tp1_price
       const bias = analysis.consensus_bias
       if (!bias || bias === 'skip' || bias === 'neutral') {
@@ -5720,6 +5720,9 @@ export default function actionsRouter(db, deps = {}) {
       if (!riskResult.approved) {
         return res.json({ ok: false, vetoed: true, reason: riskResult.veto_reason, checks: riskResult.checks })
       }
+      // WIDENED STOP (E·1): the gate floored the stop at the hourly-ATR
+      // multiple and sized on it; the order below reads `sl`.
+      if (riskResult.stop_override?.sl != null) sl = riskResult.stop_override.sl
 
       const volLots = riskResult.adjusted_volume
       // Per-symbol volume (lotSize varies by asset class) — the hardcoded
@@ -5917,6 +5920,8 @@ export default function actionsRouter(db, deps = {}) {
       if (!riskResult.approved) {
         return res.json({ ok: false, vetoed: true, reason: riskResult.veto_reason, checks: riskResult.checks })
       }
+      // WIDENED STOP (E·1): the order below reads proposal.sl.
+      if (riskResult.stop_override?.sl != null) proposal.sl = riskResult.stop_override.sl
 
       const volLots = riskResult.adjusted_volume
       const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)

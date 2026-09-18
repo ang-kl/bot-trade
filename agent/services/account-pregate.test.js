@@ -240,7 +240,7 @@ test('loop wiring (comments stripped): the account pre-gate runs after the margi
     assert.ok(pregate < at(later), `${later} must come after the account pre-gate`)
   }
   const pp = at('proposalPregate(db, acct.accountId, {')
-  const auto = at('const tradeResult = await autoTrade(db, sym, synth, acctItem, acct)')
+  const auto = at('const tradeResult = await autoTrade(db, sym, synth, acctItem, acct, { sharedAccounts: sharedAccountsForSignal })')
   assert.ok(at("stage: 'symbol_strategy'") < pp && pp < auto, 'the proposal pre-gate is the last stop before autoTrade')
   assert.ok(/if \(!pregate\.ok\) \{[\s\S]{0,300}?continue/.test(body), 'a refused account is skipped for this symbol')
   assert.ok(/if \(!pp\.ok\) \{[\s\S]{0,300}?continue/.test(body), 'a refused proposal is skipped')
@@ -291,5 +291,5 @@ test('invalidateAccountPregate forces a re-ask for a change the book fingerprint
 test('loop wiring (comments stripped): a placed order invalidates the account pre-gate memo', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-  assert.match(src, /const tradeResult = await autoTrade\(db, sym, synth, acctItem, acct\)\s*if \(tradeResult\) \{\s*fired = true\s*invalidateAccountPregate\(acct\.accountId\)/)
+  assert.match(src, /const tradeResult = await autoTrade\(db, sym, synth, acctItem, acct, \{ sharedAccounts: sharedAccountsForSignal \}\)\s*if \(tradeResult\) \{\s*fired = true\s*invalidateAccountPregate\(acct\.accountId\)/)
 })

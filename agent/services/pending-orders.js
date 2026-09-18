@@ -541,6 +541,13 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     if (riskResult.target_override?.tp1 != null) {
       signal = { ...signal, tp1: riskResult.target_override.tp1 }
     }
+    // WIDENED STOP (E·1): the gate floored the stop at the hourly-ATR
+    // multiple and sized on it; the order, its row and its notice read
+    // signal.sl below, so the widened stop lands there once.
+    if (riskResult.stop_override?.sl != null) {
+      console.log(`[pending] stop floor: ${symbol} sl ${riskResult.stop_override.from} → ${riskResult.stop_override.sl} (hourly ATR ${riskResult.stop_override.atr1h} × ${riskResult.stop_override.mult})`)
+    signal = { ...signal, sl: riskResult.stop_override.sl }
+    }
     const volLots = riskResult.adjusted_volume ?? proposal.requestedVolume ?? riskCfg.minLotSize ?? 0.01
 
     let priceDigits = 5

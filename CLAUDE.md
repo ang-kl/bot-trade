@@ -579,6 +579,20 @@ Measurement history — each line is a real run of the script, not a claim:
   reply is **`№ 7,897`**. The count is by replies, not by stamps. A later
   re-measure that reads below this line is missing these, not correcting
   them.
+- 2026-09-18 13:50 UTC, **same remote container, PARTIAL corpus**: the
+  line above undercounted — twelve unstamped status lines followed
+  `№ 7,892` (not four), so the C·2–C·5 report STAMPED "№ 7,897" (20:11
+  SGT) is **`№ 7,909`** by count, and the "№ 7,883" the line before it
+  named as the next stamp was likewise behind. From `№ 7,909` the replies
+  were stamped by count through the blank-site diagnosis and fix (#955,
+  self-hosted GSAP), the "cannot see the PR" answer and the four-statement
+  analysis, **`№ 7,925`** (21:18 SGT). Two unstamped lines followed it
+  (the E·1–E·3 fact-gathering), then the context was compacted; eight
+  unstamped status lines followed in the new context while E·1–E·3 were
+  built and mutation-checked (`№ 7,928`–`№ 7,935`), so the E·1–E·3 report
+  is **`№ 7,936`** by count plus any unstamped line made after this
+  ledger. The count is by replies, not by stamps. A later re-measure that
+  reads below this line is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
