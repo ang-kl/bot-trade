@@ -472,3 +472,23 @@ after deploy, recorded in §L of this file as it happens.
   date). Mutations red-then-restored: the family PF term, the checkpoint
   due rule, the net-vs-gross P&L sum, the +2R tail rule, plus the maker's
   two on the win-rate bars.
+  Checker round (independent, diff only): arming safety traced end to end
+  (the autopilot's arm grade is PF + sample; the shrink prior still bites on
+  PF; a stored `minWin` cannot re-enter; nothing outside the listed files
+  changed); the re-fixtured tests genuinely exercise the PF gate. Applied
+  from its findings: (F1) close order for the drawdown curve is taken from
+  whichever stamp a row carries, in JS, not from the ms column alone (a
+  pre-migration row sorted first and read a 3R drawdown where the record
+  says 5R); (F2) a lossless family reports PF null + `lossless: true`
+  instead of Infinity, which res.json turned into the same null as "no PF";
+  (F3) the window reads the ms stamp when set; (F5) the checkpoint verdict
+  is FROZEN on the date under `momentum_checkpoint_verdict_json` — judged
+  "from the date on" on a growing sample is not pre-registered — and
+  clearing the key re-judges; (F6) the family fallback names are literal so
+  the catch cannot rethrow; (F7) the routes test's dead `trailWinRatePct`
+  fixture renamed. Also: a stored override of `momentumTrialSince` was
+  coerced to NaN and silently dropped — fixed and pinned. The UI control
+  inventory regenerated (line references only). Not changed, recorded:
+  `divergence.js` still labels a combo "diverging" on a win-rate gap
+  (display only, no consumer); a snapshot that beats the deadline late
+  still writes its row (the log line under-reports that night).
