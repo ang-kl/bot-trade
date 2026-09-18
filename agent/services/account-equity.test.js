@@ -54,9 +54,11 @@ test('THE POINT: once stamped, the account stops inheriting somebody else\'s equ
   const db = db0([['46130058', false], ['43002148', false]])
   setState(db, 'ctrader_account_id', '46130058')
   setState(db, 'account_balance_usd', '35319.8')
+  setState(db, 'acct:46130058:account_balance_usd', '35319.8') // B5: the selected account's own stamp
 
-  // Before: the production symptom.
-  assert.equal(getAccountBalance(db, '43002148'), 35319.8)
+  // Before: NOTHING — B5 (18-09-2026) closed the inheritance; an unstamped
+  // named account reads null, never the selected account's number.
+  assert.equal(getAccountBalance(db, '43002148'), null)
 
   await stampAccountEquity(db, CREDS, '43002148', {
     ws: fakeWs({ '43002148': { balance: 688.17, leverageInCents: 20000 } }),
@@ -147,8 +149,10 @@ test('THE POINT: the live accounts stop inheriting the demo account\'s balance',
   setState(db, 'account_balance_usd', '35319.8')
 
   // The production symptom, before.
-  assert.equal(getAccountBalance(db, '43002148'), 35319.8)
-  assert.equal(getAccountBalance(db, '43069009'), 35319.8)
+  // B5 (18-09-2026): before their own stamp the live accounts read NULL — the
+  // demo balance is no longer inherited by a named account.
+  assert.equal(getAccountBalance(db, '43002148'), null)
+  assert.equal(getAccountBalance(db, '43069009'), null)
 
   await sweepCrossSideEquity(db, {}, {
     isLive: false,

@@ -7,6 +7,7 @@ import { DEFAULT_LOSS_CAP, loadLossCapConfig, effectiveCapUsd, runLossCap, runLo
 function freshDB() {
   const db = initDB(':memory:')
   setState(db, 'account_balance_usd', '10000')
+  setState(db, 'acct:42:account_balance_usd', '10000') // B5: the named account's own stamp
   setState(db, 'symbol_id_map', JSON.stringify({ 'GOOGL.US': 7, EURUSD: 1 }))
   return db
 }
@@ -185,6 +186,7 @@ test('the config migration is one-time, and never drags a later change back', ()
 test('THE GAP: the sweep now covers every enabled account, not just the selected one', async () => {
   const db = initDB(':memory:')
   setState(db, 'account_balance_usd', '50000')
+  for (const id of ['AAA', 'BBB', 'CCC']) setState(db, `acct:${id}:account_balance_usd`, '50000') // B5: own stamps
   db.prepare(`INSERT INTO accounts (account_id, enabled, is_live, mode) VALUES (?,1,0,'active')`).run('AAA')
   db.prepare(`INSERT INTO accounts (account_id, enabled, is_live, mode) VALUES (?,1,0,'active')`).run('BBB')
   db.prepare(`INSERT INTO accounts (account_id, enabled, is_live, mode) VALUES (?,0,0,'active')`).run('CCC')
@@ -213,6 +215,7 @@ test('one failing account does not stop the sweep of the others', async () => {
   // correctly returns before touching the broker, and the test would pass for
   // the wrong reason.
   setState(db, 'account_balance_usd', '50000')
+  for (const id of ['AAA', 'BBB', 'CCC']) setState(db, `acct:${id}:account_balance_usd`, '50000') // B5: own stamps
   db.prepare(`INSERT INTO accounts (account_id, enabled, is_live, mode) VALUES (?,1,0,'active')`).run('AAA')
   db.prepare(`INSERT INTO accounts (account_id, enabled, is_live, mode) VALUES (?,1,0,'active')`).run('BBB')
   setState(db, 'ctrader_account_id', 'AAA')
@@ -241,6 +244,7 @@ test('one failing account does not stop the sweep of the others', async () => {
 test('the sweep records per-account COVERAGE so it can be read after the fact', async () => {
   const db = initDB(':memory:')
   setState(db, 'account_balance_usd', '50000')
+  setState(db, 'acct:AAA:account_balance_usd', '50000') // B5
   setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, USDZAR: 2 }))
   db.prepare(`INSERT INTO accounts (account_id, enabled, is_live, mode) VALUES (?,1,0,'active')`).run('AAA')
   setState(db, 'ctrader_account_id', 'AAA')

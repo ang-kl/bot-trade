@@ -16,6 +16,7 @@ const ACCT = '42'
 function freshDB(balance = 48000) {
   const db = initDB(':memory:')
   setState(db, 'account_balance_usd', String(balance))
+  setState(db, `acct:${ACCT}:account_balance_usd`, String(balance)) // B5: the named account's own stamp
   setState(db, 'autotrade_enabled', 'true')
   return db
 }
