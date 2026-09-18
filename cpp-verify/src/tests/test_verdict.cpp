@@ -55,12 +55,18 @@ DealFetch complete(std::vector<Deal> ds) {
   return f;
 }
 
+// The fixtures' symbol has lotSize 100 (one unit per lot, the equity/HK
+// shape), so "units" and "lots" coincide for them; the lot-size tests below
+// are the ones that pull the two apart.
+constexpr double kOneUnitPerLot = 100.0;
+
 KeeperRecord matching() {
   KeeperRecord r;
   r.positionId = 500;
   r.symbolId = 22396;
   r.tradeSide = 1;
   r.volume = 10000;
+  r.lotSize = kOneUnitPerLot;
   r.entryPrice = 1.2345;
   r.exitPrice = 1.2445;
   r.netPnl = 98.0;          // gross 100, two commissions of -1
@@ -175,6 +181,7 @@ void partialClosesAreVolumeWeightedAndSummed() {
   r.symbolId = 22396;
   r.tradeSide = 1;
   r.volume = 20000;
+  r.lotSize = kOneUnitPerLot;
   r.entryPrice = 1.0;
   r.exitPrice = 1.15;                        // (1.10 + 1.20) / 2, volume-weighted
   r.netPnl = 147.0;                          // 150 gross, three commissions of -1
@@ -229,7 +236,8 @@ void theTenMeasuredDisputesWereTheVerifiersOwnUnits() {
   r.positionId = 241485960;
   r.symbolId = 22396;
   r.tradeSide = 1;
-  r.volume = 612;                  // units
+  r.volume = 612;                  // lots (lotSize 100: one unit per lot)
+  r.lotSize = kOneUnitPerLot;
   r.entryPrice = 10.0;
   r.exitPrice = 9.98;
   r.netPnl = -10.92;               // dollars
@@ -243,7 +251,8 @@ void theTenMeasuredDisputesWereTheVerifiersOwnUnits() {
   Verdict v = judge(r, f);
   check(v.state == State::Verified,
         "the 2020.HK row verifies once volume and money are read in the broker's units: " + v.reason);
-  check(v.brokerVolume && std::fabs(*v.brokerVolume - 612) < 1e-9, "brokerVolume is units, not centi-units");
+  check(v.brokerVolume && std::fabs(*v.brokerVolume - 612) < 1e-9, "brokerVolume is lots (one unit per lot here), not centi-units");
+  check(v.brokerVolumeUnits && std::fabs(*v.brokerVolumeUnits - 612) < 1e-9, "units are reported alongside");
   check(v.brokerNetPnl && std::fabs(*v.brokerNetPnl - (-10.92)) < 0.005, "brokerNetPnl is dollars, not cents");
 }
 
@@ -256,6 +265,7 @@ void aFractionalVolumeIsNotTruncatedIntoADispute() {
   r.symbolId = 1;
   r.tradeSide = 1;
   r.volume = 9.4;
+  r.lotSize = kOneUnitPerLot;
   r.entryPrice = 100.0;
   r.exitPrice = 103.0;
   r.netPnl = 28.2;
@@ -305,6 +315,62 @@ void aVolumeOfZeroAgainstARealPositionStillDisputes() {
   bool named = false;
   for (const auto& d : v.disputes) if (d.field == "volume") named = true;
   check(named, "and the field is named");
+}
+
+// ---------------------------------------------------------------------------
+// CONTRACT 3 (fix-the-exits BC, 18-09-2026). The contract-2 pass on …0949
+// re-disputed NATGAS and XPTUSD on `volume` alone: the keeper stores LOTS
+// (importer: centi-units / the broker's lotSize, rounded to 0.01) and the
+// verifier divided by 100 for every symbol. A lot is per-symbol.
+// ---------------------------------------------------------------------------
+
+void aCommoditysLotsAgreeOnceTheSymbolsOwnLotSizeIsUsed() {
+  // NATGAS: broker lotSize 1,000,000 centi-units; 900,000 centi-units sold
+  // = 0.9 lots, which is what the keeper's importer stores. Contract 2 read
+  // 9000 "units" and disputed 0.9 against it.
+  KeeperRecord r = matching();
+  r.volume = 0.9;
+  r.lotSize = 1000000.0;
+  DealFetch f = complete({openDeal(500, 1.2345, 9000, 1000),
+                          closeDeal(500, 1.2445, 9000, 2000, 100.0)});
+  Verdict v = judge(r, f);
+  check(v.state == State::Verified, "0.9 lots of NATGAS verifies against 900000 centi-units: " + v.reason);
+  check(v.brokerVolume && std::fabs(*v.brokerVolume - 0.9) < 1e-9, "brokerVolume is lots");
+  check(v.brokerVolumeUnits && std::fabs(*v.brokerVolumeUnits - 9000) < 1e-9, "units still reported");
+}
+
+void theKeepersTwoDecimalRoundingIsNotADispute() {
+  // XPTUSD-shaped: lotSize 10,000; 1,150 centi-units = 0.115 lots, stored
+  // as 0.12 by the importer's rounding. Half a hundredth is the keeper's own
+  // resolution — inside the tolerance; a real 0.01 difference is outside it.
+  KeeperRecord r = matching();
+  r.volume = 0.12;
+  r.lotSize = 10000.0;
+  DealFetch f = complete({openDeal(500, 1.2345, 11.5, 1000),
+                          closeDeal(500, 1.2445, 11.5, 2000, 100.0)});
+  check(judge(r, f).state == State::Verified, "0.115 stored as 0.12 is rounding, not a dispute");
+  r.volume = 0.13;
+  Verdict v = judge(r, f);
+  check(v.state == State::Disputed, "0.13 against 0.115 is a finding");
+  bool named = false;
+  for (const auto& d : v.disputes) if (d.field == "volume") named = true;
+  check(named, "and the field is named");
+}
+
+void aMissingLotSizeLeavesVolumeUncomparedNeverScaledByAGuess() {
+  KeeperRecord r = matching();
+  r.lotSize.reset();
+  Verdict v = judge(r, matchingFetch());
+  check(v.state == State::Unverified, "no lotSize → not verified (the volume was not checked)");
+  check(!v.brokerVolume, "no lots are reported without a lot size");
+  check(v.brokerVolumeUnits && std::fabs(*v.brokerVolumeUnits - 10000) < 1e-9, "units are still reported");
+  bool named = false;
+  for (const auto& f : v.uncompared) if (f == "volume") named = true;
+  check(named, "volume is named as uncompared");
+  check(v.disputes.empty(), "and nothing is disputed on a guess");
+  // A zero or negative lot size is the same as none.
+  r.lotSize = 0;
+  check(!judge(r, matchingFetch()).brokerVolume, "lotSize 0 is not a scale");
 }
 
 void anUnreadableMoneyScaleIsNeverGuessed() {
@@ -359,6 +425,9 @@ int main() {
   theKeepersSecondPrecisionIsNotADispute();
   aRealTimestampGapIsStillCaught();
   aVolumeOfZeroAgainstARealPositionStillDisputes();
+  aCommoditysLotsAgreeOnceTheSymbolsOwnLotSizeIsUsed();
+  theKeepersTwoDecimalRoundingIsNotADispute();
+  aMissingLotSizeLeavesVolumeUncomparedNeverScaledByAGuess();
   anUnreadableMoneyScaleIsNeverGuessed();
   anUnreadableMoneyScaleStillReportsRealDisputes();
   aNonStandardMoneyScaleIsHonoured();

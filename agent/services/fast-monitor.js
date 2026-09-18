@@ -311,6 +311,8 @@ export async function runFastMonitor(db, creds, deps = {}) {
           // nothing, so a position checked every 30-90s for hours looked
           // identical in the UI to one that was never touched.
           s.updatePositionCheck.run('FAST:HOLD', eval_.reason, new Date().toISOString(), 'intact', pos.id)
+          // fix-the-exits BB: a cap HOLD carries its stamp (same helper).
+          loopMod.stampExitMarks(s, pos, eval_, null)
           continue
         }
         const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor')

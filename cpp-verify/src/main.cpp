@@ -247,6 +247,10 @@ int main() {
     // against the broker's own 9.4 — the verifier manufacturing a finding
     // out of its own narrowing.
     rec.volume = optNum(rj, "volume");
+    // The symbol's lotSize (broker cents of units per lot), from the keeper's
+    // registry of the broker's own declaration. Optional: absent means the
+    // volume goes uncompared, not scaled by a guess (contract 3).
+    rec.lotSize = optNum(rj, "lotSize");
     rec.entryPrice = optNum(rj, "entryPrice");
     rec.exitPrice = optNum(rj, "exitPrice");
     rec.netPnl = optNum(rj, "netPnl");

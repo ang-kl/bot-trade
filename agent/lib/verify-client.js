@@ -31,6 +31,12 @@ export function verifyRequestFor(record, { host, slackMs = 10 * 60_000 } = {}) {
       symbolId: record.symbol_id ?? undefined,
       tradeSide: record.direction === 'short' ? 2 : 1,
       volume: record.volume,
+      // LOTS need a lot: the keeper's importer stores centi-units / the
+      // broker's lotSize, so the verifier is told that lotSize (contract 3).
+      // Only the broker's own declaration travels — never the hardcoded
+      // contract table, which would scale the broker's figure by a guess.
+      // Absent → cpp-verify leaves the volume uncompared and says so.
+      lotSize: Number(record.lot_size) > 0 ? Number(record.lot_size) : undefined,
       entryPrice: record.entry_price,
       exitPrice: record.exit_price,
       netPnl: record.net_pnl,

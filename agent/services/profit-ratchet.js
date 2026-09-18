@@ -39,6 +39,7 @@ import { getState, setState } from '../db.js'
 import { loadWithOverlay } from './account-overlay.js'
 import { getAccountBalance } from './risk.js'
 import { singleFlight, sameSideAccountIds } from './acting-layer.js'
+import { recordPositionEvent } from './position-events.js'
 
 export const DEFAULT_PROFIT_RATCHET = {
   on: true,
@@ -338,7 +339,7 @@ async function ratchetOneAccount(db, creds, accountId, cfg, { exec, ws, notify, 
 
     if (cfg.floorAction === 'flatten') {
       const rows = db.prepare(
-        `SELECT t.ctrader_position_id AS pid, m.symbol AS symbol
+        `SELECT t.ctrader_position_id AS pid, m.symbol AS symbol, t.id AS trade_id
            FROM monitored_positions m JOIN trades t ON t.id = m.trade_id
           WHERE m.status = 'active' AND t.ctrader_position_id IS NOT NULL
             AND (m.source IS NULL OR m.source = 'autopilot')
@@ -353,6 +354,15 @@ async function ratchetOneAccount(db, creds, accountId, cfg, { exec, ws, notify, 
         try {
           await exec.closePosition(creds, { positionId: parseInt(r.pid), volume: brokerVol[String(r.pid)] })
           res.closes++
+          // Journal the act so the reconciler can attribute the close when it
+          // sees the position gone (fix-the-exits BA) — this flatten used to
+          // be the one closer that left no trace anywhere.
+          recordPositionEvent(db, {
+            accountId, positionId: r.pid, tradeId: r.trade_id, symbol: r.symbol, kind: 'close',
+            toValue: brokerVol[String(r.pid)] ?? null,
+            reason: `floor halt: equity held at/below the protected floor $${trippedFloor.toFixed(2)} for ${cfg.confirmReads} reads — account flattened`,
+            source: 'profit_ratchet',
+          })
         } catch (err) {
           res.errors.push(`${r.symbol}: ${err.message}`)
         }

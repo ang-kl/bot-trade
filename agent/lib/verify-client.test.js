@@ -179,6 +179,18 @@ test('the request window CONTAINS the position, slack on both sides', () => {
   assert.equal(verifyRequestFor({ ...RECORD, direction: 'short' }, { host: 'h1' }).record.tradeSide, 2)
 })
 
+// CONTRACT 3 (fix-the-exits BC): the keeper stores LOTS, so the request
+// carries the symbol's lotSize — and only a real one. A null/zero/absent
+// lot size is OMITTED, so cpp-verify leaves the volume uncompared instead
+// of dividing by a guess.
+test('verifyRequestFor sends the broker lotSize with the record, and omits it when there is none', () => {
+  assert.equal(verifyRequestFor({ ...RECORD, lot_size: 1000000 }, { host: 'h1' }).record.lotSize, 1000000)
+  assert.equal(verifyRequestFor({ ...RECORD, lot_size: null }, { host: 'h1' }).record.lotSize, undefined)
+  assert.equal(verifyRequestFor({ ...RECORD, lot_size: 0 }, { host: 'h1' }).record.lotSize, undefined)
+  assert.equal(verifyRequestFor(RECORD, { host: 'h1' }).record.lotSize, undefined)
+  assert.ok(!('lotSize' in JSON.parse(JSON.stringify(verifyRequestFor(RECORD, { host: 'h1' }).record))), 'absent on the wire, not null')
+})
+
 // A SKIPPED VERDICT MUST REACH THE LOG. The drain is where the reason was
 // dropped, so this pins the drain rather than the client.
 test('drainCaptureQueue surfaces a skipped reason as an error line', async () => {

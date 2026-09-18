@@ -272,6 +272,9 @@ test('CHECKER COUNTEREXAMPLE (BLOCKER): shadow exit(long)+enter(short) for one n
   assert.equal(r.entries, 1, 'the short is entered after the exit')
   assert.equal(f.calls.close.length, 1); assert.equal(f.calls.close[0].positionId, `pos-NATGAS-${DEMO}`)
   assert.deepEqual(db.prepare(`SELECT side, status, note FROM momentum_book ORDER BY id`).all(), [{ side: 'long', status: 'exit_sent', note: 'rank exit (flip)' }, { side: 'short', status: 'open', note: 'entered on shadow row 3' }])
+  // fix-the-exits BA: the rank exit is journalled so the reconciler can attribute the close it will see next pass
+  assert.deepEqual(db.prepare(`SELECT position_id, symbol, kind, reason, source FROM position_events WHERE kind = 'close'`).all(),
+    [{ position_id: `pos-NATGAS-${DEMO}`, symbol: 'NATGAS', kind: 'close', reason: 'rank exit (flip)', source: 'momentum_book' }])
   assert.deepEqual(f.calls.autoTrade.map(c => c.synth.consensus_bias), ['long', 'short'])
   // a later pass (reconcile window elapsed): nothing more
   const r3 = await runMomentumBook(db, { accounts: one, credsFor, deps: f.deps, now: 2_000 + 7 * 3_600_000 })

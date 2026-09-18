@@ -101,6 +101,7 @@ import { loadShadowState, loadMomentumShadow } from './momentum-shadow.js'
 import { directionFor, trendReadingFor } from './direction-policy.js'
 import { checkRegimeGate } from './regime-gate.js'
 import { recordDecision } from './decision-log.js'
+import { recordPositionEvent } from './position-events.js'
 import { roundToDigits } from './trade-guard.js'
 import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDue, thresholdMs } from './momentum-account.js'
 import { bookCloseVolume } from './book-close-volume.js'
@@ -674,6 +675,15 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         }
         const why = acctExits.get(symbol)?.flip ? 'rank exit (flip)' : 'rank exit'
         db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = ? WHERE id = ?`).run(new Date(now).toISOString(), why, row.id)
+        // Journal the close for the reconciler's attribution (fix-the-exits
+        // BA). The trade row itself is NOT closed here: exit_sent is the
+        // broker's acceptance, the fill is what the reconciler sees.
+        if (row.position_id) {
+          recordPositionEvent(db, {
+            accountId, positionId: row.position_id, tradeId: row.trade_id, symbol, kind: 'close',
+            reason: why, source: 'momentum_book',
+          })
+        }
         summary.exits++
         log(`momentum book: ${why} ${symbol} on …${accountId.slice(-4)}`)
       } catch (err) {

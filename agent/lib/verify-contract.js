@@ -36,8 +36,11 @@
  *   1 — original (PR-AE).
  *   2 — PR-AW: money scaled by the broker's moneyDigits, volume by 100,
  *       timestamps compared with a 1 s tolerance, volume read as a double.
+ *   3 — fix-the-exits BC: volume compared in LOTS through the symbol's own
+ *       lotSize, sent with the request from the broker's declaration in the
+ *       lot-size registry; without one the volume is uncompared.
  */
-export const VERDICT_CONTRACT_VERSION = 2
+export const VERDICT_CONTRACT_VERSION = 3
 
 /**
  * Is a stored verdict older than the rules now in force?

@@ -16,6 +16,7 @@
 
 import { getSymbolMap } from '../lib/ctrader-creds.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
+import { recordPositionEvent } from './position-events.js'
 
 /**
  * Pure decision: given one position's state and its guard rules, return the
@@ -216,6 +217,13 @@ async function tradeGuardsPass(db, creds, deps = {}) {
           guard.takeProfits[c.index].done = true
           updGuard.run(JSON.stringify(guard), r.id)
           summary.partialCloses++
+          // A partial is a scale_out, NOT a close: the position stays open and
+          // the reconciler must not blame the guard for a later SL fill.
+          recordPositionEvent(db, {
+            accountId: r.account_id, positionId: r.position_id, tradeId: r.trade_id, symbol: r.symbol,
+            kind: 'scale_out', toValue: c.lots, priceAt: price,
+            reason: `partial take-profit TP${c.index + 1}: closed ${c.lots} lot(s)`, source: 'trade_guard',
+          })
           notify(`🎯 ${r.symbol}: partial take-profit — closed ${c.lots} lot(s) at ~${price}`)
         } catch (err) {
           summary.errors.push(`${r.symbol} TP${c.index + 1}: ${err.message}`)

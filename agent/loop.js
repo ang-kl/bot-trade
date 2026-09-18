@@ -2127,7 +2127,11 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 export function stampExitMarks(s, pos, eval_, outcome) {
   const marks = eval_?.updates || {}
   if (!marks.time_cap_trail_at && !marks.bank_partial_at) return false
-  if (!outcome || outcome.error || outcome.skipped) return false
+  // A HOLD that carries a mark (the cap held a winner whose stop already sat
+  // at/beyond breakeven — fix-the-exits BB) sent nothing to the broker, so
+  // there is no outcome to fail: the decision itself is what happened.
+  const held = eval_?.action === 'HOLD'
+  if (!held && (!outcome || outcome.error || outcome.skipped)) return false
   s.stampPositionExitMarks.run(
     marks.time_cap_trail_at ?? null,
     marks.bank_partial_at ?? null,
@@ -2239,6 +2243,10 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
     )
     return
   }
+
+  // A HOLD the cap decided (fix-the-exits BB) is stamped so the branch is
+  // not re-decided every pass; an observe-only external row is left alone.
+  if (pos.source !== 'external') stampExitMarks(s, pos, eval_, null)
 
   // External positions: skip LLM monitor — just update metrics, no
   // token spend. Still stamp a HOLD checkpoint (owner: "why are you

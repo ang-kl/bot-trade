@@ -67,6 +67,62 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
 }
 
 
+/** The reconciler's generic stamp for a close it cannot attribute. */
+export const GENERIC_BROKER_CLOSE = 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot'
+
+/**
+ * WHO closed this position, read from the ledgers the bot's own closers
+ * write BEFORE the reconciler sees the position gone (fix-the-exits BA,
+ * owner principle 4: every trade has a reason).
+ *
+ * The comment that used to sit on the close-detection loop claimed "a close
+ * the bot performs stamps its own close_reason via markTradeClosed before
+ * reconcile ever sees the position gone". Measured 18-09-2026 on …0949: of
+ * 40 recent closes, 18 carried the generic stamp and 11 of those were bot
+ * trades the keeper, the guardian, the ratchet, the trade guard or the
+ * momentum book had closed — none of the five writes the trade row at send
+ * time (and the book must not: exit_sent is the broker's acceptance, not
+ * the fill). What they DO write is a position_events row (kind `close` /
+ * `loss_cap_close`) or a momentum_book `exit_sent` row, so the attribution
+ * lives here, at the one place that turns "gone at the broker" into a
+ * close_reason, reading those two ledgers.
+ *
+ * `scale_out` is deliberately NOT a close: a partial take-profit leaves the
+ * position open, and a later SL fill must not be blamed on the guard.
+ *
+ * Returns `<source>: <reason>` from the newest close event, `momentum_book:
+ * <note>` from an exit_sent row, or null when neither ledger knows — the
+ * caller then keeps the generic stamp, which is what it is: not attributed.
+ */
+export function attributeBrokerClose(db, { positionId = null, tradeId = null, accountId = null } = {}) {
+  const pid = positionId != null ? normPosId(positionId) : null
+  try {
+    if (pid != null || tradeId != null) {
+      const ev = db.prepare(
+        `SELECT source, reason, kind FROM position_events
+          WHERE kind IN ('close', 'loss_cap_close')
+            AND ((? IS NOT NULL AND position_id = ?) OR (? IS NOT NULL AND trade_id = ?))
+          ORDER BY id DESC LIMIT 1`
+      ).get(pid, pid, tradeId, tradeId)
+      if (ev) {
+        const src = ev.source || 'bot'
+        const why = ev.reason || ev.kind
+        return `${src}: ${why}`
+      }
+    }
+    if (pid != null) {
+      const book = db.prepare(
+        `SELECT note FROM momentum_book WHERE status = 'exit_sent' AND position_id = ?
+            ${accountId != null ? 'AND account_id = ?' : ''}
+          ORDER BY id DESC LIMIT 1`
+      ).get(...(accountId != null ? [pid, String(accountId)] : [pid]))
+      if (book) return `momentum_book: ${book.note || 'exit sent'}`
+    }
+  } catch { /* attribution is best-effort; the generic stamp stays */ }
+  return null
+}
+
+
 /**
  * Reconcile the agent's local DB against live broker positions/orders.
  *
@@ -434,20 +490,24 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   for (const row of knownRows) {
     if (!brokerIds.has(normPosId(row.ctrader_position_id))) {
       db.prepare(`UPDATE monitored_positions SET status = 'closed' WHERE id = ?`).run(row.id)
-      // Say WHO closed it, or at least who didn't: a close the bot performs
-      // stamps its own close_reason via markTradeClosed before reconcile
-      // ever sees the position gone; a close detected HERE happened at the
-      // broker (manual close in cTrader, or a broker-side SL/TP fill).
-      // Owner hit the blank version live: a manual DOW.US short closed in
-      // under 5 minutes and the ledger had nothing to say beyond the exit
-      // price ("it didn't say what happen").
+      // Say WHO closed it, or at least who didn't. The bot's own closers
+      // (keeper, guardian, ratchet, loss cap, momentum book) close at the
+      // broker and journal the act; the trade row is closed HERE, on the
+      // next pass, when the position is gone — so this is where the journal
+      // is read (attributeBrokerClose). No journal entry → it happened at
+      // the broker (manual close in cTrader, or a broker-side SL/TP fill),
+      // and the generic stamp says so; reclassifyBrokerCloses later upgrades
+      // it to SL/TP once the exit price is known. Owner hit the blank version
+      // live: a manual DOW.US short closed in under 5 minutes and the ledger
+      // had nothing to say beyond the exit price ("it didn't say what happen").
       // ctrader_position_id, not a single trade id — could match more than one
       // 'open' row (the dedup sweep further down handles that garbage case).
       const openIds = db.prepare(
         `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open'`
       ).all(normPosId(row.ctrader_position_id))
       for (const { id } of openIds) {
-        closeTradeRow(db, id, { closeReason: 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot' })
+        const attributed = attributeBrokerClose(db, { positionId: row.ctrader_position_id, tradeId: id, accountId: acct })
+        closeTradeRow(db, id, { closeReason: attributed || GENERIC_BROKER_CLOSE })
       }
       closedDetected.push({ symbol: row.symbol, positionId: row.ctrader_position_id, source: row.source })
     }
@@ -748,7 +808,24 @@ export function reclassifyBrokerCloses(db) {
   ).all()
   const upd = db.prepare('UPDATE trades SET close_reason = ? WHERE id = ?')
   let n = 0
+  // Rows stamped generic BEFORE the reconciler read the closers' journal
+  // (fix-the-exits BA): the journal is retained 90 days, so the stamp is
+  // upgraded to who closed it wherever an event exists. Judged before the
+  // price match — a keeper close that landed near the target is still the
+  // keeper's close. The generic rows carry no exit price requirement here.
+  const generic = db.prepare(
+    `SELECT id, ctrader_position_id, account_id FROM trades
+      WHERE status = 'closed' AND close_reason LIKE 'closed at the broker%'
+        AND (ctrader_position_id IS NOT NULL)`
+  ).all()
+  const attributedIds = new Set()
+  for (const t of generic) {
+    const who = attributeBrokerClose(db, { positionId: t.ctrader_position_id, tradeId: t.id, accountId: t.account_id })
+    if (!who) continue
+    upd.run(who, t.id); n++; attributedIds.add(t.id)
+  }
   for (const t of rows) {
+    if (attributedIds.has(t.id)) continue
     const exit = Number(t.exit_price)
     if (!Number.isFinite(exit)) continue
     const near = (p) => Number.isFinite(Number(p)) && Math.abs(exit - Number(p)) <= Math.abs(exit) * 0.001
