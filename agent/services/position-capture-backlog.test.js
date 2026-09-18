@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
 import { enqueueVerifyBacklog, MAX_REVERIFY, REVERIFY_BATCH, resetBacklogReports } from './position-capture.js'
+import { VERDICT_CONTRACT_VERSION } from '../lib/verify-contract.js'
 
 function db () {
   const d = new Database(':memory:')
@@ -20,6 +21,7 @@ function db () {
       account_id TEXT NOT NULL, ctrader_position_id TEXT NOT NULL,
       symbol TEXT, closed_at_ms INTEGER,
       verification_state TEXT NOT NULL DEFAULT 'unverified',
+      verifier_version INTEGER,
       PRIMARY KEY (account_id, ctrader_position_id)
     );
     CREATE TABLE position_capture_queue (
@@ -35,9 +37,9 @@ function db () {
   return d
 }
 
-const hist = (d, pid, state = 'unverified', closed = 1000) =>
-  d.prepare('INSERT INTO position_history (account_id, ctrader_position_id, symbol, closed_at_ms, verification_state) VALUES (?,?,?,?,?)')
-    .run('A1', pid, 'EURUSD', closed, state)
+const hist = (d, pid, state = 'unverified', closed = 1000, ver = null) =>
+  d.prepare('INSERT INTO position_history (account_id, ctrader_position_id, symbol, closed_at_ms, verification_state, verifier_version) VALUES (?,?,?,?,?,?)')
+    .run('A1', pid, 'EURUSD', closed, state, ver)
 
 const q = (d, pid, state, rv = 0, attempts = 0) =>
   d.prepare('INSERT INTO position_capture_queue (account_id, position_id, due_at_ms, state, attempts, reverify_attempts, settled_at) VALUES (?,?,?,?,?,?,?)')
@@ -71,14 +73,71 @@ test('a gave_up row is NEVER re-armed — that record could not be built at all'
   assert.equal(row(d, '200').state, 'gave_up', 'the terminal state and its count must survive')
 })
 
-test('verified and disputed records are left alone — a dispute is an answer, not a question', () => {
+test('verified and absent records are left alone, and so is a CURRENT dispute — an answer is an answer', () => {
   const d = db()
-  hist(d, '300', 'verified')
-  hist(d, '301', 'disputed')
+  hist(d, '300', 'verified', 1000, VERDICT_CONTRACT_VERSION)
+  hist(d, '301', 'disputed', 1000, VERDICT_CONTRACT_VERSION)
   q(d, '300', 'captured'); q(d, '301', 'captured')
   assert.equal(enqueueVerifyBacklog(d, { accountId: 'A1' }).armed, 0)
   assert.equal(row(d, '300').state, 'captured')
-  assert.equal(row(d, '301').state, 'captured')
+  assert.equal(row(d, '301').state, 'captured',
+    'a dispute produced by the rules now in force is a FINDING and stays put')
+})
+
+// PR-AY. The rule above used to read "verified and disputed records are left
+// alone — a dispute is an answer, not a question", and for a dispute under the
+// CURRENT contract it still does. What changed is the case it could not see.
+//
+// MEASURED 18-09-2026: cpp-verify compared cTrader's money integer against
+// this keeper's dollars and disputed ten records by exactly 100x. PR-AW fixed
+// the comparison and reached NONE of them — `disputed` was terminal, so the
+// tally would have read `verified: 0` for ever with a correct verifier and no
+// way to show it. `disputed` could not tell "the broker and the keeper
+// disagree" from "the verifier was wrong when it asked".
+test('PR-AY: a dispute from an OLDER contract is re-asked — the verifier has since been fixed', () => {
+  const d = db()
+  hist(d, '310', 'disputed', 1000, VERDICT_CONTRACT_VERSION - 1)
+  q(d, '310', 'captured')
+  assert.equal(enqueueVerifyBacklog(d, { accountId: 'A1' }).armed, 1)
+  assert.equal(row(d, '310').state, 'pending', 'it goes back in the queue')
+})
+
+test('PR-AY: a dispute with NO version is stale — absent is not the same as up to date', () => {
+  // Every verdict written before PR-AY has a NULL version. Reading NULL as
+  // current would strand exactly the records this exists to rescue.
+  const d = db()
+  hist(d, '320', 'disputed', 1000, null)
+  q(d, '320', 'captured')
+  assert.equal(enqueueVerifyBacklog(d, { accountId: 'A1' }).armed, 1)
+})
+
+test('PR-AY: a stale VERIFIED record is NOT re-asked — a stricter rule does not undo an agreement', () => {
+  // The asymmetry is deliberate. Re-opening an agreement would eventually
+  // overwrite it, and the failure this fixes was disputes that could not be
+  // revisited, not agreements that might be wrong.
+  const d = db()
+  hist(d, '330', 'verified', 1000, null)
+  q(d, '330', 'captured')
+  assert.equal(enqueueVerifyBacklog(d, { accountId: 'A1' }).armed, 0)
+})
+
+test('PR-AY: a stale dispute still respects the re-verify cap — it is not an escape hatch', () => {
+  const d = db()
+  hist(d, '340', 'disputed', 1000, null)
+  q(d, '340', 'captured', MAX_REVERIFY)
+  assert.equal(enqueueVerifyBacklog(d, { accountId: 'A1' }).armed, 0,
+    'the cap PR-AP built still bounds the work a bad verifier can cause')
+})
+
+test('PR-AY: the keeper contract matches the verifier contract, exactly', () => {
+  // A keeper that thinks the contract is NEWER than the verifier's would
+  // re-ask the same records for ever — every answer would arrive stamped
+  // older than the threshold. One that thinks it is OLDER would never re-ask.
+  const cpp = readFileSync(new URL('../../cpp-verify/src/verdict.hpp', import.meta.url), 'utf8')
+  const m = cpp.match(/constexpr int kVerdictContractVersion = (\d+);/)
+  assert.ok(m, 'cpp-verify declares a contract version')
+  assert.equal(Number(m[1]), VERDICT_CONTRACT_VERSION,
+    'and the two sides agree on what it is')
 })
 
 test('a record with no queue row at all is inserted, due immediately', () => {

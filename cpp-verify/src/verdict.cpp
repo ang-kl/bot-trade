@@ -187,6 +187,9 @@ std::string verdictJson(const Verdict& v) {
   jsn::Value o{jsn::Object{}};
   o.set("state", std::string(stateName(v.state)));
   if (!v.reason.empty()) o.set("reason", v.reason);
+  // The contract that produced this verdict travels WITH it, so the keeper
+  // can tell a finding from a verdict its verifier has since outgrown.
+  o.set("contractVersion", static_cast<double>(kVerdictContractVersion));
   o.set("dealCount", static_cast<double>(v.dealCount));
   o.set("sawOpen", v.sawOpen);
   o.set("sawClose", v.sawClose);

@@ -433,13 +433,18 @@ export function completenessSpan(db, { cutoffMs = Date.parse('2026-09-11T00:00:0
 
 
 /** Record cpp-verify's answer. Written only from the verifier's reply. */
-export function recordVerdict(db, { accountId, positionId, state, disputes = [], host = null, at = null }) {
+export function recordVerdict(db, { accountId, positionId, state, disputes = [], host = null, at = null, contractVersion = null }) {
   if (!['unverified', 'verified', 'disputed', 'absent'].includes(state)) return { ok: false, reason: `bad_state: ${state}` }
+  // PR-AY: the contract the VERIFIER reported, never the keeper's own
+  // constant. Stamping our version onto a verdict an older binary produced
+  // would mark it current and strand it exactly as before — the record would
+  // claim to have been judged by rules that never saw it.
+  const ver = Number.isFinite(Number(contractVersion)) ? Number(contractVersion) : null
   const r = db.prepare(`
     UPDATE position_history
-       SET verification_state = ?, verified_at = ?, verifier_host = ?, disputes_json = ?
+       SET verification_state = ?, verified_at = ?, verifier_host = ?, disputes_json = ?, verifier_version = ?
      WHERE account_id = ? AND ctrader_position_id = ?
-  `).run(state, at ?? new Date().toISOString(), host, disputes.length ? JSON.stringify(disputes) : null,
+  `).run(state, at ?? new Date().toISOString(), host, disputes.length ? JSON.stringify(disputes) : null, ver,
     String(accountId), String(positionId))
   return r.changes === 1 ? { ok: true } : { ok: false, reason: 'no_such_record' }
 }

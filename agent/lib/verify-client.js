@@ -141,6 +141,10 @@ export function verifyClient({ env = process.env, fetchImpl = globalThis.fetch }
         host: brokerHost,
         fetchComplete: body.fetchComplete === true,
         broker: body.broker || null,
+        // PR-AY: the contract the VERIFIER used, relayed unchanged. Absent
+        // means an older binary that did not stamp one — which is stale, and
+        // must NOT be filled in with the keeper's own constant.
+        contractVersion: Number.isFinite(Number(body.contractVersion)) ? Number(body.contractVersion) : null,
       }
     } catch (e) {
       return { state: null, skipped: e.name === 'AbortError' ? 'timeout' : e.message }
