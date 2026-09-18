@@ -334,7 +334,7 @@ export function reconcileTradePricesToBroker(db) {
   let deals = []
   try {
     deals = db.prepare(
-      `SELECT matched_trade_id AS tid, lots, entry_price, close_price
+      `SELECT matched_trade_id AS tid, lots, entry_price, close_price, closed_at
          FROM broker_deals
         WHERE matched_trade_id IS NOT NULL`,
     ).all()
@@ -355,11 +355,50 @@ export function reconcileTradePricesToBroker(db) {
   }
 
   const read = db.prepare(
-    `SELECT id, side, entry_price, exit_price, status, slippage_price, proposal_entry_price FROM trades WHERE id = ?`,
+    `SELECT id, side, entry_price, exit_price, status, slippage_price, proposal_entry_price,
+            volume, opened_at, closed_at_ms FROM trades WHERE id = ?`,
   )
   const write = db.prepare(
     `UPDATE trades SET entry_price = ?, exit_price = ? WHERE id = ?`,
   )
+  // KEEPER-TRUTH FIX (18-09-2026): the broker's fill TIME and fill VOLUME are
+  // written back the same way its fill prices are. `closed_at_ms` was
+  // stamped when the reconciler noticed the position gone (16–350 s late on
+  // the records cpp-verify disputed) and `volume` is the lot size the risk
+  // stack requested (612.13 against a 612 fill). The closing deal's
+  // executionTimestamp and its lots are the truth; hold_duration_ms follows
+  // the corrected close. Closed rows only, like the prices.
+  const writeCloseMs = db.prepare(`UPDATE trades SET closed_at_ms = ?, hold_duration_ms = ? WHERE id = ?`)
+  const writeVolume = db.prepare(`UPDATE trades SET volume = ? WHERE id = ?`)
+  const openedMsOf = (t) => {
+    const raw = t.opened_at
+    if (!raw) return null
+    const iso = /T/.test(String(raw)) ? String(raw) : String(raw).replace(' ', 'T') + 'Z'
+    const v = Date.parse(iso)
+    return Number.isFinite(v) ? v : null
+  }
+  // The group's close: the LAST closing deal's time, only when every deal
+  // carries one — a group half inside the import window is not a close time.
+  const groupClosedMs = (group) => {
+    let max = null
+    for (const d of group) {
+      const v = Date.parse(String(d.closed_at || ''))
+      if (!Number.isFinite(v)) return null
+      max = max == null ? v : Math.max(max, v)
+    }
+    return max
+  }
+  const groupLots = (group) => {
+    let sum = 0
+    for (const d of group) {
+      const lots = Number(d.lots)
+      if (!(Number.isFinite(lots) && lots > 0)) return null
+      sum += lots
+    }
+    return sum > 0 ? sum : null
+  }
+  out.closeTimesCorrected = 0
+  out.volumesCorrected = 0
   // SLIPPAGE, AFTER THE FACT (02-09-2026). The dispatch stamps slippage only
   // when the ACK carries an executionPrice, which the sidecar rarely returns
   // — NULL on 100 of 100 rows — while the intended entry now survives in
@@ -423,6 +462,21 @@ export function reconcileTradePricesToBroker(db) {
       const same = (a, b) =>
         (a == null && b == null) ||
         (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= Math.max(1e-9, Math.abs(a) * 1e-6))
+      // Fill time and fill volume, independent of whether the prices moved.
+      // The time is written only when it differs by more than a second (the
+      // keeper's own resolution) — a row already stamped from the broker is
+      // left alone; the volume only when it differs at all.
+      const cms = groupClosedMs(group)
+      if (cms != null && (t.closed_at_ms == null || Math.abs(Number(t.closed_at_ms) - cms) > 1000)) {
+        const o = openedMsOf(t)
+        writeCloseMs.run(cms, o != null ? cms - o : null, tid)
+        out.closeTimesCorrected++
+      }
+      const lots = groupLots(group)
+      if (lots != null && !same(lots, Number(t.volume))) {
+        writeVolume.run(lots, tid)
+        out.volumesCorrected++
+      }
       if (same(entry, t.entry_price) && same(exit, t.exit_price)) { out.unchanged++; continue }
       write.run(entry, exit, tid)
       out.corrected++
