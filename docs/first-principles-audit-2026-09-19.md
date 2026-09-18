@@ -427,3 +427,48 @@ after deploy, recorded in §L of this file as it happens.
   condition, consumer pins for the book-held helper. Mutations
   red-then-restored: the keeper filter, the guardian filter, the streak
   exclusion, the reconciler matcher.
+- 19-09-2026 06:41 SGT: Wave 2 merged as #959 (c5eb105); deployed 06:42
+  SGT, boot "0 applied, 0 switched off, 87 unchanged, 4 held" (seed-once
+  held), book on one account. The keeper/guardian `bookSkipped` counters are
+  summary fields, not log lines; they read back from the state routes.
+- 19-09-2026 07:xx SGT: **Wave 3 built** (this PR) — §K items 10–12, plus
+  the goal-table row for item 7. (10) `trailWinRatePct` deleted: the trail
+  row is judged on PF alone and prints the win rate as a measured figure,
+  never a target; the go-live and arm bars (`edge-bars.js`) lose
+  `winRatePct`, the goal tracker's win-rate target and "wins needed" go, the
+  go-live readiness verdict and the per-combo "armed" read become PF (+
+  sample) only, and the strategy autopilot's ARMING decision drops its
+  win-rate term (a stored `minWin` override is reported as ignored). Four
+  new goal rows, one per strategy family (`family_edge_<family>`), judge PF ≥
+  1.5, tail share ≥ 20 % (closes beyond +2R over decidable closes) and max
+  drawdown ≤ 8R on the cumulative R curve over a 90-day window, measurable
+  from 30 decidable closes; `/state/family-edge` serves the numbers. R is
+  `realised_rr` (the broker's first stop) or its recomputation; a close with
+  no readable R is COUNTED undecidable, never guessed. The 8R drawdown
+  target is an evidence target for a verdict, not a risk limit: nothing
+  sizes or halts on it. (11) `equity_snapshots`: one row per enabled
+  account per nightly pass on both sides (balance + the broker's own net
+  unrealised P&L = equity; a night the broker did not answer is a null
+  point with the error), on a persisted 24 h stamp
+  (`equity_snapshot_last_at`, the housekeeping due rule), heartbeat
+  controller `equity_snapshot`, `/state/equity-curve?account=&days=`.
+  (12) `momentum_checkpoint`: one row, the date read from
+  `strategy-pins.json _trial_note` (2026-12-19) and the trial account from
+  `_trial`, judged on that date and not before on the trial account's
+  momentum closes since the Wave 1 deploy (`momentumTrialSince`), by the
+  same three family targets; before the date it reports the decidable
+  closes so far and (item 7) the week-to-date closes and net. The goal
+  table grows 14 → 19 rows (the two count pins updated, per the repo's
+  convention). Not built: a page for the goal table — nothing in `src/`
+  renders it today, so items 10 and 12 are API + tests; a page is a Wave 6
+  candidate. Tests: family-edge (PF/tail/drawdown in close order, the
+  stamped R, undecidable rows, label over strategy, window/since/account
+  scope), equity-snapshot (due rule, equity from balance + net P&L on the
+  account's own host, a failed read written as a gap, both-sides sweep with
+  token-refused skipped and the stamp before the work, the curve's change
+  and drawdown over readable nights, wiring pins for the loop/route/
+  heartbeat), goal-table (no WR target, family rows on/off/not_measurable
+  by each of the three targets, the checkpoint row before and on its
+  date). Mutations red-then-restored: the family PF term, the checkpoint
+  due rule, the net-vs-gross P&L sum, the +2R tail rule, plus the maker's
+  two on the win-rate bars.
