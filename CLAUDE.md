@@ -534,6 +534,23 @@ Measurement history — each line is a real run of the script, not a claim:
   stamped reply is **`№ 7,810`**. The count is by replies,
   not by stamps (the 08-09 rule). A later re-measure that reads below this line
   is missing these, not correcting them.
+- 2026-09-18 08:30 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the script reads this container's transcript only and
+  was refused as a reading. The session ran from `№ 7,810` to **`№ 7,842`**
+  as the last stamped reply (16–18 Sep: #943 PR-AU, #944 PR-AV the trail's
+  ATR note, #945 PR-AW the verifier's money/volume units, #946 PR-AX the
+  exit_sent reclassification, #947 PR-AY the contract-version re-ask,
+  #948 PR-AZ terminal is three states; the …0949 win-rate / profit-factor /
+  lot-sizing answer; the "fix the exits" diagnosis). The context was then
+  compacted; eight unstamped status lines followed `№ 7,842` while the
+  fix-the-exits PR was built (`№ 7,843`–`№ 7,850`: the BA reads, the BA
+  code, the reconciler tests green, the ratchet regex, the stamp
+  persistence read, mutations G–J, the gate launch, the gate green), so
+  the fix-the-exits report is **`№ 7,851`** by count. Any unstamped line
+  made between `№ 7,842` and the compaction is not in this count — the
+  compaction summary carried the last stamp, not the lines after it. The
+  count is by replies, not by stamps. A later re-measure that reads below
+  this line is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
