@@ -378,7 +378,8 @@ export function capturePosition(db, { accountId, positionId }) {
   if (figuresMoved) {
     db.prepare(`
       UPDATE position_history
-         SET verification_state = 'unverified', verified_at = NULL, verifier_host = NULL, disputes_json = NULL
+         SET verification_state = 'unverified', verified_at = NULL, verifier_host = NULL, disputes_json = NULL,
+             rebuilt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
        WHERE account_id = ? AND ctrader_position_id = ?
     `).run(acct, pid)
   }

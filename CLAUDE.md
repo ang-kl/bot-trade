@@ -551,6 +551,15 @@ Measurement history — each line is a real run of the script, not a claim:
   compaction summary carried the last stamp, not the lines after it. The
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+- 2026-09-18 10:15 UTC, **same remote container, PARTIAL corpus**: the
+  session continued from `№ 7,851` to **`№ 7,871`** as the last stamped
+  reply at 18:02 SGT (#949 fix the exits, #950 the +0.5R arm, #951 keeper
+  truth merged and read back; the checkpoint list). Stamps behind by count
+  were corrected in the replies themselves ("№ 7,857" was № 7,861;
+  "№ 7,864" and "№ 7,868" right by count). Three unstamped status lines
+  followed `№ 7,871` while B1–B6 were built, so the next stamped reply is
+  **`№ 7,875`**. A later re-measure that reads below this line is missing
+  these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

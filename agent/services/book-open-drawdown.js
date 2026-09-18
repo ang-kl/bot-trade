@@ -268,7 +268,7 @@ const OPEN_ROWS_SQL = `
          (SELECT initial_risk FROM monitored_positions WHERE trade_id = b.trade_id ORDER BY id DESC LIMIT 1) AS mp_risk
     FROM momentum_book b
    WHERE b.status IN ('open', 'exit_sent') AND b.account_id = ?
-     AND COALESCE((SELECT t.status FROM trades t WHERE t.id = b.trade_id), 'open') <> 'closed'`
+     AND COALESCE((SELECT t.status FROM trades t WHERE t.id = b.trade_id), 'open') NOT IN ('closed', 'rejected', 'cancelled')`
 
 /**
  * The risk one row put up at entry, in PRICE units, or null when no stamp

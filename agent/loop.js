@@ -3445,6 +3445,15 @@ async function runLoop(db) {
               // The credentials travel with the call because cpp-verify holds
               // no defaults and needs POST /connect before it can answer.
               verify: verifier ? (record) => verifier(record, { host, clientId, clientSecret, accessToken, accountId }) : null,
+              // B6: a symbol the lot-size registry has never seen is read from
+              // the broker once, so the verifier can compare its volume.
+              lotSizeFor: async (symbol) => {
+                const { symbolIdFor } = await import('./services/position-history.js')
+                const { getVolumeMeta } = await import('./lib/lot-sizing.js')
+                const symbolId = symbolIdFor(db, symbol)
+                if (symbolId == null) return null
+                return getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
+              },
             })
             if (drain.due) {
               log(`Position capture: ${drain.captured} captured · ${drain.archived} archived · ${drain.verified} verified · ${drain.incomplete} still incomplete` +

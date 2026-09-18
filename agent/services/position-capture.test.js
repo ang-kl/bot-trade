@@ -176,10 +176,10 @@ test('the drain sends the broker-declared lotSize with the record, and nothing f
   const { unitsPerLot } = await import('../lib/lot-size-registry.js')
   assert.equal(unitsPerLot(db, 'EURUSD').source, 'table')
   assert.ok(unitsPerLot(db, 'EURUSD').unitsPerLot > 0, 'the table knows a contract size …')
-  assert.equal(withBrokerLotSize(db, { symbol: 'EURUSD' }).lot_size, null, '… and it is not what travels')
-  assert.equal(withBrokerLotSize(db, { symbol: null }).lot_size, null)
+  assert.equal((await withBrokerLotSize(db, { symbol: 'EURUSD' })).lot_size, null, '… and it is not what travels')
+  assert.equal((await withBrokerLotSize(db, { symbol: null })).lot_size, null)
   rememberLotSize(db, 'EURUSD', 10000000)
-  assert.equal(withBrokerLotSize(db, { symbol: 'EURUSD' }).lot_size, 10000000)
+  assert.equal((await withBrokerLotSize(db, { symbol: 'EURUSD' })).lot_size, 10000000)
 
   const env = { DB_PATH: join(mkdtempSync(join(tmpdir(), 'poshist-')), 'agent.db') }
   const now = Date.now()
@@ -275,4 +275,25 @@ test('the close path and the drain are WIRED into the loop', () => {
     'every detected close must be enqueued')
   assert.match(loop, /drainCaptureQueue\(db, \{/, 'and the queue must be drained')
   assert.match(loop, /verifyClient\(\)/, 'with the verifier consulted when one is configured')
+})
+
+
+// B6 (18-09-2026): a symbol the registry has never seen is read from the
+// broker once and remembered; a failed read sends no lot (the verifier says
+// `uncompared`), never a guess.
+test('B6: an unknown symbol\'s lotSize is read from the broker once, remembered, and sent', async () => {
+  const { withBrokerLotSize } = await import('./position-capture.js')
+  const { unitsPerLot } = await import('../lib/lot-size-registry.js')
+  const db = fresh()
+  const asked = []
+  const lotSizeFor = async (symbol) => { asked.push(symbol); return symbol === 'NATGAS' ? { lotSize: 1000000, minVolume: 100000, stepVolume: 100000 } : null }
+  const r1 = await withBrokerLotSize(db, { symbol: 'NATGAS' }, { lotSizeFor })
+  assert.equal(r1.lot_size, 1000000); assert.equal(r1.lot_size_source, 'broker_read')
+  assert.equal(unitsPerLot(db, 'NATGAS').lotSize, 1000000, 'remembered in the registry')
+  const r2 = await withBrokerLotSize(db, { symbol: 'NATGAS' }, { lotSizeFor })
+  assert.equal(r2.lot_size, 1000000); assert.deepEqual(asked, ['NATGAS'], 'asked the broker once, not twice')
+  const r3 = await withBrokerLotSize(db, { symbol: 'XPTUSD' }, { lotSizeFor })
+  assert.equal(r3.lot_size, null, 'a read that returned nothing sends nothing')
+  const r4 = await withBrokerLotSize(db, { symbol: 'XPTUSD' }, { lotSizeFor: async () => { throw new Error('WS down') } })
+  assert.equal(r4.lot_size, null, 'a failed read sends nothing')
 })

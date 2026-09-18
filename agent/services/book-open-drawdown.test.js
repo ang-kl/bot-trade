@@ -486,3 +486,16 @@ test('MINOR 5: minRows above the book\'s slot count is named when it suppresses 
   assert.match(b.notice, /open drawdown 600% would have refused new entries, but bookDrawdownMinRows 20 > 3 carried row\(s\)/)
   assert.match(b.notice, /suppressed by that knob, not by the book being healthy/)
 })
+
+
+// B3 (18-09-2026): the brake reads the SAME terminal set as the trail loop.
+test('B3: a book row whose trade is rejected or cancelled is not open exposure for the brake', () => {
+  for (const st of ['rejected', 'cancelled', 'closed']) {
+    const db = fresh()
+    const tid = row(db, { symbol: 'AAA', entry: 100, planRisk: 10 })
+    row(db, { symbol: 'BBB', entry: 100, planRisk: 10 })
+    db.prepare(`UPDATE trades SET status = ? WHERE id = ?`).run(st, tid)
+    const r = bookOpenDrawdown(db, { accountId: A, bookCfg: CFG, now: NOW, marks: marks({ [markKey(A, 'AAA')]: 85, [markKey(A, 'BBB')]: 85 }) })
+    assert.equal(r.measured, 1, `${st}: only the live row is measured`)
+  }
+})

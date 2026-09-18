@@ -71,6 +71,11 @@ export function sizingBalance(db, accountId = null) {
   if (id != null) {
     const scoped = read(`acct:${id}:account_balance_usd`)
     if (scoped != null) return { balance: scoped, source: 'account', ok: true, accountId: id, reason: null }
+    // B5 (18-09-2026): a stamped ZERO is the account's own reading — no
+    // budget — not an absence to be filled from the shared key.
+    let zero = false
+    try { const r = getState(db, `acct:${id}:account_balance_usd`); zero = r != null && r !== '' && Number(r) === 0 } catch { zero = false }
+    if (zero) return { balance: 0, source: 'account', ok: true, accountId: id, reason: null }
     // The legacy value may exist and may even be right — but with more than one
     // enabled account nothing here can tell, and "may be right" is not a basis
     // for sizing real money.

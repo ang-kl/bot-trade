@@ -65,11 +65,14 @@ test('with no account named, the SELECTED account\'s own stamp is used', () => {
   assert.equal(r.accountId, '46130058')
 })
 
-test('a zero or malformed stamp is treated as absent, not as a balance of zero', () => {
+test('B5: a stamped ZERO is the account\'s own reading (no budget); a malformed stamp is still absent', () => {
+  // Until 18-09-2026 a stamped 0 was read as absent and the shared global
+  // filled it — an unfunded account sized on somebody else's equity. Owner
+  // principle 1: an account is only "how much is inside it", and 0 is an amount.
   const db = fresh()
   setState(db, 'acct:43097342:account_balance_usd', '0')
   const r = sizingBalance(db, '43097342')
-  assert.equal(r.ok, false)
+  assert.equal(r.ok, true); assert.equal(r.balance, 0); assert.equal(r.source, 'account')
   setState(db, 'acct:43097342:account_balance_usd', 'not-a-number')
   assert.equal(sizingBalance(db, '43097342').ok, false)
 })

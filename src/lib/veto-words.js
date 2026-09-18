@@ -35,6 +35,12 @@ const RULES = [
   // Detail groups are OPTIONAL so bare family keys (from the veto-breakdown
   // endpoint) translate too — "sl_too_tight" alone still reads as words.
   { re: /^sl_too_tight(?:\s+([\d.]+%)<([\d.]+%))?/, out: (m) => m[1] ? `Stop too tight — ${m[1]} vs ${m[2]} min` : 'Stop too tight' },
+  // B4 (18-09-2026): an opposite-side position on the same symbol on ANOTHER
+  // account — a self-cancelling hedge. Names the account (last 4) and side.
+  {
+    re: /^opposing_leg_cross_account(?:\s+existing_account=(\S+))?(?:\s+existing_side=(\w+))?/,
+    out: (m) => m[1] ? `Opposite leg open on ${m[1]} (${m[2] || '?'})` : 'Opposite leg open on another account',
+  },
   {
     re: /^duplicate_symbol(?:\s+existing_side=(\w+))?(?:\s+entry=([\w.]+))?(?:\s+opened=(\S+))?(?:\s+strat=(\w+))?(?:\s+lastcheck=(\S+))?/,
     out: (m) => {

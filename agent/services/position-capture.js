@@ -33,7 +33,7 @@ import { dirname, join } from 'node:path'
 import { capturePosition, recordVerdict } from './position-history.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { VERDICT_CONTRACT_VERSION } from '../lib/verify-contract.js'
-import { unitsPerLot } from '../lib/lot-size-registry.js'
+import { unitsPerLot, rememberVolumeMeta } from '../lib/lot-size-registry.js'
 
 /**
  * The record plus `lot_size`: the broker's declared lotSize for the symbol
@@ -43,11 +43,26 @@ import { unitsPerLot } from '../lib/lot-size-registry.js'
  * here — never `unitsPerLot × 100`, which would hand the verifier a guessed
  * lot to scale the broker's own volume by and call the result a verdict.
  */
-export function withBrokerLotSize (db, record) {
+export async function withBrokerLotSize (db, record, { lotSizeFor = null } = {}) {
   try {
     const u = unitsPerLot(db, record?.symbol)
     if (Number(u.lotSize) > 0) return { ...record, lot_size: Number(u.lotSize) }
   } catch { /* no registry, no lot */ }
+  // B6 (18-09-2026): a symbol the registry has never seen — the order path
+  // learns lot sizes only for symbols it has SIZED, so a position adopted or
+  // opened by hand leaves the verifier with `uncompared: ["volume"]` for
+  // ever. Ask the broker once (the same ProtoOASymbolsByIds read the sizing
+  // path uses), remember the declaration, and send it. A failed read sends
+  // nothing — the verifier then says so rather than guessing.
+  if (typeof lotSizeFor === 'function' && record?.symbol) {
+    try {
+      const meta = await lotSizeFor(record.symbol)
+      if (meta && Number(meta.lotSize) > 0) {
+        try { rememberVolumeMeta(db, record.symbol, meta) } catch { /* learning must never fail a capture */ }
+        return { ...record, lot_size: Number(meta.lotSize), lot_size_source: 'broker_read' }
+      }
+    } catch { /* the broker read failed — no lot travels */ }
+  }
   return { ...record, lot_size: null }
 }
 
@@ -171,7 +186,8 @@ export function enqueueVerifyBacklog(db, { accountId, now = Date.now(), limit = 
   // anything else will ever revisit it.
   const rows = db.prepare(`
     SELECT h.ctrader_position_id AS pid, h.symbol AS symbol,
-           q.state AS qstate, COALESCE(q.reverify_attempts, 0) AS rv
+           q.state AS qstate, COALESCE(q.reverify_attempts, 0) AS rv,
+           CASE WHEN h.rebuilt_at IS NOT NULL AND h.rebuilt_at > COALESCE(q.settled_at, '') THEN 1 ELSE 0 END AS rebuilt
       FROM position_history h
       LEFT JOIN position_capture_queue q
         ON q.account_id = h.account_id AND q.position_id = h.ctrader_position_id
@@ -195,7 +211,15 @@ export function enqueueVerifyBacklog(db, { accountId, now = Date.now(), limit = 
             OR (h.verification_state = 'disputed'
                 AND (h.verifier_version IS NULL OR h.verifier_version < ?)))
        AND (q.state IS NULL OR q.state = 'captured')
-       AND COALESCE(q.reverify_attempts, 0) < ?
+       -- B1 (18-09-2026): THE CAP COUNTS ASKS OF ONE RECORD. A record whose
+       -- watched figures moved since its last ask (rebuilt_at newer than the
+       -- queue's settled_at) has been asked zero times about what it now
+       -- says — #951's boot rebuild changed volume and close time on 18
+       -- capped …0949 records and the cap would have kept them unasked for
+       -- ever. Same shape as PR-AU and PR-AY: a rule right in general, wrong
+       -- for records changed after it was applied. The cap itself stands.
+       AND (COALESCE(q.reverify_attempts, 0) < ?
+            OR (h.rebuilt_at IS NOT NULL AND h.rebuilt_at > COALESCE(q.settled_at, '')))
      ORDER BY h.closed_at_ms ASC
      LIMIT ?
   `).all(acct, VERDICT_CONTRACT_VERSION, maxReverify, limit)
@@ -206,12 +230,14 @@ export function enqueueVerifyBacklog(db, { accountId, now = Date.now(), limit = 
       // `attempts` is reset because this is a fresh try at building the
       // record, and the previous build SUCCEEDED — carrying the old count
       // would push a healthy row toward `gave_up` for no reason.
+      // A rebuilt record starts its count again at 1: this ask is the first
+      // about the record as it now stands.
       db.prepare(`
         UPDATE position_capture_queue
            SET state = 'pending', due_at_ms = ?, attempts = 0, last_error = NULL,
-               settled_at = NULL, reverify_attempts = reverify_attempts + 1
+               settled_at = NULL, reverify_attempts = CASE WHEN ? THEN 1 ELSE reverify_attempts + 1 END
          WHERE account_id = ? AND position_id = ?
-      `).run(now, acct, r.pid)
+      `).run(now, r.rebuilt ? 1 : 0, acct, r.pid)
     } else {
       // No queue row at all: a record built by an importer rather than by a
       // detected close. Due immediately — the broker settled long ago, so the
@@ -246,8 +272,10 @@ export function enqueueVerifyBacklog(db, { accountId, now = Date.now(), limit = 
     SELECT
       COUNT(*) AS unverified,
       SUM(CASE WHEN (q.state IS NULL OR q.state = 'captured')
-                AND COALESCE(q.reverify_attempts, 0) < ? THEN 1 ELSE 0 END) AS eligible,
-      SUM(CASE WHEN COALESCE(q.reverify_attempts, 0) >= ? THEN 1 ELSE 0 END) AS blockedByAttempts,
+                AND (COALESCE(q.reverify_attempts, 0) < ?
+                     OR (h.rebuilt_at IS NOT NULL AND h.rebuilt_at > COALESCE(q.settled_at, ''))) THEN 1 ELSE 0 END) AS eligible,
+      SUM(CASE WHEN COALESCE(q.reverify_attempts, 0) >= ?
+                AND NOT (h.rebuilt_at IS NOT NULL AND h.rebuilt_at > COALESCE(q.settled_at, '')) THEN 1 ELSE 0 END) AS blockedByAttempts,
       SUM(CASE WHEN q.state = 'gave_up' THEN 1 ELSE 0 END) AS terminal,
       SUM(CASE WHEN q.state = 'pending' THEN 1 ELSE 0 END) AS alreadyQueued
       FROM position_history h
@@ -359,7 +387,7 @@ export async function refreshDealsFor(db, { accountId, positionId, getDeals, now
  * which is the honest outcome rather than a fabricated one. Without a
  * verifier the record simply stays `unverified`, which is exactly what it is.
  */
-export async function drainCaptureQueue(db, { getDeals = null, verify = null, now = Date.now(), limit = 50, env = process.env } = {}) {
+export async function drainCaptureQueue(db, { getDeals = null, verify = null, lotSizeFor = null, now = Date.now(), limit = 50, env = process.env } = {}) {
   const rows = dueCaptures(db, { now, limit })
   const out = { due: rows.length, captured: 0, incomplete: 0, gaveUp: 0, archived: 0, verified: 0, errors: [] }
 
@@ -387,7 +415,7 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, no
         try {
           // The symbol's lotSize rides with the record so the verifier can
           // compare lots (contract 3) — from the broker's declaration only.
-          const v = await verify(withBrokerLotSize(db, res.record))
+          const v = await verify(await withBrokerLotSize(db, res.record, { lotSizeFor }))
           // A SKIPPED VERDICT IS SAID OUT LOUD. verify() already knows exactly
           // why it could not answer — http_409, connect_no_accounts, timeout,
           // bad_reply, no_host — and the first version of this block dropped
