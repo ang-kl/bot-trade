@@ -57,7 +57,7 @@ export const RISK_GROUPS = Object.freeze([
     'minRR', 'minExpectancyR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'htfFreshnessMin', 'stopTriggerMethod',
   ] },
   { id: 'exposure', label: 'Exposure', keys: [
-    'maxOpenPositions', 'maxPositionsPerSymbol', 'maxClusterExposure',
+    'maxOpenPositions', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'maxClusterExposure',
     'maxCurrencyExposure', 'blockedSymbols',
   ] },
   { id: 'streak', label: 'Losing streaks', keys: [
