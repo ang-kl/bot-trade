@@ -27,6 +27,7 @@ import { loadWithOverlay } from './account-overlay.js'
 import { roundToDigits } from './trade-guard.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { recordPositionEvent } from './position-events.js'
+import { makeBookHeldCheck } from './book-held.js'
 
 export const DEFAULT_LOSS_GUARDIAN = {
   on: true,                 // safety net on by default — no naked losers
@@ -116,7 +117,7 @@ export function runLossGuardian(db, creds, deps = {}) {
 }
 
 async function lossGuardianPass(db, creds, deps = {}) {
-  const summary = { checked: 0, stops: 0, closes: 0, refused: 0, errors: [] }
+  const summary = { checked: 0, stops: 0, closes: 0, refused: 0, bookSkipped: 0, errors: [] }
   try {
     const accountId = authorisedAccountId(creds)
     // PER-ACCOUNT CONFIG (04-08-2026). `scope` and the on switch used to come
@@ -135,7 +136,7 @@ async function lossGuardianPass(db, creds, deps = {}) {
     }
     const allRows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
-              mp.time_cap_at, mp.time_cap_trail_at, mp.source AS source,
+              mp.time_cap_at, mp.time_cap_trail_at, mp.source AS source, mp.trade_id AS trade_id,
               t.ctrader_position_id AS position_id, t.account_id AS account_id
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
@@ -145,7 +146,14 @@ async function lossGuardianPass(db, creds, deps = {}) {
          AND (mp.source IS NULL OR mp.source IN ('autopilot', 'preopen', 'external', 'manual'))
          AND ${accountFilterSql('t.account_id')}`
     ).all(accountId)
+    // ONE HORIZON RULE (Wave 2, 19-09-2026, §K·6): a momentum-book row has no
+    // time_cap_at, so this guardian's maxHoldHours backstop and its ATR stop
+    // would both reach a weeks-horizon runner. The book's own rule is the
+    // only exit authority on those rows; skipped here by the same predicate
+    // the weekend bank uses, and counted.
+    const bookHolds = makeBookHeldCheck(db, null)
     const rows = allRows.filter(r => {
+      if (bookHolds(r.position_id, r.trade_id)) { summary.bookSkipped += 1; return false }
       const c = cfgFor(r.account_id)
       if (!c.on) return false
       // 'external' scope guards only positions this bot did not open. An

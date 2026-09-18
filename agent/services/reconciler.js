@@ -118,6 +118,20 @@ export function attributeBrokerClose(db, { positionId = null, tradeId = null, ac
       ).get(...(accountId != null ? [pid, String(accountId)] : [pid]))
       if (book) return `momentum_book: ${book.note || 'exit sent'}`
     }
+    // Wave 2 (§K·8): a close on a row the BOOK holds with no journal entry is
+    // the book's broker-side stop (its 3×ATR trail is amended at the broker,
+    // so the fill leaves no event) — named as such, not "closed at the
+    // broker (manual close …)". Matched on either key, exit_sent or open.
+    if (pid != null || tradeId != null) {
+      const held = db.prepare(
+        `SELECT status, note FROM momentum_book
+          WHERE status IN ('open', 'exit_sent')
+            AND ((? IS NOT NULL AND position_id = ?) OR (? IS NOT NULL AND trade_id = ?))
+            ${accountId != null ? 'AND account_id = ?' : ''}
+          ORDER BY id DESC LIMIT 1`
+      ).get(...[pid, pid, tradeId, tradeId, ...(accountId != null ? [String(accountId)] : [])])
+      if (held) return held.status === 'exit_sent' ? `momentum_book: ${held.note || 'exit sent'}` : 'momentum_book: broker-side stop fill (3×ATR trail)'
+    }
   } catch { /* attribution is best-effort; the generic stamp stays */ }
   return null
 }

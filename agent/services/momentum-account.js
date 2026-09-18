@@ -33,6 +33,8 @@
 
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
+import { weekAnchorMs } from '../shared/formulas.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { lotsToVolume } from '../lib/lot-sizing.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { notionalUsd } from '../lib/contracts.js'
@@ -554,6 +556,22 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
  * summed, reasons merged, the newest pass) so the goal table keeps one
  * figure; `accounts` carries each account's own.
  */
+/** Closes and net for this strategy on this account since the FX week anchor (Wave 2, §K·7). */
+export function weekToDateFor(db, accountId, nowMs = Date.now()) {
+  try {
+    const anchor = weekAnchorMs(nowMs)
+    const since = new Date(anchor).toISOString().replace('T', ' ').slice(0, 19)
+    const r = db.prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(net_pnl), 0) AS net, COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
+         FROM trades
+        WHERE status = 'closed' AND net_pnl IS NOT NULL AND account_id = ?
+          AND ${strategyAttrSql()} = ?
+          AND REPLACE(closed_at, 'T', ' ') >= ?`
+    ).get(String(accountId), TSMOM_STRATEGY, since)
+    return { since: new Date(anchor).toISOString(), closes: Number(r?.n) || 0, wins: Number(r?.wins) || 0, net: Number((Number(r?.net) || 0).toFixed(2)) }
+  } catch { return { since: null, closes: 0, wins: 0, net: 0 } }
+}
+
 export function momentumAccountReport(db) {
   const cfg = loadMomentumAccount(db)
   const ids = momentumAccountIds(db)
@@ -573,6 +591,11 @@ export function momentumAccountReport(db) {
       universe: { built, tradable, byReason, builtAt: state.universeBuiltAt, symbols: universe },
       lastPass: state.lastPass,
       open,
+      // Wave 2 (§K·7): the momentum family is accounted by the WEEK, its
+      // horizon's unit — closes and net since the FX week anchor, this
+      // account, this strategy. Reported here and on the goal table; the
+      // daily cap and the loss streak no longer read these closes.
+      weekToDate: weekToDateFor(db, id),
     }
     agg.built += built; agg.tradable += tradable
     agg.open.push(...open.map(o => ({ ...o, account: `…${id.slice(-4)}` })))

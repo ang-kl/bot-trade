@@ -614,6 +614,18 @@ Measurement history — each line is a real run of the script, not a claim:
   plus any unstamped line made after this ledger. The count is by replies,
   not by stamps. A later re-measure that reads below this line is missing
   these, not correcting them.
+- 2026-09-18 22:32 UTC, **same remote container, PARTIAL corpus**: the line
+  above was WRITTEN at ~22:16 UTC and mis-stamped "22:50" (a guessed time,
+  the §2 failure), corrected here. No Wave 1 report was stamped: #958 was
+  merged (06:25 SGT 19-09) inside the run of status lines, and Wave 2 was
+  built on a second worktree in the same run. By the transcript, twenty-one
+  text replies followed `№ 7,973` (22:04–22:30 UTC: the logs folded in,
+  #957 merged, the Wave 1 facts, tests and gate, #958 opened and merged,
+  the Wave 2 facts, build, tests and mutation checks, the count for this
+  ledger), so the last reply is **`№ 7,994`** and the next stamped reply
+  is **`№ 7,995`** plus any unstamped line made after this ledger. The
+  count is by replies, not by stamps. A later re-measure that reads below
+  this line is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

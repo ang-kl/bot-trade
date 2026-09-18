@@ -2047,3 +2047,17 @@ test('E·2 shared signal — N accounts on one signal each risk 1/N of their bud
   assert.equal(off.checks.shared_signal, undefined)
   assert.equal(off.checks.risk_pct_effective, base.checks.risk_pct_effective)
 })
+
+// Wave 2 (19-09-2026, §K·6): a weeks-horizon family's closes are not a streak
+test('Wave 2: three losing tsmom_long closes do NOT put the account in cooldown; three losing scan closes still do', () => {
+  const db = freshDB()
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, net_pnl, status, closed_at, label_strategy) VALUES ('JPM.US', 'BUY', ?, 'closed', ?, ?)`)
+  const at = (m) => new Date(Date.now() - m * 60_000).toISOString()
+  for (const m of [3, 2, 1]) ins.run(-10, at(m), 'tsmom_long')
+  let res = evaluateTrade(db, goodProposal())
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  for (const m of [3, 2, 1]) ins.run(-10, at(m), 'vwap_trend')
+  res = evaluateTrade(db, goodProposal())
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /loss_streak_cooldown/)
+})

@@ -1759,3 +1759,13 @@ test('Wave 1 (19-09-2026): the book\'s master switch boots from agent/config/mom
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /seedMomentumBookFromConfig\(db, \{ log/)
 })
+
+test('Wave 2 (§K·8): linking an adopted tsmom_long fill to the book upgrades its origin from reconciler_adopted to bot_pending_fill (the book placed the resting limit) — an already-clean origin is left alone', () => {
+  const db = initDB(':memory:')
+  const src = readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /UPDATE trades SET origin = 'bot_pending_fill', origin_source = 'book_link' WHERE id = \? AND \(origin IS NULL OR origin = 'reconciler_adopted'\)/)
+  assert.match(src, /if \(row\.position_id \|\| row\.trade_id\) \{\s*recordPositionEvent\(db, \{\s*accountId, positionId: row\.position_id \|\| null, tradeId: row\.trade_id/, 'a rank exit is journalled by trade id even before the position id is known')
+  db.prepare(`INSERT INTO trades (symbol, side, status, origin) VALUES ('JPM.US', 'BUY', 'open', 'reconciler_adopted')`).run()
+  db.prepare(`UPDATE trades SET origin = 'bot_pending_fill', origin_source = 'book_link' WHERE id = ? AND (origin IS NULL OR origin = 'reconciler_adopted')`).run(1)
+  assert.equal(db.prepare(`SELECT origin FROM trades WHERE id = 1`).get().origin, 'bot_pending_fill')
+})

@@ -41,6 +41,7 @@ import { instrumentType } from '../lib/contracts.js'
 import { earlyTrimConfig, earlyTrimDecision, earlyTrimShadowRow } from './early-trim.js'
 import { getAccountBalance } from './risk.js'
 import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
+import { makeBookHeldCheck } from './book-held.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
@@ -389,7 +390,7 @@ export function runProfitKeeper(db, creds, deps = {}) {
 }
 
 async function profitKeeperPass(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, managedSkipped: 0, errors: [] }
+  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, managedSkipped: 0, bookSkipped: 0, errors: [] }
   try {
     const cfg = loadProfitKeeperConfig(db)
     if (!cfg.on) return summary
@@ -400,6 +401,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     catch { trimCfg = earlyTrimConfig(null) }
 
     const accountId = authorisedAccountId(creds)
+    const bookHolds = makeBookHeldCheck(db, accountId)
     const scopeSql = cfg.scope === 'all'
       ? "mp.source IS NULL OR mp.source IN ('autopilot', 'preopen', 'external', 'manual')"
       : "mp.source IN ('external', 'manual')"
@@ -413,7 +415,17 @@ async function profitKeeperPass(db, creds, deps = {}) {
          AND (mp.keeper_opt_out IS NULL OR mp.keeper_opt_out != 1)
          AND t.ctrader_position_id IS NOT NULL AND (${scopeSql})
          AND ${accountFilterSql('mp.account_id')}`
-    ).all(accountId)
+    ).all(accountId).filter(r => {
+      // ONE HORIZON RULE (Wave 2 of the first-principles audit, 19-09-2026,
+      // §K·6). A momentum-book row is trailed by the book's 3×ATR daily rule
+      // and by nothing else: this keeper's 1h chandelier was a second stop
+      // authority on every weeks-horizon runner ("the keeper is paused on
+      // these positions" was text, not code — the SELECT never read the
+      // book). The same predicate the weekend bank and the protection audit
+      // use; counted, never silent.
+      if (bookHolds(r.position_id, r.trade_id)) { summary.bookSkipped += 1; return false }
+      return true
+    })
 
     // MANAGED-EXIT FENCE (owner "Go", 01-09-2026). On accounts the managed
     // policy governs, the trail is the ONLY exit-timing rule — one-simple-

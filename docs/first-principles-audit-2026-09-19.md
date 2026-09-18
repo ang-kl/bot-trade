@@ -391,3 +391,39 @@ after deploy, recorded in §L of this file as it happens.
   ledger no longer names tsmom_long as "would be disarmed", the momentum pass
   logging "at maxPositions … (risk maxOpenPositions caps the book's 8)" where
   it binds.
+- 19-09-2026 06:25 SGT: Wave 1 merged as #958 (e8a24c1). Read-back owed
+  (recorded in the next entry when read).
+- 19-09-2026 06:3x SGT: **Wave 2 built** (this PR) — §K items 6–8, with
+  two corrections to the plan's own text. (6) "One function used by all
+  five": the keeper and the loss guardian now skip rows the momentum book
+  holds (open or `exit_sent`, matched by position id or trade id through
+  `makeBookHeldCheck`, counted as `bookSkipped` in each summary); the loss
+  streak cooldown ignores closes labelled with a horizon-judged family
+  (`horizonJudgedKeys()`); the daily EQUITY STOP was already exempt —
+  `selectActivePositions` filters `paused` rows and the book pauses its
+  rows — so the audit's "five guards reach the book" was four, corrected
+  here; the daily CAP is deliberately left touching book rows: a cap on
+  the day's realised loss is an account rule, not a per-position guard,
+  and widening it is a risk-limit change (ask-first). (8) A rank exit
+  journals its position event by trade id when no position id is known;
+  an adopted `tsmom_long` row the book links is upgraded from
+  `reconciler_adopted` to `bot_pending_fill` (`origin_source: book_link`)
+  — not `bot_market_dispatch`, because the book's own entry path is the
+  pending-fill path and the origin vocabulary already names it; the
+  reconciler's close attribution gains matcher (c): a broker-side close
+  of a book-held row is attributed to the book's 3×ATR trail stop, or to
+  the book's `exit_sent` note. (7) `weekToDateFor(db, accountId)` (closes,
+  wins, net of the momentum family since the week anchor) is on the
+  momentum report per account — NOT yet on the goal table; the goal-table
+  row lands with Wave 3's PF/tail-share/DD goals, where the weekly window
+  is the momentum family's cadence for all three. (9) DEFERRED: the
+  per-family time cap needs the audit of the 68 "other" cap closes against
+  the strategy that owns them, which needs the token-gated trade rows;
+  carried to Wave 5 with the exit-retry-into-closed-market item. Tests:
+  keeper/guardian book-row skip, streak exclusion (three momentum losses
+  → no cooldown; three vwap losses → cooldown), reconciler matcher (c) by
+  trade id, position id, account scope and `exit_sent` note,
+  `weekToDateFor`, source pins for the origin upgrade and the journal
+  condition, consumer pins for the book-held helper. Mutations
+  red-then-restored: the keeper filter, the guardian filter, the streak
+  exclusion, the reconciler matcher.

@@ -184,6 +184,10 @@ export const HORIZON_JUDGED_FAMILIES = Object.freeze(['momentum'])
 export function judgedAtHorizon(key) {
   return HORIZON_JUDGED_FAMILIES.includes(strategyFamily(key))
 }
+/** The registry keys of the horizon-judged families (for SQL exclusions). */
+export function horizonJudgedKeys() {
+  return STRATEGY_REGISTRY.filter(s => HORIZON_JUDGED_FAMILIES.includes(s.family)).map(s => s.key)
+}
 
 export function strategyByKey(key) {
   return STRATEGY_REGISTRY.find(s => s.key === key)
