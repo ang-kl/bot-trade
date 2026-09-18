@@ -226,6 +226,34 @@ test('PR-AN: cpp-verify\'s vendored transport is byte-identical to cpp-exec\'s',
   }
 })
 
+// PR-AS: "READ-ONLY" MUST NAME ITS SCOPE, because the service now writes.
+//
+// Observed on the live boot, 18-09-2026:
+//
+//   [verify] cpp-verify starting on :8080 — read-only (app auth, account
+//            auth, deal list); sessions are per host
+//   [verify] journal UNWRITABLE at /data/verdicts — mkdir: Permission denied
+//
+// Two consecutive lines, one claiming read-only and the next reporting a
+// failed write. Both were true — the guarantee is about the BROKER, enforced
+// by the link line — but nothing said so, and a reader is entitled to
+// conclude one of them is lying. An unscoped guarantee is the same defect as
+// an unscoped measurement: it invites a wrong reading and cannot be checked.
+test('PR-AS: the read-only claim names its scope and what it writes', () => {
+  const src = readFileSync(new URL('../../cpp-verify/src/main.cpp', import.meta.url), 'utf8')
+  const code = src.replace(/^\s*\/\/.*$/gm, '')     // strip comments: no passing on prose
+
+  assert.match(code, /READ-ONLY AT THE BROKER/,
+    'the boot line must scope the claim to the broker, not assert it bare')
+  assert.match(code, /never places, amends or cancels/,
+    'and say what read-only actually forbids')
+  assert.match(code, /The only thing it writes is its own verdict journal/,
+    'and name what it DOES write, in the same breath')
+
+  assert.match(code, /o\.set\("readOnlyScope"/, '/health carries the scope, not just a bare boolean')
+  assert.match(code, /o\.set\("writes"/, 'and enumerates what it writes, so the payload cannot drift')
+})
+
 // PR-AS: THE MISSING `USER appuser` LINE IS DELIBERATE AND LOAD-BEARING.
 //
 // It reads like an oversight — a service that used to drop privileges and now
