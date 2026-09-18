@@ -44,6 +44,7 @@ import { heldLongEnough, heldHours } from './book-hold-age.js'
 import { directionFor, trendReadingFor } from './direction-policy.js'
 import { checkRegimeGate } from './regime-gate.js'
 import { recordDecision } from './decision-log.js'
+import { recordPositionEvent } from './position-events.js'
 import { assetClassOf } from './strategy-asset-cross.js'
 
 export const MOMENTUM_ACCOUNT_KEY = 'momentum_account_json'
@@ -517,6 +518,13 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
         await deps.close(creds, { positionId: row.position_id, volume })
       }
       db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
+      // Same journal line as the row-cursor exit (fix-the-exits BA).
+      if (row.position_id) {
+        recordPositionEvent(db, {
+          accountId, positionId: row.position_id, tradeId: row.trade_id, symbol: row.symbol, kind: 'close',
+          reason: 'rank exit (daily pass)', source: 'momentum_account',
+        })
+      }
       exits++
       log(`momentum account: rank exit ${row.symbol} on …${accountId.slice(-4)}`)
     } catch (err) { summary.skipped.push(`${row.symbol}: close failed — ${err.message}`) }

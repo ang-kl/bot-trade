@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState } from '../db.js'
-import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, attributeBrokerClose } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -1109,4 +1109,83 @@ test('PR-E M4: an adopted position whose label carries an intent tag is stamped 
   assert.equal(db.prepare(`SELECT origin FROM trades WHERE ctrader_position_id = '502'`).get().origin, 'reconciler_adopted')
   const v = findUnreasonedTrades(db, { now: Date.parse('2026-09-11T09:00:00Z') })
   assert.deepEqual(v.violations.filter(x => x.tradeId).map(x => x.kind), ['adopted_ours_unreasoned'])
+})
+
+// ---------------------------------------------------------------------------
+// fix-the-exits BA (18-09-2026): a close the bot performed is attributed to
+// its closer from the position_events journal (or the momentum book's
+// exit_sent row) when the reconciler sees the position gone. Measured before
+// the fix on …0949: 11 of 18 "closed at the broker" rows were bot closes.
+// ---------------------------------------------------------------------------
+
+test('BA: a close the profit keeper journalled is attributed to it, not stamped generic', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = seedKnownPosition(db, { symbol: 'DOW.US', positionId: '5101' })
+  db.prepare(`INSERT INTO position_events (position_id, trade_id, symbol, kind, reason, source) VALUES ('5101', ?, 'DOW.US', 'close', 'chandelier breach at 29.60', 'profit_keeper')`).run(tradeId)
+  reconcilePositions(db, [], [], setState)
+  const t = db.prepare(`SELECT status, close_reason FROM trades WHERE id = ?`).get(tradeId)
+  assert.equal(t.status, 'closed')
+  assert.equal(t.close_reason, 'profit_keeper: chandelier breach at 29.60')
+  assert.doesNotMatch(t.close_reason, /closed at the broker/)
+})
+
+test('BA: a loss_cap_close event (its own kind) attributes too; the NEWEST close event wins', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = seedKnownPosition(db, { symbol: 'XAUUSD', positionId: '5102' })
+  db.prepare(`INSERT INTO position_events (position_id, symbol, kind, reason, source) VALUES ('5102', 'XAUUSD', 'close', 'first attempt', 'loss_guardian')`).run()
+  db.prepare(`INSERT INTO position_events (position_id, symbol, kind, reason, source) VALUES ('5102', 'XAUUSD', 'loss_cap_close', 'floating loss $120 breached cap $100', 'loss_cap')`).run()
+  reconcilePositions(db, [], [], setState)
+  assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, 'loss_cap: floating loss $120 breached cap $100')
+})
+
+test('BA: a scale_out (partial take-profit) is NOT a close — a later broker close stays generic', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = seedKnownPosition(db, { symbol: 'EURUSD', positionId: '5103' })
+  db.prepare(`INSERT INTO position_events (position_id, trade_id, symbol, kind, reason, source) VALUES ('5103', ?, 'EURUSD', 'scale_out', 'partial take-profit TP1', 'trade_guard')`).run(tradeId)
+  reconcilePositions(db, [], [], setState)
+  assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, GENERIC)
+})
+
+test('BA: the momentum book\'s exit_sent row attributes a book close; another account\'s row does not', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', 'A')`).run()
+  const tradeId = seedKnownPosition(db, { symbol: 'NATGAS', positionId: '5104' })
+  db.prepare(`UPDATE trades SET account_id = 'A' WHERE id = ?`).run(tradeId)
+  db.prepare(`UPDATE monitored_positions SET account_id = 'A' WHERE trade_id = ?`).run(tradeId)
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, status, note, entered_at) VALUES (?, 'B', 'NATGAS', '5104', 'exit_sent', 'rank exit (flip)', datetime('now'))`).run(tradeId)
+  reconcilePositions(db, [], [], setState, { accountId: 'A' })
+  assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, GENERIC, 'B\'s book row says nothing about A\'s position')
+
+  const db2 = mkDb()
+  db2.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', 'A')`).run()
+  const t2 = seedKnownPosition(db2, { symbol: 'NATGAS', positionId: '5105' })
+  db2.prepare(`UPDATE trades SET account_id = 'A' WHERE id = ?`).run(t2)
+  db2.prepare(`UPDATE monitored_positions SET account_id = 'A' WHERE trade_id = ?`).run(t2)
+  db2.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, status, note, entered_at) VALUES (?, 'A', 'NATGAS', '5105', 'exit_sent', 'rank exit (flip)', datetime('now'))`).run(t2)
+  reconcilePositions(db2, [], [], mkSetState(db2), { accountId: 'A' })
+  assert.equal(db2.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(t2).close_reason, 'momentum_book: rank exit (flip)')
+})
+
+test('BA: attributeBrokerClose reads the journal by trade id when the position id is unknown, and returns null with no ledger', () => {
+  const db = mkDb()
+  const tradeId = seedKnownPosition(db, { symbol: 'EURUSD', positionId: '5106' })
+  assert.equal(attributeBrokerClose(db, { positionId: '5106', tradeId }), null)
+  db.prepare(`INSERT INTO position_events (trade_id, symbol, kind, reason, source) VALUES (?, 'EURUSD', 'close', 'time cap', 'position_manager')`).run(tradeId)
+  assert.equal(attributeBrokerClose(db, { tradeId }), 'position_manager: time cap')
+  assert.equal(attributeBrokerClose(db, {}), null)
+})
+
+test('BA: reclassifyBrokerCloses upgrades a row stamped generic BEFORE the fix when the journal knows the closer — and leaves it alone once attributed', () => {
+  const db = mkDb()
+  const tradeId = seedKnownPosition(db, { symbol: 'AVGO.US', positionId: '5107' })
+  db.prepare(`UPDATE trades SET status = 'closed', closed_at = datetime('now'), close_reason = ?, exit_price = 110, tp_price = 110 WHERE id = ?`).run(GENERIC, tradeId)
+  db.prepare(`INSERT INTO position_events (position_id, symbol, kind, reason, source) VALUES ('5107', 'AVGO.US', 'close', 'giveback 40% from peak', 'profit_keeper')`).run()
+  assert.equal(reclassifyBrokerCloses(db), 1)
+  // the keeper's close wins over the exit-price-near-TP guess
+  assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, 'profit_keeper: giveback 40% from peak')
+  assert.equal(reclassifyBrokerCloses(db), 0, 'idempotent: an attributed row is never rewritten')
 })

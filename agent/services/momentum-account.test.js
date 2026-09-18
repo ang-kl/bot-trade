@@ -616,6 +616,11 @@ test('PR-K: the daily pass does NOT rank-exit a position younger than bookMinHol
   assert.equal(r.exits, 1, `held long enough now: ${JSON.stringify(r.skipped)}`)
   assert.equal(f.calls.close.length, 1)
   assert.equal(db.prepare(`SELECT status, note FROM momentum_book`).get().note, 'rank exit (daily pass)')
+  // fix-the-exits BA: the daily-pass exit is journalled for the reconciler's attribution
+  const ev = db.prepare(`SELECT account_id, position_id, kind, reason, source FROM position_events WHERE kind = 'close'`).all()
+  assert.equal(ev.length, 1, JSON.stringify(ev))
+  assert.equal(ev[0].source, 'momentum_account'); assert.equal(ev[0].reason, 'rank exit (daily pass)'); assert.equal(ev[0].account_id, MOM)
+  assert.equal(ev[0].position_id, String(db.prepare(`SELECT position_id FROM momentum_book`).get().position_id))
 })
 
 test('PR-K: the hold is measured from the OLDEST stamp — a row adopted today for a trade filled three days ago is rank-exited today', async () => {

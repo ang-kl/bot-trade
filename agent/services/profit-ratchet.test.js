@@ -261,3 +261,20 @@ test('the timed backstop honours [Keep off] and a disabled (0) setting', async (
   await runProfitRatchet(db2, CREDS, d2)
   assert.equal(getState(db2, haltKey(ACCT)), 'true', 'rearmAfterDays 0 disables the backstop')
 })
+
+test('fix-the-exits BA: a flatten journals a close event per position, so the reconciler can attribute the close', async () => {
+  const db = freshDB(48000)
+  setState(db, 'profit_ratchet_json', JSON.stringify({ stepUsd: 500 }))
+  await bankAStep(db)
+  const tradeId = db.prepare(`INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, account_id)
+     VALUES ('EURUSD', 'BUY', 1.1, 0.01, '99', 'autopilot', 'open', datetime('now'), ?)`).run(ACCT).lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status, account_id)
+     VALUES ('EURUSD', ?, 'long', 1.1, 1.09, 1.12, 't', 1, 'autopilot', 'active', ?)`).run(tradeId, ACCT)
+  const d = await breach(db, 3, { floating: -100, positions: [{ positionId: 99, tradeData: { volume: 1000 } }] })
+  assert.equal(d.closed.length, 1)
+  const ev = db.prepare(`SELECT account_id, position_id, trade_id, kind, source, reason, to_value FROM position_events WHERE kind = 'close'`).all()
+  assert.equal(ev.length, 1)
+  assert.equal(ev[0].position_id, '99'); assert.equal(ev[0].trade_id, tradeId); assert.equal(ev[0].account_id, ACCT)
+  assert.equal(ev[0].source, 'profit_ratchet'); assert.equal(ev[0].to_value, 1000)
+  assert.match(ev[0].reason, /^floor halt: .*\$48000\.00 for 3 reads — account flattened$/)
+})
