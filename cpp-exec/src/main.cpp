@@ -538,6 +538,11 @@ int main(int argc, char** argv) {
       jsn::Array ids;
       for (long long id : engine.accountIds()) ids.push_back(jsn::Value(id));
       v.set("accounts", jsn::Value(std::move(ids)));
+      // B2: requested-but-refused, so the keeper can tell "not authorised by
+      // this token" from "not pushed yet" (same redaction rule as accounts).
+      jsn::Array refused;
+      for (long long id : engine.refusedAccountIds()) refused.push_back(jsn::Value(id));
+      v.set("refusedAccounts", jsn::Value(std::move(refused)));
     }
     // Telemetry counters — null when TELEMETRY_PATH isn't configured, so the
     // Node keeper can tell "disabled" apart from "configured, zero events".

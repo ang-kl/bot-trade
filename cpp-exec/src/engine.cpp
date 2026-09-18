@@ -153,6 +153,18 @@ std::vector<long long> ExecEngine::accountIds() {
   return authed_.load() && !accountIds_.empty() ? accountIds_ : requestedAccountIds_;
 }
 
+std::vector<long long> ExecEngine::refusedAccountIds() {
+  std::lock_guard lk(mtx_);
+  std::vector<long long> out;
+  if (!authed_.load()) return out;
+  for (long long id : requestedAccountIds_) {
+    bool have = false;
+    for (long long a : accountIds_) if (a == id) { have = true; break; }
+    if (!have) out.push_back(id);
+  }
+  return out;
+}
+
 bool ExecEngine::isConnected() {
   return ws_.isOpen() && authed_.load();
 }

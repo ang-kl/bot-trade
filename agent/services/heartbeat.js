@@ -571,7 +571,7 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
  *   `extra` = authorised at the sidecar but NOT enabled in the registry — the
  *   direction that matters, because it is authorisation the owner revoked.
  */
-export function rosterDrift(sidecarAccounts, credsAccountIds) {
+export function rosterDrift(sidecarAccounts, credsAccountIds, refusedAccounts = null) {
   const norm = (a) => new Set((Array.isArray(a) ? a : []).map(x => String(x)).filter(Boolean))
   // AN UNREPORTED ROSTER IS UNKNOWN, NOT EMPTY — the same rule already applied
   // to the creds side below, and its absence here cost real behaviour. While
@@ -587,9 +587,21 @@ export function rosterDrift(sidecarAccounts, credsAccountIds) {
   // be read as "the sidecar should have no accounts".
   if (want.size === 0) return { drifted: false, extra: [], missing: [] }
   const extra = [...have].filter(id => !want.has(id)).sort()
-  const missing = [...want].filter(id => !have.has(id)).sort()
-  return { drifted: extra.length > 0 || missing.length > 0, extra, missing }
+  // B2 (18-09-2026): TRIED AND REFUSED IS NOT MISSING. The live token does
+  // not cover …2148 / …9009; the sidecar tried them on every push, was refused
+  // (CH_ACCESS_TOKEN_INVALID), and reported 1/3 — so `missing` held the two
+  // for ever, the heartbeat re-pushed the same roster every ~2 minutes and
+  // logged each push as a "correction" at error level. An account the
+  // sidecar has already tried is reported separately, not re-pushed: pushing
+  // it again cannot change what the token authorises.
+  const refused = norm(refusedAccounts)
+  const missing = [...want].filter(id => !have.has(id) && !refused.has(id)).sort()
+  const refusedWanted = [...want].filter(id => refused.has(id)).sort()
+  return { drifted: extra.length > 0 || missing.length > 0, extra, missing, refused: refusedWanted }
 }
+
+/** State key holding the accounts a sidecar's token was refused for (B2). */
+export const refusedKeyFor = (sideName) => `${sideName}_refused_accounts_json`
 
 /**
  * Active liveness probe of the C++ exec engine: polls the sidecar's
@@ -1109,7 +1121,21 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       // converge — the sets describe two different processes — so drift would
       // be true on every probe forever, re-pushing each time and logging a
       // "correction" that did not happen.
-      const drift = rosterDrift(r.accounts, creds.accountIds)
+      const drift = rosterDrift(r.accounts, creds.accountIds, r.refusedAccounts)
+      // B2: say ONCE, when the set changes, which enabled accounts the token
+      // cannot authorise — and keep it where the accounts view can read it.
+      try {
+        const prev = getState(db, refusedKeyFor(side.name))
+        const nowJson = JSON.stringify(drift.refused || [])
+        if (prev !== nowJson) {
+          setState(db, refusedKeyFor(side.name), nowJson)
+          if (drift.refused?.length) {
+            console.warn(`[heartbeat] ${side.name}: the broker token does not authorise ${drift.refused.length} enabled account(s) — ${drift.refused.map(a => `…${String(a).slice(-4)}`).join(', ')} — they stay requested, not re-pushed as drift; enable a token that covers them or disable them in the registry`)
+          } else if (prev != null) {
+            console.warn(`[heartbeat] ${side.name}: every enabled account is authorised again`)
+          }
+        }
+      } catch { /* the note must never fail the probe */ }
       // No `creds.ready` check here on purpose: pushSidecarSession already
       // returns false for not-ready creds and pushes nothing, so duplicating
       // that policy would just give it two places to drift out of step. Same
@@ -1238,6 +1264,7 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
   try {
     setState(db, healthKeyFor(side.name), JSON.stringify({
       accounts: Array.isArray(r.accounts) ? r.accounts.map(String) : null,
+      refusedAccounts: Array.isArray(r.refusedAccounts) ? r.refusedAccounts.map(String) : null,
       connected: r.connected ?? null,
       hasCredentials: r.hasCredentials ?? null,
       lastReconcileAt: r.lastReconcileAt ?? null,
