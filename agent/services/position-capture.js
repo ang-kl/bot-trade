@@ -189,8 +189,84 @@ export function enqueueVerifyBacklog(db, { accountId, now = Date.now(), limit = 
     }
     armed++
   }
-  return { armed, scanned: rows.length }
+
+  // THE ZERO MUST EXPLAIN ITSELF.
+  //
+  // The first cut returned { armed, scanned } and loop.js logged only
+  // `if (backlog.armed)`. So a zero was indistinguishable from the pass not
+  // running, from a failed query, from a genuinely empty backlog — and when
+  // it started arming zero on 18-09-2026 with 41 eligible-looking records
+  // sitting there, four theories were produced and none could be confirmed,
+  // because nothing exposed the counts.
+  //
+  // That is the same shape as the swallowed `skipped` reason in
+  // verify-client.js, written hours after fixing it. A pass that reports only
+  // when it succeeds cannot be debugged from its logs.
+  //
+  // So every zero now carries the breakdown that accounts for it. The four
+  // buckets are exhaustive against `unverified`: a record is either eligible,
+  // blocked by its re-verify cap, terminal, or already queued and waiting to
+  // drain. If they do not sum, that itself is the finding.
+  const counts = db.prepare(`
+    SELECT
+      COUNT(*) AS unverified,
+      SUM(CASE WHEN (q.state IS NULL OR q.state = 'captured')
+                AND COALESCE(q.reverify_attempts, 0) < ? THEN 1 ELSE 0 END) AS eligible,
+      SUM(CASE WHEN COALESCE(q.reverify_attempts, 0) >= ? THEN 1 ELSE 0 END) AS blockedByAttempts,
+      SUM(CASE WHEN q.state = 'gave_up' THEN 1 ELSE 0 END) AS terminal,
+      SUM(CASE WHEN q.state = 'pending' THEN 1 ELSE 0 END) AS alreadyQueued
+      FROM position_history h
+      LEFT JOIN position_capture_queue q
+        ON q.account_id = h.account_id AND q.position_id = h.ctrader_position_id
+     WHERE h.account_id = ? AND h.verification_state = 'unverified'
+  `).get(maxReverify, maxReverify, acct) || {}
+
+  const out = {
+    armed,
+    scanned: rows.length,
+    unverified: counts.unverified || 0,
+    eligible: counts.eligible || 0,
+    blockedByAttempts: counts.blockedByAttempts || 0,
+    terminal: counts.terminal || 0,
+    alreadyQueued: counts.alreadyQueued || 0,
+  }
+  out.report = backlogReport(acct, out)
+  return out
 }
+
+/**
+ * A line worth logging, or null.
+ *
+ * WHY THIS IS DEDUPED RATHER THAN ALWAYS-ON. The pass runs per account on
+ * every loop, so logging every zero would be roughly sixty lines an hour
+ * saying the same thing — and a log nobody can read is as useless as one that
+ * says nothing. So the breakdown is printed when it CHANGES: once when the
+ * backlog enters a state, and again when it leaves. Silence then means
+ * "unchanged since the last line", which is a fact rather than an absence.
+ *
+ * A non-zero arming ALWAYS prints, because that is an event and not a state.
+ */
+const lastBacklogSig = new Map()
+export function backlogReport (acct, o) {
+  if (o.armed > 0) {
+    lastBacklogSig.delete(acct)
+    return `re-armed ${o.armed} unverified record(s) for a verdict `
+      + `(${o.eligible} eligible, ${o.blockedByAttempts} at the re-verify cap, `
+      + `${o.terminal} terminal, ${o.alreadyQueued} already queued)`
+  }
+  // Nothing armed AND nothing to arm is the healthy steady state: say nothing.
+  if (!o.unverified) { lastBacklogSig.delete(acct); return null }
+
+  const sig = `${o.unverified}/${o.eligible}/${o.blockedByAttempts}/${o.terminal}/${o.alreadyQueued}`
+  if (lastBacklogSig.get(acct) === sig) return null
+  lastBacklogSig.set(acct, sig)
+  return `backlog: 0 armed of ${o.unverified} unverified — ${o.eligible} eligible, `
+    + `${o.blockedByAttempts} at the re-verify cap (${MAX_REVERIFY}), ${o.terminal} terminal, `
+    + `${o.alreadyQueued} already queued`
+}
+
+/** Test seam: forget what was last reported, so a fresh state prints again. */
+export function resetBacklogReports () { lastBacklogSig.clear() }
 
 /** Rows whose time has come. */
 export function dueCaptures(db, { now = Date.now(), limit = 50 } = {}) {
