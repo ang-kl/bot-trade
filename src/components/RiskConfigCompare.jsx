@@ -25,6 +25,7 @@ const KNOBS = [
   ['dailyLossPct', 'Daily loss cap (%)'],
   ['dailyLossLimit', 'Daily loss limit ($)'],
   ['maxOpenPositions', 'Max open positions'],
+  ['allowCrossAccountHedge', 'Allow opposite leg on another account'],
   ['equityStopPct', 'Equity stop (%)'],
   ['minRR', 'Min R:R'],
   ['maxMarginUsagePct', 'Max margin usage (%)'],
