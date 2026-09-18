@@ -413,6 +413,19 @@ try {
   } catch (err) {
     console.error(`[boot] entry-mode policy seed failed (non-fatal): ${err.message}`)
   }
+  // Wave 4 of the first-principles audit (19-09-2026, §K item 13): the
+  // stored risk overrides brought back under the repo, once per file
+  // content — resets that tighten or are inert, pinned defaults pruned, the
+  // retired key dropped; every reset that would LOOSEN a bound is listed in
+  // the file's `keep` and waits for the owner's word (P7).
+  try {
+    const { seedRiskConfigFromFile } = await import('./services/risk-config-seed.js')
+    const rc = seedRiskConfigFromFile(db, { log: (m) => console.log(m) })
+    if (rc.error) console.error(`[boot] risk config seed: ${rc.error}`)
+    else console.log(`[boot] risk config: ${rc.applied ? 'applied' : 'unchanged'} — ${rc.reset.length} override(s) reset to default${rc.reset.length ? ` (${rc.reset.join(' ')})` : ''}, ${rc.pruned.length} pinned default(s) pruned, ${rc.dropped.length} retired key(s) dropped, ${rc.kept.length} owner override(s) kept${rc.kept.length ? ` (${rc.kept.join(' ')})` : ''}${rc.skipped.length ? `, skipped: ${rc.skipped.join('; ')}` : ''} (config/risk-config.json)`)
+  } catch (err) {
+    console.error(`[boot] risk config seed failed (non-fatal): ${err.message}`)
+  }
   // POSITION HISTORY, BUILT ONCE AT BOOT (owner, 17-09-2026). The sweep also
   // runs in the 8-hourly housekeeping band, but that band is not due for up to
   // eight hours after a deploy — and the owner's actual ask is to be able to

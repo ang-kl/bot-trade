@@ -219,3 +219,18 @@ test('provenance separates the global value from the account value, per key', as
     assert.equal(row.reason, null, 'nothing records a reason today, and it says so')
   } finally { s.close() }
 })
+
+test('Wave 4: a global save merges into the RAW overrides — one patched key stores one key, not every default', async () => {
+  const s = await server()
+  try {
+    await setRisk(s, { maxOpenPositions: 7 })
+    const stored = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'risk_config_json'").get().value)
+    assert.deepEqual(Object.keys(stored), ['maxOpenPositions'], 'the store holds only what was set')
+    await setRisk(s, { cooldownMinutes: 9 })
+    const stored2 = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'risk_config_json'").get().value)
+    assert.deepEqual(Object.keys(stored2).sort(), ['cooldownMinutes', 'maxOpenPositions'])
+    const g = await riskFull(s)
+    assert.equal(g.risk.effective.maxOpenPositions, 7)
+    assert.equal(g.risk.effective.cooldownMinutes, 9)
+  } finally { s.close() }
+})
