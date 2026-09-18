@@ -242,7 +242,11 @@ int main() {
     if (!rec.positionId) return errRes(400, "record.positionId is required");
     rec.symbolId = optAs<long long>(rj, "symbolId");
     rec.tradeSide = optAs<int>(rj, "tradeSide");
-    rec.volume = optAs<long long>(rj, "volume");
+    // A DOUBLE, because position_history.volume is REAL. Reading it as
+    // long long truncated 9.4 units to 9 and then disputed the difference
+    // against the broker's own 9.4 — the verifier manufacturing a finding
+    // out of its own narrowing.
+    rec.volume = optNum(rj, "volume");
     rec.entryPrice = optNum(rj, "entryPrice");
     rec.exitPrice = optNum(rj, "exitPrice");
     rec.netPnl = optNum(rj, "netPnl");
@@ -265,6 +269,7 @@ int main() {
     }
     // g_mtx released. The session serializes its own requests internally.
     verify::DealFetch fetch = session->deals(accountId, fromMs, toMs);
+    fetch.moneyDigits = session->moneyDigits(accountId);
 
     verify::Verdict v = verify::judge(rec, fetch);
     auto o = jsn::parse(verify::verdictJson(v));

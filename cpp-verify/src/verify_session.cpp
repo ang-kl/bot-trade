@@ -21,6 +21,8 @@ constexpr int kAppAuthReq = 2100;
 constexpr int kAppAuthRes = 2101;
 constexpr int kAccountAuthReq = 2102;
 constexpr int kAccountAuthRes = 2103;
+constexpr int kTraderReq = 2121;
+constexpr int kTraderRes = 2122;
 constexpr int kDealListReq = 2133;
 constexpr int kDealListRes = 2134;
 constexpr int kErrorRes = 2142;
@@ -131,8 +133,37 @@ bool VerifySession::connect(long long accountId) {
     // authorize, and tearing the app-auth down would cost a reconnect.
     return false;
   }
+  // THE MONEY SCALE, asked of the BROKER — not of the keeper, and not
+  // assumed. A verifier that took the scale from the record it is checking
+  // would be checking that record against itself; a verifier that hardcoded
+  // one would be making the very assumption that produced ten false disputes
+  // on 18-09-2026. Failing this read is not fatal: money is simply not
+  // compared, and the verdict says which field went unchecked.
+  {
+    jsn::Value tReq{jsn::Object{}};
+    tReq.set("ctidTraderAccountId", static_cast<double>(accountId));
+    auto res = sendAndWait(kTraderReq, tReq, kTraderRes, 20000);
+    if (res) {
+      const jsn::Value& tr = res->get("trader");
+      if (tr.isObject()) {
+        const jsn::Value& md = tr.get("moneyDigits");
+        if (md.isNumber()) moneyDigits_[accountId] = static_cast<int>(md.asNumber(2));
+      }
+    }
+    if (moneyDigits_.find(accountId) == moneyDigits_.end()) {
+      logLine(host_ + ": moneyDigits unreadable for " + std::to_string(accountId) +
+              " — money will NOT be compared for this account");
+    }
+  }
+
   lastError_.clear();
   return true;
+}
+
+std::optional<int> VerifySession::moneyDigits(long long accountId) const {
+  auto it = moneyDigits_.find(accountId);
+  if (it == moneyDigits_.end()) return std::nullopt;
+  return it->second;
 }
 
 DealFetch VerifySession::deals(long long accountId, long long fromMs, long long toMs) {

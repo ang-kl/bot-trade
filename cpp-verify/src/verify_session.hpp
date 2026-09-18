@@ -57,6 +57,14 @@ struct DealFetch {
   // record against a partial fetch and call it verified.
   bool complete = false;
   int pages = 0;
+  // THE BROKER'S OWN MONEY SCALE, read from ProtoOATrader, never assumed.
+  // cTrader reports money as an integer scaled by 10^moneyDigits. This
+  // service compared the raw integer against the keeper's dollars and so
+  // disputed EVERY record by exactly that factor (measured 18-09-2026: ten
+  // verdicts, ten disputes, every net_pnl off by 100x). Absent here means the
+  // trader record could not be read — money is then NOT compared, and the
+  // verdict says so, because guessing the scale is the bug itself.
+  std::optional<int> moneyDigits;
 };
 
 class VerifySession {
@@ -66,6 +74,11 @@ public:
 
   /** App auth + account auth. Returns false and sets lastError() on failure. */
   bool connect(long long accountId);
+
+  /** The broker's money scale for an account, read at connect from
+   *  ProtoOATrader. Absent when that read failed — callers must then refuse
+   *  to compare money rather than assume a scale. */
+  std::optional<int> moneyDigits(long long accountId) const;
 
   /**
    * Every deal for `accountId` in [fromMs, toMs], following `hasMore` to
@@ -86,6 +99,7 @@ private:
                                         int expectType, int timeoutMs);
 
   std::string host_, clientId_, clientSecret_, accessToken_, lastError_;
+  std::map<long long, int> moneyDigits_;   // accountId -> broker's moneyDigits
   int loopbackPort_ = 0;
   CtraderWs ws_;
   std::mutex mtx_;              // one request at a time on this socket
