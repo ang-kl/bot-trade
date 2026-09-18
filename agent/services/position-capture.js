@@ -106,6 +106,92 @@ export function enqueueCapture(db, { accountId, positionId, symbol = null, now =
   return { ok: true }
 }
 
+/** How many times one row may be re-armed to chase a missing verdict. */
+export const MAX_REVERIFY = 3
+/** How many backlog rows one pass may re-arm. */
+export const REVERIFY_BATCH = 10
+
+/**
+ * PR-AP — RE-ARM COMPLETE RECORDS THAT NEVER GOT A VERDICT.
+ *
+ * WHY THERE IS A BACKLOG AT ALL. `position_history` rows built before
+ * cpp-verify was reachable are complete and correct as records, and carry
+ * `verification_state = 'unverified'` — which is exactly what they are. The
+ * queue row that produced them is already terminal (`captured`), and
+ * `enqueueCapture` is `ON CONFLICT DO NOTHING` by design, so nothing will
+ * ever look at them again. Left alone they stay unverified for ever: sixty
+ * closed trades whose figures no independent source has ever checked.
+ *
+ * WHAT THIS DOES NOT TOUCH:
+ *
+ *   `gave_up` rows. Those are terminal because the record could not be BUILT,
+ *   which is a different failure and a fact worth keeping. Re-arming one
+ *   would restart a fight with a structural gap AND erase the count of trades
+ *   this system could not describe — the failure mode #3 shape the queue's
+ *   own comment warns about.
+ *
+ *   Rows already `verified` or `disputed`. A dispute is an ANSWER, not a
+ *   pending question; re-running it would eventually overwrite a real
+ *   disagreement with a later agreement and lose the finding.
+ *
+ * WHY IT TERMINATES. Each arming increments `reverify_attempts`, and a row at
+ * MAX_REVERIFY is skipped for good. So a verifier that is down, or an account
+ * it was never authorized on, costs at most three re-captures per row instead
+ * of one per loop pass for ever. The cap is the whole reason the column
+ * exists (see db.js).
+ *
+ * WHY IT IS GATED ON A CONFIGURED VERIFIER. Without one, `drainCaptureQueue`
+ * re-captures and writes back no verdict, so the row stays `unverified` and
+ * is armed again next pass: broker traffic bought nothing. The caller passes
+ * `armed: false` when `VERIFY_URL` is unset.
+ */
+export function enqueueVerifyBacklog(db, { accountId, now = Date.now(), limit = REVERIFY_BATCH, maxReverify = MAX_REVERIFY } = {}) {
+  const acct = accountId == null ? null : String(accountId)
+  if (!acct) return { armed: 0, reason: 'no_identity' }
+
+  // Oldest closes first: the further back a record is, the less likely
+  // anything else will ever revisit it.
+  const rows = db.prepare(`
+    SELECT h.ctrader_position_id AS pid, h.symbol AS symbol,
+           q.state AS qstate, COALESCE(q.reverify_attempts, 0) AS rv
+      FROM position_history h
+      LEFT JOIN position_capture_queue q
+        ON q.account_id = h.account_id AND q.position_id = h.ctrader_position_id
+     WHERE h.account_id = ?
+       AND h.verification_state = 'unverified'
+       AND (q.state IS NULL OR q.state = 'captured')
+       AND COALESCE(q.reverify_attempts, 0) < ?
+     ORDER BY h.closed_at_ms ASC
+     LIMIT ?
+  `).all(acct, maxReverify, limit)
+
+  let armed = 0
+  for (const r of rows) {
+    if (r.qstate === 'captured') {
+      // `attempts` is reset because this is a fresh try at building the
+      // record, and the previous build SUCCEEDED — carrying the old count
+      // would push a healthy row toward `gave_up` for no reason.
+      db.prepare(`
+        UPDATE position_capture_queue
+           SET state = 'pending', due_at_ms = ?, attempts = 0, last_error = NULL,
+               settled_at = NULL, reverify_attempts = reverify_attempts + 1
+         WHERE account_id = ? AND position_id = ?
+      `).run(now, acct, r.pid)
+    } else {
+      // No queue row at all: a record built by an importer rather than by a
+      // detected close. Due immediately — the broker settled long ago, so the
+      // owner's 30 seconds do not apply.
+      db.prepare(`
+        INSERT INTO position_capture_queue (account_id, position_id, symbol, due_at_ms, reverify_attempts)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT(account_id, position_id) DO NOTHING
+      `).run(acct, r.pid, r.symbol == null ? null : String(r.symbol), now)
+    }
+    armed++
+  }
+  return { armed, scanned: rows.length }
+}
+
 /** Rows whose time has come. */
 export function dueCaptures(db, { now = Date.now(), limit = 50 } = {}) {
   return db.prepare(`
