@@ -367,4 +367,27 @@ after deploy, recorded in §L of this file as it happens.
 ## L. Execution log
 
 - 19-09-2026 06:1x SGT: v2 filed as PR #957; v2.1 folds in the Node service
-  log (§B·5). Wave 1 begins on merge.
+  log (§B·4). Merged 06:24 SGT (39ba525).
+- 19-09-2026 06:4x SGT: **Wave 1 built** (this PR). `strategy-pins.json`
+  gains `_off` (the eleven shadow strategies switched OFF on every enabled
+  account, seed-once) and `_trial` (`tsmom_long` ON on …0058 only, OFF
+  elsewhere; checkpoint 2026-12-19); `_all` = `fib_confluence`; `_reseed`
+  emptied. The seeder writes OFF orders under `off:<strategy>` records so a
+  human re-arm afterwards stands. The edge watchdog and the adaptive breaker
+  skip the momentum family (`judgedAtHorizon`, `strategies.js`), reported as
+  `skipped: judged_at_horizon`. `agent/config/momentum-book.json` seeds the
+  book's master switch (enabled, daily cadence, 24 h hold) — the one switch
+  with no seed. ONE cap: the book's slots are `min(maxPositions,
+  risk.maxOpenPositions)` for the account (`effectiveSlots`, wired from
+  loop.js), used for both the vol-target split and the entry cap. The book's
+  dispatch carries `sharedAccounts` so E·2's 1/N split covers it. The loop no
+  longer calls burn-in (heartbeat slot kept); `burn_in_probe` and
+  `vpo_cpp_direct` are `retired` in the producer inventory and excluded from
+  the automatic roster. Tests: pins shape, trial/off/late-joiner/human-re-arm
+  semantics, scratch-file `_off`/`_trial`, watchdog and breaker exemptions,
+  book seed, burn-in removal pin, effectiveSlots. Mutations red-then-restored:
+  the OFF write, the two exemptions, the slot minimum. Read-back owed after
+  deploy: boot line "N switched off", `_trial` ON on …0058 only, arming
+  ledger no longer names tsmom_long as "would be disarmed", the momentum pass
+  logging "at maxPositions … (risk maxOpenPositions caps the book's 8)" where
+  it binds.
