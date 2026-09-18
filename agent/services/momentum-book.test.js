@@ -1616,6 +1616,62 @@ test('PR-AX: an exit_sent row whose trade HAS closed is reclassified, once', asy
   assert.equal(r2.reclassified, 0, 'the count is a repair, not a heartbeat')
 })
 
+// PR-AZ — TERMINAL IS TWO STATES. Found by the Codex review on #946, after
+// PR-AX had merged, and verified against reconciler.js:489 before acting.
+//
+// The reconciler de-duplicates trades sharing one broker position: the newest
+// row is kept and the older ones are set to `rejected` — deliberately NOT
+// `closed`, because a closed duplicate gets the same broker P&L stamped onto
+// it by the backfill and one real loss then reads as several. Nothing
+// relinks momentum_book.trade_id, so a book row pointing at a de-duplicated
+// trade never matched the sweep's `= 'closed'` and sat in `exit_sent` for
+// ever: the dead end PR-AX removes, reintroduced through a state its first
+// version did not enumerate.
+test('PR-AZ: a row whose trade was REJECTED as a duplicate is reclassified too', async () => {
+  const { db, f, id, tradeId } = await bookRowInState('exit_sent')
+  db.prepare(`UPDATE trades SET status = 'rejected' WHERE id = ?`).run(tradeId)
+  const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+  const row = bookRow(db, id)
+  assert.equal(row.status, 'closed', 'a de-duplicated trade is terminal, and its book row goes with it')
+  assert.equal(r.reclassified, 1)
+  assert.match(db.prepare('SELECT note FROM momentum_book WHERE id = ?').get(id).note, /trade rejected/,
+    'and the note says WHICH terminal state retired it — "closed" would be a lie about a dedupe')
+})
+
+test('PR-AZ: an IN-FLIGHT trade status does NOT retire a live book row', async () => {
+  // The first version of this case used a made-up status and could not exist:
+  // db.js CHECKs trades.status against a closed vocabulary, so the insert
+  // threw. The constraint is better evidence than the guess was — it names
+  // the real list, and two of its members are in flight rather than terminal.
+  // A `<> 'open'` predicate would retire a row mid-submission.
+  for (const st of ['submitting', 'unconfirmed']) {
+    const { db, f, id, tradeId } = await bookRowInState('exit_sent')
+    db.prepare(`UPDATE trades SET status = ? WHERE id = ?`).run(st, tradeId)
+    const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+    assert.equal(bookRow(db, id).status, 'exit_sent', `${st} is in flight, not terminal`)
+    assert.equal(r.reclassified, 0)
+  }
+})
+
+test('PR-AZ: a CANCELLED trade retires its book row — an order that never filled is not a position', async () => {
+  const { db, f, id, tradeId } = await bookRowInState('exit_sent')
+  db.prepare(`UPDATE trades SET status = 'cancelled' WHERE id = ?`).run(tradeId)
+  const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(bookRow(db, id).status, 'closed')
+  assert.equal(r.reclassified, 1)
+})
+
+test('PR-AZ: the terminal set matches the schema\'s own vocabulary', () => {
+  // The two must not drift: a status added to the CHECK and not considered
+  // here silently becomes "in flight for ever" for a book row.
+  const dbSrc = readFileSync(new URL('../db.js', import.meta.url), 'utf8')
+  const m = dbSrc.match(/CHECK\(status IN \('open','closed','cancelled','rejected','submitting','unconfirmed'\)\)/)
+  assert.ok(m, 'trades.status still carries the vocabulary this sweep was written against')
+  const src = readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8')
+  assert.match(src, /IN \('closed', 'rejected', 'cancelled'\)/,
+    'and the sweep retires exactly the terminal three')
+})
+
 test('PR-AX: an OPEN row whose trade closed is still reclassified, and NOT counted', async () => {
   // The pre-existing path, unchanged. `reclassified` counts only rows that
   // were stranded in exit_sent — the thing that used to be unreachable.
@@ -1643,6 +1699,6 @@ test('PR-AX: the trail STILL selects open alone — the sweep must not become a 
   const code = src.replace(/^\s*\/\/.*$/gm, '')
   assert.match(code, /FROM momentum_book WHERE status = 'open'`\)\.all\(\)/,
     'the trail loop keeps its own predicate')
-  assert.match(code, /SELECT id FROM momentum_book WHERE status = 'exit_sent'/,
+  assert.match(code, /FROM momentum_book WHERE status = 'exit_sent'/,
     'and the reclassification is its own query')
 })

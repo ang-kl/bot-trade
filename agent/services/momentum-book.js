@@ -864,14 +864,40 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   // `exit_sent` means the broker ACCEPTED the close. There is no untrailed
   // live position here, only a status that could not advance.
   //
-  // So this touches exactly one thing: a row whose trade is closed stops
-  // claiming to be part of the book.
+  // So this touches exactly one thing: a row whose trade has REACHED A
+  // TERMINAL STATE stops claiming to be part of the book.
+  //
+  // TERMINAL IS TWO STATES, NOT ONE (Codex review on #946, verified against
+  // reconciler.js:489). The reconciler de-duplicates trades that share one
+  // broker position: the newest row is kept and the older ones are set to
+  // `rejected` — deliberately not `closed`, because a closed duplicate gets
+  // the same broker P&L stamped onto it by the backfill and one real loss
+  // gets counted once per duplicate row.
+  //
+  // Nothing relinks `momentum_book.trade_id` when that happens. So a book row
+  // pointing at a de-duplicated trade would never match a `= 'closed'`
+  // predicate and would sit in `exit_sent` for ever — the exact dead end this
+  // sweep exists to remove, reintroduced through a state the first version
+  // did not enumerate.
+  //
+  // THE VOCABULARY IS THE SCHEMA'S, not a guess: db.js CHECKs trades.status
+  // against open / closed / cancelled / rejected / submitting / unconfirmed.
+  // Terminal for a book row is closed, rejected and cancelled; `submitting`
+  // and `unconfirmed` are IN FLIGHT and must not retire anything.
+  //
+  // NAMED, not `<> 'open'`: with two in-flight states in that list, a
+  // negation would retire a row the moment an order was mid-submission. A new
+  // terminal state gets added here deliberately, which is also how `rejected`
+  // was found in the first place (db.js:43).
   {
-    const done = db.prepare(`SELECT id FROM momentum_book WHERE status = 'exit_sent'
-                              AND COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open') = 'closed'`).all()
+    const done = db.prepare(`SELECT id,
+                                    COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open') AS tstatus
+                               FROM momentum_book WHERE status = 'exit_sent'
+                              AND COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open')
+                                  IN ('closed', 'rejected', 'cancelled')`).all()
     for (const r of done) {
-      db.prepare(`UPDATE momentum_book SET status = 'closed', exited_at = COALESCE(exited_at, ?), note = COALESCE(note, '') || ' | trade closed' WHERE id = ?`)
-        .run(new Date(now).toISOString(), r.id)
+      db.prepare(`UPDATE momentum_book SET status = 'closed', exited_at = COALESCE(exited_at, ?), note = COALESCE(note, '') || ' | trade ' || ? WHERE id = ?`)
+        .run(new Date(now).toISOString(), r.tstatus, r.id)
     }
     summary.reclassified = done.length
   }
