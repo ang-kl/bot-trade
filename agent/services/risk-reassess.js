@@ -55,6 +55,7 @@ export const PROPOSABLE = {
   minSLDistancePct:   { min: 0.02,   max: 2,    kind: 'number',   label: 'Minimum stop distance (%)' },
   maxCurrencyExposure: { min: 1,     max: 10,   kind: 'int',      label: 'Max positions per currency' },
   maxClusterExposure: { min: 1,      max: 10,   kind: 'int',      label: 'Max positions per cluster' },
+  maxAccountsPerSymbol: { min: 0,     max: 10,   kind: 'int',      label: 'Max accounts per symbol (book-wide)' },
   maxMarginUsagePct:  { min: 0.05,   max: 0.9,  kind: 'fraction', label: 'Max margin usage' },
   marginLevelFloorPct: { min: 100,   max: 1000, kind: 'number',   label: 'Margin level floor (%)' },
   equityStopPct:      { min: 0.02,   max: 0.5,  kind: 'fraction', label: 'Equity stop' },

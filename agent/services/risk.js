@@ -32,6 +32,7 @@ import { DEFAULT_NULL_EXIT_MIN_R } from './null-exit-guard.js'
 // not import risk.js, so this adds no cycle.
 import { pulseFor } from './market-pulse.js'
 import { checkSymbolCap, DEFAULT_MAX_PER_SYMBOL } from './symbol-position-cap.js'
+import { checkBookSymbolCap, DEFAULT_MAX_ACCOUNTS_PER_SYMBOL } from './book-symbol-cap.js'
 // Leaf module (pure rule + one indexed lookback) — no cycle back into risk.js.
 import { nextOpportunityKey } from './opportunity-identity.js'
 import { reasonKey } from './veto-breakdown.js'
@@ -277,6 +278,10 @@ export const DEFAULT_RISK_CONFIG = {
   // daily-loss sum silently under-count it. See services/unresolved-pnl.js.
   // Owner-set hard ceiling, 05-08-2026 — see symbol-position-cap.js.
   maxPositionsPerSymbol: DEFAULT_MAX_PER_SYMBOL,
+  // Book-wide: how many ACCOUNTS may hold one symbol in one direction at once.
+  // Measured 18-09-2026; see book-symbol-cap.js for why the per-account
+  // ceiling above never saw the NATGAS concentration.
+  maxAccountsPerSymbol: DEFAULT_MAX_ACCOUNTS_PER_SYMBOL,
   blockOnUnknownPnl: DEFAULT_UNKNOWN_PNL_BLOCK,
   unknownPnlGraceMin: DEFAULT_UNKNOWN_PNL_GRACE_MIN,
   // Owner 03-08-2026: past this age a still-unfilled row stops blocking. 0 or
@@ -1662,6 +1667,31 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     const cap = checkSymbolCap(db, { accountId: acct, symbol: proposal.symbol, cap: capCfg })
     checks.symbol_positions = { open: cap.open, inFlight: cap.inFlight, cap: cap.cap }
     if (!cap.allow) return veto(cap.reason, checks, proposal)
+  }
+
+  // ---- 4a-ii. BOOK-WIDE symbol ceiling (across accounts) ------------------
+  //
+  // The ceiling directly above is PER ACCOUNT and was never breached by the
+  // event that motivated this one. Measured 18-09-2026 on the 60 complete
+  // position_history records: four accounts opened NATGAS long in the same
+  // minute, one position each, every account individually compliant, while
+  // the book carried 4x the intended exposure to one contract. NATGAS was 23
+  // of 60 trades and -980.84 of the -824.33 total; ex-NATGAS the book makes
+  // money at a 1.45 profit factor.
+  //
+  // Every guard in this file measures per account. The risk is borne per
+  // OWNER. See docs/book-symbol-exposure-plan-2026-09-18.md and
+  // services/book-symbol-cap.js for the evidence and the sizing.
+  //
+  // BOTH ceilings must pass; this one does not relax the one above.
+  {
+    const bookCfg = config.maxAccountsPerSymbol == null || config.maxAccountsPerSymbol === ''
+      ? DEFAULT_MAX_ACCOUNTS_PER_SYMBOL : Number(config.maxAccountsPerSymbol)
+    const book = checkBookSymbolCap(db, {
+      symbol: proposal.symbol, direction: proposal.direction ?? proposal.side, accountId: acct, cap: bookCfg,
+    })
+    checks.book_symbol_accounts = { others: book.others, cap: book.cap }
+    if (!book.allow) return veto(book.reason, checks, proposal)
   }
 
   // ---- 4b. Per-symbol re-entry cooldown -----------------------------------

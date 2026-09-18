@@ -60,7 +60,7 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `2c84d8a` · 119 action call sites · 93 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `4be4710` · 119 action call sites · 93 state routes read.
 
 Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -126,11 +126,11 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 58 | `src/pages/Risk.jsx:768` | What that will look like | `/actions/profit-ratchet` | `profit_ratchet_state_json` ✓, dynamic key(s) — per-account/overlay write, via clearOverlay(db, …), saveWithOverlay(db, …), setState(db, …) | reload (heuristic) | WIRED |
 | 59 | `src/pages/Risk.jsx:800` | Protective stop distance | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | reload (heuristic) | WIRED |
 | 60 | `src/pages/Risk.jsx:1033` | (inline) | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
-| 61 | `src/pages/Risk.jsx:1160` | Guardian move | `/actions/weekend-bank` | `weekend_bank` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
-| 62 | `src/pages/Risk.jsx:1168` | On | `/actions/weekend-loss-flag` | `weekend_loss_flag` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
-| 63 | `src/pages/Risk.jsx:1178` | (inline) | `/actions/guardian-move-pct` | `guardian_move_pct` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
-| 64 | `src/pages/Risk.jsx:1260` | A market order with no take profit is refused. | `/actions/vpo-settings` | `vpo_enabled` ✓, `vpo_config_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
-| 65 | `src/pages/Risk.jsx:1268` | (inline) | `/actions/exec-guard` | `exec_guard_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
+| 61 | `src/pages/Risk.jsx:1163` | Guardian move | `/actions/weekend-bank` | `weekend_bank` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
+| 62 | `src/pages/Risk.jsx:1171` | On | `/actions/weekend-loss-flag` | `weekend_loss_flag` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
+| 63 | `src/pages/Risk.jsx:1181` | (inline) | `/actions/guardian-move-pct` | `guardian_move_pct` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
+| 64 | `src/pages/Risk.jsx:1263` | A market order with no take profit is refused. | `/actions/vpo-settings` | `vpo_enabled` ✓, `vpo_config_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
+| 65 | `src/pages/Risk.jsx:1271` | (inline) | `/actions/exec-guard` | `exec_guard_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
 | 66 | `src/pages/Trade.jsx:527` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), executes | `/state/positions`, `/state/broker-cache`, `/state/risk-full` | WIRED |
 | 67 | `src/pages/Trade.jsx:579` | (inline) | `/actions/validation-fill` | executes | the reply — route returns the effective value (heuristic) | WIRED |
 | 68 | `src/pages/Trade.jsx:606` | placeOrder | `/actions/manual-order` | `api_ctrader_last_ok` ✓, via resolveSymbolId(db, …), setState(db, …), recordManualOrderTrade(db, …), executes | `/state/health` | WIRED |
@@ -181,9 +181,9 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 113 | `src/pages/Tune.jsx:3520` | (inline) | `/actions/pending-mode` | `pending_matrix_json` ✓, `pending_mode_enabled` ✓, via setState(db, …) | `/state/config`, `/state/health` | WIRED |
 | 114 | `src/pages/Tune.jsx:3764` | Preset imported | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
 | 115 | `src/pages/Tune.jsx:3765` | Preset imported | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
-| 116 | `src/pages/Tune.jsx:3766` | Preset imported | `/actions/fib-rsi-filter` | `fib_rsi_filter` ✓, via setState(db, …) | `/state/fib-rsi-filter` | WIRED |
-| 117 | `src/pages/Tune.jsx:3767` | Preset imported | `/actions/fib-vwap-filter` | `fib_vwap_filter` ✓, via setState(db, …) | `/state/fib-vwap-filter` | WIRED |
-| 118 | `src/pages/Tune.jsx:3768` | Preset imported | `/actions/fib-fvg-filter` | `fib_fvg_filter` ✓, via setState(db, …) | `/state/fib-fvg-filter` | WIRED |
+| 116 | `src/pages/Tune.jsx:3766` | Preset imported | `/actions/fib-rsi-filter` | `fib_rsi_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-rsi-filter` | WIRED |
+| 117 | `src/pages/Tune.jsx:3767` | Preset imported | `/actions/fib-vwap-filter` | `fib_vwap_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-vwap-filter` | WIRED |
+| 118 | `src/pages/Tune.jsx:3768` | Preset imported | `/actions/fib-fvg-filter` | `fib_fvg_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-fvg-filter` | WIRED |
 | 119 | `src/pages/Tune.jsx:3769` | Preset imported | `/actions/symbols` | `autopilot_symbols_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), writeWatchlist(db, …) | `/state/health`, `/state/config`, `/state/market-hours` | WIRED |
 
 ### State routes read by src/ (GET)
