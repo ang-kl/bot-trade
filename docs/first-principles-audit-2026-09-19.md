@@ -48,7 +48,7 @@ restart re-pushes credentials to both sidecars and re-imports 683 statement
 deals. The fast monitor was skipping most of its ticks before the second
 hang ("previous pass still running", 72 times in 31 minutes).
 
-## B. What the two sidecar logs say (13:53–21:32 UTC 18-09)
+## B. What the three logs say (13:53–21:57 UTC 18-09)
 
 B·1 cpp-exec (demo): booted on the #956 deploy at 13:53:54; `TELEMETRY_PATH`
 unset so order telemetry is off; recorder spool ready, switched ON by the
@@ -78,7 +78,7 @@ phases that call the broker (bars, positions). The 21:30 boot then logged
 …9908 every pass (owed book exits retried into a closed market) and `…7342:
 margin exhausted (headroom $-1664.55)`.
 
-B·5 The Node service log (21:26–21:57 UTC, 1,001 lines) adds four facts.
+B·4 The Node service log (21:26–21:57 UTC, 1,001 lines) adds four facts.
 (a) The machine's own arming ledger, printed at 21:53:12, agrees with this
 audit: "pinned cells: 69 across 7 accounts … 68 have too few own closes to
 judge an edge … 5 would be disarmed right now on their own evidence" — and
@@ -99,7 +99,7 @@ the recorder at 1,506,418 events / 0.33 GB with 48.19 GB free; the tick
 shadow closing a trade every ten minutes (ledger seq 102 → 105); two pending
 orders; reconcile quiet.
 
-B·4 The momentum daily pass at 21:17:52 (right after the first restart) built
+B·5 The momentum daily pass at 21:17:52 (right after the first restart) built
 the universe for all seven accounts: 280 rows, 114 tradable, 151
 `below_min_lot`, 15 `unknown_symbol`; on …3489 (live, $56 equity) 0/56
 tradable. It entered nothing.
