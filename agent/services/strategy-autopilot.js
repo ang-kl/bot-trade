@@ -84,12 +84,17 @@ export function autopilotIntervalMs(db, opts = {}) {
  */
 /**
  * The ARM BAR, from config (owner "go with C", 01-09-2026). decideChanges has
- * accepted armMinPf/armMinWin/armMinTrades overrides since it was written,
- * but the production call site never passed them — a knob with no writer,
- * the same shape earned_floor_json had before stage 2. This loader is the
- * writer's other half: `autopilot_arm_bar_json` over the ARM_BAR defaults,
- * clamped so junk can never loosen the bar to zero. Dials via
- * POST /actions/autopilot { armBar: { minPf?, minWin?, minTrades? } }.
+ * accepted armMinPf/armMinTrades overrides since it was written, but the
+ * production call site never passed them — a knob with no writer, the same
+ * shape earned_floor_json had before stage 2. This loader is the writer's
+ * other half: `autopilot_arm_bar_json` over the ARM_BAR defaults, clamped so
+ * junk can never loosen the bar to zero. Dials via
+ * POST /actions/autopilot { armBar: { minPf?, minTrades? } }.
+ *
+ * NO WIN-RATE TERM (first-principles audit 2026-09-19, §K item 10: exit
+ * asymmetry sets expectancy, not entry accuracy). A stored `minWin` from
+ * before that change is IGNORED and named in `ignored`, so a reader of the
+ * config learns the dial does nothing rather than assuming it still bites.
  */
 export function loadArmBar(db) {
   const num = (v, dflt, lo, hi) => {
@@ -99,11 +104,12 @@ export function loadArmBar(db) {
   let p = null
   try { p = JSON.parse(getState(db, 'autopilot_arm_bar_json') || 'null') } catch { p = null }
   const src = p && typeof p === 'object' ? p : {}
-  return {
+  const out = {
     minPf: num(src.minPf, ARM_BAR.profitFactor, 1, 10),
-    minWin: num(src.minWin, ARM_BAR.winRatePct, 10, 95),
     minTrades: Math.round(num(src.minTrades, ARM_BAR.minTrades, 5, 500)),
   }
+  if (src.minWin != null) out.ignored = ['minWin']
+  return out
 }
 
 /** Disarm floor as a fraction of the arm bar's PF — see decideChanges. */
@@ -119,20 +125,23 @@ export function decideChanges(verdicts, current, opts = {}) {
   // Defaults from edge-bars.js — see that file for why this bar deliberately
   // differs from the go-live gate and the breaker floor.
   const armMinPf = opts.armMinPf ?? ARM_BAR.profitFactor
-  const armMinWin = opts.armMinWin ?? ARM_BAR.winRatePct
   const armMinTrades = opts.armMinTrades ?? ARM_BAR.minTrades
+  // NO WIN-RATE TERM. The bar was PF/WR/trades until 2026-09-19; the
+  // first-principles audit (§K item 10) removed the win-rate half — exit
+  // asymmetry sets expectancy, not entry accuracy. `opts.armMinWin` is no
+  // longer read; a verdict's winRate is carried as a measured figure only.
   // SHRINKAGE PRIOR (owner plan, 02-09-2026; ML audit). ~3.9% of zero-edge
-  // combos clear 1.5/55/20 at n=20 on luck alone, and the sweep tests ~1,872
-  // of them. Each combo's PF and WR are shrunk toward the SWEEP-WIDE mean
-  // with the weight of `k` phantom trades before the bar is applied — a
-  // combo with 20 trades and a 60% win rate in a sweep averaging 45% reads
-  // (20·60 + 20·45)/40 = 52.5, below a 55 bar; the same edge on 100 trades
-  // reads 57.5 and arms. Evidence has to outweigh the prior to count.
-  // `opts.shrink` = { k, wrMean, pfMean } computed by the caller from ALL
-  // verdicts of the sweep; absent → no shrinkage (tests, manual routes).
+  // combos clear 1.5/20 at n=20 on luck alone, and the sweep tests ~1,872
+  // of them. Each combo's PF is shrunk toward the SWEEP-WIDE mean with the
+  // weight of `k` phantom trades before the bar is applied — a combo with 20
+  // trades and PF 2.0 in a sweep averaging 1.0 reads (20·2.0 + 20·1.0)/40 =
+  // 1.5, below a 1.7 bar; the same edge on 100 trades reads 1.83 and arms.
+  // Evidence has to outweigh the prior to count. `opts.shrink` =
+  // { k, wrMean, pfMean } computed by the caller from ALL verdicts of the
+  // sweep; absent → no shrinkage (tests, manual routes).
   const shrink = opts.shrink && Number.isFinite(opts.shrink.k) && opts.shrink.k > 0 ? opts.shrink : null
   const shrunk = (v) => shrinkVerdict(v, shrink)
-  const armGrade = (v) => { const s = shrunk(v); return (s.pf ?? 0) >= armMinPf && (s.winRate ?? 0) >= armMinWin && (v.trades ?? 0) >= armMinTrades }
+  const armGrade = (v) => { const s = shrunk(v); return (s.pf ?? 0) >= armMinPf && (v.trades ?? 0) >= armMinTrades }
   // DISARM FLOOR (02-09-2026, ML audit). Disarm used to trigger only on
   // NO-GO — PF below 1.1 — while arming needed 1.5: a 0.4-PF hysteresis that
   // kept a false arm in place through dozens of re-judgements of the same
@@ -498,9 +507,9 @@ export function applyChanges(db, changes, opts = {}) {
   setState(db, 'pending_mode_enabled', Object.keys(pendM).length ? 'true' : 'false')
 }
 
-/** Does a verdict clear the arm bar? The single definition decideChanges and the history writer share. */
+/** Does a verdict clear the arm bar (PF and sample size — never win rate)? The single definition decideChanges and the history writer share. */
 export function clearsArmBar(v, bar) {
-  return (v?.pf ?? 0) >= bar.minPf && (v?.winRate ?? 0) >= bar.minWin && (v?.trades ?? 0) >= bar.minTrades
+  return (v?.pf ?? 0) >= bar.minPf && (v?.trades ?? 0) >= bar.minTrades
 }
 
 /**
@@ -539,7 +548,10 @@ export function recordComboArms(db, changes, { verdicts = [], armBar = null, rea
       at, c.kind, c.strategy ?? null, c.symbol ?? null, c.timeframe ?? null,
       c.kind === 'pending' ? 'touch' : (c.kind === 'matrix' ? 'close' : null),
       v?.pf ?? null, v?.winRate ?? null, v?.trades ?? null, v?.wfPositive ?? null, v?.wfActive ?? null,
-      armBar?.minPf ?? null, armBar?.minWin ?? null, armBar?.minTrades ?? null,
+      // bar_min_win stays NULL: the column records the bar in force, and
+      // there is no win-rate bar (2026-09-19). bt_win_rate_pct above is the
+      // MEASURED backtest figure and is still written.
+      armBar?.minPf ?? null, null, armBar?.minTrades ?? null,
     )
   }
   // A matrix or pending row is STRATEGY-BLIND: the pair leaves the matrix
@@ -753,7 +765,7 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   const armBar = loadArmBar(db)
   const shrink = sweepShrinkPrior(verdicts)
   const changes = decideChanges(verdicts, current, {
-    maxChanges, armMinPf: armBar.minPf, armMinWin: armBar.minWin, armMinTrades: armBar.minTrades,
+    maxChanges, armMinPf: armBar.minPf, armMinTrades: armBar.minTrades,
     liveDisarms: loadLiveDisarms(db),
     shrink,
   })
@@ -777,7 +789,7 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   // raw figures would announce combos the bar just refused.
   const armable = verdicts.filter((v) => {
     const s = shrinkVerdict(v, shrink)
-    return v.state === 'go' && (s.pf ?? 0) >= armBar.minPf && (s.winRate ?? 0) >= armBar.minWin && (v.trades ?? 0) >= armBar.minTrades
+    return v.state === 'go' && (s.pf ?? 0) >= armBar.minPf && (v.trades ?? 0) >= armBar.minTrades
   }).length
   const cooled = changes.cooledOff?.length
     ? ` ${changes.cooledOff.length} strategy(ies) held off — disarmed live, cooling until ${changes.cooledOff.map(c => `${c.strategy} ${c.until.slice(11, 16)}Z`).join(', ')}.`
@@ -785,7 +797,7 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   const prior = changes.shrink
     ? ` Shrinkage prior: sweep mean WR ${changes.shrink.wrMean}% / PF ${changes.shrink.pfMean}, weight ${changes.shrink.k} trades.`
     : ''
-  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable at PF≥${armBar.minPf}/W≥${armBar.minWin}%/n≥${armBar.minTrades} (${goCount} GO at the loose bar; disarm floor PF<${changes.disarmMinPf.toFixed(2)})${errors.length ? `, ${errors.length} errors` : ''}.${prior}${cooled}${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
+  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable at PF≥${armBar.minPf}/n≥${armBar.minTrades} (${goCount} GO at the loose bar; disarm floor PF<${changes.disarmMinPf.toFixed(2)})${errors.length ? `, ${errors.length} errors` : ''}.${prior}${cooled}${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
 
   if (mode === 'suggest') {
     const all = [...changes.disarm.map(c => `disarm ${describe(c)}`), ...changes.arm.map(c => `arm ${describe(c)}`), ...changes.suggestions.map(c => `${c.action} ${describe(c)}`)]

@@ -10,10 +10,21 @@ import { GO_PF } from './rsi2-seed.js'
 // constant that has drifted back to a hand-typed literal is exactly finding #3
 // coming back, so each one is checked against its consumer.
 test('every consumer takes its bar from the register, not a literal', () => {
-  assert.equal(DEFAULT_GOAL.winRatePct, GO_LIVE_BAR.winRatePct)
   assert.equal(DEFAULT_GOAL.profitFactor, GO_LIVE_BAR.profitFactor)
   assert.equal(DEFAULT_PERFORMANCE_BREAKER.pfThreshold, BREAKER_BAR.profitFactor)
   assert.equal(GO_PF, SEED_BAR.profitFactor)
+})
+
+// First-principles audit 2026-09-19, §K item 10: exit asymmetry sets
+// expectancy, not entry accuracy. Win rate is a statistic this system measures
+// and shows; it is not a bar anything is held to. A `winRatePct` key on either
+// bar is the threshold coming back, and this is the test that goes red.
+test('no bar carries a win-rate threshold — win rate is measured, never a bar', () => {
+  for (const [name, bar] of [['GO_LIVE_BAR', GO_LIVE_BAR], ['ARM_BAR', ARM_BAR], ['BREAKER_BAR', BREAKER_BAR], ['SEED_BAR', SEED_BAR]]) {
+    assert.equal(Object.hasOwn(bar, 'winRatePct'), false, `${name} must not carry winRatePct`)
+    assert.equal(Object.hasOwn(bar, 'minWin'), false, `${name} must not carry minWin`)
+  }
+  assert.equal(Object.hasOwn(DEFAULT_GOAL, 'winRatePct'), false, 'the goal has no win-rate target either')
 })
 
 test('the bars are ORDERED breaker < seed < arm <= goLive', () => {

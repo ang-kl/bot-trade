@@ -626,6 +626,19 @@ Measurement history — each line is a real run of the script, not a claim:
   is **`№ 7,995`** plus any unstamped line made after this ledger. The
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+- 2026-09-18 23:20 UTC, **same remote container, PARTIAL corpus**: eleven
+  unstamped status lines followed the ledger above (the Wave 2 gate, the
+  attribution-invariant fix, #959 opened, gated and merged 06:41 SGT, the
+  deploy read-back), so the Wave 1/2 report was stamped **`№ 8,006`**
+  (06:42 SGT 19-09) by count; twelve more followed it (the Wave 3 facts,
+  the two builders, the tests, the mutation checks, the §L entry, the
+  stale #957 check-in), so the "completed?" answer was stamped
+  **`№ 8,019`** (07:00 SGT) by count. Two unstamped lines followed it
+  (the inventory regeneration, the checker's findings applied) by this
+  ledger, so the next stamped reply is **`№ 8,022`** plus any unstamped
+  line made after this ledger. The count is by replies, not by stamps. A
+  later re-measure that reads below this line is missing these, not
+  correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

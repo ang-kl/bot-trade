@@ -132,13 +132,17 @@ export function integrityOf(rows) {
 }
 
 /**
- * Per strategy×symbol×timeframe, is the combo armed against ARM_BAR, and if
- * not, how many more trades would it take at the CURRENT win rate?
+ * Per strategy×symbol×timeframe, is the combo armed against ARM_BAR (profit
+ * factor and sample size), and if not, how many more trades would it take?
  *
  * `tradesToArm` is null when the combo's own numbers cannot reach the bar by
  * adding trades — a combo at PF 0.2 does not need more trades, it needs a
  * different idea, and printing a countdown for it would be a lie shaped like
  * a plan.
+ *
+ * `winRatePct` is on every bucket as a MEASURED figure and takes no part in
+ * `armed` (first-principles audit 2026-09-19, §K item 10: exit asymmetry sets
+ * expectancy, not entry accuracy).
  */
 export function bucketsOf(rows, bar = ARM_BAR) {
   const by = new Map()
@@ -154,18 +158,16 @@ export function bucketsOf(rows, bar = ARM_BAR) {
     const e = edgeOf(rs)
     const [strategy, symbol, timeframe] = key.split('|')
     const pfOk = e.profitFactor != null && e.profitFactor >= bar.profitFactor
-    const wrOk = e.winRatePct != null && e.winRatePct >= bar.winRatePct
     const nOk = e.trades >= bar.minTrades
     out.push({
       strategy, symbol, timeframe,
       ...e,
-      armed: pfOk && wrOk && nOk,
-      // Only a SAMPLE shortfall is countable. A combo failing on PF or win
-      // rate is not N trades away from arming; it is failing.
-      tradesToArm: (pfOk && wrOk && !nOk) ? bar.minTrades - e.trades : null,
+      armed: pfOk && nOk,
+      // Only a SAMPLE shortfall is countable. A combo failing on PF is not N
+      // trades away from arming; it is failing.
+      tradesToArm: (pfOk && !nOk) ? bar.minTrades - e.trades : null,
       failing: [
         ...(pfOk ? [] : [`profitFactor ${e.profitFactor ?? 'n/a'} < ${bar.profitFactor}`]),
-        ...(wrOk ? [] : [`winRate ${e.winRatePct ?? 'n/a'}% < ${bar.winRatePct}%`]),
         ...(nOk ? [] : [`trades ${e.trades} < ${bar.minTrades}`]),
       ],
     })
@@ -180,19 +182,19 @@ export function bucketsOf(rows, bar = ARM_BAR) {
  * @param {{rows:Array, goal:object, nowMs:number, windowDays:number}} a
  */
 export function goLiveReadiness({ rows, goal, nowMs = null, windowDays = 30 }) {
-  const g = goal || { profitFactor: GO_LIVE_BAR.profitFactor, winRatePct: GO_LIVE_BAR.winRatePct, gateOn: 'profitFactor', minTrades: 30, deadline: DEFAULT_GOAL_DEADLINE }
+  const g = goal || { profitFactor: GO_LIVE_BAR.profitFactor, gateOn: 'profitFactor', minTrades: 30, deadline: DEFAULT_GOAL_DEADLINE }
   const integrity = integrityOf(rows)
   const edge = edgeOf(rows)
   const buckets = bucketsOf(rows)
 
+  // THE BAR IS PROFIT FACTOR AND SAMPLE SIZE. Win rate is measured (edge and
+  // gate both carry it) but gates nothing: a goal whose gateOn says 'both' or
+  // 'winRate' is not honoured — goal-tracker's loadGoal already refuses those
+  // and says so in gateOnNote; this read must not resurrect them (first-
+  // principles audit 2026-09-19, §K item 10).
   const pfMet = edge.profitFactor != null && edge.profitFactor >= g.profitFactor
-  const wrMet = edge.winRatePct != null && edge.winRatePct >= g.winRatePct
   const nMet = edge.trades >= g.minTrades
-  const barMet = nMet && (
-    g.gateOn === 'both' ? (pfMet && wrMet)
-      : g.gateOn === 'winRate' ? wrMet
-        : pfMet
-  )
+  const barMet = nMet && pfMet
 
   // ORDER MATTERS. Integrity is checked FIRST and can override a met bar,
   // because "the bar is met on a record that cannot be believed" is the exact
@@ -210,9 +212,12 @@ export function goLiveReadiness({ rows, goal, nowMs = null, windowDays = 30 }) {
     // a phone does not have to assemble it.
     headline: headlineFor(verdict, edge, g, integrity, buckets),
     gate: {
-      on: g.gateOn,
+      on: 'profitFactor',
+      ...(g.gateOnNote ? { onNote: g.gateOnNote } : {}),
       profitFactor: { value: edge.profitFactor, bar: g.profitFactor, met: pfMet },
-      winRatePct: { value: edge.winRatePct, bar: g.winRatePct, met: wrMet },
+      // Measured, no bar, no `met`: a client that printed "met: false" beside
+      // the win rate would be showing a fake target.
+      winRatePct: { value: edge.winRatePct, measured: true },
       trades: { value: edge.trades, bar: g.minTrades, met: nMet },
       barMet,
     },
@@ -256,9 +261,7 @@ function headlineFor(verdict, edge, g, integrity, buckets) {
     return `UNMEASURABLE — ${integrity.blockers.length} integrity blocker(s). The ledger cannot carry a go-live verdict yet; this is not a verdict about the edge.`
   }
   const armed = buckets.filter(b => b.armed).length
-  const metric = g.gateOn === 'winRate' ? `win rate ${edge.winRatePct}% vs ${g.winRatePct}%`
-    : g.gateOn === 'both' ? `PF ${edge.profitFactor} vs ${g.profitFactor} AND win rate ${edge.winRatePct}% vs ${g.winRatePct}%`
-      : `PF ${edge.profitFactor} vs ${g.profitFactor}`
+  const metric = `PF ${edge.profitFactor} vs ${g.profitFactor}`
   return verdict === 'GO'
     ? `GO — ${metric} on ${edge.trades} trades, ${armed} armed combo(s), record clean.`
     : `NO — ${metric} on ${edge.trades} trades. Record is clean, so this is a real answer about the edge.`
