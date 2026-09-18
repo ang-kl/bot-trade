@@ -639,6 +639,15 @@ Measurement history — each line is a real run of the script, not a claim:
   line made after this ledger. The count is by replies, not by stamps. A
   later re-measure that reads below this line is missing these, not
   correcting them.
+- 2026-09-18 23:26 UTC, **same remote container, PARTIAL corpus**: after
+  the ledger above, the unstamped status lines ran on through Wave 3
+  (#960 opened, gated, merged 07:15 SGT 19-09 and read back: the 19-row
+  goal table and the first equity snapshot) and into Wave 4a's build (the
+  facts, the seed, the route fix, the tests, the mutation checks) — by the
+  transcript at this ledger the count is carried from `№ 8,019` plus the
+  lines since, and the next stamped reply re-counts from the transcript
+  before it stamps (the 09-11 rule). A later re-measure that reads below
+  this line is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
