@@ -72,12 +72,14 @@ test('applied once per content: a human change after the seed stands; a content 
   writeFileSync(p, JSON.stringify({ _note: 'b', reset: ['maxOpenPositions'], keep: [], prunePinnedDefaults: true, dropRetired: true }))
   r = seedRiskConfigFromFile(db, { file: p })
   assert.equal(r.applied, false)
-  // the operative content changes → re-applied
+  // the operative content changes → re-applied for the NEW key only; the
+  // key reset under the earlier content is the human's now (12 stands)
   writeFileSync(p, JSON.stringify({ reset: ['maxOpenPositions', 'cooldownMinutes'], keep: [], prunePinnedDefaults: true, dropRetired: true }))
   r = seedRiskConfigFromFile(db, { file: p })
   assert.equal(r.applied, true)
-  assert.deepEqual([...r.reset].sort(), ['cooldownMinutes', 'maxOpenPositions'])
-  assert.equal(loadRiskConfig(db).maxOpenPositions, DEFAULT_RISK_CONFIG.maxOpenPositions)
+  assert.deepEqual(r.reset, ['cooldownMinutes'])
+  assert.equal(loadRiskConfig(db).maxOpenPositions, 12)
+  assert.equal(loadRiskConfig(db).cooldownMinutes, DEFAULT_RISK_CONFIG.cooldownMinutes)
 })
 
 test('keep wins over reset; unknown keys are skipped and named; an unreadable file changes nothing', () => {
@@ -110,11 +112,16 @@ test('per-account overlays are never touched', () => {
 test('the checked-in file names no loosening reset: every reset key is tighter-or-equal at default than the production value, or inert', () => {
   const cfg = JSON.parse(readFileSync(CHECKED_IN, 'utf8'))
   const prod = productionStore()
-  // keys where a HIGHER value is looser
-  const higherIsLooser = ['maxOpenPositions', 'maxClusterExposure', 'maxConsecutiveLosses']
+  // keys where a HIGHER value is looser. minTradesForKelly is one of them:
+  // the Kelly check is a VETO that is skipped below the threshold, so a
+  // higher threshold lets more losing records through (checker, Wave 4a).
+  const higherIsLooser = ['maxOpenPositions', 'maxClusterExposure', 'maxConsecutiveLosses', 'minTradesForKelly']
   // keys where a LOWER value is looser
-  const lowerIsLooser = ['cooldownMinutes', 'symbolCooldownMinutes', 'minRR', 'minSLDistancePct', 'minTradesForKelly']
+  const lowerIsLooser = ['cooldownMinutes', 'symbolCooldownMinutes', 'minRR', 'minSLDistancePct']
+  // the one reset that is looser on its own, and allowed only as a PAIR
+  const pairedOnly = { minTradesForKelly: 'allowNegativeExpectancyOverride' }
   for (const k of cfg.reset) {
+    if (k in pairedOnly) { assert.ok(cfg.reset.includes(pairedOnly[k]), `${k} loosens on its own; it may be reset only together with ${pairedOnly[k]}`); continue }
     if (higherIsLooser.includes(k)) assert.ok(DEFAULT_RISK_CONFIG[k] <= prod[k], `${k}: default ${DEFAULT_RISK_CONFIG[k]} must not exceed stored ${prod[k]}`)
     else if (lowerIsLooser.includes(k)) assert.ok(DEFAULT_RISK_CONFIG[k] >= prod[k], `${k}: default ${DEFAULT_RISK_CONFIG[k]} must not sit below stored ${prod[k]}`)
     else if (k === 'allowNegativeExpectancyOverride') assert.equal(DEFAULT_RISK_CONFIG[k], false)
@@ -131,4 +138,21 @@ test('wiring pin: the boot applies the seed after the entry-mode policy seed', (
   const i = src.indexOf("seedRiskConfigFromFile(db, { log")
   assert.ok(i > 0, 'the boot calls the seed')
   assert.ok(src.indexOf('seedEntryModePolicyFromConfig(db') < i, 'placed after the policy seed (the pins/watchlist adjacency budget)')
+})
+
+test('a content change applies the DELTA: a key reset under an earlier hash and changed by a human since is not reset again (checker F6)', () => {
+  const db = initDB(':memory:')
+  setState(db, RISK_CONFIG_KEY, JSON.stringify({ maxOpenPositions: 16, cooldownMinutes: 5 }))
+  const p = tmpSeed({ reset: ['maxOpenPositions'], keep: [], prunePinnedDefaults: false, dropRetired: false })
+  let r = seedRiskConfigFromFile(db, { file: p })
+  assert.deepEqual(r.reset, ['maxOpenPositions'])
+  setState(db, RISK_CONFIG_KEY, JSON.stringify({ maxOpenPositions: 9, cooldownMinutes: 5 }))  // the human raises it
+  writeFileSync(p, JSON.stringify({ reset: ['maxOpenPositions', 'cooldownMinutes'], keep: [], prunePinnedDefaults: false, dropRetired: false }))
+  r = seedRiskConfigFromFile(db, { file: p })
+  assert.deepEqual(r.reset, ['cooldownMinutes'], 'only the new key')
+  assert.ok(r.skipped.some(s => /maxOpenPositions: applied under an earlier content/.test(s)))
+  const eff = loadRiskConfig(db)
+  assert.equal(eff.maxOpenPositions, 9, 'the human\'s value stands')
+  assert.equal(eff.cooldownMinutes, DEFAULT_RISK_CONFIG.cooldownMinutes)
+  assert.deepEqual(JSON.parse(getState(db, RISK_CONFIG_SEED_KEY)).resetEver, ['cooldownMinutes', 'maxOpenPositions'])
 })

@@ -521,10 +521,9 @@ after deploy, recorded in §L of this file as it happens.
   stands) RESETS nine overrides, every one of which tightens a bound or is
   inert: maxOpenPositions 16 → 5 (the audit's "one cap"), maxClusterExposure
   5 → 2, maxConsecutiveLosses 4 → 3, cooldownMinutes and
-  symbolCooldownMinutes 5 → 60, minRR 1.6 → 3 (already below the hard
-  floor, no behaviour change), minSLDistancePct 0.02 → 0.15 (the ATR floor
-  covers the NatGas mechanism), minTradesForKelly 10 → 30,
-  allowNegativeExpectancyOverride true → false; prunes the 37 pinned
+  symbolCooldownMinutes 5 → 60, minRR 1.6 → 3, minSLDistancePct 0.02 →
+  0.15, minTradesForKelly 10 → 30, allowNegativeExpectancyOverride true →
+  false; prunes the 37 pinned
   defaults; drops the retired key. It KEEPS eight stored overrides whose
   reset would LOOSEN a live bound or move a stop's reach — a risk-limit
   change, ask-first under P7, and not named by the Execute order:
@@ -548,3 +547,21 @@ after deploy, recorded in §L of this file as it happens.
   wiring pin (after the policy seed, outside the pins/watchlist adjacency
   budget). Mutations red-then-restored: the keep guard, the applied-once
   rule, the route's raw merge.
+  Checker round (independent): the claim "no bound loosened" HOLDS, three
+  of its supporting statements did not, corrected here and in the seed
+  file. minRR 1.6 → 3 is a no-op at the entry gate (HARD_MIN_RR floors it)
+  but restrategize's reversal amend and the bracket advice read the raw
+  key, so a reversal's target now sits 3R away instead of 1.6R.
+  minSLDistancePct 0.02 → 0.15 is not "covered by the ATR floor": it is
+  also the sizing denominator for the tick sidecar's permit volumes
+  (vpo-feeder.js) and the sizing preview, so tick-permit volumes shrink
+  about 7.5× at the next boot — tighter, and now said so. minTradesForKelly
+  10 → 30 is LOOSER on its own (the Kelly check is a veto, skipped below
+  the threshold) and tighter only because allowNegativeExpectancyOverride
+  is reset with it; the direction test now classifies it that way and pins
+  the pair. And a content change re-applies the DELTA: a key the seed
+  already reset under an earlier hash is the operator's from then on
+  (resetEver in the seed record) — a later one-key addition cannot re-reset
+  the other nine. The remaining notes (a dropped key is recorded in the
+  seed record, not the change stamps; the global reset:true path was
+  already unstamped) are carried, not fixed.

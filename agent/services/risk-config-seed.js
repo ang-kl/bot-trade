@@ -90,11 +90,18 @@ export function seedRiskConfigFromFile(db, { file = DEFAULT_FILE, log = () => {}
     // Already applied for this content: whatever a human did since stands.
     return out
   }
+  // A CONTENT CHANGE APPLIES THE DELTA, NOT THE WHOLE LIST (checker, Wave
+  // 4a): a reset key this seed already applied under an earlier hash is a
+  // human's to change afterwards — adding one key to `reset` later must
+  // not re-reset the other nine. The record keeps the union of keys ever
+  // reset; only keys outside it are reset now.
+  const resetBefore = new Set(Array.isArray(seeded?.resetEver) ? seeded.resetEver.map(String) : [])
 
   const before = loadRiskConfig(db)
   const next = { ...stored }
   for (const k of resetList) {
     if (!(k in defaults) || keep.has(k)) continue
+    if (resetBefore.has(k)) { out.skipped.push(`reset ${k}: applied under an earlier content — a later value is the operator's`); continue }
     if (k in next && !deepEqual(next[k], defaults[k])) { delete next[k]; out.reset.push(k) } else if (k in next) { delete next[k]; out.pruned.push(k) }
   }
   if (cfg.dropRetired === true) {
@@ -116,8 +123,9 @@ export function seedRiskConfigFromFile(db, { file = DEFAULT_FILE, log = () => {}
     for (const k of out.reset) log(`[boot] risk config: ${k} ${JSON.stringify(stored[k])} → default ${JSON.stringify(defaults[k])} (from config/risk-config.json)`)
   }
   out.applied = changed
+  const resetEver = [...new Set([...resetBefore, ...resetList.filter(k => (k in defaults) && !keep.has(k))])].sort()
   setState(db, RISK_CONFIG_SEED_KEY, JSON.stringify({
-    hash, at: new Date().toISOString(), reset: out.reset, pruned: out.pruned, dropped: out.dropped, kept: out.kept,
+    hash, at: new Date().toISOString(), reset: out.reset, pruned: out.pruned, dropped: out.dropped, kept: out.kept, resetEver,
   }))
   return out
 }
