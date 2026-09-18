@@ -13,6 +13,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Search every js / jsx / css / html file under bot-trade.
 # Excludes node_modules / dist and the script itself.
 #
+# `public/vendor` is excluded too (18-09-2026): it holds third-party files
+# copied verbatim from node_modules (GSAP, self-hosted so a hanging CDN
+# cannot blank the site). A minified library's colour-name table is data the
+# app never paints with; the rule is about what THIS UI draws, and the same
+# files were already exempt while they lived under node_modules.
+#
 # TWO GREPS, NOT ONE. Hex colours are case-insensitive to CSS, so the first
 # pass runs with -i: until 02-09-2026 `#22C55E` would have walked straight
 # past a list that only knew `#22c55e`. Class and word tokens stay
@@ -25,12 +31,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # and by value, not left to a reviewer's eye.
 HEX_MATCHES="$(grep -RInEi \
   --include='*.js' --include='*.jsx' --include='*.css' --include='*.html' \
-  --exclude-dir=node_modules --exclude-dir=dist \
+  --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=vendor \
   -e '#10b981' -e '#22c55e' -e '#16a34a' -e '#15803d' -e '#14b8a6' \
   "$ROOT" || true)"
 WORD_MATCHES="$(grep -RInE \
   --include='*.js' --include='*.jsx' --include='*.css' --include='*.html' \
-  --exclude-dir=node_modules --exclude-dir=dist \
+  --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=vendor \
   -e 'bg-green' -e 'text-green' -e 'border-green' -e 'from-green' -e 'to-green' \
   -e '\bemerald\b' -e '\bgreen-[0-9]' -e '\bteal\b' \
   "$ROOT" || true)"

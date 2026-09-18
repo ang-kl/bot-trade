@@ -19,8 +19,14 @@
     <!-- GSAP (CDN) + ScrollTrigger — animation layer. Pages guard on
          window.gsap so a blocked CDN degrades to a static (still fully
          functional) UI rather than breaking anything. -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" defer></script>
+    <!-- GSAP is SELF-HOSTED (public/vendor/gsap, copied from node_modules) for
+         the same reason the fonts are: a deferred script from a third-party
+         CDN gates every later deferred/module script, so when the CDN hangs
+         on a network that blocks it the app never mounts. Measured 18-09-2026:
+         a hanging cdnjs left the page blank for over 20 s; a fast failure
+         rendered in 1.5 s. Same-origin, same cache rules as the app. -->
+    <script src="/vendor/gsap/gsap.min.js" defer></script>
+    <script src="/vendor/gsap/ScrollTrigger.min.js" defer></script>
       <!-- Trade Cockpit only — IBM Plex per BUILD-ORDER.md §3, loaded once.
          (The rest of the app stays on self-hosted Inter.) -->
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
