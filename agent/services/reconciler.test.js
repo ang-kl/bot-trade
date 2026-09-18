@@ -1189,3 +1189,15 @@ test('BA: reclassifyBrokerCloses upgrades a row stamped generic BEFORE the fix w
   assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, 'profit_keeper: giveback 40% from peak')
   assert.equal(reclassifyBrokerCloses(db), 0, 'idempotent: an attributed row is never rewritten')
 })
+
+test('Wave 2 (§K·8): a close on a row the BOOK holds with no journal entry is attributed to the book\'s broker-side stop, by trade id or position id; an exit_sent row keeps its note; another account\'s row does not match', () => {
+  const db = mkDb()
+  const t = seedKnownPosition(db, { symbol: 'JPM.US', positionId: '5201' })
+  db.prepare(`UPDATE trades SET account_id = 'A' WHERE id = ?`).run(t)
+  assert.equal(attributeBrokerClose(db, { tradeId: t, accountId: 'A' }), null, 'no book row, no journal → not attributed')
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, status, note, entered_at) VALUES (?, 'A', 'JPM.US', NULL, 'open', 'entered', datetime('now'))`).run(t)
+  assert.equal(attributeBrokerClose(db, { tradeId: t, accountId: 'A' }), 'momentum_book: broker-side stop fill (3×ATR trail)')
+  assert.equal(attributeBrokerClose(db, { positionId: '5201', tradeId: t, accountId: 'B' }), null, 'scoped to the account')
+  db.prepare(`UPDATE momentum_book SET status = 'exit_sent', note = 'rank exit', position_id = '5201' WHERE trade_id = ?`).run(t)
+  assert.equal(attributeBrokerClose(db, { positionId: '5201', accountId: 'A' }), 'momentum_book: rank exit')
+})

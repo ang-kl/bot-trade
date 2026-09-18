@@ -13,6 +13,7 @@
 // target on a runner meant to hold for weeks (protection audit), and a close
 // ahead of a weekend (weekend bank).
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 
 import { initDB } from '../db.js'
@@ -147,6 +148,13 @@ test('BOTH consumers resolve to this one module', async () => {
   assert.equal(npg.bookHeldPositionIds, bookHeldPositionIds)
   assert.equal(npg.bookHeldTradeIds, bookHeldTradeIds)
   assert.equal(npg.makeBookHeldCheck, makeBookHeldCheck)
+  // Wave 2 (19-09-2026): the keeper and the loss guardian read the same predicate.
+  const pk = readFileSync(new URL('./profit-keeper.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const lg = readFileSync(new URL('./loss-guardian.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(pk, /import \{ makeBookHeldCheck \} from '\.\/book-held\.js'/)
+  assert.match(pk, /bookHolds\(r\.position_id, r\.trade_id\)/)
+  assert.match(lg, /import \{ makeBookHeldCheck \} from '\.\/book-held\.js'/)
+  assert.match(lg, /bookHolds\(r\.position_id, r\.trade_id\)/)
 })
 
 // ---------------------------------------------------------------------------

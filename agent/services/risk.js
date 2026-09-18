@@ -21,7 +21,7 @@ import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
 import { assetClassOf } from './strategy-asset-cross.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
-import { minRrFor } from './strategies.js'
+import { minRrFor, horizonJudgedKeys } from './strategies.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 import { earnedFloorVerdict, earnedFloorStretch } from './earned-floor.js'
 import { campaignConfig, campaignStopVerdict } from './campaign-stop.js'
@@ -1250,15 +1250,22 @@ export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowO
  */
 export function lossStreakVerdict(db, config, acct, nowMs = Date.now()) {
   const streakLimit = Number(config.maxConsecutiveLosses) || 0
+  // ONE HORIZON RULE (Wave 2, 19-09-2026, §K·6): a weeks-horizon family's
+  // closes are not a streak in the hours sense — three 2-day book exits must
+  // not put the whole account in cooldown, and the book is judged at its
+  // checkpoint, never by this guard. Its closes are excluded from the streak
+  // read by strategy key (label first, then the row's own strategy).
+  const excluded = horizonJudgedKeys()
   const recentClosed = streakLimit > 0
     ? db
         .prepare(
           `SELECT net_pnl, closed_at FROM trades
            WHERE status = 'closed' AND closed_at IS NOT NULL
              AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+             AND COALESCE(label_strategy, strategy, '') NOT IN (${excluded.map(() => '?').join(', ') || "''"})
            ORDER BY closed_at DESC LIMIT ?`
         )
-        .all(acct, acct, streakLimit)
+        .all(acct, acct, ...excluded, streakLimit)
     : []
   let streak = 0
   for (const t of recentClosed) {

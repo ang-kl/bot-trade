@@ -541,6 +541,14 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       insBook.run(t.id, accountId, t.symbol, t.ctrader_position_id != null ? String(t.ctrader_position_id) : null,
         String(t.side || '').toUpperCase() === 'SELL' ? 'short' : 'long',
         t.entry_price, t.sl_price, null, null, new Date(now).toISOString(), `adopted filled order (trade ${t.id})`)
+      // Wave 2 (§K·8): a tsmom_long fill the reconciler adopted is THIS
+      // book's own resting-limit fill (the daily pass placed it, the market
+      // was closed). It is clean bot evidence, not an external position —
+      // 19 of 23 book closes were excluded from every edge measure because
+      // they carried `reconciler_adopted`.
+      try {
+        db.prepare(`UPDATE trades SET origin = 'bot_pending_fill', origin_source = 'book_link' WHERE id = ? AND (origin IS NULL OR origin = 'reconciler_adopted')`).run(t.id)
+      } catch { /* an older schema without origin columns: the link stands */ }
       // The book holds NO target, and the record must say so. A closed-market
       // limit is placed with a 1.5R take profit, so the adopted row inherits
       // `current_tp` / `tp_price`; the book's first trail amend clears the
@@ -719,9 +727,14 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         // Journal the close for the reconciler's attribution (fix-the-exits
         // BA). The trade row itself is NOT closed here: exit_sent is the
         // broker's acceptance, the fill is what the reconciler sees.
-        if (row.position_id) {
+        // Wave 2 (§K·8): journal by trade id when the position id is still
+        // unknown (a resting-limit fill the reconciler adopted) — the
+        // reconciler's attribution matches on either key, and 17 of 23 book
+        // closes read "closed at the broker" because this line required the
+        // position id.
+        if (row.position_id || row.trade_id) {
           recordPositionEvent(db, {
-            accountId, positionId: row.position_id, tradeId: row.trade_id, symbol, kind: 'close',
+            accountId, positionId: row.position_id || null, tradeId: row.trade_id, symbol, kind: 'close',
             reason: why, source: 'momentum_book',
           })
         }

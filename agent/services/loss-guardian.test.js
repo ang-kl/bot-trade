@@ -76,3 +76,23 @@ test('own time cap defers ONLY the time cap — naked-position protection still 
   const d = decideLossGuardian(cfg, { side: 'BUY', entry: 100, price: 98.5, currentSl: null, atr: 1, digits: 2, ageHours: 12, hasOwnTimeCap: true })
   assert.equal(d.action.sl, 97) // protective stop still placed
 })
+
+test('Wave 2 (§K·6): the loss guardian skips a momentum-book row (no time_cap_at → its maxHoldHours backstop would otherwise reach a weeks-horizon runner) and counts it', async () => {
+  const { runLossGuardian } = await import('./loss-guardian.js')
+  const db = initDB(':memory:')
+  setState(db, 'loss_guardian_json', JSON.stringify({ on: true, scope: 'all', maxHoldHours: 1 }))
+  db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status, account_id, opened_at) VALUES ('NATGAS', 'BUY', '9101', 'open', '1', datetime('now', '-3 days'))`).run()
+  const tradeId = db.prepare(`SELECT id FROM trades WHERE ctrader_position_id = '9101'`).get().id
+  db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, status, source, trade_id, account_id, created_at) VALUES ('NATGAS', 'long', 2.9, 2.7, 'active', 'autopilot', ?, '1', datetime('now', '-3 days'))`).run(tradeId)
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, status, note, entered_at) VALUES (?, '1', 'NATGAS', '9101', 'open', 'test', datetime('now', '-3 days'))`).run(tradeId)
+  const closes = []
+  const out = await runLossGuardian(db, { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }, {
+    exec: { reconcile: async () => ({ position: [{ positionId: 9101, price: 2.9, stopLoss: 2.7, tradeData: { symbolId: 1, volume: 10000, tradeSide: 1 } }] }), closePosition: async (...a) => { closes.push(a); return { ok: true } } },
+    ws: { wsGetLastCloses: async () => ({ 1: 2.85 }), wsGetTrendbarsBatch: async () => ({}) },
+    sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3 }) },
+    notify: () => {},
+  })
+  assert.equal(out.bookSkipped, 1, 'the book row is named as skipped')
+  assert.equal(out.checked, 0)
+  assert.deepEqual(closes, [], 'nothing was closed')
+})

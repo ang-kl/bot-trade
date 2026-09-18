@@ -583,3 +583,23 @@ test('armR ships at 0.5 by default (owner, 18-09-2026) and the stored config mer
   setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', armProfitUsd: 50 }))
   assert.equal(loadProfitKeeperConfig(db).armR, 0.5, 'a stored config written before armR existed still gets the default')
 })
+
+// ---------------------------------------------------------------------------
+// ONE HORIZON RULE (Wave 2 of the first-principles audit, 19-09-2026, §K·6):
+// a momentum-book row is trailed by the book alone. Before this the keeper's
+// SELECT never read the book, and "the keeper is paused on these positions"
+// was text, not code.
+// ---------------------------------------------------------------------------
+
+test('Wave 2: a position the momentum book holds (by trade id) is skipped by the keeper and counted as bookSkipped; the same position without a book row is considered', async () => {
+  const held = mkKeeperDb({ keeperOptOut: 0 })
+  const tradeId = held.prepare(`SELECT id FROM trades WHERE ctrader_position_id = '9001'`).get().id
+  held.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, status, note, entered_at) VALUES (?, '1', 'NATGAS', NULL, 'open', 'test', datetime('now'))`).run(tradeId)
+  const a = await runProfitKeeper(held, CREDS, keeperDeps())
+  assert.equal(a.checked, 0, 'a book-held runner never reaches the keeper')
+  assert.equal(a.bookSkipped, 1)
+  const free = mkKeeperDb({ keeperOptOut: 0 })
+  const b = await runProfitKeeper(free, CREDS, keeperDeps())
+  assert.equal(b.checked, 1)
+  assert.equal(b.bookSkipped, 0)
+})

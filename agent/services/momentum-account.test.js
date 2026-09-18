@@ -775,3 +775,21 @@ test('Wave 1 (19-09-2026): ONE cap — effectiveSlots is the smaller of the book
   const loop = (await import('node:fs')).readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(loop, /maxOpenPositions: \(accountId\) => \{ try \{ return Number\(loadRiskConfig\(db, String\(accountId\)\)\?\.maxOpenPositions\)/, 'loop.js wires the risk cap into the book deps')
 })
+
+test('Wave 2 (§K·7): weekToDateFor counts this strategy\'s closes on this account since the FX week anchor only', async () => {
+  const { weekToDateFor } = await import('./momentum-account.js')
+  const { weekAnchorMs } = await import('../shared/formulas.js')
+  const db = initDB(':memory:')
+  const now = Date.UTC(2026, 8, 18, 12) // Fri
+  const anchor = weekAnchorMs(now)
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, status, net_pnl, closed_at, account_id, label_strategy) VALUES ('JPM.US', 'BUY', 'closed', ?, ?, ?, ?)`)
+  const iso = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
+  ins.run(-100, iso(anchor + 3600e3), 'A', 'tsmom_long')
+  ins.run(40, iso(anchor + 7200e3), 'A', 'tsmom_long')
+  ins.run(-500, iso(anchor - 3600e3), 'A', 'tsmom_long')   // last week
+  ins.run(-9, iso(anchor + 3600e3), 'B', 'tsmom_long')      // another account
+  ins.run(-7, iso(anchor + 3600e3), 'A', 'vwap_trend')      // another strategy
+  assert.deepEqual(weekToDateFor(db, 'A', now), { since: new Date(anchor).toISOString(), closes: 2, wins: 1, net: -60 })
+  const view = (await import('./momentum-account.js')).momentumAccountReport(db)
+  assert.ok(view, 'the report still renders')
+})
