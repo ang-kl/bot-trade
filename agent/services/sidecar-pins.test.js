@@ -160,9 +160,9 @@ test('cpp-verify links no order-writing code — the read-only guarantee is stru
 // down: the stage reported healthy because what it measured was never the
 // thing in question.
 //
-// So cpp-verify carries its own config, pointed at by the service's
-// config-file setting. Root stays `/` for the shared transport; the builder
-// and the Dockerfile are named here rather than inherited.
+// So cpp-verify carries its own config. Root is now `/cpp-verify` (PR-AN): the
+// transport is vendored, so nothing reaches outside this directory and the root
+// config cannot be inherited. The builder and the Dockerfile are named here.
 // ---------------------------------------------------------------------------
 test('cpp-verify pins its own builder and Dockerfile, not the repo root service\'s', () => {
   const cfg = JSON.parse(readFileSync(new URL('../../cpp-verify/railway.json', import.meta.url), 'utf8'))

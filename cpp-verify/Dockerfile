@@ -1,8 +1,9 @@
 # Build context is THIS DIRECTORY (root directory /cpp-verify), which is what
 # lets Railway read cpp-verify/railway.json instead of the repository root's —
 # the root one belongs to the Node service and, on a fresh deploy, wins over
-# every panel setting. The transport lives in src/shared/ as a vendored copy
-# kept byte-identical by a test.
+# every panel setting. The transport lives FLAT in src/ as a vendored copy kept
+# byte-identical by a test — not in a subdirectory, because `#pragma once` is
+# path-based and two paths to one header is a class redefinition.
 FROM debian:stable-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         g++ make libssl-dev \
