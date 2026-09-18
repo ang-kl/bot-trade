@@ -3426,7 +3426,9 @@ async function runLoop(db) {
                 const { wsGetDeals } = await import('./lib/ctrader-ws.js')
                 return wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1)
               },
-              verify: verifier ? (record) => verifier(record, { host }) : null,
+              // The credentials travel with the call because cpp-verify holds
+              // no defaults and needs POST /connect before it can answer.
+              verify: verifier ? (record) => verifier(record, { host, clientId, clientSecret, accessToken, accountId }) : null,
             })
             if (drain.due) {
               log(`Position capture: ${drain.captured} captured · ${drain.archived} archived · ${drain.verified} verified · ${drain.incomplete} still incomplete` +

@@ -52,19 +52,81 @@ export function verifyClient({ env = process.env, fetchImpl = globalThis.fetch }
   const secret = String(env.EXEC_SECRET || '').trim()
   if (!base || !secret || typeof fetchImpl !== 'function') return null
 
-  return async function verify(record, { host = null, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  // WHICH HOSTS THIS CLIENT HAS OPENED A SESSION FOR.
+  //
+  // cpp-verify holds ONE SESSION PER HOST and answers only for accounts that
+  // session was authorized on (its I17 check). Nothing in this process ever
+  // called POST /connect, so every /verify returned 409 "no session for
+  // host … POST /connect first" — and the 409 was swallowed as a null state,
+  // so 38 re-armed records came back `0 verified` with no error line.
+  //
+  // Measured 18-09-2026: cpp-verify's /health reported "sessions":[] while
+  // the drain reported 10 captured · 0 verified, four passes running.
+  //
+  // Per PROCESS, not persisted: the verifier holds its sessions in memory and
+  // a restart drops them, so a cached "yes" that outlived the service would
+  // be worse than no cache. A 409 clears the entry and reconnects once.
+  const connected = new Set()
+
+  async function connect(brokerHost, creds, timeoutMs) {
+    const { clientId, clientSecret, accessToken, accountId } = creds || {}
+    if (!clientId || !clientSecret || !accessToken || !accountId) return { ok: false, reason: 'no_credentials' }
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), timeoutMs)
+    try {
+      const res = await fetchImpl(`${base}/connect`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` },
+        body: JSON.stringify({ host: brokerHost, clientId, clientSecret, accessToken, accountIds: [Number(accountId)] }),
+        signal: ctl.signal,
+      })
+      if (!res.ok) return { ok: false, reason: `connect_http_${res.status}` }
+      const body = await res.json().catch(() => null)
+      // `authorized` counts the accounts the broker actually accepted. A 200
+      // with zero authorized is a FAILURE to connect, not a session: treating
+      // it as one would send every later /verify into a guaranteed 403.
+      if (!body || !(Number(body.authorized) > 0)) return { ok: false, reason: 'connect_no_accounts' }
+      connected.add(brokerHost)
+      return { ok: true, authorized: Number(body.authorized) }
+    } catch (e) {
+      return { ok: false, reason: e.name === 'AbortError' ? 'connect_timeout' : `connect_${e.message}` }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  return async function verify(record, { host = null, timeoutMs = DEFAULT_TIMEOUT_MS, ...creds } = {}) {
     const brokerHost = host || String(env.CTRADER_HOST || '').trim()
     if (!brokerHost) return { state: null, skipped: 'no_host' }
+
+    if (!connected.has(brokerHost)) {
+      const c = await connect(brokerHost, creds, timeoutMs)
+      if (!c.ok) return { state: null, skipped: c.reason }
+    }
 
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), timeoutMs)
     try {
-      const res = await fetchImpl(`${base}/verify`, {
+      let res = await fetchImpl(`${base}/verify`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` },
         body: JSON.stringify(verifyRequestFor(record, { host: brokerHost })),
         signal: ctl.signal,
       })
+      // A 409 means the session went away under us — cpp-verify restarted, or
+      // it was never there. Reconnect and try ONCE. Not a loop: a second 409
+      // is a real condition and must be reported, not retried into silence.
+      if (res.status === 409) {
+        connected.delete(brokerHost)
+        const c = await connect(brokerHost, creds, timeoutMs)
+        if (!c.ok) return { state: null, skipped: c.reason }
+        res = await fetchImpl(`${base}/verify`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` },
+          body: JSON.stringify(verifyRequestFor(record, { host: brokerHost })),
+          signal: ctl.signal,
+        })
+      }
       if (!res.ok) return { state: null, skipped: `http_${res.status}` }
       const body = await res.json()
       // THE ANSWER IS CARRIED, NOT INTERPRETED. If cpp-verify says the fetch
