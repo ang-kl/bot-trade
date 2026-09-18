@@ -14,6 +14,12 @@
 // — so "a change to the goal will not propagate to the breaker or the arming
 // bar, and vice versa."
 //
+// THE WIN-RATE HALVES OF THE FIRST TWO ARE GONE (first-principles audit,
+// 2026-09-19, §K item 10): exit asymmetry sets expectancy, not entry accuracy,
+// so win rate is measured and displayed everywhere but is never a bar — no
+// entry in this register carries a `winRatePct`, and edge-bars.test.js turns
+// red if one is re-introduced.
+//
 // THIS DOES NOT UNIFY THEM, AND MUST NOT. They answer four different
 // questions and correctly hold four different values: a breaker that trips at
 // the go-live target would halt trading during any ordinary drawdown on the
@@ -34,7 +40,6 @@
 
 /** The owner's dated go-live gate. Mirrors goal-tracker's DEFAULT_GOAL. */
 export const GO_LIVE_BAR = {
-  winRatePct: 68,
   profitFactor: 1.68,
   source: 'agent/services/goal-tracker.js — DEFAULT_GOAL',
   question: 'may this system trade real money on 2026-08-15?',
@@ -42,7 +47,6 @@ export const GO_LIVE_BAR = {
 
 /** Which backtested strategy/symbol/timeframe combos may be ARMED live. */
 export const ARM_BAR = {
-  winRatePct: 60,
   profitFactor: 1.7,
   minTrades: 25,
   source: 'agent/services/strategy-autopilot.js — decideChanges opts',

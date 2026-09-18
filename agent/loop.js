@@ -3760,6 +3760,23 @@ async function runLoop(db) {
             await hbeat(db, 'cross_side_equity', !(x.swept > 0 && x.stamped === 0),
               x.swept > 0 && x.stamped === 0 ? `0/${x.swept} stamped` : null)
           } catch (err) { await hbeat(db, 'cross_side_equity', false, err?.message) /* equity is best-effort; never break the cycle */ }
+          // Wave 3 (first-principles audit 19-09-2026 §K item 11): the
+          // NIGHTLY equity snapshot — balance + the broker's net unrealised
+          // P&L per enabled account on both sides, one row each, once every
+          // 24 h on a persisted stamp (equity_snapshot_last_at) so a
+          // restart resumes the schedule. Read-only against the broker,
+          // bounded, best-effort: the curve shows a null night, never a
+          // guessed one.
+          try {
+            const { equitySnapshotDue, runEquitySnapshot } = await import('./services/equity-snapshot.js')
+            if (equitySnapshotDue(db)) {
+              const snap = await runEquitySnapshot(db, { clientId, clientSecret, accessToken })
+              const gaps = snap.results.filter(r => r.equity == null).map(r => `…${String(r.accountId).slice(-4)}: ${r.error ?? 'no equity'}`).join(' · ')
+              log(`Equity snapshot: ${snap.written}/${snap.swept} account(s) written` + (snap.failed ? ` — ${gaps}` : '')
+                + (snap.skipped?.length ? ` — skipped ${snap.skipped.length} (token refused)` : ''))
+              await hbeat(db, 'equity_snapshot', !(snap.swept > 0 && snap.written === 0), snap.swept > 0 && snap.written === 0 ? `0/${snap.swept} written` : null)
+            }
+          } catch (err) { await hbeat(db, 'equity_snapshot', false, err?.message) }
         } else {
           // No credentials — the audit cannot run, and saying nothing would
           // read on screen as "checked, all clear". ¶D·2.

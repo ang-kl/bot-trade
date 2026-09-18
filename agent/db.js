@@ -795,6 +795,23 @@ const TABLES = `
     silent_drops INTEGER, top_block TEXT
   );
 
+  -- Nightly mark-to-market equity per account (first-principles audit
+  -- 19-09-2026 §K item 11): balance + the broker's net unrealised P&L, one
+  -- row per enabled account per pass, null fields with the error on a night
+  -- the broker did not answer. The equity curve the momentum checkpoint is
+  -- judged on reads this, not the per-minute panels.
+  CREATE TABLE IF NOT EXISTS equity_snapshots (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    at             TEXT NOT NULL,
+    account_id     TEXT NOT NULL,
+    balance_usd    REAL,
+    open_pnl_usd   REAL,
+    equity_usd     REAL,
+    open_positions INTEGER,
+    error          TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_equity_snapshots_acct_at ON equity_snapshots(account_id, at);
+
   -- Backtest→live divergence tracker (owner "plan #1", 02-09-2026).
   -- combo_arms: the EVIDENCE a combo was armed on, snapshotted at arm time —
   -- the arm decision used to record nothing about which verdict justified

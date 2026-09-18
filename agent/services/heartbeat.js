@@ -160,6 +160,9 @@ export const CONTROLLERS = {
   closed_market_sweep: { label: 'Closed-market limit sweep', tiedToLoop: true, factor: 3 },
   fx_legs_refresh:     { label: 'FX-leg refresh',            tiedToLoop: true, factor: 3 },
   cross_side_equity:   { label: 'Cross-side equity read',    tiedToLoop: true, loopMultiplier: 3, factor: 4 },
+  // Wave 3 (19-09-2026): the nightly mark-to-market equity row per account,
+  // once every 24 h on a persisted stamp. Stale only after two missed nights.
+  equity_snapshot:     { label: 'Nightly equity snapshot',    expectedSec: 24 * 3600, factor: 2 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

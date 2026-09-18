@@ -26,9 +26,12 @@
 // one confounds the edge answer if it is wrong.
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { readFileSync } from 'node:fs'
+import { getState, setState } from '../db.js'
 
 export const GOAL_TABLE_KEY = 'goal_table_json'
+/** The momentum checkpoint's frozen verdict (Wave 3): written once on the date. */
+export const MOMENTUM_CHECKPOINT_KEY = 'momentum_checkpoint_verdict_json'
 
 export const DEFAULT_GOAL_TARGETS = Object.freeze({
   // Share of registered controllers that have beaten at least once and read
@@ -47,12 +50,31 @@ export const DEFAULT_GOAL_TARGETS = Object.freeze({
   // Closed trades in the window still missing P&L or a postmortem.
   incompleteClosesMax: 0,
   incompleteCloseWindowHours: 48,
-  // The trail rule's counterfactual against the owner's 69% goal and a PF
-  // that at least does not lose. Measured over the counterfactual's own
-  // 30-trade floor; below it the goal is not measurable.
-  trailWinRatePct: 69,
+  // The trail rule's counterfactual: a PF that at least does not lose,
+  // measured over the counterfactual's own 30-trade floor; below it the
+  // goal is not measurable. The 69% win-rate half of this goal was DELETED
+  // in Wave 3 of the first-principles audit (19-09-2026): exit asymmetry
+  // sets expectancy, not entry accuracy, and a trail rule that wins 40% of
+  // the time at 3R is doing its job.
   trailMinPf: 1.0,
   trailDays: 30,
+  // Per-family edge (Wave 3, §K item 10): the three numbers a system is
+  // judged by at its horizon — PF, tail share (closes beyond +2R) and max
+  // drawdown in R — per strategy family over a rolling window, measurable
+  // only from familyMinCloses decidable closes. familyMaxDdR matches the
+  // tick-validation programme's owner-set 8R budget; it is an evidence
+  // target for a verdict, not a risk limit (nothing sizes or halts on it).
+  familyMinPf: 1.5,
+  familyTailSharePct: 20,
+  familyMaxDdR: 8,
+  familyMinCloses: 30,
+  familyDays: 90,
+  // The momentum trial's pre-registered checkpoint (§K item 12): judged
+  // on ONE date, on the trial account's momentum-family closes since the
+  // trial began, by the three family targets above. The date is read from
+  // agent/config/strategy-pins.json (_trial_note), not restated here; the
+  // start is the Wave 1 deploy that switched the trial on.
+  momentumTrialSince: '2026-09-18T22:26:00Z',
   // Earned-floor checkpoint: pre-registered in earned-floor.js as 30 closes
   // and PF ≥ 1.5. Read from there, not restated, so the two cannot drift.
   // Open inspector findings older than this many hours count against the
@@ -91,6 +113,13 @@ export function goalTargets(raw) {
   if (raw && typeof raw === 'object') {
     for (const [k, v] of Object.entries(raw)) {
       if (k in DEFAULT_GOAL_TARGETS) {
+        if (typeof DEFAULT_GOAL_TARGETS[k] === 'string') {
+          // A date-valued target (momentumTrialSince): a string that parses
+          // as a date replaces the default; anything else is junk and the
+          // default stands — never NaN, never a silently ignored override.
+          if (typeof v === 'string' && Number.isFinite(Date.parse(v))) out[k] = v
+          continue
+        }
         const n = Number(v)
         if (Number.isFinite(n)) out[k] = n
       } else {
@@ -246,13 +275,13 @@ async function trailGoal(db, targets) {
   const best = trails.sort((a, b) => (b.usable || 0) - (a.usable || 0))[0] || null
   const floor = cf.rules?.length ? undefined : undefined
   const measurable = cf.verdict === 'OK' && best && best.winRate != null && best.profitFactor != null
-  const ok = measurable && best.winRate >= targets.trailWinRatePct && best.profitFactor >= targets.trailMinPf
+  const ok = measurable && best.profitFactor >= targets.trailMinPf
   return goal('trail_rule', {
-    name: 'Trail rule reaches the win-rate goal', subsystem: 'managed exit',
-    metric: best ? `${best.rule} replay: win rate and profit factor` : 'trail rule replay: win rate and profit factor',
-    target: `WR ≥ ${targets.trailWinRatePct}% and PF ≥ ${targets.trailMinPf}`,
+    name: 'Trail rule does not lose', subsystem: 'managed exit',
+    metric: best ? `${best.rule} replay: profit factor (win rate shown, not a target)` : 'trail rule replay: profit factor',
+    target: `PF ≥ ${targets.trailMinPf}`,
     horizon: `${targets.trailDays}d`,
-    current: measurable ? `WR ${best.winRate}% · PF ${best.profitFactor} · n=${best.usable}` : null,
+    current: measurable ? `PF ${best.profitFactor} · WR ${best.winRate}% (measured) · n=${best.usable}` : null,
     verdict: !measurable ? 'not_measurable' : ok ? 'on_track' : 'off_track',
     note: !measurable ? (cf.note || 'insufficient replayable trades') : `${best.usable} replayable trade(s); ${cf.eligible} eligible of ${cf.considered} considered`,
     source: '/state/exit-counterfactual',
@@ -403,6 +432,101 @@ async function horizonGoal(db, targets) {
   })
 }
 
+const FAMILY_LABEL = { mean_reversion: 'mean reversion', breakout: 'breakout', trend: 'trend', momentum: 'momentum' }
+
+function familyVerdict(f, targets) {
+  const measurable = f.decidable >= targets.familyMinCloses && (f.profitFactor != null || f.lossless === true)
+  const ddOk = f.maxDrawdownR != null && f.maxDrawdownR <= targets.familyMaxDdR
+  const pfOk = f.lossless === true || (f.profitFactor != null && f.profitFactor >= targets.familyMinPf)
+  const ok = measurable && pfOk && (f.tailSharePct ?? 0) >= targets.familyTailSharePct && ddOk
+  const pfText = f.lossless === true ? 'PF ∞ (no losses)' : (f.profitFactor == null ? 'PF —' : `PF ${f.profitFactor}`)
+  const current = f.closes > 0
+    ? `${pfText} · tail ${f.tailSharePct ?? '—'}% · maxDD ${f.maxDrawdownR ?? '—'}R · n=${f.decidable}/${f.closes}`
+    : null
+  return { measurable, ok, current }
+}
+
+/** Wave 3 (§K item 10): one row per strategy family, PF / tail share / max DD. */
+async function familyGoals(db, targets, now) {
+  const { familyEdgeReport } = await import('./family-edge.js')
+  const { STRATEGY_FAMILIES, familyOf, horizonJudgedKeys } = await import('./strategies.js')
+  const rep = familyEdgeReport(db, { days: targets.familyDays, now })
+  const horizonFams = new Set(horizonJudgedKeys().map(k => familyOf(k)).filter(Boolean))
+  return STRATEGY_FAMILIES.map(fam => {
+    const f = rep.families[fam]
+    const v = familyVerdict(f, targets)
+    const atHorizon = horizonFams.has(fam)
+    return goal(`family_edge_${fam}`, {
+      name: `${FAMILY_LABEL[fam] || fam} family: PF, tail share and drawdown`, subsystem: 'strategy family',
+      metric: 'closed-trade profit factor · share of closes beyond +2R · max drawdown of the cumulative R curve',
+      target: `PF ≥ ${targets.familyMinPf} · tail ≥ ${targets.familyTailSharePct}% · maxDD ≤ ${targets.familyMaxDdR}R`,
+      horizon: atHorizon ? `${targets.familyDays}d rolling (judged at the checkpoint, not here)` : `${targets.familyDays}d rolling`,
+      current: v.current,
+      verdict: !v.measurable ? 'not_measurable' : v.ok ? 'on_track' : 'off_track',
+      note: !v.measurable
+        ? `${f.decidable} decidable of ${f.closes} close(s); ${targets.familyMinCloses} needed` + (f.undecidable ? ` (${f.undecidable} with no readable R)` : '')
+        : `${f.decidable} decidable close(s)` + (f.undecidable ? `, ${f.undecidable} with no readable R` : '') + (atHorizon ? '; the momentum verdict is the checkpoint row' : ''),
+      source: '/state/family-edge',
+    })
+  })
+}
+
+/** The checkpoint date is read from the pins file's _trial_note, never restated. */
+export function momentumCheckpointDate() {
+  try {
+    const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
+    const m = String(cfg._trial_note || '').match(/checkpoint (\d{4}-\d{2}-\d{2})/)
+    return m ? m[1] : null
+  } catch { return null }
+}
+
+/** Wave 3 (§K item 12): the momentum trial's pre-registered checkpoint, one row, one date. */
+async function momentumCheckpointGoal(db, targets, now) {
+  const { familyEdgeReport } = await import('./family-edge.js')
+  const { weekToDateFor, TSMOM_STRATEGY } = await import('./momentum-account.js')
+  const date = momentumCheckpointDate()
+  let trialIds = []
+  try {
+    const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
+    trialIds = Array.isArray(cfg._trial?.[TSMOM_STRATEGY]) ? cfg._trial[TSMOM_STRATEGY].map(String) : []
+  } catch { trialIds = [] }
+  const acct = trialIds[0] ?? null
+  const due = date ? now >= Date.parse(`${date}T00:00:00Z`) : false
+  // THE VERDICT IS FROZEN ON THE DATE. A pre-registered checkpoint judged
+  // on a rolling, growing sample from the date onwards is not pre-
+  // registered (checker, Wave 3): the first evaluation on or after the
+  // date stores its record under MOMENTUM_CHECKPOINT_KEY, and every later
+  // read reports that record, not the live one. Clearing the key re-judges.
+  let frozen = null
+  try { frozen = JSON.parse(getState(db, MOMENTUM_CHECKPOINT_KEY) || 'null') } catch { frozen = null }
+  if (frozen && frozen.date !== date) frozen = null
+  const live = familyEdgeReport(db, { since: targets.momentumTrialSince, now, accountId: acct })
+  const f = frozen?.family ?? live.families.momentum
+  const v = familyVerdict(f, targets)
+  if (due && date && acct && !frozen) {
+    frozen = { date, judgedAt: new Date(now).toISOString(), family: live.families.momentum, targets: { familyMinPf: targets.familyMinPf, familyTailSharePct: targets.familyTailSharePct, familyMaxDdR: targets.familyMaxDdR, familyMinCloses: targets.familyMinCloses } }
+    try { setState(db, MOMENTUM_CHECKPOINT_KEY, JSON.stringify(frozen)) } catch { /* the row still reports the live judgement */ }
+  }
+  const wtd = acct ? weekToDateFor(db, acct, now) : null
+  return goal('momentum_checkpoint', {
+    name: `Momentum trial verdict on ${date || '(date unset)'}`, subsystem: 'momentum book',
+    metric: `trial account's momentum closes since ${targets.momentumTrialSince.slice(0, 10)}: PF · tail share · max drawdown`,
+    target: `on ${date || '?'}: PF ≥ ${targets.familyMinPf} · tail ≥ ${targets.familyTailSharePct}% · maxDD ≤ ${targets.familyMaxDdR}R`,
+    horizon: date ? `checkpoint ${date}` : 'checkpoint date unset',
+    current: v.current,
+    verdict: !date || !acct ? 'not_measurable' : !due ? 'not_measurable' : (v.measurable ? (v.ok ? 'on_track' : 'off_track') : 'off_track'),
+    note: !date ? 'no checkpoint date in strategy-pins.json _trial_note'
+      : !acct ? 'no trial account in strategy-pins.json _trial'
+      : !due ? `pre-registered; judged on ${date}, not before — ${f.decidable} decidable close(s) so far on …${acct.slice(-4)}` + (wtd ? `; week to date ${wtd.closes} close(s), net ${wtd.net}` : '')
+      : (v.measurable ? `judged ${frozen?.judgedAt?.slice(0, 10) ?? 'now'} on ${f.decidable} decidable close(s); frozen` : `judged ${frozen?.judgedAt?.slice(0, 10) ?? 'now'} with fewer than ${targets.familyMinCloses} decidable closes (${f.decidable}): the trial did not earn a number; frozen`),
+    source: '/state/family-edge?account=<trial>',
+    ...(frozen ? { judgedAt: frozen.judgedAt } : {}),
+    ...(wtd ? { weekToDate: wtd } : {}),
+    trialAccount: acct ? `…${acct.slice(-4)}` : null,
+    checkpointDate: date,
+  })
+}
+
 /**
  * The table. Every goal is attempted; one that throws reports not_measurable
  * with the error, so a broken reader is visible as a row rather than as a
@@ -426,8 +550,14 @@ export async function goalTable(db, { now = Date.now() } = {}) {
     ['trade_reasons', () => reasonsGoal(db, t, now)],
     ['fundable_universe', () => fundableGoal(db, t, now)],
     ['account_horizon', () => horizonGoal(db, t)],
+    ['momentum_checkpoint', () => momentumCheckpointGoal(db, t, now)],
   ]
   const goals = []
+  // Family rows come as a group (one per family) so a failed reader shows
+  // as four not_measurable rows, not one.
+  try { goals.push(...await familyGoals(db, t, now)) } catch (err) {
+    for (const fam of ['mean_reversion', 'breakout', 'trend', 'momentum']) goals.push(goal(`family_edge_${fam}`, { name: `family_edge_${fam}`, subsystem: 'goal table', metric: 'unreadable', target: null, horizon: null, current: null, verdict: 'not_measurable', note: `reader failed: ${err?.message || err}`, source: null }))
+  }
   for (const [id, read] of readers) {
     try { goals.push(await read()) } catch (err) {
       goals.push(goal(id, { name: id, subsystem: 'goal table', metric: 'unreadable', target: null, horizon: null, current: null, verdict: 'not_measurable', note: `reader failed: ${err?.message || err}`, source: null }))

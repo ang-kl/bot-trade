@@ -56,8 +56,8 @@ test('change cap: disarms jump the queue, overflow becomes suggestions', () => {
   assert.ok(c.suggestions.length >= 4) // the rest wait for the human or the next night
 })
 
-test('arming bar: a GO below PF/win/trades is NOT armed (only proven combos)', () => {
-  // clears "GO" but marginal — like AUDUSD·4h (PF 1.50, 54%): must not arm
+test('arming bar: a GO below PF/trades is NOT armed (only proven combos)', () => {
+  // clears "GO" but marginal — like AUDUSD·4h (PF 1.50): must not arm
   const marginal = { strategy: 'fib_618_fade', symbol: 'AUDUSD', timeframe: '4h', entryMode: 'close', state: 'go', trades: 40, pf: 1.5, winRate: 54, total: 3, wfActive: 4, wfPositive: 3 }
   const c = decideChanges([marginal], { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} })
   assert.equal(c.arm.length, 0)
@@ -65,10 +65,26 @@ test('arming bar: a GO below PF/win/trades is NOT armed (only proven combos)', (
 
 test('arming bar: thresholds are configurable', () => {
   const combo = { strategy: 'rsi2_reversion', symbol: 'US30', timeframe: '8h', entryMode: 'close', state: 'go', trades: 30, pf: 1.6, winRate: 58, total: 4, wfActive: 4, wfPositive: 3 }
-  // strict default (1.7/60/25) → no arm; loosened → arms
+  // strict default (1.7/25) → no arm; loosened → arms
   assert.equal(decideChanges([combo], { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }).arm.length, 0)
-  const loose = decideChanges([combo], { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }, { armMinPf: 1.5, armMinWin: 55, armMinTrades: 20 })
+  const loose = decideChanges([combo], { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }, { armMinPf: 1.5, armMinTrades: 20 })
   assert.ok(loose.arm.length >= 1)
+})
+
+// First-principles audit 2026-09-19, §K item 10: exit asymmetry sets
+// expectancy, not entry accuracy. The arm bar has no win-rate term; a verdict
+// whose PF and sample clear the bar arms whatever its win rate says, and an
+// `armMinWin` override — the old dial — is not read.
+test('arming bar: a low win rate does not veto a PF-proven combo, and armMinWin is not a dial', () => {
+  const lowWr = { strategy: 'donchian_breakout', symbol: 'NAS100', timeframe: '1h', entryMode: 'close', state: 'go', trades: 40, pf: 2.1, winRate: 28, total: 6, wfActive: 4, wfPositive: 3 }
+  const cur = { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }
+  const c = decideChanges([lowWr], cur)
+  assert.ok(c.arm.length >= 1, 'PF 2.1 on 40 trades arms — under the old 60% bar this was refused')
+  assert.ok(c.arm.some(a => a.kind === 'matrix' && a.symbol === 'NAS100'))
+  // the old override is inert: passing it must change nothing
+  assert.deepEqual(decideChanges([lowWr], cur, { armMinWin: 95 }).arm, c.arm)
+  // and the same verdict with a null win rate is judged the same way
+  assert.deepEqual(decideChanges([{ ...lowWr, winRate: null }], cur).arm, c.arm)
 })
 
 test('isBusyWindow: US session, NY→Sydney handover, and JPN225 window', () => {
@@ -154,24 +170,32 @@ test('the mode always MIRRORS the matrix — the two can never disagree', () => 
 
 test('loadArmBar: defaults are ARM_BAR; stored values override; junk clamps, never loosens to zero', () => {
   const db = initDB(':memory:')
-  assert.deepEqual(loadArmBar(db), { minPf: 1.7, minWin: 60, minTrades: 25 })
-  setState(db, 'autopilot_arm_bar_json', JSON.stringify({ minPf: 1.5, minWin: 55, minTrades: 20 }))
-  assert.deepEqual(loadArmBar(db), { minPf: 1.5, minWin: 55, minTrades: 20 })
-  setState(db, 'autopilot_arm_bar_json', JSON.stringify({ minPf: 0, minWin: -5, minTrades: 'junk' }))
+  assert.deepEqual(loadArmBar(db), { minPf: 1.7, minTrades: 25 })
+  setState(db, 'autopilot_arm_bar_json', JSON.stringify({ minPf: 1.5, minTrades: 20 }))
+  assert.deepEqual(loadArmBar(db), { minPf: 1.5, minTrades: 20 })
+  setState(db, 'autopilot_arm_bar_json', JSON.stringify({ minPf: 0, minTrades: 'junk' }))
   const clamped = loadArmBar(db)
   assert.equal(clamped.minPf, 1, 'minPf floors at 1 — a bar below breakeven is not a bar')
-  assert.equal(clamped.minWin, 10)
   assert.equal(clamped.minTrades, 25, 'junk degrades to the default, not to zero')
   setState(db, 'autopilot_arm_bar_json', 'not json')
-  assert.deepEqual(loadArmBar(db), { minPf: 1.7, minWin: 60, minTrades: 25 })
+  assert.deepEqual(loadArmBar(db), { minPf: 1.7, minTrades: 25 })
+})
+
+test('loadArmBar: a stored minWin (the pre-2026-09-19 dial) is ignored and reported as ignored', () => {
+  const db = initDB(':memory:')
+  setState(db, 'autopilot_arm_bar_json', JSON.stringify({ minPf: 1.5, minWin: 55, minTrades: 20 }))
+  const bar = loadArmBar(db)
+  assert.deepEqual(bar, { minPf: 1.5, minTrades: 20, ignored: ['minWin'] })
+  assert.equal(Object.hasOwn(bar, 'minWin'), false, 'no win-rate bar is loaded, however it was stored')
+  assert.equal(Object.hasOwn(loadArmBar(initDB(':memory:')), 'ignored'), false, 'nothing to report when nothing was stored')
 })
 
 test('a lowered bar arms the combo the default bar refuses', () => {
   const verdicts = [{ strategy: 'ema_pullback', symbol: 'EURUSD', timeframe: '4h', entryMode: 'close', state: 'go', pf: 1.55, winRate: 56, trades: 22 }]
   const current = { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }
   const strict = decideChanges(verdicts, current, {})
-  assert.equal(strict.arm.length, 0, 'below the default 1.7/60/25 bar nothing arms')
-  const eased = decideChanges(verdicts, current, { armMinPf: 1.5, armMinWin: 55, armMinTrades: 20 })
+  assert.equal(strict.arm.length, 0, 'below the default 1.7/25 bar nothing arms')
+  const eased = decideChanges(verdicts, current, { armMinPf: 1.5, armMinTrades: 20 })
   assert.ok(eased.arm.length >= 1, 'the eased bar must arm it')
 })
 
@@ -271,7 +295,7 @@ test('recordComboArms: an arm snapshots its verdict + bar; a disarm closes the r
     { strategy: 'ema_pullback', symbol: 'GBPUSD', timeframe: '12h', entryMode: 'close', state: 'go', pf: 1.8, winRate: 65, trades: 25, wfPositive: 3, wfActive: 4 },
   ]
   const changes = decideChanges(verdicts, EMPTY)
-  recordComboArms(db, changes, { verdicts, armBar: { minPf: 1.7, minWin: 60, minTrades: 25 } })
+  recordComboArms(db, changes, { verdicts, armBar: { minPf: 1.7, minTrades: 25 } })
   const rows = db.prepare('SELECT * FROM combo_arms ORDER BY id').all()
   assert.deepEqual(rows.map(r => r.kind).sort(), ['matrix', 'strategy'])
   const m = rows.find(r => r.kind === 'matrix')
@@ -294,7 +318,7 @@ test('recordComboArms: an arm snapshots its verdict + bar; a disarm closes the r
 
 test('persistVerdictHistory keeps only bar-clearing or currently-armed verdicts, stamped armable', () => {
   const db = initDB(':memory:')
-  const bar = { minPf: 1.5, minWin: 55, minTrades: 20 }
+  const bar = { minPf: 1.5, minTrades: 20 }
   const verdicts = [
     { strategy: 'a', symbol: 'X', timeframe: '1h', entryMode: 'close', state: 'go', pf: 1.6, winRate: 58, trades: 22 },   // clears
     { strategy: 'b', symbol: 'Y', timeframe: '4h', entryMode: 'close', state: 'no-go', pf: 0.8, winRate: 30, trades: 30 }, // armed combo → kept
@@ -379,7 +403,7 @@ test('boot reconcile squares combo_arms with the live matrices: stale rows close
   // A verdict arm on US30 1d SUPERSEDES the unevidenced row; a disarm of a
   // pair closes its unevidenced row too.
   recordComboArms(db, { arm: [{ kind: 'matrix', strategy: 'vp_value', symbol: 'US30', timeframe: '1d' }], disarm: [] },
-    { verdicts: [{ strategy: 'vp_value', symbol: 'US30', timeframe: '1d', entryMode: 'close', pf: 1.7, winRate: 60, trades: 25 }], armBar: { minPf: 1.5, minWin: 55, minTrades: 20 }, at: '2026-09-02 01:00:00' })
+    { verdicts: [{ strategy: 'vp_value', symbol: 'US30', timeframe: '1d', entryMode: 'close', pf: 1.7, winRate: 60, trades: 25 }], armBar: { minPf: 1.5, minTrades: 20 }, at: '2026-09-02 01:00:00' })
   const us30Rows = rows.length && db.prepare(`SELECT * FROM combo_arms WHERE symbol='US30' ORDER BY id`).all()
   assert.equal(us30Rows.length, 2)
   assert.equal(us30Rows[0].disarm_reason, 'superseded_by_verdict_arm')
@@ -416,7 +440,7 @@ import { loadLiveDisarms, noteLiveDisarm, DISARM_PF_FRACTION, LIVE_DISARM_COOL_O
 const V = (strategy, symbol, timeframe, pf, winRate = 60, trades = 30, state = 'go', entryMode = 'close') =>
   ({ strategy, symbol, timeframe, entryMode, state, pf, winRate, trades })
 const EMPTY2 = { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }
-const BAR = { armMinPf: 1.5, armMinWin: 55, armMinTrades: 20 }
+const BAR = { armMinPf: 1.5, armMinTrades: 20 }
 
 test('a strategy the live evaluators disarmed is NOT re-armed inside the cool-off, and is afterwards', () => {
   const now = Date.parse('2026-09-01T06:25:00Z')
@@ -482,13 +506,18 @@ test('shrinkVerdict: 20 trades at 60% in a 45% sweep reads 52.5; 100 trades read
 })
 
 test('decideChanges with the prior: the 20-trade fluke is refused, the 100-trade edge arms', () => {
+  // The prior bites on PF now that the bar has no win-rate term (2026-09-19):
+  // PF 1.8 on 20 trades in a sweep averaging 1.0 reads (20·1.8 + 20·1.0)/40
+  // = 1.4, below the 1.5 bar; the same edge on 100 trades reads 1.67 and arms.
   const shrink = { k: 20, wrMean: 45, pfMean: 1.0 }
-  const fluke = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 2.0, 60, 20)], EMPTY2, { ...BAR, shrink })
-  assert.equal(fluke.arm.length, 0, 'WR 52.5 after shrinkage is below the 55 bar')
+  const fluke = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.8, 60, 20)], EMPTY2, { ...BAR, shrink })
+  assert.equal(fluke.arm.length, 0, 'PF 1.4 after shrinkage is below the 1.5 bar')
   assert.deepEqual(fluke.shrink, { k: 20, wrMean: 45, pfMean: 1 })
-  const proven = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 2.0, 60, 100)], EMPTY2, { ...BAR, shrink })
-  assert.equal(proven.arm.length, 2, 'WR 57.5 / PF 1.83 arms strategy + matrix')
-  assert.equal(decideChanges([V('ema_pullback', 'GBPUSD', '1h', 2.0, 60, 20)], EMPTY2, BAR).arm.length, 2, 'without a prior the same verdict arms as before')
+  const proven = decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.8, 60, 100)], EMPTY2, { ...BAR, shrink })
+  assert.equal(proven.arm.length, 2, 'PF 1.67 arms strategy + matrix')
+  assert.equal(decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.8, 60, 20)], EMPTY2, BAR).arm.length, 2, 'without a prior the same verdict arms as before')
+  // a win rate the old 55 bar would have refused changes nothing either way
+  assert.equal(decideChanges([V('ema_pullback', 'GBPUSD', '1h', 1.8, 20, 100)], EMPTY2, { ...BAR, shrink }).arm.length, 2, 'WR 20 is measured, not gated')
 })
 
 test('sweepShrinkPrior: null under 30 verdicts; PF capped at 5 so a lossless combo cannot lift the prior over the bar', () => {

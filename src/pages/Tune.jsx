@@ -1625,8 +1625,12 @@ export default function Tune() {
   // An older agent that does not emit the block yields "not reported", never
   // an invented default — the copy must not claim a bar it cannot see.
   const autopilotBar = config?.autopilot?.arm_bar
+  // No win-rate term: the bar is PF and sample size (first-principles audit
+  // 2026-09-19, §K item 10). An agent that still has a stored minWin reports
+  // it under `ignored`, and the copy says so rather than printing a bar the
+  // autopilot does not apply.
   const autopilotBarText = autopilotBar
-    ? `PF ≥ ${autopilotBar.minPf} · WR ≥ ${autopilotBar.minWin}% · n ≥ ${autopilotBar.minTrades}`
+    ? `PF ≥ ${autopilotBar.minPf} · n ≥ ${autopilotBar.minTrades}${autopilotBar.ignored?.length ? ` (stored ${autopilotBar.ignored.join(', ')} ignored — win rate is measured, not a bar)` : ''}`
     : 'arm bar not reported by this agent'
   const autopilotMaxChanges = config?.autopilot?.max_changes ?? '—'
   const pendingArmed = config?.pending_mode_enabled === true || config?.pending_mode_enabled === 'true'

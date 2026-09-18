@@ -3106,13 +3106,17 @@ export default function actionsRouter(db, deps = {}) {
     // Arm-bar dials (owner "go with C", 01-09-2026): partial update over the
     // stored bar, clamped by loadArmBar. The bar decideChanges enforces and
     // the headline's "armable" count both read this — one number, no drift.
+    // `minWin` is not a dial any more (first-principles audit 2026-09-19,
+    // §K item 10: win rate is measured, never a bar): a request carrying it
+    // is not written, and a stored one is dropped on the next write so the
+    // reply's `ignored` clears once the operator touches the bar again.
     if (req.body?.armBar && typeof req.body.armBar === 'object') {
       let current = {}
       try { current = JSON.parse(getState(db, 'autopilot_arm_bar_json') || '{}') || {} } catch { current = {} }
+      delete current.minWin
       const next = {
         ...current,
         ...(req.body.armBar.minPf != null ? { minPf: Number(req.body.armBar.minPf) } : {}),
-        ...(req.body.armBar.minWin != null ? { minWin: Number(req.body.armBar.minWin) } : {}),
         ...(req.body.armBar.minTrades != null ? { minTrades: Number(req.body.armBar.minTrades) } : {}),
       }
       setState(db, 'autopilot_arm_bar_json', JSON.stringify(next))
@@ -3120,7 +3124,7 @@ export default function actionsRouter(db, deps = {}) {
     if (req.body?.runNow) setState(db, 'autopilot_last_run_ms', '0') // next loop cycle evaluates
     const { loadArmBar } = await import('../services/strategy-autopilot.js')
     const armBar = loadArmBar(db)
-    console.log(`[actions] autopilot mode=${mode} armBar PF>=${armBar.minPf} W>=${armBar.minWin}% n>=${armBar.minTrades}`)
+    console.log(`[actions] autopilot mode=${mode} armBar PF>=${armBar.minPf} n>=${armBar.minTrades}${armBar.ignored ? ` (ignored: ${armBar.ignored.join(',')})` : ''}`)
     res.json({
       ok: true, mode,
       maxChanges: Number(getState(db, 'autopilot_max_changes')) || 4,

@@ -29,12 +29,12 @@ const post = (h, path, body) => fetch(h.url(path), {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 }).then(r => r.json())
 
-test('GET /state/goal-table returns thirteen goals with verdicts and a summary', async () => {
+test('GET /state/goal-table returns nineteen goals with verdicts and a summary', async () => {
   const h = await server()
   try {
     const r = await fetch(h.url('/state/goal-table')).then(x => x.json())
-    assert.equal(r.goals.length, 14) // PR-C veto_rate + PR-E trade_reasons
-    assert.ok(r.summary.on_track + r.summary.off_track + r.summary.not_measurable === 14)
+    assert.equal(r.goals.length, 19) // PR-C veto_rate + PR-E trade_reasons + Wave 3 four family rows and the momentum checkpoint
+    assert.ok(r.summary.on_track + r.summary.off_track + r.summary.not_measurable === 19)
     assert.ok(r.goals.every(g => ['on_track', 'off_track', 'not_measurable'].includes(g.verdict)))
     assert.equal(r.targets.pipelineConversionMin, 0.5)
   } finally { h.close() }
@@ -44,15 +44,27 @@ test('POST /actions/goal-table: a stored key the route does not know survives a 
   const h = await server()
   try {
     setState(h.db, 'goal_table_json', JSON.stringify({ targets: { pipelineConversionMin: 0.7, futureKnob: 7 }, ownerNote: 'keep' }))
-    const r = await post(h, '/actions/goal-table', { trailWinRatePct: 65 })
+    const r = await post(h, '/actions/goal-table', { someFutureTargetKey: 65 })
     assert.equal(r.ok, true)
     const stored = JSON.parse(getState(h.db, 'goal_table_json'))
     assert.equal(stored.targets.futureKnob, 7, 'an unrelated POST must not drop a stored key')
     assert.equal(stored.targets.pipelineConversionMin, 0.7, 'an untouched known key keeps its stored value')
-    assert.equal(stored.targets.trailWinRatePct, 65, 'the patched key changes')
+    assert.equal(stored.targets.someFutureTargetKey, 65, 'the patched key changes')
     assert.equal(stored.ownerNote, 'keep', 'a top-level stored key survives')
     assert.equal(r.targets.futureKnob, 7, 'the reply is built from what is stored, not from a fixed list')
     const g = await fetch(h.url('/actions/goal-table')).then(x => x.json())
-    assert.equal(g.targets.trailWinRatePct, 65)
+    assert.equal(g.targets.someFutureTargetKey, 65)
+  } finally { h.close() }
+})
+
+test('GET /state/equity-curve and /state/family-edge answer on an empty db (Wave 3)', async () => {
+  const h = await server()
+  try {
+    const c = await fetch(h.url('/state/equity-curve?days=30')).then(x => x.json())
+    assert.deepEqual(c.accounts, [])
+    assert.equal(c.lastPassAt, null)
+    const f = await fetch(h.url('/state/family-edge?days=0')).then(x => x.json())
+    assert.deepEqual(Object.keys(f.families).sort(), ['breakout', 'mean_reversion', 'momentum', 'trend'])
+    assert.equal(f.families.momentum.closes, 0)
   } finally { h.close() }
 })

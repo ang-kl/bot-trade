@@ -10,7 +10,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { goLiveReadiness, integrityOf, edgeOf, bucketsOf, deadlineProjection, INTEGRITY_LIMITS, strategyOf } from './go-live-readiness.js'
 
-const GOAL = { profitFactor: 1.68, winRatePct: 68, gateOn: 'profitFactor', minTrades: 30, deadline: '2026-08-12' }
+const GOAL = { profitFactor: 1.68, gateOn: 'profitFactor', minTrades: 30, deadline: '2026-08-12' }
 const NOW = Date.parse('2026-08-08T00:00:00Z')
 
 // A clean row: attributed, decidable, unflagged.
@@ -96,9 +96,9 @@ test('no losses at all is null PF, not an infinite edge', () => {
 
 test('a combo short only of SAMPLE gets a countdown; one failing on PF does not', () => {
   const rows = [
-    // 10 trades, PF 4.0, 50% wins → passes PF, fails the 60% win-rate bar.
-    ...clean(10, { winEvery: 2, win: 400, loss: -100, symbol: 'A' }),
-    // 10 trades, PF 8.0, 80% wins → passes both, short on trades only.
+    // 10 trades, PF 0.5, 50% wins → fails PF.
+    ...clean(10, { winEvery: 2, win: 100, loss: -200, symbol: 'A' }),
+    // 10 trades, PF 8.0, 80% wins → passes PF, short on trades only.
     ...Array.from({ length: 10 }, (_, i) =>
       row(100 + i, i % 5 === 0 ? -100 : 100, { symbol: 'B' })),
   ]
@@ -106,9 +106,35 @@ test('a combo short only of SAMPLE gets a countdown; one failing on PF does not'
   const a = b.find(x => x.symbol === 'A')
   const bb = b.find(x => x.symbol === 'B')
   assert.equal(a.tradesToArm, null, 'failing on a ratio is not N trades away')
-  assert.ok(a.failing.some(f => /winRate/.test(f)))
+  assert.ok(a.failing.some(f => /profitFactor/.test(f)))
   assert.equal(bb.tradesToArm, 15, '25 - 10')
   assert.equal(bb.armed, false)
+})
+
+// First-principles audit 2026-09-19, §K item 10: exit asymmetry sets
+// expectancy, not entry accuracy. A combo's win rate is on the bucket as a
+// measured figure and takes no part in `armed`.
+test('a low win rate does not keep a combo from arming, and is never listed as failing', () => {
+  // 30 trades, 30% wins of +400 / 70% losses of -50: PF (9×400)/(21×50) = 3.43.
+  const rows = Array.from({ length: 30 }, (_, i) => row(i + 1, i % 10 < 3 ? 400 : -50, { symbol: 'C' }))
+  const c = bucketsOf(rows).find(x => x.symbol === 'C')
+  assert.equal(c.winRatePct, 30, 'measured and reported')
+  assert.equal(c.armed, true, 'under the old 60% bar this combo was refused')
+  assert.deepEqual(c.failing, [])
+  assert.ok(!c.failing.some(f => /winRate/.test(f)))
+})
+
+test('the gate reports win rate as measured, with no bar and no met flag', () => {
+  // 40 trades, 25% wins of +400 / 75% losses of -50: PF 4000/1500 = 2.67.
+  const rows = Array.from({ length: 40 }, (_, i) => row(i + 1, i % 4 === 0 ? 400 : -50))
+  const r = goLiveReadiness({ rows, goal: GOAL, nowMs: NOW })
+  assert.equal(r.verdict, 'GO')
+  assert.equal(r.gate.winRatePct.value, 25)
+  assert.equal(r.gate.winRatePct.measured, true)
+  assert.equal(Object.hasOwn(r.gate.winRatePct, 'bar'), false)
+  assert.equal(Object.hasOwn(r.gate.winRatePct, 'met'), false)
+  assert.equal(r.gate.on, 'profitFactor')
+  assert.doesNotMatch(r.headline, /win rate/)
 })
 
 test('unattributed rows never form a bucket — a bucket needs a strategy', () => {
@@ -139,11 +165,19 @@ test('the live arithmetic: 13 trades in 30 days against a 12-08 deadline', () =>
   assert.equal(p.willMakeIt, false)
 })
 
-test('gateOn is honoured — profitFactor alone by owner decision 03-08', () => {
-  // PF 4.0 with a 50% win rate: passes on profitFactor, fails on 'both'.
+test('the gate is profit factor alone — a goal asking for both or winRate cannot revive the win-rate bar', () => {
+  // PF 4.0 with a 50% win rate: GO on profitFactor, and STILL GO when the
+  // stored goal says 'both' or 'winRate' (owner decision 03-08 made PF the
+  // gate; §K item 10 removed the win-rate target entirely).
   const rows = clean(40, { winEvery: 2, win: 400, loss: -100 })
   assert.equal(goLiveReadiness({ rows, goal: { ...GOAL, gateOn: 'profitFactor' }, nowMs: NOW }).verdict, 'GO')
-  assert.equal(goLiveReadiness({ rows, goal: { ...GOAL, gateOn: 'both' }, nowMs: NOW }).verdict, 'NO')
+  assert.equal(goLiveReadiness({ rows, goal: { ...GOAL, gateOn: 'both', winRatePct: 68 }, nowMs: NOW }).verdict, 'GO')
+  assert.equal(goLiveReadiness({ rows, goal: { ...GOAL, gateOn: 'winRate', winRatePct: 68 }, nowMs: NOW }).verdict, 'GO')
+  const noted = goLiveReadiness({ rows, goal: { ...GOAL, gateOn: 'profitFactor', gateOnNote: 'stored gateOn "both" ignored' }, nowMs: NOW })
+  assert.equal(noted.gate.on, 'profitFactor')
+  assert.match(noted.gate.onNote, /ignored/)
+  // without a goal at all the default is the same
+  assert.equal(goLiveReadiness({ rows, goal: null, nowMs: NOW }).gate.on, 'profitFactor')
 })
 
 test('integrity counts decidability separately from flags', () => {

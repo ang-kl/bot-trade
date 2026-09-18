@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
-  goalTracker, loadGoal, daysRemaining, winsNeeded, winnersNeededForPf,
+  goalTracker, loadGoal, daysRemaining, winnersNeededForPf,
   impliedWinRateForPf, DEFAULT_GOAL, GOAL_STATE_KEY, auditGoalChange,
 } from './goal-tracker.js'
 
@@ -41,23 +41,43 @@ function seedAccount(db, id, { isLive = 0, enabled = 1, label = null } = {}) {
 // The arithmetic, in isolation
 // ---------------------------------------------------------------------------
 
-test('winsNeeded inverts the aggregate hit rate', () => {
-  // 100 trades, 60 wins, 20 more coming, target 68%:
-  // need ceil(0.68 * 120 - 60) = ceil(21.6) = 22 wins out of 20 -> impossible.
-  assert.equal(winsNeeded({ wins: 60, trades: 100, remaining: 20, targetPct: 68 }), 22)
-  // Same record with 100 more trades: ceil(0.68*200 - 60) = 76 of 100 -> hard
-  // but reachable.
-  assert.equal(winsNeeded({ wins: 60, trades: 100, remaining: 100, targetPct: 68 }), 76)
+// First-principles audit 2026-09-19, §K item 10: exit asymmetry sets
+// expectancy, not entry accuracy. The 68% win-rate target and its `winsNeeded`
+// arithmetic are gone; win rate is a measured statistic on the row and nothing
+// else. These pin the contract so a re-introduced target turns red.
+test('the goal carries no win-rate target', () => {
+  assert.equal(Object.hasOwn(DEFAULT_GOAL, 'winRatePct'), false)
+  const db = freshDb()
+  assert.equal(Object.hasOwn(loadGoal(db), 'winRatePct'), false)
+  // a stored one is not merged back in either
+  setState(db, GOAL_STATE_KEY, JSON.stringify({ winRatePct: 70 }))
+  assert.equal(Object.hasOwn(loadGoal(db), 'winRatePct'), false, 'a stored win-rate target is not a target')
 })
 
-test('winsNeeded is <= 0 once the target is already locked', () => {
-  // 90 wins of 100 with 10 to come: 0.68*110 = 74.8, already have 90.
-  assert.ok(winsNeeded({ wins: 90, trades: 100, remaining: 10, targetPct: 68 }) <= 0)
+test('the win-rate metric is measured only: no target, gap, winsNeeded or verdict', () => {
+  const db = freshDb()
+  seedAccount(db, '5203012')
+  seedTrades(db, { accountId: '5203012', wins: 20, losses: 20 })
+  const row = goalTracker(db, { now: NOW }).accounts.find(a => a.accountId === '5203012')
+  assert.equal(row.winRate.value, 50)
+  assert.equal(row.winRate.measured, true)
+  for (const k of ['target', 'gap', 'winsNeeded', 'requiredRateOnRemaining', 'meetsNow', 'verdict']) {
+    assert.equal(Object.hasOwn(row.winRate, k), false, `winRate.${k} would present a target that no longer exists`)
+  }
+  // the PF metric still carries its requirement — that gate is untouched
+  assert.equal(row.profitFactor.target, 1.68)
+  assert.ok(Object.hasOwn(row.profitFactor, 'winsNeeded'))
 })
 
-test('winsNeeded does not round a whole number up by one', () => {
-  // 0.5 * (50 + 50) = 50 exactly, with 25 wins in hand -> 25 more, not 26.
-  assert.equal(winsNeeded({ wins: 25, trades: 50, remaining: 50, targetPct: 50 }), 25)
+test('a low win rate with a met profit factor reads met — the win rate cannot veto', () => {
+  const db = freshDb()
+  seedAccount(db, '5203012')
+  // 40 trades, 12 wins of +400 / 28 losses of -50: 30% wins, PF 4800/1400 = 3.43.
+  seedTrades(db, { accountId: '5203012', wins: 12, losses: 28, winAmt: 400, lossAmt: -50 })
+  const row = goalTracker(db, { now: NOW }).accounts.find(a => a.accountId === '5203012')
+  assert.equal(row.winRate.value, 30)
+  assert.equal(row.profitFactor.verdict, 'met')
+  assert.equal(row.verdict, 'met', 'under the old 68% bar this row read out_of_reach')
 })
 
 test('winnersNeededForPf solves the ratio at the observed trade sizes', () => {
@@ -95,11 +115,31 @@ test('the goal defaults to the owner stated gate', () => {
 
 test('goal overrides merge over defaults and reject nonsense', () => {
   const db = freshDb()
-  setState(db, GOAL_STATE_KEY, JSON.stringify({ winRatePct: 70, deadline: 'soon', profitFactor: -3 }))
+  setState(db, GOAL_STATE_KEY, JSON.stringify({ minTrades: 40, deadline: 'soon', profitFactor: -3 }))
   const g = loadGoal(db)
-  assert.equal(g.winRatePct, 70)
+  assert.equal(g.minTrades, 40)
   assert.equal(g.deadline, DEFAULT_GOAL.deadline, 'a malformed date falls back rather than crashing the panel')
   assert.equal(g.profitFactor, DEFAULT_GOAL.profitFactor, 'a negative target is not a target')
+})
+
+test("a stored gateOn other than 'profitFactor' is ignored and SAID to be ignored", () => {
+  for (const stored of ['both', 'winRate', 'nonsense']) {
+    const db = freshDb()
+    setState(db, GOAL_STATE_KEY, JSON.stringify({ gateOn: stored }))
+    const g = loadGoal(db)
+    assert.equal(g.gateOn, 'profitFactor', `gateOn ${stored} must not gate on a win rate`)
+    assert.match(g.gateOnNote, /ignored/)
+    assert.match(g.gateOnNote, new RegExp(stored))
+    // and the row carries the note, so the card can print it
+    seedAccount(db, 'X')
+    const row = goalTracker(db, { now: NOW }).accounts.find(a => a.accountId === 'X')
+    assert.equal(row.gateOn, 'profitFactor')
+    assert.match(row.gateOnNote, /ignored/)
+  }
+  const db = freshDb()
+  setState(db, GOAL_STATE_KEY, JSON.stringify({ gateOn: 'profitFactor' }))
+  assert.equal(Object.hasOwn(loadGoal(db), 'gateOnNote'), false, 'nothing to note when the stored value is the only one there is')
+  assert.equal(Object.hasOwn(loadGoal(freshDb()), 'gateOnNote'), false)
 })
 
 test('unparseable goal state does not throw', () => {
@@ -146,67 +186,72 @@ test('a large record clearing both targets reads met', () => {
   assert.equal(row.verdict, 'met')
 })
 
-test('a large record below target with too few trades left is out_of_reach', () => {
+test('a large record below the PF target with too few trades left is out_of_reach or at_risk, never met', () => {
   const db = freshDb()
   seedAccount(db, '5203012')
-  // 100 trades, 40 wins (40%), closed over ~2 days -> a high trade rate, but
-  // still nowhere near 68% aggregate with 11 days left.
+  // 100 trades, 40 wins of +100 / 60 losses of -50: PF 4000/3000 = 1.33,
+  // closed over ~2 days -> a high trade rate.
   seedTrades(db, { accountId: '5203012', wins: 40, losses: 60, startMs: NOW - 2 * DAY, spacingMs: DAY / 60 })
   const row = goalTracker(db, { now: NOW }).accounts.find(a => a.accountId === '5203012')
-  assert.equal(row.winRate.value, 40)
-  const need = row.winRate.winsNeeded
+  assert.equal(row.profitFactor.value, 1.33)
+  const need = row.profitFactor.winsNeeded
   assert.ok(need > 0)
   if (need > row.expectedRemaining) {
-    assert.equal(row.winRate.verdict, 'out_of_reach')
+    assert.equal(row.profitFactor.verdict, 'out_of_reach')
   } else {
-    assert.equal(row.winRate.verdict, 'at_risk',
-      'reachable only by beating the observed hit rate')
+    assert.equal(row.profitFactor.verdict, 'at_risk',
+      'reachable only by beating the observed record')
   }
+  assert.equal(row.verdict, row.profitFactor.verdict)
 })
 
-test('out_of_reach is arithmetic: needing more wins than trades remaining', () => {
+test('out_of_reach is arithmetic: needing more winners than trades remaining', () => {
   const db = freshDb()
   seedAccount(db, '5203012')
-  // 50 trades, 10 wins, spread one per day over 50 days -> ~1 trade/day, so
-  // only ~11 more close before the deadline. Lifting 20% to 68% would take
-  // 32 wins out of those 11.
+  // 50 trades, 10 wins (+100) / 40 losses (-50): PF 0.5, spread one per day
+  // over 50 days -> ~1 trade/day, so only ~14 more close before the deadline.
+  // At the observed sizes, PF 1.68 needs ~20 winners from those 14.
   seedTrades(db, { accountId: '5203012', wins: 10, losses: 40, startMs: NOW - 50 * DAY, spacingMs: DAY })
   const row = goalTracker(db, { now: NOW }).accounts.find(a => a.accountId === '5203012')
-  assert.ok(row.expectedRemaining < row.winRate.winsNeeded,
+  assert.ok(row.expectedRemaining < row.profitFactor.winsNeeded,
     'the requirement exceeds the trades expected before the deadline')
-  assert.equal(row.winRate.verdict, 'out_of_reach')
-  assert.equal(row.verdict, 'out_of_reach', 'the weaker of the two gates governs')
+  assert.equal(row.profitFactor.verdict, 'out_of_reach')
+  assert.equal(row.verdict, 'out_of_reach', 'the profit-factor gate governs')
 })
 
-test('at_risk means reachable only by improving on the observed hit rate', () => {
+test('at_risk means reachable only by improving on the observed record', () => {
   const db = freshDb()
   seedAccount(db, '5203012')
-  // 40 trades at 60%, plenty of trades still expected (high rate over 1 day
-  // span means a large expectedRemaining) -> the requirement lands above 60%.
-  seedTrades(db, { accountId: '5203012', wins: 24, losses: 16, startMs: NOW - DAY, spacingMs: DAY / 60 })
+  // 40 trades, 16 wins (+100) / 24 losses (-50): PF 1600/1200 = 1.33, with
+  // plenty of trades still expected (high rate over a 1-day span) -> the
+  // requirement lands above the 40% the account has managed.
+  seedTrades(db, { accountId: '5203012', wins: 16, losses: 24, startMs: NOW - DAY, spacingMs: DAY / 60 })
   const row = goalTracker(db, { now: NOW }).accounts.find(a => a.accountId === '5203012')
-  assert.equal(row.winRate.value, 60)
-  assert.ok(row.expectedRemaining > row.winRate.winsNeeded, 'reachable')
-  assert.ok(row.winRate.requiredRateOnRemaining > row.winRate.value,
+  assert.equal(row.winRate.value, 40)
+  assert.ok(row.expectedRemaining > row.profitFactor.winsNeeded, 'reachable')
+  assert.ok(row.profitFactor.requiredRateOnRemaining > row.winRate.value,
     'it demands better than the account has managed')
-  assert.equal(row.winRate.verdict, 'at_risk')
+  assert.equal(row.profitFactor.verdict, 'at_risk')
 })
 
 test('there is no on_track verdict: below target at steady form never arrives', () => {
-  // The load-bearing claim in the verdict set. Both metrics are computed from
-  // the account's own performance, so an account that keeps performing exactly
-  // as it has been converges on the number it already has. Below target must
+  // The load-bearing claim in the verdict set. The gate is computed from the
+  // account's own performance, so an account that keeps performing exactly as
+  // it has been converges on the number it already has. Below target must
   // therefore read at_risk — it is only reachable by IMPROVING — and the
-  // required lift is visible as requiredRateOnRemaining above value.
+  // required lift is visible as requiredRateOnRemaining above the measured
+  // win rate.
   const db = freshDb()
   seedAccount(db, '5203012')
-  seedTrades(db, { accountId: '5203012', wins: 27, losses: 13, startMs: NOW - DAY, spacingMs: DAY / 200 })
+  // 40 trades, 18 wins (+100) / 22 losses (-50): PF 1800/1100 = 1.64, just
+  // under the 1.68 gate.
+  seedTrades(db, { accountId: '5203012', wins: 18, losses: 22, startMs: NOW - DAY, spacingMs: DAY / 200 })
   const row = goalTracker(db, { now: NOW }).accounts.find(a => a.accountId === '5203012')
-  assert.equal(row.winRate.value, 67.5, 'just under the 68 gate')
-  assert.ok(row.expectedRemaining > row.winRate.winsNeeded, 'arithmetically reachable')
-  assert.ok(row.winRate.requiredRateOnRemaining > row.winRate.value,
+  assert.equal(row.profitFactor.value, 1.64, 'just under the 1.68 gate')
+  assert.ok(row.expectedRemaining > row.profitFactor.winsNeeded, 'arithmetically reachable')
+  assert.ok(row.profitFactor.requiredRateOnRemaining > row.winRate.value,
     'reaching the gate demands better than the account has managed')
-  assert.equal(row.winRate.verdict, 'at_risk')
+  assert.equal(row.profitFactor.verdict, 'at_risk')
   const out = goalTracker(db, { now: NOW })
   const verdicts = new Set(out.accounts.map(a => a.verdict).concat(out.portfolio.verdict))
   assert.ok(!verdicts.has('on_track'), 'the verdict set has no unreachable state')
@@ -302,12 +347,13 @@ test('a past deadline leaves zero days and makes any shortfall out_of_reach', ()
   const db = freshDb()
   seedAccount(db, '5203012')
   setState(db, GOAL_STATE_KEY, JSON.stringify({ deadline: '2026-07-01' }))
-  seedTrades(db, { accountId: '5203012', wins: 20, losses: 20 })
+  seedTrades(db, { accountId: '5203012', wins: 10, losses: 30 })   // PF 1000/1500 = 0.67
   const out = goalTracker(db, { now: NOW })
   assert.equal(out.daysRemaining, 0)
   const row = out.accounts.find(a => a.accountId === '5203012')
   assert.equal(row.expectedRemaining, 0)
-  assert.equal(row.winRate.verdict, 'out_of_reach')
+  assert.equal(row.profitFactor.verdict, 'out_of_reach')
+  assert.equal(row.verdict, 'out_of_reach')
 })
 
 test('the window option restricts the record without changing the gate', () => {
@@ -321,7 +367,7 @@ test('the window option restricts the record without changing the gate', () => {
   assert.equal(allTime.trades, 80)
   assert.equal(recent.trades, 40)
   assert.ok(recent.winRate.value > allTime.winRate.value)
-  assert.equal(recent.winRate.target, 68, 'the window changes the record, not the gate')
+  assert.equal(recent.profitFactor.target, 1.68, 'the window changes the record, not the gate')
 })
 
 test('registry metadata rides along so the panel can flag the live account', () => {
@@ -372,11 +418,12 @@ test('an unobservable payoff yields null rather than a guess', () => {
 })
 
 test('the gate follows profit factor, not the AND of both', () => {
-  // A row that MEETS profit factor but misses win rate must now read as met:
+  // A row that MEETS profit factor but misses win rate must read as met:
   // under the old AND it read out_of_reach, which is what put "Out of reach"
   // on a card whose PF gate was the one the owner cared about.
   const g = loadGoal({ getState: () => null })
   assert.equal(g.gateOn, 'profitFactor')
+  assert.equal(Object.hasOwn(g, 'winRatePct'), false)
 })
 
 // ---------------------------------------------------------------------------
@@ -483,5 +530,7 @@ test('the deadline moved to 15-08, and only ONE file holds the date', async () =
   assert.match(GO_LIVE_BAR.question, /2026-08-15/, 'the register must not still ask about the 12th')
   // And the BAR is untouched: a moved date is not a softened target.
   assert.equal(DEFAULT_GOAL.profitFactor, 1.68)
-  assert.equal(DEFAULT_GOAL.winRatePct, 68)
+  // The win-rate half of the gate is gone by decision, not softened
+  // (first-principles audit 2026-09-19, §K item 10).
+  assert.equal(Object.hasOwn(GO_LIVE_BAR, 'winRatePct'), false)
 })

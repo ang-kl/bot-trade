@@ -2738,6 +2738,33 @@ export default function stateRouter(db) {
     }
   })
 
+  // Wave 3 (first-principles audit 19-09-2026 §K item 11): the nightly
+  // mark-to-market equity curve per account. ?account=<id> scopes to one;
+  // ?days= (1..365, default 90).
+  router.get('/equity-curve', async (req, res) => {
+    try {
+      const { equityCurve } = await import('../services/equity-snapshot.js')
+      const days = Math.min(365, Math.max(1, Number(req.query.days) || 90))
+      const accountId = req.query.account != null && String(req.query.account).trim() !== '' ? String(req.query.account).trim() : null
+      res.json(equityCurve(db, { accountId, days }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // Wave 3 (§K item 10): closed-trade edge per strategy family — PF, tail
+  // share, max drawdown. ?days= (0 = all time), ?account=<id>.
+  router.get('/family-edge', async (req, res) => {
+    try {
+      const { familyEdgeReport } = await import('../services/family-edge.js')
+      const days = req.query.days != null ? Math.min(3650, Math.max(0, Number(req.query.days) || 0)) : 90
+      const accountId = req.query.account != null && String(req.query.account).trim() !== '' ? String(req.query.account).trim() : null
+      res.json(familyEdgeReport(db, { days, accountId }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/goal-table', async (_req, res) => {
     try {
       const { goalTable } = await import('../services/goal-table.js')

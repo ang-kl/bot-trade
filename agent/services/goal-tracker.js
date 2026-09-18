@@ -1,28 +1,30 @@
 // Goal tracker — am I going to hit the go-live gate by the deadline, per account?
 //
-// The owner's standing gate for putting real money on this: win rate above 68%
-// and profit factor above 1.68, by 12 Aug 2026. Those two numbers already exist
-// on the Performance page as tiles. What the tiles cannot answer is the only
-// question that matters in the first week of August: *given the record so far
-// and the rate trades are actually closing, is that gate still reachable, and
-// what would the remaining trades have to look like?*
+// The owner's standing gate for putting real money on this: profit factor
+// above 1.68, by the deadline below. That number already exists on the
+// Performance page as a tile. What the tile cannot answer is the only question
+// that matters in the first week of August: *given the record so far and the
+// rate trades are actually closing, is that gate still reachable, and what
+// would the remaining trades have to look like?*
+//
+// WIN RATE IS MEASURED HERE, NOT TARGETED. It used to be the second half of
+// the gate (68%). First-principles audit 2026-09-19, §K item 10: exit
+// asymmetry sets expectancy, not entry accuracy — a win-rate threshold is not
+// a bar this system uses any more. The measured rate still rides along in
+// each row as a statistic, with no target, no gap and no "wins needed".
 //
 // ===========================================================================
 // WHAT THIS COMPUTES, AND WHAT IT REFUSES TO
 // ===========================================================================
 //
-// REACHABILITY, not a forecast. This does not predict a win rate. It inverts
-// the arithmetic: with `n` closed trades of which `w` are wins, and `m` more
-// expected before the deadline, the aggregate clears the target `T` only if
-// the next `m` contain at least
-//
-//     needWins = ceil(T·(n + m) − w)
-//
-// wins. If needWins > m the gate is arithmetically OUT OF REACH at this trade
-// rate — no run of luck inside the remaining trades gets there, and saying
-// "on pace" would be false. If needWins ≤ 0 it is already locked regardless of
-// what the remaining trades do. Everything in between is a required hit rate
-// on the remaining trades, `needWins / m`, which is a fact about the record
+// REACHABILITY, not a forecast. This does not predict anything. With `n`
+// closed trades and `m` more expected before the deadline, it asks how many
+// of the next `m` would have to be winners for the aggregate to clear the
+// target. If that number exceeds `m` the gate is arithmetically OUT OF REACH
+// at this trade rate — no run of luck inside the remaining trades gets there,
+// and saying "on pace" would be false. If it is ≤ 0 the gate is already locked
+// regardless of what the remaining trades do. Everything in between is a
+// required hit rate on the remaining trades, which is a fact about the record
 // and not an opinion about the future.
 //
 // PROFIT FACTOR needs an assumption, and the assumption is stated. PF is a
@@ -65,7 +67,6 @@ export const DEFAULT_GOAL = {
   // Values live in edge-bars.js, the register of every numeric edge bar, so a
   // change here is visible next to the arming bar and the breaker floor it
   // silently relates to (Risk-Decision Audit 2026-08-03, finding #3).
-  winRatePct: GO_LIVE_BAR.winRatePct,
   profitFactor: GO_LIVE_BAR.profitFactor,
   // WHICH METRIC IS THE GATE. Owner 2026-08-03: profit factor alone.
   //
@@ -73,7 +74,11 @@ export const DEFAULT_GOAL = {
   // binding one for the wrong reason — 68% wins implies PF ~4.0 at the
   // observed payoff, so requiring both meant requiring the far stricter of
   // the two without anyone deciding to. Win rate is still computed and shown;
-  // it just no longer vetoes the gate. 'both' restores the old behaviour.
+  // it just no longer vetoes the gate. 'both' and 'winRate' were accepted as
+  // stored overrides until 2026-09-19 (first-principles audit, §K item 10);
+  // they are not any more — there is no win-rate target left to gate on, so
+  // a stored value other than 'profitFactor' is reported in `gateOnNote` and
+  // the gate stays on profit factor.
   gateOn: 'profitFactor',
   // MOVED 08-08-2026, owner: "Move the goal's deadline to 15 August."
   //
@@ -111,13 +116,20 @@ export function loadGoal(db) {
   const deadline = typeof saved.deadline === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(saved.deadline)
     ? saved.deadline
     : DEFAULT_GOAL.deadline
-  return {
-    winRatePct: num(saved.winRatePct, DEFAULT_GOAL.winRatePct),
+  const out = {
     profitFactor: num(saved.profitFactor, DEFAULT_GOAL.profitFactor),
-    gateOn: ['both', 'profitFactor', 'winRate'].includes(saved.gateOn) ? saved.gateOn : DEFAULT_GOAL.gateOn,
+    gateOn: DEFAULT_GOAL.gateOn,
     deadline,
     minTrades: Math.round(num(saved.minTrades, DEFAULT_GOAL.minTrades)),
   }
+  // A stored gateOn of 'both' or 'winRate' (or anything else) is not honoured
+  // and not silently dropped either: the reply names what was asked for and
+  // that the gate stayed on profit factor, so an operator reading the goal
+  // back learns the override did nothing rather than assuming it applied.
+  if (saved.gateOn != null && saved.gateOn !== 'profitFactor') {
+    out.gateOnNote = `stored gateOn ${JSON.stringify(saved.gateOn)} ignored — win rate is measured, never a bar (first-principles audit 2026-09-19, §K item 10); the gate is profit factor`
+  }
+  return out
 }
 
 /** State key holding the last goal this process observed, for change detection. */
@@ -151,7 +163,7 @@ export function auditGoalChange(db, goal) {
   try {
     const raw = getState(db, GOAL_SEEN_KEY)
     const prev = raw ? JSON.parse(raw) : null
-    const same = prev && ['winRatePct', 'profitFactor', 'gateOn', 'deadline', 'minTrades']
+    const same = prev && ['profitFactor', 'gateOn', 'deadline', 'minTrades']
       .every(k => prev[k] === goal[k])
     if (same) return out
     // First observation on a fresh database is not a "change" to report — it
@@ -181,21 +193,6 @@ export function daysRemaining(deadline, nowMs) {
 }
 
 /**
- * Wins required among the next `m` trades for the aggregate hit rate to reach
- * `targetPct`. Returns the raw requirement — callers interpret >m as
- * unreachable and ≤0 as already locked.
- */
-export function winsNeeded({ wins, trades, remaining, targetPct }) {
-  const t = targetPct / 100
-  return Math.ceil(t * (trades + remaining) - wins - 1e-9)
-}
-
-/**
- * Winners required among the next `m` trades for profit factor to reach
- * `target`, holding average win and average loss at their observed values.
- * null when there is no observed average win or loss to hold fixed.
- */
-/**
  * The WIN RATE that reaches a target profit factor, holding the observed
  * payoff ratio fixed.
  *
@@ -221,6 +218,11 @@ export function impliedWinRateForPf({ avgWin, avgLoss, target }) {
   return round2((r / (1 + r)) * 100)
 }
 
+/**
+ * Winners required among the next `m` trades for profit factor to reach
+ * `target`, holding average win and average loss at their observed values.
+ * null when there is no observed average win or loss to hold fixed.
+ */
 export function winnersNeededForPf({ grossWin, grossLoss, avgWin, avgLoss, remaining, target }) {
   if (!(avgWin > 0) || !(avgLoss > 0)) return null
   const numer = target * (grossLoss + remaining * avgLoss) - grossWin
@@ -425,7 +427,6 @@ function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left
     : null
 
   const m = expectedRemaining ?? 0
-  const wNeed = trades > 0 ? winsNeeded({ wins: stats.wins, trades, remaining: m, targetPct: goal.winRatePct }) : null
   // A record with no losses has no profit factor to compute — grossLoss is the
   // denominator. Requiring 0 more winners is the honest encoding: nothing the
   // remaining trades do can make an all-winning record fail the ratio, and the
@@ -439,19 +440,15 @@ function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left
       })
     : null
 
+  // MEASURED, NOT TARGETED. No target, no gap, no wins-needed, no verdict:
+  // a win-rate threshold is not a bar this system uses (first-principles
+  // audit 2026-09-19, §K item 10 — exit asymmetry sets expectancy, not entry
+  // accuracy). The number is here because the card shows it beside the
+  // record; `measured: true` is the contract that it is a statistic only.
   const winRate = {
     metric: 'winRate',
-    target: goal.winRatePct,
+    measured: true,
     value: stats.winRate,
-    gap: stats.winRate != null ? round2(stats.winRate - goal.winRatePct) : null,
-    winsNeeded: wNeed,
-    // The hit rate the REMAINING trades must clear. >1 means impossible.
-    requiredRateOnRemaining: wNeed != null && m > 0 ? round2((wNeed / m) * 100) : null,
-    meetsNow: stats.winRate != null ? stats.winRate >= goal.winRatePct : null,
-    verdict: verdictFor({
-      needed: wNeed, remaining: m, sampleOk, trades,
-      meetsNow: stats.winRate != null && stats.winRate >= goal.winRatePct,
-    }),
   }
 
   const profitFactor = {
@@ -502,20 +499,15 @@ function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left
     net: stats.net,
     winRate,
     profitFactor,
-    // ONE WORD, from whichever metric the owner made the gate. Both are still
-    // computed and returned; `gateOn` decides which one the verdict follows.
-    // An AND of the two silently enforced the stricter target — see
-    // impliedWinRateForPf for why 68% and PF 1.68 are not the same demand.
+    // ONE WORD, from the profit-factor gate. `gateOn` is always
+    // 'profitFactor' now (see loadGoal); it is still returned so a client
+    // that printed it keeps printing the truth. An AND of the two once
+    // silently enforced the stricter target — see impliedWinRateForPf for why
+    // 68% and PF 1.68 were never the same demand.
     gateOn: goal.gateOn,
-    verdict: goal.gateOn === 'winRate' ? winRate.verdict
-      : goal.gateOn === 'profitFactor' ? profitFactor.verdict
-        : worstOf(winRate.verdict, profitFactor.verdict),
+    ...(goal.gateOnNote ? { gateOnNote: goal.gateOnNote } : {}),
+    verdict: profitFactor.verdict,
   }
-}
-
-const RANK = ['met', 'at_risk', 'insufficient_sample', 'out_of_reach', 'no_data']
-function worstOf(a, b) {
-  return RANK.indexOf(a) >= RANK.indexOf(b) ? a : b
 }
 function round2(v) {
   return Number.isFinite(v) ? Math.round(v * 100) / 100 : null

@@ -1,10 +1,15 @@
 // GoalTracker — the go-live gate, per account, with the deadline attached.
 //
 // The Performance page already shows win rate and profit factor. What it does
-// not show is whether those numbers can still become 68% and 1.68 by 12 Aug,
+// not show is whether the profit factor can still become 1.68 by the deadline,
 // which is the actual decision in front of the owner. This card answers that
 // per account, and it is deliberately blunt about the three ways a green tick
 // would be a lie:
+//
+// WIN RATE IS SHOWN, NOT TARGETED. It used to be the second half of the gate
+// (68%). First-principles audit 2026-09-19, §K item 10: exit asymmetry sets
+// expectancy, not entry accuracy — so the card prints the measured rate with
+// no target beside it and no "needs N winners" line under it.
 //
 //   • too few trades  -> "not enough trades", never a tick, however good the
 //                        rate looks. 3-for-3 is 100% and means nothing.
@@ -58,6 +63,25 @@ function fetchGoal() {
 }
 
 function MetricRow({ m, label, fmt, row }) {
+  // A MEASURED metric (the server marks it `measured: true`, and carries no
+  // target, verdict or requirement for it) prints the value and says what it
+  // is. Nothing else in the row is rendered for it — a "vs —" or a fake
+  // verdict would present a target that does not exist.
+  if (m.measured) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+        <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU, textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</span>
+          <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: TX }}>
+            {fmt(m.value)}
+          </span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }} title="Measured over the closed trades on this card. Not a gate: exit asymmetry sets expectancy, not entry accuracy.">
+            measured · not a gate
+          </span>
+        </span>
+      </div>
+    )
+  }
   const v = VERDICT[m.verdict] || VERDICT.no_data
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
@@ -74,7 +98,7 @@ function MetricRow({ m, label, fmt, row }) {
         <span style={{ fontSize: 'var(--fs-body)', color: SB }}>
           needs <strong>{m.winsNeeded}</strong> winners of the ~{row.expectedRemaining} trades still expected
           {m.requiredRateOnRemaining != null && (
-            <> — a <strong>{pct(m.requiredRateOnRemaining)}</strong> hit rate, against {pct(row.winRate.value)} so far</>
+            <> — a <strong>{pct(m.requiredRateOnRemaining)}</strong> hit rate, against {pct(row.winRate?.value)} so far</>
           )}
         </span>
       )}
@@ -215,7 +239,7 @@ export default function GoalTracker({ variant = 'full' }) {
   if (!data) return null
   // `data` arriving is not proof `data.goal` did. The route can answer with an
   // error body, or an older agent build without the goal block, and reading
-  // data.goal.winRatePct then takes the whole Performance page down (measured
+  // data.goal.profitFactor then takes the whole Performance page down (measured
   // 03-08-2026 in the degraded-payload sweep). No goal = nothing to show.
   if (!data.goal) return null
 
@@ -238,7 +262,7 @@ export default function GoalTracker({ variant = 'full' }) {
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Go-Live Gate</span>
           <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
-            {data.goal.winRatePct}% win · PF {data.goal.profitFactor} ·{' '}
+            PF {data.goal.profitFactor} ·{' '}
             <strong style={{ color: data.daysRemaining <= 3 ? WRN : MU }}>
               {data.daysRemaining === 0 ? 'deadline passed' : `${data.daysRemaining}d left`}
             </strong>
@@ -266,7 +290,7 @@ export default function GoalTracker({ variant = 'full' }) {
           Go-Live Gate — Progress card
         </span>
         <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
-          win rate {data.goal.winRatePct}% · profit factor {data.goal.profitFactor} · by {data.goal.deadline}
+          profit factor {data.goal.profitFactor} · by {data.goal.deadline}
           {' · '}
           <strong style={{ color: data.daysRemaining <= 3 ? WRN : MU }}>
             {data.daysRemaining === 0 ? 'deadline passed' : `${data.daysRemaining} day${data.daysRemaining === 1 ? '' : 's'} left`}
@@ -274,8 +298,8 @@ export default function GoalTracker({ variant = 'full' }) {
         </span>
         <SectionTools id="goal" title="Go-Live Gate — Progress card" data={data}
           toText={() => [
-            `Go-live gate: win rate ${data.goal.winRatePct}% · profit factor ${data.goal.profitFactor} · by ${data.goal.deadline} (${data.daysRemaining}d left)`,
-            ...[p, ...ordered].map(r => `${r.login ? `#${r.login}` : (r.label || r.accountId)}${r.label && r.login ? ` ${r.label}` : ''} · ${r.trades} closed · win ${pct(r.winRate.value)} (${VERDICT[r.winRate.verdict]?.label}) · PF ${num2(r.profitFactor.value)} (${VERDICT[r.profitFactor.verdict]?.label})`),
+            `Go-live gate: profit factor ${data.goal.profitFactor} · by ${data.goal.deadline} (${data.daysRemaining}d left)`,
+            ...[p, ...ordered].map(r => `${r.login ? `#${r.login}` : (r.label || r.accountId)}${r.label && r.login ? ` ${r.label}` : ''} · ${r.trades} closed · win ${pct(r.winRate?.value)} (measured) · PF ${num2(r.profitFactor.value)} (${VERDICT[r.profitFactor.verdict]?.label})`),
           ].join('\n')}
           render={() => (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
