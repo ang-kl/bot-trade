@@ -34,6 +34,7 @@
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { weekAnchorMs } from '../shared/formulas.js'
+import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { lotsToVolume } from '../lib/lot-sizing.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { notionalUsd } from '../lib/contracts.js'
@@ -564,7 +565,7 @@ export function weekToDateFor(db, accountId, nowMs = Date.now()) {
       `SELECT COUNT(*) AS n, COALESCE(SUM(net_pnl), 0) AS net, COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
          FROM trades
         WHERE status = 'closed' AND net_pnl IS NOT NULL AND account_id = ?
-          AND COALESCE(label_strategy, strategy) = ?
+          AND ${strategyAttrSql()} = ?
           AND REPLACE(closed_at, 'T', ' ') >= ?`
     ).get(String(accountId), TSMOM_STRATEGY, since)
     return { since: new Date(anchor).toISOString(), closes: Number(r?.n) || 0, wins: Number(r?.wins) || 0, net: Number((Number(r?.net) || 0).toFixed(2)) }

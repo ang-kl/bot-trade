@@ -1262,7 +1262,7 @@ export function lossStreakVerdict(db, config, acct, nowMs = Date.now()) {
           `SELECT net_pnl, closed_at FROM trades
            WHERE status = 'closed' AND closed_at IS NOT NULL
              AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
-             AND COALESCE(label_strategy, strategy, '') NOT IN (${excluded.map(() => '?').join(', ') || "''"})
+             AND COALESCE(${strategyAttrSql()}, '') NOT IN (${excluded.map(() => '?').join(', ') || "''"})
            ORDER BY closed_at DESC LIMIT ?`
         )
         .all(acct, acct, ...excluded, streakLimit)
