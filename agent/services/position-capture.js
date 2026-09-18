@@ -33,6 +33,23 @@ import { dirname, join } from 'node:path'
 import { capturePosition, recordVerdict } from './position-history.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { VERDICT_CONTRACT_VERSION } from '../lib/verify-contract.js'
+import { unitsPerLot } from '../lib/lot-size-registry.js'
+
+/**
+ * The record plus `lot_size`: the broker's declared lotSize for the symbol
+ * (cents of units per lot), or nothing. The registry's table fallback
+ * carries NO lotSize by construction (lot-size-registry.js `unitsPerLot`
+ * returns `lotSize: null` for `source: 'table'`), and that is what is read
+ * here — never `unitsPerLot × 100`, which would hand the verifier a guessed
+ * lot to scale the broker's own volume by and call the result a verdict.
+ */
+export function withBrokerLotSize (db, record) {
+  try {
+    const u = unitsPerLot(db, record?.symbol)
+    if (Number(u.lotSize) > 0) return { ...record, lot_size: Number(u.lotSize) }
+  } catch { /* no registry, no lot */ }
+  return { ...record, lot_size: null }
+}
 
 /** The owner's 30 seconds. */
 export const CAPTURE_DELAY_MS = 30_000
@@ -368,7 +385,9 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, no
 
       if (verify) {
         try {
-          const v = await verify(res.record)
+          // The symbol's lotSize rides with the record so the verifier can
+          // compare lots (contract 3) — from the broker's declaration only.
+          const v = await verify(withBrokerLotSize(db, res.record))
           // A SKIPPED VERDICT IS SAID OUT LOUD. verify() already knows exactly
           // why it could not answer — http_409, connect_no_accounts, timeout,
           // bad_reply, no_host — and the first version of this block dropped

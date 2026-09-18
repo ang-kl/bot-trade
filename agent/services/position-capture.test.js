@@ -162,6 +162,38 @@ test('the verifier is asked, and its answer is stored unchanged', async () => {
   assert.equal(JSON.parse(row.disputes_json)[0].field, 'entry_price')
 })
 
+// CONTRACT 3 (fix-the-exits BC): the record handed to the verifier carries
+// the symbol's lotSize from the broker's declaration in the registry — and
+// NOT the hardcoded contract table, which would scale the broker's own
+// volume by a guess and call the result a verdict.
+test('the drain sends the broker-declared lotSize with the record, and nothing from the table fallback', async () => {
+  const { rememberLotSize } = await import('../lib/lot-size-registry.js')
+  const { withBrokerLotSize } = await import('./position-capture.js')
+  const db = fresh()
+  seedComplete(db)
+  // Nothing declared yet: the registry falls back to its table, which has a
+  // unitsPerLot but NO lotSize (lot-size-registry.js) → no lot travels.
+  const { unitsPerLot } = await import('../lib/lot-size-registry.js')
+  assert.equal(unitsPerLot(db, 'EURUSD').source, 'table')
+  assert.ok(unitsPerLot(db, 'EURUSD').unitsPerLot > 0, 'the table knows a contract size …')
+  assert.equal(withBrokerLotSize(db, { symbol: 'EURUSD' }).lot_size, null, '… and it is not what travels')
+  assert.equal(withBrokerLotSize(db, { symbol: null }).lot_size, null)
+  rememberLotSize(db, 'EURUSD', 10000000)
+  assert.equal(withBrokerLotSize(db, { symbol: 'EURUSD' }).lot_size, 10000000)
+
+  const env = { DB_PATH: join(mkdtempSync(join(tmpdir(), 'poshist-')), 'agent.db') }
+  const now = Date.now()
+  enqueueCapture(db, { accountId: ACCT, positionId: PID, now })
+  const seen = []
+  await drainCaptureQueue(db, {
+    now: now + CAPTURE_DELAY_MS, env,
+    verify: async (record) => { seen.push(record); return { state: 'verified', disputes: [], contractVersion: 3 } },
+  })
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].symbol, 'EURUSD')
+  assert.equal(seen[0].lot_size, 10000000, 'the verifier is told the lot the keeper priced its lots with')
+})
+
 test('an unreachable verifier leaves the record unverified — it never becomes verified by default', async () => {
   // The whole point of the separate service. A `verified` produced here
   // because the verifier was down would be worse than no verification.

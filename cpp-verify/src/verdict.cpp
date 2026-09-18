@@ -109,8 +109,13 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
 
   if (v.sawOpen && openVol > 0) {
     v.brokerEntryPrice = openNotional / static_cast<double>(openVol);
-    // CENTS OF UNITS -> UNITS, the scale the keeper stores in.
-    v.brokerVolume = static_cast<double>(openVol) / kVolumeCentiUnits;
+    // CENTS OF UNITS -> UNITS for the record, and -> LOTS for the comparison
+    // through the symbol's own lotSize (contract 3). No lotSize, no lots:
+    // a volume scaled by a guessed lot is the contract-2 defect again.
+    v.brokerVolumeUnits = static_cast<double>(openVol) / kVolumeCentiUnits;
+    if (rec.lotSize && *rec.lotSize > 0) {
+      v.brokerVolume = static_cast<double>(openVol) / *rec.lotSize;
+    }
     v.brokerOpenedAtMs = openedAt;
   }
   if (v.sawClose && closeVol > 0) {
@@ -145,7 +150,11 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
 
   compare(v.disputes, "symbol_id", rec.symbolId, v.brokerSymbolId, 0);
   compare(v.disputes, "trade_side", rec.tradeSide, v.brokerTradeSide, 0);
-  compare(v.disputes, "volume", rec.volume, v.brokerVolume, tol.volume);
+  if (v.brokerVolume) {
+    compare(v.disputes, "volume", rec.volume, v.brokerVolume, tol.volume);
+  } else {
+    v.uncompared.push_back("volume");
+  }
   compare(v.disputes, "entry_price", rec.entryPrice, v.brokerEntryPrice, tol.price);
   compare(v.disputes, "exit_price", rec.exitPrice, v.brokerExitPrice, tol.price);
   if (fetch.moneyDigits) {
@@ -214,6 +223,7 @@ std::string verdictJson(const Verdict& v) {
   if (v.brokerSymbolId) b.set("symbolId", static_cast<double>(*v.brokerSymbolId));
   if (v.brokerTradeSide) b.set("tradeSide", static_cast<double>(*v.brokerTradeSide));
   if (v.brokerVolume) b.set("volume", static_cast<double>(*v.brokerVolume));
+  if (v.brokerVolumeUnits) b.set("volumeUnits", static_cast<double>(*v.brokerVolumeUnits));
   if (v.brokerEntryPrice) b.set("entryPrice", *v.brokerEntryPrice);
   if (v.brokerExitPrice) b.set("exitPrice", *v.brokerExitPrice);
   if (v.brokerNetPnl) b.set("netPnl", *v.brokerNetPnl);

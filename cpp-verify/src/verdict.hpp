@@ -49,8 +49,13 @@ namespace verify {
  *   1 — original (PR-AE).
  *   2 — PR-AW: money scaled by the broker's moneyDigits, volume by 100,
  *       timestamps compared with a 1 s tolerance, volume read as a double.
+ *   3 — fix-the-exits BC: volume compared in LOTS through the symbol's own
+ *       lotSize (sent by the keeper from the broker's declaration); without
+ *       one the volume is uncompared, never scaled by a guess. Contract 2
+ *       divided by 100 for every symbol and disputed NATGAS (lotSize
+ *       1,000,000) and XPTUSD on the unit alone.
  */
-constexpr int kVerdictContractVersion = 2;
+constexpr int kVerdictContractVersion = 3;
 
 /**
  * What the keeper says about one closed position. Every field is OPTIONAL in
@@ -63,7 +68,12 @@ struct KeeperRecord {
   long long positionId = 0;
   std::optional<long long> symbolId;
   std::optional<int> tradeSide;        // opening side: 1 BUY, 2 SELL
-  std::optional<double> volume;      // UNITS, as the keeper stores them (REAL)
+  std::optional<double> volume;      // LOTS, as the keeper stores them (REAL,
+                                     // rounded to 0.01 by its own importer)
+  // The symbol's lotSize in the broker's CENTS OF UNITS (ProtoOALightSymbol
+  // lotSize, e.g. 10,000,000 for EURUSD), as the keeper's registry holds it
+  // from the broker's own declaration. Absent → volume is not compared.
+  std::optional<double> lotSize;
   std::optional<double> entryPrice;
   std::optional<double> exitPrice;
   std::optional<double> netPnl;
@@ -96,7 +106,8 @@ struct Verdict {
   std::optional<double> brokerNetPnl;
   std::optional<long long> brokerOpenedAtMs;
   std::optional<long long> brokerClosedAtMs;
-  std::optional<double> brokerVolume;
+  std::optional<double> brokerVolume;       // LOTS (needs rec.lotSize)
+  std::optional<double> brokerVolumeUnits;  // units, always (centi-units / 100)
   std::optional<long long> brokerSymbolId;
   std::optional<int> brokerTradeSide;
   // FIELDS THAT WERE NOT COMPARED, and why. A verdict that silently skips a
@@ -111,7 +122,10 @@ struct Verdict {
 struct Tolerance {
   double price = 1e-9;   // exact, modulo binary representation
   double money = 0.005;  // half a cent
-  double volume = 1e-6;  // units, after the centi-units conversion
+  // LOTS. The keeper's importer rounds lots to 0.01 (broker-history-import.js
+  // `Math.round((d.volume / meta.lotSize) * 100) / 100`), so half of that
+  // step is the keeper's own resolution — the same reasoning as timeMs.
+  double volume = 0.005;
   // TIMESTAMPS ARE COMPARED WITH A TOLERANCE, and it is not slack: the keeper
   // records second precision (every opened_at_ms it stores ends in 000) while
   // the broker reports milliseconds, so a zero tolerance disputed every
@@ -125,9 +139,13 @@ struct Tolerance {
 
 /** cTrader expresses deal volume in CENTS OF UNITS (agent/lib/lot-sizing.js
  *  documents the same constant for the order path). It is a protocol-wide
- *  scale, not a per-symbol one — lotSize converts units to LOTS, which is a
- *  different question. Measured against four symbols across three asset
- *  classes on 18-09-2026: 61200/612, 1500/15, 1800/18, 3610/36.1. */
+ *  scale — but the keeper stores LOTS, and a lot is a per-symbol quantity
+ *  (the broker's lotSize, itself in cents of units). Contract 2 read the four
+ *  symbols measured on 18-09-2026 (61200/612, 1500/15, 1800/18, 3610/36.1)
+ *  as "divide by 100" — true only because every one of them has lotSize 100
+ *  (one unit per lot). The same pass disputed NATGAS (lotSize 1,000,000) and
+ *  XPTUSD on exactly that assumption. Units are still reported for the
+ *  record; the COMPARISON is in lots, through `KeeperRecord::lotSize`. */
 constexpr double kVolumeCentiUnits = 100.0;
 
 /**
