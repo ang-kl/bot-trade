@@ -570,6 +570,15 @@ Measurement history — each line is a real run of the script, not a claim:
   B7, merge when green" followed; one unstamped status line preceded this
   ledger, so the next stamped reply is **`№ 7,883`**. A later re-measure
   that reads below this line is missing these, not correcting them.
+- 2026-09-18 12:20 UTC, **same remote container, PARTIAL corpus**: the
+  line above was written after ONE unstamped line; seven more followed
+  while B7 was gated and merged (#953, 19:19 SGT), so the B7 read-back
+  report is **`№ 7,890`** (19:46 SGT), the ledger acknowledgement
+  `№ 7,891`, the checkpoint `№ 7,892` (19:50 SGT). Four unstamped status
+  lines followed `№ 7,892` while C·2–C·5 were built, so the next stamped
+  reply is **`№ 7,897`**. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting
+  them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

@@ -511,7 +511,32 @@ squash-merge.
   fingerprint of the token VALUE, not the refresh stamp. Read-back: no
   "refreshed reactively" line for …2148/…9009, no "rotated access token
   re-pushed" line, the live sidecar's `/connect` count stops climbing, the
-  equity line reads "skipped 2 (token refused)".
+  equity line reads "skipped 2 (token refused)". Merged #953 (4dd26b6),
+  read back 19:46 SGT: every signal as predicted.
+- **C·2 – C·5** (the 19:50 SGT checkpoint's code items; owner: "build C·2 to
+  C·5, merge when green"), one PR:
+  - C·2 ARM.US — the fundable universe reports it `unknown_symbol` (absent
+    from the broker's 1,940-symbol list for this account), so no map can
+    hold it. `config/watchlist-additions.json` gains a `remove` array,
+    applied by the same seed to the global list and every own list;
+    ARM.US leaves `symbols`. Read-back: boot "…, 8 removed", no more
+    "symbolId unknown" scan line.
+  - C·3 record completeness — `GET /state/position-history` gains
+    `sinceCutoff.openedAfterCutoff`: the post-cutoff refusals that also
+    OPENED after the cutoff, by missing field / origin / strategy, with the
+    rows. The 53 the boot line counted get named; the entry-path fix
+    follows from what it shows.
+  - C·4 the disputed verdict — it was `volume` on COST.US: ours 12.57 (the
+    requested size from `trades.volume`) vs the broker's 12.5 fill. The
+    request no longer stands in for the fill: with no deal lots and no live
+    read the record is refused naming `volume`, and the request rides
+    beside it as `requested_volume` (new column). The view lists disputed
+    records with their disagreeing fields and sources.
+  - C·5 FX legs — a USD-base pair is no longer a demand for its own quote
+    currency (it is sized off its own scanned price), which retires
+    USDCLP/USDCOP/USDBRL from the leg list; a leg the broker refused is not
+    re-asked for 15 minutes (`fx_leg_attempts_json`), so a weekend no
+    longer costs a spot request and a log line per cycle.
 
 ### 9.3 Open on the owner's side (unchanged from §8, restated)
 

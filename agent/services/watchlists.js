@@ -219,6 +219,19 @@ export function seedWatchlistAdditionsFromConfig(db, { file = null, log = () => 
   }
   const symbols = Array.isArray(cfg?.symbols) ? [...new Set(cfg.symbols.map(s => String(s || '').toUpperCase().trim()).filter(Boolean))] : null
   if (!symbols) { out.error = 'watchlist-additions.json has no symbols array'; return out }
+  // C·2 (18-09-2026): a declared REMOVAL, for a name the broker does not
+  // offer. ARM.US was seeded on 09-09 and the fundable universe has reported
+  // it `unknown_symbol` since (absent from the 1,940-symbol list the broker
+  // returns for this account); every scan cycle logged "symbolId unknown —
+  // call POST /actions/symbol-map" for a symbol no map can hold. The seed
+  // is the one repo-declared writer of these lists, so the removal lives
+  // beside the additions and is applied the same way: to the global list
+  // and to every account's own list, idempotently, settings of the other
+  // rows untouched. A name in both arrays is removed (the removal is the
+  // later decision).
+  const removals = Array.isArray(cfg?.remove) ? [...new Set(cfg.remove.map(s => String(s || '').toUpperCase().trim()).filter(Boolean))] : []
+  out.removed = 0
+  out.removedDetail = {}
   const group = typeof cfg.group === 'string' && cfg.group.trim() ? cfg.group.trim() : null
   const targets = [{ key: WATCHLIST_KEY, name: 'global', items: readWatchlist(db, null) }]
   let accounts = []
@@ -226,17 +239,29 @@ export function seedWatchlistAdditionsFromConfig(db, { file = null, log = () => 
   for (const id of accounts) {
     if (hasOwnWatchlist(db, id)) targets.push({ key: acctWatchlistKey(id), name: id, items: readWatchlist(db, id) })
   }
+  const removeSet = new Set(removals)
   for (const t of targets) {
     out.lists++
-    const have = new Set(t.items.map(i => i.symbol))
-    const missing = symbols.filter(s => !have.has(s))
-    out.present += symbols.length - missing.length
-    if (!missing.length) continue
-    const next = [...t.items, ...missing.map(symbol => ({ symbol, enabled: true, ...(group ? { group } : {}) }))]
+    const label = t.name === 'global' ? 'global' : `…${t.name.slice(-4)}`
+    let items = t.items
+    const gone = items.filter(i => removeSet.has(i.symbol)).map(i => i.symbol)
+    if (gone.length) {
+      items = items.filter(i => !removeSet.has(i.symbol))
+      out.removed += gone.length
+      out.removedDetail[t.name] = gone
+      log(`[boot] watchlist removals (${label}): -${gone.length} — ${gone.join(', ')} (config/watchlist-additions.json "remove")`)
+    }
+    const have = new Set(items.map(i => i.symbol))
+    const missing = symbols.filter(s => !have.has(s) && !removeSet.has(s))
+    out.present += symbols.filter(s => have.has(s)).length
+    if (!missing.length && !gone.length) continue
+    const next = [...items, ...missing.map(symbol => ({ symbol, enabled: true, ...(group ? { group } : {}) }))]
     setState(db, t.key, JSON.stringify(next))
-    out.added += missing.length
-    out.detail[t.name] = missing
-    log(`[boot] watchlist additions (${t.name === 'global' ? 'global' : `…${t.name.slice(-4)}`}): +${missing.length} — ${missing.join(', ')} (from config/watchlist-additions.json)`)
+    if (missing.length) {
+      out.added += missing.length
+      out.detail[t.name] = missing
+      log(`[boot] watchlist additions (${label}): +${missing.length} — ${missing.join(', ')} (from config/watchlist-additions.json)`)
+    }
   }
   return out
 }

@@ -233,10 +233,19 @@ export function buildPositionRecord(db, { accountId, positionId }) {
       return per > 0 ? units / per : null
     } catch { return null }
   })()
-  const volume = num(deal?.lots) ?? mpLots ?? num(trade?.volume)
+  // THE REQUESTED SIZE IS NOT THE FILL (C·4, 18-09-2026). cpp-verify's first
+  // dispute under contract 3 was exactly this field: COST.US, ours 12.57
+  // (trades.volume, what the risk stack ASKED for) against the broker's 12.5
+  // fill. A record that presents the request as the fill is a confident wrong
+  // number, so the request no longer stands in: with no deal lots and no live
+  // read, `volume` is absent, the record goes to the refused stream naming
+  // it, and the capture queue re-asks once the deals arrive. The request is
+  // kept beside it as `requested_volume` — a plan field, never compared.
+  const requestedVolume = num(trade?.volume)
+  const volume = num(deal?.lots) ?? mpLots ?? null
   sources.volume = num(deal?.lots) != null ? 'broker_deals'
     : mpLots != null ? 'monitored_positions.broker_volume_units'
-      : num(trade?.volume) != null ? 'trades.volume (requested size, not the fill)' : null
+      : requestedVolume != null ? `none — trades.volume ${requestedVolume} is the requested size, not the fill` : null
 
   const mgmt = managementFor(db, { accountId: acct, positionId: pid, tradeId: trade?.id ?? null })
   sources.management = 'position_events'
@@ -297,6 +306,7 @@ export function buildPositionRecord(db, { accountId, positionId }) {
     entry_price: entry,
     exit_price: exit,
     volume,
+    requested_volume: requestedVolume,
     opened_at_ms: openedMs,
     closed_at_ms: closedMs,
     // From the two timestamps above when both are known — a hold computed
@@ -353,7 +363,7 @@ export function capturePosition(db, { accountId, positionId }) {
     'direction', 'direction_reason', 'strategy', 'family', 'timeframe', 'origin',
     'risk_event_id', 'conviction', 'planned_entry', 'planned_sl', 'planned_tp',
     'planned_r', 'risk_dist', 'planned_hold_min', 'exit_rule',
-    'entry_price', 'exit_price', 'volume', 'opened_at_ms', 'closed_at_ms', 'hold_ms',
+    'entry_price', 'exit_price', 'volume', 'requested_volume', 'opened_at_ms', 'closed_at_ms', 'hold_ms',
     'gross_pnl', 'commission', 'swap', 'net_pnl', 'realised_r',
     'close_reason', 'sl_moves', 'tp_moves', 'scale_outs', 'events_json', 'sources_json',
   ]
@@ -511,10 +521,68 @@ export function recordVerdict(db, { accountId, positionId, state, disputes = [],
  * fields ranked. That ranking is the actionable output: it names, in order,
  * what this system does not record about its own trades.
  */
-export function positionHistoryView(db, { limit = 100, accountId = null } = {}) {
+export function positionHistoryView(db, { limit = 100, accountId = null, cutoffMs = Date.parse('2026-09-11T00:00:00Z') } = {}) {
   const acct = accountId == null ? null : String(accountId)
   const where = acct ? 'WHERE account_id = ?' : ''
   const args = acct ? [acct] : []
+  const parse = (s) => { try { return s ? JSON.parse(s) : null } catch { return null } }
+
+  // C·4 (18-09-2026): a dispute is the condition the verifier exists to
+  // surface, and until now it was a COUNT here and one log line at the moment
+  // it landed. The disputed records are listed with the fields that disagree
+  // and where each of our figures came from, so the next reader does not
+  // have to find the log.
+  const disputed = db.prepare(`
+    SELECT account_id, ctrader_position_id, symbol, volume, requested_volume, verified_at, disputes_json, sources_json
+      FROM position_history ${where ? `${where} AND` : 'WHERE'} verification_state = 'disputed'
+     ORDER BY verified_at DESC LIMIT 50
+  `).all(...args).map(r => ({
+    account_id: r.account_id, ctrader_position_id: r.ctrader_position_id, symbol: r.symbol,
+    volume: r.volume, requested_volume: r.requested_volume, verified_at: r.verified_at,
+    disputes: parse(r.disputes_json) || [], sources: parse(r.sources_json) || {},
+  }))
+
+  // C·3 (18-09-2026): the boot line said "53 refusals opened AFTER the cutoff
+  // (a live gap if this is large)" and nothing listed them. This is the list:
+  // the post-cutoff refusals that also OPENED after the cutoff, by missing
+  // field, by origin and by strategy, with the rows themselves — the shape
+  // that says which entry path is not recording what.
+  const openedAfter = []
+  try {
+    for (const row of db.prepare(
+      `SELECT account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json
+         FROM position_history_incomplete ${where ? `${where} AND` : 'WHERE'} closed_at_ms >= ?
+        ORDER BY closed_at_ms DESC`
+    ).all(...args, cutoffMs)) {
+      const p = parse(row.partial_json) || {}
+      const opened = Number(p.opened_at_ms)
+      if (!Number.isFinite(opened) || opened < cutoffMs) continue
+      openedAfter.push({
+        account_id: row.account_id, ctrader_position_id: row.ctrader_position_id, symbol: row.symbol,
+        origin: p.origin ?? null, strategy: p.strategy ?? null, direction: p.direction ?? null,
+        risk_event_id: p.risk_event_id ?? null, trade_id: p.trade_id ?? null,
+        opened_at_ms: opened, closed_at_ms: row.closed_at_ms,
+        missing: parse(row.missing_json) || [],
+      })
+    }
+  } catch { /* diagnostic; the view must not fail on it */ }
+  const tally = (rows, pick) => {
+    const m = {}
+    for (const r of rows) { const k = String(pick(r) ?? 'null'); m[k] = (m[k] || 0) + 1 }
+    return Object.entries(m).sort((a, b) => b[1] - a[1]).map(([key, n]) => ({ key, n }))
+  }
+  const byMissing = {}
+  for (const r of openedAfter) for (const f of r.missing) byMissing[f] = (byMissing[f] || 0) + 1
+  const sinceCutoff = {
+    cutoff: new Date(cutoffMs).toISOString(),
+    openedAfterCutoff: {
+      n: openedAfter.length,
+      byMissingField: Object.entries(byMissing).sort((a, b) => b[1] - a[1]).map(([field, n]) => ({ field, n })),
+      byOrigin: tally(openedAfter, r => r.origin),
+      byStrategy: tally(openedAfter, r => r.strategy),
+      rows: openedAfter.slice(0, 100),
+    },
+  }
 
   const totals = db.prepare(`
     SELECT COUNT(*) AS n,
@@ -553,6 +621,8 @@ export function positionHistoryView(db, { limit = 100, accountId = null } = {}) 
     // Descending, so the first entry is the field most often missing — the
     // one worth fixing first.
     missingFields: Object.entries(missingCounts).sort((a, b) => b[1] - a[1]).map(([field, n]) => ({ field, n })),
+    disputed,
+    sinceCutoff,
     recent,
   }
 }

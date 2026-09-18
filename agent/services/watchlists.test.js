@@ -308,3 +308,33 @@ test('watchlist-additions seed: the checked-in file parses, names US stocks with
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log[\s\S]{0,700}?seedWatchlistAdditionsFromConfig\(db, \{ log/, 'the boot seed runs after the strategy pins')
 })
+
+test('C·2: a declared removal drops the symbol from the global list and every own list, idempotently, other rows untouched', () => {
+  const d = db()
+  setState(d, 'autopilot_symbols_json', JSON.stringify([{ symbol: 'EURUSD', enabled: true, maxVolume: 0.5 }, { symbol: 'ARM.US', enabled: true, group: 'US Stocks' }, { symbol: 'V.US', enabled: false }]))
+  upsertAccount(d, { accountId: '222' }); setAccountEnabled(d, '222', true, 'active')
+  writeWatchlist(d, '222', [{ symbol: 'ARM.US' }, { symbol: 'GBPUSD' }])
+  const dir = mkdtempSync(join(tmpdir(), 'wl-'))
+  const file = join(dir, 'watchlist-additions.json')
+  // ARM.US in BOTH arrays: the removal wins (it is the later decision).
+  writeFileSync(file, JSON.stringify({ group: 'US Stocks', symbols: ['V.US', 'ARM.US', 'MA.US'], remove: ['arm.us'] }))
+  const lines = []
+  const a = seedWatchlistAdditionsFromConfig(d, { file, log: (m) => lines.push(m) })
+  assert.equal(a.error, null)
+  assert.equal(a.removed, 2)
+  assert.deepEqual(a.removedDetail, { global: ['ARM.US'], 222: ['ARM.US'] })
+  assert.equal(a.added, 3, 'MA.US to both lists and V.US to 222\'s; V.US already on the global one')
+  assert.deepEqual(readWatchlist(d, null).map(i => i.symbol), ['EURUSD', 'V.US', 'MA.US'])
+  assert.deepEqual(readWatchlist(d, null)[1], { symbol: 'V.US', enabled: false }, 'the other rows keep their settings')
+  assert.deepEqual(readWatchlist(d, '222').map(i => i.symbol), ['GBPUSD', 'V.US', 'MA.US'])
+  assert.equal(lines.filter(l => /watchlist removals/.test(l)).length, 2)
+  // Idempotent: a second run removes and adds nothing.
+  const b = seedWatchlistAdditionsFromConfig(d, { file, log: () => {} })
+  assert.equal(b.removed, 0); assert.equal(b.added, 0)
+})
+
+test('C·2: the checked-in config removes ARM.US and no longer adds it', () => {
+  const cfg = JSON.parse(readFileSync(new URL('../config/watchlist-additions.json', import.meta.url), 'utf8'))
+  assert.deepEqual(cfg.remove, ['ARM.US'])
+  assert.ok(!cfg.symbols.includes('ARM.US'))
+})

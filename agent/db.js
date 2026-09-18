@@ -1772,6 +1772,7 @@ export function initDB(dbPath) {
     entry_price         REAL NOT NULL,
     exit_price          REAL NOT NULL,
     volume              REAL NOT NULL,
+    requested_volume    REAL,               -- C·4: what was asked for; never the fill
     opened_at_ms        INTEGER NOT NULL,
     closed_at_ms        INTEGER NOT NULL,
     hold_ms             INTEGER NOT NULL,
@@ -1897,6 +1898,10 @@ export function initDB(dbPath) {
     // rows that were reset by #951's boot rebuild before this column
     // existed: `unverified` with a verifier_version is exactly "had a
     // verdict, then rebuilt" (the reset clears the verdict, not the version).
+    // C·4 (18-09-2026): the requested size kept beside the fill, never as it.
+    if (cols.size && !cols.has('requested_volume')) {
+      db.exec('ALTER TABLE position_history ADD COLUMN requested_volume REAL');
+    }
     if (cols.size && !cols.has('rebuilt_at')) {
       db.exec('ALTER TABLE position_history ADD COLUMN rebuilt_at TEXT');
       db.exec(`UPDATE position_history SET rebuilt_at = built_at

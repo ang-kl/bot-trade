@@ -34,11 +34,30 @@
 // gate would have to start refusing it.
 import { fxQuoteCurrency } from '../lib/contracts.js'
 import { readFxTable, recordFxRate, RATE_MAX_AGE_MS } from './fx-rates.js'
+import { getState, setState } from '../db.js'
 
 /** Refresh a leg once it is older than this. Well inside RATE_MAX_AGE_MS. */
 export const LEG_REFRESH_AFTER_MS = 6 * 3_600_000
 /** Never fetch more than this many legs in one cycle. */
 export const LEG_FETCH_LIMIT = 8
+/**
+ * C·5 (18-09-2026): a leg that FAILED is not retried until this has passed.
+ * Measured: USDCLP, USDCOP and USDBRL returned "no usable quote" on every
+ * cycle for hours — ~1,400 pointless spot requests a day and a log line every
+ * minute — because a failure left the leg stale and the next cycle asked
+ * again. A quote the broker did not have a minute ago is not going to exist
+ * now; fifteen minutes is short against the 26-hour usability window.
+ */
+export const LEG_RETRY_AFTER_MS = 15 * 60_000
+const ATTEMPTS_KEY = 'fx_leg_attempts_json'
+
+/** When each leg was last ASKED for and refused, { SYMBOL: ms }. */
+export function readLegAttempts(db) {
+  try { const v = JSON.parse(getState(db, ATTEMPTS_KEY) || '{}'); return v && typeof v === 'object' ? v : {} } catch { return {} }
+}
+function writeLegAttempts(db, attempts) {
+  try { setState(db, ATTEMPTS_KEY, JSON.stringify(attempts)) } catch { /* diagnostic memo; never fails the sweep */ }
+}
 
 /**
  * Pure. The currencies sizing must convert to USD for these symbols.
@@ -53,6 +72,15 @@ export function requiredQuoteCurrencies(symbols) {
   for (const raw of symbols || []) {
     const sym = String(raw?.symbol ?? raw ?? '').toUpperCase()
     if (!sym) continue
+    // C·5 (18-09-2026): a USD-BASE pair is NOT a demand for its own quote
+    // currency. USDCLP is sized off its own price, which the scan writes into
+    // the rate table the moment it produces the setup (recordFxRates), so the
+    // only thing "CLP" ever needed was a CROSS quoted in CLP — and there is
+    // none. Before this rule the refresher kept asking the broker for
+    // USDCLP, USDCOP and USDBRL every cycle, for a rate nothing consumed.
+    // The quote currency of a cross still lands here, and the USD-base pair
+    // is still the leg that resolves it (legSymbolFor).
+    if (/^USD[A-Z]{3}$/.test(sym)) continue
     const q = fxQuoteCurrency(sym)
     if (q && q !== 'USD') out.add(q)
   }
@@ -117,6 +145,7 @@ export function legVetoDemand(db, { symbolMap, days = 7 } = {}) {
  */
 export function staleLegs(table, legSymbols, {
   now = Date.now(), refreshAfterMs = LEG_REFRESH_AFTER_MS, demand = null,
+  attempts = null, retryAfterMs = LEG_RETRY_AFTER_MS,
 } = {}) {
   const scored = []
   for (const sym of legSymbols) {
@@ -124,6 +153,9 @@ export function staleLegs(table, legSymbols, {
     const age = row && Number.isFinite(row.t) ? now - row.t : Infinity
     const usable = row && Number.isFinite(row.p) && row.p > 0
     if (usable && age <= refreshAfterMs) continue
+    // C·5: asked and refused less than retryAfterMs ago → not asked again yet.
+    const lastAsk = Number(attempts?.[sym])
+    if (Number.isFinite(lastAsk) && now - lastAsk < retryAfterMs) continue
     scored.push({ symbol: sym, ageMs: age, everSeen: !!usable, blocked: demand?.[sym] || 0 })
   }
   return scored.sort((a, b) => (b.blocked - a.blocked) || (b.ageMs - a.ageMs))
@@ -155,7 +187,8 @@ export async function refreshFxLegs(db, {
   }
 
   const demand = legVetoDemand(db, { symbolMap })
-  const stale = staleLegs(readFxTable(db), unique, { now, refreshAfterMs, demand })
+  const attempts = readLegAttempts(db)
+  const stale = staleLegs(readFxTable(db), unique, { now, refreshAfterMs, demand, attempts })
   const fetched = []
   const failed = []
   // WHY A REASON AND NOT JUST A NAME (2026-08-22). The loop logged
@@ -189,6 +222,15 @@ export async function refreshFxLegs(db, {
       // cycle retries it, and it is still inside the 26-hour window.
       fail(s.symbol, `request failed: ${String(err?.message || err).slice(0, 80)}`)
     }
+  }
+  // C·5: remember the refusals (and forget them on success) so the next
+  // cycles do not re-ask a leg the broker just said it cannot price.
+  if (failed.length || fetched.length) {
+    const next = { ...attempts }
+    for (const s of failed) next[s] = now
+    for (const s of fetched) delete next[s]
+    for (const [s, t] of Object.entries(next)) if (!Number.isFinite(Number(t)) || now - Number(t) > RATE_MAX_AGE_MS) delete next[s]
+    writeLegAttempts(db, next)
   }
   return { checked: unique.length, stale: stale.length, fetched, failed, failedWhy, currencies }
 }
