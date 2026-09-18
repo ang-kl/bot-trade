@@ -243,3 +243,14 @@ test('production shape (every account pinned): a 3-loss streak on account X\'s O
   assert.equal(strategyLossStreak(db2, 'fib_618_fade', 12, { accountId: '111' }).streak, 1)
   assert.equal(strategyLossStreak(db2, 'fib_618_fade').streak, 3)
 })
+
+test('Wave 1 (19-09-2026): a loss streak on a momentum-family strategy is not a verdict — tsmom_long is left alone by the breaker while a scan strategy on the same streak is disarmed', () => {
+  const db = initDB(':memory:')
+  setState(db, 'enabled_strategies_json', JSON.stringify(['tsmom_long', 'fib_618_fade', 'ema_pullback']))
+  for (const m of [20, 10, 0]) { closeTrade(db, 'tsmom_long', -1, m); closeTrade(db, 'fib_618_fade', -1, m) }
+  const out = runAdaptiveBreaker(db, { notify: () => {} })
+  assert.deepEqual(out.actions.map(a => a.strategy), ['fib_618_fade'])
+  const m = loadStageMatrix(db, getState)
+  assert.equal(m.strategies.find(s => s.key === 'tsmom_long').stages.trade, true)
+  assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, false)
+})

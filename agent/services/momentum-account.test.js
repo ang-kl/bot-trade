@@ -761,3 +761,17 @@ test('PR-O control: the identical bleeding account with the brake OFF takes the 
   assert.equal(r.entries, 1, 'the refusal above was the brake, not some other gate')
   assert.deepEqual(f.calls.autoTrade.map(c => c.symbol), ['BTCUSD'])
 })
+
+test('Wave 1 (19-09-2026): ONE cap — effectiveSlots is the smaller of the book\'s maxPositions and the risk gate\'s maxOpenPositions for the account; unknown → the book\'s own number', async () => {
+  const { effectiveSlots } = await import('./momentum-account.js')
+  assert.equal(effectiveSlots({ maxPositions: 8 }, { maxOpenPositions: () => 5 }, 'A'), 5)
+  assert.equal(effectiveSlots({ maxPositions: 8 }, { maxOpenPositions: () => 16 }, 'A'), 8)
+  assert.equal(effectiveSlots({ maxPositions: 8 }, { maxOpenPositions: () => null }, 'A'), 8)
+  assert.equal(effectiveSlots({ maxPositions: 8 }, {}, 'A'), 8)
+  assert.equal(effectiveSlots({ maxPositions: 8 }, { maxOpenPositions: () => { throw new Error('x') } }, 'A'), 8)
+  const src = (await import('node:fs')).readFileSync(new URL('./momentum-account.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /maxPositions: slots, atr, price, symbol, meta, rates/, 'the vol target divides by the effective slots')
+  assert.match(src, /if \(open >= slots\)/, 'the entry cap is the effective slots')
+  const loop = (await import('node:fs')).readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(loop, /maxOpenPositions: \(accountId\) => \{ try \{ return Number\(loadRiskConfig\(db, String\(accountId\)\)\?\.maxOpenPositions\)/, 'loop.js wires the risk cap into the book deps')
+})

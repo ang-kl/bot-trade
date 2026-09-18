@@ -1736,3 +1736,26 @@ test('B3: an OPEN row whose trade is in flight (submitting / unconfirmed) is NOT
     assert.equal(bookRow(db, id).status, 'open', `${st} is in flight, not terminal`)
   }
 })
+
+test('Wave 1 (19-09-2026): the book\'s master switch boots from agent/config/momentum-book.json — only the named keys are patched, diff-by-value, idempotent; the checked-in file enables the book; index.js runs the seed', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { seedMomentumBookFromConfig, loadMomentumBook, MOMENTUM_BOOK_CONFIG_KEY } = await import('./momentum-book.js')
+  const db = initDB(':memory:')
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: false, stopAtr: 4 }))
+  const file = join(mkdtempSync(join(tmpdir(), 'mbook-')), 'momentum-book.json')
+  writeFileSync(file, JSON.stringify({ enabled: true, bookMinHoldHours: 48 }))
+  const lines = []
+  const a = seedMomentumBookFromConfig(db, { file, log: (m) => lines.push(m) })
+  assert.equal(a.error, null); assert.equal(a.applied, true)
+  const cfg = loadMomentumBook(db)
+  assert.equal(cfg.enabled, true); assert.equal(cfg.bookMinHoldHours, 48)
+  assert.equal(cfg.stopAtr, 4, 'a stored key the file does not name is kept')
+  assert.equal(seedMomentumBookFromConfig(db, { file }).applied, false, 'idempotent')
+  assert.match(lines[0], /momentum book: enabled=true/)
+  const shipped = JSON.parse(readFileSync(new URL('../config/momentum-book.json', import.meta.url), 'utf8'))
+  assert.equal(shipped.enabled, true)
+  const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /seedMomentumBookFromConfig\(db, \{ log/)
+})

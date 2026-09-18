@@ -168,6 +168,23 @@ export function minRrFor(strategyKey, fallback) {
 }
 
 /** Look up one registry entry by key (or undefined). */
+/** The registry family of a strategy key ('momentum', 'mean_reversion', 'breakout', 'trend'); null when unknown. */
+export function strategyFamily(key) {
+  return STRATEGY_REGISTRY.find(s => s.key === key)?.family ?? null
+}
+
+/**
+ * Wave 1 of the first-principles audit (19-09-2026, §K·2): the momentum
+ * family's horizon is weeks, so a rolling 20-close verdict or a loss streak
+ * of 2-day holds is a sample it cannot have earned yet. The edge watchdog
+ * and the adaptive breaker leave these keys alone; the family is judged at
+ * the pre-registered checkpoint on the goal table instead.
+ */
+export const HORIZON_JUDGED_FAMILIES = Object.freeze(['momentum'])
+export function judgedAtHorizon(key) {
+  return HORIZON_JUDGED_FAMILIES.includes(strategyFamily(key))
+}
+
 export function strategyByKey(key) {
   return STRATEGY_REGISTRY.find(s => s.key === key)
 }

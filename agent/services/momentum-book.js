@@ -95,6 +95,7 @@
 // against an in-memory DB with fake fills.
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { armedTradeKeys } from './stage-matrix.js'
 import { loadShadowState, loadMomentumShadow } from './momentum-shadow.js'
@@ -210,6 +211,34 @@ export function momentumBookConfig(raw) {
     // and its validation never live in two places.
     ...bookDrawdownConfig(r),
   }
+}
+
+/**
+ * Wave 1 of the first-principles audit (19-09-2026, §K·3): the book's master
+ * switch boots from the repo like every other subsystem. Diff-by-value like
+ * seedMomentumAccountFromConfig: only the keys the file names are patched,
+ * and a stored value that already matches is left alone.
+ */
+export function seedMomentumBookFromConfig(db, { file = null, log = () => {} } = {}) {
+  let cfg = null
+  try {
+    cfg = JSON.parse(readFileSync(file || new URL('../config/momentum-book.json', import.meta.url), 'utf8'))
+  } catch (err) {
+    return { applied: false, effective: null, error: `momentum-book.json unreadable: ${err.message}` }
+  }
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return { applied: false, effective: null, error: 'momentum-book.json is not an object' }
+  let stored = null
+  try { stored = JSON.parse(getState(db, MOMENTUM_BOOK_CONFIG_KEY) || 'null') } catch { stored = null }
+  const base = momentumBookConfig(stored)
+  const patch = {}
+  for (const k of Object.keys(DEFAULT_MOMENTUM_BOOK)) if (k in cfg) patch[k] = cfg[k]
+  const next = momentumBookConfig({ ...base, ...patch })
+  const same = JSON.stringify(next) === JSON.stringify(base)
+  if (!same) {
+    setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(next))
+    log(`[boot] momentum book: enabled=${next.enabled} maxPositionsPerAccount=${next.maxPositionsPerAccount} cadence=${next.bookExitCadence} minHold=${next.bookMinHoldHours}h (from config/momentum-book.json)`)
+  }
+  return { applied: !same, effective: next, error: null }
 }
 
 export function loadMomentumBook(db) {
@@ -423,7 +452,10 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   summary.considered = ordered.length
   summary.notArmed = 0
   summary.armCheckFailed = 0
-  for (const acct of ordered) {
+  // E·2 for the book (Wave 1, audit §K·4): every account in this pass shares
+  // the same ranking, so each is sized at 1/N of its budget — the gate reads
+  // `sharedAccounts` off the account object it is handed.
+  for (const acct of ordered.map(a => ({ ...a, sharedAccounts: ordered.length }))) {
     const accountId = String(acct.accountId)
     // THE ARM GATE RECORDS ITS REFUSAL (owner principle 4, measured
     // 16-09-2026): this branch used to `continue` silently while the two
@@ -777,7 +809,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         const price = live > 0 ? live : Number(bars[bars.length - 1]?.c)
         const synth = buildEntrySynth({ symbol, price, atr, cfg, conviction, rankPct, side, directionReason: dp.reason })
         if (!synth) { summary.skipped.push(`${symbol}: no usable price/ATR`); return 'skipped' }
-        const result = await deps.autoTrade(db, symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'cross_sectional_book' })
+        const result = await deps.autoTrade(db, symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'cross_sectional_book', sharedAccounts: ordered.length })
         if (!result) { summary.skipped.push(`${accountId} ${symbol}: not filled (gate or broker)`); return 'skipped' }
         const t = tradeRowFor.get(symbol, accountId, TSMOM_STRATEGY)
         insBook.run(t?.id ?? null, accountId, symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null, side,

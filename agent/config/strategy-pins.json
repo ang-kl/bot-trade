@@ -1,6 +1,9 @@
 {
-  "_note": "Owner-declared strategy pins (§7,522·B·2, widened 09-09-2026 13:35 SGT: \"set them ON for ALL … all accounts are consider as cluster\"; PR-B 11-09-2026, owner principle 9: one list for every account, no ids). Applied at boot by seedStrategyPinsFromConfig: \"_all\" pins every strategy listed ON for Auto Trade & Open on EVERY enabled account's overlay, an account enabled later included on its first boot (a hand pin — the evidence gate admits it, the adaptive breaker and the edge watchdog hold it against a POOLED verdict but NOT against that account's OWN streak/no-edge record, which still writes the cell false); an existing true cell is left alone; a per-id key would still win for that id; POST /actions/stage-matrix changes a cell live until the next boot re-applies this file. CHANGED 16-09-2026 (owner decision, this PR): tsmom_long IS now pinned here. It used to be excluded — \"the momentum book's own\" — and the measured cost was that the only strategy family with edge (PF 1.5–2.9 at 10–60 days) ran on 1 of 7 enabled accounts: it ships defaultOn:false (services/strategies.js), nothing in the codebase armed it, and momentum-book.js gates its whole per-account pass on armedTradeKeys(...).has('tsmom_long'). Meanwhile config/momentum-account.json has said \"accountId\": \"_all\" since PR-B — the TARGETING switch was moved to every account and the ARMING switch was not. This line closes that gap declaratively, so an account enabled later is armed on its first boot like every other strategy here. Side effect the owner has NOT separately ruled on, reported not decided: an explicit true cell IS a hand pin (isHandPinned, stage-matrix.js:241), so tsmom_long now takes the pin exemption in adaptive-breaker.js and edge-watchdog.js — held against a POOLED verdict, still disarmed where that ACCOUNT's own loss streak (accountsWithOwnStreak) or own no-edge window (accountsWithOwnNoEdge) reads bad. The immunity is not separable: armedTradeKeys reads only the overlay cell, so any per-account arm is a pin. It changes nothing at the evidence gate (evidence-gate.js already admits tsmom_long everywhere via momentum_account) and nothing at the risk gate's per-account verdict, which momentum-book.js does not call — the overlay cell is the only automatic brake on the book's entries.",
+  "_note": "Owner-declared strategy pins, applied at boot by seedStrategyPinsFromConfig (seed-once per entry; a guard's or a human's later change persists across deploys). WAVE 1 OF THE FIRST-PRINCIPLES AUDIT (docs/first-principles-audit-2026-09-19.md \u00a7K\u00b71, owner 19-09-2026 'Execute'): arming follows measured evidence. `_all` pins ON, for EVERY enabled account, only what has earned it. `_off` switches OFF, for every enabled account, the strategies whose live record is not positive (they keep proposing into the scan, the decision log and the evidence shadow at zero cost; a per-id key naming one of them ON wins for that id). `_trial` names ONE account per strategy on a pre-registered trial: ON there, OFF everywhere else \u2014 the one documented exception to 'no account ids' (principle 9), reconciled with 'one account per system' (07-09 P5) as: a system on trial runs on one account until its dated checkpoint. `_reseed` re-issues a spent ON order for one cell (`<accountId>:<strategy>:<token>`).",
   "_all": [
+    "fib_confluence"
+  ],
+  "_off": [
     "fib_618_fade",
     "cup_handle",
     "inv_cup_handle",
@@ -10,15 +13,15 @@
     "vwap_trend",
     "vp_value",
     "rsi2_reversion",
-    "fib_confluence",
     "va_breakout",
-    "fvg_retrace",
-    "tsmom_long"
+    "fvg_retrace"
   ],
-  "_reseed_note": "OWNER ORDER 17-09-2026, after being shown the evidence: the edge watchdog disarmed tsmom_long globally at 07:46:55 UTC on its own measurement (expectancy -$108.48, profit factor 0 — zero winning closes in its window of 20, minTrades 15), two minutes after PR-U armed it. The owner was asked whether to proceed given that number and answered arm the three anyway. This is therefore a DELIBERATE OVERRIDE of a risk control's fresh verdict, recorded as such. Each entry is \"<accountId>:<strategy>[:token]\" and is applied AT MOST ONCE, keyed on the whole string — so a later disarm is not fought every boot (the #870 loop, fixed by the seed-once rule). The bare key is already spent for these three accounts (the boot line reads them under \"seeded before, since disarmed\"), which is why the :2 token is needed to issue a fresh order. WHAT WILL ACTUALLY HOLD: an explicit true cell IS a hand pin, and both the adaptive breaker and the edge watchdog EXEMPT hand pins from a POOLED verdict — which is why 42993489/43002148/43069009/46979908 kept tsmom_long through the 07:46 global disarm. So these three pins persist even though the global keeps being turned off. They do NOT survive that account's OWN loss streak (accountsWithOwnStreak) or its OWN no-edge window (accountsWithOwnNoEdge); those still write the cell false, and this file will not put it back.",
-  "_reseed": [
-    "47790949:tsmom_long:2",
-    "46130058:tsmom_long:2",
-    "43097342:tsmom_long:2"
-  ]
+  "_off_note": "Measured 19-09-2026, 90 days, all accounts (/state/attribution): none of these has a clean record of >= 30 closes at PF >= 1.5; fib_618_fade PF 0.62 over 49 (owner-disabled since 27-07), ema_pullback 0.10/14, rsi_meanrev 0.22/8, vp_value 0.61/18, vwap_trend 0.70/30, va_breakout 0/3, fvg_retrace 0/1 (no backtest), donchian 1.09/29, rsi2 1.13/31, cup_handle 1 close. They are SHADOW: computed by the scan, refused at the stage gate with a decision_log row, measured by the evidence shadow.",
+  "_trial": {
+    "tsmom_long": [
+      "46130058"
+    ]
+  },
+  "_trial_note": "tsmom_long (the weeks-horizon momentum book) is the only design aligned with the measured horizon, and its live record is 23 closes at PF 0 (never held to its horizon; the same signal stacked on four accounts). Trial on ONE funded account with no third-party channel (\u20260058), at the verdict's pending half-risk scale, judged at the pre-registered checkpoint 2026-12-19 (PF >= 1.5, tail share, max drawdown) \u2014 not by the 20-close watchdog or the streak breaker, which are exempt for the momentum family (Wave 1). fib_confluence: 26 closes at PF 2.72 (the one positive live record) \u2014 pinned everywhere at the verdict's pending half-risk scale until 30 closes.",
+  "_reseed": []
 }

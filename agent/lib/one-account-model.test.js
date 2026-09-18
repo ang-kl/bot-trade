@@ -271,8 +271,16 @@ test('one account model: the hardcoded-account configs declare every account', (
   assert.equal('exclusive' in cfg('agent/config/momentum-account.json'), false)
   assert.deepEqual(cfg('agent/config/tick-observation.json').accounts, { _all: 'SHADOW' })
   const pins = cfg('agent/config/strategy-pins.json')
-  assert.ok(Array.isArray(pins._all) && pins._all.length >= 12)
-  assert.deepEqual(Object.keys(pins).filter(k => /^\d+$/.test(k)), [], 'no account ids in the pins file')
+  // Wave 1 of the first-principles audit (19-09-2026): arming follows
+  // evidence. `_all` carries only what earned it; `_off` is the shadow set;
+  // `_trial` is the ONE documented exception to "no ids" — one account per
+  // system on trial until its dated checkpoint (07-09 P5 reconciled with P9).
+  assert.ok(Array.isArray(pins._all) && pins._all.length >= 1 && pins._all.length <= 3)
+  assert.ok(Array.isArray(pins._off) && pins._off.length >= 10, 'the shadow set is named')
+  assert.deepEqual(Object.keys(pins).filter(k => /^\d+$/.test(k)), [], 'no account ids as keys in the pins file')
+  assert.deepEqual(Object.keys(pins._trial), ['tsmom_long'])
+  assert.equal(pins._trial.tsmom_long.length, 1, 'one trial account')
+  assert.match(pins._trial_note, /checkpoint/)
   assert.equal('demo' in cfg('agent/config/tick-validation.json'), false)
   assert.ok('traded' in cfg('agent/config/tick-validation.json'))
 })

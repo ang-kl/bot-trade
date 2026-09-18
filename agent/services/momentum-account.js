@@ -290,7 +290,21 @@ export function loadMomentumAccountState(db, accountId = null) {
  *       bars(creds, id) → bars, spot(creds, id) → {bid,ask}|null,
  *       equity(accountId) → number|null, rates() → map|null, atrOf(bars) → number|null
  */
+/**
+ * Wave 1 (19-09-2026, audit §K·3): ONE cap, not three. The book's slot count
+ * is the smaller of its own maxPositions and the risk gate's maxOpenPositions
+ * for this account (deps.maxOpenPositions, wired from loop.js) — so the vol
+ * target never divides equity across slots the gate will not let exist.
+ * Unknown → the book's own number, as before.
+ */
+export function effectiveSlots(cfg, deps, accountId) {
+  let riskCap = null
+  try { const v = Number(deps?.maxOpenPositions?.(accountId)); riskCap = Number.isFinite(v) && v > 0 ? v : null } catch { riskCap = null }
+  return riskCap != null ? Math.max(1, Math.min(cfg.maxPositions, riskCap)) : cfg.maxPositions
+}
+
 export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
+  const slots = effectiveSlots(cfg, deps, accountId)
   const out = {}
   const equity = deps.equity ? deps.equity(accountId) : null
   const rates = deps.rates ? deps.rates() : null
@@ -312,7 +326,7 @@ export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
       if (!(atr > 0) || !(price > 0)) { row.reason = 'no_bars'; continue }
       row.atr = atr; row.price = price
       row.bid = Number(q?.bid) > 0 ? Number(q.bid) : null // a short is priced at the bid (checker item c)
-      const s = volTargetLots({ equity, volTargetPct: cfg.volTargetPct, maxPositions: cfg.maxPositions, atr, price, symbol, meta, rates })
+      const s = volTargetLots({ equity, volTargetPct: cfg.volTargetPct, maxPositions: slots, atr, price, symbol, meta, rates })
       row.lots = s.lots; row.notionalUsd = s.notionalUsd; row.assetVolPct = s.assetVolPct ?? null
       if (!s.affordable) { row.reason = s.note; continue }
       row.ok = true
@@ -341,6 +355,7 @@ export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
 export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEntrySynth, deps = {}, now = Date.now(), log = () => {}, marginExhausted = false, entryBrake = null }) {
   const cfg = loadMomentumAccount(db)
   const accountId = String(acct.accountId)
+  const slots = effectiveSlots(cfg, deps, accountId)
   const state = loadMomentumAccountState(db, accountId)
   const summary = { account: accountId, ran: false, entries: 0, exits: 0, rankExitsDeferred: 0, skipped: [], universe: null }
   if (!dailyDue({ nowMs: now, lastRunMs: state.lastRunMs, afterUtc: cfg.dailyRunAfterUtc, cadence: cfg.cadence })) {
@@ -424,7 +439,7 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   }
   for (const w of wanted) {
     if (entryBrake?.block) break
-    if (open >= cfg.maxPositions) { summary.skipped.push(`at maxPositions ${cfg.maxPositions}`); break }
+    if (open >= slots) { summary.skipped.push(`at maxPositions ${slots}${slots !== cfg.maxPositions ? ` (risk maxOpenPositions caps the book's ${cfg.maxPositions})` : ''}`); break }
     if (openSyms.has(w.symbol)) continue
     try { if (workingLimit.get(accountId, w.symbol, TSMOM_STRATEGY)) { summary.skipped.push(`${w.symbol}: limit already working`); continue } } catch { /* no table */ }
     // The account's daily fundable universe (§7,437·B·3), exactly as the
@@ -457,7 +472,7 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
         source: 'momentum_account',
         synthesis: `${synth.synthesis} Sized by the ${cfg.volTargetPct}% vol target: ${u.lots} lots ($${u.notionalUsd} notional at ${u.assetVolPct}% asset vol).`,
       })
-      const result = await deps.autoTrade(db, w.symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'daily_momentum_account' })
+      const result = await deps.autoTrade(db, w.symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'daily_momentum_account', sharedAccounts: acct.sharedAccounts ?? null })
       if (!result) { summary.skipped.push(`${w.symbol}: not filled (gate, closed market, or broker)`); continue }
       const t = tradeRowFor.get(w.symbol, accountId, TSMOM_STRATEGY)
       insBook.run(t?.id ?? null, accountId, w.symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null, w.side,

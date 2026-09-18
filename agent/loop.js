@@ -508,7 +508,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // E·2: how many accounts this same signal reached the gate for, counted
     // by the dispatcher's fan-out; the gate splits each account's budget by
     // it. Null on a single-account dispatch.
-    sharedAccounts: opts.sharedAccounts ?? null,
+    sharedAccounts: opts.sharedAccounts ?? accountOverride?.sharedAccounts ?? null,
     // Provenance for the order log: who fired this attempt (auto_signal |
     // validation_fill | …). Rides inside proposal_json — no schema change.
     source: synth.source || 'auto_signal',
@@ -4043,6 +4043,9 @@ async function runLoop(db) {
             // exhausted account takes no book entries this pass and the
             // richest account is tried first. null = unknown, not exhausted.
             marginHeadroom: (accountId) => marginPoolForCycle(db).find(p => p.accountId === String(accountId))?.status?.headroom ?? null,
+            // Wave 1: the risk gate's per-account position cap, so the book
+            // sizes and enters against ONE cap.
+            maxOpenPositions: (accountId) => { try { return Number(loadRiskConfig(db, String(accountId))?.maxOpenPositions) || null } catch { return null } },
             // The account's daily fundable universe (§7,437·B·3): an
             // unfundable name is skipped by name, unknown dispatches as before.
             fundable: (accountId, symbol) => isFundable(db, accountId, symbol),
@@ -4534,14 +4537,13 @@ async function runLoop(db) {
       // through the full auto-trade path with tight time caps, so completed
       // round-trips accumulate fast. Inert unless burn_in_json.on AND
       // autotrade armed; a failure must never take down the loop.
+      // Wave 1 of the first-principles audit (19-09-2026, §K·5): burn-in is
+      // RETIRED — −$3,989 over 122 deals and 69 of the last 168 time-cap
+      // closes were its probes. The loop no longer runs it whatever the
+      // stored `burn_in_json.on` says; the module and its route stay for
+      // the record. The heartbeat keeps its slot so the controllers table
+      // reads "retired", not "stale".
       try {
-        const biCreds = getCtraderCreds(db)
-        if (biCreds.ready && !cycleOverBudget()) {
-          phase('burn-in')
-          const { runBurnIn } = await import('./services/burn-in.js')
-          const b = await runBudgetedSubPhase(db, 'burn_in', () => runBurnIn(db, biCreds))
-          if (b?.placed || b?.attempted) log(`Burn-in: ${b.summary}`)
-        }
         await hbeat(db, 'burn_in')
       } catch (err) {
         log(`Burn-in failed (non-fatal): ${err.message}`)
