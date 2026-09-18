@@ -1794,6 +1794,11 @@ export function initDB(dbPath) {
                           CHECK(verification_state IN ('unverified','verified','disputed','absent')),
     verified_at         TEXT,
     verifier_host       TEXT,
+    -- PR-AY: the contract version that produced this verdict. NULL means the
+    -- verdict predates the stamp, which is stale, not current. The backlog
+    -- re-asks anything judged under an older contract, so a fix to the
+    -- comparison can reach the records its predecessor got wrong.
+    verifier_version    INTEGER,
     disputes_json       TEXT,
 
     built_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -1870,6 +1875,21 @@ export function initDB(dbPath) {
     const cols = new Set(db.prepare('PRAGMA table_info(position_capture_queue)').all().map(c => c.name));
     if (!cols.has('reverify_attempts')) {
       db.exec('ALTER TABLE position_capture_queue ADD COLUMN reverify_attempts INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  // PR-AY: the verdict's contract version, for DBs created before the column.
+  // Without it every verdict already on disk is indistinguishable from one
+  // produced by the current comparison rules, so a record the verifier got
+  // WRONG can never be re-asked — which is exactly what happened to the ten
+  // records disputed on a 100x units error before PR-AW fixed it.
+  //
+  // NULL is the value every existing verdict takes, and the backlog reads
+  // NULL as stale rather than current: absent is not the same as up to date.
+  {
+    const cols = new Set(db.prepare('PRAGMA table_info(position_history)').all().map(c => c.name));
+    if (cols.size && !cols.has('verifier_version')) {
+      db.exec('ALTER TABLE position_history ADD COLUMN verifier_version INTEGER');
     }
   }
 

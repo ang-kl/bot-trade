@@ -32,6 +32,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { capturePosition, recordVerdict } from './position-history.js'
 import { pageDeals } from '../lib/deal-paging.js'
+import { VERDICT_CONTRACT_VERSION } from '../lib/verify-contract.js'
 
 /** The owner's 30 seconds. */
 export const CAPTURE_DELAY_MS = 30_000
@@ -158,12 +159,29 @@ export function enqueueVerifyBacklog(db, { accountId, now = Date.now(), limit = 
       LEFT JOIN position_capture_queue q
         ON q.account_id = h.account_id AND q.position_id = h.ctrader_position_id
      WHERE h.account_id = ?
-       AND h.verification_state = 'unverified'
+       -- PR-AY: A STALE VERDICT IS RE-ASKED, not carried for ever.
+       --
+       -- unverified was the whole predicate, which made disputed
+       -- TERMINAL. Measured 18-09-2026: cpp-verify compared cTrader's money
+       -- integer against this keeper's dollars and disputed ten records by
+       -- exactly 100x; PR-AW fixed the comparison and could reach none of
+       -- them, because nothing would ever ask again. The tally would have sat
+       -- at verified: 0 with a correct verifier and no way to show it.
+       --
+       -- So a disputed record judged under an OLDER contract is eligible
+       -- again — once, because answering it stamps the current version. A
+       -- record re-disputed under the current contract is a real finding and
+       -- stays put. verified and absent are not re-asked: an agreement
+       -- does not become a disagreement by the rules getting stricter, and
+       -- re-opening one would eventually overwrite it.
+       AND (h.verification_state = 'unverified'
+            OR (h.verification_state = 'disputed'
+                AND (h.verifier_version IS NULL OR h.verifier_version < ?)))
        AND (q.state IS NULL OR q.state = 'captured')
        AND COALESCE(q.reverify_attempts, 0) < ?
      ORDER BY h.closed_at_ms ASC
      LIMIT ?
-  `).all(acct, maxReverify, limit)
+  `).all(acct, VERDICT_CONTRACT_VERSION, maxReverify, limit)
 
   let armed = 0
   for (const r of rows) {
@@ -218,8 +236,11 @@ export function enqueueVerifyBacklog(db, { accountId, now = Date.now(), limit = 
       FROM position_history h
       LEFT JOIN position_capture_queue q
         ON q.account_id = h.account_id AND q.position_id = h.ctrader_position_id
-     WHERE h.account_id = ? AND h.verification_state = 'unverified'
-  `).get(maxReverify, maxReverify, acct) || {}
+     WHERE h.account_id = ?
+       AND (h.verification_state = 'unverified'
+            OR (h.verification_state = 'disputed'
+                AND (h.verifier_version IS NULL OR h.verifier_version < ?)))
+  `).get(maxReverify, maxReverify, acct, VERDICT_CONTRACT_VERSION) || {}
 
   const out = {
     armed,
@@ -360,6 +381,7 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, no
             recordVerdict(db, {
               accountId: row.account_id, positionId: row.position_id,
               state: v.state, disputes: v.disputes || [], host: v.host || null,
+              contractVersion: v.contractVersion ?? null,
             })
             if (v.state === 'verified') out.verified++
             // A DISPUTE IS LOUD. It means the broker and this system disagree

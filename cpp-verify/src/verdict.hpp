@@ -25,6 +25,34 @@
 namespace verify {
 
 /**
+ * THE COMPARISON CONTRACT'S VERSION, and the reason it exists.
+ *
+ * A verdict is only as good as the rules that produced it, and those rules
+ * have been wrong: until PR-AW this service compared cTrader's money integer
+ * against the keeper's dollars and disputed every record by exactly 100x. The
+ * fix was correct and reached nothing, because a `disputed` verdict is
+ * terminal — the keeper re-arms `unverified` records only, so ten records
+ * wrongly disputed on 18-09-2026 would have stayed disputed for ever, judged
+ * by a verifier that no longer exists.
+ *
+ * `disputed` could not tell "the broker and the keeper genuinely disagree"
+ * from "the verifier was wrong when it asked". Stamping every verdict with
+ * the contract that produced it is what makes that distinction possible: the
+ * keeper re-asks anything judged under an older contract, once, and a record
+ * re-disputed under the current one is a real finding.
+ *
+ * BUMP THIS whenever a change alters what counts as agreement — a new field,
+ * a changed tolerance, a units correction. Do NOT bump it for a refactor that
+ * cannot change a verdict: every bump costs one re-verification of every
+ * disputed record.
+ *
+ *   1 — original (PR-AE).
+ *   2 — PR-AW: money scaled by the broker's moneyDigits, volume by 100,
+ *       timestamps compared with a 1 s tolerance, volume read as a double.
+ */
+constexpr int kVerdictContractVersion = 2;
+
+/**
  * What the keeper says about one closed position. Every field is OPTIONAL in
  * the C++ sense on purpose: the difference between "the keeper recorded 0"
  * and "the keeper recorded nothing" is exactly what the completeness gate
