@@ -19,7 +19,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home appuser
 COPY --from=build /app/bin/cpp-verify /usr/local/bin/cpp-verify
-# No volume, no spool, no entrypoint script: this service holds no state.
-USER appuser
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# THIS SERVICE NOW HOLDS STATE — the verdict journal — and the comment that
+# used to sit here ("no volume, no spool, no entrypoint script: this service
+# holds no state") is corrected rather than left to mislead the next reader.
+#
+# The entrypoint runs as ROOT only long enough to mkdir and chown the journal
+# directory on the mounted volume, which Railway mounts root-owned, then drops
+# to uid 10001 via setpriv before exec. Measured 18-09-2026: without it
+# /health reported `"lastError": "mkdir: Permission denied"` and every verdict
+# would have gone unrecorded while the service looked healthy.
+#
+# So there is deliberately NO `USER appuser` line: the process still ends up as
+# appuser, but the drop happens in the entrypoint, after the chown.
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/cpp-verify"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

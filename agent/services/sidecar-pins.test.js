@@ -226,6 +226,62 @@ test('PR-AN: cpp-verify\'s vendored transport is byte-identical to cpp-exec\'s',
   }
 })
 
+// PR-AS: "READ-ONLY" MUST NAME ITS SCOPE, because the service now writes.
+//
+// Observed on the live boot, 18-09-2026:
+//
+//   [verify] cpp-verify starting on :8080 — read-only (app auth, account
+//            auth, deal list); sessions are per host
+//   [verify] journal UNWRITABLE at /data/verdicts — mkdir: Permission denied
+//
+// Two consecutive lines, one claiming read-only and the next reporting a
+// failed write. Both were true — the guarantee is about the BROKER, enforced
+// by the link line — but nothing said so, and a reader is entitled to
+// conclude one of them is lying. An unscoped guarantee is the same defect as
+// an unscoped measurement: it invites a wrong reading and cannot be checked.
+test('PR-AS: the read-only claim names its scope and what it writes', () => {
+  const src = readFileSync(new URL('../../cpp-verify/src/main.cpp', import.meta.url), 'utf8')
+  const code = src.replace(/^\s*\/\/.*$/gm, '')     // strip comments: no passing on prose
+
+  assert.match(code, /READ-ONLY AT THE BROKER/,
+    'the boot line must scope the claim to the broker, not assert it bare')
+  assert.match(code, /never places, amends or cancels/,
+    'and say what read-only actually forbids')
+  assert.match(code, /The only thing it writes is its own verdict journal/,
+    'and name what it DOES write, in the same breath')
+
+  assert.match(code, /o\.set\("readOnlyScope"/, '/health carries the scope, not just a bare boolean')
+  assert.match(code, /o\.set\("writes"/, 'and enumerates what it writes, so the payload cannot drift')
+})
+
+// PR-AS: THE MISSING `USER appuser` LINE IS DELIBERATE AND LOAD-BEARING.
+//
+// It reads like an oversight — a service that used to drop privileges and now
+// does not — so without this pin the obvious "fix" is to add it back, which
+// would restore `mkdir: Permission denied` on the journal and lose every
+// verdict silently. Measured 18-09-2026 03:2x UTC on the first deploy with the
+// volume attached.
+//
+// The process still runs as uid 10001. The drop moved into the entrypoint,
+// AFTER the chown that only root can perform on a Railway-mounted volume.
+test('PR-AS: cpp-verify drops to uid 10001 in the entrypoint, not via USER', () => {
+  const df = readFileSync(new URL('../../cpp-verify/Dockerfile', import.meta.url), 'utf8')
+  const code = df.replace(/^\s*#.*$/gm, '')
+  assert.doesNotMatch(code, /^\s*USER\s+appuser/m,
+    'a USER line here runs the entrypoint as appuser, which cannot chown the root-owned mount')
+  assert.match(code, /ENTRYPOINT\s*\[\s*"\/usr\/local\/bin\/entrypoint\.sh"/,
+    'the entrypoint must be the one that prepares the volume')
+
+  const sh = readFileSync(new URL('../../cpp-verify/entrypoint.sh', import.meta.url), 'utf8')
+  const shCode = sh.replace(/^\s*#.*$/gm, '')
+  assert.match(shCode, /chown -R 10001:10001/, 'the journal dir is handed to appuser')
+  assert.match(shCode, /setpriv --reuid=10001 --regid=10001/,
+    'and root is DROPPED before exec — a read-only verifier running as root trades one failure for a worse one')
+  assert.match(shCode, /exec setpriv/, 'exec, so signals reach the service rather than a shell')
+  assert.doesNotMatch(shCode, /exit 1/,
+    'a journal that cannot be prepared must not become an outage: it reports unwritable and serves')
+})
+
 test('PR-AN: cpp-verify builds from its own directory, so it cannot inherit the root service\'s config', () => {
   const cfg = JSON.parse(readFileSync(new URL('../../cpp-verify/railway.json', import.meta.url), 'utf8'))
   // Relative to the /cpp-verify root directory now — NOT 'cpp-verify/Dockerfile',

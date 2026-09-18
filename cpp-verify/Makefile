@@ -1,4 +1,5 @@
-# cpp-verify — the read-only position verifier.
+# cpp-verify — the position verifier. READ-ONLY AT THE BROKER: it never
+# places, amends or cancels. It does write one thing — its own verdict journal.
 #
 # BUILD CONTEXT IS THIS DIRECTORY, and the WebSocket transport and HTTP server
 # are VENDORED COPIES of cpp-exec's, sitting in src/ beside this service's own.

@@ -1,4 +1,5 @@
-// cpp-verify/src/main.cpp — the read-only verifier's HTTP surface.
+// cpp-verify/src/main.cpp — the verifier's HTTP surface. Read-only AT THE
+// BROKER; the one thing it writes is its own verdict journal.
 //
 // THREE ROUTES AND NOTHING ELSE:
 //   GET  /health   public (Railway's probe sends no headers)
@@ -101,9 +102,25 @@ int main() {
   // write at boot rather than discovering otherwise on the first verdict.
   verify::journal().open(env("VERIFY_JOURNAL_DIR"));
 
+  // "READ-ONLY" IS A CLAIM ABOUT THE BROKER, AND IT MUST SAY SO.
+  //
+  // The bare word was accurate until this service grew a verdict journal, and
+  // then the very next boot line read "journal UNWRITABLE ... mkdir:
+  // Permission denied" — a service announcing it is read-only and, one line
+  // later, that it failed to write. A reader is entitled to conclude one of
+  // the two lines is lying.
+  //
+  // Neither is. The guarantee is that it never PLACES, AMENDS OR CANCELS
+  // anything at the broker — enforced structurally by the link line, which
+  // pulls in no order-writing code (see the Makefile and sidecar-pins.test.js).
+  // It was never a claim that the process writes no bytes anywhere. So the
+  // scope is stated rather than left to be inferred, and what it DOES write is
+  // named in the same breath.
   std::fprintf(stderr,
-               "[verify] cpp-verify starting on :%d — read-only (app auth, "
-               "account auth, deal list); sessions are per host%s\n",
+               "[verify] cpp-verify starting on :%d — READ-ONLY AT THE BROKER: "
+               "app auth, account auth, deal list; it never places, amends or "
+               "cancels. The only thing it writes is its own verdict journal. "
+               "Sessions are per host%s\n",
                port, hostPinIgnored ? "; CTRADER_HOST is set and IGNORED" : "");
   if (!verify::journal().configured()) {
     std::fprintf(stderr, "[verify] journal OFF — VERIFY_JOURNAL_DIR not set; verdicts are returned but not kept here\n");
@@ -124,7 +141,14 @@ int main() {
     jsn::Value o{jsn::Object{}};
     o.set("ok", true);
     o.set("service", std::string("cpp-verify"));
+    // Scoped, not bare: `readOnly` means AT THE BROKER. `writes` names every
+    // byte this service puts on disk, so the payload cannot drift from the
+    // truth the way a lone boolean did.
     o.set("readOnly", true);
+    o.set("readOnlyScope", std::string("broker: never places, amends or cancels"));
+    jsn::Array writes;
+    writes.push_back(jsn::Value(std::string("verdict journal")));
+    o.set("writes", jsn::Value(std::move(writes)));
     o.set("hostPinIgnored", hostPinIgnored);
     jsn::Value j{jsn::Object{}};
     j.set("configured", verify::journal().configured());
