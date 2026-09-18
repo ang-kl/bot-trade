@@ -72,5 +72,5 @@ test('wiring (E·2): the dispatcher counts the shared accounts once per signal a
   const loop = src('agent/loop.js')
   assert.match(loop, /const sharedAccountsForSignal = apAccounts\.reduce/)
   assert.match(loop, /autoTrade\(db, sym, synth, acctItem, acct, \{ sharedAccounts: sharedAccountsForSignal \}\)/)
-  assert.match(loop, /sharedAccounts: opts\.sharedAccounts \?\? null/)
+  assert.match(loop, /sharedAccounts: opts\.sharedAccounts \?\? accountOverride\?\.sharedAccounts \?\? null/, 'the count reaches the gate from the dispatcher (opts) and from the book (accountOverride)')
 })

@@ -339,13 +339,22 @@ try {
   } catch (err) {
     console.error(`[boot] momentum account seed failed (non-fatal): ${err.message}`)
   }
+  // Wave 1 (19-09-2026): the book's master switch from the repo.
+  try {
+    const { seedMomentumBookFromConfig } = await import('./services/momentum-book.js')
+    const mb = seedMomentumBookFromConfig(db, { log: (m) => console.log(m) })
+    if (mb.error) console.error(`[boot] momentum book: ${mb.error}`)
+    else console.log(`[boot] momentum book: ${mb.applied ? 'applied' : 'unchanged'} — enabled=${mb.effective?.enabled} (config/momentum-book.json)`)
+  } catch (err) {
+    console.error(`[boot] momentum book seed failed (non-fatal): ${err.message}`)
+  }
   // Owner-declared strategy pins from the repo (§7,522·B·2), same reason and
   // same rule as the two seeds above.
   try {
     const { seedStrategyPinsFromConfig } = await import('./services/stage-matrix.js')
     const sp = seedStrategyPinsFromConfig(db, { getState, setState }, { log: (m) => console.log(m) })
     if (sp.error) console.error(`[boot] strategy pins: ${sp.error}`)
-    else console.log(`[boot] strategy pins: ${sp.applied.length} applied, ${sp.unchanged.length} unchanged${sp.held?.length ? `, ${sp.held.length} held (seeded before, since disarmed: ${sp.held.join(' ')})` : ''}${sp.skipped.length ? `, skipped: ${sp.skipped.join('; ')}` : ''} (config/strategy-pins.json)`)
+    else console.log(`[boot] strategy pins: ${sp.applied.length} applied, ${sp.off?.length || 0} switched off, ${sp.unchanged.length} unchanged${sp.held?.length ? `, ${sp.held.length} held (seeded before, since disarmed: ${sp.held.join(' ')})` : ''}${sp.skipped.length ? `, skipped: ${sp.skipped.join('; ')}` : ''} (config/strategy-pins.json)`)
   } catch (err) {
     console.error(`[boot] strategy pins seed failed (non-fatal): ${err.message}`)
   }

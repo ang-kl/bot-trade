@@ -30,7 +30,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
-import { STRATEGY_KEYS } from './strategies.js'
+import { STRATEGY_KEYS, judgedAtHorizon } from './strategies.js'
 import { loadStageMatrix, setStage, armedTradeKeys, disarmStrategyEverywhere, FILTER_DEFS } from './stage-matrix.js'
 import { noteLiveDisarm } from './strategy-autopilot.js'
 
@@ -94,6 +94,9 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
   const io = { getState, setState }
   const actions = []
   for (const key of STRATEGY_KEYS) {
+    // Wave 1 (19-09-2026): a loss streak of 2-day holds is not a verdict on
+    // a weeks-horizon family; the checkpoint on the goal table is.
+    if (judgedAtHorizon(key)) continue
     try {
       const { streak, newestId } = strategyLossStreak(db, key)
       if (streak < cfg.streak || newestId == null) continue

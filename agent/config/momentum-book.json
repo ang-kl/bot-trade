@@ -1,0 +1,6 @@
+{
+  "_note": "Wave 1 of the first-principles audit (docs/first-principles-audit-2026-09-19.md §K·3, owner 19-09-2026 'Execute'): the momentum book's master switch, declared from the repo like every other subsystem — it was the one switch with no seed. Only the keys named here are patched over the stored config at boot (diff-by-value, seedMomentumBookFromConfig). The book's slot count is the smaller of maxPositionsPerAccount and the risk gate's maxOpenPositions for the account (one cap, not three).",
+  "enabled": true,
+  "bookExitCadence": "daily",
+  "bookMinHoldHours": 24
+}

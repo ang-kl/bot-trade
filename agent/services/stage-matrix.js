@@ -590,6 +590,51 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
   } else if ('_reseed' in cfg) {
     out.skipped.push('_reseed: malformed')
   }
+  // `_trial` (Wave 1 of the first-principles audit, 19-09-2026): ONE account
+  // per strategy on a pre-registered trial — ON there, OFF everywhere else.
+  // The listed ids ride as ordinary ON entries (`<strategy>` under a per-id
+  // seed record `trial:<strategy>`); every other enabled account gets an OFF
+  // order for that strategy, applied by the `_off` path below.
+  const offOrders = new Map() // accountId -> Set(strategy)
+  let enabledIds = []
+  try { enabledIds = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { enabledIds = [] }
+  const trialOn = new Map() // accountId -> Set(strategy)
+  if (cfg._trial && typeof cfg._trial === 'object' && !Array.isArray(cfg._trial)) {
+    for (const [strategy, ids] of Object.entries(cfg._trial)) {
+      if (!Array.isArray(ids) || !ids.every(x => /^[0-9]+$/.test(String(x)))) { out.skipped.push(`_trial ${strategy}: malformed`); continue }
+      const listed = new Set(ids.map(String))
+      for (const id of listed) {
+        if (!trialOn.has(id)) trialOn.set(id, new Set())
+        trialOn.get(id).add(strategy)
+        entries.push([id, [`${strategy}:trial`]])
+      }
+      for (const id of enabledIds) if (!listed.has(id)) { if (!offOrders.has(id)) offOrders.set(id, new Set()); offOrders.get(id).add(strategy) }
+    }
+  } else if ('_trial' in cfg) {
+    out.skipped.push('_trial: malformed')
+  }
+  // `_off` (Wave 1): switch OFF, for every enabled account, the strategies
+  // named — unless a per-id key or `_trial` names that strategy ON for the
+  // account (an explicit ON wins). Seed-once like everything else here, under
+  // the record `off:<strategy>`, so a human re-arming a cell afterwards is
+  // not undone on the next boot.
+  if (Array.isArray(cfg._off)) {
+    const explicitOn = new Map()
+    for (const [id, keys] of entries) {
+      if (!Array.isArray(keys)) continue
+      if (!explicitOn.has(id)) explicitOn.set(id, new Set())
+      for (const e of keys) explicitOn.get(id).add(String(e).split(':')[0])
+    }
+    for (const id of enabledIds) {
+      for (const strategy of cfg._off) {
+        if (explicitOn.get(id)?.has(strategy)) continue
+        if (!offOrders.has(id)) offOrders.set(id, new Set()); offOrders.get(id).add(strategy)
+      }
+    }
+  } else if ('_off' in cfg) {
+    out.skipped.push('_off: malformed')
+  }
+  out.off = []
   for (const [accountId, keys] of entries) {
     if (!/^[0-9]+$/.test(accountId) || !Array.isArray(keys)) { out.skipped.push(`${accountId}: malformed`); continue }
     const done = new Set(Array.isArray(seeded[accountId]) ? seeded[accountId] : [])
@@ -611,6 +656,28 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
         log(`[boot] strategy pin …${accountId.slice(-4)}: ${key} ON for Auto Trade & Open (from config/strategy-pins.json)`)
       }
       done.add(entry); dirty = true
+    }
+    seeded[accountId] = [...done]
+  }
+  for (const [accountId, strategies] of offOrders) {
+    const done = new Set(Array.isArray(seeded[accountId]) ? seeded[accountId] : [])
+    for (const key of strategies) {
+      if (!STRATEGY_KEYS.includes(key)) { out.skipped.push(`${accountId}: unknown strategy '${key}' in _off/_trial`); continue }
+      const record = `off:${key}`
+      const tag = `${accountId}:${key}`
+      if (done.has(record)) { out.unchanged.push(`${tag}:off`); continue }
+      if (isHandPinned(db, getState, accountId, key)) {
+        setStage(db, {
+          kind: 'strategy', key, stage: 'trade', on: false, accountId,
+          actor: 'boot_seed', reason: 'declared OFF in agent/config/strategy-pins.json (_off/_trial — no positive live record, or on trial elsewhere)',
+          evidence: { file: 'agent/config/strategy-pins.json', seededOnce: true },
+        }, { getState, setState })
+        out.off.push(tag)
+        log(`[boot] strategy pin …${accountId.slice(-4)}: ${key} OFF for Auto Trade & Open (from config/strategy-pins.json _off/_trial)`)
+      } else {
+        out.unchanged.push(`${tag}:off`)
+      }
+      done.add(record); dirty = true
     }
     seeded[accountId] = [...done]
   }

@@ -58,6 +58,7 @@ export const ENTRY_PRODUCERS = Object.freeze([
     id: 'burn_in_probe', family: 'automatic', basis: 'bar',
     file: 'agent/services/burn-in.js', via: 'autoTrade',
     trigger: 'burn-in / probe orders at a fixed small size', admission: 'exec-engine',
+    retired: '2026-09-19 Wave 1 (first-principles audit §K·5): the loop no longer calls it',
   },
   {
     id: 'vpo_cpp_direct', family: 'automatic', basis: 'bar',
@@ -65,6 +66,7 @@ export const ENTRY_PRODUCERS = Object.freeze([
     fedBy: 'agent/services/vpo-feeder.js → POST /vpo-config',
     trigger: 'tick touch of a virtual pending level inside the sidecar', admission: 'cpp-guard',
     note: 'blocker B01/B04: sized from a cached minimum-stop volume; no Node risk gate or reservation',
+    retired: '2026-09-19 Wave 1 (first-principles audit §K·5): stays OFF; bypasses the Node gate',
   },
   {
     id: 'tick_momentum', family: 'automatic', basis: 'tick',
@@ -115,7 +117,12 @@ export const ENTRY_PRODUCERS = Object.freeze([
 
 /** Producers the mode-epoch fence must cover: every automatic one. */
 export function automaticProducers() {
-  return ENTRY_PRODUCERS.filter(p => p.family === 'automatic')
+  return ENTRY_PRODUCERS.filter(p => p.family === 'automatic' && !p.retired)
+}
+
+/** Producers retired by the first-principles audit (Wave 1): listed for the record, never scheduled. */
+export function retiredProducers() {
+  return ENTRY_PRODUCERS.filter(p => !!p.retired)
 }
 
 /** Producers that bypass the Node chokepoint today — the P2 work list. */

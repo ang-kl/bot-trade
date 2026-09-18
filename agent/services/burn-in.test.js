@@ -264,3 +264,12 @@ test('symbols with an open bot position are skipped', async () => {
   assert.ok(!placed.some(p => p.symbol === 'A1USD'))
   assert.equal(placed.length, 2)
 })
+
+test('Wave 1 (19-09-2026): the loop no longer runs burn-in — the call is gone from loop.js (comments stripped) and the producer is listed as retired', async () => {
+  const { readFileSync } = await import('node:fs')
+  const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.ok(!/runBurnIn\(/.test(loop), 'loop.js must not call runBurnIn')
+  assert.match(loop, /hbeat\(db, 'burn_in'\)/, 'the heartbeat slot stays so the controllers table reads it')
+  const { retiredProducers } = await import('../lib/entry-producers.js')
+  assert.ok(retiredProducers().some(p => p.id === 'burn_in_probe'))
+})

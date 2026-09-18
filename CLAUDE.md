@@ -604,6 +604,16 @@ Measurement history — each line is a real run of the script, not a claim:
   verification lines, the restart cause), so the next stamped reply is
   **`№ 7,973`**. The count is by replies, not by stamps. A later re-measure
   that reads below this line is missing these, not correcting them.
+- 2026-09-18 22:50 UTC, **same remote container, PARTIAL corpus**: `№ 7,973`
+  (06:04 SGT 19-09, the four-task status) was right by count. Unstamped
+  status lines followed while the three logs were folded in, #957 gated and
+  merged (06:24 SGT) and Wave 1 of the audit's §K was built: fourteen by
+  this ledger (the logs read, the v2.1 edits, the PR opened, the facts
+  agent, the worktree, the edit passes, the test rewrites, the mutation
+  checks, the gate launch), so the Wave 1 report is **`№ 7,988`** by count
+  plus any unstamped line made after this ledger. The count is by replies,
+  not by stamps. A later re-measure that reads below this line is missing
+  these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

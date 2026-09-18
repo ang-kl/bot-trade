@@ -10,7 +10,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { ENTRY_PRODUCERS, PRODUCER_FAMILIES, ADMISSIONS, automaticProducers, producersOutsideExecEngine, producerInventoryView } from './entry-producers.js'
+import { ENTRY_PRODUCERS, PRODUCER_FAMILIES, ADMISSIONS, automaticProducers, retiredProducers, producersOutsideExecEngine, producerInventoryView } from './entry-producers.js'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..')
 
@@ -70,8 +70,12 @@ test('the shape of every entry, and the P2 work list', () => {
     assert.ok(ADMISSIONS.includes(p.admission), `${p.id}: admission ${p.admission}`)
     assert.ok(p.file && p.via, `${p.id}: file and via`)
     if (p.family === 'automatic') assert.ok(p.basis === 'bar' || p.basis === 'tick', `${p.id}: an automatic producer is bar- or tick-based`)
+    if ('retired' in p) assert.match(p.retired, /^2026-\d\d-\d\d /, `${p.id}: a retirement names its date and reason`)
   }
-  assert.equal(automaticProducers().length, 8)
+  // Wave 1 (19-09-2026): burn_in_probe and vpo_cpp_direct are retired — listed for
+  // the record, never scheduled, excluded from the mode-epoch fence's roster.
+  assert.equal(automaticProducers().length, 6)
+  assert.deepEqual(retiredProducers().map(p => p.id), ['burn_in_probe', 'vpo_cpp_direct'])
   assert.deepEqual(automaticProducers().filter(p => p.basis === 'tick').map(p => p.id), ['tick_momentum'], 'P6b: the one tick-basis producer')
   assert.deepEqual(producersOutsideExecEngine().map(p => p.id), ['vpo_cpp_direct', 'tick_momentum'], 'the two in-process sidecar paths the Node chokepoint does not cover (both fenced by the permit at the send boundary)')
   const v = producerInventoryView()

@@ -247,3 +247,13 @@ test('production shape (every account pinned): a no-edge record on account X\'s 
   assert.equal(strategyRollingEdge(db2, 'rsi_meanrev', 30, { accountId: '111', ownOnly: true }).trades, 0)
   assert.equal(strategyRollingEdge(db2, 'rsi_meanrev', 30, { accountId: '111' }).trades, 16)
 })
+
+test('Wave 1 (19-09-2026): a momentum-family strategy is judged at its horizon, never by the 20-close window — losing tsmom_long stays armed and is reported as skipped', () => {
+  const db = initDB(':memory:')
+  arm(db, ['tsmom_long', 'rsi_meanrev'])
+  seed(db, 'tsmom_long', [-8, -7, -9, -6, -8, -7, -9, -6, -8, -7, -9, -6, -8, -7, -9, -6])
+  const r = runEdgeWatchdog(db, {})
+  assert.equal(r.actions.length, 0)
+  assert.equal(isArmed(db, 'tsmom_long'), true, 'the book is not disarmed on a sample it cannot have earned')
+  assert.deepEqual(r.evaluated.find(e => e.strategy === 'tsmom_long'), { strategy: 'tsmom_long', skipped: 'judged_at_horizon' })
+})

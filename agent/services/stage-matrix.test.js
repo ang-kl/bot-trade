@@ -387,85 +387,97 @@ test('strategy-pin seed: _all pins the list on every ENABLED account, a per-id k
   assert.deepEqual(seedStrategyPinsFromConfig(db, io, { file }).skipped, ['_all: malformed'])
 })
 
-test('strategy-pin seed: the checked-in file parses, pins the WHOLE stack including tsmom_long on EVERY account (owner 09-09-2026; PR-B: one _all list, no ids; 16-09-2026: the momentum arm), and index.js applies it at boot after the momentum seed', () => {
+test('strategy-pin seed: the checked-in file parses — Wave 1 (19-09-2026): `_all` pins only what has earned it, `_off` names the shadow set, `_trial` names ONE account for the momentum book, no bare account-id keys — and index.js applies it at boot after the momentum seed', () => {
   const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
   const ids = Object.keys(cfg).filter(k => /^\d+$/.test(k))
-  assert.deepEqual(ids, [], 'no hardcoded account ids (principle 9)')
-  // 16-09-2026 (owner decision): tsmom_long is IN the list. It used to be the
-  // one exclusion, and the measured cost was the momentum book running on 1
-  // of 7 enabled accounts while momentum-account.json said "_all". RED if a
-  // later edit drops it back out.
-  assert.deepEqual(cfg._all, STRATEGY_KEYS, '_all: every registry strategy, tsmom_long included')
-  assert.ok(cfg._all.includes('tsmom_long'), 'the momentum book\'s strategy is armed from the repo, not by hand')
+  assert.deepEqual(ids, [], 'no hardcoded account ids as keys (principle 9)')
+  assert.deepEqual(cfg._all, ['fib_confluence'], '_all: the one strategy with a positive live record (PF 2.72 over 26)')
+  assert.deepEqual([...cfg._off].sort(), [...STRATEGY_KEYS.filter(k => k !== 'fib_confluence' && k !== 'tsmom_long')].sort(), '_off: every other scan strategy is shadow')
+  assert.deepEqual(Object.keys(cfg._trial), ['tsmom_long'], '_trial: the momentum book only')
+  assert.equal(cfg._trial.tsmom_long.length, 1, 'one account per system on trial (07-09 P5 reconciled with P9 in the note)')
+  assert.match(cfg._trial_note, /2026-12-19/, 'the trial names its checkpoint date')
+  assert.deepEqual(cfg._reseed, [], 'the 17-09 per-account re-arms are superseded by the trial')
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-  assert.match(src, /seedMomentumAccountFromConfig\(db, \{ log[\s\S]{0,900}?seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log/, 'the boot seed runs after the momentum-account seed')
+  assert.match(src, /seedMomentumAccountFromConfig\(db, \{ log[\s\S]{0,1500}?seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log/, 'the boot seed runs after the momentum-account seed')
+  assert.match(src, /switched off/, 'the boot line reports the OFF orders')
 })
 
-// ---------------------------------------------------------------------------
-// THE MOMENTUM ARM (owner decision, 16-09-2026). The defect these tests pin:
-// tsmom_long ships defaultOn:false, nothing in the codebase armed it, and
-// momentum-book.js gates its entire per-account pass on
-// `armedTradeKeys(db, getState, accountId).has(TSMOM_STRATEGY)` — so the book
-// logged "0 entered on 1 account(s)" against a 7-account registry. A test that
-// only checks the config file would not catch a seed that never reaches that
-// predicate, which is this repo's recurring failure mode, so these run the
-// SHIPPED file through the seed and then read the predicate itself.
-// ---------------------------------------------------------------------------
-
-/** The shipped config, run through the seed against a throwaway db. */
 function seedShipped(db) {
   return seedStrategyPinsFromConfig(db, io, { file: new URL('../config/strategy-pins.json', import.meta.url) })
 }
 
-test('momentum arm: the SHIPPED pins file arms tsmom_long on every ENABLED account, and armedTradeKeys — the predicate momentum-book.js gates on — returns it for each', () => {
-  const db = withAccounts(initDB(':memory:'), ['111', '222', '333'])
-  // tsmom_long is OFF globally (defaultOn:false, and production's stored list
-  // does not carry it), so nothing but the pin can arm it. RED if the seed
-  // stops reaching the overlay and the test accidentally reads the global.
+const TRIAL_ID = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))._trial.tsmom_long[0]
+
+test('momentum trial: the SHIPPED pins file arms tsmom_long on the ONE trial account and switches it OFF everywhere else; fib_confluence is ON everywhere; the shadow set is OFF everywhere', () => {
+  const db = withAccounts(initDB(':memory:'), ['111', '222', TRIAL_ID])
   setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
-  assert.equal(armedTradeKeys(db, getState, '111').has('tsmom_long'), false, 'before the seed: the measured production state')
+  // production shape before the seed: the old `_all` had pinned everything
+  for (const id of ['111', '222', TRIAL_ID]) for (const k of ['tsmom_long', 'vwap_trend', 'donchian_breakout']) setStage(db, { kind: 'strategy', key: k, stage: 'trade', on: true, accountId: id }, io)
   const r = seedShipped(db)
   assert.equal(r.error, null)
-  for (const id of ['111', '222', '333']) {
-    assert.ok(r.applied.includes(`${id}:tsmom_long`), `${id}: the seed applied the momentum pin`)
-    assert.equal(isHandPinned(db, getState, id, 'tsmom_long'), true, `${id}: explicit true cell`)
-    assert.equal(armedTradeKeys(db, getState, id).has('tsmom_long'), true, `${id}: momentum-book.js:357's gate is open`)
+  assert.ok(r.unchanged.includes(`${TRIAL_ID}:tsmom_long:trial`) || r.applied.includes(`${TRIAL_ID}:tsmom_long:trial`), 'the trial account keeps/gets tsmom_long')
+  assert.equal(armedTradeKeys(db, getState, TRIAL_ID).has('tsmom_long'), true, 'the trial account trades the book')
+  for (const id of ['111', '222']) {
+    assert.ok(r.off.includes(`${id}:tsmom_long`), `${id}: tsmom_long switched OFF (on trial elsewhere)`)
+    assert.equal(armedTradeKeys(db, getState, id).has('tsmom_long'), false)
+    assert.ok(r.off.includes(`${id}:vwap_trend`) && r.off.includes(`${id}:donchian_breakout`), `${id}: the shadow set switched OFF`)
+    assert.equal(armedTradeKeys(db, getState, id).has('vwap_trend'), false)
   }
-  // Second boot changes nothing (seed-once).
-  assert.deepEqual(seedShipped(db).applied, [], 'idempotent on the shipped file')
+  for (const id of ['111', '222', TRIAL_ID]) {
+    assert.ok(r.applied.includes(`${id}:fib_confluence`), `${id}: fib_confluence ON from _all`)
+    assert.equal(armedTradeKeys(db, getState, id).has('fib_confluence'), true)
+  }
+  // Second boot changes nothing (seed-once on every record, ON and OFF alike).
+  const again = seedShipped(db)
+  assert.deepEqual(again.applied, [], 'idempotent ON')
+  assert.deepEqual(again.off, [], 'idempotent OFF')
 })
 
-test('momentum arm: an account enabled AFTER the first boot gets tsmom_long on its first boot; a DISABLED account never does', () => {
+test('momentum trial: an account enabled AFTER the first boot gets the same orders on its first boot (fib_confluence ON, tsmom_long OFF unless it is the trial account); a DISABLED account gets nothing', () => {
   const db = withAccounts(initDB(':memory:'), ['111', '999'])
   setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
   db.prepare(`UPDATE accounts SET enabled = 0 WHERE account_id = '999'`).run()
+  setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: true, accountId: '999' }, io)
   const a = seedShipped(db)
-  assert.ok(a.applied.includes('111:tsmom_long'))
-  assert.ok(!a.applied.some(t => t.startsWith('999:')), 'a disabled account is not pinned at all')
-  assert.equal(armedTradeKeys(db, getState, '999').has('tsmom_long'), false, 'disabled: the gate stays shut')
-  // Enabled later — armed on its very next boot, no hand-run route call.
+  assert.ok(!a.applied.some(t => t.startsWith('999:')) && !a.off.some(t => t.startsWith('999:')), 'a disabled account is not touched at all')
   db.prepare(`UPDATE accounts SET enabled = 1 WHERE account_id = '999'`).run()
   const b = seedShipped(db)
-  assert.ok(b.applied.includes('999:tsmom_long'), 'the late joiner is armed on its first boot')
-  assert.equal(armedTradeKeys(db, getState, '999').has('tsmom_long'), true)
+  assert.ok(b.applied.includes('999:fib_confluence'), 'the late joiner gets the ON order')
+  assert.ok(b.off.includes('999:tsmom_long'), 'and the OFF order for the strategy on trial elsewhere')
+  assert.equal(armedTradeKeys(db, getState, '999').has('tsmom_long'), false)
 })
 
-test('momentum arm: an operator\'s existing tsmom_long cell is not clobbered — a true cell stays true and is reported unchanged, a deliberate false is left false', () => {
-  const db = withAccounts(initDB(':memory:'), ['111', '222'])
+test('momentum trial: seed-once holds a HUMAN change made after the seed — a re-armed shadow strategy is not switched off again, and a disarmed trial cell is held', () => {
+  const db = withAccounts(initDB(':memory:'), ['111', TRIAL_ID])
   setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
-  // 111 was armed by hand on 08-09 (the one POST /actions/stage-matrix call).
-  setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: true, accountId: '111' }, io)
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: true, accountId: '111' }, io)
   const a = seedShipped(db)
-  assert.ok(a.unchanged.includes('111:tsmom_long'), 'an existing true cell is reported unchanged, not re-applied')
-  assert.ok(!a.applied.includes('111:tsmom_long'))
-  assert.equal(armedTradeKeys(db, getState, '111').has('tsmom_long'), true)
-  // A guard (or a human) turns it off after the seed has recorded it: the next
-  // boot HOLDS the off — the seed-once rule, so the arm is not a loop that
-  // overrides the watchdog every deploy.
-  setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false, accountId: '222' }, io)
+  assert.ok(a.off.includes('111:vwap_trend'))
+  // the owner re-arms it by hand after the seed: the next boot leaves it alone
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: true, accountId: '111' }, io)
   const b = seedShipped(db)
-  assert.ok(b.held.includes('222:tsmom_long'), 'a post-seed disarm stands across the next boot')
-  assert.equal(armedTradeKeys(db, getState, '222').has('tsmom_long'), false)
+  assert.ok(!b.off.includes('111:vwap_trend'), 'the OFF order was spent on the first boot')
+  assert.equal(armedTradeKeys(db, getState, '111').has('vwap_trend'), true, 'the human re-arm stands')
+  // a guard disarms the trial cell: held across the next boot (the seed-once rule)
+  setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false, accountId: TRIAL_ID }, io)
+  const c = seedShipped(db)
+  assert.ok(c.held.includes(`${TRIAL_ID}:tsmom_long:trial`), 'a post-seed disarm of the trial cell stands')
+})
+
+test('_off and _trial on a scratch file: an explicit per-id ON wins over _off; _trial switches the strategy OFF on every account it does not name; malformed blocks are named and skipped', () => {
+  const db = withAccounts(initDB(':memory:'), ['111', '222', '333'])
+  const file = join(mkdtempSync(join(tmpdir(), 'pins-off-')), 'pins.json')
+  for (const id of ['111', '222', '333']) for (const k of ['vwap_trend', 'tsmom_long']) setStage(db, { kind: 'strategy', key: k, stage: 'trade', on: true, accountId: id }, io)
+  writeFileSync(file, JSON.stringify({ _off: ['vwap_trend'], _trial: { tsmom_long: ['222'] }, '333': ['vwap_trend'] }))
+  const r = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(r.skipped, [])
+  assert.deepEqual([...r.off].sort(), ['111:tsmom_long', '111:vwap_trend', '222:vwap_trend', '333:tsmom_long'])
+  assert.equal(armedTradeKeys(db, getState, '333').has('vwap_trend'), true, 'the per-id ON wins over _off')
+  assert.equal(armedTradeKeys(db, getState, '222').has('tsmom_long'), true, 'the trial account keeps the strategy')
+  assert.equal(armedTradeKeys(db, getState, '111').has('tsmom_long'), false)
+  writeFileSync(file, JSON.stringify({ _off: 'vwap_trend', _trial: ['tsmom_long'] }))
+  const bad = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(bad.skipped.sort(), ['_off: malformed', '_trial: malformed'])
 })
 
 test('wiring: momentum-book.js still gates its per-account pass on armedTradeKeys(...).has(TSMOM_STRATEGY) — the predicate the pin moves', async () => {
@@ -553,13 +565,8 @@ test('a malformed _reseed entry is named and skipped, the good ones still land',
   assert.deepEqual(r.applied, ['47790949:tsmom_long:2'])
 })
 
-test('the checked-in file carries the owner order for the three accounts', () => {
+test('the checked-in file no longer carries the 17-09 per-account re-arms — the trial replaces them (Wave 1, 19-09-2026)', () => {
   const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
-  assert.ok(Array.isArray(cfg._reseed))
-  for (const id of ['47790949', '46130058', '43097342']) {
-    assert.ok(cfg._reseed.includes(`${id}:tsmom_long:2`), `${id} re-armed by the 17-09 order`)
-  }
-  // The override is on the record, with the number the owner was shown.
-  assert.match(cfg._reseed_note, /108\.48/)
-  assert.match(cfg._reseed_note, /DELIBERATE OVERRIDE/)
+  assert.deepEqual(cfg._reseed, [])
+  assert.equal('_reseed_note' in cfg, false)
 })

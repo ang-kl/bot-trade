@@ -26,7 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
-import { enabledStrategies } from './strategies.js'
+import { enabledStrategies, judgedAtHorizon } from './strategies.js'
 import { armedTradeKeys, disarmStrategyEverywhere } from './stage-matrix.js'
 import { noteLiveDisarm } from './strategy-autopilot.js'
 
@@ -141,6 +141,10 @@ export function runEdgeWatchdog(db, { notify } = {}) {
     }
   } catch { /* no accounts table — global candidates only */ }
   for (const key of armed) {
+    // Wave 1 (19-09-2026): a weeks-horizon family is not judged by a
+    // 20-close window. Recorded as evaluated with the reason so the
+    // exemption is visible, never silent.
+    if (judgedAtHorizon(key)) { evaluated.push({ strategy: key, skipped: 'judged_at_horizon' }); continue }
     try {
       // POOLED on purpose: the watchdog disarms a strategy everywhere, so it
       // judges the strategy's whole book. accountId: null is that intent
