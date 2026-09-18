@@ -226,6 +226,34 @@ test('PR-AN: cpp-verify\'s vendored transport is byte-identical to cpp-exec\'s',
   }
 })
 
+// PR-AS: THE MISSING `USER appuser` LINE IS DELIBERATE AND LOAD-BEARING.
+//
+// It reads like an oversight — a service that used to drop privileges and now
+// does not — so without this pin the obvious "fix" is to add it back, which
+// would restore `mkdir: Permission denied` on the journal and lose every
+// verdict silently. Measured 18-09-2026 03:2x UTC on the first deploy with the
+// volume attached.
+//
+// The process still runs as uid 10001. The drop moved into the entrypoint,
+// AFTER the chown that only root can perform on a Railway-mounted volume.
+test('PR-AS: cpp-verify drops to uid 10001 in the entrypoint, not via USER', () => {
+  const df = readFileSync(new URL('../../cpp-verify/Dockerfile', import.meta.url), 'utf8')
+  const code = df.replace(/^\s*#.*$/gm, '')
+  assert.doesNotMatch(code, /^\s*USER\s+appuser/m,
+    'a USER line here runs the entrypoint as appuser, which cannot chown the root-owned mount')
+  assert.match(code, /ENTRYPOINT\s*\[\s*"\/usr\/local\/bin\/entrypoint\.sh"/,
+    'the entrypoint must be the one that prepares the volume')
+
+  const sh = readFileSync(new URL('../../cpp-verify/entrypoint.sh', import.meta.url), 'utf8')
+  const shCode = sh.replace(/^\s*#.*$/gm, '')
+  assert.match(shCode, /chown -R 10001:10001/, 'the journal dir is handed to appuser')
+  assert.match(shCode, /setpriv --reuid=10001 --regid=10001/,
+    'and root is DROPPED before exec — a read-only verifier running as root trades one failure for a worse one')
+  assert.match(shCode, /exec setpriv/, 'exec, so signals reach the service rather than a shell')
+  assert.doesNotMatch(shCode, /exit 1/,
+    'a journal that cannot be prepared must not become an outage: it reports unwritable and serves')
+})
+
 test('PR-AN: cpp-verify builds from its own directory, so it cannot inherit the root service\'s config', () => {
   const cfg = JSON.parse(readFileSync(new URL('../../cpp-verify/railway.json', import.meta.url), 'utf8'))
   // Relative to the /cpp-verify root directory now — NOT 'cpp-verify/Dockerfile',
