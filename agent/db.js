@@ -1834,6 +1834,26 @@ export function initDB(dbPath) {
   CREATE INDEX IF NOT EXISTS idx_pos_capture_due ON position_capture_queue(state, due_at_ms);
   `);
 
+  // PR-AP: how many times this row was RE-ARMED to chase a verdict, as
+  // distinct from `attempts`, which counts tries at building the record.
+  //
+  // The two must not share a counter. `attempts` reaching MAX_ATTEMPTS means
+  // the record could not be BUILT and the row goes terminal `gave_up`; a
+  // re-arm means the record is fine and only cpp-verify's answer is missing.
+  // Collapsing them would let a verifier outage mark a perfectly good capture
+  // as one this system could not record — the opposite of the truth.
+  //
+  // It exists to make the backlog pass TERMINATE. Without a counter, a row
+  // whose verdict never arrives (verifier down, account not authorized) would
+  // be re-armed on every pass for ever, re-pulling its deals from the broker
+  // each time.
+  {
+    const cols = new Set(db.prepare('PRAGMA table_info(position_capture_queue)').all().map(c => c.name));
+    if (!cols.has('reverify_attempts')) {
+      db.exec('ALTER TABLE position_capture_queue ADD COLUMN reverify_attempts INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
   // STOP BEYOND ENTRY ⇒ be_moved (02-09-2026). be_moved was set only by the
   // explicit break-even step (position-manager rule 5, trade-guard's BE) —
   // a TRAIL that carried the stop through entry left the flag at 0. Measured

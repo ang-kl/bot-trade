@@ -3407,9 +3407,20 @@ async function runLoop(db) {
           // the verifier's behalf — that would re-introduce the
           // self-certification the separate service exists to prevent.
           try {
-            const { drainCaptureQueue } = await import('./services/position-capture.js')
+            const { drainCaptureQueue, enqueueVerifyBacklog } = await import('./services/position-capture.js')
             const { verifyClient } = await import('./lib/verify-client.js')
             const verifier = verifyClient()
+            // PR-AP: records built while cpp-verify was unreachable are
+            // complete but never got a verdict, and their queue rows are
+            // terminal, so nothing would ever revisit them. Re-arm a few per
+            // pass into THIS queue rather than building a second scheduler —
+            // it already paces (50 a drain), retries with backoff and gives
+            // up loudly. Only when a verifier is configured: without one a
+            // re-capture buys broker traffic and no answer.
+            if (verifier) {
+              const backlog = enqueueVerifyBacklog(db, { accountId })
+              if (backlog.armed) log(`Position capture: re-armed ${backlog.armed} unverified record(s) for a verdict`)
+            }
             const drain = await drainCaptureQueue(db, {
               getDeals: async (t0, t1) => {
                 const { wsGetDeals } = await import('./lib/ctrader-ws.js')
