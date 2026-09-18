@@ -3878,6 +3878,12 @@ export default function actionsRouter(db, deps = {}) {
         givebackPct: b.givebackPct !== undefined ? Math.min(95, Math.max(5, Number(b.givebackPct) || current.givebackPct)) : current.givebackPct,
         // both
         takeProfitUsd: b.takeProfitUsd !== undefined ? num(b.takeProfitUsd) : current.takeProfitUsd,
+        // both: the R floor on the arm (owner 18-09-2026: +0.5R). null/0 = off.
+        // Listed HERE because this reply is rebuilt field by field (failure
+        // mode #5): a knob missing from this list is silently dropped.
+        armR: b.armR === null ? null
+          : b.armR !== undefined ? clamp(b.armR, 0, 10, current.armR)
+          : current.armR,
       }
       setState(db, 'profit_keeper_json', JSON.stringify(next))
       console.log(`[actions] Profit Keeper ${next.on ? 'ON' : 'off'} — scope=${next.scope} arm=$${next.armProfitUsd} giveback=${next.givebackPct}%${next.takeProfitUsd ? ` tp=$${next.takeProfitUsd}` : ''}`)

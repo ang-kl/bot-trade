@@ -90,6 +90,17 @@ export const DEFAULT_PROFIT_KEEPER = {
   structureMaxAtrMult: 4,     // giveback from the peak stays bounded by this
   // fixed mode
   armProfitUsd: 50,
+  // OWNER ORDER 18-09-2026 ("set the arm to +0.5R"): the keeper does not
+  // engage before the position has earned half its own risk. The arm is
+  // max(the mode's own threshold, armR × the position's initial risk in
+  // dollars) — the R term only ever RAISES the arm, in both modes. Measured
+  // reason: on …0949 the adaptive arm (1.2 × 1h-ATR, or 0.1 % of balance)
+  // engaged the chandelier on moves of a few tenths of an R and the trail
+  // then cut winners at +0.30R average; avg win +0.40R vs avg loss −0.72R
+  // is the exit shape that produced. Rows with no `initial_risk` on record
+  // (adopted / manual positions) keep the mode's own threshold — no R is
+  // invented for them. null/0 switches the R term off.
+  armR: 0.5,
   givebackPct: 40,
   // both modes
   takeProfitUsd: null,    // optional hard close at +$X (null = off)
@@ -265,7 +276,7 @@ function quoteInfo(symbol, price) {
  */
 export function decideProfitKeeper(cfg, {
   side, entry, price, lots, unitsPerLot, symbol, peak, currentSl, digits,
-  atr = null, balance = null, scaledOut = false, bars = null,
+  atr = null, balance = null, scaledOut = false, bars = null, initialRisk = null,
 }) {
   const out = { newPeak: peak || 0, profitUsd: null, action: null }
   if (!cfg?.on || !(price > 0) || !(entry > 0) || !(lots > 0) || !(unitsPerLot > 0)) return out
@@ -277,6 +288,11 @@ export function decideProfitKeeper(cfg, {
   const profitQuote = (price - entry) * dir * lots * unitsPerLot
   const profitUsd = q.toUsd(profitQuote)
   out.profitUsd = Math.round(profitUsd * 100) / 100
+  // The position's own 1R in dollars (initial stop distance × size), and the
+  // arm floor `armR` of it demands — 0 when the risk is not on record.
+  const riskUsd = Number(initialRisk) > 0 ? q.toUsd(Number(initialRisk) * lots * unitsPerLot) : 0
+  const armUsdR = Number(cfg.armR) > 0 && riskUsd > 0 ? Number(cfg.armR) * riskUsd : 0
+  out.riskUsd = riskUsd > 0 ? Math.round(riskUsd * 100) / 100 : null
   out.newPeak = Math.max(peak || 0, out.profitUsd)
 
   if (Number(cfg.takeProfitUsd) > 0 && profitUsd >= Number(cfg.takeProfitUsd)) {
@@ -291,7 +307,7 @@ export function decideProfitKeeper(cfg, {
     // Arm threshold in volatility units with a balance-relative noise floor.
     const armUsdAtr = q.toUsd(Number(cfg.armAtrMult) * atr * lots * unitsPerLot)
     const armUsdBal = balance > 0 ? balance * (Number(cfg.armBalancePct) / 100) : 0
-    const armUsd = Math.max(armUsdAtr, armUsdBal)
+    const armUsd = Math.max(armUsdAtr, armUsdBal, armUsdR)
     if (!(armUsd > 0) || out.newPeak < armUsd) return out
 
     // Chandelier trail: SL sits trailAtrMult × ATR behind the PEAK price —
@@ -360,7 +376,8 @@ export function decideProfitKeeper(cfg, {
   }
 
   // FIXED mode (also the fallback when no ATR is available).
-  if (!(Number(cfg.armProfitUsd) > 0) || out.newPeak < Number(cfg.armProfitUsd)) return out
+  const armFixed = Math.max(Number(cfg.armProfitUsd) || 0, armUsdR)
+  if (!(armFixed > 0) || out.newPeak < armFixed) return out
 
   const lockUsd = out.newPeak * (1 - Math.min(95, Math.max(0, Number(cfg.givebackPct))) / 100)
   if (profitUsd <= lockUsd) {
@@ -399,7 +416,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd,
               mp.scaled_out, mp.trade_id, mp.account_id, t.ctrader_position_id AS position_id,
-              t.sl_price AS original_sl, mp.early_trimmed
+              t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
@@ -553,6 +570,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
         balance,
         scaledOut: !!r.scaled_out,
         bars: barsBySymbolId[td.symbolId] ?? null,
+        initialRisk: r.initial_risk,
       })
       // ── EARLY TRIM, SHADOW ONLY (owner 07-08: "ship T2 log-only now") ──
       // Computed here because this is the one place that already holds broker

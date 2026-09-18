@@ -2317,6 +2317,7 @@ export default function Tune() {
                         {numField('Giveback', 'givebackPct', { min: 5, max: 95, suffix: '%', hint: 'Fixed mode: the lock sits at (100 − this)% of the peak. Clamped 0–95 by the engine.' })}
                       </>
                     )}
+                    {numField('Arm floor', 'armR', { min: 0, max: 10, step: 0.1, suffix: 'R', hint: "Both modes: the keeper never arms before peak profit reaches this many R of the position's own initial risk (owner, 18-09-2026: 0.5). Raises the arm only; 0 = off. Positions with no risk on record use the mode threshold alone." })}
                     <Segmented label="Profit Keeper scope" value={keeper.scope}
                       options={[{ value: 'external', label: 'manual only' }, { value: 'all', label: 'all positions' }]}
                       onChange={sc => post({ scope: sc }, `Profit Keeper scope: ${sc}`)} />

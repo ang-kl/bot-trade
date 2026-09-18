@@ -125,3 +125,18 @@ test('toggles are booleans, not truthiness', async () => {
     assert.equal(r.config.structureTrailEnabled, false, 'the other toggle stayed off')
   } finally { h.close() }
 })
+
+test('armR (owner 18-09-2026): written, clamped, null means off, and an unrelated POST keeps it', async () => {
+  const h = await server()
+  try {
+    assert.equal(loadProfitKeeperConfig(h.db).armR, 0.5, 'the shipped default')
+    let r = await post(h, { armR: 1 })
+    assert.equal(r.config.armR, 1)
+    await post(h, { armAtrMult: 1.2 })
+    assert.equal(loadProfitKeeperConfig(h.db).armR, 1, 'an unrelated write does not reset it')
+    r = await post(h, { armR: 99 })
+    assert.equal(r.config.armR, 10, 'clamped to the 0–10 band')
+    r = await post(h, { armR: null })
+    assert.equal(r.config.armR, null, 'null switches the R floor off and is preserved as null')
+  } finally { h.close() }
+})
