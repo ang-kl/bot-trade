@@ -40,6 +40,7 @@ import { getState } from '../db.js'
 import { instrumentType } from '../lib/contracts.js'
 import { earlyTrimConfig, earlyTrimDecision, earlyTrimShadowRow } from './early-trim.js'
 import { getAccountBalance } from './risk.js'
+import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
@@ -181,20 +182,9 @@ export function cachedAtrForSymbol(db, symbol, now = Date.now()) {
   } catch { return null }
 }
 
-export function atrFromBars(bars, period = 14) {
-  if (!Array.isArray(bars) || bars.length < period + 1) return null
-  const trs = []
-  for (let i = 1; i < bars.length; i++) {
-    const b = bars[i]
-    const prevC = bars[i - 1].c
-    trs.push(Math.max(b.h - b.l, Math.abs(b.h - prevC), Math.abs(b.l - prevC)))
-  }
-  let atr = trs.slice(0, period).reduce((s, v) => s + v, 0) / period
-  for (let i = period; i < trs.length; i++) {
-    atr = (atr * (period - 1) + trs[i]) / period
-  }
-  return atr
-}
+// E·1: the ATR maths moved to lib/stop-floor.js so the risk gate's stop
+// floor and the keeper read one implementation; re-exported unchanged.
+export { atrFromBars }
 
 /**
  * The most recent CONFIRMED swing pivot on the protective side of the trade,
@@ -749,3 +739,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
   }
   return summary
 }
+
+// E·1: the keeper's ATR cache is the fallback hourly-ATR source for the
+// risk gate's stop floor (the scan's cached 1h bars answer first).
+registerAtrSource('keeper_cache', (db, symbol) => cachedAtrForSymbol(db, symbol))

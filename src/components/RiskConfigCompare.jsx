@@ -28,6 +28,8 @@ const KNOBS = [
   ['allowCrossAccountHedge', 'Allow opposite leg on another account'],
   ['equityStopPct', 'Equity stop (%)'],
   ['minRR', 'Min R:R'],
+  ['minStopAtrMult', 'Min stop (hourly ATR ×)'],
+  ['sharedSignalRiskSplit', 'Shared-signal risk split'],
   ['maxMarginUsagePct', 'Max margin usage (%)'],
   ['maxCurrencyExposure', 'Max currency exposure'],
   ['maxConsecutiveLosses', 'Max consecutive losses'],

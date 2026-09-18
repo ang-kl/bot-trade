@@ -1102,6 +1102,10 @@ export default function Risk() {
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Min SL distance${mark('minSLDistancePct')}`} anchor="minSLDistancePct" applied={appliedKeys.has('minSLDistancePct')} unit="% px" value={risk.minSLDistancePct} onChange={v => setRisk(r => ({ ...r, minSLDistancePct: v }))}
                     hint="% of price — stops tighter than this get swept by noise. (Entered as a plain percent: 0.15 = 0.15% of price.)" recommend="0.15% of price." />
+                  <Field label={`Min stop (hourly ATR ×)${mark('minStopAtrMult')}`} anchor="minStopAtrMult" applied={appliedKeys.has('minStopAtrMult')} unit="× ATR" value={risk.minStopAtrMult} onChange={v => setRisk(r => ({ ...r, minStopAtrMult: v }))}
+                    hint="A stop tighter than this many hourly ATRs is widened to the floor before the R:R check and sizing — the widened stop is what the order carries. 0 = off; with no hourly ATR cached the floor is skipped and recorded." recommend="1.0 — one hour's ordinary range." />
+                  <Field label={`Shared-signal risk split${mark('sharedSignalRiskSplit')}`} anchor="sharedSignalRiskSplit" applied={appliedKeys.has('sharedSignalRiskSplit')} value={risk.sharedSignalRiskSplit} onChange={v => setRisk(r => ({ ...r, sharedSignalRiskSplit: v }))}
+                    hint="When one signal fans out to N accounts: 'equal' gives each account 1/N of its per-trade budget on it; 'off' lets every account risk its full budget on the same setup." recommend="equal." />
                   <Field label={`Min R:R${mark('minRR')}`} anchor="minRR" applied={appliedKeys.has('minRR')} unit="×SL" value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
                     hint="TP must sit at least this multiple of the SL distance from entry — the take-profit rule." recommend="1.5 — TP at least 1.5× the SL distance." />
                   <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} anchor="maxSpreadFracOfSL" pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
@@ -1183,7 +1187,7 @@ export default function Risk() {
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
-                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'marginRateStock', 'marginRateIndex', 'marginRateCommodity', 'marginRateCrypto', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'htfFreshnessMin', 'maxOpenPositions', 'allowCrossAccountHedge', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
+                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'maxNotionalXBalance', 'marginRateStock', 'marginRateIndex', 'marginRateCommodity', 'marginRateCrypto', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'minStopAtrMult', 'sharedSignalRiskSplit', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'htfFreshnessMin', 'maxOpenPositions', 'allowCrossAccountHedge', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
               }}>Save bot risk</Button></span>
             </div>

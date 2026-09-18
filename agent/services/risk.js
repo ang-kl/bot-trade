@@ -46,6 +46,7 @@ import { isMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './moment
 import { strategyVerdict } from './strategy-verdicts.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
 import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
+import { hourlyAtrFor, stopFloor } from '../lib/stop-floor.js'
 
 /**
  * THE EXPECTANCY FLOOR. Owner-set 13-08-2026, and not overridable from the
@@ -372,6 +373,22 @@ export const DEFAULT_RISK_CONFIG = {
   minExpectancyR: 0.15,
   minSLDistancePct: 0.15,          // SL must be ≥ this % from entry (stops too
                                    // tight get swept by noise).
+  minStopAtrMult: 1.0,             // E·1 (owner 18-09-2026): the stop must sit
+                                   // at least this many HOURLY ATRs from entry.
+                                   // A tighter stop is WIDENED to the floor
+                                   // before the R:R check and sizing (the
+                                   // widened stop is what the order carries).
+                                   // Denominated in the symbol's own hourly
+                                   // range, so it bites on NatGas and leaves an
+                                   // ATR-stopped strategy alone. 0 = off; no
+                                   // ATR available = no floor, recorded.
+  sharedSignalRiskSplit: 'equal',  // E·2 (owner 18-09-2026): when ONE signal
+                                   // fans out to N eligible accounts, each
+                                   // account risks 1/N of its budget on it
+                                   // ('equal'); 'off' = every account risks its
+                                   // full budget on the same setup, which is
+                                   // how a NatGas stop cost every account at
+                                   // once in the 14–18 Sep statements.
   maxSpreadFracOfSL: 0.25,         // Microstructure gate: the live bid/ask
                                    // spread is a cost paid at entry. If it
                                    // exceeds this fraction of the SL distance,
@@ -1907,11 +1924,11 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     return veto('missing_entry_or_sl', checks, proposal)
   }
   const entry = Number(proposal.entry)
-  const sl = Number(proposal.sl)
+  let sl = Number(proposal.sl)
   if (!Number.isFinite(entry) || !Number.isFinite(sl)) {
     return veto('missing_entry_or_sl', checks, proposal)
   }
-  const slDistance = Math.abs(entry - sl)
+  let slDistance = Math.abs(entry - sl)
   // BROKER TRUTH FOR "ONE LOT", when the order path has recorded it.
   // contracts.js's table is the fallback and is measurably wrong on 9
   // symbols (100× ADAUSD/XRPUSD, 1000× DOGEUSD — confirmed against real
@@ -1928,6 +1945,35 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   checks.sl_distance = slDistance
   if (slDistance === 0) {
     return veto('sl_at_entry', checks, proposal)
+  }
+  // ---- 5b. Hourly-ATR stop floor (E·1) -----------------------------------
+  // Runs BEFORE the R:R check and BEFORE sizing on purpose: the widened stop
+  // is the one the order will carry, so the target is judged against it and
+  // the volume is sized on it. `stop_override` on the approval tells the
+  // caller to send the widened stop (loop.js / pending-orders.js /
+  // closed-market-limits.js). No ATR → `no_atr`, no floor, and the trade is
+  // gated exactly as before this section existed.
+  let stopOverride = null
+  {
+    const mult = Number(config.minStopAtrMult)
+    if (Number.isFinite(mult) && mult > 0) {
+      const { atr, source } = hourlyAtrFor(db, proposal.symbol)
+      if (atr == null) {
+        checks.stop_floor = 'no_atr'
+      } else {
+        const digits = Math.max(String(entry).split('.')[1]?.length ?? 0, String(sl).split('.')[1]?.length ?? 0, String(proposal.tp1 ?? '').split('.')[1]?.length ?? 0)
+        const widened = stopFloor({ entry, sl, atr, mult, digits })
+        if (widened) {
+          checks.stop_floor = { from: sl, to: widened.sl, atr1h: Number(atr.toFixed(digits + 2)), mult, source }
+          stopOverride = { sl: widened.sl, from: sl, atr1h: atr, mult, source }
+          sl = widened.sl
+          slDistance = Number(Math.abs(entry - sl).toFixed(digits))
+          checks.sl_distance = slDistance
+        } else {
+          checks.stop_floor = { ok: true, atr1h: Number(atr.toFixed(digits + 2)), mult, source }
+        }
+      }
+    }
   }
   // Round RR to 2 decimals for comparison so "1.50" equals the floor 1.5 —
   // float math produces 1.4999... which would spuriously veto.
@@ -2052,7 +2098,14 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     // never the product: an earned-floor admit on a pending pin is one
     // half-risk trade, not a quarter-risk one.
     const efScale = Math.min(earnedFloor?.riskScale ?? 1, verdict.state !== 'n/a' ? verdict.riskScale : 1)
-    const effRiskPct = (budget / balance) * efScale
+    // E·2: one signal, N accounts — the budget is split, not multiplied. The
+    // dispatcher counts the accounts that reached the gate for this signal
+    // (proposal.sharedAccounts); a single-account dispatch (routes, the
+    // book, a validation fill) carries none and is unchanged.
+    const sharedN = Number(proposal.sharedAccounts)
+    const sharedScale = config.sharedSignalRiskSplit !== 'off' && Number.isFinite(sharedN) && sharedN > 1 ? 1 / sharedN : 1
+    if (sharedScale < 1) checks.shared_signal = { accounts: sharedN, scale: Number(sharedScale.toFixed(4)) }
+    const effRiskPct = (budget / balance) * efScale * sharedScale
     // VOL-TARGET SIZING (owner 07-09-2026, §7,386·D1): on the momentum
     // account a tsmom proposal carries its own size, computed by the
     // momentum-account pass from equity × vol target ÷ asset vol. The
@@ -2086,6 +2139,8 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     // Risk-based size, reduced by the per-symbol cap only when one is set.
     sizingFloor = hasCap ? Math.min(risked.volume, reqVol) : risked.volume
     sizingNote = hasCap && reqVol < risked.volume ? `${risked.note} · capped_at_max_lots=${reqVol}` : risked.note
+    if (checks.shared_signal) sizingNote = `${sizingNote} · shared_signal=1/${checks.shared_signal.accounts}`
+    if (stopOverride) sizingNote = `${sizingNote} · stop_floor=${stopOverride.from}->${stopOverride.sl}`
   }
 
   // ---- 10. Kelly sizing (PER-STRATEGY expectancy) ------------------------
@@ -2293,6 +2348,9 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     ...(earnedFloor?.stretchedFrom != null
       ? { target_override: { tp1: earnedFloor.tp1, rr: earnedFloor.rr, from: earnedFloor.stretchedFrom } }
       : {}),
+    // E·1: the stop the order must carry when the hourly-ATR floor widened
+    // it. Absent on every approval that did not widen.
+    ...(stopOverride ? { stop_override: stopOverride } : {}),
   }
 }
 

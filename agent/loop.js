@@ -505,6 +505,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // is recorded and ignored.
     sizing: synth.sizing ?? null,
     sizedVolume: synth.sizedVolume ?? null,
+    // E·2: how many accounts this same signal reached the gate for, counted
+    // by the dispatcher's fan-out; the gate splits each account's budget by
+    // it. Null on a single-account dispatch.
+    sharedAccounts: opts.sharedAccounts ?? null,
     // Provenance for the order log: who fired this attempt (auto_signal |
     // validation_fill | …). Rides inside proposal_json — no schema change.
     source: synth.source || 'auto_signal',
@@ -533,6 +537,15 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   if (riskResult.target_override?.tp1 != null) {
     log(`Risk target: ${symbol} tp1 ${synth.tp1} → ${riskResult.target_override.tp1} (${riskResult.target_override.from}R → ${riskResult.target_override.rr}R, earned-floor stretch)`)
     synth = { ...synth, tp1: riskResult.target_override.tp1, tp1_price: riskResult.target_override.tp1 }
+  }
+  // WIDENED STOP (E·1): the gate floored the stop at `minStopAtrMult` hourly
+  // ATRs and sized the volume on that stop. Everything below — the order's
+  // relative stop, the trades row, the fill anchor — reads synth.sl, so the
+  // override lands there once, here, with the reason.
+  if (riskResult.stop_override?.sl != null) {
+    const so = riskResult.stop_override
+    log(`Risk stop: ${symbol} sl ${so.from} → ${so.sl} (hourly ATR ${so.atr1h} × ${so.mult} floor, ${so.source})`)
+    synth = { ...synth, sl: so.sl, ...(synth.sl_price != null ? { sl_price: so.sl } : {}) }
   }
 
   // We need symbolId — THIS ACCOUNT's id (03-09-2026). The global
@@ -1404,6 +1417,19 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
       const { sidecarRostersBySide } = await import('./lib/exec-engine.js')
       sidecarRosters = await sidecarRostersBySide()
     } catch { /* unknown — fail open on BOTH sides */ }
+    // E·2 PRE-PASS: how many accounts share this signal. Counted from the
+    // two cycle-level gates every account is asked before any symbol work
+    // (margin pool, account pre-gate) so the number is one per signal and
+    // known before the first dispatch. A later per-symbol skip (watchlist,
+    // strategy, fundable universe, proposal pre-gate, the risk gate itself)
+    // leaves the survivors at 1/N of a slightly larger N — the split errs on
+    // the side of LESS risk, never more, and checks.shared_signal records N.
+    const sharedAccountsForSignal = apAccounts.reduce((n, a) => {
+      const pe = pool.find(p => String(p.accountId) === String(a.accountId))
+      if (pe?.exhausted) return n
+      try { if (!accountPregate(db, a.accountId, { cycle: loopCount }).ok) return n } catch { return n }
+      return n + 1
+    }, 0)
     for (const acct of apAccounts) {
       // PER-ACCOUNT AUTOTRADE GATE — the enforcement point for the owner's
       // independent switches. Without this the switches would be decorative:
@@ -1640,7 +1666,13 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
         continue
       }
 
-      const tradeResult = await autoTrade(db, sym, synth, acctItem, acct)
+      // E·2: the accounts that reached THIS gate for THIS signal are the ones
+      // sharing it. Counted as the fan-out goes — an account skipped above
+      // never joins — and the count the first dispatch sees is the number of
+      // accounts still ahead of it plus itself, which is the roster minus the
+      // ones already skipped; later accounts see the same roster figure. One
+      // number per signal, from the pre-pass below.
+      const tradeResult = await autoTrade(db, sym, synth, acctItem, acct, { sharedAccounts: sharedAccountsForSignal })
       if (tradeResult) {
         fired = true
         // The book just changed: the next symbol re-asks the pre-gate for

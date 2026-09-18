@@ -11,6 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
+import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { tfMs } from '../lib/timeframes.js'
 import { computeCupHandleSignal, computeInvCupHandleSignal, traceCupHandleSearch, traceInvCupHandleSearch } from './cup-handle.js'
 import { categoriseSymbol } from '../lib/sessions.js'
@@ -136,6 +137,15 @@ function cachedBars(symbolId, period) {
   const ttl = tfMs(period) || 300_000
   return Date.now() - entry.fetchedAt < ttl ? entry.bars : null
 }
+
+/** E·1: the scan's cached bars for a symbol id, read-only (null when stale/absent). */
+export function cachedBarsFor(symbolId, period) {
+  return symbolId == null ? null : cachedBars(symbolId, period)
+}
+
+// E·1: the scan fetches 1h bars for every symbol it scans and keeps them a
+// full bar, so the risk gate's hourly-ATR stop floor reads them for free.
+registerAtrSource('scan_1h', (db, symbol, symbolId) => atrFromBars(cachedBarsFor(symbolId, '1h')))
 
 /**
  * Bars for a REGIME read. Prefers a higher timeframe already in the scan

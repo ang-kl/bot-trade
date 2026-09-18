@@ -1461,7 +1461,11 @@ export default function Performance() {
       const day = rows.reduce((s, t2) => s + Number(t2.net_pnl), 0)
       const gw = rows.filter(t2 => Number(t2.net_pnl) > 0).reduce((s, t2) => s + Number(t2.net_pnl), 0)
       const gl = rows.filter(t2 => Number(t2.net_pnl) <= 0).reduce((s, t2) => s + -Number(t2.net_pnl), 0)
-      const n30 = led?.windows?.find(w => w.key === '30d')?.net ?? null
+      const w30 = led?.windows?.find(w => w.key === '30d')
+      const n30 = w30?.net ?? null
+      // E·3: the 30-day money this account made or lost on closes the bot
+      // did not decide (adopted, manual in the broker app, another system).
+      const ext30 = w30?.external && w30.external.n > 0 ? { n: w30.external.n, net: w30.external.net, byOrigin: w30.external.byOrigin || {} } : null
       const cap = bal != null && dailyLossPct != null ? bal * dailyLossPct : null
       const used = cap ? Math.min(100, Math.round(Math.max(0, -day) / cap * 100)) : null
       const isSel = a.account_id === selectedAccountId
@@ -1480,7 +1484,7 @@ export default function Performance() {
         isLive: a.is_live === 1,
         name: `${a.is_live ? 'Live' : 'Demo'} · ${accountNumbers(a)}${dormantButHeld ? ' · OFF' : ''}`,
         ccy: a.base_currency || '—',
-        bal, day, gw, gl, n30, cap, used, equity, live,
+        bal, day, gw, gl, n30, ext30, cap, used, equity, live,
         hasToday: rows.length > 0,
         usedCol: used == null ? P_MU : used > 66 ? P_DN : used > 33 ? P_WRN : P_ACC,
       }

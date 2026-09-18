@@ -168,6 +168,15 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
                 <span style={{ fontWeight: 600, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span>
                 {' '}of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop
               </span>
+              {/* E·3 (18-09-2026): money on this account that this system did
+                  not decide — adopted positions, the broker app, another
+                  channel. Named on the card so a manual or third-party loss
+                  is never read as the bot's, and the bot's never as theirs. */}
+              {a.ext30 && (
+                <span style={{ ...cell, color: P_WRN }} title={Object.entries(a.ext30.byOrigin).map(([k, v]) => `${k}: ${v}`).join(', ')}>
+                  not the bot (30d): {a.ext30.n} close{a.ext30.n === 1 ? '' : 's'} · {signed(a.ext30.net)}
+                </span>
+              )}
             </>,
             `${a.name}, balance ${a.bal != null ? money(a.bal) : 'unknown'}`)
         })}

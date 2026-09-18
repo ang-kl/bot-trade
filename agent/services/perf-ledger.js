@@ -16,6 +16,7 @@
 import { getState } from '../db.js'
 import { categorize, MARKETS, dayAnchorMs, weekAnchorMs, closedAtMs } from '../shared/formulas.js'
 import { realisedRR, checkTradeConsistency } from './trade-consistency.js'
+import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 
 export { categorize, MARKETS, closedAtMs }
 
@@ -169,7 +170,7 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
   const rows = db.prepare(
     `SELECT symbol, side, entry_price, sl_price, tp_price, net_pnl, closed_at, closed_at_ms,
             close_reason, exit_price, account_id, label_strategy, strategy,
-            realised_rr, pnl_price_mismatch
+            realised_rr, pnl_price_mismatch, origin
        FROM trades
       WHERE status = 'closed' AND net_pnl IS NOT NULL ${scope.sql}`
   ).all(...scope.params)
@@ -189,6 +190,11 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
       : (() => { const c = checkTradeConsistency(r); return c.decidable && !c.ok })(),
     acc: r.account_id != null ? String(r.account_id) : null,
     strat: r.label_strategy || r.strategy || null,
+    // E·3: who opened it. A trade with a stamped origin outside the bot's
+    // two clean origins (adopted, manual in the broker app, another system)
+    // is EXTERNAL money on this account; an unstamped row is unattributed
+    // and counted as such, never assumed to be the bot's.
+    origin: r.origin != null && String(r.origin).trim() !== '' ? String(r.origin) : null,
   })).filter(tr => tr.t != null)
 
   // Carry baseline: current balance for this scope. Injectable for tests.
@@ -239,6 +245,17 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
       if (perMarket[tr.cat]) foldTrade(perMarket[tr.cat], tr)
     }
     const stats = finalizeStats(st)
+    // E·3 (owner 18-09-2026, §7,925·C·5): the statements showed −937 of one
+    // account's −2,282 came from a TradingView channel and iOS manual deals
+    // this system never decided. The window names that money: `external`
+    // is every close whose origin is stamped and NOT a clean bot origin;
+    // `unattributed` is the rows with no origin stamped (the backfill's
+    // job, not a guess here). Both ride beside the window's totals, which
+    // still include them — the account's money is the account's money.
+    const external = inWin.filter(tr => tr.origin != null && !CLEAN_BOT_ORIGINS.includes(tr.origin))
+    const externalByOrigin = {}
+    for (const tr of external) externalByOrigin[tr.origin] = (externalByOrigin[tr.origin] || 0) + 1
+    const unattributed = inWin.filter(tr => tr.origin == null).length
     const carryOut = bal != null ? Number((bal - netAfter).toFixed(2)) : null
     const carryIn = carryOut != null ? Number((carryOut - st.net).toFixed(2)) : null
     return {
@@ -248,6 +265,12 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
       ...stats,
       lastTradeAt: lastTradeMs != null ? new Date(lastTradeMs).toISOString() : null,
       markets: Object.fromEntries(MARKETS.map(m => [m, finalizeStats(perMarket[m])])),
+      external: {
+        n: external.length,
+        net: Number(external.reduce((n, tr) => n + tr.pnl, 0).toFixed(2)),
+        byOrigin: externalByOrigin,
+        unattributed,
+      },
     }
   })
 

@@ -1961,3 +1961,89 @@ test('B4: a row with no account stamp, or on the SAME account, is not an opposin
   assert.equal(crossAccountOpposingLeg(db, '47790949', 'GBPUSD', 'short'), null)
   assert.equal(crossAccountOpposingLeg(db, '47790949', 'GBPUSD', 'SELL'), null, 'BUY/SELL spelling normalised')
 })
+
+// E·1 / E·2 (owner 18-09-2026: "build E·1 to E·3") -------------------------
+
+test('E·1 stop floor — a stop inside one hourly ATR is widened, sized on, and returned as stop_override', async () => {
+  const { registerAtrSource, clearAtrSources } = await import('../lib/stop-floor.js')
+  clearAtrSources()
+  registerAtrSource('test', () => 0.006) // one hourly ATR = 60 pips on EURUSD
+  try {
+    const db = freshDB()
+    setBalance(db, 10000)
+    // stop 30 pips (inside the ATR); target 200 pips so the R:R still clears
+    // HARD_MIN_RR at the widened 60-pip stop (200/60 = 3.33).
+    const res = evaluateTrade(db, goodProposal({ sl: 1.0970, tp1: 1.1200 }))
+    assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+    assert.deepEqual(res.stop_override, { sl: 1.094, from: 1.097, atr1h: 0.006, mult: 1, source: 'test' })
+    assert.equal(res.checks.stop_floor.from, 1.097)
+    assert.equal(res.checks.stop_floor.to, 1.094)
+    assert.equal(res.checks.sl_distance, 0.006)
+    // R:R judged on the WIDENED stop
+    assert.equal(res.checks.rr, 3.33)
+    // sized on the widened stop: $150 budget ÷ ($600 per lot) = 0.25, not 0.5
+    assert.equal(res.checks.risk_based_volume, 0.25)
+    assert.match(res.sizing_note, /stop_floor=1\.097->1\.094/)
+  } finally { clearAtrSources() }
+})
+
+test('E·1 stop floor — the widened stop can turn a fine-looking target into bad_rr', async () => {
+  const { registerAtrSource, clearAtrSources } = await import('../lib/stop-floor.js')
+  clearAtrSources()
+  registerAtrSource('test', () => 0.006)
+  try {
+    const db = freshDB()
+    // 30-pip stop, 105-pip target: 3.5R on paper, 1.75R at the floor
+    const res = evaluateTrade(db, goodProposal())
+    assert.equal(res.approved, false)
+    assert.match(res.veto_reason, /bad_rr/)
+    assert.equal(res.checks.stop_floor.to, 1.094)
+  } finally { clearAtrSources() }
+})
+
+test('E·1 stop floor — a stop already past the floor is untouched; no ATR is recorded as no_atr; 0 switches it off', async () => {
+  const { registerAtrSource, clearAtrSources } = await import('../lib/stop-floor.js')
+  clearAtrSources()
+  try {
+    const db = freshDB()
+    let res = evaluateTrade(db, goodProposal())
+    assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+    assert.equal(res.checks.stop_floor, 'no_atr')
+    assert.equal(res.stop_override, undefined)
+
+    registerAtrSource('test', () => 0.002) // floor 20 pips < the 30-pip stop
+    res = evaluateTrade(db, goodProposal())
+    assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+    assert.equal(res.checks.stop_floor.ok, true)
+    assert.equal(res.stop_override, undefined)
+
+    registerAtrSource('test', () => 0.006)
+    res = evaluateTrade(db, goodProposal(), { ...DEFAULT_RISK_CONFIG, minStopAtrMult: 0 })
+    assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+    assert.equal(res.checks.stop_floor, undefined)
+    assert.equal(res.stop_override, undefined)
+  } finally { clearAtrSources() }
+})
+
+test('E·2 shared signal — N accounts on one signal each risk 1/N of their budget; off or single restores the full budget', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  const base = evaluateTrade(db, goodProposal())
+  assert.equal(base.approved, true, `got: ${base.veto_reason}`)
+  assert.equal(base.checks.shared_signal, undefined)
+
+  const shared = evaluateTrade(db, goodProposal({ sharedAccounts: 4 }))
+  assert.equal(shared.approved, true, `got: ${shared.veto_reason}`)
+  assert.deepEqual(shared.checks.shared_signal, { accounts: 4, scale: 0.25 })
+  assert.equal(shared.checks.risk_pct_effective, Number((base.checks.risk_pct_effective / 4).toFixed(4)))
+  assert.equal(shared.checks.risk_based_volume, 0.12) // 0.49 ÷ 4, floored to the lot step
+  assert.match(shared.sizing_note, /shared_signal=1\/4/)
+
+  const one = evaluateTrade(db, goodProposal({ sharedAccounts: 1 }))
+  assert.equal(one.checks.shared_signal, undefined)
+  assert.equal(one.checks.risk_pct_effective, base.checks.risk_pct_effective)
+
+  const off = evaluateTrade(db, goodProposal({ sharedAccounts: 4 }), { ...DEFAULT_RISK_CONFIG, sharedSignalRiskSplit: 'off' })
+  assert.equal(off.checks.shared_signal, undefined)
+  assert.equal(off.checks.risk_pct_effective, base.checks.risk_pct_effective)
+})

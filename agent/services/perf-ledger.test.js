@@ -140,3 +140,27 @@ test('buildPerfLedger balance: scoped key only for a named account — absent is
   assert.equal(buildPerfLedger(db, { now, accountId: 'E' }).balance, null)
   assert.equal(buildPerfLedger(db, { now, accountId: 'X' }).balance, null)
 })
+
+test('E·3: every window names the money the bot did not decide (external by origin) and the unattributed rows', () => {
+  const db = initDB(':memory:')
+  const now = Date.UTC(2026, 8, 18, 12)
+  const ins = db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, status, net_pnl, closed_at, close_reason, account_id, opened_at, origin)
+    VALUES (?, 'BUY', 100, 95, 110, 'closed', ?, ?, 'x', 'A', datetime('now','-1 day'), ?)
+  `)
+  const at = (h) => new Date(now - h * 3600_000).toISOString().replace('T', ' ').slice(0, 19)
+  ins.run('XAUUSD', -469.66, at(2), 'external_system')   // the TradingView channel
+  ins.run('JPN225', -129.46, at(3), 'manual_broker')     // the iOS app
+  ins.run('COIN.US', 1.43, at(4), 'bot_market_dispatch')
+  ins.run('DOW.US', 40.21, at(5), 'bot_pending_fill')
+  ins.run('TSLA.US', -82.32, at(6), null)                // never stamped
+  const led = buildPerfLedger(db, { accountId: 'A', now, balance: 43941.22 })
+  const w = led.windows.find(x => x.key === '30d')
+  assert.deepEqual(w.external, { n: 2, net: -599.12, byOrigin: { external_system: 1, manual_broker: 1 }, unattributed: 1 })
+  // the window's own totals still carry every close — the account's money is the account's money
+  assert.equal(w.trades, 5)
+  assert.equal(Number(w.net.toFixed(2)), -639.8)
+  // a window with nothing external says so with zeros, not with an absent field
+  const h1 = led.windows.find(x => x.key === '1h')
+  assert.deepEqual(h1.external, { n: 0, net: 0, byOrigin: {}, unattributed: 0 })
+})
