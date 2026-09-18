@@ -1,4 +1,4 @@
-# First-principles audit — 19-09-2026 (v2, independently redone with the sidecar logs)
+# First-principles audit — 19-09-2026 (v2.1, independently redone with the three Railway logs)
 
 Owner orders (19-09-2026 05:4x–06:0x SGT): "Audit thoroughly into the current
 spec and codebase. Any overdrift work, compress settings, confuse algorithmic
@@ -10,8 +10,8 @@ v1 was the № 7,967 report (three read-only investigators + a production read).
 v2 is a redo from primary sources by the session itself: every number below
 was re-measured from the state routes, the closed-trade table (500 most recent
 closes across the four demo accounts, 11-08 → 18-09), the Railway logs of all
-three services and the two uploaded sidecar logs (cpp-exec and cpp-acct,
-13:53–21:32 UTC 18-09). Where v2 contradicts v1 it says so (§J). Nothing was
+three services and the three uploaded logs (cpp-exec and cpp-acct 13:53–21:32
+UTC 18-09; the Node service 21:26–21:57 UTC 18-09, 1,001 lines). Where v2 contradicts v1 it says so (§J). Nothing was
 changed by the audit itself; the action plan (§K) is what changes things.
 
 ---
@@ -45,7 +45,8 @@ A·4 The process is unstable at the market close: the Node loop hung twice in
 13 minutes on 18-09 (21:05 → 21:17 "scanning 1 symbols", 21:17 → 21:30
 "monitoring 12 positions"), the watchdog killed it both times, and every
 restart re-pushes credentials to both sidecars and re-imports 683 statement
-deals.
+deals. The fast monitor was skipping most of its ticks before the second
+hang ("previous pass still running", 72 times in 31 minutes).
 
 ## B. What the two sidecar logs say (13:53–21:32 UTC 18-09)
 
@@ -76,6 +77,27 @@ phases that call the broker (bars, positions). The 21:30 boot then logged
 `GD.US: close failed — MARKET_CLOSED` and `KO.US: close failed` on …7342 and
 …9908 every pass (owed book exits retried into a closed market) and `…7342:
 margin exhausted (headroom $-1664.55)`.
+
+B·5 The Node service log (21:26–21:57 UTC, 1,001 lines) adds four facts.
+(a) The machine's own arming ledger, printed at 21:53:12, agrees with this
+audit: "pinned cells: 69 across 7 accounts … 68 have too few own closes to
+judge an edge … 5 would be disarmed right now on their own evidence" — and
+the five are `tsmom_long` on …0058 (6-loss streak), …0949 (6), …7342 (5 of
+8), …9908 (3 of 3) and `vwap_trend` on …7342 (7). The book is pinned by
+exception against the account's own record, not only the pooled one.
+(b) The fast monitor is overrun: "previous pass still running — skipped N
+tick(s)" 72 times in 31 minutes, beside "Cycle past soft deadline — skipping
+pending-order phase". That is the shape of the "monitoring 12 positions" hang
+the watchdog killed at 21:30:51.
+(c) 404 `[protection]` lines in 31 minutes — 156 of them "N targetless — N
+momentum-book (trail only)", 124 "deferred to target-restore", 124 "target
+NOT restored — nothing to restore (MSFT.US, KO.US, …)": a guard reporting,
+every minute, that book rows carry no take profit, which is their design.
+(d) `Pending orders skipped: fib_618_fade not trade-armed for …0949` every
+cycle: a retired strategy's path still runs and reports each minute. Also:
+the recorder at 1,506,418 events / 0.33 GB with 48.19 GB free; the tick
+shadow closing a trade every ten minutes (ledger seq 102 → 105); two pending
+orders; reconcile quiet.
 
 B·4 The momentum daily pass at 21:17:52 (right after the first restart) built
 the universe for all seven accounts: 280 rows, 114 tradable, 151
@@ -273,8 +295,11 @@ never as a hand edit of production state.
 
 **Wave 1 — arm by evidence (config + small code).**
 1. `strategy-pins.json`: `_all` keeps only what has earned it: `tsmom_long`
-   (trial) and `fib_confluence` (trial, half risk via the verdict's pending
-   scale). The nine shadow strategies leave `_all`; fib_618_fade, fvg_retrace
+   (trial — the arming ledger says it would be disarmed on its own streak on
+   every account, so the trial runs on ONE account at the verdict's pending
+   half-risk scale, and its 30-close verdict is replaced by the dated
+   checkpoint in wave 3) and `fib_confluence` (trial, half risk via the
+   verdict's pending scale). The nine shadow strategies leave `_all`; fib_618_fade, fvg_retrace
    leave every list. A `_shadow` note names them so the evidence shadow keeps
    measuring them at zero cost.
 2. `global-strategies.json`: `tsmom_long` re-armed with a reseed marker; the
@@ -318,8 +343,13 @@ never as a hand edit of production state.
 
 **Wave 5 — stability and reporting.**
 15. Per-call timeouts on every broker call in the scan and monitor phases;
-    the watchdog logs the stuck call, not just the phase; owed book exits are
-    not retried into a closed market (hours check first).
+    the watchdog logs the stuck call, not just the phase; the fast monitor's
+    pass budget is measured and its overrun ("previous pass still running")
+    becomes a health field with a target; owed book exits are not retried
+    into a closed market (hours check first); the protection audit stops
+    reporting trail-only book rows as targetless every minute (one line on
+    change); a retired strategy's pending-order path is not run and reported
+    each cycle.
 16. `services/daily-report.js` reading the DB and posting to Telegram on the
     loop's daily cursor.
 17. Sidecar logging to stdout for info, stderr for errors only.
@@ -336,4 +366,5 @@ after deploy, recorded in §L of this file as it happens.
 
 ## L. Execution log
 
-- 19-09-2026 06:1x SGT: v2 filed (this PR). Wave 1 begins on merge.
+- 19-09-2026 06:1x SGT: v2 filed as PR #957; v2.1 folds in the Node service
+  log (§B·5). Wave 1 begins on merge.
