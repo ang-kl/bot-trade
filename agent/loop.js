@@ -3986,7 +3986,12 @@ async function runLoop(db) {
             fundable: (accountId, symbol) => isFundable(db, accountId, symbol),
           },
         })
-        if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
+        // PR-AX: `reclassified` prints only when non-zero. It should be a
+        // one-off burst clearing the backlog of rows stranded in `exit_sent`
+        // and then near-silent; a line that keeps reporting reclassifications
+        // every pass means rows are re-entering the state faster than their
+        // trades close, which is a different problem and worth seeing.
+        if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed${mb.reclassified ? `, ${mb.reclassified} exit_sent row(s) reclassified closed` : ''} on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
         if (mb.momentumAccount) log(`momentum account …${String(mb.momentumAccount.account).slice(-4)}: daily pass — ${mb.momentumAccount.entries} entered, ${mb.momentumAccount.exits} exited; universe ${mb.momentumAccount.universe?.tradable}/${mb.momentumAccount.universe?.total} tradable${mb.momentumAccount.universe?.byReason ? ` (${Object.entries(mb.momentumAccount.universe.byReason).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`)
       } catch (err) {
         log(`momentum book failed: ${err.message}`)
