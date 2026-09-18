@@ -484,3 +484,40 @@ test('multi-deal entry: ONE deal without lots keeps the whole trade skipped', ()
   assert.equal(out.corrected, 0)
   assert.equal(db.prepare('SELECT entry_price FROM trades WHERE id = 801').get().entry_price, 5.0)
 })
+
+// KEEPER-TRUTH FIX (18-09-2026): the broker's fill time and fill volume are
+// written back like its fill prices. cpp-verify disputed closed_at_ms by
+// 16–350 s (the reconciler's detection stamp) and volume by a hundredth of a
+// lot (the requested size) on eleven records.
+test('keeper truth: closed_at_ms and hold_duration_ms take the closing deal\'s time; volume takes the fill', () => {
+  const db = initDB(':memory:')
+  const opened = '2026-09-16 01:00:00'
+  const brokerClose = Date.parse('2026-09-16T05:00:00.000Z')
+  db.prepare(`INSERT INTO trades (id, symbol, side, entry_price, exit_price, status, volume, opened_at, closed_at_ms, hold_duration_ms)
+              VALUES (77, 'DOW.US', 'SELL', 29.69, 29.49, 'closed', 12.57, ?, ?, ?)`).run(opened, brokerClose + 274_000, brokerClose + 274_000 - Date.parse('2026-09-16T01:00:00Z'))
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id)
+              VALUES ('9', '9', 'DOW.US', 'SELL', 12.5, 29.69, 29.49, ?, 77)`).run(new Date(brokerClose).toISOString())
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.closeTimesCorrected, 1)
+  assert.equal(out.volumesCorrected, 1)
+  const t = db.prepare('SELECT closed_at_ms, hold_duration_ms, volume FROM trades WHERE id = 77').get()
+  assert.equal(t.closed_at_ms, brokerClose, 'the fill, not the 274 s-late detection')
+  assert.equal(t.hold_duration_ms, brokerClose - Date.parse('2026-09-16T01:00:00Z'), 'the hold follows the corrected close')
+  assert.equal(t.volume, 12.5, 'the fill, not the 12.57 requested')
+  // Idempotent: a second pass finds nothing to correct.
+  const again = reconcileTradePricesToBroker(db)
+  assert.equal(again.closeTimesCorrected, 0); assert.equal(again.volumesCorrected, 0)
+})
+
+test('keeper truth: a stamp within a second of the fill is left alone; a group missing a close time or lots writes nothing', () => {
+  const db = initDB(':memory:')
+  const close = Date.parse('2026-09-16T05:00:00.000Z')
+  db.prepare(`INSERT INTO trades (id, symbol, side, entry_price, exit_price, status, volume, closed_at_ms) VALUES (1, 'X', 'BUY', 1, 2, 'closed', 3, ?)`).run(close + 400)
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id) VALUES ('a', 'a', 'X', 'BUY', 3, 1, 2, ?, 1)`).run(new Date(close).toISOString())
+  db.prepare(`INSERT INTO trades (id, symbol, side, entry_price, exit_price, status, volume, closed_at_ms) VALUES (2, 'Y', 'BUY', 1, 2, 'closed', 5, ?)`).run(close + 60_000)
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id) VALUES ('b', 'b', 'Y', 'BUY', NULL, 1, 2, NULL, 2)`).run()
+  const out = reconcileTradePricesToBroker(db)
+  assert.equal(out.closeTimesCorrected, 0); assert.equal(out.volumesCorrected, 0)
+  assert.equal(db.prepare('SELECT closed_at_ms FROM trades WHERE id = 1').get().closed_at_ms, close + 400)
+  assert.equal(db.prepare('SELECT closed_at_ms, volume FROM trades WHERE id = 2').get().volume, 5)
+})

@@ -36,6 +36,8 @@
 // precisely the calculation cpp-verify exists to check, and a record that
 // derived them would agree with itself by construction.
 
+import { unitsPerLot } from '../lib/lot-size-registry.js'
+
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null
   const n = Number(v)
@@ -181,17 +183,60 @@ export function buildPositionRecord(db, { accountId, positionId }) {
   // BROKER TRUTH WINS ON THE BROKER'S OWN FIELDS. Where `broker_deals` has a
   // figure it is used; the local row is the fallback, and which one supplied
   // each group is recorded rather than left to be guessed later.
+  //
+  // THE WHOLE POSITION, NOT ITS LAST DEAL (keeper-truth fix, 18-09-2026). A
+  // position closed in parts has one closing deal per part; reading the
+  // newest deal alone gave that part's lots and price as the position's.
+  // The deals are aggregated the way the verifier itself sums them: lots
+  // summed, the exit lots-weighted, money summed, the close the LAST fill.
+  // Absent stays absent — a group with any deal missing a field yields NULL
+  // for that field rather than a partial sum presented as a total.
   const deal = (() => {
     try {
-      return db.prepare(`
-        SELECT position_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at,
-               gross_pnl, swap, commission, net_pnl
+      const g = db.prepare(`
+        SELECT COUNT(*) AS deals, MAX(symbol) AS symbol, MAX(side) AS side,
+               CASE WHEN COUNT(*) = COUNT(lots) THEN SUM(lots) END AS lots,
+               MAX(entry_price) AS entry_price,
+               CASE WHEN COUNT(*) = COUNT(lots) AND COUNT(*) = COUNT(close_price) AND SUM(lots) > 0
+                    THEN SUM(close_price * lots) / SUM(lots)
+                    WHEN COUNT(*) = 1 THEN MAX(close_price) END AS close_price,
+               MIN(opened_at) AS opened_at, MAX(closed_at) AS closed_at,
+               CASE WHEN COUNT(*) = COUNT(gross_pnl) THEN SUM(gross_pnl) END AS gross_pnl,
+               CASE WHEN COUNT(*) = COUNT(swap) THEN SUM(swap) END AS swap,
+               CASE WHEN COUNT(*) = COUNT(commission) THEN SUM(commission) END AS commission,
+               CASE WHEN COUNT(*) = COUNT(net_pnl) THEN SUM(net_pnl) END AS net_pnl
           FROM broker_deals WHERE position_id = ? AND (account_id = ? OR ? IS NULL)
-         ORDER BY closed_at DESC LIMIT 1
       `).get(pid, acct, acct)
+      return g && g.deals > 0 ? g : null
     } catch { return null }
   })()
   sources.money = deal ? 'broker_deals' : (trade ? 'trades' : null)
+
+  // VOLUME IS THE FILL, NOT THE ORDER (keeper-truth fix, 18-09-2026). The
+  // verifier's contract-3 pass disputed seven records by a hundredth of a
+  // lot — 612.13 vs 612, 12.57 vs 12.5 — because `trades.volume` is the lot
+  // size the risk stack REQUESTED, and it was the fallback whenever no deal
+  // row carried lots. The broker's deals come first; then the volume the
+  // reconciler read off the live position (monitored_positions.
+  // broker_volume_units, in units, through the registry's units-per-lot);
+  // the requested size is last, and the source is recorded either way so a
+  // dispute on it can be read for what it is.
+  const mpLots = (() => {
+    try {
+      const mp = db.prepare(
+        `SELECT mp.broker_volume_units AS units FROM monitored_positions mp
+          WHERE mp.trade_id = ? AND mp.broker_volume_units IS NOT NULL ORDER BY mp.id DESC LIMIT 1`
+      ).get(trade?.id ?? -1)
+      const units = num(mp?.units)
+      if (units == null || !(units > 0)) return null
+      const per = unitsPerLot(db, str(trade?.symbol) ?? str(deal?.symbol)).unitsPerLot
+      return per > 0 ? units / per : null
+    } catch { return null }
+  })()
+  const volume = num(deal?.lots) ?? mpLots ?? num(trade?.volume)
+  sources.volume = num(deal?.lots) != null ? 'broker_deals'
+    : mpLots != null ? 'monitored_positions.broker_volume_units'
+      : num(trade?.volume) != null ? 'trades.volume (requested size, not the fill)' : null
 
   const mgmt = managementFor(db, { accountId: acct, positionId: pid, tradeId: trade?.id ?? null })
   sources.management = 'position_events'
@@ -201,7 +246,14 @@ export function buildPositionRecord(db, { accountId, positionId }) {
   if (directionReason != null) sources.direction_reason = 'risk_events.proposal_json'
 
   const openedMs = ms(deal?.opened_at) ?? ms(trade?.opened_at)
-  const closedMs = num(trade?.closed_at_ms) ?? ms(deal?.closed_at) ?? ms(trade?.closed_at)
+  // THE BROKER'S FILL TIME, NOT OUR DETECTION TIME (keeper-truth fix,
+  // 18-09-2026). `trades.closed_at_ms` is stamped when the reconciler
+  // notices the position gone — 16 to 350 s after the fill on the records
+  // the verifier disputed. The closing deal's executionTimestamp is the
+  // close; the local stamp is the fallback and is named as such.
+  const closedMs = ms(deal?.closed_at) ?? num(trade?.closed_at_ms) ?? ms(trade?.closed_at)
+  sources.closed_at = ms(deal?.closed_at) != null ? 'broker_deals'
+    : (num(trade?.closed_at_ms) != null || ms(trade?.closed_at) != null) ? 'trades (detection time, not the fill)' : null
   const entry = num(deal?.entry_price) ?? num(trade?.entry_price)
   const exit = num(deal?.close_price) ?? num(trade?.exit_price)
   const plannedEntry = num(plan?.planned_entry) ?? num(trade?.proposal_entry_price)
@@ -244,10 +296,12 @@ export function buildPositionRecord(db, { accountId, positionId }) {
 
     entry_price: entry,
     exit_price: exit,
-    volume: num(deal?.lots) ?? num(trade?.volume),
+    volume,
     opened_at_ms: openedMs,
     closed_at_ms: closedMs,
-    hold_ms: num(trade?.hold_duration_ms) ?? (openedMs != null && closedMs != null ? closedMs - openedMs : null),
+    // From the two timestamps above when both are known — a hold computed
+    // from the detection-time stamp would carry the same lag.
+    hold_ms: openedMs != null && closedMs != null ? closedMs - openedMs : num(trade?.hold_duration_ms),
     gross_pnl: num(deal?.gross_pnl) ?? num(trade?.gross_pnl),
     commission: num(deal?.commission) ?? num(trade?.commission),
     swap: num(deal?.swap) ?? num(trade?.swap),

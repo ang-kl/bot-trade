@@ -350,3 +350,70 @@ test('the history is built ONCE AT BOOT, not only on the 8-hourly band', () => {
     'and prints the incomplete count beside the complete one, never alone')
   assert.match(index, /most often missing/, 'with the ranked field list that says what is not recorded')
 })
+
+// ---------------------------------------------------------------------------
+// KEEPER-TRUTH FIX (18-09-2026). cpp-verify's contract-3 pass disputed the
+// keeper on two fields that were the keeper's own doing: `volume` fell back
+// to the REQUESTED lot size (612.13 against a 612 fill) and `closed_at_ms`
+// was the reconciler's detection stamp (16–350 s after the broker's fill).
+// ---------------------------------------------------------------------------
+
+test('keeper truth: the closing deal\'s time beats the detection stamp, and the hold follows it', () => {
+  const db = fresh()
+  seedComplete(db)
+  const brokerClose = CLOSE_MS - 274_000                           // DOW.US: detected 274 s late
+  db.prepare(`UPDATE broker_deals SET closed_at = ? WHERE position_id = ?`).run(new Date(brokerClose).toISOString(), PID)
+  const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
+  assert.equal(record.closed_at_ms, brokerClose, 'the fill time, not when we noticed')
+  assert.equal(record.hold_ms, brokerClose - OPEN_MS, 'hold recomputed from the corrected close')
+  assert.equal(JSON.parse(record.sources_json).closed_at, 'broker_deals')
+})
+
+test('keeper truth: with no deal the detection stamp is used and NAMED as such', () => {
+  const db = fresh()
+  seedComplete(db)
+  db.prepare(`DELETE FROM broker_deals`).run()
+  const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
+  assert.equal(record.closed_at_ms, CLOSE_MS)
+  assert.match(JSON.parse(record.sources_json).closed_at, /detection time/)
+})
+
+test('keeper truth: a position closed in two parts records the SUM of the fills, lots-weighted exit, summed money, last close', () => {
+  const db = fresh()
+  seedComplete(db)
+  db.prepare(`UPDATE broker_deals SET lots = 6000, close_price = 1.1040, gross_pnl = 24, net_pnl = 23, closed_at = ? WHERE deal_id = 'd1'`)
+    .run(new Date(CLOSE_MS - 600_000).toISOString())
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
+              VALUES ('d2', ?, ?, 'EURUSD', 'BUY', 4000, 1.1000, 1.1065, ?, ?, 26, -1, -1, 24)`)
+    .run(PID, ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
+  const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
+  assert.equal(record.volume, 10000, 'lots summed across the parts')
+  assert.ok(Math.abs(record.exit_price - (1.1040 * 0.6 + 1.1065 * 0.4)) < 1e-9, 'exit is lots-weighted')
+  assert.equal(record.gross_pnl, 50); assert.equal(record.net_pnl, 47)
+  assert.equal(record.closed_at_ms, CLOSE_MS, 'the close is the LAST part')
+})
+
+test('keeper truth: a part with no lots makes the group\'s lots ABSENT, never a partial sum', () => {
+  const db = fresh()
+  seedComplete(db)
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, net_pnl)
+              VALUES ('d2', ?, ?, 'EURUSD', 'BUY', NULL, 1.1000, 1.1065, ?, ?, 24)`)
+    .run(PID, ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
+  db.prepare(`UPDATE trades SET volume = 12.57 WHERE ctrader_position_id = ?`).run(PID)
+  const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
+  assert.equal(record.volume, 12.57, 'falls through to the next source rather than summing one part')
+  assert.match(JSON.parse(record.sources_json).volume, /requested size/)
+})
+
+test('keeper truth: without a deal the volume the reconciler read off the live position beats the requested size', () => {
+  const db = fresh()
+  const { tradeId } = seedComplete(db)
+  db.prepare(`DELETE FROM broker_deals`).run()
+  db.prepare(`UPDATE trades SET volume = 612.13 WHERE id = ?`).run(tradeId)
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status, account_id, broker_volume_units)
+              VALUES ('EURUSD', ?, 'long', 1.1, 1.098, 1.106, 't', 0.002, 'autopilot', 'closed', ?, 61200000)`).run(tradeId, ACCT)
+  // EURUSD: 100,000 units per lot (the registry's table, no broker declaration seeded) → 612 lots
+  const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
+  assert.equal(record.volume, 612, 'the fill the reconciler saw, not the 612.13 requested')
+  assert.equal(JSON.parse(record.sources_json).volume, 'monitored_positions.broker_volume_units')
+})
