@@ -2192,7 +2192,10 @@ export default function actionsRouter(db, deps = {}) {
       const blocked = new Set((Array.isArray(current.blockedSymbols) ? current.blockedSymbols : []).map(s => String(s).toUpperCase()))
       const sym = String(symbol).toUpperCase()
       blocked.add(sym)
-      const next = { ...current, blockedSymbols: [...blocked] }
+      // Raw overrides, not the effective config (see /risk-config).
+      let rawOverrides = {}
+      try { rawOverrides = JSON.parse(getState(db, 'risk_config_json') || '{}') || {} } catch { rawOverrides = {} }
+      const next = { ...rawOverrides, blockedSymbols: [...blocked] }
       setState(db, 'risk_config_json', JSON.stringify(next))
       res.json({ ok: true, cancelled, blockedSymbols: next.blockedSymbols })
     } catch (err) {
@@ -5254,18 +5257,28 @@ export default function actionsRouter(db, deps = {}) {
         setState(db, 'risk_config_json', null)
         return res.json({ ok: true, effective: DEFAULT_RISK_CONFIG })
       }
+      // Merge into the RAW overrides, not the effective config (the same
+      // rule risk-reassess-apply already states below): starting from
+      // loadRiskConfig() materialised every DEFAULT as a stored override —
+      // measured 19-09-2026: 55 stored keys, 37 of them at their default,
+      // so a default change could never reach this install and the grid
+      // marked everything "overridden". The reply is still the effective
+      // config, as before.
       const current = loadRiskConfig(db)
-      const next = { ...current }
+      let rawOverrides = {}
+      try { rawOverrides = JSON.parse(getState(db, 'risk_config_json') || '{}') || {} } catch { rawOverrides = {} }
+      const patch = {}
       for (const k of allowed) {
-        if (k in body) next[k] = body[k]
+        if (k in body) patch[k] = body[k]
       }
-      setState(db, 'risk_config_json', JSON.stringify(next))
+      setState(db, 'risk_config_json', JSON.stringify({ ...rawOverrides, ...patch }))
+      const next = loadRiskConfig(db)
       // WHEN did each field last actually change? The Risk page's summary
       // claimed "the settings below hold these values now" without ever
       // reading them back, so a field edited after an apply left the row
       // asserting a number that was no longer there.
       noteRiskConfigChanges(db, current, next, { by: 'manual' })
-      console.log('[actions] Risk config updated:', next)
+      console.log('[actions] Risk config updated:', patch)
       res.json({ ok: true, effective: next })
     } catch (err) {
       res.status(500).json({ error: err.message })

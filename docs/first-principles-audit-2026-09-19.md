@@ -492,3 +492,76 @@ after deploy, recorded in §L of this file as it happens.
   `divergence.js` still labels a combo "diverging" on a win-rate gap
   (display only, no consumer); a snapshot that beats the deadline late
   still writes its row (the log line under-reports that night).
+- 19-09-2026 07:15 SGT: Wave 3 merged as #960 (2cf797b); deployed 07:16 SGT.
+  Read-back: the goal table serves 19 rows; the family rows over 90 days —
+  mean reversion PF 0.69, tail 2.3 %, max DD 72.57R on 307 decidable closes
+  (32 with no readable R); breakout PF 0.65, tail 5.7 %, max DD 39.92R on
+  106; trend PF 0.31, tail 1.3 %, max DD 16.57R on 75; momentum PF 0 on 23
+  (not yet measurable); the trail row PF 0.593 with the win rate printed as
+  measured. The checkpoint row: pre-registered, 0 decidable closes so far on
+  …0058, week to date 2 closes net −5. The first nightly equity snapshot
+  landed at 07:20 SGT: five accounts written (…3489 53.77, …7342 1,446.56,
+  …0058 29,777.13, …9908 699.75, …0949 43,796.48), the two token-refused
+  accounts skipped as designed.
+- 19-09-2026 07:3x SGT: **Wave 4a built** (this PR) — §K item 13, with a
+  correction to §E·3 and a P7 boundary the audit did not draw. Measured
+  from `/state/risk-matrix` (the raw store, not the effective-vs-default
+  diff): `risk_config_json` held 55 keys — 17 differing from the defaults,
+  37 pinned AT their default, and the retired `kellyFraction`. §E·3 named
+  16 of the 17 and missed two that are tighter than default and matter:
+  `perTradeRiskPct` 0.01 (default 0.05 — the verdict's half-risk scale)
+  and `maxCurrencyExposure` 1 (default 2). Cause of the 37: `POST
+  /actions/risk-config` (and the queued-veto writer) spread the EFFECTIVE
+  config into the store, so every save materialised every default as an
+  override and no default change could reach this install; the
+  risk-reassess applier already had the right rule. Both writers now merge
+  into the raw overrides (test: one patched key stores one key). The seed
+  (`agent/config/risk-config.json`, `risk-config-seed.js`, applied once per
+  content hash under `risk_config_seed_json`, a human change afterwards
+  stands) RESETS nine overrides, every one of which tightens a bound or is
+  inert: maxOpenPositions 16 → 5 (the audit's "one cap"), maxClusterExposure
+  5 → 2, maxConsecutiveLosses 4 → 3, cooldownMinutes and
+  symbolCooldownMinutes 5 → 60, minRR 1.6 → 3, minSLDistancePct 0.02 →
+  0.15, minTradesForKelly 10 → 30, allowNegativeExpectancyOverride true →
+  false; prunes the 37 pinned
+  defaults; drops the retired key. It KEEPS eight stored overrides whose
+  reset would LOOSEN a live bound or move a stop's reach — a risk-limit
+  change, ask-first under P7, and not named by the Execute order:
+  perTradeRiskPct 0.01 (→ 0.05 is 5× the risk per trade), dailyLossLimit
+  150 (→ 300; the plan's "replaced by the tier rule" is the owner's word),
+  maxNotionalXBalance 4 (→ 10), maxMarginUsagePct 0.4 (→ 0.5),
+  marginLevelFloorPct 200 (→ 150), maxCurrencyExposure 1 (→ 2),
+  maxSpreadFracOfSL 0.03 (→ 0.25), equityStopPct 0.15 (→ null, which trips
+  the equity stop at the 3 % daily figure). A test pins that the file
+  names no loosening reset. Per-account overlays are untouched (none exist
+  in production). Item 14 (compression to ~38 keys) is NOT in this PR: the
+  audit gives the ~15-key residue but never enumerates the ~28 removable
+  keys, and 17 of the 66 have no reader outside risk.js while the daily
+  tier knobs among them are the owner's residue — it needs its own PR with
+  the enumeration made explicit and a checker on it (Wave 4b). Tests: the
+  production store reproduced (32 keys) → 9 reset, 14 pinned pruned, 1
+  dropped, 8 kept, only the kept overrides remain; applied once per content
+  (a human change stands; the `_note` does not re-apply; operative content
+  does); keep wins over reset; unknown keys named; an unreadable file
+  changes nothing; overlays untouched; the no-loosening pin; the boot
+  wiring pin (after the policy seed, outside the pins/watchlist adjacency
+  budget). Mutations red-then-restored: the keep guard, the applied-once
+  rule, the route's raw merge.
+  Checker round (independent): the claim "no bound loosened" HOLDS, three
+  of its supporting statements did not, corrected here and in the seed
+  file. minRR 1.6 → 3 is a no-op at the entry gate (HARD_MIN_RR floors it)
+  but restrategize's reversal amend and the bracket advice read the raw
+  key, so a reversal's target now sits 3R away instead of 1.6R.
+  minSLDistancePct 0.02 → 0.15 is not "covered by the ATR floor": it is
+  also the sizing denominator for the tick sidecar's permit volumes
+  (vpo-feeder.js) and the sizing preview, so tick-permit volumes shrink
+  about 7.5× at the next boot — tighter, and now said so. minTradesForKelly
+  10 → 30 is LOOSER on its own (the Kelly check is a veto, skipped below
+  the threshold) and tighter only because allowNegativeExpectancyOverride
+  is reset with it; the direction test now classifies it that way and pins
+  the pair. And a content change re-applies the DELTA: a key the seed
+  already reset under an earlier hash is the operator's from then on
+  (resetEver in the seed record) — a later one-key addition cannot re-reset
+  the other nine. The remaining notes (a dropped key is recorded in the
+  seed record, not the change stamps; the global reset:true path was
+  already unstamped) are carried, not fixed.
