@@ -135,11 +135,36 @@ test('cpp-verify links no order-writing code — the read-only guarantee is stru
   assert.doesNotMatch(mk, /engine\.cpp|order_guard\.cpp|trail_engine\.cpp|vpo_dispatcher\.cpp/,
     'and never the execution engine or anything that can place, amend or close')
 
-  // The session itself implements three broker messages and no more.
+  // The session implements four broker messages and no more.
   const sess = src('../../cpp-verify/src/verify_session.cpp')
   const reqTypes = [...sess.matchAll(/constexpr int k\w+Req = (\d+);/g)].map((m) => m[1]).sort()
-  assert.deepEqual(reqTypes, ['2100', '2102', '2133'],
-    'app auth, account auth, deal list — a fourth request type here needs a very good reason')
+  assert.deepEqual(reqTypes, ['2100', '2102', '2121', '2133'],
+    'app auth, account auth, TRADER, deal list — a fifth request type needs a very good reason')
+
+  // WHY 2121 WAS ADDED, since this list is the read-only guarantee and
+  // widening it quietly would be the whole point of the guard defeated.
+  //
+  // ProtoOATraderReq fetches the trader record — balance, leverage and
+  // `moneyDigits`. PR-AW needs the last of those: cTrader reports money as an
+  // integer scaled by 10^moneyDigits, and comparing that raw against the
+  // keeper's dollars disputed every record by exactly 100x (measured
+  // 18-09-2026: ten verdicts, ten disputes, zero verified — a guard that
+  // could not return agreement).
+  //
+  // It had to come from the BROKER. Taking the scale from the keeper would
+  // have the verifier check a record against a number that record supplied;
+  // hardcoding 100 would repeat the assumption that caused the bug. 2121 is a
+  // read: it places, amends and cancels nothing.
+  //
+  // AND THE GUARD GETS TEETH IT DID NOT HAVE. An allowlist says what is
+  // there; it cannot say what a future edit must never add. These are the
+  // write messages by number, so a paste of any of them fails here even if
+  // someone also updates the list above.
+  for (const [type, what] of [['2106', 'NewOrder'], ['2108', 'CancelOrder'], ['2110', 'AmendOrder'],
+                              ['2111', 'AmendPositionSLTP'], ['2112', 'ClosePosition']]) {
+    assert.doesNotMatch(sess, new RegExp(`=\\s*${type}\\s*;`),
+      `${what}Req (${type}) must never appear in a read-only verifier`)
+  }
 })
 
 // ---------------------------------------------------------------------------

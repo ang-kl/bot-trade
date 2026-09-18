@@ -109,7 +109,8 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
 
   if (v.sawOpen && openVol > 0) {
     v.brokerEntryPrice = openNotional / static_cast<double>(openVol);
-    v.brokerVolume = openVol;
+    // CENTS OF UNITS -> UNITS, the scale the keeper stores in.
+    v.brokerVolume = static_cast<double>(openVol) / kVolumeCentiUnits;
     v.brokerOpenedAtMs = openedAt;
   }
   if (v.sawClose && closeVol > 0) {
@@ -118,7 +119,15 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
     // Copied and summed, never recomputed from prices (I8). A P&L derived
     // from a price move is the thing this service exists to check, not a
     // thing it may assume.
-    v.brokerNetPnl = gross + swap + commission;
+    //
+    // SCALED BY THE BROKER'S OWN moneyDigits. cTrader sends money as an
+    // integer scaled by 10^moneyDigits; comparing that raw integer against
+    // the keeper's dollars disputed every record by exactly that factor.
+    // When the scale could not be read, the sum is NOT converted at a guessed
+    // rate — net_pnl is left out of the comparison and named in `uncompared`.
+    if (fetch.moneyDigits) {
+      v.brokerNetPnl = (gross + swap + commission) / std::pow(10.0, *fetch.moneyDigits);
+    }
   }
 
   if (!v.sawClose) {
@@ -136,14 +145,32 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
 
   compare(v.disputes, "symbol_id", rec.symbolId, v.brokerSymbolId, 0);
   compare(v.disputes, "trade_side", rec.tradeSide, v.brokerTradeSide, 0);
-  compare(v.disputes, "volume", rec.volume, v.brokerVolume, 0);
+  compare(v.disputes, "volume", rec.volume, v.brokerVolume, tol.volume);
   compare(v.disputes, "entry_price", rec.entryPrice, v.brokerEntryPrice, tol.price);
   compare(v.disputes, "exit_price", rec.exitPrice, v.brokerExitPrice, tol.price);
-  compare(v.disputes, "net_pnl", rec.netPnl, v.brokerNetPnl, tol.money);
-  compare(v.disputes, "opened_at_ms", rec.openedAtMs, v.brokerOpenedAtMs, 0);
-  compare(v.disputes, "closed_at_ms", rec.closedAtMs, v.brokerClosedAtMs, 0);
+  if (fetch.moneyDigits) {
+    compare(v.disputes, "net_pnl", rec.netPnl, v.brokerNetPnl, tol.money);
+  } else {
+    v.uncompared.push_back("net_pnl");
+  }
+  compare(v.disputes, "opened_at_ms", rec.openedAtMs, v.brokerOpenedAtMs, tol.timeMs);
+  compare(v.disputes, "closed_at_ms", rec.closedAtMs, v.brokerClosedAtMs, tol.timeMs);
 
   if (v.disputes.empty()) {
+    // AGREEMENT ON WHAT WAS CHECKED IS NOT AGREEMENT. A field that went
+    // uncompared cannot be signed off, so the verdict stays Unverified and
+    // says which one — rather than reporting `verified` for a record whose
+    // money nobody looked at.
+    if (!v.uncompared.empty()) {
+      v.state = State::Unverified;
+      v.reason = "every compared field agrees, but not compared: ";
+      for (size_t i = 0; i < v.uncompared.size(); ++i) {
+        if (i) v.reason += ", ";
+        v.reason += v.uncompared[i];
+      }
+      v.reason += " (the broker's money scale could not be read)";
+      return v;
+    }
     v.state = State::Verified;
     return v;
   }
@@ -163,6 +190,11 @@ std::string verdictJson(const Verdict& v) {
   o.set("dealCount", static_cast<double>(v.dealCount));
   o.set("sawOpen", v.sawOpen);
   o.set("sawClose", v.sawClose);
+  if (!v.uncompared.empty()) {
+    jsn::Array uc;
+    for (const auto& f : v.uncompared) uc.push_back(jsn::Value{f});
+    o.set("uncompared", jsn::Value{uc});
+  }
 
   jsn::Array ds;
   for (const auto& d : v.disputes) {

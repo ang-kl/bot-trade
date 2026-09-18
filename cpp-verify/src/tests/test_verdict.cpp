@@ -1,5 +1,6 @@
 // cpp-verify/src/tests/test_verdict.cpp — the comparison rules, no sockets.
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -14,27 +15,33 @@ void check(bool cond, const std::string& what) {
   if (!cond) { std::fprintf(stderr, "FAIL: %s\n", what.c_str()); ++failures; }
 }
 
-Deal openDeal(long long pos, double price, long long vol, long long ts, double comm = -1.0) {
+// THE FIXTURES SPEAK IN THE BROKER'S UNITS, because that is what the code
+// under test receives: volume in CENTS OF UNITS and money scaled by
+// moneyDigits. The helpers take units and dollars and convert, so a test
+// reads in the keeper's terms while the Deal carries the wire's.
+constexpr double kCenti = 100.0;   // cents of units, and moneyDigits = 2
+
+Deal openDeal(long long pos, double price, double units, long long ts, double commDollars = -1.0) {
   Deal d;
   d.dealId = ts;            // unique enough for a fixture
   d.positionId = pos;
   d.symbolId = 22396;
-  d.volume = vol;
+  d.volume = static_cast<long long>(units * kCenti);
   d.tradeSide = 1;
   d.executionPrice = price;
   d.executionTimestamp = ts;
-  d.commission = comm;
+  d.commission = commDollars * kCenti;
   return d;
 }
 
-Deal closeDeal(long long pos, double price, long long vol, long long ts,
-               double gross, double swap = 0, double comm = -1.0) {
-  Deal d = openDeal(pos, price, vol, ts, comm);
+Deal closeDeal(long long pos, double price, double units, long long ts,
+               double grossDollars, double swapDollars = 0, double commDollars = -1.0) {
+  Deal d = openDeal(pos, price, units, ts, commDollars);
   d.dealId = ts + 1;
   d.tradeSide = 2;
   d.hasClose = true;
-  d.grossProfit = gross;
-  d.swap = swap;
+  d.grossProfit = grossDollars * kCenti;
+  d.swap = swapDollars * kCenti;
   return d;
 }
 
@@ -44,6 +51,7 @@ DealFetch complete(std::vector<Deal> ds) {
   f.complete = true;
   f.pages = 1;
   f.deals = std::move(ds);
+  f.moneyDigits = 2;        // what the broker reports; see moneyDigitsUnknown*
   return f;
 }
 
@@ -198,6 +206,141 @@ void theJsonCarriesTheBrokerFiguresAndTheDisputes() {
 
 } // namespace
 
+
+// ---------------------------------------------------------------------------
+// PR-AW — the units the broker actually speaks.
+//
+// MEASURED 18-09-2026, the verifier's first ten live verdicts: ten records,
+// ten `disputed`, and every single net_pnl off by EXACTLY 100x —
+// 9/900, -52.2/-5220, -10.92/-1092, 28.73/2873, 44.71/4471, 34.16/3416,
+// -143.4/-14340. A constant factor across three asset classes is not a
+// corrupt ledger, it is a unit. cTrader scales money by 10^moneyDigits and
+// deal volume by 100 (cents of units); this service compared both raw.
+//
+// The consequence was not noise but silence: with a constant factor on money,
+// NO record could ever reach `verified`, whatever its data. A guard that
+// cannot return agreement is failure mode #3 wearing a verdict.
+// ---------------------------------------------------------------------------
+
+void theTenMeasuredDisputesWereTheVerifiersOwnUnits() {
+  // 2020.HK position 241485960 as the broker reported it and as the keeper
+  // stored it. Before this fix: volume 612 vs 61200, net_pnl -10.92 vs -1092.
+  KeeperRecord r;
+  r.positionId = 241485960;
+  r.symbolId = 22396;
+  r.tradeSide = 1;
+  r.volume = 612;                  // units
+  r.entryPrice = 10.0;
+  r.exitPrice = 9.98;
+  r.netPnl = -10.92;               // dollars
+  r.openedAtMs = 1789369726000;    // the keeper's second precision
+  r.closedAtMs = 1789435930589;
+
+  DealFetch f = complete({
+    openDeal(241485960, 10.0, 612, 1789369726429, 0.0),
+    closeDeal(241485960, 9.98, 612, 1789435930661, -10.92, 0.0, 0.0),
+  });
+  Verdict v = judge(r, f);
+  check(v.state == State::Verified,
+        "the 2020.HK row verifies once volume and money are read in the broker's units: " + v.reason);
+  check(v.brokerVolume && std::fabs(*v.brokerVolume - 612) < 1e-9, "brokerVolume is units, not centi-units");
+  check(v.brokerNetPnl && std::fabs(*v.brokerNetPnl - (-10.92)) < 0.005, "brokerNetPnl is dollars, not cents");
+}
+
+void aFractionalVolumeIsNotTruncatedIntoADispute() {
+  // COST.US 241583897: keeper 9.4 units, broker 940 centi-units. The route
+  // read the keeper's REAL volume as long long, truncated it to 9, and then
+  // disputed its own truncation.
+  KeeperRecord r;
+  r.positionId = 7;
+  r.symbolId = 1;
+  r.tradeSide = 1;
+  r.volume = 9.4;
+  r.entryPrice = 100.0;
+  r.exitPrice = 103.0;
+  r.netPnl = 28.2;
+  r.openedAtMs = 1000;
+  r.closedAtMs = 2000;
+  DealFetch f = complete({openDeal(7, 100.0, 9.4, 1000, 0.0),
+                          closeDeal(7, 103.0, 9.4, 2000, 28.2, 0.0, 0.0)});
+  f.deals[0].symbolId = 1;
+  Verdict v = judge(r, f);
+  check(v.state == State::Verified, "9.4 units against 940 centi-units agrees: " + v.reason);
+}
+
+void theKeepersSecondPrecisionIsNotADispute() {
+  // Every opened_at_ms the keeper stores ends in 000; the broker reports ms.
+  KeeperRecord r = matching();
+  r.openedAtMs = 1000;
+  r.closedAtMs = 2000;
+  DealFetch f = complete({openDeal(500, 1.2345, 10000, 1421),    // +421 ms
+                          closeDeal(500, 1.2445, 10000, 2934, 100.0)});  // +934 ms
+  Verdict v = judge(r, f);
+  check(v.state == State::Verified, "sub-second format difference is not a finding: " + v.reason);
+}
+
+void aRealTimestampGapIsStillCaught() {
+  // NATGAS 241647090 on the same pass: closed_at_ms 265 SECONDS late. The
+  // tolerance must absorb the format and still catch this.
+  KeeperRecord r = matching();
+  r.openedAtMs = 1000;
+  r.closedAtMs = 1789434084425;
+  DealFetch f = complete({openDeal(500, 1.2345, 10000, 1000),
+                          closeDeal(500, 1.2445, 10000, 1789433819475, 100.0)});
+  Verdict v = judge(r, f);
+  check(v.state == State::Disputed, "a 265-second gap is a real disagreement");
+  check(v.disputes.size() == 1 && v.disputes[0].field == "closed_at_ms",
+        "and it is the only one named");
+}
+
+void aVolumeOfZeroAgainstARealPositionStillDisputes() {
+  // NATGAS 241563888: the keeper recorded volume 0 against 900000 centi-units
+  // (9000 units). Not a unit artefact — a real hole, and it must survive.
+  KeeperRecord r = matching();
+  r.volume = 0;
+  DealFetch f = complete({openDeal(500, 1.2345, 9000, 1000),
+                          closeDeal(500, 1.2445, 9000, 2000, 100.0)});
+  Verdict v = judge(r, f);
+  check(v.state == State::Disputed, "volume 0 against 9000 units is a finding, not a unit");
+  bool named = false;
+  for (const auto& d : v.disputes) if (d.field == "volume") named = true;
+  check(named, "and the field is named");
+}
+
+void anUnreadableMoneyScaleIsNeverGuessed() {
+  DealFetch f = matchingFetch();
+  f.moneyDigits.reset();                 // the trader record could not be read
+  Verdict v = judge(matching(), f);
+  check(v.state == State::Unverified,
+        "agreement on what WAS checked is not agreement: a record whose money "
+        "nobody compared must not read `verified`");
+  check(v.uncompared.size() == 1 && v.uncompared[0] == "net_pnl", "and the skipped field is named");
+  check(v.reason.find("money scale") != std::string::npos, "and the reason says why: " + v.reason);
+  check(!v.brokerNetPnl, "no figure is published at a guessed scale");
+}
+
+void anUnreadableMoneyScaleStillReportsRealDisputes() {
+  DealFetch f = matchingFetch();
+  f.moneyDigits.reset();
+  KeeperRecord r = matching();
+  r.entryPrice = 9.99;                   // a disagreement that has nothing to do with money
+  Verdict v = judge(r, f);
+  check(v.state == State::Disputed, "a price disagreement stands on its own");
+  check(v.disputes.size() == 1 && v.disputes[0].field == "entry_price", "named, and money is not invented");
+}
+
+void aNonStandardMoneyScaleIsHonoured() {
+  // moneyDigits is per-broker, which is exactly why it is read rather than
+  // hardcoded. At 3 digits the same wire integers mean a tenth as much.
+  DealFetch f = complete({openDeal(500, 1.2345, 10000, 1000),
+                          closeDeal(500, 1.2445, 10000, 2000, 100.0)});
+  f.moneyDigits = 3;
+  KeeperRecord r = matching();
+  r.netPnl = 9.8;                        // 9800 wire units at 10^3
+  Verdict v = judge(r, f);
+  check(v.state == State::Verified, "the broker's own scale is applied, not 2: " + v.reason);
+}
+
 int main() {
   aRecordThatAgreesWithTheBrokerIsVerified();
   anIncompleteFetchCanNeverVerifyAndNeverDisputes();
@@ -210,6 +353,15 @@ int main() {
   partialClosesAreVolumeWeightedAndSummed();
   anotherPositionsDealsAreNeverMixedIn();
   theJsonCarriesTheBrokerFiguresAndTheDisputes();
+
+  theTenMeasuredDisputesWereTheVerifiersOwnUnits();
+  aFractionalVolumeIsNotTruncatedIntoADispute();
+  theKeepersSecondPrecisionIsNotADispute();
+  aRealTimestampGapIsStillCaught();
+  aVolumeOfZeroAgainstARealPositionStillDisputes();
+  anUnreadableMoneyScaleIsNeverGuessed();
+  anUnreadableMoneyScaleStillReportsRealDisputes();
+  aNonStandardMoneyScaleIsHonoured();
 
   if (failures) { std::fprintf(stderr, "test_verdict: %d failure(s)\n", failures); return 1; }
   std::fprintf(stderr, "test_verdict: all passed\n");
