@@ -140,18 +140,23 @@ test('PR-J: the cap trail uses ATR when the caller has one', () => {
   assert.match(res.reason, /1.5×ATR/)
 })
 
-test('PR-J: the cap NEVER loosens a stop — it refuses the hold and closes instead', () => {
+test('PR-J: the cap NEVER loosens a stop — and a stop it cannot improve is HELD, not closed (fix-the-exits BB)', () => {
   // Stop already at +1.5R (3430); the trail would sit at +0.5R (3410) and the
-  // breakeven floor at 3400, both looser. Checker B1: a hold that cannot
-  // improve the stop is an unpriced extension of risk, so the cap closes the
-  // position exactly as it did before PR-J. RED if a looser stop is proposed.
+  // breakeven floor at 3400, both looser. Checker B1 (11-09) had the cap
+  // CLOSE here on the argument that an unimprovable hold is an unpriced
+  // extension of risk — but a stop at +1.5R carries no open risk below
+  // entry, and closing forfeited the upside (measured 18-09: 6 of 8 recent
+  // time_cap_expired closes were winners, +0.46R avg). RED if a looser stop
+  // is proposed, RED if the position is closed.
   const capAt = new Date(Date.now() - 60_000).toISOString()
   const pos = longXAU({ time_cap_at: capAt, current_sl: 3430 })
   const res = evaluatePosition(pos, { currentPrice: 3440 })
-  assert.equal(res.action, 'FULL_EXIT')
-  assert.equal(res.reason, `time_cap_expired (${capAt})`)
+  assert.equal(res.action, 'HOLD')
+  assert.match(res.reason, /^time_cap_held \(/)
+  assert.match(res.reason, /stop 3430 already at\/beyond breakeven/)
   assert.equal(res.newSL, null, 'no stop is proposed at all, let alone a looser one')
-  assert.equal(res.updates.time_cap_trail_at, undefined, 'nothing is stamped when nothing was held')
+  assert.equal(res.exitFraction, null)
+  assert.ok(res.updates.time_cap_trail_at, 'the hold is stamped so the branch is not re-decided every pass')
 })
 
 // ---------------------------------------------------------------------------
@@ -186,14 +191,36 @@ test('PR-J/B1: a SHORT held in the same band is floored at breakeven too', () =>
   assert.ok(res.newSL < pos.current_sl, 'a short tightens by lowering the stop')
 })
 
-test('PR-J/B1: a stop already at or above breakeven is not loosened — the cap closes', () => {
+test('PR-J/B1 → BB: a stop already at or above breakeven is not loosened — and the position is held at it', () => {
   // Stop at +0.25R, position at +0.5R: breakeven and peak−1.5R are both looser
-  // than what the position already has, so the hold is refused.
+  // than what the position already has. Nothing to tighten → HOLD, stamped.
   const capAt = new Date(Date.now() - 60_000).toISOString()
   const pos = longXAU({ time_cap_at: capAt, current_sl: 3405 })
   const res = evaluatePosition(pos, { currentPrice: 3410 })
-  assert.equal(res.action, 'FULL_EXIT')
-  assert.equal(res.reason, `time_cap_expired (${capAt})`)
+  assert.equal(res.action, 'HOLD')
+  assert.match(res.reason, /^time_cap_held \(/)
+  assert.ok(res.updates.time_cap_trail_at)
+})
+
+test('fix-the-exits BB: the DOW.US shape — a SHORT winner whose stop already passed breakeven is held at its cap, not closed at +0.38R', () => {
+  // …0949, 17-09-2026: SELL DOW.US entry 29.69, initial stop 30.21 (risk
+  // 0.52), stop later moved to 29.60 (past breakeven), price 29.49 at the
+  // cap = +0.38R. The old branch closed it as time_cap_expired.
+  const capAt = new Date(Date.now() - 60_000).toISOString()
+  const pos = shortEUR({ symbol: 'DOW.US', entry_price: 29.69, current_sl: 29.60, current_tp: null, initial_risk: 0.52, time_cap_at: capAt })
+  const res = evaluatePosition(pos, { currentPrice: 29.49 })
+  assert.equal(res.action, 'HOLD', `closed a winner: ${res.reason}`)
+  assert.match(res.reason, /^time_cap_held \(.*R=0\.38/)
+  assert.equal(res.newSL, null)
+  assert.ok(res.updates.time_cap_trail_at)
+  // Once stamped, the next pass does not re-decide the cap (the ordinary ladder governs it) …
+  const next = evaluatePosition({ ...pos, time_cap_trail_at: res.updates.time_cap_trail_at }, { currentPrice: 29.49 })
+  assert.doesNotMatch(next.reason, /time_cap_held|time_cap_expired \(/)
+  // … and the backstop still ends the hold.
+  const late = evaluatePosition(
+    { ...pos, time_cap_at: new Date(Date.now() - 73 * 3_600_000).toISOString(), time_cap_trail_at: capAt },
+    { currentPrice: 29.49 })
+  assert.equal(late.action, 'FULL_EXIT'); assert.match(late.reason, /time_cap_expired_backstop/)
 })
 
 test('PR-J/B1: a stop-less row gets a stop at breakeven, never at peak − 1.5R', () => {

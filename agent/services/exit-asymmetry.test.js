@@ -115,6 +115,32 @@ test('a WINNER past its time cap is trailed and stamped, not closed', async () =
   assert.match(row.last_check_reasoning, /time_cap_trailing/)
 })
 
+test('fix-the-exits BB: a winner whose stop already sits past breakeven is HELD at its cap and the hold is stamped in the DB', async () => {
+  // Stop at +0.5R already (1.1025 on a 0.0050 risk), price +1R: the cap's
+  // trail (breakeven floor 1.1000, peak − 1.5R = 1.0975) is looser, so there
+  // is nothing to tighten. Before BB this closed as time_cap_expired.
+  addPosition('NZDUSD', { entry: 1.1000, sl: 1.1025 })
+  const d = deps({ 3: 1.1050 })
+  await runFastMonitor(wireDb, CREDS, d)
+  const row = wireDb.prepare('SELECT * FROM monitored_positions WHERE symbol = ?').get('NZDUSD')
+  assert.equal(row.status, 'active', 'still open')
+  assert.equal(d.calls.length, 0, 'nothing was sent to the broker')
+  assert.match(row.last_check_action, /HOLD/)
+  assert.match(row.last_check_reasoning, /time_cap_held/)
+  assert.ok(row.time_cap_trail_at, 'the hold is stamped in the DB so the cap is not re-decided every pass')
+  wireDb.prepare('DELETE FROM monitored_positions WHERE id = ?').run(row.id)
+})
+
+test('stampExitMarks: a HOLD carrying a mark is stamped without an outcome; a broker action still needs one', () => {
+  const id = addPosition('USDCAD', { entry: 1.3, sl: 1.295 })
+  const pos = { id }
+  assert.equal(stampExitMarks(wireStmts, pos, { action: 'MOVE_SL', updates: { time_cap_trail_at: 'x' } }, null), false, 'an action with no outcome stamps nothing')
+  assert.equal(stampExitMarks(wireStmts, pos, { action: 'HOLD', updates: {} }, null), false, 'a HOLD with no mark stamps nothing')
+  assert.equal(stampExitMarks(wireStmts, pos, { action: 'HOLD', updates: { time_cap_trail_at: '2026-09-18T07:00:00.000Z' } }, null), true)
+  assert.equal(wireDb.prepare('SELECT time_cap_trail_at FROM monitored_positions WHERE id = ?').get(id).time_cap_trail_at, '2026-09-18T07:00:00.000Z')
+  wireDb.prepare('DELETE FROM monitored_positions WHERE id = ?').run(id)
+})
+
 test('a LOSER past its time cap still gets the close verdict, with the unchanged reason', async () => {
   addPosition('GBPUSD', { entry: 1.3000, sl: 1.2950 })
   // EURUSD is quoted null this pass (its market "closed"), so only the loser

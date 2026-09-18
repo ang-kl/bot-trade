@@ -55,10 +55,13 @@ export const DEFAULT_RULES = Object.freeze({
   // this rule after 17–21h held, several of them in profit.
   //
   // So: a position at or above `timeCapHoldMinR` when its cap expires is NOT
-  // closed. Its stop is tightened to a trail and it leaves by that stop, by its
-  // target, or by invalidation. A position BELOW the threshold — and a position
-  // whose price cannot be read at all — still dies at the clock, with the same
-  // reason string it always had. `timeCapHoldWinners: false` restores the old
+  // closed. Its stop is tightened to a trail (floored at breakeven) and it
+  // leaves by that stop, by its target, or by invalidation; a winner whose stop
+  // already sits at or beyond breakeven is HELD at that stop (fix-the-exits
+  // BB, 18-09-2026 — before that it was closed, forfeiting upside on zero open
+  // risk). A position BELOW the threshold — and a position whose price cannot
+  // be read at all — still dies at the clock, with the same reason string it
+  // always had. `timeCapHoldWinners: false` restores the old
   // behaviour exactly, and `timeCapMaxExtraHours` bounds the hold so "hold the
   // winner" can never mean "hold forever".
   timeCapHoldWinners: true,
@@ -285,10 +288,10 @@ export function evaluatePosition(pos, ctx) {
       // back into −1R of open risk, ten times over in the 21:31 batch.
       //
       // So the trail is FLOORED AT BREAKEVEN — the same floor the bank branch
-      // below already applies — and the hold is REFUSED when even that is not
-      // tighter than the stop the position already has: then the cap closes
-      // the position exactly as it did before this PR. A hold that cannot
-      // improve the stop is not a hold, it is an unpriced extension of risk.
+      // below already applies. When even that is not tighter than the stop
+      // the position already has, the position is HELD at its own stop (see
+      // the branch below — until 18-09-2026 it was closed here, which cut
+      // winners whose risk was already zero).
       if (!pos.time_cap_trail_at) {
         const peakR = Math.max(newMfe ?? 0, r)
         const td = trailDistance(pos, rules.timeCapTrailAtrMult, ctx.atr)
@@ -317,11 +320,24 @@ export function evaluatePosition(pos, ctx) {
             metrics: capMetrics,
           }
         }
+        // NOTHING TO TIGHTEN — HOLD, do not close (fix-the-exits BB,
+        // 18-09-2026). This branch is reached only when the stop the
+        // position already has is at or beyond the breakeven-floored trail,
+        // i.e. at or beyond ENTRY in the trade's favour: the position carries
+        // no open risk below entry, so "an unpriced extension of risk" (the
+        // B1 argument above) does not describe it. Closing it forfeits the
+        // upside for nothing. Measured on …0949 before this fix: 8 recent
+        // `time_cap_expired` closes, 6 of them winners at +0.46R on average
+        // (DOW.US short, entry 29.69, closed 29.49 at +0.38R with its stop
+        // already past breakeven — the case this comment is written about).
+        // The stamp is what stops the branch re-deciding every pass; the
+        // backstop above is the only cap rule still watching the position.
+        updates.time_cap_trail_at = now.toISOString()
         return {
-          action: 'FULL_EXIT',
-          reason: `time_cap_expired (${pos.time_cap_at})`,
+          action: 'HOLD',
+          reason: `time_cap_held (${pos.time_cap_at}, R=${r.toFixed(2)} ≥ ${minR}, stop ${pos.current_sl} already at/beyond breakeven — nothing to tighten)`,
           newSL: null,
-          exitFraction: 1,
+          exitFraction: null,
           updates,
           metrics: capMetrics,
         }
