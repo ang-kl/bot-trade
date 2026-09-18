@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import { initDB } from './db.js'
 import {
   MONITOR_CONCURRENCY,
+  monitorOnePosition,
   runMonitorPhase,
   runWeekendWatchPhase,
 } from './loop.js'
@@ -39,6 +40,9 @@ function mkStmts(db) {
     ),
     updatePositionCheck: db.prepare(
       'UPDATE monitored_positions SET last_check_action = ?, last_check_reasoning = ?, last_check_at = ?, thesis_status = ? WHERE id = ?'
+    ),
+    stampPositionExitMarks: db.prepare(
+      'UPDATE monitored_positions SET time_cap_trail_at = COALESCE(time_cap_trail_at, ?), bank_partial_at = COALESCE(bank_partial_at, ?) WHERE id = ?'
     ),
   }
 }
@@ -127,4 +131,26 @@ test('runWeekendWatchPhase isolates a per-position failure — siblings still co
   assert.equal(goodRow.last_check_action, 'WEEKEND:HOLD')
   const badRow = db.prepare("SELECT last_check_action FROM monitored_positions WHERE symbol = 'WKBAD'").get()
   assert.equal(badRow.last_check_action, null, 'the failing weekend check never persisted an action')
+})
+
+// fix-the-exits BB (18-09-2026): the SLOW monitor's HOLD path writes the cap's
+// hold stamp too — the end-to-end case in exit-asymmetry.test.js goes through
+// the fast monitor, and a stamp written on one path and not the other would
+// re-decide the cap on every slow pass (the mutation that removed this call
+// left every other test green).
+test('monitorOnePosition stamps a HOLD the time cap decided (stop already past breakeven) so it is not re-decided', async () => {
+  const db = mkDb()
+  const s = mkStmts(db)
+  const id = db.prepare(`
+    INSERT INTO monitored_positions
+      (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status, strategy, time_cap_at, created_at)
+    VALUES ('EURUSD', 'BUY', 1.1000, 1.1025, NULL, 'x', 0.0050, 'autopilot', 'active', 'fib_618_fade', ?, datetime('now', '-20 hours'))
+  `).run(new Date(Date.now() - 3 * 3_600_000).toISOString()).lastInsertRowid
+  const pos = db.prepare('SELECT * FROM monitored_positions WHERE id = ?').get(id)
+  await monitorOnePosition(db, s, pos, 1.1050, null, () => true) // +1R, stop at +0.5R already; LLM skipped
+  const row = db.prepare('SELECT status, last_check_action, last_check_reasoning, time_cap_trail_at FROM monitored_positions WHERE id = ?').get(id)
+  assert.equal(row.status, 'active')
+  assert.equal(row.last_check_action, 'HOLD')
+  assert.match(row.last_check_reasoning, /time_cap_held/)
+  assert.ok(row.time_cap_trail_at, 'the slow monitor stamps the hold in the DB')
 })
