@@ -11,7 +11,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
-import { enqueueVerifyBacklog, MAX_REVERIFY, REVERIFY_BATCH } from './position-capture.js'
+import { enqueueVerifyBacklog, MAX_REVERIFY, REVERIFY_BATCH, resetBacklogReports } from './position-capture.js'
 
 function db () {
   const d = new Database(':memory:')
@@ -154,6 +154,115 @@ test('loop.js arms the backlog, and only when a verifier is configured', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
     .replace(/^\s*\/\/.*$/gm, '')          // strip comments: a test must not pass by matching prose
   assert.match(src, /enqueueVerifyBacklog/, 'the backlog pass must be imported in the loop')
-  assert.match(src, /if\s*\(verifier\)\s*\{[\s\S]{0,200}enqueueVerifyBacklog\(db,\s*\{\s*accountId\s*\}\)/,
+  assert.match(src, /if\s*\(verifier\)\s*\{[\s\S]{0,400}enqueueVerifyBacklog\(db,\s*\{\s*accountId\s*\}\)/,
     'it must be gated on a configured verifier: without one a re-capture costs broker traffic and returns no verdict')
+
+  // PR-AT: the loop must log what the PASS decided is worth saying, not only
+  // its successes. `if (backlog.armed)` is the exact line that made 18-09's
+  // zero unexplainable, so it must not come back.
+  assert.match(src, /if \(backlog\.report\) log\(/,
+    'the loop logs backlog.report — which covers the zero case')
+  assert.doesNotMatch(src, /if \(backlog\.armed\) log\(/,
+    'logging only on a non-zero arming is what made the silent zero undebuggable')
+})
+
+// ---------------------------------------------------------------------------
+// PR-AT — THE ZERO EXPLAINS ITSELF.
+//
+// On 18-09-2026 the pass began arming zero with 41 eligible-looking records
+// sitting untouched, and it said NOTHING, because loop.js logged only
+// `if (backlog.armed)`. Four theories were produced and none could be
+// confirmed: no count was exposed, so the logs could not distinguish "nothing
+// to do" from "query returned nothing" from "pass never ran".
+//
+// These tests pin the breakdown and the dedupe. The dedupe matters as much as
+// the breakdown: sixty identical lines an hour is a log nobody reads, which
+// fails the same way silence does.
+// ---------------------------------------------------------------------------
+
+test('the four buckets are EXHAUSTIVE against unverified', () => {
+  const d = db()
+  resetBacklogReports()
+  hist(d, 'e1'); q(d, 'e1', 'captured', 0)          // eligible
+  hist(d, 'e2')                                      // eligible, no queue row
+  hist(d, 'b1'); q(d, 'b1', 'captured', MAX_REVERIFY) // at the cap
+  hist(d, 't1'); q(d, 't1', 'gave_up', 0)           // terminal
+  hist(d, 'p1'); q(d, 'p1', 'pending', 0)           // already queued
+  const r = enqueueVerifyBacklog(d, { accountId: 'A1', limit: 0 })
+  assert.equal(r.unverified, 5)
+  assert.equal(r.eligible, 2)
+  assert.equal(r.blockedByAttempts, 1)
+  assert.equal(r.terminal, 1)
+  assert.equal(r.alreadyQueued, 1)
+  assert.equal(r.eligible + r.blockedByAttempts + r.terminal + r.alreadyQueued, r.unverified,
+    'if these do not sum, a record is in a state nothing accounts for — that is the finding')
+})
+
+test('A ZERO WITH WORK OUTSTANDING REPORTS, naming why none was armed', () => {
+  const d = db()
+  resetBacklogReports()
+  hist(d, 'b1'); q(d, 'b1', 'captured', MAX_REVERIFY)
+  hist(d, 'b2'); q(d, 'b2', 'captured', MAX_REVERIFY)
+  const r = enqueueVerifyBacklog(d, { accountId: 'A1' })
+  assert.equal(r.armed, 0)
+  assert.ok(r.report, 'a zero with unverified records left MUST say something')
+  assert.match(r.report, /0 armed of 2 unverified/)
+  assert.match(r.report, /0 eligible/)
+  assert.match(r.report, /2 at the re-verify cap/)
+})
+
+test('a zero with NOTHING outstanding stays silent — that is the healthy state', () => {
+  const d = db()
+  resetBacklogReports()
+  hist(d, 'v1', 'verified'); q(d, 'v1', 'captured')
+  const r = enqueueVerifyBacklog(d, { accountId: 'A1' })
+  assert.equal(r.armed, 0)
+  assert.equal(r.report, null, 'an empty backlog is not news')
+})
+
+test('THE SAME ZERO IS NOT REPEATED — sixty lines an hour is silence by another route', () => {
+  const d = db()
+  resetBacklogReports()
+  hist(d, 'b1'); q(d, 'b1', 'captured', MAX_REVERIFY)
+  const first = enqueueVerifyBacklog(d, { accountId: 'A1' })
+  assert.ok(first.report, 'the first time it enters this state, it says so')
+  const second = enqueueVerifyBacklog(d, { accountId: 'A1' })
+  assert.equal(second.report, null, 'unchanged means silence, which is then a fact not an absence')
+})
+
+test('...but a CHANGED zero reports again', () => {
+  const d = db()
+  resetBacklogReports()
+  hist(d, 'b1'); q(d, 'b1', 'captured', MAX_REVERIFY)
+  assert.ok(enqueueVerifyBacklog(d, { accountId: 'A1' }).report)
+  assert.equal(enqueueVerifyBacklog(d, { accountId: 'A1' }).report, null)
+  hist(d, 'b2'); q(d, 'b2', 'captured', MAX_REVERIFY)   // the picture moved
+  const r = enqueueVerifyBacklog(d, { accountId: 'A1' })
+  assert.ok(r.report, 'a different backlog is different news')
+  assert.match(r.report, /0 armed of 2 unverified/)
+})
+
+test('a non-zero arming ALWAYS reports — an event, not a state', () => {
+  const d = db()
+  resetBacklogReports()
+  hist(d, 'e1'); q(d, 'e1', 'captured', 0)
+  const first = enqueueVerifyBacklog(d, { accountId: 'A1' })
+  assert.match(first.report, /re-armed 1 unverified record\(s\)/)
+  d.prepare("UPDATE position_capture_queue SET state='captured', reverify_attempts=0 WHERE position_id='e1'").run()
+  const second = enqueueVerifyBacklog(d, { accountId: 'A1' })
+  assert.match(second.report, /re-armed 1 unverified record\(s\)/, 'repeated work is repeated news')
+})
+
+test('accounts are reported independently — one going quiet must not silence another', () => {
+  const d = db()
+  resetBacklogReports()
+  hist(d, 'b1'); q(d, 'b1', 'captured', MAX_REVERIFY)
+  assert.ok(enqueueVerifyBacklog(d, { accountId: 'A1' }).report)
+  assert.equal(enqueueVerifyBacklog(d, { accountId: 'A1' }).report, null)
+  // A2 has its own state and its own first time.
+  d.prepare('INSERT INTO position_history (account_id, ctrader_position_id, symbol, closed_at_ms, verification_state) VALUES (?,?,?,?,?)')
+    .run('A2', 'x1', 'EURUSD', 1000, 'unverified')
+  d.prepare('INSERT INTO position_capture_queue (account_id, position_id, due_at_ms, state, attempts, reverify_attempts) VALUES (?,?,?,?,?,?)')
+    .run('A2', 'x1', 1, 'captured', 0, MAX_REVERIFY)
+  assert.ok(enqueueVerifyBacklog(d, { accountId: 'A2' }).report, 'A2 has never reported before')
 })

@@ -3418,8 +3418,11 @@ async function runLoop(db) {
             // up loudly. Only when a verifier is configured: without one a
             // re-capture buys broker traffic and no answer.
             if (verifier) {
+              // The pass decides what is worth saying — a non-zero arming
+              // always, a zero only when its breakdown CHANGES. Logging only
+              // on success is what made 18-09's zero unexplainable.
               const backlog = enqueueVerifyBacklog(db, { accountId })
-              if (backlog.armed) log(`Position capture: re-armed ${backlog.armed} unverified record(s) for a verdict`)
+              if (backlog.report) log(`Position capture [${accountId}]: ${backlog.report}`)
             }
             const drain = await drainCaptureQueue(db, {
               getDeals: async (t0, t1) => {
