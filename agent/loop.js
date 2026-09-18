@@ -2807,7 +2807,11 @@ async function runLoop(db) {
     // an auth error there trigger one cooldown-limited refresh, and the next
     // controller pass re-reads the healed token from state.
     const { setAuthErrorHook } = await import('./lib/ctrader-ws.js')
-    setAuthErrorHook(() => refreshCtraderToken(db))
+    const { tokenRefusedAccounts } = await import('./lib/token-refused.js')
+    // B7: a refusal for an account the token never covered is not a rotation.
+    setAuthErrorHook(() => refreshCtraderToken(db), {
+      skip: (err) => err?.accountId != null && tokenRefusedAccounts(db).has(String(err.accountId)),
+    })
   } catch { /* auth module optional */ }
 
   // Reset daily error counter at midnight UTC
@@ -3700,7 +3704,7 @@ async function runLoop(db) {
             const { sweepCrossSideEquity } = await import('./services/account-equity.js')
             const x = await sweepCrossSideEquity(db, { clientId, clientSecret, accessToken }, { isLive })
             crossSideEquitySeeded = true
-            if (x.swept > 0) {
+            if (x.swept > 0 || x.skipped?.length) {
               // A failure can be SILENT: stampAccountEquity returns
               // { balance: null, error: null } when the broker answered but
               // the balance decoded to 0/NaN (an unfunded account, by the
@@ -3709,11 +3713,15 @@ async function runLoop(db) {
               // reports failure and cannot say why (measured 2026-08-27:
               // ACCT-LIVE-2/3, both zero-balance). Name both kinds.
               const why = x.results
-                .filter(r => r.error != null || r.balance == null)
+                .filter(r => !r.skipped && (r.error != null || r.balance == null))
                 .map(r => `${r.accountId}: ${r.error ?? 'broker answered, balance 0/unusable — not stamped'}`)
                 .join(' · ')
+              // B7: refused accounts are named as skipped, not asked and not failed.
+              const skippedNote = x.skipped?.length
+                ? ` — skipped ${x.skipped.length} (token refused): ${x.skipped.map(a => `…${String(a).slice(-4)}`).join(', ')}`
+                : ''
               log(`Cross-side equity: ${x.stamped}/${x.swept} ${isLive ? 'demo' : 'live'} account(s) stamped`
-                + (x.failed ? ` — ${why}` : ''))
+                + (x.failed ? ` — ${why}` : '') + skippedNote)
             }
             // A stamp that failed on every account is a failed run; one that
             // stamped some is a run with a named gap, already logged above.

@@ -560,6 +560,16 @@ Measurement history — each line is a real run of the script, not a claim:
   followed `№ 7,871` while B1–B6 were built, so the next stamped reply is
   **`№ 7,875`**. A later re-measure that reads below this line is missing
   these, not correcting them.
+- 2026-09-18 11:10 UTC, **same remote container, PARTIAL corpus**: `№ 7,875`
+  (18:43 SGT, the #952 merge report) was right by count. Six unstamped
+  status lines followed it during the #952 read-back (18:46–18:59 SGT: the
+  deploy landed, the cpp suite finished, the wake fired, the second re-push
+  loop found), so the read-back report is **`№ 7,881`** (19:02 SGT): B1–B6
+  live, and the reactive-refresh loop measured (~20 OAuth refreshes an hour,
+  the live broker session torn down every ~3 minutes). The owner's "build
+  B7, merge when green" followed; one unstamped status line preceded this
+  ledger, so the next stamped reply is **`№ 7,883`**. A later re-measure
+  that reads below this line is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

@@ -26,6 +26,8 @@
 // ever needs the unowned global.
 // ---------------------------------------------------------------------------
 
+import { tokenRefusedAccounts } from '../lib/token-refused.js'
+
 /**
  * Read one account's trader record and stamp its scoped equity keys.
  *
@@ -101,7 +103,7 @@ export const hostForSide = (isLive) => (isLive ? 'live.ctraderapi.com' : 'demo.c
  *                    results:Array<{accountId:string,balance:number|null,error:string|null}>}>}
  */
 export async function sweepCrossSideEquity(db, creds, { isLive, deps = {}, timeoutMs = 12_000 } = {}) {
-  const out = { swept: 0, stamped: 0, failed: 0, timedOut: 0, results: [] }
+  const out = { swept: 0, stamped: 0, failed: 0, timedOut: 0, skipped: [], results: [] }
   let rows = []
   try {
     rows = db.prepare(
@@ -109,7 +111,21 @@ export async function sweepCrossSideEquity(db, creds, { isLive, deps = {}, timeo
     ).all()
   } catch { return out }
 
-  const others = rows.filter(r => (r.is_live === 1) !== !!isLive)
+  const crossSide = rows.filter(r => (r.is_live === 1) !== !!isLive)
+  // B7 (18-09-2026): an account the sidecar tried and the token was REFUSED
+  // for (B2's `<side>_refused_accounts_json`) is not asked again here. Every
+  // ask was refused, every refusal fired the reactive token refresh, and every
+  // refresh re-pushed credentials to both sidecars — measured: ~20 OAuth
+  // refreshes an hour and the live broker session torn down every ~3 minutes,
+  // for a balance the broker was never going to give us. The account is named
+  // as skipped, never counted as failed: the record already says why.
+  const refused = deps.tokenRefused ?? tokenRefusedAccounts(db)
+  const skipped = crossSide.filter(r => refused.has(String(r.account_id)))
+  const others = crossSide.filter(r => !refused.has(String(r.account_id)))
+  out.skipped = skipped.map(r => String(r.account_id))
+  for (const r of skipped) {
+    out.results.push({ accountId: String(r.account_id), balance: null, error: null, skipped: 'token_refused' })
+  }
   if (others.length === 0) return out
   out.swept = others.length
 

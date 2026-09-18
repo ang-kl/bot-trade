@@ -271,3 +271,42 @@ test('P2: an account that BEATS the deadline still stamps while another hangs', 
   assert.equal(getState(db, 'acct:HUNG:account_balance_usd'), null)
   assert.deepEqual({ stamped: r.stamped, timedOut: r.timedOut }, { stamped: 1, timedOut: 1 })
 })
+
+// ---------------------------------------------------------------------------
+// B7 (18-09-2026): an account the token was refused for is not asked again.
+// Measured: every ask of …2148/…9009 was refused CH_ACCESS_TOKEN_INVALID, each
+// refusal fired the reactive token refresh, each refresh re-pushed credentials
+// to both sidecars — ~20 OAuth refreshes an hour, the live session torn down
+// every ~3 minutes.
+// ---------------------------------------------------------------------------
+test('B7: refused accounts are skipped — never asked, named, not counted as failed', async () => {
+  const db = db0([['DEMO', false], ['43002148', true], ['43069009', true], ['42993489', true]])
+  setState(db, 'cpp_exec_refused_accounts_json', JSON.stringify(['43002148', '43069009']))
+  const asked = []
+  const ws = {
+    wsGetTrader: async (_h, _ci, _cs, _at, accountId) => { asked.push(String(accountId)); return { balance: 10, leverageInCents: 0 } },
+    traderBalance: (t) => t?.balance ?? null,
+  }
+  const r = await sweepCrossSideEquity(db, {}, {
+    isLive: false,
+    deps: { ws, setAccountState: (d, id, k, v) => setState(d, `acct:${id}:${k}`, v) },
+  })
+  assert.deepEqual(asked, ['42993489'], 'the refused two are not asked')
+  assert.deepEqual({ swept: r.swept, stamped: r.stamped, failed: r.failed }, { swept: 1, stamped: 1, failed: 0 })
+  assert.deepEqual(r.skipped, ['43002148', '43069009'])
+  assert.deepEqual(r.results.filter(x => x.skipped).map(x => [x.accountId, x.skipped, x.error]),
+    [['43002148', 'token_refused', null], ['43069009', 'token_refused', null]])
+  assert.equal(getState(db, 'acct:43002148:account_balance_usd'), null, 'nothing invented for a refused account')
+})
+
+test('B7: with every cross-side account refused the sweep asks nothing and reports swept 0, skipped 2', async () => {
+  const db = db0([['DEMO', false], ['43002148', true], ['43069009', true]])
+  setState(db, 'cpp_exec_refused_accounts_json', JSON.stringify([43002148, 43069009]))
+  let asked = 0
+  const r = await sweepCrossSideEquity(db, {}, {
+    isLive: false,
+    deps: { ws: { wsGetTrader: async () => { asked++; return {} }, traderBalance: () => null } },
+  })
+  assert.equal(asked, 0)
+  assert.deepEqual({ swept: r.swept, skipped: r.skipped }, { swept: 0, skipped: ['43002148', '43069009'] })
+})

@@ -1590,3 +1590,48 @@ test('probeCppExec: refused accounts are not re-pushed, are said ONCE, and land 
     assert.deepEqual(JSON.parse(getState(db, 'cpp_exec_refused_accounts_json')), [])
   } finally { console.warn = origWarn }
 })
+
+// ---------------------------------------------------------------------------
+// B7 (18-09-2026): the rotated-token re-push compares the TOKEN, not the
+// refresh stamp. The stamp moved every ~3 minutes under the reactive refresh
+// and each move re-pushed credentials to both sidecars.
+// ---------------------------------------------------------------------------
+test('B7: a moved refresh stamp with the same token is not a rotation; a changed token is pushed once', async () => {
+  const db = initDB(':memory:')
+  db.exec(`CREATE TABLE IF NOT EXISTS accounts (
+    account_id TEXT PRIMARY KEY, is_live INTEGER, enabled INTEGER, mode TEXT)`)
+  db.prepare('INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES (?,?,?,?)').run('42993489', 0, 1, 'active')
+  setState(db, 'ctrader_account_id', '42993489')
+  setState(db, 'ctrader_is_live', 'false')
+  setState(db, 'ctrader_access_token', 'tok-A')
+  setState(db, 'ctrader_token_refreshed_at', '2026-09-18T10:00:00.000Z')
+  let pushes = 0
+  const warns = []
+  const origWarn = console.warn
+  console.warn = (...a) => { warns.push(a.join(' ')) }
+  try {
+    const exec = {
+      execEngineMode: () => 'cpp',
+      pingSidecar: async () => ({ ok: true, mode: 'cpp', connected: true, hasCredentials: true, accounts: [42993489], refusedAccounts: [], lastReconcileAt: T0.getTime() }),
+      pushSidecarSession: async () => { pushes++; return true },
+    }
+    await probeCppExec(db, { exec, now: T0 })
+    assert.equal(pushes, 1, 'first sight of tok-A → pushed once')
+    await probeCppExec(db, { exec, now: new Date(T0.getTime() + 120_000) })
+    assert.equal(pushes, 1, 'same token → no push')
+    // The stamp moves (a reactive refresh that handed back the same token, or
+    // any other writer) while the token is unchanged → still no push.
+    setState(db, 'ctrader_token_refreshed_at', '2026-09-18T10:03:00.000Z')
+    await probeCppExec(db, { exec, now: new Date(T0.getTime() + 240_000) })
+    assert.equal(pushes, 1, 'a moved stamp with the same token is not a rotation')
+    // The token itself changes → pushed exactly once more.
+    setState(db, 'ctrader_access_token', 'tok-B')
+    await probeCppExec(db, { exec, now: new Date(T0.getTime() + 360_000) })
+    await probeCppExec(db, { exec, now: new Date(T0.getTime() + 480_000) })
+    assert.equal(pushes, 2, 'a changed token is pushed once')
+    assert.equal(warns.filter(w => /rotated access token re-pushed/.test(w)).length, 2)
+    const memo = JSON.parse(getState(db, 'cpp_exec_token_push_json'))
+    assert.equal(memo.cpp_exec.length, 16, 'the memo holds a fingerprint, not the token or the stamp')
+    assert.notEqual(memo.cpp_exec, 'tok-B')
+  } finally { console.warn = origWarn }
+})
