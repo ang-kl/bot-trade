@@ -27,6 +27,7 @@
 
 #include "http_server.hpp"
 #include "json.hpp"
+#include "journal.hpp"
 #include "verdict.hpp"
 #include "verify_session.hpp"
 
@@ -93,10 +94,28 @@ int main() {
     return 2;
   }
   const bool hostPinIgnored = !env("CTRADER_HOST").empty();
+
+  // THE VERIFIER KEEPS ITS OWN RECORD. A verdict written only into the
+  // agent's database is a finding held by the party being audited; this is
+  // the copy the agent cannot reach. Off when unset, and it proves it can
+  // write at boot rather than discovering otherwise on the first verdict.
+  verify::journal().open(env("VERIFY_JOURNAL_DIR"));
+
   std::fprintf(stderr,
                "[verify] cpp-verify starting on :%d — read-only (app auth, "
                "account auth, deal list); sessions are per host%s\n",
                port, hostPinIgnored ? "; CTRADER_HOST is set and IGNORED" : "");
+  if (!verify::journal().configured()) {
+    std::fprintf(stderr, "[verify] journal OFF — VERIFY_JOURNAL_DIR not set; verdicts are returned but not kept here\n");
+  } else if (verify::journal().writable()) {
+    std::fprintf(stderr, "[verify] journal WRITABLE at %s\n", verify::journal().dir().c_str());
+  } else {
+    // Loud, because a mounted volume this process cannot write to looks
+    // exactly like a working one until someone reads the trail and finds
+    // nothing in it.
+    std::fprintf(stderr, "[verify] journal UNWRITABLE at %s — %s\n",
+                 verify::journal().dir().c_str(), verify::journal().lastError().c_str());
+  }
 
   HttpServer server(port, secret);
 
@@ -107,6 +126,13 @@ int main() {
     o.set("service", std::string("cpp-verify"));
     o.set("readOnly", true);
     o.set("hostPinIgnored", hostPinIgnored);
+    jsn::Value j{jsn::Object{}};
+    j.set("configured", verify::journal().configured());
+    j.set("writable", verify::journal().writable());
+    if (verify::journal().configured()) j.set("dir", verify::journal().dir());
+    if (!verify::journal().lastError().empty()) j.set("lastError", verify::journal().lastError());
+    j.set("written", static_cast<double>(verify::journal().written()));
+    o.set("journal", j);
     jsn::Array hosts;
     for (const auto& [host, sess] : g_sessions) {
       jsn::Value h{jsn::Object{}};
@@ -224,7 +250,18 @@ int main() {
     out.set("positionId", static_cast<double>(rec.positionId));
     out.set("fetchPages", static_cast<double>(fetch.pages));
     out.set("fetchComplete", fetch.complete);
-    return jsonRes(200, jsn::dump(out));
+
+    // EVERY verdict is journalled, not just disagreements. A trail that keeps
+    // only disputes cannot answer "was this record ever checked, and when" —
+    // which is the question an audit actually asks.
+    const std::string dumped = jsn::dump(out);
+    if (verify::journal().configured() && !verify::journal().append(dumped)) {
+      // Never fails the response: the caller asked for a verdict and the
+      // verdict is sound. But it does not pass silently either.
+      std::fprintf(stderr, "[verify] journal append FAILED for position %lld — %s\n",
+                   rec.positionId, verify::journal().lastError().c_str());
+    }
+    return jsonRes(200, dumped);
   });
 
   if (!server.run()) {

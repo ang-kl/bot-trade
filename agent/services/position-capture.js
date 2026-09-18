@@ -272,6 +272,14 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, no
       if (verify) {
         try {
           const v = await verify(res.record)
+          // A SKIPPED VERDICT IS SAID OUT LOUD. verify() already knows exactly
+          // why it could not answer — http_409, connect_no_accounts, timeout,
+          // bad_reply, no_host — and the first version of this block dropped
+          // that on the floor with `if (v && v.state)`. The result was four
+          // passes reporting "10 captured · 0 verified" with no error line and
+          // no way to tell a verifier that is down from one that disagrees.
+          // Failure mode #3 inside the verification path itself.
+          if (v && !v.state && v.skipped) out.errors.push(`verify ${row.position_id}: skipped ${v.skipped}`)
           if (v && v.state) {
             recordVerdict(db, {
               accountId: row.account_id, positionId: row.position_id,
