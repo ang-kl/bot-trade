@@ -11,7 +11,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  withRetry, setAuthErrorHook, isAuthTokenError, _resetAuthRecoveryForTests,
+  withRetry, setAuthErrorHook, isAuthTokenError, _resetAuthRecoveryForTests, tagAccount,
 } from './ctrader-ws.js'
 
 const authErr = () => new Error('cTrader error: CH_ACCESS_TOKEN_INVALID — Invalid access token')
@@ -65,11 +65,54 @@ test('isAuthTokenError matches both broker spellings and nothing else', () => {
 // ---------------------------------------------------------------------------
 test('the loop installs the hook and the on-demand route exists', () => {
   const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
-  assert.match(loop, /setAuthErrorHook\(\(\) => refreshCtraderToken\(db\)\)/,
+  assert.match(loop, /setAuthErrorHook\(\(\) => refreshCtraderToken\(db\), \{/,
     'a hook nothing sets is the same dead repair this replaces')
+  // B7: the loop hands the hook the refused-account predicate.
+  assert.match(loop, /skip: \(err\) => err\?\.accountId != null && tokenRefusedAccounts\(db\)\.has\(String\(err\.accountId\)\)/,
+    'a refusal for an account the token never covered must not read as a rotation')
   const actions = readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8')
   assert.match(actions, /router\.post\('\/ctrader-token-refresh'/,
     'the on-demand lever must exist for recovery without waiting on a broker error')
   assert.doesNotMatch(actions.slice(actions.indexOf("'/ctrader-token-refresh'"), actions.indexOf("'/ctrader-token-refresh'") + 900), /req\.body/,
     'the route must never accept a caller-supplied refresh token')
+})
+
+// ---------------------------------------------------------------------------
+// B7 (18-09-2026): a refusal for an account the token never covered is NOT a
+// rotation. Measured: …2148/…9009 answered CH_ACCESS_TOKEN_INVALID on every
+// call, the hook refreshed the token every cooldown, and the heartbeat
+// re-pushed the "rotated" token to both sidecars every ~3 minutes.
+// ---------------------------------------------------------------------------
+test('B7: the skip predicate declines the refresh for a refused account and leaves the cooldown untouched', async () => {
+  _resetAuthRecoveryForTests()
+  let refreshes = 0
+  const refused = new Set(['43002148'])
+  setAuthErrorHook(async () => { refreshes++ }, {
+    skip: (err) => err?.accountId != null && refused.has(String(err.accountId)),
+  })
+  const logs = []
+  const origLog = console.log
+  console.log = (...a) => { logs.push(a.join(' ')) }
+  try {
+    await assert.rejects(
+      withRetry(async () => { throw tagAccount(authErr(), '43002148') }, 1, 'test'),
+      /CH_ACCESS_TOKEN_INVALID/)
+    assert.equal(refreshes, 0, 'refused extra account → no refresh')
+    assert.equal(logs.filter(l => /not a rotation, no reactive refresh/.test(l)).length, 2, 'said on each attempt, at info level')
+    // The same error from a covered account still refreshes — the cooldown was
+    // NOT consumed by the declined one.
+    await assert.rejects(withRetry(async () => { throw tagAccount(authErr(), '42993489') }, 0, 'test'))
+    assert.equal(refreshes, 1)
+    // An untagged error (no account known) keeps today's behaviour.
+    _resetAuthRecoveryForTests()
+    await assert.rejects(withRetry(async () => { throw authErr() }, 0, 'test'))
+    assert.equal(refreshes, 2)
+  } finally { console.log = origLog; setAuthErrorHook(null) }
+})
+
+test('B7: tagAccount names the account once and never overwrites an existing tag', () => {
+  const e = tagAccount(new Error('x'), 43002148)
+  assert.equal(e.accountId, '43002148')
+  assert.equal(tagAccount(e, '999').accountId, '43002148')
+  assert.equal(tagAccount(null, '1'), null)
 })

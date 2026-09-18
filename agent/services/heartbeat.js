@@ -22,6 +22,8 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { createHash } from 'node:crypto'
+import { refusedKeyFor } from '../lib/token-refused.js'
 import { auditControllerEvent } from './phase-audit.js'
 import { checkProtectionFreshness, protectionFreshnessFrom } from './protection-freshness.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
@@ -600,8 +602,10 @@ export function rosterDrift(sidecarAccounts, credsAccountIds, refusedAccounts = 
   return { drifted: extra.length > 0 || missing.length > 0, extra, missing, refused: refusedWanted }
 }
 
-/** State key holding the accounts a sidecar's token was refused for (B2). */
-export const refusedKeyFor = (sideName) => `${sideName}_refused_accounts_json`
+/** State key holding the accounts a sidecar's token was refused for (B2). Lives in
+ *  lib/token-refused.js since B7 so the equity sweep and the reactive refresh can
+ *  read it without importing the heartbeat; re-exported for its existing readers. */
+export { refusedKeyFor }
 
 /**
  * Active liveness probe of the C++ exec engine: polls the sidecar's
@@ -837,19 +841,34 @@ export async function sideCreds(db, side) {
  * With two sidecars an idle demo side makes this more likely, not less.
  */
 const TOKEN_PUSH_KEY = 'cpp_exec_token_push_json'
+/** B7: a short fingerprint of the token VALUE — what the sidecar holds is the
+ *  token, not the time it was fetched. Never the token itself in state. */
+export function accessTokenFingerprint(token) {
+  if (!token) return null
+  return createHash('sha256').update(String(token)).digest('hex').slice(0, 16)
+}
+
 async function repushRotatedToken(db, exec, side) {
-  const refreshedAt = getState(db, 'ctrader_token_refreshed_at')
-  if (!refreshedAt) return false
+  // B7 (18-09-2026): compare the TOKEN, not the refresh stamp. The stamp
+  // moved every ~3 minutes while the reactive refresh was firing on refused
+  // extra accounts, and each move re-pushed credentials to both sidecars —
+  // tearing the live broker session down each time — although the sidecar
+  // may well have held the very token being pushed.
+  // No refresh has ever happened → the sidecar holds the only token there is
+  // (pushed at boot); nothing to compare yet.
+  if (!getState(db, 'ctrader_token_refreshed_at')) return false
+  const fp = accessTokenFingerprint(getState(db, 'ctrader_access_token'))
+  if (!fp) return false
   let seen = {}
   try { seen = JSON.parse(getState(db, TOKEN_PUSH_KEY) || '{}') } catch { seen = {} }
-  if (seen[side.name] === refreshedAt) return false
+  if (seen[side.name] === fp) return false
   try {
     const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(await sideCreds(db, side)) : false
     // Record the stamp on ANY outcome, not only success. A not-ready credential
     // set is not going to become ready because we retried in 2 minutes, and
     // re-pushing every probe forever is the unconditional-re-push shape this
     // file already records as having cost real behaviour once.
-    seen[side.name] = refreshedAt
+    seen[side.name] = fp
     try { setState(db, TOKEN_PUSH_KEY, JSON.stringify(seen)) } catch { /* best effort */ }
     return pushed
   } catch { return false }

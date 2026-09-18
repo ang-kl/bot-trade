@@ -364,10 +364,23 @@ export function backoffMs(attempt, err, rand = Math.random) {
 // until someone notices.
 // ---------------------------------------------------------------------------
 let authErrorHook = null
+let authRecoverySkip = null
 let lastAuthRecoveryAt = 0
 export const AUTH_RECOVERY_COOLDOWN_MS = 60_000
 
-export function setAuthErrorHook(fn) { authErrorHook = fn }
+/**
+ * B7 (18-09-2026): `skip(err)` → true means this auth error is NOT a rotated
+ * token and must not trigger a refresh. The case it exists for: an EXTRA
+ * account the token was never granted for answers CH_ACCESS_TOKEN_INVALID on
+ * every call. Refreshing on that refused the same account again with a new
+ * token, moved the refresh stamp, and re-pushed credentials to both sidecars
+ * every ~3 minutes. The loop passes a predicate over B2's refused set; the
+ * error carries `accountId` when the caller tagged it (wsGetTrader does).
+ */
+export function setAuthErrorHook(fn, { skip = null } = {}) {
+  authErrorHook = fn
+  authRecoverySkip = typeof skip === 'function' ? skip : null
+}
 
 export function isAuthTokenError(err) {
   return /CH_ACCESS_TOKEN_(INVALID|EXPIRED)/.test(err?.message || '')
@@ -375,6 +388,14 @@ export function isAuthTokenError(err) {
 
 async function maybeRecoverAuth(err, now = Date.now()) {
   if (!authErrorHook || !isAuthTokenError(err)) return
+  if (authRecoverySkip) {
+    let skip = false
+    try { skip = !!authRecoverySkip(err) } catch { skip = false }
+    if (skip) {
+      console.log(`[auth] token refused for account …${String(err?.accountId ?? '').slice(-4)} — not a rotation, no reactive refresh`)
+      return
+    }
+  }
   if (now - lastAuthRecoveryAt < AUTH_RECOVERY_COOLDOWN_MS) return
   lastAuthRecoveryAt = now
   try {
@@ -782,8 +803,18 @@ export async function wsGetTrader(host, clientId, clientSecret, accessToken, acc
   const payload = await withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.TRADER_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.TRADER_RES },
-  ], timeoutMs), 2, 'wsGetTrader')
+  ], timeoutMs).catch((err) => { throw tagAccount(err, accountId) }), 2, 'wsGetTrader')
   return payload.trader || {}
+}
+
+/** B7: name the account an error came from, so the reactive refresh can tell a
+ *  refused extra account from a rotated token. Tagged inside the retried fn so
+ *  withRetry's recovery sees it. */
+export function tagAccount(err, accountId) {
+  if (err && typeof err === 'object' && err.accountId == null && accountId != null) {
+    try { err.accountId = String(accountId) } catch { /* frozen error — untagged */ }
+  }
+  return err
 }
 
 /**

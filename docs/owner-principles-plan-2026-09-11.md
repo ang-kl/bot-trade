@@ -496,7 +496,22 @@ squash-merge.
 - **B2** (separate PR, C++ + Node) — the live sidecar's `/health` reports the
   accounts the token was REFUSED for; the heartbeat treats tried-and-refused
   as not-drift (one warning on change, not an error every 2 minutes); the
-  registry names them unauthorised.
+  registry names them unauthorised. Merged in #952 with B1/B3–B6; read back
+  19:02 SGT: one warning, no drift lines, `tokenRefused` on …2148/…9009.
+- **B7** (found by the #952 read-back; owner: "build B7, merge when green") —
+  the loop B2 did not touch: the cross-side equity pass kept asking the broker
+  about …2148/…9009 through Node's own WebSocket, each refusal fired the
+  reactive token refresh (a REAL OAuth refresh at Spotware, ~20 an hour), the
+  refresh stamp moved, and the heartbeat re-pushed the "rotated" token to both
+  sidecars, tearing the live broker session down every ~3 minutes. Three
+  changes: `lib/token-refused.js` reads B2's refused set; the equity sweep
+  skips those accounts (named as skipped, not failed); the reactive refresh
+  declines an error tagged with a refused account (`setAuthErrorHook(fn,
+  { skip })`, `wsGetTrader` tags its errors); the heartbeat compares a
+  fingerprint of the token VALUE, not the refresh stamp. Read-back: no
+  "refreshed reactively" line for …2148/…9009, no "rotated access token
+  re-pushed" line, the live sidecar's `/connect` count stops climbing, the
+  equity line reads "skipped 2 (token refused)".
 
 ### 9.3 Open on the owner's side (unchanged from §8, restated)
 
