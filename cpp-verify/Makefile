@@ -1,8 +1,20 @@
 # cpp-verify — the read-only position verifier.
 #
-# BUILD CONTEXT IS THE REPOSITORY ROOT, not this directory: the WebSocket
-# transport and the HTTP server are cpp-exec's and are compiled from there
-# rather than copied. Copies drift; this cannot.
+# BUILD CONTEXT IS THIS DIRECTORY, and the WebSocket transport and HTTP server
+# are VENDORED COPIES of cpp-exec's, sitting in src/ beside this service's own.
+#
+# That is a reversal, and the reason is measured rather than preferred. While
+# this service compiled cpp-exec's files in place, its build context had to be
+# the repository root — and the repository root carries railway.json and
+# Dockerfile belonging to the NODE service, which Railway reads in preference
+# to any panel setting on a fresh deploy. The result was a service named
+# cpp-verify that built, in turn, the trading agent (crash-looping on
+# AGENT_SECRET) and then cpp-exec itself — an ORDER-PLACING ENGINE running
+# where the read-only one belongs. Sharing source cost the read-only guarantee.
+#
+# Copies drift, so the drift is made loud instead of silent:
+# agent/services/sidecar-pins.test.js asserts each file here is BYTE-IDENTICAL
+# to cpp-exec/src/, and goes red naming the file when it is not.
 #
 # WHAT IS DELIBERATELY ABSENT: cpp-exec/src/engine.cpp and everything it
 # pulls in. "Read-only" is a property of the link line here, not a promise
@@ -17,17 +29,18 @@ CXXFLAGS := -std=c++20 -Wall -Wextra -I$(OPENSSL_PREFIX)/include
 LDFLAGS  := -L$(OPENSSL_PREFIX)/lib
 LDLIBS   := -lssl -lcrypto
 
-SHARED   := ../cpp-exec/src/ws_client.cpp ../cpp-exec/src/http_server.cpp
+# The vendored transport sits in src/ alongside this service's own sources, so
+# the wildcard covers it and every vendored file keeps cpp-exec's own relative
+# includes unchanged — which is what lets the byte-identity test be exact.
 SRC      := $(wildcard src/*.cpp)
 TEST_SRC := $(wildcard src/tests/*.cpp)
-LIB_SRC  := $(filter-out src/main.cpp,$(SRC)) $(SHARED)
+LIB_SRC  := $(filter-out src/main.cpp,$(SRC))
 
 # Headers are prerequisites for the same reason cpp-exec's Makefile spells
 # out at length (see its comment): without them a header-only change rebuilds
 # nothing and `make test` re-runs stale binaries, so a mutation check on code
 # that lives in a .hpp reports green while the edit is sitting on disk.
-HDRS     := $(wildcard src/*.hpp) $(wildcard src/tests/*.hpp) \
-            $(wildcard ../cpp-exec/src/*.hpp) $(wildcard ../cpp-exec/src/tests/*.hpp)
+HDRS     := $(wildcard src/*.hpp) $(wildcard src/tests/*.hpp)
 
 BIN       := bin/cpp-verify
 TEST_BINS := $(patsubst src/tests/%.cpp,bin/%,$(TEST_SRC))
@@ -36,9 +49,9 @@ TEST_BINS := $(patsubst src/tests/%.cpp,bin/%,$(TEST_SRC))
 
 all: $(BIN)
 
-$(BIN): $(SRC) $(SHARED) $(HDRS)
+$(BIN): $(SRC) $(HDRS)
 	@mkdir -p bin
-	$(CXX) $(CXXFLAGS) $(SRC) $(SHARED) -o $@ $(LDFLAGS) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(SRC) -o $@ $(LDFLAGS) $(LDLIBS)
 
 bin/%: src/tests/%.cpp $(LIB_SRC) $(HDRS)
 	@mkdir -p bin

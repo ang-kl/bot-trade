@@ -25,8 +25,8 @@
 #include <string>
 #include <vector>
 
-#include "../../cpp-exec/src/json.hpp"
-#include "../../cpp-exec/src/ws_client.hpp"
+#include "json.hpp"
+#include "ws_client.hpp"
 
 namespace verify {
 

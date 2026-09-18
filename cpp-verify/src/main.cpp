@@ -25,8 +25,8 @@
 #include <string>
 #include <vector>
 
-#include "../../cpp-exec/src/http_server.hpp"
-#include "../../cpp-exec/src/json.hpp"
+#include "http_server.hpp"
+#include "json.hpp"
 #include "verdict.hpp"
 #include "verify_session.hpp"
 

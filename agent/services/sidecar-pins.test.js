@@ -126,8 +126,12 @@ test('cpp-verify links no order-writing code — the read-only guarantee is stru
   // matching its own prose is CLAUDE.md failure mode #2, so strip properly.
   const mkStrip = (t) => t.replace(/^\s*#.*$/gm, '')
   const mk = mkStrip(readFileSync(new URL('../../cpp-verify/Makefile', import.meta.url), 'utf8'))
-  assert.match(mk, /SHARED\s*:=\s*\.\.\/cpp-exec\/src\/ws_client\.cpp \.\.\/cpp-exec\/src\/http_server\.cpp\s*$/m,
-    'only the transport is borrowed from cpp-exec')
+  // PR-AN: the vendored transport lives in src/ and is picked up by the
+  // wildcard, so there is no SHARED line to read any more. WHAT IS VENDORED is
+  // pinned exactly by the byte-identity test below; what must never appear is
+  // still asserted here.
+  assert.doesNotMatch(mk, /\.\.\/cpp-exec/,
+    'nothing reaches outside this directory — that is what forced the root build context')
   assert.doesNotMatch(mk, /engine\.cpp|order_guard\.cpp|trail_engine\.cpp|vpo_dispatcher\.cpp/,
     'and never the execution engine or anything that can place, amend or close')
 
@@ -164,15 +168,74 @@ test('cpp-verify pins its own builder and Dockerfile, not the repo root service\
   const cfg = JSON.parse(readFileSync(new URL('../../cpp-verify/railway.json', import.meta.url), 'utf8'))
   assert.equal(cfg.build?.builder, 'DOCKERFILE',
     'RAILPACK auto-detection is what picked up the root Node image; the builder is stated')
-  assert.equal(cfg.build?.dockerfilePath, 'cpp-verify/Dockerfile',
-    'relative to the REPO ROOT, because that is this service\'s build context')
+  assert.equal(cfg.build?.dockerfilePath, 'Dockerfile',
+    'relative to the /cpp-verify root directory — see the PR-AN test below for why')
   assert.equal(cfg.deploy?.healthcheckPath, '/health',
     'a deploy that never serves must fail the healthcheck rather than sit there')
 
-  // The root config is a DIFFERENT service's and must not be what cpp-verify
-  // reads — if these two ever agree on dockerfilePath, the root one is being
-  // inherited again and the verifier is building the agent.
+  // PR-AM asserted here that the root config's dockerfilePath DIFFERED from
+  // this one, on the reasoning that agreement meant the root was being
+  // inherited. PR-AN makes that check meaningless rather than wrong: both now
+  // read 'Dockerfile' because each resolves against its OWN root directory,
+  // and the same basename no longer implies the same file. What actually has
+  // to hold is that this service's build context is its own directory, which
+  // is asserted directly in the PR-AN test below instead of inferred from a
+  // string comparison.
   const root = JSON.parse(readFileSync(new URL('../../railway.json', import.meta.url), 'utf8'))
-  assert.notEqual(root.build?.dockerfilePath, cfg.build?.dockerfilePath,
-    'the root Dockerfile builds the Node agent — the verifier must never resolve to it')
+  assert.equal(root.build?.builder, 'DOCKERFILE',
+    'the Node service still depends on the root config: its panel carries no builder')
+})
+
+// ---------------------------------------------------------------------------
+// PR-AN: the vendored transport must stay BYTE-IDENTICAL to cpp-exec's.
+//
+// WHY THE COPY EXISTS AT ALL, since duplication was deliberately avoided when
+// cpp-verify was built. Compiling cpp-exec's files in place forced the build
+// context to be the repository ROOT — and the root carries `railway.json` and
+// `Dockerfile` belonging to the NODE service, which Railway reads in
+// preference to any panel setting on a fresh deploy. Measured 17-09-2026: the
+// service named cpp-verify built the trading agent (crash-looping on
+// AGENT_SECRET at 23:03 UTC), and then, with the root pointed elsewhere, built
+// and RAN cpp-exec itself at 23:15 — an order-placing engine live on the
+// read-only service. Sharing the source cost the read-only guarantee, so the
+// source is vendored and the context is this directory.
+//
+// The cost of a copy is drift, and a drifted transport is the kind of defect
+// nobody reads: the verifier would keep answering, just against a different
+// framing or socket implementation than the executor uses. So drift is a RED
+// TEST that names the file, not a code-review hope.
+// ---------------------------------------------------------------------------
+test('PR-AN: cpp-verify\'s vendored transport is byte-identical to cpp-exec\'s', () => {
+  // The complete vendored set. json.hpp and the test's fake_broker.hpp are
+  // here too: both were cpp-exec dependencies that the first cut of this
+  // change missed, and with the build context narrowed to this directory they
+  // would have failed the Docker build rather than degrading quietly.
+  const files = [
+    ['ws_client.cpp', 'src'], ['ws_client.hpp', 'src'],
+    ['http_server.cpp', 'src'], ['http_server.hpp', 'src'],
+    ['json.hpp', 'src'],
+    ['fake_broker.hpp', 'src/tests'],
+  ]
+  for (const [f, dir] of files) {
+    const from = dir === 'src/tests' ? 'src/tests' : 'src'
+    const origin = readFileSync(new URL(`../../cpp-exec/${from}/${f}`, import.meta.url))
+    const vendored = readFileSync(new URL(`../../cpp-verify/${dir}/${f}`, import.meta.url))
+    assert.ok(origin.equals(vendored),
+      `cpp-verify/${dir}/${f} has DRIFTED from cpp-exec/${from}/${f} — re-copy it, or if the ` +
+      `divergence is intentional, say so here and explain why the verifier needs a different transport`)
+  }
+})
+
+test('PR-AN: cpp-verify builds from its own directory, so it cannot inherit the root service\'s config', () => {
+  const cfg = JSON.parse(readFileSync(new URL('../../cpp-verify/railway.json', import.meta.url), 'utf8'))
+  // Relative to the /cpp-verify root directory now — NOT 'cpp-verify/Dockerfile',
+  // which only resolves when the context is the repository root, which is the
+  // arrangement that let the Node service's config win.
+  assert.equal(cfg.build?.dockerfilePath, 'Dockerfile')
+  const df = readFileSync(new URL('../../cpp-verify/Dockerfile', import.meta.url), 'utf8')
+    .replace(/^\s*#.*$/gm, '')
+  assert.doesNotMatch(df, /COPY\s+cpp-exec\//,
+    'a COPY reaching outside this directory forces the root context back')
+  assert.doesNotMatch(df, /COPY\s+cpp-verify\b/, 'same')
+  assert.match(df, /COPY\s+src\s+\.\/src/, 'the sources come from this directory')
 })

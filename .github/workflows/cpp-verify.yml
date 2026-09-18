@@ -1,10 +1,18 @@
 # Build + unit-test the read-only position verifier on Linux with g++/libssl —
 # the Railway runtime, not just clang on a dev machine.
 #
-# THE PATH LIST INCLUDES cpp-exec's TRANSPORT ON PURPOSE. cpp-verify compiles
-# ws_client.cpp and http_server.cpp out of cpp-exec rather than keeping a copy,
-# so a change there is a change to THIS service too. Leaving them out would be
-# a gate that cannot fire on the code it guards.
+# THE PATH LIST INCLUDES cpp-exec's TRANSPORT ON PURPOSE, and PR-AN changed the
+# reason without changing the list. cpp-verify no longer compiles those files
+# out of cpp-exec — it VENDORS byte-identical copies under cpp-verify/src/, so
+# that its build context can be its own directory (the repository root's
+# railway.json belongs to the Node service and wins over any panel setting on a
+# fresh deploy; while the context was the root, this service built the trading
+# agent, and then cpp-exec itself).
+#
+# So a change to cpp-exec's transport is still a change to THIS service: the
+# copy must be re-synced, and agent/services/sidecar-pins.test.js goes red
+# naming the file until it is. Leaving these paths out would be a gate that
+# cannot fire on the code it guards.
 name: cpp-verify
 on:
   pull_request:
