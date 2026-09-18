@@ -164,6 +164,11 @@ test('completenessSpan measures where clean data begins instead of arguing it fr
     `).run(new Date(closedMs - 100).toISOString(), new Date(closedMs).toISOString(), closedMs, String(pid), ACCT, re.lastInsertRowid)
     db.prepare(`INSERT INTO trade_plans (trade_id, account_id, symbol, side, strategy, planned_entry, planned_sl, risk_dist)
                 VALUES (?, ?, 'EURUSD','BUY','vwap_trend',1.1,1.098,0.002)`).run(t.lastInsertRowid, ACCT)
+    // C·4: a complete record needs a FILL volume — the broker's deal, not the
+    // requested size on the trade row.
+    db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
+                VALUES (?, ?, ?, 'EURUSD', 'BUY', 10000, 1.1, 1.105, ?, ?, 50, -1, -1, 48)`)
+      .run(`d${pid}`, String(pid), ACCT, new Date(closedMs - 100).toISOString(), new Date(closedMs).toISOString())
     capturePosition(db, { accountId: ACCT, positionId: String(pid) })
   }
   mk(1, after)

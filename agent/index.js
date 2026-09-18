@@ -356,7 +356,7 @@ try {
     const { seedWatchlistAdditionsFromConfig } = await import('./services/watchlists.js')
     const wa = seedWatchlistAdditionsFromConfig(db, { log: (m) => console.log(m) })
     if (wa.error) console.error(`[boot] watchlist additions: ${wa.error}`)
-    else console.log(`[boot] watchlist additions: ${wa.added} added across ${wa.lists} list(s), ${wa.present} already present (config/watchlist-additions.json)`)
+    else console.log(`[boot] watchlist additions: ${wa.added} added across ${wa.lists} list(s), ${wa.present} already present${wa.removed ? `, ${wa.removed} removed` : ''} (config/watchlist-additions.json)`)
   } catch (err) {
     console.error(`[boot] watchlist additions seed failed (non-fatal): ${err.message}`)
   }

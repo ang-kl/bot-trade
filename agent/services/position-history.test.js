@@ -152,8 +152,13 @@ test('with no broker row the local figures are used and the source says so — n
   seedComplete(db)
   db.exec('DELETE FROM broker_deals')
   const { record, missing } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
-  assert.deepEqual(missing, [])
+  // C·4: the money and prices fall back to the local row; the VOLUME does
+  // not — trades.volume is what was asked for, and a request is not a fill.
+  assert.deepEqual(missing, ['volume'])
   assert.equal(record.net_pnl, 48)
+  assert.equal(record.volume, null)
+  assert.equal(record.requested_volume, 10000, 'the request is kept beside the record, never as the fill')
+  assert.match(JSON.parse(record.sources_json).volume, /requested size, not the fill/)
   assert.equal(JSON.parse(record.sources_json).money, 'trades',
     'a caller must be able to see this was never confirmed against the broker')
 })
@@ -406,9 +411,62 @@ test('keeper truth: a part with no lots makes the group\'s lots ABSENT, never a 
               VALUES ('d2', ?, ?, 'EURUSD', 'BUY', NULL, 1.1000, 1.1065, ?, ?, 24)`)
     .run(PID, ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
   db.prepare(`UPDATE trades SET volume = 12.57 WHERE ctrader_position_id = ?`).run(PID)
-  const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
-  assert.equal(record.volume, 12.57, 'falls through to the next source rather than summing one part')
-  assert.match(JSON.parse(record.sources_json).volume, /requested size/)
+  const { record, missing } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
+  // C·4 (COST.US, the verifier's first contract-3 dispute: ours 12.57
+  // requested vs the broker's 12.5 fill): the request never stands in.
+  assert.equal(record.volume, null, 'no partial sum, and no request presented as the fill')
+  assert.ok(missing.includes('volume'))
+  assert.equal(record.requested_volume, 12.57)
+  assert.match(JSON.parse(record.sources_json).volume, /requested size, not the fill/)
+})
+
+// ---------------------------------------------------------------------------
+// C·3 / C·4 (18-09-2026): the view lists the disputes with their sources, and
+// the post-cutoff refusals that also OPENED after the cutoff — the "live gap"
+// the boot line counted and nothing listed.
+// ---------------------------------------------------------------------------
+test('C·4: the view lists disputed records with the disagreeing fields and where our figure came from', () => {
+  const db = fresh()
+  seedComplete(db)
+  assert.equal(capturePosition(db, { accountId: ACCT, positionId: PID }).ok, true)
+  recordVerdict(db, { accountId: ACCT, positionId: PID, state: 'disputed', host: 'demo.ctrader.com',
+    disputes: [{ field: 'volume', keeper: 12.57, broker: 12.5 }], contractVersion: 3 })
+  const v = positionHistoryView(db)
+  assert.equal(v.verification.disputed, 1)
+  assert.equal(v.disputed.length, 1)
+  assert.equal(v.disputed[0].ctrader_position_id, PID)
+  assert.deepEqual(v.disputed[0].disputes, [{ field: 'volume', keeper: 12.57, broker: 12.5 }])
+  assert.equal(v.disputed[0].sources.volume, 'broker_deals')
+  assert.equal(v.disputed[0].requested_volume, 10000)
+})
+
+test('C·3: the view lists the refusals that opened after the cutoff, by missing field, origin and strategy', () => {
+  const db = fresh()
+  const cutoffMs = Date.parse('2026-09-11T00:00:00Z')
+  // One refusal opened BEFORE the cutoff (history), two opened after (the gap).
+  const ins = db.prepare(`INSERT INTO position_history_incomplete (account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json) VALUES (?,?,?,?,?,?)`)
+  ins.run(ACCT, 'p-old', 'EURUSD', cutoffMs + 86400_000, JSON.stringify(['direction_reason']),
+    JSON.stringify({ opened_at_ms: cutoffMs - 86400_000, origin: 'scan_dispatch', strategy: 'vwap_trend' }))
+  ins.run(ACCT, 'p-ext', 'XRPUSD', cutoffMs + 2 * 86400_000, JSON.stringify(['direction_reason', 'strategy', 'planned_entry']),
+    JSON.stringify({ opened_at_ms: cutoffMs + 3600_000, origin: 'external', strategy: null }))
+  ins.run(ACCT, 'p-book', 'LLY.US', cutoffMs + 3 * 86400_000, JSON.stringify(['direction_reason']),
+    JSON.stringify({ opened_at_ms: cutoffMs + 7200_000, origin: 'momentum_book', strategy: 'tsmom_long' }))
+  const v = positionHistoryView(db, { cutoffMs })
+  const g = v.sinceCutoff.openedAfterCutoff
+  assert.equal(g.n, 2, 'the pre-cutoff opening is history, not a gap')
+  assert.deepEqual(g.byMissingField[0], { field: 'direction_reason', n: 2 })
+  assert.deepEqual(g.byOrigin.map(x => x.key).sort(), ['external', 'momentum_book'])
+  assert.deepEqual(g.byStrategy.find(x => x.key === 'null'), { key: 'null', n: 1 })
+  assert.deepEqual(g.rows.map(r => r.ctrader_position_id), ['p-book', 'p-ext'], 'newest close first')
+  assert.deepEqual(g.rows[1].missing, ['direction_reason', 'strategy', 'planned_entry'])
+  // The per-account view scopes the list too.
+  assert.equal(positionHistoryView(db, { cutoffMs, accountId: 'other' }).sinceCutoff.openedAfterCutoff.n, 0)
+})
+
+test('C·4: the requested_volume column exists on a fresh database and on one migrated from before it', () => {
+  const db = fresh()
+  const cols = new Set(db.prepare(`PRAGMA table_info(position_history)`).all().map(c => c.name))
+  assert.ok(cols.has('requested_volume'))
 })
 
 test('keeper truth: without a deal the volume the reconciler read off the live position beats the requested size', () => {

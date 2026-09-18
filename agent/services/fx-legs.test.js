@@ -12,7 +12,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
-  requiredQuoteCurrencies, legSymbolFor, staleLegs, refreshFxLegs, fxLegReport,
+  requiredQuoteCurrencies, legSymbolFor, staleLegs, refreshFxLegs, fxLegReport, readLegAttempts, LEG_RETRY_AFTER_MS,
   legVetoDemand, LEG_REFRESH_AFTER_MS,
 } from './fx-legs.js'
 import { loadFxRates, readFxTable } from './fx-rates.js'
@@ -234,4 +234,37 @@ test('the report names each currency, its leg, and how old it is', () => {
   assert.equal(by.PLN.state, 'expired')     // this is the one that vetoed 695 entries
   assert.equal(by.NOK.state, 'missing')
   assert.ok(rep.unusable >= 2)
+})
+
+// ---------------------------------------------------------------------------
+// C·5 (18-09-2026): USDCLP, USDCOP and USDBRL were asked for every cycle and
+// refused every cycle ("no usable quote") — a rate nothing consumed, because
+// a USD-base pair is sized off its own scanned price and no cross on the
+// watchlist is quoted in those currencies.
+// ---------------------------------------------------------------------------
+test('C·5: a USD-base pair is not a demand for its own quote currency; a cross still is, and the USD pair is still its leg', () => {
+  assert.deepEqual([...requiredQuoteCurrencies(['USDCLP', 'USDCOP', 'USDBRL', 'USDJPY'])], [],
+    'sized off their own price — the refresher owes them nothing')
+  const got = requiredQuoteCurrencies(['USDJPY', 'EURJPY'])
+  assert.deepEqual([...got], ['JPY'], 'the cross demands JPY')
+  assert.equal(legSymbolFor('JPY', { USDJPY: 11 }), 'USDJPY', 'and USDJPY is the leg that resolves it')
+})
+
+test('C·5: a leg the broker refused is not asked again until LEG_RETRY_AFTER_MS, and is forgotten once it prices', async () => {
+  const db = initDB(':memory:')
+  let asks = 0
+  let quote = null
+  const getSpot = async () => { asks++; return quote }
+  const args = { symbols: ['EURPLN'], symbolMap: { USDPLN: 10 }, getSpot }
+  const r1 = await refreshFxLegs(db, { ...args, now: NOW })
+  assert.deepEqual(r1.failed, ['USDPLN']); assert.equal(asks, 1)
+  assert.equal(readLegAttempts(db).USDPLN, NOW, 'the refusal is remembered')
+  const r2 = await refreshFxLegs(db, { ...args, now: NOW + 60_000 })
+  assert.equal(asks, 1, 'a minute later the leg is NOT asked again')
+  assert.deepEqual(r2.failed, [], 'and the cycle reports nothing failed — there was nothing to report')
+  quote = { bid: 3.79, ask: 3.80 }
+  const r3 = await refreshFxLegs(db, { ...args, now: NOW + LEG_RETRY_AFTER_MS + 1000 })
+  assert.equal(asks, 2, 'past the retry window it is asked once more')
+  assert.deepEqual(r3.fetched, ['USDPLN'])
+  assert.equal(readLegAttempts(db).USDPLN, undefined, 'a priced leg is no longer remembered as refused')
 })
