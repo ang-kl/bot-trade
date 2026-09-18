@@ -2626,6 +2626,11 @@ async function runLoop(db) {
     const { reconcileTradePricesToBroker } = await import('./services/broker-history-import.js')
     const fix = reconcileTradePricesToBroker(db)
     if (fix.corrected) log(`corrected ${fix.corrected} fill price(s) from the broker ledger`)
+    // Keeper-truth fix (18-09-2026): fill TIME and fill VOLUME are written
+    // back too, and said when they are — the read-back for that change.
+    if (fix.closeTimesCorrected || fix.volumesCorrected) {
+      log(`corrected ${fix.closeTimesCorrected || 0} close time(s) and ${fix.volumesCorrected || 0} fill volume(s) from the broker ledger`)
+    }
     // STAMPED, NOT SWALLOWED. A thrown transaction used to come back as
     // `corrected: 0`, the same reading as "the record already agrees". The
     // error is logged and kept in state (cleared on the next clean pass) so
