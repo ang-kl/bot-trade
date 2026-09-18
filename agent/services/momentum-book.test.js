@@ -1432,3 +1432,115 @@ test('PR-P: a row the TRAIL closes (its trade went away while the row was open) 
   // this reason and was removed rather than left as decoration.)
   assert.deepEqual(JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY)).marks, {}, 'a closed trade leaves no mark behind')
 })
+
+// ---------------------------------------------------------------------------
+// PR-AV — the trail says what it decided, on every pass.
+//
+// THE MEASURED DEFECT (18-09-2026, /state/momentum-book): five of 36 open book
+// rows carried `atr: null`, two of them open since 07-09. The stored `atr` was
+// written in exactly ONE place — inside the `trailImproves` branch — so a row
+// whose 3-ATR trail sat wider than its standing stop never wrote one. That is
+// the correct outcome of a wide trail, and it read identically to a row the
+// ratchet had never reached.
+//
+// Nothing traded wrong: the stored value was never an INPUT (the trail
+// recomputes ATR from bars every pass, and `row.atr` was read only by the
+// view). The cost was diagnostic, and this repo has a name for it — a panel
+// that cannot tell a working guard from a dead one. The fix is that every
+// branch which ends a row's pass records what it decided.
+// ---------------------------------------------------------------------------
+
+/** Enter one book row, then hand it back with the trail's record blanked. */
+async function bookRowWithStop(stop, { fill = true } = {}) {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', rank: 0.95, conviction: 9 })
+  const f = fakes({ fill })
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 1_000 })
+  const row = db.prepare(`SELECT * FROM momentum_book ORDER BY id DESC LIMIT 1`).get()
+  assert.ok(row, 'the fixture opened a book row')
+  db.prepare(`UPDATE momentum_book SET stop = ?, atr = NULL, trail_checked_at = NULL, trail_note = NULL WHERE id = ?`).run(stop, row.id)
+  db.prepare(`DELETE FROM momentum_shadow`).run()   // no further entries or exits
+  return { db, f, id: row.id }
+}
+const trailRow = (db, id) => db.prepare(`SELECT atr, trail_checked_at, trail_note, stop FROM momentum_book WHERE id = ?`).get(id)
+
+test('PR-AV THE MEASURED CASE: a trail that DECLINES still records that it ran', async () => {
+  // ATR over the fixture bars is 2 and the last close is 102.9, so the 3-ATR
+  // candidate is 96.9 — wider than a stop already standing at 99, which is
+  // exactly the condition that used to leave no trace at all.
+  const { db, f, id } = await bookRowWithStop(99)
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+
+  const r = trailRow(db, id)
+  assert.equal(r.stop, 99, 'the stop correctly did NOT move')
+  assert.equal(f.calls.amend.length, 0, 'and nothing was sent to the broker')
+  assert.equal(r.atr, 2, 'BUT the ATR it computed is now on the row — this is the whole fix')
+  assert.ok(r.trail_checked_at, 'and when it ran')
+  assert.match(r.trail_note, /declined/, 'and that it declined')
+  assert.match(r.trail_note, /trail at 96\.9/,
+    'naming the UNCLAMPED candidate — the ratchet\'s own output just equals the standing stop and says nothing')
+  assert.match(r.trail_note, /standing stop 99/, 'and the stop that beat it')
+})
+
+test('PR-AV: a trail that MOVES records the move', async () => {
+  const { db, f, id } = await bookRowWithStop(90)
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+
+  const r = trailRow(db, id)
+  assert.equal(r.stop, 96.9, 'the ratchet moved the stop up')
+  assert.equal(f.calls.amend.length, 1, 'and amended at the broker')
+  assert.equal(r.atr, 2)
+  assert.ok(r.trail_checked_at)
+  assert.match(r.trail_note, /trailed 90 -> 96\.9/)
+})
+
+test('PR-AV: thin bars leave a NULL atr — but a STAMP, so "no data" never reads like "never ran"', async () => {
+  const { db, f, id } = await bookRowWithStop(99)
+  f.deps.bars = async () => f.bars.slice(0, 5)   // fewer than atrPeriod + 1
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+
+  const r = trailRow(db, id)
+  assert.equal(r.atr, null, 'no ATR is computable from five bars, and none is invented')
+  assert.ok(r.trail_checked_at, 'the stamp is the difference: the ratchet DID run')
+  assert.match(r.trail_note, /no ATR/)
+  assert.match(r.trail_note, /got 5/, 'and says how many bars it had — the operator\'s actual remedy')
+})
+
+test('PR-AV: a row the pass cannot reach says WHY, in the same field', async () => {
+  const { db, f, id } = await bookRowWithStop(99)
+  f.deps.bars = async () => { throw new Error('broker timeout') }
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+
+  const r = trailRow(db, id)
+  assert.ok(r.trail_checked_at)
+  assert.match(r.trail_note, /not reached/)
+  assert.match(r.trail_note, /broker timeout/,
+    '"the broker was down for one pass" and "this symbol does not resolve" have different remedies and must not share a null')
+})
+
+test('PR-AV: an unresolvable symbol is named too, without ever calling for bars', async () => {
+  const { db, f, id } = await bookRowWithStop(99)
+  f.deps.symbolMap = {}                     // nothing resolves
+  let barsCalled = 0
+  f.deps.bars = async () => { barsCalled++; return f.bars }
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+
+  const r = trailRow(db, id)
+  assert.equal(barsCalled, 0)
+  assert.match(r.trail_note, /symbol does not resolve/)
+  assert.ok(r.trail_checked_at)
+})
+
+test('PR-AV: the view carries the trail\'s own account, so a null atr can be read correctly', async () => {
+  const { db, f, id } = await bookRowWithStop(99)
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+
+  const view = momentumBookReport(db)
+  const o = view.open.find(x => x.symbol === 'BTCUSD')
+  assert.ok(o, JSON.stringify(view.open))
+  assert.ok(o.trailCheckedAt, 'the panel that reported the null now reports the stamp beside it')
+  assert.match(o.trailNote, /declined/)
+  assert.equal(trailRow(db, id).atr, 2)
+})

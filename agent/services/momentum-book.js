@@ -855,6 +855,34 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     const k = markKey(r.account_id, r.symbol)
     if (prevMarks[k]) nextMarks[k] = prevMarks[k]
   }
+  // PR-AV: the trail's work is recorded on EVERY pass that reaches it, not
+  // only on a pass that moved the stop.
+  //
+  // THE DEFECT, measured 18-09-2026 from /state/momentum-book: five of 36 open
+  // rows carried `atr: null`, two of them open since 07-09. The stored `atr`
+  // was written in one place only -- inside the `trailImproves` branch below --
+  // so a row whose 3-ATR trail sat WIDER than its current stop never wrote one.
+  // That is the correct and common outcome of a wide trail, and it was
+  // indistinguishable in the read from a row the ratchet had never reached at
+  // all. The stored value was never an INPUT to anything (the trail recomputes
+  // ATR from bars every pass), so nothing traded wrong -- but the only panel
+  // that answers "is the ratchet alive on this row" could not tell a working
+  // ratchet from a dead one. Failure mode #3, in its reporting half: two
+  // conditions with different remedies collapsed into one null.
+  //
+  // So: every branch below that ends this row's pass says what it decided.
+  const noteTrail = (id, note, atr = null) => {
+    try {
+      db.prepare(`UPDATE momentum_book SET trail_checked_at = ?, trail_note = ?, atr = COALESCE(?, atr) WHERE id = ?`)
+        // `atr == null` FIRST: Number(null) is 0 and Number.isFinite(0) is
+        // true, so the obvious one-liner writes a real-looking ATR of zero
+        // onto a row that could not compute one — the same null-is-not-zero
+        // trap trailStop's own comment warns about, walked straight into on
+        // the first draft of this fix and caught by the thin-bars test.
+        .run(new Date(now).toISOString(), String(note).slice(0, 200),
+          atr == null || !Number.isFinite(Number(atr)) ? null : Number(atr), id)
+    } catch { /* the trail must not fail on its own bookkeeping */ }
+  }
   for (const row of db.prepare(`SELECT * FROM momentum_book WHERE status = 'open'`).all()) {
     const rowSide = row.side === 'short' ? 'short' : 'long'
     const mk = markKey(row.account_id, row.symbol)
@@ -884,6 +912,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     // tell them apart from a count (checker MAJOR 2).
     if (!creds || symbolId == null || !deps.bars) {
       markFail[mk] = !acct ? 'account not in this pass' : !creds ? 'no credentials this pass' : symbolId == null ? 'symbol does not resolve on this account' : 'no bars reader'
+      noteTrail(row.id, `not reached: ${markFail[mk]}`)
       continue
     }
     try {
@@ -915,11 +944,32 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       // limit builder reads (lot-sizing.getVolumeMeta).
       const digits = deps.digitsFor ? await deps.digitsFor(creds, symbolId) : null
       const next = raw != null && digits != null ? roundToDigits(raw, digits) : raw
-      if (next != null && trailImproves({ side: rowSide, prevStop: row.stop, nextStop: next })) {
+      if (next == null || !trailImproves({ side: rowSide, prevStop: row.stop, nextStop: next })) {
+        // THE COMMON CASE, and the one that used to leave no trace. A 3-ATR
+        // trail is wide: for a short it only improves when close + 3*ATR falls
+        // below the stop already standing. Saying so — with the candidate and
+        // the standing stop — is what lets an operator distinguish "working,
+        // declined" from "never ran" without reading this file.
+        noteTrail(row.id,
+          atr == null
+            ? `no ATR: ${cfg.atrPeriod}-period ATR needs ${cfg.atrPeriod + 1} bars, got ${Array.isArray(bars) ? bars.length : 0}`
+            : next == null
+              ? `no trail candidate (close ${close})`
+              // `next` here is the RATCHET's output (Math.max/min of the
+              // candidate and the standing stop), so on a declined pass it
+              // simply equals the standing stop and says nothing. The
+              // operator needs the unclamped candidate — what the trail
+              // WOULD have set — which is the close offset by stopAtr ATRs.
+              : `declined: ${cfg.stopAtr}xATR from close ${close} puts the trail at ` +
+                `${Math.round((rowSide === 'short' ? close + cfg.stopAtr * atr : close - cfg.stopAtr * atr) * 1e5) / 1e5}; ` +
+                `the standing stop ${row.stop} is already tighter`,
+          atr)
+      } else {
         // A stop-only amend CLEARS the take profit at the broker; the book
         // never holds one, and says so (assertAmendIntent).
         if (row.position_id && deps.amend) await deps.amend(creds, { positionId: row.position_id, stopLoss: next, takeProfit: null })
         db.prepare(`UPDATE momentum_book SET stop = ?, atr = ? WHERE id = ?`).run(next, atr, row.id)
+        noteTrail(row.id, `trailed ${row.stop} -> ${next} on ${cfg.stopAtr}xATR ${atr}`, atr)
         if (row.trade_id != null) {
           // The amend above clears the target at the broker; the record clears
           // with it, so the target-restore sweep has nothing to put back (rows
@@ -933,6 +983,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       // PR-P: the trail already names this one; the brake needs the same fact
       // in a form it can put next to the row it could not price.
       markFail[mk] = `bars unavailable: ${String(err.message).slice(0, 60)}`
+      noteTrail(row.id, `not reached: ${markFail[mk]}`)
       summary.skipped.push(`${row.symbol} trail: ${err.message}`)
     }
   }
@@ -1016,7 +1067,11 @@ export function momentumBookReport(db) {
       }
       return { note: 'Open mark-to-market on this account\'s own book rows, as a percentage of the risk they put up at entry. At or above limitPct the account takes no NEW book entries. It ALSO refuses when coveragePct (rows it can price / rows open) is under minCoveragePct — a reading built on a minority of the book is not the book\'s reading — and whatever it cannot read is named in the loop log every pass, blocking or not. Exits, stops and the owed-exit retry never consult it. ageBasis says whether staleness was measured on the bar\'s own stamp or on the fetch clock.', accounts: out }
     })(),
-    open: open.map(o => ({ account: `…${String(o.account_id).slice(-4)}`, symbol: o.symbol, side: o.side, entry: o.entry_price, stop: o.stop, atr: o.atr, enteredAt: o.entered_at, status: o.status })),
+    // PR-AV: `atr` alone could not say whether the ratchet was alive on a row.
+    // `trailCheckedAt` and `trailNote` are the trail's own account of its last
+    // pass — a null `atr` next to a fresh stamp reading "declined: …" is a
+    // working ratchet; a null `atr` with NO stamp is one that has never run.
+    open: open.map(o => ({ account: `…${String(o.account_id).slice(-4)}`, symbol: o.symbol, side: o.side, entry: o.entry_price, stop: o.stop, atr: o.atr, trailCheckedAt: o.trail_checked_at ?? null, trailNote: o.trail_note ?? null, enteredAt: o.entered_at, status: o.status })),
     closed: { n: pnl.length, wins: wins.length, winRate: pnl.length ? Math.round((wins.length / pnl.length) * 1000) / 10 : null, profitFactor: gl > 0 ? Math.round((wins.reduce((a, b) => a + b, 0) / gl) * 100) / 100 : (pnl.length ? null : 0), net: Math.round(pnl.reduce((a, b) => a + b, 0) * 100) / 100 },
     note: `Rank exits respect the horizon since PR-K: minimum hold ${cfg.bookMinHoldHours}h on both paths${cfg.bookExitCadence === 'every_pass' ? ' (LIFTED — bookExitCadence is "every_pass", the pre-PR-K restore)' : ', row-cursor cadence "daily"'} — the stop, a refused exit's retry and an exit owed from a previous day still run every pass. Two-sided (PR-D): longs from the top band; shorts from the bottom band only at conviction ≥ the short floor (9/10 on the defaults) and never against an up-trend reading. Entries and exits come from the momentum shadow ranking; the stop is 3×ATR and only moves in the trade's favour; the keeper is paused on these positions.`,
   }
