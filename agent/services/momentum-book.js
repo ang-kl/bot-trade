@@ -329,7 +329,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   const cfg = loadMomentumBook(db)
   if (!cfg.enabled) return { ran: false, why: 'disabled' }
   const state = loadBookState(db)
-  const summary = { ran: true, entries: 0, exits: 0, trailed: 0, skipped: [], accounts: 0 }
+  const summary = { ran: true, entries: 0, exits: 0, trailed: 0, reclassified: 0, skipped: [], accounts: 0 }
   // Every shadow row since the cursor advances it (refusals included, so
   // nothing is re-read); LONG and SHORT entries and exits act (PR-D) — a
   // short row still has to pass directionFor at tryEnter.
@@ -842,6 +842,40 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   // OUTSIDE the trail loop, which still selects `open` only: an `exit_sent`
   // row keeps the last mark it had while open, and nothing about the exit
   // path — no amend, no stop, no retry — is touched by this.
+  // PR-AX: `exit_sent` IS NO LONGER A DEAD END.
+  //
+  // MEASURED 18-09-2026 from /state/momentum-book: 28 rows `open`, every one
+  // carrying a fresh trail stamp; 8 rows `exit_sent`, not one stamped, the
+  // oldest fifteen days old. The only branch that moves a row to `closed`
+  // lives inside the trail loop below — and that loop selects `status =
+  // 'open'`. So a row that reached `exit_sent` could never be reclassified by
+  // the code whose whole job is to reclassify it. The state only accumulated,
+  // and the report — which counts `open` + `exit_sent` — presented 36 open
+  // book positions where 28 were open.
+  //
+  // WHY THIS IS A SEPARATE SWEEP AND NOT A WIDER LOOP QUERY. Widening the
+  // trail loop to walk `exit_sent` was the first version of this fix, and it
+  // turned PR-P MAJOR 1 red: walking those rows RE-PRICES them, which
+  // replaces the carried marks the entry brake judges an account on. That
+  // test also states the rule directly — the trail "selects `open` only, and
+  // must keep doing so — trailing an exited row is exit behaviour" — and it
+  // is right. An exit that was REFUSED leaves the row `open` with an
+  // `exit_pending` note and is retried every pass, so it keeps its trail;
+  // `exit_sent` means the broker ACCEPTED the close. There is no untrailed
+  // live position here, only a status that could not advance.
+  //
+  // So this touches exactly one thing: a row whose trade is closed stops
+  // claiming to be part of the book.
+  {
+    const done = db.prepare(`SELECT id FROM momentum_book WHERE status = 'exit_sent'
+                              AND COALESCE((SELECT t.status FROM trades t WHERE t.id = momentum_book.trade_id), 'open') = 'closed'`).all()
+    for (const r of done) {
+      db.prepare(`UPDATE momentum_book SET status = 'closed', exited_at = COALESCE(exited_at, ?), note = COALESCE(note, '') || ' | trade closed' WHERE id = ?`)
+        .run(new Date(now).toISOString(), r.id)
+    }
+    summary.reclassified = done.length
+  }
+
   const prevMarks = state.marks || {}
   const markFail = {}
   const nextMarks = {}

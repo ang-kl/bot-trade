@@ -1544,3 +1544,105 @@ test('PR-AV: the view carries the trail\'s own account, so a null atr can be rea
   assert.match(o.trailNote, /declined/)
   assert.equal(trailRow(db, id).atr, 2)
 })
+
+// ---------------------------------------------------------------------------
+// PR-AX — `exit_sent` is no longer a dead end.
+//
+// MEASURED 18-09-2026 from /state/momentum-book: 28 rows `open`, every one
+// carrying a fresh trail stamp; 8 rows `exit_sent`, not one stamped, the
+// oldest fifteen days old. The trail loop selected `status = 'open'`, so
+// `exit_sent` rows were never walked — and since the ONLY branch that moves a
+// row to `closed` lives inside that loop, a row that reached `exit_sent` could
+// never be reclassified by the code whose job that is.
+//
+// The cost: the report counts `open` + `exit_sent`, so it presented 36 open
+// book positions where 28 were open, and the gap only ever widened.
+//
+// A CLAIM I MADE AND THEN DISPROVED, kept because the disproof is the useful
+// part. I argued an `exit_sent` row whose trade is still open would never be
+// trailed again, and started by widening the trail loop to walk those rows.
+// That turned PR-P MAJOR 1 red — walking them RE-PRICES them, replacing the
+// carried marks the entry brake judges an account on — and that test states
+// the rule outright: the trail "selects `open` only, and must keep doing so
+// — trailing an exited row is exit behaviour".
+//
+// It is right, and the hole I imagined does not exist: a REFUSED exit leaves
+// the row `open` with an `exit_pending` note and is retried every pass
+// (momentum-book.js:617/680), so it keeps its trail. `exit_sent` means the
+// broker ACCEPTED the close. So the fix is a narrow sweep, not a wider loop.
+// ---------------------------------------------------------------------------
+
+/** One book row, forced into a chosen status with the trail record blanked. */
+async function bookRowInState(status, { closeTrade = false, stop = 99 } = {}) {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter', rank: 0.95, conviction: 9 })
+  const f = fakes()
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 1_000 })
+  const row = db.prepare(`SELECT * FROM momentum_book ORDER BY id DESC LIMIT 1`).get()
+  db.prepare(`UPDATE momentum_book SET status = ?, stop = ?, atr = NULL, trail_checked_at = NULL, trail_note = NULL WHERE id = ?`)
+    .run(status, stop, row.id)
+  if (closeTrade) db.prepare(`UPDATE trades SET status = 'closed' WHERE id = ?`).run(row.trade_id)
+  db.prepare(`DELETE FROM momentum_shadow`).run()
+  return { db, f, id: row.id, tradeId: row.trade_id }
+}
+const bookRow = (db, id) => db.prepare(`SELECT status, stop, atr, trail_checked_at, trail_note FROM momentum_book WHERE id = ?`).get(id)
+
+test('PR-AX: an exit_sent row whose trade is still open is LEFT ALONE — not trailed, not reclassified', async () => {
+  // The rule PR-P MAJOR 1 encodes, pinned from the other side: the close was
+  // accepted and the row is on its way out, so the sweep does not touch it
+  // and the trail does not walk it. A refused exit is a different row — it
+  // stays `open` with an exit_pending note and keeps its trail.
+  const { db, f, id } = await bookRowInState('exit_sent', { stop: 90 })
+  const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+
+  const row = bookRow(db, id)
+  assert.equal(row.status, 'exit_sent', 'still on its way out')
+  assert.equal(row.stop, 90, 'the stop is NOT moved — trailing an exited row is exit behaviour')
+  assert.equal(f.calls.amend.length, 0, 'and nothing is sent to the broker for it')
+  assert.equal(r.reclassified, 0, 'its trade has not closed, so there is nothing to reclassify')
+})
+
+test('PR-AX: an exit_sent row whose trade HAS closed is reclassified, once', async () => {
+  const { db, f, id } = await bookRowInState('exit_sent', { closeTrade: true })
+  const r1 = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(bookRow(db, id).status, 'closed', 'the dead end is gone')
+  assert.equal(r1.reclassified, 1, 'and it is counted, because a silent repair cannot be told from the bug')
+  assert.equal(f.calls.amend.length, 0, 'a closed position is never amended')
+
+  // Second pass: the row is `closed`, so it is out of the walked set entirely.
+  const r2 = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 3_000 })
+  assert.equal(r2.reclassified, 0, 'the count is a repair, not a heartbeat')
+})
+
+test('PR-AX: an OPEN row whose trade closed is still reclassified, and NOT counted', async () => {
+  // The pre-existing path, unchanged. `reclassified` counts only rows that
+  // were stranded in exit_sent — the thing that used to be unreachable.
+  const { db, f, id } = await bookRowInState('open', { closeTrade: true })
+  const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(bookRow(db, id).status, 'closed')
+  assert.equal(r.reclassified, 0, 'this row was never stranded, so it is not a repair')
+})
+
+test('PR-AX: a `closed` row is never walked — the loop does not resurrect finished rows', async () => {
+  const { db, f, id } = await bookRowInState('closed', { stop: 90 })
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+  const r = bookRow(db, id)
+  assert.equal(r.stop, 90, 'untouched')
+  assert.equal(r.trail_checked_at, null, 'and not even looked at')
+  assert.equal(f.calls.amend.length, 0)
+})
+
+test('PR-AX: the trail STILL selects open alone — the sweep must not become a wider loop', async () => {
+  // Pinned because the first version of this fix did exactly that and turned
+  // PR-P MAJOR 1 red. The sweep and the trail are deliberately separate: one
+  // advances a status, the other moves stops, and only the first may look at
+  // an exited row.
+  const src = readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8')
+  const code = src.replace(/^\s*\/\/.*$/gm, '')
+  assert.match(code, /FROM momentum_book WHERE status = 'open'`\)\.all\(\)/,
+    'the trail loop keeps its own predicate')
+  assert.match(code, /SELECT id FROM momentum_book WHERE status = 'exit_sent'/,
+    'and the reclassification is its own query')
+})
