@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { openJournal } from './lib/wal-open.js';
 import { maybeEmergencyReclaim } from './services/emergency-reclaim.js';
+import { resetReverifyAttempts } from './services/reverify-reset.js';
 // Leaf module — imports nothing, takes `db` as a parameter — so this cannot
 // cycle back into db.js. See closeTradeRow for why the stamp lives here.
 import { stampRealisedAudit } from './services/trade-consistency.js';
@@ -1852,6 +1853,21 @@ export function initDB(dbPath) {
     if (!cols.has('reverify_attempts')) {
       db.exec('ALTER TABLE position_capture_queue ADD COLUMN reverify_attempts INTEGER NOT NULL DEFAULT 0');
     }
+  }
+
+  // PR-AU: give back the attempts spent against a verifier that could not
+  // answer. Measured 18-09-2026 04:08 UTC — "0 armed of 18 unverified, 0
+  // eligible, 18 at the re-verify cap" — because all three attempts were
+  // burned before PR-AR taught the client to POST /connect, so every one met
+  // a 409. Runs EXACTLY ONCE and records that it did: see the file for why an
+  // idempotent predicate would abolish the cap instead of respecting it.
+  try {
+    const r = resetReverifyAttempts(db);
+    if (r.applied) {
+      console.log(`[db] reverify reset: returned the cap on ${r.changes} record(s) whose attempts were spent before the verifier could answer`);
+    }
+  } catch (err) {
+    console.error('[db] reverify reset failed, continuing:', err.message);
   }
 
   // STOP BEYOND ENTRY ⇒ be_moved (02-09-2026). be_moved was set only by the
