@@ -22,6 +22,7 @@
 #include "tick_recorder.hpp"
 #include "tick_segment_routes.hpp"
 #include "spot_quote_routes.hpp"
+#include "tick_tap.hpp"
 #include "tick_firer.hpp"
 #include "tick_shadow.hpp"
 #include "tick_strategy.hpp"
@@ -212,6 +213,10 @@ int main(int argc, char** argv) {
   // (P4); until then the consumer counts, and /tick-status shows the shape.
   std::unique_ptr<tick::SymbolWorkers> tickWorkers;
   std::atomic<uint64_t> tickWorkerEvents{0};
+  // 19-09-2026: the configured tick universe (tick_tap.hpp) — set from
+  // /config `tickSymbolIds`; the feed's quotes-only subscriptions
+  // (`quoteSymbolIds`) never pass it into the recorder or the workers.
+  tick::SymbolUniverse tickUniverse;
   // P4: the strategy runs on the workers in SHADOW only — one
   // tick_momentum_breakout per symbol, per worker (a symbol lives on one
   // worker, so no lock is shared between workers), switched by /config
@@ -520,7 +525,7 @@ int main(int argc, char** argv) {
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim, &tickFirer](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim, &tickFirer, &tickUniverse](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -682,6 +687,9 @@ int main(int argc, char** argv) {
           std::lock_guard<std::mutex> lk(vpoMtx);
           if (spotFeed) for (long long id : spotFeed->subscribedSymbols()) subs.push_back(jsn::Value(static_cast<double>(id)));
           tj.set("subscribed", jsn::Value(std::move(subs)));
+          // 19-09-2026: the configured universe the tap admits (tick_tap.hpp);
+          // null until the keeper's first push names it.
+          tj.set("universe", tickUniverse.configured() ? jsn::Value(static_cast<double>(tickUniverse.size())) : jsn::Value(nullptr));
         }
         v.set("tick", std::move(tj));
       } else {
@@ -906,7 +914,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder, &tickWorkers, &liveFeedHost, &liveFeedAccountId, &liveFeedVpoSymbolIds, &liveFeedTrailEnabled, &liveFeedDepthEnabled, &liveFeedRecorderAttached](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder, &tickWorkers, &liveFeedHost, &liveFeedAccountId, &liveFeedVpoSymbolIds, &liveFeedTrailEnabled, &liveFeedDepthEnabled, &liveFeedRecorderAttached, &tickUniverse](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -1069,17 +1077,8 @@ int main(int argc, char** argv) {
           depthFeedEnabled);
       spotFeed->setDecisionRing(&decisionRing);
       if (tick::TickRecorder* rec = tickRecorder.get()) {
-        tick::SymbolWorkers* workers = tickWorkers.get();
-        spotFeed->setRawTap([rec, workers](long long symbolId, bool hasBid, long long bid, bool hasAsk, long long ask, long long generation) {
-          const uint64_t recvMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::system_clock::now().time_since_epoch()).count());
-          const tick::Record r = rec->onQuote(symbolId, hasBid, bid, hasAsk, ask, recvMs, static_cast<uint32_t>(generation));
-          if (workers) {
-            tick::WorkerEvent ev;
-            ev.recvMs = r.recvMs; ev.seq = r.seq; ev.symbolId = r.symbolId; ev.bid = r.bid; ev.ask = r.ask; ev.flags = r.flags;
-            workers->dispatch(ev);
-          }
-        });
+        // The tap lives in tick_tap.cpp (testable); the universe gates it.
+        spotFeed->setRawTap(tick::makeRecorderTap(rec, tickWorkers.get(), &tickUniverse));
       }
       if (trailPtr) spotFeed->ensureSymbols(trailEngine.symbolIds());
       SpotFeed* feedPtr = spotFeed.get();
@@ -1298,7 +1297,7 @@ int main(int argc, char** argv) {
   // guard live — halt (kill switch), require-bracket, max order volume —
   // without pausing or locking the order path. Each field is optional; only
   // the ones present are changed. Reads on the order path are lock-free.
-  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStratReset, &tickSimMtx, &tickSim, &tickFirer, &tickPermits](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/config", [&engine, &decisionRing, &tickRecorder, &spotFeed, &vpoMtx, &tickWorkers, &tickShadow, &tickStratReset, &tickSimMtx, &tickSim, &tickFirer, &tickPermits, &tickUniverse](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -1446,6 +1445,23 @@ int main(int argc, char** argv) {
     if (v.get("tickSymbolIds").isArray()) {
       std::vector<long long> ids;
       for (const auto& e : v.get("tickSymbolIds").asArray()) {
+        long long id = e.isNumber() ? (long long)e.asNumber() : std::strtoll(e.asString().c_str(), nullptr, 10);
+        if (id > 0) ids.push_back(id);
+      }
+      // The configured universe: what the recorder records and the workers
+      // run. Set on every push that names the list (an empty list is a
+      // decision too: record nothing).
+      tickUniverse.set(ids);
+      std::lock_guard<std::mutex> lk(vpoMtx);
+      if (spotFeed && !ids.empty()) spotFeed->ensureSymbols(ids);
+    }
+    // 19-09-2026: QUOTES-ONLY subscriptions — the keeper's open monitored
+    // positions, so GET /quotes can price them. Subscribed on the feed and
+    // nothing else: never the universe, so never recorded, never run through
+    // the strategy (tick_tap.hpp).
+    if (v.get("quoteSymbolIds").isArray()) {
+      std::vector<long long> ids;
+      for (const auto& e : v.get("quoteSymbolIds").asArray()) {
         long long id = e.isNumber() ? (long long)e.asNumber() : std::strtoll(e.asString().c_str(), nullptr, 10);
         if (id > 0) ids.push_back(id);
       }

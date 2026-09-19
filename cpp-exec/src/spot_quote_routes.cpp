@@ -1,6 +1,7 @@
 // cpp-exec/src/spot_quote_routes.cpp — see spot_quote_routes.hpp.
 #include "spot_quote_routes.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <set>
 
@@ -31,6 +32,11 @@ void registerSpotQuoteRoutes(HttpServer& server, QuoteFeedReader reader, const s
     jsn::Value v{jsn::Object{}};
     v.set("feed", std::string(!view.present ? "absent" : view.connected ? "up" : "down"));
     v.set("generation", static_cast<double>(view.present ? view.generation : 0));
+    // The sidecar's OWN clock at answer time (checker SHOULD 4): recvMs is
+    // stamped by this process's system_clock, so the keeper ages a quote as
+    // nowMs - recvMs on ONE clock rather than against its own Date.now().
+    v.set("nowMs", static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count()));
     jsn::Array arr;
     for (const SpotQuote& q : view.quotes) {
       if (!want.empty() && !want.count(q.symbolId)) continue;

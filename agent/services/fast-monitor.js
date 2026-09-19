@@ -53,45 +53,86 @@ export function quoteMaxAgeMs(env = process.env) {
 }
 
 /**
- * Pure: the sidecar's quote for `symbolId` when it is usable.
+ * Pure: the sidecar's quote for `symbolId` when it is usable. The age is
+ * `ageMs` when the body carried the sidecar's own `nowMs` (one clock:
+ * checker SHOULD 4 — the sidecar's system_clock and Node's Date.now() can
+ * differ by seconds), else nowMs - recvMs on Node's clock (an older sidecar).
  * @returns {{quote: {bid:number, ask:number}|null, source: 'sidecar'|'stale'|'missing'}}
  */
 export function pickSidecarQuote(quotes, symbolId, nowMs, maxAgeMs = QUOTE_MAX_AGE_DEFAULT_MS) {
   const q = quotes?.get?.(Number(symbolId))
   if (!q || !(q.bid > 0) || !(q.ask > 0)) return { quote: null, source: 'missing' }
-  if (!Number.isFinite(q.recvMs) || nowMs - q.recvMs > maxAgeMs) return { quote: null, source: 'stale' }
+  const age = Number.isFinite(q.ageMs) ? q.ageMs : Number.isFinite(q.recvMs) ? nowMs - q.recvMs : Infinity
+  if (age > maxAgeMs) return { quote: null, source: 'stale' }
   return { quote: { bid: q.bid, ask: q.ask }, source: 'sidecar' }
 }
 
-/** A /quotes body → Map symbolId → {bid, ask, tsMs, recvMs}; empty when the feed is absent or the body null. */
+/**
+ * A /quotes body → Map symbolId → {bid, ask, tsMs, recvMs, ageMs}; empty when
+ * the feed is absent or the body null. ageMs = body.nowMs - recvMs on the
+ * sidecar's clock, null when the body carries no nowMs.
+ */
 export function quoteMapFrom(body) {
   const m = new Map()
   if (!body || body.feed === 'absent' || !Array.isArray(body.quotes)) return m
+  const nowMs = Number(body.nowMs)
   for (const q of body.quotes) {
     const id = Number(q?.symbolId)
     if (!(id > 0)) continue
-    m.set(id, { bid: q.bid == null ? null : Number(q.bid), ask: q.ask == null ? null : Number(q.ask), tsMs: Number(q.tsMs) || 0, recvMs: Number(q.recvMs) || 0 })
+    const recvMs = Number(q.recvMs) || 0
+    m.set(id, {
+      bid: q.bid == null ? null : Number(q.bid), ask: q.ask == null ? null : Number(q.ask),
+      tsMs: Number(q.tsMs) || 0, recvMs,
+      ageMs: Number.isFinite(nowMs) && nowMs > 0 && recvMs > 0 ? nowMs - recvMs : null,
+    })
   }
   return m
 }
 
 /**
- * The symbol id to look the position up by ON ITS OWN SIDE'S sidecar. cTrader
- * ids are per environment (ctrader-creds.js, 03-09-2026): the position's
- * account map when one is on file; the global map only for the primary
- * account (or a position with no account); otherwise null — a wrong
- * instrument's price is worse than a broker round trip.
+ * The account a side's sidecar feed authenticates as — the side PRIMARY
+ * (heartbeat.js sideCreds: the globally selected account when it is enabled
+ * on this side, else the first enabled row on it). The sidecar's quote table
+ * is keyed in THAT account's symbol id space.
  */
-export function sidecarSymbolIdFor(db, pos, globalMap, primaryId, cache = new Map()) {
+export function sidePrimaryFor(db, isLive, selectedId) {
+  try {
+    const ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 AND is_live = ? ORDER BY account_id').all(isLive ? 1 : 0).map(r => String(r.account_id))
+    if (selectedId != null && ids.includes(String(selectedId))) return String(selectedId)
+    return ids[0] ?? null
+  } catch { return null }
+}
+
+/**
+ * The symbol id to look the position up by on its side's sidecar — in the
+ * SIDE PRIMARY's id space, because that is the account the feed subscribed
+ * as and the space the guard sync resolves the pushed ids in.
+ *
+ * CHECKER BLOCKER 1 (19-09-2026): the first cut used the POSITION's own
+ * account map. cTrader ids are per account (ctrader-creds.js, 03-09): with
+ * the demo primary mapping {EURUSD:1, GBPUSD:2} and a same-side account 333
+ * mapping EURUSD→2 in its own space, a EURUSD position on 333 was priced
+ * from GBPUSD's quote and the monitor logged a PARTIAL_EXIT on a fictitious
+ * +16R. So: the side primary's map (its account map when on file, else the
+ * global map when the side primary is the account the global map was built
+ * from); the position's own id must AGREE with it — a non-primary account
+ * with no map on file, or whose own id for the name differs, is not looked
+ * up (null → the broker round trip, as before this change).
+ */
+export function sidecarSymbolIdFor(db, pos, globalMap, primaryId, cache = new Map(), sidePrimary = primaryId) {
   const sym = String(pos.symbol || '').toUpperCase()
   const acct = pos.account_id != null ? String(pos.account_id) : null
-  if (acct == null || primaryId == null || String(primaryId) === acct) {
-    const own = acct != null ? accountMap(db, acct, cache) : null
-    const id = own?.[sym] ?? globalMap?.[sym]
-    return id != null ? Number(id) : null
-  }
-  const own = accountMap(db, acct, cache)
-  return own?.[sym] != null ? Number(own[sym]) : null
+  const sideAcct = sidePrimary != null ? String(sidePrimary) : null
+  if (sideAcct == null) return null
+  // the side space
+  const sideMap = accountMap(db, sideAcct, cache) ?? (primaryId != null && String(primaryId) === sideAcct ? globalMap : null)
+  const sideId = sideMap?.[sym]
+  if (!(Number(sideId) > 0)) return null
+  // the position's own space must agree
+  if (acct == null || acct === sideAcct) return Number(sideId)
+  const own = accountMap(db, acct, cache) ?? (primaryId != null && String(primaryId) === acct ? globalMap : null)
+  const ownId = own?.[sym]
+  return Number(ownId) === Number(sideId) ? Number(sideId) : null
 }
 function accountMap(db, acct, cache) {
   if (cache.has(acct)) return cache.get(acct)
@@ -284,22 +325,34 @@ export async function runFastMonitor(db, creds, deps = {}) {
       return typeof known === 'boolean' ? known : (typeof creds.isLive === 'boolean' ? creds.isLive : null)
     }
     const acctMapCache = new Map()
+    // The side primary per side (the feed's account, whose id space the
+    // sidecar's table is keyed in); the creds' own account when the side is
+    // unresolved (one sidecar for both).
+    const sidePrimaries = new Map()
+    const sidePrimaryOf = (isLive) => {
+      const key = String(isLive)
+      if (!sidePrimaries.has(key)) sidePrimaries.set(key, typeof isLive === 'boolean' ? sidePrimaryFor(db, isLive, primaryId) : (creds.accountId != null ? String(creds.accountId) : primaryId))
+      return sidePrimaries.get(key)
+    }
+    const lookupId = (pos) => sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache, sidePrimaryOf(sideOf(pos)))
     const sidecarIds = new Map() // side key → Set of symbol ids to ask for
     for (const pos of positions) {
       if (pos.source === 'external') continue
-      const id = sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache)
+      const id = lookupId(pos)
       if (id == null) continue
       const key = String(sideOf(pos))
       if (!sidecarIds.has(key)) sidecarIds.set(key, new Set())
       sidecarIds.get(key).add(id)
     }
+    // The sides are pulled CONCURRENTLY (checker SHOULD 3): two hung sidecars
+    // cost one timeout before the first position is priced, not two.
     const quotesBySide = new Map() // side key → Map symbolId → quote
-    for (const [key, ids] of sidecarIds) {
+    await Promise.all([...sidecarIds].map(async ([key, ids]) => {
       const isLive = key === 'true' ? true : key === 'false' ? false : null
       let body = null
       try { body = typeof exec.sidecarQuotes === 'function' ? await exec.sidecarQuotes(isLive, { ids: [...ids] }) : null } catch { body = null }
       quotesBySide.set(key, quoteMapFrom(body))
-    }
+    }))
     const quoteCounts = { fromSidecar: 0, fromBroker: 0, stale: 0 }
 
     let checked = 0
@@ -351,7 +404,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
 
         // Sidecar first (fresh within maxAgeMs on the sidecar's receipt
         // clock), the broker round trip otherwise — exactly as before.
-        const sidecarId = sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache)
+        const sidecarId = lookupId(pos)
         const pick = sidecarId == null
           ? { quote: null, source: 'missing' }
           : pickSidecarQuote(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)

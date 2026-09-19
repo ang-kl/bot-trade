@@ -13,29 +13,40 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
-import { runFastMonitor, startFastMonitor, pickSidecarQuote, quoteMapFrom, sidecarSymbolIdFor, quoteMaxAgeMs, QUOTE_MAX_AGE_DEFAULT_MS, PASS_RECORD_KEY, _resetFastDecisionStateForTests } from './fast-monitor.js'
+import { runFastMonitor, startFastMonitor, pickSidecarQuote, quoteMapFrom, sidecarSymbolIdFor, sidePrimaryFor, quoteMaxAgeMs, QUOTE_MAX_AGE_DEFAULT_MS, PASS_RECORD_KEY, _resetFastDecisionStateForTests } from './fast-monitor.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 
 const CREDS = { ready: true, host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '111', isLive: false }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
-function mkDb({ accounts = true } = {}) {
-  const db = initDB(':memory:')
-  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, GBPUSD: 2, USDJPY: 3 }))
-  setState(db, 'ctrader_account_id', '111')
-  if (accounts) {
-    db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
-    db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('222','2',1,1,'active')`).run()
+// ONE db for every runFastMonitor case in this file: loop.js's
+// prepareStatements is a process singleton bound to the FIRST db it sees, so a
+// second :memory: db would have its metrics/checkpoint writes land in the
+// first one and read back as null. Each case starts from an empty
+// monitored_positions table and no per-account symbol maps.
+let SHARED = null
+function mkDb() {
+  if (!SHARED) {
+    SHARED = initDB(':memory:')
+    setState(SHARED, 'symbol_id_map', JSON.stringify({ EURUSD: 1, GBPUSD: 2, USDJPY: 3 }))
+    setState(SHARED, 'ctrader_account_id', '111')
+    SHARED.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','1',0,1,'active')`).run()
+    SHARED.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('222','2',1,1,'active')`).run()
+    SHARED.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('333','3',0,1,'active')`).run() // demo, another broker
   }
+  const db = SHARED
+  db.prepare('DELETE FROM monitored_positions').run()
+  db.prepare("UPDATE accounts SET enabled = 1").run()
+  for (const a of ['222', '333', '444', '555', '666']) setState(db, accountSymbolMapKey(a), null)
   _resetFastDecisionStateForTests()
   return db
 }
-function addPos(db, symbol, accountId, { source = 'autopilot' } = {}) {
+function addPos(db, symbol, accountId, { source = 'autopilot', sl = 1.0950 } = {}) {
   return db.prepare(`
     INSERT INTO monitored_positions
       (symbol, side, entry_price, current_sl, current_tp, initial_risk, status, source, strategy, account_id, created_at)
-    VALUES (?, 'BUY', 1.1000, 1.0950, 1.1200, 0.0050, 'active', ?, 'fib_618_fade', ?, datetime('now'))
-  `).run(symbol, source, accountId).lastInsertRowid
+    VALUES (?, 'BUY', 1.1000, ?, 1.1200, 0.0050, 'active', ?, 'fib_618_fade', ?, datetime('now'))
+  `).run(symbol, sl, source, accountId).lastInsertRowid
 }
 // Each position is fresh (never checked) so it is due on the first tick;
 // position ids are per fresh :memory: db so the pacing maps do not collide
@@ -89,18 +100,99 @@ test('quoteMapFrom: a body → map by id; absent feed, null body and bad rows �
   assert.equal(quoteMapFrom(null).size, 0)
   assert.equal(quoteMapFrom({ feed: 'absent', quotes: [{ symbolId: 1, bid: 1, ask: 1 }] }).size, 0, 'an absent feed carries no usable quotes')
   const m = quoteMapFrom({ feed: 'up', quotes: [{ symbolId: '41', bid: '1.1', ask: null, tsMs: 5, recvMs: 6 }, { symbolId: 0 }, {}] })
-  assert.deepEqual([...m.entries()], [[41, { bid: 1.1, ask: null, tsMs: 5, recvMs: 6 }]])
+  assert.deepEqual([...m.entries()], [[41, { bid: 1.1, ask: null, tsMs: 5, recvMs: 6, ageMs: null }]], 'no nowMs on the body → no sidecar-clock age')
+  const n = quoteMapFrom({ feed: 'up', nowMs: 1_000_000, quotes: [{ symbolId: 41, bid: 1.1, ask: 1.2, tsMs: 5, recvMs: 999_000 }] })
+  assert.equal(n.get(41).ageMs, 1_000, 'ageMs = nowMs - recvMs on the sidecar\'s clock')
 })
 
-test('sidecarSymbolIdFor: the account\'s own map wins; the global map only for the primary account or no account; another account without a map → null', () => {
+test('one clock (checker SHOULD 4): a body whose nowMs is far from Node\'s clock still ages on the sidecar\'s own clock', () => {
+  const nodeNow = 2_000_000_000_000
+  // the sidecar's clock runs 90 s AHEAD of Node's: recvMs looks "in the future" to Node
+  const ahead = quoteMapFrom({ feed: 'up', nowMs: nodeNow + 90_000, quotes: [
+    { symbolId: 1, bid: 1, ask: 1.1, recvMs: nodeNow + 90_000 - 2_000 },   // 2 s old on the sidecar
+    { symbolId: 2, bid: 1, ask: 1.1, recvMs: nodeNow + 90_000 - 30_000 },  // 30 s old on the sidecar — Node's clock would call it 60 s FRESH
+  ] })
+  assert.equal(pickSidecarQuote(ahead, 1, nodeNow).source, 'sidecar')
+  assert.equal(pickSidecarQuote(ahead, 2, nodeNow).source, 'stale', 'a 30 s-old quote is stale although Node\'s clock reads it as 60 s in the future')
+  // the sidecar's clock runs 90 s BEHIND: Node's clock would call a fresh quote 90 s stale
+  const behind = quoteMapFrom({ feed: 'up', nowMs: nodeNow - 90_000, quotes: [{ symbolId: 1, bid: 1, ask: 1.1, recvMs: nodeNow - 90_000 - 1_000 }] })
+  assert.equal(pickSidecarQuote(behind, 1, nodeNow).source, 'sidecar', 'a 1 s-old quote is fresh although Node\'s clock reads it as 91 s old')
+  // an older sidecar without nowMs: Node's clock, as the first cut did
+  const legacy = quoteMapFrom({ feed: 'up', quotes: [{ symbolId: 1, bid: 1, ask: 1.1, recvMs: nodeNow - 10_001 }] })
+  assert.equal(pickSidecarQuote(legacy, 1, nodeNow).source, 'stale')
+})
+
+test('sidePrimaryFor: the selected account when it is enabled on the side, else the first enabled row; null when the side has none', () => {
   const db = mkDb()
-  setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 901 } }))
-  const g = { EURUSD: 1 }
-  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '111' }, g, '111'), 1, 'primary → global')
-  assert.equal(sidecarSymbolIdFor(db, { symbol: 'eurusd', account_id: null }, g, '111'), 1, 'no account → global')
-  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '222' }, g, '111'), 901, 'another account → its own map, never the global id')
-  assert.equal(sidecarSymbolIdFor(db, { symbol: 'GBPUSD', account_id: '222' }, g, '111'), null, 'its own map lacks the symbol → no sidecar lookup')
-  assert.equal(sidecarSymbolIdFor(db, { symbol: 'GBPUSD', account_id: '333' }, g, '111'), null, 'no map on file → no sidecar lookup')
+  assert.equal(sidePrimaryFor(db, false, '111'), '111')
+  assert.equal(sidePrimaryFor(db, false, '222'), '111', 'the selected account is live → the demo side\'s first enabled row')
+  assert.equal(sidePrimaryFor(db, true, '111'), '222')
+  db.prepare("UPDATE accounts SET enabled = 0 WHERE account_id = '222'").run()
+  assert.equal(sidePrimaryFor(db, true, '111'), null)
+})
+
+test('sidecarSymbolIdFor (checker BLOCKER 1): the lookup id is in the SIDE PRIMARY\'s space; a position\'s own id must agree, else no sidecar lookup', () => {
+  const db = mkDb()
+  const g = { EURUSD: 1, GBPUSD: 2 }
+  // 333 (same side as the primary 111) maps EURUSD → 2 — GBPUSD's id in 111's space
+  setState(db, accountSymbolMapKey('333'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 2, USDCAD: 9 } }))
+  // 444 agrees with the primary on EURUSD
+  setState(db, accountSymbolMapKey('444'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  const cache = new Map()
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '111' }, g, '111', cache, '111'), 1, 'the primary itself → the global map (built from it)')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'eurusd', account_id: null }, g, '111', cache, '111'), 1, 'no account → the side space')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '333' }, g, '111', cache, '111'), null, 'its own id (2) disagrees with the side space (1) → NOT looked up — never GBPUSD\'s quote')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'USDCAD', account_id: '333' }, g, '111', cache, '111'), null, 'the side primary has no id for the name → nothing to look up')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '444' }, g, '111', cache, '111'), 1, 'agrees → looked up')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'GBPUSD', account_id: '444' }, g, '111', cache, '111'), null, 'no own id for the name → cannot confirm → not looked up')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '555' }, g, '111', cache, '111'), null, 'no map on file → not looked up')
+  // the side primary is NOT the account the global map was built from: only its own map counts
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'USDJPY', account_id: '222' }, g, '111', cache, '222'), 903)
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '222' }, g, '111', cache, '222'), null, 'the global map is never the live side\'s space')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'USDJPY', account_id: '666' }, g, '111', cache, '666'), null, 'a side primary with no map and not the global\'s account → no space at all')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '111' }, g, '111', cache, null), null, 'no side primary → nothing')
+})
+
+test('CHECKER 1 (blocker): a same-name symbol with different ids on two same-side accounts is never priced from the other id', async () => {
+  // The demo sidecar's feed authenticates as the side primary (111): its table
+  // is keyed 1 = EURUSD, 2 = GBPUSD. Account 333 (also demo, another broker)
+  // maps EURUSD → 2 in ITS space. The first cut priced 333's EURUSD from
+  // GBPUSD's 1.2602 and logged a PARTIAL_EXIT on a fictitious +16R.
+  const db = mkDb()
+  setState(db, accountSymbolMapKey('333'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 2 } }))
+  addPos(db, 'EURUSD', '333', { sl: 1.2650 }) // a stop GBPUSD's price would touch and EURUSD's would not
+  const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, nowMs: t, count: 2, quotes: [fresh(t, 1), fresh(t, 2, 1.2601, 1.2603)] }) })
+  const out = await runFastMonitor(db, CREDS, d)
+  const row = db.prepare('SELECT last_check_action, status FROM monitored_positions').get()
+  assert.equal(out.quotes.fromSidecar, 0, `priced from the sidecar by another account's id space: ${JSON.stringify(out.quotes)} → ${row.last_check_action}`)
+  assert.deepEqual(d.calls.sidecar, [], 'nothing on the demo side is sidecar-resolvable → the side is not even asked')
+  assert.deepEqual(d.calls.ws, [1], 'priced through the broker, as before this change')
+  assert.equal(row.status, 'active')
+  assert.ok(String(row.last_check_action).startsWith('FAST:HOLD'), row.last_check_action)
+})
+
+test('CHECKER 3: the per-side pulls are made concurrently, so two slow sidecars cost one timeout, not two', async () => {
+  const db = mkDb()
+  addPos(db, 'EURUSD', '111') // demo
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
+  addPos(db, 'USDJPY', '222') // live
+  const d = deps({})
+  const started = []
+  let inFlight = 0, maxInFlight = 0
+  d.exec.sidecarQuotes = async (isLive) => {
+    started.push(isLive); inFlight++; maxInFlight = Math.max(maxInFlight, inFlight)
+    await sleep(60)
+    inFlight--
+    return null
+  }
+  const t0 = Date.now()
+  await runFastMonitor(db, CREDS, d)
+  const elapsed = Date.now() - t0
+  assert.equal(started.length, 2)
+  assert.equal(maxInFlight, 2, `both sides' pulls must be in flight together (max in flight was ${maxInFlight}; elapsed ${elapsed} ms)`)
+  // (elapsed is reported, not bounded: the first case in a process pays the loop.js import)
+  void elapsed
 })
 
 test('sidecar-first: a fresh sidecar quote prices the position and the broker is NOT called; the counts say so', async () => {
@@ -163,7 +255,7 @@ test('wiring pin: ONE sidecarQuotes call per side per tick, each with that side\
   addPos(db, 'EURUSD', '111')   // demo, primary → global id 1
   addPos(db, 'GBPUSD', '111')   // demo, primary → global id 2
   addPos(db, 'USDJPY', '222')   // live, its own map → 903
-  addPos(db, 'EURUSD', '222', { source: 'external' }) // observe-only: never priced, never asked for
+  addPos(db, 'EURUSD', '111', { source: 'external' }) // observe-only on the PRIMARY (resolvable): never priced, never asked for — checker NOTE 5
   setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
   const d = deps({ quotesBySide: null })
   let t = d.now()
@@ -175,6 +267,7 @@ test('wiring pin: ONE sidecarQuotes call per side per tick, each with that side\
   }
   const out = await runFastMonitor(db, CREDS, d)
   assert.equal(out.checked, 3)
+  assert.equal(db.prepare("SELECT last_check_action FROM monitored_positions WHERE source = 'external'").get().last_check_action, null, 'the external position was not priced')
   assert.deepEqual(out.quotes, { fromSidecar: 3, fromBroker: 0, stale: 0 })
   assert.deepEqual(d.calls.sidecar.sort((a, b) => Number(a.isLive) - Number(b.isLive)), [{ isLive: false, ids: [1, 2] }, { isLive: true, ids: [903] }])
   assert.deepEqual(d.calls.ws, [])

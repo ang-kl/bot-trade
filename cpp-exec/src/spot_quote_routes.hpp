@@ -37,11 +37,13 @@ using QuoteFeedReader = std::function<QuoteFeedView()>;
 
 /**
  * Registers `GET /quotes[?ids=1,2,3]`. Response:
- *   { feed: "up"|"down"|"absent", generation, count,
+ *   { feed: "up"|"down"|"absent", generation, nowMs, count,
  *     quotes: [{ symbolId, bid, ask, tsMs, recvMs }] }
  * A side never seen is null, never 0 (a Buy's `ask <= trigger` against 0
  * is a false touch — the same rule the feed's own tick callback keeps).
  * `ids` filters to those symbol ids; absent or empty = every symbol.
+ * `nowMs` is this process's clock at answer time, so a caller ages a quote
+ * as nowMs - recvMs on one clock (its own clock may differ by seconds).
  *
  * Bearer-REQUIRED like the segment routes: quotes are market data, so the
  * route refuses 401 both when the header does not match and when no

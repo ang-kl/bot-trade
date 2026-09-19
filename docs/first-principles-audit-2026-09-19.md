@@ -763,3 +763,32 @@ after deploy, recorded in §L of this file as it happens.
   `skipShare10m` ≤ 0.10 over a 10-minute window with positions open, i.e.
   `monitor_cadence` on_track; `fromBroker` on the live side names the
   positions the live sidecar cannot price until it has a feed.
+  CHECKER ROUND (19-09-2026 12:35 SGT, second commit). BLOCKER: the lookup
+  id was taken from the POSITION's own account map, but the sidecar's
+  table is keyed in the space of the account its feed authenticates as —
+  the side primary (`sideCreds`); reproduced: demo primary {EURUSD:1,
+  GBPUSD:2}, a same-side account mapping EURUSD→2, and a EURUSD position
+  on it was priced from GBPUSD's quote (a PARTIAL_EXIT on a fictitious
+  +16R). Now `sidePrimaryFor` picks the side primary the way `sideCreds`
+  does, the id is resolved in ITS map (the global map only when the side
+  primary built it), and the position's own id must agree — otherwise no
+  sidecar lookup, the broker round trip as before (`CHECKER 1` test;
+  mutation back to the per-account map → red). SHOULD: the union widened
+  the evidence path — every feed symbol reached the recorder's tap and the
+  workers, so quotes-only symbols would have been recorded, run through
+  the shadow strategy and counted by tick-validation. Now the open
+  positions ride a SEPARATE `/config` field, `quoteSymbolIds`
+  (`quoteSymbolNames`/`resolveQuoteSymbols`; `tickSymbolNames` is the
+  configured list again), which only subscribes the feed; the tap lives in
+  `tick_tap.*` behind a `SymbolUniverse` set from the configured
+  `tickSymbolIds` — a quotes-only symbol is neither recorded nor
+  dispatched (`test_tick_tap`; `/health tick.universe`); `guardDiffers`
+  diffs both lists against `tick.subscribed`. RULE: quotes-only symbols
+  are not recorded; a side with tick observation OFF pushes no quote list
+  at all, so its positions stay on the broker path (the live side today).
+  SHOULD: the per-side pulls run under `Promise.all` (two hung sidecars
+  cost one timeout). SHOULD: `/quotes` carries `nowMs` (the sidecar's
+  clock) and the age is `nowMs − recvMs` on that one clock, Node's clock
+  only for an older sidecar. NOTE: the wiring pin's external position now
+  sits on a resolvable account so the `external` skip is exercised. NOTE:
+  after a reconnect a one-sided first frame keeps the slot's other side.

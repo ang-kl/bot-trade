@@ -71,7 +71,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/naked-position-guard.js': { reason: 'same-side roster filter (plan §3.1)', max: { is_live: 1, isLive: 3 } },
   'agent/services/entry-drain.js': { reason: 'creds per account for the drain (plan §3.1)', max: { is_live: 3, isLive: 1 } },
   'agent/services/exec-guard-sync.js': { reason: 'the side\'s roster for the guard push (plan §3.1); the tick-entry roster reads mode + STABLE only; the open positions carried on the side\'s sidecar (19-09-2026)', max: { is_live: 4, isLive: 14 } },
-  'agent/services/fast-monitor.js': { reason: 'which sidecar to pull quotes from per position (plan §3.1 routing, 19-09-2026); the evaluation reads no side', max: { is_live: 2, isLive: 4 } },
+  'agent/services/fast-monitor.js': { reason: 'which sidecar to pull quotes from per position and that side\'s primary account (plan §3.1 routing, 19-09-2026); the evaluation reads no side', max: { is_live: 3, isLive: 10 } },
   'agent/services/tick-permits.js': { reason: 'the side the feeder pushes to (plan §3.1); no environment strike since PR-B', max: { is_live: 1, isLive: 4 } },
   'agent/services/tick-readiness.js': { reason: 'sideFor (plan §3.1: tick-readiness.js:27) and registry ordering; the validation_stage check reads no environment', max: { is_live: 2, live_str: 1, environment_cmp: 1 } },
   'agent/services/tick-validation.js': { reason: 'which side\'s shadow signals to read (plan §3.1: tick-validation.js side)', max: { live_str: 1, environment_cmp: 1 } },

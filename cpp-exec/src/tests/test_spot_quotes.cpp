@@ -12,7 +12,11 @@
 //    signal to fall back to the broker — and a feed with no events yet
 //    answers feed:"up", count 0;
 //  - the bearer gate: no header, a wrong secret, and an unconfigured secret
-//    all refuse 401.
+//    all refuse 401;
+//  - `nowMs` (the sidecar's clock at answer time) rides on the body, so the
+//    keeper ages a quote on one clock;
+//  - after a RECONNECT a bid-only first frame keeps the slot's ask from the
+//    previous connection (the carry is per slot, not per connection).
 //
 // The feed runs on its own thread against the fake broker while the HTTP
 // thread copies the table, which is why this file is in TSAN_TESTS.
@@ -191,6 +195,9 @@ static void test_quotes_update_and_the_route_serves_them() {
     jsn::Value b = bodyOf(httpGet(port, "/quotes", secret));
     assert(b.get("feed").asString() == "up");
     assert(b.get("count").asNumber(-1) == 2);
+    // nowMs: the sidecar's own clock at answer time, at or after every recvMs
+    assert(b.get("nowMs").asNumber(0) >= static_cast<double>(beforeMs));
+    for (const auto& q : b.get("quotes").asArray()) assert(b.get("nowMs").asNumber(0) >= q.get("recvMs").asNumber(0));
     const jsn::Value* q41 = quoteFor(b, 41);
     const jsn::Value* q42 = quoteFor(b, 42);
     assert(q41 && q42);
@@ -222,6 +229,22 @@ static void test_quotes_update_and_the_route_serves_them() {
     assert(q41 && q41->get("bid").asNumber(0) == 1.101 && q41->get("ask").asNumber(0) == 1.1012);
     assert(feed.latestQuotes().size() == 2);
     std::puts("  a new event replaces the slot; unknown ids in the filter are ignored");
+  }
+  // reconnect: the broker hangs up, the feed comes back on generation 2, and
+  // a bid-only first frame for 41 keeps its ask from before the drop
+  broker.dropClient();
+  for (int i = 0; i < 500 && feed.reconnects() < 1; ++i) std::this_thread::sleep_for(milliseconds(10));
+  assert(broker.waitForConnection(5000));
+  for (int i = 0; i < 500 && !feed.isConnected(); ++i) std::this_thread::sleep_for(milliseconds(10));
+  assert(feed.isConnected());
+  assert(broker.send(spot(41, 110200, 0)));
+  assert(waitTicks(feed, 5, 5000));
+  {
+    jsn::Value b = bodyOf(httpGet(port, "/quotes?ids=41", secret));
+    assert(b.get("generation").asNumber(0) == 2);
+    const jsn::Value* q41 = quoteFor(b, 41);
+    assert(q41 && q41->get("bid").asNumber(0) == 1.102 && q41->get("ask").asNumber(0) == 1.1012);
+    std::puts("  after a reconnect a one-sided frame keeps the slot's other side");
   }
   // the gate
   assert(httpGet(port, "/quotes", "", /*sendAuth=*/false).status == 401);

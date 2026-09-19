@@ -41,7 +41,7 @@ TEST_BINS := $(patsubst src/tests/%.cpp,bin/%,$(TEST_SRC))
 # where supported"). Only the tests that drive real threads across a socket
 # or a ring — the whole suite under TSan would double the build for no
 # additional coverage. Separate output dir so the plain binaries stay cached.
-TSAN_TESTS := test_spot_feed_creds test_async_session test_tick_recorder test_tick_segments test_tick_workers test_tick_shadow test_tick_firer test_spot_feed_stop test_spot_feed_heartbeat test_spot_quotes test_telemetry test_engine_send_boundary
+TSAN_TESTS := test_spot_feed_creds test_async_session test_tick_recorder test_tick_segments test_tick_workers test_tick_shadow test_tick_firer test_spot_feed_stop test_spot_feed_heartbeat test_spot_quotes test_tick_tap test_telemetry test_engine_send_boundary
 TSAN_BINS  := $(addprefix bin/tsan/,$(TSAN_TESTS))
 
 .PHONY: all test tsan clean

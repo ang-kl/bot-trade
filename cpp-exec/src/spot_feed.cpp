@@ -337,8 +337,11 @@ void SpotFeed::runOnce() {
       lastTickBySymbol_[symbolId] = tickMs;
       SpotQuote& lq = latestQuotes_[symbolId];
       lq.symbolId = symbolId;
-      lq.bid = q.bid;
-      lq.ask = q.ask;
+      // Only the sides THIS connection has seen are written: after a
+      // reconnect the per-connection carry starts empty, and a bid-only
+      // first frame must not overwrite the slot's good ask with 0.
+      if (q.haveBid) lq.bid = q.bid;
+      if (q.haveAsk) lq.ask = q.ask;
       lq.tsMs = tsV.isNumber() && tsV.asNumber(0) > 0 ? static_cast<long long>(tsV.asNumber(0)) : tickMs;
       lq.recvMs = tickMs;
     }
