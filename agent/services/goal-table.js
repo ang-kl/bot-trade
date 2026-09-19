@@ -106,6 +106,13 @@ export const DEFAULT_GOAL_TARGETS = Object.freeze({
   // reason (origin, strategy, plan, approval id, close reason, scored plan)
   // plus UNKNOWN sends older than the resolver's age floor.
   tradeReasonsMax: 0,
+  // Wave 5 (§K·15): the fast monitor's cadence. Share of ticks (10-minute
+  // window) skipped because the previous pass was still running — the
+  // overrun that used to reach the log only as a throttled count. Read from
+  // the monitor's own pass record; not measurable when the record is absent
+  // or older than fastMonitorRecordMaxAgeMin.
+  fastMonitorSkipMaxPct: 10,
+  fastMonitorRecordMaxAgeMin: 5,
 })
 
 export function goalTargets(raw) {
@@ -152,7 +159,9 @@ function goal(id, fields) {
 async function controllersGoal(db, targets, nowMs) {
   const { heartbeatView } = await import('./heartbeat.js')
   const view = heartbeatView(db, { now: new Date(nowMs) })
-  const ran = view.filter(v => v.verdict !== 'never_ran' && !v.dormant)
+  // A retired controller (Wave 5, §K·15: pending_orders) is not judged — it
+  // is not scheduled, so its freshness is not a fact about the system.
+  const ran = view.filter(v => v.verdict !== 'never_ran' && !v.dormant && !v.retired)
   const ok = ran.filter(v => v.verdict === 'ok')
   const bad = ran.filter(v => v.verdict !== 'ok').map(v => `${v.name}:${v.verdict}`)
   const current = pct(ok.length, ran.length)
@@ -163,6 +172,34 @@ async function controllersGoal(db, targets, nowMs) {
     verdict: ran.length === 0 ? 'not_measurable' : current >= targets.controllersOkPct ? 'on_track' : 'off_track',
     note: ran.length === 0 ? 'no controller has beaten yet' : bad.length ? `${ok.length}/${ran.length} ok — ${bad.join(', ')}` : `${ok.length}/${ran.length} ok`,
     source: '/state/heartbeats',
+  })
+}
+
+/**
+ * Wave 5 (§K·15): the fast monitor's overrun as a goal. The tick path writes
+ * fast_monitor_pass_json (throttled to 5 s) with tick.skipShare10m; this row
+ * reads it and compares with fastMonitorSkipMaxPct.
+ */
+function monitorCadenceGoal(db, targets, nowMs) {
+  let rec = null
+  try { rec = JSON.parse(getState(db, 'fast_monitor_pass_json') || 'null') } catch { rec = null }
+  const atMs = rec?.at ? Date.parse(rec.at) : NaN
+  const ageMin = Number.isFinite(atMs) ? (nowMs - atMs) / 60_000 : null
+  const stale = ageMin == null || ageMin > targets.fastMonitorRecordMaxAgeMin
+  const share = rec?.tick?.skipShare10m
+  const measurable = !stale && Number.isFinite(share)
+  const pct = measurable ? Math.round(share * 1000) / 10 : null
+  return goal('monitor_cadence', {
+    name: 'Fast monitor keeps its cadence', subsystem: 'fast monitor',
+    metric: 'share of ticks skipped because the previous pass was still running, 10 min',
+    target: `≤ ${targets.fastMonitorSkipMaxPct}%`, horizon: 'now',
+    current: pct == null ? null : `${pct}%`,
+    verdict: !measurable ? 'not_measurable' : pct <= targets.fastMonitorSkipMaxPct ? 'on_track' : 'off_track',
+    note: !rec ? 'no pass record yet (fast_monitor_pass_json absent)'
+      : stale ? `pass record is ${ageMin == null ? 'undated' : `${Math.round(ageMin)} min old`} — older than ${targets.fastMonitorRecordMaxAgeMin} min; the monitor is not writing it`
+        : !Number.isFinite(share) ? 'pass record predates the share (written by a build before Wave 5)'
+          : `${rec.tick.skipped10m ?? '?'} skipped of ~${Math.round(600_000 / (rec.tick.everyMs || 3_000))} expected; busy ${Math.round((rec.tick.busyShare10m ?? 0) * 100)}% of the window; last tick ${rec.tick.lastMs ?? '?'} ms, max ${rec.tick.max10mMs ?? '?'} ms`,
+    source: '/health (fastMonitor)',
   })
 }
 
@@ -538,6 +575,7 @@ export async function goalTable(db, { now = Date.now() } = {}) {
   const readers = [
     ['controllers_ok', () => controllersGoal(db, t, now)],
     ['records_fresh', () => recordsGoal(db, t, now)],
+    ['monitor_cadence', () => monitorCadenceGoal(db, t, now)],
     ['pipeline_conversion', () => pipelineGoal(db, t)],
     ['veto_rate', () => vetoGoal(db, t, now)],
     ['close_completeness', () => closesGoal(db, t, now)],

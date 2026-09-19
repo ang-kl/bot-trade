@@ -51,6 +51,7 @@
 import WebSocket from 'ws'
 
 import { PT } from './ctrader-payload-types.js'
+import { beginCall, endCall, describeSteps } from './inflight.js'
 
 /** Feature flag. Read per call so a deploy can flip it without a restart. */
 export function poolEnabled() {
@@ -70,6 +71,14 @@ const IDLE_MS = Math.max(30_000, Number(process.env.CTRADER_WS_IDLE_MS) || 600_0
 
 const HEARTBEAT_MS = 9_000
 const AUTH_TIMEOUT_MS = Math.max(5_000, Number(process.env.CTRADER_WS_AUTH_TIMEOUT_MS) || 20_000)
+// Wave 5 (§K·15): how long a request may sit QUEUED behind this socket's
+// chain (plus its own timeoutMs) before the caller is unblocked. Read per
+// call so a deploy can change it without a restart.
+export const DEFAULT_QUEUE_BUDGET_MS = 30_000
+export function queueBudgetMs() {
+  const n = Number(process.env.CTRADER_QUEUE_BUDGET_MS)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_QUEUE_BUDGET_MS
+}
 
 /**
  * Should this message be ignored rather than read as the in-flight response?
@@ -244,13 +253,58 @@ class Session {
    * parked on the historical rate limiter — match wsRun exactly, because
    * scan behaviour depends on them.
    */
-  run(steps, timeoutMs, collectAll, takeHistoricalToken, isHistorical) {
-    // Queue behind whatever this socket is already doing. The tail is kept
-    // rejection-free so one failed request never poisons the queue.
-    const mine = this.chain.then(
-      () => this.runNow(steps, timeoutMs, collectAll, takeHistoricalToken, isHistorical))
+  run(steps, timeoutMs, collectAll, takeHistoricalToken, isHistorical, { registered = false } = {}) {
+    // END-TO-END BOUND (Wave 5, §K·15; checker BLOCKER 19-09-2026). runNow's
+    // per-step timer is armed only once the request is AT THE FRONT of this
+    // chain and past the rate bucket: the time spent queued was never
+    // covered, and withRetry(fn, 2) multiplied whatever it took
+    // (fast-monitor.js: 81 s worst case for one wsReconcile).
+    //
+    // So a request may wait QUEUED for at most timeoutMs + queueBudgetMs().
+    // Past that it is ABANDONED: the chain callback drops it instead of
+    // sending it late, and the caller gets an Error naming the call with
+    // `queued_timeout`. The first draft let the abandoned request still run
+    // when its turn came — and because the caller had already been told it
+    // failed BEFORE sending, wsPlaceOrder's retry resubmitted while the
+    // original was still queued: three NEW_ORDER_REQ from one call in the
+    // checker's run. Cancel-before-send is the whole fix: a queued_timeout
+    // now means, exactly, "never reached the broker", which is the one class
+    // of failure a NEW_ORDER_REQ may be retried on (isAmbiguousSubmitError
+    // stays false for it on purpose).
+    //
+    // Once runNow has STARTED the outer deadline never fires: from there the
+    // per-step timer is the bound, and its timeout message carries wsRun's
+    // numeric `after sending <type>` marker that classifies a sent order as
+    // ambiguous. The registry entry (when this call was not already
+    // registered by wsRun — `registered`, so a pooled call counts once) is
+    // released when the caller's wait ends: at the abandon for a queued
+    // call, at the true end for a started one.
+    let abandoned = false
+    let started = false
+    let deadlineErr = null
+    const mine = this.chain.then(() => {
+      if (abandoned) return Promise.reject(deadlineErr)
+      started = true
+      return this.runNow(steps, timeoutMs, collectAll, takeHistoricalToken, isHistorical)
+    })
+    // The tail is kept rejection-free so one failed request never poisons
+    // the queue.
     this.chain = mine.then(() => {}, () => {})
-    return mine
+    const desc = describeSteps(steps, this.accountAuth?.ctidTraderAccountId)
+    const token = registered ? null : beginCall({ name: `session${desc.name.slice(2)}`, symbol: desc.symbol, accountId: desc.accountId })
+    const budget = (Number(timeoutMs) || 0) + queueBudgetMs()
+    let timer = null
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        if (started) return // in flight: the per-step timer owns it from here
+        abandoned = true
+        deadlineErr = new Error(
+          `cTrader WS queued_timeout after ${budget}ms — ${desc.name}${desc.symbol ? ` ${desc.symbol}` : ''} was still queued behind this socket (per-step timeout ${timeoutMs}ms + queue budget ${queueBudgetMs()}ms) and is dropped unsent: it never reached the broker`)
+        reject(deadlineErr)
+      }, budget)
+      timer.unref?.()
+    })
+    return Promise.race([mine, deadline]).finally(() => { clearTimeout(timer); if (token != null) endCall(token) })
   }
 
   runNow(steps, timeoutMs, collectAll, takeHistoricalToken, isHistorical) {
@@ -356,6 +410,9 @@ const pool = new Map()
 // thread a connect function through, and untested wiring is how a correct
 // module ends up never being called.
 let connectImpl = (url) => new WebSocket(url)
+/** Test seam: the class itself, so the queued-timeout race can be driven with a chain that never settles. */
+export const _SessionForTests = Session
+
 export function _setConnectForTests(fn) { connectImpl = fn || ((url) => new WebSocket(url)) }
 
 /** Test seam — drop every session without waiting for idle timers. */
@@ -415,5 +472,5 @@ export async function pooledRun(host, appAuth, accountAuth, steps, timeoutMs, co
     log: deps.log || (() => {}),
   })
   await s.open()
-  return s.run(steps, timeoutMs, collectAll, deps.takeHistoricalToken, deps.isHistorical)
+  return s.run(steps, timeoutMs, collectAll, deps.takeHistoricalToken, deps.isHistorical, { registered: deps.registered === true })
 }

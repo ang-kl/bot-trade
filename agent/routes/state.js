@@ -2765,6 +2765,17 @@ export default function stateRouter(db) {
     }
   })
 
+  // Wave 5 (§K item 16): the last daily report as posted, and whether the
+  // next is due on the loop's 24 h cursor.
+  router.get('/daily-report', async (_req, res) => {
+    try {
+      const { dailyReportView } = await import('../services/daily-report.js')
+      res.json(dailyReportView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/goal-table', async (_req, res) => {
     try {
       const { goalTable } = await import('../services/goal-table.js')

@@ -814,6 +814,10 @@ test('a position target-restore WILL repair is still deferred to it', async () =
 })
 
 test('the deferred set gets an OUTCOME line, so neither log line over-claims', async () => {
+  // Wave 5: the protection lines print on CHANGE; an earlier test in this
+  // file printed the same breakdown for this account, so start clean.
+  const { _resetProtectionLineMemoryForTests } = await import('./naked-position-guard.js')
+  _resetProtectionLineMemoryForTests()
   oneAccount()
   targetlessOn(A, 'EURUSD', '111', 1.05, { current_tp: 1.12, entry_price: 1.09 })
   const exec = { reconcile: async () => ({ position: [{ positionId: '111', stopLoss: 1.05, takeProfit: null }] }) }

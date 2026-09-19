@@ -50,7 +50,11 @@ export const CONTROLLERS = {
   // "protection every minute" is the claim, and a 90s band breaks it.
   protection_band:  { label: 'Protection band (60s)',  expectedSec: 60,   factor: 4, effect: { key: 'fast_monitor_pass_json', kind: 'json', maxAgeSec: 240 } },
   burn_in:          { label: 'Burn-in engine',         tiedToLoop: true,  factor: 3 },
-  pending_orders:   { label: 'Pending-order manager',  tiedToLoop: true,  factor: 3 },
+  // Wave 5 (§K·15): retired with its producer (lib/entry-producers.js
+  // pending_fib_orders). The loop no longer runs or beats the phase; the
+  // watchdog ignores it and the panel labels it, so a controller that is
+  // not scheduled cannot read as stalled.
+  pending_orders:   { label: 'Pending-order manager',  tiedToLoop: true,  factor: 3, retired: '2026-09-19 Wave 5: producer retired — phase not scheduled' },
   // EVERY THIRD LOOP, not every loop (measured 08-09-2026, § 7,453·C): both
   // of these beat inside loop.js's reconcile block, gated `loopCount % 3 ===
   // 0`, so their real cadence is ~3 minutes on a 1-minute loop. Expected as
@@ -163,6 +167,9 @@ export const CONTROLLERS = {
   // Wave 3 (19-09-2026): the nightly mark-to-market equity row per account,
   // once every 24 h on a persisted stamp. Stale only after two missed nights.
   equity_snapshot:     { label: 'Nightly equity snapshot',    expectedSec: 24 * 3600, factor: 2 },
+  // Wave 5 (§K item 16): the daily Telegram report, once every 24 h on the
+  // loop's persisted cursor; its record is the last text as posted.
+  daily_report:        { label: 'Daily report (Telegram)',    expectedSec: 24 * 3600, factor: 2, effect: { key: 'daily_report_last_json', kind: 'json', maxAgeSec: 30 * 3600 } },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
@@ -408,6 +415,8 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
   for (const row of rows) {
     const def = CONTROLLERS[row.name]
     if (!def) continue
+    // A retired controller is not scheduled, so its silence is not a stall.
+    if (def.retired) continue
     const expected = expectedSecFor(def, lsec)
     const limit = expected * def.factor
     const age = ageSecOf(row, now)
@@ -487,6 +496,13 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
   return Object.entries(CONTROLLERS).map(([name, def]) => {
     const row = byName[name]
     const expected = expectedSecFor(def, lsec)
+    if (def.retired) {
+      // Labelled, not judged: the last beat (if any) is history, the verdict
+      // says why nothing is expected. The goal table skips `retired` rows.
+      return { name, label: def.label, status: 'retired', verdict: 'retired', retired: true, note: def.retired,
+        expected_sec: null, runs: row?.runs ?? 0, last_run_at: row?.last_run_at ?? null, last_ok_at: row?.last_ok_at ?? null,
+        last_error: null, error_is_current: false, consecutive_failures: 0, detail: null }
+    }
     // Every controller with a declared effect gets its record dated here —
     // the protection audit's per-account merge is one kind among several.
     const product = def.effect ? effectRecord(db, name, { nowMs: now.getTime(), loopSec: lsec, protection }) : null

@@ -1574,3 +1574,50 @@ test('the default work cap is ONE per pass', async () => {
   assert.deepEqual(amends, ['Z0'])
   assert.equal(MAX_APPLY_PER_PASS, 1)
 })
+
+// ---------------------------------------------------------------------------
+// Wave 5 (first-principles audit 19-09-2026 §K item 15): the protection
+// breakdown prints once per CHANGE, with a 30-minute heartbeat repeat — not
+// once per pass.
+// ---------------------------------------------------------------------------
+test('printOnChange: the same text twice prints once; a change prints; after 30 minutes the unchanged text repeats with a suffix', async () => {
+  const { printOnChange, PROTECTION_LINE_REPEAT_MS, _resetProtectionLineMemoryForTests } = await import('./naked-position-guard.js')
+  _resetProtectionLineMemoryForTests()
+  const out = []
+  const print = (l) => out.push(l)
+  const t0 = 1_800_000_000_000
+  assert.equal(printOnChange('A', 'targetless', '[protection] A: 2 targetless — 2 momentum-book (trail only)', t0, print), 'printed')
+  assert.equal(printOnChange('A', 'targetless', '[protection] A: 2 targetless — 2 momentum-book (trail only)', t0 + 60_000, print), 'unchanged')
+  assert.equal(out.length, 1, 'same breakdown twice → one line')
+  assert.equal(printOnChange('A', 'targetless', '[protection] A: 3 targetless — 2 momentum-book (trail only), 1 bot-owned (target applied)', t0 + 120_000, print), 'printed')
+  assert.equal(out.length, 2, 'a change → a new line')
+  // Another account, another kind: their own memory.
+  assert.equal(printOnChange('B', 'targetless', '[protection] B: 1 targetless — 1 external (left alone — the human\'s own)', t0 + 120_000, print), 'printed')
+  assert.equal(printOnChange('A', 'deferred_restore', '[protection] A: 1 deferred to target-restore — 0 restored, 1 still without a target', t0 + 120_000, print), 'printed')
+  assert.equal(out.length, 4)
+  // The 30-minute repeat.
+  assert.equal(printOnChange('A', 'targetless', '[protection] A: 3 targetless — 2 momentum-book (trail only), 1 bot-owned (target applied)', t0 + 120_000 + PROTECTION_LINE_REPEAT_MS - 1, print), 'unchanged')
+  assert.equal(printOnChange('A', 'targetless', '[protection] A: 3 targetless — 2 momentum-book (trail only), 1 bot-owned (target applied)', t0 + 120_000 + PROTECTION_LINE_REPEAT_MS, print), 'repeated')
+  assert.equal(out[4], '[protection] A: 3 targetless — 2 momentum-book (trail only), 1 bot-owned (target applied) (unchanged 30m)')
+  assert.equal(PROTECTION_LINE_REPEAT_MS, 30 * 60_000)
+  _resetProtectionLineMemoryForTests()
+})
+
+test('END TO END: two passes with the same targetless breakdown print the line ONCE; the Telegram mute is untouched', async () => {
+  const { _resetProtectionLineMemoryForTests } = await import('./naked-position-guard.js')
+  _resetProtectionLineMemoryForTests()
+  const db = initDB(':memory:')
+  bookRow(db, 'C1')
+  const rows = [{ ...targetlessRow('C1', '0005.HK'), id: 1 }]
+  const pos = rows.map(r => targetlessPos(r.ctrader_position_id, r.symbol))
+  const t0 = 1_800_000_000_000
+  const sent = []
+  const run = (nowMs) => runProtectionAudit(db, rows, pos, { accountId: 'A', nowMs, sendMessage: async (m) => { sent.push(m) } })
+  const first = await captureLog(() => run(t0))
+  const second = await captureLog(() => run(t0 + 60_000))
+  assert.equal(first.filter(l => /targetless —/.test(l)).length, 1, first.join('\n'))
+  assert.equal(second.filter(l => /targetless —/.test(l)).length, 0, 'unchanged breakdown one minute later: no second line\n' + second.join('\n'))
+  const third = await captureLog(() => run(t0 + 31 * 60_000))
+  assert.equal(third.filter(l => /targetless — .*\(unchanged 30m\)$/.test(l)).length, 1, third.join('\n'))
+  _resetProtectionLineMemoryForTests()
+})

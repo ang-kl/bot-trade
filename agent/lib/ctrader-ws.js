@@ -33,6 +33,7 @@ import { parseTimeframe, fetchPlan, aggregateBars } from './timeframes.js'
 export { PT } from './ctrader-payload-types.js'
 import { PT } from './ctrader-payload-types.js'
 import { poolEnabled, pooledRun, poolStatus } from './ctrader-session.js'
+import { beginCall, endCall, describeSteps } from './inflight.js'
 
 // ProtoOATrendbarPeriod enum codes + bar durations, one table so a period
 // can never exist in one map but not the other (a missing duration would
@@ -156,6 +157,15 @@ export function historicalRateStatus() {
 }
 
 function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
+  // Wave 5 (§K·15): every call is registered while it is open, named by its
+  // request step, so the loop watchdog can say WHICH call hung rather than
+  // which phase. Ended in `finally` on both paths — a token left open would
+  // be reported as the oldest call on every /health read.
+  const token = beginCall(describeSteps(steps))
+  return wsRunInner(host, steps, timeoutMs, collectAll).finally(() => endCall(token))
+}
+
+function wsRunInner(host, steps, timeoutMs = 20_000, collectAll = false) {
   // POOLED PATH (2026-07-28, CTRADER_WS_POOL=1). Every helper below builds its
   // steps as [APP_AUTH_REQ, ACCOUNT_AUTH_REQ, ...the actual request], so the
   // auth prefix is peeled off here and satisfied once per socket instead of
@@ -171,6 +181,8 @@ function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
     return pooledRun(host, steps[0].send.payload, steps[1].send.payload, steps.slice(2), timeoutMs, collectAll, {
       takeHistoricalToken,
       isHistorical: (t) => HISTORICAL_PAYLOADS.has(t),
+      // wsRun registered this call already; the session must not count it twice.
+      registered: true,
     })
   }
   return new Promise((resolve, reject) => {

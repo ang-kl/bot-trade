@@ -106,6 +106,7 @@ import { recordPositionEvent } from './position-events.js'
 import { roundToDigits } from './trade-guard.js'
 import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDue, thresholdMs } from './momentum-account.js'
 import { bookCloseVolume } from './book-close-volume.js'
+import { isSymbolOpenCached } from './symbol-hours.js'
 // PR-K: the hold-age rule lives in its own module because the momentum-account
 // path enforces the SAME minimum hold and may not import this file (cycle).
 import { parseStamp, heldLongEnough as heldLongEnoughFor, heldHours, minHoldMsFor } from './book-hold-age.js'
@@ -322,6 +323,26 @@ export function buildEntrySynth({ symbol, price, atr, cfg, conviction = null, ra
   }
 }
 
+// ---------------------------------------------------------------------------
+// OWED EXITS ARE NOT RETRIED INTO A CLOSED MARKET (Wave 5, §K·15). Block (2)
+// below retries a refused exit on EVERY pass — right, because an owed exit
+// must not wait a day. But the audit's log had `close failed — MARKET_CLOSED`
+// on 26 of 26 passes for one name: a broker call the hours table already
+// knew would be refused, and a line per pass saying so. Now the hours are
+// asked FIRST; a market known closed defers the close without a broker call
+// and is counted in the pass summary as `deferredClosed`. Only the broker's
+// own schedule (a symbol_hours row) may defer: a symbol the table has never
+// seen is still attempted, whatever the sessions.js heuristic guesses.
+//
+// ONE LINE PER SYMBOL, not per pass: this process-wide Map remembers which
+// account|symbol is currently deferred, prints when a symbol FIRST defers and
+// once more when its market is next seen open (the close is then attempted).
+// In-memory on purpose — a restart prints the first-defer line once more,
+// which is one line, not one per pass.
+// ---------------------------------------------------------------------------
+const deferredClosed = new Map() // `${accountId}|${symbol}` → first deferred at (ms)
+export function _resetDeferredClosedForTests() { deferredClosed.clear() }
+
 export function loadBookState(db) {
   try {
     const s = JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY) || 'null')
@@ -368,7 +389,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   const cfg = loadMomentumBook(db)
   if (!cfg.enabled) return { ran: false, why: 'disabled' }
   const state = loadBookState(db)
-  const summary = { ran: true, entries: 0, exits: 0, trailed: 0, reclassified: 0, skipped: [], accounts: 0 }
+  const summary = { ran: true, entries: 0, exits: 0, trailed: 0, reclassified: 0, deferredClosed: 0, skipped: [], accounts: 0 }
   // Every shadow row since the cursor advances it (refusals included, so
   // nothing is re-read); LONG and SHORT entries and exits act (PR-D) — a
   // short row still has to pass directionFor at tryEnter.
@@ -714,6 +735,36 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     for (const [symbol] of acctExits) {
       const row = openRow.get(accountId, symbol)
       if (!row) continue
+      // Hours first (Wave 5, §K·15): a market the BROKER's schedule says is
+      // closed gets no broker call. The row keeps its note (exit_pending /
+      // owed), the retry stays owed, and the pass counts it. Only a
+      // symbol_hours row (source 'broker') may defer: with no row,
+      // isSymbolOpenCached falls to the sessions.js heuristic, which calls
+      // US500 closed at 02:00 UTC and XTIUSD closed outside New York — a
+      // wrongly deferred exit on an open market is the worse error, so the
+      // heuristic and an error both ATTEMPT the close (one refused line at
+      // worst).
+      const deferKey = `${accountId}|${symbol}`
+      let hours = { open: true, source: 'unknown' }
+      try { hours = (deps.isSymbolOpen ?? isSymbolOpenCached)(db, symbol, new Date(now)) } catch { hours = { open: true, source: 'error' } }
+      if (hours.open === false && hours.source === 'broker') {
+        summary.deferredClosed++
+        // A flip whose exit waits for the market keeps its other side on the
+        // book's own state, exactly as the cadence deferral does — the
+        // cursor has consumed the shadow's `enter` row, so nothing else would.
+        const want = acctExits.get(symbol)
+        if (want?.flip && want.to) rememberFlip(symbol, want)
+        if (!deferredClosed.has(deferKey)) {
+          deferredClosed.set(deferKey, now)
+          log(`momentum book: exit of ${symbol} on …${accountId.slice(-4)} deferred — market closed (${hours.source}); retried when it opens, not per pass`)
+        }
+        continue
+      }
+      if (deferredClosed.has(deferKey)) {
+        const since = deferredClosed.get(deferKey)
+        deferredClosed.delete(deferKey)
+        log(`momentum book: market open for ${symbol} on …${accountId.slice(-4)} — resuming the deferred exit (deferred ${Math.round((now - since) / 60_000)} min)`)
+      }
       try {
         if (row.position_id && deps.close) {
           // The close needs a volume (09-09-2026): broker position first,

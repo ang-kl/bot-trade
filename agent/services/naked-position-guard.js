@@ -196,6 +196,45 @@ export function dueForAlert(findings, lastAlertMap, nowMs, muteMs = MUTE_MS) {
   })
 }
 
+// ---------------------------------------------------------------------------
+// ONE LINE ON CHANGE (Wave 5, §K·15). The `[protection] <acct>: N targetless
+// — …` breakdown was printed on EVERY pass by two callers (the band each
+// minute, the loop's reconcile each cycle), and the target-restore pair the
+// same way: on the audit's log, 14 trail-only book rows were "targetless"
+// once a minute for the whole day, which is the same fact 1,440 times.
+//
+// A line is printed when its TEXT differs from the last one printed for the
+// same account and kind, or every PROTECTION_LINE_REPEAT_MS as a heartbeat
+// line suffixed `(unchanged 30m)` so a reader can still tell the audit is
+// running. Process-wide, in memory: a restart prints each line once more.
+// The Telegram mute logic (dueForAlert, muteKeyFor) is untouched — this is
+// stdout only.
+// ---------------------------------------------------------------------------
+export const PROTECTION_LINE_REPEAT_MS = 30 * 60_000
+const lastPrinted = new Map() // `${accountId}|${kind}` → { text, at }
+export function _resetProtectionLineMemoryForTests() { lastPrinted.clear() }
+
+/**
+ * Print `text` for (accountId, kind) if it differs from the last print or the
+ * repeat interval has elapsed. Returns 'printed' | 'repeated' | 'unchanged'.
+ * Pure apart from the print and the memory; `print` is injectable for tests.
+ */
+export function printOnChange(accountId, kind, text, nowMs = Date.now(), print = (l) => console.log(l)) {
+  const key = `${accountId ?? '?'}|${kind}`
+  const last = lastPrinted.get(key)
+  if (!last || last.text !== text) {
+    lastPrinted.set(key, { text, at: nowMs })
+    print(text)
+    return 'printed'
+  }
+  if (nowMs - last.at >= PROTECTION_LINE_REPEAT_MS) {
+    lastPrinted.set(key, { text, at: nowMs })
+    print(`${text} (unchanged ${Math.round(PROTECTION_LINE_REPEAT_MS / 60_000)}m)`)
+    return 'repeated'
+  }
+  return 'unchanged'
+}
+
 const STATE_KEY = 'naked_position_alerts_json'
 const TARGET_STATE_KEY = 'targetless_position_alerts_json'
 const LOG_STATE_KEY = 'protection_log_writes_json'
@@ -618,7 +657,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       const parts = [...counts.entries()]
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .map(([k, n]) => `${n} ${k}`)
-      console.log(`[protection] ${accountId ?? '?'}: ${audit.targetless.length} targetless — ${parts.join(', ')}`)
+      printOnChange(accountId, 'targetless', `[protection] ${accountId ?? '?'}: ${audit.targetless.length} targetless — ${parts.join(', ')}`, nowMs)
     }
 
     // Separate message, no siren: a stop is in place, so this is a management
@@ -1240,7 +1279,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
         out.targetsRestored += fix.restored
         for (const e of fix.errors) out.errors.push(`${id}: target restore — ${e}`)
         if (fix.restored) console.log(`[protection] ${id}: restored ${fix.restored} take profit(s) from the book`)
-        for (const sk of fix.skipped) console.log(`[protection] ${id}: target NOT restored — ${sk}`)
+        for (const sk of fix.skipped) printOnChange(id, `not_restored|${String(sk).split(' ')[0]}`, `[protection] ${id}: target NOT restored — ${sk}`, deps.nowMs ?? Date.now())
         // CLOSE THE LOOP THE BREAKDOWN OPENED (16-09-2026, review). The audit's
         // stdout line reports N positions "deferred to target-restore" — the
         // routing, which it can know. What it cannot know is the OUTCOME, and
@@ -1249,7 +1288,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
         // the pair of lines is complete and neither one over-claims.
         if (restorable.size) {
           const stillOpen = restorable.size - fix.restored
-          console.log(`[protection] ${id}: ${restorable.size} deferred to target-restore — ${fix.restored} restored, ${Math.max(0, stillOpen)} still without a target`)
+          printOnChange(id, 'deferred_restore', `[protection] ${id}: ${restorable.size} deferred to target-restore — ${fix.restored} restored, ${Math.max(0, stillOpen)} still without a target`, deps.nowMs ?? Date.now())
         }
       } catch (err) {
         // A failed repair must never take down the audit that found the fault.

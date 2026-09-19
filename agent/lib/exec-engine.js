@@ -8,6 +8,7 @@
 
 import { tagLabelWithIntent } from './trade-labels.js'
 import { isAmbiguousOrderOutcome } from './exec-fallback.js'
+import { beginCall, endCall } from './inflight.js'
 
 export function execEngineMode() {
   return process.env.EXEC_ENGINE === 'cpp' ? 'cpp' : 'js'
@@ -102,6 +103,13 @@ export function execBaseFor(credsOrHost) {
 }
 
 async function sidecar(base, method, path, body) {
+  // Wave 5 (§K·15): registered while open so the loop watchdog can name a
+  // sidecar call that hung, not just the phase it hung in.
+  const token = beginCall({ name: `sidecar:${method} ${path}`, symbol: body?.symbol ?? null, accountId: body?.accountId ?? body?.ctidTraderAccountId ?? null })
+  try { return await sidecarInner(base, method, path, body) } finally { endCall(token) }
+}
+
+async function sidecarInner(base, method, path, body) {
   const res = await fetch(base + path, {
     method,
     headers: {

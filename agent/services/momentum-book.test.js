@@ -1769,3 +1769,102 @@ test('Wave 2 (§K·8): linking an adopted tsmom_long fill to the book upgrades i
   db.prepare(`UPDATE trades SET origin = 'bot_pending_fill', origin_source = 'book_link' WHERE id = ? AND (origin IS NULL OR origin = 'reconciler_adopted')`).run(1)
   assert.equal(db.prepare(`SELECT origin FROM trades WHERE id = 1`).get().origin, 'bot_pending_fill')
 })
+
+// ---------------------------------------------------------------------------
+// Wave 5 (first-principles audit 19-09-2026 §K item 15): an owed exit is not
+// retried into a market the hours table already knows is closed — no broker
+// call, one line when it first defers, one when it resumes.
+// ---------------------------------------------------------------------------
+test('OWED EXIT, MARKET CLOSED: the close is not sent, the pass counts deferredClosed, ONE line on the first deferral and none on the next pass; when the market opens the close goes with one resume line', async () => {
+  const { _resetDeferredClosedForTests } = await import('./momentum-book.js')
+  _resetDeferredClosedForTests()
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  let open = true
+  f.deps.isSymbolOpen = () => (open ? { open: true, source: 'broker' } : { open: false, source: 'broker', reason: 'closed per broker trading schedule' })
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 1_000 })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit' })
+  open = false
+  const lines = []
+  let r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 2_000, log: (l) => lines.push(l) })
+  assert.equal(f.calls.close.length, 0, 'known closed: the broker is not called')
+  assert.equal(r.exits, 0)
+  assert.equal(r.deferredClosed, 1)
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'open', 'the row stays open, the exit still owed')
+  assert.ok(!r.skipped.some(x => /close failed/.test(x)), 'not a failed close — nothing was sent')
+  const deferLines = lines.filter(l => /deferred — market closed/.test(l))
+  assert.equal(deferLines.length, 1, lines.join('\n'))
+  assert.match(deferLines[0], /BTCUSD on …\w+/)
+  // Next pass, still closed: still no call, still counted, NO second line.
+  r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 62_000, log: (l) => lines.push(l) })
+  assert.equal(f.calls.close.length, 0)
+  assert.equal(r.deferredClosed, 1)
+  assert.equal(lines.filter(l => /deferred — market closed/.test(l)).length, 1, 'one line per symbol, not per pass')
+  // The market opens: the close goes, one resume line.
+  open = true
+  r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 122_000, log: (l) => lines.push(l) })
+  assert.equal(r.exits, 1)
+  assert.equal(r.deferredClosed, 0)
+  assert.deepEqual(f.calls.close, [{ positionId: `pos-BTCUSD-${DEMO}`, volume: 1000 }])
+  assert.equal(lines.filter(l => /market open for BTCUSD .* resuming the deferred exit \(deferred 2 min\)/.test(l)).length, 1, lines.join('\n'))
+  assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'exit_sent')
+})
+
+test('OWED EXIT, hours UNKNOWN (no symbol_hours row): the close IS attempted even where the sessions.js heuristic guesses closed — only the broker schedule may defer', async () => {
+  const { _resetDeferredClosedForTests } = await import('./momentum-book.js')
+  _resetDeferredClosedForTests()
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'NATGAS', action: 'enter' })
+  const f = fakes()
+  // No stub: the real isSymbolOpenCached. NATGAS has no hours row, and at
+  // 21:10 UTC the heuristic calls energies closed (settlement break) — the
+  // exact guess that must NOT hold an owed exit.
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM symbol_hours WHERE symbol = 'NATGAS'`).get().n, 0)
+  const { isSymbolOpenCached } = await import('./symbol-hours.js')
+  const at = Date.parse('2026-09-09T21:10:00Z')
+  assert.deepEqual([isSymbolOpenCached(db, 'NATGAS', new Date(at)).open, isSymbolOpenCached(db, 'NATGAS', new Date(at)).source], [false, 'heuristic'])
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: at - 60_000 })
+  shadowRow(db, { symbol: 'NATGAS', action: 'exit' })
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: at })
+  assert.equal(r.exits, 1)
+  assert.equal(r.deferredClosed, 0)
+  assert.equal(f.calls.close.length, 1, 'the heuristic is not a reason to hold an owed exit')
+  // The same for an explicit heuristic verdict and for an hours reader that throws.
+  for (const stub of [() => ({ open: false, source: 'heuristic', reason: 'guess' }), () => { throw new Error('hours reader down') }]) {
+    const db2 = fresh()
+    setState(db2, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+    setStage(db2, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+    shadowRow(db2, { symbol: 'BTCUSD', action: 'enter' })
+    const f2 = fakes()
+    f2.deps.isSymbolOpen = stub
+    await runMomentumBook(db2, { accounts, credsFor, deps: f2.deps, now: 1_000 })
+    shadowRow(db2, { symbol: 'BTCUSD', action: 'exit' })
+    const r2 = await runMomentumBook(db2, { accounts, credsFor, deps: f2.deps, now: 2_000 })
+    assert.equal(r2.exits, 1); assert.equal(r2.deferredClosed, 0); assert.equal(f2.calls.close.length, 1)
+  }
+})
+
+test('OWED EXIT, hours known OPEN: the close is sent', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  f.deps.isSymbolOpen = () => ({ open: true, source: 'broker' })
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 1_000 })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'exit' })
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(r.exits, 1)
+  assert.equal(f.calls.close.length, 1)
+})
+
+test('wiring pin: the hours are asked BEFORE the owed close, and the default is the cached broker schedule', () => {
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const src = strip(readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8'))
+  assert.match(src, /\(deps\.isSymbolOpen \?\? isSymbolOpenCached\)\(db, symbol, new Date\(now\)\)[\s\S]{0,600}?if \(hours\.open === false && hours\.source === 'broker'\) \{[\s\S]{0,900}?continue[\s\S]{0,700}?const volume = await bookCloseVolume/)
+})

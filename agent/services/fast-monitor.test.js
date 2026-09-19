@@ -303,3 +303,65 @@ test('withBudget really does abandon a wait that overruns', async () => {
   assert.match(res.error.message, /exceeded its/)
   assert.ok(Date.now() - t0 < 2000)
 })
+
+// ---------------------------------------------------------------------------
+// Wave 5 (first-principles audit 19-09-2026 §K item 15): the tick's overrun
+// as a measured share, written by the tick path itself.
+// ---------------------------------------------------------------------------
+import { tickShares, TICK_RECORD_MIN_MS } from './fast-monitor.js'
+
+test('tickShares: skipped over expected ticks, busy over the window, capped and rounded; empty window → null', () => {
+  // 10 min at 3 s = 200 expected ticks; 20 skipped = 10 %; 60 s busy = 10 %.
+  assert.deepEqual(tickShares({ sampleMs: [30_000, 30_000], skipped: 20, windowMs: 600_000, everyMs: 3_000 }), { skipShare: 0.1, busyShare: 0.1, expectedTicks: 200 })
+  // A young monitor is judged on its uptime: 30 s at 3 s = 10 expected.
+  assert.equal(tickShares({ sampleMs: [], skipped: 5, windowMs: 30_000, everyMs: 3_000 }).skipShare, 0.5)
+  assert.equal(tickShares({ sampleMs: [900_000], skipped: 999, windowMs: 600_000, everyMs: 3_000 }).skipShare, 1, 'capped')
+  assert.equal(tickShares({ sampleMs: [], skipped: 0, windowMs: 0, everyMs: 3_000 }).skipShare, null)
+  assert.equal(TICK_RECORD_MIN_MS, 5_000)
+})
+
+test('the TICK path writes the pass record without the band, counts every skip in the window, and does not need the band to have run', async () => {
+  const db = initDB(':memory:')
+  const hb = { beat: () => {} }
+  let t = 1_000_000
+  // A tick that outlives its cadence several times over: the ticker skips
+  // its own next firings while it runs, and each skip is a sample. The fake
+  // clock is pushed past the 5 s throttle before the read, so the record
+  // read is one written AFTER the skips, not the first (throttled) one.
+  const stop = startFastMonitor(db, () => ({ ready: false }), {
+    tickMs: 5, bandMs: 10_000, heartbeat: hb, clock: () => t,
+    runTick: async () => { await sleep(40); t += 40 }, runBand: async () => {},
+  })
+  await sleep(120)
+  t += TICK_RECORD_MIN_MS
+  await sleep(60)
+  stop()
+  const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.ok(rec, 'the record exists although the band never ran')
+  assert.equal(rec.band.lastMs, null, 'the band figures are blank, not invented')
+  assert.ok(rec.tick.skipped10m >= 3, `skips in the window are counted: ${rec.tick.skipped10m}`)
+  assert.ok(rec.tick.skipShare10m > 0 && rec.tick.skipShare10m <= 1, `skipShare10m ${rec.tick.skipShare10m}`)
+  assert.ok(rec.tick.busyShare10m > 0 && rec.tick.busyShare10m <= 1, `busyShare10m ${rec.tick.busyShare10m}`)
+})
+
+test('the tick-path record is throttled to once per TICK_RECORD_MIN_MS (the first write lands, the next inside the window does not)', async () => {
+  const db = initDB(':memory:')
+  let t = 1_000_000
+  const clock = () => t
+  const stop = startFastMonitor(db, () => ({ ready: false }), {
+    tickMs: 5, bandMs: 10_000, heartbeat: { beat: () => {} }, clock,
+    runTick: async () => { t += 1 },   // each tick "takes" 1 ms on the fake clock
+    runBand: async () => {},
+  })
+  await sleep(40)
+  const first = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.ok(first, 'first tick wrote the record')
+  await sleep(40)
+  const second = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.equal(second.at, first.at, 'inside the 5 s throttle the record is not re-written')
+  t += TICK_RECORD_MIN_MS
+  await sleep(40)
+  const third = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.notEqual(third.at, first.at, 'past the throttle it is')
+  stop()
+})
