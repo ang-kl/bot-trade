@@ -396,7 +396,14 @@ test('strategy-pin seed: the checked-in file parses — Wave 1 (19-09-2026): `_a
   assert.deepEqual(Object.keys(cfg._trial), ['tsmom_long'], '_trial: the momentum book only')
   assert.equal(cfg._trial.tsmom_long.length, 1, 'one account per system on trial (07-09 P5 reconciled with P9 in the note)')
   assert.match(cfg._trial_note, /2026-12-19/, 'the trial names its checkpoint date')
-  assert.deepEqual(cfg._reseed, [], 'the 17-09 per-account re-arms are superseded by the trial')
+  // Owner order 19-09-2026: re-arm fib_confluence on the four accounts the
+  // Wave 1 deploy held OFF ("seeded before, since disarmed"). One token, four
+  // cells, applied once each.
+  assert.deepEqual(cfg._reseed, [
+    '42993489:fib_confluence:owner-19-09', '43097342:fib_confluence:owner-19-09',
+    '46130058:fib_confluence:owner-19-09', '47790949:fib_confluence:owner-19-09',
+  ])
+  assert.match(cfg._reseed_note, /re-arm fib_confluence on the four accounts/)
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /seedMomentumAccountFromConfig\(db, \{ log[\s\S]{0,1500}?seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log/, 'the boot seed runs after the momentum-account seed')
   assert.match(src, /switched off/, 'the boot line reports the OFF orders')
@@ -565,8 +572,9 @@ test('a malformed _reseed entry is named and skipped, the good ones still land',
   assert.deepEqual(r.applied, ['47790949:tsmom_long:2'])
 })
 
-test('the checked-in file no longer carries the 17-09 per-account re-arms — the trial replaces them (Wave 1, 19-09-2026)', () => {
+test('the checked-in file carries no 17-09 re-arm (the trial replaced them); its only reseed is the owner\'s 19-09 fib_confluence order', () => {
   const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
-  assert.deepEqual(cfg._reseed, [])
-  assert.equal('_reseed_note' in cfg, false)
+  assert.ok(cfg._reseed.every(e => e.endsWith(':fib_confluence:owner-19-09')), 'every reseed is the 19-09 order')
+  assert.ok(!cfg._reseed.some(e => /tsmom_long/.test(e)), 'no 17-09 tsmom re-arm')
+  assert.equal(cfg._reseed.length, 4)
 })
