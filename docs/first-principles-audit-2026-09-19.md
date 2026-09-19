@@ -674,3 +674,25 @@ after deploy, recorded in §L of this file as it happens.
   after deploy: boot "risk config" line, `/state/risk-matrix` retired list
   and 42 effective keys, no change in effective `maxOpenPositions` 5 /
   `cooldownMinutes` 60 / `perTradeRiskPct` 0.01 / `dailyLossLimit` 150.
+- 19-09-2026 09:10 SGT: Wave 5a read-back on 826d0a8. Boot: "[boot] pending
+  orders: producer retired — phase not scheduled". `/health`: `inflight`
+  live (at one read the oldest open call was a position-P&L read on …0949,
+  136 ms in), `fastMonitor` live. MEASURED, and the reason the row exists:
+  six minutes after boot the fast monitor read skipShare10m 0.75, busyShare
+  0.86, last pass 25 s, worst pass 126 s against a 3 s cadence — the
+  `monitor_cadence` row is `off_track` (target ≤ 10 %). The protection
+  sweep inside the pass is what takes the time (the pre-Wave log shows
+  "previous pass still running — skipped" on most ticks). Carried as a
+  named finding for the owner: the cadence is a config value and the sweep
+  is per account through the broker, so the fix is either a longer tick or
+  a lighter pass, and neither is a docs decision.
+- 19-09-2026 09:16 SGT: Wave 4b merged as #966 (eb2a653); deployed 09:17
+  SGT. Read-back: boot "risk config: unchanged — … 8 owner override(s)
+  kept (…)"; `/state/risk-matrix` serves 42 values, `overridden` = exactly
+  the eight kept keys, `retired` = [] (no retired key is stored anywhere:
+  the fold-then-drop left nothing), and the effective values unchanged —
+  maxOpenPositions 5, cooldownMinutes 60, perTradeRiskPct 0.01,
+  dailyLossLimit 150. All six waves of §K are merged and read back; the
+  owner-side items stay as §K lists them (the eight kept overrides, P6c,
+  task #6, tokens for …2148/…9009, the 19 symbols armed on unreachable
+  timeframes, the fast-monitor cadence above).

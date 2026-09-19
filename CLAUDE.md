@@ -676,6 +676,13 @@ Measurement history — each line is a real run of the script, not a claim:
   is **`№ 8,081`** plus any unstamped line made after this ledger. The
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+- 2026-09-19 01:19 UTC, **same remote container, PARTIAL corpus**: the
+  transcript captures eighteen text replies after `№ 8,066` (four more
+  than the line above: the Wave 5a read-back, #966 opened, the
+  notifications read, the Wave 4b deploy), so the last reply is
+  `№ 8,084` and the Waves 4b/5a/5b report is **`№ 8,085`** by count. The
+  count is by replies, not by stamps. A later re-measure that reads below
+  this line is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
