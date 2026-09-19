@@ -17,10 +17,7 @@ const KNOBS = [
   ['perTradeRiskPct', 'Risk per trade (%)'],
   ['maxRiskCapPct', 'Max risk cap (%)'],
   ['maxNotionalXBalance', 'Exposure ceiling (× balance)'],
-  ['marginRateStock', 'Margin rate — shares'],
-  ['marginRateIndex', 'Margin rate — indices'],
-  ['marginRateCommodity', 'Margin rate — commodities'],
-  ['marginRateCrypto', 'Margin rate — crypto'],
+  ['marginRates', 'Margin rates (shares / indices / commodities / crypto)'],
   ['minExpectancyR', 'Min expectancy (R)'],
   ['dailyLossPct', 'Daily loss cap (%)'],
   ['dailyLossLimit', 'Daily loss limit ($)'],
@@ -34,6 +31,21 @@ const KNOBS = [
   ['maxCurrencyExposure', 'Max currency exposure'],
   ['maxConsecutiveLosses', 'Max consecutive losses'],
 ]
+
+/**
+ * A cell. An object-valued knob (Wave 4b: `marginRates` is one object of
+ * four per-class rates) renders as `field: value` pairs on one line, and
+ * compares by content, not by reference — two accounts with the same rates
+ * are the same cell.
+ */
+function cellText(v) {
+  if (v == null) return '—'
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    return Object.entries(v).map(([k, x]) => `${k}: ${x ?? '—'}`).join(' · ')
+  }
+  return String(v)
+}
+const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
 export default function RiskConfigCompare() {
   const [cols, setCols] = useState(null)
@@ -87,15 +99,15 @@ export default function RiskConfigCompare() {
                 {KNOBS.map(([key, label]) => (
                   <tr key={key} className="border-t border-[var(--glass-edge)]">
                     <td className="py-1 pr-3">{label}</td>
-                    <td className="py-1 px-2 text-right">{cols.global[key] ?? '—'}</td>
+                    <td className="py-1 px-2 text-right">{cellText(cols.global[key])}</td>
                     {cols.per.map(({ acct, config }) => {
                       const v = config[key]
-                      const differs = v != null && cols.global[key] != null && v !== cols.global[key]
+                      const differs = v != null && cols.global[key] != null && !sameValue(v, cols.global[key])
                       return (
                         <td key={acct.account_id}
                           className={`py-1 px-2 text-right ${differs ? 'font-semibold bg-[var(--color-accent-soft)]' : ''}`}
-                          title={differs ? `overlay — global is ${cols.global[key]}` : undefined}>
-                          {v ?? '—'}
+                          title={differs ? `overlay — global is ${cellText(cols.global[key])}` : undefined}>
+                          {cellText(v)}
                         </td>
                       )
                     })}

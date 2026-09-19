@@ -31,8 +31,8 @@
 // blind spot stops the account within one loop or two.
 //
 // Both knobs are configurable and both fail towards blocking:
-//   risk_config_json.blockOnUnknownPnl    (default true)
-//   risk_config_json.unknownPnlGraceMin   (default 15)
+//   risk_config_json.unknownPnl.block     (default true)
+//   risk_config_json.unknownPnl.graceMin  (default 15)
 // and the same two names under global_guards_json for the portfolio layer.
 // ---------------------------------------------------------------------------
 
@@ -50,7 +50,7 @@ export const DEFAULT_UNKNOWN_PNL_GRACE_MIN = 15
 // mark-unresolvable.js already writes rows off, but only on positive evidence
 // that the broker has no deal history. A row nobody looked at, or that the
 // sweep never reached, is left blocking indefinitely. This is the time-based
-// backstop for exactly that case: past `unknownPnlMaxAgeMin` the backfill has
+// backstop for exactly that case: past `unknownPnl.maxAgeMin` the backfill has
 // had hours, not minutes, and waiting longer is not caution — it is a halt
 // with no release.
 //

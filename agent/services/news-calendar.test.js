@@ -60,7 +60,7 @@ test('newsWindowEvent: blocks inside the window, only matching currency+impact',
   assert.equal(newsWindowEvent([{ title: 'NFP', country: 'USD', impact: 'High', date: mins(-10) }], 'XAUUSD', now)?.title, 'NFP')
 })
 
-test('risk gate: newsGateEnabled vetoes news_window from the CACHED calendar; off by default', async () => {
+test('risk gate: newsGate.on vetoes news_window from the CACHED calendar; off by default', async () => {
   const { initDB, setState } = await import('../db.js')
   const { evaluateTrade, DEFAULT_RISK_CONFIG } = await import('./risk.js')
   const db = initDB(':memory:')
@@ -75,11 +75,11 @@ test('risk gate: newsGateEnabled vetoes news_window from the CACHED calendar; of
   const off = evaluateTrade(db, proposal, { ...DEFAULT_RISK_CONFIG })
   assert.ok(!/news_window/.test(off.veto_reason || ''), 'gate must be off by default')
   // Enabled: vetoed with the event named.
-  const on = evaluateTrade(db, proposal, { ...DEFAULT_RISK_CONFIG, newsGateEnabled: true })
+  const on = evaluateTrade(db, proposal, { ...DEFAULT_RISK_CONFIG, newsGate: { ...DEFAULT_RISK_CONFIG.newsGate, on: true } })
   assert.equal(on.approved, false)
   assert.match(on.veto_reason, /news_window: High USD FOMC/)
   // Unaffected symbol still trades with the gate on.
-  const jpy = evaluateTrade(db, { ...proposal, symbol: 'AUS200' }, { ...DEFAULT_RISK_CONFIG, newsGateEnabled: true })
+  const jpy = evaluateTrade(db, { ...proposal, symbol: 'AUS200' }, { ...DEFAULT_RISK_CONFIG, newsGate: { ...DEFAULT_RISK_CONFIG.newsGate, on: true } })
   assert.ok(!/news_window/.test(jpy.veto_reason || ''))
 })
 

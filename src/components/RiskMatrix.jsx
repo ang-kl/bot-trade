@@ -34,12 +34,18 @@ function SectionTitle({ children }) {
   return <h3 className="w3-heading text-(length:--fs-h) font-semibold mb-1">{children}</h3>
 }
 
-/** Compact display. Percent-shaped keys are stored as fractions. */
-const PCT_KEYS = /Pct$|^deriskTriggerPct$|FracOf/
+/**
+ * Compact display. Percent-shaped keys are stored as fractions. An
+ * object-valued key (Wave 4b: derisk, newsGate, marginRates, …) renders its
+ * fields on one line, each formatted by the same rule (`derisk.triggerPct`
+ * is a percentage; `marginRates.stock` is a fraction shown as one).
+ */
+const PCT_KEYS = /Pct$|FracOf|^marginRates\.|^commissionGate\.maxFracOfWin$/
 function show(key, v) {
   if (v == null || v === '') return '—'
   if (Array.isArray(v)) return v.length ? `${v.length} listed` : 'none'
   if (typeof v === 'boolean') return v ? 'on' : 'off'
+  if (typeof v === 'object') return Object.entries(v).map(([f, x]) => `${f} ${show(`${key}.${f}`, x)}`).join(' · ')
   if (typeof v === 'number' && PCT_KEYS.test(key)) return `${Number((v * 100).toFixed(4))}%`
   return String(v)
 }

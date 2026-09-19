@@ -70,9 +70,9 @@ export function buildEnvironment(db, symbol, nowMs = Date.now()) {
     const all = cachedEventsSync(db, nowMs)
     const cfg = (() => { try { return loadRiskConfig(db) } catch { return {} } })()
     const inWin = newsWindowEvent(all, symbol, nowMs, {
-      minBefore: cfg.newsGateMinBefore ?? 15,
-      minAfter: cfg.newsGateMinAfter ?? 15,
-      impacts: cfg.newsGateImpacts ?? ['High'],
+      minBefore: cfg.newsGate?.minBefore ?? 15,
+      minAfter: cfg.newsGate?.minAfter ?? 15,
+      impacts: cfg.newsGate?.impacts ?? ['High'],
     })
     macroNews = {
       events: relevantEvents(all, symbol, nowMs).map(e => ({
@@ -91,7 +91,7 @@ export function buildEnvironment(db, symbol, nowMs = Date.now()) {
       // gating." The calendar gate VETOES new entries; it never closes what
       // is already open — that stays with SL/TP and the managers.
       gate: {
-        enabled: cfg.newsGateEnabled === true,
+        enabled: cfg.newsGate?.on === true,
         appliesTo: 'new entries only — an existing position is not closed by the calendar gate',
         activeEvent: inWin
           ? { title: inWin.title, currency: inWin.country, impact: inWin.impact, scheduledAt: new Date(inWin.t).toISOString() }

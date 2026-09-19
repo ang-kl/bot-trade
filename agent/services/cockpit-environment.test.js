@@ -64,7 +64,7 @@ test('the gate sub-block separates new-entry gating from managing the open posit
   seedNews(db, { fetchedAgoMs: 60_000, events: [
     { title: 'NFP', country: 'USD', impact: 'High', date: new Date(NOW + 10 * 60_000).toISOString() },
   ] })
-  setState(db, 'risk_config_json', JSON.stringify({ newsGateEnabled: true }))
+  setState(db, 'risk_config_json', JSON.stringify({ newsGate: { on: true } }))
   const out = buildEnvironment(db, 'EURUSD', NOW)
   // 10 minutes ahead is inside the default 15-minute window → the gate is hot.
   assert.equal(out.macroNews.gate.enabled, true)

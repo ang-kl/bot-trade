@@ -4,15 +4,24 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDB, getState, setState } from '../db.js'
-import { DEFAULT_RISK_CONFIG, loadRiskConfig } from './risk.js'
+import { DEFAULT_RISK_CONFIG, LEGACY_RISK_KEYS, loadRiskConfig } from './risk.js'
 import { seedRiskConfigFromFile, riskConfigSeedHash, RISK_CONFIG_SEED_KEY, RISK_CONFIG_KEY } from './risk-config-seed.js'
 
 const CHECKED_IN = new URL('../config/risk-config.json', import.meta.url)
 
-/** The production store as read on 19-09-2026: 17 differing, 37 pinned at default, one retired. */
+/**
+ * The production store as read on 19-09-2026: 17 differing, 37 pinned at
+ * default, one retired — in the key names of THAT day. Wave 4b folded five of
+ * the pinned names (dailyLossPctMax, blockOnUnknownPnl, deriskOnDrawdown,
+ * leverage, newsGateImpacts) and three of the differing ones
+ * (symbolCooldownMinutes, minTradesForKelly, allowNegativeExpectancyOverride)
+ * into object keys or retired them; the fixture keeps the old names with
+ * their literal values, because that is what an un-seeded store holds.
+ */
 function productionStore() {
   const pinned = {}
-  for (const k of ['dailyLossPct', 'dailyLossPctMax', 'campaign', 'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'maxPositionsPerSymbol', 'blockOnUnknownPnl', 'nullExitMinR', 'maxRiskCapPct', 'deriskOnDrawdown', 'minLotSize', 'leverage', 'newsGateImpacts', 'blockedSymbols']) pinned[k] = DEFAULT_RISK_CONFIG[k]
+  for (const k of ['dailyLossPct', 'campaign', 'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'maxPositionsPerSymbol', 'nullExitMinR', 'maxRiskCapPct', 'minLotSize', 'blockedSymbols']) pinned[k] = DEFAULT_RISK_CONFIG[k]
+  Object.assign(pinned, { dailyLossPctMax: null, blockOnUnknownPnl: true, deriskOnDrawdown: true, leverage: 100, newsGateImpacts: ['High'] })
   return {
     ...pinned,
     dailyLossLimit: 150, perTradeRiskPct: 0.01, maxNotionalXBalance: 4, maxConsecutiveLosses: 4,
@@ -40,14 +49,19 @@ test('the checked-in seed: resets only tightening/inert keys, keeps every loosen
   assert.equal(r.storedKeys, 32)
   assert.deepEqual([...r.reset].sort(), ['allowNegativeExpectancyOverride', 'cooldownMinutes', 'maxClusterExposure', 'maxConsecutiveLosses', 'maxOpenPositions', 'minRR', 'minSLDistancePct', 'minTradesForKelly', 'symbolCooldownMinutes'])
   assert.deepEqual([...r.kept].sort(), ['dailyLossLimit', 'equityStopPct', 'marginLevelFloorPct', 'maxCurrencyExposure', 'maxMarginUsagePct', 'maxNotionalXBalance', 'maxSpreadFracOfSL', 'perTradeRiskPct'])
-  assert.deepEqual(r.dropped, ['kellyFraction'])
-  assert.equal(r.pruned.length, 14, 'every pinned default pruned')
+  // Wave 4b: the pinned legacy scalars with a successor are FOLDED (into a
+  // partial object), then pruned field by field because they sit at the
+  // default; the two with no successor are dropped with kellyFraction.
+  assert.deepEqual([...r.folded].sort(), ['blockOnUnknownPnl', 'deriskOnDrawdown', 'newsGateImpacts'])
+  assert.deepEqual([...r.dropped].sort(), ['dailyLossPctMax', 'kellyFraction', 'leverage'])
+  assert.deepEqual([...r.pruned].sort(), ['blockedSymbols', 'campaign', 'dailyLossFloorUsd', 'dailyLossPct', 'dailyLossTierAtUsd', 'derisk.on', 'maxPositionsPerSymbol', 'maxRiskCapPct', 'minLotSize', 'newsGate.impacts', 'nullExitMinR', 'unknownPnl.block'], 'every pinned default pruned, the folded ones per field')
   const stored = JSON.parse(getState(db, RISK_CONFIG_KEY))
-  assert.deepEqual(Object.keys(stored).sort(), ['dailyLossLimit', 'equityStopPct', 'marginLevelFloorPct', 'maxCurrencyExposure', 'maxMarginUsagePct', 'maxNotionalXBalance', 'maxSpreadFracOfSL', 'perTradeRiskPct'], 'only real, kept overrides remain')
+  assert.deepEqual(Object.keys(stored).sort(), ['dailyLossLimit', 'equityStopPct', 'marginLevelFloorPct', 'maxCurrencyExposure', 'maxMarginUsagePct', 'maxNotionalXBalance', 'maxSpreadFracOfSL', 'perTradeRiskPct'], 'only real, kept overrides remain — no empty object left behind')
   const eff = loadRiskConfig(db)
   assert.equal(eff.maxOpenPositions, DEFAULT_RISK_CONFIG.maxOpenPositions)
   assert.equal(eff.cooldownMinutes, DEFAULT_RISK_CONFIG.cooldownMinutes)
-  assert.equal(eff.allowNegativeExpectancyOverride, false)
+  assert.equal(eff.kellyVeto.allowNegative, false)
+  assert.equal(eff.kellyVeto.minTrades, 30)
   assert.equal(eff.perTradeRiskPct, 0.01, 'the half-risk scale is NOT loosened by the seed')
   assert.equal(eff.dailyLossLimit, 150, 'the owner\'s cap is NOT touched by the seed')
   assert.equal(eff.equityStopPct, 0.15)
@@ -120,11 +134,23 @@ test('the checked-in file names no loosening reset: every reset key is tighter-o
   const lowerIsLooser = ['cooldownMinutes', 'symbolCooldownMinutes', 'minRR', 'minSLDistancePct']
   // the one reset that is looser on its own, and allowed only as a PAIR
   const pairedOnly = { minTradesForKelly: 'allowNegativeExpectancyOverride' }
+  // A legacy name in `reset` (Wave 4b) compares against its SUCCESSOR's default.
+  const defaultOf = (k) => {
+    if (k in DEFAULT_RISK_CONFIG) return DEFAULT_RISK_CONFIG[k]
+    assert.ok(k in LEGACY_RISK_KEYS, `${k}: neither a risk key nor a legacy name`)
+    // symbolCooldownMinutes has no successor (dropped, not folded); the
+    // per-symbol lock it governed now reads cooldownMinutes, so that is the
+    // default its reset is measured against.
+    if (k === 'symbolCooldownMinutes') return DEFAULT_RISK_CONFIG.cooldownMinutes
+    const t = LEGACY_RISK_KEYS[k]
+    assert.ok(t, `${k}: retired with no successor — classify it by hand`)
+    return DEFAULT_RISK_CONFIG[t[0]][t[1]]
+  }
   for (const k of cfg.reset) {
     if (k in pairedOnly) { assert.ok(cfg.reset.includes(pairedOnly[k]), `${k} loosens on its own; it may be reset only together with ${pairedOnly[k]}`); continue }
-    if (higherIsLooser.includes(k)) assert.ok(DEFAULT_RISK_CONFIG[k] <= prod[k], `${k}: default ${DEFAULT_RISK_CONFIG[k]} must not exceed stored ${prod[k]}`)
-    else if (lowerIsLooser.includes(k)) assert.ok(DEFAULT_RISK_CONFIG[k] >= prod[k], `${k}: default ${DEFAULT_RISK_CONFIG[k]} must not sit below stored ${prod[k]}`)
-    else if (k === 'allowNegativeExpectancyOverride') assert.equal(DEFAULT_RISK_CONFIG[k], false)
+    if (higherIsLooser.includes(k)) assert.ok(defaultOf(k) <= prod[k], `${k}: default ${defaultOf(k)} must not exceed stored ${prod[k]}`)
+    else if (lowerIsLooser.includes(k)) assert.ok(defaultOf(k) >= prod[k], `${k}: default ${defaultOf(k)} must not sit below stored ${prod[k]}`)
+    else if (k === 'allowNegativeExpectancyOverride') assert.equal(defaultOf(k), false)
     else assert.fail(`${k}: not classified — classify it before resetting it`)
   }
   for (const k of ['perTradeRiskPct', 'dailyLossLimit', 'maxNotionalXBalance', 'maxMarginUsagePct', 'marginLevelFloorPct', 'maxCurrencyExposure', 'maxSpreadFracOfSL', 'equityStopPct']) {
@@ -155,4 +181,31 @@ test('a content change applies the DELTA: a key reset under an earlier hash and 
   assert.equal(eff.maxOpenPositions, 9, 'the human\'s value stands')
   assert.equal(eff.cooldownMinutes, DEFAULT_RISK_CONFIG.cooldownMinutes)
   assert.deepEqual(JSON.parse(getState(db, RISK_CONFIG_SEED_KEY)).resetEver, ['cooldownMinutes', 'maxOpenPositions'])
+})
+
+test('Wave 4b: a stored legacy scalar the seed does not reset is FOLDED into its successor before dropRetired, never silently lost; a legacy name in reset is reset', () => {
+  const db = initDB(':memory:')
+  setState(db, RISK_CONFIG_KEY, JSON.stringify({ deriskMult: 0.25, marginRateStock: 0.3, minTradesForKelly: 10, maxRiskUsd: 300 }))
+  const p = tmpSeed({ reset: ['minTradesForKelly'], keep: [], prunePinnedDefaults: true, dropRetired: true })
+  const r = seedRiskConfigFromFile(db, { file: p })
+  assert.deepEqual(r.reset, ['minTradesForKelly'], 'a legacy name in reset is honoured as a reset')
+  assert.deepEqual([...r.folded].sort(), ['deriskMult', 'marginRateStock'])
+  assert.deepEqual(r.dropped, ['maxRiskUsd'], 'no successor → dropped, and said so')
+  const stored = JSON.parse(getState(db, RISK_CONFIG_KEY))
+  assert.deepEqual(stored, { derisk: { mult: 0.25 }, marginRates: { stock: 0.3 } })
+  const eff = loadRiskConfig(db)
+  assert.equal(eff.derisk.mult, 0.25)
+  assert.equal(eff.derisk.on, true)
+  assert.equal(eff.marginRates.stock, 0.3)
+  assert.equal(eff.kellyVeto.minTrades, 30, 'reset to the default, not folded to 10')
+  assert.deepEqual(JSON.parse(getState(db, RISK_CONFIG_SEED_KEY)).resetEver, ['minTradesForKelly'])
+})
+
+test('Wave 4b: prunePinnedDefaults is one level deep on object keys — a field at its default leaves, a real override stays, an emptied object goes', () => {
+  const db = initDB(':memory:')
+  setState(db, RISK_CONFIG_KEY, JSON.stringify({ derisk: { on: true, mult: 0.4 }, newsGate: { on: false, impacts: ['High'] }, minRR: 2 }))
+  const p = tmpSeed({ reset: [], keep: [], prunePinnedDefaults: true, dropRetired: false })
+  const r = seedRiskConfigFromFile(db, { file: p })
+  assert.deepEqual([...r.pruned].sort(), ['derisk.on', 'newsGate.impacts', 'newsGate.on'])
+  assert.deepEqual(JSON.parse(getState(db, RISK_CONFIG_KEY)), { derisk: { mult: 0.4 }, minRR: 2 })
 })

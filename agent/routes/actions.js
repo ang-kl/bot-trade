@@ -9,7 +9,7 @@ import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-c
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { recordTradePlan } from '../services/trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
-import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
+import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent, mergeRiskConfig, migrateLegacyRiskKeys } from '../services/risk.js'
 import { noteRiskConfigChanges } from '../services/risk-config-history.js'
 import { wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
@@ -5245,9 +5245,14 @@ export default function actionsRouter(db, deps = {}) {
         let overlay = {}
         try { overlay = JSON.parse(getState(db, key) || '{}') || {} } catch { overlay = {} }
         const beforeOverlay = { ...overlay }
+        // An object-valued key (Wave 4b: derisk, newsGate, …) PATCHES the
+        // stored object one level deep, so `{ derisk: { mult: 0.4 } }` on an
+        // account leaves its other derisk fields following the global config.
+        const patch = {}
         for (const k of allowed) {
-          if (k in body) overlay[k] = body[k]
+          if (k in body) patch[k] = body[k]
         }
+        overlay = mergeRiskConfig(migrateLegacyRiskKeys(overlay), patch)
         setState(db, key, JSON.stringify(overlay))
         noteRiskConfigChanges(db, beforeOverlay, overlay, { accountId: acctId, by: 'manual' })
         console.log(`[actions] Risk overlay updated for account ${acctId}:`, overlay)
@@ -5271,7 +5276,23 @@ export default function actionsRouter(db, deps = {}) {
       for (const k of allowed) {
         if (k in body) patch[k] = body[k]
       }
-      setState(db, 'risk_config_json', JSON.stringify({ ...rawOverrides, ...patch }))
+      // Same one-level-deep rule as the overlay branch above: an object key
+      // in the body patches the stored object, it does not replace it
+      // (`campaign` is the exception — one record, replaced wholesale; see
+      // REPLACE_WHOLE_KEYS in risk.js). Then the SUB-FIELDS at their default
+      // are pruned: the Risk page sends the whole effective object, and
+      // without this one save would pin three default fields of `derisk` in
+      // the store — the class Wave 4a just cleaned, one level down. An
+      // object left empty leaves the store.
+      const merged = mergeRiskConfig(migrateLegacyRiskKeys(rawOverrides), patch)
+      for (const k of Object.keys(merged)) {
+        const d = DEFAULT_RISK_CONFIG[k]
+        const v = merged[k]
+        if (!d || typeof d !== 'object' || Array.isArray(d) || !v || typeof v !== 'object' || Array.isArray(v)) continue
+        for (const f of Object.keys(v)) if (f in d && JSON.stringify(v[f]) === JSON.stringify(d[f])) delete v[f]
+        if (Object.keys(v).length === 0) delete merged[k]
+      }
+      setState(db, 'risk_config_json', JSON.stringify(merged))
       const next = loadRiskConfig(db)
       // WHEN did each field last actually change? The Risk page's summary
       // claimed "the settings below hold these values now" without ever

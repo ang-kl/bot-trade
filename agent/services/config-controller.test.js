@@ -147,7 +147,7 @@ test('a disabled account is not advised about', () => {
 test('minRR below breakeven is DANGER and names the arithmetic', () => {
   const db = fresh()
   seed(db)                                     // 32/93 wins -> ~34.4%
-  cfg(db, '46130058', { minRR: 1.5, allowNegativeExpectancyOverride: false, minTradesForKelly: 30 })
+  cfg(db, '46130058', { minRR: 1.5, kellyVeto: { allowNegative: false, minTrades: 30 } })
   const out = proposeForAccount(db, '46130058')
   const p = out.proposals.find(x => x.setting === 'minRR')
   assert.ok(p, 'the finding that prompted this module must be the one it makes')
@@ -164,7 +164,7 @@ test('minRR below breakeven is DANGER and names the arithmetic', () => {
 test('minRR that clears breakeven but not the target is a WARNING, not a danger', () => {
   const db = fresh()
   seed(db)
-  cfg(db, '46130058', { minRR: 2.5, allowNegativeExpectancyOverride: false, minTradesForKelly: 30 })
+  cfg(db, '46130058', { minRR: 2.5, kellyVeto: { allowNegative: false, minTrades: 30 } })
   const p = proposeForAccount(db, '46130058').proposals.find(x => x.setting === 'minRR')
   assert.equal(p.severity, 'warn')
   assert.match(p.why, /clears breakeven but cannot reach the target/)
@@ -173,7 +173,7 @@ test('minRR that clears breakeven but not the target is a WARNING, not a danger'
 test('minRR already at the target produces no proposal', () => {
   const db = fresh()
   seed(db)
-  cfg(db, '46130058', { minRR: 3.5, allowNegativeExpectancyOverride: false, minTradesForKelly: 30 })
+  cfg(db, '46130058', { minRR: 3.5, kellyVeto: { allowNegative: false, minTrades: 30 } })
   assert.equal(proposeForAccount(db, '46130058').proposals.some(p => p.setting === 'minRR'), false)
 })
 
@@ -182,23 +182,23 @@ test('the expectancy override and the Kelly sample size are visibly coupled', ()
   seed(db)
   // Override ON: the sample size changes nothing because the veto never fires,
   // so proposing it would be noise.
-  cfg(db, '46130058', { minRR: 3.5, allowNegativeExpectancyOverride: true, minTradesForKelly: 10 })
+  cfg(db, '46130058', { minRR: 3.5, kellyVeto: { allowNegative: true, minTrades: 10 } })
   const withOverride = proposeForAccount(db, '46130058').proposals
-  assert.ok(withOverride.some(p => p.setting === 'allowNegativeExpectancyOverride'))
-  assert.equal(withOverride.some(p => p.setting === 'minTradesForKelly'), false)
+  assert.ok(withOverride.some(p => p.setting === 'kellyVeto.allowNegative'))
+  assert.equal(withOverride.some(p => p.setting === 'kellyVeto.minTrades'), false)
 
   // Override OFF: now a 10-trade sample can stand a strategy down, and that
   // IS worth saying.
-  cfg(db, '46130058', { minRR: 3.5, allowNegativeExpectancyOverride: false, minTradesForKelly: 10 })
+  cfg(db, '46130058', { minRR: 3.5, kellyVeto: { allowNegative: false, minTrades: 10 } })
   const withoutOverride = proposeForAccount(db, '46130058').proposals
-  assert.ok(withoutOverride.some(p => p.setting === 'minTradesForKelly'))
+  assert.ok(withoutOverride.some(p => p.setting === 'kellyVeto.minTrades'))
 })
 
 test('a daily cap smaller than one average loss is DANGER', () => {
   // Measured: a $16.16 cap on 43097342 produced 4,717 vetoes in one week.
   const db = fresh()
   seed(db, { avgWin: 100, avgLoss: 200 })
-  cfg(db, '46130058', { minRR: 3.5, allowNegativeExpectancyOverride: false, minTradesForKelly: 30, dailyLossPct: 0.001 })
+  cfg(db, '46130058', { minRR: 3.5, kellyVeto: { allowNegative: false, minTrades: 30 }, dailyLossPct: 0.001 })
   const p = proposeForAccount(db, '46130058', { balance: 50000 }).proposals.find(x => x.setting === 'dailyLossPct')
   assert.ok(p)
   assert.equal(p.severity, 'danger')
@@ -214,7 +214,7 @@ test('a roomy daily cap is left alone', () => {
   // full-risk losses wide — and daily_cap_vs_permitted_risk correctly said so,
   // failing a test whose point was the OTHER rule. The two knobs have to be
   // set together to mean anything, which is the finding that rule exists for.
-  cfg(db, '46130058', { minRR: 3.5, allowNegativeExpectancyOverride: false, minTradesForKelly: 30, dailyLossPct: 0.18, perTradeRiskPct: 0.01 })
+  cfg(db, '46130058', { minRR: 3.5, kellyVeto: { allowNegative: false, minTrades: 30 }, dailyLossPct: 0.18, perTradeRiskPct: 0.01 })
   assert.equal(
     proposeForAccount(db, '46130058', { balance: 50000 }).proposals.some(p => p.setting === 'dailyLossPct'),
     false,
@@ -269,7 +269,7 @@ const memState = () => {
 }
 const report = (proposals) => ({ accounts: [{ accountId: '43097342', proposals }] })
 const DANGER = { rule: 'minRR_below_breakeven', setting: 'minRR', current: 1.5, proposed: 6.16, severity: 'danger', why: 'BELOW breakeven' }
-const WARN = { rule: 'kelly_sample_too_thin', setting: 'minTradesForKelly', current: 10, proposed: 30, severity: 'warn', why: 'thin' }
+const WARN = { rule: 'kelly_sample_too_thin', setting: 'kellyVeto.minTrades', current: 10, proposed: 30, severity: 'warn', why: 'thin' }
 
 test('a danger proposal is announced once, not every cycle', () => {
   const st = memState()

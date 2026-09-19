@@ -212,8 +212,8 @@ test('vpoPreArmVeto: news window vetoes when the gate is enabled, not when disab
   ]))
   setState(db, 'news_calendar_fetched_ms', String(Date.now()))
   const cfg = loadRiskConfig(db)
-  assert.match(vpoPreArmVeto(db, { ...cfg, newsGateEnabled: true }, 'EURUSD'), /news_window/)
-  assert.equal(vpoPreArmVeto(db, { ...cfg, newsGateEnabled: false }, 'EURUSD'), null)
+  assert.match(vpoPreArmVeto(db, { ...cfg, newsGate: { ...cfg.newsGate, on: true } }, 'EURUSD'), /news_window/)
+  assert.equal(vpoPreArmVeto(db, { ...cfg, newsGate: { ...cfg.newsGate, on: false } }, 'EURUSD'), null)
 })
 
 test('vpoPreArmVeto: margin-level floor vetoes on a fresh low snapshot, fails open on stale', () => {

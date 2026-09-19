@@ -184,9 +184,9 @@ export const RULES = Object.freeze([
      * this is on fixes one gate and leaves the other open.
      */
     evaluate({ config }) {
-      if (!config.allowNegativeExpectancyOverride) return null
+      if (!config.kellyVeto?.allowNegative) return null
       return {
-        setting: 'allowNegativeExpectancyOverride',
+        setting: 'kellyVeto.allowNegative',
         current: true,
         proposed: false,
         severity: 'warn',
@@ -203,11 +203,11 @@ export const RULES = Object.freeze([
      * than a footnote so the two knobs are visibly coupled.
      */
     evaluate({ config }) {
-      const n = Number(config.minTradesForKelly)
-      if (config.allowNegativeExpectancyOverride) return null
+      const n = Number(config.kellyVeto?.minTrades)
+      if (config.kellyVeto?.allowNegative) return null
       if (!Number.isFinite(n) || n >= 30) return null
       return {
-        setting: 'minTradesForKelly',
+        setting: 'kellyVeto.minTrades',
         current: n,
         proposed: 30,
         severity: 'warn',

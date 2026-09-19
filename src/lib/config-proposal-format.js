@@ -27,5 +27,11 @@ export function num(n, dp = 2) {
  * exactly the opposite of what the card recommends.
  */
 export function commandFor(accountId, setting, value) {
-  return `POST /actions/risk-config  {"accountId":"${accountId}","${setting}":${JSON.stringify(value)}}`
+  // A dotted setting (`kellyVeto.allowNegative`, Wave 4b) names one field of
+  // an object-valued key; the route patches that object one level deep, so
+  // the command carries `{ "kellyVeto": { "allowNegative": false } }` and
+  // the sibling fields are left alone.
+  const [key, field] = String(setting).split('.')
+  const body = { accountId: String(accountId), [key]: field ? { [field]: value } : value }
+  return `POST /actions/risk-config  ${JSON.stringify(body)}`
 }

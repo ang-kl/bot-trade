@@ -415,16 +415,17 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // market path and the drift gate below. '' / 'off' disables.
   try {
     const { tfMs, nextBarCloseMs } = await import('./lib/timeframes.js')
-    const minTf = String(loadRiskConfig(db, accountId)?.limitDispatchMinTf ?? '').trim().toLowerCase()
+    const htf = loadRiskConfig(db, accountId)?.htfLimitDispatch
+    const minTf = String(htf?.minTf ?? '').trim().toLowerCase()
     const minMs = minTf && minTf !== 'off' ? tfMs(minTf) : 0
     const sigMs = synth.timeframe ? tfMs(synth.timeframe) : 0
     // BACKTEST-PARITY WINDOW (owner "build it", 03-09-2026): the backtester
-    // fills at the NEXT bar's open, so inside htfFreshnessMin after the
+    // fills at the NEXT bar's open, so inside htfLimitDispatch.freshnessMin after the
     // signal bar closed a market order (with the drift gate) IS the
     // backtested entry; the resting limit is the fallback for the rest of
     // the bar. A synth that says marketOnly (the momentum book, priced at
     // the live quote) never rests.
-    const freshMin = Number(loadRiskConfig(db, accountId)?.htfFreshnessMin) || 0
+    const freshMin = Number(htf?.freshnessMin) || 0
     const lastBarCloseMs = sigMs > 0 ? (nextBarCloseMs(synth.timeframe) ?? 0) - sigMs : 0
     const fresh = freshMin > 0 && lastBarCloseMs > 0 && (Date.now() - lastBarCloseMs) <= freshMin * 60_000
     if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {
@@ -761,11 +762,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // seconds after filling. A ceiling that only the gate enforces is a ceiling
   // the rogue path walks under. Re-read here, immediately before the order
   // leaves, because the count can have changed since the verdict.
+  //
+  // THROUGH loadRiskConfig, for THIS account (Wave 4b). This used to parse
+  // the raw global `risk_config_json` itself, so an account's overlay value
+  // and a changed default were both invisible here: the gate honoured them,
+  // the submission boundary did not.
   {
     const { checkSymbolCap, DEFAULT_MAX_PER_SYMBOL } = await import('./services/symbol-position-cap.js')
     let capCfg = DEFAULT_MAX_PER_SYMBOL
     try {
-      const rc = JSON.parse(getState(db, 'risk_config_json') || '{}')
+      const rc = loadRiskConfig(db, accountId)
       if (Number(rc.maxPositionsPerSymbol) > 0) capCfg = Number(rc.maxPositionsPerSymbol)
     } catch { /* defaults */ }
     const cap = checkSymbolCap(db, { accountId, symbol, cap: capCfg })

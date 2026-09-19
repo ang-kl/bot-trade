@@ -2,7 +2,9 @@
 // agent/lib/cooldown-counterfactual.js — what did the SHORT cooldown let through?
 //
 // THE FINDING THIS SERVES (Defensive-Drift audit, 2026-08-06, §5.2 item 7).
-// `symbolCooldownMinutes` is configured at 5 against a shipped default of 240.
+// the per-symbol cooldown (`cooldownMinutes` since Wave 4b folded the separate
+// `symbolCooldownMinutes` into it) was configured at 5 against a shipped
+// default of 240.
 // At the default, these two re-entries are refused:
 //
 //   JPN225 Sell  close 03-08 20:15:36 → next open 20:53:44   gap 38.1 min
@@ -33,7 +35,7 @@
 // ---------------------------------------------------------------------------
 
 /**
- * The shipped default, mirrored from DEFAULTS.symbolCooldownMinutes.
+ * The shipped default, mirrored from DEFAULT_RISK_CONFIG.cooldownMinutes.
  *
  * Was 240 — the borrowed freqtrade figure — until the owner set it to 60 on
  * 2026-08-06. 60 is the measured number: it refuses both JPN225 re-entries and

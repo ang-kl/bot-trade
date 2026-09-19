@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import { effectiveCapUsd } from './loss-cap.js'
 import {
   DEFAULT_RISK_CONFIG,
+  loadRiskConfig,
   evaluateTrade,
   currencyLegs,
   netExposure,
@@ -15,7 +16,7 @@ import {
   riskBudgetUsd,
   drawdownDeriskFactor,
   getAccountBalance,
-  getAccountLeverage,
+  getAccountLeverage, DEFAULT_LEVERAGE,
   requiredMargin,
   marginRateFor,
   portfolioMarginStatus,
@@ -112,16 +113,18 @@ function setLeverage(db, leverage) {
 }
 
 // Tests below exercise gates that fire BEFORE the per-symbol re-entry
-// cooldown; recent EURUSD closed trades would otherwise trip the 240m
-// symbol_cooldown veto instead of the gate under test.
-const NO_SYMBOL_COOLDOWN = { ...DEFAULT_RISK_CONFIG, symbolCooldownMinutes: 0 }
+// cooldown; recent EURUSD closed trades would otherwise trip the 60m
+// symbol_cooldown veto instead of the gate under test. Since Wave 4b the
+// per-symbol lock and the streak cool-off share `cooldownMinutes`; a test
+// that needs the streak cool-off sets it back explicitly.
+const NO_SYMBOL_COOLDOWN = { ...DEFAULT_RISK_CONFIG, cooldownMinutes: 0 }
 // The per-class margin rates (03-09-2026) replace notional/leverage for
 // shares, indices, commodities and crypto. The older margin and notional
 // tests below pin the LEVERAGE arithmetic on XAUUSD/JPN225 on purpose, so
 // they opt out of the rates; the rate path has its own tests further down.
 // maxPositionHeadroomShare 1 = the pre-§7,539 fill-to-the-cap shrink these
 // tests pin; the per-position share has its own tests further down.
-const LEVERAGE_ONLY = { marginRateStock: null, marginRateIndex: null, marginRateCommodity: null, marginRateCrypto: null, maxPositionHeadroomShare: 1 }
+const LEVERAGE_ONLY = { marginRates: { stock: null, index: null, commodity: null, crypto: null }, maxPositionHeadroomShare: 1 }
 
 // Currency legs -----------------------------------------------------------
 
@@ -542,13 +545,13 @@ test('equity-aware — $10k balance, EURUSD: risk-based volume computed (1.5% ca
   assert.equal(res.adjusted_volume, 0.01)
 })
 
-// Paced daily budget (owner 03-08-2026) ------------------------------------
+// Daily budget through pacedDailyCap ---------------------------------------
 // The unit arithmetic lives in daily-loss-pacing.test.js. What matters HERE
-// is that the gate actually uses it, and — the part that could go wrong
-// silently — that an unconfigured ceiling leaves the limit exactly where it
-// was.
+// is that the gate uses it and that, with no ceiling (the `dailyLossPctMax`
+// key was retired in Wave 4b — null on every store, so the ramp never ran),
+// the limit is the flat cap, exactly where it was.
 
-test('paced budget — no dailyLossPctMax leaves the flat cap untouched', () => {
+test('daily budget — the gate passes no ceiling, so the flat cap stands and nothing claims to be paced', () => {
   // OWNER DECISION 07-08: at 10,000 the tier rule applies 4% (not 3%), so the
   // cap is 400. The point of this test is the ABSENCE of pacing, not the
   // number; the boundary moves with the policy and the assertions below are
@@ -567,45 +570,21 @@ test('paced budget — no dailyLossPctMax leaves the flat cap untouched', () => 
   assert.equal(res.checks.daily_cap_paced, undefined)
 })
 
-test('paced budget — a ceiling raises the cap and says so on the veto line', () => {
+test('daily budget — a stored legacy dailyLossPctMax is dropped, never a ceiling: the veto line is the flat cap at any hour', () => {
+  // Wave 4b: the key is retired. A store that still carries one (an old
+  // save) must not resurrect the ramp — 18% at the day's midpoint would have
+  // approved this −$1,000 day on a $10k account; the flat 4% tier cap refuses.
   const db = freshDB()
   setBalance(db, 10000)
-  insertClosedTrade(db, -400)                 // over the flat 3% ($300)…
-  // dailyLossLimit null: this test is about the PACED % ramp, and the flat $
-  // cap (300 by default) would bind below it and mask what is under test.
-  const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18, dailyLossLimit: null }
-  // PIN THE CLOCK. The paced allowance ramps from 3% at the day open to 18% at
-  // its close, so "over the flat cap but inside the paced one" is only true
-  // once the day has moved. Run this at 21:08 UTC — minutes after the FX day
-  // opens — and the paced cap is still ~3.1%, $400 is genuinely over it, and
-  // the assertion below inverts. That is not a bug in the budget; it is a test
-  // that never said WHEN. Half past the day.
-  const res = evaluateTrade(db, goodProposal(), cfg, { nowMs: fxDayOpenMs() + 12 * 3600_000 })
-  // …but inside the paced allowance, which is ≥ 3% at every point of the day.
-  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
-  assert.equal(res.checks.daily_cap_paced, true)
-  assert.ok(res.checks.daily_cap_usd >= 300)
-  assert.equal(res.checks.daily_cap_ceiling_usd, 1800)
-  // The ask was "how many can be trade" — the answer is on the record.
-  assert.equal(typeof res.checks.daily_trades_left, 'number')
-  assert.ok(res.checks.daily_budget_left_usd > 0)
-})
-
-test('paced budget — the ceiling still stops it, with the pacing explained', () => {
-  const db = freshDB()
-  setBalance(db, 10000)
-  insertClosedTrade(db, -1900)                // past 18% of 10k
-  // dailyLossLimit null: this test is about the PACED % ramp, and the flat $
-  // cap (300 by default) would bind below it and mask what is under test.
-  const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18, dailyLossLimit: null }
-  // Same pinned clock as above: at the day's midpoint the ceiling is what
-  // stops this, not the ramp still being low.
-  const res = evaluateTrade(db, goodProposal(), cfg, { nowMs: fxDayOpenMs() + 12 * 3600_000 })
+  insertClosedTrade(db, -1000)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('risk_config_json', ?)`).run(JSON.stringify({ dailyLossPctMax: 0.18, dailyLossLimit: null }))
+  const cfg = loadRiskConfig(db)
+  assert.equal('dailyLossPctMax' in cfg, false)
+  const res = evaluateTrade(db, goodProposal({ accountId: null }), { ...cfg, cooldownMinutes: 0 }, { nowMs: fxDayOpenMs() + 12 * 3600_000 })
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /daily_loss_limit_hit/)
-  assert.match(res.veto_reason, /paced .* through the FX day/)
-  assert.equal(res.checks.daily_budget_left_usd, 0)
-  assert.equal(res.checks.daily_trades_left, 0)
+  assert.ok(!/paced/.test(res.veto_reason), 'no ceiling, so nothing is paced')
+  assert.equal(res.checks.daily_cap_paced, undefined)
 })
 
 test('equity-aware — daily cap scales with balance (%)', () => {
@@ -706,9 +685,11 @@ test('blockedSymbols is case-insensitive', () => {
 
 // Leverage / margin headroom ---------------------------------------------
 
-test('getAccountLeverage returns config default when unset', () => {
+test('getAccountLeverage returns DEFAULT_LEVERAGE when unset — leverage is not a risk key (Wave 4b)', () => {
   const db = freshDB()
-  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), DEFAULT_RISK_CONFIG.leverage)
+  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), DEFAULT_LEVERAGE)
+  assert.equal(DEFAULT_LEVERAGE, 100)
+  assert.equal('leverage' in DEFAULT_RISK_CONFIG, false)
 })
 
 test('getAccountLeverage returns stored value when set', () => {
@@ -720,7 +701,7 @@ test('getAccountLeverage returns stored value when set', () => {
 test('getAccountLeverage falls back when non-positive', () => {
   const db = freshDB()
   setLeverage(db, -5)
-  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), DEFAULT_RISK_CONFIG.leverage)
+  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), DEFAULT_LEVERAGE)
 })
 
 test('requiredMargin — EURUSD 0.01 lot at 1.10, 1:100 lev = $11 margin', () => {
@@ -1052,15 +1033,15 @@ test('riskBudgetUsd: hard ceiling caps an over-configured pct', () => {
   // 8% wanted, ceiling 5% → capped to $500
   assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.08, maxRiskCapPct: 0.05 }), 500)
 })
-test('riskBudgetUsd: absolute maxRiskUsd ceiling also bites', () => {
-  assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.05, maxRiskCapPct: 0.05, maxRiskUsd: 300 }), 300)
+test('riskBudgetUsd: the retired maxRiskUsd is ignored — the ceiling is maxRiskCapPct × balance only (Wave 4b)', () => {
+  assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.05, maxRiskCapPct: 0.05, maxRiskUsd: 300 }), 500)
 })
 test('riskBudgetUsd: drawdown factor scales the budget down', () => {
   assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.05, maxRiskCapPct: 0.05 }, 0.5), 250)
 })
 
 test('drawdownDeriskFactor: halves after a losing window, 1 otherwise', () => {
-  const cfg = { deriskOnDrawdown: true, deriskWindowHours: 24, deriskTriggerPct: 0.05, deriskMult: 0.5 }
+  const cfg = { derisk: { on: true, windowHours: 24, triggerPct: 0.05, mult: 0.5 } }
   const db = freshDB()
   // no trades → normal size
   assert.equal(drawdownDeriskFactor(db, 10000, cfg), 1)
@@ -1068,7 +1049,7 @@ test('drawdownDeriskFactor: halves after a losing window, 1 otherwise', () => {
   insertClosedTrade(db, -600)
   assert.equal(drawdownDeriskFactor(db, 10000, cfg), 0.5)
   // disabled → always 1
-  assert.equal(drawdownDeriskFactor(db, 10000, { ...cfg, deriskOnDrawdown: false }), 1)
+  assert.equal(drawdownDeriskFactor(db, 10000, { derisk: { ...cfg.derisk, on: false } }), 1)
 })
 
 test('fxDayOpenMs/fxDayStartSql — anchors at the last 17:00 New York', async () => {
@@ -1143,7 +1124,7 @@ test('evaluateTrade — commission gate default OFF does not veto even with bad 
 test('evaluateTrade — commission gate enabled vetoes a symbol with bad commission history', () => {
   const db = freshDB()
   for (let i = 0; i < 5; i++) insertClosedTradeWithCommission(db, '0016.HK', 8, -15, i + 1)
-  const cfg = { ...NO_SYMBOL_COOLDOWN, commissionGateEnabled: true, commissionMaxFracOfWin: 0.5, commissionGateMinTrades: 5 }
+  const cfg = { ...NO_SYMBOL_COOLDOWN, commissionGate: { on: true, maxFracOfWin: 0.5, minTrades: 5 } }
   const out = evaluateTrade(db, goodProposal({ symbol: '0016.HK' }), cfg)
   assert.equal(out.approved, false)
   assert.match(out.veto_reason, /commission_drag/)
@@ -1152,7 +1133,7 @@ test('evaluateTrade — commission gate enabled vetoes a symbol with bad commiss
 test('evaluateTrade — commission gate enabled but too few trades still approves', () => {
   const db = freshDB()
   insertClosedTradeWithCommission(db, '0016.HK', 8, -15)
-  const cfg = { ...NO_SYMBOL_COOLDOWN, commissionGateEnabled: true, commissionMaxFracOfWin: 0.5, commissionGateMinTrades: 5 }
+  const cfg = { ...NO_SYMBOL_COOLDOWN, commissionGate: { on: true, maxFracOfWin: 0.5, minTrades: 5 } }
   const out = evaluateTrade(db, goodProposal({ symbol: '0016.HK' }), cfg)
   assert.equal(out.approved, true, `expected approved, got veto: ${out.veto_reason}`)
 })
@@ -1273,7 +1254,7 @@ test('evaluateTrade — slippage gate default OFF does not veto even with bad hi
 test('evaluateTrade — slippage gate enabled vetoes a drifting symbol', () => {
   const db = freshDB()
   for (let i = 0; i < 5; i++) insertTradeWithSlippage(db, 'EURUSD', 1.1, 0.01, i + 1)
-  const cfg = { ...NO_SYMBOL_COOLDOWN, slippageGateEnabled: true, slippageMaxAdversePct: 0.1, slippageGateMinTrades: 5 }
+  const cfg = { ...NO_SYMBOL_COOLDOWN, slippageGate: { on: true, maxAdversePct: 0.1, minTrades: 5 } }
   const out = evaluateTrade(db, goodProposal(), cfg)
   assert.equal(out.approved, false)
   assert.match(out.veto_reason, /slippage_drift/)
@@ -1282,7 +1263,7 @@ test('evaluateTrade — slippage gate enabled vetoes a drifting symbol', () => {
 test('evaluateTrade — slippage gate enabled but null threshold stays a no-op', () => {
   const db = freshDB()
   for (let i = 0; i < 5; i++) insertTradeWithSlippage(db, 'EURUSD', 1.1, 0.01, i + 1)
-  const cfg = { ...NO_SYMBOL_COOLDOWN, slippageGateEnabled: true, slippageMaxAdversePct: null }
+  const cfg = { ...NO_SYMBOL_COOLDOWN, slippageGate: { on: true, maxAdversePct: null, minTrades: 5 } }
   const out = evaluateTrade(db, goodProposal(), cfg)
   assert.equal(out.approved, true, `expected approved, got veto: ${out.veto_reason}`)
 })
@@ -1338,6 +1319,37 @@ test('evaluateTrade applies the account overlay even over a pre-loaded configOve
   // Same proposal for a non-overlaid account passes the blocked-symbol check.
   const out2 = evaluateTrade(db, { ...goodProposal(), accountId: '43097342' }, globalCfg)
   assert.ok(!/blocked/i.test(out2.veto_reason || ''), `unexpected blocked veto: ${out2.veto_reason}`)
+})
+
+// Wave 4b BLOCKER (checker, 19-09-2026): the overlay is applied INSIDE
+// evaluateTrade with the raw store. Spread over the base, a PARTIAL stored
+// object replaced the whole key — `{ derisk: { mult: 0.4 } }` switched derisk
+// OFF (2.5× the size), `{ marginRates: { stock: 0.3 } }` left indices,
+// commodities and crypto unrated. It is merged one level deep now.
+test('evaluateTrade merges a PARTIAL object overlay one level deep: derisk stays ON with the overlaid multiplier, and an overlaid share rate leaves the index rate in force', async () => {
+  const { marginRateFor } = await import('./risk.js')
+  const db = freshDB()
+  setBalance(db, 100_000)
+  db.prepare('INSERT OR REPLACE INTO agent_state (key, value) VALUES (?, ?)').run('acct:46130058:account_balance_usd', '100000')
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('acct:46130058:risk_config_json', ?)`)
+    .run(JSON.stringify({ derisk: { mult: 0.4, triggerPct: 0.01 }, marginRates: { stock: 0.3 } }))
+  insertClosedTrade(db, -1500)                 // −1.5% in the window: past the overlaid 1% trigger, inside the 4% day cap
+  const globalCfg = { ...loadRiskConfig(db), cooldownMinutes: 0 }
+  const res = evaluateTrade(db, { ...goodProposal(), accountId: '46130058' }, globalCfg)
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.deepEqual(res.checks.derisked, { factor: 0.4, window_h: 24 }, 'derisk ON (default) with the overlaid mult and the default window')
+  // The effective config the gate used, read the same way it reads it.
+  const eff = loadRiskConfig(db, '46130058')
+  assert.deepEqual(eff.marginRates, { stock: 0.3, index: 0.05, commodity: 0.05, crypto: 0.5 })
+  assert.equal(marginRateFor(eff, 'NAS100'), 0.05)
+  // And through the gate itself: an index proposal's margin equals the
+  // no-overlay figure (rated at 5%), not the leverage path a wiped rate falls to.
+  const idx = { ...goodProposal(), symbol: 'NAS100', entry: 20000, sl: 19900, tp1: 20350 }
+  const withOverlay = evaluateTrade(db, { ...idx, accountId: '46130058' }, globalCfg)
+  assert.equal(withOverlay.checks.margin_rate, 0.05, `the index rate survived the overlay: ${JSON.stringify(withOverlay.checks)}`)
+  db.prepare(`DELETE FROM agent_state WHERE key = 'acct:46130058:risk_config_json'`).run()
+  const without = evaluateTrade(db, { ...idx, accountId: '46130058' }, globalCfg)
+  assert.equal(without.checks.margin_rate, 0.05)
 })
 
 // --- campaign stop (owner 07-08 "proceed") ---------------------------------
@@ -1712,7 +1724,7 @@ test('strategyPerfStats: a real negative-expectancy record now actually vetoes t
   }
   const stats = strategyPerfStats(db, 'fvg_retrace')
   assert.equal(stats.total_trades, 30)
-  const kelly = kellyVolume(stats, 0.5, { ...DEFAULT_RISK_CONFIG, minTradesForKelly: 30 })
+  const kelly = kellyVolume(stats, 0.5, { ...DEFAULT_RISK_CONFIG, kellyVeto: { minTrades: 30, allowNegative: false } })
   assert.equal(kelly.volume, 0, `expected a Kelly veto on a losing record, got: ${kelly.note}`)
   assert.match(kelly.note, /kelly_negative/)
 })
@@ -1826,9 +1838,9 @@ test('marginRateFor: shares, indices, commodities and crypto get their class rat
   assert.equal(marginRateFor(cfg, 'EURUSD'), null)
   assert.equal(marginRateFor(cfg, ''), null)
   // a null/0 knob falls back to the leverage path; a rate over 1 is clamped to 1
-  assert.equal(marginRateFor({ ...cfg, marginRateStock: null }, '0005.HK'), null)
-  assert.equal(marginRateFor({ ...cfg, marginRateStock: 0 }, '0005.HK'), null)
-  assert.equal(marginRateFor({ ...cfg, marginRateStock: 3 }, '0005.HK'), 1)
+  assert.equal(marginRateFor({ ...cfg, marginRates: { ...cfg.marginRates, stock: null } }, '0005.HK'), null)
+  assert.equal(marginRateFor({ ...cfg, marginRates: { ...cfg.marginRates, stock: 0 } }, '0005.HK'), null)
+  assert.equal(marginRateFor({ ...cfg, marginRates: { ...cfg.marginRates, stock: 3 } }, '0005.HK'), 1)
 })
 
 test('requiredMargin: a rate is a fraction of notional and wins over leverage; without one leverage stands', () => {
