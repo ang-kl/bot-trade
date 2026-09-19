@@ -1,5 +1,9 @@
 # bot-trade
 
+> **Proprietary — all rights reserved.** This repository is public for reference only.
+> No permission is granted to use, copy, modify or redistribute it; see [LICENSE](LICENSE).
+> It places real orders and can lose money. No warranty, no liability, not financial advice.
+
 Deterministic multi-strategy trading agent for cTrader (Pepperstone), with a 5-tab web control panel, a C++ execution sidecar, and full self-monitoring.
 
 **How it decides:** entries are pure rules — no LLM in the trade path. Five registered strategies (Fib 61.8% fade — the default — Cup & Handle, EMA pullback, Donchian breakout, RSI mean-reversion) scan closed bars only; every proposal then passes a deterministic risk gate (`agent/services/risk.js`): risk-based sizing from balance × per-trade % (uncapped unless the owner caps it), min R:R, daily loss cap + equity stop, per-symbol cooldowns, max positions, margin/exposure checks with cross-pair USD conversion. Claude is used **only** for position monitoring and weekend gap checks — that spend is metered and capped (Desk → LLM spend).
