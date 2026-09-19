@@ -40,7 +40,7 @@ test('the migration: risk_events carries repeat_count (default 1) and last_at, a
 
 test('three identical vetoes on one opportunity → ONE row with repeat_count 3, the same id returned each time', () => {
   const db = fresh()
-  const ids = [1, 2, 3].map(() => persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5', checks: {} }))
+  const ids = [1, 2, 3].map(() => persistRiskEvent(db, P(), { approved: false, veto_reason: 'symbol_position_cap 3/3 open', checks: {} }))
   assert.deepEqual(ids, [ids[0], ids[0], ids[0]])
   const r = rows(db)
   assert.equal(r.length, 1)
@@ -51,17 +51,17 @@ test('three identical vetoes on one opportunity → ONE row with repeat_count 3,
 
 test('the same guard with different live numbers is the same reason head — it merges', () => {
   const db = fresh()
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'daily_loss_limit_hit pnl=-912.72 limit=16.16' })
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'daily_loss_limit_hit pnl=-940.10 limit=16.16' })
+  persistRiskEvent(db, P(), { approved: false, veto_reason: 'sl_too_tight 0.010%<0.05%' })
+  persistRiskEvent(db, P(), { approved: false, veto_reason: 'sl_too_tight 0.012%<0.05%' })
   const r = rows(db)
   assert.equal(r.length, 1)
   assert.equal(r[0].repeat_count, 2)
-  assert.match(r[0].veto_reason, /-912\.72/, 'the first sighting keeps its own words')
+  assert.match(r[0].veto_reason, /0\.010%/, 'the first sighting keeps its own words')
 })
 
 test('a changed reason head starts a second row', () => {
   const db = fresh()
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
+  persistRiskEvent(db, P(), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
   persistRiskEvent(db, P(), { approved: false, veto_reason: 'bad_rr 1.20<3' })
   persistRiskEvent(db, P(), { approved: false, veto_reason: 'bad_rr 1.20<3' })
   const r = rows(db)
@@ -71,12 +71,12 @@ test('a changed reason head starts a second row', () => {
 
 test('an approval never merges — before or after a veto', () => {
   const db = fresh()
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
+  persistRiskEvent(db, P(), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
   const ok1 = persistRiskEvent(db, P(), { approved: true, adjusted_volume: 0.1 })
   const ok2 = persistRiskEvent(db, P(), { approved: true, adjusted_volume: 0.1 })
   assert.notEqual(ok1, ok2, 'two approvals are two rows — each is the row a trade links to')
   // A veto after an approval is a new row too: the newest row is not a veto.
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
+  persistRiskEvent(db, P(), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
   const r = rows(db)
   assert.equal(r.length, 4)
   assert.ok(r.every(x => x.repeat_count === 1))
@@ -84,20 +84,20 @@ test('an approval never merges — before or after a veto', () => {
 
 test('a different opportunity (other account, symbol or side) is its own row', () => {
   const db = fresh()
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
-  persistRiskEvent(db, P({ accountId: '22220002' }), { approved: false, veto_reason: 'max_positions=5/5' })
-  persistRiskEvent(db, P({ symbol: 'GBPUSD' }), { approved: false, veto_reason: 'max_positions=5/5' })
-  persistRiskEvent(db, P({ side: 'SELL' }), { approved: false, veto_reason: 'max_positions=5/5' })
+  persistRiskEvent(db, P(), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
+  persistRiskEvent(db, P({ accountId: '22220002' }), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
+  persistRiskEvent(db, P({ symbol: 'GBPUSD' }), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
+  persistRiskEvent(db, P({ side: 'SELL' }), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
   assert.equal(rows(db).length, 4)
 })
 
 test('a row older than the window does not absorb a repeat; inside it does', () => {
   const db = fresh()
-  const id = persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
+  const id = persistRiskEvent(db, P(), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
   const key = rows(db)[0].opportunity_key
   const first = Date.parse(rows(db)[0].created_at)
-  assert.equal(mergeRepeatVeto(db, { opportunityKey: key, reason: 'max_positions=5/5', nowMs: first + VETO_REPEAT_WINDOW_MS + 1000 }), null)
-  assert.equal(mergeRepeatVeto(db, { opportunityKey: key, reason: 'max_positions=5/5', nowMs: first + 1000 }), id)
+  assert.equal(mergeRepeatVeto(db, { opportunityKey: key, reason: 'symbol_position_cap 3/3 open', nowMs: first + VETO_REPEAT_WINDOW_MS + 1000 }), null)
+  assert.equal(mergeRepeatVeto(db, { opportunityKey: key, reason: 'symbol_position_cap 3/3 open', nowMs: first + 1000 }), id)
   assert.equal(VETO_REPEAT_WINDOW_MS, 6 * 60 * 60 * 1000)
 })
 
@@ -114,7 +114,7 @@ test('the opportunity gap rule reads the newest SIGHTING (last_at), so a merged 
 
 test('the audit: vetoed is the SUM of repeats and vetoedDistinct the row count; reachedGate uses the sum', () => {
   const db = fresh()
-  for (let i = 0; i < 4; i++) persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
+  for (let i = 0; i < 4; i++) persistRiskEvent(db, P(), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
   persistRiskEvent(db, P({ symbol: 'GBPUSD' }), { approved: false, veto_reason: 'bad_rr 1.20<3' })
   persistRiskEvent(db, P({ symbol: 'XAUUSD' }), { approved: true, adjusted_volume: 0.1 })
   const a = auditDecisions(db, { accountId: A })
@@ -122,13 +122,13 @@ test('the audit: vetoed is the SUM of repeats and vetoedDistinct the row count; 
   assert.equal(a.vetoedDistinct, 2)
   assert.equal(a.approved, 1)
   assert.equal(a.reachedGate, 6)
-  assert.equal(a.topVetoes[0].key, 'max_positions=5/5')
+  assert.equal(a.topVetoes[0].key, 'symbol_position_cap 3/3 open')
   assert.equal(a.topVetoes[0].n, 4)
 })
 
 test('veto-breakdown, the journal, the funnel and the refusal ledger all count repeats, and say how many rows', () => {
   const db = fresh()
-  for (let i = 0; i < 3; i++) persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
+  for (let i = 0; i < 3; i++) persistRiskEvent(db, P(), { approved: false, veto_reason: 'symbol_position_cap 3/3 open' })
   persistRiskEvent(db, P({ symbol: 'GBPUSD' }), { approved: true, adjusted_volume: 0.1 })
 
   const vb = vetoBreakdown(db, { days: 1 })
@@ -181,10 +181,22 @@ test('a post-approval refusal never absorbs a gate veto (it resolves an approval
 })
 
 test('max_positions merges on the FULL reason: 6/5 is an overrun and must not hide under the 5/5 row', () => {
+  // THE VETO BOUNDARY (19-09-2026): max_positions is a cycle-stable head, so
+  // persistRiskEvent redirects it to decision_log and never inserts it here
+  // (veto-boundary.test.js). The overrun guard in mergeRepeatVeto still
+  // protects any row that already exists, so it is exercised directly.
   const db = fresh()
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
-  persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=6/5' })
-  const r = rows(db)
-  assert.deepEqual(r.map(x => [x.veto_reason, x.repeat_count]), [['max_positions=5/5', 2], ['max_positions=6/5', 1]])
+  const ins = db.prepare(`INSERT INTO risk_events (symbol, side, approved, veto_reason, account_id, created_at, opportunity_key) VALUES ('EURUSD','BUY',0,?,?,?,?)`)
+  const nowMs = fxDayOpenMs(Date.now()) + 3 * 3600e3
+  ins.run('max_positions=5/5', A, new Date(nowMs - 60_000).toISOString(), 'k')
+  assert.equal(typeof mergeRepeatVeto(db, { opportunityKey: 'k', reason: 'max_positions=5/5', nowMs }), 'number', 'same full reason merges')
+  assert.equal(mergeRepeatVeto(db, { opportunityKey: 'k', reason: 'max_positions=6/5', nowMs }), null, 'an overrun never folds into the 5/5 row')
+  assert.equal(rows(db)[0].repeat_count, 2)
+})
+
+test('the boundary: a cycle-stable head handed to persistRiskEvent is a decision_log skip, not a merged veto row', () => {
+  const db = fresh()
+  for (let i = 0; i < 3; i++) persistRiskEvent(db, P(), { approved: false, veto_reason: 'max_positions=5/5' })
+  assert.equal(rows(db).length, 0)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM decision_log WHERE stage = 'gate_redirect' AND reason = 'max_positions'`).get().n, 3)
 })

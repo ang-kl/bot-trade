@@ -14,6 +14,7 @@ import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } 
 import { recordTradePlan } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates } from './services/risk.js'
+import { journalMarginPoolState } from './services/margin-pool-journal.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
@@ -1732,20 +1733,13 @@ function marginPoolForCycle(db) {
       ? `${p.accountId}: ${p.exhausted ? 'EXHAUSTED' : `headroom $${p.status.headroom.toFixed(2)}`} (used $${p.status.usedMargin.toFixed(2)} / cap $${p.status.cap.toFixed(2)}, ${p.status.source})`
       : `${p.accountId}: no balance on record — judged by the risk gate`)
     if (pool.length) log(`Margin pool (maxMarginUsagePct=${config.maxMarginUsagePct}): ${said.join(' · ')}${pool.every(p => p.exhausted) ? ' — every account exhausted, dispatch paused this cycle' : ''}`)
-    for (const p of pool.filter(x => x.exhausted)) {
-      try {
-        persistRiskEvent(db, { symbol: 'PORTFOLIO', side: '—', accountId: p.accountId }, {
-          approved: false,
-          veto_reason: `portfolio_margin_exhausted used=${p.status.usedMargin.toFixed(2)} cap=${p.status.cap.toFixed(2)} source=${p.status.source}`,
-          checks: {
-            margin_used_usd: Number(p.status.usedMargin.toFixed(2)),
-            margin_cap_usd: Number(p.status.cap.toFixed(2)),
-            margin_source: p.status.source,
-            account_id: p.accountId,
-          },
-        })
-      } catch { /* journaling is best-effort */ }
-    }
+    // THE VETO BOUNDARY (19-09-2026): an exhausted account is a cycle-stable
+    // state, not a refused proposal. It used to be journaled here as a
+    // risk_events veto under symbol 'PORTFOLIO' EVERY cycle — 1,235 rows in
+    // 24 h, 100 % of the gate's vetoes, with nothing refused at the gate.
+    // Now: one decision_log row per account per state change (exhausted /
+    // recovered), see services/margin-pool-journal.js.
+    journalMarginPoolState(db, pool, { loopId: loopCount })
   } catch (err) {
     // The pool must never break dispatch on its own error: fall back to the
     // plain roster, nobody exhausted, and say so once.
