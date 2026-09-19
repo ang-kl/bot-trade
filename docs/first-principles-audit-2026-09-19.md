@@ -638,3 +638,39 @@ after deploy, recorded in §L of this file as it happens.
   the checker round. Read-back owed after deploy: `/health` inflight and
   fastMonitor, the `monitor_cadence` row, the boot line for the retired
   phase, the first daily report post.
+- 19-09-2026 09:09 SGT: Wave 5a merged as #965 (826d0a8). Read-back owed
+  (recorded in the next entry when read).
+- 19-09-2026 09:1x SGT: **Wave 4b built** (this PR) — §K item 14, the
+  compression the Wave 4a entry deferred, with the enumeration made
+  explicit. `DEFAULT_RISK_CONFIG` goes from 66 keys to 42 with no behaviour
+  change: nine families become objects (`newsGate`, `carryGate`,
+  `commissionGate`, `slippageGate`, `marginRates`, `derisk`, `unknownPnl`,
+  `kellyVeto`, `htfLimitDispatch`), each carrying every old value; four keys
+  are retired (`dailyLossPctMax`, `stopTriggerMethod`, `maxRiskUsd`, and
+  `leverage`, now `DEFAULT_LEVERAGE` behind the two account-leverage state
+  keys); `symbolCooldownMinutes` is DROPPED, not folded — two windows cannot
+  fold into one, so the per-symbol lock reads `cooldownMinutes` from now
+  on. Legacy scalars in the stored global and in every overlay are folded
+  on read (`LEGACY_RISK_KEYS`, `migrateLegacyRiskKeys`) and by the seed's
+  dropRetired (fold, then drop); `mergeRiskConfig` merges one level deep
+  with `campaign` replaced wholesale, and `evaluateTrade` merges a partial
+  overlay the same way instead of spreading the raw stored object over the
+  merged config (the checker's blocker: a one-key overlay used to erase the
+  rest of its family). The route patches object bodies one level deep and
+  prunes sub-fields equal to the default. LATENT DEFECT FOUND: the
+  per-symbol cap at the order boundary in `loop.js` read the raw global
+  store, bypassing both the overlay and the default; it reads
+  `loadRiskConfig(db, accountId)` now. The audit's "~38 keys" is 42 here:
+  three judgement calls were left as they are and are named for the
+  owner rather than compressed — the daily tier knobs, the two envelope
+  bounds the UI proposes against, and the campaign block. Risk page,
+  compare view, matrix and proposal format follow the new shape; the UI
+  control inventory regenerated. No effective value changes for any
+  account: the 42-key count, the retired set, the object defaults carrying
+  every old value, the one-level merge, the legacy fold, the dropped
+  cooldown key and the order-boundary pin are each tested
+  (`risk-config-shape.test.js`), every consumer test re-pinned. Mutations
+  red-then-restored by the maker and the checker round. Read-back owed
+  after deploy: boot "risk config" line, `/state/risk-matrix` retired list
+  and 42 effective keys, no change in effective `maxOpenPositions` 5 /
+  `cooldownMinutes` 60 / `perTradeRiskPct` 0.01 / `dailyLossLimit` 150.
