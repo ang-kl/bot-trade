@@ -211,12 +211,40 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
   return out
 }
 
-/** The owner's tick symbol names (tick_symbols_json), validated. */
-export function tickSymbolNames(db) {
+/**
+ * The owner's tick symbol names (tick_symbols_json), validated.
+ *
+ * With `withOpenPositions` (19-09-2026, fast-monitor quotes from the
+ * sidecar): the union with the symbols of the OPEN monitored positions on
+ * `side` — the sidecar only holds quotes for the symbols the keeper pushes,
+ * and the fast monitor prices open positions, not the momentum universe. A
+ * position whose account is on the other side is not this sidecar's to
+ * carry; one with no account row on file is carried on both (a spare
+ * subscription costs nothing, a missing one costs a broker round trip per
+ * tick). External (observe-only) positions are not priced by the monitor
+ * and are not carried. Only the push asks for the union — the readiness
+ * page, the permit feeder and the state route keep reporting the owner's
+ * list as configured.
+ */
+export function tickSymbolNames(db, { withOpenPositions = false, side = null } = {}) {
+  const out = new Set()
   try {
     const arr = JSON.parse(getState(db, 'tick_symbols_json') || '[]')
-    return Array.isArray(arr) ? [...new Set(arr.map(s => String(s).trim().toUpperCase()).filter(Boolean))] : []
-  } catch { return [] }
+    if (Array.isArray(arr)) for (const s of arr) { const n = String(s).trim().toUpperCase(); if (n) out.add(n) }
+  } catch { /* a corrupt list is an empty list, as before */ }
+  if (withOpenPositions) {
+    try {
+      const isLive = side?.isLive
+      const rows = typeof isLive === 'boolean'
+        ? db.prepare(`SELECT DISTINCT p.symbol AS symbol FROM monitored_positions p
+                      LEFT JOIN accounts a ON a.account_id = p.account_id
+                      WHERE p.status = 'active' AND p.source IS NOT 'external'
+                        AND (a.account_id IS NULL OR a.is_live = ?)`).all(isLive ? 1 : 0)
+        : db.prepare(`SELECT DISTINCT symbol FROM monitored_positions WHERE status = 'active' AND source IS NOT 'external'`).all()
+      for (const r of rows) { const n = String(r.symbol || '').trim().toUpperCase(); if (n) out.add(n) }
+    } catch { /* an unreadable table adds nothing; the configured list still carries */ }
+  }
+  return [...out]
 }
 
 // Unresolvable names are logged once per (side, name), not per probe.
@@ -228,7 +256,7 @@ const unresolvedLogged = new Set()
  * logged once per (side, name), as before.
  */
 export async function resolveTickSymbols(db, creds, side, { resolveSymbolId = null } = {}) {
-  const names = tickSymbolNames(db)
+  const names = tickSymbolNames(db, { withOpenPositions: true, side })
   if (!names.length || !creds?.ready) return []
   const resolve = resolveSymbolId || (await import('../lib/ctrader-creds.js')).resolveSymbolId
   const out = []

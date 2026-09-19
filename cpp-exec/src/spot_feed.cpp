@@ -317,20 +317,31 @@ void SpotFeed::runOnce() {
               ra.isNumber(), static_cast<long long>(ra.asNumber(0)),
               reconnects_.load(std::memory_order_relaxed) + 1);
     }
-    // Feed truth: two relaxed stores + one short-held map write per tick.
-    {
-      const long long tickMs = duration_cast<milliseconds>(
-          system_clock::now().time_since_epoch()).count();
-      lastTickAtMs_.store(tickMs, std::memory_order_relaxed);
-      tickCount_.fetch_add(1, std::memory_order_relaxed);
-      std::lock_guard<std::mutex> lk(tickMtx_);
-      lastTickBySymbol_[symbolId] = tickMs;
-    }
     Quote& q = lastQuote[symbolId];
     const jsn::Value& bidV = p.get("bid");
     const jsn::Value& askV = p.get("ask");
     if (bidV.isNumber()) { q.bid = bidV.asNumber(0) / kPointsPerPrice; q.haveBid = true; }
     if (askV.isNumber()) { q.ask = askV.asNumber(0) / kPointsPerPrice; q.haveAsk = true; }
+    // Feed truth: two relaxed stores + one short-held map write per tick —
+    // and, under the same lock, the latest-quote table GET /quotes serves
+    // (the carried bid/ask, the event's timestamp when it has one, the
+    // local receipt time). One map slot per symbol: no allocation once a
+    // symbol has been seen.
+    {
+      const long long tickMs = duration_cast<milliseconds>(
+          system_clock::now().time_since_epoch()).count();
+      lastTickAtMs_.store(tickMs, std::memory_order_relaxed);
+      tickCount_.fetch_add(1, std::memory_order_relaxed);
+      const jsn::Value& tsV = p.get("timestamp");
+      std::lock_guard<std::mutex> lk(tickMtx_);
+      lastTickBySymbol_[symbolId] = tickMs;
+      SpotQuote& lq = latestQuotes_[symbolId];
+      lq.symbolId = symbolId;
+      lq.bid = q.bid;
+      lq.ask = q.ask;
+      lq.tsMs = tsV.isNumber() && tsV.asNumber(0) > 0 ? static_cast<long long>(tsV.asNumber(0)) : tickMs;
+      lq.recvMs = tickMs;
+    }
     if (q.haveBid && q.haveAsk && onTick_) onTick_(symbolId, q.bid, q.ask);
   }
 }
@@ -345,6 +356,14 @@ std::vector<long long> SpotFeed::subscribedSymbols() {
 std::vector<std::pair<long long, long long>> SpotFeed::lastTickBySymbol() {
   std::lock_guard<std::mutex> lk(tickMtx_);
   return { lastTickBySymbol_.begin(), lastTickBySymbol_.end() };
+}
+
+std::vector<SpotQuote> SpotFeed::latestQuotes() {
+  std::lock_guard<std::mutex> lk(tickMtx_);
+  std::vector<SpotQuote> out;
+  out.reserve(latestQuotes_.size());
+  for (const auto& [id, q] : latestQuotes_) out.push_back(q);
+  return out;
 }
 
 void SpotFeed::runLoop() {

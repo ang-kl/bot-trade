@@ -370,3 +370,31 @@ test('PR-L: a push with no resolved symbol OMITS the cost schedule rather than s
   // and a push carrying no schedule is never a DIFFERENCE, so it does not flap
   assert.equal(guardDiffers(r2.desired, { ...base, tick: { recording: true, subscribed: [1, 41], shadowSim: good.desired.tickShadowSim } }), false)
 })
+
+test('19-09-2026: the pushed tick symbols are the configured list ∪ the open monitored positions on the side; the plain call keeps the owner\'s list', async () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD', 'XAUUSD']))
+  const ins = db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, initial_risk, status, source, strategy, account_id, created_at)
+                          VALUES (?, 'BUY', 1, 0.9, 1.2, 0.1, ?, ?, 'trend', ?, datetime('now'))`)
+  ins.run('gbpusd', 'active', 'autopilot', '111')   // demo, open
+  ins.run('USDJPY', 'active', 'autopilot', '222')   // live, open
+  ins.run('AUDUSD', 'active', 'autopilot', null)    // no account row → both sides
+  ins.run('NZDUSD', 'closed', 'autopilot', '111')   // closed → not carried
+  ins.run('USDCAD', 'active', 'external', '111')    // observe-only → not priced, not carried
+  ins.run('EURUSD', 'active', 'autopilot', '111')   // already configured → no duplicate
+  assert.deepEqual(tickSymbolNames(db), ['EURUSD', 'XAUUSD'], 'the readiness page, the permit feeder and the state route see the configured list only')
+  assert.deepEqual(tickSymbolNames(db, { withOpenPositions: true, side: { isLive: false } }), ['EURUSD', 'XAUUSD', 'GBPUSD', 'AUDUSD'])
+  assert.deepEqual(tickSymbolNames(db, { withOpenPositions: true, side: { isLive: true } }), ['EURUSD', 'XAUUSD', 'USDJPY', 'AUDUSD'])
+  assert.deepEqual(tickSymbolNames(db, { withOpenPositions: true, side: { isLive: null } }), ['EURUSD', 'XAUUSD', 'GBPUSD', 'USDJPY', 'AUDUSD'], 'one sidecar for both sides carries every open symbol')
+  // the resolver — the only path to the push — asks for the union
+  _resetTickResolveLogForTests()
+  const seen = []
+  const resolve = async (_db, _creds, name) => { seen.push(name); return { id: seen.length, source: 'account' } }
+  await resolveTickSymbolIds(db, { ready: true }, { name: 'cpp_exec_demo', isLive: false }, { resolveSymbolId: resolve })
+  assert.deepEqual(seen, ['EURUSD', 'XAUUSD', 'GBPUSD', 'AUDUSD'])
+  // the "unchanged → no push" diff still holds once the sidecar carries them
+  const desired = { halt: false, haltAccounts: [], entryEpochs: { 111: 0, 333: 0 }, tickRecord: true, tickSymbolIds: [1, 2, 3, 4] }
+  const base = { halt: false, haltAccountCount: 0, entryEpochs: { 111: 0, 333: 0 } }
+  assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 2] } }), true, 'an open position\'s symbol not carried → push')
+  assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 2, 3, 4] } }), false, 'carried → quiet')
+})

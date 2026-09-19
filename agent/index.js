@@ -1013,7 +1013,9 @@ app.get('/health', (req, res) => {
         const rec = JSON.parse(getState(db, 'fast_monitor_pass_json') || 'null')
         if (!rec?.tick) return null
         const t = rec.tick
-        return { everyMs: t.everyMs ?? null, lastMs: t.lastMs ?? null, max10mMs: t.max10mMs ?? null, skippedTicks: t.skippedTicks ?? null, skipShare10m: t.skipShare10m ?? null, busyShare10m: t.busyShare10m ?? null, at: rec.at ?? null }
+        // quotes (19-09-2026): where the last pass's prices came from —
+        // {fromSidecar, fromBroker, stale}; null until a pass has priced.
+        return { everyMs: t.everyMs ?? null, lastMs: t.lastMs ?? null, max10mMs: t.max10mMs ?? null, skippedTicks: t.skippedTicks ?? null, skipShare10m: t.skipShare10m ?? null, busyShare10m: t.busyShare10m ?? null, quotes: t.quotes ?? null, at: rec.at ?? null }
       } catch { return null }
     })(),
     // Broker pacing (incident 2026-07-28): historical requests (trendbars,

@@ -730,3 +730,36 @@ after deploy, recorded in §L of this file as it happens.
   loop's journal call is pinned in `margin-pool.test.js`; and legacy
   `PORTFOLIO` rows are excluded from the ledger's waiting/pending reads so
   they no longer clog it as `unscorable`.
+- 19-09-2026 11:56 SGT: fast-monitor quotes from the sidecar (this PR).
+  The `monitor_cadence` finding above, addressed rather than carried
+  (owner principle 3). MEASURED BEFORE: `runFastMonitor` looped serially
+  over every active monitored position (48) and made one broker round
+  trip per due position (`wsGetSpotOnce`) plus a trendbar batch per
+  symbol every 5 min; a tick with nothing due took 2 ms, the worst tick in
+  ten minutes 51 s, skipShare10m 0.45–0.75 against the target ≤ 10 %. The
+  sidecar already held a live spot subscription for the momentum universe
+  (53 symbols on the demo sidecar) with no endpoint serving a price.
+  BUILT: `SpotFeed` keeps a latest-quote table per symbol (`latestQuotes()`,
+  updated under its existing tick lock, one slot per symbol); `GET /quotes
+  [?ids=]` (`spot_quote_routes.*`, bearer-required, `feed: up|down|absent`,
+  driven by `test_spot_quotes` through a real HttpServer, in TSAN_TESTS);
+  `exec-engine.sidecarQuotes(isLive, {ids})`; the tick makes ONE pull per
+  side that has positions and prices from it when the quote's `recvMs` is
+  within `FAST_MONITOR_QUOTE_MAX_AGE_MS` (default 10 s), falling back to
+  the broker round trip exactly as before for a stale or missing symbol;
+  per-tick counts `{fromSidecar, fromBroker, stale}` in
+  `fast_monitor_pass_json` `tick.quotes` and `/health fastMonitor.quotes`;
+  the guard sync's pushed `tickSymbolIds` = the configured tick symbols ∪
+  the open monitored positions' symbols on that side (the sidecar only
+  holds what the keeper pushes; the "unchanged → no push" diff kept). No
+  change to the evaluation, the spike logic or the volume cadence. The
+  LIVE sidecar builds a feed only with a recorder, a tick trail or a VPO
+  strategy configured (`main.cpp`: `(vpoDispatcher && !vpoSymbolIds.empty())
+  || trailTickEnabled || tickRecorder`); without one it answers
+  `feed: absent` and its positions price through the broker as before —
+  its Railway variables were not readable from this session, so which
+  branch it is on is a read-back item. ACCEPTANCE (read-back after
+  deploy): `/health fastMonitor.quotes.fromSidecar` > 0 on the demo side,
+  `skipShare10m` ≤ 0.10 over a 10-minute window with positions open, i.e.
+  `monitor_cadence` on_track; `fromBroker` on the live side names the
+  positions the live sidecar cannot price until it has a feed.

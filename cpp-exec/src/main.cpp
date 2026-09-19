@@ -21,6 +21,7 @@
 #include "heartbeat.hpp"
 #include "tick_recorder.hpp"
 #include "tick_segment_routes.hpp"
+#include "spot_quote_routes.hpp"
 #include "tick_firer.hpp"
 #include "tick_shadow.hpp"
 #include "tick_strategy.hpp"
@@ -830,6 +831,22 @@ int main(int argc, char** argv) {
   // costs 33 % on the wire against a 1 MiB cap per call; the keeper pulls in
   // chunks.
   registerTickSegmentRoutes(server, tickSpoolPath, tickRecorder != nullptr, execSecret);
+
+  // 19-09-2026: GET /quotes — the feed's latest bid/ask per symbol for the
+  // keeper's fast monitor (spot_quote_routes.hpp). The reader borrows the
+  // feed pointer under vpoMtx for the length of one table copy, the same
+  // bounded hold GET /health makes for depthBookEntries. feed:"absent" when
+  // no feed exists on this sidecar (no recorder, no trail, no VPO strategy).
+  registerSpotQuoteRoutes(server, [&spotFeed, &vpoMtx]() -> QuoteFeedView {
+    QuoteFeedView view;
+    std::lock_guard<std::mutex> lk(vpoMtx);
+    if (!spotFeed) return view;
+    view.present = true;
+    view.connected = spotFeed->isConnected();
+    view.generation = spotFeed->reconnects() + 1;
+    view.quotes = spotFeed->latestQuotes();
+    return view;
+  }, execSecret);
 
   // P6a: the shadow portfolio's closed trades, same cursor contract as
   // /decisions — {after, bootId}; a bootId mismatch hands over the whole ring.

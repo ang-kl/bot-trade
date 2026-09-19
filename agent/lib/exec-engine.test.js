@@ -5,7 +5,7 @@ import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { execEngineMode, placeOrder, stripLedgerFields, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget, validateExecGuard, execBaseFor, invalidateSidecarSession,
-  _resetOrderLocks,
+  _resetOrderLocks, sidecarQuotes,
 } from './exec-engine.js'
 
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'ci', clientSecret: 'cs', accessToken: 'at', accountId: '123' }
@@ -768,4 +768,29 @@ test('placeOrder with a ledger: a TIMEOUT from the sidecar keeps its clientMsgId
   nextResponse = { status: 502, body: '{"errorCode":"rate_limited","description":"the connection\'s request budget is spent (40/s, 25% reserved for protection) — not sent"}' }
   await assert.rejects(() => placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: rl.ledger }, { ...ORDER, symbolId: 68 }))
   assert.equal(rl.calls.resolved.length, 1); assert.equal(rl.calls.resolved[0].state, 'RELEASED')
+})
+
+test('19-09-2026 sidecarQuotes: GET /quotes with the bearer and the ids filter, parsed body back; a failing answer or js mode is null', async () => {
+  nextResponse = { status: 200, body: JSON.stringify({ feed: 'up', generation: 3, count: 1, quotes: [{ symbolId: 41, bid: 1.1, ask: 1.1002, tsMs: 1, recvMs: 2 }] }) }
+  const r = await sidecarQuotes(false, { ids: [41, 7, 'x', 0] })
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].method, 'GET')
+  assert.equal(requests[0].url, '/quotes?ids=41,7', 'only positive numeric ids travel')
+  assert.equal(requests[0].auth, 'Bearer sekret')
+  assert.deepEqual(r, { feed: 'up', generation: 3, count: 1, quotes: [{ symbolId: 41, bid: 1.1, ask: 1.1002, tsMs: 1, recvMs: 2 }] })
+  // no ids → no query string
+  await sidecarQuotes(null)
+  assert.equal(requests[1].url, '/quotes')
+  // an absent feed is a body, not a failure — the caller reads feed:"absent"
+  nextResponse = { status: 200, body: '{"feed":"absent","generation":0,"count":0,"quotes":[]}' }
+  assert.deepEqual(await sidecarQuotes(true), { feed: 'absent', generation: 0, count: 0, quotes: [] })
+  // a sidecar that predates the route (404), a wrong shape, and js mode are null
+  nextResponse = { status: 404, body: '{"error":"not found"}' }
+  assert.equal(await sidecarQuotes(false), null)
+  nextResponse = { status: 200, body: '{"ok":true}' }
+  assert.equal(await sidecarQuotes(false), null, 'a body without feed is not a quotes answer')
+  process.env.EXEC_ENGINE = 'js'
+  const before = requests.length
+  assert.equal(await sidecarQuotes(false), null)
+  assert.equal(requests.length, before, 'js mode makes no HTTP call')
 })

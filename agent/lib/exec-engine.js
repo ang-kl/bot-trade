@@ -379,6 +379,40 @@ export async function sidecarTickStatus({ timeoutMs = 5_000, base = execBaseFor(
 }
 
 /**
+ * 19-09-2026: the sidecar's latest bid/ask per symbol (GET /quotes) — the
+ * fast monitor's price source before it falls back to one broker round trip
+ * per position. `isLive` picks the side's base (a boolean; anything else is
+ * EXEC_URL's sidecar), `ids` narrows the answer to those symbol ids. Returns
+ * the parsed body — {feed:'up'|'down'|'absent', generation, count, quotes:
+ * [{symbolId, bid, ask, tsMs, recvMs}]} — or null when the sidecar is
+ * unreachable, not in cpp mode, or predates the route. Short timeout on
+ * purpose: this runs inside the 3 s tick, and a slow answer is worth less
+ * than the broker fallback it would delay.
+ */
+export async function sidecarQuotes(isLive = null, { ids = [], timeoutMs = 2_000, base = null } = {}) {
+  if (execEngineMode() !== 'cpp') return null
+  const url = base || (typeof isLive === 'boolean' ? execBaseFor(isLive ? EXEC_HOST_LIVE : EXEC_HOST_DEMO) : execBaseFor())
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(n => Number.isFinite(n) && n > 0)
+  const qs = list.length ? `?ids=${list.join(',')}` : ''
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(url + '/quotes' + qs, {
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
+    })
+    if (!res.ok) return null
+    const body = await res.json().catch(() => null)
+    if (!body || typeof body !== 'object' || typeof body.feed !== 'string') return null
+    return { feed: body.feed, generation: Number(body.generation) || 0, count: Number(body.count) || 0, quotes: Array.isArray(body.quotes) ? body.quotes : [] }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/**
  * P6a: the shadow portfolio's closed trades (POST /tick-shadow), same cursor
  * contract as /decisions: {after, bootId}; a bootId mismatch hands over the
  * whole ring. null when the sidecar is unreachable, not in cpp mode, or

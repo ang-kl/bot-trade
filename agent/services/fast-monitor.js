@@ -31,6 +31,75 @@ import { cachedAtrForSymbol } from './profit-keeper.js'
 import { manageStageAllows } from './stage-matrix.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import { BoundedMap } from '../lib/bounded-map.js'
+import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
+
+// ---------------------------------------------------------------------------
+// QUOTES FROM THE SIDECAR (19-09-2026). The tick re-priced every due position
+// with its own broker round trip (wsGetSpotOnce, serially) while the sidecar
+// already held a live spot subscription for the same symbols. Measured before
+// this change: a tick with nothing due took 2 ms, the worst tick in ten
+// minutes 51 s, skipShare10m 0.45–0.75 against the goal table's ≤ 10 %. Now
+// each tick makes ONE pull per side that has positions (GET /quotes) and
+// prices from it; the broker call is the fallback, taken exactly as before
+// when the sidecar has no quote for the symbol or its quote is older than
+// QUOTE_MAX_AGE_MS (measured on recvMs, the sidecar's receipt clock — the
+// broker's own timestamp can be minutes old on a quiet symbol and still be
+// the current price).
+// ---------------------------------------------------------------------------
+export const QUOTE_MAX_AGE_DEFAULT_MS = 10_000
+export function quoteMaxAgeMs(env = process.env) {
+  const n = Number(env.FAST_MONITOR_QUOTE_MAX_AGE_MS)
+  return n > 0 ? n : QUOTE_MAX_AGE_DEFAULT_MS
+}
+
+/**
+ * Pure: the sidecar's quote for `symbolId` when it is usable.
+ * @returns {{quote: {bid:number, ask:number}|null, source: 'sidecar'|'stale'|'missing'}}
+ */
+export function pickSidecarQuote(quotes, symbolId, nowMs, maxAgeMs = QUOTE_MAX_AGE_DEFAULT_MS) {
+  const q = quotes?.get?.(Number(symbolId))
+  if (!q || !(q.bid > 0) || !(q.ask > 0)) return { quote: null, source: 'missing' }
+  if (!Number.isFinite(q.recvMs) || nowMs - q.recvMs > maxAgeMs) return { quote: null, source: 'stale' }
+  return { quote: { bid: q.bid, ask: q.ask }, source: 'sidecar' }
+}
+
+/** A /quotes body → Map symbolId → {bid, ask, tsMs, recvMs}; empty when the feed is absent or the body null. */
+export function quoteMapFrom(body) {
+  const m = new Map()
+  if (!body || body.feed === 'absent' || !Array.isArray(body.quotes)) return m
+  for (const q of body.quotes) {
+    const id = Number(q?.symbolId)
+    if (!(id > 0)) continue
+    m.set(id, { bid: q.bid == null ? null : Number(q.bid), ask: q.ask == null ? null : Number(q.ask), tsMs: Number(q.tsMs) || 0, recvMs: Number(q.recvMs) || 0 })
+  }
+  return m
+}
+
+/**
+ * The symbol id to look the position up by ON ITS OWN SIDE'S sidecar. cTrader
+ * ids are per environment (ctrader-creds.js, 03-09-2026): the position's
+ * account map when one is on file; the global map only for the primary
+ * account (or a position with no account); otherwise null — a wrong
+ * instrument's price is worse than a broker round trip.
+ */
+export function sidecarSymbolIdFor(db, pos, globalMap, primaryId, cache = new Map()) {
+  const sym = String(pos.symbol || '').toUpperCase()
+  const acct = pos.account_id != null ? String(pos.account_id) : null
+  if (acct == null || primaryId == null || String(primaryId) === acct) {
+    const own = acct != null ? accountMap(db, acct, cache) : null
+    const id = own?.[sym] ?? globalMap?.[sym]
+    return id != null ? Number(id) : null
+  }
+  const own = accountMap(db, acct, cache)
+  return own?.[sym] != null ? Number(own[sym]) : null
+}
+function accountMap(db, acct, cache) {
+  if (cache.has(acct)) return cache.get(acct)
+  let m = null
+  try { m = getAccountSymbolMap(db, acct)?.map ?? null } catch { m = null }
+  cache.set(acct, m)
+  return m
+}
 
 /**
  * Pure cadence policy: milliseconds between checks for one position.
@@ -200,6 +269,39 @@ export async function runFastMonitor(db, creds, deps = {}) {
     const symbolMap = (() => { try { return JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { return {} } })()
     const overrides = loadMonitorOverrides(db)
 
+    // ONE /quotes pull per side that has positions (see the header block).
+    // A position's side is its account's registry row; no row → the creds'
+    // side. The pull is bounded (2 s) and any failure is an empty map, i.e.
+    // the broker fallback for every position — never a skipped check.
+    const exec = deps.exec ?? await import('../lib/exec-engine.js')
+    const maxAgeMs = deps.quoteMaxAgeMs ?? quoteMaxAgeMs()
+    const primaryId = getState(db, 'ctrader_account_id')
+    const acctLive = new Map()
+    try { for (const r of db.prepare('SELECT account_id, is_live FROM accounts').all()) acctLive.set(String(r.account_id), r.is_live === 1) } catch { /* no registry → creds side */ }
+    const sideOf = (pos) => {
+      const acct = pos.account_id != null ? String(pos.account_id) : null
+      const known = acct != null ? acctLive.get(acct) : undefined
+      return typeof known === 'boolean' ? known : (typeof creds.isLive === 'boolean' ? creds.isLive : null)
+    }
+    const acctMapCache = new Map()
+    const sidecarIds = new Map() // side key → Set of symbol ids to ask for
+    for (const pos of positions) {
+      if (pos.source === 'external') continue
+      const id = sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache)
+      if (id == null) continue
+      const key = String(sideOf(pos))
+      if (!sidecarIds.has(key)) sidecarIds.set(key, new Set())
+      sidecarIds.get(key).add(id)
+    }
+    const quotesBySide = new Map() // side key → Map symbolId → quote
+    for (const [key, ids] of sidecarIds) {
+      const isLive = key === 'true' ? true : key === 'false' ? false : null
+      let body = null
+      try { body = typeof exec.sidecarQuotes === 'function' ? await exec.sidecarQuotes(isLive, { ids: [...ids] }) : null } catch { body = null }
+      quotesBySide.set(key, quoteMapFrom(body))
+    }
+    const quoteCounts = { fromSidecar: 0, fromBroker: 0, stale: 0 }
+
     let checked = 0
     let acted = 0
     for (const pos of positions) {
@@ -247,7 +349,20 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (!due) continue
         lastCheckAt.set(pos.id, now())
 
-        const q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+        // Sidecar first (fresh within maxAgeMs on the sidecar's receipt
+        // clock), the broker round trip otherwise — exactly as before.
+        const sidecarId = sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache)
+        const pick = sidecarId == null
+          ? { quote: null, source: 'missing' }
+          : pickSidecarQuote(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)
+        let q = pick.quote
+        if (q) {
+          quoteCounts.fromSidecar++
+        } else {
+          if (pick.source === 'stale') quoteCounts.stale++
+          quoteCounts.fromBroker++
+          q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+        }
         const mid = q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null
         if (mid == null) {
           noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
@@ -336,7 +451,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         console.error('[fast-monitor]', pos.symbol, err.message)
       }
     }
-    return { checked, acted, positions: positions.length }
+    return { checked, acted, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarIds.size }
   } finally {
     running = false
   }
@@ -707,6 +822,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   let bandRunning = false
   let bandSkipped = 0
   let lastTick = null
+  let lastQuotes = null   // { fromSidecar, fromBroker, stale } from the last pass that priced anything
   let lastBand = { ms: null, overran: false }
   let lastTickRecordAt = 0
   const startedMs = clock()
@@ -735,6 +851,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
         tick: {
           everyMs: tickMs, lastMs: lastTick, max10mMs: tk.max, skippedTicks: skipped,
           skipped10m: skipsKept.length, skipShare10m: shares.skipShare, busyShare10m: shares.busyShare,
+          // 19-09-2026: where the last pass's prices came from (see the
+          // header block) — the acceptance read for the sidecar path.
+          quotes: lastQuotes,
         },
         band: { everyMs: bandMs, lastMs: band.ms, max10mMs: bd.max, overran: band.overran, skippedBands: bandSkipped },
       }))
@@ -748,10 +867,14 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     writeRecord(nowMs)
   }
 
+  // Returns { err, quotes }; an injected runTick may still return a bare
+  // error or null (older tests), which the caller below reads the same way.
   const runTick = deps.runTick ?? (async (creds) => {
     let tickErr = null
+    let quotes = null
     try {
-      await runFastMonitor(db, creds, deps)
+      const r = await runFastMonitor(db, creds, deps)
+      if (r?.quotes) quotes = r.quotes
     } catch (err) {
       tickErr = err
       console.error('[fast-monitor] tick failed:', err.message)
@@ -771,7 +894,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] session-open-guard failed:', err.message)
     }
-    return tickErr
+    return { err: tickErr, quotes }
   })
 
   const t = setInterval(async () => {
@@ -797,7 +920,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       // ONE creds read per tick: this was called five times per tick, each
       // doing several getState reads plus a JSON.parse of the symbol map.
       const creds = getCreds(db)
-      const tickErr = await runTick(creds, startedAt)
+      const r = await runTick(creds, startedAt)
+      const tickErr = r instanceof Error ? r : (r?.err ?? null)
+      if (r?.quotes) lastQuotes = r.quotes
       const ms = clock() - startedAt
       lastTick = ms
       tickSamples.push({ at: startedAt, ms })
