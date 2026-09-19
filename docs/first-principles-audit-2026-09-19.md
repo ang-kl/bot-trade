@@ -696,3 +696,37 @@ after deploy, recorded in §L of this file as it happens.
   owner-side items stay as §K lists them (the eight kept overrides, P6c,
   task #6, tokens for …2148/…9009, the 19 symbols armed on unreachable
   timeframes, the fast-monitor cadence above).
+- 19-09-2026 11:55 SGT: veto boundary (this PR). Measured on the 24 h to
+  this morning: 1,235 risk_events veto rows, 100 % of the gate's vetoes,
+  were `marginPoolForCycle` journaling every exhausted account EVERY loop
+  cycle under symbol `PORTFOLIO` while zero proposals were refused at the
+  gate — so the `veto_rate` goal read 0.996 for an idle gate. A veto is a
+  refusal of a trade the bot would otherwise have taken; an exhausted
+  account is a cycle-stable, per-account STATE. What moved: the margin
+  pool now writes one `decision_log` row per account per state change
+  (`margin_pool` skip on exhaustion, `proceed` on recovery;
+  `services/margin-pool-journal.js`, in-memory last-state map reset on
+  boot) instead of a veto per cycle; `persistRiskEvent` carries the
+  boundary explicitly — `CYCLE_STABLE_REASONS` (frozen: the margin pool,
+  `max_positions`, `daily_loss_limit_hit`, `campaign_stop`,
+  `unknown_daily_pnl`, `loss_streak_cooldown`,
+  `balance_not_account_scoped`, and the three portfolio guards
+  `global_halt` / `portfolio_daily_loss` / `portfolio_position_cap`) are
+  written as `gate_redirect` skips and return `{ redirected, head }`,
+  never a risk_events row; `overexposed_*` and `correlated_*` stay vetoes
+  because they take the proposal as an input. The backstop guards in
+  `evaluateTrade` are unchanged — only WHERE the refusal is recorded
+  changed. `decision-audit` and `veto-breakdown` leave legacy `PORTFOLIO`
+  rows out of `vetoed`/`reachedGate` (reported as `legacyPortfolioRows`,
+  shown under `upstream:margin_pool`) so history stops inflating the rate;
+  the goal's `vetoMinReachedGate` floor is untouched. Pinned by
+  `veto-boundary.test.js`: each cycle-stable guard tripped through the real
+  gate and asserted redirected, the pool's once-per-transition write, and
+  the audit's exclusion. Checker round (12:23 SGT): the redirect now carries
+  the proposal's levels in `detail.proposal` and the refusal ledger reads
+  `gate_redirect` beside `evidence_gate`, so a redirected refusal is still
+  scored for forgone R; the validation-fill route reads the newer of the two
+  records (`latestGateVerdict`) instead of the last risk_events row; the
+  loop's journal call is pinned in `margin-pool.test.js`; and legacy
+  `PORTFOLIO` rows are excluded from the ledger's waiting/pending reads so
+  they no longer clog it as `unscorable`.

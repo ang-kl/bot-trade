@@ -15,6 +15,11 @@
 // normalises to the head token; the newest full string per group rides along
 // as the human-readable example.
 
+/** The symbol the pre-boundary margin pool stamped on its per-cycle risk_events rows. */
+export const LEGACY_PORTFOLIO_SYMBOL = 'PORTFOLIO'
+/** Where those rows are shown now: the stage the margin pool's skips use. */
+export const LEGACY_MARGIN_POOL_STAGE = 'margin_pool'
+
 export function reasonKey(reason) {
   const s = String(reason || 'unspecified').trim()
   // Head token: everything before the first ':' or ' — ', with any
@@ -116,8 +121,20 @@ export function vetoBreakdown(db, { days = 7, account = null, limit = MAX_GUARD_
   let approved = 0
   let vetoed = 0
   let vetoedDistinct = 0
+  let legacyPortfolioRows = 0
   for (const r of riskRows) {
     if (r.approved === 1) { approved += 1; continue }
+    // THE VETO BOUNDARY (19-09-2026): the margin pool's pre-boundary rows
+    // (symbol 'PORTFOLIO', one per exhausted account per CYCLE) were never
+    // proposals refused at the gate. They are shown where the pool's skips
+    // live now — `upstream:margin_pool` — and stay out of the gate's totals.
+    if (String(r.symbol) === LEGACY_PORTFOLIO_SYMBOL) {
+      legacyPortfolioRows += Math.max(1, Number(r.reps) || 1)
+      bump(`upstream:${LEGACY_MARGIN_POOL_STAGE}`, reasonKey(r.veto_reason), {
+        symbol: null, created_at: r.created_at, example: r.veto_reason || null, reps: r.reps,
+      })
+      continue
+    }
     vetoed += Math.max(1, Number(r.reps) || 1)
     vetoedDistinct += 1
     bump('risk_gate', reasonKey(r.veto_reason), {
@@ -168,6 +185,9 @@ export function vetoBreakdown(db, { days = 7, account = null, limit = MAX_GUARD_
         ? Math.round(approved / (approved + vetoed) * 1000) / 10
         : null,
       upstreamSkips: decisionRows.length,
+      // Pre-boundary margin-pool rows counted under upstream:margin_pool, not
+      // as gate vetoes.
+      legacyPortfolioRows,
       // The TRUE distinct count, not the returned length — otherwise the cap
       // would quietly rewrite the very number an operator reads to judge how
       // fragmented the veto reasons are.

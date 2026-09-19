@@ -61,6 +61,9 @@ export const VERDICTS = Object.freeze({
 
 const int = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
+/** The symbol the pre-boundary margin pool stamped on its per-cycle rows. */
+export const LEGACY_PORTFOLIO_SYMBOL = 'PORTFOLIO'
+
 /**
  * Group rows to [{key, n}] descending. Small and local on purpose — the
  * shape is the point, and a shared helper would hide it.
@@ -104,7 +107,7 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     sinceFxDayOpen: true, considered: 0, reachedGate: 0, approved: 0, vetoed: 0, vetoedDistinct: 0,
     tradesOpened: 0, pendingOrders: 0, placementReceipts: 0, landed: 0,
     resolutions: 0, accountedFor: 0, topResolutions: [], droppedApprovals: [],
-    silentDrops: 0, topVetoes: [], topSkipStages: [],
+    silentDrops: 0, topVetoes: [], topSkipStages: [], legacyPortfolioRows: 0,
     quietMinutes: null, at,
   }
 
@@ -197,7 +200,18 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // stays the number of REFUSALS, comparable with the un-merged history;
     // `vetoedDistinct` is the row count — the number of distinct refusals.
     // The gap between them is the waste the veto goal measures.
-    const vetoRows = gate.filter(r => int(r.approved) !== 1)
+    // THE VETO BOUNDARY (19-09-2026). The margin pool used to journal every
+    // exhausted account every cycle as a veto under symbol 'PORTFOLIO' —
+    // 1,235 of 1,235 vetoes in 24 h with nothing refused at the gate, so
+    // `veto_rate` read 0.996 for an idle gate. Those rows are legacy now
+    // (loop.js writes a decision_log skip per state change instead), and
+    // history must not keep inflating the rate: a PORTFOLIO row never
+    // reached the gate as a proposal, so it is neither `vetoed` nor
+    // `reachedGate`. It is counted here so the exclusion is visible.
+    const legacyPortfolioRows = gate
+      .filter(r => int(r.approved) !== 1 && String(r.symbol) === LEGACY_PORTFOLIO_SYMBOL)
+      .reduce((a, r) => a + int(r.reps ?? r.n), 0)
+    const vetoRows = gate.filter(r => int(r.approved) !== 1 && String(r.symbol) !== LEGACY_PORTFOLIO_SYMBOL)
     const vetoed = vetoRows.reduce((a, r) => a + int(r.reps ?? r.n), 0)
     const vetoedDistinct = vetoRows.reduce((a, r) => a + int(r.n), 0)
     // Approvals that a downstream refusal already accounted for.
@@ -320,6 +334,9 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
       // Symbol + side + when, per dropped approval. Owner-facing only.
       droppedApprovals: drops,
       silentDrops, topVetoes, topSkipStages, quietMinutes, at,
+      // Pre-boundary margin-pool rows (symbol 'PORTFOLIO') seen this day and
+      // left OUT of vetoed/reachedGate — see the veto boundary note above.
+      legacyPortfolioRows,
       gateScope: scope,
     }
   } catch (err) {

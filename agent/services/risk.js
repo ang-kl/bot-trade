@@ -36,6 +36,7 @@ import { checkBookSymbolCap, DEFAULT_MAX_ACCOUNTS_PER_SYMBOL } from './book-symb
 // Leaf module (pure rule + one indexed lookback) — no cycle back into risk.js.
 import { nextOpportunityKey } from './opportunity-identity.js'
 import { reasonKey } from './veto-breakdown.js'
+import { recordDecision } from './decision-log.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
@@ -2573,12 +2574,144 @@ export function persistPostApprovalVeto(db, proposal, reason, checks = {}) {
 }
 
 /**
+ * THE VETO BOUNDARY (19-09-2026, owner principle 7).
+ *
+ * A veto is a refusal of a trade the bot would otherwise have taken. The
+ * risk_events table holds only those: per-proposal gate refusals, where the
+ * proposal's own numbers (its R:R, its stop, its symbol's cluster, its size)
+ * decided the answer. A refusal whose answer could not change until the
+ * account's state changes — the day's loss cap, the position cap, a loss
+ * streak, a halted portfolio — is cycle-stable and per-account: it is a SKIP,
+ * recorded in decision_log, the same place the per-account pre-filter
+ * (account-pregate.js) already records it when it asks first.
+ *
+ * Measured 18/19-09-2026: 1,235 of the 1,235 risk_events vetoes in 24 h were
+ * the margin pool journaling every exhausted account EVERY loop cycle under
+ * symbol 'PORTFOLIO', while zero proposals were refused at the gate — and the
+ * veto goal read 0.996 for an idle gate.
+ *
+ * These are reason HEADS (the token before the first space, colon, '=' or
+ * '('), each verified against the string the guard emits:
+ *   portfolio_margin_exhausted  — accountMarginPool, journaled by loop.js's
+ *                                 margin pool (once per state change now)
+ *   max_positions               — maxPositionsVerdict `max_positions=n/cap`
+ *   daily_loss_limit_hit        — dailyLossVerdict
+ *   campaign_stop               — campaignStopVerdict `campaign_stop (label): …`
+ *   unknown_daily_pnl           — unknownPnlBlocks `unknown_daily_pnl (scope): …`
+ *   loss_streak_cooldown        — lossStreakVerdict
+ *   balance_not_account_scoped  — balanceScopeVerdict
+ *   global_halt, portfolio_daily_loss, portfolio_position_cap
+ *                               — evaluateGlobalGuards: portfolio-wide and
+ *                                 cycle-stable for every account at once
+ * NOT here, deliberately: `overexposed_<ccy>` and `correlated_*` take the
+ * proposal as an input (its currency legs, its cluster, its side) — a
+ * different proposal on the same account gets a different answer, so they
+ * are per-proposal vetoes. `regime_block` and `evidence_gate` are not gate
+ * heads at all: they are decision_log stages written upstream (gate-skips.js)
+ * and evaluateTrade cannot emit them.
+ *
+ * The backstop guards in evaluateTrade keep running; only WHERE their
+ * refusal is recorded changes. Frozen ARRAY, not a Set: Object.freeze on a
+ * Set does not stop add/delete.
+ */
+export const CYCLE_STABLE_REASONS = Object.freeze([
+  'portfolio_margin_exhausted',
+  'max_positions',
+  'daily_loss_limit_hit',
+  'campaign_stop',
+  'unknown_daily_pnl',
+  'loss_streak_cooldown',
+  'balance_not_account_scoped',
+  'global_halt',
+  'portfolio_daily_loss',
+  'portfolio_position_cap',
+])
+
+/** The decision_log stage a redirected cycle-stable refusal lands under. */
+export const GATE_REDIRECT_STAGE = 'gate_redirect'
+
+/** The head token of a veto reason: everything before the first space, ':', '=' or '('. */
+export function reasonHead(reason) {
+  return String(reason ?? '').trim().split(/[\s:=(]/, 1)[0]
+}
+
+/**
+ * The newest gate verdict for a symbol, across BOTH records: the risk_events
+ * row (approval or per-proposal veto) and the gate_redirect decision_log row
+ * (a cycle-stable refusal). Whichever is newer wins, so a reader that used
+ * to take the newest risk_events row cannot report a stale approval as the
+ * verdict after a redirected refusal. Null when neither exists.
+ *
+ * @returns {{source:'risk_events'|'gate_redirect', approved:number, veto_reason:string|null, created_at:string}|null}
+ */
+export function latestGateVerdict(db, { symbol, accountId = null } = {}) {
+  const acctSql = accountId != null ? ' AND (account_id = ? OR account_id IS NULL)' : ''
+  const acctArgs = accountId != null ? [String(accountId)] : []
+  let ev = null, rd = null
+  try {
+    ev = db.prepare(
+      `SELECT approved, veto_reason, created_at FROM risk_events WHERE symbol = ?${acctSql} ORDER BY id DESC LIMIT 1`
+    ).get(symbol, ...acctArgs) || null
+  } catch { ev = null }
+  try {
+    rd = db.prepare(
+      `SELECT reason, detail_json, created_at FROM decision_log WHERE stage = ? AND symbol = ?${acctSql} ORDER BY id DESC LIMIT 1`
+    ).get(GATE_REDIRECT_STAGE, symbol, ...acctArgs) || null
+  } catch { rd = null }
+  const ms = (t) => Date.parse(String(t).replace(' ', 'T') + (/[zZ]|[+-]\d\d:\d\d$/.test(String(t)) ? '' : 'Z'))
+  const evMs = ev ? ms(ev.created_at) : -Infinity
+  const rdMs = rd ? ms(rd.created_at) : -Infinity
+  if (!ev && !rd) return null
+  if (rd && (!ev || rdMs >= evMs)) {
+    let full = null
+    try { full = JSON.parse(rd.detail_json || 'null')?.reason ?? null } catch { full = null }
+    return { source: GATE_REDIRECT_STAGE, approved: 0, veto_reason: full || rd.reason, created_at: rd.created_at }
+  }
+  return { source: 'risk_events', approved: Number(ev.approved), veto_reason: ev.veto_reason, created_at: ev.created_at }
+}
+
+/**
  * Persist a risk evaluation to the risk_events audit table.
+ *
+ * Returns the row id (a number) for an approval or a per-proposal veto. A
+ * cycle-stable refusal (CYCLE_STABLE_REASONS) is NOT inserted: it is written
+ * as a decision_log skip and `{ redirected: true, head }` is returned. Every
+ * caller threads the id only on the approved path, so the marker is never
+ * mistaken for lineage.
  */
 export function persistRiskEvent(db, proposal, result) {
   const accountId = proposal.accountId != null
     ? String(proposal.accountId)
     : (getState(db, 'ctrader_account_id') || null)
+
+  if (!result.approved) {
+    const head = reasonHead(result.veto_reason)
+    if (CYCLE_STABLE_REASONS.includes(head)) {
+      recordDecision(db, {
+        accountId,
+        symbol: proposal.symbol ?? null,
+        timeframe: proposal.timeframe ?? null,
+        strategy: proposal.strategy ?? null,
+        stage: GATE_REDIRECT_STAGE,
+        decision: 'skip',
+        reason: head,
+        detail: {
+          reason: result.veto_reason, checks: result.checks || null, side: proposal.side ?? null,
+          // The refusal ledger scores a redirected refusal for forgone R the
+          // same way it scores an evidence-gate shadow (gate-skips.js): the
+          // proposal's levels ride in detail in that shape.
+          proposal: {
+            symbol: proposal.symbol ?? null, side: proposal.side ?? null,
+            entry: proposal.entry ?? null, sl: proposal.sl ?? null, tp1: proposal.tp1 ?? null, tp2: proposal.tp2 ?? null,
+            requestedVolume: proposal.requestedVolume ?? null, strategy: proposal.strategy || null,
+            timeframe: proposal.timeframe ?? null, conviction: proposal.conviction ?? null,
+            source: proposal.source || null, accountId,
+          },
+        },
+      })
+      return { redirected: true, head }
+    }
+  }
 
   // §70.8 OPPORTUNITY IDENTITY. Stamped HERE because this is the one choke
   // point every evaluation passes through — the same reason the lineage id is

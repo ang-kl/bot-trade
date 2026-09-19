@@ -3007,9 +3007,12 @@ export default function actionsRouter(db, deps = {}) {
       // Dynamic import keeps route wiring free of load-order surprises.
       const { autoTrade } = await import('../loop.js')
       const result = await autoTrade(db, symbol, synth, { maxVolume: 0.01 }, null, { producerId: 'route_validation_fill' })
-      const lastEvent = db.prepare(
-        `SELECT approved, veto_reason, created_at FROM risk_events WHERE symbol = ? ORDER BY id DESC LIMIT 1`
-      ).get(symbol)
+      // THE VETO BOUNDARY (19-09-2026): a cycle-stable refusal is a
+      // gate_redirect decision_log row, not a risk_events row — reading only
+      // risk_events here returned the PREVIOUS approval as "the risk event"
+      // after such a refusal. latestGateVerdict reads both and takes the newer.
+      const { latestGateVerdict } = await import('../services/risk.js')
+      const lastEvent = latestGateVerdict(db, { symbol, accountId: creds.accountId })
 
       if (result) {
         console.log(`[actions] VALIDATION FILL: ${result.side} ${symbol} @ ${result.executionPrice} posId=${result.positionId}`)

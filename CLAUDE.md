@@ -683,6 +683,18 @@ Measurement history — each line is a real run of the script, not a claim:
   `№ 8,084` and the Waves 4b/5a/5b report is **`№ 8,085`** by count. The
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+- 2026-09-19 04:30 UTC, **same remote container, PARTIAL corpus**: from
+  `№ 8,085` the replies were stamped by count through #967 (`№ 8,087`,
+  `№ 8,089`), the "how are we today" answer `№ 8,090`, the veto question
+  `№ 8,091`, the expert answer `№ 8,092`, the three read-only checks
+  `№ 8,093`, the makers' status `№ 8,097` and the 12:25 SGT status
+  **`№ 8,103`**; the unstamped lines between them (the two makers and two
+  checkers launched, their reports acknowledged, "merge when green"
+  acknowledged) are in that count. One unstamped line follows this ledger
+  (the veto-boundary PR opened), so the next stamped reply is **`№ 8,105`**
+  plus any unstamped line made after this ledger. The count is by replies,
+  not by stamps. A later re-measure that reads below this line is missing
+  these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
