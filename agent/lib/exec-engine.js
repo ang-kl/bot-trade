@@ -385,7 +385,9 @@ export async function sidecarTickStatus({ timeoutMs = 5_000, base = execBaseFor(
  * EXEC_URL's sidecar), `ids` narrows the answer to those symbol ids. Returns
  * the parsed body — {feed:'up'|'down'|'absent', generation, count, quotes:
  * [{symbolId, bid, ask, tsMs, recvMs}]} — or null when the sidecar is
- * unreachable, not in cpp mode, or predates the route. Short timeout on
+ * unreachable, not in cpp mode, or predates the route. `accountId` is the
+ * account the feed authenticates as — the id space of `quotes` (null when
+ * absent); `nowMs` the sidecar's clock at answer time. Short timeout on
  * purpose: this runs inside the 3 s tick, and a slow answer is worth less
  * than the broker fallback it would delay.
  */
@@ -404,7 +406,7 @@ export async function sidecarQuotes(isLive = null, { ids = [], timeoutMs = 2_000
     if (!res.ok) return null
     const body = await res.json().catch(() => null)
     if (!body || typeof body !== 'object' || typeof body.feed !== 'string') return null
-    return { feed: body.feed, generation: Number(body.generation) || 0, count: Number(body.count) || 0, quotes: Array.isArray(body.quotes) ? body.quotes : [] }
+    return { feed: body.feed, generation: Number(body.generation) || 0, accountId: body.accountId != null && Number(body.accountId) > 0 ? String(body.accountId) : null, nowMs: Number(body.nowMs) || null, count: Number(body.count) || 0, quotes: Array.isArray(body.quotes) ? body.quotes : [] }
   } catch {
     return null
   } finally {

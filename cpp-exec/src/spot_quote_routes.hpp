@@ -31,17 +31,20 @@ struct QuoteFeedView {
   bool present = false;
   bool connected = false;
   long long generation = 0; // 1 on the first connection, +1 per reconnect
+  long long accountId = 0;  // the account the feed authenticates as (its id space)
   std::vector<SpotQuote> quotes;
 };
 using QuoteFeedReader = std::function<QuoteFeedView()>;
 
 /**
  * Registers `GET /quotes[?ids=1,2,3]`. Response:
- *   { feed: "up"|"down"|"absent", generation, nowMs, count,
+ *   { feed: "up"|"down"|"absent", generation, accountId, nowMs, count,
  *     quotes: [{ symbolId, bid, ask, tsMs, recvMs }] }
  * A side never seen is null, never 0 (a Buy's `ask <= trigger` against 0
  * is a false touch — the same rule the feed's own tick callback keeps).
  * `ids` filters to those symbol ids; absent or empty = every symbol.
+ * `accountId` is the account the feed authenticates as: the symbol ids in
+ * `quotes` live in THAT account's id space (null when absent).
  * `nowMs` is this process's clock at answer time, so a caller ages a quote
  * as nowMs - recvMs on one clock (its own clock may differ by seconds).
  *

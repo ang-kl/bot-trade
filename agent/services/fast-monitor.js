@@ -90,49 +90,40 @@ export function quoteMapFrom(body) {
 }
 
 /**
- * The account a side's sidecar feed authenticates as — the side PRIMARY
- * (heartbeat.js sideCreds: the globally selected account when it is enabled
- * on this side, else the first enabled row on it). The sidecar's quote table
- * is keyed in THAT account's symbol id space.
- */
-export function sidePrimaryFor(db, isLive, selectedId) {
-  try {
-    const ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 AND is_live = ? ORDER BY account_id').all(isLive ? 1 : 0).map(r => String(r.account_id))
-    if (selectedId != null && ids.includes(String(selectedId))) return String(selectedId)
-    return ids[0] ?? null
-  } catch { return null }
-}
-
-/**
  * The symbol id to look the position up by on its side's sidecar — in the
- * SIDE PRIMARY's id space, because that is the account the feed subscribed
- * as and the space the guard sync resolves the pushed ids in.
+ * FEED ACCOUNT's id space, because that is the account the feed subscribed
+ * as and the space its quote table is keyed in. The sidecar reports it on
+ * every /quotes answer (`accountId`): whichever account made the first
+ * /connect on that side and stayed in the roster — NOT necessarily what
+ * Node calls primary (checker round 2: a non-primary dispatch can make the
+ * first /connect, and the selected account can switch later).
  *
- * CHECKER BLOCKER 1 (19-09-2026): the first cut used the POSITION's own
- * account map. cTrader ids are per account (ctrader-creds.js, 03-09): with
- * the demo primary mapping {EURUSD:1, GBPUSD:2} and a same-side account 333
- * mapping EURUSD→2 in its own space, a EURUSD position on 333 was priced
+ * CHECKER BLOCKER 1 (19-09-2026, round 1): the first cut used the POSITION's
+ * own account map. cTrader ids are per account (ctrader-creds.js, 03-09):
+ * with the feed account mapping {EURUSD:1, GBPUSD:2} and a same-side account
+ * 333 mapping EURUSD→2 in its own space, a EURUSD position on 333 was priced
  * from GBPUSD's quote and the monitor logged a PARTIAL_EXIT on a fictitious
- * +16R. So: the side primary's map (its account map when on file, else the
- * global map when the side primary is the account the global map was built
- * from); the position's own id must AGREE with it — a non-primary account
- * with no map on file, or whose own id for the name differs, is not looked
- * up (null → the broker round trip, as before this change).
+ * +16R. So: the feed account's map (`symbol_id_map:<feedAccountId>`; the
+ * global map only when the feed account is the one the global map was built
+ * from, `ctrader_account_id`); the position's own id must AGREE with it — a
+ * non-primary account with no map on file, or whose own id for the name
+ * differs, is not looked up (null → the broker round trip, as before this
+ * change). No feed account, or a feed account with no map → null too.
  */
-export function sidecarSymbolIdFor(db, pos, globalMap, primaryId, cache = new Map(), sidePrimary = primaryId) {
+export function sidecarSymbolIdFor(db, pos, globalMap, primaryId, cache = new Map(), feedAccountId = null) {
   const sym = String(pos.symbol || '').toUpperCase()
   const acct = pos.account_id != null ? String(pos.account_id) : null
-  const sideAcct = sidePrimary != null ? String(sidePrimary) : null
-  if (sideAcct == null) return null
-  // the side space
-  const sideMap = accountMap(db, sideAcct, cache) ?? (primaryId != null && String(primaryId) === sideAcct ? globalMap : null)
-  const sideId = sideMap?.[sym]
-  if (!(Number(sideId) > 0)) return null
+  const feedAcct = feedAccountId != null ? String(feedAccountId) : null
+  if (feedAcct == null) return null
+  // the feed's space
+  const feedMap = accountMap(db, feedAcct, cache) ?? (primaryId != null && String(primaryId) === feedAcct ? globalMap : null)
+  const feedId = feedMap?.[sym]
+  if (!(Number(feedId) > 0)) return null
   // the position's own space must agree
-  if (acct == null || acct === sideAcct) return Number(sideId)
+  if (acct == null || acct === feedAcct) return Number(feedId)
   const own = accountMap(db, acct, cache) ?? (primaryId != null && String(primaryId) === acct ? globalMap : null)
   const ownId = own?.[sym]
-  return Number(ownId) === Number(sideId) ? Number(sideId) : null
+  return Number(ownId) === Number(feedId) ? Number(feedId) : null
 }
 function accountMap(db, acct, cache) {
   if (cache.has(acct)) return cache.get(acct)
@@ -325,34 +316,28 @@ export async function runFastMonitor(db, creds, deps = {}) {
       return typeof known === 'boolean' ? known : (typeof creds.isLive === 'boolean' ? creds.isLive : null)
     }
     const acctMapCache = new Map()
-    // The side primary per side (the feed's account, whose id space the
-    // sidecar's table is keyed in); the creds' own account when the side is
-    // unresolved (one sidecar for both).
-    const sidePrimaries = new Map()
-    const sidePrimaryOf = (isLive) => {
-      const key = String(isLive)
-      if (!sidePrimaries.has(key)) sidePrimaries.set(key, typeof isLive === 'boolean' ? sidePrimaryFor(db, isLive, primaryId) : (creds.accountId != null ? String(creds.accountId) : primaryId))
-      return sidePrimaries.get(key)
-    }
-    const lookupId = (pos) => sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache, sidePrimaryOf(sideOf(pos)))
-    const sidecarIds = new Map() // side key → Set of symbol ids to ask for
+    // The sides with a position to price. The WHOLE table is pulled per
+    // side (no ids filter): the lookup ids live in the feed account's space,
+    // and which account that is only the answer says (`accountId`). The
+    // table is the feed's subscription — tens of symbols — so the filter
+    // would save nothing worth a second round trip.
+    const sidecarSides = new Set()
     for (const pos of positions) {
       if (pos.source === 'external') continue
-      const id = lookupId(pos)
-      if (id == null) continue
-      const key = String(sideOf(pos))
-      if (!sidecarIds.has(key)) sidecarIds.set(key, new Set())
-      sidecarIds.get(key).add(id)
+      sidecarSides.add(String(sideOf(pos)))
     }
     // The sides are pulled CONCURRENTLY (checker SHOULD 3): two hung sidecars
     // cost one timeout before the first position is priced, not two.
-    const quotesBySide = new Map() // side key → Map symbolId → quote
-    await Promise.all([...sidecarIds].map(async ([key, ids]) => {
+    const quotesBySide = new Map()   // side key → Map symbolId → quote
+    const feedAccountBySide = new Map() // side key → the feed's account (its id space), or null
+    await Promise.all([...sidecarSides].map(async (key) => {
       const isLive = key === 'true' ? true : key === 'false' ? false : null
       let body = null
-      try { body = typeof exec.sidecarQuotes === 'function' ? await exec.sidecarQuotes(isLive, { ids: [...ids] }) : null } catch { body = null }
+      try { body = typeof exec.sidecarQuotes === 'function' ? await exec.sidecarQuotes(isLive) : null } catch { body = null }
       quotesBySide.set(key, quoteMapFrom(body))
+      feedAccountBySide.set(key, body && body.feed !== 'absent' && body.accountId != null ? String(body.accountId) : null)
     }))
+    const lookupId = (pos) => sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache, feedAccountBySide.get(String(sideOf(pos))) ?? null)
     const quoteCounts = { fromSidecar: 0, fromBroker: 0, stale: 0 }
 
     let checked = 0
@@ -504,7 +489,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         console.error('[fast-monitor]', pos.symbol, err.message)
       }
     }
-    return { checked, acted, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarIds.size }
+    return { checked, acted, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size }
   } finally {
     running = false
   }

@@ -393,15 +393,27 @@ export async function syncExecGuard(db, exec, side, { reportedGuard = null, cred
     // P3a: the tick symbols ride on the same push, resolved to this side's
     // ids; only asked for when recording is wanted (nothing to carry otherwise).
     if (desired.tickRecord && creds) {
+      // THE FEED ACCOUNT'S ID SPACE (checker round 2). The sidecar's feed
+      // authenticates as whichever account made the first /connect on the
+      // side and stayed in the roster — not necessarily sideCreds' primary —
+      // and it reports that account on /health tick.feedAccountId. The ids
+      // pushed here are looked up in the feed's space, so they are resolved
+      // with THAT account's creds when the sidecar names one (sideCreds'
+      // token covers every account of the same ctid; the resolver fetches
+      // that account's own symbol list and caches it). An older sidecar
+      // reporting none resolves under sideCreds as before — the same
+      // assumption the pre-existing tickSymbolIds resolution carried.
+      const feedAccountId = (reportedTick ?? reportedGuard?.tick)?.feedAccountId
+      const resolveCreds = feedAccountId != null && Number(feedAccountId) > 0 ? { ...creds, accountId: String(feedAccountId) } : creds
       let resolved = []
-      try { resolved = await resolveTickSymbols(db, creds, side, { resolveSymbolId }) } catch { resolved = [] }
+      try { resolved = await resolveTickSymbols(db, resolveCreds, side, { resolveSymbolId }) } catch { resolved = [] }
       desired.tickSymbolIds = resolved.map(s => s.id)
       // 19-09-2026: the open positions' symbols ride as a SEPARATE list the
       // sidecar only subscribes for quotes (quoteSymbolNames). Only while
       // this side records — a side with tick observation OFF pushes no
       // quote list, and its positions stay on the broker path.
       let quotes = []
-      try { quotes = await resolveQuoteSymbols(db, creds, side, { resolveSymbolId }) } catch { quotes = [] }
+      try { quotes = await resolveQuoteSymbols(db, resolveCreds, side, { resolveSymbolId }) } catch { quotes = [] }
       const configured = new Set(desired.tickSymbolIds)
       desired.quoteSymbolIds = quotes.map(s => s.id).filter(id => !configured.has(id))
       // PR-L: the cost schedule travels with the symbols it prices. The

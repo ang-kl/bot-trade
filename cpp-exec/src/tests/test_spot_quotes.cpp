@@ -135,6 +135,7 @@ QuoteFeedReader readerFor(SpotFeed* feed) {
     v.present = true;
     v.connected = feed->isConnected();
     v.generation = feed->reconnects() + 1;
+    v.accountId = feed->accountId();
     v.quotes = feed->latestQuotes();
     return v;
   };
@@ -170,6 +171,7 @@ static void test_quotes_update_and_the_route_serves_them() {
     jsn::Value b = bodyOf(httpGet(port, "/quotes", secret));
     assert(b.get("feed").asString() == "up");
     assert(b.get("generation").asNumber(0) == 1);
+    assert(b.get("accountId").asNumber(0) == 4002); // the feed's account: the id space of the table
     assert(b.get("count").asNumber(-1) == 0);
     assert(b.get("quotes").isArray() && b.get("quotes").asArray().empty());
     std::puts("  live feed, no events: feed up, count 0");
@@ -265,6 +267,7 @@ static void test_no_feed_is_absent_and_an_unconfigured_secret_refuses() {
     jsn::Value b = bodyOf(httpGet(port, "/quotes", secret));
     assert(b.get("feed").asString() == "absent");
     assert(b.get("generation").asNumber(-1) == 0);
+    assert(b.get("accountId").isNull());
     assert(b.get("count").asNumber(-1) == 0);
     assert(b.get("quotes").isArray() && b.get("quotes").asArray().empty());
     std::puts("  no feed object: feed absent, count 0");

@@ -32,6 +32,7 @@ void registerSpotQuoteRoutes(HttpServer& server, QuoteFeedReader reader, const s
     jsn::Value v{jsn::Object{}};
     v.set("feed", std::string(!view.present ? "absent" : view.connected ? "up" : "down"));
     v.set("generation", static_cast<double>(view.present ? view.generation : 0));
+    v.set("accountId", view.present && view.accountId > 0 ? jsn::Value(static_cast<double>(view.accountId)) : jsn::Value(nullptr));
     // The sidecar's OWN clock at answer time (checker SHOULD 4): recvMs is
     // stamped by this process's system_clock, so the keeper ages a quote as
     // nowMs - recvMs on ONE clock rather than against its own Date.now().

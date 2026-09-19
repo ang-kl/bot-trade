@@ -792,3 +792,31 @@ after deploy, recorded in §L of this file as it happens.
   only for an older sidecar. NOTE: the wiring pin's external position now
   sits on a resolvable account so the `external` skip is exercised. NOTE:
   after a reconnect a one-sided first frame keeps the slot's other side.
+  CHECKER ROUND 2 (19-09-2026 13:05 SGT, third commit). FEED-ACCOUNT
+  KEYING: the sidecar's feed authenticates as whichever account made the
+  first `/connect` on its side and stayed in the roster
+  (`feedAccountStillAuthorized`, main.cpp) — not necessarily what Node
+  calls the side primary (`sideCreds` can differ: a non-primary dispatch
+  made the first connect, or the selected account switched later). So
+  `GET /quotes` and `/health tick` now report the feed's `accountId` /
+  `feedAccountId`, the fast monitor pulls the WHOLE table per side (no ids
+  filter — the space is only known from the answer) and keys the lookup in
+  THAT account's map (`symbol_id_map:<feedAccountId>`, the global map only
+  when the feed account is `ctrader_account_id`'s), refusing to the broker
+  when no account is reported or its map is absent, with the position's
+  own id still required to agree; `sidePrimaryFor` is gone. The guard sync
+  resolves `tickSymbolIds`/`quoteSymbolIds` with the feed account's creds
+  when `/health tick` reports one, `sideCreds` as before otherwise — the
+  PRE-EXISTING `tickSymbolIds` resolution carried the same "sideCreds is
+  the feed account" assumption since P3a. EXCLUSION, NOT ADMISSION: the
+  feed carries more than `tick_symbols_json` (VPO and trail symbols;
+  "subscribed 53 additional symbol(s)" on the demo boot) and all of it was
+  recorded before this PR; an admission universe would have narrowed the
+  record and the shadow evidence on deploy, and an empty list with
+  recording on would have recorded nothing. `tick_tap.*` now drops ONLY
+  the quotes-only ids — `quoteSymbolIds` minus `tickSymbolIds` minus
+  anything the feed already carried before the push — remembered across
+  pushes and promoted out when named in `tickSymbolIds`; `/health
+  tick.quoteOnly` is the excluded count. THE RECORDED SET IS UNCHANGED BY
+  THIS PR. The wiring pin's external position is a symbol no other
+  position carries.

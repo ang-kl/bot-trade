@@ -102,6 +102,10 @@ public:
   // existed nothing outside this object could see it. Facts only — the
   // STALENESS verdict is Node's, which knows market hours; this side cannot.
   bool isConnected() const { return connected_.load(std::memory_order_relaxed); }
+  // The account this feed authenticates as — the space its quote table's
+  // symbol ids live in (whichever account made the first /connect on this
+  // side and stayed in the roster; NOT necessarily what Node calls primary).
+  long long accountId() const { return accountId_; }
   long long lastTickAtMs() const { return lastTickAtMs_.load(std::memory_order_relaxed); }
   long long tickCount() const { return tickCount_.load(std::memory_order_relaxed); }
   long long reconnects() const { return reconnects_.load(std::memory_order_relaxed); }

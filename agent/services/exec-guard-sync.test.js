@@ -394,11 +394,23 @@ test('19-09-2026 (checker SHOULD 2): the open positions\' symbols are pushed as 
   requestTickObservation(db, '111', 'RECORD')
   let sent = null
   const exec = { setExecGuard: async (_c, body) => { sent = body; return { ok: true } } }
-  const r = await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, { creds: { ready: true, accountId: '111' }, resolveSymbolId: resolve, reportedGuard: null })
+  const seenCreds = new Set()
+  const resolveRec = async (creds, ...rest) => { seenCreds.add(String(creds?.accountId)); return resolve(null, creds, ...rest) }
+  const r = await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, { creds: { ready: true, accountId: '111' }, resolveSymbolId: (_db, creds, name) => resolveRec(creds, name), reportedGuard: null })
   assert.equal(r.pushed, true)
+  assert.deepEqual([...seenCreds], ['111'], 'no feed account reported → resolved under sideCreds, as before')
   assert.deepEqual(sent.tickSymbolIds, [1, 41], 'the configured universe — the recorder and the strategy read this and only this')
   assert.deepEqual(sent.quoteSymbolIds, [2, 3], 'the open positions, quotes-only; EURUSD (1) already configured is not repeated')
   assert.deepEqual(await resolveQuoteSymbols(db, { ready: false }, { isLive: false }, { resolveSymbolId: resolve }), [], 'no creds, no ids')
+  // checker round 2: the sidecar reports the FEED account (the first /connect on the side, kept while in
+  // the roster) — the ids are resolved in THAT account's space, not sideCreds' primary
+  seenCreds.clear()
+  const r2 = await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, { creds: { ready: true, accountId: '111' }, resolveSymbolId: (_db, creds, name) => resolveRec(creds, name), reportedGuard: { halt: false, haltAccountCount: 0, tick: { recording: true, feedAccountId: 333, subscribed: [] } }, force: true })
+  assert.equal(r2.pushed, true)
+  assert.deepEqual([...seenCreds], ['333'], 'resolved with the feed account\'s creds')
+  seenCreds.clear()
+  await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, { creds: { ready: true, accountId: '111' }, resolveSymbolId: (_db, creds, name) => resolveRec(creds, name), reportedGuard: { halt: false, haltAccountCount: 0 }, reportedTick: { recording: true, feedAccountId: '333', subscribed: [] }, force: true })
+  assert.deepEqual([...seenCreds], ['333'], 'reportedTick carries it too')
   // a side with tick observation OFF pushes no quote list (its positions stay on the broker path)
   const live = desiredGuardFor(db, { isLive: true }, Date.now())
   assert.equal(live.tickRecord, false)

@@ -777,13 +777,15 @@ test('19-09-2026 sidecarQuotes: GET /quotes with the bearer and the ids filter, 
   assert.equal(requests[0].method, 'GET')
   assert.equal(requests[0].url, '/quotes?ids=41,7', 'only positive numeric ids travel')
   assert.equal(requests[0].auth, 'Bearer sekret')
-  assert.deepEqual(r, { feed: 'up', generation: 3, count: 1, quotes: [{ symbolId: 41, bid: 1.1, ask: 1.1002, tsMs: 1, recvMs: 2 }] })
+  assert.deepEqual(r, { feed: 'up', generation: 3, accountId: null, nowMs: null, count: 1, quotes: [{ symbolId: 41, bid: 1.1, ask: 1.1002, tsMs: 1, recvMs: 2 }] }, 'an older sidecar: no accountId, no nowMs')
+  nextResponse = { status: 200, body: JSON.stringify({ feed: 'up', generation: 3, accountId: 4002, nowMs: 1_700_000_000_000, count: 0, quotes: [] }) }
+  assert.deepEqual(await sidecarQuotes(false), { feed: 'up', generation: 3, accountId: '4002', nowMs: 1_700_000_000_000, count: 0, quotes: [] }, 'the feed account (the id space) and the sidecar clock ride along')
   // no ids → no query string
   await sidecarQuotes(null)
   assert.equal(requests[1].url, '/quotes')
   // an absent feed is a body, not a failure — the caller reads feed:"absent"
   nextResponse = { status: 200, body: '{"feed":"absent","generation":0,"count":0,"quotes":[]}' }
-  assert.deepEqual(await sidecarQuotes(true), { feed: 'absent', generation: 0, count: 0, quotes: [] })
+  assert.deepEqual(await sidecarQuotes(true), { feed: 'absent', generation: 0, accountId: null, nowMs: null, count: 0, quotes: [] })
   // a sidecar that predates the route (404), a wrong shape, and js mode are null
   nextResponse = { status: 404, body: '{"error":"not found"}' }
   assert.equal(await sidecarQuotes(false), null)

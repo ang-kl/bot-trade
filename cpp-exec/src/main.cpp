@@ -213,10 +213,10 @@ int main(int argc, char** argv) {
   // (P4); until then the consumer counts, and /tick-status shows the shape.
   std::unique_ptr<tick::SymbolWorkers> tickWorkers;
   std::atomic<uint64_t> tickWorkerEvents{0};
-  // 19-09-2026: the configured tick universe (tick_tap.hpp) — set from
-  // /config `tickSymbolIds`; the feed's quotes-only subscriptions
-  // (`quoteSymbolIds`) never pass it into the recorder or the workers.
-  tick::SymbolUniverse tickUniverse;
+  // 19-09-2026: the quotes-only exclusion (tick_tap.hpp) — the feed's
+  // `quoteSymbolIds` subscriptions never reach the recorder or the workers;
+  // everything else the feed carries is recorded exactly as before.
+  tick::QuoteOnlyGate tickUniverse;
   // P4: the strategy runs on the workers in SHADOW only — one
   // tick_momentum_breakout per symbol, per worker (a symbol lives on one
   // worker, so no lock is shared between workers), switched by /config
@@ -687,9 +687,12 @@ int main(int argc, char** argv) {
           std::lock_guard<std::mutex> lk(vpoMtx);
           if (spotFeed) for (long long id : spotFeed->subscribedSymbols()) subs.push_back(jsn::Value(static_cast<double>(id)));
           tj.set("subscribed", jsn::Value(std::move(subs)));
-          // 19-09-2026: the configured universe the tap admits (tick_tap.hpp);
-          // null until the keeper's first push names it.
-          tj.set("universe", tickUniverse.configured() ? jsn::Value(static_cast<double>(tickUniverse.size())) : jsn::Value(nullptr));
+          // 19-09-2026: the ids the tap EXCLUDES (quotes-only, tick_tap.hpp)
+          // and the account the feed authenticates as — the id space of its
+          // quote table, which the keeper resolves its pushed ids and its
+          // /quotes lookups in. null when no feed exists.
+          tj.set("quoteOnly", static_cast<double>(tickUniverse.quoteOnlyCount()));
+          tj.set("feedAccountId", spotFeed ? jsn::Value(static_cast<double>(spotFeed->accountId())) : jsn::Value(nullptr));
         }
         v.set("tick", std::move(tj));
       } else {
@@ -852,6 +855,7 @@ int main(int argc, char** argv) {
     view.present = true;
     view.connected = spotFeed->isConnected();
     view.generation = spotFeed->reconnects() + 1;
+    view.accountId = spotFeed->accountId();
     view.quotes = spotFeed->latestQuotes();
     return view;
   }, execSecret);
@@ -1442,23 +1446,23 @@ int main(int argc, char** argv) {
       if (dropped) decisionRing.log("tick", "permits_dropped", 0, 0, std::to_string(dropped), "malformed or for an account not in tickEntryAccounts");
       (void)set;
     }
+    std::vector<long long> pushedTickIds;
     if (v.get("tickSymbolIds").isArray()) {
       std::vector<long long> ids;
       for (const auto& e : v.get("tickSymbolIds").asArray()) {
         long long id = e.isNumber() ? (long long)e.asNumber() : std::strtoll(e.asString().c_str(), nullptr, 10);
         if (id > 0) ids.push_back(id);
       }
-      // The configured universe: what the recorder records and the workers
-      // run. Set on every push that names the list (an empty list is a
-      // decision too: record nothing).
-      tickUniverse.set(ids);
+      pushedTickIds = ids;
       std::lock_guard<std::mutex> lk(vpoMtx);
       if (spotFeed && !ids.empty()) spotFeed->ensureSymbols(ids);
     }
     // 19-09-2026: QUOTES-ONLY subscriptions — the keeper's open monitored
     // positions, so GET /quotes can price them. Subscribed on the feed and
-    // nothing else: never the universe, so never recorded, never run through
-    // the strategy (tick_tap.hpp).
+    // EXCLUDED from the recorder tap and the workers (tick_tap.hpp): the
+    // gate is applied against the subscription as it stood before this
+    // push, so a symbol the feed already carried for VPO, the trail or the
+    // tick list keeps being recorded.
     if (v.get("quoteSymbolIds").isArray()) {
       std::vector<long long> ids;
       for (const auto& e : v.get("quoteSymbolIds").asArray()) {
@@ -1466,6 +1470,7 @@ int main(int argc, char** argv) {
         if (id > 0) ids.push_back(id);
       }
       std::lock_guard<std::mutex> lk(vpoMtx);
+      tickUniverse.apply(ids, pushedTickIds, spotFeed ? spotFeed->subscribedSymbols() : std::vector<long long>{});
       if (spotFeed && !ids.empty()) spotFeed->ensureSymbols(ids);
     }
     const GuardSnapshot g = engine.guard().snapshot();
