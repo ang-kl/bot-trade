@@ -299,6 +299,35 @@ test('wiring pin: ONE sidecarQuotes call per side per tick (the whole table); an
   assert.deepEqual(d3.calls.ws, [3])
 })
 
+test('R3-1a: the feed account IS the selected account and its own map (built later) differs from the global map — the own map is the space, the global map is no fallback', async () => {
+  const db = mkDb()
+  setState(db, accountSymbolMapKey('111'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 5 } }))
+  const g = { EURUSD: 1, GBPUSD: 2 }
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '111' }, g, '111', new Map(), '111'), 5, 'the own map wins over the global map for the same account')
+  assert.equal(sidecarSymbolIdFor(db, { symbol: 'GBPUSD', account_id: '111' }, g, '111', new Map(), '111'), null, 'the own map lacks it → no global fallback → broker')
+  // end to end: a table keyed at the own-map id prices; one keyed at the global id is missing → broker
+  addPos(db, 'EURUSD', '111')
+  const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: t, count: 1, quotes: [fresh(t, 5)] }) })
+  assert.deepEqual((await runFastMonitor(db, CREDS, d)).quotes, { fromSidecar: 1, fromBroker: 0, stale: 0 })
+  assert.deepEqual(d.calls.ws, [])
+  const db2 = mkDb()
+  setState(db2, accountSymbolMapKey('111'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 5 } }))
+  addPos(db2, 'EURUSD', '111')
+  const d2 = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: t, count: 1, quotes: [fresh(t, 1)] }) })
+  assert.deepEqual((await runFastMonitor(db2, CREDS, d2)).quotes, { fromSidecar: 0, fromBroker: 1, stale: 0 }, 'id 1 in the table is not id 5 in the own map')
+})
+
+test('R3-4: a side holding ONLY external positions is not pulled at all', async () => {
+  const db = mkDb()
+  addPos(db, 'EURUSD', '111', { source: 'external' })
+  const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', count: 1, quotes: [fresh(t, 1)] }) })
+  const out = await runFastMonitor(db, CREDS, d)
+  assert.equal(out.sidecarPulls, 0)
+  assert.deepEqual(d.calls.sidecar, [], 'nothing to price on the side → no round trip to its sidecar')
+  assert.deepEqual(d.calls.ws, [])
+  assert.equal(out.checked, 0)
+})
+
 test('R2-1c: the selected account switched to 333 while the demo feed stays on 111 — the lookup is keyed in 111\'s space', async () => {
   const db = mkDb()
   setState(db, 'ctrader_account_id', '333')

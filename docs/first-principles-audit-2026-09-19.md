@@ -820,3 +820,11 @@ after deploy, recorded in §L of this file as it happens.
   tick.quoteOnly` is the excluded count. THE RECORDED SET IS UNCHANGED BY
   THIS PR. The wiring pin's external position is a symbol no other
   position carries.
+  CHECKER ROUND 3 (19-09-2026 13:25 SGT, fourth commit, "safe to merge"):
+  a side holding only external positions is not pulled (`R3-4`, so the
+  external skip in the sides loop has an observable effect); the feed
+  account's OWN map wins over the global map for the same account and
+  the global map is no fallback (`R3-1a`); on a `/connect` feed rebuild
+  the quotes-only exclusion drops every id in the new feed's initial VPO +
+  trail subscription (`QuoteOnlyGate::rebuilt`), so a formerly quotes-only
+  symbol that is now a VPO/trail symbol is recorded again.

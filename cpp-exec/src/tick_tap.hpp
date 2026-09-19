@@ -57,6 +57,14 @@ public:
       if (!subscribedForElse) quoteOnly_.insert(id);
     }
   }
+  /** A /connect feed REBUILD: the new feed's initial subscription is what
+   *  VPO and the trail asked for, so any id in it that was quotes-only is
+   *  recorded again (it is now a VPO/trail symbol); quotes-only ids not in
+   *  it stay excluded until the keeper's next push drops or re-adds them. */
+  void rebuilt(const std::vector<long long>& initialSubscription) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    for (long long id : initialSubscription) quoteOnly_.erase(id);
+  }
   bool admits(long long symbolId) const {
     std::lock_guard<std::mutex> lk(mtx_);
     return quoteOnly_.count(symbolId) == 0;

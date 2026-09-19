@@ -7,7 +7,9 @@
 //  - a `quoteSymbolIds` symbol produces no recorder event and no dispatch;
 //  - a symbol in BOTH lists is recorded; a later push naming a quotes-only
 //    symbol in tickSymbolIds promotes it; a quotes-only symbol stays excluded
-//    across pushes although it is now subscribed.
+//    across pushes although it is now subscribed;
+//  - a /connect feed rebuild whose initial (VPO + trail) subscription carries
+//    a formerly quotes-only id records it again.
 // The workers run their own threads, hence TSAN_TESTS.
 #include <atomic>
 #include <cassert>
@@ -96,6 +98,16 @@ static void test_only_the_quotes_only_symbols_are_excluded() {
   fire(5, false);
   fire(77, true);
   std::puts("  a push without tickSymbolIds excludes only the new quotes-only ids");
+
+  // a /connect feed REBUILD whose initial subscription (VPO + trail) now
+  // carries 5: it is recorded again; a quotes-only id not in it stays out
+  gate.apply({77, 5, 6}, {}, {41, 77, 42, 99});
+  assert(gate.quoteOnlyCount() == 2);        // 5 and 6
+  gate.rebuilt({41, 5});
+  assert(gate.quoteOnlyCount() == 1);        // 6 only
+  fire(5, true);
+  fire(6, false);
+  std::puts("  feed rebuild: a quotes-only id in the new feed's initial subscription is recorded again");
 
   // no gate at all: everything passes
   SpotRawTap ungated = makeRecorderTap(&rec, nullptr, nullptr);

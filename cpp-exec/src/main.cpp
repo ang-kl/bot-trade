@@ -1085,6 +1085,9 @@ int main(int argc, char** argv) {
         spotFeed->setRawTap(tick::makeRecorderTap(rec, tickWorkers.get(), &tickUniverse));
       }
       if (trailPtr) spotFeed->ensureSymbols(trailEngine.symbolIds());
+      // A rebuilt feed starts from the VPO + trail subscription: a formerly
+      // quotes-only id that is now in it is recorded again (tick_tap.hpp).
+      tickUniverse.rebuilt(spotFeed->subscribedSymbols());
       SpotFeed* feedPtr = spotFeed.get();
       spotFeedThread = std::thread([feedPtr] { feedPtr->runLoop(); });
       liveFeedHost = useHost;
