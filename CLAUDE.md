@@ -648,6 +648,17 @@ Measurement history — each line is a real run of the script, not a claim:
   lines since, and the next stamped reply re-counts from the transcript
   before it stamps (the 09-11 rule). A later re-measure that reads below
   this line is missing these, not correcting them.
+- 2026-09-18 23:54 UTC, **same remote container, PARTIAL corpus**: the
+  "completed?" answer was `№ 8,019` (07:00 SGT 19-09) and the "how are we
+  today" answer **`№ 8,041`** (07:38 SGT) by count — twenty-one unstamped
+  status lines between them (Wave 3's checker round, #960 merged and read
+  back, Wave 4a's facts, build, checker round, #961 opened). Seven unstamped
+  lines followed `№ 8,041` by this ledger (#961 merged and read back, the
+  Wave 4b and Wave 5 facts, the three makers launched, Wave 6's docs), so
+  the next stamped reply is **`№ 8,049`** plus any unstamped line made
+  after this ledger. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting
+  them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
