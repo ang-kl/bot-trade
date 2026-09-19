@@ -16,6 +16,7 @@ import { randomInt } from 'node:crypto';
 import { llmProviderInfo } from './lib/llm-provider.js';
 import { tierTable } from './lib/model-router.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
+import { inflightSummary } from './lib/inflight.js';
 import { publicPipelineView } from './services/decision-audit.js';
 import { readRecentErrors } from './services/error-log.js';
 import ctraderOauthRouter from './routes/ctrader-oauth.js';
@@ -999,6 +1000,22 @@ app.get('/health', (req, res) => {
       try { return JSON.parse(getState(db, 'loop_cpu_profile_json') || 'null') } catch { return null }
     })(),
     watchdogMinutes: Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12),
+    // Wave 5 (§K·15): the broker/sidecar calls open RIGHT NOW, oldest first
+    // — the call a hung phase is waiting on, while the process is still alive
+    // to say so. `oldest` is null when nothing is open.
+    inflight: inflightSummary(),
+    // Wave 5 (§K·15): the fast monitor's own cadence, from its pass record.
+    // skipShare10m is the share of ticks skipped because the previous pass
+    // was still running (the goal table's monitor_cadence row reads the same
+    // record); busyShare10m is the share of the window spent inside a pass.
+    fastMonitor: (() => {
+      try {
+        const rec = JSON.parse(getState(db, 'fast_monitor_pass_json') || 'null')
+        if (!rec?.tick) return null
+        const t = rec.tick
+        return { everyMs: t.everyMs ?? null, lastMs: t.lastMs ?? null, max10mMs: t.max10mMs ?? null, skippedTicks: t.skippedTicks ?? null, skipShare10m: t.skipShare10m ?? null, busyShare10m: t.busyShare10m ?? null, at: rec.at ?? null }
+      } catch { return null }
+    })(),
     // Broker pacing (incident 2026-07-28): historical requests (trendbars,
     // deals) are capped at 5/s by cTrader and we were sending 20-40/s. A
     // non-zero `queued` here means work is waiting on the limiter — the

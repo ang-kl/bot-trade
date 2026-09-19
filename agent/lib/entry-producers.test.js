@@ -74,8 +74,10 @@ test('the shape of every entry, and the P2 work list', () => {
   }
   // Wave 1 (19-09-2026): burn_in_probe and vpo_cpp_direct are retired — listed for
   // the record, never scheduled, excluded from the mode-epoch fence's roster.
-  assert.equal(automaticProducers().length, 6)
-  assert.deepEqual(retiredProducers().map(p => p.id), ['burn_in_probe', 'vpo_cpp_direct'])
+  // Wave 5 (19-09-2026, §K·15): pending_fib_orders joins them — fib_618_fade
+  // is OFF everywhere, so the loop no longer schedules the pending phase.
+  assert.equal(automaticProducers().length, 5)
+  assert.deepEqual(retiredProducers().map(p => p.id), ['pending_fib_orders', 'burn_in_probe', 'vpo_cpp_direct'])
   assert.deepEqual(automaticProducers().filter(p => p.basis === 'tick').map(p => p.id), ['tick_momentum'], 'P6b: the one tick-basis producer')
   assert.deepEqual(producersOutsideExecEngine().map(p => p.id), ['vpo_cpp_direct', 'tick_momentum'], 'the two in-process sidecar paths the Node chokepoint does not cover (both fenced by the permit at the send boundary)')
   const v = producerInventoryView()

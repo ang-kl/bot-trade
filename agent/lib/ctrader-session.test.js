@@ -262,3 +262,97 @@ test('with the flag OFF, wsRun does not touch the pool at all', async () => {
     _resetPool()
   }
 })
+
+
+// ---------------------------------------------------------------------------
+// Wave 5 §K·15, checker BLOCKER (19-09-2026): the queued-call bound must never
+// let one wsPlaceOrder put two NEW_ORDER_REQ on the wire.
+// ---------------------------------------------------------------------------
+import { _SessionForTests } from './ctrader-session.js'
+import { isAmbiguousSubmitError } from './ctrader-ws.js'
+import { inflightSummary, _resetInflightForTests } from './inflight.js'
+
+const ORDER = [{ send: { payloadType: PT.NEW_ORDER_REQ, payload: { ctidTraderAccountId: 111, symbolId: 1, label: 'ORDER-B' } }, expect: PT.EXECUTION_EVENT }]
+const withQueueBudget = async (ms, fn) => {
+  const prev = process.env.CTRADER_QUEUE_BUDGET_MS
+  process.env.CTRADER_QUEUE_BUDGET_MS = String(ms)
+  const keepAlive = setTimeout(() => {}, 5_000)
+  try { return await fn() } finally {
+    clearTimeout(keepAlive)
+    if (prev == null) delete process.env.CTRADER_QUEUE_BUDGET_MS; else process.env.CTRADER_QUEUE_BUDGET_MS = prev
+  }
+}
+
+test('CANCEL BEFORE SEND: a queued order that outlives its budget is DROPPED, never sent late — one wsPlaceOrder-style retry loop puts exactly ONE NEW_ORDER_REQ through runNow, the abandoned attempt zero', async () => {
+  _resetInflightForTests()
+  await withQueueBudget(30, async () => {
+    const s = new _SessionForTests('k', { host: 'demo.example.com', appAuth: APP, accountAuth: ACC, connect: () => { throw new Error('no socket') }, log: () => {} })
+    let releaseChain
+    s.chain = new Promise(r => { releaseChain = r })       // the socket is busy with an earlier request
+    const reached = []
+    s.runNow = async (steps) => { reached.push(steps[steps.length - 1].send.payloadType); return { ok: true } }
+    // wsPlaceOrder's loop: withRetry(fn, 2, …, isAmbiguousSubmitError) retries
+    // only failures the classifier calls pre-submit. Mirrored here without
+    // its 2 s/4 s backoff.
+    const errors = []
+    let result = null
+    for (let attempt = 0; attempt <= 2 && !result; attempt++) {
+      try { result = await s.run(ORDER, 20, false, async () => 0, () => false) } catch (err) {
+        errors.push(err)
+        if (isAmbiguousSubmitError(err)) throw err
+        if (attempt === 0) {
+          assert.equal(reached.length, 0, 'the abandoned attempt never reached runNow')
+          assert.equal(inflightSummary().count, 0, 'the abandoned call is released from the registry')
+          releaseChain()                                   // the earlier request finishes now
+          await new Promise(r => setImmediate(r))
+        }
+      }
+    }
+    assert.equal(errors.length, 1, 'one queued_timeout, then the retry went through')
+    assert.match(errors[0].message, /queued_timeout/)
+    assert.match(errors[0].message, /dropped unsent: it never reached the broker/)
+    assert.equal(isAmbiguousSubmitError(errors[0]), false, 'never sent → not ambiguous → the retry is the RIGHT call')
+    assert.deepEqual(reached, [PT.NEW_ORDER_REQ], 'exactly ONE NEW_ORDER_REQ ever reached runNow')
+    assert.deepEqual(result, { ok: true })
+    assert.equal(inflightSummary().count, 0)
+  })
+  _resetInflightForTests()
+})
+
+test('ONCE STARTED the outer deadline never fires: the per-step timer owns the call, its error carries the numeric marker isAmbiguousSubmitError reads, exactly one NEW_ORDER_REQ hits the wire, and the registry holds the call until it truly ends', async () => {
+  _resetPool()
+  _resetInflightForTests()
+  const prev = process.env.CTRADER_WS_POOL
+  process.env.CTRADER_WS_POOL = '1'
+  try {
+    await withQueueBudget(10, async () => {
+      // Per-step 60 ms, queue budget 10 ms: the deadline (70 ms) lands AFTER
+      // the request has started and must be a no-op; the per-step timeout at
+      // 60 ms is what rejects.
+      const d = deps((msg) => { if (msg.payloadType === PT.NEW_ORDER_REQ) { /* never answered */ } })
+      const p = run(ORDER, d, 60)
+      await new Promise(r => setTimeout(r, 20))
+      assert.equal(inflightSummary().count, 1, 'registered while in flight')
+      const err = await p.then(() => null, e => e)
+      assert.ok(err, 'rejected')
+      assert.match(err.message, /after sending 2106/, 'the per-step timeout message, with the numeric marker')
+      assert.ok(!/queued_timeout/.test(err.message), 'the outer deadline did not fire on a started call')
+      assert.equal(isAmbiguousSubmitError(err), true, 'a sent order that timed out is AMBIGUOUS — no resubmit')
+      assert.equal(FakeWs.last.sent.filter(m => m.payloadType === PT.NEW_ORDER_REQ).length, 1, 'exactly one NEW_ORDER_REQ on the wire')
+      assert.equal(inflightSummary().count, 0, 'released when the call truly ended')
+    })
+  } finally {
+    if (prev == null) delete process.env.CTRADER_WS_POOL; else process.env.CTRADER_WS_POOL = prev
+    _resetPool(); _resetInflightForTests()
+  }
+})
+
+test('a pooled call is registered ONCE: run() with registered:true does not add a session-level entry', async () => {
+  _resetInflightForTests()
+  const s = new _SessionForTests('k', { host: 'h', appAuth: APP, accountAuth: ACC, connect: () => { throw new Error('no socket') }, log: () => {} })
+  s.runNow = async () => { assert.equal(inflightSummary().count, 0, 'wsRun holds the only entry'); return 1 }
+  assert.equal(await s.run(RECONCILE, 50, false, async () => 0, () => false, { registered: true }), 1)
+  s.runNow = async () => { assert.equal(inflightSummary().count, 1, 'a direct session call registers itself'); return 2 }
+  assert.equal(await s.run(RECONCILE, 50, false, async () => 0, () => false), 2)
+  assert.equal(inflightSummary().count, 0)
+})

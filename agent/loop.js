@@ -26,6 +26,8 @@ import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from '.
 import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
 import { getCtraderCreds, getSymbolMap, attachEntryFence } from './lib/ctrader-creds.js'
 import { managePendingOrders } from './services/pending-orders.js'
+import { isProducerRetired } from './lib/entry-producers.js'
+import { configureInflight, inflightSummary, describeCall, maybeStamp as maybeStampInflight } from './lib/inflight.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
@@ -98,6 +100,11 @@ let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
 let pendingPhaseInFlight = false      // a budget-abandoned pending phase still executing detached
+// Wave 5 (§K·15): the pending-order producer is retired in the inventory
+// (lib/entry-producers.js) — fib_618_fade is OFF on every account, and the
+// phase logged `Pending orders skipped: fib_618_fade not trade-armed` every
+// cycle. Read once; the phase below is not scheduled and says so at boot.
+const PENDING_PRODUCER_RETIRED = isProducerRetired('pending_fib_orders')
 
 // Sub-phase time budgets (incident follow-up, 2026-07-28: the loop re-hung
 // AFTER the pending-phase budget shipped, and /health showed "pending
@@ -3777,6 +3784,20 @@ async function runLoop(db) {
               await hbeat(db, 'equity_snapshot', !(snap.swept > 0 && snap.written === 0), snap.swept > 0 && snap.written === 0 ? `0/${snap.swept} written` : null)
             }
           } catch (err) { await hbeat(db, 'equity_snapshot', false, err?.message) }
+          // Wave 5 (first-principles audit 19-09-2026 §K item 16): the DAILY
+          // REPORT to Telegram, on the same 24 h persisted cursor shape
+          // (daily_report_last_at, stamped before the work). Reads the DB
+          // only — the goal table, the momentum week, the equity curve, the
+          // family edge, the veto rate, arming changes, open positions — and
+          // posts through the outbox so quiet hours apply.
+          try {
+            const { dailyReportDue, postDailyReport } = await import('./services/daily-report.js')
+            if (dailyReportDue(db)) {
+              const dr = await postDailyReport(db)
+              log(`Daily report: ${dr.ok ? `${dr.chars} chars, ${dr.delivery}${dr.truncated ? ', truncated' : ''}` : `FAILED — ${dr.error}`}`)
+              await hbeat(db, 'daily_report', dr.ok, dr.ok ? null : dr.error)
+            }
+          } catch (err) { await hbeat(db, 'daily_report', false, err?.message) }
         } else {
           // No credentials — the audit cannot run, and saying nothing would
           // read on screen as "checked, all clear". ¶D·2.
@@ -4481,7 +4502,10 @@ async function runLoop(db) {
       // symbol×timeframe. Inert unless the owner enabled the flag; a failure
       // here must never take down the scan/monitor loop.
       // ---------------------------------------------------------------------
-      try {
+      // Wave 5 (§K·15): a retired producer's phase is not run and not
+      // beaten — heartbeat.js carries the controller as retired so the panel
+      // says so instead of reading it as stalled.
+      if (!PENDING_PRODUCER_RETIRED) try {
         phase('pending orders')
         // TIME BUDGET + NO-OVERLAP (owner-approved 2026-07-27, root-cause fix
         // for the day's hang→watchdog-restart cycle: /health's loopPhase
@@ -6032,6 +6056,19 @@ async function runLoop(db) {
 // never watchdog-restarted (a fresh process would zero consecutiveErrors and
 // defeat the breaker). Set LOOP_WATCHDOG_MINUTES=0 to disable.
 // ---------------------------------------------------------------------------
+/**
+ * The watchdog's line, as a pure function so a test can pin that it names
+ * the in-flight call (Wave 5, §K·15). `inflight` is the registry's summary
+ * ({ oldest, count }) or null.
+ */
+export function watchdogLine(detail, inflight) {
+  const oldest = inflight?.oldest || null
+  const inflightStr = oldest
+    ? `in-flight: ${describeCall(oldest)}${inflight.count > 1 ? ` (+${inflight.count - 1} more)` : ''}`
+    : 'in-flight: none registered'
+  return `[watchdog] LOOP HUNG — no cycle activity for ${detail.quietMin}m (limit ${detail.limitMin}m), stuck in phase "${detail.phase}" — ${inflightStr} (loop #${detail.loopCount}, started ${detail.startedAt}). Exiting for a Railway auto-restart.`
+}
+
 function startLoopWatchdog(db) {
   const minutes = Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12)
   if (!(minutes > 0)) { log('Loop watchdog DISABLED (LOOP_WATCHDOG_MINUTES=0)'); return }
@@ -6046,8 +6083,16 @@ function startLoopWatchdog(db) {
       if (getState(db, 'circuit_breaker_tripped_at')) return
       const phase = getState(db, 'loop_phase') || 'unknown'
       const startedAt = getState(db, 'loop_started_at') || 'unknown'
-      const detail = { phase, loopCount, loopRunning, startedAt, quietMin: Math.round(quietMs / 60_000), limitMin: limit / 60_000 }
-      console.error(`[watchdog] LOOP HUNG — no cycle activity for ${detail.quietMin}m (limit ${detail.limitMin}m), stuck in phase "${phase}" (loop #${loopCount}, started ${startedAt}). Exiting for a Railway auto-restart.`)
+      // Wave 5 (§K·15): the stuck CALL, not just the phase. Read from the
+      // in-memory registry (same process), stamped once more so the record
+      // outlives the exit below.
+      const inflight = inflightSummary()
+      maybeStampInflight(Date.now(), true)
+      const detail = {
+        phase, loopCount, loopRunning, startedAt, quietMin: Math.round(quietMs / 60_000), limitMin: limit / 60_000,
+        inflight: inflight.oldest ? describeCall(inflight.oldest) : null, inflightCount: inflight.count,
+      }
+      console.error(watchdogLine(detail, inflight))
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
           .run('WATCHDOG_EXIT', '/loop', JSON.stringify(detail))
@@ -6071,7 +6116,12 @@ export function startLoop(db) {
     }
   }
   log('Agent loop starting...')
+  if (PENDING_PRODUCER_RETIRED) log('[boot] pending orders: producer retired — phase not scheduled')
   setTimeout(() => runLoop(db), 5000) // 5s delay on startup
+  // Wave 5 (§K·15): the in-flight call registry stamps its oldest call to
+  // loop_inflight_json from here on, so the watchdog's finding survives the
+  // restart it triggers.
+  configureInflight({ db, setState })
   startLoopWatchdog(db)
   // Fast position monitor — 30s ticker, volume-aware cadence per open
   // position (owner: active positions are watched in ~1 minute, not 5).

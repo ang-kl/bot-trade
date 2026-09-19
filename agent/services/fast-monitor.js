@@ -430,6 +430,28 @@ export function bandOverran(bandMs, everyMs) {
   return Number(bandMs) > Number(everyMs)
 }
 
+/** The tick path re-writes the pass record at most this often (Wave 5, §K·15). */
+export const TICK_RECORD_MIN_MS = 5_000
+
+/**
+ * The tick's two shares over the window (Wave 5, §K·15), pure:
+ *   skipShare — ticks skipped because the previous pass was still running,
+ *               over the ticks the window EXPECTED (window / everyMs);
+ *   busyShare — Σ tick ms over the window, i.e. how much of it a pass owned.
+ * `windowMs` is the measured window: the full 10 minutes once the monitor
+ * has been up that long, the uptime before that — a monitor two minutes old
+ * is judged on two minutes, not on eight it never ran. Both are 0..1 with
+ * three decimals; null when the window is empty.
+ */
+export function tickShares({ sampleMs = [], skipped = 0, windowMs, everyMs }) {
+  const w = Number(windowMs), e = Number(everyMs)
+  if (!(w > 0) || !(e > 0)) return { skipShare: null, busyShare: null, expectedTicks: null }
+  const expectedTicks = Math.max(1, Math.round(w / e))
+  const busy = sampleMs.reduce((a, b) => a + (Number(b) || 0), 0)
+  const r3 = (x) => Math.round(Math.min(1, Math.max(0, x)) * 1000) / 1000
+  return { skipShare: r3(skipped / expectedTicks), busyShare: r3(busy / w), expectedTicks }
+}
+
 /**
  * The 60-SECOND PROTECTION BAND — everything that used to sit inside the
  * 3-second tick behind `due('pnl_watch', 60)`: P&L watch, the per-position
@@ -679,26 +701,51 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   const bandMs = deps.bandMs ?? Math.max(5_000, Number(process.env.PROTECTION_BAND_MS) || 60_000)
   const tickSamples = []
   const bandSamples = []
+  const tickSkips = []       // { at } per skipped tick, kept for the window
   let tickRunning = false
   let skipped = 0
   let bandRunning = false
   let bandSkipped = 0
   let lastTick = null
+  let lastBand = { ms: null, overran: false }
+  let lastTickRecordAt = 0
+  const startedMs = clock()
 
-  const writeRecord = (nowMs, band) => {
+  // Written by the band ticker after every band pass, and — Wave 5 (§K·15) —
+  // by the TICK path too, throttled to TICK_RECORD_MIN_MS: until then the
+  // record only existed once the band had run, and the tick's skip count
+  // reached the log throttled (skipped === 1 || skipped % 20 === 0), so the
+  // printed count under-reported and nothing served the share. The band's
+  // last figures are kept so a tick-written record does not blank them.
+  const writeRecord = (nowMs, band = lastBand) => {
     try {
+      lastBand = band
       const tk = rollingMax(tickSamples, nowMs)
       const bd = rollingMax(bandSamples, nowMs)
       tickSamples.splice(0, tickSamples.length, ...tk.kept)
       bandSamples.splice(0, bandSamples.length, ...bd.kept)
+      const skipsKept = tickSkips.filter(s => nowMs - s.at <= RECORD_WINDOW_MS)
+      tickSkips.splice(0, tickSkips.length, ...skipsKept)
+      const shares = tickShares({
+        sampleMs: tk.kept.map(s => s.ms), skipped: skipsKept.length,
+        windowMs: Math.min(RECORD_WINDOW_MS, Math.max(tickMs, nowMs - startedMs)), everyMs: tickMs,
+      })
       setState(db, PASS_RECORD_KEY, JSON.stringify({
         at: new Date(nowMs).toISOString(),
-        tick: { everyMs: tickMs, lastMs: lastTick, max10mMs: tk.max, skippedTicks: skipped },
+        tick: {
+          everyMs: tickMs, lastMs: lastTick, max10mMs: tk.max, skippedTicks: skipped,
+          skipped10m: skipsKept.length, skipShare10m: shares.skipShare, busyShare10m: shares.busyShare,
+        },
         band: { everyMs: bandMs, lastMs: band.ms, max10mMs: bd.max, overran: band.overran, skippedBands: bandSkipped },
       }))
     } catch (err) {
       console.error('[fast-monitor] pass record not written:', err.message)
     }
+  }
+  const writeTickRecord = (nowMs) => {
+    if (nowMs - lastTickRecordAt < TICK_RECORD_MIN_MS) return
+    lastTickRecordAt = nowMs
+    writeRecord(nowMs)
   }
 
   const runTick = deps.runTick ?? (async (creds) => {
@@ -730,6 +777,8 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   const t = setInterval(async () => {
     if (tickRunning) {
       skipped++
+      tickSkips.push({ at: clock() })
+      writeTickRecord(clock())
       // Still beat — a busy monitor is not a stalled one, and skipping the
       // heartbeat would trip the watchdog's stall alert on our own backlog.
       try {
@@ -752,6 +801,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       const ms = clock() - startedAt
       lastTick = ms
       tickSamples.push({ at: startedAt, ms })
+      writeTickRecord(clock())
       try {
         const hb = deps.heartbeat ?? await import('./heartbeat.js')
         hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null, detail: { ms, skipped } })

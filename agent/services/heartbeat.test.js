@@ -1635,3 +1635,40 @@ test('B7: a moved refresh stamp with the same token is not a rotation; a changed
     assert.notEqual(memo.cpp_exec, 'tok-B')
   } finally { console.warn = origWarn }
 })
+
+// ---------------------------------------------------------------------------
+// Wave 5 (first-principles audit 19-09-2026 §K item 15): a RETIRED controller
+// — pending_orders, whose producer fib_618_fade is OFF everywhere — is not
+// scheduled, so its silence is not a stall: the watchdog ignores it, the
+// panel labels it, the loop does not run or beat the phase and says so once
+// at boot.
+// ---------------------------------------------------------------------------
+test('retired controller: checkHeartbeats never stalls it, heartbeatView labels it, the goal table skips it, the loop guards the phase and logs once at boot', async () => {
+  const { readFileSync } = await import('node:fs')
+  const strip = (s) => s.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.match(CONTROLLERS.pending_orders.retired, /^2026-09-19 Wave 5/)
+  const db = initDB(':memory:')
+  // A last beat two days ago on a loop-tied, factor-3 controller would read
+  // stalled on any live controller.
+  beat(db, 'pending_orders', { ok: true, now: new Date('2026-09-17T00:00:00Z') })
+  const said = []
+  const events = checkHeartbeats(db, { now: new Date('2026-09-19T00:00:00Z'), notify: (t) => said.push(t), loopSec: 300, bootMs: Date.parse('2026-09-18T00:00:00Z') })
+  assert.ok(!events.some(e => e.name === 'pending_orders'), JSON.stringify(events))
+  assert.ok(!said.some(t => /Pending-order manager/.test(t)), said.join('\n'))
+  const row = heartbeatView(db, { now: new Date('2026-09-19T00:00:00Z'), loopSec: 300 }).find(v => v.name === 'pending_orders')
+  assert.equal(row.status, 'retired'); assert.equal(row.verdict, 'retired'); assert.equal(row.retired, true)
+  assert.match(row.note, /producer retired/); assert.equal(row.runs, 1)
+  // The goal table's controllers row does not count it.
+  const { goalTable } = await import('./goal-table.js')
+  const g = (await goalTable(db, { now: Date.parse('2026-09-19T00:00:00Z') })).goals.find(x => x.id === 'controllers_ok')
+  assert.ok(!/pending_orders/.test(g.note), g.note)
+  // The producer inventory and the loop agree.
+  const { isProducerRetired } = await import('../lib/entry-producers.js')
+  assert.equal(isProducerRetired('pending_fib_orders'), true)
+  assert.equal(isProducerRetired('scan_dispatch'), false)
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  assert.match(loop, /const PENDING_PRODUCER_RETIRED = isProducerRetired\('pending_fib_orders'\)/)
+  assert.match(loop, /if \(!PENDING_PRODUCER_RETIRED\) try \{\s*phase\('pending orders'\)/)
+  assert.match(loop, /if \(PENDING_PRODUCER_RETIRED\) log\('\[boot\] pending orders: producer retired — phase not scheduled'\)/)
+  assert.equal((loop.match(/producer retired — phase not scheduled/g) || []).length, 1, 'logged at boot only, not in the cycle')
+})

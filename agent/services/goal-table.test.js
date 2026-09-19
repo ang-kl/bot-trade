@@ -19,7 +19,7 @@ function byId(table) { return Object.fromEntries(table.goals.map(g => [g.id, g])
 test('an empty db reports every goal, none of them as a number it did not earn', async () => {
   const db = initDB(':memory:')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 19) // Wave 3: four family rows + the momentum checkpoint
+  assert.equal(t.goals.length, 20) // Wave 3: four family rows + the momentum checkpoint; Wave 5: monitor_cadence
   const g = byId(t)
   assert.equal(g.controllers_ok.verdict, 'not_measurable', 'no controller has beaten')
   assert.equal(g.pipeline_conversion.verdict, 'not_measurable', 'no decision audit on record')
@@ -31,7 +31,7 @@ test('an empty db reports every goal, none of them as a number it did not earn',
     assert.ok(['on_track', 'off_track', 'not_measurable'].includes(goal.verdict), `${goal.id} has a verdict`)
     assert.ok(goal.metric && goal.target !== undefined && goal.horizon !== undefined, `${goal.id} names metric/target/horizon`)
   }
-  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 19)
+  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 20)
 })
 
 test('controllers_ok: reads the heartbeat verdicts, names the offenders', async () => {
@@ -109,7 +109,7 @@ test('a reader that throws becomes a not_measurable row, not a missing table', a
   // Break one reader's input: an unparseable momentum config must not take the table down.
   setState(db, 'momentum_account_json', '{not json')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 19) // Wave 3: four family rows + the momentum checkpoint
+  assert.equal(t.goals.length, 20) // Wave 3: four family rows + the momentum checkpoint; Wave 5: monitor_cadence
   assert.ok(t.goals.every(g => g.verdict))
 })
 
@@ -278,4 +278,32 @@ test('Wave 3 (checker F2): a lossless family with enough closes is on_track, not
   const g = byId(await goalTable(db, { now: T0.getTime() }))
   assert.equal(g.family_edge_trend.verdict, 'on_track')
   assert.match(g.family_edge_trend.current, /PF ∞ \(no losses\)/)
+})
+
+// --- Wave 5 (first-principles audit 19-09-2026 §K item 15): monitor_cadence -
+test('monitor_cadence: not_measurable without a record or with a stale one; on/off track from tick.skipShare10m against fastMonitorSkipMaxPct', async () => {
+  const db = initDB(':memory:')
+  const now = Date.parse('2026-09-19T12:00:00Z')
+  assert.equal(DEFAULT_GOAL_TARGETS.fastMonitorSkipMaxPct, 10)
+  let row = byId(await goalTable(db, { now })).monitor_cadence
+  assert.equal(row.subsystem, 'fast monitor')
+  assert.equal(row.verdict, 'not_measurable'); assert.match(row.note, /absent/)
+  assert.equal(row.target, '≤ 10%')
+
+  setState(db, 'fast_monitor_pass_json', JSON.stringify({ at: new Date(now - 6 * 60_000).toISOString(), tick: { everyMs: 3000, skipShare10m: 0.02 } }))
+  row = byId(await goalTable(db, { now })).monitor_cadence
+  assert.equal(row.verdict, 'not_measurable'); assert.match(row.note, /6 min old/)
+
+  setState(db, 'fast_monitor_pass_json', JSON.stringify({ at: new Date(now - 60_000).toISOString(), tick: { everyMs: 3000, lastMs: 120, max10mMs: 900, skipped10m: 4, skipShare10m: 0.02, busyShare10m: 0.1 } }))
+  row = byId(await goalTable(db, { now })).monitor_cadence
+  assert.equal(row.verdict, 'on_track'); assert.equal(row.current, '2%'); assert.match(row.note, /4 skipped of ~200 expected/)
+
+  setState(db, 'fast_monitor_pass_json', JSON.stringify({ at: new Date(now - 60_000).toISOString(), tick: { everyMs: 3000, skipShare10m: 0.25 } }))
+  row = byId(await goalTable(db, { now })).monitor_cadence
+  assert.equal(row.verdict, 'off_track'); assert.equal(row.current, '25%')
+
+  // A record from before the share existed is not a number.
+  setState(db, 'fast_monitor_pass_json', JSON.stringify({ at: new Date(now).toISOString(), tick: { everyMs: 3000 } }))
+  row = byId(await goalTable(db, { now })).monitor_cadence
+  assert.equal(row.verdict, 'not_measurable'); assert.match(row.note, /predates/)
 })

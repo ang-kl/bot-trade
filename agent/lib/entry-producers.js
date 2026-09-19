@@ -47,6 +47,7 @@ export const ENTRY_PRODUCERS = Object.freeze([
     id: 'pending_fib_orders', family: 'automatic', basis: 'bar',
     file: 'agent/services/pending-orders.js', via: 'exec.placeOrder',
     trigger: 'resting limits at Fibonacci levels, including restored ones', admission: 'exec-engine',
+    retired: '2026-09-19 Wave 5 (first-principles audit §K·15): fib_618_fade is OFF on every account; the phase is not scheduled',
   },
   {
     id: 'closed_market_limits', family: 'automatic', basis: 'bar',
@@ -120,9 +121,14 @@ export function automaticProducers() {
   return ENTRY_PRODUCERS.filter(p => p.family === 'automatic' && !p.retired)
 }
 
-/** Producers retired by the first-principles audit (Wave 1): listed for the record, never scheduled. */
+/** Producers retired by the first-principles audit (Waves 1 and 5): listed for the record, never scheduled. */
 export function retiredProducers() {
   return ENTRY_PRODUCERS.filter(p => !!p.retired)
+}
+
+/** Is this producer retired? The loop asks before scheduling a phase (Wave 5: pending_fib_orders). */
+export function isProducerRetired(id) {
+  return ENTRY_PRODUCERS.some(p => p.id === id && !!p.retired)
 }
 
 /** Producers that bypass the Node chokepoint today — the P2 work list. */
