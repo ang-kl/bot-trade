@@ -2636,6 +2636,41 @@ export function reasonHead(reason) {
 }
 
 /**
+ * The newest gate verdict for a symbol, across BOTH records: the risk_events
+ * row (approval or per-proposal veto) and the gate_redirect decision_log row
+ * (a cycle-stable refusal). Whichever is newer wins, so a reader that used
+ * to take the newest risk_events row cannot report a stale approval as the
+ * verdict after a redirected refusal. Null when neither exists.
+ *
+ * @returns {{source:'risk_events'|'gate_redirect', approved:number, veto_reason:string|null, created_at:string}|null}
+ */
+export function latestGateVerdict(db, { symbol, accountId = null } = {}) {
+  const acctSql = accountId != null ? ' AND (account_id = ? OR account_id IS NULL)' : ''
+  const acctArgs = accountId != null ? [String(accountId)] : []
+  let ev = null, rd = null
+  try {
+    ev = db.prepare(
+      `SELECT approved, veto_reason, created_at FROM risk_events WHERE symbol = ?${acctSql} ORDER BY id DESC LIMIT 1`
+    ).get(symbol, ...acctArgs) || null
+  } catch { ev = null }
+  try {
+    rd = db.prepare(
+      `SELECT reason, detail_json, created_at FROM decision_log WHERE stage = ? AND symbol = ?${acctSql} ORDER BY id DESC LIMIT 1`
+    ).get(GATE_REDIRECT_STAGE, symbol, ...acctArgs) || null
+  } catch { rd = null }
+  const ms = (t) => Date.parse(String(t).replace(' ', 'T') + (/[zZ]|[+-]\d\d:\d\d$/.test(String(t)) ? '' : 'Z'))
+  const evMs = ev ? ms(ev.created_at) : -Infinity
+  const rdMs = rd ? ms(rd.created_at) : -Infinity
+  if (!ev && !rd) return null
+  if (rd && (!ev || rdMs >= evMs)) {
+    let full = null
+    try { full = JSON.parse(rd.detail_json || 'null')?.reason ?? null } catch { full = null }
+    return { source: GATE_REDIRECT_STAGE, approved: 0, veto_reason: full || rd.reason, created_at: rd.created_at }
+  }
+  return { source: 'risk_events', approved: Number(ev.approved), veto_reason: ev.veto_reason, created_at: ev.created_at }
+}
+
+/**
  * Persist a risk evaluation to the risk_events audit table.
  *
  * Returns the row id (a number) for an approval or a per-proposal veto. A
@@ -2660,7 +2695,19 @@ export function persistRiskEvent(db, proposal, result) {
         stage: GATE_REDIRECT_STAGE,
         decision: 'skip',
         reason: head,
-        detail: { reason: result.veto_reason, checks: result.checks || null, side: proposal.side ?? null },
+        detail: {
+          reason: result.veto_reason, checks: result.checks || null, side: proposal.side ?? null,
+          // The refusal ledger scores a redirected refusal for forgone R the
+          // same way it scores an evidence-gate shadow (gate-skips.js): the
+          // proposal's levels ride in detail in that shape.
+          proposal: {
+            symbol: proposal.symbol ?? null, side: proposal.side ?? null,
+            entry: proposal.entry ?? null, sl: proposal.sl ?? null, tp1: proposal.tp1 ?? null, tp2: proposal.tp2 ?? null,
+            requestedVolume: proposal.requestedVolume ?? null, strategy: proposal.strategy || null,
+            timeframe: proposal.timeframe ?? null, conviction: proposal.conviction ?? null,
+            source: proposal.source || null, accountId,
+          },
+        },
       })
       return { redirected: true, head }
     }

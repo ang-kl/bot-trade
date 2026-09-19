@@ -62,15 +62,19 @@ export function evidenceShadowRefusals(db) {
     rows = db.prepare(`
       SELECT account_id, symbol, strategy, reason, detail_json, created_at
         FROM decision_log
-       WHERE stage = 'evidence_gate' AND decision = 'skip'
+       WHERE stage IN ('evidence_gate', 'gate_redirect') AND decision = 'skip'
        ORDER BY account_id, symbol, strategy, created_at ASC, id ASC
     `).all()
   } catch { return [] }
   const byKey = new Map()
   let prevTuple = null, prev = null
   for (const r of rows) {
-    let p = null
-    try { p = JSON.parse(r.detail_json || 'null')?.proposal ?? null } catch { p = null }
+    let p = null, detail = null
+    try { detail = JSON.parse(r.detail_json || 'null'); p = detail?.proposal ?? null } catch { p = null }
+    // A gate_redirect row's `reason` column is the HEAD (the boundary's
+    // key); the full string the gate said is in detail.reason. Score under
+    // the full string so reasonKey groups it with the pre-boundary history.
+    const reason = detail?.reason || r.reason
     const proposal = { symbol: r.symbol, side: p?.side ?? null, strategy: r.strategy }
     const createdMs = Date.parse(String(r.created_at).replace(' ', 'T') + (/[zZ]$/.test(String(r.created_at)) ? '' : 'Z'))
     if (!Number.isFinite(createdMs)) continue
@@ -80,12 +84,12 @@ export function evidenceShadowRefusals(db) {
     prev = { opportunity_key: res.key, created_at: new Date(createdMs).toISOString() }
     let g = byKey.get(res.key)
     if (!g) {
-      g = { opportunity_key: res.key, symbol: r.symbol, side: proposal.side, account_id: r.account_id, first_at: r.created_at, last_at: r.created_at, refusals: 0, reason: r.reason, proposal_json: p ? JSON.stringify(p) : null }
+      g = { opportunity_key: res.key, symbol: r.symbol, side: proposal.side, account_id: r.account_id, first_at: r.created_at, last_at: r.created_at, refusals: 0, reason, proposal_json: p ? JSON.stringify(p) : null }
       byKey.set(res.key, g)
     }
     g.refusals += 1
     if (r.created_at < g.first_at) g.first_at = r.created_at
-    if (r.created_at > g.last_at) { g.last_at = r.created_at; g.reason = r.reason }
+    if (r.created_at > g.last_at) { g.last_at = r.created_at; g.reason = reason }
     if (!g.proposal_json && p) g.proposal_json = JSON.stringify(p)
   }
   if (!byKey.size) return []
@@ -93,12 +97,21 @@ export function evidenceShadowRefusals(db) {
   return [...byKey.values()].filter(g => !scored.has(g.opportunity_key))
 }
 
+/**
+ * The pre-boundary margin pool's per-cycle rows (symbol 'PORTFOLIO', no
+ * levels) were never a refused setup: they clogged the ledger as
+ * `unscorable` — ~12k keys, 24 per cycle, measured 19-09-2026. Excluded from
+ * both reads so nothing is written for them.
+ */
+const LEGACY_PORTFOLIO_SYMBOL = 'PORTFOLIO'
+
 /** Opportunities refused and not yet scored, both sources. */
 function waitingCount(db) {
   const n = db.prepare(`
     SELECT COUNT(DISTINCT opportunity_key) AS n FROM risk_events
-     WHERE approved = 0 AND opportunity_key IS NOT NULL AND opportunity_key NOT IN (SELECT opportunity_key FROM refusal_scores)
-  `).get().n
+     WHERE approved = 0 AND opportunity_key IS NOT NULL AND COALESCE(symbol, '') <> ?
+       AND opportunity_key NOT IN (SELECT opportunity_key FROM refusal_scores)
+  `).get(LEGACY_PORTFOLIO_SYMBOL).n
   return n + evidenceShadowRefusals(db).length
 }
 
@@ -109,11 +122,11 @@ export function pendingRefusals(db, { nowMs = Date.now(), limit = 50 } = {}) {
            SUM(COALESCE(repeat_count, 1)) AS refusals,
            MAX(veto_reason) AS reason, MAX(proposal_json) AS proposal_json
       FROM risk_events
-     WHERE approved = 0 AND opportunity_key IS NOT NULL
+     WHERE approved = 0 AND opportunity_key IS NOT NULL AND COALESCE(symbol, '') <> ?
        AND opportunity_key NOT IN (SELECT opportunity_key FROM refusal_scores)
      GROUP BY opportunity_key
      ORDER BY first_at ASC LIMIT ?
-  `).all(limit * 4)
+  `).all(LEGACY_PORTFOLIO_SYMBOL, limit * 4)
     .concat(evidenceShadowRefusals(db))
     .sort((a, b) => String(a.first_at).replace('T', ' ').localeCompare(String(b.first_at).replace('T', ' ')))
   const out = []

@@ -47,19 +47,21 @@ export function journalMarginPoolState(db, pool, { loopId = null } = {}) {
     if (was === undefined && !now) { lastExhausted.set(id, now); continue }
     lastExhausted.set(id, now)
     const st = p.status || {}
-    const used = Number.isFinite(Number(st.usedMargin)) ? Number(st.usedMargin).toFixed(2) : 'na'
-    const cap = Number.isFinite(Number(st.cap)) ? Number(st.cap).toFixed(2) : 'na'
+    const usedN = Number.isFinite(Number(st.usedMargin)) ? Number(Number(st.usedMargin).toFixed(2)) : null
+    const capN = Number.isFinite(Number(st.cap)) ? Number(Number(st.cap).toFixed(2)) : null
+    const used = usedN == null ? 'na' : usedN.toFixed(2)
+    const cap = capN == null ? 'na' : capN.toFixed(2)
     const source = st.source ?? 'na'
     const row = now
       ? {
         accountId: id, symbol: null, stage: MARGIN_POOL_STAGE, decision: 'skip', loopId,
         reason: `portfolio_margin_exhausted used=${used} cap=${cap} source=${source}`,
-        detail: { margin_used_usd: Number(used) || null, margin_cap_usd: Number(cap) || null, margin_source: source, account_id: id, transition: 'exhausted' },
+        detail: { margin_used_usd: usedN, margin_cap_usd: capN, margin_source: source, account_id: id, transition: 'exhausted' },
       }
       : {
         accountId: id, symbol: null, stage: MARGIN_POOL_STAGE, decision: 'proceed', loopId,
         reason: `portfolio_margin_recovered used=${used} cap=${cap} source=${source}`,
-        detail: { margin_used_usd: Number(used) || null, margin_cap_usd: Number(cap) || null, margin_source: source, account_id: id, transition: 'recovered' },
+        detail: { margin_used_usd: usedN, margin_cap_usd: capN, margin_source: source, account_id: id, transition: 'recovered' },
       }
     try { recordDecision(db, row) } catch { /* journaling is best-effort */ }
     written.push(row)

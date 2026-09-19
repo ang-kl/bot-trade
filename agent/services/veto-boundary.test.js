@@ -14,8 +14,9 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
   evaluateTrade, persistRiskEvent, DEFAULT_RISK_CONFIG,
-  CYCLE_STABLE_REASONS, GATE_REDIRECT_STAGE, reasonHead,
+  CYCLE_STABLE_REASONS, GATE_REDIRECT_STAGE, reasonHead, latestGateVerdict,
 } from './risk.js'
+import { pendingRefusals, scoreRefusedOpportunities, refusalCostReport } from './refusal-ledger.js'
 import { journalMarginPoolState, resetMarginPoolJournal, MARGIN_POOL_STAGE } from './margin-pool-journal.js'
 import { auditDecisions, LEGACY_PORTFOLIO_SYMBOL } from './decision-audit.js'
 import { vetoBreakdown } from './veto-breakdown.js'
@@ -329,4 +330,71 @@ test('(d) the list is exactly the guards the fixtures above trip, plus the margi
   const fromGate = [...tripped].sort()
   const expected = CYCLE_STABLE_REASONS.filter(h => h !== 'portfolio_margin_exhausted').sort()
   assert.deepEqual(fromGate, expected, 'every cycle-stable head evaluateTrade can emit has a fixture that proves the redirect')
+})
+
+// ---- checker round (19-09-2026): the ledger, the validation-fill read, PORTFOLIO clog
+
+test('ledger: a redirected max_positions refusal with full levels is pending after its horizon and scored for forgone R', async () => {
+  const db = fresh()
+  // Three loops re-proposing the same setup; the pre-filter is not in this
+  // path (pending-orders, closed-market limits and the manual routes call the
+  // gate directly), so the gate's redirect is the only record.
+  for (let i = 0; i < 3; i++) persistRiskEvent(db, proposalFor(A), { approved: false, veto_reason: 'max_positions=5/5', checks: {} })
+  assert.equal(riskRows(db).length, 0)
+  const now = Date.now()
+  assert.equal(pendingRefusals(db, { nowMs: now }).filter(p => !p.unscorable).length, 0, 'the 1h horizon (2 days) has not elapsed')
+  const far = now + 30 * 86_400_000
+  const pend = pendingRefusals(db, { nowMs: far })
+  assert.equal(pend.length, 1, 'three re-proposals are one opportunity')
+  assert.equal(pend[0].symbol, 'EURUSD')
+  assert.equal(pend[0].refusals, 3)
+  assert.equal(pend[0].reasonKey, 'max_positions=<n>/5', 'scored under the FULL reason, keyed like the pre-boundary history')
+  assert.equal(pend[0].unscorable, undefined, `levels carried: ${JSON.stringify(pend[0])}`)
+  assert.deepEqual([pend[0].entry, pend[0].sl, pend[0].tp], [1.1, 1.097, 1.1105])
+  // Bars after the refusal reach the target: +3.5R forgone.
+  const H = 3600_000
+  const fetchBars = async () => [[pend[0].firstMs + H, 1.1, 1.105, 1.099, 1.104, 0], [pend[0].firstMs + 2 * H, 1.104, 1.111, 1.103, 1.11, 0]]
+  const r = await scoreRefusedOpportunities(db, fetchBars, { nowMs: far, maxPerCycle: 10 })
+  assert.equal(r.scored, 1)
+  const row = db.prepare(`SELECT * FROM refusal_scores`).get()
+  assert.equal(row.outcome, 'target')
+  assert.equal(row.reason_key, 'max_positions=<n>/5')
+  assert.ok(row.r_reached > 3, `r_reached ${row.r_reached}`)
+})
+
+test('validation-fill read: after a redirected refusal the newest verdict is the refusal, not the older approval', () => {
+  const db = fresh()
+  const okId = persistRiskEvent(db, proposalFor(A, { symbol: 'XAUUSD' }), { approved: true, adjusted_volume: 0.1, checks: {} })
+  assert.equal(typeof okId, 'number')
+  // The raw read the route used to make: it returns the approval.
+  assert.equal(db.prepare(`SELECT approved FROM risk_events WHERE symbol = ? ORDER BY id DESC LIMIT 1`).get('XAUUSD').approved, 1)
+  // Make the redirect strictly newer than the approval's ISO stamp.
+  db.prepare(`UPDATE risk_events SET created_at = ? WHERE id = ?`).run(new Date(Date.now() - 60_000).toISOString(), okId)
+  persistRiskEvent(db, proposalFor(A, { symbol: 'XAUUSD' }), { approved: false, veto_reason: 'daily_loss_limit_hit pnl=-500.00 limit=400.00', checks: {} })
+  const v = latestGateVerdict(db, { symbol: 'XAUUSD', accountId: A })
+  assert.equal(v.source, GATE_REDIRECT_STAGE)
+  assert.equal(v.approved, 0)
+  assert.equal(v.veto_reason, 'daily_loss_limit_hit pnl=-500.00 limit=400.00', 'the full reason, not the head')
+  // A per-proposal veto later is a risk_events row and wins by recency.
+  db.prepare(`UPDATE decision_log SET created_at = datetime('now', '-30 seconds')`).run()
+  persistRiskEvent(db, proposalFor(A, { symbol: 'XAUUSD' }), { approved: false, veto_reason: 'bad_rr 1.20<3', checks: {} })
+  const v2 = latestGateVerdict(db, { symbol: 'XAUUSD', accountId: A })
+  assert.equal(v2.source, 'risk_events')
+  assert.equal(v2.veto_reason, 'bad_rr 1.20<3')
+  assert.equal(latestGateVerdict(db, { symbol: 'NOSUCH' }), null)
+})
+
+test('ledger: legacy PORTFOLIO rows are neither waiting nor scored; a real refusal still is', async () => {
+  const db = fresh()
+  const ins = db.prepare(`INSERT INTO risk_events (symbol, side, approved, veto_reason, account_id, created_at, opportunity_key, proposal_json)
+                          VALUES (?, '—', 0, 'portfolio_margin_exhausted used=1 cap=0 source=estimate', ?, ?, ?, ?)`)
+  for (let i = 0; i < 20; i++) ins.run(LEGACY_PORTFOLIO_SYMBOL, A, new Date(Date.now() - i * 60_000).toISOString(), `${A}|PORTFOLIO|—|@${i}`, JSON.stringify({ symbol: 'PORTFOLIO', side: '—', accountId: A }))
+  persistRiskEvent(db, proposalFor(A), { approved: false, veto_reason: 'bad_rr 1.20<3', checks: {} })
+  assert.equal(refusalCostReport(db).waiting, 1, '20 legacy rows + 1 real refusal → 1 waiting')
+  const far = Date.now() + 30 * 86_400_000
+  assert.deepEqual(pendingRefusals(db, { nowMs: far }).map(p => p.symbol), ['EURUSD'])
+  const r = await scoreRefusedOpportunities(db, async () => [], { nowMs: far, maxPerCycle: 50 })
+  assert.equal(r.unscorable, 0, 'no unscorable rows written for legacy PORTFOLIO keys')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM refusal_scores WHERE symbol = ?`).get(LEGACY_PORTFOLIO_SYMBOL).n, 0)
+  assert.equal(r.waiting, 0)
 })

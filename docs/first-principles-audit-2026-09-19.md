@@ -722,4 +722,11 @@ after deploy, recorded in §L of this file as it happens.
   the goal's `vetoMinReachedGate` floor is untouched. Pinned by
   `veto-boundary.test.js`: each cycle-stable guard tripped through the real
   gate and asserted redirected, the pool's once-per-transition write, and
-  the audit's exclusion.
+  the audit's exclusion. Checker round (12:23 SGT): the redirect now carries
+  the proposal's levels in `detail.proposal` and the refusal ledger reads
+  `gate_redirect` beside `evidence_gate`, so a redirected refusal is still
+  scored for forgone R; the validation-fill route reads the newer of the two
+  records (`latestGateVerdict`) instead of the last risk_events row; the
+  loop's journal call is pinned in `margin-pool.test.js`; and legacy
+  `PORTFOLIO` rows are excluded from the ledger's waiting/pending reads so
+  they no longer clog it as `unscorable`.

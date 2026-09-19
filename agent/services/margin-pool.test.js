@@ -100,5 +100,10 @@ test('wiring pin: the dispatch reads the pool once, skips only the exhausted acc
   assert.match(src, /const poolEntry = pool\.find\(p => String\(p\.accountId\) === String\(acct\.accountId\)\)\s+if \(poolEntry\?\.exhausted\) \{[\s\S]{0,700}?stage: 'margin_pool'[\s\S]{0,300}?continue\s+\}/,
     'an exhausted account is skipped by name inside the fan-out, with a decision row')
   assert.match(src, /accountMarginPool\(db, config, accounts\.map\(a => a\.accountId\)/, 'the pool is the per-account status from risk.js')
+  // THE VETO BOUNDARY (19-09-2026): the pool journals a state CHANGE through
+  // services/margin-pool-journal.js, once per cycle, and no longer writes a
+  // risk_events row per exhausted account per cycle.
+  assert.match(src, /journalMarginPoolState\(db, pool, \{ loopId: loopCount \}\)/, 'the state-change journal is called from the pool memo')
+  assert.doesNotMatch(src, /persistRiskEvent\(db, \{ symbol: 'PORTFOLIO'/, 'no per-cycle PORTFOLIO veto row')
   assert.match(src, /marginHeadroom: \(accountId\) => marginPoolForCycle\(db\)\.find\(p => p\.accountId === String\(accountId\)\)\?\.status\?\.headroom \?\? null/, 'the momentum book reads the same pool')
 })
