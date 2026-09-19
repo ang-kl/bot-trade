@@ -128,7 +128,7 @@ test('contamination: drawdown de-risk and lesson decay stay per-account', () => 
   const db = fresh()
   // A tilts: −$600 in the window → factor 0.5 for A…
   insertClosedTrade(db, { account: 'A', pnl: -600, closedAgoMin: 30 })
-  const cfg = { ...DEFAULT_RISK_CONFIG, deriskOnDrawdown: true, deriskWindowHours: 24, deriskTriggerPct: 0.05, deriskMult: 0.5 }
+  const cfg = { ...DEFAULT_RISK_CONFIG, derisk: { on: true, windowHours: 24, triggerPct: 0.05, mult: 0.5 } }
   assert.equal(drawdownDeriskFactor(db, 10000, cfg, 'A'), 0.5)
   // …but B keeps full size.
   assert.equal(drawdownDeriskFactor(db, 10000, cfg, 'B'), 1)

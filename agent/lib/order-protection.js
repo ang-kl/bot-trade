@@ -11,9 +11,12 @@
 // (owner 2026-07-24: "my concern is the spike lost which move less than 3
 // seconds").
 //
-// Config-gated: risk config `stopTriggerMethod` unset/null → no field is
-// sent and broker behaviour is EXACTLY as before. Values may be the enum
-// name (case-insensitive) or the numeric wire value.
+// Config-gated: a `stopTriggerMethod` unset/null on the config object handed
+// in → no field is sent and broker behaviour is EXACTLY as before. Values may
+// be the enum name (case-insensitive) or the numeric wire value. Wave 4b
+// retired the key from DEFAULT_RISK_CONFIG (null everywhere, written by
+// nothing), so the risk config never carries one now; the helper stays for
+// a payload that does.
 // ---------------------------------------------------------------------------
 
 export const STOP_TRIGGER_METHODS = {

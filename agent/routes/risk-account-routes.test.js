@@ -234,3 +234,59 @@ test('Wave 4: a global save merges into the RAW overrides — one patched key st
     assert.equal(g.risk.effective.cooldownMinutes, 9)
   } finally { s.close() }
 })
+
+test('Wave 4b: an object-valued key in the body PATCHES the stored object one level deep — global and overlay alike', async () => {
+  const s = await server()
+  try {
+    // The Risk page sends the WHOLE effective object; only the field that
+    // differs from the default may land in the store (checker item 4).
+    await setRisk(s, { derisk: { on: true, windowHours: 24, triggerPct: 0.05, mult: 0.4 } })
+    let stored = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'risk_config_json'").get().value)
+    assert.deepEqual(stored, { derisk: { mult: 0.4 } }, 'default sub-fields are pruned, not pinned')
+    await setRisk(s, { derisk: { windowHours: 48 } })
+    stored = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'risk_config_json'").get().value)
+    assert.deepEqual(stored, { derisk: { mult: 0.4, windowHours: 48 } }, 'the second save did not wipe the first field')
+    const g = await riskFull(s)
+    assert.deepEqual(g.risk.effective.derisk, { on: true, windowHours: 48, triggerPct: 0.05, mult: 0.4 })
+    // per-account overlay: the same rule
+    await setRisk(s, { accountId: '47790949', newsGate: { on: true } })
+    await setRisk(s, { accountId: '47790949', newsGate: { minBefore: 30 } })
+    const ov = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'acct:47790949:risk_config_json'").get().value)
+    assert.deepEqual(ov, { newsGate: { on: true, minBefore: 30 } })
+    const a = await riskFull(s, '47790949')
+    assert.deepEqual(a.risk.effective.newsGate, { on: true, minBefore: 30, minAfter: 15, impacts: ['High'] })
+    assert.equal(g.risk.effective.newsGate.on, false, 'the global config is untouched by the overlay')
+    // a retired scalar name in the body is not a risk key and is dropped
+    await setRisk(s, { deriskMult: 0.1 })
+    stored = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'risk_config_json'").get().value)
+    assert.equal('deriskMult' in stored, false)
+    assert.equal((await riskFull(s)).risk.effective.derisk.mult, 0.4)
+  } finally { s.close() }
+})
+
+test('Wave 4b: a store that still carries legacy scalars is folded on the write path, so the object patch lands on the folded value', async () => {
+  const s = await server()
+  try {
+    s.db.prepare("INSERT INTO agent_state (key, value) VALUES ('risk_config_json', ?)").run(JSON.stringify({ deriskMult: 0.25, symbolCooldownMinutes: 5 }))
+    await setRisk(s, { derisk: { windowHours: 48 } })
+    const stored = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'risk_config_json'").get().value)
+    // symbolCooldownMinutes has no successor: dropped, never written into
+    // cooldownMinutes (it would have rewritten the streak window).
+    assert.deepEqual(stored, { derisk: { mult: 0.25, windowHours: 48 } })
+  } finally { s.close() }
+})
+
+test('Wave 4b: a global save whose object equals the default leaves NO entry; `campaign` is replaced wholesale, not merged', async () => {
+  const s = await server()
+  try {
+    await setRisk(s, { derisk: { mult: 0.4 } })
+    await setRisk(s, { derisk: { on: true, windowHours: 24, triggerPct: 0.05, mult: 0.5 } })
+    let stored = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'risk_config_json'").get().value)
+    assert.deepEqual(stored, {}, 'an object put back to its default leaves the store')
+    await setRisk(s, { campaign: { maxDrawdownPct: 0.08, startEquity: 1983, startAt: '2026-08-07T00:00:00Z', label: 'old' } })
+    await setRisk(s, { campaign: { maxDrawdownPct: 0.05 } })
+    stored = JSON.parse(s.db.prepare("SELECT value FROM agent_state WHERE key = 'risk_config_json'").get().value)
+    assert.deepEqual(stored.campaign, { maxDrawdownPct: 0.05 }, 'no stale startEquity/startAt from the previous campaign')
+    assert.deepEqual((await riskFull(s)).risk.effective.campaign, { maxDrawdownPct: 0.05 })
+  } finally { s.close() }
+})

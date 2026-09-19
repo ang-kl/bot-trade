@@ -128,7 +128,7 @@ test('disarm mechanism — a hypothetical listed symbol would still be refused (
   // uses, and a stored blockedSymbols config has no way to reach past it.
   assert.equal(blocklistedSymbol(['SOMESYM'], 'Some-Sym'), 'SOMESYM')
   const db = freshDB()
-  const cfg = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['NATGAS'], symbolCooldownMinutes: 0 }
+  const cfg = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['NATGAS'], cooldownMinutes: 0 }
   const res = evaluateTrade(db, goodProposal({ symbol: 'NATGAS', entry: 2.700, sl: 2.680, tp1: 2.770 }), cfg)
   // The CONFIG blocklist still works for symbols the owner blocks via config.
   assert.equal(res.approved, false)
@@ -137,7 +137,7 @@ test('disarm mechanism — a hypothetical listed symbol would still be refused (
 
 test('disarm — the config-level blockedSymbols gate still works beside it (regression)', () => {
   const db = freshDB()
-  const cfg = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['GBPUSD'], symbolCooldownMinutes: 0 }
+  const cfg = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['GBPUSD'], cooldownMinutes: 0 }
   const res = evaluateTrade(db, goodProposal({ symbol: 'GBPUSD', entry: 1.2700, sl: 1.2665, tp1: 1.2825 }), cfg)
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /symbol_blocked GBPUSD/)
@@ -211,7 +211,7 @@ test('daily loss gauge — a day made of NULL-pnl stop-outs now trips the cap', 
   insertStopout(db, { volume: 1.0, minsAgo: 8 })
   // The cooldown would also (rightly) veto this EURUSD proposal now, so use
   // another symbol and disable the gates that sit in front of the daily cap.
-  const cfg = { ...DEFAULT_RISK_CONFIG, symbolCooldownMinutes: 0, blockOnUnknownPnl: false }
+  const cfg = { ...DEFAULT_RISK_CONFIG, cooldownMinutes: 0, unknownPnl: { ...DEFAULT_RISK_CONFIG.unknownPnl, block: false } }
   const res = evaluateTrade(db, goodProposal({ symbol: 'GBPUSD', entry: 1.2700, sl: 1.2665, tp1: 1.2825 }), cfg)
   assert.equal(res.approved, false, 'expected the daily cap to trip on estimated stop-outs')
   assert.match(res.veto_reason, /daily_loss_limit_hit/)
@@ -222,7 +222,7 @@ test('daily loss gauge — a day made of NULL-pnl stop-outs now trips the cap', 
 test('daily loss gauge — backfill replaces the estimate, never double-counts', () => {
   const db = freshDB()
   insertStopout(db, { volume: 1.0, minsAgo: 10 })
-  const cfg = { ...DEFAULT_RISK_CONFIG, symbolCooldownMinutes: 0, blockOnUnknownPnl: false }
+  const cfg = { ...DEFAULT_RISK_CONFIG, cooldownMinutes: 0, unknownPnl: { ...DEFAULT_RISK_CONFIG.unknownPnl, block: false } }
   const before = evaluateTrade(db, goodProposal({ symbol: 'GBPUSD', entry: 1.2700, sl: 1.2665, tp1: 1.2825 }), cfg)
   assert.equal(before.checks.daily_pnl, -300, 'estimated while NULL')
   // The backfill lands: the real loss was worse than planned (slippage).
@@ -265,7 +265,7 @@ test('equity stop — accountPnlToday charges attributed stop-outs at planned ri
 test('cooldown — a NULL-pnl stop-out 10 minutes ago vetoes re-entry on that symbol', () => {
   const db = freshDB()
   insertStopout(db, { minsAgo: 10, closeReason: 'stopped beyond the SL — gap/slippage through the stop' })
-  const cfg = { ...DEFAULT_RISK_CONFIG, blockOnUnknownPnl: false }
+  const cfg = { ...DEFAULT_RISK_CONFIG, unknownPnl: { ...DEFAULT_RISK_CONFIG.unknownPnl, block: false } }
   const res = evaluateTrade(db, goodProposal(), cfg)
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /symbol_cooldown/)
@@ -275,7 +275,7 @@ test('cooldown — a NULL-pnl stop-out 10 minutes ago vetoes re-entry on that sy
 test('cooldown — a NULL-pnl close with NO reason still arms (unreadable ≠ fine)', () => {
   const db = freshDB()
   insertStopout(db, { minsAgo: 10, closeReason: null })
-  const res = evaluateTrade(db, goodProposal(), { ...DEFAULT_RISK_CONFIG, blockOnUnknownPnl: false })
+  const res = evaluateTrade(db, goodProposal(), { ...DEFAULT_RISK_CONFIG, unknownPnl: { ...DEFAULT_RISK_CONFIG.unknownPnl, block: false } })
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /symbol_cooldown/)
 })
@@ -283,7 +283,7 @@ test('cooldown — a NULL-pnl close with NO reason still arms (unreadable ≠ fi
 test('cooldown — a TP-shaped NULL-pnl close does NOT arm (loss-only doctrine holds)', () => {
   const db = freshDB()
   insertStopout(db, { minsAgo: 10, closeReason: 'take profit hit' })
-  const res = evaluateTrade(db, goodProposal(), { ...DEFAULT_RISK_CONFIG, blockOnUnknownPnl: false })
+  const res = evaluateTrade(db, goodProposal(), { ...DEFAULT_RISK_CONFIG, unknownPnl: { ...DEFAULT_RISK_CONFIG.unknownPnl, block: false } })
   assert.ok(!/symbol_cooldown/.test(res.veto_reason || ''), `cooldown armed on a winner: ${res.veto_reason}`)
 })
 
@@ -299,8 +299,8 @@ test('cooldown — a filled-in loss still arms (regression)', () => {
 
 test('cooldown — expires: a stop-out outside the window does not veto on cooldown', () => {
   const db = freshDB()
-  insertStopout(db, { minsAgo: DEFAULT_RISK_CONFIG.symbolCooldownMinutes + 5 })
-  const res = evaluateTrade(db, goodProposal(), { ...DEFAULT_RISK_CONFIG, blockOnUnknownPnl: false })
+  insertStopout(db, { minsAgo: DEFAULT_RISK_CONFIG.cooldownMinutes + 5 })
+  const res = evaluateTrade(db, goodProposal(), { ...DEFAULT_RISK_CONFIG, unknownPnl: { ...DEFAULT_RISK_CONFIG.unknownPnl, block: false } })
   assert.ok(!/symbol_cooldown/.test(res.veto_reason || ''), `cooldown outlived its window: ${res.veto_reason}`)
 })
 

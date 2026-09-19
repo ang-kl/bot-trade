@@ -241,12 +241,11 @@ export const DEFAULT_RISK_CONFIG = {
   // "which cap binds" line after changing either field.
   dailyLossLimit: 300,             // USD, flat. null = check off.
   dailyLossPct: 0.03,              // 3% of balance. null = check off.
-  // Owner 03-08-2026: the daily budget may RAMP across the FX day instead of
-  // being available all at once — dailyLossPct is what the day OPENS with,
-  // dailyLossPctMax is the most it can ever reach, and the allowance moves
-  // between them with elapsed day time. null (or ≤ dailyLossPct) = the flat
-  // cap, unchanged. See services/daily-loss-pacing.js.
-  dailyLossPctMax: null,
+  // The paced day ceiling (`dailyLossPctMax`, owner 03-08-2026) was RETIRED
+  // in Wave 4b: it shipped null, was never set on any store, and the pacing
+  // branch it fed was dead at null. The day is the flat cap; see
+  // services/daily-loss-pacing.js for the arithmetic, which still takes a
+  // ceiling argument for its own tests and receives null from here.
   // ⚠️ OWNER DECISION, 2026-08-07 — A RISK LIMIT INCREASE, verbatim:
   // "Change immediately dailyLossPct for ACCT-DEMO-1 to $200 min. or 3% for
   //  accounts < $10000. 4% for account > $10000."
@@ -283,15 +282,18 @@ export const DEFAULT_RISK_CONFIG = {
   // Measured 18-09-2026; see book-symbol-cap.js for why the per-account
   // ceiling above never saw the NATGAS concentration.
   maxAccountsPerSymbol: DEFAULT_MAX_ACCOUNTS_PER_SYMBOL,
-  blockOnUnknownPnl: DEFAULT_UNKNOWN_PNL_BLOCK,
-  unknownPnlGraceMin: DEFAULT_UNKNOWN_PNL_GRACE_MIN,
-  // Owner 03-08-2026: past this age a still-unfilled row stops blocking. 0 or
-  // null restores the old block-until-resolved behaviour.
-  unknownPnlMaxAgeMin: DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN,
-  // A row the backfill has attempted this many times and never filled stops
-  // blocking straight away, without waiting out the age window — the repair
-  // was tried and failed, which is better evidence than a clock. 0/null = off.
-  unknownPnlMinAttempts: DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS,
+  // One object (Wave 4b) where four scalars stood — block / grace / age-out /
+  // give-up. maxAgeMin (owner 03-08-2026): past this age a still-unfilled row
+  // stops blocking; 0 or null restores block-until-resolved. minAttempts: a
+  // row the backfill has attempted this many times and never filled stops
+  // blocking straight away — the repair was tried and failed, which is better
+  // evidence than a clock; 0/null = off.
+  unknownPnl: {
+    block: DEFAULT_UNKNOWN_PNL_BLOCK,
+    graceMin: DEFAULT_UNKNOWN_PNL_GRACE_MIN,
+    maxAgeMin: DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN,
+    minAttempts: DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS,
+  },
   // NULL-EXIT FLOOR (owner 2026-08-04, "this account has penny profit, took
   // profits too early"). A discretionary close inside this many R of the
   // entry banks nothing and pays the spread — measured, 26 of 31 explicit
@@ -302,7 +304,7 @@ export const DEFAULT_RISK_CONFIG = {
   // Size AGGRESSIVELY on the now-proven combos, with an ALGO HARD CAP as the
   // safety layer. The effective $ budget per trade is:
   //   base    = perTradeRiskUsd (if > 0) else balance × perTradeRiskPct
-  //   ceiling = min(balance × maxRiskCapPct, maxRiskUsd?)
+  //   ceiling = balance × maxRiskCapPct
   //   budget  = min(base, ceiling) × drawdown-de-risk factor
   perTradeRiskPct: 0.05,           // 5% of balance per trade (aggressive)
   perTradeRiskUsd: null,           // absolute $ risk/trade; when > 0, overrides the pct
@@ -313,7 +315,8 @@ export const DEFAULT_RISK_CONFIG = {
   // how it is applied here; the notional half of the invariant is the
   // measured maxNotionalXBalance ceiling below.
   maxRiskCapPct: 0.015,            // hard ceiling — never risk more than this % of balance
-  maxRiskUsd: null,                // optional absolute $ ceiling per trade
+  // (`maxRiskUsd`, an absolute $ ceiling, was retired in Wave 4b: null on
+  // every store, and the ceiling is already maxRiskCapPct × balance.)
   // NOTIONAL CEILING — the check that does not trust the contract table.
   //
   // Every ceiling above is denominated in RISK, and risk is
@@ -336,26 +339,30 @@ export const DEFAULT_RISK_CONFIG = {
   // that the same oversizing produced. null = off.
   maxNotionalXBalance: 10,
   // Anti-tilt: when realized PnL over the last window is down more than
-  // deriskTriggerPct of balance, scale the budget by deriskMult — a losing run
-  // sizes DOWN automatically instead of compounding at 5%.
-  deriskOnDrawdown: true,
-  deriskWindowHours: 24,
-  deriskTriggerPct: 0.05,          // down >5% in the window → de-risk
-  deriskMult: 0.5,                 // …to half size until it recovers
+  // derisk.triggerPct of balance, scale the budget by derisk.mult — a losing
+  // run sizes DOWN automatically instead of compounding at 5%.
+  derisk: {
+    on: true,
+    windowHours: 24,
+    triggerPct: 0.05,              // down >5% in the window → de-risk
+    mult: 0.5,                     // …to half size until it recovers
+  },
   minLotSize: 0.01,                // Broker minimum lot size.
   maxConsecutiveLosses: 3,         // After N losses in a row → cooldown.
-  cooldownMinutes: 60,             // Cool-off window after hitting the streak.
-  // OWNER DECISION 2026-08-06: 240 → 60, and the gate is now LOSS-ONLY and
-  // ACCOUNT-SCOPED (step 4b). 240 was the borrowed freqtrade "CooldownPeriod"
-  // default and was never measured against this book. 60 is: it refuses both
-  // JPN225 re-entries that cost −$10,487.68 (gaps 38.1 and 36.6 min) and is the
-  // smallest value that does, which matters because everything above it is
-  // unpaid-for restriction on a system whose entry breadth was the other half
-  // of the same audit finding.
-  symbolCooldownMinutes: 60,       // Per-symbol lock after a LOSING trade on
-                                   // that symbol, on this account. Stops
-                                   // instant re-entry into the same broken
-                                   // level after a stop-out.
+  // ONE cooldown window (Wave 4b): the streak cool-off after
+  // maxConsecutiveLosses AND the per-symbol lock after a LOSING trade on that
+  // symbol, on this account (stops instant re-entry into the same broken
+  // level after a stop-out). Both shipped 60; `symbolCooldownMinutes` was
+  // retired (a stored value is dropped, never folded into this key — two
+  // windows do not fold losslessly into one).
+  // OWNER DECISION 2026-08-06: 240 → 60, and the per-symbol gate is LOSS-ONLY
+  // and ACCOUNT-SCOPED (step 4b). 240 was the borrowed freqtrade
+  // "CooldownPeriod" default and was never measured against this book. 60 is:
+  // it refuses both JPN225 re-entries that cost −$10,487.68 (gaps 38.1 and
+  // 36.6 min) and is the smallest value that does, which matters because
+  // everything above it is unpaid-for restriction on a system whose entry
+  // breadth was the other half of the same audit finding.
+  cooldownMinutes: 60,
   maxOpenPositions: 5,             // Hard cap on concurrent positions.
   allowCrossAccountHedge: false,   // B4: an opposite-side position on the same
                                    // symbol on ANOTHER account vetoes the entry
@@ -396,21 +403,16 @@ export const DEFAULT_RISK_CONFIG = {
                                    // fiction — veto (doc_reference/
                                    // microstructure-frequent-trading-notes.md).
                                    // 0 disables the check.
-  htfFreshnessMin: 120,            // Backtest-parity window (owner "build
-                                   // it", 03-09-2026): the backtester fills
-                                   // at the NEXT bar's open, so a ≥4h signal
-                                   // dispatches at MARKET (with the drift
-                                   // gate) inside this many minutes after its
-                                   // bar closed, and rests as a limit only
-                                   // after the window. 0 = always the limit.
-  limitDispatchMinTf: '4h',        // Limit dispatch (owner, 03-09-2026): a
-                                   // signal on a bar this long or longer is
-                                   // priced at the last CLOSED bar's close,
-                                   // which a market order reaches up to a bar
-                                   // late (NAS100 1w: three days, 1.2%). Such
-                                   // signals rest as a LIMIT at the approved
-                                   // entry, expiring when the bar closes.
-                                   // '' or 'off' disables (market + drift gate).
+  // Limit dispatch (owner, 03-09-2026): a signal on a bar `minTf` or longer
+  // is priced at the last CLOSED bar's close, which a market order reaches up
+  // to a bar late (NAS100 1w: three days, 1.2%). Such signals rest as a LIMIT
+  // at the approved entry, expiring when the bar closes; '' or 'off' disables
+  // (market + drift gate). `freshnessMin` is the backtest-parity window
+  // (owner "build it", 03-09-2026): the backtester fills at the NEXT bar's
+  // open, so a qualifying signal dispatches at MARKET (with the drift gate)
+  // inside this many minutes after its bar closed, and rests as a limit only
+  // after the window. 0 = always the limit.
+  htfLimitDispatch: { minTf: '4h', freshnessMin: 120 },
   maxEntryDriftFracOfSL: 0.25,     // Entry-drift gate (owner "do both",
                                    // 03-09-2026): the live quote vs the
                                    // proposal's entry, adverse-positive, as a
@@ -423,12 +425,14 @@ export const DEFAULT_RISK_CONFIG = {
   maxClusterExposure: 2,           // Net directional exposure to any one
                                    // correlation cluster (gold/USD, US
                                    // equity, crude…). 0 disables the check.
-  minTradesForKelly: 30,           // Below this → use default volume (skip Kelly).
-  allowNegativeExpectancyOverride: false, // If false, negative expectancy vetoes.
-  // Account leverage (e.g. 200 = 1:200). Used to check margin headroom so the
-  // risk manager doesn't approve a position that eats your available margin.
-  // Override via POST /actions/balance { leverage: 500 }.
-  leverage: 100,
+  // Kelly veto: below minTrades the strategy is unproven and sizes by the
+  // risk budget (Kelly skipped); with allowNegative false a strategy Kelly
+  // has sized to zero — its own record says it loses — is vetoed.
+  kellyVeto: { minTrades: 30, allowNegative: false },
+  // Account leverage is NOT a risk key (Wave 4b): the broker stamps it into
+  // agent_state (`acct:<id>:account_leverage`, set by the balance refresh or
+  // POST /actions/balance { leverage }), and getAccountLeverage falls back to
+  // DEFAULT_LEVERAGE only when no stamp exists.
   maxMarginUsagePct: 0.5,          // Max % of balance locked in margin.
   // PER-POSITION SHARE OF HEADROOM (owner order 09-09-2026 15:20 SGT,
   // §7,539·B·1). The shrink-to-fit rule below used to size a new position
@@ -450,33 +454,37 @@ export const DEFAULT_RISK_CONFIG = {
   // insufficient_margin guard — on, configured — never fired (failure mode
   // #3). Each rate is a FRACTION of notional; null/0 falls back to
   // notional / leverage (FX stays on the account leverage).
-  marginRateStock: 0.2,            // share CFDs (.US .HK .DE .UK .AU)
-  marginRateIndex: 0.05,           // index CFDs
-  marginRateCommodity: 0.05,       // metals, energy, softs
-  marginRateCrypto: 0.5,           // crypto CFDs
-  // Broker-side spike protection (owner 2026-07-24): stop trigger method for
-  // entry orders' SL. null = broker default (TRADE — touch-triggered, spike-
-  // sensitive). 'OPPOSITE' | 'DOUBLE_TRADE' | 'DOUBLE_OPPOSITE' make the
-  // broker require the other side of the spread / a confirming quote before
-  // firing the stop — the tick-speed remedy for sub-3s wick sweeps.
-  stopTriggerMethod: null,
+  marginRates: {
+    stock: 0.2,                    // share CFDs (.US .HK .DE .UK .AU)
+    index: 0.05,                   // index CFDs
+    commodity: 0.05,               // metals, energy, softs
+    crypto: 0.5,                   // crypto CFDs
+  },
+  // (`stopTriggerMethod`, the broker-side stop trigger method of 2026-07-24,
+  // was retired in Wave 4b: null on every store and written by nothing.
+  // lib/order-protection.js still sends the field when a payload carries
+  // one; the risk config no longer does.)
   // News-window entry gate (owner-approved 2026-07-24): veto NEW entries
   // whose symbol's currencies have a scheduled release inside the window —
   // most sub-3s FX spikes are timed prints, and news spreads widen exactly
   // when stops are most touchable. Uses the CACHED calendar only (sync, no
   // network in the trade path); no data = no block. Default OFF.
-  newsGateEnabled: false,
-  newsGateMinBefore: 15,           // minutes before the release
-  newsGateMinAfter: 15,            // minutes after it
-  newsGateImpacts: ['High'],       // add 'Medium' to widen coverage
+  newsGate: {
+    on: false,
+    minBefore: 15,                 // minutes before the release
+    minAfter: 15,                  // minutes after it
+    impacts: ['High'],             // add 'Medium' to widen coverage
+  },
   // Carry-cost gate (approved data-plan item 3): veto NEW entries whose
   // side pays a nightly swap worse than the threshold — swing entries on
   // heavy-negative-carry instruments bleed even when the price thesis is
   // right. Rates come from the broker's own ProtoOASymbol (cached in
   // symbol_hours by the hours refresh, points per lot per night). Unknown
   // swap = no block, never a stuck veto. Default OFF.
-  carryGateEnabled: false,
-  carryMaxNegativeSwapPoints: null, // e.g. -10 vetoes when the side's swap < −10 pts/night; null = gate stays a no-op even when enabled
+  carryGate: {
+    on: false,
+    maxNegativeSwapPoints: null,   // e.g. -10 vetoes when the side's swap < −10 pts/night; null = gate stays a no-op even when on
+  },
   // Commission-drag gate (owner: small HK-stock trades getting eaten by
   // commission — e.g. 0016.HK -$15.87 commission against a +$8.92 gross
   // win). No live pre-trade commission feed exists (the broker only reports
@@ -485,9 +493,11 @@ export const DEFAULT_RISK_CONFIG = {
   // enough of them, veto new entries when the average commission has been
   // eating too large a share of the average win. Too few closed trades on
   // the symbol = no block, never a stuck veto. Default OFF.
-  commissionGateEnabled: false,
-  commissionMaxFracOfWin: null, // e.g. 0.5 vetoes when avg commission ≥ 50% of the symbol's avg win; null = gate stays a no-op even when enabled
-  commissionGateMinTrades: 5,   // closed trades required on the symbol before the gate can act
+  commissionGate: {
+    on: false,
+    maxFracOfWin: null,            // e.g. 0.5 vetoes when avg commission ≥ 50% of the symbol's avg win; null = gate stays a no-op even when on
+    minTrades: 5,                  // closed trades required on the symbol before the gate can act
+  },
   // Margin-level floor (owner-approved build 3, 2026-07-27, after a live
   // margin call): no NEW entries while the broker-reported live margin level
   // sits below this % — the broker's own stop-out is typically 50%, so 150%
@@ -498,9 +508,11 @@ export const DEFAULT_RISK_CONFIG = {
   // intended entry — historical read over trades.slippage_price, same
   // default-off shape as the carry/commission gates. Too few measured
   // fills = no block, never a stuck veto. Default OFF.
-  slippageGateEnabled: false,
-  slippageMaxAdversePct: null, // e.g. 0.1 vetoes when avg adverse slippage ≥ 0.1% of entry; null = no-op even when enabled
-  slippageGateMinTrades: 5,    // measured fills required on the symbol before the gate can act
+  slippageGate: {
+    on: false,
+    maxAdversePct: null,           // e.g. 0.1 vetoes when avg adverse slippage ≥ 0.1% of entry; null = no-op even when on
+    minTrades: 5,                  // measured fills required on the symbol before the gate can act
+  },
   // Instrument universe: empty = everything allowed. Put symbols here to veto
   // them regardless of balance (e.g. ["BTCUSD"] to temporarily disable crypto).
   // Tier is just a label for the dashboard — the real equity gate is
@@ -560,14 +572,110 @@ export function accountRiskOverlay(db, accountId) {
   } catch { return null }
 }
 
+/**
+ * The scalar keys Wave 4b retired, each mapped to where its value lives now
+ * (`[newKey, subKey]`) or to null when it has no successor (the value is
+ * dropped: it was null / unset on every store and read by a dead branch).
+ * `symbolCooldownMinutes` has NO successor either: two windows cannot fold
+ * losslessly into one (a stored per-symbol 5 over a streak 60 would have
+ * rewritten the streak cool-off to 5 — checker, 19-09-2026). The per-symbol
+ * lock reads `cooldownMinutes` from now on, which is the compression's
+ * decision; a stored legacy value is dropped and reported as retired.
+ */
+export const LEGACY_RISK_KEYS = Object.freeze({
+  dailyLossPctMax: null,
+  stopTriggerMethod: null,
+  leverage: null,
+  maxRiskUsd: null,
+  newsGateEnabled: ['newsGate', 'on'],
+  newsGateMinBefore: ['newsGate', 'minBefore'],
+  newsGateMinAfter: ['newsGate', 'minAfter'],
+  newsGateImpacts: ['newsGate', 'impacts'],
+  commissionGateEnabled: ['commissionGate', 'on'],
+  commissionMaxFracOfWin: ['commissionGate', 'maxFracOfWin'],
+  commissionGateMinTrades: ['commissionGate', 'minTrades'],
+  slippageGateEnabled: ['slippageGate', 'on'],
+  slippageMaxAdversePct: ['slippageGate', 'maxAdversePct'],
+  slippageGateMinTrades: ['slippageGate', 'minTrades'],
+  carryGateEnabled: ['carryGate', 'on'],
+  carryMaxNegativeSwapPoints: ['carryGate', 'maxNegativeSwapPoints'],
+  marginRateStock: ['marginRates', 'stock'],
+  marginRateIndex: ['marginRates', 'index'],
+  marginRateCommodity: ['marginRates', 'commodity'],
+  marginRateCrypto: ['marginRates', 'crypto'],
+  deriskOnDrawdown: ['derisk', 'on'],
+  deriskWindowHours: ['derisk', 'windowHours'],
+  deriskTriggerPct: ['derisk', 'triggerPct'],
+  deriskMult: ['derisk', 'mult'],
+  blockOnUnknownPnl: ['unknownPnl', 'block'],
+  unknownPnlGraceMin: ['unknownPnl', 'graceMin'],
+  unknownPnlMaxAgeMin: ['unknownPnl', 'maxAgeMin'],
+  unknownPnlMinAttempts: ['unknownPnl', 'minAttempts'],
+  minTradesForKelly: ['kellyVeto', 'minTrades'],
+  allowNegativeExpectancyOverride: ['kellyVeto', 'allowNegative'],
+  limitDispatchMinTf: ['htfLimitDispatch', 'minTf'],
+  htfFreshnessMin: ['htfLimitDispatch', 'freshnessMin'],
+  symbolCooldownMinutes: null,
+})
+
+const isPlainObject = (v) => v != null && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * Fold every retired scalar a stored config (global or overlay) still
+ * carries into its Wave 4b successor, in place, and delete the legacy key.
+ * A value already present at the destination wins: the new key is what a
+ * human edits now, the legacy one is what an old save left behind. Returns
+ * the same object. Applied by loadRiskConfig before merging and by the boot
+ * seed before it drops retired keys, so a stored legacy value is never
+ * silently lost.
+ */
+export function migrateLegacyRiskKeys(obj) {
+  if (!isPlainObject(obj)) return obj
+  for (const [legacy, target] of Object.entries(LEGACY_RISK_KEYS)) {
+    if (!(legacy in obj)) continue
+    const value = obj[legacy]
+    delete obj[legacy]
+    if (!target) continue
+    const [key, sub] = target
+    if (!isPlainObject(obj[key])) obj[key] = {}
+    if (!(sub in obj[key])) obj[key][sub] = value
+  }
+  return obj
+}
+
+/**
+ * Keys whose object value is ONE record, not a set of independent knobs, and
+ * so REPLACES wholesale: a campaign is { maxDrawdownPct, startEquity,
+ * startAt, label } armed together (campaign-stop.js is all-or-nothing), and a
+ * field-wise merge would keep a stale startEquity/startAt from the previous
+ * campaign under a new percentage.
+ */
+export const REPLACE_WHOLE_KEYS = Object.freeze(['campaign'])
+
+/**
+ * Merge a partial risk config over a base ONE LEVEL DEEP: an object-valued
+ * key in the patch (`{ derisk: { mult: 0.4 } }`) patches that object's fields
+ * rather than replacing it, so the other three derisk fields survive. Arrays
+ * (`blockedSymbols`, `newsGate.impacts`), scalars and REPLACE_WHOLE_KEYS
+ * replace. Pure.
+ */
+export function mergeRiskConfig(base, patch) {
+  const out = { ...(base || {}) }
+  if (!isPlainObject(patch)) return out
+  for (const [k, v] of Object.entries(patch)) {
+    out[k] = isPlainObject(v) && isPlainObject(out[k]) && !REPLACE_WHOLE_KEYS.includes(k) ? { ...out[k], ...v } : v
+  }
+  return out
+}
+
 export function loadRiskConfig(db, accountId = null) {
   const raw = getState(db, 'risk_config_json')
-  let cfg = { ...DEFAULT_RISK_CONFIG }
+  let cfg = mergeRiskConfig(DEFAULT_RISK_CONFIG, {})
   if (raw) {
-    try { cfg = { ...cfg, ...JSON.parse(raw) } } catch { /* defaults stand */ }
+    try { cfg = mergeRiskConfig(cfg, migrateLegacyRiskKeys(JSON.parse(raw))) } catch { /* defaults stand */ }
   }
   const overlay = accountRiskOverlay(db, accountId)
-  return overlay ? { ...cfg, ...overlay } : cfg
+  return overlay ? mergeRiskConfig(cfg, migrateLegacyRiskKeys(overlay)) : cfg
 }
 
 /**
@@ -653,10 +761,22 @@ export function getAccountBalance(db, accountId = null) {
 }
 
 /**
- * Read the configured account leverage (e.g. 200 → 1:200). Falls back to the
- * config default when unset or malformed. Leverage ≤0 is ignored.
+ * The leverage assumed when no account has stamped one (1:100). Not a risk
+ * key (Wave 4b): the broker's own figure lands in agent_state
+ * `acct:<id>:account_leverage` on every balance refresh, and a number an
+ * operator could edit on the Risk page while the broker's stamp silently
+ * won was a control for nothing.
+ */
+export const DEFAULT_LEVERAGE = 100
+
+/**
+ * Read the account leverage (e.g. 200 → 1:200): the account's own stamp,
+ * then the legacy global stamp, then DEFAULT_LEVERAGE when unset or
+ * malformed. Leverage ≤0 is ignored. The second argument is kept for the
+ * call sites that pass the risk config; it is not read.
  */
 export function getAccountLeverage(db, config, accountId = null) {
+  void config // kept for the callers that pass the risk config; not read since Wave 4b
   // Same resolution rule as getAccountBalance above, for the same reason.
   const resolvedAcct = accountId != null ? accountId : getState(db, 'ctrader_account_id')
   if (resolvedAcct != null) {
@@ -664,9 +784,9 @@ export function getAccountLeverage(db, config, accountId = null) {
     if (Number.isFinite(scoped) && scoped > 0) return scoped
   }
   const raw = getState(db, 'account_leverage')
-  if (raw == null) return config.leverage
+  if (raw == null) return DEFAULT_LEVERAGE
   const n = Number(raw)
-  if (!Number.isFinite(n) || n <= 0) return config.leverage
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_LEVERAGE
   return n
 }
 
@@ -687,7 +807,7 @@ export function requiredMargin(symbol, volumeLots, price, leverage, rates = null
 
 /**
  * The margin rate the broker applies to THIS symbol's class, from the
- * per-class knobs (marginRateStock / Index / Commodity / Crypto). null for
+ * per-class knobs (marginRates.stock / index / commodity / crypto). null for
  * FX and anything unclassified, meaning "use the account leverage".
  * Pure; the class comes from assetClassOf (strategy-asset-cross.js).
  */
@@ -695,12 +815,12 @@ export function marginRateFor(config, symbol) {
   const cls = assetClassOf(symbol)
   const pick = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.min(1, Number(v)) : null)
   switch (cls) {
-    case 'stock': return pick(config?.marginRateStock)
-    case 'index': return pick(config?.marginRateIndex)
+    case 'stock': return pick(config?.marginRates?.stock)
+    case 'index': return pick(config?.marginRates?.index)
     case 'metal':
     case 'energy':
-    case 'soft': return pick(config?.marginRateCommodity)
-    case 'crypto': return pick(config?.marginRateCrypto)
+    case 'soft': return pick(config?.marginRates?.commodity)
+    case 'crypto': return pick(config?.marginRates?.crypto)
     default: return null
   }
 }
@@ -865,25 +985,26 @@ export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct, ent
 
 /**
  * The effective $ risk budget for one trade after the algo layers: absolute-$
- * override → pct, capped by the hard ceiling(s), scaled by the drawdown
+ * override → pct, capped by the hard ceiling, scaled by the drawdown
  * de-risk factor. Pure.
  */
 export function riskBudgetUsd(balance, cfg, ddFactor = 1) {
   if (!(balance > 0)) return 0
   const base = Number(cfg.perTradeRiskUsd) > 0 ? Number(cfg.perTradeRiskUsd) : balance * (cfg.perTradeRiskPct ?? 0)
-  const ceilings = [balance * (Number.isFinite(cfg.maxRiskCapPct) ? cfg.maxRiskCapPct : Infinity)]
-  if (Number(cfg.maxRiskUsd) > 0) ceilings.push(Number(cfg.maxRiskUsd))
-  const capped = Math.min(base, ...ceilings)
+  const ceiling = balance * (Number.isFinite(cfg.maxRiskCapPct) ? cfg.maxRiskCapPct : Infinity)
+  const capped = Math.min(base, ceiling)
   const f = Number.isFinite(ddFactor) ? ddFactor : 1
   return Math.max(0, capped * f)
 }
 
 /**
- * Anti-tilt de-risk multiplier: 1 normally, or cfg.deriskMult when realized net
- * PnL over the last cfg.deriskWindowHours is worse than −(balance × trigger).
+ * Anti-tilt de-risk multiplier: 1 normally, or cfg.derisk.mult when realized
+ * net PnL over the last cfg.derisk.windowHours is worse than −(balance ×
+ * derisk.triggerPct).
  */
 export function drawdownDeriskFactor(db, balance, cfg, accountId = null) {
-  if (!cfg?.deriskOnDrawdown || !(balance > 0)) return 1
+  const d = cfg?.derisk
+  if (!d?.on || !(balance > 0)) return 1
   try {
     // M1 scoping: the anti-tilt window looks at THIS account's realized
     // P&L, not the whole book (NULL legacy rows count everywhere).
@@ -893,9 +1014,9 @@ export function drawdownDeriskFactor(db, balance, cfg, accountId = null) {
        WHERE status = 'closed' AND net_pnl IS NOT NULL
          AND closed_at >= datetime('now', ?)
          AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
-    ).get(`-${Math.max(1, Math.round(cfg.deriskWindowHours || 24))} hours`, acct, acct)
+    ).get(`-${Math.max(1, Math.round(d.windowHours || 24))} hours`, acct, acct)
     const pnl = row?.pnl ?? 0
-    return pnl <= -(balance * (cfg.deriskTriggerPct ?? 1)) ? (cfg.deriskMult ?? 1) : 1
+    return pnl <= -(balance * (d.triggerPct ?? 1)) ? (d.mult ?? 1) : 1
   } catch { return 1 }
 }
 
@@ -938,7 +1059,7 @@ export function scanRates(db) {
  * expectancy is negative or inputs are invalid.
  */
 export function kellyVolume(stats, defaultVolume, config) {
-  if (!stats || !stats.total_trades || stats.total_trades < config.minTradesForKelly) {
+  if (!stats || !stats.total_trades || stats.total_trades < (config.kellyVeto?.minTrades ?? DEFAULT_RISK_CONFIG.kellyVeto.minTrades)) {
     return { volume: defaultVolume, note: `kelly_skipped_sample=${stats?.total_trades || 0}` }
   }
   const winRate = stats.win_rate || 0
@@ -1134,14 +1255,14 @@ export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowO
     // cover these rows have, and the checks row says so out loud.
     checks.daily_pnl_unpriceable_stopouts = stopoutEst.unpriceable
   }
-  // The allowance may be PACED across the FX day (dailyLossPctMax set) or
-  // flat (it isn't). pacedDailyCap collapses to the old arithmetic in the
-  // flat case, so this is one code path rather than two.
+  // The day is the FLAT cap. pacedDailyCap still takes a ceiling for its own
+  // arithmetic; the risk config no longer carries one (`dailyLossPctMax` was
+  // retired in Wave 4b, never set anywhere), so it is null here.
   const nowMs = Number.isFinite(Number(nowOpt)) ? Number(nowOpt) : Date.now()
   const pacing = pacedDailyCap({
     balance,
     basePct: config.dailyLossPct,
-    maxPct: config.dailyLossPctMax,
+    maxPct: null,
     absoluteFallback: config.dailyLossLimit,
     // Owner's two-tier floor, 2026-08-07. See DEFAULT_RISK_CONFIG.
     floorUsd: config.dailyLossFloorUsd,
@@ -1224,9 +1345,9 @@ export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowO
   // See services/unresolved-pnl.js for the full reasoning and the knobs.
   const unresolved = unresolvedPnlSince(db, dayStartSql, {
     accountId: acct,
-    graceMin: config.unknownPnlGraceMin,
-    maxAgeMin: config.unknownPnlMaxAgeMin,
-    minAttempts: config.unknownPnlMinAttempts,
+    graceMin: config.unknownPnl?.graceMin,
+    maxAgeMin: config.unknownPnl?.maxAgeMin,
+    minAttempts: config.unknownPnl?.minAttempts,
   })
   checks.unresolved_pnl_trades = unresolved.count
   // Written-off rows land in checks_json on EVERY evaluation, blocked or not.
@@ -1235,8 +1356,8 @@ export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowO
   // record anywhere. risk_events keeps it permanently.
   checks.unresolvable_pnl_trades = unresolved.unresolvableCount ?? 0
   const unknownVerdict = unknownPnlBlocks(unresolved, {
-    enabled: config.blockOnUnknownPnl,
-    graceMin: config.unknownPnlGraceMin ?? DEFAULT_UNKNOWN_PNL_GRACE_MIN,
+    enabled: config.unknownPnl?.block,
+    graceMin: config.unknownPnl?.graceMin ?? DEFAULT_UNKNOWN_PNL_GRACE_MIN,
     scope: 'account',
   })
   if (unknownVerdict.block) return out(true, 'unknown_daily_pnl', unknownVerdict.reason)
@@ -1495,9 +1616,14 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // Per-account risk overlay applies ON TOP of whatever config arrived —
   // callers pre-load the global config once per cycle (loop.js, pending
   // orders) and would silently bypass the overlay otherwise.
+  // The overlay is the RAW store: legacy names folded and object keys
+  // merged ONE LEVEL DEEP (Wave 4b), never spread — a partial stored
+  // `{ derisk: { mult: 0.4 } }` spread over the base would replace the whole
+  // object and switch derisk OFF (checker, 19-09-2026: risk_budget 150 vs
+  // 60, 2.5× the size; a partial marginRates leaves three classes unrated).
   const overlay = accountRiskOverlay(db, acct)
   const base = configOverride || loadRiskConfig(db)
-  const config = overlay ? { ...base, ...overlay } : base
+  const config = overlay ? mergeRiskConfig(base, migrateLegacyRiskKeys(overlay)) : base
   // M1c: balance/leverage resolve per-account too (acct:<id>: keys when
   // stamped, legacy global keys otherwise) so caps size off the right equity.
   const balance = getAccountBalance(db, acct)
@@ -1601,12 +1727,12 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // ---- 0b. News-window entry gate (config-gated, default OFF) -------------
   // Pure in-memory check against the cached calendar — microseconds, no
   // network. Missing/stale data means no block, never a stuck veto.
-  if (config.newsGateEnabled) {
+  if (config.newsGate?.on) {
+    const ng = config.newsGate
     const ev = newsWindowEvent(cachedEventsSync(db), proposal.symbol, Date.now(), {
-      minBefore: Number(config.newsGateMinBefore) || 15,
-      minAfter: Number(config.newsGateMinAfter) || 15,
-      impacts: Array.isArray(config.newsGateImpacts) && config.newsGateImpacts.length
-        ? config.newsGateImpacts : ['High'],
+      minBefore: Number(ng.minBefore) || 15,
+      minAfter: Number(ng.minAfter) || 15,
+      impacts: Array.isArray(ng.impacts) && ng.impacts.length ? ng.impacts : ['High'],
     })
     if (ev) {
       checks.news_window = `${ev.country} ${ev.title} @ ${new Date(ev.t).toISOString()}`
@@ -1619,9 +1745,9 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // symbol_hours. Sync DB read only. Unknown/missing swap data = no block.
   // (null threshold must NOT coerce to 0 — Number(null) === 0 would veto
   // every negative-swap side; same bug class the perf-ledger tests caught.)
-  if (config.carryGateEnabled && config.carryMaxNegativeSwapPoints != null
-    && Number.isFinite(Number(config.carryMaxNegativeSwapPoints))) {
-    const cc = evaluateCarryCost(db, proposal, Number(config.carryMaxNegativeSwapPoints))
+  if (config.carryGate?.on && config.carryGate.maxNegativeSwapPoints != null
+    && Number.isFinite(Number(config.carryGate.maxNegativeSwapPoints))) {
+    const cc = evaluateCarryCost(db, proposal, Number(config.carryGate.maxNegativeSwapPoints))
     if (cc) {
       checks.carry_cost = cc.detail
       if (cc.vetoReason) return veto(cc.vetoReason, checks, proposal)
@@ -1633,9 +1759,9 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // only reports commission after a fill closes). Too few closed trades on
   // the symbol = no block, never a stuck veto. Same null-threshold-must-not-
   // coerce-to-0 caution as the carry gate above.
-  if (config.commissionGateEnabled && config.commissionMaxFracOfWin != null
-    && Number.isFinite(Number(config.commissionMaxFracOfWin))) {
-    const cm = evaluateCommissionCost(db, proposal, Number(config.commissionMaxFracOfWin), config.commissionGateMinTrades, proposal.accountId)
+  if (config.commissionGate?.on && config.commissionGate.maxFracOfWin != null
+    && Number.isFinite(Number(config.commissionGate.maxFracOfWin))) {
+    const cm = evaluateCommissionCost(db, proposal, Number(config.commissionGate.maxFracOfWin), config.commissionGate.minTrades, proposal.accountId)
     if (cm) {
       checks.commission_cost = cm.detail
       if (cm.vetoReason) return veto(cm.vetoReason, checks, proposal)
@@ -1671,9 +1797,9 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // enabled + numeric threshold or it stays a no-op, and thin history never
   // blocks. slippage_price is adverse-positive, so this reads execution
   // quality directly rather than inferring it from spreads.
-  if (config.slippageGateEnabled && config.slippageMaxAdversePct != null
-    && Number.isFinite(Number(config.slippageMaxAdversePct))) {
-    const sd = evaluateSlippageDrift(db, proposal, Number(config.slippageMaxAdversePct), config.slippageGateMinTrades, proposal.accountId)
+  if (config.slippageGate?.on && config.slippageGate.maxAdversePct != null
+    && Number.isFinite(Number(config.slippageGate.maxAdversePct))) {
+    const sd = evaluateSlippageDrift(db, proposal, Number(config.slippageGate.maxAdversePct), config.slippageGate.minTrades, proposal.accountId)
     if (sd) {
       checks.slippage_drift = sd.detail
       if (sd.vetoReason) return veto(sd.vetoReason, checks, proposal)
@@ -1788,10 +1914,13 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // ---- 4b. Per-symbol re-entry cooldown -----------------------------------
   // A signal zone persists after knocking us out, so without this the very
   // next loop re-enters the same broken level. Locks the symbol for
-  // symbolCooldownMinutes after its most recent LOSING trade ON THIS ACCOUNT.
+  // cooldownMinutes after its most recent LOSING trade ON THIS ACCOUNT (the
+  // same window as the streak cool-off above — Wave 4b retired the separate
+  // `symbolCooldownMinutes`; both shipped 60, and a stored legacy value is
+  // dropped rather than folded, so it can never rewrite the streak window).
   //
   // OWNER DECISION, 2026-08-06: "proceed with loss-only and account-scoped
-  // cooldown" alongside symbolCooldownMinutes 5 → 60. The two halves are one
+  // cooldown" alongside the per-symbol window 5 → 60. The two halves are one
   // decision and must be read together:
   //
   //   LOSS-ONLY. The gate used to fire after ANY close, so a symbol that had
@@ -1813,7 +1942,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // cost −$10,487.68 (gaps of 38.1 and 36.6 minutes); the old 5-minute setting
   // refused neither, however broadly it was scoped. Breadth was never what was
   // wrong with it.
-  if (config.symbolCooldownMinutes > 0) {
+  if (config.cooldownMinutes > 0) {
     // OWNER ORDER, 2026-08-22 audit item 3. This gate used to require
     // `net_pnl IS NOT NULL AND net_pnl < 0`, on the reasoning that unknown
     // P&L belonged to the unresolved-pnl guard. That reasoning had a hole the
@@ -1841,7 +1970,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       .all(proposal.symbol, acct, acct)
     const lastClosed = recentClosed.find(r => Number(r.net_pnl) < 0 || countsAsStopout(r))
     if (lastClosed?.closed_at) {
-      const unlockAt = new Date(lastClosed.closed_at).getTime() + config.symbolCooldownMinutes * 60_000
+      const unlockAt = new Date(lastClosed.closed_at).getTime() + config.cooldownMinutes * 60_000
       if (unlockAt > Date.now()) {
         const mins = Math.ceil((unlockAt - Date.now()) / 60_000)
         checks.symbol_cooldown_wait = mins
@@ -1865,7 +1994,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       const cf = cooldownCounterfactual({
         lastCloseAt: lastClosed.closed_at,
         lastNetPnl: lastClosed.net_pnl,
-        configuredMin: config.symbolCooldownMinutes,
+        configuredMin: config.cooldownMinutes,
       })
       if (cf.note) {
         checks.symbol_cooldown_counterfactual = cf.note
@@ -2134,7 +2263,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     }
     checks.risk_budget = Number(budget.toFixed(2))
     checks.risk_pct_effective = Number(effRiskPct.toFixed(4))
-    if (ddFactor < 1) checks.derisked = { factor: ddFactor, window_h: config.deriskWindowHours }
+    if (ddFactor < 1) checks.derisked = { factor: ddFactor, window_h: config.derisk?.windowHours }
     checks.risk_based_volume = risked.volume
     checks.risk_based_usd = risked.usdRisk
     if (risked.volume < effMinLots) {
@@ -2168,7 +2297,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     config
   )
   checks.kelly_volume = kellyVol
-  if (kellyVol === 0 && !config.allowNegativeExpectancyOverride) {
+  if (kellyVol === 0 && !config.kellyVeto?.allowNegative) {
     return veto(`negative_expectancy ${kellyNote}`, checks, proposal)
   }
   // Never ship below the broker's minimum — and that comment is now true.

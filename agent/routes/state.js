@@ -1037,7 +1037,7 @@ export default function stateRouter(db) {
       } catch { /* unknown registry → every row's account counts as enabled */ }
       const cfg = (() => { try { return loadRiskConfig(db) } catch { return {} } })()
       res.json(unknownPnlReport(db, {
-        graceMin: cfg.unknownPnlGraceMin,
+        graceMin: cfg.unknownPnl?.graceMin,
         enabledAccounts: enabled,
         exhaustedAccounts: exhaustedAccounts(),
       }))
@@ -3836,7 +3836,7 @@ export default function stateRouter(db) {
           const p = pacedDailyCap({
             balance,
             basePct: effective.dailyLossPct,
-            maxPct: effective.dailyLossPctMax,
+            maxPct: null, // the paced ceiling was retired (Wave 4b); the day is the flat cap
             absoluteFallback: effective.dailyLossLimit,
             nowMs,
             dayOpenMs: fxDayOpenMs(nowMs),

@@ -39,8 +39,8 @@ export const STATE_KEY = 'risk_reassess_json'
  *
  * Deliberately narrow: position sizing, loss caps, exposure counts and the
  * quality floors. Not in this list, and so not proposable — the news/carry/
- * commission/slippage gate toggles, blockedSymbols, stopTriggerMethod, and
- * leverage (leverage is the broker's fact, not a preference).
+ * commission/slippage gate objects, blockedSymbols, and the account leverage
+ * (the broker's fact, stamped into agent_state, not a risk key).
  */
 export const PROPOSABLE = {
   perTradeRiskPct:    { min: 0.0025, max: 0.03, kind: 'fraction', label: 'Risk per trade' },
@@ -49,8 +49,7 @@ export const PROPOSABLE = {
   dailyLossLimit:     { min: 1,      max: 1e7,  kind: 'usd',      label: 'Daily loss limit ($)' },
   maxOpenPositions:   { min: 1,      max: 50,   kind: 'int',      label: 'Max open positions' },
   maxConsecutiveLosses: { min: 2,    max: 10,   kind: 'int',      label: 'Max consecutive losses' },
-  cooldownMinutes:    { min: 0,      max: 1440, kind: 'int',      label: 'Cooldown after the streak' },
-  symbolCooldownMinutes: { min: 0,   max: 4320, kind: 'int',      label: 'Per-symbol cooldown' },
+  cooldownMinutes:    { min: 0,      max: 1440, kind: 'int',      label: 'Cooldown after the streak (and the per-symbol lock)' },
   minRR:              { min: 1,      max: 5,    kind: 'number',   label: 'Minimum reward:risk' },
   minSLDistancePct:   { min: 0.02,   max: 2,    kind: 'number',   label: 'Minimum stop distance (%)' },
   minStopAtrMult:     { min: 0,      max: 5,    kind: 'number',   label: 'Minimum stop (hourly ATR multiples)' },

@@ -40,13 +40,13 @@ import { loadRiskConfigChanges } from './risk-config-history.js'
  */
 export const RISK_GROUPS = Object.freeze([
   { id: 'day', label: 'Day limits', keys: [
-    'dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'equityStopPct',
+    'dailyLossPct', 'dailyLossLimit', 'equityStopPct',
     'campaign', 'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'dailyLossTierSmallPct', 'dailyLossTierLargePct',
     'maxMarginUsagePct', 'maxPositionHeadroomShare', 'marginLevelFloorPct',
-    'marginRateStock', 'marginRateIndex', 'marginRateCommodity', 'marginRateCrypto',
+    'marginRates',
   ] },
   { id: 'size', label: 'Position size', keys: [
-    'perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'minLotSize',
+    'perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'minLotSize',
     // Grouped with the risk ceilings because an operator reads it as one, but
     // it is the only one here denominated in EXPOSURE rather than risk — which
     // is what lets it catch a wrong contract spec that the others compute
@@ -54,7 +54,7 @@ export const RISK_GROUPS = Object.freeze([
     'maxNotionalXBalance',
   ] },
   { id: 'quality', label: 'Entry quality', keys: [
-    'minRR', 'minExpectancyR', 'minSLDistancePct', 'minStopAtrMult', 'sharedSignalRiskSplit', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'limitDispatchMinTf', 'htfFreshnessMin', 'stopTriggerMethod',
+    'minRR', 'minExpectancyR', 'minSLDistancePct', 'minStopAtrMult', 'sharedSignalRiskSplit', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'htfLimitDispatch',
   ] },
   { id: 'exposure', label: 'Exposure', keys: [
     'maxOpenPositions', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'maxClusterExposure',
@@ -62,20 +62,14 @@ export const RISK_GROUPS = Object.freeze([
     'maxCurrencyExposure', 'blockedSymbols',
   ] },
   { id: 'streak', label: 'Losing streaks', keys: [
-    'maxConsecutiveLosses', 'cooldownMinutes', 'symbolCooldownMinutes',
-    'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult',
+    'maxConsecutiveLosses', 'cooldownMinutes', 'derisk',
   ] },
   { id: 'pnl', label: 'P&L trust', keys: [
-    'blockOnUnknownPnl', 'unknownPnlGraceMin', 'unknownPnlMaxAgeMin', 'unknownPnlMinAttempts',
-    'minTradesForKelly', 'allowNegativeExpectancyOverride', 'nullExitMinR',
+    'unknownPnl', 'kellyVeto', 'nullExitMinR',
   ] },
   { id: 'cost', label: 'Cost gates', keys: [
-    'newsGateEnabled', 'newsGateMinBefore', 'newsGateMinAfter', 'newsGateImpacts',
-    'carryGateEnabled', 'carryMaxNegativeSwapPoints',
-    'commissionGateEnabled', 'commissionMaxFracOfWin', 'commissionGateMinTrades',
-    'slippageGateEnabled', 'slippageMaxAdversePct', 'slippageGateMinTrades',
+    'newsGate', 'carryGate', 'commissionGate', 'slippageGate',
   ] },
-  { id: 'account', label: 'Account', keys: ['leverage'] },
 ])
 
 /**
@@ -95,6 +89,42 @@ export const RISK_GROUPS = Object.freeze([
  */
 export const RETIRED_KEYS = Object.freeze({
   kellyFraction: 'no longer read — full Kelly ships the risk-budgeted size (risk.js kellyVolume)',
+  // Wave 4b (first-principles audit §K item 14): 66 keys → 42, no behaviour
+  // change. A stored value under any name below is folded into its successor
+  // by risk.js migrateLegacyRiskKeys on every read and by the boot seed.
+  dailyLossPctMax: 'retired — null everywhere, and the paced-ceiling branch it fed was dead at null; the day is the flat cap',
+  stopTriggerMethod: 'retired — null everywhere and written by nothing; lib/order-protection.js still honours a payload that carries one',
+  leverage: 'retired — the broker stamps account_leverage into agent_state; risk.js DEFAULT_LEVERAGE is the last fallback, not a config key',
+  maxRiskUsd: 'retired — null everywhere; the ceiling is already maxRiskCapPct × balance',
+  newsGateEnabled: 'folded into newsGate.on',
+  newsGateMinBefore: 'folded into newsGate.minBefore',
+  newsGateMinAfter: 'folded into newsGate.minAfter',
+  newsGateImpacts: 'folded into newsGate.impacts',
+  commissionGateEnabled: 'folded into commissionGate.on',
+  commissionMaxFracOfWin: 'folded into commissionGate.maxFracOfWin',
+  commissionGateMinTrades: 'folded into commissionGate.minTrades',
+  slippageGateEnabled: 'folded into slippageGate.on',
+  slippageMaxAdversePct: 'folded into slippageGate.maxAdversePct',
+  slippageGateMinTrades: 'folded into slippageGate.minTrades',
+  carryGateEnabled: 'folded into carryGate.on',
+  carryMaxNegativeSwapPoints: 'folded into carryGate.maxNegativeSwapPoints',
+  marginRateStock: 'folded into marginRates.stock',
+  marginRateIndex: 'folded into marginRates.index',
+  marginRateCommodity: 'folded into marginRates.commodity',
+  marginRateCrypto: 'folded into marginRates.crypto',
+  deriskOnDrawdown: 'folded into derisk.on',
+  deriskWindowHours: 'folded into derisk.windowHours',
+  deriskTriggerPct: 'folded into derisk.triggerPct',
+  deriskMult: 'folded into derisk.mult',
+  blockOnUnknownPnl: 'folded into unknownPnl.block',
+  unknownPnlGraceMin: 'folded into unknownPnl.graceMin',
+  unknownPnlMaxAgeMin: 'folded into unknownPnl.maxAgeMin',
+  unknownPnlMinAttempts: 'folded into unknownPnl.minAttempts',
+  minTradesForKelly: 'folded into kellyVeto.minTrades',
+  allowNegativeExpectancyOverride: 'folded into kellyVeto.allowNegative',
+  limitDispatchMinTf: 'folded into htfLimitDispatch.minTf',
+  htfFreshnessMin: 'folded into htfLimitDispatch.freshnessMin',
+  symbolCooldownMinutes: 'retired — the per-symbol lock reads cooldownMinutes now (both shipped 60); a stored value is dropped, not folded, so it can never rewrite the streak window',
 })
 
 /** Which group a key belongs to. 'Other' is a bug, not a category. */

@@ -103,7 +103,7 @@ test('wiring pins: loop.js runs the gate after the market-hours gate, before the
   const gate = src.indexOf("import('./services/evidence-gate.js')")
   assert.ok(gate > 0)
   assert.ok(src.indexOf("mkt_closed_logged_${symbol}`, null)") < gate, 'after the market-hours gate')
-  assert.ok(gate < src.indexOf('limitDispatchMinTf'), 'before the limit branch')
+  assert.ok(gate < src.indexOf('htfLimitDispatch'), 'before the limit branch')
   assert.ok(gate < src.indexOf('const riskResult = evaluateTrade(db, proposal, riskCfg)'), 'before the risk gate')
   const block = src.slice(gate, gate + 1400)
   // PR-C: the refusal is a decision_log skip carrying the proposal (services/

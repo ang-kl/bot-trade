@@ -55,8 +55,11 @@ describe('a proposal', () => {
     const body = JSON.parse(cmd.slice(cmd.indexOf('{')))
     expect(body).toEqual({ accountId: '46130058', minRR: 3.2 })
     // Booleans must not arrive quoted — "false" is truthy on the far end.
-    const b = commandFor('46130058', 'allowNegativeExpectancyOverride', false)
-    expect(JSON.parse(b.slice(b.indexOf('{'))).allowNegativeExpectancyOverride).toBe(false)
+    // A dotted setting names one field of an object-valued key (Wave 4b);
+    // the command carries the nested object so the route's one-level-deep
+    // patch leaves the sibling field alone.
+    const b = commandFor('46130058', 'kellyVeto.allowNegative', false)
+    expect(JSON.parse(b.slice(b.indexOf('{')))).toEqual({ accountId: '46130058', kellyVeto: { allowNegative: false } })
   })
 })
 

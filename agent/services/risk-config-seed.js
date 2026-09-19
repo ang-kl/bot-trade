@@ -22,7 +22,11 @@
 //   - `prunePinnedDefaults`: a stored value deep-equal to its default is
 //     removed — no behaviour change today, and the key follows the default
 //     again from now on.
-//   - `dropRetired`: stored keys absent from DEFAULT_RISK_CONFIG are removed.
+//   - `dropRetired`: stored keys absent from DEFAULT_RISK_CONFIG are removed —
+//     AFTER the Wave 4b legacy scalars have been folded into their successor
+//     objects (risk.js migrateLegacyRiskKeys), so a stored legacy value is
+//     never silently lost. A legacy name in `reset` is still a reset: it is
+//     deleted before the fold, because the file said "back to the default".
 // The per-account overlays (`acct:<id>:risk_config_json`) are NOT touched:
 // none exists in production today, and an overlay is a human's per-account
 // decision, not a spread artefact.
@@ -35,7 +39,7 @@
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { getState, setState } from '../db.js'
-import { DEFAULT_RISK_CONFIG, loadRiskConfig } from './risk.js'
+import { DEFAULT_RISK_CONFIG, loadRiskConfig, migrateLegacyRiskKeys, LEGACY_RISK_KEYS } from './risk.js'
 import { noteRiskConfigChanges } from './risk-config-history.js'
 
 export const RISK_CONFIG_SEED_KEY = 'risk_config_seed_json'
@@ -63,7 +67,7 @@ export function riskConfigSeedHash(cfg) {
  * @returns {{applied:boolean, hash:string|null, reset:string[], pruned:string[], dropped:string[], kept:string[], skipped:string[], storedKeys:number|null, error:string|null}}
  */
 export function seedRiskConfigFromFile(db, { file = DEFAULT_FILE, log = () => {}, defaults = DEFAULT_RISK_CONFIG } = {}) {
-  const out = { applied: false, hash: null, reset: [], pruned: [], dropped: [], kept: [], skipped: [], storedKeys: null, error: null }
+  const out = { applied: false, hash: null, reset: [], pruned: [], dropped: [], folded: [], kept: [], skipped: [], storedKeys: null, error: null }
   let cfg
   try { cfg = JSON.parse(readFileSync(file, 'utf8')) } catch (err) { out.error = `cannot read ${String(file)}: ${err?.message ?? err}`; return out }
   if (!cfg || typeof cfg !== 'object') { out.error = 'malformed seed file'; return out }
@@ -80,8 +84,9 @@ export function seedRiskConfigFromFile(db, { file = DEFAULT_FILE, log = () => {}
 
   const keep = new Set(Array.isArray(cfg.keep) ? cfg.keep.map(String) : [])
   const resetList = Array.isArray(cfg.reset) ? cfg.reset.map(String) : []
+  const isRiskKey = (k) => (k in defaults) || (k in LEGACY_RISK_KEYS)
   for (const k of resetList) {
-    if (!(k in defaults)) out.skipped.push(`reset ${k}: not a risk key`)
+    if (!isRiskKey(k)) out.skipped.push(`reset ${k}: not a risk key`)
     if (keep.has(k)) out.skipped.push(`reset ${k}: also in keep — keep wins`)
   }
   for (const k of keep) if (k in stored) out.kept.push(k)
@@ -100,11 +105,22 @@ export function seedRiskConfigFromFile(db, { file = DEFAULT_FILE, log = () => {}
   const before = loadRiskConfig(db)
   const next = { ...stored }
   for (const k of resetList) {
-    if (!(k in defaults) || keep.has(k)) continue
+    if (!isRiskKey(k) || keep.has(k)) continue
     if (resetBefore.has(k)) { out.skipped.push(`reset ${k}: applied under an earlier content — a later value is the operator's`); continue }
-    if (k in next && !deepEqual(next[k], defaults[k])) { delete next[k]; out.reset.push(k) } else if (k in next) { delete next[k]; out.pruned.push(k) }
+    if (!(k in next)) continue
+    // A legacy name has no default of its own to compare against: any stored
+    // value under it is an override, and resetting it means dropping it
+    // before the fold below could carry it into the successor key.
+    if (!(k in defaults) || !deepEqual(next[k], defaults[k])) { delete next[k]; out.reset.push(k) } else { delete next[k]; out.pruned.push(k) }
   }
   if (cfg.dropRetired === true) {
+    const legacyPresent = Object.keys(next).filter(k => k in LEGACY_RISK_KEYS && !keep.has(k))
+    if (legacyPresent.length) {
+      const kept = Object.fromEntries([...keep].filter(k => k in next).map(k => [k, next[k]]))
+      migrateLegacyRiskKeys(next)
+      Object.assign(next, kept)
+      for (const k of legacyPresent) (LEGACY_RISK_KEYS[k] ? out.folded : out.dropped).push(k)
+    }
     for (const k of Object.keys(next)) {
       if (!(k in defaults) && !keep.has(k)) { delete next[k]; out.dropped.push(k) }
     }
@@ -112,7 +128,19 @@ export function seedRiskConfigFromFile(db, { file = DEFAULT_FILE, log = () => {}
   if (cfg.prunePinnedDefaults === true) {
     for (const k of Object.keys(next)) {
       if (keep.has(k)) continue
-      if (k in defaults && deepEqual(next[k], defaults[k])) { delete next[k]; out.pruned.push(k) }
+      if (!(k in defaults)) continue
+      if (deepEqual(next[k], defaults[k])) { delete next[k]; out.pruned.push(k); continue }
+      // An object-valued key (Wave 4b) is pruned ONE LEVEL DEEP: a field at
+      // its default leaves the object, and an object left empty leaves the
+      // store — so a scalar folded from a pinned legacy default does not
+      // survive as a partial override.
+      const d = defaults[k]
+      if (d && typeof d === 'object' && !Array.isArray(d) && next[k] && typeof next[k] === 'object' && !Array.isArray(next[k])) {
+        for (const f of Object.keys(next[k])) {
+          if (f in d && deepEqual(next[k][f], d[f])) { delete next[k][f]; out.pruned.push(`${k}.${f}`) }
+        }
+        if (Object.keys(next[k]).length === 0) delete next[k]
+      }
     }
   }
 
@@ -123,7 +151,7 @@ export function seedRiskConfigFromFile(db, { file = DEFAULT_FILE, log = () => {}
     for (const k of out.reset) log(`[boot] risk config: ${k} ${JSON.stringify(stored[k])} → default ${JSON.stringify(defaults[k])} (from config/risk-config.json)`)
   }
   out.applied = changed
-  const resetEver = [...new Set([...resetBefore, ...resetList.filter(k => (k in defaults) && !keep.has(k))])].sort()
+  const resetEver = [...new Set([...resetBefore, ...resetList.filter(k => isRiskKey(k) && !keep.has(k))])].sort()
   setState(db, RISK_CONFIG_SEED_KEY, JSON.stringify({
     hash, at: new Date().toISOString(), reset: out.reset, pruned: out.pruned, dropped: out.dropped, kept: out.kept, resetEver,
   }))

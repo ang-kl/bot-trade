@@ -51,11 +51,12 @@ export function vpoPreArmVeto(db, cfg, symbol) {
   ).get(symbol)?.n || 0
   if (dup + dupTrades > 0) return `duplicate_symbol: ${symbol} already has an open position — VPO must not stack`
 
-  if (cfg.newsGateEnabled) {
+  if (cfg.newsGate?.on) {
+    const ng = cfg.newsGate
     const ev = newsWindowEvent(cachedEventsSync(db), symbol, Date.now(), {
-      minBefore: Number(cfg.newsGateMinBefore) || 15,
-      minAfter: Number(cfg.newsGateMinAfter) || 15,
-      impacts: Array.isArray(cfg.newsGateImpacts) && cfg.newsGateImpacts.length ? cfg.newsGateImpacts : ['High'],
+      minBefore: Number(ng.minBefore) || 15,
+      minAfter: Number(ng.minAfter) || 15,
+      impacts: Array.isArray(ng.impacts) && ng.impacts.length ? ng.impacts : ['High'],
     })
     if (ev) return `news_window: ${ev.impact} ${ev.country} ${ev.title}`
   }

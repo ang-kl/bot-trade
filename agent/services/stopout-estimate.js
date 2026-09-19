@@ -12,7 +12,7 @@
 // 21 Aug 2026, account ACCT-DEMO-2: three NatGas stop-outs and a flipped short,
 // all NULL at the time, and an AUTO entry was approved at 16:09 SGT with the
 // day already 4.4% down against a 3% cap. unresolved-pnl.js blocks entries on
-// the same fact, but it AGES OUT (unknownPnlMaxAgeMin / unknownPnlMinAttempts)
+// the same fact, but it AGES OUT (unknownPnl.maxAgeMin / unknownPnl.minAttempts)
 // — after which the rows neither block nor count. This module makes them
 // count.
 //

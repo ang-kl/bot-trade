@@ -127,7 +127,7 @@ function dbWithClosedTrade({ closedAt, netPnl, symbol = 'JPN225' }) {
   // proposal would never reach the cooldown block at all. Lifted here so the
   // test exercises the gate it is about — not a change to any shipped default.
   setState(db, 'risk_config_json', JSON.stringify({
-    symbolCooldownMinutes: 5, dailyLossLimit: 1e9, dailyLossPct: 0.99, maxConsecutiveLosses: 0,
+    cooldownMinutes: 5, dailyLossLimit: 1e9, dailyLossPct: 0.99, maxConsecutiveLosses: 0,
   }))
   db.prepare(
     `INSERT INTO trades (symbol, side, status, closed_at, net_pnl, account_id)
@@ -245,7 +245,7 @@ test('AT 60 MINUTES the two JPN225 re-entries that cost -$10,487.68 are refused'
   for (const gapMin of [38, 37]) {
     const db = dbWithClosedTrade({ closedAt: new Date(Date.now() - gapMin * 60_000).toISOString(), netPnl: -1315.92 })
     setState(db, 'risk_config_json', JSON.stringify({
-      symbolCooldownMinutes: 60, dailyLossLimit: 1e9, dailyLossPct: 0.99, maxConsecutiveLosses: 0,
+      cooldownMinutes: 60, dailyLossLimit: 1e9, dailyLossPct: 0.99, maxConsecutiveLosses: 0,
     }))
     const v = evaluateTrade(db, { symbol: 'JPN225', bias: 'short', entry: 40000, sl: 40400, tp1: 39400, accountId: '43097342' })
     assert.equal(v.approved, false, `gap ${gapMin}m must be refused at 60m`)

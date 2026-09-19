@@ -91,7 +91,7 @@ test('refreshSymbolHours captures swap rates when the broker provides them', asy
   assert.equal(getSwapInfo(db, 'BTCUSD'), null)
 })
 
-test('risk gate: carryGateEnabled vetoes negative_carry side-aware; off by default; unknown = no block', async () => {
+test('risk gate: carryGate.on vetoes negative_carry side-aware; off by default; unknown = no block', async () => {
   const { initDB, setState } = await import('../db.js')
   const { evaluateTrade, evaluateCarryCost, DEFAULT_RISK_CONFIG } = await import('./risk.js')
   const db = initDB(':memory:')
@@ -107,7 +107,7 @@ test('risk gate: carryGateEnabled vetoes negative_carry side-aware; off by defau
   const off = evaluateTrade(db, proposal, { ...DEFAULT_RISK_CONFIG })
   assert.ok(!/negative_carry/.test(off.veto_reason || ''), 'gate must be off by default')
   // Enabled with threshold: the long side (-412.7) is below -50 → vetoed.
-  const cfg = { ...DEFAULT_RISK_CONFIG, carryGateEnabled: true, carryMaxNegativeSwapPoints: -50 }
+  const cfg = { ...DEFAULT_RISK_CONFIG, carryGate: { on: true, maxNegativeSwapPoints: -50 } }
   const on = evaluateTrade(db, proposal, cfg)
   assert.equal(on.approved, false)
   assert.match(on.veto_reason, /negative_carry: swapLong -412\.7/)
@@ -116,7 +116,7 @@ test('risk gate: carryGateEnabled vetoes negative_carry side-aware; off by defau
   // Unknown symbol swap → null, never a block.
   assert.equal(evaluateCarryCost(db, { symbol: 'EURUSD', side: 'BUY' }, -50), null)
   // Enabled but threshold null → gate is a no-op.
-  const noThresh = evaluateTrade(db, proposal, { ...DEFAULT_RISK_CONFIG, carryGateEnabled: true })
+  const noThresh = evaluateTrade(db, proposal, { ...DEFAULT_RISK_CONFIG, carryGate: { on: true, maxNegativeSwapPoints: null } })
   assert.ok(!/negative_carry/.test(noThresh.veto_reason || ''))
 })
 

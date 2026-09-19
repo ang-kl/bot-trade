@@ -83,15 +83,15 @@ test('without the reason the closed-market behaviour is byte-for-byte what it wa
 })
 
 test('the threshold is a risk default of 4h; 1d and 1w qualify, 1h and 15m do not', () => {
-  assert.equal(DEFAULT_RISK_CONFIG.limitDispatchMinTf, '4h')
-  const min = tfMs(DEFAULT_RISK_CONFIG.limitDispatchMinTf)
+  assert.equal(DEFAULT_RISK_CONFIG.htfLimitDispatch.minTf, '4h')
+  const min = tfMs(DEFAULT_RISK_CONFIG.htfLimitDispatch.minTf)
   for (const tf of ['4h', '12h', '1d', '1w', '1mo']) assert.ok(tfMs(tf) >= min, `${tf} rests as a limit`)
   for (const tf of ['15m', '1h']) assert.ok(tfMs(tf) < min, `${tf} stays a market order`)
 })
 
 test('wiring pins: loop.js branches ≥threshold signals into the limit path before the market order, with the htf reason and the bar-close expiry (comments stripped)', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
-  const branch = src.indexOf("limitDispatchMinTf")
+  const branch = src.indexOf("htfLimitDispatch")
   assert.ok(branch > 0)
   const block = src.slice(branch, branch + 2500)
   assert.ok(block.includes("if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {"))
@@ -107,12 +107,17 @@ test('wiring pins: loop.js branches ≥threshold signals into the limit path bef
   assert.ok(block.includes("minTf !== 'off' ? tfMs(minTf) : 0"))
 })
 
-test('backtest-parity window: inside htfFreshnessMin after the bar close the branch falls through to market; marketOnly synths never rest', () => {
-  assert.equal(DEFAULT_RISK_CONFIG.htfFreshnessMin, 120)
+test('backtest-parity window: inside htfLimitDispatch.freshnessMin after the bar close the branch falls through to market; marketOnly synths never rest', () => {
+  assert.equal(DEFAULT_RISK_CONFIG.htfLimitDispatch.freshnessMin, 120)
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
-  const branch = src.indexOf('limitDispatchMinTf')
+  // From the START of the line that reads the object (indexOf lands on the
+  // property name, mid-line).
+  const branch = src.lastIndexOf('\n', src.indexOf('htfLimitDispatch')) + 1
   const block = src.slice(branch, branch + 3000)
-  assert.ok(block.includes("const freshMin = Number(loadRiskConfig(db, accountId)?.htfFreshnessMin) || 0"))
+  // Both fields are read from loadRiskConfig for THIS account — the object
+  // is read once and the window comes off it, not off a literal.
+  assert.ok(block.includes("const htf = loadRiskConfig(db, accountId)?.htfLimitDispatch"))
+  assert.ok(block.includes("const freshMin = Number(htf?.freshnessMin) || 0"))
   assert.ok(block.includes("const lastBarCloseMs = sigMs > 0 ? (nextBarCloseMs(synth.timeframe) ?? 0) - sigMs : 0"))
   assert.ok(block.includes("const fresh = freshMin > 0 && lastBarCloseMs > 0 && (Date.now() - lastBarCloseMs) <= freshMin * 60_000"))
   assert.ok(block.includes("if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {"))

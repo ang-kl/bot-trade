@@ -14,7 +14,7 @@
 // buys a bigger cliff, not a better one; at the same trade rate it would have
 // been reached by lunch.
 //
-// What this does instead. The ceiling (`dailyLossPctMax`) is the MOST the day
+// What this does instead. The ceiling (`maxPct`) is the MOST the day
 // may ever cost. The base (`dailyLossPct`) is what may be spent by the time
 // the day OPENS. Between them the allowance ramps with elapsed FX-day time:
 //
@@ -28,10 +28,11 @@
 //
 // TWO DELIBERATE PROPERTIES:
 //
-//   1. OFF BY DEFAULT, AND NEVER LOOSER BY ACCIDENT. `dailyLossPctMax` is null
-//      in DEFAULT_RISK_CONFIG. Absent, or ≤ base, or malformed → the flat cap
-//      behaves exactly as it does today, byte for byte. A config that cannot
-//      be read must not widen a risk limit.
+//   1. OFF, AND NEVER LOOSER BY ACCIDENT. The risk gate passes `maxPct: null`
+//      (Wave 4b retired the `dailyLossPctMax` key: it was null on every
+//      store, so the ramp never ran). Absent, or ≤ base, or malformed → the
+//      flat cap behaves exactly as it does today, byte for byte. A config
+//      that cannot be read must not widen a risk limit.
 //   2. THE CEILING IS ABSOLUTE. allowed(t) never exceeds balance × ceiling,
 //      whatever the clock does — a wrong `nowMs`, a DST seam, a paused box
 //      resuming days later. Clamped at both ends.
@@ -138,7 +139,7 @@ export function tieredDailyPct(balance, { smallPct = null, largePct = null, tier
  * @param {object} a
  * @param {number|null} a.balance        account balance USD, null when unset
  * @param {number|null} a.basePct        dailyLossPct — spendable at day open; null = check off
- * @param {number|null} a.maxPct         dailyLossPctMax — the day's ceiling
+ * @param {number|null} a.maxPct         the day's ceiling (null from the risk gate since Wave 4b retired `dailyLossPctMax`)
  * @param {number|null} a.absoluteFallback  dailyLossLimit USD; null = check off
  * @param {number} a.nowMs
  * @param {number} a.dayOpenMs           fxDayOpenMs(nowMs)

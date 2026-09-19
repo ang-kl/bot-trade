@@ -213,7 +213,9 @@ applier and the weekend bank (`book-held.js:120`), the +1R take
 
 ## E. Settings
 
-E·1 186 operator-facing keys: 66 risk (`risk.js:232-511`), 21 keeper, 20 goal
+E·1 162 operator-facing keys: 42 risk (`risk.js:232-521`; 66 before Wave 4b
+folded the gate/derisk/margin-rate/unknown-P&L/Kelly/HTF scalars into
+object keys and retired four dead ones), 21 keeper, 20 goal
 targets, 68 route-written switches, 11 config files; 141 controls on the Risk
 and Tune pages; none decorative at the wiring level.
 
