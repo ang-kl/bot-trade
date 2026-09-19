@@ -7,13 +7,13 @@
 
 #include "engine.hpp"
 #include "json.hpp"
+#include "log.hpp"
 
 using namespace std::chrono;
 
 namespace {
-void logLine(const std::string& msg) {
-  std::fprintf(stderr, "[trail] %s\n", msg.c_str());
-}
+void logInfo(const std::string& msg) { sidecar_log::logInfo("[trail]", msg); }
+void logError(const std::string& msg) { sidecar_log::logError("[trail]", msg); }
 double roundTo(double v, int digits) {
   const double f = std::pow(10.0, digits);
   return std::round(v * f) / f;
@@ -88,7 +88,7 @@ void TrailEngine::configure(const std::vector<std::pair<long long, TrailSpec>>& 
   byPosition_.swap(next);
   specsDroppedNoAccount_.store(dropped, std::memory_order_relaxed);
   if (dropped > 0) {
-    logLine(std::to_string(dropped) +
+    logError(std::to_string(dropped) +
             " spec(s) dropped — no ctidTraderAccountId, so their SL cannot be "
             "ratcheted here (the keeper's own ratchet still applies)");
   }
@@ -187,7 +187,7 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
         // Clear only if no newer target arrived while we were amending.
         if (it->second.pendingSl == snap.pendingSl) it->second.pendingSl = 0;
       }
-      logLine("SL ratcheted pos=" + std::to_string(posId) + " -> " + std::to_string(snap.pendingSl));
+      logInfo("SL ratcheted pos=" + std::to_string(posId) + " -> " + std::to_string(snap.pendingSl));
       if (ring_) ring_->log("trail", "amend_ok", snap.accountId, snap.symbolId, "",
                             "pos=" + std::to_string(posId) + " sl=" + std::to_string(snap.pendingSl));
     } else {
@@ -195,7 +195,7 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
       // Drop the pending target — the next tick recomputes from live state,
       // so a broker rejection (stop too close, position gone) cannot loop.
       if (it != byPosition_.end() && it->second.pendingSl == snap.pendingSl) it->second.pendingSl = 0;
-      logLine("SL amend FAILED pos=" + std::to_string(posId) + ": " +
+      logError("SL amend FAILED pos=" + std::to_string(posId) + ": " +
               r.body.get("errorCode").asString() + " " + r.body.get("description").asString());
       if (ring_) ring_->log("trail", "amend_fail", snap.accountId, snap.symbolId,
                             r.body.get("errorCode").asString(), "pos=" + std::to_string(posId));

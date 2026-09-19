@@ -1,5 +1,6 @@
 // cpp-exec/src/telemetry.cpp
 #include "telemetry.hpp"
+#include "log.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -27,7 +28,7 @@ void Telemetry::run() {
   // An unopenable path used to fail in complete silence AND leave the ring
   // permanently full (audit #11) — say it once, then drain-and-drop so the
   // dropped_ counter on /health tells the story instead of a wedged ring.
-  if (!f) std::fprintf(stderr, "[telemetry] cannot open %s — records will be dropped\n", path_.c_str());
+  if (!f) sidecar_log::logErrorF("[telemetry]", "cannot open %s — records will be dropped", path_.c_str());
   // Rotate at 64 MiB (~1.7M records): the volume this file lives on is the
   // same fixed Railway mount the agent DB uses; unbounded growth there is
   // how bot-trade-vol alerts happen. One .1 generation is kept.
@@ -48,7 +49,7 @@ void Telemetry::run() {
         std::remove(old.c_str());
         std::rename(path_.c_str(), old.c_str());
         f = std::fopen(path_.c_str(), "ab");
-        if (!f) std::fprintf(stderr, "[telemetry] reopen after rotation failed — records will be dropped\n");
+        if (!f) sidecar_log::logError("[telemetry]", "reopen after rotation failed — records will be dropped");
       }
     }
     // Exit only once the producer has stopped AND the ring is drained, so no

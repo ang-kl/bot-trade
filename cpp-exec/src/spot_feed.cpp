@@ -11,6 +11,7 @@
 
 #include "decision_ring.hpp"
 #include "json.hpp"
+#include "log.hpp"
 
 using namespace std::chrono;
 
@@ -38,9 +39,8 @@ constexpr int kSubscribeDepthReq = 2156;
 constexpr int kSubscribeDepthRes = 2157;
 constexpr double kPointsPerPrice = 100000.0;
 
-void logLine(const std::string& msg) {
-  std::fprintf(stderr, "[spot-feed] %s\n", msg.c_str());
-}
+void logInfo(const std::string& msg) { sidecar_log::logInfo("[spot-feed]", msg); }
+void logError(const std::string& msg) { sidecar_log::logError("[spot-feed]", msg); }
 
 // Sends `payload` under `reqType` and waits for `expectType`, treating a
 // broker error frame or timeout as failure. Only used during the handshake
@@ -65,7 +65,7 @@ std::optional<jsn::Value> sendAndWait(CtraderWs& ws, int reqType, const jsn::Val
     if (type == expectType) return msg->get("payload");
     if (type == kErrorRes) {
       const auto& p = msg->get("payload");
-      logLine("broker error during handshake: " + p.get("errorCode").asString() +
+      logError("broker error during handshake: " + p.get("errorCode").asString() +
               " " + p.get("description").asString());
       return std::nullopt;
     }
@@ -169,7 +169,7 @@ void SpotFeed::drainPendingSubs() {
     dframe.set("payload", sub);
     ws_.sendText(jsn::dump(dframe));
   }
-  logLine("subscribed " + std::to_string(add.size()) + " additional symbol(s)");
+  logInfo("subscribed " + std::to_string(add.size()) + " additional symbol(s)");
 }
 
 bool SpotFeed::connectAuthSubscribe() {
@@ -177,7 +177,7 @@ bool SpotFeed::connectAuthSubscribe() {
   // never sets it, so production is always TLS to the pinned host.
   const bool up = loopbackPort_ > 0 ? ws_.connect("127.0.0.1", loopbackPort_, false) : ws_.connect(host_);
   if (!up) {
-    logLine("connect failed: " + ws_.lastError());
+    logError("connect failed: " + ws_.lastError());
     return false;
   }
   jsn::Value appAuth{jsn::Object{}};
@@ -191,7 +191,7 @@ bool SpotFeed::connectAuthSubscribe() {
   appAuth.set("clientId", useClientId);
   appAuth.set("clientSecret", useClientSecret);
   if (!sendAndWait(ws_, kAppAuthReq, appAuth, kAppAuthRes)) {
-    logLine("app auth failed");
+    logError("app auth failed");
     ws_.close();
     return false;
   }
@@ -199,7 +199,7 @@ bool SpotFeed::connectAuthSubscribe() {
   acctAuth.set("ctidTraderAccountId", accountId_);
   acctAuth.set("accessToken", useAccessToken);
   if (!sendAndWait(ws_, kAccountAuthReq, acctAuth, kAccountAuthRes)) {
-    logLine("account auth failed");
+    logError("account auth failed");
     ws_.close();
     return false;
   }
@@ -217,13 +217,13 @@ bool SpotFeed::connectAuthSubscribe() {
     for (long long id : symbolIds_) ids.push_back(jsn::Value(static_cast<double>(id)));
     sub.set("symbolId", jsn::Value(ids));
     if (!sendAndWait(ws_, kSubscribeSpotsReq, sub, kSubscribeSpotsRes)) {
-      logLine("subscribe spots failed");
+      logError("subscribe spots failed");
       ws_.close();
       return false;
     }
-    logLine("subscribed to " + std::to_string(symbolIds_.size()) + " symbol(s) on " + host_);
+    logInfo("subscribed to " + std::to_string(symbolIds_.size()) + " symbol(s) on " + host_);
   } else {
-    logLine("no symbols yet — feed idles until ensureSymbols() delivers some");
+    logInfo("no symbols yet — feed idles until ensureSymbols() delivers some");
   }
 
   // L2 depth is best-effort on top of a healthy spot subscription: broker
@@ -244,11 +244,11 @@ bool SpotFeed::connectAuthSubscribe() {
     dsub.set("symbolId", jsn::Value(dids));
     if (sendAndWait(ws_, kSubscribeDepthReq, dsub, kSubscribeDepthRes)) {
       depthActive_.store(true, std::memory_order_relaxed);
-      logLine("depth subscribed for " + std::to_string(symbolIds_.size()) + " symbol(s)");
+      logInfo("depth subscribed for " + std::to_string(symbolIds_.size()) + " symbol(s)");
     } else if (ws_.isOpen()) {
-      logLine("depth subscribe rejected — continuing spots-only");
+      logError("depth subscribe rejected — continuing spots-only");
     } else {
-      logLine("connection dropped during depth subscribe");
+      logError("connection dropped during depth subscribe");
       return false;
     }
   }
@@ -289,7 +289,7 @@ void SpotFeed::runOnce() {
     if (type == kHeartbeat) continue;
     if (type == kErrorRes) {
       const auto& p = msg->get("payload");
-      logLine("broker error: " + p.get("errorCode").asString() + " " + p.get("description").asString());
+      logError("broker error: " + p.get("errorCode").asString() + " " + p.get("description").asString());
       break; // drop the connection; runLoop's backoff reconnects
     }
     if (type == kDepthEvent) {
@@ -366,7 +366,7 @@ void SpotFeed::runLoop() {
     // every capped reconnect is a minute with no tick-level SL ratchet).
     if (steady_clock::now() - startedAt >= seconds(60)) backoffMs = 1000;
     if (stopped_.load(std::memory_order_relaxed)) break;
-    logLine("disconnected, reconnecting in " + std::to_string(backoffMs) + "ms");
+    logError("disconnected, reconnecting in " + std::to_string(backoffMs) + "ms");
     {
       // Interruptible: stop() must not have to wait out a 60s backoff while
       // /connect's join() holds up every other request (audit C2).

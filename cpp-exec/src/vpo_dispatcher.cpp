@@ -23,10 +23,12 @@
 #include "vpo_dispatcher.hpp"
 
 #include "decision_ring.hpp"
+#include "log.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 
 namespace vpo {
@@ -281,9 +283,12 @@ void VpoDispatcher::recordOutcome(const StrategyModule& s, const char* verdict,
     outcomes_.lastFireAtMs = nowMs;
     outcomes_.lastDetail = line;
   }
-  // stderr too: the counters answer "what happened", the log answers "when,
+  // The log too: the counters answer "what happened", the log answers "when,
   // and in what order relative to everything else the sidecar was doing".
-  std::fprintf(stderr, "[vpo] %s\n", line.c_str());
+  // A placed order is information; every other verdict (no_sizing,
+  // no_account, rejected, failed) is a refusal or a failure — stderr.
+  if (std::strcmp(verdict, "placed") == 0) sidecar_log::logInfo("[vpo]", line);
+  else sidecar_log::logError("[vpo]", line);
 }
 
 VpoDispatcher::Outcomes VpoDispatcher::outcomes() const {

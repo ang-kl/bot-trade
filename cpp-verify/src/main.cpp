@@ -29,6 +29,7 @@
 #include "http_server.hpp"
 #include "json.hpp"
 #include "journal.hpp"
+#include "log.hpp"
 #include "verdict.hpp"
 #include "verify_session.hpp"
 
@@ -91,7 +92,7 @@ int main() {
   const int port = std::atoi(env("PORT", "8080").c_str());
   const std::string secret = env("EXEC_SECRET");
   if (secret.empty()) {
-    std::fprintf(stderr, "[verify] EXEC_SECRET not set — refusing to start\n");
+    sidecar_log::logError("[verify]", "EXEC_SECRET not set — refusing to start");
     return 2;
   }
   const bool hostPinIgnored = !env("CTRADER_HOST").empty();
@@ -116,21 +117,21 @@ int main() {
   // It was never a claim that the process writes no bytes anywhere. So the
   // scope is stated rather than left to be inferred, and what it DOES write is
   // named in the same breath.
-  std::fprintf(stderr,
-               "[verify] cpp-verify starting on :%d — READ-ONLY AT THE BROKER: "
+  sidecar_log::logInfoF("[verify]",
+               "cpp-verify starting on :%d — READ-ONLY AT THE BROKER: "
                "app auth, account auth, deal list; it never places, amends or "
                "cancels. The only thing it writes is its own verdict journal. "
-               "Sessions are per host%s\n",
+               "Sessions are per host%s",
                port, hostPinIgnored ? "; CTRADER_HOST is set and IGNORED" : "");
   if (!verify::journal().configured()) {
-    std::fprintf(stderr, "[verify] journal OFF — VERIFY_JOURNAL_DIR not set; verdicts are returned but not kept here\n");
+    sidecar_log::logInfo("[verify]", "journal OFF — VERIFY_JOURNAL_DIR not set; verdicts are returned but not kept here");
   } else if (verify::journal().writable()) {
-    std::fprintf(stderr, "[verify] journal WRITABLE at %s\n", verify::journal().dir().c_str());
+    sidecar_log::logInfoF("[verify]", "journal WRITABLE at %s", verify::journal().dir().c_str());
   } else {
     // Loud, because a mounted volume this process cannot write to looks
     // exactly like a working one until someone reads the trail and finds
     // nothing in it.
-    std::fprintf(stderr, "[verify] journal UNWRITABLE at %s — %s\n",
+    sidecar_log::logErrorF("[verify]", "journal UNWRITABLE at %s — %s",
                  verify::journal().dir().c_str(), verify::journal().lastError().c_str());
   }
 
@@ -291,14 +292,14 @@ int main() {
     if (verify::journal().configured() && !verify::journal().append(dumped)) {
       // Never fails the response: the caller asked for a verdict and the
       // verdict is sound. But it does not pass silently either.
-      std::fprintf(stderr, "[verify] journal append FAILED for position %lld — %s\n",
+      sidecar_log::logErrorF("[verify]", "journal append FAILED for position %lld — %s",
                    rec.positionId, verify::journal().lastError().c_str());
     }
     return jsonRes(200, dumped);
   });
 
   if (!server.run()) {
-    std::fprintf(stderr, "[verify] bind/listen failed on :%d\n", port);
+    sidecar_log::logErrorF("[verify]", "bind/listen failed on :%d", port);
     return 1;
   }
   return 0;

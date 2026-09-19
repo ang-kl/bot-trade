@@ -30,6 +30,7 @@
 #include "peer_probe.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
+#include "log.hpp"
 #include "spot_feed.hpp"
 #include "telemetry.hpp"
 #include "trail_engine.hpp"
@@ -37,9 +38,8 @@
 #include "vpo_dispatcher.hpp"
 #include "vpo_strategies.hpp"
 
-static void logLine(const std::string& msg) {
-  std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
-}
+static void logInfo(const std::string& msg) { sidecar_log::logInfo("[cpp-exec]", msg); }
+static void logError(const std::string& msg) { sidecar_log::logError("[cpp-exec]", msg); }
 
 // Crash handler (2026-07-24 staging incident: the sidecar died repeatedly
 // with ZERO log output — a naked SIGSEGV kills the process before anything
@@ -87,7 +87,7 @@ static std::string envOr(const char* name, const std::string& dflt) {
 static std::string requireEnv(const char* name, bool& ok) {
   const char* v = std::getenv(name);
   if (!v || !*v) {
-    logLine(std::string("missing required env ") + name);
+    logError(std::string("missing required env ") + name);
     ok = false;
     return "";
   }
@@ -131,7 +131,10 @@ int main(int argc, char** argv) {
                       std::istreambuf_iterator<char>());
     HttpResponse res = handleBacktest(input);
     if (res.status != 200) {
-      std::fprintf(stderr, "%s\n", res.body.c_str());
+      // The body is the command's output either way (a JSON error object on
+      // failure); the exit code carries the verdict, not the stream.
+      std::fprintf(stdout, "%s\n", res.body.c_str());
+      std::fflush(stdout);
       return 1;
     }
     std::fwrite(res.body.data(), 1, res.body.size(), stdout);
@@ -159,9 +162,9 @@ int main(int argc, char** argv) {
   std::unique_ptr<Telemetry> telemetry;
   if (!telemetryPath.empty()) {
     telemetry = std::make_unique<Telemetry>(4096, telemetryPath);
-    logLine("order telemetry -> " + telemetryPath);
+    logInfo("order telemetry -> " + telemetryPath);
   } else {
-    logLine("TELEMETRY_PATH not set — order telemetry disabled");
+    logInfo("TELEMETRY_PATH not set — order telemetry disabled");
   }
 
   // 4096 slots (was 256): the tick path rings a signal and a shadow close
@@ -193,14 +196,14 @@ int main(int argc, char** argv) {
     rc.environment = feedHost.find("demo") != std::string::npos ? 0 : 1;
     tickRecorder = std::make_unique<tick::TickRecorder>(rc);
     if (tickRecorder->start()) {
-      logLine("tick recorder: spool " + tickSpoolPath + " (" + std::to_string(rc.segmentBytes >> 20) + " MiB segments, " +
+      logInfo("tick recorder: spool " + tickSpoolPath + " (" + std::to_string(rc.segmentBytes >> 20) + " MiB segments, " +
               std::to_string(rc.spoolCapBytes >> 30) + " GiB cap, reserve >= " + std::to_string(rc.reserveMinBytes >> 30) +
               " GiB or " + std::to_string(rc.reservePct) + "% of the mount) — OFF until the keeper switches recording on");
     } else {
-      logLine("tick recorder: NOT started — " + tickRecorder->stats().reason + " (recording stays off)");
+      logError("tick recorder: NOT started — " + tickRecorder->stats().reason + " (recording stays off)");
     }
   } else {
-    logLine("TICK_SPOOL_PATH not set — tick recorder disabled");
+    logInfo("TICK_SPOOL_PATH not set — tick recorder disabled");
   }
   // P3b: the symbol workers (plan §8, TM-22/TM-23) — TICK_WORKERS threads
   // (default 2), each owning a fixed shard of symbols, fed the same
@@ -330,7 +333,7 @@ int main(int argc, char** argv) {
           }
         });
     tickWorkers->start();
-    logLine("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; strategy " + std::string("tick_momentum_breakout v1 profile ") + tickParams.profileHash() + " runs in SHADOW only when the keeper switches it on; the shadow portfolio fills by the replayer's rules, " + tickSim.json() + "; tick entries place only for accounts the keeper lists in tickEntryAccounts — none at boot)");
+    logInfo("tick workers: " + std::to_string(nWorkers) + " (fixed symbol shards; strategy " + std::string("tick_momentum_breakout v1 profile ") + tickParams.profileHash() + " runs in SHADOW only when the keeper switches it on; the shadow portfolio fills by the replayer's rules, " + tickSim.json() + "; tick entries place only for accounts the keeper lists in tickEntryAccounts — none at boot)");
   }
 
   // The decision ring (owner invariant 1, 2026-08-31): every decision this
@@ -345,7 +348,7 @@ int main(int argc, char** argv) {
   // /connect is honoured exactly as before.
   const std::string pinnedHost = envOr("CTRADER_HOST", "");
   if (!pinnedHost.empty())
-    logLine("host PINNED to " + pinnedHost + " — /connect for any other host will be refused");
+    logInfo("host PINNED to " + pinnedHost + " — /connect for any other host will be refused");
   {
     const std::string& host = pinnedHost;
     std::string clientId = envOr("CTRADER_CLIENT_ID", "");
@@ -355,9 +358,9 @@ int main(int argc, char** argv) {
     if (!clientId.empty() && !accessToken.empty() && accountId > 0) {
       engine.setCredentials(host.empty() ? "live.ctraderapi.com" : host,
                             clientId, clientSecret, accessToken, accountId);
-      logLine("credentials pre-seeded from env");
+      logInfo("credentials pre-seeded from env");
     } else {
-      logLine("waiting for credentials via POST /connect");
+      logInfo("waiting for credentials via POST /connect");
     }
   }
 
@@ -398,7 +401,7 @@ int main(int argc, char** argv) {
   trailEngine.setDecisionRing(&decisionRing);
   if (trailTickEnabled) {
     trailEngine.start(engine);
-    logLine("tick-level trail engine started (TRAIL_TICK_ENABLED)");
+    logInfo("tick-level trail engine started (TRAIL_TICK_ENABLED)");
   }
 
   vpo::VpoConfigStore vpoStore;
@@ -455,7 +458,7 @@ int main(int argc, char** argv) {
       std::string field;
       while (std::getline(es, field, ':')) fields.push_back(field);
       if (fields.size() < 3) {
-        logLine("VPO_SYMBOLS: skipping malformed entry '" + entry + "'");
+        logError("VPO_SYMBOLS: skipping malformed entry '" + entry + "'");
         continue;
       }
       const std::string& symbol = fields[0];
@@ -463,7 +466,7 @@ int main(int argc, char** argv) {
       const std::string& key = fields[2];
       const int digits = fields.size() >= 4 ? std::atoi(fields[3].c_str()) : 5;
       if (symbolId <= 0) {
-        logLine("VPO_SYMBOLS: bad symbolId in '" + entry + "'");
+        logError("VPO_SYMBOLS: bad symbolId in '" + entry + "'");
         continue;
       }
       std::unique_ptr<vpo::StrategyModule> strat;
@@ -476,7 +479,7 @@ int main(int argc, char** argv) {
       else if (key == "fib_confluence") strat = std::make_unique<vpo::FibConfluenceStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else if (key == "rsi2_reversion") strat = std::make_unique<vpo::Rsi2ReversionStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else {
-        logLine("VPO_SYMBOLS: unknown strategy key '" + key + "' — skipping");
+        logError("VPO_SYMBOLS: unknown strategy key '" + key + "' — skipping");
         continue;
       }
       vpoSymbolIds.push_back(symbolId);
@@ -485,9 +488,9 @@ int main(int argc, char** argv) {
 
     if (vpoDispatcher->strategyCount() > 0) {
       vpoDispatcher->start(vpoRecomputeMs);
-      logLine("VPO dispatcher started with " + std::to_string(vpoDispatcher->strategyCount()) + " strategy/ies");
+      logInfo("VPO dispatcher started with " + std::to_string(vpoDispatcher->strategyCount()) + " strategy/ies");
     } else {
-      logLine("VPO_ENABLED but no valid strategies parsed from VPO_SYMBOLS — dispatcher not started");
+      logError("VPO_ENABLED but no valid strategies parsed from VPO_SYMBOLS — dispatcher not started");
       vpoDispatcher.reset();
     }
   }
@@ -505,13 +508,13 @@ int main(int argc, char** argv) {
   RequestPacer pacer(pacerCfg);
   engine.setPacer(&pacer);
   engine.setMaxInFlight(std::atoi(envOr("EXEC_MAX_IN_FLIGHT", "8").c_str()));
-  logLine("request pacer: " + std::to_string(pacer.config().capacityPerSec) + "/s (docs: 50/s per connection), burst " +
+  logInfo("request pacer: " + std::to_string(pacer.config().capacityPerSec) + "/s (docs: 50/s per connection), burst " +
           std::to_string(pacer.config().burst) + ", " + std::to_string(pacer.config().protectionReservePct) + "% reserved for protection");
   // P2b-2: the broker session is async — a reader thread per connection,
   // every request a future keyed by its clientMsgId, awaited outside the
   // execution mutex; the heartbeat is the reader's. Stated at boot so the
   // shape in force is never inferred from the version alone.
-  logLine("broker session: async (reader thread + request futures; heartbeat idle bound " +
+  logInfo("broker session: async (reader thread + request futures; heartbeat idle bound " +
           std::to_string(kHeartbeatIdleSeconds) + " s)");
 
   HttpServer server(port, execSecret);
@@ -921,14 +924,14 @@ int main(int argc, char** argv) {
     //
     // Unset CTRADER_HOST = unpinned = today's deployment, byte-for-byte.
     if (!connectHostAllowed(pinnedHost, host)) {
-      logLine("REFUSED /connect for host '" + host + "' — this sidecar is pinned to '" + pinnedHost + "'");
+      logError("REFUSED /connect for host '" + host + "' — this sidecar is pinned to '" + pinnedHost + "'");
       return {400, "{\"error\":\"host mismatch: this sidecar serves '" + pinnedHost +
                    "' and cannot switch to '" + host + "'\"}"};
     }
     const std::string useHost = effectiveConnectHost(pinnedHost, host);
     engine.setCredentials(useHost, clientId, clientSecret, accessToken, accountId,
                           extraIds);
-    logLine("credentials updated via /connect for " + useHost + " (" +
+    logInfo("credentials updated via /connect for " + useHost + " (" +
             std::to_string(1 + extraIds.size()) + " account(s) requested)");
 
     // (Re)start the VPO tick feed against the freshly pushed session — the
@@ -1002,7 +1005,7 @@ int main(int argc, char** argv) {
         if (live) {
           const bool rotated = live->updateCredentials(clientId, clientSecret, accessToken);
           if (trailTickEnabled) live->ensureSymbols(trailEngine.symbolIds());
-          logLine(std::string("spot feed kept — ") +
+          logInfo(std::string("spot feed kept — ") +
                   (rotated ? "credentials refreshed in place for the next reconnect"
                            : "nothing the feed reads has changed") +
                   "; no resubscribe, no recorder gap");
@@ -1070,7 +1073,7 @@ int main(int argc, char** argv) {
       liveFeedTrailEnabled = trailTickEnabled;
       liveFeedDepthEnabled = depthFeedEnabled;
       liveFeedRecorderAttached = (tickRecorder != nullptr);
-      logLine("spot feed (re)started: " + std::to_string(vpoSymbolIds.size()) + " VPO symbol(s)" +
+      logInfo("spot feed (re)started: " + std::to_string(vpoSymbolIds.size()) + " VPO symbol(s)" +
               (trailPtr ? " + trail engine fan-out" : ""));
     }
     return {200, "{\"ok\":true}"};
@@ -1204,7 +1207,7 @@ int main(int argc, char** argv) {
         idled = vpoDispatcher->disarmAll();
         vpoDispatcher->setAccountId(0);
       }
-      logLine("VPO tier DISARMED by the keeper (" + v.get("reason").asString() + "): store cleared, " +
+      logError("VPO tier DISARMED by the keeper (" + v.get("reason").asString() + "): store cleared, " +
               std::to_string(idled) + " strategy/ies idled, account " + std::to_string(prev) + " -> 0");
       jsn::Value out{jsn::Object{}};
       out.set("ok", true);
@@ -1325,9 +1328,9 @@ int main(int argc, char** argv) {
       if (tickRecorder) {
         const bool was = tickRecorder->recording();
         if (!tickRecorder->setRecording(v.get("tickRecord").asBool()))
-          logLine("tick recorder: recording switch ignored — the recorder never started (" + tickRecorder->stats().reason + ")");
+          logError("tick recorder: recording switch ignored — the recorder never started (" + tickRecorder->stats().reason + ")");
         if (was != tickRecorder->recording()) {
-          logLine(std::string("tick recorder: recording ") + (tickRecorder->recording() ? "ON" : "OFF") + " (keeper's switch)");
+          logInfo(std::string("tick recorder: recording ") + (tickRecorder->recording() ? "ON" : "OFF") + " (keeper's switch)");
           decisionRing.log("tick", "recording_changed", 0, 0, tickRecorder->recording() ? "on" : "off", "keeper's switch via /config");
         }
       }
@@ -1337,7 +1340,7 @@ int main(int argc, char** argv) {
       const bool was = tickShadow.exchange(want);
       if (was != want) {
         if (!want) tickStratReset.fetch_add(1, std::memory_order_release); // each worker clears its own bank on its next event
-        logLine(std::string("tick strategy shadow ") + (want ? "ON" : "OFF") + " (keeper's switch; signals are rung, nothing is placed)");
+        logInfo(std::string("tick strategy shadow ") + (want ? "ON" : "OFF") + " (keeper's switch; signals are rung, nothing is placed)");
         decisionRing.log("tick", "shadow_changed", 0, 0, want ? "on" : "off", "keeper's switch via /config");
       }
     }
@@ -1383,7 +1386,7 @@ int main(int argc, char** argv) {
         }
         next.costs = sch;
       }
-      if (next.json() != tickSim.json()) { tickSim = next; logLine("tick shadow sim: " + tickSim.json() + " (keeper's push; applies to new books)"); }
+      if (next.json() != tickSim.json()) { tickSim = next; logInfo("tick shadow sim: " + tickSim.json() + " (keeper's push; applies to new books)"); }
     }
     // P6b: the accounts in TICK_MOMENTUM on this executor — FULL REPLACE,
     // declarative like haltAccounts; an account that leaves the set has its
@@ -1399,7 +1402,7 @@ int main(int argc, char** argv) {
       if (was != ids) {
         for (long long id : was) if (!ids.count(id)) tickPermits.clearAccount(id);
         tickFirer.setAccounts(ids);
-        logLine("tick entries: " + std::to_string(ids.size()) + " account(s) in TICK_MOMENTUM on this executor (keeper's push; " +
+        logInfo("tick entries: " + std::to_string(ids.size()) + " account(s) in TICK_MOMENTUM on this executor (keeper's push; " +
                 (ids.empty() ? std::string("nothing is placed") : std::string("the shadow book's fills place with the keeper's permits")) + ")");
         decisionRing.log("tick", "entry_accounts_changed", 0, 0, ids.empty() ? "none" : std::to_string(ids.size()),
                          "was " + std::to_string(was.size()) + " account(s), keeper's push via /config");
@@ -1469,7 +1472,7 @@ int main(int argc, char** argv) {
     return handleBacktest(req.body);
   });
 
-  logLine("starting on port " + std::to_string(port));
+  logInfo("starting on port " + std::to_string(port));
   const bool served = server.run();
 
   // Audit C3. server.run() returning is not the only way out of this process,
@@ -1493,7 +1496,7 @@ int main(int argc, char** argv) {
     if (retiring) {
       retiring->stop();
       if (retiringThread.joinable()) retiringThread.join();
-      logLine("spot feed stopped");
+      logInfo("spot feed stopped");
     }
   }
   // The trail worker was left running on this path (audit #12) — a joinable
@@ -1503,6 +1506,6 @@ int main(int argc, char** argv) {
   peerProbe.stop();
   if (tickWorkers) tickWorkers->stop();
   tickFirer.stop();
-  if (tickRecorder) { tickRecorder->stop(); logLine("tick recorder stopped (segment sealed)"); }
+  if (tickRecorder) { tickRecorder->stop(); logInfo("tick recorder stopped (segment sealed)"); }
   return served ? 0 : 1;
 }

@@ -239,6 +239,9 @@ test('PR-AN: cpp-verify\'s vendored transport is byte-identical to cpp-exec\'s',
     ['ws_client.cpp', 'src'], ['ws_client.hpp', 'src'],
     ['http_server.cpp', 'src'], ['http_server.hpp', 'src'],
     ['json.hpp', 'src'],
+    // Wave 5 (audit §K item 17): http_server.cpp routes its lines through the
+    // shared stream header, so the header is vendored with it.
+    ['log.hpp', 'src'],
     ['fake_broker.hpp', 'src/tests'],
   ]
   for (const [f, dir] of files) {

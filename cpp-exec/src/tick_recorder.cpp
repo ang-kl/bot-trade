@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include "json.hpp"
+#include "log.hpp"
 
 namespace tick {
 
@@ -27,7 +28,7 @@ uint64_t nowMs() {
   return static_cast<uint64_t>(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
 }
 
-void logLine(const std::string& msg) { std::fprintf(stderr, "[tick-recorder] %s\n", msg.c_str()); }
+void logError(const std::string& msg) { sidecar_log::logError("[tick-recorder]", msg); }
 
 inline void put16(uint8_t* p, uint16_t v) { p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; }
 inline void put32(uint8_t* p, uint32_t v) { for (int i = 0; i < 4; ++i) p[i] = (v >> (8 * i)) & 0xFF; }
@@ -313,7 +314,7 @@ bool TickRecorder::start() {
     std::lock_guard<std::mutex> lk(statsMtx_);
     st_.state = "ERROR";
     st_.reason = why;
-    logLine("cannot start: " + why);
+    logError("cannot start: " + why);
     return false;
   };
   if (cfg_.spoolDir.empty()) return fail("no spool directory");
