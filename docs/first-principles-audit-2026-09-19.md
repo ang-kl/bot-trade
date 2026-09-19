@@ -586,3 +586,10 @@ after deploy, recorded in §L of this file as it happens.
   comments citing the old paths were left as they are: the file is the
   same, one directory down, and the archive index says so. Waves 4b and 5
   are in build in parallel (three makers); their entries follow.
+- 19-09-2026 08:1x SGT: owner order "re-arm fib_confluence on the four
+  accounts" (…3489, …7342, …0058, …0949 — the four the Wave 1 boot held OFF
+  as "seeded before, since disarmed"; the disarm predates the arming log).
+  Done as repo config: four `_reseed` entries with one token
+  (`owner-19-09`) in `agent/config/strategy-pins.json`, applied once each
+  at the next boot with actor `boot_seed`; the two tests that pinned the
+  list as empty now pin the order.
