@@ -1,5 +1,6 @@
 // cpp-exec/src/http_server.cpp
 #include "http_server.hpp"
+#include "log.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -12,9 +13,8 @@
 #include <cstring>
 #include <thread>
 
-static void logLine(const std::string& msg) {
-  std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
-}
+static void logInfo(const std::string& msg) { sidecar_log::logInfo("[cpp-exec]", msg); }
+static void logError(const std::string& msg) { sidecar_log::logError("[cpp-exec]", msg); }
 
 HttpServer::HttpServer(int port, std::string bearerSecret)
     : port_(port), secret_(std::move(bearerSecret)) {}
@@ -26,7 +26,7 @@ void HttpServer::route(const std::string& method, const std::string& path,
 
 bool HttpServer::run() {
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) { logLine("http: socket failed"); return false; }
+  if (fd < 0) { logError("http: socket failed"); return false; }
   int one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
   sockaddr_in addr{};
@@ -35,11 +35,11 @@ bool HttpServer::run() {
   addr.sin_port = htons(static_cast<uint16_t>(port_));
   if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) < 0 ||
       ::listen(fd, 16) < 0) {
-    logLine("http: bind/listen failed on port " + std::to_string(port_));
+    logError("http: bind/listen failed on port " + std::to_string(port_));
     ::close(fd);
     return false;
   }
-  logLine("http: listening on :" + std::to_string(port_));
+  logInfo("http: listening on :" + std::to_string(port_));
   for (;;) {
     int cfd = ::accept(fd, nullptr, nullptr);
     if (cfd < 0) continue;

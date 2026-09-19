@@ -1,6 +1,7 @@
 // cpp-verify/src/verify_session.cpp — see verify_session.hpp for why this
 // class exists and why it implements only three broker messages.
 #include "verify_session.hpp"
+#include "log.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -35,9 +36,7 @@ constexpr int kMaxRowsPerPage = 1000;
 // looks whole.
 constexpr int kMaxPages = 500;
 
-void logLine(const std::string& msg) {
-  std::fprintf(stderr, "[verify] %s\n", msg.c_str());
-}
+void logError(const std::string& msg) { sidecar_log::logError("[verify]", msg); }
 
 // cTrader's JSON bridge sends some int64 fields as strings and some as
 // numbers, depending on the field and the gateway build. Reading only one
@@ -117,7 +116,7 @@ bool VerifySession::connect(long long accountId) {
     appAuth.set("clientId", clientId_);
     appAuth.set("clientSecret", clientSecret_);
     if (!sendAndWait(kAppAuthReq, appAuth, kAppAuthRes, 20000)) {
-      logLine(host_ + ": app auth failed — " + lastError_);
+      logError(host_ + ": app auth failed — " + lastError_);
       ws_.close();
       return false;
     }
@@ -127,7 +126,7 @@ bool VerifySession::connect(long long accountId) {
   acctAuth.set("ctidTraderAccountId", static_cast<double>(accountId));
   acctAuth.set("accessToken", accessToken_);
   if (!sendAndWait(kAccountAuthReq, acctAuth, kAccountAuthRes, 20000)) {
-    logLine(host_ + ": account auth failed for " + std::to_string(accountId) +
+    logError(host_ + ": account auth failed for " + std::to_string(accountId) +
             " — " + lastError_);
     // The socket stays open: another account on this host may still
     // authorize, and tearing the app-auth down would cost a reconnect.
@@ -151,7 +150,7 @@ bool VerifySession::connect(long long accountId) {
       }
     }
     if (moneyDigits_.find(accountId) == moneyDigits_.end()) {
-      logLine(host_ + ": moneyDigits unreadable for " + std::to_string(accountId) +
+      logError(host_ + ": moneyDigits unreadable for " + std::to_string(accountId) +
               " — money will NOT be compared for this account");
     }
   }

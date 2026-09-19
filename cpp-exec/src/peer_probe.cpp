@@ -12,12 +12,12 @@
 #include <unistd.h>
 
 #include "decision_ring.hpp"
+#include "log.hpp"
 
 using namespace std::chrono;
 
-static void logLine(const std::string& msg) {
-  std::fprintf(stderr, "[peer-probe] %s\n", msg.c_str());
-}
+static void logInfo(const std::string& msg) { sidecar_log::logInfo("[peer-probe]", msg); }
+static void logError(const std::string& msg) { sidecar_log::logError("[peer-probe]", msg); }
 
 static long long nowMsPeer() {
   return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
@@ -113,7 +113,7 @@ void PeerProbe::runLoop(int intervalSec) {
       peerOk_.store(true, std::memory_order_relaxed);
       if (wasDown) {
         reportedDown_ = false;
-        logLine("peer is back");
+        logInfo("peer is back");
         if (ring_) ring_->log("peer", "up", 0, 0, "", host_);
       }
     } else {
@@ -126,7 +126,7 @@ void PeerProbe::runLoop(int intervalSec) {
       // Hysteresis: one transition into DOWN per episode, at the threshold.
       if (f == kDownAfter && !reportedDown_) {
         reportedDown_ = true;
-        logLine("peer DOWN after " + std::to_string(f) + " consecutive failures: " + err);
+        logError("peer DOWN after " + std::to_string(f) + " consecutive failures: " + err);
         if (ring_) ring_->log("peer", "down", 0, 0, err, host_ + " ×" + std::to_string(f));
       }
     }
@@ -139,14 +139,14 @@ void PeerProbe::runLoop(int intervalSec) {
 void PeerProbe::start(const std::string& url, DecisionRing* ring, int intervalSec) {
   if (url.empty()) return;
   if (!parsePeerUrl(url, host_, port_, path_)) {
-    logLine("PEER_URL not usable ('" + url + "') — expected http://host:port[/path]; probe stays off");
+    logError("PEER_URL not usable ('" + url + "') — expected http://host:port[/path]; probe stays off");
     return;
   }
   ring_ = ring;
   enabled_.store(true, std::memory_order_relaxed);
   running_.store(true, std::memory_order_relaxed);
   worker_ = std::thread([this, intervalSec] { runLoop(intervalSec < 5 ? 5 : intervalSec); });
-  logLine("probing peer " + host_ + ":" + std::to_string(port_) + path_ + " every " + std::to_string(intervalSec) + "s");
+  logInfo("probing peer " + host_ + ":" + std::to_string(port_) + path_ + " every " + std::to_string(intervalSec) + "s");
 }
 
 void PeerProbe::stop() {

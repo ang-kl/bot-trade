@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include "heartbeat.hpp"
+#include "log.hpp"
 
 #include <cctype>
 
@@ -19,9 +20,8 @@ static long long steadyMs() {
   return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-static void logLine(const std::string& msg) {
-  std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
-}
+static void logInfo(const std::string& msg) { sidecar_log::logInfo("[cpp-exec]", msg); }
+static void logError(const std::string& msg) { sidecar_log::logError("[cpp-exec]", msg); }
 
 // Maps a guard/transport reason to a small stable int for the binary
 // telemetry record (TelemetryRecord.reason_code is a fixed-width field, not a
@@ -119,9 +119,9 @@ void ExecEngine::setCredentials(std::string host, std::string clientId,
       EngineResult r = authAccountLocked(id, /*extra=*/true);
       if (r.ok) {
         accountIds_.push_back(id);
-        logLine("account " + std::to_string(id) + " authorized on existing session");
+        logInfo("account " + std::to_string(id) + " authorized on existing session");
       } else {
-        logLine("account " + std::to_string(id) + " auth FAILED on existing session (stays requested, retried on next reconnect): " + jsn::dump(r.body));
+        logError("account " + std::to_string(id) + " auth FAILED on existing session (stays requested, retried on next reconnect): " + jsn::dump(r.body));
       }
     }
     return;
@@ -243,13 +243,13 @@ void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
   // Unsolicited EXECUTION_EVENTs (an order expiring, a broker-side SL/TP
   // fill, another account's activity, a LATE ANSWER to a request that gave
   // up) are real events. P2b-1: they are journaled for the keeper's ledger
-  // (POST /events) instead of dropped; still not logged to stdout (owner
+  // (POST /events) instead of dropped; still not logged (owner
   // 2026-08-27: "silence the 2126 log noise", same call as 2120).
   if (type == pt::EXECUTION_EVENT || type == pt::ORDER_ERROR_EVENT) {
     if (journal_) journal_->record(msg, false);
     return;
   }
-  logLine("unsolicited payloadType=" + std::to_string(type));
+  logInfo("unsolicited payloadType=" + std::to_string(type));
 }
 
 // Auth-family error codes mean the session (not this one request) is dead:
@@ -333,12 +333,12 @@ void ExecEngine::noteBrokerError(const std::string& errorCode, bool extraAuth) {
   // written for: if the token cannot authorize the account we trade on, the
   // session really is dead and must be rebuilt.
   if (act == AuthErrorAction::SkipAccount) {
-    logLine("auth-family error '" + errorCode +
+    logError("auth-family error '" + errorCode +
             "' while authorizing an EXTRA account — session kept, that account skipped");
     if (ring_) ring_->log("engine", "auth_error", 0, 0, errorCode, "skip_account: session kept");
     return;
   }
-  logLine("auth-family broker error '" + errorCode + "' — closing session for reauth");
+  logError("auth-family broker error '" + errorCode + "' — closing session for reauth");
   if (ring_) ring_->log("engine", "auth_error", 0, 0, errorCode, "kill_session: closing for reauth");
   // On the reader thread — the socket's owner — so closing here is the C1-safe
   // path; the reader loop then exits and fails everything still in flight.
@@ -387,7 +387,7 @@ void ExecEngine::readerLoop(long long generation) {
     if (!text) continue; // idle slice, or the socket closed (the loop condition sees it)
     auto msg = jsn::parse(*text);
     if (!msg || !msg->isObject()) {
-      logLine("unparseable frame dropped");
+      logError("unparseable frame dropped");
       continue;
     }
     framesIn_.fetch_add(1);
@@ -631,14 +631,14 @@ bool ExecEngine::connectAndAuth() {
   stopReaderLocked();
   const bool loopback = loopbackPort_ > 0;
   if (!ws_.connect(loopback ? "127.0.0.1" : host_, loopback ? loopbackPort_ : 5036, !loopback)) {
-    logLine("connect failed: " + ws_.lastError());
+    logError("connect failed: " + ws_.lastError());
     return false;
   }
   lastSendMs_.store(steadyMs());
   startReaderLocked();
   auto a = authApp();
   if (!a.ok) {
-    logLine("app auth failed: " + jsn::dump(a.body));
+    logError("app auth failed: " + jsn::dump(a.body));
     stopReaderLocked();
     return false;
   }
@@ -650,7 +650,7 @@ bool ExecEngine::connectAndAuth() {
   // management forever (audit #5).
   auto b = authAccountLocked(primaryAccountLocked(), /*extra=*/false);
   if (!b.ok) {
-    logLine("account auth failed: " + jsn::dump(b.body));
+    logError("account auth failed: " + jsn::dump(b.body));
     stopReaderLocked();
     return false;
   }
@@ -662,7 +662,7 @@ bool ExecEngine::connectAndAuth() {
     if (r.ok) {
       accountIds_.push_back(id);
     } else {
-      logLine("extra account " + std::to_string(id) +
+      logError("extra account " + std::to_string(id) +
               " auth failed — skipped this session, retried on next reconnect: " +
               jsn::dump(r.body));
     }
@@ -672,7 +672,7 @@ bool ExecEngine::connectAndAuth() {
     return false;
   }
   authed_.store(true);
-  logLine("connected and authenticated to " + host_ + " (" +
+  logInfo("connected and authenticated to " + host_ + " (" +
           std::to_string(accountIds_.size()) + "/" +
           std::to_string(requestedAccountIds_.size()) + " account(s))");
   return true;
@@ -744,7 +744,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
       ? static_cast<long long>(payload.get("ctidTraderAccountId").asNumber(0)) : 0;
   const OrderVerdict v = validateOrder(payload, guard_.snapshot());
   if (!v.ok) {
-    logLine("order REJECTED by guard: " + v.reason);
+    logError("order REJECTED by guard: " + v.reason);
     if (telemetry_) {
       telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
                        volume, price, 0, classifyReasonCode(v.reason)});
@@ -771,7 +771,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
     {
       const OrderVerdict again = validateOrder(payload, guard_.snapshot());
       if (!again.ok) {
-        logLine("order REJECTED by guard at the send boundary (state changed while queued): " + again.reason);
+        logError("order REJECTED by guard at the send boundary (state changed while queued): " + again.reason);
         if (telemetry_) {
           telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
                            volume, price, 0, classifyReasonCode(again.reason)});
@@ -788,7 +788,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
       const GuardSnapshot gs = guard_.snapshot();
       const PermitVerdict pv = validatePermit(payload, gs, consumedPermits_, nowMs());
       if (!pv.ok) {
-        logLine("order REFUSED at the send boundary: " + pv.reason);
+        logError("order REFUSED at the send boundary: " + pv.reason);
         if (telemetry_) {
           telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
                            volume, price, 0, classifyReasonCode(pv.reason)});
@@ -932,7 +932,7 @@ void ExecEngine::runLoop() {
         if (ring_) ring_->log("engine", "connected", 0, 0, "", std::to_string(accountIds().size()) + " account(s)");
         backoffMs = 1000;
       } else {
-        logLine("reconnect in " + std::to_string(backoffMs) + "ms");
+        logError("reconnect in " + std::to_string(backoffMs) + "ms");
         if (ring_) ring_->log("engine", "backoff", 0, 0, "", "reconnect in " + std::to_string(backoffMs) + "ms");
         std::this_thread::sleep_for(milliseconds(backoffMs));
         backoffMs = backoffMs * 2 > kBackoffCapMs ? kBackoffCapMs : backoffMs * 2;
