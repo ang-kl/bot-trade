@@ -695,6 +695,18 @@ Measurement history — each line is a real run of the script, not a claim:
   plus any unstamped line made after this ledger. The count is by replies,
   not by stamps. A later re-measure that reads below this line is missing
   these, not correcting them.
+- 2026-09-19 14:30 UTC, **same remote container, PARTIAL corpus**: from
+  `№ 8,103` the replies were stamped by count through the daily report
+  `№ 8,116`, the built-not-merged answer `№ 8,127`, the "merge? live?"
+  answer `№ 8,131`, the stop-the-task answer `№ 8,143` and the
+  billing-access answer `№ 8,145`; the unstamped lines between them (the
+  checker rounds relayed, the hourly Actions probes, the notifications
+  read) are in that count. GitHub Actions refused every job from 04:27 to
+  14:26 UTC on an account billing block — twelve probe re-runs, no runner,
+  no step — and ran again once the repository was made public; #968 (the
+  veto boundary) merged at 14:30 UTC on the first green CI. The count is
+  by replies, not by stamps. A later re-measure that reads below this line
+  is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

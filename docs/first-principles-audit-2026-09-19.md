@@ -730,3 +730,101 @@ after deploy, recorded in §L of this file as it happens.
   loop's journal call is pinned in `margin-pool.test.js`; and legacy
   `PORTFOLIO` rows are excluded from the ledger's waiting/pending reads so
   they no longer clog it as `unscorable`.
+- 19-09-2026 11:56 SGT: fast-monitor quotes from the sidecar (this PR).
+  The `monitor_cadence` finding above, addressed rather than carried
+  (owner principle 3). MEASURED BEFORE: `runFastMonitor` looped serially
+  over every active monitored position (48) and made one broker round
+  trip per due position (`wsGetSpotOnce`) plus a trendbar batch per
+  symbol every 5 min; a tick with nothing due took 2 ms, the worst tick in
+  ten minutes 51 s, skipShare10m 0.45–0.75 against the target ≤ 10 %. The
+  sidecar already held a live spot subscription for the momentum universe
+  (53 symbols on the demo sidecar) with no endpoint serving a price.
+  BUILT: `SpotFeed` keeps a latest-quote table per symbol (`latestQuotes()`,
+  updated under its existing tick lock, one slot per symbol); `GET /quotes
+  [?ids=]` (`spot_quote_routes.*`, bearer-required, `feed: up|down|absent`,
+  driven by `test_spot_quotes` through a real HttpServer, in TSAN_TESTS);
+  `exec-engine.sidecarQuotes(isLive, {ids})`; the tick makes ONE pull per
+  side that has positions and prices from it when the quote's `recvMs` is
+  within `FAST_MONITOR_QUOTE_MAX_AGE_MS` (default 10 s), falling back to
+  the broker round trip exactly as before for a stale or missing symbol;
+  per-tick counts `{fromSidecar, fromBroker, stale}` in
+  `fast_monitor_pass_json` `tick.quotes` and `/health fastMonitor.quotes`;
+  the guard sync's pushed `tickSymbolIds` = the configured tick symbols ∪
+  the open monitored positions' symbols on that side (the sidecar only
+  holds what the keeper pushes; the "unchanged → no push" diff kept). No
+  change to the evaluation, the spike logic or the volume cadence. The
+  LIVE sidecar builds a feed only with a recorder, a tick trail or a VPO
+  strategy configured (`main.cpp`: `(vpoDispatcher && !vpoSymbolIds.empty())
+  || trailTickEnabled || tickRecorder`); without one it answers
+  `feed: absent` and its positions price through the broker as before —
+  its Railway variables were not readable from this session, so which
+  branch it is on is a read-back item. ACCEPTANCE (read-back after
+  deploy): `/health fastMonitor.quotes.fromSidecar` > 0 on the demo side,
+  `skipShare10m` ≤ 0.10 over a 10-minute window with positions open, i.e.
+  `monitor_cadence` on_track; `fromBroker` on the live side names the
+  positions the live sidecar cannot price until it has a feed.
+  CHECKER ROUND (19-09-2026 12:35 SGT, second commit). BLOCKER: the lookup
+  id was taken from the POSITION's own account map, but the sidecar's
+  table is keyed in the space of the account its feed authenticates as —
+  the side primary (`sideCreds`); reproduced: demo primary {EURUSD:1,
+  GBPUSD:2}, a same-side account mapping EURUSD→2, and a EURUSD position
+  on it was priced from GBPUSD's quote (a PARTIAL_EXIT on a fictitious
+  +16R). Now `sidePrimaryFor` picks the side primary the way `sideCreds`
+  does, the id is resolved in ITS map (the global map only when the side
+  primary built it), and the position's own id must agree — otherwise no
+  sidecar lookup, the broker round trip as before (`CHECKER 1` test;
+  mutation back to the per-account map → red). SHOULD: the union widened
+  the evidence path — every feed symbol reached the recorder's tap and the
+  workers, so quotes-only symbols would have been recorded, run through
+  the shadow strategy and counted by tick-validation. Now the open
+  positions ride a SEPARATE `/config` field, `quoteSymbolIds`
+  (`quoteSymbolNames`/`resolveQuoteSymbols`; `tickSymbolNames` is the
+  configured list again), which only subscribes the feed; the tap lives in
+  `tick_tap.*` behind a `SymbolUniverse` set from the configured
+  `tickSymbolIds` — a quotes-only symbol is neither recorded nor
+  dispatched (`test_tick_tap`; `/health tick.universe`); `guardDiffers`
+  diffs both lists against `tick.subscribed`. RULE: quotes-only symbols
+  are not recorded; a side with tick observation OFF pushes no quote list
+  at all, so its positions stay on the broker path (the live side today).
+  SHOULD: the per-side pulls run under `Promise.all` (two hung sidecars
+  cost one timeout). SHOULD: `/quotes` carries `nowMs` (the sidecar's
+  clock) and the age is `nowMs − recvMs` on that one clock, Node's clock
+  only for an older sidecar. NOTE: the wiring pin's external position now
+  sits on a resolvable account so the `external` skip is exercised. NOTE:
+  after a reconnect a one-sided first frame keeps the slot's other side.
+  CHECKER ROUND 2 (19-09-2026 13:05 SGT, third commit). FEED-ACCOUNT
+  KEYING: the sidecar's feed authenticates as whichever account made the
+  first `/connect` on its side and stayed in the roster
+  (`feedAccountStillAuthorized`, main.cpp) — not necessarily what Node
+  calls the side primary (`sideCreds` can differ: a non-primary dispatch
+  made the first connect, or the selected account switched later). So
+  `GET /quotes` and `/health tick` now report the feed's `accountId` /
+  `feedAccountId`, the fast monitor pulls the WHOLE table per side (no ids
+  filter — the space is only known from the answer) and keys the lookup in
+  THAT account's map (`symbol_id_map:<feedAccountId>`, the global map only
+  when the feed account is `ctrader_account_id`'s), refusing to the broker
+  when no account is reported or its map is absent, with the position's
+  own id still required to agree; `sidePrimaryFor` is gone. The guard sync
+  resolves `tickSymbolIds`/`quoteSymbolIds` with the feed account's creds
+  when `/health tick` reports one, `sideCreds` as before otherwise — the
+  PRE-EXISTING `tickSymbolIds` resolution carried the same "sideCreds is
+  the feed account" assumption since P3a. EXCLUSION, NOT ADMISSION: the
+  feed carries more than `tick_symbols_json` (VPO and trail symbols;
+  "subscribed 53 additional symbol(s)" on the demo boot) and all of it was
+  recorded before this PR; an admission universe would have narrowed the
+  record and the shadow evidence on deploy, and an empty list with
+  recording on would have recorded nothing. `tick_tap.*` now drops ONLY
+  the quotes-only ids — `quoteSymbolIds` minus `tickSymbolIds` minus
+  anything the feed already carried before the push — remembered across
+  pushes and promoted out when named in `tickSymbolIds`; `/health
+  tick.quoteOnly` is the excluded count. THE RECORDED SET IS UNCHANGED BY
+  THIS PR. The wiring pin's external position is a symbol no other
+  position carries.
+  CHECKER ROUND 3 (19-09-2026 13:25 SGT, fourth commit, "safe to merge"):
+  a side holding only external positions is not pulled (`R3-4`, so the
+  external skip in the sides loop has an observable effect); the feed
+  account's OWN map wins over the global map for the same account and
+  the global map is no fallback (`R3-1a`); on a `/connect` feed rebuild
+  the quotes-only exclusion drops every id in the new feed's initial VPO +
+  trail subscription (`QuoteOnlyGate::rebuilt`), so a formerly quotes-only
+  symbol that is now a VPO/trail symbol is recorded again.

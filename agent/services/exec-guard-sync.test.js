@@ -10,7 +10,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { desiredGuardFor, guardDiffers, syncExecGuard, resolveTickSymbolIds, tickSymbolNames, tickSymbolClassMap, TICK_COST_MAP_KEY, _resetTickResolveLogForTests, _resetTickClassLogForTests } from './exec-guard-sync.js'
+import { desiredGuardFor, guardDiffers, syncExecGuard, resolveTickSymbolIds, resolveQuoteSymbols, tickSymbolNames, quoteSymbolNames, tickSymbolClassMap, TICK_COST_MAP_KEY, _resetTickResolveLogForTests, _resetTickClassLogForTests } from './exec-guard-sync.js'
 import { trippedKey } from './equity-stop.js'
 import { fxDayOpenMs } from '../lib/volume-structure.js'
 
@@ -369,4 +369,59 @@ test('PR-L: a push with no resolved symbol OMITS the cost schedule rather than s
   assert.deepEqual(JSON.parse(getState(db, TICK_COST_MAP_KEY)).cpp_exec_demo, stored, 'the stored map is untouched')
   // and a push carrying no schedule is never a DIFFERENCE, so it does not flap
   assert.equal(guardDiffers(r2.desired, { ...base, tick: { recording: true, subscribed: [1, 41], shadowSim: good.desired.tickShadowSim } }), false)
+})
+
+test('19-09-2026 (checker SHOULD 2): the open positions\' symbols are pushed as a SEPARATE quotes-only list per side; the configured list is untouched; guardDiffers diffs both', async () => {
+  const db = withAccounts(initDB(':memory:'))
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD', 'XAUUSD']))
+  const ins = db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, initial_risk, status, source, strategy, account_id, created_at)
+                          VALUES (?, 'BUY', 1, 0.9, 1.2, 0.1, ?, ?, 'trend', ?, datetime('now'))`)
+  ins.run('gbpusd', 'active', 'autopilot', '111')   // demo, open
+  ins.run('USDJPY', 'active', 'autopilot', '222')   // live, open
+  ins.run('AUDUSD', 'active', 'autopilot', null)    // no account row → both sides
+  ins.run('NZDUSD', 'closed', 'autopilot', '111')   // closed → not carried
+  ins.run('USDCAD', 'active', 'external', '111')    // observe-only → not priced, not carried
+  ins.run('EURUSD', 'active', 'autopilot', '111')   // also configured → dropped from the quote list by id below
+  assert.deepEqual(tickSymbolNames(db), ['EURUSD', 'XAUUSD'], 'the readiness page, the permit feeder and the state route see the configured list only')
+  assert.deepEqual(quoteSymbolNames(db, { isLive: false }), ['GBPUSD', 'AUDUSD', 'EURUSD'])
+  assert.deepEqual(quoteSymbolNames(db, { isLive: true }), ['USDJPY', 'AUDUSD'])
+  assert.deepEqual(quoteSymbolNames(db, { isLive: null }), ['GBPUSD', 'USDJPY', 'AUDUSD', 'EURUSD'], 'one sidecar for both sides carries every open symbol')
+  // the push: two lists, the quote list minus the configured ids
+  _resetTickResolveLogForTests()
+  const ids = { EURUSD: 1, XAUUSD: 41, GBPUSD: 2, AUDUSD: 3, USDJPY: 4 }
+  const resolve = async (_db, _creds, name) => ({ id: ids[name] ?? null, source: 'account' })
+  const { requestTickObservation } = await import('./entry-mode.js')
+  requestTickObservation(db, '111', 'RECORD')
+  let sent = null
+  const exec = { setExecGuard: async (_c, body) => { sent = body; return { ok: true } } }
+  const seenCreds = new Set()
+  const resolveRec = async (creds, ...rest) => { seenCreds.add(String(creds?.accountId)); return resolve(null, creds, ...rest) }
+  const r = await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, { creds: { ready: true, accountId: '111' }, resolveSymbolId: (_db, creds, name) => resolveRec(creds, name), reportedGuard: null })
+  assert.equal(r.pushed, true)
+  assert.deepEqual([...seenCreds], ['111'], 'no feed account reported → resolved under sideCreds, as before')
+  assert.deepEqual(sent.tickSymbolIds, [1, 41], 'the configured universe — the recorder and the strategy read this and only this')
+  assert.deepEqual(sent.quoteSymbolIds, [2, 3], 'the open positions, quotes-only; EURUSD (1) already configured is not repeated')
+  assert.deepEqual(await resolveQuoteSymbols(db, { ready: false }, { isLive: false }, { resolveSymbolId: resolve }), [], 'no creds, no ids')
+  // checker round 2: the sidecar reports the FEED account (the first /connect on the side, kept while in
+  // the roster) — the ids are resolved in THAT account's space, not sideCreds' primary
+  seenCreds.clear()
+  const r2 = await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, { creds: { ready: true, accountId: '111' }, resolveSymbolId: (_db, creds, name) => resolveRec(creds, name), reportedGuard: { halt: false, haltAccountCount: 0, tick: { recording: true, feedAccountId: 333, subscribed: [] } }, force: true })
+  assert.equal(r2.pushed, true)
+  assert.deepEqual([...seenCreds], ['333'], 'resolved with the feed account\'s creds')
+  seenCreds.clear()
+  await syncExecGuard(db, exec, { name: 'cpp_exec_demo', isLive: false }, { creds: { ready: true, accountId: '111' }, resolveSymbolId: (_db, creds, name) => resolveRec(creds, name), reportedGuard: { halt: false, haltAccountCount: 0 }, reportedTick: { recording: true, feedAccountId: '333', subscribed: [] }, force: true })
+  assert.deepEqual([...seenCreds], ['333'], 'reportedTick carries it too')
+  // a side with tick observation OFF pushes no quote list (its positions stay on the broker path)
+  const live = desiredGuardFor(db, { isLive: true }, Date.now())
+  assert.equal(live.tickRecord, false)
+  let sentLive = null
+  await syncExecGuard(db, { setExecGuard: async (_c, body) => { sentLive = body; return { ok: true } } }, { name: 'cpp_exec', isLive: true }, { creds: { ready: true, accountId: '222' }, resolveSymbolId: resolve, reportedGuard: null })
+  assert.equal(sentLive.quoteSymbolIds, undefined)
+  assert.equal(sentLive.tickSymbolIds, undefined)
+  // the diff: an uncarried symbol on EITHER list is a push; both carried → quiet
+  const desired = { halt: false, haltAccounts: [], entryEpochs: { 111: 0, 333: 0 }, tickRecord: true, tickSymbolIds: [1, 41], quoteSymbolIds: [2, 3] }
+  const base = { halt: false, haltAccountCount: 0, entryEpochs: { 111: 0, 333: 0 } }
+  assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 41] } }), true, 'an open position\'s symbol not carried → push')
+  assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 2, 3] } }), true, 'a configured symbol not carried → push')
+  assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 41, 2, 3, 7] } }), false, 'both carried → quiet (unchanged → no push)')
 })

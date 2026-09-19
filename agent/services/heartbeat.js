@@ -1265,7 +1265,7 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
         now: nowMs,
       })
       if (sync.pushed) {
-        console.warn(`[heartbeat] ${side.name}: exec guard converged — halt=${sync.desired.halt} haltAccounts=[${sync.desired.haltAccounts.join(', ')}]${sync.desired.tickRecord ? ` tickRecord=true tickSymbolIds=[${(sync.desired.tickSymbolIds || []).join(', ')}]` : ''}`)
+        console.warn(`[heartbeat] ${side.name}: exec guard converged — halt=${sync.desired.halt} haltAccounts=[${sync.desired.haltAccounts.join(', ')}]${sync.desired.tickRecord ? ` tickRecord=true tickSymbolIds=[${(sync.desired.tickSymbolIds || []).join(', ')}] quoteSymbolIds=[${(sync.desired.quoteSymbolIds || []).join(', ')}]` : ''}`)
       }
       if (sync.error) console.warn(`[heartbeat] ${side.name}: exec guard push FAILED — ${sync.error}`)
       stampGuardSync(sync.error ?? null)

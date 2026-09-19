@@ -31,6 +31,107 @@ import { cachedAtrForSymbol } from './profit-keeper.js'
 import { manageStageAllows } from './stage-matrix.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import { BoundedMap } from '../lib/bounded-map.js'
+import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
+
+// ---------------------------------------------------------------------------
+// QUOTES FROM THE SIDECAR (19-09-2026). The tick re-priced every due position
+// with its own broker round trip (wsGetSpotOnce, serially) while the sidecar
+// already held a live spot subscription for the same symbols. Measured before
+// this change: a tick with nothing due took 2 ms, the worst tick in ten
+// minutes 51 s, skipShare10m 0.45–0.75 against the goal table's ≤ 10 %. Now
+// each tick makes ONE pull per side that has positions (GET /quotes) and
+// prices from it; the broker call is the fallback, taken exactly as before
+// when the sidecar has no quote for the symbol or its quote is older than
+// QUOTE_MAX_AGE_MS (measured on recvMs, the sidecar's receipt clock — the
+// broker's own timestamp can be minutes old on a quiet symbol and still be
+// the current price).
+// ---------------------------------------------------------------------------
+export const QUOTE_MAX_AGE_DEFAULT_MS = 10_000
+export function quoteMaxAgeMs(env = process.env) {
+  const n = Number(env.FAST_MONITOR_QUOTE_MAX_AGE_MS)
+  return n > 0 ? n : QUOTE_MAX_AGE_DEFAULT_MS
+}
+
+/**
+ * Pure: the sidecar's quote for `symbolId` when it is usable. The age is
+ * `ageMs` when the body carried the sidecar's own `nowMs` (one clock:
+ * checker SHOULD 4 — the sidecar's system_clock and Node's Date.now() can
+ * differ by seconds), else nowMs - recvMs on Node's clock (an older sidecar).
+ * @returns {{quote: {bid:number, ask:number}|null, source: 'sidecar'|'stale'|'missing'}}
+ */
+export function pickSidecarQuote(quotes, symbolId, nowMs, maxAgeMs = QUOTE_MAX_AGE_DEFAULT_MS) {
+  const q = quotes?.get?.(Number(symbolId))
+  if (!q || !(q.bid > 0) || !(q.ask > 0)) return { quote: null, source: 'missing' }
+  const age = Number.isFinite(q.ageMs) ? q.ageMs : Number.isFinite(q.recvMs) ? nowMs - q.recvMs : Infinity
+  if (age > maxAgeMs) return { quote: null, source: 'stale' }
+  return { quote: { bid: q.bid, ask: q.ask }, source: 'sidecar' }
+}
+
+/**
+ * A /quotes body → Map symbolId → {bid, ask, tsMs, recvMs, ageMs}; empty when
+ * the feed is absent or the body null. ageMs = body.nowMs - recvMs on the
+ * sidecar's clock, null when the body carries no nowMs.
+ */
+export function quoteMapFrom(body) {
+  const m = new Map()
+  if (!body || body.feed === 'absent' || !Array.isArray(body.quotes)) return m
+  const nowMs = Number(body.nowMs)
+  for (const q of body.quotes) {
+    const id = Number(q?.symbolId)
+    if (!(id > 0)) continue
+    const recvMs = Number(q.recvMs) || 0
+    m.set(id, {
+      bid: q.bid == null ? null : Number(q.bid), ask: q.ask == null ? null : Number(q.ask),
+      tsMs: Number(q.tsMs) || 0, recvMs,
+      ageMs: Number.isFinite(nowMs) && nowMs > 0 && recvMs > 0 ? nowMs - recvMs : null,
+    })
+  }
+  return m
+}
+
+/**
+ * The symbol id to look the position up by on its side's sidecar — in the
+ * FEED ACCOUNT's id space, because that is the account the feed subscribed
+ * as and the space its quote table is keyed in. The sidecar reports it on
+ * every /quotes answer (`accountId`): whichever account made the first
+ * /connect on that side and stayed in the roster — NOT necessarily what
+ * Node calls primary (checker round 2: a non-primary dispatch can make the
+ * first /connect, and the selected account can switch later).
+ *
+ * CHECKER BLOCKER 1 (19-09-2026, round 1): the first cut used the POSITION's
+ * own account map. cTrader ids are per account (ctrader-creds.js, 03-09):
+ * with the feed account mapping {EURUSD:1, GBPUSD:2} and a same-side account
+ * 333 mapping EURUSD→2 in its own space, a EURUSD position on 333 was priced
+ * from GBPUSD's quote and the monitor logged a PARTIAL_EXIT on a fictitious
+ * +16R. So: the feed account's map (`symbol_id_map:<feedAccountId>`; the
+ * global map only when the feed account is the one the global map was built
+ * from, `ctrader_account_id`); the position's own id must AGREE with it — a
+ * non-primary account with no map on file, or whose own id for the name
+ * differs, is not looked up (null → the broker round trip, as before this
+ * change). No feed account, or a feed account with no map → null too.
+ */
+export function sidecarSymbolIdFor(db, pos, globalMap, primaryId, cache = new Map(), feedAccountId = null) {
+  const sym = String(pos.symbol || '').toUpperCase()
+  const acct = pos.account_id != null ? String(pos.account_id) : null
+  const feedAcct = feedAccountId != null ? String(feedAccountId) : null
+  if (feedAcct == null) return null
+  // the feed's space
+  const feedMap = accountMap(db, feedAcct, cache) ?? (primaryId != null && String(primaryId) === feedAcct ? globalMap : null)
+  const feedId = feedMap?.[sym]
+  if (!(Number(feedId) > 0)) return null
+  // the position's own space must agree
+  if (acct == null || acct === feedAcct) return Number(feedId)
+  const own = accountMap(db, acct, cache) ?? (primaryId != null && String(primaryId) === acct ? globalMap : null)
+  const ownId = own?.[sym]
+  return Number(ownId) === Number(feedId) ? Number(feedId) : null
+}
+function accountMap(db, acct, cache) {
+  if (cache.has(acct)) return cache.get(acct)
+  let m = null
+  try { m = getAccountSymbolMap(db, acct)?.map ?? null } catch { m = null }
+  cache.set(acct, m)
+  return m
+}
 
 /**
  * Pure cadence policy: milliseconds between checks for one position.
@@ -200,6 +301,45 @@ export async function runFastMonitor(db, creds, deps = {}) {
     const symbolMap = (() => { try { return JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { return {} } })()
     const overrides = loadMonitorOverrides(db)
 
+    // ONE /quotes pull per side that has positions (see the header block).
+    // A position's side is its account's registry row; no row → the creds'
+    // side. The pull is bounded (2 s) and any failure is an empty map, i.e.
+    // the broker fallback for every position — never a skipped check.
+    const exec = deps.exec ?? await import('../lib/exec-engine.js')
+    const maxAgeMs = deps.quoteMaxAgeMs ?? quoteMaxAgeMs()
+    const primaryId = getState(db, 'ctrader_account_id')
+    const acctLive = new Map()
+    try { for (const r of db.prepare('SELECT account_id, is_live FROM accounts').all()) acctLive.set(String(r.account_id), r.is_live === 1) } catch { /* no registry → creds side */ }
+    const sideOf = (pos) => {
+      const acct = pos.account_id != null ? String(pos.account_id) : null
+      const known = acct != null ? acctLive.get(acct) : undefined
+      return typeof known === 'boolean' ? known : (typeof creds.isLive === 'boolean' ? creds.isLive : null)
+    }
+    const acctMapCache = new Map()
+    // The sides with a position to price. The WHOLE table is pulled per
+    // side (no ids filter): the lookup ids live in the feed account's space,
+    // and which account that is only the answer says (`accountId`). The
+    // table is the feed's subscription — tens of symbols — so the filter
+    // would save nothing worth a second round trip.
+    const sidecarSides = new Set()
+    for (const pos of positions) {
+      if (pos.source === 'external') continue
+      sidecarSides.add(String(sideOf(pos)))
+    }
+    // The sides are pulled CONCURRENTLY (checker SHOULD 3): two hung sidecars
+    // cost one timeout before the first position is priced, not two.
+    const quotesBySide = new Map()   // side key → Map symbolId → quote
+    const feedAccountBySide = new Map() // side key → the feed's account (its id space), or null
+    await Promise.all([...sidecarSides].map(async (key) => {
+      const isLive = key === 'true' ? true : key === 'false' ? false : null
+      let body = null
+      try { body = typeof exec.sidecarQuotes === 'function' ? await exec.sidecarQuotes(isLive) : null } catch { body = null }
+      quotesBySide.set(key, quoteMapFrom(body))
+      feedAccountBySide.set(key, body && body.feed !== 'absent' && body.accountId != null ? String(body.accountId) : null)
+    }))
+    const lookupId = (pos) => sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache, feedAccountBySide.get(String(sideOf(pos))) ?? null)
+    const quoteCounts = { fromSidecar: 0, fromBroker: 0, stale: 0 }
+
     let checked = 0
     let acted = 0
     for (const pos of positions) {
@@ -247,7 +387,20 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (!due) continue
         lastCheckAt.set(pos.id, now())
 
-        const q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+        // Sidecar first (fresh within maxAgeMs on the sidecar's receipt
+        // clock), the broker round trip otherwise — exactly as before.
+        const sidecarId = lookupId(pos)
+        const pick = sidecarId == null
+          ? { quote: null, source: 'missing' }
+          : pickSidecarQuote(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)
+        let q = pick.quote
+        if (q) {
+          quoteCounts.fromSidecar++
+        } else {
+          if (pick.source === 'stale') quoteCounts.stale++
+          quoteCounts.fromBroker++
+          q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+        }
         const mid = q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null
         if (mid == null) {
           noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
@@ -336,7 +489,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         console.error('[fast-monitor]', pos.symbol, err.message)
       }
     }
-    return { checked, acted, positions: positions.length }
+    return { checked, acted, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size }
   } finally {
     running = false
   }
@@ -707,6 +860,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   let bandRunning = false
   let bandSkipped = 0
   let lastTick = null
+  let lastQuotes = null   // { fromSidecar, fromBroker, stale } from the last pass that priced anything
   let lastBand = { ms: null, overran: false }
   let lastTickRecordAt = 0
   const startedMs = clock()
@@ -735,6 +889,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
         tick: {
           everyMs: tickMs, lastMs: lastTick, max10mMs: tk.max, skippedTicks: skipped,
           skipped10m: skipsKept.length, skipShare10m: shares.skipShare, busyShare10m: shares.busyShare,
+          // 19-09-2026: where the last pass's prices came from (see the
+          // header block) — the acceptance read for the sidecar path.
+          quotes: lastQuotes,
         },
         band: { everyMs: bandMs, lastMs: band.ms, max10mMs: bd.max, overran: band.overran, skippedBands: bandSkipped },
       }))
@@ -748,10 +905,14 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     writeRecord(nowMs)
   }
 
+  // Returns { err, quotes }; an injected runTick may still return a bare
+  // error or null (older tests), which the caller below reads the same way.
   const runTick = deps.runTick ?? (async (creds) => {
     let tickErr = null
+    let quotes = null
     try {
-      await runFastMonitor(db, creds, deps)
+      const r = await runFastMonitor(db, creds, deps)
+      if (r?.quotes) quotes = r.quotes
     } catch (err) {
       tickErr = err
       console.error('[fast-monitor] tick failed:', err.message)
@@ -771,7 +932,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] session-open-guard failed:', err.message)
     }
-    return tickErr
+    return { err: tickErr, quotes }
   })
 
   const t = setInterval(async () => {
@@ -797,7 +958,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       // ONE creds read per tick: this was called five times per tick, each
       // doing several getState reads plus a JSON.parse of the symbol map.
       const creds = getCreds(db)
-      const tickErr = await runTick(creds, startedAt)
+      const r = await runTick(creds, startedAt)
+      const tickErr = r instanceof Error ? r : (r?.err ?? null)
+      if (r?.quotes) lastQuotes = r.quotes
       const ms = clock() - startedAt
       lastTick = ms
       tickSamples.push({ at: startedAt, ms })

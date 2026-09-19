@@ -38,6 +38,19 @@ using SpotTickCallback = std::function<void(long long symbolId, double bid, doub
 using SpotRawTap = std::function<void(long long symbolId, bool hasBid, long long bid,
                                       bool hasAsk, long long ask, long long generation)>;
 
+// The feed's LATEST quote for one symbol (19-09-2026, fast-monitor quotes
+// from the sidecar). bid/ask are descaled price units, carried forward the
+// same way SpotTickCallback's callers carry them; a side never seen is 0.
+// tsMs is the event's own timestamp when the frame carried one, else the
+// local receipt time; recvMs is always the local receipt time — the keeper's
+// age check reads recvMs, because it is the clock that says how long ago THIS
+// process last heard the symbol, whatever the broker stamped.
+struct SpotQuote {
+  long long symbolId = 0;
+  double bid = 0, ask = 0;
+  long long tsMs = 0, recvMs = 0;
+};
+
 class SpotFeed {
 public:
   // depthEnabled additionally subscribes the same symbol list to L2 depth
@@ -89,12 +102,21 @@ public:
   // existed nothing outside this object could see it. Facts only — the
   // STALENESS verdict is Node's, which knows market hours; this side cannot.
   bool isConnected() const { return connected_.load(std::memory_order_relaxed); }
+  // The account this feed authenticates as — the space its quote table's
+  // symbol ids live in (whichever account made the first /connect on this
+  // side and stayed in the roster; NOT necessarily what Node calls primary).
+  long long accountId() const { return accountId_; }
   long long lastTickAtMs() const { return lastTickAtMs_.load(std::memory_order_relaxed); }
   long long tickCount() const { return tickCount_.load(std::memory_order_relaxed); }
   long long reconnects() const { return reconnects_.load(std::memory_order_relaxed); }
   // (symbolId, lastTickAtMs) pairs — bearer-gated in /health (symbol ids
   // identify what is traded, same reasoning as the accounts redaction).
   std::vector<std::pair<long long, long long>> lastTickBySymbol();
+  // Every symbol's latest quote (a copy; symbolId ascending). Thread-safe;
+  // for GET /quotes so the keeper's fast monitor can price its open
+  // positions from a feed this process already holds instead of one broker
+  // round trip per position.
+  std::vector<SpotQuote> latestQuotes();
 
   // Refresh the credentials the NEXT connect will use, without disturbing
   // the live one.
@@ -185,6 +207,7 @@ private:
   std::atomic<long long> reconnects_{0};
   std::mutex tickMtx_;
   std::map<long long, long long> lastTickBySymbol_;
+  std::map<long long, SpotQuote> latestQuotes_; // guarded by tickMtx_; survives reconnects (recvMs says how old)
   class DecisionRing* ring_ = nullptr;
   SpotRawTap rawTap_;
 };

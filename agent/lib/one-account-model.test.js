@@ -60,7 +60,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/index.js': { reason: 'boots ctrader_is_live from the env and names the side in the roster-invariant boot line', max: { isLive: 2, live_str: 1, demo_str: 1 } },
   // ---- credentials / host choice (plan §3.1: ctrader-creds.js) -------------
   'agent/lib/ctrader-creds.js': { reason: 'host choice and same-side roster for the credentials (plan §3.1 routing)', max: { is_live: 1, isLive: 5 } },
-  'agent/lib/exec-engine.js': { reason: 'sidecar roster per side (plan §3.1: exec-engine.js rosters)', max: { isLive: 4 } },
+  'agent/lib/exec-engine.js': { reason: 'sidecar roster per side (plan §3.1: exec-engine.js rosters); sidecarQuotes picks the side\'s base (19-09-2026)', max: { isLive: 7 } },
   'agent/loop.js': { reason: 'host choices and same-side fan-outs (plan §3.1: loop.js), side named in logs', max: { is_live: 4, isLive: 33, live_str: 5, demo_str: 5 } },
   'agent/routes/actions.js': { reason: 'account selection writes ctrader_is_live and picks the host; creds per account (the validation-fill refusal is in RESIDUAL_GATES)', max: { is_live: 2, isLive: 27, live_str: 1, demo_str: 1 } },
   'agent/routes/state.js': { reason: 'health/roster views echo the side; the manual-order override resolves the account\'s creds', max: { is_live: 6, isLive: 4, live_str: 1, demo_str: 1 } },
@@ -70,7 +70,8 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/acting-layer.js': { reason: 'same-side roster filter (plan §3.1)', max: { is_live: 2, isLive: 3 } },
   'agent/services/naked-position-guard.js': { reason: 'same-side roster filter (plan §3.1)', max: { is_live: 1, isLive: 3 } },
   'agent/services/entry-drain.js': { reason: 'creds per account for the drain (plan §3.1)', max: { is_live: 3, isLive: 1 } },
-  'agent/services/exec-guard-sync.js': { reason: 'the side\'s roster for the guard push (plan §3.1); the tick-entry roster reads mode + STABLE only', max: { is_live: 3, isLive: 10 } },
+  'agent/services/exec-guard-sync.js': { reason: 'the side\'s roster for the guard push (plan §3.1); the tick-entry roster reads mode + STABLE only; the open positions carried on the side\'s sidecar (19-09-2026)', max: { is_live: 4, isLive: 14 } },
+  'agent/services/fast-monitor.js': { reason: 'which sidecar to pull quotes from per position (plan §3.1 routing, 19-09-2026); the evaluation reads no side', max: { is_live: 2, isLive: 4 } },
   'agent/services/tick-permits.js': { reason: 'the side the feeder pushes to (plan §3.1); no environment strike since PR-B', max: { is_live: 1, isLive: 4 } },
   'agent/services/tick-readiness.js': { reason: 'sideFor (plan §3.1: tick-readiness.js:27) and registry ordering; the validation_stage check reads no environment', max: { is_live: 2, live_str: 1, environment_cmp: 1 } },
   'agent/services/tick-validation.js': { reason: 'which side\'s shadow signals to read (plan §3.1: tick-validation.js side)', max: { live_str: 1, environment_cmp: 1 } },

@@ -219,6 +219,34 @@ export function tickSymbolNames(db) {
   } catch { return [] }
 }
 
+/**
+ * 19-09-2026 (fast-monitor quotes from the sidecar): the symbols of the OPEN
+ * monitored positions on `side`, for a QUOTES-ONLY subscription on that
+ * side's feed (`quoteSymbolIds` on /config). Kept apart from the configured
+ * tick symbols on purpose (checker SHOULD 2): the sidecar's recorder tap and
+ * symbol workers admit only the configured universe, so a symbol pushed here
+ * is priced by GET /quotes and nothing else — never recorded, never run
+ * through the shadow strategy, never counted by tick-validation. A position
+ * whose account is on the other side is not this sidecar's; one with no
+ * account row on file is carried on both (a spare subscription costs
+ * nothing, a missing one costs a broker round trip per tick). External
+ * (observe-only) positions are not priced by the monitor and are not
+ * carried. The readiness page, the permit feeder and the state route read
+ * `tickSymbolNames` only.
+ */
+export function quoteSymbolNames(db, side = null) {
+  try {
+    const isLive = side?.isLive
+    const rows = typeof isLive === 'boolean'
+      ? db.prepare(`SELECT DISTINCT p.symbol AS symbol FROM monitored_positions p
+                    LEFT JOIN accounts a ON a.account_id = p.account_id
+                    WHERE p.status = 'active' AND p.source IS NOT 'external'
+                      AND (a.account_id IS NULL OR a.is_live = ?)`).all(isLive ? 1 : 0)
+      : db.prepare(`SELECT DISTINCT symbol FROM monitored_positions WHERE status = 'active' AND source IS NOT 'external'`).all()
+    return [...new Set(rows.map(r => String(r.symbol || '').trim().toUpperCase()).filter(Boolean))]
+  } catch { return [] }
+}
+
 // Unresolvable names are logged once per (side, name), not per probe.
 const unresolvedLogged = new Set()
 /**
@@ -228,7 +256,15 @@ const unresolvedLogged = new Set()
  * logged once per (side, name), as before.
  */
 export async function resolveTickSymbols(db, creds, side, { resolveSymbolId = null } = {}) {
-  const names = tickSymbolNames(db)
+  return resolveNames(db, creds, side, tickSymbolNames(db), { resolveSymbolId })
+}
+
+/** The quotes-only names (quoteSymbolNames) resolved to this side's ids, same rules. */
+export async function resolveQuoteSymbols(db, creds, side, { resolveSymbolId = null } = {}) {
+  return resolveNames(db, creds, side, quoteSymbolNames(db, side), { resolveSymbolId })
+}
+
+async function resolveNames(db, creds, side, names, { resolveSymbolId = null } = {}) {
   if (!names.length || !creds?.ready) return []
   const resolve = resolveSymbolId || (await import('../lib/ctrader-creds.js')).resolveSymbolId
   const out = []
@@ -330,9 +366,11 @@ export function guardDiffers(desired, reported) {
   // difference on every probe — harmless (the push is idempotent) and it
   // stops as soon as that sidecar is redeployed.
   if (tick && desired.tickShadowSim && tick.shadowSim && typeof tick.shadowSim === 'object' && !sameSim(desired.tickShadowSim, tick.shadowSim)) return true
-  if (tick && Array.isArray(desired.tickSymbolIds) && desired.tickSymbolIds.length && Array.isArray(tick.subscribed)) {
+  if (tick && Array.isArray(tick.subscribed)) {
     const have = new Set(tick.subscribed.map(Number))
-    for (const id of desired.tickSymbolIds) if (!have.has(Number(id))) return true
+    for (const id of desired.tickSymbolIds || []) if (!have.has(Number(id))) return true
+    // 19-09-2026: a quotes-only symbol the feed does not carry is a push too
+    for (const id of desired.quoteSymbolIds || []) if (!have.has(Number(id))) return true
   }
   return false
 }
@@ -355,9 +393,29 @@ export async function syncExecGuard(db, exec, side, { reportedGuard = null, cred
     // P3a: the tick symbols ride on the same push, resolved to this side's
     // ids; only asked for when recording is wanted (nothing to carry otherwise).
     if (desired.tickRecord && creds) {
+      // THE FEED ACCOUNT'S ID SPACE (checker round 2). The sidecar's feed
+      // authenticates as whichever account made the first /connect on the
+      // side and stayed in the roster — not necessarily sideCreds' primary —
+      // and it reports that account on /health tick.feedAccountId. The ids
+      // pushed here are looked up in the feed's space, so they are resolved
+      // with THAT account's creds when the sidecar names one (sideCreds'
+      // token covers every account of the same ctid; the resolver fetches
+      // that account's own symbol list and caches it). An older sidecar
+      // reporting none resolves under sideCreds as before — the same
+      // assumption the pre-existing tickSymbolIds resolution carried.
+      const feedAccountId = (reportedTick ?? reportedGuard?.tick)?.feedAccountId
+      const resolveCreds = feedAccountId != null && Number(feedAccountId) > 0 ? { ...creds, accountId: String(feedAccountId) } : creds
       let resolved = []
-      try { resolved = await resolveTickSymbols(db, creds, side, { resolveSymbolId }) } catch { resolved = [] }
+      try { resolved = await resolveTickSymbols(db, resolveCreds, side, { resolveSymbolId }) } catch { resolved = [] }
       desired.tickSymbolIds = resolved.map(s => s.id)
+      // 19-09-2026: the open positions' symbols ride as a SEPARATE list the
+      // sidecar only subscribes for quotes (quoteSymbolNames). Only while
+      // this side records — a side with tick observation OFF pushes no
+      // quote list, and its positions stay on the broker path.
+      let quotes = []
+      try { quotes = await resolveQuoteSymbols(db, resolveCreds, side, { resolveSymbolId }) } catch { quotes = [] }
+      const configured = new Set(desired.tickSymbolIds)
+      desired.quoteSymbolIds = quotes.map(s => s.id).filter(id => !configured.has(id))
       // PR-L: the cost schedule travels with the symbols it prices. The
       // sidecar's books look the class up by symbol id, so the map is built
       // here — the only place that has both the name and this side's id.
