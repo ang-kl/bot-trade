@@ -456,7 +456,7 @@ function settle(j, patch) {
  * in-thread action returns) is on GET /state/tick-research-job?id=… once
  * `state` is `done`; the trials are in tick_trials by then.
  */
-export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null } = {}) {
+export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [] } = {}) {
   if (jobs.current) {
     return { status: 409, body: { ok: false, error: 'research_running', jobId: jobs.current.jobId, startedAt: jobs.current.startedAt, where: 'one research job runs at a time; poll GET /state/tick-research-job?id=<jobId> and post again when it is done' } }
   }
@@ -468,7 +468,12 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   plan.segmentsAvailable = a.segmentsAvailable
   plan.segmentsDropped = a.segmentsDropped
   const th = thresholds || loadThresholds()
-  const j = { jobId: randomUUID().slice(0, 12), state: 'running', startedAt: now.toISOString(), finishedAt: null, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, plan: { stageA: plan.stageA, dryRun: plan.dryRun, params: plan.params, sim: plan.sim, onlySymbol: plan.onlySymbol, maxSegments: plan.maxSegments, noteTruncated: plan.noteTruncated }, result: null, error: null, worker: null, db, importTrial }
+  // Checker, 20-09-2026: `segmentsFailed` was on the 202 alone, so an
+  // operator who posts and then polls never learns that a segment could not
+  // be pulled — the same shape as the figures that used to live only on the
+  // transient response. It rides the job record too.
+  const failedNote = segmentsFailed.length ? { segmentsFailed, segmentsFailedNote: `${segmentsFailed.length} listed segment(s) could not be pulled and are NOT in this replay; the replayed set is the oldest that did arrive` } : {}
+  const j = { jobId: randomUUID().slice(0, 12), state: 'running', startedAt: now.toISOString(), finishedAt: null, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, ...failedNote, plan: { stageA: plan.stageA, dryRun: plan.dryRun, params: plan.params, sim: plan.sim, onlySymbol: plan.onlySymbol, maxSegments: plan.maxSegments, noteTruncated: plan.noteTruncated }, result: null, error: null, worker: null, db, importTrial }
   let worker
   try {
     worker = new Worker(workerFile, { workerData: { files: a.files, plan, replay: th.replay } })
@@ -492,7 +497,7 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   })
   worker.on('error', (err) => { if (settled) return; settled = true; settle(j, { state: 'failed', error: err.message }) })
   worker.on('exit', (code) => { if (settled) return; settled = true; settle(j, { state: 'failed', error: `worker exited with code ${code} before reporting` }) })
-  return { status: 202, body: { ok: true, jobId: j.jobId, state: 'running', startedAt: j.startedAt, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, dryRun: plan.dryRun, stageA: plan.stageA, noteTruncated: plan.noteTruncated, poll: `/state/tick-research-job?id=${j.jobId}`, note: 'the replay runs in a worker thread; the result and the imported trial ids are on the poll URL once state is done' } }
+  return { status: 202, body: { ok: true, jobId: j.jobId, state: 'running', startedAt: j.startedAt, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, ...failedNote, dryRun: plan.dryRun, stageA: plan.stageA, noteTruncated: plan.noteTruncated, poll: `/state/tick-research-job?id=${j.jobId}`, note: 'the replay runs in a worker thread; the result and the imported trial ids are on the poll URL once state is done' } }
 }
 
 /**
@@ -577,6 +582,17 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
     // 5,000,000 cap. Typing 3 when the refusal named 2 is an ordinary
     // mistake, and `maxSegments` has no upper bound of its own, so without
     // this a large value was the pre-flight's off switch.
+    //
+    // WHAT THIS MEASURES, AND WHAT IT DOES NOT (checker, 20-09-2026). It
+    // measures the LISTED slice. The cache can also hold segments the sides
+    // no longer list — the recorder's `retire()` unlinks old sealed segments
+    // the keeper already pulled — and those are invisible here while still
+    // counting in `admit`'s cap check on the merged cache afterwards. So in
+    // that one shape bytes do move before a 413 (measured 8,128 bytes on a
+    // scaled fixture; the worst case stays bounded by `maxBytes`), and
+    // `segmentsAvailable` UNDERSTATES what was reachable — 4 where 6 were.
+    // The cap itself is never exceeded: `admit` is the enforcement, this is
+    // only the early refusal that keeps the bytes still.
     if (per && askedRecords > maxRecords) {
       const records = askedRecords
       const scope = maxSegments == null
@@ -619,13 +635,16 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
     // what the bound pulled), and its `names` are deduplicated where the two
     // sides list the same segment, which `listed.segments` is not.
     const listedCount = Array.isArray(listed.names) ? listed.names.length : listed.segments
-    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest, segmentsAvailable: listedCount })
     // A segment that FAILED to pull is not a segment the operator chose to
     // leave out. Without this the oldest segment failing looks identical to a
     // clean bounded run — the replay quietly moves on to the oldest N present
-    // and only `sync.failed`, nested per side, says otherwise.
-    const failedNames = [...(pull.failed || []), ...(pull.sides || []).flatMap(x => x.failed || [])].map(f => f?.name).filter(Boolean)
-    return { status: started.status, body: { ...started.body, sync: pull, ...(failedNames.length ? { segmentsFailed: failedNames, segmentsFailedNote: `${failedNames.length} listed segment(s) could not be pulled and are NOT in this replay; the replayed set is the oldest that did arrive` } : {}) } }
+    // and only `sync.failed`, nested per side, says otherwise. It is handed
+    // to the job so the POLL carries it as well as the 202.
+    // De-duplicated: a side's failure is reported both on the side and on the
+    // pull as a whole, and the operator wants the SEGMENTS, not the reports.
+    const failedNames = [...new Set([...(pull.failed || []), ...(pull.sides || []).flatMap(x => x.failed || [])].map(f => f?.name).filter(Boolean))]
+    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest, segmentsAvailable: listedCount, segmentsFailed: failedNames })
+    return { status: started.status, body: { ...started.body, sync: pull } }
   } finally {
     syncLock = null
   }
