@@ -471,6 +471,21 @@ async function horizonGoal(db, targets) {
 
 const FAMILY_LABEL = { mean_reversion: 'mean reversion', breakout: 'breakout', trend: 'trend', momentum: 'momentum' }
 
+/**
+ * Owner order 20-09-2026 ("retire the intraday paths, keep momentum only").
+ * These three families measure a stack no producer can trade any more: their
+ * only automatic producer was scan_dispatch, retired in
+ * lib/entry-producers.js. The rows STAY — deleting them would delete the
+ * measurement the decision was made on — but they read as history, not as
+ * live failures. The momentum family is untouched.
+ */
+const RETIRED_FAMILIES = Object.freeze({
+  mean_reversion: 'retired 2026-09-20 (intraday retirement)',
+  breakout: 'retired 2026-09-20 (intraday retirement)',
+  trend: 'retired 2026-09-20 (intraday retirement)',
+})
+const RETIRED_FAMILY_NOTE = 'FAMILY RETIRED 2026-09-20 (owner order: intraday paths retired, momentum only) — this row is the historical record of a stack no producer can trade; the strategies keep proposing into the scan and the refusal ledger at zero risk.'
+
 function familyVerdict(f, targets) {
   const measurable = f.decidable >= targets.familyMinCloses && (f.profitFactor != null || f.lossless === true)
   const ddOk = f.maxDrawdownR != null && f.maxDrawdownR <= targets.familyMaxDdR
@@ -493,6 +508,7 @@ async function familyGoals(db, targets, now) {
     const f = rep.families[fam]
     const v = familyVerdict(f, targets)
     const atHorizon = horizonFams.has(fam)
+    const retiredNote = RETIRED_FAMILIES[fam] ? ` · ${RETIRED_FAMILY_NOTE}` : ''
     return goal(`family_edge_${fam}`, {
       name: `${FAMILY_LABEL[fam] || fam} family: PF, tail share and drawdown`, subsystem: 'strategy family',
       metric: 'closed-trade profit factor · share of closes beyond +2R · max drawdown of the cumulative R curve',
@@ -500,10 +516,11 @@ async function familyGoals(db, targets, now) {
       horizon: atHorizon ? `${targets.familyDays}d rolling (judged at the checkpoint, not here)` : `${targets.familyDays}d rolling`,
       current: v.current,
       verdict: !v.measurable ? 'not_measurable' : v.ok ? 'on_track' : 'off_track',
-      note: !v.measurable
+      note: (!v.measurable
         ? `${f.decidable} decidable of ${f.closes} close(s); ${targets.familyMinCloses} needed` + (f.undecidable ? ` (${f.undecidable} with no readable R)` : '')
-        : `${f.decidable} decidable close(s)` + (f.undecidable ? `, ${f.undecidable} with no readable R` : '') + (atHorizon ? '; the momentum verdict is the checkpoint row' : ''),
+        : `${f.decidable} decidable close(s)` + (f.undecidable ? `, ${f.undecidable} with no readable R` : '') + (atHorizon ? '; the momentum verdict is the checkpoint row' : '')) + retiredNote,
       source: '/state/family-edge',
+      retired: RETIRED_FAMILIES[fam] || null,
     })
   })
 }

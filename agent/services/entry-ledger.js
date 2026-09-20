@@ -116,7 +116,7 @@ export function reserveVpoPermits(db, opts = {}) {
  * maxOrderVolume cap still binds. A standing row is reused only when its
  * epoch, volume and symbol id are unchanged.
  */
-export function reserveStandingPermits(db, { accountId, producerId, basis = 'bar', entries = [], sizeRequired = true, ttlMs = VPO_PERMIT_TTL_MS, now = Date.now() } = {}) {
+export function reserveStandingPermits(db, { accountId, producerId, basis = 'bar', entries = [], sizeRequired = true, ttlMs = VPO_PERMIT_TTL_MS, now = Date.now(), admit = admitEntry } = {}) {
   const id = String(accountId)
   if (!STANDING_PRODUCERS.includes(producerId)) throw new Error(`reserveStandingPermits: ${producerId} is not a standing producer`)
   const st = engineStatusFor(db, id)
@@ -159,7 +159,7 @@ export function reserveStandingPermits(db, { accountId, producerId, basis = 'bar
           out.permits.push({ key, symbol, side, permit: permitOf(kept, now + ttlMs) })
           continue
         }
-        const r = reserveEntry(db, { accountId: id, producerId, basis, symbol, symbolId, side, orderType: 'MARKET', volume, signalRef: String(key), ttlMs, now })
+        const r = reserveEntry(db, { accountId: id, producerId, basis, symbol, symbolId, side, orderType: 'MARKET', volume, signalRef: String(key), ttlMs, now, admit })
         if (!r.ok) { out.refused.push({ key, symbol, side, reason: r.reason }); continue }
         out.issued++
         out.permits.push({ key, symbol, side, permit: r.permit })
@@ -196,6 +196,14 @@ export function reserveEntry(db, {
   accountId, producerId, basis = 'bar', symbol = null, symbolId = null, side, orderType = 'MARKET',
   volume = null, sl = null, tp = null, signalRef = null, ttlMs = DEFAULT_PERMIT_TTL_MS, now = Date.now(),
   gatewayInstance = null,
+  // THE FENCE IS INJECTABLE (20-09-2026). The VPO producer is retired in
+  // lib/entry-producers.js, so its standing-permit logic is unreachable from
+  // a test through the real fence. The tests used to lift the retirement mark
+  // on the shared inventory object, which another test file can observe —
+  // under `--experimental-test-isolation=none` that made the retirement
+  // invariant vacuous. The DEFAULT is the real fence; the refusal it produces
+  // is asserted at the end of this module's test file.
+  admit = admitEntry,
 } = {}) {
   const id = accountId != null ? String(accountId) : null
   if (id == null) return { ok: false, reason: 'no_account' }
@@ -203,7 +211,7 @@ export function reserveEntry(db, {
   if (symbolId == null && !symbol) return { ok: false, reason: 'no_symbol' }
   const sideU = String(side).toUpperCase()
   const tx = db.transaction(() => {
-    const a = admitEntry(db, { accountId: id, producerId, basis })
+    const a = admit(db, { accountId: id, producerId, basis })
     if (!a.ok) return { ok: false, reason: a.reason, modeEpoch: a.modeEpoch }
     const st = engineStatusFor(db, id)
     const clash = openConflict(db, { accountId: id, symbolId, symbol, side: sideU, producerId })

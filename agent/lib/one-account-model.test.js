@@ -277,7 +277,12 @@ test('one account model: the hardcoded-account configs declare every account', (
   // evidence. `_all` carries only what earned it; `_off` is the shadow set;
   // `_trial` is the ONE documented exception to "no ids" — one account per
   // system on trial until its dated checkpoint (07-09 P5 reconciled with P9).
-  assert.ok(Array.isArray(pins._all) && pins._all.length >= 1 && pins._all.length <= 3)
+  // 20-09-2026 (owner: "retire the intraday paths, keep momentum only"):
+  // `_all` is now EMPTY and fib_confluence is in `_off` — not because its
+  // record turned, but because its only producer (scan_dispatch) is retired
+  // in lib/entry-producers.js, and principle 6 forbids showing a strategy
+  // armed that no producer can trade. The armed set is `_trial` alone.
+  assert.ok(Array.isArray(pins._all) && pins._all.length <= 3)
   assert.ok(Array.isArray(pins._off) && pins._off.length >= 10, 'the shadow set is named')
   assert.deepEqual(Object.keys(pins).filter(k => /^\d+$/.test(k)), [], 'no account ids as keys in the pins file')
   assert.deepEqual(Object.keys(pins._trial), ['tsmom_long'])

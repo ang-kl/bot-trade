@@ -32,6 +32,7 @@ export const ENTRY_PRODUCERS = Object.freeze([
     file: 'agent/loop.js', via: 'autoTrade → execPlaceOrder',
     trigger: 'main loop: scan → analyse → risk gate → dispatch', admission: 'exec-engine',
     note: 'the ordinary scanner and synthesis path; every strategy in the registry',
+    retired: '2026-09-20 owner order: intraday paths retired, momentum only (9 strategies, 61 trades, net −62.63 over 30 days — ~7 trades each, nothing decidable); the scan still runs and its proposals are recorded as producer_retired skips',
   },
   {
     id: 'daily_momentum_account', family: 'automatic', basis: 'bar',
@@ -54,6 +55,7 @@ export const ENTRY_PRODUCERS = Object.freeze([
     file: 'agent/services/closed-market-limits.js', via: 'exec.placeOrder',
     trigger: 'closed-market and higher-timeframe limits placed for the next open', admission: 'exec-engine',
     note: 'plan B14: placement precedes the evidence gate on this branch',
+    retired: '2026-09-20 owner order: intraday paths retired, momentum only; no limit is rested for the next open and the placement phase is not scheduled (the stale-limit sweep keeps reconciling rows already at the broker)',
   },
   {
     id: 'burn_in_probe', family: 'automatic', basis: 'bar',

@@ -1665,10 +1665,33 @@ test('retired controller: checkHeartbeats never stalls it, heartbeatView labels 
   // The producer inventory and the loop agree.
   const { isProducerRetired } = await import('../lib/entry-producers.js')
   assert.equal(isProducerRetired('pending_fib_orders'), true)
-  assert.equal(isProducerRetired('scan_dispatch'), false)
+  // 20-09-2026 (owner: "retire the intraday paths, keep momentum only"):
+  // scan_dispatch is retired too — but its phase KEEPS running as a free
+  // shadow (the proposals end at the fence and are scored), so unlike the
+  // pending phase there is no loop guard and no boot line for it.
+  assert.equal(isProducerRetired('scan_dispatch'), true)
+  assert.equal(isProducerRetired('daily_momentum_account'), false, 'the kept momentum producers are not retired')
+  assert.equal(isProducerRetired('cross_sectional_book'), false)
+  assert.equal(isProducerRetired('tick_momentum'), false, 'the tick engine stays reachable')
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   assert.match(loop, /const PENDING_PRODUCER_RETIRED = isProducerRetired\('pending_fib_orders'\)/)
   assert.match(loop, /if \(!PENDING_PRODUCER_RETIRED\) try \{\s*phase\('pending orders'\)/)
   assert.match(loop, /if \(PENDING_PRODUCER_RETIRED\) log\('\[boot\] pending orders: producer retired — phase not scheduled'\)/)
-  assert.equal((loop.match(/producer retired — phase not scheduled/g) || []).length, 1, 'logged at boot only, not in the cycle')
+  assert.equal((loop.match(/pending orders: producer retired — phase not scheduled/g) || []).length, 1, 'logged at boot only, not in the cycle')
+  // The same shape for the closed-market limit producer (20-09-2026): the
+  // two placement sites are not reached and one boot line says so. The
+  // stale-limit SWEEP is deliberately untouched — it reconciles rows already
+  // at the broker, and retiring a producer stops NEW entries only.
+  assert.equal(isProducerRetired('closed_market_limits'), true)
+  assert.match(loop, /const CLOSED_MARKET_PRODUCER_RETIRED = isProducerRetired\('closed_market_limits'\)/)
+  assert.match(loop, /if \(CLOSED_MARKET_PRODUCER_RETIRED\) log\('\[boot\] closed-market limits: producer retired/)
+  assert.equal((loop.match(/closed-market limits: producer retired/g) || []).length, 1, 'logged at boot only, not in the cycle')
+  // FIX ROUND 20-09-2026: the refusal is the FENCE's, keyed on the CALLING
+  // producer — a module-level branch guard here retired the momentum
+  // account's closed-market entries too (its daily pass runs at 21:05 UTC,
+  // with the US and HK markets shut). The loop passes whose risk it is and
+  // the fence answers; the boot line is a statement, not the mechanism.
+  assert.ok(!/queuePendingSignal\(db, symbol, synth, marketGate\.reason\)\s*\n\s*log\(`Closed market — limit producer retired/.test(loop),
+    'no branch-level retirement: a kept producer still rests its limit')
+  assert.ok(/reconcileStaleClosedMarketLimits/.test(loop), 'the stale-limit sweep still runs')
 })

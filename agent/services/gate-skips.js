@@ -62,3 +62,38 @@ export function recordEvidenceShadow(db, { symbol, side, synth = {}, accountId, 
     },
   })
 }
+
+/**
+ * A RETIRED producer asked to open new risk and was refused at the fence
+ * (services/entry-mode.js admitEntry; owner order 20-09-2026, the intraday
+ * retirement). One decision_log SKIP, never a risk_events veto — the
+ * boundary drawn by the veto-boundary PR: a refusal that is stable for the
+ * whole cycle and the same for every proposal on the account is a skip.
+ *
+ * The proposal rides in detail_json in the SAME shape the evidence shadow
+ * and the gate_redirect row use, so the refusal ledger scores the retired
+ * stack's proposals for forgone R at zero risk — the scan keeps producing
+ * evidence and, if it recovers, the owner has the record.
+ */
+export const PRODUCER_RETIRED_STAGE = 'producer_retired'
+
+export function recordProducerRetired(db, { accountId, producerId, reason, basis = null, proposal = null, loopId = null }) {
+  const p = proposal || null
+  recordDecision(db, {
+    accountId,
+    symbol: p?.symbol ?? null, timeframe: p?.timeframe ?? null, strategy: p?.strategy ?? null,
+    stage: PRODUCER_RETIRED_STAGE, decision: 'skip',
+    reason: `producer_retired: ${producerId}`, loopId,
+    detail: {
+      reason, producerId, basis,
+      proposal: p
+        ? {
+          symbol: p.symbol ?? null, side: p.side ?? null, entry: p.entry ?? null, sl: p.sl ?? null,
+          tp1: p.tp1 ?? null, tp2: p.tp2 ?? null, requestedVolume: p.requestedVolume ?? null,
+          strategy: p.strategy || null, timeframe: p.timeframe ?? null,
+          conviction: p.conviction ?? null, source: p.source || 'auto_signal', accountId,
+        }
+        : null,
+    },
+  })
+}

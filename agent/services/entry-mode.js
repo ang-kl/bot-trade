@@ -39,11 +39,13 @@ import { createHash } from 'node:crypto'
 import { getState, setState } from '../db.js'
 import { getAccountState, setAccountState } from './account-registry.js'
 import { recordDecision } from './decision-log.js'
+import { recordProducerRetired } from './gate-skips.js'
 import { ENTRY_MODES, OBSERVATION_MODES, ENTRY_MODE_POLICIES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
 import { ENTRY_PRODUCERS } from '../lib/entry-producers.js'
 // P2a: the intent ledger (a function-only cycle: entry-ledger imports the
 // fence from here; nothing on either side runs at module load).
 import { releaseOldEpoch, intentCounts } from './entry-ledger.js'
+import { DEFAULT_GAP_MS } from './opportunity-identity.js'
 
 export const ENGINE_STATUS_KEY = 'engine_status_json'
 
@@ -502,16 +504,68 @@ export function seedTickObservationFromConfig(db, { file = null, universeFile = 
 // cycle and a decision_log row per cycle is noise, not evidence.
 const refusalsSeen = new Map()
 
+// A RETIRED producer's refusal is the retired stack's EVIDENCE, so it is
+// deduped on the opportunity's own rule rather than remembered forever: one
+// row per setup per opportunity window, which is the gap the ledger already
+// uses to decide that a setup re-proposed after a quiet spell is a NEW
+// opportunity (services/opportunity-identity.js). A minute of slack past the
+// gap keeps two consecutive rows from collapsing back into one opportunity.
+// Without a window the first row would be the only row a setup ever wrote —
+// which is not "the scan keeps producing evidence", it is one snapshot and
+// then silence.
+export const RETIRED_REFUSAL_WINDOW_MS = DEFAULT_GAP_MS + 60_000
+const RETIRED_SEEN_MAX = 5_000
+const retiredSeen = new Map()   // key -> ms of the row last written
+
+function retiredRefusalIsDue(key, nowMs) {
+  const last = retiredSeen.get(key)
+  if (last != null && nowMs - last < RETIRED_REFUSAL_WINDOW_MS) return false
+  // Bounded: the scan's universe times the accounts is small, but a long-
+  // lived process must not accumulate keys for symbols that stopped signalling.
+  if (retiredSeen.size >= RETIRED_SEEN_MAX) {
+    for (const [k, at] of retiredSeen) if (nowMs - at >= 2 * RETIRED_REFUSAL_WINDOW_MS) retiredSeen.delete(k)
+  }
+  retiredSeen.set(key, nowMs)
+  return true
+}
+
 /**
  * The fence. Automatic producers are admitted only when the account's
  * effective mode has the producer's basis; manual families always pass here.
  */
-export function admitEntry(db, { accountId, producerId, basis = 'bar' }) {
+export function admitEntry(db, { accountId, producerId, basis = 'bar', proposal = null, now = Date.now() }) {
   const id = accountId != null ? String(accountId) : null
   const producer = ENTRY_PRODUCERS.find(p => p.id === producerId)
   if (!producer) return { ok: false, reason: `unknown_producer: ${producerId}`, modeEpoch: null }
   if (id == null) return { ok: false, reason: 'no_account', modeEpoch: null }
   const st = engineStatusFor(db, id)
+  // RETIRED PRODUCERS (owner order 20-09-2026: "retire the intraday paths,
+  // keep momentum only"). ONE structural fence, and it is FIRST — before the
+  // mode and basis checks, so the reason a reader sees is the true one and
+  // not "entry_mode_basis" for a path that is gone whatever the mode says.
+  // Marking a producer `retired` in lib/entry-producers.js is therefore
+  // sufficient on its own; entry-producers.test.js pins that it cannot
+  // silently do nothing. Manual and manual_assisted families are not
+  // retired — the owner keeps every hand route.
+  if (producer.retired) {
+    const reason = `producer_retired: ${producerId} — ${producer.retired}`
+    // DEDUPE, the gate_redirect rule: a refusal that is stable for the whole
+    // cycle must not write a row per symbol per cycle.
+    //
+    // WITH a proposal the row is evidence, so it is deduped per setup on the
+    // opportunity window (above): one scoreable row per setup per window, not
+    // one per loop and not one for all time. WITHOUT a proposal there is
+    // nothing to score — those asks come from the producers' own modules, not
+    // from the scan — so one row per account / producer / epoch is the whole
+    // record, and the refusal ledger skips them for having no levels.
+    const key = `retired:${id}:${producerId}:${st.modeEpoch}:${proposal?.symbol ?? '-'}:${proposal?.side ?? '-'}:${proposal?.strategy ?? '-'}`
+    const due = proposal ? retiredRefusalIsDue(key, now) : !refusalsSeen.has(key)
+    if (due) {
+      if (!proposal) refusalsSeen.set(key, true)
+      try { recordProducerRetired(db, { accountId: id, producerId, reason, basis, proposal }) } catch { /* best effort */ }
+    }
+    return { ok: false, reason, retired: true, modeEpoch: st.modeEpoch, mode: st.effectiveEntryMode, family: producer.family }
+  }
   if (producer.family !== 'automatic') return { ok: true, reason: null, modeEpoch: st.modeEpoch, mode: st.effectiveEntryMode, family: producer.family }
   const mode = st.effectiveEntryMode
   let reason = null
@@ -535,7 +589,7 @@ export function admitEntry(db, { accountId, producerId, basis = 'bar' }) {
 }
 
 /** Test seam: forget the per-epoch refusal dedupe. */
-export function _resetRefusalDedupe() { refusalsSeen.clear() }
+export function _resetRefusalDedupe() { refusalsSeen.clear(); retiredSeen.clear() }
 
 /** Every registry account's record, for GET /state/entry-engines. */
 export function entryEnginesView(db) {

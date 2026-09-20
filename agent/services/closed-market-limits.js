@@ -216,6 +216,17 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   // same; the reason rides on the risk event and the message so the record
   // says which path placed the order.
   const reason = opts.reason === 'htf' ? 'htf' : 'closed_market'
+  // WHOSE RISK THIS IS (20-09-2026, fix round on the intraday retirement).
+  // This module is a TRANSPORT as well as a producer: the scan rested its own
+  // limits here (producer `closed_market_limits`, retired with the scan), but
+  // the momentum account and the manual_assisted routes also rest THEIR
+  // entries through it when the market is shut. Fencing every one of them
+  // under the retired id would have retired the momentum account's
+  // closed-market entries too — 22 US/HK stocks and 10 indices of its
+  // universe, since its daily pass runs at 21:05 UTC with those markets
+  // closed. The caller names itself; the default is the retired id, so a
+  // caller that does not name itself is refused rather than admitted.
+  const producerId = opts.producerId || 'closed_market_limits'
   const expiresAtMs = Number.isFinite(Number(opts.expiresAtMs)) && Number(opts.expiresAtMs) > nowMs
     ? Number(opts.expiresAtMs)
     : nowMs + expiryMsFor()
@@ -352,8 +363,10 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     riskCfg,
   })
 
-  // P1b: the fence, by name — this producer places its own orders.
-  const admission = admitEntry(db, { accountId: creds.accountId, producerId: 'closed_market_limits', basis: 'bar' })
+  // P1b: the fence, by name — under the CALLING producer's id (see the note
+  // on `producerId` above), so a retired caller is refused and a kept one
+  // rests its limit exactly as before.
+  const admission = admitEntry(db, { accountId: creds.accountId, producerId, basis: 'bar' })
   if (!admission.ok) return { placed: false, skipped: 'entry_mode', reason: admission.reason }
   try {
     const ev = await exec.placeOrder(creds, payload)

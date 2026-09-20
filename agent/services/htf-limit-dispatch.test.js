@@ -15,6 +15,7 @@ import { DEFAULT_RISK_CONFIG } from './risk.js'
 import { nextBarCloseMs, tfMs } from '../lib/timeframes.js'
 import { tradePrice } from './alert-format.js'
 
+
 const CREDS = { host: 'demo', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '42' }
 // NAS100 1w short, the case that exposed it: proposal 29455.2 / sl 30422.56 / tp1 27520.47
 const SYNTH = { consensus_bias: 'short', entry: 29455.2, sl: 30422.564285714285, tp1: 27520.471428571433, strategy: 'vwap_trend', timeframe: '1w', overall_conviction: 9 }
@@ -22,6 +23,10 @@ const SYNTH = { consensus_bias: 'short', entry: 29455.2, sl: 30422.564285714285,
 function fakes() {
   const placed = [], events = []
   return {
+    // The KEPT producer's id: `closed_market_limits` is retired and refused
+    // at the fence, and the momentum account is who rests HTF limits now.
+    // Nothing here mutates the shared inventory.
+    producerId: 'daily_momentum_account',
     placed, events,
     risk: {
       loadRiskConfig: () => ({}),
@@ -96,7 +101,9 @@ test('wiring pins: loop.js branches ≥threshold signals into the limit path bef
   const block = src.slice(branch, branch + 2500)
   assert.ok(block.includes("if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {"))
   assert.ok(block.includes("const expiresAtMs = nextBarCloseMs(synth.timeframe)"))
-  assert.ok(block.includes("reason: 'htf', expiresAtMs,"))
+  assert.ok(block.includes("producerId, requestedVolume: requestedVol, reason: 'htf', expiresAtMs,"),
+    "the CALLING producer's id travels with the placement (20-09-2026): a retired caller is refused, a kept one rests as before")
+  assert.ok(block.includes("{ producerId }),"), 'and with the entry fence on the credentials')
   assert.ok(block.includes("placeClosedMarketLimit("))
   assert.ok(/return null\s*\}\s*\} catch/.test(block), 'a qualifying signal never falls through to the market order')
   // The branch sits after the market-hours gate and before the risk gate / market order.

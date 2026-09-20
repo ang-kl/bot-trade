@@ -8,7 +8,24 @@ import { join } from 'node:path'
 
 import { initDB } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { requestEntryMode, engineStatusFor, writeEngineStatus, _resetRefusalDedupe, acknowledgeEntryEpochs } from './entry-mode.js'
+
+// ---------------------------------------------------------------------------
+// A RETIRED PRODUCER IS REFUSED AT THE FENCE (20-09-2026, owner: "retire the
+// intraday paths, keep momentum only"), and `vpo_cpp_direct` is one of them.
+// The tests below exercise the ledger's standing-permit logic, so they inject the fence
+// (`the `admit` option`) the same way they inject exec, risk and sizing. NOTHING
+// here mutates the shared inventory: a test file that deleted the retirement
+// mark on the singleton made the retirement invariant vacuous for every other
+// file in the same process (`--experimental-test-isolation=none`). The real
+// fence is the DEFAULT, and the last test in this file asserts the refusal it
+// produces.
+// ---------------------------------------------------------------------------
+// The stub delegates to the REAL fence under a KEPT producer's id, so every
+// mode rule (STOPPED, WARMING, the epoch) still binds exactly as in
+// production and only the RETIREMENT is out of the way.
+const ADMIT_AS_KEPT_PRODUCER = (db, o) => admitEntry(db, { ...o, producerId: 'daily_momentum_account' })
+
+import { requestEntryMode, engineStatusFor, writeEngineStatus, _resetRefusalDedupe, acknowledgeEntryEpochs, admitEntry } from './entry-mode.js'
 import {
   reserveEntry, redeemPermit, markSent, resolveIntent, releaseOldEpoch, expireStale, openIntents, intentCounts,
   pendingExposure, reconcileIntents, operatorResolve, ledgerView, newIntentId, OPEN_STATES,
@@ -25,7 +42,7 @@ function fresh() {
   _resetRefusalDedupe()
   return db
 }
-const base = { accountId: DEMO, producerId: 'scan_dispatch', symbolId: 1, symbol: 'EURUSD', side: 'BUY', volume: 1000, sl: 100, tp: 200 }
+const base = { accountId: DEMO, producerId: 'daily_momentum_account', symbolId: 1, symbol: 'EURUSD', side: 'BUY', volume: 1000, sl: 100, tp: 200 }
 const row = (db, id) => db.prepare('SELECT * FROM entry_intents WHERE id = ?').get(id)
 
 test('reserve issues a one-use permit; a second open intent on the same account/symbol/side is refused; other keys, accounts and manual producers are not', () => {
@@ -52,7 +69,7 @@ test('the P1b fence is inside the reservation: a STOPPED account reserves nothin
   const r = reserveEntry(db, base)
   assert.equal(r.ok, false); assert.equal(r.reason, 'entry_mode_stopped')
   assert.equal(reserveEntry(db, { ...base, producerId: 'route_manual_order' }).ok, true, 'manual is admitted under STOPPED')
-  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = 'scan_dispatch'`).get().n, 0)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = 'daily_momentum_account'`).get().n, 0)
 })
 
 test('redeem moves RESERVED → DISPATCHING exactly once; expired, consumed, unknown and stale-epoch permits are refused', () => {
@@ -209,45 +226,45 @@ test('reserveVpoPermits issues one permit per strategy and side, reuses them acr
   const db = fresh()
   const now = Date.now()
   const entries = [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }, { key: 'vp_value', symbol: 'GBPUSD', symbolId: 2, volume: -1 }]
-  const r1 = reserveVpoPermits(db, { accountId: DEMO, entries, now })
+  const r1 = reserveVpoPermits(db, { admit: ADMIT_AS_KEPT_PRODUCER, accountId: DEMO, entries, now })
   assert.equal(r1.issued, 2); assert.equal(r1.reused, 0); assert.equal(r1.released, 0); assert.deepEqual(r1.refused, [])
   assert.deepEqual(r1.permits.map(p => [p.key, p.symbol, p.side, p.permit.volume, p.permit.epoch]), [['vwap_trend', 'EURUSD', 'BUY', 1000, 0], ['vwap_trend', 'EURUSD', 'SELL', 1000, 0]])
   assert.equal(r1.permits[0].permit.expiresAtMs, now + 5 * 60 * 1000)
   const ids = r1.permits.map(p => p.permit.intentId)
   // the next push reuses them and extends their expiry
-  const r2 = reserveVpoPermits(db, { accountId: DEMO, entries, now: now + 60_000 })
+  const r2 = reserveVpoPermits(db, { admit: ADMIT_AS_KEPT_PRODUCER, accountId: DEMO, entries, now: now + 60_000 })
   assert.equal(r2.reused, 2); assert.equal(r2.issued, 0)
   assert.deepEqual(r2.permits.map(p => p.permit.intentId), ids)
   assert.equal(row(db, ids[0]).permit_expires_at, new Date(now + 60_000 + 5 * 60 * 1000).toISOString())
   // a sizing change supersedes them
-  const r3 = reserveVpoPermits(db, { accountId: DEMO, entries: [{ ...entries[0], volume: 2000 }], now })
+  const r3 = reserveVpoPermits(db, { admit: ADMIT_AS_KEPT_PRODUCER, accountId: DEMO, entries: [{ ...entries[0], volume: 2000 }], now })
   assert.equal(r3.released, 2); assert.equal(r3.issued, 2)
   assert.equal(row(db, ids[0]).state, 'RELEASED'); assert.equal(row(db, ids[0]).error_code, 'vpo_permit_superseded')
   // no sizing → nothing held
-  const r4 = reserveVpoPermits(db, { accountId: DEMO, entries: [{ ...entries[0], volume: -1 }], now })
+  const r4 = reserveVpoPermits(db, { admit: ADMIT_AS_KEPT_PRODUCER, accountId: DEMO, entries: [{ ...entries[0], volume: -1 }], now })
   assert.equal(r4.released, 2); assert.equal(r4.permits.length, 0)
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED'`).get(VPO_PRODUCER).n, 0)
   // the fence still binds
   requestEntryMode(db, DEMO, 'STOPPED')
-  const r5 = reserveVpoPermits(db, { accountId: DEMO, entries, now })
+  const r5 = reserveVpoPermits(db, { admit: ADMIT_AS_KEPT_PRODUCER, accountId: DEMO, entries, now })
   assert.equal(r5.permits.length, 0); assert.equal(r5.refused.length, 2); assert.equal(r5.refused[0].reason, 'entry_mode_stopped')
 })
 
 test('a standing VPO reservation never blocks another producer, but a VPO fire in flight does, and another producer\'s open intent blocks the VPO reserve', () => {
   const db = fresh()
-  const r = reserveVpoPermits(db, { accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
+  const r = reserveVpoPermits(db, { admit: ADMIT_AS_KEPT_PRODUCER, accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
   const buy = r.permits.find(p => p.side === 'BUY').permit
   const scan = reserveEntry(db, { ...base, symbolId: 1, symbol: 'EURUSD', side: 'BUY' })
   assert.equal(scan.ok, true, 'capacity held in advance is not a commitment')
   redeemPermit(db, scan.permit.id); markSent(db, scan.intentId)
   // now the VPO reserve on the same key is refused while the scan entry is in flight
   releaseVpoReservations(db, DEMO, 'test')
-  const again = reserveVpoPermits(db, { accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
+  const again = reserveVpoPermits(db, { admit: ADMIT_AS_KEPT_PRODUCER, accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
   assert.equal(again.refused.length, 1); assert.match(again.refused[0].reason, /^intent_open: SENT/)
   assert.equal(again.permits.length, 1, 'the SELL side is free')
   // the ring says the tier redeemed the standing BUY permit → SENT (from RESERVED), then FILLED
   resolveIntent(db, scan.intentId, { state: 'FILLED', positionId: 1, source: 'response' })
-  const r2 = reserveVpoPermits(db, { accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
+  const r2 = reserveVpoPermits(db, { admit: ADMIT_AS_KEPT_PRODUCER, accountId: DEMO, entries: [{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1, volume: 1000 }] })
   const buy2 = r2.permits.find(p => p.side === 'BUY').permit
   assert.notEqual(buy2.intentId, buy.intentId)
   const ins = db.prepare(`INSERT INTO cpp_decisions (side, boot_id, seq, ts_ms, component, kind, account_id, symbol_id, code, detail) VALUES ('cpp_exec_demo', 'b1', ?, 1, 'engine', ?, ?, ?, ?, ?)`)
@@ -469,4 +486,13 @@ test('PR-E wiring: the primary reconcile pass calls the deal-history settle righ
   assert.ok(settle2 > rec2 && settle2 - rec2 < 3000, 'and settles them')
   const args2 = src.slice(settle2, src.indexOf('})', settle2))
   assert.ok(args2.includes('accountId: acc.account_id') && args2.includes('wsGetDeals(host, clientId, clientSecret, accessToken, acc.account_id, t0, t1)'), 'with that account\'s id on the pull')
+})
+
+test('the injected fence is a test fixture, not a hole: through the REAL fence the ledger reserves nothing for that producer', () => {
+  const db = fresh()
+  // The REAL fence: no `admit` option, so admitEntry itself answers.
+  const r = reserveEntry(db, { ...base, producerId: 'vpo_cpp_direct', symbolId: 77, symbol: 'NAS100' })
+  assert.equal(r.ok, false)
+  assert.match(r.reason, /^producer_retired: vpo_cpp_direct/)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = 'vpo_cpp_direct'`).get().n, 0)
 })

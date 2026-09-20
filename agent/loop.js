@@ -28,6 +28,7 @@ import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, close
 import { getCtraderCreds, getSymbolMap, attachEntryFence } from './lib/ctrader-creds.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { isProducerRetired } from './lib/entry-producers.js'
+import { admitEntry } from './services/entry-mode.js'
 import { configureInflight, inflightSummary, describeCall, maybeStamp as maybeStampInflight } from './lib/inflight.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
@@ -106,6 +107,16 @@ let pendingPhaseInFlight = false      // a budget-abandoned pending phase still 
 // phase logged `Pending orders skipped: fib_618_fade not trade-armed` every
 // cycle. Read once; the phase below is not scheduled and says so at boot.
 const PENDING_PRODUCER_RETIRED = isProducerRetired('pending_fib_orders')
+// Owner order 20-09-2026 ("retire the intraday paths, keep momentum only"):
+// the SCAN's resting-limit producer is retired in the inventory, so no limit
+// is rested for the next open on the scan's behalf. Read once, for the boot
+// line only: the refusal itself is the fence's, keyed on the CALLING
+// producer (see the closed-market branch in autoTrade), because the momentum
+// account and the manual_assisted routes rest their own entries through the
+// same module and must keep doing so. The STALE-LIMIT SWEEP is deliberately
+// NOT retired — it reconciles rows already at the broker, and retiring a
+// producer stops NEW entries only.
+const CLOSED_MARKET_PRODUCER_RETIRED = isProducerRetired('closed_market_limits')
 
 // Sub-phase time budgets (incident follow-up, 2026-07-28: the loop re-hung
 // AFTER the pending-phase budget shipped, and /health showed "pending
@@ -329,6 +340,29 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // (negative caps) still never reaches the gate.
   const requestedVol = Number(watchlistItem?.maxVolume) > 0 ? Number(watchlistItem.maxVolume) : null
 
+  // THE RETIRED-PRODUCER FENCE, asked here with the proposal in hand (owner
+  // order 20-09-2026). admitEntry is the one structural fence and it refuses
+  // this producer wherever it is asked — exec-engine re-asks it at the last
+  // Node boundary — but asking HERE is what gives the refusal its levels, so
+  // the scan's proposals are scored by the refusal ledger for forgone R
+  // instead of ending as a rejected trades row. Only a RETIRED refusal stops
+  // the path here; every other verdict is left to the boundary, unchanged.
+  {
+    const retired = admitEntry(db, {
+      accountId, producerId, basis: 'bar',
+      proposal: {
+        symbol, side, entry: synth.entry ?? null, sl: synth.sl ?? null,
+        tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null, requestedVolume: requestedVol,
+        strategy: synth.strategy || null, timeframe: synth.timeframe ?? null,
+        conviction: synth.overall_conviction ?? null, source: synth.source || 'auto_signal',
+      },
+    })
+    if (!retired.ok && retired.retired) {
+      log(`RETIRED ${symbol} ${side} ${synth.strategy || '?'} (${producerId}): proposal recorded, no order placed`)
+      return null
+    }
+  }
+
   // Market-hours gate: a MARKET order into a closed market is a guaranteed
   // broker rejection — stocks/indices trade the NY session only, FX/metals
   // close on weekends. The signal isn't lost: it's queued (pending_signals)
@@ -347,13 +381,22 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // fill (no internal re-fire queue, so no double-fill). The limit clears
     // the SAME risk gate. One order per symbol; a fresher read replaces it.
     // If the feature is OFF, fall back to the legacy internal re-fire queue.
+    // THE RETIREMENT IS KEYED ON THE PRODUCER, NOT ON THIS BRANCH (fix round,
+    // 20-09-2026). `closed_market_limits` is the SCAN's resting-limit
+    // producer and is retired with the scan — but the momentum account and
+    // the manual_assisted routes rest their own entries through the same
+    // module, and a branch-level guard retired those too. The caller's own
+    // producer id travels with the fence and with the placement: a retired
+    // caller is refused inside placeClosedMarketLimit (and never reaches
+    // here anyway, having been refused at the top of autoTrade), a kept one
+    // rests its limit exactly as before.
     try {
       const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
       const r = await placeClosedMarketLimit(
         db,
-        attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId: 'closed_market_limits' }),
+        attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId }),
         symbol, synth,
-        { requestedVolume: requestedVol, notify: (t) => import('./services/telegram-control.js').then(m => m.notifyOwner(t)).catch(() => {}) }
+        { producerId, requestedVolume: requestedVol, notify: (t) => import('./services/telegram-control.js').then(m => m.notifyOwner(t)).catch(() => {}) }
       )
       if (r.placed) {
         log(`Closed market — resting LIMIT for ${symbol} @ ${r.limitPrice} (fills at open, expires ${r.expiresAt})`)
@@ -434,10 +477,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
       const r = await placeClosedMarketLimit(
         db,
-        attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId: 'closed_market_limits' }),
+        attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId }),
         symbol, synth,
         {
-          requestedVolume: requestedVol, reason: 'htf', expiresAtMs,
+          producerId, requestedVolume: requestedVol, reason: 'htf', expiresAtMs,
           notify: (t) => import('./services/telegram-control.js').then(m => m.notifyOwner(t)).catch(() => {}),
         },
       )
@@ -6118,6 +6161,7 @@ export function startLoop(db) {
   log('Agent loop starting...')
   if (PENDING_PRODUCER_RETIRED) log('[boot] pending orders: producer retired — phase not scheduled')
   setTimeout(() => runLoop(db), 5000) // 5s delay on startup
+  if (CLOSED_MARKET_PRODUCER_RETIRED) log('[boot] closed-market limits: producer retired — the scan rests no limits for the next open; the momentum and manual paths rest their own under their own producer')
   // Wave 5 (§K·15): the in-flight call registry stamps its oldest call to
   // loop_inflight_json from here on, so the watchdog's finding survives the
   // restart it triggers.

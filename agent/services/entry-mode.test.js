@@ -45,7 +45,7 @@ test('STOPPED refuses every automatic producer and admits manual ones; TIME_BASE
   for (const id of ['route_manual_order', 'route_position_double', 'route_position_reverse', 'route_trade_now']) {
     assert.equal(admitEntry(db, { accountId: DEMO, producerId: id }).ok, true, `${id} is manual and admitted under STOPPED`)
   }
-  assert.equal(admitEntry(db, { accountId: LIVE, producerId: 'scan_dispatch' }).ok, true, 'the other account is untouched')
+  assert.equal(admitEntry(db, { accountId: LIVE, producerId: 'daily_momentum_account' }).ok, true, 'the other account is untouched')
   // one decision_log row per (account, producer, epoch), not per call
   const rows = db.prepare(`SELECT COUNT(*) AS n FROM decision_log WHERE stage = 'entry_mode' AND account_id = ?`).get(DEMO).n
   assert.equal(rows, automaticProducers().length)
@@ -56,17 +56,17 @@ test('STOPPED refuses every automatic producer and admits manual ones; TIME_BASE
   assert.equal(back.ok, true); assert.equal(back.status.modeEpoch, 2)
   assert.equal(back.status.transitionState, 'WARMING'); assert.equal(back.status.effectiveEntryMode, 'STOPPED'); assert.equal(back.status.requestedEntryMode, 'TIME_BASED')
   assert.equal(back.status.fenceAckEpoch, null, 'the ack is the sidecar\'s echo, never our own write')
-  const warming = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar' })
+  const warming = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar' })
   assert.equal(warming.ok, false); assert.match(warming.reason, /^entry_mode_transition: WARMING/)
   assert.deepEqual(acknowledgeEntryEpochs(db, { [DEMO]: 1 }), [], 'an older epoch echoed binds nothing')
   const acked = acknowledgeEntryEpochs(db, { [DEMO]: 2, [LIVE]: 0 })
   assert.equal(acked.length, 1); assert.equal(acked[0].effectiveEntryMode, 'TIME_BASED'); assert.equal(acked[0].transitionState, 'STABLE')
   assert.equal(engineStatusFor(db, DEMO).fenceAckEpoch, 2)
-  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar' }).ok, true)
-  const tick = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'tick' })
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar' }).ok, true)
+  const tick = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'tick' })
   assert.equal(tick.ok, false); assert.match(tick.reason, /^entry_mode_basis: TIME_BASED admits bar/)
   assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'nope' }).ok, false)
-  assert.equal(admitEntry(db, { accountId: null, producerId: 'scan_dispatch' }).reason, 'no_account')
+  assert.equal(admitEntry(db, { accountId: null, producerId: 'daily_momentum_account' }).reason, 'no_account')
 })
 
 test('a stale revision is refused; TICK_MOMENTUM is refused until the engine exists; an unknown mode is refused', () => {
@@ -113,7 +113,7 @@ test('AUDIT 11-09-2026: a failed gateway push leaves the account BLOCKED with en
   assert.equal(back.status.transitionState, 'WARMING')
   const blocked = markEntryModeBlocked(db, DEMO, 'sidecar 502')
   assert.equal(blocked.changed, true); assert.equal(blocked.status.transitionState, 'BLOCKED'); assert.equal(blocked.status.effectiveEntryMode, 'STOPPED')
-  const held = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch' })
+  const held = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account' })
   assert.equal(held.ok, false); assert.match(held.reason, /^entry_mode_transition: BLOCKED/)
   // a later probe echoes the epoch: BLOCKED → STABLE, effective
   const acked = acknowledgeEntryEpochs(db, { [DEMO]: 2 }, { source: 'probe:test' })
@@ -166,13 +166,26 @@ test('wiring pins (comments stripped): the fence is called at every Node produce
   // P2a: every hand-built creds object goes through the one helper that
   // attaches the fence AND the ledger; a bare object can no longer place.
   assert.match(src('../loop.js'), /execPlaceOrder\(attachEntryFence\(db, \{ host, clientId, clientSecret, accessToken, accountId, execGuard \}, \{ producerId \}\)/, 'autoTrade\'s hand-built creds carry the fence and the ledger')
-  assert.equal((src('../loop.js').match(/attachEntryFence\(db, \{ host: isLive \? 'live\.ctraderapi\.com' : 'demo\.ctraderapi\.com', clientId, clientSecret, accessToken, accountId \}, \{ producerId: 'closed_market_limits' \}\)/g) || []).length, 2, 'both closed-market call sites')
+  // 20-09-2026: both closed-market call sites carry the CALLING producer's
+  // id, not the hardcoded 'closed_market_limits'. That producer is retired
+  // with the scan; the momentum account and the manual_assisted routes rest
+  // their own entries through the same module and must keep doing so, so the
+  // fence has to see whose risk it is.
+  assert.equal((src('../loop.js').match(/attachEntryFence\(db, \{ host: isLive \? 'live\.ctraderapi\.com' : 'demo\.ctraderapi\.com', clientId, clientSecret, accessToken, accountId \}, \{ producerId \}\)/g) || []).length, 2, 'both closed-market call sites')
+  assert.equal((src('../loop.js').match(/producerId, requestedVolume: requestedVol/g) || []).length, 2, 'and both pass it to the placement')
   assert.match(src('../loop.js'), /getCtraderCreds\(db, undefined, \{ producerId: 'pending_fib_orders' \}\)/, 'the pending pass names its producer')
   assert.ok(!/\bexecPlaceOrder\(\{ host,/.test(src('../loop.js')), 'no bare hand-built creds reach placeOrder')
   assert.match(src('../lib/ctrader-creds.js'), /entryLedger: \{[\s\S]{0,400}reserve: \(o = \{\}\) => reserveEntry\(db/, 'the ledger rides with the credentials')
-  assert.match(src('./closed-market-limits.js'), /admitEntry\(db, \{ accountId: creds\.accountId, producerId: 'closed_market_limits'/)
-  assert.match(src('./pending-orders.js'), /admitEntry\(db, \{ accountId: creds\.accountId, producerId: 'pending_fib_orders'/)
-  assert.match(src('./vpo-feeder.js'), /admitEntry\(db, \{ accountId: String\(acct\), producerId: 'vpo_cpp_direct'/)
+  assert.match(src('./closed-market-limits.js'), /const producerId = opts\.producerId \|\| 'closed_market_limits'/, 'fail-closed: an unnamed caller is the retired producer')
+  assert.match(src('./closed-market-limits.js'), /admitEntry\(db, \{ accountId: creds\.accountId, producerId, basis: 'bar' \}\)/)
+  // pending-orders and vpo-feeder take the fence as an injectable dependency
+  // (their producers are retired, so their own tests cannot reach the logic
+  // through the real one) — the DEFAULT is admitEntry itself.
+  assert.match(src('./pending-orders.js'), /const admit = deps\.admit \?\? admitEntry/)
+  assert.match(src('./pending-orders.js'), /admit\(db, \{ accountId: creds\.accountId, producerId: 'pending_fib_orders'/)
+  assert.match(src('./vpo-feeder.js'), /const admit = deps\.admit \?\? admitEntry/)
+  assert.match(src('./vpo-feeder.js'), /admit\(db, \{ accountId: String\(acct\), producerId: 'vpo_cpp_direct'/)
+  assert.match(src('./entry-ledger.js'), /admit = admitEntry,/, 'the ledger takes the same default')
   assert.match(src('./momentum-book.js'), /producerId: 'cross_sectional_book'/)
   assert.match(src('./momentum-account.js'), /producerId: 'daily_momentum_account'/)
   assert.match(src('./burn-in.js'), /producerId: 'burn_in_probe'/)
@@ -208,7 +221,7 @@ test('P3a/P4: tick observation OFF → RECORD → OFF moves the revision, never 
   assert.equal(r.status.tickObservation, 'RECORD'); assert.equal(r.status.configRevision, 1); assert.equal(r.status.modeEpoch, 0)
   assert.equal(engineStatusFor(db, DEMO).tickObservation, 'RECORD', 'persisted')
   assert.equal(engineStatusFor(db, DEMO).effectiveEntryMode, 'TIME_BASED', 'observation changes no entry authority')
-  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar' }).ok, true, 'time entries continue while observing')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar' }).ok, true, 'time entries continue while observing')
   assert.equal(requestTickObservation(db, DEMO, 'RECORD', { expectedRevision: 0 }).reason, 'revision_conflict')
   const shadow = requestTickObservation(db, DEMO, 'SHADOW')
   assert.equal(shadow.ok, true, 'P4: SHADOW runs the strategy in shadow — signals only'); assert.equal(shadow.status.tickObservation, 'SHADOW'); assert.equal(shadow.status.modeEpoch, 0)
@@ -369,7 +382,7 @@ test('P6b / PR-B: TICK_MOMENTUM is admitted on ANY account whose injected readin
   assert.equal(st.effectiveEntryMode, 'TICK_MOMENTUM'); assert.equal(st.transitionState, 'STABLE')
   _resetRefusalDedupe()
   assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum', basis: 'tick' }).ok, true, 'the tick producer is admitted under TICK_MOMENTUM')
-  const bar = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar' })
+  const bar = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar' })
   assert.equal(bar.ok, false); assert.match(bar.reason, /^entry_mode_basis/)
   assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'route_manual_order' }).ok, true, 'manual keeps its own attribution under any mode')
   // and the tick producer is refused everywhere else
