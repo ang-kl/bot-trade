@@ -25,12 +25,23 @@ import { STRATEGIES } from '../../agent/lib/trade-labels.js'
 //
 // So the coverage guard below runs against the BROKER LABEL vocabulary
 // (agent/lib/trade-labels.js's STRATEGIES) — the set of strategy keys that can
-// actually appear on a stored trade — minus the free-text buckets that predate
-// the registry and are never stamped by a producer.
+// actually appear on a stored trade — minus the buckets no producer stamps.
+//
+// THE EXCLUSION LIST IS THE WEAK POINT OF THIS GUARD, so it is kept as short
+// as the facts allow. Its first version read "never stamped by a producer" and
+// listed `burnin`, which is stamped: burn-in.js writes `strategy: 'burnin'` on
+// every order it places and reads the rows back by `label_strategy`. The
+// producer is retired, the closed rows are not, and they render. It now has a
+// short code and is off this list — excluding a key that really does reach the
+// UI is the blind spot this guard exists to close, not one to document.
+//
+// What remains is the free-text vocabulary that predates the registry:
+// buckets an LLM's prose strategy falls into so the label still round-trips,
+// plus encodeLabel's catch-all. Nothing stamps these on a row as a strategy
+// key, so they have no column to render badly in.
 const LABEL_ONLY_BUCKETS = new Set([
   'trend', 'meanrev', 'breakout', 'scalp', 'swing', 'news', 'reversal',
-  'burnin', // the sampling harness, its own bucket by design
-  'other',  // encodeLabel's catch-all for an unrecognised key
+  'other', // encodeLabel's catch-all for an unrecognised key
 ])
 
 describe('strategy labels', () => {
