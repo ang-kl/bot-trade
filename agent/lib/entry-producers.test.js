@@ -76,8 +76,17 @@ test('the shape of every entry, and the P2 work list', () => {
   // the record, never scheduled, excluded from the mode-epoch fence's roster.
   // Wave 5 (19-09-2026, §K·15): pending_fib_orders joins them — fib_618_fade
   // is OFF everywhere, so the loop no longer schedules the pending phase.
-  assert.equal(automaticProducers().length, 5)
-  assert.deepEqual(retiredProducers().map(p => p.id), ['pending_fib_orders', 'burn_in_probe', 'vpo_cpp_direct'])
+  // 20-09-2026 (owner: "retire the intraday paths, keep momentum only"):
+  // scan_dispatch and closed_market_limits join them. tick_momentum stays —
+  // the owner pulled it back from this order mid-build; the tick engine is
+  // intended to be used and stays reachable behind its readiness predicate
+  // and the per-account switch to TICK_MOMENTUM.
+  assert.equal(automaticProducers().length, 3)
+  assert.deepEqual(automaticProducers().map(p => p.id), ['daily_momentum_account', 'cross_sectional_book', 'tick_momentum'],
+    'the kept automatic producers: the two momentum paths and the tick engine')
+  assert.deepEqual(retiredProducers().map(p => p.id),
+    ['scan_dispatch', 'pending_fib_orders', 'closed_market_limits', 'burn_in_probe', 'vpo_cpp_direct'],
+    'inventory order; the 20-09 pair is scan_dispatch and closed_market_limits')
   assert.deepEqual(automaticProducers().filter(p => p.basis === 'tick').map(p => p.id), ['tick_momentum'], 'P6b: the one tick-basis producer')
   assert.deepEqual(producersOutsideExecEngine().map(p => p.id), ['vpo_cpp_direct', 'tick_momentum'], 'the two in-process sidecar paths the Node chokepoint does not cover (both fenced by the permit at the send boundary)')
   const v = producerInventoryView()

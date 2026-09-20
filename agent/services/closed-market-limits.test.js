@@ -10,7 +10,9 @@ import { initDB, setState } from '../db.js'
 import {
   buildLimitPayload, loadClosedMarketLimitsConfig, DEFAULT_CLOSED_MARKET_LIMITS,
   placeClosedMarketLimit, reconcileStaleClosedMarketLimits,
+
 } from './closed-market-limits.js'
+
 
 const CREDS = { host: 'demo', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '42' }
 const SYNTH = { consensus_bias: 'long', entry: 100, sl: 98, tp1: 104, tp2: 106, strategy: 'rsi2_reversion', timeframe: '8h', overall_conviction: 8 }
@@ -18,6 +20,13 @@ const SYNTH = { consensus_bias: 'long', entry: 100, sl: 98, tp1: 104, tp2: 106, 
 function fakes({ approved = true } = {}) {
   const placed = []
   return {
+    // WHOSE RISK (20-09-2026): this module is the transport for whichever
+    // producer rests a limit. `closed_market_limits` — the SCAN's own
+    // resting-limit producer — is retired and refused at the fence, so these
+    // tests exercise the module as the KEPT momentum producer uses it, which
+    // is the live path today. The last test in this file asserts the refusal
+    // the retired id gets. Nothing here mutates the shared inventory.
+    producerId: 'daily_momentum_account',
     placed,
     risk: {
       loadRiskConfig: () => ({}),
@@ -405,4 +414,20 @@ test('PR-AL: a synth with no reason records null, not an invented one', async ()
   await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, f)
   assert.ok(seen.length >= 1)
   for (const p of seen) assert.equal(p.direction_reason, null)
+})
+
+test('the retired producer is refused here too: naming closed_market_limits (or naming nothing) places nothing', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+  const f = fakes()
+  // The RETIRED producer's own id — and the DEFAULT, so a caller that does
+  // not name itself is refused rather than admitted.
+  for (const opts of [{ ...f, producerId: 'closed_market_limits' }, { ...f, producerId: undefined }]) {
+    const r = await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, opts)
+    assert.ok(!r.placed)
+    assert.equal(r.skipped, 'entry_mode')
+    assert.match(r.reason, /^producer_retired: closed_market_limits/)
+  }
+  assert.equal(f.placed.length, 0, 'the fence refused before the broker was called')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE note='pending-closed'`).get().n, 0)
 })

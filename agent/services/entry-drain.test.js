@@ -46,7 +46,7 @@ test('STOPPED with resting rows enters QUIESCING; the drain cancels this account
   const db = fresh()
   const r = requestEntryMode(db, DEMO, 'STOPPED', { expectedRevision: 0 })
   assert.equal(r.status.transitionState, 'QUIESCING'); assert.equal(r.status.entryCounts.resting, 2)
-  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch' }).ok, false, 'the fence is closed before the drain runs')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account' }).ok, false, 'the fence is closed before the drain runs')
   const manual = { orderId: 900, tradeData: { label: 'owner-manual', symbolId: 1 } }
   const fx = fakeExec({ snapshots: [[manual]] })
   const d = await drainEntryOrders(db, creds(DEMO), { exec: fx.exec })
@@ -134,7 +134,7 @@ test('under an active mode the pass recounts and never cancels: resting rows are
   // the effective mode stays STOPPED and the fence refuses, until the
   // unknown clears AND the gateway has acknowledged the epoch.
   assert.equal(back.status.effectiveEntryMode, 'STOPPED')
-  const held = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch' })
+  const held = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account' })
   assert.equal(held.ok, false); assert.match(held.reason, /^entry_mode_transition: RECONCILING/)
   db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, account_id)
     VALUES ('AUDUSD', '4h', '150', 1, 0.7, 0.69, 0.72, 1000, '2099-01-01T00:00:00.000Z', 'working', 'pending-fib', ?)`).run(DEMO)
@@ -145,7 +145,7 @@ test('under an active mode the pass recounts and never cancels: resting rows are
   assert.equal(rowOf(db, '150').status, 'working')
   const acked = acknowledgeEntryEpochs(db, { [DEMO]: back.status.modeEpoch })
   assert.equal(acked.length, 1); assert.equal(acked[0].transitionState, 'STABLE'); assert.equal(acked[0].effectiveEntryMode, 'TIME_BASED')
-  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch' }).ok, true, 'active, acknowledged, nothing unknown')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account' }).ok, true, 'active, acknowledged, nothing unknown')
   assert.equal((await drainEntryOrders(db, creds(DEMO), { exec: fx.exec })).skipped, 'stable')
   // a STOPPED account with nothing resting is STABLE at once and the drain has nothing to do
   const r2 = requestEntryMode(db, LIVE, 'STOPPED')

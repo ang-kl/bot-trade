@@ -149,6 +149,16 @@ export async function runVpoFeeder(db, deps = {}) {
   // runs is not testing the gate.
   const creds = deps.creds ?? getCtraderCreds(db)
   if (!creds?.ready) return { skipped: 'cTrader credentials not ready' }
+  // THE FENCE IS INJECTABLE, LIKE EVERY OTHER DEPENDENCY HERE (20-09-2026).
+  // This producer is RETIRED in lib/entry-producers.js, so admitEntry refuses
+  // it and the module's own logic would be unreachable from a test. The tests
+  // used to lift the retirement mark on the shared inventory object instead,
+  // which is a mutation of module state another test file can observe — under
+  // `--experimental-test-isolation=none` it made the retirement invariant
+  // itself vacuous. Injecting the fence keeps the mutation out of the shared
+  // singleton; the DEFAULT is the real fence, and the refusal it produces is
+  // asserted at the end of this module's test file.
+  const admit = deps.admit ?? admitEntry
 
   const { wsGetTrendbarsBatch } = deps.ws || await import('../lib/ctrader-ws.js')
   const { getVolumeMeta, lotsToVolume } = deps.sizing || await import('../lib/lot-sizing.js')
@@ -245,7 +255,7 @@ export async function runVpoFeeder(db, deps = {}) {
   // armed at all — the tier cannot fire what it was never told to hold. The
   // fire-time fence (a permit checked at the sidecar's send) is P2.
   if (Number.isFinite(acct) && acct > 0) {
-    const admission = admitEntry(db, { accountId: String(acct), producerId: 'vpo_cpp_direct', basis: 'bar' })
+    const admission = admit(db, { accountId: String(acct), producerId: 'vpo_cpp_direct', basis: 'bar' })
     if (!admission.ok) {
       // P2a (11-09-2026): a fence that only withholds the NEXT push leaves the
       // previous one armed until the store ages it out (VpoConfigStore
@@ -267,7 +277,7 @@ export async function runVpoFeeder(db, deps = {}) {
   let permits = []
   if (Number.isFinite(acct) && acct > 0) {
     try {
-      const r = reserveVpoPermits(db, { accountId: String(acct), entries: permitEntries })
+      const r = reserveVpoPermits(db, { accountId: String(acct), entries: permitEntries, admit })
       permits = r.permits
       if (r.issued || r.released || r.refused.length) {
         console.log(`[vpo-feeder] permits for …${String(acct).slice(-4)}: ${r.issued} issued, ${r.reused} reused, ${r.released} released` +

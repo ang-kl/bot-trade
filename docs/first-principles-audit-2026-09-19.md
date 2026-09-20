@@ -828,3 +828,113 @@ after deploy, recorded in §L of this file as it happens.
   the quotes-only exclusion drops every id in the new feed's initial VPO +
   trail subscription (`QuoteOnlyGate::rebuilt`), so a formerly quotes-only
   symbol that is now a VPO/trail symbol is recorded again.
+
+- 20-09-2026: **INTRADAY RETIREMENT — momentum only** (owner order,
+  19/20-09-2026: *"retire the intraday paths, keep momentum only"*).
+
+  THE MEASURED BASIS. Over 30 days, 9 strategies traded 61 trades for a net
+  −62.63: `donchian_breakout` 22 trades PF 0.38, `rsi2_reversion` 10 PF
+  0.13, `vwap_trend` 5 PF 0.15, `vp_value` 11 PF 0.84, `tsmom_long` 3 PF 0.
+  Sixty-one trades across nine strategies is ~7 each — nothing there is
+  decidable, and the first principles A·1 / A·5 already say horizon is the
+  design variable and one system per horizon. The weeks-horizon momentum
+  book is the horizon kept.
+
+  RETIRED (marked `retired` in `agent/lib/entry-producers.js`, refused at
+  `admitEntry`): `scan_dispatch` (the main loop's scan → analyse → risk gate
+  → dispatch) and `closed_market_limits` (resting limits for the next open).
+  TWO, not three: `tick_momentum` was in the first cut of this order and the
+  owner pulled it back mid-build — the tick engine is intended to be used,
+  so it stays UNRETIRED and reachable, exactly as it is today: gated by its
+  readiness predicate and requiring an explicit per-account switch to
+  TICK_MOMENTUM. It was not missed. Nothing in the `_off` list touches it
+  either: the tick path reads neither the strategy pins nor the stage
+  matrix.
+
+  KEPT LIVE: `daily_momentum_account` and `cross_sectional_book` — the
+  momentum shadow has its own universe (`momentum-universe.json`) and
+  fetches its own bars, and the book reads the shadow's rows plus
+  ATR/spot/rates directly, so neither depends on the retired scan. Every
+  manual and manual_assisted route is untouched: `route_manual_order`,
+  `route_trade_now`, `route_execute_trade`, `route_validation_fill`,
+  `route_position_double`, `route_position_reverse`. The owner keeps every
+  hand.
+
+  OPEN POSITIONS KEEP THEIR EXITS. Retiring a producer stops NEW entries
+  only. The monitor, the keeper, the loss guardian, the protection audit and
+  the reconciler are untouched, no position was closed and no resting order
+  was cancelled. The stale closed-market limit SWEEP also keeps running —
+  it reconciles rows already at the broker, and retiring the producer that
+  places them is not a reason to stop reading them.
+
+  THE SCAN KEEPS RUNNING, AS A FREE SHADOW. The scan, the analysis and the
+  risk gate are unchanged; their proposals now end at `admitEntry` with
+  `producer_retired`, recorded as a decision_log SKIP (never a risk_events
+  veto — the boundary #968 drew) carrying the proposal's levels, so the
+  refusal ledger scores them for forgone R at zero risk. If the intraday
+  edge recovers, the owner will have the record rather than a dark year.
+
+  STAGE MATRIX AGREES WITH THE INVENTORY (principle 6: no strategy shown
+  armed that no producer can trade). `agent/config/strategy-pins.json`:
+  `fib_confluence` moves into `_off` and `_all` is now empty — its record
+  (26 closes, PF 2.72) is not what changed; its only producer is. The whole
+  intraday registry is OFF on every enabled account; `tsmom_long` stays ON
+  under `_trial` (…0058, checkpoint 2026-12-19).
+
+  THE GOAL TABLE keeps `family_edge_mean_reversion` / `_breakout` /
+  `_trend` — deleting them would delete the measurement the decision rests
+  on — with a note on each that the family is retired as of this date, so
+  they read as history rather than as live failures.
+  `family_edge_momentum` and `momentum_checkpoint` are unchanged.
+
+  THE ONE DEPENDENCY THE ORDER DID NOT ANTICIPATE, and how it is resolved.
+  `closed-market-limits.js` is not only the scan's producer — it is also the
+  TRANSPORT the momentum account and the manual_assisted routes use to rest
+  an entry while a market is shut (`marketOnly: false`,
+  `momentum-account.js`). The first cut of this change keyed the loop's
+  closed-market and HTF branches on a module-level constant, which retired
+  those paths for EVERY producer. Measured consequence, found by the
+  checker: the momentum pass runs once per UTC day at 21:05 (the US, the
+  European indices and HK all shut), the queued signal keeps only
+  symbol/bias/conviction/strategy — not the entry, the vol-target size, the
+  ATR stop or `noTarget` — the reopen re-derives it with a Fibonacci scan,
+  and the retry dispatches as `scan_dispatch`, which is retired. So 22 US/HK
+  stocks and 10 indices of the momentum universe would have been silently
+  unenterable, on the very book this order was written to keep.
+
+  THE RETIREMENT IS THEREFORE KEYED ON THE PRODUCER, not on the branch. The
+  caller's own producer id travels with the fence and with the placement:
+  `closed_market_limits` (the scan's resting-limit identity, and the default
+  for a caller that names nothing, so this fails closed) is refused;
+  `daily_momentum_account`, `cross_sectional_book`, `route_trade_now` and
+  `route_validation_fill` rest their limits exactly as before, pinned by
+  tests. The HTF branch is likewise unchanged for kept producers, so the
+  behaviour change flagged earlier (HTF rests → market order) does not
+  arise for them either.
+
+  THE EVIDENCE CADENCE IS THE OPPORTUNITY'S, not "once ever". A retired
+  producer's refusal is deduped per setup on `RETIRED_REFUSAL_WINDOW_MS` —
+  the refusal ledger's own 30-minute opportunity gap plus a minute — so the
+  scan writes one scoreable row per setup per window rather than one per
+  cycle (noise) or one for all time (silence, which is what the first cut
+  did while claiming the opposite). A refusal carrying no proposal has
+  nothing to score and is excluded from the ledger's read, so two producers'
+  level-less refusals can no longer collapse into one opportunity key and
+  surface under whichever was written first.
+
+  NO TEST MUTATES THE PRODUCER INVENTORY. The first cut lifted the `retired`
+  mark on the shared inventory objects in five test files; under
+  `--experimental-test-isolation=none` that made the retirement invariant
+  itself vacuous in another file's tests. The fence is now an injected
+  dependency where a retired producer's own module has to be exercised
+  (`deps.admit` in pending-orders and vpo-feeder, the `admit` option in the
+  entry ledger), the stub delegates to the REAL fence under a kept
+  producer's id so every mode rule still binds, and each of those files ends
+  with a test that goes through the real fence and asserts the refusal.
+
+  READ-BACK OWED: after deploy, confirm from the live agent that (a) the
+  boot log carries `closed-market limits: producer retired — phase not
+  scheduled`, (b) `producer_retired` skips appear in decision_log with
+  proposal levels and NO new risk_events vetoes for them, (c) the momentum
+  book and momentum account still dispatch, and (d) open positions from the
+  retired strategies are still monitored and exited.

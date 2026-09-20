@@ -266,6 +266,16 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
   // never throw into the trading path.
   const notify = (text) => { try { deps.notify?.(text) } catch { /* best effort */ } }
   const { exec, scan, risk, sizing } = await defaultDeps(deps)
+  // THE FENCE IS INJECTABLE, LIKE EVERY OTHER DEPENDENCY HERE (20-09-2026).
+  // This producer is RETIRED in lib/entry-producers.js, so admitEntry refuses
+  // it and the module's own logic would be unreachable from a test. The tests
+  // used to lift the retirement mark on the shared inventory object instead,
+  // which is a mutation of module state another test file can observe — under
+  // `--experimental-test-isolation=none` it made the retirement invariant
+  // itself vacuous. Injecting the fence keeps the mutation out of the shared
+  // singleton; the DEFAULT is the real fence, and the refusal it produces is
+  // asserted at the end of this module's test file.
+  const admit = deps.admit ?? admitEntry
 
   let matrix = null
   try { matrix = JSON.parse(getState(db, 'pending_matrix_json') || 'null') } catch { matrix = null }
@@ -620,7 +630,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     }
 
     // P1b: the fence, by name.
-    const admission = admitEntry(db, { accountId: creds.accountId, producerId: 'pending_fib_orders', basis: 'bar' })
+    const admission = admit(db, { accountId: creds.accountId, producerId: 'pending_fib_orders', basis: 'bar' })
     if (!admission.ok) { summary.skipped.push(`${symbol}: entry_mode ${admission.reason}`); continue }
     try {
       const execEvent = await exec.placeOrder(creds, orderPayload)

@@ -55,6 +55,15 @@ const num = (v) => { if (v == null || v === '') return null; const n = Number(v)
  * per account|symbol|side|strategy tuple in time order, the backfill's
  * walk), so a shadow refusal is still scored for forgone R. Unscored keys
  * only; rows without a readable proposal are unscorable downstream.
+ *
+ * 20-09-2026 (the intraday retirement): `producer_retired` skips join them.
+ * The scan, its analysis and the risk gate keep running; their proposals now
+ * end at the fence and are scored here for forgone R at zero risk — one row
+ * per setup per opportunity window (entry-mode.js's RETIRED_REFUSAL_WINDOW_MS,
+ * the same gap this file's opportunity identity uses), so a retired stack
+ * goes on producing evidence instead of going dark, without writing a row per
+ * symbol per cycle. A skip with no symbol and no proposal carries nothing to
+ * score and is excluded below.
  */
 export function evidenceShadowRefusals(db) {
   let rows = []
@@ -62,7 +71,7 @@ export function evidenceShadowRefusals(db) {
     rows = db.prepare(`
       SELECT account_id, symbol, strategy, reason, detail_json, created_at
         FROM decision_log
-       WHERE stage IN ('evidence_gate', 'gate_redirect') AND decision = 'skip'
+       WHERE stage IN ('evidence_gate', 'gate_redirect', 'producer_retired') AND decision = 'skip'
        ORDER BY account_id, symbol, strategy, created_at ASC, id ASC
     `).all()
   } catch { return [] }
@@ -71,6 +80,15 @@ export function evidenceShadowRefusals(db) {
   for (const r of rows) {
     let p = null, detail = null
     try { detail = JSON.parse(r.detail_json || 'null'); p = detail?.proposal ?? null } catch { p = null }
+    // NO SYMBOL, NO LEVELS, NO OPPORTUNITY (20-09-2026, fix round). A
+    // `producer_retired` skip written where no proposal was in hand — the
+    // producers' own modules ask the fence with an account and nothing else —
+    // has symbol NULL and proposal null. Read in, every such row from every
+    // producer collapses into the SAME key (`<acct>|-|-|-@…`), so the ledger
+    // would surface one producer's refusal under another's reason and then
+    // write it off as unscorable. Excluded at the door, the way the legacy
+    // PORTFOLIO rows are below.
+    if (!r.symbol || !p) continue
     // A gate_redirect row's `reason` column is the HEAD (the boundary's
     // key); the full string the gate said is in detail.reason. Score under
     // the full string so reasonKey groups it with the pre-boundary history.

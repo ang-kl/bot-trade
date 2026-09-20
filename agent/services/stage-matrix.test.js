@@ -391,19 +391,20 @@ test('strategy-pin seed: the checked-in file parses — Wave 1 (19-09-2026): `_a
   const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
   const ids = Object.keys(cfg).filter(k => /^\d+$/.test(k))
   assert.deepEqual(ids, [], 'no hardcoded account ids as keys (principle 9)')
-  assert.deepEqual(cfg._all, ['fib_confluence'], '_all: the one strategy with a positive live record (PF 2.72 over 26)')
-  assert.deepEqual([...cfg._off].sort(), [...STRATEGY_KEYS.filter(k => k !== 'fib_confluence' && k !== 'tsmom_long')].sort(), '_off: every other scan strategy is shadow')
+  // 20-09-2026 (owner: "retire the intraday paths, keep momentum only"):
+  // `_all` is EMPTY and fib_confluence joined `_off`. Its record did not turn
+  // (PF 2.72 over 26) — its only producer did: scan_dispatch is retired in
+  // lib/entry-producers.js, and principle 6 forbids the UI showing a strategy
+  // armed that no producer can trade.
+  assert.deepEqual(cfg._all, [], '_all: empty — no intraday strategy has a producer any more')
+  assert.deepEqual([...cfg._off].sort(), [...STRATEGY_KEYS.filter(k => k !== 'tsmom_long')].sort(), '_off: every scan strategy is shadow, the momentum book aside')
   assert.deepEqual(Object.keys(cfg._trial), ['tsmom_long'], '_trial: the momentum book only')
   assert.equal(cfg._trial.tsmom_long.length, 1, 'one account per system on trial (07-09 P5 reconciled with P9 in the note)')
   assert.match(cfg._trial_note, /2026-12-19/, 'the trial names its checkpoint date')
-  // Owner order 19-09-2026: re-arm fib_confluence on the four accounts the
-  // Wave 1 deploy held OFF ("seeded before, since disarmed"). One token, four
-  // cells, applied once each.
-  assert.deepEqual(cfg._reseed, [
-    '42993489:fib_confluence:owner-19-09', '43097342:fib_confluence:owner-19-09',
-    '46130058:fib_confluence:owner-19-09', '47790949:fib_confluence:owner-19-09',
-  ])
-  assert.match(cfg._reseed_note, /re-arm fib_confluence on the four accounts/)
+  // The 19-09 fib_confluence re-arm is spent AND superseded by the 20-09
+  // retirement: the list is empty, the mechanism documented.
+  assert.deepEqual(cfg._reseed, [])
+  assert.match(cfg._reseed_note, /intraday retirement/)
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /seedMomentumAccountFromConfig\(db, \{ log[\s\S]{0,1500}?seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log/, 'the boot seed runs after the momentum-account seed')
   assert.match(src, /switched off/, 'the boot line reports the OFF orders')
@@ -431,8 +432,12 @@ test('momentum trial: the SHIPPED pins file arms tsmom_long on the ONE trial acc
     assert.equal(armedTradeKeys(db, getState, id).has('vwap_trend'), false)
   }
   for (const id of ['111', '222', TRIAL_ID]) {
-    assert.ok(r.applied.includes(`${id}:fib_confluence`), `${id}: fib_confluence ON from _all`)
-    assert.equal(armedTradeKeys(db, getState, id).has('fib_confluence'), true)
+    // 20-09-2026: fib_confluence is OFF everywhere now — `_all` is empty and
+    // it sits in `_off`, because scan_dispatch (its only producer) is retired.
+    assert.ok(!r.applied.includes(`${id}:fib_confluence`), `${id}: nothing is armed from _all any more`)
+    assert.ok(r.off.includes(`${id}:fib_confluence`) || r.unchanged.includes(`${id}:fib_confluence:off`),
+      `${id}: fib_confluence carries an OFF order (written where a hand pin had to be cleared, recorded as unchanged where it was already off)`)
+    assert.equal(armedTradeKeys(db, getState, id).has('fib_confluence'), false)
   }
   // Second boot changes nothing (seed-once on every record, ON and OFF alike).
   const again = seedShipped(db)
@@ -449,7 +454,8 @@ test('momentum trial: an account enabled AFTER the first boot gets the same orde
   assert.ok(!a.applied.some(t => t.startsWith('999:')) && !a.off.some(t => t.startsWith('999:')), 'a disabled account is not touched at all')
   db.prepare(`UPDATE accounts SET enabled = 1 WHERE account_id = '999'`).run()
   const b = seedShipped(db)
-  assert.ok(b.applied.includes('999:fib_confluence'), 'the late joiner gets the ON order')
+  assert.ok(b.off.includes('999:fib_confluence') || b.unchanged.includes('999:fib_confluence:off'), 'the late joiner gets the OFF order for the retired stack')
+  assert.equal(armedTradeKeys(db, getState, '999').has('fib_confluence'), false)
   assert.ok(b.off.includes('999:tsmom_long'), 'and the OFF order for the strategy on trial elsewhere')
   assert.equal(armedTradeKeys(db, getState, '999').has('tsmom_long'), false)
 })
@@ -574,7 +580,9 @@ test('a malformed _reseed entry is named and skipped, the good ones still land',
 
 test('the checked-in file carries no 17-09 re-arm (the trial replaced them); its only reseed is the owner\'s 19-09 fib_confluence order', () => {
   const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
-  assert.ok(cfg._reseed.every(e => e.endsWith(':fib_confluence:owner-19-09')), 'every reseed is the 19-09 order')
   assert.ok(!cfg._reseed.some(e => /tsmom_long/.test(e)), 'no 17-09 tsmom re-arm')
-  assert.equal(cfg._reseed.length, 4)
+  // 20-09-2026: emptied with the intraday retirement — the 19-09
+  // fib_confluence order is spent and superseded, the key kept so the
+  // mechanism stays visible.
+  assert.equal(cfg._reseed.length, 0)
 })

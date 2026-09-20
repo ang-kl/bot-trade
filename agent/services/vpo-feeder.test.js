@@ -2,8 +2,28 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { runVpoFeeder, vpoPreArmVeto } from './vpo-feeder.js'
+import { runVpoFeeder as runVpoFeederReal, vpoPreArmVeto } from './vpo-feeder.js'
 import { loadRiskConfig } from './risk.js'
+import { admitEntry } from './entry-mode.js'
+
+// ---------------------------------------------------------------------------
+// A RETIRED PRODUCER IS REFUSED AT THE FENCE (20-09-2026, owner: "retire the
+// intraday paths, keep momentum only"), and `vpo_cpp_direct` is one of them.
+// The tests below exercise the feeder's own bar / sizing / permit logic, so they inject the fence
+// (`deps.admit`) the same way they inject exec, risk and sizing. NOTHING
+// here mutates the shared inventory: a test file that deleted the retirement
+// mark on the singleton made the retirement invariant vacuous for every other
+// file in the same process (`--experimental-test-isolation=none`). The real
+// fence is the DEFAULT, and the last test in this file asserts the refusal it
+// produces.
+// ---------------------------------------------------------------------------
+// The stub delegates to the REAL fence under a KEPT producer's id, so every
+// mode rule (STOPPED, WARMING, the epoch) still binds exactly as in
+// production and only the RETIREMENT is out of the way.
+const ADMIT_AS_KEPT_PRODUCER = (db, o) => admitEntry(db, { ...o, producerId: 'daily_momentum_account' })
+/** Every test here runs the feeder with the fence injected; the last one calls runVpoFeederReal. */
+const runVpoFeeder = (db, deps = {}) => runVpoFeederReal(db, { admit: ADMIT_AS_KEPT_PRODUCER, ...deps })
+
 
 function freshDB() { return initDB(':memory:') }
 
@@ -387,4 +407,22 @@ test('feeder: the push carries two permits per sized strategy, reused on the nex
   // way no standing permit survives a STOPPED account
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE account_id = '42' AND state = 'RELEASED'`).get().n, 2)
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE account_id = '42' AND state = 'RESERVED'`).get().n, 0)
+})
+
+test('the injected fence is a test fixture, not a hole: through the REAL fence the feeder arms nothing — the producer is retired', async () => {
+  const db = freshDB()
+  setState(db, 'vpo_enabled', 'true')
+  setState(db, 'vpo_config_json', JSON.stringify([{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1 }]))
+  setState(db, 'ctrader_access_token', 'tok')
+  setState(db, 'ctrader_account_id', '42')
+  setState(db, 'account_balance_usd', '10000')
+  let pushed = null
+  // The REAL fence (no deps.admit): the inventory's retirement stands.
+  const r = await runVpoFeederReal(db, {
+    ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS,
+    push: async (payload) => { pushed = payload },
+  })
+  assert.match(String(r.skipped), /^entry_mode: producer_retired: vpo_cpp_direct/)
+  assert.equal(r.disarmed, true, 'the previous arming is cleared, not left to age out')
+  assert.ok(!pushed?.bars, 'no config push carries bars for a retired producer')
 })

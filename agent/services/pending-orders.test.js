@@ -6,7 +6,25 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
+import { admitEntry } from './entry-mode.js'
 import { managePendingOrders, persistFilledTrade } from './pending-orders.js'
+
+// ---------------------------------------------------------------------------
+// A RETIRED PRODUCER IS REFUSED AT THE FENCE (20-09-2026, owner: "retire the
+// intraday paths, keep momentum only"), and `pending_fib_orders` is one of them.
+// The tests below exercise the pending-order manager's own lifecycle, so they inject the fence
+// (`deps.admit`) the same way they inject exec, risk and sizing. NOTHING
+// here mutates the shared inventory: a test file that deleted the retirement
+// mark on the singleton made the retirement invariant vacuous for every other
+// file in the same process (`--experimental-test-isolation=none`). The real
+// fence is the DEFAULT, and the last test in this file asserts the refusal it
+// produces.
+// ---------------------------------------------------------------------------
+// The stub delegates to the REAL fence under a KEPT producer's id, so every
+// mode rule (STOPPED, WARMING, the epoch) still binds exactly as in
+// production and only the RETIREMENT is out of the way.
+const ADMIT_AS_KEPT_PRODUCER = (db, o) => admitEntry(db, { ...o, producerId: 'daily_momentum_account' })
+
 
 const SYMBOL_MAP = { EURUSD: 1, XAUUSD: 41 }
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 'sec', accessToken: 'tok', accountId: '123' }
@@ -27,6 +45,7 @@ function makeDeps({ reconcile = { order: [], position: [] }, setups = [], lastCl
   return {
     calls,
     deps: {
+      admit: ADMIT_AS_KEPT_PRODUCER,
       exec: {
         reconcile: async () => reconcile,
         placeOrder: async (_creds, payload) => {
@@ -666,4 +685,16 @@ test('PR-AL: a signal with no reason records null, not an invented one', async (
   await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
   assert.equal(seen.length, 1)
   assert.equal(seen[0].direction_reason, null)
+})
+
+test('the injected fence is a test fixture, not a hole: through the REAL fence nothing is placed — the producer is retired', async () => {
+  const db = freshDb()
+  const { deps, calls } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  // The REAL fence: deps.admit is left out, so admitEntry itself answers.
+  delete deps.admit
+  const res = await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(res.placed, 0)
+  assert.equal(calls.placed.length, 0, 'the fence refused before the broker was called')
+  assert.ok(res.skipped.some(s => /producer_retired: pending_fib_orders/.test(s)), `skipped names the retirement: ${JSON.stringify(res.skipped)}`)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM pending_orders`).get().n, 0)
 })
