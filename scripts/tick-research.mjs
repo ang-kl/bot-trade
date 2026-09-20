@@ -35,7 +35,16 @@ if (args.includes('--include-test')) simArg.includeTest = true
 const onlySymbol = opt('--symbol') ? Number(opt('--symbol')) : null
 const outFile = opt('--out')
 
+// A flag with NO VALUE is refused, never read as absent. Checker,
+// 20-09-2026: `opt()` returns args[i+1], so `--max-segments` typed last gave
+// undefined and the script replayed the WHOLE directory with no stderr line
+// and exit 0 — the operator who mistypes gets exactly the full run they were
+// trying to avoid.
 const boundedArg = opt('--max-segments')
+if (args.includes('--max-segments') && (boundedArg == null || boundedArg.startsWith('--'))) {
+  console.error('--max-segments needs a value: the number of segments to replay, oldest first')
+  process.exit(2)
+}
 const bounded = maxSegmentsFrom(boundedArg == null ? {} : { maxSegments: Number(boundedArg) })
 if (bounded.refuse) { console.error(`${bounded.refuse.body.error}: ${bounded.refuse.body.where}`); process.exit(2) }
 const available = listSegments(target)

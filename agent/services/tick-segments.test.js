@@ -572,3 +572,48 @@ test('checker M-1, follow-up: a SECOND request after a successful sync is not re
     assert.equal(third.body.records, 600)
   } finally { s.close(); _resetTickResearchJobs() }
 })
+
+// ---- PR-EX checker, 20-09-2026: what `maxSegments` actually bounds --------
+// The bound is on WHAT THE CACHE HOLDS of the sidecar's oldest segments, not
+// on how many GETs this particular run makes. Two ways it used to mean the
+// wrong thing, both measured by the checker on the production shape
+// (4 sealed 64 MiB segments, two sides): a warm cache made the run pull the
+// segments BEYOND the bound (128 MiB moved and then sliced away by the
+// replay, which reads the oldest two either way), and each side was handed
+// the bound whole, so two sides pulled up to twice what was asked for.
+test('PR-EX: a cache already holding the oldest N counts against maxSegments — nothing beyond the bound is pulled', async () => {
+  const a = makeSegment(10), b = makeSegment(20, { startedMs: 1_757_548_900_000 })
+  const NAME_C = 'seg-1757549000000-000003.tks'
+  const s = await fakeSidecar({ files: new Map([[NAME_A, a], [NAME_B, b], [NAME_C, makeSegment(30, { startedMs: 1_757_549_000_000 })]]) })
+  const dest = tmp('tick-cache-warm-')
+  try {
+    // seed the cache with the OLDEST two, exactly as a previous bounded run leaves it
+    writeFileSync(join(dest, NAME_A), a)
+    writeFileSync(join(dest, NAME_B), b)
+    const before = s.calls.chunk
+    const r = await syncSegments(dep(s), dest, { maxSegments: 2 })
+    assert.equal(r.pulled, 0, 'RED if the skip-if-cached test runs before the bound: segment 3 is pulled')
+    assert.equal(r.skipped, 2); assert.equal(r.taken, 2); assert.equal(r.truncated, true)
+    assert.equal(s.calls.chunk, before, 'not one chunk requested')
+    assert.deepEqual(readdirSync(dest).sort(), [NAME_A, NAME_B])
+  } finally { s.close() }
+})
+
+test('PR-EX: the segment bound is shared ACROSS sides, like the byte budget — two sides under maxSegments 2 pull two, not four', async () => {
+  const one = await fakeSidecar({ files: new Map([[NAME_A, makeSegment(10)], [NAME_B, makeSegment(20, { startedMs: 1_757_548_900_000 })]]) })
+  const NAME_C = 'seg-1757549000000-000003.tks'
+  const NAME_D = 'seg-1757549100000-000004.tks'
+  const two = await fakeSidecar({ files: new Map([[NAME_C, makeSegment(30, { startedMs: 1_757_549_000_000 })], [NAME_D, makeSegment(40, { startedMs: 1_757_549_100_000 })]]) })
+  const dest = tmp('tick-cache-sides-')
+  try {
+    const r = await syncFromSidecars(dest, { sides: [{ name: 'one', base: one.base }, { name: 'two', base: two.base }], secret: SECRET, maxSegments: 2 })
+    assert.equal(r.pulled, 2, 'RED if each side gets the whole bound: 4 pulled')
+    assert.equal(r.taken, 2)
+    assert.deepEqual(readdirSync(dest).sort(), [NAME_A, NAME_B])
+    assert.equal(r.sides[1].pulled, 0, 'the second side is asked, and takes nothing — the bound is spent')
+    // unbounded is unchanged: every side pulls what it lists
+    const all = tmp('tick-cache-sides2-')
+    const u = await syncFromSidecars(all, { sides: [{ name: 'one', base: one.base }, { name: 'two', base: two.base }], secret: SECRET })
+    assert.equal(u.pulled, 4); assert.deepEqual(readdirSync(all).sort(), [NAME_A, NAME_B, NAME_C, NAME_D].sort())
+  } finally { one.close(); two.close() }
+})
