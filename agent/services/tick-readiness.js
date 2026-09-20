@@ -23,6 +23,10 @@ import { validationHistory } from './tick-validation.js'
 import { TICK_ENTRY_STAGES } from '../lib/entry-contracts.js'
 
 export const RECORDER_STATUS_MAX_AGE_MS = 10 * 60_000
+// The checks that stand between an account and SHADOWING (20-09-2026). The
+// PAUSE_CHECKS of tick-permits.js are absent by design — see the note beside
+// `shadowBlockers` below for why, and for what excluding them does not do.
+export const SHADOW_CHECKS = Object.freeze(['observation_active', 'symbols_declared', 'recorder_status_fresh', 'shadow_strategy_running', 'profile_matches_sidecar'])
 export const DISK_STOP_PCT = 85
 
 function sideFor(environment) { return environment === 'live' ? 'cpp_exec' : 'cpp_exec_demo' }
@@ -99,6 +103,35 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
   add('validation_stage', stageOk, 'engine_status_json.validationStage', st.validationStage, st.updatedAt, 'missing_evidence', 'reach SHADOW_PASSED: REPLAY_PASSED then shadow evidence over the owner-set minimums (POST /actions/tick-validation) — the same bar on every account')
 
   const blockedReasons = checks.filter(c => !c.ok).map(c => c.check)
+  // 20-09-2026: `ready` above is ONE bar for TWO different questions, and the
+  // live accounts are failing it on the wrong one. `ready` gates exactly two
+  // things — promotion to TICK_MOMENTUM (entry-mode.js) and, through the
+  // subset PAUSE_CHECKS, the pausing of live tick permits (tick-permits.js).
+  // Neither gates the SHADOW: shadowing is driven by tickObservation ===
+  // 'SHADOW' through exec-guard-sync's `tickShadow`, which never reads this
+  // file. So an account that could shadow today reads "not ready" on checks
+  // about TRADING, which it is nowhere near.
+  //
+  // MEASURED: the live sidecar (cpp-acct) has no TICK_SPOOL_PATH, so
+  // /tick-status answers {"enabled":false} (main.cpp) and every
+  // status-derived check reads "no status" at once. That is a REPORTING
+  // artefact — nothing is gated by it — and the split below names it as one.
+  //
+  // `recorder_recording`, `disk_reserve_clear` and `feed_continuity` are
+  // DELIBERATELY excluded from the shadow set. They are the PAUSE_CHECKS
+  // (tick-permits.js); they gate TRADING, not shadowing. A container
+  // filesystem below the 2 GiB reserve parks the recorder at PAUSED_RESERVE
+  // (tick_recorder.hpp reserveMinBytes), which stops writeRecord and nothing
+  // else — the shadow strategy runs on unaffected (tick_tap.cpp). That
+  // parking is a FAIL-SAFE: it withholds tick permits, so an arming attempt
+  // is refused while the disk is short. It stays in `ready`, and a shadow
+  // that is genuinely running is no longer reported as blocked by it.
+  //
+  // DERIVED FIELDS ONLY. `ready` and `blockedReasons` are computed above and
+  // are not touched here: nothing below may change a mode, and the promotion
+  // gate must keep reading the whole check list. tick-readiness.test.js
+  // recomputes the old predicate over the old check list and asserts equality.
+  const shadowBlockers = blockedReasons.filter(r => SHADOW_CHECKS.includes(r))
   return {
     accountId: `…${id.slice(-4)}`,
     environment: st.environment,
@@ -111,6 +144,9 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
     ready: blockedReasons.length === 0,
     readiness: checks,
     blockedReasons,
+    tradingBlockers: blockedReasons,
+    shadowBlockers,
+    shadowReady: shadowBlockers.length === 0,
     byClass: Object.fromEntries(['operator_policy', 'broker_constraint', 'missing_evidence', 'infrastructure', 'integration_defect'].map(k => [k, checks.filter(c => !c.ok && c.blockClass === k).map(c => c.check)])),
     validationHistory: validationHistory(db, id).slice(-5),
     updatedAt: st.updatedAt,
@@ -126,7 +162,11 @@ export function tickReadinessView(db, { now = new Date() } = {}) {
     at: now.toISOString(),
     accounts,
     readyCount: accounts.filter(a => a.ready).length,
-    note: 'P5: derived on every read from the stored records and the last pulled sidecar status; a failing check names its class and remedy. TICK_MOMENTUM is refused until P6 reads `ready` here; no check lowers a risk limit.',
+    // 20-09-2026: the second count is the one to read when asking "can this
+    // account shadow today". `readyCount` stays what it was — the accounts
+    // cleared to TRADE — and is still the only figure any gate reads.
+    shadowReadyCount: accounts.filter(a => a.shadowReady).length,
+    note: 'P5: derived on every read from the stored records and the last pulled sidecar status; a failing check names its class and remedy. TICK_MOMENTUM is refused until P6 reads `ready` here; no check lowers a risk limit. `shadowReady` / `shadowBlockers` are a DERIVED read of the same checks (SHADOW_CHECKS) and gate nothing: the shadow is driven by tickObservation, and the three PAUSE_CHECKS left out of it still block trading.',
   }
 }
 

@@ -15,7 +15,8 @@ import { setAccountHorizon } from './account-horizon.js'
 import { READINESS_CHECK_SHAPE, BLOCK_CLASSES } from '../lib/entry-contracts.js'
 import { profileHash, profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
 import { importTickTrial } from './tick-research.js'
-import { tickReadinessFor, tickReadinessView, tickSignalsView, RECORDER_STATUS_MAX_AGE_MS } from './tick-readiness.js'
+import { tickReadinessFor, tickReadinessView, tickSignalsView, RECORDER_STATUS_MAX_AGE_MS, SHADOW_CHECKS } from './tick-readiness.js'
+import { PAUSE_CHECKS } from './tick-permits.js'
 
 const DEMO = '46979908', LIVE = '42993489'
 const NOW = new Date('2026-09-11T06:00:00Z')
@@ -155,4 +156,88 @@ test('the signals view parses what the sidecar rang, names the symbol when the h
   assert.equal(s.symbol, 'EURUSD'); assert.equal(s.direction, 'BUY'); assert.equal(s.trigger2, 1.105); assert.equal(s.stopDistance, 0.0004); assert.equal(s.V, 0.52); assert.equal(s.E, 0.71); assert.equal(s.setupId, 3); assert.equal(s.profile, prefix)
   assert.equal(v.signals.find(x => x.symbolId === 2).symbol, null)
   assert.equal(v.byProfile[prefix], 1); assert.equal(v.byProfile.ffffffffffffffff, 1)
+})
+
+// ---------------------------------------------------------------------------
+// 20-09-2026: the shadow/trading split. `ready` answers "may this account be
+// promoted to TICK_MOMENTUM / keep its tick permits"; `shadowReady` answers
+// "can this account shadow today". They are different questions, and the live
+// accounts were failing the first one on checks that belong only to it.
+// ---------------------------------------------------------------------------
+
+// The check list `ready` is computed over, written out so that dropping a
+// check from tick-readiness.js turns this red rather than quietly widening
+// the trading gate.
+const OLD_CHECKS = ['account_registered', 'account_enabled', 'global_halt_clear', 'engine_record_valid', 'transition_stable', 'no_unknown_entries', 'horizon_admits_tick', 'observation_active', 'symbols_declared', 'recorder_status_fresh', 'recorder_recording', 'disk_reserve_clear', 'feed_continuity', 'profile_pinned', 'profile_matches_sidecar', 'shadow_strategy_running', 'replay_evidence', 'validation_stage']
+
+test('a sidecar with no TICK_SPOOL_PATH (enabled:false) blocks the shadow AND the trading gate — nothing can run there', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD']))
+  requestTickObservation(db, LIVE, 'SHADOW', { now: NOW })
+  pin(db, LIVE)
+  setState(db, 'cpp_exec_tick_json', JSON.stringify({ at: NOW.toISOString(), side: 'cpp_exec', status: { enabled: false, reason: 'TICK_SPOOL_PATH not set' } }))
+  const r = tickReadinessFor(db, LIVE, { now: NOW })
+  assert.equal(r.shadowReady, false, 'no spool path on the sidecar means no tick workers, so no shadow either')
+  assert.equal(r.ready, false)
+  // and it says WHICH of the shadow's own checks are out — not the trading ones
+  assert.ok(r.shadowBlockers.includes('shadow_strategy_running'))
+  assert.ok(r.shadowBlockers.includes('profile_matches_sidecar'))
+  assert.ok(r.shadowBlockers.every(c => SHADOW_CHECKS.includes(c)), JSON.stringify(r.shadowBlockers))
+})
+
+test('a shadow that is genuinely running while the recorder is parked at PAUSED_RESERVE is shadowReady and NOT ready — the artefact resolved, the fail-safe kept', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD']))
+  requestTickObservation(db, DEMO, 'SHADOW', { now: NOW })
+  pin(db, DEMO)
+  // The container-filesystem case: below the 2 GiB reserveMinBytes the
+  // recorder parks at PAUSED_RESERVE, which stops writeRecord and nothing
+  // else — tick_tap still feeds the workers, so strategy.shadow stays true.
+  recorder(db, { state: 'PAUSED_RESERVE', recording: true, shadow: true })
+  const r = tickReadinessFor(db, DEMO, { now: NOW })
+  assert.equal(r.shadowReady, true, JSON.stringify(r.shadowBlockers))
+  assert.deepEqual(r.shadowBlockers, [])
+  // the fail-safe is untouched: PAUSE_CHECKS still block trading, so an
+  // arming attempt is still refused while the disk is short.
+  assert.equal(r.ready, false)
+  assert.deepEqual(r.blockedReasons.slice().sort(), ['disk_reserve_clear', 'recorder_recording'])
+  assert.deepEqual(r.tradingBlockers, r.blockedReasons, 'tradingBlockers is an alias, not a second computation')
+  for (const c of PAUSE_CHECKS) assert.ok(!SHADOW_CHECKS.includes(c), `${c} is a PAUSE_CHECK and must not be in the shadow set`)
+  const v = tickReadinessView(db, { now: NOW })
+  assert.equal(v.readyCount, 0, 'the trading count is what it always was')
+  assert.equal(v.shadowReadyCount, 1)
+})
+
+test('`ready` is byte-for-byte the OLD predicate over the OLD check list — the split does not leak into the promotion gate', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD', 'XAUUSD']))
+  requestTickObservation(db, DEMO, 'SHADOW', { now: NOW })
+  pin(db, DEMO)
+  // Several fixtures, chosen so that shadowReady and ready DISAGREE on some
+  // of them: if `ready` were ever assigned from `shadowReady`, the parked
+  // and dropped-feed cases below would flip and this goes red.
+  const fixtures = [
+    ['nothing pulled', () => { }],
+    ['fully evidenced', () => recorder(db)],
+    ['parked at the reserve', () => recorder(db, { state: 'PAUSED_RESERVE', recording: true })],
+    ['dropping events', () => recorder(db, { dropped: 9 })],
+    ['disk over the stop band', () => recorder(db, { usagePct: 93 })],
+    ['shadow switch not converged', () => recorder(db, { shadow: false })],
+    ['profile mismatch', () => recorder(db, { profile: '0000000000000000' })],
+    ['status stale', () => recorder(db, { at: new Date(NOW.getTime() - RECORDER_STATUS_MAX_AGE_MS - 1000).toISOString() })],
+    ['no spool path', () => setState(db, 'cpp_exec_demo_tick_json', JSON.stringify({ at: NOW.toISOString(), side: 'cpp_exec_demo', status: { enabled: false } }))],
+  ]
+  let disagreements = 0
+  for (const [name, apply] of fixtures) {
+    apply()
+    const r = tickReadinessFor(db, DEMO, { now: NOW })
+    // the OLD list, in the OLD order, still the whole list
+    assert.deepEqual(r.readiness.map(c => c.check), OLD_CHECKS, `${name}: the check list changed`)
+    // the OLD predicate, recomputed here from the checks themselves
+    const oldReady = r.readiness.filter(c => !c.ok).map(c => c.check).length === 0
+    assert.equal(r.ready, oldReady, `${name}: ready is no longer blockedReasons.length === 0`)
+    assert.deepEqual(r.blockedReasons, r.readiness.filter(c => !c.ok).map(c => c.check), `${name}: blockedReasons drifted`)
+    if (r.ready !== r.shadowReady) disagreements++
+  }
+  assert.ok(disagreements >= 3, `the fixtures must actually separate the two gates (saw ${disagreements})`)
 })
