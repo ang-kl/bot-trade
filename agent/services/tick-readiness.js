@@ -23,10 +23,47 @@ import { validationHistory } from './tick-validation.js'
 import { TICK_ENTRY_STAGES } from '../lib/entry-contracts.js'
 
 export const RECORDER_STATUS_MAX_AGE_MS = 10 * 60_000
-// The checks that stand between an account and SHADOWING (20-09-2026). The
-// PAUSE_CHECKS of tick-permits.js are absent by design — see the note beside
-// `shadowBlockers` below for why, and for what excluding them does not do.
-export const SHADOW_CHECKS = Object.freeze(['observation_active', 'symbols_declared', 'recorder_status_fresh', 'shadow_strategy_running', 'profile_matches_sidecar'])
+// The checks that stand between an account and SHADOWING (20-09-2026, set
+// corrected the same day after review). The PAUSE_CHECKS of tick-permits.js
+// are absent by design — see the note beside `shadowBlockers` below.
+//
+// THREE ACCOUNT-LEVEL CHECKS ARE IN, and they are not trading-specific: an
+// account that is not registered, not enabled, or sitting under the global
+// halt is not shadowing either, and a panel that said otherwise would be
+// showing a result the system is not producing (owner principle 6). They
+// cost nothing in reachability — all three pass by default.
+//
+// `profile_matches_sidecar` IS OUT, and this is the correction. `pinned` is
+// `engine_status_json.profileHash`, written in exactly ONE place —
+// tick-validation.js, inside the REPLAY_PASSED import branch — so no account
+// carries a pin until replay evidence is imported. With no pin the check
+// fails, and while it was in this set `shadowReady` could not be true on ANY
+// production account: it reported exactly what `ready` already did. MEASURED
+// against the real production shape (live account, SHADOW, symbols declared,
+// TICK_SPOOL_PATH set, recorder RECORDING, strategy.shadow true, fresh pull,
+// sidecar hash = the repo's default profile, no pin): `shadowReady: false`,
+// `shadowBlockers: ["profile_matches_sidecar"]`. Every fixture that asserted
+// the true branch ran AFTER a test helper wrote a pin — a true branch out of
+// reach of the input that would produce it (CLAUDE.md failure mode 3).
+//
+// It is wrong on the merits too. The pin is evidence bookkeeping for TRADING
+// — which parameters the replay evidence was produced against. Shadowing
+// needs none of it: exec-guard-sync turns the shadow on from
+// `tickObservation === 'SHADOW'` alone. And the set was incoherent with it
+// in: `profile_pinned` was excluded while `profile_matches_sidecar`, which
+// IS `profile_pinned` plus a match, was included.
+export const SHADOW_CHECKS = Object.freeze(['account_registered', 'account_enabled', 'global_halt_clear', 'observation_active', 'symbols_declared', 'recorder_status_fresh', 'shadow_strategy_running'])
+
+// `observation_active` passes on RECORD as well as SHADOW (it tests
+// `!== 'OFF'`), and `shadow_strategy_running` short-circuits to ok when the
+// account is not in SHADOW — so those two together let a RECORD-only account
+// read as shadowing. `shadowReady` means "the shadow IS running on this
+// account", so the SHADOW requirement is carried as this derived blocker.
+//
+// It is NOT a readiness check and is deliberately not added to the check
+// list: adding one there would change `blockedReasons`, and `ready` is
+// `blockedReasons.length === 0`. Nothing in this file may move that.
+export const SHADOW_OBSERVATION_BLOCKER = 'observation_is_shadow'
 export const DISK_STOP_PCT = 85
 
 function sideFor(environment) { return environment === 'live' ? 'cpp_exec' : 'cpp_exec_demo' }
@@ -127,11 +164,18 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
   // is refused while the disk is short. It stays in `ready`, and a shadow
   // that is genuinely running is no longer reported as blocked by it.
   //
+  // What `shadowReady` does NOT say: that the account is evidenced, pinned or
+  // eligible to trade. It says the shadow is running there. `ready` is still
+  // the only answer to the trading question and the only thing any gate reads.
+  //
   // DERIVED FIELDS ONLY. `ready` and `blockedReasons` are computed above and
   // are not touched here: nothing below may change a mode, and the promotion
   // gate must keep reading the whole check list. tick-readiness.test.js
   // recomputes the old predicate over the old check list and asserts equality.
   const shadowBlockers = blockedReasons.filter(r => SHADOW_CHECKS.includes(r))
+  // "is the shadow running on THIS account", not "could it be" — see
+  // SHADOW_OBSERVATION_BLOCKER. Derived, never a readiness check.
+  if (st.tickObservation !== 'SHADOW') shadowBlockers.push(SHADOW_OBSERVATION_BLOCKER)
   return {
     accountId: `…${id.slice(-4)}`,
     environment: st.environment,
@@ -166,7 +210,7 @@ export function tickReadinessView(db, { now = new Date() } = {}) {
     // account shadow today". `readyCount` stays what it was — the accounts
     // cleared to TRADE — and is still the only figure any gate reads.
     shadowReadyCount: accounts.filter(a => a.shadowReady).length,
-    note: 'P5: derived on every read from the stored records and the last pulled sidecar status; a failing check names its class and remedy. TICK_MOMENTUM is refused until P6 reads `ready` here; no check lowers a risk limit. `shadowReady` / `shadowBlockers` are a DERIVED read of the same checks (SHADOW_CHECKS) and gate nothing: the shadow is driven by tickObservation, and the three PAUSE_CHECKS left out of it still block trading.',
+    note: 'P5: derived on every read from the stored records and the last pulled sidecar status; a failing check names its class and remedy. TICK_MOMENTUM is refused until P6 reads `ready` here; no check lowers a risk limit. `shadowReady` / `shadowBlockers` are a DERIVED read of the same checks (SHADOW_CHECKS) plus the observation_is_shadow requirement, and gate nothing: they answer "is the shadow running on this account", not "may it trade". The three PAUSE_CHECKS and the evidence checks left out of them still block trading, and `ready` is unchanged.',
   }
 }
 

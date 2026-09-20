@@ -402,6 +402,14 @@ static void test_start_creates_one_level_only_and_survives_a_missing_parent() {
   assert(again.start());
   assert(again.stats().state != "ERROR");
   again.stop();
+
+  // Tidy up this scenario's own tree. The rest of the file leaves its
+  // mkdtemp dirs behind; no reason to add to that here.
+  for (const std::string& d : {good, good2}) {
+    for (const std::string& f : listFiles(d, "")) ::unlink(f.c_str());
+    ::rmdir(d.c_str());
+  }
+  ::rmdir(root);
 }
 
 int main() {
