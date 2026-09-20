@@ -1131,7 +1131,7 @@ Dated follow-up per the plan's standing rule. PR-H implements §4 PR-H of `docs/
 ### 12.2 What SHADOW costs, and where it cannot run (measured in `cpp-exec/src/main.cpp`, read-only)
 
 - **Cost.** SHADOW is a per-sidecar switch: `exec-guard-sync.js:161-162` derives the side's `tickShadow` from ANY account on that side in SHADOW, so `_all: SHADOW` puts the whole demo sidecar in shadow at the next guard push. The workers already exist when the recorder does (`main.cpp:254-337`: `TICK_WORKERS` threads, default 2, built inside `if (tickRecorder)`); SHADOW adds, on those threads, one `TickMomentumStrategy` + one `ShadowBook` per carried symbol fed every classified event, the signal ring line per signal and the shadow ledger the keeper pulls. Nothing is placed (`tickEntryAccounts` is empty until a human or PR-G's rule puts an account in `TICK_MOMENTUM`, and that needs `SHADOW_PASSED`). The CPU is on the sidecar, not the keeper; the keeper's added work is the `pullTickShadow` rows and the readiness view's reads.
-- **The live sidecar (cpp-acct) has no spool, and the claim "shadow still runs off the feed there" is FALSE.** `main.cpp:185-203`: `TICK_SPOOL_PATH` unset → `tickRecorder` is null → the log line `TICK_SPOOL_PATH not set — tick recorder disabled`. `main.cpp:254-337`: the symbol workers, the strategies, the shadow books and `tickWorkers->start()` are all inside `if (tickRecorder) { … }`; `main.cpp:1215`: `/config tickShadow` is honoured only `&& tickWorkers`; `main.cpp:733`: `GET /tick-status` answers `{"enabled":false,"reason":"TICK_SPOOL_PATH not set"}`; `main.cpp:249-252`: the tick firer starts only with a recorder. So on cpp-acct today SHADOW is a declaration the sidecar cannot act on — no strategy, no signals, no shadow book — until the owner sets `TICK_SPOOL_PATH` on it (an infrastructure change, ask-first; cpp-acct has NO volume, TM-27). This PR does not touch C++.
+- **The live sidecar (cpp-acct) has no spool, and the claim "shadow still runs off the feed there" is FALSE.** `main.cpp:185-203`: `TICK_SPOOL_PATH` unset → `tickRecorder` is null → the log line `TICK_SPOOL_PATH not set — tick recorder disabled`. `main.cpp:254-337`: the symbol workers, the strategies, the shadow books and `tickWorkers->start()` are all inside `if (tickRecorder) { … }`; `main.cpp:1215`: `/config tickShadow` is honoured only `&& tickWorkers`; `main.cpp:733`: `GET /tick-status` answers `{"enabled":false,"reason":"TICK_SPOOL_PATH not set"}`; `main.cpp:249-252`: the tick firer starts only with a recorder. So on cpp-acct today SHADOW is a declaration the sidecar cannot act on — no strategy, no signals, no shadow book — until the owner sets `TICK_SPOOL_PATH` on it (an infrastructure change, ask-first; cpp-acct has NO volume, TM-27). This PR does not touch C++. **Re-read at source 20-09-2026 (§17.1): this bullet's finding STANDS — with no `TICK_SPOOL_PATH` on cpp-acct there are no workers, no strategies, no shadow books and no firer, so "the shadow still runs off the feed there" is still FALSE. Only its remedy was wrong, and that is corrected in §12.3's row and in §17.1. The line numbers this bullet quotes have since moved: the construction gate now reads `main.cpp:191-193`, the firer `:259-263`, the workers/strategies/shadow books `:264`, `/config tickShadow` `:1361`, `/tick-status` `:764`.**
 - **Readiness checks that cannot pass on the live side today, and why** (`tick-readiness.js`, read against the `{enabled:false}` status the heartbeat stores as `cpp_exec_tick_json`): `recorder_recording` (`status.enabled === false`), `disk_reserve_clear` (no `status.disk`), `feed_continuity` (no `status.events`), `profile_matches_sidecar` (no `status.strategy`), `shadow_strategy_running` (in SHADOW, `status.strategy.shadow` absent) — five infrastructure/integration blockers per live account, every one downstream of the missing spool path, none of them an evidence question. `recorder_status_fresh` passes as long as the heartbeat pulls the endpoint. A live account therefore stays `ready: false` under PR-G's rule and is never promoted — which is the correct reading of principle 1 (the same bar) against a sidecar that cannot meet it, not a demo/live gate.
 
 ### 12.3 Named remaining blockages (owner-side; not built here)
@@ -1141,7 +1141,7 @@ Dated follow-up per the plan's standing rule. PR-H implements §4 PR-H of `docs/
 | The bearer token | every `/state/*` read from outside answers 401; no runtime claim in this file is closed by a runtime read (README "Owner-held preconditions", TM-37) | the owner supplies the token; the readiness/research/validation reads can then be exercised against production |
 | Segment locality | the sealed segments are at `/data/tick` on cpp-exec (demo); the keeper has no path to them; the sidecar exposes no segment listing or download (`/tick-status` reports counts, `segmentsSealed`, the mount — not files; there is no `GET /tick-segments`) | either (a) the owner mounts or copies the spool where the keeper runs and sets `TICK_SEGMENTS_DIR`, then `POST /actions/tick-research`; or (b) run `scripts/tick-research.mjs` beside the spool and `POST /actions/tick-trials`; or (c) **the next C++ step, described, not built:** `GET /tick-segments` (the sealed segment list with name, bytes, first/last recvMs, CRC of the header) and `GET /tick-segments/<name>` (the sealed bytes, range-capable, refusing the open segment) on the sidecar, behind the exec secret; the keeper's research action would then stream segments from the demo side into a keeper-local cache directory and point `TICK_SEGMENTS_DIR` at it. Sealed segments are immutable, so a cache is safe; the 2 GiB spool cap bounds the transfer |
 | The three symbols unresolvable on demo | `SPX500`, `USOIL`, `UKOIL` are in the momentum universe but have no id on the demo side (plan §4 PR-H); the recorder carries what resolves | a demo-side name mapping from the owner (or dropping them from the demo carry list) — a data question, not code |
-| The live sidecar's spool | §12.2: no `TICK_SPOOL_PATH`, no volume on cpp-acct → no workers, no shadow, no tick firer | the owner sets the path and a volume (ask-first, TM-27) |
+| The live sidecar's spool | §12.2: no `TICK_SPOOL_PATH`, no volume on cpp-acct → no workers, no shadow, no tick firer | **Corrected 20-09-2026 (§17.1): the owner sets the path; a volume is needed only before arming.** A container-local spool path is enough for the workers, the shadow and its evidence (nothing survives a restart); the volume is what `disk_reserve_clear` needs before a live tick permit is issued. Either way it is an infrastructure change, ask-first (TM-27) |
 | Bootstrap sample on the test block | the blocks are cut by EVENT index (thirds of the event stream, `blockSummaries`), NOT by trade count — the test block holds whatever fell in the last third after the purge. Measured here on the planted fixture with `includeTest`: train 0 / validation 0 / test 0 — both of the fixture's trades fall inside the purge windows at the block boundaries while `summary.trades` still counts 2 (the checker's own run read 0 / 0 / 2 on the block rows); either way, nothing like a third of the trades. The first draft of this row assumed "~13 of 40"; that was an unmeasured assumption (checker M-3). Hence `replay.minTestTrades 10`: a marginal profile fails honestly on the sample rather than passes on a bootstrap over two numbers | more data (a longer recording), never a lower threshold |
 
 ### 12.3a Checker notes carried as stated limits (11-09-2026), not built
@@ -1877,3 +1877,202 @@ The table above is arithmetic on the schedule and does not need it.
   PR-L's: `make -C cpp-exec test` rebuilt nothing on a header change and
   re-ran stale binaries, so any such result quoted before that commit — mine
   included — was vacuous.
+
+---
+
+## 17. Follow-up — two corrected claims and two gaps with no register row (docs only, 20-09-2026)
+
+Dated follow-up per the plan's standing rule, and per owner principle 5 (**the
+`.md` plans are checked** — kept audited against the code). **This section
+changes no code and no configuration.** It records what the code does today,
+where earlier sections of this file said otherwise, and two things the code
+does that nothing in the repository declares as intent.
+
+Every `file:line` below was opened on `b9f5931` before it was written here.
+Nothing in this section is claimed as IMPLEMENTED; TM-27 stays `PARTIAL` and
+the two new register rows are filed `PLANNED`.
+
+### 17.1 Corrected claim 1 — the spot feed is its own connection, and a second connection ADDS a rate budget
+
+Earlier readings treated the sidecar's quote feed as traffic on the order
+connection, and therefore treated cTrader's rate limit as a budget the feed and
+the order path share. Both halves are wrong at source.
+
+- **The feed is a dedicated, subscribe-only WebSocket.**
+  `cpp-exec/src/spot_feed.hpp:3-10` states the design and the reason in the
+  file's own words: a tick arriving while the engine's "single
+  mutex-serialized connection" is blocked awaiting an
+  `EXECUTION_EVENT`/`RECONCILE_RES` would be "silently logged by
+  `handleUnsolicited()` and dropped — never reaching the dispatcher", so "a
+  second, subscribe-only connection avoids that entirely; it never sends
+  order/reconcile traffic, so it's always free to read". `SpotFeed` owns its
+  own `CtraderWs ws_` (`spot_feed.hpp:177`), distinct from `ExecEngine`'s
+  `CtraderWs ws_` (`engine.hpp:313`).
+- **The rate limit is per CONNECTION.** `cpp-exec/src/request_pacer.hpp:6-12`
+  quotes the cTrader Open API docs directly: "a maximum of 50 requests per
+  second per connection for any non-historical data requests" and "5 requests
+  per second per connection for any historical data requests". The 5/s figure
+  is the HISTORICAL limit only; the ordinary limit is 50/s. The pacer's own
+  comment adds that "this sidecar holds ONE connection, so the budget is per
+  process" — that is the pacer's scope (the engine's request connection), not
+  a statement that the feed draws on it.
+
+The consequence, stated plainly because the earlier reading had it backwards:
+**a second connection adds a budget, it does not split one.** The spot feed
+does not spend the engine's 50/s, and the engine's pacing is not relieved by
+the feed being quiet.
+
+### 17.2 Corrected claim 2 — a Railway VOLUME is not required to run the tick shadow; `TICK_SPOOL_PATH` is
+
+`TICK_SPOOL_PATH` is the construction gate for the **entire** tick block, not
+only for the disk writer:
+
+- `cpp-exec/src/main.cpp:191-193` — the recorder is constructed only when the
+  variable is non-empty.
+- `main.cpp:259-263` — `tickFirer.start()` is inside `if (tickRecorder)`.
+- `main.cpp:264` — the symbol workers, the tick strategies and the shadow
+  books are built inside the same guard (`TICK_WORKERS`, default 2).
+- `main.cpp:1361` — `POST /config tickShadow` is honoured only
+  `&& tickWorkers`, so with no workers the switch is ignored.
+- `main.cpp:764` — `GET /tick-status` answers
+  `{"enabled":false,"reason":"TICK_SPOOL_PATH not set"}`.
+
+What the path has to point at is modest. `TickRecorder::start()`
+(`cpp-exec/src/tick_recorder.cpp:311-361`) needs a creatable directory and an
+exclusive `flock` on `<dir>/.recorder.lock`; a container-local path satisfies
+both. And `main.cpp:200-206` KEEPS the recorder object even when `start()`
+fails — the failure is logged ("recording stays off") and the workers, the
+strategies and the shadow books are still built.
+
+The shadow does not read the spool. It runs off the raw tap:
+`cpp-exec/src/tick_tap.hpp:80-81` describes the tap `main.cpp` installs on the
+feed, and `tick_tap.cpp:17-21` dispatches the classified observation to the
+workers on every admitted event, independently of whether anything is written.
+A full spool stops only `writeRecord` (`tick_recorder.cpp:587-600`, state
+`PAUSED_RESERVE`).
+
+**Where a volume does matter: arming.** `disk_reserve_clear`
+(`agent/services/tick-readiness.js:80`) fails on `PAUSED_RESERVE` or a mount
+over the stop threshold, and it is one of the three `PAUSE_CHECKS`
+(`agent/services/tick-permits.js:50`) whose failure withholds an account's
+standing tick permits. So the boundary is:
+
+| Want | Needs |
+|---|---|
+| Workers, strategies, shadow books, shadow evidence | `TICK_SPOOL_PATH` set to any creatable directory — **container-local is enough** (nothing survives a restart; a restart is what the recording loses) |
+| A durable recording, and sealed segments to replay | a mounted volume |
+| **Arming** (a live tick permit) | a mounted volume, because `disk_reserve_clear` is a `PAUSE_CHECK` |
+
+Two related facts, both read at source:
+
+- **The spool cap is 2 GiB, not 10 GB.**
+  `cpp-exec/src/tick_recorder.hpp:178-181`: `spoolCapBytes = 2ull << 30`,
+  `reserveMinBytes = 2ull << 30`, `reservePct = 20` (and
+  `segmentBytes = 64ull << 20`). The "10GB volumes" in
+  `docs/tick-momentum/plan.md` §10 and in TM-27's requirement title are the
+  owner's reported Railway volumes as filed on 10-09-2026 — not the spool cap,
+  and not the mount that was later measured (50 GB at `/data` on cpp-exec).
+  `docs/tick-momentum/README.md` already stated 2 GiB in its phase table and
+  now states it in the preconditions too.
+- **The spool directory is created with a single-level `::mkdir`**
+  (`tick_recorder.cpp:321-322`), not `mkdir -p`. `/data/tick` works on cpp-exec
+  because `cpp-exec/entrypoint.sh:13,19` runs `mkdir -p` and `chown appuser`
+  as root before `runuser` drops privileges. A sidecar without that entrypoint
+  step, given a nested path, fails at the first missing parent.
+
+**What is NOT corrected: §12.2's finding stands.** cpp-acct has no
+`TICK_SPOOL_PATH`, so it has no workers, no strategies, no shadow books and no
+firer, and "the shadow still runs off the feed there" remains FALSE. Only the
+remedy was wrong. §12.3's row now reads "the owner sets the path; a volume is
+needed only before arming" in place of "the owner sets the path and a volume",
+and §12.2 carries the same correction inline together with the current line
+numbers, which had drifted from the ones that bullet quotes.
+
+### 17.3 Gap with no register row — a tick fill is not owned by the bot's position machinery (new row TM-43)
+
+This is the principle-5 failure this section exists to record: the behaviour is
+in the code, it is not what anyone appears to have intended, and no plan, no
+register row and no test declares it either way.
+
+The chain, each link opened:
+
+1. **The label.** `cpp-exec/src/tick_firer.cpp:74-78` builds
+   `"tick:" + profileHash`, appending `"|||||||" + intentId` when there is an
+   intent tag; `:114` sets it on the order payload.
+2. **The parser.** `agent/lib/trade-labels.js:192-194` splits on `|`,
+   uppercases field 0 and looks it up in `REV_SOURCES`. `"TICK:<hash>"` is in
+   no such table, so `source` is `null`.
+3. **Ownership.** `isOurs` (`trade-labels.js:340-343`) returns true only for
+   `autopilot`, `copilot` or `preopen`. It returns **false**.
+4. **Adoption.** `agent/services/reconciler.js:395-400` therefore sets
+   `adoptedSource = 'external'` and the thesis "External position —
+   reconciliation import"; `reconciler.js:498` gates `stampAdoptedFromIntent`
+   on `ours`, so it is never called.
+
+`external` is then skipped by every enumeration built for bot positions:
+
+| Where | Line | Effect on a tick position |
+|---|---|---|
+| `agent/loop.js` `selectActivePositions` | `2596-2600` | admitted by the whitelist (`autopilot`, `preopen`, `external`) — the one place it is not filtered out |
+| `agent/loop.js` equity stop | `5258` | `if (p.source === 'external') continue` — skipped |
+| `agent/loop.js` exit-mark stamping | `2331` | `if (pos.source !== 'external') stampExitMarks(...)` — not stamped |
+| `agent/services/fast-monitor.js` | `326`, `347` | skipped twice: excluded from the sidecar quote pull, then `continue`d in the per-position loop ("observe-only") |
+| `agent/services/session-open-guard.js` | `81` | `AND (source IS NULL OR source != 'external')` — skipped |
+| `agent/services/naked-position-guard.js` | `62` (stated), `475` (`HUMAN_SOURCES`) | deliberately exempt as "the owner's own trade" |
+| `agent/services/profit-keeper.js` | `406` | **covered** (scope `all` and scope `external,manual` both include it) |
+| `agent/services/loss-guardian.js` | `146` | **covered** |
+| `agent/services/cockpit-intention.js` | `79` | reports it as keeper-managed, on the same rule |
+
+The firer sets a broker bracket at placement — `relativeStopLoss` and
+`relativeTakeProfit` on the order (`tick_firer.cpp:111-113`) — and that is the
+whole of the protection a tick position would carry from the bot's side.
+
+**So a tick position placed today would be managed by the MANUAL-position path**
+— broker bracket, profit keeper, loss guardian — and would be invisible to the
+fast monitor, the equity stop, the session-open guard, the naked-position guard
+and exit-mark stamping. That may even be a defensible choice. Nothing in the
+code says it was made. Filed as **TM-43** (`PLANNED`, related blocker B16):
+"A tick fill is owned and managed by the same machinery as a bar entry."
+
+### 17.4 Gap behind it — a tick close cannot produce a complete `position_history` row (new row TM-44)
+
+`agent/services/position-history.js:79` lists `direction_reason` among
+`REQUIRED_FIELDS`, so by the module's own definition a row without it is
+incomplete. The value has exactly one source: `directionReasonFor`
+(`position-history.js:99-106`) reads `risk_events.proposal_json`, the record
+carries it at `:286-292`, and `:255` stamps
+`sources.direction_reason = 'risk_events.proposal_json'`.
+
+The tick path writes no `risk_events` row — there is no such write in
+`agent/services/tick-*.js` — so there is nothing for that lookup to find.
+
+The one mechanism that would attach a risk event to an adopted position,
+`stampAdoptedFromIntent`, is unreachable for a tick fill (§17.3, gated on
+`ours`) and **would miss even if it were reached**: its lookup is a ±5-minute
+window around the INTENT's `created_at` (`agent/services/reconciler.js:45-53`),
+while a standing tick permit is created by the feeder pass minutes to hours
+before the fill it eventually authorises. The window misses by construction,
+not by timing luck.
+
+Downstream, the capture queue pays for this on every tick close: `MAX_ATTEMPTS`
+6 (`agent/services/position-capture.js:73`) and `MAX_REVERIFY` 3
+(`position-capture.js:143`) are spent chasing a verdict that cannot complete,
+and the row still records no reason.
+
+Owner principle 4 — **"Unknown" must not happen** after four weeks of trading;
+every trade has a reason — is measured against the bar path today. Measured
+against the tick path it cannot hold. Filed as **TM-44** (`PLANNED`):
+"A tick position's close lands as a complete `position_history` row."
+
+### 17.5 What this section does not claim
+
+- Nothing here is IMPLEMENTED. TM-27 remains `PARTIAL`, and its evidence column
+  now names what is still unmeasured: no per-service mount/UID/statfs/free/inode
+  snapshot for either environment (the `/state` reads still answer 401, TM-37),
+  and cpp-acct has no spool path set at all.
+- TM-43 and TM-44 are `PLANNED`. Neither describes work done in this change.
+- No tick order has been placed by this repository, and this change does not
+  make one possible.
+- The facts in §17.1–§17.4 are read from source, not from a live service.
+  Nothing here was confirmed against a running sidecar, because the bearer
+  token blockage in §12.3 is unchanged.
