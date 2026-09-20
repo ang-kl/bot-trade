@@ -262,18 +262,28 @@ export async function syncSegments(d, destDir, { maxBytes = DEFAULT_MAX_BYTES, m
   const corrupt = have.corrupt || []
   let pulled = 0, skipped = 0, bytes = 0, truncated = list.truncated
   const failed = []
+  // `taken` is what the CACHE HOLDS of the sidecar's oldest segments, pulled
+  // or already there — which is what `maxSegments` bounds. Checker, 20-09-2026:
+  // the skip-if-cached test used to run BEFORE the bound, so a cache already
+  // holding the oldest two under `maxSegments: 2` went on to pull segments 3
+  // and 4 — 128 MiB moved on the production shape and then sliced away by the
+  // replay, which reads the oldest two either way. Counting the skips against
+  // the bound is what makes "pull the oldest two" mean the same thing on a
+  // cold cache and a warm one.
+  let taken = 0
   for (const s of list.segments) {
-    if (have.get(s.name) === s.bytes) { skipped++; continue }
-    if (pulled >= maxSegments || bytes + s.bytes > maxBytes) { truncated = true; break }
+    if (taken >= maxSegments) { truncated = true; break }
+    if (have.get(s.name) === s.bytes) { skipped++; taken++; continue }
+    if (bytes + s.bytes > maxBytes) { truncated = true; break }
     const r = await pullSegment(d, s.name, destDir)
-    if (r.ok) { pulled++; bytes += r.bytes }
+    if (r.ok) { pulled++; taken++; bytes += r.bytes }
     else failed.push({ name: s.name, error: r.error })
   }
   // A cached file that failed verification and the sidecar no longer lists
   // cannot be repaired from here — reported, never silently trusted.
   const listedNames = new Set(list.segments.map(x => x.name))
   return {
-    pulled, skipped, bytes, truncated, failed, enabled: true,
+    pulled, skipped, bytes, truncated, failed, enabled: true, taken,
     corrupt: corrupt.map(c => ({ ...c, repulled: listedNames.has(c.name) })),
     segments: list.segments.length, openBytes: list.openBytes, spool: list.spool ?? null,
   }
@@ -285,10 +295,18 @@ export async function syncSegments(d, destDir, { maxBytes = DEFAULT_MAX_BYTES, m
  * has no recorder is a REPORTED fact, never an exception.
  */
 export async function syncFromSidecars(destDir, { sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs, maxBytes, maxSegments, verifyCache = true } = {}) {
-  const out = { destDir, pulled: 0, skipped: 0, bytes: 0, truncated: false, corrupt: 0, sides: [] }
+  const out = { destDir, pulled: 0, skipped: 0, bytes: 0, truncated: false, corrupt: 0, taken: 0, sides: [] }
   let budget = maxBytes ?? DEFAULT_MAX_BYTES
+  // The SEGMENT bound is shared across the sides the same way the byte budget
+  // is. Checker, 20-09-2026: it used to be handed to each side whole, so a
+  // two-side deployment under `maxSegments: 2` pulled up to four segments and
+  // the replay then used two of them. `undefined` keeps each side on its own
+  // default, which is the unbounded path this function had before.
+  let segmentBudget = maxSegments
   for (const side of sides) {
-    const r = await syncSegments({ base: side.base, fetch: fetchImpl, secret, timeoutMs }, destDir, { maxBytes: budget, maxSegments, verifyCache })
+    const r = await syncSegments({ base: side.base, fetch: fetchImpl, secret, timeoutMs }, destDir, { maxBytes: budget, ...(segmentBudget === undefined ? {} : { maxSegments: Math.max(0, segmentBudget) }), verifyCache })
+    if (segmentBudget !== undefined) segmentBudget = Math.max(0, segmentBudget - (r.taken ?? 0))
+    out.taken += r.taken ?? 0
     out.pulled += r.pulled
     out.skipped += r.skipped
     out.bytes += r.bytes
@@ -313,7 +331,7 @@ export function recordsInBytes(bytes) {
  * question.
  */
 export async function listAllSides({ sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs } = {}) {
-  const out = { segments: 0, bytes: 0, records: 0, truncated: false, reachable: 0, names: [], sides: [] }
+  const out = { segments: 0, bytes: 0, records: 0, truncated: false, reachable: 0, names: [], recordsPerSegment: [], sides: [] }
   for (const side of sides) {
     const r = await listSidecarSegments({ base: side.base, fetch: fetchImpl, secret, timeoutMs })
     const bytes = r.segments.reduce((a, s) => a + s.bytes, 0)
@@ -326,7 +344,11 @@ export async function listAllSides({ sides = segmentSides(), fetch: fetchImpl, s
     // The NAMES matter, not just the count: the cache may already hold some
     // of these, and summing "what the sides list" with "what the cache holds"
     // double-counts exactly the segments a previous sync pulled.
-    for (const seg of r.segments) if (!out.names.includes(seg.name)) out.names.push(seg.name)
+    // PR-EX: the PER-SEGMENT record counts travel with the names, in the
+    // same order. The research route's 413 has to tell the operator how many
+    // segments fit under the cap, and an aggregate cannot answer that when
+    // the segments differ in size (the last one sealed is routinely short).
+    for (const seg of r.segments) if (!out.names.includes(seg.name)) { out.names.push(seg.name); out.recordsPerSegment.push(recordsInBytes(seg.bytes)) }
     out.sides.push({ side: side.name, reachable: r.ok, enabled: r.enabled, segments: r.segments.length, bytes, records, truncated: r.truncated, ...(r.error ? { error: r.error } : {}), ...(r.reason ? { reason: r.reason } : {}) })
   }
   return out
