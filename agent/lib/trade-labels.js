@@ -76,11 +76,21 @@ export const STRATEGIES = {
   fvg_retrace: 'FVG',
   tsmom_long: 'TSM',   // the long-only TS momentum book (03-09-2026)
   // The tick book's strategy (20-09-2026). It is NOT a STRATEGY_REGISTRY key
-  // and deliberately stays out of that registry — see ownedByIntent below —
-  // but it must have a label code all the same: without one, encodeLabel
-  // writes OTH and every adopted tick fill shows a blank/other Strategy
-  // column, the same permanent loss of attribution va_breakout and
-  // fvg_retrace suffered above.
+  // and deliberately stays out of that registry — see ownedByIntent below.
+  //
+  // CORRECTED JUSTIFICATION (checker round, same day): the first version of
+  // this note claimed "without a code encodeLabel writes OTH", which is the
+  // va_breakout/fvg_retrace story above and is NOT what happens here. Nothing
+  // in Node encodes a tick label: the sidecar writes it directly
+  // (cpp-exec/src/tick_firer.cpp), and encodeLabel is never on that path. The
+  // code earns its place the other way round — as a DECODE. `parseLabel` maps
+  // the strategy field through REV_STRATEGIES, so a code here is what lets
+  // `TICKM` come back as `tick_momentum_breakout` if the sidecar's label ever
+  // grows a strategy field, and what keeps describeLabel from reporting
+  // 'strategy "TICKM" not recognised'. Today the sidecar leaves field 2 empty
+  // and the strategy is recovered from the intent's producer instead
+  // (reconciler.js PRODUCER_STRATEGY) — so this entry is a hedge that costs
+  // one line, not the fix for the blank column.
   tick_momentum_breakout: 'TICKM',
   burnin:     'BURN',
   other:      'OTH',

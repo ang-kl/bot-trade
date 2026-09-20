@@ -1264,19 +1264,35 @@ test('tick fill: loop.js OWN selectActivePositions statement returns the adopted
   // The REAL prepared statement, imported from loop.js — not a re-typed SQL
   // string. A re-typed copy would keep passing after the whitelist in loop.js
   // changed, which is the exact failure the preopen incident recorded there.
+  //
+  // AND IT MUST BE THE ADOPTION THAT PUT IT THERE (20-09-2026, checker round).
+  // The first version of this test asserted only that the statement returned
+  // the row, and SURVIVED both mutations of the mechanism it claimed to pin:
+  // `repairMisfiledOwnPositions` runs at the end of every reconcile pass and
+  // re-upgrades the row within the same call, so killing `byIntent` at the
+  // adoption site left the row monitored anyway. A test that cannot go red
+  // when the thing it names is deleted is failure mode #1.
+  //
+  // Two assertions close that: `sourcesRepaired === 0` (the healer did not
+  // have to rescue it — red if the adoption produced `external`), and the
+  // stamped strategy on the monitored row (red if `ours` is false, since the
+  // stamp is gated on it and the healer never runs for an already-autopilot
+  // row).
   const { prepareStatements } = await import('../loop.js')
   const db = mkDb()
   const ACCT = '46130058'
   const id = seedTickIntent(db, { accountId: ACCT })
-  reconcilePositions(db, [makeBrokerPosition({
+  const result = reconcilePositions(db, [makeBrokerPosition({
     positionId: 7002, symbolName: 'EURUSD', openPrice: 100, stopLoss: 99.5, label: TICK_LABEL(id), volume: 1000,
   })], [], mkSetState(db), { accountId: ACCT })
 
+  assert.equal(result.sourcesRepaired, 0, 'OURS at adoption — not rescued afterwards by the healer')
   const s = prepareStatements(db)
   const rows = s.selectActivePositions.all('active')
   assert.equal(rows.length, 1, 'the adopted tick position is monitored')
   assert.equal(rows[0].symbol, 'EURUSD')
   assert.equal(rows[0].source, 'autopilot')
+  assert.equal(rows[0].strategy, 'tick_momentum_breakout', 'monitored AND attributed, on the adoption pass itself')
 })
 
 test('tick fill: manageStageAllows says YES for tick_momentum_breakout — no matrix cell can strand it', async () => {
@@ -1326,13 +1342,25 @@ test('tick fill: repairMisfiledOwnPositions upgrades a PRE-PR misfiled row, is i
      VALUES ('EURUSD', 'BUY', 100, 0.01, '7005', 'external', ?, ?, 'open', datetime('now'))`
   ).run(label, ACCT).lastInsertRowid
   db.prepare(
-    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, thesis, source, label_raw, account_id, status)
-     VALUES ('EURUSD', ?, 'long', 100, 'External position — reconciliation import', 'external', ?, ?, 'active')`
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, thesis, source, label_raw, account_id, status)
+     VALUES ('EURUSD', ?, 'long', 100, 99.25, 'External position — reconciliation import', 'external', ?, ?, 'active')`
   ).run(tradeId, label, ACCT)
 
   assert.equal(repairMisfiledOwnPositions(db), 1)
   assert.equal(db.prepare(`SELECT source FROM trades WHERE id = ?`).get(tradeId).source, 'autopilot')
   assert.equal(db.prepare(`SELECT source FROM monitored_positions WHERE trade_id = ?`).get(tradeId).source, 'autopilot')
+  // ATTRIBUTION, NOT JUST SCOPE. Rescuing `source` alone left exactly the rows
+  // this healer exists for managed but unattributed — strategy NULL (so
+  // strategy-attribution buckets them as unlabelled), origin untouched, no
+  // trade_plans row (so position_history's required fields go unmet). The
+  // original test asserted only `source`, which is why that was invisible.
+  const healed = db.prepare(`SELECT source, origin, strategy FROM trades WHERE id = ?`).get(tradeId)
+  assert.deepEqual(healed, { source: 'autopilot', origin: 'bot_market_dispatch', strategy: 'tick_momentum_breakout' })
+  assert.equal(db.prepare(`SELECT strategy FROM monitored_positions WHERE trade_id = ?`).get(tradeId).strategy, 'tick_momentum_breakout')
+  const healedPlan = db.prepare(`SELECT * FROM trade_plans WHERE trade_id = ?`).get(tradeId)
+  assert.ok(healedPlan, 'the healed row gets its plan too')
+  assert.equal(healedPlan.planned_sl, 99.25, 'from the monitored row\'s stop, the only bracket a healed row has')
+  assert.equal(healedPlan.source, 'reconciler_adopted_intent')
   assert.equal(repairMisfiledOwnPositions(db), 0, 'idempotent: an upgraded row no longer matches')
 
   // The inverse — a revert of the code does NOT undo the writes, so the undo
@@ -1366,4 +1394,44 @@ test('ownedByIntent is STATE-AGNOSTIC: an intent already FILLed by reconcileInte
   assert.equal(ownedByIntent(db, label, ACCT), false, 'a manual producer is the decision of a human, not the bot')
   assert.equal(ownedByIntent(db, 'MAN|v1|-|-|-|-|-', ACCT), false, 'no tag, no ownership')
   assert.equal(ownedByIntent(null, label, ACCT), false, 'a DB error returns false, never throws')
+})
+
+test('tick fill: a RELEASED permit that fired anyway is STILL adopted — and the breach is journalled', () => {
+  // The cost of state-agnostic ownership, made legible rather than argued
+  // away (20-09-2026, checker round). A RELEASED or REJECTED intent with a
+  // live position at the broker means the sidecar fired past a withdrawn
+  // permit — this repo's ambiguous-submission shape. Ownership must NOT
+  // change: live risk owned by nobody is the worse failure of the two. But an
+  // ordinary adoption thesis would record a fence breach as a routine import,
+  // so the state goes in the thesis and an action_log row names it.
+  const db = mkDb()
+  const ACCT = '46130058'
+  const id = seedTickIntent(db, { accountId: ACCT, state: 'RELEASED' })
+  const result = reconcilePositions(db, [makeBrokerPosition({
+    positionId: 7007, symbolName: 'EURUSD', openPrice: 100, stopLoss: 99.5, label: TICK_LABEL(id), volume: 1000,
+  })], [], mkSetState(db), { accountId: ACCT })
+
+  assert.equal(result.newExternal[0].adopted, true, 'a withdrawn permit does not disown live risk')
+  assert.equal(result.newExternal[0].source, 'autopilot')
+  assert.equal(result.newExternal[0].fenceBreach, 'RELEASED')
+  const mp = db.prepare(`SELECT thesis FROM monitored_positions WHERE trade_id = (SELECT id FROM trades WHERE ctrader_position_id = '7007')`).get()
+  assert.match(mp.thesis, /PERMIT RELEASED: fired past a withdrawn permit/)
+
+  const log = db.prepare(`SELECT body FROM action_log WHERE method = 'FENCE_BREACH_ADOPTED' ORDER BY id DESC LIMIT 1`).get()
+  assert.ok(log, 'the breach is journalled')
+  const body = JSON.parse(log.body)
+  assert.equal(body.intentId, id)
+  assert.equal(body.state, 'RELEASED')
+  assert.equal(body.producerId, 'tick_momentum')
+  assert.equal(body.account, '…0058', 'account by last 4 only')
+
+  // A normally-resolved intent writes NO breach row — the journal must mean
+  // something when it is there.
+  const ok = seedTickIntent(db, { accountId: ACCT, id: 'itickok000001', state: 'FILLED' })
+  reconcilePositions(db, [
+    makeBrokerPosition({ positionId: 7007, symbolName: 'EURUSD', openPrice: 100, stopLoss: 99.5, label: TICK_LABEL(id), volume: 1000 }),
+    makeBrokerPosition({ positionId: 7008, symbolName: 'EURUSD', openPrice: 100, stopLoss: 99.5, label: TICK_LABEL(ok), volume: 1000 }),
+  ], [], mkSetState(db), { accountId: ACCT })
+  assert.equal(db.prepare(`SELECT COUNT(*) c FROM action_log WHERE method = 'FENCE_BREACH_ADOPTED'`).get().c, 1,
+    'one breach, one row — a FILLED intent is not a breach')
 })

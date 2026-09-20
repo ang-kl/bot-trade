@@ -19,6 +19,14 @@ export const STRAT_SHORT = {
   va_breakout: 'VAB',
   fvg_retrace: 'FVG',
   tsmom_long: 'TSM',
+  // Added 2026-09-20. NOT a STRATEGY_REGISTRY key — deliberately, see the note
+  // at the registry's tail — so the registry-coverage test above could never
+  // have caught this one. It reaches the UI all the same: the reconciler
+  // stamps it on a tick fill adopted from its intent, and without an entry
+  // here the 4-letter mobile column rendered the raw 22-character key. The
+  // label-vocabulary test below is the guard that covers keys the registry
+  // does not.
+  tick_momentum_breakout: 'TICK',
 }
 
 // key → short code, falling back to the raw key (never blank for a real

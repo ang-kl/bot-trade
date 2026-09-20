@@ -776,6 +776,38 @@ test('a position opened OUTSIDE the bot is never touched', async () => {
   assert.match(sent[0], /opened outside the bot, left alone/)
 })
 
+test('TICK SCOPE (20-09-2026): an adopted tick row that HAS a target is never a finding, so the applier cannot amend it', async () => {
+  // A tick fill is now stamped `autopilot` (ownership derived from its filled
+  // intent), so it is no longer exempt from this applier the way an `external`
+  // row is — and this applier AMENDS protection, which on cTrader REPLACES it
+  // (failure mode #7). What keeps it safe is that the sidecar's tick firer
+  // always sends a relativeTakeProfit, so the broker holds one and the row
+  // never enters `targetless` at all. That is a claim about another process,
+  // which is exactly the kind this repo pins rather than asserts.
+  const db = initDB(':memory:')
+  const applied = []
+  const withTp = { positionId: 'T1', symbol: 'EURUSD', stopLoss: 99.5, takeProfit: 101 }
+  const row = targetlessRow('T1', 'EURUSD', { source: 'autopilot', strategy: 'tick_momentum_breakout', current_sl: 99.5 })
+  const a = auditProtection([row], [withTp])
+  assert.equal(a.targetless.length, 0, 'a tick row with a broker target is not targetless')
+  assert.equal(a.naked.length, 0)
+  await runProtectionAudit(db, [row], [withTp], {
+    sendMessage: async () => {},
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 102, basis: 'HVN' }),
+    applyTarget: async () => { applied.push('should not happen'); return { ok: true } },
+  })
+  assert.deepEqual(applied, [], 'nothing to apply, so no amend and no replaced bracket')
+
+  // And the other half of the swap, stated honestly: the SAME row with no
+  // broker target IS eligible, where an `external` row would not be. That is
+  // the reach this change bought, not an accident.
+  const bare = auditProtection([row], [targetlessPos('T1', 'EURUSD')])
+  assert.equal(bare.targetless.length, 1)
+  assert.equal(bare.targetless[0].source, 'autopilot')
+  assert.match(bare.targetless[0].detail, /could not have been submitted this way/)
+})
+
 test('no suggestion means no target — an invented one is worse than none', async () => {
   const db = initDB(':memory:')
   const applied = []
