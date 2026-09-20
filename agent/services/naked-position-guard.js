@@ -474,6 +474,23 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     // costs no bar fetch and can reach no amend by any path.
     const HUMAN_SOURCES = new Set(['external', 'manual'])
     const humanOwned = (f) => HUMAN_SOURCES.has(String(f.source || '').trim().toLowerCase())
+    // TICK ROWS ARE IN SCOPE HERE AS OF 20-09-2026, and that is a change of
+    // reach, not just of bookkeeping. An adopted tick fill used to arrive as
+    // `external` and was exempt by the line above; it is now stamped
+    // `autopilot` (ownership derived from the filled intent, reconciler.js),
+    // so the APPLIER can reach it — and this applier AMENDS protection, which
+    // on cTrader REPLACES it (this repo's failure mode #7: every stop-only
+    // amend deleted the take profit).
+    //
+    // What keeps that safe is upstream and NOT a rule in this file: a finding
+    // only enters `targetless` when the broker holds no take profit, and the
+    // sidecar's tick firer always sends `relativeTakeProfit` with the order
+    // (cpp-exec/src/tick_firer.cpp), so a tick row should never produce one.
+    // "Should never" is the phrase this repo distrusts, so it is pinned by a
+    // test rather than left as a claim — see the tick-adopted case in
+    // naked-position-guard.test.js. If a tick fill ever DOES arrive without a
+    // target, the applier setting one is the right outcome; what must not
+    // happen is it arriving here unnoticed.
     // SCOPE NOTE, STATED IN BOTH PLACES (17-09-2026, third review).
     // `accountId` defaults to null here, and null means "ask across every
     // account" — so an unscoped audit pass treats a book row on ANY account as

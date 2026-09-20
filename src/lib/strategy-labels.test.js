@@ -12,6 +12,26 @@
 import { describe, it, expect } from 'vitest'
 import { STRAT_SHORT, stratShort, STRAT_NAME, strategyLabel } from './strategy-labels.js'
 import { STRATEGY_REGISTRY } from '../../agent/services/strategies.js'
+import { STRATEGIES } from '../../agent/lib/trade-labels.js'
+
+// THE REGISTRY IS NOT THE WHOLE VOCABULARY (2026-09-20). Every guard in this
+// file keyed off STRATEGY_REGISTRY, which made it blind by construction to a
+// strategy that is deliberately NOT in the registry. `tick_momentum_breakout`
+// is exactly that: the sidecar fires it, the reconciler stamps it on the trade
+// row from the filled intent, and it stays out of the registry so the fast
+// monitor manages it unconditionally (see the note at the registry's tail).
+// It reached the UI with no short code and rendered its raw 22-character key
+// in a four-letter mobile column, and no test here could have said so.
+//
+// So the coverage guard below runs against the BROKER LABEL vocabulary
+// (agent/lib/trade-labels.js's STRATEGIES) — the set of strategy keys that can
+// actually appear on a stored trade — minus the free-text buckets that predate
+// the registry and are never stamped by a producer.
+const LABEL_ONLY_BUCKETS = new Set([
+  'trend', 'meanrev', 'breakout', 'scalp', 'swing', 'news', 'reversal',
+  'burnin', // the sampling harness, its own bucket by design
+  'other',  // encodeLabel's catch-all for an unrecognised key
+])
 
 describe('strategy labels', () => {
   it('covers every strategy in the registry', () => {
@@ -19,10 +39,18 @@ describe('strategy labels', () => {
     expect(missing, `add these to STRAT_SHORT or they render as raw keys: ${missing.join(', ')}`).toEqual([])
   })
 
-  it('has no label pointing at a strategy the registry does not have', () => {
+  it('covers every strategy the BROKER LABEL can carry, registry or not', () => {
+    const missing = Object.keys(STRATEGIES)
+      .filter(k => !LABEL_ONLY_BUCKETS.has(k) && !STRAT_SHORT[k])
+    expect(missing, `add these to STRAT_SHORT or they render as raw keys: ${missing.join(', ')}`).toEqual([])
+  })
+
+  it('has no label pointing at a strategy neither the registry nor the label vocabulary has', () => {
     // A stale entry is harmless but signals the map was edited by hand
-    // against a registry that has since changed — worth knowing.
-    const keys = new Set(STRATEGY_REGISTRY.map(s => s.key))
+    // against a registry that has since changed — worth knowing. The label
+    // vocabulary counts as legitimate: a key can be stampable without being
+    // a registry strategy.
+    const keys = new Set([...STRATEGY_REGISTRY.map(s => s.key), ...Object.keys(STRATEGIES)])
     const orphans = Object.keys(STRAT_SHORT).filter(k => !keys.has(k))
     expect(orphans).toEqual([])
   })
@@ -30,6 +58,14 @@ describe('strategy labels', () => {
   it('short codes are unique — two strategies sharing a code are unreadable', () => {
     const codes = Object.values(STRAT_SHORT)
     expect(new Set(codes).size).toBe(codes.length)
+  })
+
+  it('renders the tick strategy short AND long, though it is not a registry key', () => {
+    expect(stratShort('tick_momentum_breakout')).toBe('TICK')
+    // STRAT_NAME deliberately carries no entry: the humaniser already produces
+    // the right words, and an entry there would trip the registry-orphan guard
+    // in the full-names block below.
+    expect(strategyLabel('tick_momentum_breakout')).toBe('Tick Momentum Breakout')
   })
 
   it('falls back to the raw key rather than blank, and null stays null', () => {
