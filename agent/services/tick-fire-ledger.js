@@ -38,6 +38,16 @@
 import { getState, setState } from '../db.js'
 
 export const TICK_FIRE_LEDGER_CURSOR_KEY = 'tick_fire_ledger_cursor_json'
+// THE COUNT OUTLIVES THE PASS (20-09-2026, checker round). A lost window
+// visible only in a log line is this repo's protection-audit shape: the sweep
+// fired every 50 seconds while its RECORD sat a week stale, and nobody reads a
+// log after the fact. The ring is bounded and OVERWRITTEN, so a fire this pass
+// could not attribute is gone for good — so each pass stores its own figures,
+// and the unattributed counts accumulate BY REASON with the span they cover.
+// Nothing reads these yet; the readiness view is a later PR. The record exists
+// first, because a count that was never written cannot be shown later.
+export const TICK_FIRE_LEDGER_LAST_KEY = 'tick_fire_ledger_last_json'
+export const TICK_FIRE_LEDGER_TOTALS_KEY = 'tick_fire_ledger_totals_json'
 export const TICK_FIRE_KINDS = Object.freeze(['fire', 'fire_result', 'fire_reject', 'fire_refused'])
 const STRATEGY = 'tick_momentum_breakout'
 const PRODUCER = 'tick_momentum'
@@ -60,6 +70,41 @@ export function reasonFor({ side, entry, stop, target }) {
   if (entry == null || stop == null) return null
   const t = target == null ? '' : `_target=${target}`
   return `tick:breakout_${s}_entry=${entry}_stop=${stop}${t}`
+}
+
+/**
+ * Store this pass's own figures and fold its unattributed counts into the
+ * running totals. Best-effort: an unwritable agent_state must not lose the
+ * risk events the pass already wrote.
+ */
+function persist(db, out, now) {
+  const at = new Date(now).toISOString()
+  try {
+    setState(db, TICK_FIRE_LEDGER_LAST_KEY, JSON.stringify({
+      at, scanned: out.scanned, written: out.written, skipped: out.skipped,
+      unattributed: out.unattributed, rejects: out.rejects,
+      reasons: [...new Set(out.reasons)], cursor: out.cursor,
+    }))
+  } catch { /* state unwritable */ }
+  try {
+    let t = null
+    try { t = JSON.parse(getState(db, TICK_FIRE_LEDGER_TOTALS_KEY) || 'null') } catch { t = null }
+    const totals = {
+      firstAt: t?.firstAt || at,
+      lastAt: at,
+      passes: Number(t?.passes || 0) + 1,
+      written: Number(t?.written || 0) + out.written,
+      skipped: Number(t?.skipped || 0) + out.skipped,
+      rejects: Number(t?.rejects || 0) + out.rejects,
+      unattributedTotal: Number(t?.unattributedTotal || 0) + out.unattributed,
+      unattributed: { ...(t?.unattributed && typeof t.unattributed === 'object' ? t.unattributed : {}) },
+    }
+    // BY REASON, because "3 unattributed" and "3 intent_missing" answer
+    // different questions: a pruned intent is a retention problem, a missing
+    // breakout is a sidecar that predates the fire-detail change.
+    for (const why of out.reasons) totals.unattributed[why] = Number(totals.unattributed[why] || 0) + 1
+    setState(db, TICK_FIRE_LEDGER_TOTALS_KEY, JSON.stringify(totals))
+  } catch { /* state unwritable */ }
 }
 
 /**
@@ -141,6 +186,7 @@ export function runTickFireLedger(db, { now = Date.now(), limit = MAX_ROWS } = {
   const next = { lastId: Number(last.id), bootId: String(last.boot_id || ''), seq: Number(last.seq) || 0 }
   try { setState(db, TICK_FIRE_LEDGER_CURSOR_KEY, JSON.stringify(next)) } catch { /* state unwritable — re-read next pass */ }
   out.cursor = next
+  persist(db, out, now)
   if (out.written || out.unattributed) {
     // Account ids by last 4 (repo rule). One line per pass, only when it said
     // something: silence here would hide exactly the lost window this counts.

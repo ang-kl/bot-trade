@@ -16,8 +16,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState } from '../db.js'
-import { runTickFireLedger, TICK_FIRE_LEDGER_CURSOR_KEY, reasonFor, parseDetail } from './tick-fire-ledger.js'
-import { reconcilePositions } from './reconciler.js'
+import { runTickFireLedger, TICK_FIRE_LEDGER_CURSOR_KEY, TICK_FIRE_LEDGER_LAST_KEY, TICK_FIRE_LEDGER_TOTALS_KEY, reasonFor, parseDetail } from './tick-fire-ledger.js'
+import { reconcilePositions, repairMisfiledOwnPositions } from './reconciler.js'
 import { REQUIRED_FIELDS, buildPositionRecord, capturePosition } from './position-history.js'
 
 const ACCT = '46130058'          // logged by its last 4: …0058
@@ -184,6 +184,82 @@ test('a fire_result whose intent no longer exists is counted as unattributed —
   const empty = runTickFireLedger(db, { now: CLOSE_MS })
   assert.equal(empty.scanned, 0)
   assert.equal(empty.written, 0)
+})
+
+// ---------------------------------------------------------------------------
+// 5. THE HEALER'S PATH, not only the adoption site. repairMisfiledOwnPositions
+// calls stampAdoptedFromIntent too (20-09-2026 checker round), for rows adopted
+// `external` BEFORE tick fills were owned at all. Those are exactly the rows
+// whose closes are still unattributed, so the fire ledger's link has to reach
+// them by that door as well — an `it.risk_event_id` branch that only worked at
+// the adoption site would leave the back catalogue on `missing:
+// direction_reason` forever.
+// ---------------------------------------------------------------------------
+test('a HEALED misfiled row picks up risk_event_id from the intent the fire ledger stamped, and its close completes', () => {
+  const db = fresh()
+  seedTickIntent(db)
+  ring(db, { detail: okDetail() })
+  assert.equal(runTickFireLedger(db, { now: OPEN_MS }).written, 1)
+  const reid = db.prepare('SELECT risk_event_id FROM entry_intents WHERE id = ?').get(INTENT).risk_event_id
+  assert.ok(reid > 0)
+
+  // The row as it was left before ownership existed: external, unattributed,
+  // with only the label to go on.
+  const label = `tick:${'a'.repeat(16)}|||||||${INTENT}`
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, label_raw, account_id, status, opened_at)
+     VALUES ('EURUSD', 'BUY', 1.1000, 0.01, '7009', 'external', ?, ?, 'open', datetime('now'))`
+  ).run(label, ACCT).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, source, label_raw, account_id, status)
+     VALUES ('EURUSD', ?, 'long', 1.1000, 1.0980, 1.1060, 'External position — reconciliation import', 'external', ?, ?, 'active')`
+  ).run(tradeId, label, ACCT)
+
+  assert.equal(repairMisfiledOwnPositions(db), 1)
+  const healed = db.prepare('SELECT source, origin, strategy, risk_event_id FROM trades WHERE id = ?').get(tradeId)
+  assert.deepEqual(healed, { source: 'autopilot', origin: 'bot_market_dispatch', strategy: 'tick_momentum_breakout', risk_event_id: reid },
+    'the healer takes the intent own event — the ±5-min window would find nothing here either')
+
+  // And the close of a healed row now completes, which is the whole point.
+  db.prepare(`UPDATE trades SET status = 'closed', exit_price = 1.1050, opened_at = ?, closed_at = ?, closed_at_ms = ?,
+              hold_duration_ms = ?, gross_pnl = 50, net_pnl = 48, commission = -1, swap = -1, realised_rr = 2.5, close_reason = 'take_profit'
+              WHERE id = ?`)
+    .run(new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString(), CLOSE_MS, CLOSE_MS - OPEN_MS, tradeId)
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
+              VALUES ('d9', '7009', ?, 'EURUSD', 'BUY', 0.01, 1.1000, 1.1050, ?, ?, 50, -1, -1, 48)`)
+    .run(ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
+  const { record, missing } = buildPositionRecord(db, { accountId: ACCT, positionId: '7009' })
+  assert.deepEqual(missing, [])
+  assert.match(record.direction_reason, /^tick:breakout_BUY_entry=/)
+})
+
+// ---------------------------------------------------------------------------
+// 6. THE RECORD OF WHAT COULD NOT BE ATTRIBUTED IS PERSISTED, not just logged.
+// "Nobody reads a log after the fact" is this repo's own lesson: the
+// protection audit fired every 50 seconds while its RECORD sat a week stale.
+// The ring is bounded and overwritten, so a window this pass could not
+// attribute is gone — the count must outlive the pass.
+// ---------------------------------------------------------------------------
+test('every pass persists its own figures, and the unattributed totals accumulate by reason across passes', () => {
+  const db = fresh()
+  ring(db, { seq: 11, detail: okDetail('ivanished0001') })
+  runTickFireLedger(db, { now: OPEN_MS })
+  ring(db, { seq: 12, detail: okDetail('ivanished0002') })
+  runTickFireLedger(db, { now: CLOSE_MS })
+
+  const last = JSON.parse(getState(db, TICK_FIRE_LEDGER_LAST_KEY))
+  assert.equal(last.at, new Date(CLOSE_MS).toISOString(), 'the LAST pass, not the first')
+  assert.equal(last.scanned, 1)
+  assert.equal(last.written, 0)
+  assert.equal(last.unattributed, 1)
+  assert.deepEqual(last.reasons, ['intent_missing'])
+  assert.ok(last.cursor.lastId > 0)
+
+  const totals = JSON.parse(getState(db, TICK_FIRE_LEDGER_TOTALS_KEY))
+  assert.equal(totals.unattributed.intent_missing, 2, 'two fills across two passes could not be attributed')
+  assert.equal(totals.written, 0)
+  assert.equal(totals.unattributedTotal, 2)
+  assert.ok(totals.firstAt && totals.lastAt, 'the span the totals cover is on the record, not inferred')
 })
 
 test('reasonFor refuses to invent: no side, no entry, or no stop yields null rather than a shorter sentence', () => {
