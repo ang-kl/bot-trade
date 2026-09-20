@@ -495,3 +495,71 @@ test('PR-EX: the script takes --max-segments through the same validator, and a f
   const unbounded = run(['--params', '{"rangeEvents":64,"momentumEvents":16,"maxSpread":200}'])
   assert.deepEqual(JSON.parse(unbounded.stdout).trials[0].manifest.files, names)
 })
+
+// Checker, 20-09-2026 (second round): the fix that put the bound on the
+// manifest reached the ROUTE only. The script called loadSegments +
+// runTrials directly, so a trial made by `--max-segments 2` was
+// indistinguishable from an unbounded run, and the same evidence
+// content-keyed differently depending on which door produced it — measured
+// 932c7a86ea1c82effd67 (route) against 088c4dff91b8292437fa (script) over
+// the same slice and settings. Both 413 texts recommend the script, so this
+// is the door the operator is sent to. One path now: the script calls
+// `replayFiles`, the same function the route and the worker call.
+test('PR-EX: the script and the route are ONE path — same slice, same settings, same manifest and the SAME trial id', () => {
+  const db = initDB(':memory:')
+  const { dir, names } = fourSegments(400)
+  const script = new URL('../../scripts/tick-research.mjs', import.meta.url).pathname
+  const sim = JSON.stringify(SIM), params = JSON.stringify(PARAMS)
+  const runScript = (args) => JSON.parse(execFileSync(process.execPath, [script, dir, '--params', params, '--sim', sim, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
+
+  const s2 = runScript(['--max-segments', '2']).trials[0]
+  assert.deepEqual(s2.manifest.files, names.slice(0, 2))
+  assert.equal(s2.manifest.maxSegments, 2, 'RED if the script does not go through replayFiles: the bound is not on the manifest')
+  assert.equal(s2.manifest.segmentsAvailable, 4)
+  assert.equal(s2.manifest.segmentsDropped, 2)
+
+  const r2 = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, maxSegments: 2, dryRun: true }, { segmentsDir: dir, maxRecords: 5000, segmentsAvailable: 4 })
+  assert.equal(r2.status, 200)
+  assert.equal(s2.trialId, r2.body.trialIds[0], 'the two doors content-key the same evidence the same way')
+
+  // and unbounded, on both doors, is still the manifest it always was
+  const sAll = runScript([]).trials[0]
+  const rAll = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, dryRun: true }, { segmentsDir: dir, maxRecords: 5000 })
+  assert.equal('maxSegments' in sAll.manifest, false)
+  assert.equal(sAll.trialId, rAll.body.trialIds[0])
+  assert.notEqual(sAll.trialId, s2.trialId, 'a bounded run is not the same trial as an unbounded one')
+})
+
+// Checker, 20-09-2026 (second round): `segmentsFailed` was on the 202 only,
+// so an operator who posts and then polls never learns that a segment could
+// not be pulled — and a failed OLDEST segment otherwise looks exactly like a
+// clean bounded run.
+test('PR-EX: a segment that FAILED to pull is named on the polled job, not only on the 202', async () => {
+  _resetTickResearchJobs()
+  const db = initDB(':memory:')
+  const { dir: source, names } = fourSegments(400)
+  const empty = mkdtempSync(join(tmpdir(), 'tick-seg-none3-'))
+  const dest = mkdtempSync(join(tmpdir(), 'tick-cache-fail-'))
+  const listed = { segments: 4, bytes: 0, records: 1600, truncated: false, reachable: 1, names, recordsPerSegment: [400, 400, 400, 400], sides: [] }
+  const r = await startTickResearchJobWithSync(db, { stageA: false, params: PARAMS, sim: SIM, dryRun: true, maxSegments: 2 }, {
+    segmentsDir: empty, cacheDir: dest, maxRecords: 1000,
+    listAll: async () => listed,
+    // the OLDEST fails; the second arrives
+    sync: async (d) => {
+      mkdirSync(d, { recursive: true })
+      copyFileSync(join(source, names[1]), join(d, names[1]))
+      return { destDir: d, pulled: 1, skipped: 0, bytes: 0, truncated: false, failed: [{ name: names[0], error: 'chunk_checksum' }], sides: [{ side: 'one', failed: [{ name: names[0], error: 'chunk_checksum' }] }] }
+    },
+  })
+  assert.equal(r.status, 202, JSON.stringify(r.body).slice(0, 300))
+  assert.deepEqual(r.body.segmentsFailed, [names[0]], 'named once, though the sync reports it per side and in the whole')
+  const job = tickResearchJob(r.body.jobId)
+  assert.ok(job.segmentsFailed?.includes(names[0]), 'RED if the failed names live only on the transient 202')
+  assert.match(job.segmentsFailedNote, /could not be pulled and are NOT in this replay/)
+  // and the replay really did run on the one that arrived
+  const done = await waitDone(r.body.jobId)
+  assert.equal(done.state, 'done', JSON.stringify(done).slice(0, 300))
+  assert.deepEqual(done.result.manifest.files, [names[1]])
+  assert.ok(done.segmentsFailed.includes(names[0]), 'the finished job still says it')
+  _resetTickResearchJobs()
+})
