@@ -1,4 +1,4 @@
-import { isOurs, parseLabel, labelIntentId } from '../lib/trade-labels.js'
+import { isOurs, parseLabel, labelIntentId, ownedByIntent } from '../lib/trade-labels.js'
 import { recordTradePlan } from './trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
 import { getState, closeTradeRow } from '../db.js'
@@ -32,6 +32,44 @@ export function brokerVolumeToLots(bp, symbol, db = null) {
   const perLot = contractSize(symbol) || 1
   return perLot > 0 ? units / perLot : units
 }
+// PRODUCER → STRATEGY, for a label that carries no strategy field of its own
+// (20-09-2026). The sidecar's tick firer writes `tick:<profileHash>|…|i<id>`:
+// field 2 is empty, so parseLabel().strategy is null and the adopted row used
+// to land with a blank Strategy column — the attribution loss trade-labels.js
+// already records against va_breakout/fvg_retrace, arriving by a different
+// door. The intent row names the producer, and the producer names exactly one
+// strategy, so the fact is recoverable. `parsed.strategy` still wins wherever
+// the label has one; this only fills a hole.
+const PRODUCER_STRATEGY = Object.freeze({
+  tick_momentum: 'tick_momentum_breakout',
+})
+
+/** The producer and resolved state of an intent, for the adoption thesis. Never throws. */
+function intentMeta(db, intentId) {
+  try {
+    const r = db.prepare('SELECT producer_id, state FROM entry_intents WHERE id = ?').get(String(intentId || ''))
+    return r ? { producerId: r.producer_id || null, state: String(r.state || '').toUpperCase() || null } : { producerId: null, state: null }
+  } catch { return { producerId: null, state: null } }
+}
+
+// A permit that was WITHDRAWN and then fired anyway (20-09-2026, checker
+// round). `ownedByIntent` is state-agnostic on purpose — an intent that is not
+// open, with a live position at the broker, is this repo's ambiguous-
+// submission shape, and live risk owned by nobody is the worse failure — but
+// it is still a fence breach, and the thesis alone would record it as an
+// ordinary adoption. So ownership does not change and the breach is made
+// legible: the state goes into the thesis and an `action_log` row names it.
+//
+// THREE STATES, and the third is the sharpest:
+//   REJECTED — the authority refused the entry and it happened anyway.
+//   RELEASED — the permit was handed back, then spent.
+//   EXPIRED  — the permit was spent past its own TTL. Worse than the other
+//              two because nothing withdrew it: the sidecar simply ignored
+//              the clock it was given, so the failure is in the thing that
+//              enforces the window rather than in a race against a withdrawal.
+// Any other state is a normal resolution and writes nothing.
+const BREACH_STATES = new Set(['REJECTED', 'RELEASED', 'EXPIRED'])
+
 /** M4: see the call site in reconcilePositions. Returns what was stamped, or null. */
 export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbolName, side, entry, sl, tp }) {
   try {
@@ -41,7 +79,8 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
     if (!it) return null
     const origin = String(it.order_type || 'MARKET').toUpperCase() === 'MARKET' ? 'bot_market_dispatch' : 'bot_pending_fill'
     const sideWord = side === 'long' ? 'BUY' : 'SELL'
-    const strategy = parsed?.strategy && parsed.strategy !== 'other' ? parsed.strategy : null
+    const strategy = (parsed?.strategy && parsed.strategy !== 'other' ? parsed.strategy : null)
+      || PRODUCER_STRATEGY[String(it.producer_id || '')] || null
     const createdMs = Date.parse(it.created_at)
     let riskEventId = null
     if (Number.isFinite(createdMs)) {
@@ -392,12 +431,32 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     //    was `continue`, so those fills stayed invisible forever.
     //  · foreign label → a manual/external position: import observe-only.
     const label = bp.tradeData?.label || bp.label || ''
-    const ours = isOurs(label)
     const parsed = parseLabel(label)
-    const adoptedSource = ours ? (parsed.source || 'autopilot') : 'external'
-    const thesis = ours
-      ? `Adopted bot position — label ${adoptedSource}${parsed.strategy ? `/${parsed.strategy}` : ''} (reconciled; local row was missing)`
-      : 'External position — reconciliation import'
+    // A TICK FILL IS OURS EVEN THOUGH ITS LABEL SAYS NOTHING WE KNOW
+    // (20-09-2026). The sidecar labels `tick:<profileHash>|||||||i<intentId>`;
+    // field 0 matches no SOURCES code, so isOurs() is false and this fill —
+    // sent by this system, off a permit this system reserved — landed as
+    // `external`: observe-only, skipped by the fast monitor, the equity stop,
+    // the session-open guard, the naked-position guard and exit-mark stamping.
+    // Ownership is therefore read from the LEDGER (trade-labels.ownedByIntent):
+    // the tag's entry_intents row, on THIS account, from an automatic producer.
+    // Stamped `autopilot`, the row is indistinguishable from a bar entry to all
+    // six source whitelists, with no edit to any of them.
+    //
+    // Cost bound: the label check is free and runs first; the query only
+    // happens for a label that actually carries an `i…` tag.
+    const labelOurs = isOurs(label)
+    const intentTag = labelOurs ? null : labelIntentId(label)
+    const byIntent = intentTag ? ownedByIntent(db, label, acct) : false
+    const ours = labelOurs || byIntent
+    const intentInfo = byIntent ? intentMeta(db, intentTag) : { producerId: null, state: null }
+    const breach = byIntent && BREACH_STATES.has(String(intentInfo.state || ''))
+    const adoptedSource = byIntent ? 'autopilot' : (labelOurs ? (parsed.source || 'autopilot') : 'external')
+    const thesis = byIntent
+      ? `Adopted bot position — intent ${intentTag} (${intentInfo.producerId || 'unknown producer'})${breach ? ` — PERMIT ${intentInfo.state}: fired past a withdrawn permit` : ''}; local row was missing`
+      : ours
+        ? `Adopted bot position — label ${adoptedSource}${parsed.strategy ? `/${parsed.strategy}` : ''} (reconciled; local row was missing)`
+        : 'External position — reconciliation import'
 
     const side = bp.tradeData?.tradeSide === 'BUY' || bp.tradeData?.tradeSide === 1 ? 'long' : 'short'
     const entry = bp.tradeData?.openPrice ?? bp.price ?? null
@@ -497,7 +556,23 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     // adopted_ours_unreasoned rather than hiding.
     const stamped = ours ? stampAdoptedFromIntent(db, { tradeId: inserted, label, parsed, acct, symbolName, side, entry, sl, tp }) : null
 
-    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted, ...(stamped ? { stampedFromIntent: stamped } : {}) })
+    // The breach is journalled AFTER the row exists, so the log line names a
+    // trade that can be looked up. It changes nothing about ownership.
+    if (breach) {
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+          'FENCE_BREACH_ADOPTED', '/reconcile',
+          JSON.stringify({
+            intentId: intentTag, state: intentInfo.state, producerId: intentInfo.producerId,
+            account: `…${String(acct ?? '').slice(-4)}`, symbol: symbolName, positionId: posId, tradeId: inserted,
+            detail: 'a position is live at the broker against an intent that was not open — adopted so it is managed, recorded so the breach is not silent',
+          }).slice(0, 2000)
+        )
+      } catch { /* audit best-effort — never fail a reconcile over a log row */ }
+      console.warn(`[reconcile] FENCE BREACH adopted: intent ${intentTag} state ${intentInfo.state} account …${String(acct ?? '').slice(-4)} trade ${inserted}`)
+    }
+
+    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted, ...(breach ? { fenceBreach: intentInfo.state } : {}), ...(stamped ? { stampedFromIntent: stamped } : {}) })
   }
 
   const closedDetected = []
@@ -739,21 +814,145 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
 export function repairMisfiledOwnPositions(db) {
   let upgraded = 0
   try {
+    // COST, STATED WHERE IT IS PAID (20-09-2026, checker round). The adoption
+    // site's "only for a label that carries a tag" bound does NOT describe
+    // this loop: here one `ownedByIntent` query runs per ACTIVE EXTERNAL row
+    // carrying an i-tag, every pass, forever — including rows whose tag never
+    // resolves to an intent and never will. Nine such rows today, so it is
+    // nothing; it is written down because it grows with misfiled rows rather
+    // than with tick fills, which is the opposite of what the name suggests.
     const rows = db.prepare(
-      `SELECT id, trade_id, label_raw FROM monitored_positions
-       WHERE status = 'active' AND source = 'external' AND label_raw IS NOT NULL`
+      `SELECT mp.id, mp.trade_id, mp.label_raw, mp.account_id, mp.symbol, mp.side,
+              mp.entry_price, mp.current_sl, mp.current_tp, t.broker_sl_initial
+         FROM monitored_positions mp
+         LEFT JOIN trades t ON t.id = mp.trade_id
+       WHERE mp.status = 'active' AND mp.source = 'external' AND mp.label_raw IS NOT NULL`
     ).all()
     for (const r of rows) {
-      if (!isOurs(r.label_raw)) continue
-      const src = parseLabel(r.label_raw).source || 'autopilot'
-      db.prepare('UPDATE monitored_positions SET source = ? WHERE id = ?').run(src, r.id)
-      if (r.trade_id != null) {
-        try { db.prepare(`UPDATE trades SET source = ? WHERE id = ? AND source = 'external'`).run(src, r.trade_id) } catch { /* trades row optional */ }
+      let src = null
+      let byIntent = false
+      if (isOurs(r.label_raw)) {
+        src = parseLabel(r.label_raw).source || 'autopilot'
+      } else {
+        // The SAME defect by a different door (20-09-2026): a tick fill whose
+        // label carries no source this module knows, adopted as `external`
+        // before ownedByIntent existed. The intent tag must resolve on the
+        // row's OWN account — a tag that names an intent on another account is
+        // not evidence of anything, and upgrading on it would hand one
+        // account's position to another's management.
+        const tag = labelIntentId(r.label_raw)
+        if (tag && r.account_id != null && ownedByIntent(db, r.label_raw, r.account_id)) {
+          // Logged BEFORE the write: the log is what the inverse
+          // (undoIntentUpgrades) is driven from, and a line written after a
+          // write that then throws names nothing.
+          console.log(`[reconcile] misfiled tick position upgraded: trade ${r.trade_id} intent ${tag} account …${String(r.account_id).slice(-4)}`)
+          src = 'autopilot'
+          byIntent = true
+        }
+      }
+      if (!src) continue
+      // ONE TRANSACTION. The pair used to be two loose writes, so a throw
+      // between them left `monitored_positions` managed and `trades` still
+      // external — two readings of one position disagreeing, which is this
+      // repo's oldest failure shape.
+      db.transaction(() => {
+        db.prepare('UPDATE monitored_positions SET source = ? WHERE id = ?').run(src, r.id)
+        if (r.trade_id != null) {
+          db.prepare(`UPDATE trades SET source = ? WHERE id = ? AND source = 'external'`).run(src, r.trade_id)
+        }
+      })()
+      // ATTRIBUTION, NOT JUST SCOPE (20-09-2026, checker round). Rescuing
+      // `source` alone is what the healer did first, and it left exactly the
+      // rows this function exists for — a tick fill adopted `external` BEFORE
+      // the ownership fix — managed but unattributed: `strategy` NULL, so
+      // strategy-attribution.js buckets it as unlabelled and alpha-decay and
+      // strategy-insights count it against nothing; `origin` untouched; no
+      // `trade_plans` row, so `planned_entry`/`planned_sl`/`risk_dist` are
+      // absent and position_history's REQUIRED_FIELDS go unmet. The stamp ran
+      // at the adoption site only, which is the one path these rows did not
+      // take. Best-effort, exactly as at the adoption site.
+      if (byIntent && r.trade_id != null) {
+        // THE STOP AT ENTRY, NOT THE STOP NOW (20-09-2026, second checker
+        // round). This passed `current_sl`, and the comment in the test called
+        // it "the only bracket a healed row has" — both wrong, in the
+        // direction that flatters the numbers. `current_sl` is LIVE: the
+        // ledger-convergence block above adopts the broker's stop onto it, and
+        // a misfiled tick row sitting as `external` was inside the profit
+        // keeper's DEFAULT scope, whose ratchet amends the stop and writes it
+        // back. So a row open long enough to ratchet once got `planned_sl` =
+        // the ratcheted stop, `risk_dist` narrower than the risk actually
+        // taken, and an OVERSTATED realised R on close — in position_history,
+        // whose whole purpose is that figure.
+        //
+        // `trades.broker_sl_initial` is the stop as the broker first held it,
+        // stamped once and only before any break-even move (see the block
+        // above, which is source-agnostic and therefore ran for these rows
+        // too). Fall back to `current_sl` only where it was never stamped:
+        // a late plan is better than none, and it is the same figure this code
+        // used before.
+        stampAdoptedFromIntent(db, {
+          tradeId: r.trade_id, label: r.label_raw, parsed: parseLabel(r.label_raw), acct: r.account_id,
+          symbolName: r.symbol, side: r.side, entry: r.entry_price,
+          sl: r.broker_sl_initial ?? r.current_sl, tp: r.current_tp,
+        })
       }
       upgraded++
     }
   } catch { /* repair is best-effort; the next pass retries */ }
   return upgraded
+}
+
+/**
+ * THE NAMED INVERSE of the intent-derived upgrade (20-09-2026).
+ *
+ * A revert of the code that introduced ownedByIntent does NOT undo its writes:
+ * rows already upgraded stay `autopilot` and stay managed, with nothing in the
+ * tree that knows why. So the undo ships with the change rather than being
+ * improvised during an incident. Drive it from the trade ids in the
+ * `[reconcile] misfiled tick position upgraded` log lines.
+ *
+ * Only rows whose ownership came from a tag are touched: an `isOurs` label
+ * (AP/CP/PRE) is a different repair and is left alone, so running this can
+ * never re-break the pre-open fix.
+ *
+ * SCOPE, NOT ATTRIBUTION (20-09-2026, checker round). This restores `source`
+ * and therefore MANAGEMENT SCOPE — which guards and monitors see the row. It
+ * deliberately does NOT undo what the healer's stamp wrote: `strategy`,
+ * `origin`, `risk_event_id` and the `trade_plans` row survive. Those are facts
+ * about how the position came to exist, read off the intent ledger; they were
+ * true before this change and stay true after a revert. Un-writing them would
+ * re-create the unattributed row, which is the defect, not the rollback.
+ *
+ * @param {object} db
+ * @param {{tradeIds: Array<number|string>}} opts
+ * @returns {{reverted: number, skipped: Array<{tradeId: any, why: string}>}}
+ */
+export function undoIntentUpgrades(db, { tradeIds = [] } = {}) {
+  let reverted = 0
+  const skipped = []
+  for (const id of tradeIds || []) {
+    try {
+      const mp = db.prepare(
+        `SELECT id, trade_id, label_raw, account_id FROM monitored_positions
+          WHERE trade_id = ? ORDER BY id DESC LIMIT 1`
+      ).get(id)
+      if (!mp) { skipped.push({ tradeId: id, why: 'no monitored_positions row' }); continue }
+      if (isOurs(mp.label_raw)) { skipped.push({ tradeId: id, why: 'label is ours — not an intent-derived upgrade' }); continue }
+      if (!labelIntentId(mp.label_raw)) { skipped.push({ tradeId: id, why: 'label carries no intent tag' }); continue }
+      // One transaction, and the trades write is guarded on the value the
+      // healer wrote — mirroring the forward pair exactly, so the undo cannot
+      // demote a row that something else has since re-sourced.
+      db.transaction(() => {
+        db.prepare(`UPDATE monitored_positions SET source = 'external' WHERE id = ?`).run(mp.id)
+        db.prepare(`UPDATE trades SET source = 'external' WHERE id = ? AND source = 'autopilot'`).run(id)
+      })()
+      console.log(`[reconcile] intent upgrade REVERTED: trade ${id} account …${String(mp.account_id ?? '').slice(-4)}`)
+      reverted++
+    } catch (e) {
+      skipped.push({ tradeId: id, why: String(e?.message || e) })
+    }
+  }
+  return { reverted, skipped }
 }
 
 /**
