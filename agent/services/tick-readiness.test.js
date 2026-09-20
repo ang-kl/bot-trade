@@ -15,7 +15,8 @@ import { setAccountHorizon } from './account-horizon.js'
 import { READINESS_CHECK_SHAPE, BLOCK_CLASSES } from '../lib/entry-contracts.js'
 import { profileHash, profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
 import { importTickTrial } from './tick-research.js'
-import { tickReadinessFor, tickReadinessView, tickSignalsView, RECORDER_STATUS_MAX_AGE_MS } from './tick-readiness.js'
+import { tickReadinessFor, tickReadinessView, tickSignalsView, RECORDER_STATUS_MAX_AGE_MS, SHADOW_CHECKS, SHADOW_OBSERVATION_BLOCKER } from './tick-readiness.js'
+import { PAUSE_CHECKS } from './tick-permits.js'
 
 const DEMO = '46979908', LIVE = '42993489'
 const NOW = new Date('2026-09-11T06:00:00Z')
@@ -155,4 +156,171 @@ test('the signals view parses what the sidecar rang, names the symbol when the h
   assert.equal(s.symbol, 'EURUSD'); assert.equal(s.direction, 'BUY'); assert.equal(s.trigger2, 1.105); assert.equal(s.stopDistance, 0.0004); assert.equal(s.V, 0.52); assert.equal(s.E, 0.71); assert.equal(s.setupId, 3); assert.equal(s.profile, prefix)
   assert.equal(v.signals.find(x => x.symbolId === 2).symbol, null)
   assert.equal(v.byProfile[prefix], 1); assert.equal(v.byProfile.ffffffffffffffff, 1)
+})
+
+// ---------------------------------------------------------------------------
+// 20-09-2026: the shadow/trading split. `ready` answers "may this account be
+// promoted to TICK_MOMENTUM / keep its tick permits"; `shadowReady` answers
+// "is the shadow RUNNING on this account". They are different questions, and
+// the live accounts were failing the first one on checks that belong only to
+// it.
+//
+// The set was corrected the same day: `profile_matches_sidecar` came OUT (it
+// needs a pin no production account has, so the true branch was unreachable),
+// the three account-level checks came IN, and the SHADOW requirement is
+// carried as a derived blocker. Each of those three has its own fixture
+// below, and each of those fixtures is what the corresponding mutation
+// turns red.
+// ---------------------------------------------------------------------------
+
+// The check list `ready` is computed over, written out so that dropping a
+// check from tick-readiness.js turns this red rather than quietly widening
+// the trading gate.
+const OLD_CHECKS = ['account_registered', 'account_enabled', 'global_halt_clear', 'engine_record_valid', 'transition_stable', 'no_unknown_entries', 'horizon_admits_tick', 'observation_active', 'symbols_declared', 'recorder_status_fresh', 'recorder_recording', 'disk_reserve_clear', 'feed_continuity', 'profile_pinned', 'profile_matches_sidecar', 'shadow_strategy_running', 'replay_evidence', 'validation_stage']
+
+// A sidecar that ANSWERS /tick-status with {"enabled":false} — it is up and
+// reachable, but built no tick workers. Reachable on the demo side after a
+// spool is lost. NOT the live shape today: with no recorder, main.cpp sets
+// /health.tick = null and heartbeat.js gates pullTickStatus on `r.tick` being
+// an object, so `cpp_exec_tick_json` is never written at all — that case is
+// the absent-record fixture below.
+test('a sidecar that answers enabled:false (no tick workers) blocks the shadow AND the trading gate — nothing can run there', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD']))
+  requestTickObservation(db, LIVE, 'SHADOW', { now: NOW })
+  pin(db, LIVE)
+  setState(db, 'cpp_exec_tick_json', JSON.stringify({ at: NOW.toISOString(), side: 'cpp_exec', status: { enabled: false, reason: 'TICK_SPOOL_PATH not set' } }))
+  const r = tickReadinessFor(db, LIVE, { now: NOW })
+  assert.equal(r.shadowReady, false, 'no tick workers on the sidecar means no shadow')
+  assert.equal(r.ready, false)
+  // the shadow's own reason is the strategy that is not running — NOT the
+  // profile pin, which is trading evidence and no longer in the set.
+  assert.ok(r.shadowBlockers.includes('shadow_strategy_running'))
+  assert.ok(!r.shadowBlockers.includes('profile_matches_sidecar'), 'the pin is trading evidence, not a shadow prerequisite')
+  assert.ok(r.shadowBlockers.every(c => SHADOW_CHECKS.includes(c) || c === SHADOW_OBSERVATION_BLOCKER), JSON.stringify(r.shadowBlockers))
+})
+
+// THE PRODUCTION SHAPE, and the fixture the first version of this split did
+// not have. No account carries a profileHash pin: it is written in one place
+// only — tick-validation.js's REPLAY_PASSED branch — and nothing has passed.
+// While `profile_matches_sidecar` was in SHADOW_CHECKS this read false, so
+// `shadowReady` could not be true on any real account and reported exactly
+// what `ready` already did. Every earlier positive fixture ran after the
+// `pin` helper wrote one; production is pre-pin. Do not add `pin` here.
+test('an UNPINNED account whose sidecar is recording and shadowing is shadowReady — the pin is trading evidence, not a shadow prerequisite', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD', 'XAUUSD']))
+  requestTickObservation(db, LIVE, 'SHADOW', { now: NOW })
+  recorder(db, { side: 'cpp_exec' })   // RECORDING, strategy.shadow true, fresh, default profile
+  const r = tickReadinessFor(db, LIVE, { now: NOW })
+  assert.equal(r.profileHash, null, 'the fixture must really be unpinned, or it proves nothing')
+  assert.equal(r.shadowReady, true, JSON.stringify(r.shadowBlockers))
+  assert.deepEqual(r.shadowBlockers, [])
+  // and it is emphatically NOT ready to trade: no pin, no replay evidence, no stage
+  assert.equal(r.ready, false)
+  for (const want of ['profile_pinned', 'profile_matches_sidecar', 'replay_evidence', 'validation_stage']) assert.ok(r.blockedReasons.includes(want), want)
+  assert.equal(tickReadinessView(db, { now: NOW }).shadowReadyCount, 1)
+})
+
+test('a disabled account under a global halt is NOT shadowReady, however healthy its sidecar — the panel shows no result the system is not producing', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD']))
+  requestTickObservation(db, DEMO, 'SHADOW', { now: NOW })
+  recorder(db)
+  assert.equal(tickReadinessFor(db, DEMO, { now: NOW }).shadowReady, true, 'the baseline must be true, or the negative below proves nothing')
+  db.prepare('UPDATE accounts SET enabled = 0 WHERE account_id = ?').run(DEMO)
+  setState(db, 'exec_guard_json', JSON.stringify({ halt: true }))
+  const r = tickReadinessFor(db, DEMO, { now: NOW })
+  assert.equal(r.shadowReady, false)
+  assert.ok(r.shadowBlockers.includes('account_enabled'))
+  assert.ok(r.shadowBlockers.includes('global_halt_clear'))
+  assert.equal(tickReadinessView(db, { now: NOW }).shadowReadyCount, 0)
+})
+
+test('a RECORD-only account is NOT shadowReady — the field means the shadow IS running, not that it could', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD']))
+  requestTickObservation(db, DEMO, 'RECORD', { now: NOW })
+  recorder(db)
+  const r = tickReadinessFor(db, DEMO, { now: NOW })
+  // observation_active passes (it tests !== 'OFF') and shadow_strategy_running
+  // short-circuits to ok off SHADOW — so without the derived requirement both
+  // would be clear and this would read true while nothing shadows.
+  assert.equal(r.readiness.find(c => c.check === 'observation_active').ok, true)
+  assert.equal(r.readiness.find(c => c.check === 'shadow_strategy_running').ok, true)
+  assert.equal(r.shadowReady, false)
+  assert.deepEqual(r.shadowBlockers, [SHADOW_OBSERVATION_BLOCKER])
+  // and switching the same account to SHADOW clears it
+  requestTickObservation(db, DEMO, 'SHADOW', { now: NOW })
+  assert.equal(tickReadinessFor(db, DEMO, { now: NOW }).shadowReady, true)
+})
+
+test('a live sidecar with NO recorder writes no status record at all — the absent-record case, distinct from enabled:false', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD']))
+  requestTickObservation(db, LIVE, 'SHADOW', { now: NOW })
+  // nothing written to cpp_exec_tick_json: main.cpp answers /health.tick =
+  // null, so heartbeat.js never calls pullTickStatus for this side.
+  const r = tickReadinessFor(db, LIVE, { now: NOW })
+  assert.equal(r.shadowReady, false)
+  assert.deepEqual(r.shadowBlockers.slice().sort(), ['recorder_status_fresh', 'shadow_strategy_running'])
+  assert.ok(!r.shadowBlockers.includes('profile_matches_sidecar'))
+  assert.equal(r.ready, false)
+})
+
+test('a shadow that is genuinely running while the recorder is parked at PAUSED_RESERVE is shadowReady and NOT ready — the artefact resolved, the fail-safe kept', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD']))
+  requestTickObservation(db, DEMO, 'SHADOW', { now: NOW })
+  pin(db, DEMO)
+  // The container-filesystem case: below the 2 GiB reserveMinBytes the
+  // recorder parks at PAUSED_RESERVE, which stops writeRecord and nothing
+  // else — tick_tap still feeds the workers, so strategy.shadow stays true.
+  recorder(db, { state: 'PAUSED_RESERVE', recording: true, shadow: true })
+  const r = tickReadinessFor(db, DEMO, { now: NOW })
+  assert.equal(r.shadowReady, true, JSON.stringify(r.shadowBlockers))
+  assert.deepEqual(r.shadowBlockers, [])
+  // the fail-safe is untouched: PAUSE_CHECKS still block trading, so an
+  // arming attempt is still refused while the disk is short.
+  assert.equal(r.ready, false)
+  assert.deepEqual(r.blockedReasons.slice().sort(), ['disk_reserve_clear', 'recorder_recording'])
+  assert.deepEqual(r.tradingBlockers, r.blockedReasons, 'tradingBlockers is an alias, not a second computation')
+  for (const c of PAUSE_CHECKS) assert.ok(!SHADOW_CHECKS.includes(c), `${c} is a PAUSE_CHECK and must not be in the shadow set`)
+  const v = tickReadinessView(db, { now: NOW })
+  assert.equal(v.readyCount, 0, 'the trading count is what it always was')
+  assert.equal(v.shadowReadyCount, 1)
+})
+
+test('`ready` is byte-for-byte the OLD predicate over the OLD check list — the split does not leak into the promotion gate', () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD', 'XAUUSD']))
+  requestTickObservation(db, DEMO, 'SHADOW', { now: NOW })
+  pin(db, DEMO)
+  // Several fixtures, chosen so that shadowReady and ready DISAGREE on some
+  // of them: if `ready` were ever assigned from `shadowReady`, the parked
+  // and dropped-feed cases below would flip and this goes red.
+  const fixtures = [
+    ['nothing pulled', () => { }],
+    ['fully evidenced', () => recorder(db)],
+    ['parked at the reserve', () => recorder(db, { state: 'PAUSED_RESERVE', recording: true })],
+    ['dropping events', () => recorder(db, { dropped: 9 })],
+    ['disk over the stop band', () => recorder(db, { usagePct: 93 })],
+    ['shadow switch not converged', () => recorder(db, { shadow: false })],
+    ['profile mismatch', () => recorder(db, { profile: '0000000000000000' })],
+    ['status stale', () => recorder(db, { at: new Date(NOW.getTime() - RECORDER_STATUS_MAX_AGE_MS - 1000).toISOString() })],
+    ['no spool path', () => setState(db, 'cpp_exec_demo_tick_json', JSON.stringify({ at: NOW.toISOString(), side: 'cpp_exec_demo', status: { enabled: false } }))],
+  ]
+  let disagreements = 0
+  for (const [name, apply] of fixtures) {
+    apply()
+    const r = tickReadinessFor(db, DEMO, { now: NOW })
+    // the OLD list, in the OLD order, still the whole list
+    assert.deepEqual(r.readiness.map(c => c.check), OLD_CHECKS, `${name}: the check list changed`)
+    // the OLD predicate, recomputed here from the checks themselves
+    const oldReady = r.readiness.filter(c => !c.ok).map(c => c.check).length === 0
+    assert.equal(r.ready, oldReady, `${name}: ready is no longer blockedReasons.length === 0`)
+    assert.deepEqual(r.blockedReasons, r.readiness.filter(c => !c.ok).map(c => c.check), `${name}: blockedReasons drifted`)
+    if (r.ready !== r.shadowReady) disagreements++
+  }
+  assert.ok(disagreements >= 3, `the fixtures must actually separate the two gates (saw ${disagreements})`)
 })

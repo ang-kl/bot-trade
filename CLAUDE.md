@@ -729,6 +729,25 @@ Measurement history — each line is a real run of the script, not a claim:
   `№ 8,181` plus any unstamped line made after this ledger. The count is
   by replies, not by stamps. A later re-measure that reads below this line
   is missing these, not correcting them.
+- 2026-09-20 13:30 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule; owed with #974 and not carried there — recorded here
+  on the next code PR): the script reads this container's transcript only
+  and was refused as a reading. The session ran from `№ 8,181` through the
+  #971–#974 merges (the replay-grid bound, the retired producers, the
+  tick docs corrections, tick fills owned from the intent) to the #974
+  read-back `№ 8,209` (22:41 SGT), with the unstamped lines between them
+  counted by replies. The context was then compacted; the transcript
+  captured NOTHING as text while plan mode was on, so from `№ 8,192` the
+  count is by replies made, not by what the file holds. After `№ 8,209`:
+  three unstamped lines, the stop answer `№ 8,213`, four more unstamped
+  lines (the checker verdict relayed, the fix round sent, the note
+  recorded, the agents stopped), so the reply STAMPED "№ 8,216" (the
+  agents-stopped answer, 20:52 SGT) is **`№ 8,218`** by count — behind by
+  two, recorded rather than carried. Two unstamped lines followed (the
+  plan approved, #975/#976 opened), so the next stamped reply is
+  **`№ 8,221`** plus any unstamped line made after this ledger. The count
+  is by replies, not by stamps. A later re-measure that reads below this
+  line is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never

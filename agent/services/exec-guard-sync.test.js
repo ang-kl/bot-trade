@@ -425,3 +425,58 @@ test('19-09-2026 (checker SHOULD 2): the open positions\' symbols are pushed as 
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 2, 3] } }), true, 'a configured symbol not carried → push')
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 41, 2, 3, 7] } }), false, 'both carried → quiet (unchanged → no push)')
 })
+
+// ---------------------------------------------------------------------------
+// A PIN OF A DELIBERATE NON-CHANGE (20-09-2026).
+//
+// exec-guard-sync derives `tickRecord` from `mode !== 'OFF'`, so an account in
+// SHADOW turns RECORDING on as well as shadowing. Asked whether SHADOW should
+// stop implying RECORD — so that a sidecar could shadow without writing a
+// spool — the answer here is NO, and this test is what makes that answer cost
+// something to reverse:
+//
+//   1. OBSERVATION_MODES (agent/lib/entry-contracts.js) is a THREE-value enum
+//      — OFF | RECORD | SHADOW. There is no "shadow without record" state to
+//      express, so the change would be a fourth mode, not a one-line edit.
+//   2. cpp-exec's accounts are put into SHADOW via the `_all` pin, and the
+//      recording that rides along IS the demo research spool — the segments
+//      the replay grid is built from. Breaking SHADOW ⇒ RECORD would silently
+//      stop producing them while every panel still read "shadowing".
+//
+// The readiness split shipped alongside this changes NOTHING here: it adds
+// derived reporting fields to tick-readiness.js and touches no account's
+// effectiveEntryMode, tickEntryAccounts or `ready` predicate. This test fails
+// if someone makes `tickRecord` conditional on the mode being RECORD.
+// ---------------------------------------------------------------------------
+test('SHADOW implies RECORD on the guard push, on a live account as on a demo one — the demo research spool depends on it', async () => {
+  const db = withAccounts(initDB(':memory:'))
+  const now = Date.now()
+  const { requestTickObservation } = await import('./entry-mode.js')
+
+  // nothing observed yet: neither switch is on
+  const off = desiredGuardFor(db, { isLive: null }, now)
+  assert.equal(off.tickRecord, false)
+  assert.equal(off.tickShadow, false)
+
+  // the live account into SHADOW — the case the readiness split reports on
+  requestTickObservation(db, '222', 'SHADOW')
+  const live = desiredGuardFor(db, { isLive: true }, now)
+  assert.equal(live.tickShadow, true, 'SHADOW sets the shadow switch')
+  assert.equal(live.tickRecord, true, 'and RECORDING with it: there is no shadow-without-record mode')
+
+  // and on the demo side, where the recorded segments are the replay corpus
+  requestTickObservation(db, '111', 'SHADOW')
+  const demo = desiredGuardFor(db, { isLive: false }, now)
+  assert.equal(demo.tickShadow, true)
+  assert.equal(demo.tickRecord, true, 'the demo spool is what the replay grid reads; SHADOW must keep producing it')
+
+  // RECORD alone records and does NOT shadow — the two switches stay distinct
+  requestTickObservation(db, '111', 'RECORD')
+  const rec = desiredGuardFor(db, { isLive: false }, now)
+  assert.equal(rec.tickRecord, true)
+  assert.equal(rec.tickShadow, false, 'RECORD is not SHADOW; the split is between the two switches, not inside one')
+
+  // the enum this rests on really is three-valued
+  const { OBSERVATION_MODES } = await import('../lib/entry-contracts.js')
+  assert.deepEqual([...OBSERVATION_MODES], ['OFF', 'RECORD', 'SHADOW'], 'a fourth mode would be a contract change, not a one-line edit')
+})

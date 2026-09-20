@@ -7,6 +7,7 @@
 // and the spool cap retires the oldest sealed one, never the open one; a
 // second writer is refused; a torn tail is quarantined and reported.
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -338,6 +339,79 @@ static void test_switching_off_seals_the_open_segment_with_a_gap() {
   rec.stop();
 }
 
+
+// start() creates ONE level with ::mkdir — it is not `mkdir -p`, and that is
+// why the container path depends on the entrypoint (20-09-2026).
+//
+// tick_recorder.cpp's start() calls ::mkdir(spoolDir) once and fails on
+// anything but EEXIST. So a TICK_SPOOL_PATH whose PARENT does not exist —
+// the ordinary case on a container with no volume mounted, e.g.
+// /data/tick where /data itself is absent — does not get created here: the
+// recorder reports ERROR with the errno text and stays off.
+//
+// What actually makes the no-volume path work is cpp-exec/entrypoint.sh,
+// which runs `mkdir -p "$TICK_SPOOL_PATH"` (and chowns it to appuser) before
+// exec'ing the binary. If that line is ever dropped, or the variable is set
+// on a service whose entrypoint is bypassed, the recorder cannot recover on
+// its own — this test is the record of that dependency.
+//
+// The second half matters as much as the first: after the failed start the
+// object must stay usable, because main.cpp carries on with recording
+// disabled and keeps serving /tick-status from stats().
+static void test_start_creates_one_level_only_and_survives_a_missing_parent() {
+  // (a) one level below an existing directory: created, start succeeds
+  char base[] = "/tmp/tick_mkdir_XXXXXX";
+  const char* root = mkdtemp(base);
+  assert(root);
+  const std::string good = std::string(root) + "/child";
+  {
+    TickRecorder rec(smallConfig(good), plenty());
+    assert(rec.start());
+    struct stat sb{};
+    assert(::stat(good.c_str(), &sb) == 0 && S_ISDIR(sb.st_mode));
+    assert(rec.started());
+    rec.stop();
+  }
+
+  // (b) two levels — the parent does not exist — FAILS, and says mkdir + errno
+  const std::string missingParent = std::string(root) + "/absent/child";
+  TickRecorder bad(smallConfig(missingParent), plenty());
+  assert(!bad.start());
+  assert(!bad.started());
+  const RecorderStats s = bad.stats();
+  assert(s.state == "ERROR");
+  assert(s.reason.find("mkdir") != std::string::npos);
+  assert(s.reason.find(missingParent) != std::string::npos);
+  assert(s.reason.find(std::strerror(ENOENT)) != std::string::npos);
+  // nothing was created at either level
+  struct stat sb{};
+  assert(::stat((std::string(root) + "/absent").c_str(), &sb) != 0);
+
+  // the object is still usable: stats() answers, the switch refuses rather
+  // than filling a ring nobody drains, and a retry fails the same way.
+  assert(bad.setRecording(true) == false);
+  assert(bad.recording() == false);
+  assert(!bad.start());
+  assert(bad.stats().state == "ERROR");
+  bad.stop();
+
+  // and a fresh recorder on a good directory still starts — the failure was
+  // the path, not a latched global.
+  const std::string good2 = std::string(root) + "/child2";
+  TickRecorder again(smallConfig(good2), plenty());
+  assert(again.start());
+  assert(again.stats().state != "ERROR");
+  again.stop();
+
+  // Tidy up this scenario's own tree. The rest of the file leaves its
+  // mkdtemp dirs behind; no reason to add to that here.
+  for (const std::string& d : {good, good2}) {
+    for (const std::string& f : listFiles(d, "")) ::unlink(f.c_str());
+    ::rmdir(d.c_str());
+  }
+  ::rmdir(root);
+}
+
 int main() {
   test_format_round_trips_and_detects_corruption();
   test_records_carry_the_raw_observation_and_its_flags();
@@ -349,6 +423,7 @@ int main() {
   test_a_second_writer_on_the_same_spool_is_refused();
   test_a_torn_tail_is_quarantined_and_reported_as_a_gap();
   test_switching_off_seals_the_open_segment_with_a_gap();
+  test_start_creates_one_level_only_and_survives_a_missing_parent();
   std::puts("test_tick_recorder: all passed");
   return 0;
 }
