@@ -53,13 +53,21 @@ function intentMeta(db, intentId) {
 }
 
 // A permit that was WITHDRAWN and then fired anyway (20-09-2026, checker
-// round). `ownedByIntent` is state-agnostic on purpose — a REJECTED or
-// RELEASED intent with a live position at the broker is this repo's
-// ambiguous-submission shape, and live risk owned by nobody is the worse
-// failure — but it is still a fence breach, and the thesis alone would record
-// it as an ordinary adoption. So ownership does not change and the breach is
-// made legible: the state goes into the thesis and an `action_log` row names
-// it. Anything OTHER than these two is a normal resolution.
+// round). `ownedByIntent` is state-agnostic on purpose — an intent that is not
+// open, with a live position at the broker, is this repo's ambiguous-
+// submission shape, and live risk owned by nobody is the worse failure — but
+// it is still a fence breach, and the thesis alone would record it as an
+// ordinary adoption. So ownership does not change and the breach is made
+// legible: the state goes into the thesis and an `action_log` row names it.
+//
+// THREE STATES, and the third is the sharpest:
+//   REJECTED — the authority refused the entry and it happened anyway.
+//   RELEASED — the permit was handed back, then spent.
+//   EXPIRED  — the permit was spent past its own TTL. Worse than the other
+//              two because nothing withdrew it: the sidecar simply ignored
+//              the clock it was given, so the failure is in the thing that
+//              enforces the window rather than in a race against a withdrawal.
+// Any other state is a normal resolution and writes nothing.
 const BREACH_STATES = new Set(['REJECTED', 'RELEASED', 'EXPIRED'])
 
 /** M4: see the call site in reconcilePositions. Returns what was stamped, or null. */
@@ -814,9 +822,11 @@ export function repairMisfiledOwnPositions(db) {
     // nothing; it is written down because it grows with misfiled rows rather
     // than with tick fills, which is the opposite of what the name suggests.
     const rows = db.prepare(
-      `SELECT id, trade_id, label_raw, account_id, symbol, side, entry_price, current_sl, current_tp
-         FROM monitored_positions
-       WHERE status = 'active' AND source = 'external' AND label_raw IS NOT NULL`
+      `SELECT mp.id, mp.trade_id, mp.label_raw, mp.account_id, mp.symbol, mp.side,
+              mp.entry_price, mp.current_sl, mp.current_tp, t.broker_sl_initial
+         FROM monitored_positions mp
+         LEFT JOIN trades t ON t.id = mp.trade_id
+       WHERE mp.status = 'active' AND mp.source = 'external' AND mp.label_raw IS NOT NULL`
     ).all()
     for (const r of rows) {
       let src = null
@@ -862,9 +872,28 @@ export function repairMisfiledOwnPositions(db) {
       // at the adoption site only, which is the one path these rows did not
       // take. Best-effort, exactly as at the adoption site.
       if (byIntent && r.trade_id != null) {
+        // THE STOP AT ENTRY, NOT THE STOP NOW (20-09-2026, second checker
+        // round). This passed `current_sl`, and the comment in the test called
+        // it "the only bracket a healed row has" — both wrong, in the
+        // direction that flatters the numbers. `current_sl` is LIVE: the
+        // ledger-convergence block above adopts the broker's stop onto it, and
+        // a misfiled tick row sitting as `external` was inside the profit
+        // keeper's DEFAULT scope, whose ratchet amends the stop and writes it
+        // back. So a row open long enough to ratchet once got `planned_sl` =
+        // the ratcheted stop, `risk_dist` narrower than the risk actually
+        // taken, and an OVERSTATED realised R on close — in position_history,
+        // whose whole purpose is that figure.
+        //
+        // `trades.broker_sl_initial` is the stop as the broker first held it,
+        // stamped once and only before any break-even move (see the block
+        // above, which is source-agnostic and therefore ran for these rows
+        // too). Fall back to `current_sl` only where it was never stamped:
+        // a late plan is better than none, and it is the same figure this code
+        // used before.
         stampAdoptedFromIntent(db, {
           tradeId: r.trade_id, label: r.label_raw, parsed: parseLabel(r.label_raw), acct: r.account_id,
-          symbolName: r.symbol, side: r.side, entry: r.entry_price, sl: r.current_sl, tp: r.current_tp,
+          symbolName: r.symbol, side: r.side, entry: r.entry_price,
+          sl: r.broker_sl_initial ?? r.current_sl, tp: r.current_tp,
         })
       }
       upgraded++

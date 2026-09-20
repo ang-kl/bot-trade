@@ -1337,13 +1337,21 @@ test('tick fill: repairMisfiledOwnPositions upgrades a PRE-PR misfiled row, is i
   const ACCT = '46130058'
   const id = seedTickIntent(db, { accountId: ACCT })
   const label = TICK_LABEL(id)
+  // A ROW THAT HAS ALREADY BEEN RATCHETED — which is the normal state of the
+  // population this healer is for. A tick fill misfiled as `external` sat
+  // inside the profit keeper's DEFAULT scope, and the keeper's ratchet amends
+  // the stop and writes `current_sl` back. So the live stop (99.75) is NOT the
+  // risk that was taken; `broker_sl_initial` (99.5) is — stamped once by the
+  // reconciler before any break-even move. Planning from the live stop would
+  // record a risk distance of 0.25 where 0.5 was risked and overstate realised
+  // R on close, in the one table whose purpose is that figure.
   const tradeId = db.prepare(
-    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, label_raw, account_id, status, opened_at)
-     VALUES ('EURUSD', 'BUY', 100, 0.01, '7005', 'external', ?, ?, 'open', datetime('now'))`
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, label_raw, account_id, status, opened_at, broker_sl_initial)
+     VALUES ('EURUSD', 'BUY', 100, 0.01, '7005', 'external', ?, ?, 'open', datetime('now'), 99.5)`
   ).run(label, ACCT).lastInsertRowid
   db.prepare(
     `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, thesis, source, label_raw, account_id, status)
-     VALUES ('EURUSD', ?, 'long', 100, 99.25, 'External position — reconciliation import', 'external', ?, ?, 'active')`
+     VALUES ('EURUSD', ?, 'long', 100, 99.75, 'External position — reconciliation import', 'external', ?, ?, 'active')`
   ).run(tradeId, label, ACCT)
 
   assert.equal(repairMisfiledOwnPositions(db), 1)
@@ -1359,7 +1367,8 @@ test('tick fill: repairMisfiledOwnPositions upgrades a PRE-PR misfiled row, is i
   assert.equal(db.prepare(`SELECT strategy FROM monitored_positions WHERE trade_id = ?`).get(tradeId).strategy, 'tick_momentum_breakout')
   const healedPlan = db.prepare(`SELECT * FROM trade_plans WHERE trade_id = ?`).get(tradeId)
   assert.ok(healedPlan, 'the healed row gets its plan too')
-  assert.equal(healedPlan.planned_sl, 99.25, 'from the monitored row\'s stop, the only bracket a healed row has')
+  assert.equal(healedPlan.planned_sl, 99.5, 'the stop at ENTRY (broker_sl_initial), not the ratcheted live stop')
+  assert.equal(healedPlan.risk_dist, 0.5, 'the risk actually taken — 0.25 here would overstate every R that follows')
   assert.equal(healedPlan.source, 'reconciler_adopted_intent')
   assert.equal(repairMisfiledOwnPositions(db), 0, 'idempotent: an upgraded row no longer matches')
 

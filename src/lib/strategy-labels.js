@@ -27,6 +27,13 @@ export const STRAT_SHORT = {
   // label-vocabulary test below is the guard that covers keys the registry
   // does not.
   tick_momentum_breakout: 'TICK',
+  // Not a registry strategy either, and a REAL blind spot rather than a
+  // hypothetical one: burn-in.js stamps `strategy: 'burnin'` on the orders it
+  // places and reads them back by `label_strategy = 'burnin'`, so hundreds of
+  // closed rows carry it. The producer is retired; the rows are not, and they
+  // still render. Added 2026-09-20 with the label-vocabulary guard below,
+  // which is what surfaced it.
+  burnin: 'BURN',
 }
 
 // key → short code, falling back to the raw key (never blank for a real
