@@ -707,6 +707,28 @@ Measurement history — each line is a real run of the script, not a claim:
   veto boundary) merged at 14:30 UTC on the first green CI. The count is
   by replies, not by stamps. A later re-measure that reads below this line
   is missing these, not correcting them.
+- 2026-09-20 03:40 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the script reads this container's transcript only and
+  was refused as a reading; the count was carried and re-measured from the
+  transcript before each stamp. The session ran from `№ 8,145` through the
+  qanat critique `№ 8,160`, the config/singularity answer `№ 8,163`, the
+  licence and retirement work, the tick-readiness measurement `№ 8,168`,
+  the replay-grid blockage `№ 8,169`, the MASSIVE / Alpha Vantage
+  commercial comparison `№ 8,170`, the two checker rounds `№ 8,171`–
+  `№ 8,174`, the strategy-lookback answer `№ 8,175`, the second fix
+  rounds `№ 8,176`–`№ 8,178`, the merged-tree gate and PR #971
+  `№ 8,179`, and the CI wait `№ 8,180`; the unstamped lines between them
+  (the agent briefs, the fix rounds relayed, the production reads) are in
+  that count. **One measurement in this run was wrong and is recorded as
+  such**: at `№ 8,173·B` the `backtest_runs` table's last write (31-07)
+  was read as "the backtest engine is dead"; `/state/config` then showed
+  `autopilot_mode: auto` with `autopilot_last_run_ms` thirteen minutes
+  old. Two readings of one subsystem disagreed and the stale one was
+  believed — the failure this file already records against the protection
+  audit. Corrected in the open at `№ 8,175·A`. The next reply is
+  `№ 8,181` plus any unstamped line made after this ledger. The count is
+  by replies, not by stamps. A later re-measure that reads below this line
+  is missing these, not correcting them.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
