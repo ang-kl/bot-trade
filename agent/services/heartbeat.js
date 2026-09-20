@@ -1241,6 +1241,16 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       try { await pullEventsIntoDb(db, exec, side, r) } catch (err) { console.warn(`[heartbeat] events pull failed (${side.name}): ${err.message}`) }
     }
   } catch { /* next probe retries from the stored cursor */ }
+  // PR-1b (20-09-2026): the tick fire ledger reads the rows the pull above
+  // just landed and turns each ACCEPTED tick fire into the one approved
+  // risk_events row its close needs for `direction_reason` — the field that
+  // made every tick close fail capture with `missing: direction_reason`. It
+  // is bounded by fills (not by feeder passes), idempotent by intent id, and
+  // its own try: a ledger failure must never fail the beat.
+  try {
+    const { runTickFireLedger } = await import('./tick-fire-ledger.js')
+    runTickFireLedger(db, { now: nowMs })
+  } catch (err) { console.warn(`[heartbeat] tick fire ledger failed (${side.name}): ${err.message}`) }
   // GUARD SYNC (declarative convergence): only against a CONNECTED sidecar
   // that reported its guard — pushing at an older sidecar (guard:null) would
   // push blind on every probe forever.

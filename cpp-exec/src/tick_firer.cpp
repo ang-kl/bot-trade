@@ -159,6 +159,7 @@ int TickFirer::onFill(const ShadowFill& f, long long nowMs) {
     fire.payload = buildPayload(acct, f, *vol, *permit);
     fire.intentId = permit->get("intentId").asString();
     fire.fillMs = nowMs;
+    fire.entry = f.entry; fire.stop = f.stop; fire.target = f.target; fire.side = f.side;
     fire.maxFireDelayMs = static_cast<long long>(permit->get("maxFireDelayMs").asNumber(0));
     bool full = false;
     {
@@ -210,7 +211,12 @@ void TickFirer::fireOne(const TickFire& fire) {
     { std::lock_guard<std::mutex> lk(mtx_); counters_.sent++; }
     if (ring_) ring_->log("tick", "fire_result", fire.accountId, sym, "ok", "intent=" + fire.intentId +
                           " pos=" + std::to_string(static_cast<long long>(r.body.get("position").get("positionId").asNumber(0))) +
-                          " order=" + std::to_string(static_cast<long long>(r.body.get("order").get("orderId").asNumber(0))));
+                          " order=" + std::to_string(static_cast<long long>(r.body.get("order").get("orderId").asNumber(0))) +
+                          // PR-1b (20-09-2026): the breakout fact, so the keeper's
+                          // fire ledger can write a direction_reason that states what
+                          // moved instead of naming the strategy back at itself.
+                          " entry=" + std::to_string(fire.entry) + " stop=" + std::to_string(fire.stop) +
+                          " target=" + std::to_string(fire.target) + " side=" + fire.side);
   } else {
     { std::lock_guard<std::mutex> lk(mtx_); counters_.rejected++; }
     if (ring_) ring_->log("tick", "fire_reject", fire.accountId, sym, r.body.get("errorCode").asString(), "intent=" + fire.intentId + " " + r.body.get("description").asString());
