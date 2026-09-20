@@ -313,7 +313,7 @@ export function recordsInBytes(bytes) {
  * question.
  */
 export async function listAllSides({ sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs } = {}) {
-  const out = { segments: 0, bytes: 0, records: 0, truncated: false, reachable: 0, names: [], sides: [] }
+  const out = { segments: 0, bytes: 0, records: 0, truncated: false, reachable: 0, names: [], recordsPerSegment: [], sides: [] }
   for (const side of sides) {
     const r = await listSidecarSegments({ base: side.base, fetch: fetchImpl, secret, timeoutMs })
     const bytes = r.segments.reduce((a, s) => a + s.bytes, 0)
@@ -326,7 +326,11 @@ export async function listAllSides({ sides = segmentSides(), fetch: fetchImpl, s
     // The NAMES matter, not just the count: the cache may already hold some
     // of these, and summing "what the sides list" with "what the cache holds"
     // double-counts exactly the segments a previous sync pulled.
-    for (const seg of r.segments) if (!out.names.includes(seg.name)) out.names.push(seg.name)
+    // PR-EX: the PER-SEGMENT record counts travel with the names, in the
+    // same order. The research route's 413 has to tell the operator how many
+    // segments fit under the cap, and an aggregate cannot answer that when
+    // the segments differ in size (the last one sealed is routinely short).
+    for (const seg of r.segments) if (!out.names.includes(seg.name)) { out.names.push(seg.name); out.recordsPerSegment.push(recordsInBytes(seg.bytes)) }
     out.sides.push({ side: side.name, reachable: r.ok, enabled: r.enabled, segments: r.segments.length, bytes, records, truncated: r.truncated, ...(r.error ? { error: r.error } : {}), ...(r.reason ? { reason: r.reason } : {}) })
   }
   return out
