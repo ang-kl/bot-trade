@@ -274,7 +274,8 @@ test('PR-L: a replay trial is charged the repo schedule by the keeper\'s symbol 
 // therefore unreachable on this deployment. These tests pin the bound that
 // opens it: the OLDEST n, the cap applied after the slice, and a refusal that
 // names the remedy and the number that actually fits.
-import { mkdirSync, copyFileSync } from 'node:fs'
+import { mkdirSync, copyFileSync, readdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { startTickResearchJobWithSync, maxSegmentsFrom, segmentsThatFit, researchPlan as researchPlanImpl } from './tick-research-run.js'
 
 /** Four sealed segments, chronological by name, `records` records each. */
@@ -319,6 +320,14 @@ test('PR-EX: still over the cap after slicing is 413, and the where names maxSeg
   assert.equal(three.body.segmentsThatFit, 3)
   assert.equal(segmentsThatFit([400, 400, 400, 400], 1000), 2)
   assert.equal(segmentsThatFit([2000], 1000), 0, 'nothing fits is 0, not 1')
+  // Checker, 20-09-2026: mutation `>` → `>=` SURVIVED — neither case above
+  // discriminates the boundary. `admit` admits at the cap (`records >
+  // maxRecords` refuses), so a slice that lands exactly ON the cap must be
+  // offered, or the number the operator is told to type replays one segment
+  // less than it could and, worse, the two halves of the same rule disagree.
+  assert.equal(segmentsThatFit([500, 500], 1000), 2, 'EXACTLY at the cap fits — RED if the boundary is >=')
+  assert.equal(segmentsThatFit([500, 501], 1000), 1)
+  assert.equal(segmentsThatFit([1000], 1000), 1, 'one segment exactly at the cap fits')
 })
 
 test('PR-EX: an invalid maxSegments is REFUSED 400 bad_max_segments naming the value — never coerced to "replay everything"', () => {
@@ -392,7 +401,97 @@ test('PR-EX: with maxSegments set the sidecar pre-flight does NOT refuse from th
   const done = await waitDone(b.r.body.jobId)
   assert.equal(done.state, 'done', JSON.stringify(done).slice(0, 300))
   assert.deepEqual(done.result.manifest.files, names.slice(0, 2), 'the trial manifest names the segments that were replayed')
-  assert.equal(done.maxSegments, 2); assert.equal(done.segmentsAvailable, 2); assert.equal(done.segmentsDropped, 0)
+  assert.equal(done.maxSegments, 2)
+  // Checker, 20-09-2026: these two used to read 2 and 0 — "I saw everything
+  // there was" — because `admit` counts the CACHE and on this path the cache
+  // holds exactly what the bound pulled. Seconds after a 413 that said
+  // `segments: 4`. The listing is the authority on how much there is.
+  assert.equal(done.segmentsAvailable, 4, 'from the sidecar LISTING, not the cache the bound filled')
+  assert.equal(done.segmentsDropped, 2)
+  assert.equal(b.r.body.segmentsAvailable, 4, 'the 202 says the same as the finished job')
+  assert.equal(b.r.body.segmentsDropped, 2)
   assert.equal(done.plan.maxSegments, 2)
+  // ... and the cold cache and the warm cache tell the SAME story: the same
+  // POST answered `4 / 2` locally and `2 / 0` through the sync before this.
+  const warm = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, dryRun: true, maxSegments: 2 }, { segmentsDir: source, maxRecords: 1000 })
+  assert.equal(warm.body.segmentsAvailable, 4); assert.equal(warm.body.segmentsDropped, 2)
+  assert.equal(warm.body.segmentsAvailable, done.segmentsAvailable, 'cold cache and warm cache agree')
   _resetTickResearchJobs()
+})
+
+test('PR-EX: a BOUNDED request whose slice is still over the cap is refused from the LISTING too — not 192 MiB pulled and then 413', async () => {
+  _resetTickResearchJobs()
+  const db = initDB(':memory:')
+  const { dir: source, names } = fourSegments(400)
+  const empty = mkdtempSync(join(tmpdir(), 'tick-seg-none2-'))
+  const dest = mkdtempSync(join(tmpdir(), 'tick-cache-c-'))
+  const listed = { segments: 4, bytes: 0, records: 1600, truncated: false, reachable: 1, names, recordsPerSegment: [400, 400, 400, 400], sides: [] }
+  const calls = []
+  // the production shape: the refusal named 2, the operator typed 3.
+  // 3 × 400 = 1200 is over the 1000 cap, so nothing may move.
+  const r = await startTickResearchJobWithSync(db, { stageA: false, params: PARAMS, sim: SIM, maxSegments: 3 }, {
+    segmentsDir: empty, cacheDir: dest, maxRecords: 1000,
+    listAll: async () => listed,
+    sync: async (d, o) => { calls.push(o); for (const n of names) copyFileSync(join(source, n), join(d, n)); return { destDir: d, pulled: names.length, skipped: 0, bytes: 0, truncated: false, sides: [] } },
+  })
+  assert.equal(r.status, 413); assert.equal(r.body.error, 'too_many_records')
+  assert.equal(calls.length, 0, 'RED if a bounded request skips the pre-flight: the bytes move and THEN it 413s')
+  assert.deepEqual(readdirSync(dest), [], 'not one byte on disk')
+  assert.equal(r.body.records, 1200, 'the records the BOUND asked for, not the whole listing')
+  assert.equal(r.body.maxSegments, 3); assert.equal(r.body.segmentsThatFit, 2)
+  assert.match(r.body.where, /maxSegments 3/); assert.match(r.body.where, /"maxSegments": 2/)
+  assert.equal(r.body.sync.pulled, 0)
+  _resetTickResearchJobs()
+})
+
+test('PR-EX: the persisted trial records that it was BOUNDED — the row, not just the transient job, says 2 of 4', () => {
+  const db = initDB(':memory:')
+  const { dir, names } = fourSegments(400)
+  const r = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, maxSegments: 2 }, { segmentsDir: dir, maxRecords: 1000, segmentsAvailable: 4 })
+  assert.equal(r.status, 200)
+  const row = db.prepare('SELECT manifest_json, note FROM tick_trials WHERE trial_id = ?').get(r.body.trialIds[0])
+  const m = JSON.parse(row.manifest_json)
+  assert.deepEqual(m.files, names.slice(0, 2))
+  assert.equal(m.maxSegments, 2, 'RED if the bound dies at the persistence boundary')
+  assert.equal(m.segmentsAvailable, 4); assert.equal(m.segmentsDropped, 2)
+  assert.match(row.note, /maxSegments 2: 2 of 4 segment\(s\), oldest first/)
+  // an UNBOUNDED run persists the manifest it always did — no null fields,
+  // so no existing trial is re-keyed by this change
+  const all = tickResearchAction(db, { stageA: false, params: { ...PARAMS, rangeEvents: 65 }, sim: SIM }, { segmentsDir: dir, maxRecords: 5000 })
+  const um = JSON.parse(db.prepare('SELECT manifest_json FROM tick_trials WHERE trial_id = ?').get(all.body.trialIds[0]).manifest_json)
+  assert.equal('maxSegments' in um, false); assert.equal('segmentsDropped' in um, false)
+  // two different subsets of the same spool are different trials
+  const four = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, maxSegments: 4 }, { segmentsDir: dir, maxRecords: 5000 })
+  assert.notEqual(four.body.trialIds[0], r.body.trialIds[0], 'the bound rides into trialIdFor')
+})
+
+test('PR-EX: the script takes --max-segments through the same validator, and a flag with NO VALUE is refused rather than read as "replay everything"', () => {
+  const { dir, names } = fourSegments(400)
+  const script = new URL('../../scripts/tick-research.mjs', import.meta.url).pathname
+  const run = (args) => {
+    try {
+      const stdout = execFileSync(process.execPath, [script, dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return { code: 0, stdout }
+    } catch (err) { return { code: err.status, stderr: String(err.stderr) } }
+  }
+  // Checker, 20-09-2026: `opt()` returns args[i+1], so a TRAILING flag gave
+  // undefined and the script replayed the whole directory with no stderr line
+  // and exit 0 — the operator who mistypes gets exactly the full run they
+  // were trying to avoid.
+  const trailing = run(['--max-segments'])
+  assert.equal(trailing.code, 2, 'RED if a valueless flag is read as absent')
+  assert.match(trailing.stderr, /--max-segments needs a value/)
+  const swallowed = run(['--max-segments', '--stage-a'])
+  assert.equal(swallowed.code, 2, 'the next flag is not the value')
+  for (const bad of ['0', '-1', '1.5', 'two']) {
+    const r = run(['--max-segments', bad])
+    assert.equal(r.code, 2, `--max-segments ${bad}`)
+    assert.match(r.stderr, /bad_max_segments/)
+  }
+  const ok = run(['--max-segments', '2', '--params', '{"rangeEvents":64,"momentumEvents":16,"maxSpread":200}'])
+  assert.equal(ok.code, 0)
+  const out = JSON.parse(ok.stdout)
+  assert.deepEqual(out.trials[0].manifest.files, names.slice(0, 2), 'the two OLDEST, the same slice the route takes')
+  const unbounded = run(['--params', '{"rangeEvents":64,"momentumEvents":16,"maxSpread":200}'])
+  assert.deepEqual(JSON.parse(unbounded.stdout).trials[0].manifest.files, names)
 })

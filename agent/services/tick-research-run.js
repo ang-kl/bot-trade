@@ -148,6 +148,20 @@ export function segmentsThatFit(recordsPerSegment, maxRecords) {
 }
 
 /**
+ * The per-segment record counts a sidecar LISTING carries, or null when it
+ * does not carry them. Checker, 20-09-2026: the first version spread the
+ * aggregate evenly across the listed segments when the field was missing —
+ * a guess dressed as a measurement, and one that names a `maxSegments` the
+ * next request would 413 on again whenever the last sealed segment is short.
+ * A refusal that cannot measure the remedy now says so instead.
+ */
+export function listedRecordsPerSegment(listed) {
+  return Array.isArray(listed?.recordsPerSegment) && listed.recordsPerSegment.length === (listed.names?.length ?? listed.recordsPerSegment.length)
+    ? listed.recordsPerSegment
+    : null
+}
+
+/**
  * Decode segments into per-symbol oracle quote streams (the replayer's
  * input) and the manifest base. A gap marker invalidates continuity: the
  * sim sees it as a crossed (invalid) quote, which the strategy treats as a
@@ -292,13 +306,31 @@ export function researchPlan(body = {}, { costSchedule = null, symbolClass = nul
 export function replayFiles(files, plan, replayThresholds) {
   const loaded = loadSegments(files, { onlySymbol: plan.onlySymbol })
   if (!loaded.manifestBase.events) return null
+  // Checker, 20-09-2026: the manifest named the files replayed and nothing
+  // else, so a bounded run and an unbounded run over a two-segment spool
+  // persisted identically — `maxSegments`, `segmentsAvailable` and
+  // `segmentsDropped` died at the persistence boundary with the job object.
+  // These rows are the evidence that clears REPLAY_PASSED; a row that cannot
+  // say it saw 2 of 4 is a half-truth the moment the process restarts. The
+  // fields ride into `trialIdFor` with the rest of the manifest, so two
+  // different subsets cannot collide on a trial id. Only written when a
+  // bound was SET: an unbounded run saw everything, and adding null fields
+  // would re-key every existing trial.
+  if (plan.maxSegments != null) {
+    Object.assign(loaded.manifestBase, {
+      maxSegments: plan.maxSegments,
+      segmentsAvailable: plan.segmentsAvailable ?? files.length,
+      segmentsDropped: plan.segmentsDropped ?? 0,
+    })
+  }
   const trials = runTrials(loaded, { stageA: plan.stageA, params: plan.params, sim: plan.sim, symbolClass: plan.symbolClass })
   return { manifest: loaded.manifestBase, trials: trials.map(t => ({ trial: t, verdict: replayChecks(t, replayThresholds) })) }
 }
 
 /** The main-thread half: import (unless dry) and shape the reply. */
 function finish(db, plan, replayed, replayThresholds, dir, importTrial, admitted = {}) {
-  const noteText = plan.note ?? (plan.stageA ? 'stage-A grid via POST /actions/tick-research' : 'POST /actions/tick-research')
+  const bound = plan.maxSegments == null ? '' : ` (maxSegments ${plan.maxSegments}: ${replayed.manifest.files.length} of ${plan.segmentsAvailable ?? replayed.manifest.files.length} segment(s), oldest first)`
+  const noteText = plan.note ?? ((plan.stageA ? 'stage-A grid via POST /actions/tick-research' : 'POST /actions/tick-research') + bound)
   const out = replayed.trials.map(({ trial: t, verdict }) => {
     const imported = plan.dryRun ? { ok: true, trialId: t.trialId, inserted: false } : importTrial(db, t, { note: noteText })
     return { trialId: imported.trialId ?? t.trialId, inserted: !plan.dryRun && imported.inserted === true, imported: !plan.dryRun && imported.ok === true, symbolId: t.manifest.symbolId, profileHash: t.profileHash, params: t.params, summary: t.summary, blocks: t.blocks, replay: verdict }
@@ -328,6 +360,22 @@ function finish(db, plan, replayed, replayThresholds, dir, importTrial, admitted
  * applied to the SLICE, which is the whole point: 4 × 1,677,720 records is
  * over the 5,000,000 cap and 2 of them are not.
  */
+/**
+ * What the operator's spool actually HOLDS, when the caller knows better than
+ * the directory does. Checker, 20-09-2026: `admit` counts the cache, and on
+ * the sync path the cache is exactly what the bound pulled — so a run that
+ * replayed 2 of the sidecar's 4 segments reported `segmentsAvailable: 2,
+ * segmentsDropped: 0` ("I saw everything there was") seconds after a 413 that
+ * said `segments: 4`, and the SAME request answered `4 / 2` once the cache was
+ * warm. The listing is the authority on how much there is; the cache is only
+ * the authority on what is replayable right now.
+ */
+function withAvailable(a, segmentsAvailable) {
+  if (a.refuse || segmentsAvailable == null) return a
+  const available = Math.max(segmentsAvailable, a.files.length)
+  return { ...a, segmentsAvailable: available, segmentsDropped: Math.max(0, available - a.files.length) }
+}
+
 function admit(segmentsDir, { maxRecords = MAX_RECORDS, maxSegments = null } = {}) {
   const dir = typeof segmentsDir === 'string' ? segmentsDir.trim() : ''
   const available = listSegments(dir)
@@ -356,12 +404,14 @@ function admit(segmentsDir, { maxRecords = MAX_RECORDS, maxSegments = null } = {
  * POST /actions/tick-validation), and imports unless dryRun. Used by tests
  * and small runs; the route uses startTickResearchJob.
  */
-export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS } = {}) {
+export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, segmentsAvailable = null } = {}) {
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
-  const a = admit(segmentsDir, { maxRecords, maxSegments: bounded.value })
+  const a = withAvailable(admit(segmentsDir, { maxRecords, maxSegments: bounded.value }), segmentsAvailable)
   if (a.refuse) return a.refuse
   const plan = researchPlan(body, replayCostContext(db))
+  plan.segmentsAvailable = a.segmentsAvailable
+  plan.segmentsDropped = a.segmentsDropped
   const th = thresholds || loadThresholds()
   const replayed = replayFiles(a.files, plan, th.replay)
   if (!replayed) return { status: 409, body: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }
@@ -406,15 +456,17 @@ function settle(j, patch) {
  * in-thread action returns) is on GET /state/tick-research-job?id=… once
  * `state` is `done`; the trials are in tick_trials by then.
  */
-export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date() } = {}) {
+export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null } = {}) {
   if (jobs.current) {
     return { status: 409, body: { ok: false, error: 'research_running', jobId: jobs.current.jobId, startedAt: jobs.current.startedAt, where: 'one research job runs at a time; poll GET /state/tick-research-job?id=<jobId> and post again when it is done' } }
   }
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
-  const a = admit(segmentsDir, { maxRecords, maxSegments: bounded.value })
+  const a = withAvailable(admit(segmentsDir, { maxRecords, maxSegments: bounded.value }), segmentsAvailable)
   if (a.refuse) return a.refuse
   const plan = researchPlan(body, replayCostContext(db))
+  plan.segmentsAvailable = a.segmentsAvailable
+  plan.segmentsDropped = a.segmentsDropped
   const th = thresholds || loadThresholds()
   const j = { jobId: randomUUID().slice(0, 12), state: 'running', startedAt: now.toISOString(), finishedAt: null, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, plan: { stageA: plan.stageA, dryRun: plan.dryRun, params: plan.params, sim: plan.sim, onlySymbol: plan.onlySymbol, maxSegments: plan.maxSegments, noteTruncated: plan.noteTruncated }, result: null, error: null, worker: null, db, importTrial }
   let worker
@@ -509,19 +561,39 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
     // is only readable through GET /tick-segment. With `maxSegments` set the
     // aggregate is NOT the question: only that many segments are pulled, and
     // `admit` below applies the real cap to the cached files that arrived.
-    if (maxSegments == null && listed.records + cachedRecords > maxRecords) {
-      const records = listed.records + cachedRecords
-      const per = Array.isArray(listed.recordsPerSegment) && listed.recordsPerSegment.length
-        ? listed.recordsPerSegment
-        // A listing without per-segment counts (an older side, or an injected
-        // stub) still answers the question, just coarsely: the aggregate
-        // spread evenly. Stated as what it is rather than silently averaged.
-        : Array.from({ length: listed.segments || 0 }, () => Math.floor(listed.records / Math.max(1, listed.segments)))
-      const fits = segmentsThatFit(per, maxRecords)
+    const per = listedRecordsPerSegment(listed)
+    const fits = per ? segmentsThatFit(per, maxRecords) : null
+    // What the operator actually asked to have pulled: the whole listing, or
+    // the oldest `maxSegments` of it.
+    const askedRecords = maxSegments == null
+      ? listed.records + cachedRecords
+      : (per ? per.slice(0, maxSegments).reduce((a, b) => a + b, 0) : null)
+    // BOTH bounds are refused from the LISTING, before a byte moves. The
+    // aggregate half is checker M-1's rule, unchanged. The bounded half is
+    // this checker's (20-09-2026): skipping the pre-flight whenever a bound
+    // was set re-opened exactly the waste M-1 closed — `{"maxSegments": 3}`
+    // on the production shape pulls 3 × 67,108,864 = 201,326,592 bytes to the
+    // volume and then 413s, because 3 × 1,677,720 = 5,033,160 is over the
+    // 5,000,000 cap. Typing 3 when the refusal named 2 is an ordinary
+    // mistake, and `maxSegments` has no upper bound of its own, so without
+    // this a large value was the pre-flight's off switch.
+    if (per && askedRecords > maxRecords) {
+      const records = askedRecords
+      const scope = maxSegments == null
+        ? `${listed.segments} sidecar segment(s) and the cache`
+        : `the ${Math.min(maxSegments, listed.segments)} oldest of ${listed.segments} sidecar segment(s) (maxSegments ${maxSegments})`
       const remedy = fits > 0
         ? `Re-post with { "maxSegments": ${fits} } to replay the ${fits} oldest of the ${listed.segments} listed segment(s), which fit under the cap`
         : `Not even the oldest single listed segment fits under the cap`
-      return { status: 413, body: { ok: false, error: 'too_many_records', records, maxRecords, segments: listed.segments, segmentsThatFit: fits, segmentsDir: dest, where: `${records.toLocaleString('en-US')} record(s) are reachable across ${listed.segments} sidecar segment(s) and the cache, over the keeper's cap of ${maxRecords.toLocaleString('en-US')} per job — nothing was pulled. ${remedy}, or run scripts/tick-research.mjs beside the spool`, sync: { destDir: dest, pulled: 0, skipped: 0, bytes: 0, truncated: false, sides: listed.sides, note: 'refused from the listing; no bytes were moved' } } }
+      return { status: 413, body: { ok: false, error: 'too_many_records', records, maxRecords, segments: listed.segments, maxSegments, segmentsThatFit: fits, segmentsDir: dest, where: `${records.toLocaleString('en-US')} record(s) are reachable across ${scope}, over the keeper's cap of ${maxRecords.toLocaleString('en-US')} per job — nothing was pulled. ${remedy}, or run scripts/tick-research.mjs beside the spool`, sync: { destDir: dest, pulled: 0, skipped: 0, bytes: 0, truncated: false, sides: listed.sides, note: 'refused from the listing; no bytes were moved' } } }
+    }
+    // A listing that carries no per-segment counts cannot answer "how many
+    // fit", and a request bounded against it cannot be pre-flighted: the cap
+    // is still enforced by `admit` after the pull, and the reply says the
+    // remedy could not be measured rather than naming a guessed number.
+    if (maxSegments == null && listed.records + cachedRecords > maxRecords) {
+      const records = listed.records + cachedRecords
+      return { status: 413, body: { ok: false, error: 'too_many_records', records, maxRecords, segments: listed.segments, maxSegments, segmentsThatFit: null, segmentsDir: dest, where: `${records.toLocaleString('en-US')} record(s) are reachable across ${listed.segments} sidecar segment(s) and the cache, over the keeper's cap of ${maxRecords.toLocaleString('en-US')} per job — nothing was pulled. The sides did not list per-segment sizes, so how many segments fit under the cap is NOT known here; post { "maxSegments": n } to replay the n oldest, or run scripts/tick-research.mjs beside the spool`, sync: { destDir: dest, pulled: 0, skipped: 0, bytes: 0, truncated: false, sides: listed.sides, note: 'refused from the listing; no bytes were moved' } } }
     }
     let pull
     try {
@@ -543,8 +615,17 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
       const b = after.refuse.body
       return { status: after.refuse.status, body: { ...b, ...(b.error === 'no_segments' ? { where: NO_SEGMENTS_ANYWHERE, localWhere: NO_SEGMENTS_WHERE } : {}), sync: pull } }
     }
-    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest })
-    return { status: started.status, body: { ...started.body, sync: pull } }
+    // The listing is the authority on how much there IS (the cache holds only
+    // what the bound pulled), and its `names` are deduplicated where the two
+    // sides list the same segment, which `listed.segments` is not.
+    const listedCount = Array.isArray(listed.names) ? listed.names.length : listed.segments
+    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest, segmentsAvailable: listedCount })
+    // A segment that FAILED to pull is not a segment the operator chose to
+    // leave out. Without this the oldest segment failing looks identical to a
+    // clean bounded run — the replay quietly moves on to the oldest N present
+    // and only `sync.failed`, nested per side, says otherwise.
+    const failedNames = [...(pull.failed || []), ...(pull.sides || []).flatMap(x => x.failed || [])].map(f => f?.name).filter(Boolean)
+    return { status: started.status, body: { ...started.body, sync: pull, ...(failedNames.length ? { segmentsFailed: failedNames, segmentsFailedNote: `${failedNames.length} listed segment(s) could not be pulled and are NOT in this replay; the replayed set is the oldest that did arrive` } : {}) } }
   } finally {
     syncLock = null
   }
