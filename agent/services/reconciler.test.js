@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState } from '../db.js'
-import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, attributeBrokerClose } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -1200,4 +1200,170 @@ test('Wave 2 (§K·8): a close on a row the BOOK holds with no journal entry is 
   assert.equal(attributeBrokerClose(db, { positionId: '5201', tradeId: t, accountId: 'B' }), null, 'scoped to the account')
   db.prepare(`UPDATE momentum_book SET status = 'exit_sent', note = 'rank exit', position_id = '5201' WHERE trade_id = ?`).run(t)
   assert.equal(attributeBrokerClose(db, { positionId: '5201', accountId: 'A' }), 'momentum_book: rank exit')
+})
+
+// ---------------------------------------------------------------------------
+// TICK FILLS ARE OWNED BY THE BOT (20-09-2026).
+//
+// Measured defect: the sidecar's tick firer labels its order
+// `tick:<profileHash>|||||||i<intentId>`. Field 0 is in no SOURCES vocabulary,
+// so isOurs() said false and the fill this system sent was adopted `external` —
+// skipped by the fast monitor, the equity stop, the session-open guard, the
+// naked-position guard and exit-mark stamping. Ownership now comes from the
+// FILLED INTENT, and the row is stamped `autopilot` so all six source
+// whitelists treat it as the bar entry it behaves like. The negatives below are
+// the point: the tag alone is not the evidence — the intent must exist, on this
+// account, from an automatic producer.
+// ---------------------------------------------------------------------------
+
+const TICK_LABEL = (intentId, hash = 'a'.repeat(16)) => `tick:${hash}|||||||${intentId}`
+
+function seedTickIntent(db, { id = 'itick01abcdef', accountId = '46130058', producerId = 'tick_momentum', state = 'FILLED', symbol = 'EURUSD', side = 'BUY', sl = null, tp = null } = {}) {
+  const at = '2026-09-20T08:00:00.000Z'
+  db.prepare(`INSERT INTO entry_intents (id, account_id, environment, symbol, symbol_id, side, order_type, volume, sl, tp, producer_id, basis, mode_epoch, permit_id, permit_expires_at, state, created_at, updated_at)
+              VALUES (?, ?, 'demo', ?, 1, ?, 'MARKET', 1000, ?, ?, ?, 'tick', 0, ?, ?, ?, ?, ?)`)
+    .run(id, String(accountId), symbol, side, sl, tp, producerId, `p${id.slice(1)}`, at, state, at, at)
+  return id
+}
+
+test('tick fill: a FILLED tick intent makes the broker position OURS — adopted autopilot, strategy tick_momentum_breakout, origin bot_market_dispatch, with a plan', () => {
+  const db = mkDb()
+  const ACCT = '46130058'
+  const id = seedTickIntent(db, { accountId: ACCT })
+  // The standing tick permit carries NO sl/tp of its own — the sidecar sets a
+  // broker bracket at fire time. The plan must fall back to what the
+  // reconciler reads off the broker position, or `planned_sl` is null and the
+  // close can never be scored against a plan.
+  const brokerPos = [makeBrokerPosition({
+    positionId: 7001, symbolName: 'EURUSD', tradeSide: 'BUY', openPrice: 100,
+    stopLoss: 99.5, takeProfit: 101, label: TICK_LABEL(id), volume: 1000,
+  })]
+  const result = reconcilePositions(db, brokerPos, [], mkSetState(db), { accountId: ACCT })
+
+  assert.equal(result.newExternal.length, 1)
+  assert.equal(result.newExternal[0].adopted, true, 'a tick fill is OURS')
+  assert.equal(result.newExternal[0].source, 'autopilot')
+  assert.deepEqual(result.newExternal[0].stampedFromIntent,
+    { intentId: id, origin: 'bot_market_dispatch', strategy: 'tick_momentum_breakout', riskEventId: null })
+
+  const t = db.prepare(`SELECT source, origin, strategy FROM trades WHERE ctrader_position_id = '7001'`).get()
+  assert.deepEqual(t, { source: 'autopilot', origin: 'bot_market_dispatch', strategy: 'tick_momentum_breakout' })
+  const mp = db.prepare(`SELECT source, strategy, status, thesis FROM monitored_positions WHERE trade_id = (SELECT id FROM trades WHERE ctrader_position_id = '7001')`).get()
+  assert.equal(mp.source, 'autopilot')
+  assert.equal(mp.strategy, 'tick_momentum_breakout')
+  assert.equal(mp.status, 'active')
+  assert.match(mp.thesis, new RegExp(`Adopted bot position — intent ${id} \\(tick_momentum\\)`))
+  const p = db.prepare(`SELECT * FROM trade_plans WHERE trade_id = (SELECT id FROM trades WHERE ctrader_position_id = '7001')`).get()
+  assert.ok(p, 'a plan row exists')
+  assert.equal(p.planned_sl, 99.5, 'the plan falls back to the broker bracket the permit did not carry')
+  assert.equal(p.planned_tp, 101)
+  assert.equal(p.strategy, 'tick_momentum_breakout')
+})
+
+test('tick fill: loop.js OWN selectActivePositions statement returns the adopted row', async () => {
+  // The REAL prepared statement, imported from loop.js — not a re-typed SQL
+  // string. A re-typed copy would keep passing after the whitelist in loop.js
+  // changed, which is the exact failure the preopen incident recorded there.
+  const { prepareStatements } = await import('../loop.js')
+  const db = mkDb()
+  const ACCT = '46130058'
+  const id = seedTickIntent(db, { accountId: ACCT })
+  reconcilePositions(db, [makeBrokerPosition({
+    positionId: 7002, symbolName: 'EURUSD', openPrice: 100, stopLoss: 99.5, label: TICK_LABEL(id), volume: 1000,
+  })], [], mkSetState(db), { accountId: ACCT })
+
+  const s = prepareStatements(db)
+  const rows = s.selectActivePositions.all('active')
+  assert.equal(rows.length, 1, 'the adopted tick position is monitored')
+  assert.equal(rows[0].symbol, 'EURUSD')
+  assert.equal(rows[0].source, 'autopilot')
+})
+
+test('tick fill: manageStageAllows says YES for tick_momentum_breakout — no matrix cell can strand it', async () => {
+  const { manageStageAllows } = await import('./stage-matrix.js')
+  const { STRATEGY_KEYS } = await import('./strategies.js')
+  const { setState: setStateFn } = await import('../db.js')
+  const db = mkDb()
+  assert.ok(!STRATEGY_KEYS.includes('tick_momentum_breakout'),
+    'tick_momentum_breakout must stay OUT of STRATEGY_REGISTRY — in it, management depends on a matrix cell')
+  assert.equal(manageStageAllows(db, getState, 'tick_momentum_breakout'), true)
+  // Turn the manage cell OFF by hand (setStage refuses a non-registry key) —
+  // an unknown key is managed regardless, which is the property being pinned.
+  setStateFn(db, 'stage_matrix_json', JSON.stringify({ strategy: { tick_momentum_breakout: { manage: false } } }))
+  assert.equal(manageStageAllows(db, getState, 'tick_momentum_breakout'), true,
+    'a live tick fill must never be stranded by a stage-matrix cell nobody edited')
+})
+
+test('tick fill NEGATIVE: a MAN-labelled position with a well-formed but UNKNOWN intent tag stays external', () => {
+  const db = mkDb()
+  const ACCT = '46130058'
+  // no entry_intents row at all — the tag names nothing
+  reconcilePositions(db, [makeBrokerPosition({
+    positionId: 7003, symbolName: 'NATGAS', openPrice: 3, label: 'MAN|v1|-|-|-|-|-|inosuch01abc', volume: 1000,
+  })], [], mkSetState(db), { accountId: ACCT })
+  const t = db.prepare(`SELECT source FROM trades WHERE ctrader_position_id = '7003'`).get()
+  assert.equal(t.source, 'external', 'a tag is not evidence — the ledger row is')
+  assert.equal(db.prepare(`SELECT source FROM monitored_positions WHERE trade_id = (SELECT id FROM trades WHERE ctrader_position_id = '7003')`).get().source, 'external')
+})
+
+test('tick fill NEGATIVE: a tick label whose intent belongs to a DIFFERENT account stays external', () => {
+  const db = mkDb()
+  const id = seedTickIntent(db, { accountId: '46130058' })
+  reconcilePositions(db, [makeBrokerPosition({
+    positionId: 7004, symbolName: 'EURUSD', openPrice: 100, stopLoss: 99.5, label: TICK_LABEL(id), volume: 1000,
+  })], [], mkSetState(db), { accountId: '99990000' })
+  assert.equal(db.prepare(`SELECT source FROM trades WHERE ctrader_position_id = '7004'`).get().source, 'external',
+    'one account intent must never hand another account position to bot management')
+})
+
+test('tick fill: repairMisfiledOwnPositions upgrades a PRE-PR misfiled row, is idempotent, and undoIntentUpgrades puts it back', () => {
+  const db = mkDb()
+  const ACCT = '46130058'
+  const id = seedTickIntent(db, { accountId: ACCT })
+  const label = TICK_LABEL(id)
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, label_raw, account_id, status, opened_at)
+     VALUES ('EURUSD', 'BUY', 100, 0.01, '7005', 'external', ?, ?, 'open', datetime('now'))`
+  ).run(label, ACCT).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, thesis, source, label_raw, account_id, status)
+     VALUES ('EURUSD', ?, 'long', 100, 'External position — reconciliation import', 'external', ?, ?, 'active')`
+  ).run(tradeId, label, ACCT)
+
+  assert.equal(repairMisfiledOwnPositions(db), 1)
+  assert.equal(db.prepare(`SELECT source FROM trades WHERE id = ?`).get(tradeId).source, 'autopilot')
+  assert.equal(db.prepare(`SELECT source FROM monitored_positions WHERE trade_id = ?`).get(tradeId).source, 'autopilot')
+  assert.equal(repairMisfiledOwnPositions(db), 0, 'idempotent: an upgraded row no longer matches')
+
+  // The inverse — a revert of the code does NOT undo the writes, so the undo
+  // ships with the change.
+  const undone = undoIntentUpgrades(db, { tradeIds: [tradeId] })
+  assert.equal(undone.reverted, 1)
+  assert.deepEqual(undone.skipped, [])
+  assert.equal(db.prepare(`SELECT source FROM trades WHERE id = ?`).get(tradeId).source, 'external')
+  assert.equal(db.prepare(`SELECT source FROM monitored_positions WHERE trade_id = ?`).get(tradeId).source, 'external')
+  // and it refuses a row that is ours by LABEL — that is the pre-open repair,
+  // a different fix, which this must never undo.
+  const preTrade = seedKnownPosition(db, { symbol: 'US30', positionId: '7006', source: 'autopilot' })
+  db.prepare(`UPDATE monitored_positions SET label_raw = 'PRE|v1|TREND|HI|LDN|H1|REGT' WHERE trade_id = ?`).run(preTrade)
+  const refused = undoIntentUpgrades(db, { tradeIds: [preTrade] })
+  assert.equal(refused.reverted, 0)
+  assert.match(refused.skipped[0].why, /label is ours/)
+})
+
+test('ownedByIntent is STATE-AGNOSTIC: an intent already FILLed by reconcileIntents is still found', async () => {
+  const { ownedByIntent } = await import('../lib/trade-labels.js')
+  const db = mkDb()
+  const ACCT = '46130058'
+  const label = TICK_LABEL(seedTickIntent(db, { accountId: ACCT, state: 'RESERVED', id: 'itickres0001' }))
+  assert.equal(ownedByIntent(db, label, ACCT), true, 'RESERVED')
+  db.prepare(`UPDATE entry_intents SET state = 'FILLED' WHERE id = 'itickres0001'`).run()
+  assert.equal(ownedByIntent(db, label, ACCT), true, 'FILLED — reconcileIntents and this pass race; state must not decide ownership')
+  db.prepare(`UPDATE entry_intents SET state = 'REJECTED' WHERE id = 'itickres0001'`).run()
+  assert.equal(ownedByIntent(db, label, ACCT), true, 'still the decision this system took')
+  // a MANUAL-family producer is not automatic ownership
+  db.prepare(`UPDATE entry_intents SET producer_id = 'route_manual_order' WHERE id = 'itickres0001'`).run()
+  assert.equal(ownedByIntent(db, label, ACCT), false, 'a manual producer is the decision of a human, not the bot')
+  assert.equal(ownedByIntent(db, 'MAN|v1|-|-|-|-|-', ACCT), false, 'no tag, no ownership')
+  assert.equal(ownedByIntent(null, label, ACCT), false, 'a DB error returns false, never throws')
 })

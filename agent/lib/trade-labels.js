@@ -17,6 +17,8 @@
 // so legacy labels like "abot-auto" still round-trip cleanly.
 // ---------------------------------------------------------------------------
 
+import { ENTRY_PRODUCERS } from './entry-producers.js'
+
 export const LABEL_VERSION = 'v1'
 export const MAX_LABEL_LEN = 90 // cTrader accepts up to 100 — stay safe.
 
@@ -73,6 +75,13 @@ export const STRATEGIES = {
   va_breakout: 'VAB',
   fvg_retrace: 'FVG',
   tsmom_long: 'TSM',   // the long-only TS momentum book (03-09-2026)
+  // The tick book's strategy (20-09-2026). It is NOT a STRATEGY_REGISTRY key
+  // and deliberately stays out of that registry — see ownedByIntent below —
+  // but it must have a label code all the same: without one, encodeLabel
+  // writes OTH and every adopted tick fill shows a blank/other Strategy
+  // column, the same permanent loss of attribution va_breakout and
+  // fvg_retrace suffered above.
+  tick_momentum_breakout: 'TICKM',
   burnin:     'BURN',
   other:      'OTH',
 }
@@ -237,6 +246,7 @@ export const STRATEGY_DISPLAY = {
   va_breakout: 'Value-Area Breakout',
   fvg_retrace: 'FVG Retrace',
   tsmom_long: 'TS Momentum Long',
+  tick_momentum_breakout: 'Tick Momentum Breakout',
   // Not a registry strategy — the burn-in sampling harness places its own
   // orders through the same dispatcher and deserves its own bucket rather
   // than polluting "other".
@@ -340,6 +350,61 @@ export function describeLabel(label) {
 export function isOurs(label) {
   const p = parseLabel(label)
   return p.source === 'autopilot' || p.source === 'copilot' || p.source === 'preopen'
+}
+
+// ---------------------------------------------------------------------------
+// OWNERSHIP DERIVED FROM THE FILLED INTENT (20-09-2026).
+//
+// Measured defect: the sidecar's tick firer labels its order
+// `tick:<profileHash>|||||||i<intentId>` (cpp-exec/src/tick_firer.cpp). Field 0
+// is `tick:<hash>`, which is in no vocabulary here, so parseLabel returns
+// source=null and isOurs() above says false. The reconciler then adopts a fill
+// THIS SYSTEM SENT as `external` — observe-only: skipped by the fast monitor,
+// the equity stop, the session-open guard, the naked-position guard and
+// exit-mark stamping. A tick entry would open and then be owned by nobody.
+//
+// The fix is not another source word. `preopen` is the warning: a new source
+// value has to be learned SEPARATELY by six enumerations (loop.js's
+// selectActivePositions whitelist, profit-keeper, loss-guardian,
+// cockpit-intention, isOurs, the reconciler), and the one time that was done
+// the rows silently dropped out of monitoring for two days. Nor does adding
+// `tick` to SOURCES help: field 0 is `tick:<hash>`, not `tick`, and changing it
+// means a C++ label change and a sidecar deploy.
+//
+// So ownership is read from the LEDGER instead of the label: the tag's
+// entry_intents row is the decision this system took, on this account, by a
+// named automatic producer. A position that matches is stamped
+// source='autopilot' by the adopter and every one of the six filters treats it
+// exactly as a bar entry, with zero edits to any filter. Measurement separation
+// lives in `strategy` (position-history.js reads it there), not in pretending
+// the position belongs to someone else.
+//
+// STATE-AGNOSTIC ON PURPOSE: reconcileIntents FILLs the intent off the same
+// tag, and the two passes race. Filtering on state='FILLED' would make
+// ownership depend on which ran first.
+//
+// isOurs() above is unchanged BYTE FOR BYTE — it has pure callers that hold no
+// db handle.
+//
+// @param {object} db          better-sqlite3 handle
+// @param {string} label       the broker label, tag included
+// @param {string|number} accountId the account the position was read on
+// @returns {boolean}
+// ---------------------------------------------------------------------------
+export function ownedByIntent(db, label, accountId) {
+  try {
+    const tag = labelIntentId(label)
+    if (!tag || db == null || accountId == null) return false
+    const row = db.prepare('SELECT account_id, producer_id FROM entry_intents WHERE id = ?').get(tag)
+    if (!row) return false
+    if (String(row.account_id) !== String(accountId)) return false
+    const producer = ENTRY_PRODUCERS.find(p => p.id === String(row.producer_id))
+    return !!producer && producer.family === 'automatic'
+  } catch {
+    // A missing table, a closed handle, a locked db — ownership is a repair,
+    // never a reason to fail the reconcile. The next pass retries.
+    return false
+  }
 }
 
 /**

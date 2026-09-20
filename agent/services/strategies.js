@@ -80,6 +80,17 @@ export const STRATEGY_REGISTRY = [
   // matrix can arm it per account, the evidence gate can name it, and every
   // report that keys on strategies sees it. Ships DISARMED like fvg_retrace.
   { key: 'tsmom_long',        name: 'TS Momentum Long',   compute: () => null,             defaultOn: false, pendingCapable: false, minBars: 0,   family: 'momentum' },
+  // `tick_momentum_breakout` IS DELIBERATELY ABSENT (20-09-2026). It is a real
+  // strategy — agent/lib/tick-strategy.js STRATEGY_ID, fired by the sidecar,
+  // and it has a broker label code in trade-labels.js so its fills are
+  // attributable. It is NOT here because manageStageAllows()
+  // (services/stage-matrix.js) returns true for any key not in STRATEGY_KEYS:
+  // out of the registry, the fast monitor manages a tick position
+  // unconditionally. Adding the key would make management of a live tick fill
+  // depend on a stage-matrix cell that defaults OFF, so a matrix nobody edited
+  // would strand the position — the same shape as the preopen incident in
+  // loop.js's selectActivePositions. If it is ever added, the matrix cell must
+  // be seeded `manage: true` in the SAME change.
 ]
 
 /**
