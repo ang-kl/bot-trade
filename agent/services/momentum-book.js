@@ -105,7 +105,7 @@ import { recordDecision } from './decision-log.js'
 import { recordPositionEvent } from './position-events.js'
 import { roundToDigits } from './trade-guard.js'
 import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDue, thresholdMs } from './momentum-account.js'
-import { adoptOrBackfill } from './book-entry-write.js'
+import { bookEntryWrite } from './book-entry-write.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 // PR-K: the hold-age rule lives in its own module because the momentum-account
@@ -423,8 +423,8 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   const inScanScope = (symbol) => !scanScope || scanScope.has(String(symbol).toUpperCase())
   const openRow = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ? AND symbol = ?`)
   const openCount = db.prepare(`SELECT COUNT(*) AS n FROM momentum_book WHERE status = 'open' AND account_id = ?`)
-  const insBook = db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`)
+  // §4-P: rows are written by the one shared `bookEntryWrite`, which also
+  // hands the position over in the same transaction. No local INSERT here.
   const tradeRowFor = db.prepare(`SELECT id, ctrader_position_id, entry_price, sl_price FROM trades WHERE symbol = ? AND account_id = ? AND label_strategy = ? AND status = 'open' ORDER BY id DESC LIMIT 1`)
   const openTsmomTrades = db.prepare(`SELECT id, symbol, side, ctrader_position_id, entry_price, sl_price FROM trades WHERE account_id = ? AND label_strategy = ? AND status = 'open' AND id NOT IN (SELECT trade_id FROM momentum_book WHERE trade_id IS NOT NULL) ORDER BY id ASC`)
   // A resting tsmom limit on this account for the symbol: the reconcile
@@ -563,39 +563,42 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       // resting-limit path, where the trade lookup ran before the fill), and
       // skipping it here is what left the fill unadopted for ever — keeper
       // managed, 1.5R capped, exempt from nothing. It is completed instead.
-      const existing = openRow.get(accountId, t.symbol) || null
+      if (openRow.get(accountId, t.symbol)) continue
+      // §4-P (21-09-2026): the row and the keeper hand-over are ONE
+      // transaction, through the one shared writer. They were two loose
+      // statements here; see the note at the top of book-entry-write.js.
       // The row carries the trade's own side (PR-D): a SELL fill is a short
-      // row. The keeper hand-over — `paused = 1`, `current_tp` and `tp_price`
-      // cleared — happens inside `adoptOrBackfill`, in the same transaction as
-      // the row, on BOTH the adopt and the backfill path. It used to be two
-      // loose statements here; see the §4-P note above `bookEntryWrite` for
-      // why that mattered. The reason it is done at all is unchanged and
-      // measured: a closed-market limit is placed with a 1.5R take profit, so
-      // the row would inherit `current_tp` / `tp_price`, the book's first
-      // trail amend would clear the target at the broker, and the
-      // target-restore sweep would put it straight back (04-09-2026, LLY.US
-      // on ACCT-DEMO-1: lost its target at 08:46 SGT and held it again by the
-      // evening — a 1.5R cap on a trend position meant to run).
-      const seen = adoptOrBackfill(db, { accountId, trade: t, existingRow: existing, now })
-      if (seen.action === 'skipped') continue
-
+      // row. The reason the hand-over clears the target at all is unchanged
+      // and measured: a closed-market limit is placed with a 1.5R take profit,
+      // so the row inherits `current_tp` / `tp_price`, the book's first trail
+      // amend clears the target at the broker, and the target-restore sweep
+      // puts it straight back (04-09-2026, LLY.US on ACCT-DEMO-1: lost its
+      // target at 08:46 SGT and held it again by the evening — a 1.5R cap on
+      // a trend position meant to run).
+      const handed = bookEntryWrite(db, {
+        accountId,
+        row: {
+          tradeId: t.id, symbol: t.symbol,
+          positionId: t.ctrader_position_id ?? null,
+          side: String(t.side || '').toUpperCase() === 'SELL' ? 'short' : 'long',
+          entry: t.entry_price, stop: t.sl_price, atr: null, rank: null,
+          enteredAt: new Date(now).toISOString(),
+          note: `adopted filled order (trade ${t.id})`,
+        },
+      })
       // Wave 2 (§K·8): a tsmom_long fill the reconciler adopted is THIS
       // book's own resting-limit fill (the daily pass placed it, the market
       // was closed). It is clean bot evidence, not an external position —
       // 19 of 23 book closes were excluded from every edge measure because
-      // they carried `reconciler_adopted`. True of a backfill too: the same
-      // fill, reaching the book by the other door.
+      // they carried `reconciler_adopted`.
       try {
         db.prepare(`UPDATE trades SET origin = 'bot_pending_fill', origin_source = 'book_link' WHERE id = ? AND (origin IS NULL OR origin = 'reconciler_adopted')`).run(t.id)
       } catch { /* an older schema without origin columns: the link stands */ }
-
-      if (seen.action === 'backfilled') {
-        summary.backfilled = (summary.backfilled || 0) + 1
-        log(`momentum book: backfilled ${t.symbol} on …${accountId.slice(-4)} (orphan row ${seen.rowId} → trade ${t.id}; keeper paused, limit target cleared)`)
-        continue
-      }
       summary.adopted++
-      log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price})`)
+      // The line says what was actually done, not what was attempted: a trade
+      // with no monitor row is adopted into the book but has no keeper to
+      // pause, and claiming otherwise is how a true-sounding log lies.
+      log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price}${handed.handedOver ? '; keeper paused, limit target cleared' : '; no monitor row to pause'})`)
     }
 
     // A MOMENTUM ACCOUNT (owner 07-09-2026, §7,386·D1; every enabled account
@@ -890,9 +893,22 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         const result = await deps.autoTrade(db, symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'cross_sectional_book', sharedAccounts: ordered.length })
         if (!result) { summary.skipped.push(`${accountId} ${symbol}: not filled (gate or broker)`); return 'skipped' }
         const t = tradeRowFor.get(symbol, accountId, TSMOM_STRATEGY)
-        insBook.run(t?.id ?? null, accountId, symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null, side,
-          t?.entry_price ?? synth.entry, t?.sl_price ?? synth.sl, atr, rankPct, new Date(now).toISOString(), note)
-        if (t?.id != null) db.prepare(`UPDATE monitored_positions SET paused = 1 WHERE trade_id = ?`).run(t.id)
+        // §4-P (21-09-2026): through the ONE shared writer. This site was the
+        // drift the shared rule exists to end — it paused the monitor and
+        // stopped there, leaving `monitored_positions.current_tp` and
+        // `trades.tp_price` set. A closed-market limit carries a 1.5R take
+        // profit, so a row entered here kept a 1.5R ceiling on a weeks-horizon
+        // position and the target-restore sweep put it back at the broker
+        // after the trail amend cleared it. The other two writers already
+        // cleared both; this one did not.
+        bookEntryWrite(db, {
+          accountId,
+          row: {
+            tradeId: t?.id ?? null, symbol, positionId: t?.ctrader_position_id ?? null, side,
+            entry: t?.entry_price ?? synth.entry, stop: t?.sl_price ?? synth.sl,
+            atr, rank: rankPct, enteredAt: new Date(now).toISOString(), note,
+          },
+        })
         summary.entries++
         log(`momentum book: ${side} ${symbol} on …${accountId.slice(-4)} @ ${synth.entry} stop ${synth.sl.toFixed(5)} (${note}; ${dp.reason})`)
         return 'entered'

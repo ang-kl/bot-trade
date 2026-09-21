@@ -1,56 +1,77 @@
 // ---------------------------------------------------------------------------
-// agent/services/book-entry-write.js — writing a momentum-book row, and
-// completing one that was written blind.
+// agent/services/book-entry-write.js — writing a momentum-book row and handing
+// the position over to the book, in one place and in one transaction.
 //
-// WHY A THIRD FILE, since the reason is not obvious. `momentum-book.js`
-// imports `momentum-account.js` and the reverse import is forbidden (the same
-// constraint that produced `book-hold-age.js` and `book-held.js`), yet BOTH
-// write book rows and both must hand the position over to the book in the same
-// breath. A rule duplicated in two files is a rule that drifts in one of them,
-// and this particular rule is the only thing standing between a weeks-horizon
-// position and the intraday stack. So it lives here, once, and both import it.
+// WHY A THIRD FILE. `momentum-book.js` imports `momentum-account.js` and the
+// reverse import is forbidden (the constraint that already produced
+// `book-hold-age.js` and `book-held.js`), yet THREE call sites write book rows
+// and all three must hand the position over in the same breath. A rule
+// duplicated across files is a rule that drifts in one of them — and it had
+// already drifted, see below.
+//
+// WHAT THIS PROTECTS. Every exemption that keeps an intraday management rule
+// off a weeks-horizon momentum runner — the profit keeper, the loss guardian,
+// the weekend bank, the protection audit's target applier — is keyed on
+// `book-held.js` (a book row naming this trade or this position) plus
+// `monitored_positions.paused`. Nothing reads a horizon. So these two writes
+// ARE the protection.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THE TWO DEFECTS THIS CLOSES, both measured at source 21-09-2026
+//
+// 1. THE HAND-OVER HAD DRIFTED. Of the three writers, two cleared the limit's
+//    take profit and one did not. `momentum-book.js` `tryEnter` ran
+//    `UPDATE monitored_positions SET paused = 1` and stopped there — it did
+//    NOT clear `monitored_positions.current_tp`, and did NOT clear
+//    `trades.tp_price`. A closed-market limit is placed WITH a 1.5R take
+//    profit, so a row entered through that path keeps a 1.5R ceiling on a
+//    position meant to run for weeks, and the target-restore sweep (which
+//    reads `current_tp`) puts the target back at the broker after the book's
+//    trail amend clears it. That is the exact incident recorded on
+//    04-09-2026 for LLY.US on ACCT-DEMO-1: target lost at the 08:46 SGT
+//    trail, held again by the evening.
+//
+// 2. THE WINDOW. The row and the hand-over were two separate statements at
+//    every writer. A throw between them — and the callers catch into
+//    `summary.skipped` — leaves the row written (so `book-held.js` exempts the
+//    position from the keeper, the guardian and the weekend bank) while
+//    `paused` is still 0 (so the fast monitor still manages it). Half in the
+//    book's care and half in the keeper's, which is a state no rule is written
+//    for. One transaction now: either the book owns the position, or the
+//    keeper plainly does.
+//
+// WHAT THIS FILE DOES **NOT** CLAIM. An earlier draft of this module asserted
+// that the daily pass writes a book row naming neither a trade nor a position
+// on the closed-market path, and built a backfill for it. That was WRONG and
+// the branch was removed: on a closed market `autoTrade` rests the limit and
+// returns null (`loop.js:427`), so every caller's `if (!result) … continue`
+// fires five lines ABOVE the row write. No such row is produced by any path in
+// this tree, and the fill is booked later by the adopt pass exactly as its
+// docstring says. The correction is recorded here rather than quietly dropped.
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// §4-P (21-09-2026). THE BOOK ROW IS THE ONLY PROTECTION A WEEKS-HORIZON
-// POSITION HAS, so writing it is a transaction and completing it is a duty.
-//
-// Every exemption that keeps an intraday rule off a momentum runner — the
-// profit keeper, the loss guardian, the weekend bank, the protection audit's
-// target applier — is keyed on `book-held.js` (a book row naming this trade or
-// this position) plus `monitored_positions.paused`. Nothing reads a horizon.
-// So a book row that names NEITHER key protects nothing, and the two writes
-// below are what stand between a trend position and the intraday stack.
-//
-// TWO DEFECTS THIS CLOSES, both measured at source on 21-09-2026:
-//
-//  1. THE ORPHAN. `momentum-account.js` places the daily entry, then looks its
-//     trade up with `status = 'open'`. On the closed-market path the order is
-//     a RESTING LIMIT and no open trade exists yet, so the lookup misses and
-//     the row is written with trade_id NULL *and* position_id NULL. When the
-//     limit fills hours later, the adopt pass asks `openRow(account, symbol)`,
-//     finds that orphan and `continue`s — so the fill is never adopted, the
-//     keeper is never paused, and the 1.5R take profit a closed-market limit
-//     carries is never cleared. For ever, and silently.
-//  2. THE WINDOW. The insert and the pause were two statements. A throw
-//     between them (the caller's try/catch swallows it into `summary.skipped`)
-//     left the position keeper-managed AND carrying an orphan that blocked its
-//     own adoption — the worst of both states. One transaction now: either the
-//     book owns the position, or the keeper plainly does.
-// ---------------------------------------------------------------------------
-
-/** The keeper hand-over: pause the monitor and drop the limit's target. */
-function pauseForBook(db, tradeId) {
-  db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(tradeId)
-  db.prepare(`UPDATE trades SET tp_price = NULL WHERE id = ?`).run(tradeId)
+/**
+ * The keeper hand-over. ONE rule, so it cannot drift again: the monitor is
+ * paused AND the limit's target is cleared on both the monitor row and the
+ * trade. Returns what it actually changed, because a caller that logs "keeper
+ * paused" must be able to tell whether anything was.
+ */
+export function pauseForBook(db, tradeId) {
+  const paused = db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(tradeId)
+  const cleared = db.prepare(`UPDATE trades SET tp_price = NULL WHERE id = ?`).run(tradeId)
+  return { monitorRows: paused.changes, tradeRows: cleared.changes }
 }
 
 /**
  * Write a book entry and hand the position over, atomically.
- * `pause` is injectable so a test can prove the rollback; production passes none.
+ *
+ * `pause` is injectable so a test can prove the rollback; production passes
+ * none. Returns `{ handedOver }` — false when there was no trade id to hand
+ * over, or when no monitor row matched — so no caller has to guess.
  */
 export function bookEntryWrite(db, { accountId, row, pause = null } = {}) {
   const acct = String(accountId)
+  let handed = { monitorRows: 0, tradeRows: 0 }
   const tx = db.transaction(() => {
     db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`)
@@ -59,53 +80,9 @@ export function bookEntryWrite(db, { accountId, row, pause = null } = {}) {
         row.enteredAt, row.note ?? null)
     if (row.tradeId != null) {
       if (pause) pause()
-      else pauseForBook(db, row.tradeId)
+      else handed = pauseForBook(db, row.tradeId)
     }
   })
   tx()
-  return { ok: true }
-}
-
-/**
- * A filled tsmom trade meets the book. Three outcomes:
- *  · `backfilled` — an ORPHAN row (neither key set) is completed from this
- *    trade and the keeper handed over. This is defect 1 above.
- *  · `skipped`    — a row that already names a trade or a position holds this
- *    symbol; it is the book's record and is never re-pointed.
- *  · `adopted`    — no row at all, so one is written (the ordinary path).
- * Never throws for a missing trade; the caller's loop must keep going.
- */
-export function adoptOrBackfill(db, { accountId, trade, existingRow = null, now = Date.now() } = {}) {
-  if (!trade || trade.id == null) return { action: 'skipped', reason: 'no trade' }
-  const acct = String(accountId)
-  const posId = trade.ctrader_position_id != null ? String(trade.ctrader_position_id) : null
-  const side = String(trade.side || '').toUpperCase() === 'SELL' ? 'short' : 'long'
-
-  if (existingRow) {
-    if (existingRow.trade_id != null || existingRow.position_id != null) {
-      return { action: 'skipped', reason: 'row already identified', rowId: existingRow.id }
-    }
-    const tx = db.transaction(() => {
-      db.prepare(`UPDATE momentum_book
-                     SET trade_id = ?, position_id = ?, side = ?,
-                         entry_price = COALESCE(?, entry_price), stop = COALESCE(?, stop),
-                         note = COALESCE(note, '') || ' | backfilled from trade ' || ?
-                   WHERE id = ?`)
-        .run(trade.id, posId, side, trade.entry_price ?? null, trade.sl_price ?? null, String(trade.id), existingRow.id)
-      pauseForBook(db, trade.id)
-    })
-    tx()
-    return { action: 'backfilled', rowId: existingRow.id, tradeId: trade.id }
-  }
-
-  bookEntryWrite(db, {
-    accountId: acct,
-    row: {
-      tradeId: trade.id, symbol: trade.symbol, positionId: posId, side,
-      entry: trade.entry_price ?? null, stop: trade.sl_price ?? null,
-      atr: null, rank: null, enteredAt: new Date(now).toISOString(),
-      note: `adopted filled order (trade ${trade.id})`,
-    },
-  })
-  return { action: 'adopted', tradeId: trade.id }
+  return { ok: true, handedOver: handed.monitorRows > 0, handed }
 }

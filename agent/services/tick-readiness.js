@@ -131,7 +131,7 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
   // workers (cpp-exec main.cpp), so its shadow switch can never converge —
   // the remedy must say so, not send the operator to wait for a probe.
   const noSpool = !!status && status.enabled === false
-  add('shadow_strategy_running', st.tickObservation !== 'SHADOW' ? true : !!(status?.strategy?.shadow), `${side}:/tick-status.strategy.shadow`, st.tickObservation === 'SHADOW' ? (noSpool ? 'sidecar has no TICK_SPOOL_PATH (no tick workers)' : String(!!status?.strategy?.shadow)) : 'n/a (not in SHADOW)', rec?.at ?? null, noSpool ? 'infrastructure' : 'integration_defect', noSpool ? 'the sidecar has no TICK_SPOOL_PATH and builds no tick workers without one, so SHADOW cannot run there: set TICK_SPOOL_PATH on that sidecar (ask-first — it restarts the sidecar; a VOLUME is not needed for shadow, only before arming, TM-27)' : 'the guard sync has not converged the sidecar\'s shadow switch; check the next probe')
+  add('shadow_strategy_running', st.tickObservation !== 'SHADOW' ? true : !!(status?.strategy?.shadow), `${side}:/tick-status.strategy.shadow`, st.tickObservation === 'SHADOW' ? (noSpool ? 'sidecar has no TICK_SPOOL_PATH (no tick workers)' : String(!!status?.strategy?.shadow)) : 'n/a (not in SHADOW)', rec?.at ?? null, noSpool ? 'infrastructure' : 'integration_defect', noSpool ? 'the sidecar has no TICK_SPOOL_PATH and builds no tick workers without one, so SHADOW cannot run there: set TICK_SPOOL_PATH on that sidecar (ask-first — it restarts the sidecar; a VOLUME is not needed for shadow; one may be needed before arming, since the disk reserve must clear, TM-27)' : 'the guard sync has not converged the sidecar\'s shadow switch; check the next probe')
   const trial = replayTrialFor(db, pinned)
   add('replay_evidence', !!trial, 'tick_trials', trial ? `trial ${trial.trialId} at ${trial.at}` : (pinned ? 'no trial for the pinned profile' : 'no profile pinned'), trial?.at ?? null, 'missing_evidence', 'POST /actions/tick-research (stage-A grid over the segments at TICK_SEGMENTS_DIR, imported into the ledger) — or scripts/tick-research.mjs beside the spool, then POST /actions/tick-trials')
   // PR-B (owner principle 1): ONE bar for every account — SHADOW_PASSED or
@@ -187,12 +187,23 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
   // anti-regression test recomputes the old predicate over the old list.
   const recorderDestination = {
     path: status?.spoolDir ?? null,
-    state: status ? (status.enabled === false ? 'NO_SPOOL_PATH' : String(status.state || 'UNKNOWN')) : 'NO_STATUS',
-    reason: status
-      ? (status.enabled === false
-        ? (status.reason || 'TICK_SPOOL_PATH not set — the sidecar builds no tick block at all')
-        : (status.reason || null))
-      : 'the heartbeat has not pulled /tick-status from this side',
+    // AND IT CARRIES ITS OWN FRESHNESS. Every other value in this payload has
+    // an `at`; without one, a sidecar that died an hour ago reports as
+    // `RECORDING`, present tense — the exact shape CLAUDE.md records against
+    // the protection audit, where a stale panel was believed over the thing
+    // that actually updates. `recorder_status_fresh` is elsewhere in this
+    // object, but a consumer rendering "the recorder destination" has no
+    // reason to join against it, so staleness travels WITH the reading.
+    at: rec?.at ?? null,
+    stale: !!status && !fresh,
+    state: !status ? 'NO_STATUS' : (!fresh ? 'STALE' : (status.enabled === false ? 'NO_SPOOL_PATH' : String(status.state || 'UNKNOWN'))),
+    reason: !status
+      ? 'the heartbeat has not pulled /tick-status from this side'
+      : !fresh
+        ? `last read ${rec?.at ?? 'unknown'} — too old to describe the sidecar now`
+        : (status.enabled === false
+          ? (status.reason || 'TICK_SPOOL_PATH not set — the sidecar builds no tick block at all')
+          : (status.reason || null)),
   }
   return {
     recorderDestination,
