@@ -78,6 +78,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { getState, setState } from '../db.js'
 import { singleFlight } from './acting-layer.js'
+import { recordedTargetFor } from './target-restore.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { normPosId } from '../lib/pos-id.js'
 
@@ -789,8 +790,8 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
         targetless: audit.targetless.length,
         missingTargets: audit.targetless.map(f => {
           const row = openRows.find(r => String(r.ctrader_position_id) === String(f.positionId))
-          const recorded = Number(row?.current_tp) > 0 ? Number(row.current_tp)
-            : row?.source === 'bot' && Number(row?.entry_tp) > 0 ? Number(row.entry_tp) : null
+          const target = recordedTargetFor(row)
+          const recorded = target > 0 ? target : null
           return { positionId: String(f.positionId), symbol: f.symbol,
             recordedTarget: recorded, resolution: recorded == null ? 'target_decision_required' : 'recorded_target_available' }
         }),

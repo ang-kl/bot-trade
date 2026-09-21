@@ -602,6 +602,34 @@ test('a position whose BOOK target can be restored is not amended twice in one s
   assert.equal(out.targetsSet, 0)
 })
 
+for (const source of ['autopilot', 'copilot', 'preopen']) {
+  test(`${source}: restore the recorded entry target and report it without a structural replacement`, async () => {
+    oneAccount()
+    targetlessOn(A, 'EURUSD', '111', 1.05, { source, entry_price: 1.09 })
+    db.prepare('UPDATE trades SET tp_price = 1.12 WHERE ctrader_position_id = ?').run('111')
+    const amends = []
+    let structuralCalls = 0
+    const out = await runProtectionAuditAllAccounts(db, creds, {
+      exec: { reconcile: async () => ({ position: [{ positionId: '111', stopLoss: 1.05, takeProfit: null }] }) },
+      wsReconcile: async () => ({ position: [{ positionId: '111', stopLoss: 1.06, takeProfit: null }] }),
+      tpSuggest: {
+        makeTargetSuggester: () => async () => ({ tp: 1.13, basis: 'HVN' }),
+        makeTargetApplier: () => async () => { structuralCalls++; return { ok: true } },
+      },
+      restoreOpts: { amend: async (_c, args) => { amends.push(args); return { executionType: 'OK' } } },
+    })
+    assert.equal(out.targetsRestored, 1)
+    assert.equal(structuralCalls, 0, 'recorded target must take precedence')
+    assert.equal(amends.length, 1)
+    assert.equal(amends[0].takeProfit, 1.12)
+    assert.equal(amends[0].stopLoss, 1.06, 'fresh broker stop retained')
+    const audit = JSON.parse(db.prepare('SELECT value FROM agent_state WHERE key = ?')
+      .get(`acct:${A}:protection_audit_last_json`).value)
+    assert.equal(audit.missingTargets[0].recordedTarget, 1.12)
+    assert.equal(audit.missingTargets[0].resolution, 'recorded_target_available')
+  })
+}
+
 test('a position with NO recorded target is exactly the one this fix reaches', async () => {
   // The complement of the test above, and the production population: adopted /
   // externally-sourced rows that never carried a target to restore.

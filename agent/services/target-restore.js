@@ -8,7 +8,8 @@
 // on every pass — while having no way to act on it.
 //
 // SO THIS ONLY EVER RESTORES WHAT THE BOT ITSELF RECORDED. The source is
-// `monitored_positions.current_tp`: the target the bot placed and wrote down.
+// `monitored_positions.current_tp`, or a bot-owned trade's original `tp_price`
+// from the account/symbol-matched join: targets the bot placed and wrote down.
 // A position with no recorded target is left alone and left reported. This
 // cannot invent a level, cannot move an existing one, and cannot act on a
 // position it has no record of.
@@ -26,6 +27,7 @@
 import { recordPositionEvent } from './position-events.js'
 import { getState, setState } from '../db.js'
 import { singleFlight } from './acting-layer.js'
+import { isOurs, SOURCES } from '../lib/trade-labels.js'
 
 /** How long before the same position may be retried after a failed restore. */
 const RETRY_AFTER_MS = 30 * 60_000
@@ -45,6 +47,15 @@ export function restoreEnabled(db) {
   return getState(db, ENABLED_KEY) !== 'false'
 }
 
+/** Use the label ownership vocabulary, retaining legacy `bot` compatibility.
+ * Shared with the audit display so recorded targets cannot disappear there.
+ * entry_tp is supplied only by the account/symbol-matched trade join.
+ */
+export function recordedTargetFor(row) {
+  const owned = row?.source === 'bot' || isOurs(SOURCES[row?.source])
+  return num(row?.current_tp) ?? (owned ? num(row?.entry_tp) : null)
+}
+
 /**
  * Should this targetless position have its recorded target put back?
  *
@@ -54,7 +65,7 @@ export function restoreEnabled(db) {
  * @returns {{action:'restore', tp:number}|{action:'skip', reason:string}}
  */
 export function planTargetRestore(row, { brokerSl = null } = {}) {
-  const tp = num(row?.current_tp) ?? (row?.source === 'bot' ? num(row?.entry_tp) : null)
+  const tp = recordedTargetFor(row)
   if (tp == null || tp <= 0) {
     // The overwhelmingly common case for an externally-opened position, and
     // the one where guessing would be worst. Reported, never invented.
