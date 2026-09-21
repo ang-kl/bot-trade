@@ -765,6 +765,11 @@ Measurement history — each line is a real run of the script, not a claim:
   This is a continuation of the owner's supplied 8,325 rebase, not a fresh
   transcript measurement. Later visible replies take precedence.
 
+- 2026-09-21, **Codex Work continuation, transcript corpus unavailable**:
+  Visible replies continued through **`№ 8,343`** during #989 deployment
+  verification and the two simulation review corrections. This continues
+  the recorded rebase; later visible replies take precedence.
+
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

@@ -466,7 +466,7 @@ export function loadSizedCommission(file = TICK_SHADOW_SIM_FILE) {
  * `basis` says which shape was charged, always — a figure whose shape is not
  * on the record is the kind of number this repo has had to withdraw before.
  */
-export function sizedCommissionUsdPerSide(classRow, className, { priceUsd, symbol = null, rates = null, lots, unitsPerLot, sized = null } = {}) {
+export function sizedCommissionUsdPerSide(classRow, className, { priceUsd, symbol = null, quoteCurrency = symbol ? fxQuoteCurrency(symbol) : null, rates = null, lots, unitsPerLot, sized = null } = {}) {
   const row = costRow(classRow)
   const L = Number(lots), P = Number(priceUsd), U = Number(unitsPerLot)
   if (!(L > 0) || !(P > 0) || !(U > 0)) return { usd: 0, basis: 'unpriceable', note: 'lots, price or units-per-lot missing' }
@@ -488,7 +488,7 @@ export function sizedCommissionUsdPerSide(classRow, className, { priceUsd, symbo
   }
 
   // priceUsd is the legacy argument name. With a symbol it is a quote price.
-  const rate = usdRate(symbol ? (fxQuoteCurrency(symbol) || 'USD') : 'USD', rates)
+  const rate = usdRate(quoteCurrency || 'USD', rates)
   if (row.commissionBpsPerSide > 0 && !Number.isFinite(rate)) return { usd: NaN, basis: 'unpriceable', note: 'quote-to-USD conversion unavailable' }
   const notional = P * L * U * rate
   const usd = row.commissionBpsPerSide > 0 ? row.commissionBpsPerSide * notional / 10000 : 0
@@ -503,10 +503,10 @@ export function sizedCommissionUsdPerSide(classRow, className, { priceUsd, symbo
  * Both sides of one round trip, in USD, at `multiple` × the schedule.
  * @returns {{usd:number, entryUsd:number, exitUsd:number, basis:string, note:string|null}}
  */
-export function sizedCommissionUsdRoundTrip(classRow, className, { entryUsd, exitUsd, symbol = null, rates = null, lots, unitsPerLot, sized = null, multiple = 1 } = {}) {
+export function sizedCommissionUsdRoundTrip(classRow, className, { entryUsd, exitUsd, symbol = null, quoteCurrency = undefined, rates = null, lots, unitsPerLot, sized = null, multiple = 1 } = {}) {
   const k = Number.isFinite(Number(multiple)) ? Number(multiple) : 1
-  const a = sizedCommissionUsdPerSide(classRow, className, { priceUsd: entryUsd, symbol, rates, lots, unitsPerLot, sized })
-  const b = sizedCommissionUsdPerSide(classRow, className, { priceUsd: exitUsd, symbol, rates, lots, unitsPerLot, sized })
+  const a = sizedCommissionUsdPerSide(classRow, className, { priceUsd: entryUsd, symbol, quoteCurrency, rates, lots, unitsPerLot, sized })
+  const b = sizedCommissionUsdPerSide(classRow, className, { priceUsd: exitUsd, symbol, quoteCurrency, rates, lots, unitsPerLot, sized })
   return { usd: k * (a.usd + b.usd), entryUsd: k * a.usd, exitUsd: k * b.usd, basis: a.basis, note: a.note || b.note }
 }
 

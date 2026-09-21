@@ -65,7 +65,7 @@ import {
 import { pendingExposure, STANDING_PRODUCERS } from './entry-ledger.js'
 import { sharedShadowTrades, sideAccounts, sideCostSchedule } from './tick-shadow.js'
 import { brokerLotStep, brokerMinLots, unitsPerLot } from '../lib/lot-size-registry.js'
-import { usdLossPerLot } from '../lib/contracts.js'
+import { fxQuoteCurrency, usdLossPerLot } from '../lib/contracts.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 import {
   costsForClass, loadSizedCommission, repriceNetR, scheduleHash,
@@ -143,7 +143,7 @@ export function accountContext(db, accountId, { sharedAccounts = 1, rates = null
   const open = openPositionsForAccount(db, id)
   const openCount = openPositionsForAccount(db, id, { countOnly: true }).length
   const margin = portfolioMarginStatus(db, cfg, { balance, leverage, rates, accountId: id })
-  const intents = pendingExposure(db, id).filter(i => !(i.state === 'RESERVED' && STANDING_PRODUCERS.includes(i.producerId)))
+  const intents = pendingExposure(db, id, { includeAccepted: true }).filter(i => !(i.state === 'RESERVED' && STANDING_PRODUCERS.includes(i.producerId)))
   return {
     accountId: id,
     balance,
@@ -218,7 +218,8 @@ export function decideOne(db, trade, ctx, state, cost) {
 
   const meta = ctx.contracts?.[symbol]
   const per = meta?.per ?? unitsPerLot(db, symbol)
-  const usdPerLot = usdLossPerLot(symbol, stopPriceDistance, entryPrice, ctx.rates, per.unitsPerLot)
+  const quoteCurrency = meta ? meta.quoteCurrency : fxQuoteCurrency(symbol)
+  const usdPerLot = usdLossPerLot(symbol, stopPriceDistance, entryPrice, ctx.rates, per.unitsPerLot, quoteCurrency)
   if (!Number.isFinite(usdPerLot) || !(usdPerLot > 0)) return { ...base, reason: 'unpriceable' }
 
   // Size: the account's own budget (de-risked and split) ÷ what one lot loses
@@ -233,7 +234,7 @@ export function decideOne(db, trade, ctx, state, cost) {
   if (!(lots > 0) || lots < minLots) return { ...base, reason: 'below_min_lot' }
 
   const marginRate = marginRateFor(ctx.config, symbol)
-  const { marginRequired } = requiredMargin(symbol, lots, entryPrice, ctx.leverage, ctx.rates, per.unitsPerLot, marginRate)
+  const { marginRequired } = requiredMargin(symbol, lots, entryPrice, ctx.leverage, ctx.rates, per.unitsPerLot, marginRate, quoteCurrency)
   const used = (ctx.marginUsedUsd ?? 0) + state.marginUsd
   base.marginRequiredUsd = num(marginRequired) != null ? +marginRequired.toFixed(2) : null
   base.marginUsedUsd = +used.toFixed(2)
@@ -251,7 +252,7 @@ export function decideOne(db, trade, ctx, state, cost) {
   const rowClass = trade.cost_class || cost.classOfSymbol(trade.symbol_id) || null
   const classRow = costsForClass(cost.schedule, rowClass)
   const comm = sizedCommissionUsdRoundTrip(classRow, classRow.class, {
-    entryUsd: entryPrice, exitUsd: exitPrice, symbol, rates: ctx.rates, lots, unitsPerLot: per.unitsPerLot, sized: cost.sized, multiple: 1,
+    entryUsd: entryPrice, exitUsd: exitPrice, symbol, quoteCurrency, rates: ctx.rates, lots, unitsPerLot: per.unitsPerLot, sized: cost.sized, multiple: 1,
   })
   if (!Number.isFinite(comm.usd)) return { ...base, reason: 'unpriceable' }
   const grossUsd = grossR != null ? grossR * usdPerR : null
@@ -268,7 +269,7 @@ export function decideOne(db, trade, ctx, state, cost) {
   for (const k of [0, 1, 2]) {
     const rK = repriceNetR(trade, slipOnly, k)
     const cK = sizedCommissionUsdRoundTrip(classRow, classRow.class, {
-      entryUsd: entryPrice, exitUsd: exitPrice, symbol, rates: ctx.rates, lots, unitsPerLot: per.unitsPerLot, sized: cost.sized, multiple: k,
+      entryUsd: entryPrice, exitUsd: exitPrice, symbol, quoteCurrency, rates: ctx.rates, lots, unitsPerLot: per.unitsPerLot, sized: cost.sized, multiple: k,
     })
     sensitivityUsd[k] = rK == null ? null : +(rK * usdPerR - cK.usd).toFixed(2)
   }
@@ -310,7 +311,9 @@ export function evidenceCount(sharedTrades) {
  * @param {{side:string, profilePrefix?:string|null, sinceMs?:number|null, persist?:boolean, limit?:number}} opts
  */
 export function accountExecutionSim(db, { side, profilePrefix = null, sinceMs = null, persist = false, limit = 5000, scenario = null } = {}) {
-  if (scenario && (scenario.version !== 1 || scenario.side !== side || scenario.profile !== profilePrefix)) throw new Error('scenario scope mismatch')
+  if (scenario && scenario.version !== 2) throw new Error('scenario version lacks frozen quote currencies; capture a new scenario')
+  if (scenario && (scenario.side !== side || scenario.profile !== profilePrefix)) throw new Error('scenario scope mismatch')
+  if (scenario && scenario.contexts.some(c => Object.values(c.names).filter(Boolean).some(s => !Object.hasOwn(c.contracts?.[s] ?? {}, 'quoteCurrency')))) throw new Error('scenario quote currency metadata missing')
   const shared = (scenario?.shared ?? sharedShadowTrades(db, { side, profilePrefix, sinceMs, limit }))
     // The shared read orders by EXIT; an execution simulation has to run in
     // ENTRY order, because the cap and the margin are read when a position is
@@ -341,11 +344,11 @@ export function accountExecutionSim(db, { side, profilePrefix = null, sinceMs = 
     const nameOf = symbolNameResolver(db, id)
     const names = Object.fromEntries(shared.map(t => [String(t.symbol_id), nameOf(t.symbol_id)]))
     const contracts = Object.fromEntries([...new Set(Object.values(names).filter(Boolean))].map(symbol => [symbol, {
-      per: unitsPerLot(db, symbol), min: brokerMinLots(db, symbol), step: brokerLotStep(db, symbol),
+      per: unitsPerLot(db, symbol), min: brokerMinLots(db, symbol), step: brokerLotStep(db, symbol), quoteCurrency: fxQuoteCurrency(symbol),
     }]))
     return { ...ctx, heldSymbols: [...(ctx.heldSymbols ?? [])], intentSymbols: [...(ctx.intentSymbols ?? [])], intentSymbolIds: [...(ctx.intentSymbolIds ?? [])], names, contracts }
   })
-  const inputs = scenario ?? { version: 1, capturedAt: new Date().toISOString(), side, profile: profilePrefix, sinceMs, shared, rates, contexts, cost: frozenCost, costBasis: costBasis(db, { side }) }
+  const inputs = scenario ?? { version: 2, capturedAt: new Date().toISOString(), side, profile: profilePrefix, sinceMs, shared, rates, contexts, cost: frozenCost, costBasis: costBasis(db, { side }) }
   // Identity excludes wall-clock capture time: identical inputs are one scenario.
   const scenarioId = createHash('sha256').update(JSON.stringify({ ...inputs, capturedAt: undefined })).digest('hex')
 
