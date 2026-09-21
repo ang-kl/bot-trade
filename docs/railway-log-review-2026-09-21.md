@@ -43,11 +43,67 @@ positions were checked. The live records must not be counted as verified.
 - Send successful verifier journal preparation to stdout; warnings retain
   stderr.
 
-## Still requiring runtime evidence
+## Deployment read-back — 15:07 UTC / 23:07 SGT
 
-The three missing TP causes are not established by these exports. A computed
-entry-based target can be behind the current market, but this is a hypothesis
-until the rejection/read failure is captured. These changes do not claim to
-repair those targets. Live tick observation remains disabled pending the
-protection/reconciliation read-back. Validation thresholds, automatic entry
-selection and account entry modes are unchanged.
+PR #991 was merged as `394fa783318186b3032c31e941d23cfa968b91e7` and all four
+services deployed successfully. The full gate passed: 5,165 backend tests,
+one skipped, 896 frontend tests under UTC, ESLint, build and colour gate.
+The automated review's convergence-watch finding was corrected and resolved.
+
+The new diagnostics confirmed all three proposed targets were already below
+the market. These are broker refusals, not evidence of a connection failure:
+
+| Account | Symbol / position | Attempted TP | Bid in broker rejection |
+| --- | --- | ---: | ---: |
+| 46130058 | BTCUSD / 240088269 | 83128.65 | 86030.05 |
+| 46979908 | ETHUSD / 242004561 | 2623.64 | 2746.87 |
+| 47790949 | XRPUSD / 242243017 | 1.4587 | 1.5038 |
+
+All three returned `TRADING_BAD_STOPS`. The applier still labels the thrown
+broker errors retryable. Repeatedly submitting these prices cannot restore
+the targets while the market remains above them. A replacement target or a
+profit-taking close is an exit-policy decision; neither was invented here.
+
+At 14:57:15 UTC the fresh cross-side reconciliation marked three stale local
+rows closed and adopted the funded live account's actual ES.US position
+586195695. At 14:57:54 the protection worker reported setting TP 81.02.
+Subsequent audits, including after the live sidecar restart, verified that
+position's SL and TP. All seven accounts were covered: 41 demo positions and
+one funded live position; the other two live accounts had no positions.
+Three demo positions remained targetless, with zero missing stops and zero
+stop disagreements reported. Reconciliation changed ledger records; it did
+not close those three positions at the broker.
+
+## Option 2 activation
+
+Under the owner's continuation instruction including live tick activation,
+set `TICK_SPOOL_PATH=/data/tick` on cpp-acct at 15:00:54 UTC, after the fresh
+live protection audit and zero in-flight/unknown intent check. The previous
+variable was absent. Deployment `bf6a03db-1a21-48bd-a8ea-eee4ea97b2b9` succeeded
+on the same commit. No storage was provisioned. The existing rollout permits
+shadow observation on the container filesystem; retention across restarts
+is not established.
+
+The live service authenticated 3/3 accounts, enabled recording and shadow,
+and subscribed 54 symbols. Controllers then showed both services RECORDING,
+shadow ON, zero tick entry accounts and all seven accounts TIME_BASED with
+zero reserved/in-flight/unknown intents. Every account was shadow-ready;
+tick entries remained blocked by profile and validation evidence.
+
+At the final read-back, the live feed timestamp was 15:06:53 UTC and the
+demo timestamp was 15:06:58 UTC. The agent collected one completed live
+shadow trade at 15:06:58 UTC, proving the observation pipeline had processed
+quotes through a simulated close. This is no profitability verdict.
+
+Tick-level trailing still reads "Not reported / disabled" on both services.
+The time-based main loop took 252.6 seconds on its first post-deploy pass,
+then 68.5, 61.3 and 58.6 seconds. Startup included an 85-second event-loop
+stall; later lag recovered. The logs do not prove every-second strategy or
+management execution. The all-account broker panel also fell back to the
+selected account while retaining an all-account label; its missing-position
+warning must not override the account-scoped protection audits.
+
+Validation thresholds, automatic entry selection and account entry modes
+were unchanged. Remaining work: the three passed-target exit decisions,
+broker-refusal classification, loop stalls/overlap, accurate all-account
+broker-panel fallback, and persistent live replay retention if required.

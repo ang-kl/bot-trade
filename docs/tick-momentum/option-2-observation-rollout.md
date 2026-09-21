@@ -1,6 +1,20 @@
 # Option 2 — turning tick observation on for the live broker side
 
-**Status: PREPARED, NOT EXECUTED. Every step below awaits the owner's word.**
+**Status: EXECUTED 21-09-2026, runtime verified at 15:07 UTC / 23:07 SGT.**
+
+The owner subsequently instructed continuation including live tick activation.
+After fresh live protection and zero in-flight/unknown intent checks,
+`TICK_SPOOL_PATH=/data/tick` was set on cpp-acct. Deployment
+`bf6a03db-1a21-48bd-a8ea-eee4ea97b2b9` succeeded on `394fa78`.
+Both services now show recording and shadow ON in Controllers, zero tick
+entry accounts and all seven accounts TIME_BASED. The live feed timestamp
+advanced to 15:06:53 UTC and its first simulated close was collected at
+15:06:58 UTC. The funded live position remained protected after restart.
+No persistent volume was added. Full observations and unresolved TP issues:
+[`railway-log-review-2026-09-21.md`](../railway-log-review-2026-09-21.md).
+
+The original preparation and expected outcomes below are retained as the
+rollout record; predicted capacity and readiness are not fresh measurements.
 
 Written 21-09-2026 for §1 of the approved Option 2 + Priorities 1–6 plan. The
 decision it serves: *make every sidecar tick-capable so tick trading can be

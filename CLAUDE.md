@@ -777,6 +777,13 @@ Measurement history — each line is a real run of the script, not a claim:
   failure reporting. This continues the supplied rebase, not a new measured
   transcript count. Later visible replies take precedence.
 
+- 2026-09-21 15:07 UTC, **Codex Work continuation, transcript corpus unavailable**:
+  Visible replies continued through **`№ 8,375`** during #991 review, merge,
+  deployment and the authorized cpp-acct observation activation. The live
+  feed and first completed shadow trade were verified, with all seven accounts
+  still TIME_BASED. This continues the owner's supplied rebase; later visible
+  replies take precedence. Runtime evidence is in the Railway log review.
+
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
