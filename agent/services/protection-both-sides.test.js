@@ -30,3 +30,30 @@ test('no credentials for a required side is a failure, not a clean audit', async
   assert.match(out.errors.join(' '), /credentials unavailable/)
   db.close()
 })
+
+test('a hung broker side is reported without withholding the other side result', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts (account_id,is_live,enabled) VALUES ('demo',0,1),('live',1,1)").run()
+  let release
+  const blocked = new Promise(resolve => { release = resolve })
+  const seen = []
+  try {
+    const out = await runProtectionAuditBothSides(db, { ready: true, accountId: 'demo', isLive: false }, {
+      accountBudgetMs: 20,
+      credsForSide: (isLive, accountId) => ({ ready: true, isLive, accountId }),
+      exec: { reconcile: async c => {
+        seen.push(c.accountId)
+        return c.isLive ? blocked : { position: [] }
+      } },
+      tpSuggest: { makeTargetSuggester: () => async () => null, makeTargetApplier: () => async () => ({ ok: false }) },
+    })
+    assert.deepEqual(seen.sort(), ['demo', 'live'])
+    assert.equal(out.accounts, 1)
+    assert.equal(out.blind, true, 'an entirely unreachable required side still fails coverage')
+    assert.match(out.errors[0], /live.*budget/)
+  } finally {
+    release({ position: [] })
+    await new Promise(resolve => setImmediate(resolve))
+    db.close()
+  }
+})

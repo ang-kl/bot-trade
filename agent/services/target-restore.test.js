@@ -239,10 +239,14 @@ test('only bot-owned recorded entry targets may fill a missing current target', 
   const row = { ...LONG, current_tp: null, entry_tp: 1.15 }
   for (const source of ['autopilot', 'copilot', 'preopen', 'bot']) {
     assert.equal(planTargetRestore({ ...row, source }, { brokerSl: 1.09 }).tp, 1.15, source)
+    for (const current_tp of [0, '0', -1, '', null, undefined]) {
+      assert.equal(planTargetRestore({ ...row, source, current_tp }, { brokerSl: 1.09 }).tp, 1.15)
+    }
     assert.equal(planTargetRestore({ ...row, source, entry_tp: 1.05 }, { brokerSl: 1.09 }).action, 'skip')
     assert.equal(planTargetRestore({ ...row, source, current_tp: 1.18 }, { brokerSl: 1.09 }).tp, 1.18)
   }
   for (const source of ['external', 'manual', 'unknown', null, undefined]) {
     assert.equal(planTargetRestore({ ...row, source }, { brokerSl: 1.09 }).action, 'skip', String(source))
+    assert.equal(planTargetRestore({ ...row, source, current_tp: 0 }, { brokerSl: 1.09 }).action, 'skip')
   }
 })

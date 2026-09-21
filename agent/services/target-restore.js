@@ -53,7 +53,10 @@ export function restoreEnabled(db) {
  */
 export function recordedTargetFor(row) {
   const owned = row?.source === 'bot' || isOurs(SOURCES[row?.source])
-  return num(row?.current_tp) ?? (owned ? num(row?.entry_tp) : null)
+  const current = num(row?.current_tp)
+  if (current > 0) return current
+  const entry = owned ? num(row?.entry_tp) : null
+  return entry > 0 ? entry : null
 }
 
 /**
