@@ -612,11 +612,11 @@ export async function wsCancelOrder(host, clientId, clientSecret, accessToken, a
  * Fetch all open positions and pending orders for an account via RECONCILE_REQ.
  * Returns the raw RECONCILE_RES payload: `{ position: [...], order: [...] }`.
  */
-export function wsReconcile(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 25_000) {
+export function wsReconcile(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 25_000, retries = 2) {
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.RECONCILE_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.RECONCILE_RES },
-  ], timeoutMs), 2, 'wsReconcile')
+  ], timeoutMs), retries, 'wsReconcile')
 }
 
 /**
