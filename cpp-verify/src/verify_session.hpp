@@ -7,8 +7,8 @@
 // the execution engine carries placeOrder/amend/close in its binary, and
 // "read-only" then rests on nobody ever wiring a route to them.
 //
-// So this class implements EXACTLY three broker messages — app auth, account
-// auth, deal list — and has no method that can write. The guarantee is
+// So this class implements only read messages — app auth, account auth,
+// trader, deal list and reconcile — and has no method that can write. The guarantee is
 // structural: there is no code path from any HTTP request to an order,
 // because the code does not exist in this process.
 //
@@ -86,6 +86,9 @@ public:
    * reason — a caller must treat that as "unknown", never as "none".
    */
   DealFetch deals(long long accountId, long long fromMs, long long toMs);
+
+  /** Independent broker reconcile. Never sends an order or amendment. */
+  jsn::Value protection(long long accountId);
 
   bool isOpen() const { return ws_.isOpen(); }
   std::string lastError() const { return lastError_; }

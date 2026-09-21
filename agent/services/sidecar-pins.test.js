@@ -135,11 +135,12 @@ test('cpp-verify links no order-writing code — the read-only guarantee is stru
   assert.doesNotMatch(mk, /engine\.cpp|order_guard\.cpp|trail_engine\.cpp|vpo_dispatcher\.cpp/,
     'and never the execution engine or anything that can place, amend or close')
 
-  // The session implements four broker messages and no more.
+  // Reconcile (2124) reads open SL/TP directly for independent protection
+  // checks. It is read-only; the forbidden write-message list stays intact.
   const sess = src('../../cpp-verify/src/verify_session.cpp')
   const reqTypes = [...sess.matchAll(/constexpr int k\w+Req = (\d+);/g)].map((m) => m[1]).sort()
-  assert.deepEqual(reqTypes, ['2100', '2102', '2121', '2133'],
-    'app auth, account auth, TRADER, deal list — a fifth request type needs a very good reason')
+  assert.deepEqual(reqTypes, ['2100', '2102', '2121', '2124', '2133'],
+    'only app auth, account auth, trader, reconcile and deal list are allowed')
 
   // WHY 2121 WAS ADDED, since this list is the read-only guarantee and
   // widening it quietly would be the whole point of the guard defeated.

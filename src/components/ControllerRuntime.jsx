@@ -27,7 +27,7 @@ export default function ControllerRuntime({ runtime }) {
       <div className="overflow-x-auto">
         <table className="w-full text-left">
           <caption className="text-left font-semibold">Account entry and protection status</caption>
-          <thead><tr>{['Account', 'Entry mode', 'Shadow / entry readiness', 'Broker protection'].map(h => <th key={h} className="pr-3 py-1">{h}</th>)}</tr></thead>
+          <thead><tr>{['Account', 'Entry mode', 'Shadow / entry readiness', 'Broker protection', 'Independent cpp-verify check'].map(h => <th key={h} className="pr-3 py-1">{h}</th>)}</tr></thead>
           <tbody>{runtime.accounts.map(a => <tr key={a.accountId}>
             <td className="pr-3 py-1">{a.accountId} ({a.environment}){a.enabled ? '' : ' - disabled'}{a.brokerAccess === 'TOKEN_REFUSED' && <div>Broker authorisation required</div>}</td>
             <td className="pr-3">{a.entryMode}{a.entryCounts && <div>Intents: {a.entryCounts.unsent} reserved; {a.entryCounts.inFlight} in flight; {a.entryCounts.unknown} unknown</div>}</td>
@@ -35,9 +35,11 @@ export default function ControllerRuntime({ runtime }) {
               {!a.shadowReady && <div>Shadow: {a.shadowBlockers.join(', ')}</div>}
               {!a.entryReady && <div>Entry: {a.tradingBlockers.join(', ')}</div>}</td>
             <td className="pr-3">{a.protection.summary}</td>
+            <td className="pr-3">{a.independentProtection?.summary || 'UNVERIFIED'}<br />{stamp(a.independentProtection?.checkedAt)}</td>
           </tr>)}</tbody>
         </table>
       </div>
+      <p>Independent protection checks read every registered account directly from the broker in cpp-verify, on a separate session from closed-trade verification. Checks repeat 60 seconds after each pass; readings older than three minutes are unverified.</p>
       {runtime.monitor && <p>Monitor interval: {count(runtime.monitor.tick?.everyMs)} ms; protection interval: {count(runtime.monitor.band?.everyMs)} ms; last protection duration: {count(runtime.monitor.band?.lastMs)} ms{runtime.monitor.band?.overran ? ' - OVERRAN' : ''}. Recorded: {stamp(runtime.monitor.at)}.</p>}
       {missing.length > 0 && <div role="status"><strong>Missing TP1 - last broker audit</strong>
         <ul>{missing.map(p => <li key={`${p.account}:${p.positionId}`}>{p.account} / {p.symbol} / {p.positionId}: {p.repairFailure?.retryable === false && ['TRADING_BAD_STOPS', 'TRADING_BAD_VOLUME'].includes(p.repairFailure.code) ? `Action required: ${p.repairFailure.code || 'broker refusal'} at TP ${p.repairFailure.attemptedTarget}. ${p.repairFailure.error}. Identical automatic repair paused.` : p.recordedTarget == null ? 'Target decision required - no recorded target' : `Recorded target ${p.recordedTarget} available; broker confirmation pending`}{p.stale ? ' (audit stale or latest check failed)' : ''}</li>)}</ul>

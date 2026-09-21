@@ -1,0 +1,92 @@
+import { getState, setState } from '../db.js'
+import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
+
+const STATE_KEY = 'independent_protection_json'
+const MAX_AGE_MS = 180_000
+
+export function independentProtectionView(db, accountId, nowMs = Date.now()) {
+  let state
+  try { state = JSON.parse(getState(db, STATE_KEY) || 'null') } catch { /* unknown */ }
+  const row = state?.accounts?.find(a => String(a.accountId) === String(accountId))
+  const checkedAt = Number(row?.checkedAtMs)
+  const ageMs = checkedAt > 0 ? nowMs - checkedAt : null
+  const stale = ageMs == null || ageMs < 0 || ageMs > MAX_AGE_MS
+  const readError = state?.error || state?.hostErrors?.[row?.host] || row?.error
+  const valid = ['openCount', 'missingSl', 'missingTp'].every(k => Number.isInteger(row?.[k]) && row[k] >= 0)
+    && row.missingSl <= row.openCount && row.missingTp <= row.openCount && row.source === 'broker_reconcile'
+  const ok = !readError && row?.ok === true && valid && !stale
+  return { ...row, ok, stale, ageMs, checkedAt: checkedAt > 0 ? new Date(checkedAt).toISOString() : null,
+    error: readError || (!row ? 'No independent broker reading' : !valid ? 'Invalid independent reading' : null),
+    summary: !ok ? `UNVERIFIED: ${readError || (stale ? 'reading absent or stale' : 'check failed')}`
+      : `${row.openCount} open; ${row.missingSl} missing SL; ${row.missingTp} missing TP1`,
+  }
+}
+
+// Node only provisions read sessions and relays cpp-verify's results. The
+// independent process performs its own reconcile every 60s after each pass.
+export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  const base = String(env.VERIFY_URL || '').replace(/\/$/, '')
+  const secret = String(env.EXEC_SECRET || '')
+  if (!base || !secret) return null
+  let running = false
+  const headers = { authorization: `Bearer ${secret}`, 'content-type': 'application/json' }
+  const request = async (path, body) => {
+    const res = await fetchImpl(`${base}${path}`, { method: body ? 'POST' : 'GET', headers,
+      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(body ? 90_000 : 10_000) })
+    if (!res.ok) throw new Error(`cpp-verify ${path}: HTTP ${res.status}`)
+    return res.json()
+  }
+  const fingerprints = new Map()
+  return async () => {
+    if (running) return
+    running = true
+    try {
+      let status = await request('/protection-status')
+      if (status?.source !== 'cpp-verify' || !Array.isArray(status.accounts) || !Array.isArray(status.sessions)) throw new Error('Invalid independent protection reply')
+      // Include every registered account. Entry enablement never gates reads
+      // of existing protection, including manage-only or zero-balance accounts.
+      const accounts = db.prepare('SELECT account_id FROM accounts ORDER BY account_id').all()
+      const groups = new Map()
+      for (const a of accounts) {
+        const creds = credsForRegisteredAccount(db, a.account_id)
+        if (!creds?.ready) continue
+        if (!groups.has(creds.host)) groups.set(creds.host, { creds, ids: [] })
+        groups.get(creds.host).ids.push(String(a.account_id))
+      }
+      // Separate hosts can connect independently; each host has one roster.
+      const hostErrors = {}
+      const groupList = [...groups]
+      const connections = await Promise.allSettled(groupList.map(async ([host, { creds, ids }]) => {
+        const session = status.sessions.find(s => s.host === host)
+        const signature = JSON.stringify([creds.clientId, creds.clientSecret, creds.accessToken, ids])
+        const authorised = new Set((session?.accounts || []).map(String))
+        if (session?.open && ids.every(id => authorised.has(id)) && fingerprints.get(host) === signature) return
+        const result = await request('/connect', { purpose: 'protection', host,
+          clientId: creds.clientId, clientSecret: creds.clientSecret, accessToken: creds.accessToken, accountIds: ids })
+        const accepted = new Set((result.accounts || []).filter(a => a.authorized).map(a => String(a.accountId)))
+        if (!ids.every(id => accepted.has(id))) throw new Error(`Independent verifier could not authorise every account on ${host}`)
+        fingerprints.set(host, signature)
+      }))
+      connections.forEach((result, i) => {
+        if (result.status === 'rejected') hostErrors[groupList[i][0]] = result.reason.message
+      })
+      status = await request('/protection-status')
+      if (status?.source !== 'cpp-verify' || !Array.isArray(status.accounts)) throw new Error('Invalid independent protection reply')
+      const rows = status.accounts.filter(row => groups.get(row.host)?.ids.includes(String(row.accountId)))
+      setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, readAt: new Date().toISOString(), error: null }))
+    } catch (error) {
+      let previous = {}
+      try { previous = JSON.parse(getState(db, STATE_KEY) || '{}') } catch { /* preserve unknown */ }
+      setState(db, STATE_KEY, JSON.stringify({ ...previous, readAt: new Date().toISOString(), error: error.message }))
+    } finally { running = false }
+  }
+}
+
+export function startIndependentProtection(db) {
+  const poll = makeIndependentProtectionPoll(db)
+  if (!poll) return () => {}
+  void poll()
+  const timer = setInterval(() => { void poll() }, 30_000)
+  timer.unref?.()
+  return () => clearInterval(timer)
+}

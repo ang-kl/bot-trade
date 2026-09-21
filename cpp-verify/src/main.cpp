@@ -1,10 +1,11 @@
 // cpp-verify/src/main.cpp — the verifier's HTTP surface. Read-only AT THE
 // BROKER; the one thing it writes is its own verdict journal.
 //
-// THREE ROUTES AND NOTHING ELSE:
+// READ-ONLY BROKER ROUTES:
 //   GET  /health   public (Railway's probe sends no headers)
 //   POST /connect  bearer; adds or refreshes a broker session FOR A HOST
 //   POST /verify   bearer; re-fetches a position's deals and answers a verdict
+//   GET  /protection-status bearer; independently checked open SL/TP coverage
 //
 // There is no route that writes to a broker because there is no code in this
 // binary that can: the Makefile links verify_session.cpp and verdict.cpp, not
@@ -32,6 +33,7 @@
 #include "log.hpp"
 #include "verdict.hpp"
 #include "verify_session.hpp"
+#include "protection_watch.hpp"
 
 namespace {
 
@@ -119,7 +121,7 @@ int main() {
   // named in the same breath.
   sidecar_log::logInfoF("[verify]",
                "cpp-verify starting on :%d — READ-ONLY AT THE BROKER: "
-               "app auth, account auth, deal list; it never places, amends or "
+               "app auth, account auth, trader, deals and reconcile; it never places, amends or "
                "cancels. The only thing it writes is its own verdict journal. "
                "Sessions are per host%s",
                port, hostPinIgnored ? "; CTRADER_HOST is set and IGNORED" : "");
@@ -135,7 +137,12 @@ int main() {
                  verify::journal().dir().c_str(), verify::journal().lastError().c_str());
   }
 
+  verify::ProtectionWatch protection;
+  protection.start();
   HttpServer server(port, secret);
+  server.route("GET", "/protection-status", [&](const HttpRequest&) {
+    return jsonRes(200, jsn::dump(protection.status()));
+  });
 
   server.route("GET", "/health", [&](const HttpRequest&) {
     std::lock_guard<std::mutex> lk(g_mtx);
@@ -176,6 +183,8 @@ int main() {
     auto body = jsn::parse(req.body);
     if (!body || !body->isObject()) return errRes(400, "body must be a JSON object");
     const std::string host = body->get("host").asString();
+    const std::string purpose = body->get("purpose").asString();
+    if (!purpose.empty() && purpose != "history" && purpose != "protection") return errRes(400, "unknown session purpose");
     if (host.empty()) return errRes(400, "host is required — this service holds no default");
 
     std::vector<long long> want;
@@ -212,7 +221,9 @@ int main() {
       if (!good) r.set("error", slot->lastError());
       results.push_back(r);
     }
-    {
+    if (purpose == "protection") {
+      protection.replace(host, slot, ok);
+    } else {
       std::lock_guard<std::mutex> lk(g_mtx);
       g_sessions[host] = slot;
       g_accounts[host] = ok;
