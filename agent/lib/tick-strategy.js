@@ -81,6 +81,7 @@ export class TickMomentumOracle {
     this.asks = []
     this.spreads = []
     this.accepted = 0
+    this.warmedEvaluations = 0
     this.lastRecvMs = null
     this.state = 'WARMING'
     this.setup = null   // frozen at arm: { H, L, bidHigh, bidLow, askHigh, askLow, B, armedAt, id, confirmed, dir }
@@ -124,6 +125,7 @@ export class TickMomentumOracle {
     const warm = priorMids.length >= N + 1 && priorMids.length >= M
     let signal = null
     if (warm) {
+      this.warmedEvaluations++
       const lastN = priorMids.slice(-N)
       const H = Math.max(...lastN), L = Math.min(...lastN)
       const diffsN = []

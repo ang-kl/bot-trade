@@ -10,10 +10,10 @@
 // half file under the real name; syncSegments skips what is already cached
 // at the right length and honours its bounds; the research route pulls and
 // then runs; and with nothing reachable anywhere the 409 is still honest.
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { mkdtempSync as makeTempDir, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -29,6 +29,15 @@ import { startTickResearchJobWithSync, _resetTickResearchJobs, NO_SEGMENTS_ANYWH
 const SECRET = 'test-exec-secret'
 const NAME_A = 'seg-1757548800000-000001.tks'
 const NAME_B = 'seg-1757548900000-000002.tks'
+
+// Remove only directories owned by this module, after all tests finish.
+const temporaryDirectories = new Set()
+const mkdtempSync = (...args) => {
+  const dir = makeTempDir(...args)
+  temporaryDirectories.add(dir)
+  return dir
+}
+after(() => { for (const dir of temporaryDirectories) rmSync(dir, { recursive: true, force: true }) })
 
 /** A valid sealed segment: header + n two-sided quote records, all checksummed. */
 function makeSegment(n = 40, { startedMs = 1_757_548_800_000, symbolId = 7 } = {}) {

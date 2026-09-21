@@ -26,10 +26,15 @@ if (!file) {
       if (p?.phantom > 0 || p?.unmatched > 0) reasons.push('broker and position records disagree')
       if (p?.naked > 0) reasons.push(`${p.naked} missing stop(s)`)
       if (p?.targetless > 0) reasons.push(`${p.targetless} missing target(s)`)
+      if (a.brokerAccess === 'TOKEN_REFUSED') reasons.push('broker authorisation required')
+      if (!a.entryCounts || ![a.entryCounts.unsent, a.entryCounts.inFlight, a.entryCounts.unknown].every(v => Number.isInteger(v) && v >= 0)) reasons.push('entry intent counts unavailable')
+      else if (a.entryCounts.inFlight > 0 || a.entryCounts.unknown > 0) reasons.push('entry intents in flight or unknown; reconcile before restart')
+      if (a.entryMode !== 'TIME_BASED') reasons.push('account is not confirmed in the existing time-based entry mode')
       return reasons.map(reason => ({ accountId: a.accountId, reason }))
     })
     if (!accounts.length) blockers.push({ reason: 'No enabled live account represented' })
     if (!live.healthFresh || live.connected !== true) blockers.push({ reason: 'Live sidecar connection not freshly verified' })
+    if (live.tickBlock === 'available' && live.entryAccounts !== 0) blockers.push({ reason: 'Existing tick entry account roster is not confirmed empty' })
     console.log(JSON.stringify({
       mode: 'PREPARE_ONLY', service: 'cpp-acct', observedAt: runtime.at,
       approvalRequired: true, protectionBlockers: blockers,

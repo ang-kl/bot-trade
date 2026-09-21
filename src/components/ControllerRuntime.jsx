@@ -29,8 +29,8 @@ export default function ControllerRuntime({ runtime }) {
           <caption className="text-left font-semibold">Account entry and protection status</caption>
           <thead><tr>{['Account', 'Entry mode', 'Shadow / entry readiness', 'Broker protection'].map(h => <th key={h} className="pr-3 py-1">{h}</th>)}</tr></thead>
           <tbody>{runtime.accounts.map(a => <tr key={a.accountId}>
-            <td className="pr-3 py-1">{a.accountId} ({a.environment}){a.enabled ? '' : ' - disabled'}</td>
-            <td className="pr-3">{a.entryMode}</td>
+            <td className="pr-3 py-1">{a.accountId} ({a.environment}){a.enabled ? '' : ' - disabled'}{a.brokerAccess === 'TOKEN_REFUSED' && <div>Broker authorisation required</div>}</td>
+            <td className="pr-3">{a.entryMode}{a.entryCounts && <div>Intents: {a.entryCounts.unsent} reserved; {a.entryCounts.inFlight} in flight; {a.entryCounts.unknown} unknown</div>}</td>
             <td className="pr-3">Shadow: {a.shadowReady ? 'READY' : 'BLOCKED'}; entries: {a.entryReady ? 'READY' : 'BLOCKED'}
               {!a.shadowReady && <div>Shadow: {a.shadowBlockers.join(', ')}</div>}
               {!a.entryReady && <div>Entry: {a.tradingBlockers.join(', ')}</div>}</td>

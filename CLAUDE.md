@@ -758,6 +758,13 @@ Measurement history — each line is a real run of the script, not a claim:
   SGT. The next reply after this checkpoint is `№ 8,328`; later visible replies
   take precedence. No claim is made to reconstruct the missing transcript.
 
+- 2026-09-21, **Codex Work continuation, transcript corpus unavailable**:
+  Visible replies continued through **`№ 8,339`** at 21:09 SGT during TP,
+  account coverage, simulation and replay work. The first update in this turn
+  was unstamped and is counted as 8,332; numbered updates resumed at 8,333.
+  This is a continuation of the owner's supplied 8,325 rebase, not a fresh
+  transcript measurement. Later visible replies take precedence.
+
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

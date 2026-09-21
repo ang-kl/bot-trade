@@ -773,7 +773,7 @@ test('an externally-opened position is still never touched by this path', async 
   assert.equal(out.targetless, 1, 'still reported')
 })
 
-test('a momentum-book row is still never touched by this path', async () => {
+test('legacy momentum-book rows receive mandatory TP1 through the independent audit path', async () => {
   oneAccount()
   targetlessOn(A, '0005.HK', '111', 159.6)
   db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
@@ -787,7 +787,7 @@ test('a momentum-book row is still never touched by this path', async () => {
       makeTargetApplier: () => async (f) => { amends.push(f.positionId); return { ok: true } },
     },
   })
-  assert.deepEqual(amends, [], 'the book exits by the trail; a 1.5R floor caps the right tail')
+  assert.deepEqual(amends, ['111'], 'mandatory TP1 also covers book positions created before #984')
 })
 
 // ---------------------------------------------------------------------------

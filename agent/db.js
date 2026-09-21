@@ -808,6 +808,15 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_tick_shadow_fills_acct ON tick_shadow_account_fills(account_id, executed, reason);
 
+  -- Immutable, dated current-conditions scenarios. Legacy fill rows above are
+  -- the latest projection cache, never historical execution evidence.
+  CREATE TABLE IF NOT EXISTS tick_shadow_account_scenarios (
+    scenario_id TEXT PRIMARY KEY,
+    captured_at TEXT NOT NULL,
+    inputs_json TEXT NOT NULL,
+    result_json TEXT NOT NULL
+  );
+
   -- Speech-act inspection findings (owner invariants 2-4, 31-08-2026): what
   -- each log SAID vs what it was DOING, the principlised next action, and a
   -- falsifier with a deadline. The PARTIAL UNIQUE index is the anti-noise

@@ -34,7 +34,12 @@ export function tickTrialsView(db, { limit = 50 } = {}) {
     summary: JSON.parse(r.summary_json), blocks: JSON.parse(r.blocks_json), note: r.note,
   }))
   const byProfile = {}
+  let shadowProfiles = []
+  try { shadowProfiles = db.prepare("SELECT side, profile_hash AS profileHash, COUNT(*) AS trades FROM tick_shadow_trades WHERE reason <> 'lost_restart' GROUP BY side, profile_hash").all() } catch { /* no shadow evidence */ }
   for (const t of trials) {
+    t.evidenceState = t.summary.trades === 0 ? 'EMPTY' : 'OBSERVED'
+    t.matchingShadow = shadowProfiles.filter(s => s.profileHash === t.profileHash)
+    t.shadowAttribution = t.matchingShadow.length ? 'same_profile_only; data windows and costs still require validation' : 'no_matching_profile; other shadow runs cannot corroborate this trial'
     const validation = t.blocks.find(b => b.name === 'validation') || null
     const test = t.blocks.find(b => b.name === 'test') || null
     // AUDIT 11-09-2026 (plan §7): the test block is WITHHELD on a research
@@ -50,6 +55,7 @@ export function tickTrialsView(db, { limit = 50 } = {}) {
   }
   return {
     at: new Date().toISOString(), trials, profiles: Object.values(byProfile),
+    emptyTrials: trials.filter(t => t.evidenceState === 'EMPTY').length,
     note: 'P4: research trials only — no profile here is approved for trading; acceptance (plan §7) needs out-of-sample expectancy with an interval on independent blocks, cost and parameter-neighbourhood robustness, and the multiple-testing adjustment, judged by the owner before P6 imports evidence.',
   }
 }

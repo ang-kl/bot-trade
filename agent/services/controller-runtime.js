@@ -2,6 +2,8 @@
 import { getState } from '../db.js'
 import { tickReadinessFor, RECORDER_STATUS_MAX_AGE_MS } from './tick-readiness.js'
 import { lastProtectionAudit } from './naked-position-guard.js'
+import { tokenRefusedAccounts } from '../lib/token-refused.js'
+import { intentCounts } from './entry-ledger.js'
 
 const read = (db, key) => {
   try { return JSON.parse(getState(db, key) || 'null') } catch { return null }
@@ -38,17 +40,26 @@ export function controllerRuntimeView(db, { nowMs = Date.now() } = {}) {
         : status?.enabled === false ? 'Set TICK_SPOOL_PATH on this service to construct the tick workers; restart approval required' : status?.reason ?? null,
     }
   })
+  const refused = tokenRefusedAccounts(db)
   const rows = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY is_live, account_id').all()
   const accounts = rows.map(row => {
     const id = String(row.account_id)
     const tick = tickReadinessFor(db, id, { now: new Date(nowMs) })
     const audit = read(db, `acct:${id}:protection_audit_last_json`)
+    const protection = lastProtectionAudit(db, { accountId: id, nowMs, expectedSec: 60, staleFactor: 3 })
+    if (refused.has(id)) {
+      protection.ok = false
+      protection.lastAttemptOk = false
+      protection.summary = 'Broker token refused; protection cannot be verified. Reconnect cTrader and authorise this account.'
+    }
     return {
       accountId: id, environment: row.is_live ? 'live' : 'demo', enabled: !!row.enabled,
       entryMode: tick.effectiveEntryMode, shadowReady: tick.shadowReady,
       entryReady: tick.ready, tradingBlockers: tick.tradingBlockers,
       shadowBlockers: tick.shadowBlockers,
-      protection: lastProtectionAudit(db, { accountId: id, nowMs, expectedSec: 60, staleFactor: 3 }),
+      brokerAccess: refused.has(id) ? 'TOKEN_REFUSED' : 'NOT_REFUSED',
+      entryCounts: intentCounts(db, id),
+      protection,
       missingTargets: audit?.missingTargets ?? null,
     }
   })

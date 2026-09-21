@@ -4,9 +4,9 @@
 // the trial ledger with each trial's replay verdict; with no reachable
 // segment the action refuses 409 no_segments and names where the data is —
 // it never writes a trial it did not replay.
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync as makeTempDir, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -16,6 +16,15 @@ import { buildFixture } from '../lib/tick-strategy.test.js'
 import { simulate } from '../lib/tick-replay-sim.js'
 import { tickResearchAction, listSegments, loadSegments, runTrials, stageAGrid, NO_SEGMENTS_WHERE } from './tick-research-run.js'
 import { loadThresholds } from './tick-validation.js'
+
+// Remove only directories owned by this module, after all tests finish.
+const temporaryDirectories = new Set()
+const mkdtempSync = (...args) => {
+  const dir = makeTempDir(...args)
+  temporaryDirectories.add(dir)
+  return dir
+}
+after(() => { for (const dir of temporaryDirectories) rmSync(dir, { recursive: true, force: true }) })
 
 /** The planted fixture as one sealed segment for symbol `symbolId`. */
 export function fixtureSegment({ symbolId = 7, gapAfter = null } = {}) {
