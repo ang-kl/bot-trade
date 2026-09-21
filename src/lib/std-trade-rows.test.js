@@ -27,6 +27,15 @@ describe('broker rows carry strategy + timeframe for segmentation', () => {
 })
 
 describe('brokerPositionRows: DB↔broker integrity cross-check (owner: verify each open position individually)', () => {
+  it('does not call an unavailable monitor read an untracked broker position', () => {
+    const broker = [{ positionId: 1, symbol: 'EURUSD', side: 'BUY', sl: 1.09, tp: 1.11 }]
+    const [unknown] = brokerPositionRows(broker, { dbByPid: new Map(), dbReadStatus: 'unverified' })
+    expect(unknown.integrity).toBe('monitor records unverified')
+    expect(unknown.sl).toBe(1.09)
+    expect(unknown.tp).toBe(1.11)
+    const [knownAbsent] = brokerPositionRows(broker, { dbByPid: new Map(), dbReadStatus: 'verified' })
+    expect(knownAbsent.integrity).toBe('untracked in DB')
+  })
   it('no dbByPid passed → integrity stays null (existing callers unaffected)', () => {
     const [row] = brokerPositionRows([{ positionId: 1, symbol: 'EURUSD', side: 'BUY', sl: 1.09, tp: 1.11 }])
     expect(row.integrity).toBeNull()
