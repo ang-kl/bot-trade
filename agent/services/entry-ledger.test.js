@@ -500,10 +500,21 @@ test('the injected fence is a test fixture, not a hole: through the REAL fence t
 // ---------------------------------------------------------------------------
 // PR-3 (dual-basis arbitration, 21-09-2026): both bases through one ledger.
 // ---------------------------------------------------------------------------
-test('PR-3: on [bar, tick] the same key from both bases is one owner — a tick standing permit never vetoes the bar signal, the bar intent blocks new tick capacity (intent_open), and the standing reuse withdraws the row the bar side took', () => {
+// PR-3: admitting tick carries the contract's evidence bar (a pinned
+// profile + SHADOW_PASSED), so each fixture pins it before setting the set.
+async function dualBasis(db, id) {
+  const { profileHashFull, DEFAULT_PARAMS } = await import('../lib/tick-strategy.js')
+  const cur = engineStatusFor(db, id)
+  writeEngineStatus(db, { ...cur, profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', configRevision: cur.configRevision + 1, updatedAt: new Date().toISOString() })
+  const rev = engineStatusFor(db, id).configRevision
+  const r = requestAdmittedBases(db, id, ['bar', 'tick'], { expectedRevision: rev, readiness: () => ({ ready: true, blockedReasons: [] }) })
+  assert.equal(r.ok, true, r.reason)
+  return engineStatusFor(db, id).configRevision
+}
+
+test('PR-3: on [bar, tick] the same key from both bases is one owner — a tick standing permit never vetoes the bar signal, the bar intent blocks new tick capacity (intent_open), and the standing reuse withdraws the row the bar side took', async () => {
   const db = fresh()
-  const ready = () => ({ ready: true, blockedReasons: [] })
-  assert.equal(requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: 0, readiness: ready }).ok, true)
+  await dualBasis(db, DEMO)
   const tickBase = { accountId: DEMO, producerId: TICK_PRODUCER, basis: 'tick', symbolId: 1, symbol: 'EURUSD', side: 'BUY' }
   // 1. tick standing permit first, then the bar signal on the same key: bar admitted
   const t = reserveEntry(db, { ...tickBase, signalRef: 'tick:1' })
@@ -524,26 +535,26 @@ test('PR-3: on [bar, tick] the same key from both bases is one owner — a tick 
   assert.equal(reserveEntry(db, { ...tickBase, symbolId: 2, symbol: 'GBPUSD', side: 'SELL', signalRef: 'tick:2' }).ok, true, 'a different side is a different key')
 })
 
-test('PR-3: narrowing [bar, tick] → [bar] releases the tick RESERVED rows as basis_withdrawn and leaves in-flight rows alone; a later mode switch releases the bar rows at the old epoch as epoch_stale, and nothing RESERVED at the old epoch remains', () => {
+test('PR-3: narrowing [bar, tick] → [bar] releases the tick RESERVED rows as basis_withdrawn and leaves in-flight rows alone; a later mode switch releases the bar rows at the old epoch as epoch_stale, and nothing RESERVED at the old epoch remains', async () => {
   const db = fresh()
-  const ready = () => ({ ready: true, blockedReasons: [] })
-  assert.equal(requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: 0, readiness: ready }).ok, true)
+  const rev = await dualBasis(db, DEMO)
   const tick = (symbolId, symbol, side = 'BUY') => reserveEntry(db, { accountId: DEMO, producerId: TICK_PRODUCER, basis: 'tick', symbolId, symbol, side, signalRef: `tick:${symbolId}` })
   const t1 = tick(1, 'EURUSD'), t2 = tick(41, 'XAUUSD'), t3 = tick(2, 'GBPUSD')
   const b1 = reserveEntry(db, { ...base, symbolId: 3, symbol: 'USDJPY' })
   assert.ok(t1.ok && t2.ok && t3.ok && b1.ok)
   assert.equal(redeemPermit(db, t3.permit.id).ok, true, 't3 is DISPATCHING — in flight')
-  const n = requestAdmittedBases(db, DEMO, ['bar'], { expectedRevision: 1 })
+  const n = requestAdmittedBases(db, DEMO, ['bar'], { expectedRevision: rev })
   assert.equal(n.ok, true); assert.deepEqual(n.removed, ['tick']); assert.equal(n.released, 2)
   for (const id of [t1.intentId, t2.intentId]) { assert.equal(row(db, id).state, 'RELEASED'); assert.equal(row(db, id).error_code, 'basis_withdrawn'); assert.equal(row(db, id).resolution_source, 'epoch') }
   assert.equal(row(db, t3.intentId).state, 'DISPATCHING', 'an in-flight tick intent settles on the broker\'s evidence, like a mode switch leaves it')
   assert.equal(row(db, b1.intentId).state, 'RESERVED', 'the bar row is untouched by the narrowing')
   assert.equal(engineStatusFor(db, DEMO).modeEpoch, 0, 'the narrowing moved no epoch')
+  assert.equal(engineStatusFor(db, DEMO).validationStage, 'SHADOW_PASSED')
   // releaseRemovedBases stands alone too: nothing to remove releases nothing
   assert.deepEqual(releaseRemovedBases(db, DEMO, []), { released: 0 })
   assert.deepEqual(releaseRemovedBases(db, DEMO, ['tick']), { released: 0 }, 'already released')
   // then the mode switch: the bar row at the old epoch is epoch_stale (releaseOldEpoch unchanged)
-  const sw = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: 2 })
+  const sw = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: rev + 1 })
   assert.equal(sw.ok, true); assert.equal(sw.status.modeEpoch, 1)
   assert.equal(row(db, b1.intentId).state, 'RELEASED'); assert.equal(row(db, b1.intentId).error_code, 'epoch_stale')
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE account_id = ? AND state = 'RESERVED' AND mode_epoch < 1`).get(DEMO).n, 0, 'nothing RESERVED at the old epoch remains')
@@ -552,8 +563,7 @@ test('PR-3: narrowing [bar, tick] → [bar] releases the tick RESERVED rows as b
 
 test('PR-3: both bases\' permits at the same epoch redeem; both at a stale epoch are refused permit_epoch_stale — the same check the sidecar\'s validatePermit applies, which reads no basis (source pin, comments stripped)', async () => {
   const db = fresh()
-  const ready = () => ({ ready: true, blockedReasons: [] })
-  assert.equal(requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: 0, readiness: ready }).ok, true)
+  await dualBasis(db, DEMO)
   const now = Date.now()
   const b = reserveEntry(db, { ...base, now })
   const t = reserveEntry(db, { accountId: DEMO, producerId: TICK_PRODUCER, basis: 'tick', symbolId: 41, symbol: 'XAUUSD', side: 'SELL', signalRef: 'tick:41', now })

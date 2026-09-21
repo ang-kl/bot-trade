@@ -293,6 +293,16 @@ export function requestAdmittedBases(db, accountId, bases, { expectedRevision = 
       return { ok: false, reason: `tick_not_ready: ${blocked}`, current: cur.configRevision, blockedReasons: rd?.blockedReasons || [] }
     }
   }
+  // PR-3 (checker, 21-09-2026): the contract's own evidence rules bind the
+  // admitted set too (entry-contracts.js: a pinned profile and SHADOW_PASSED
+  // while tick is admitted). Asked AFTER the readiness gate so the reason a
+  // caller sees is the readiness one when both would refuse, and asked as a
+  // refusal rather than left to writeEngineStatus's throw.
+  if (want != null) {
+    const { stored: st2, invalid: iv2, ...clean2 } = cur // eslint-disable-line no-unused-vars
+    const full = validateEngineStatus({ ...clean2, admittedBases: want })
+    if (!full.ok) return { ok: false, reason: `admitted_bases_refused: ${full.errors.join('; ')}`, current: cur.configRevision, errors: full.errors }
+  }
   const removed = before.filter(b => !after.includes(b))
   let released = 0
   if (removed.length) { try { released = releaseRemovedBases(db, id, removed, { now: now.getTime() }).released } catch { /* ledger table absent */ } }

@@ -152,8 +152,18 @@ test('PR-G: entryModePolicy is manual | auto, defaults to manual, and a pre-PR-G
 test('PR-3: admittedBases is null by default (the mode\'s own basis), a set of SIGNAL_BASES is valid, and [] / duplicates / an unknown basis are refused by name; a record without the field still validates', () => {
   const base = defaultEngineStatus({ accountId: '46130058', environment: 'demo' })
   assert.equal(base.admittedBases, null)
-  assert.equal(validateEngineStatus({ ...base, admittedBases: ['bar', 'tick'] }).ok, true)
-  assert.equal(validateEngineStatus({ ...base, admittedBases: ['tick'] }).ok, true)
+  // The evidence bar follows the ADMITTED BASIS, not the mode string: a set
+  // containing 'tick' needs the pinned profile and SHADOW_PASSED that an
+  // effective TICK_MOMENTUM needs (checker, 21-09-2026).
+  const evidenced = { ...base, profileHash: 'a'.repeat(64), validationStage: 'SHADOW_PASSED' }
+  assert.equal(validateEngineStatus({ ...evidenced, admittedBases: ['bar', 'tick'] }).ok, true)
+  assert.equal(validateEngineStatus({ ...evidenced, admittedBases: ['tick'] }).ok, true)
+  assert.equal(validateEngineStatus({ ...base, admittedBases: ['bar'] }).ok, true, 'bar alone needs no tick evidence')
+  const bare = validateEngineStatus({ ...base, admittedBases: ['bar', 'tick'] })
+  assert.equal(bare.ok, false, 'TIME_BASED + UNVALIDATED + no profile must NOT validate while tick is admitted')
+  assert.match(bare.errors.join('; '), /profileHash: required while tick entries are admitted/)
+  assert.match(bare.errors.join('; '), /validationStage: admitting tick needs at least SHADOW_PASSED/)
+  assert.equal(validateEngineStatus({ ...evidenced, validationStage: 'REPLAY_PASSED', admittedBases: ['tick'] }).ok, false, 'REPLAY_PASSED is below the bar for the overlay too')
   assert.match(validateEngineStatus({ ...base, admittedBases: [] }).errors.join('; '), /^admittedBases: an empty set/)
   assert.match(validateEngineStatus({ ...base, admittedBases: ['bar', 'bar'] }).errors.join('; '), /^admittedBases: duplicate basis/)
   assert.match(validateEngineStatus({ ...base, admittedBases: ['candle'] }).errors.join('; '), /admittedBases\[0\]: 'candle' not in \[bar, tick\]/)

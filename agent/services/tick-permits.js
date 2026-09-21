@@ -164,7 +164,19 @@ const pausedLogged = new Map() // accountId → reason last logged
 // filled symbol is withdrawn on the NEXT heartbeat — the companion of
 // account-pregate.js invalidateAccountPregate, on the tick side.
 const repushDue = new Set()
-export function markTickRepush(accountId) { if (accountId != null) repushDue.add(String(accountId)) }
+/**
+ * Mark an account for a re-push. BOUNDED (checker, 21-09-2026): only an
+ * account that currently admits tick is marked. The loop marks EVERY bar
+ * fill on every account, and `takeTickRepush(want)` clears only ids on that
+ * side's tick roster — so a pure-bar account's mark would never be taken and
+ * `tickRepushPending()` would read true for ever, growing one id per account.
+ */
+export function markTickRepush(db, accountId) {
+  if (accountId == null) return false
+  try { if (!basesFor(engineStatusFor(db, accountId)).includes('tick')) return false } catch { return false }
+  repushDue.add(String(accountId))
+  return true
+}
 /** Take (and clear) the marks; `accountIds` narrows to one side's roster, null takes every mark. */
 export function takeTickRepush(accountIds = null) {
   const out = []
@@ -173,7 +185,12 @@ export function takeTickRepush(accountIds = null) {
   }
   return out
 }
+/** Peek: which marks are due, without clearing any (the heartbeat asks before its credentials resolve). */
+export function peekTickRepush(accountIds = null) {
+  return [...repushDue].filter(id => accountIds == null || accountIds.map(String).includes(id))
+}
 export function tickRepushPending() { return repushDue.size > 0 }
+export function _resetTickRepushForTests() { repushDue.clear() }
 
 /**
  * PR-3: ONE budget for both bases. The positions the keeper knows plus the
@@ -182,6 +199,13 @@ export function tickRepushPending() { return repushDue.size > 0 }
  * (a standing permit is capacity held in advance, not exposure; counting it
  * would refuse the tick side its own permits). The position cap itself is
  * unchanged (owner): this only makes both sides spend from the same count.
+ *
+ * IT CAN DOUBLE-COUNT, IN THE SAFE DIRECTION (checker, 21-09-2026): a bar
+ * intent still SENT whose trade row already reads `submitting` is counted
+ * twice — measured 3 for 2 real orders — because the two sides settle at
+ * different moments. The error only ever refuses the tick side EARLY; it can
+ * never over-permit, which is why it is left as it is rather than joined on
+ * a broker id the intent does not yet have.
  */
 export function heldWithPending(db, accountId) {
   const held = openPositionsFor(db, accountId)

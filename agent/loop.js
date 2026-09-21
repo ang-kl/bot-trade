@@ -1739,7 +1739,7 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
         // PR-3: the tick side's companion — the next heartbeat re-pushes
         // this account's permits so the sidecar's standing permit on the
         // filled symbol is withdrawn (position_open), not left to expire.
-        markTickRepush(acct.accountId)
+        markTickRepush(db, acct.accountId)
         if (process.env.TELEGRAM_BOT_TOKEN) {
           try {
             const { sendMessage } = await import('./services/telegram.js')

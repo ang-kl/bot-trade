@@ -301,11 +301,22 @@ export function validateEngineStatus(obj) {
     if (e.transitionState === 'STABLE' && e.requestedEntryMode !== e.effectiveEntryMode) {
       errors.push('transitionState: STABLE requires requested and effective modes to agree')
     }
-    if (e.effectiveEntryMode === 'TICK_MOMENTUM') {
-      if (e.profileHash == null) errors.push('profileHash: required while TICK_MOMENTUM is effective')
+    // PR-3 (21-09-2026): THE EVIDENCE RULES FOLLOW THE ADMITTED BASIS, not
+    // the mode string. An account admitting 'tick' through `admittedBases`
+    // places tick entries exactly as an effective TICK_MOMENTUM one does, so
+    // it carries the same bar — otherwise a record with TIME_BASED,
+    // UNVALIDATED and no pinned profile but ['bar','tick'] validates, and the
+    // backstop this contract provides is lost precisely where it is the last
+    // line: a record that admits tick without the evidence must not validate,
+    // so engineStatusFor falls back to the OFF default and the account drops
+    // off both tick rosters on the next read.
+    const admitsTick = e.effectiveEntryMode === 'TICK_MOMENTUM' ||
+      (Array.isArray(e.admittedBases) && e.admittedBases.includes('tick'))
+    if (admitsTick) {
+      if (e.profileHash == null) errors.push('profileHash: required while tick entries are admitted')
       // PR-B: one evidence bar for every account — no environment clause.
       if (!TICK_ENTRY_STAGES.includes(e.validationStage)) {
-        errors.push('validationStage: TICK_MOMENTUM needs at least SHADOW_PASSED — plan runbook "Stages"')
+        errors.push('validationStage: admitting tick needs at least SHADOW_PASSED — plan runbook "Stages"')
       }
     }
     if (e.entryCounts.unknown > 0 && e.transitionState === 'STABLE' && e.effectiveEntryMode !== 'STOPPED') {

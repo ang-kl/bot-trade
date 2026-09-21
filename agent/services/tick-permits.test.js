@@ -11,11 +11,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { initDB, setState, getState } from '../db.js'
-import { upsertAccount } from './account-registry.js'
-import { engineStatusFor, requestEntryMode, requestAdmittedBases, acknowledgeEntryEpochs, writeEngineStatus, admitEntry, _resetRefusalDedupe } from './entry-mode.js'
+import { upsertAccount, setAccountState } from './account-registry.js'
+import { validateEngineStatus } from '../lib/entry-contracts.js'
+import { engineStatusFor, requestEntryMode, requestAdmittedBases, acknowledgeEntryEpochs, writeEngineStatus, admitEntry, _resetRefusalDedupe, ENGINE_STATUS_KEY } from './entry-mode.js'
 import { reconcileIntents, TICK_PRODUCER, reserveEntry, resolveIntent, redeemPermit, STANDING_PRODUCERS } from './entry-ledger.js'
 import { profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
-import { permitSizing, tickEntryAccountsFor, runTickPermitFeeder, loadTickEntryConfig, PAUSE_CHECKS, WIRE_UNIT, PAUSED_KEY, openPositionsFor, heldWithPending, markTickRepush, takeTickRepush, tickRepushPending } from './tick-permits.js'
+import { permitSizing, tickEntryAccountsFor, runTickPermitFeeder, loadTickEntryConfig, PAUSE_CHECKS, WIRE_UNIT, PAUSED_KEY, openPositionsFor, heldWithPending, markTickRepush, takeTickRepush, peekTickRepush, tickRepushPending, _resetTickRepushForTests } from './tick-permits.js'
 import { labelIntentId } from '../lib/trade-labels.js'
 import { desiredGuardFor } from './exec-guard-sync.js'
 
@@ -292,7 +293,12 @@ test('the sidecar\'s tick label carries the intent in the 8th field, so a positi
 // ---------------------------------------------------------------------------
 // PR-3 (dual-basis arbitration, 21-09-2026): admittedBases with ONE budget.
 // ---------------------------------------------------------------------------
+// PR-3: the overlay carries the same evidence bar as the mode (a pinned
+// profile + SHADOW_PASSED — entry-contracts.js), so this pins it first,
+// exactly as switchOn does above for TICK_MOMENTUM itself.
 const dual = (db, id) => {
+  const cur = engineStatusFor(db, id)
+  writeEngineStatus(db, { ...cur, profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', configRevision: cur.configRevision + 1, updatedAt: new Date().toISOString() })
   const r = requestAdmittedBases(db, id, ['bar', 'tick'], { expectedRevision: engineStatusFor(db, id).configRevision, readiness: () => ({ ready: true, blockedReasons: [] }) })
   assert.equal(r.ok, true, r.reason)
   return engineStatusFor(db, id)
@@ -371,13 +377,25 @@ test('PR-3: a tick standing permit, then a bar signal on the same symbol and sid
   assert.equal(r.permits, 3)
   assert.match(r.refused.find(x => x.symbol === 'EURUSD').reason, /^intent_open: RESERVED/)
   // the re-push mark: the loop marks the account on a fill; the heartbeat takes it once, by side roster
+  _resetTickRepushForTests()
   assert.equal(tickRepushPending(), false)
-  markTickRepush(DEMO); markTickRepush(DEMO2)
+  // BOUNDED (checker): only an account that currently admits tick is marked,
+  // so the loop marking EVERY bar fill cannot leave a pure-bar account's id
+  // in the set for ever (takeTickRepush only ever clears tick-roster ids).
+  assert.equal(markTickRepush(db, DEMO), true, 'DEMO admits [bar, tick]')
+  assert.equal(markTickRepush(db, DEMO2), false, 'a pure-bar account is never marked')
+  assert.equal(markTickRepush(db, LIVE), false)
+  assert.equal(markTickRepush(db, null), false)
+  assert.deepEqual(peekTickRepush(null), [DEMO], 'one mark, and peeking clears nothing')
+  assert.deepEqual(peekTickRepush(null), [DEMO])
   assert.equal(tickRepushPending(), true)
-  assert.deepEqual(takeTickRepush([DEMO]), [DEMO], 'taken for this side\'s roster only')
-  assert.equal(tickRepushPending(), true, 'the other account\'s mark waits for its side')
-  assert.deepEqual(takeTickRepush(null), [DEMO2]); assert.equal(tickRepushPending(), false)
+  assert.deepEqual(takeTickRepush([DEMO2]), [], 'another side\'s roster takes nothing')
+  assert.deepEqual(takeTickRepush([DEMO]), [DEMO], 'taken for this side\'s roster')
+  assert.equal(tickRepushPending(), false, 'nothing is left behind to leak')
   assert.deepEqual(takeTickRepush([DEMO]), [], 'a mark is taken once')
+  // a bar fill on an account that has since dropped tick leaves no residue
+  assert.equal(requestAdmittedBases(db, DEMO, null, { expectedRevision: engineStatusFor(db, DEMO).configRevision }).ok, true)
+  assert.equal(markTickRepush(db, DEMO), false); assert.equal(tickRepushPending(), false)
 })
 
 test('PR-3: the bar side\'s account pre-gate refusing (balance_not_account_scoped — the pure read, no decision row) gives the tick side zero permits, releases its standing rows and names the guard in out.paused; the guard sync agrees; an exhausted margin pool pauses the same way; both clear when the state does', async () => {
@@ -412,4 +430,77 @@ test('PR-3: the bar side\'s account pre-gate refusing (balance_not_account_scope
   setState(db, 'broker_snapshot_cache_json', JSON.stringify({ fetchedAt: new Date().toISOString(), account: { health: { usedMargin: 100 } } }))
   r = await runTickPermitFeeder(db, side, d.opts)
   assert.equal(r.permits, 4); assert.deepEqual(r.paused, [])
+})
+
+test('PR-3 (checker blocker): an UNEVIDENCED record admitting tick does not validate, so engineStatusFor falls back to the OFF default and the feeder roster, the guard sync push, admitEntry(tick) and the permits all drop the account on the NEXT READ — the self-healing the overlay must not lose', async () => {
+  const db = fresh()
+  _resetRefusalDedupe()
+  dual(db, DEMO)
+  setState(db, `acct:${DEMO}:account_balance_usd`, '10000')
+  const d = deps()
+  // armed: on both rosters, the fence says yes, four standing permits pushed
+  assert.deepEqual(tickEntryAccountsFor(db, side), [DEMO])
+  assert.deepEqual(desiredGuardFor(db, side).tickEntryAccounts, [Number(DEMO)])
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: TICK_PRODUCER, basis: 'tick' }).ok, true)
+  assert.equal((await runTickPermitFeeder(db, side, d.opts)).permits, 4)
+  // THE BACKSTOP. A record admitting tick WITHOUT the evidence reaches the
+  // store — a pre-PR-3 build, a restored backup, a hand edit — and is read
+  // back. It must not validate: the evidence rules follow the admitted
+  // basis, not the mode string.
+  const armed = engineStatusFor(db, DEMO)
+  const unevidenced = { ...armed, stored: undefined, invalid: undefined, validationStage: 'UNVALIDATED', profileHash: null }
+  delete unevidenced.stored; delete unevidenced.invalid
+  assert.equal(validateEngineStatus(unevidenced).ok, false, 'TIME_BASED + UNVALIDATED + no profile + [bar, tick] must NOT validate')
+  setAccountState(db, DEMO, ENGINE_STATUS_KEY, JSON.stringify(unevidenced))
+  const st = engineStatusFor(db, DEMO)
+  assert.equal(st.stored, false, 'the stored record no longer satisfies the contract')
+  assert.ok(Array.isArray(st.invalid) && st.invalid.some(e => /validationStage: admitting tick needs at least SHADOW_PASSED/.test(e)), JSON.stringify(st.invalid))
+  assert.ok(st.invalid.some(e => /profileHash: required while tick entries are admitted/.test(e)))
+  assert.equal(st.effectiveEntryMode, 'TIME_BASED'); assert.equal(st.admittedBases, null, 'the fallback is the OFF default — no overlay survives it')
+  // every reader drops it on the next read
+  _resetRefusalDedupe()
+  assert.deepEqual(tickEntryAccountsFor(db, side), [], 'off the feeder roster')
+  assert.deepEqual(desiredGuardFor(db, side).tickEntryAccounts, [], 'off the guard sync push')
+  const a = admitEntry(db, { accountId: DEMO, producerId: TICK_PRODUCER, basis: 'tick' })
+  assert.equal(a.ok, false); assert.match(a.reason, /^entry_mode_basis: TIME_BASED admits bar producers/)
+  const r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 0)
+  assert.deepEqual(d.pushes.at(-1), { tickEntryAccounts: [], tickPermits: [] })
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED'`).get(TICK_PRODUCER).n, 0, 'the standing permits went with it')
+  // and the overlay cannot be set again while the evidence is gone
+  const again = requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: engineStatusFor(db, DEMO).configRevision, readiness: () => ({ ready: true, blockedReasons: [] }) })
+  assert.equal(again.ok, false); assert.equal(again.reason, 'engine_record_invalid', 'the setter refuses on an invalid record before anything else')
+  // and once the corrupt record is replaced by the OFF default, the evidence
+  // rule itself is what refuses the set
+  writeEngineStatus(db, { ...engineStatusFor(db, DEMO), stored: undefined, invalid: undefined, updatedAt: new Date().toISOString() })
+  const bare = requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: engineStatusFor(db, DEMO).configRevision, readiness: () => ({ ready: true, blockedReasons: [] }) })
+  assert.equal(bare.ok, false); assert.match(bare.reason, /^admitted_bases_refused:/)
+  assert.match(bare.reason, /validationStage: admitting tick needs at least SHADOW_PASSED/)
+})
+
+test('PR-3 (checker blocker, parity): importTickValidation REVOKING the stage under an admitted tick is refused and changes nothing — exactly what it already does under an effective TICK_MOMENTUM, measured; the evidence and the admitted set can never disagree on a stored record', async () => {
+  const { importTickValidation } = await import('./tick-validation.js')
+  // (a) the overlay
+  const db = fresh()
+  dual(db, DEMO)
+  assert.throws(() => importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'the shadow evidence was withdrawn' } }),
+    /engine status invalid: .*admitting tick needs at least SHADOW_PASSED/)
+  let st = engineStatusFor(db, DEMO)
+  assert.equal(st.validationStage, 'SHADOW_PASSED', 'nothing was written'); assert.deepEqual(st.admittedBases, ['bar', 'tick'])
+  assert.deepEqual(tickEntryAccountsFor(db, side), [DEMO], 'still armed, because the revocation did not land')
+  // (b) the mode, on the same database — the pre-existing behaviour the
+  // overlay is now at parity with (this is what main does today)
+  const db2 = fresh()
+  switchOn(db2, DEMO)
+  assert.throws(() => importTickValidation(db2, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'x' } }),
+    /engine status invalid: .*admitting tick needs at least SHADOW_PASSED/, 'ONE rule, one message, for the mode and the overlay alike')
+  st = engineStatusFor(db2, DEMO)
+  assert.equal(st.validationStage, 'SHADOW_PASSED'); assert.equal(st.effectiveEntryMode, 'TICK_MOMENTUM')
+  assert.deepEqual(tickEntryAccountsFor(db2, side), [DEMO])
+  // The operator's route to disarm either one is the entry-mode route, not
+  // the importer: clearing the overlay (or STOPPED) first, then revoking.
+  assert.equal(requestAdmittedBases(db, DEMO, null, { expectedRevision: engineStatusFor(db, DEMO).configRevision }).ok, true)
+  assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'the shadow evidence was withdrawn' } }).ok, true)
+  assert.equal(engineStatusFor(db, DEMO).validationStage, 'UNVALIDATED')
+  assert.deepEqual(tickEntryAccountsFor(db, side), [])
 })

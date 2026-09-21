@@ -1208,7 +1208,7 @@ export default function actionsRouter(db, deps = {}) {
         const r = requestAdmittedBases(db, String(accountId), req.body.admittedBases, { expectedRevision, actor: 'owner', readiness: tickReadinessFor })
         if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
         const { markTickRepush } = await import('../services/tick-permits.js')
-        markTickRepush(String(accountId))
+        markTickRepush(db, String(accountId))
         console.log(`[actions] entry-mode admittedBases → …${String(accountId).slice(-4)} ${JSON.stringify(r.status.admittedBases)} (bases ${r.bases.join('+') || 'none'}, revision ${r.status.configRevision}, released ${r.released})`)
         return res.json({ ok: true, changed: r.changed, bases: r.bases, removed: r.removed, released: r.released, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` } })
       }
