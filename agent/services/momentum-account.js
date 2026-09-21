@@ -48,6 +48,7 @@ import { checkRegimeGate } from './regime-gate.js'
 import { recordDecision } from './decision-log.js'
 import { recordPositionEvent } from './position-events.js'
 import { assetClassOf } from './strategy-asset-cross.js'
+import { bookEntryWrite } from './book-entry-write.js'
 
 export const MOMENTUM_ACCOUNT_KEY = 'momentum_account_json'
 export const MOMENTUM_ACCOUNT_STATE_KEY = 'momentum_account_state_json'
@@ -399,9 +400,9 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
   const openSyms = new Set(openRows.map(r => String(r.symbol).toUpperCase()))
 
-  // ENTRIES: best rank first, up to the slot count.
-  const insBook = db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`)
+  // ENTRIES: best rank first, up to the slot count. The row itself is written
+  // by `bookEntryWrite` (§4-P), which is also what hands the position over to
+  // the book — the two used to be separate statements here.
   const tradeRowFor = db.prepare(`SELECT id, ctrader_position_id, entry_price, sl_price FROM trades WHERE symbol = ? AND account_id = ? AND label_strategy = ? AND status = 'open' ORDER BY id DESC LIMIT 1`)
   const workingLimit = db.prepare(`SELECT id FROM pending_orders WHERE account_id = ? AND symbol = ? AND status = 'working' AND strategy = ? LIMIT 1`)
   let open = openSyms.size
@@ -477,9 +478,24 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
       const result = await deps.autoTrade(db, w.symbol, synth, may.item || null, { accountId, isLive: !!acct.isLive, producerId: 'daily_momentum_account', sharedAccounts: acct.sharedAccounts ?? null })
       if (!result) { summary.skipped.push(`${w.symbol}: not filled (gate, closed market, or broker)`); continue }
       const t = tradeRowFor.get(w.symbol, accountId, TSMOM_STRATEGY)
-      insBook.run(t?.id ?? null, accountId, w.symbol, t?.ctrader_position_id != null ? String(t.ctrader_position_id) : null, w.side,
-        t?.entry_price ?? synth.entry, t?.sl_price ?? synth.sl, u.atr, w.rank, new Date(now).toISOString(), `daily pass: vol-target ${u.lots} lots`)
-      if (t?.id != null) db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(t.id)
+      // §4-P (21-09-2026): the row and the keeper hand-over are ONE
+      // transaction. They were two statements, and a throw between them left
+      // the position keeper-managed while an un-named book row blocked its own
+      // later adoption for ever. `t` is legitimately undefined here on the
+      // closed-market path — the order rests as a limit and no open trade
+      // exists yet — so the row is written naming nothing, and the book's
+      // adopt pass now BACKFILLS it when the limit fills rather than skipping
+      // the fill. See the §4-P note above `bookEntryWrite` in momentum-book.js.
+      bookEntryWrite(db, {
+        accountId,
+        row: {
+          tradeId: t?.id ?? null, symbol: w.symbol,
+          positionId: t?.ctrader_position_id ?? null, side: w.side,
+          entry: t?.entry_price ?? synth.entry, stop: t?.sl_price ?? synth.sl,
+          atr: u.atr, rank: w.rank, enteredAt: new Date(now).toISOString(),
+          note: `daily pass: vol-target ${u.lots} lots`,
+        },
+      })
       openSyms.add(w.symbol); open++
       summary.entries++
       log(`momentum account: ${w.side} ${w.symbol} on …${accountId.slice(-4)} @ ${synth.entry} stop ${synth.sl.toFixed(5)} ${u.lots} lots (vol target; ${dp.reason})`)

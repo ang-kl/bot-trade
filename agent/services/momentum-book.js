@@ -105,6 +105,7 @@ import { recordDecision } from './decision-log.js'
 import { recordPositionEvent } from './position-events.js'
 import { roundToDigits } from './trade-guard.js'
 import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDue, thresholdMs } from './momentum-account.js'
+import { adoptOrBackfill } from './book-entry-write.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 // PR-K: the hold-age rule lives in its own module because the momentum-account
@@ -557,29 +558,42 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     // tsmom_long trade on this account without a book row is adopted here,
     // the keeper paused, the ATR filled in by the trail pass below.
     for (const t of openTsmomTrades.all(accountId, TSMOM_STRATEGY)) {
-      if (openRow.get(accountId, t.symbol)) continue
-      // The adopted row carries the trade's own side (PR-D): a SELL fill is a short row.
-      insBook.run(t.id, accountId, t.symbol, t.ctrader_position_id != null ? String(t.ctrader_position_id) : null,
-        String(t.side || '').toUpperCase() === 'SELL' ? 'short' : 'long',
-        t.entry_price, t.sl_price, null, null, new Date(now).toISOString(), `adopted filled order (trade ${t.id})`)
+      // §4-P: an EXISTING row no longer ends this trade's story. A row that
+      // names neither a trade nor a position is the daily pass's orphan (the
+      // resting-limit path, where the trade lookup ran before the fill), and
+      // skipping it here is what left the fill unadopted for ever — keeper
+      // managed, 1.5R capped, exempt from nothing. It is completed instead.
+      const existing = openRow.get(accountId, t.symbol) || null
+      // The row carries the trade's own side (PR-D): a SELL fill is a short
+      // row. The keeper hand-over — `paused = 1`, `current_tp` and `tp_price`
+      // cleared — happens inside `adoptOrBackfill`, in the same transaction as
+      // the row, on BOTH the adopt and the backfill path. It used to be two
+      // loose statements here; see the §4-P note above `bookEntryWrite` for
+      // why that mattered. The reason it is done at all is unchanged and
+      // measured: a closed-market limit is placed with a 1.5R take profit, so
+      // the row would inherit `current_tp` / `tp_price`, the book's first
+      // trail amend would clear the target at the broker, and the
+      // target-restore sweep would put it straight back (04-09-2026, LLY.US
+      // on ACCT-DEMO-1: lost its target at 08:46 SGT and held it again by the
+      // evening — a 1.5R cap on a trend position meant to run).
+      const seen = adoptOrBackfill(db, { accountId, trade: t, existingRow: existing, now })
+      if (seen.action === 'skipped') continue
+
       // Wave 2 (§K·8): a tsmom_long fill the reconciler adopted is THIS
       // book's own resting-limit fill (the daily pass placed it, the market
       // was closed). It is clean bot evidence, not an external position —
       // 19 of 23 book closes were excluded from every edge measure because
-      // they carried `reconciler_adopted`.
+      // they carried `reconciler_adopted`. True of a backfill too: the same
+      // fill, reaching the book by the other door.
       try {
         db.prepare(`UPDATE trades SET origin = 'bot_pending_fill', origin_source = 'book_link' WHERE id = ? AND (origin IS NULL OR origin = 'reconciler_adopted')`).run(t.id)
       } catch { /* an older schema without origin columns: the link stands */ }
-      // The book holds NO target, and the record must say so. A closed-market
-      // limit is placed with a 1.5R take profit, so the adopted row inherits
-      // `current_tp` / `tp_price`; the book's first trail amend clears the
-      // target at the broker, and the target-restore sweep (which reads
-      // `monitored_positions.current_tp`) then puts it straight back.
-      // Measured 04-09-2026: LLY.US on ACCT-DEMO-1 lost its target at the
-      // 08:46 SGT trail and held it again by the evening — a 1.5R cap on a
-      // trend position that is meant to run. Cleared here, once, at adoption.
-      db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(t.id)
-      db.prepare(`UPDATE trades SET tp_price = NULL WHERE id = ?`).run(t.id)
+
+      if (seen.action === 'backfilled') {
+        summary.backfilled = (summary.backfilled || 0) + 1
+        log(`momentum book: backfilled ${t.symbol} on …${accountId.slice(-4)} (orphan row ${seen.rowId} → trade ${t.id}; keeper paused, limit target cleared)`)
+        continue
+      }
       summary.adopted++
       log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price})`)
     }
