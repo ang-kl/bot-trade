@@ -397,3 +397,126 @@ export function costSensitivity(rows, schedule, classOfSymbol = () => null, mult
     note: 'each closed shadow trade re-priced from its recorded fill prices: its own slippage removed, then the schedule applied at the multiple. The class comes from the row\'s own cost_class where it has one, else the keeper\'s current symbol map. 1x is NOT the recorded profit factor for trades closed under a different cost model — it is what they would have earned under this one.',
   }
 }
+
+// ---------------------------------------------------------------------------
+// §2 PR-2b: the SIZE-AWARE commission path.
+//
+// Everything above this line is the SIZE-FREE model the shared shadow book is
+// charged, and it is unchanged: the book records price units and R, it never
+// sees a lot size, and `tick-cost-schedule.test.js` pins every one of its
+// numbers by value. Nothing below is reachable from it.
+//
+// What is below is used ONLY by the account execution simulation
+// (services/tick-shadow-accounts.js), which DOES know a lot size — and a lot
+// size is exactly what the size-free model's two documented gaps need:
+//
+//   1. US STOCK has a $0.02 PER SIDE MINIMUM. The config's own
+//      `_commissionSource` measures it: flat per-share with no minimum fits
+//      57/60 of the owner's charged US-stock deals, WITH the minimum 60/60.
+//      The four misses are the four smallest quantities in the sample. The
+//      size-free model cannot express it ("it depends on the number of
+//      shares, and the shadow book is deliberately size-free"). Here it can.
+//   2. FX is really $3.50 PER LOT per side, approximated in the size-free
+//      model as 0.35 bps — which is that fee divided by a 100,000-unit lot,
+//      exact only for a USD-BASE pair. Measured per pair the same file
+//      records GBP-base over-charged ~35% and NZD-base under-charged ~41%.
+//      With a lot size in hand the fee is charged as what it is.
+//
+// The per-share figure is NOT restated here: it is read off the schedule's own
+// `stock_us.commissionWirePerSide` (2000 wire units = $0.02 of price), so the
+// two paths cannot drift. The two numbers the size-free model has no room for
+// — the US minimum and the FX per-lot fee — live in the config's
+// `sizedCommission` block, beside the measurements they come from.
+//
+// EVERY OTHER CLASS keeps the bps-of-notional shape, because for those classes
+// that IS the measured shape (HK stock is a genuine rate at 15 bps; index and
+// crypto measured a genuine zero; commodity is a narrow-sample placeholder and
+// stays one).
+// ---------------------------------------------------------------------------
+
+/** cTrader wire units per 1.0 of a symbol's own price (tick_recorder.hpp). */
+export const WIRE_PER_PRICE = 100_000
+
+/**
+ * The `sizedCommission` block of the repo's schedule file, normalised.
+ * A missing or unusable figure comes back `null`, and the caller then falls
+ * back to the size-free bps shape and SAYS which it used — an absent
+ * measurement is never replaced by a guess.
+ */
+export function loadSizedCommission(file = TICK_SHADOW_SIM_FILE) {
+  let raw = null
+  try { raw = JSON.parse(readFileSync(file, 'utf8'))?.sizedCommission ?? null } catch { return { stockUsMinUsdPerSide: null, fxUsdPerLotPerSide: null, source: 'unreadable' } }
+  const pos = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null)
+  return {
+    stockUsMinUsdPerSide: pos(raw?.stock_us?.minUsdPerSide),
+    fxUsdPerLotPerSide: pos(raw?.fx?.usdPerLotPerSide),
+    source: raw ? 'config' : 'absent',
+  }
+}
+
+/**
+ * The commission ONE SIDE of a position of `lots` costs, in USD.
+ *
+ * @param {object} classRow  the schedule's row for this class (four terms)
+ * @param {string|null} className
+ * @param {{priceUsd:number, lots:number, unitsPerLot:number, sized?:object}} ctx
+ * @returns {{usd:number, basis:string, note:string|null}}
+ *
+ * `basis` says which shape was charged, always — a figure whose shape is not
+ * on the record is the kind of number this repo has had to withdraw before.
+ */
+export function sizedCommissionUsdPerSide(classRow, className, { priceUsd, lots, unitsPerLot, sized = null } = {}) {
+  const row = costRow(classRow)
+  const L = Number(lots), P = Number(priceUsd), U = Number(unitsPerLot)
+  if (!(L > 0) || !(P > 0) || !(U > 0)) return { usd: 0, basis: 'unpriceable', note: 'lots, price or units-per-lot missing' }
+  const s = sized || { stockUsMinUsdPerSide: null, fxUsdPerLotPerSide: null }
+
+  if (className === 'stock_us') {
+    // Per-share fee straight off the schedule's own wire term, so the two
+    // paths cannot disagree about what $0.02 is.
+    const perShareUsd = row.commissionWirePerSide / WIRE_PER_PRICE
+    const shares = L * U
+    const raw = perShareUsd * shares
+    const min = s.stockUsMinUsdPerSide
+    if (min == null) return { usd: raw, basis: 'per_share_no_minimum', note: 'the measured $0.02/side MINIMUM is not configured — this UNDERCHARGES a small position, the direction the size-free model already has' }
+    return { usd: Math.max(raw, min), basis: 'per_share_with_minimum', note: raw < min ? 'the per-side minimum bound this side' : null }
+  }
+
+  if (className === 'fx' && s.fxUsdPerLotPerSide != null) {
+    return { usd: s.fxUsdPerLotPerSide * L, basis: 'per_lot', note: null }
+  }
+
+  const notional = P * L * U
+  const usd = row.commissionBpsPerSide > 0 ? row.commissionBpsPerSide * notional / 10000 : 0
+  return {
+    usd,
+    basis: row.commissionBpsPerSide > 0 ? 'bps_of_notional' : 'zero',
+    note: className === 'fx' ? 'no per-lot figure configured — charged the size-free bps approximation, which over-charges GBP-base and under-charges NZD-base (see the config)' : null,
+  }
+}
+
+/**
+ * Both sides of one round trip, in USD, at `multiple` × the schedule.
+ * @returns {{usd:number, entryUsd:number, exitUsd:number, basis:string, note:string|null}}
+ */
+export function sizedCommissionUsdRoundTrip(classRow, className, { entryUsd, exitUsd, lots, unitsPerLot, sized = null, multiple = 1 } = {}) {
+  const k = Number.isFinite(Number(multiple)) ? Number(multiple) : 1
+  const a = sizedCommissionUsdPerSide(classRow, className, { priceUsd: entryUsd, lots, unitsPerLot, sized })
+  const b = sizedCommissionUsdPerSide(classRow, className, { priceUsd: exitUsd, lots, unitsPerLot, sized })
+  return { usd: k * (a.usd + b.usd), entryUsd: k * a.usd, exitUsd: k * b.usd, basis: a.basis, note: a.note || b.note }
+}
+
+/**
+ * THE HARD RULE, stated once and asserted by test.
+ *
+ * `rowChargedUnder` answers ONE question: did the book subtract what THIS
+ * REPO'S FILE says. It is arithmetic against `agent/config/tick-shadow-sim.json`
+ * and it reaches nothing outside this repo. It is NOT, and must never be
+ * presented as, evidence that the file matches what the broker actually
+ * charges — the commission rows are measured from the owner's statements with
+ * two gaps stated in the file itself, and the slippage row is a PLACEHOLDER
+ * that nothing in this repo measures.
+ */
+export const SCHEDULE_MATCH_MEANS = Object.freeze(
+  'a charged row proves the book subtracted what agent/config/tick-shadow-sim.json says, and nothing more. It is not evidence that the file matches the broker: the commission rows are measured from the owner\'s statements with the two gaps that file states, and the slippage row is a placeholder no record in this repo measures.'
+)

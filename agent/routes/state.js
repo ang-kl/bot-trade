@@ -2605,6 +2605,17 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // S2 PR-2a: the ACCOUNT EXECUTION simulation, beside /tick-shadow's shared
+  // one. `?persist=1` also writes the decided rows to
+  // tick_shadow_account_fills (idempotent on (shadow_trade_id, account_id)).
+  router.get('/tick-shadow-accounts', async (req, res) => {
+    try {
+      const { tickShadowAccountsView } = await import('../services/tick-shadow-accounts.js')
+      res.json(tickShadowAccountsView(db, { persist: String(req.query.persist || '') === '1' }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   // P5: the signals the sidecar rang in SHADOW (cpp_decisions tick/signal),
   // parsed — direction, trigger, stop distance, V, E, setup and the profile
   // each was produced under. Nothing here was placed.

@@ -757,6 +757,57 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_tick_shadow_side_profile ON tick_shadow_trades(side, profile_hash, exit_ms);
 
+  -- §2 PR-2a: the ACCOUNT EXECUTION SIMULATION, beside the shared one.
+  --
+  -- tick_shadow_trades above is the SHARED MARKET-SIGNAL record: one row per
+  -- shadow trade, no account column, and it deliberately stays that way. This
+  -- table is the other half — for each shared trade and each enabled account,
+  -- whether THAT account could actually have executed it under its own
+  -- balance, risk budget, drawdown de-risk, minimum lot, lot increment,
+  -- margin, existing exposure, open/pending intents and position cap.
+  --
+  -- A REFUSED SIGNAL IS A ROW, NEVER A DROPPED ONE: executed = 0 with a
+  -- first-class reason, which is what makes "why could this account not take
+  -- a signal the market gave" answerable instead of invisible.
+  --
+  -- THE COUNTING RULE. Rows here are EXECUTIONS OF SHARED OBSERVATIONS, not
+  -- observations. The evidence count is the number of distinct
+  -- shadow_trade_id values; summing rows across accounts multiplies one
+  -- observation by the number of accounts and manufactures independent
+  -- evidence that does not exist. services/tick-shadow-accounts.js enforces
+  -- this and its test pins it by name.
+  CREATE TABLE IF NOT EXISTS tick_shadow_account_fills (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    at               TEXT NOT NULL DEFAULT (datetime('now')),
+    shadow_trade_id  INTEGER NOT NULL,
+    account_id       TEXT NOT NULL,
+    side             TEXT,
+    profile_hash     TEXT,
+    symbol_id        INTEGER,
+    symbol           TEXT,
+    executed         INTEGER NOT NULL,
+    reason           TEXT,              -- NULL when executed; see REFUSAL_REASONS
+    lots             REAL,
+    lot_step         REAL,
+    min_lots         REAL,
+    risk_budget_usd  REAL,              -- after the drawdown de-risk AND the shared-signal split
+    dd_factor        REAL,
+    shared_split     REAL,
+    usd_per_r        REAL,              -- the $ a 1R loss costs at the SIZED lots
+    margin_required_usd REAL,
+    margin_used_usd  REAL,
+    margin_cap_usd   REAL,
+    commission_usd   REAL,              -- size-aware, both sides (PR-2b)
+    gross_usd        REAL,
+    net_usd          REAL,
+    net_r            REAL,
+    cost_class       TEXT,
+    cost_basis       TEXT,              -- per_share_with_minimum | per_lot | bps_of_notional | zero
+    schedule_hash    TEXT,
+    UNIQUE(shadow_trade_id, account_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_tick_shadow_fills_acct ON tick_shadow_account_fills(account_id, executed, reason);
+
   -- Speech-act inspection findings (owner invariants 2-4, 31-08-2026): what
   -- each log SAID vs what it was DOING, the principlised next action, and a
   -- falsifier with a deadline. The PARTIAL UNIQUE index is the anti-noise

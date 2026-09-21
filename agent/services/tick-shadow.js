@@ -42,6 +42,14 @@ function rows(db, { side, profilePrefix = null, sinceMs = null, limit = 5000 } =
   } catch { return [] }
 }
 
+/**
+ * The SHARED shadow trades for a side/profile/window — the same read the
+ * portfolio uses, exported so the §2 account execution simulation projects
+ * onto exactly the rows this module judges and cannot drift into a second,
+ * subtly different population.
+ */
+export function sharedShadowTrades(db, opts = {}) { return rows(db, opts) }
+
 // PR-H: the bootstrap lives with the replayer (lib/tick-replay-sim.js) so
 // the replay and shadow stages judge expectancy by one statistic; kept on
 // this module's surface for its importers.
@@ -173,6 +181,24 @@ export function sideCostSchedule(db, side, { file = undefined } = {}) {
   }
 }
 
+/**
+ * WHICH ACCOUNTS BELONG TO A SIDE — the ONE routing read of `is_live` in the
+ * shadow stack (owner principle 1: only routing may read it; every policy gate
+ * reads balance and evidence). `cpp_exec` is the live sidecar's side and
+ * `cpp_exec_demo` the other one, so this says which sidecar an account's
+ * shadow trades came from and nothing about what it is allowed to do.
+ *
+ * Exported so the §2 account execution simulation reuses it instead of adding
+ * a SECOND reader of the flag.
+ *
+ * @returns {string[]} account ids, ascending
+ */
+export function sideAccounts(db, side, { enabledOnly = false } = {}) {
+  const env = side === 'cpp_exec' ? 1 : 0
+  const where = 'is_live = ?' + (enabledOnly ? ' AND enabled = 1' : '')   // ONE reader of the flag, by design
+  try { return db.prepare(`SELECT account_id FROM accounts WHERE ${where} ORDER BY account_id`).all(env).map(r => String(r.account_id)) } catch { return [] }
+}
+
 /** The account's own R in dollars: its stamped balance (scoped key only) × its own per-trade risk. */
 export function accountRiskPerTrade(db, accountId) {
   const raw = getState(db, `acct:${String(accountId)}:account_balance_usd`)
@@ -203,12 +229,11 @@ export function shadowPortfolio(db, { side, profilePrefix = null, sinceMs = null
   const sensitivity = { ...costSensitivity(allTrades, cost.schedule, cost.classOfSymbol), symbolMapPushedAt: cost.pushedAt, symbolMapped: cost.mapped, unclassifiedSymbols: cost.unclassified }
   let accounts = []
   try {
-    const env = side === 'cpp_exec' ? 1 : 0
-    accounts = db.prepare('SELECT account_id FROM accounts WHERE is_live = ? ORDER BY account_id').all(env).map(r => {
-      const st = engineStatusFor(db, r.account_id)
-      const risk = accountRiskPerTrade(db, r.account_id)
+    accounts = sideAccounts(db, side).map(id => {
+      const st = engineStatusFor(db, id)
+      const risk = accountRiskPerTrade(db, id)
       return {
-        accountId: `…${String(r.account_id).slice(-4)}`,
+        accountId: `…${String(id).slice(-4)}`,
         tickObservation: st.tickObservation, validationStage: st.validationStage,
         ...risk,
         projectedNetUsd: risk.usdPerR != null ? +(stats.netR * risk.usdPerR).toFixed(2) : null,
