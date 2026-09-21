@@ -39,8 +39,8 @@ jobs:
       - name: Build and run the verifier's unit tests
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev
-          make -C cpp-verify CXX=g++ test
-          make -C cpp-verify CXX=g++ all
+          make -C cpp-verify CXX=g++ -j$(nproc) test
+          make -C cpp-verify CXX=g++ -j$(nproc) all
       - name: The binary links no order-writing code
         # The service's only real guarantee is structural, so it is checked
         # rather than asserted in a comment: if a future change links the
