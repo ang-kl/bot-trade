@@ -173,6 +173,27 @@ export function brokerMinLots(db, symbol) {
 }
 
 /**
+ * The broker's LOT INCREMENT for `symbol`, IN LOTS — the step an order volume
+ * must be a multiple of. `null` when the broker has never told us, with the
+ * same discipline as `brokerMinLots`: unknown is not a block and it is not a
+ * licence either, so the caller falls back to its own assumption and says so.
+ *
+ * Added for the §2 account execution simulation, which must snap a sized
+ * volume DOWN to a step the broker would accept before asking whether it is
+ * still above the minimum — rounding the two in the wrong order turns a
+ * refusable order into an apparently fillable one.
+ *
+ * @returns {{stepLots:number|null, source:'broker'|'unknown', stepVolume:number|null, lotSize:number|null}}
+ */
+export function brokerLotStep(db, symbol) {
+  const e = entryOf(readMap(db), clean(symbol))
+  if (!e || !e.stepVolume) {
+    return { stepLots: null, source: 'unknown', stepVolume: null, lotSize: e?.lotSize ?? null }
+  }
+  return { stepLots: e.stepVolume / e.lotSize, source: 'broker', stepVolume: e.stepVolume, lotSize: e.lotSize }
+}
+
+/**
  * How many units make one lot of `symbol`, and where that answer came from.
  *
  * @returns {{unitsPerLot: number, source: 'broker'|'table', lotSize: number|null}}
