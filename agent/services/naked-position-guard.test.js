@@ -1201,6 +1201,24 @@ test('the breakdown separates a refused amend from an uncomputable target', asyn
   const line = lines.find(l => /targetless —/.test(l))
   assert.match(line, /1 bot-owned \(apply refused\)/)
   assert.match(line, /1 bot-owned \(no target computable\)/)
+  assert.ok(lines.some(l => /A: target NOT SET on USDBRL \(position D1\).*TP 5\.4; retryable=false; broker said no/.test(l)), lines.join('\n'))
+})
+
+test('a thrown target repair logs its reason once per permitted attempt', async () => {
+  const db = initDB(':memory:')
+  try {
+    const opts = { accountId: 'A', nowMs: 1_800_000_000_000,
+      suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+      applyTarget: async () => { throw new Error('read timeout\nconnection ended') },
+    }
+    const lines = await captureLog(async () => {
+      await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], opts)
+      await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], { ...opts, nowMs: opts.nowMs + 60_000 })
+    })
+    const failures = lines.filter(l => /target NOT SET/.test(l))
+    assert.equal(failures.length, 1)
+    assert.match(failures[0], /retryable=true; read timeout connection ended/)
+  } finally { db.close() }
 })
 
 test('no targetless positions, no breakdown line', async () => {

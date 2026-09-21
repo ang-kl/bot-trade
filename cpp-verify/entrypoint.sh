@@ -32,7 +32,7 @@ if [ -n "$JOURNAL_DIR" ]; then
   # verifies — refusing to start would turn a recording problem into an
   # outage. But it says so.
   if mkdir -p "$JOURNAL_DIR" 2>/dev/null && chown -R 10001:10001 "$JOURNAL_DIR" 2>/dev/null; then
-    echo "[entrypoint] journal dir $JOURNAL_DIR prepared and owned by uid 10001" >&2
+    echo "[entrypoint] journal dir $JOURNAL_DIR prepared and owned by uid 10001"
   else
     echo "[entrypoint] WARNING: could not prepare $JOURNAL_DIR — the journal will report unwritable" >&2
   fi

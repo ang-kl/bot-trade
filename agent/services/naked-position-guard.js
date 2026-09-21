@@ -602,16 +602,18 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
             console.log(`[protection] ${accountId ?? '?'}: target SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp} (${s.basis})`)
           } else {
             applyFailed.add(f)
+            console.log(`[protection] ${accountId ?? '?'}: target NOT SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp}; retryable=${r?.retryable === true}; ${String(r?.error || 'applier returned no reason').replace(/[\r\n]+/g, ' ').slice(0, 600)}`)
             // `retryable` marks a refusal about REACHING the broker. The
             // applier is the only layer that can tell those apart, so it says
             // so rather than leaving this one to parse an error string.
             if (r && r.retryable) backOffApply(pid)
           }
-        } catch {
+        } catch (error) {
           // A throw is always transient from here: nothing was established
           // about the position, so nothing justifies a six-hour silence.
           applyFailed.add(f)
           backOffApply(pid)
+          console.log(`[protection] ${accountId ?? '?'}: target NOT SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp}; retryable=true; ${String(error?.message || error).replace(/[\r\n]+/g, ' ').slice(0, 600)}`)
         }
       }
     }

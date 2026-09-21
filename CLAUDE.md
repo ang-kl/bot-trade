@@ -770,6 +770,13 @@ Measurement history — each line is a real run of the script, not a claim:
   verification and the two simulation review corrections. This continues
   the recorded rebase; later visible replies take precedence.
 
+- 2026-09-21 14:32 UTC, **Codex Work continuation, transcript corpus unavailable**:
+  The counting script again found no JSONL transcripts. Visible replies
+  continued through **`№ 8,356`** while checking the four owner-supplied
+  Railway exports and correcting cross-side ledger reconciliation and TP
+  failure reporting. This continues the supplied rebase, not a new measured
+  transcript count. Later visible replies take precedence.
+
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

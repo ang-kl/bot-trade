@@ -32,6 +32,7 @@ import { admitEntry } from './services/entry-mode.js'
 import { configureInflight, inflightSummary, describeCall, maybeStamp as maybeStampInflight } from './lib/inflight.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
+import { reconcileCrossSideAccounts } from './services/cross-side-reconcile.js'
 import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
 import { recordRegimeBlock, recordEvidenceShadow } from './services/gate-skips.js'
 import { accountPregate, proposalPregate, invalidateAccountPregate } from './services/account-pregate.js'
@@ -3766,9 +3767,17 @@ async function runLoop(db) {
             }
           } catch { /* registry optional on old DBs */ }
 
+          // The opposite side has its OWN broker session. Reconcile its local
+          // rows from a fresh account-identified read, without changing the
+          // selected account or placing/amending/cancelling broker orders.
+          const crossReconciled = await reconcileCrossSideAccounts(db, getCtraderCreds(db))
+          for (const r of crossReconciled) {
+            if (r.result) log(`Reconcile[${r.accountId}] cross-side: ${r.result.newExternal.length} new external, ${r.result.closedDetected.length} closed, ${(r.result.orphansClosed || []).length} orphan(s)`)
+            else log(`Reconcile[${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
+          }
+
           // ---- CROSS-SIDE EQUITY (READ ONLY) -----------------------------
-          // The sweep above is deliberately one-sided: a demo session must
-          // never manage live positions. But an account whose balance is
+          // An account whose balance is
           // never read answers out of the unowned global — measured
           // 2026-08-16 with the session on demo, the live accounts ACCT-LIVE-2
           // and ACCT-DEMO-5 reported the selected DEMO account's 35,319.80
