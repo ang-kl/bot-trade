@@ -189,16 +189,24 @@ function monitorCadenceGoal(db, targets, nowMs) {
   const share = rec?.tick?.skipShare10m
   const measurable = !stale && Number.isFinite(share)
   const pct = measurable ? Math.round(share * 1000) / 10 : null
+  const baseNote = !rec ? 'no pass record yet (fast_monitor_pass_json absent)'
+    : stale ? `pass record is ${ageMin == null ? 'undated' : `${Math.round(ageMin)} min old`} — older than ${targets.fastMonitorRecordMaxAgeMin} min; the monitor is not writing it`
+      : !Number.isFinite(share) ? 'pass record predates the share (written by a build before Wave 5)'
+        : `${rec.tick.skipped10m ?? '?'} skipped of ~${Math.round(600_000 / (rec.tick.everyMs || 3_000))} expected; busy ${Math.round((rec.tick.busyShare10m ?? 0) * 100)}% of the window; last tick ${rec.tick.lastMs ?? '?'} ms, max ${rec.tick.max10mMs ?? '?'} ms`
+  // 20-09-2026: the sidecar-quote acceptance figure, appended when the
+  // record carries a 10-minute window (older records do not — this note is
+  // then byte-identical to before). No new goal row, no target/verdict change.
+  const q10 = rec?.tick?.quotes10m
+  const note = q10 && q10.passes
+    ? `${baseNote} · quotes 10m: ${q10.fromSidecar} sidecar / ${q10.fromBroker} broker (${Math.round(q10.sidecarSharePct ?? 0)}% sidecar)`
+    : baseNote
   return goal('monitor_cadence', {
     name: 'Fast monitor keeps its cadence', subsystem: 'fast monitor',
     metric: 'share of ticks skipped because the previous pass was still running, 10 min',
     target: `≤ ${targets.fastMonitorSkipMaxPct}%`, horizon: 'now',
     current: pct == null ? null : `${pct}%`,
     verdict: !measurable ? 'not_measurable' : pct <= targets.fastMonitorSkipMaxPct ? 'on_track' : 'off_track',
-    note: !rec ? 'no pass record yet (fast_monitor_pass_json absent)'
-      : stale ? `pass record is ${ageMin == null ? 'undated' : `${Math.round(ageMin)} min old`} — older than ${targets.fastMonitorRecordMaxAgeMin} min; the monitor is not writing it`
-        : !Number.isFinite(share) ? 'pass record predates the share (written by a build before Wave 5)'
-          : `${rec.tick.skipped10m ?? '?'} skipped of ~${Math.round(600_000 / (rec.tick.everyMs || 3_000))} expected; busy ${Math.round((rec.tick.busyShare10m ?? 0) * 100)}% of the window; last tick ${rec.tick.lastMs ?? '?'} ms, max ${rec.tick.max10mMs ?? '?'} ms`,
+    note,
     source: '/health (fastMonitor)',
   })
 }

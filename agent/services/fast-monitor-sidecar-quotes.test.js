@@ -353,7 +353,14 @@ test('the counts land in the pass record (fast_monitor_pass_json tick.quotes) th
   await sleep(80)
   stop()
   const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
-  assert.deepEqual(rec.tick.quotes, { fromSidecar: 1, fromBroker: 1, stale: 0 })
+  // 20-09-2026: the stored object now also carries the priced pass's own
+  // `at` and `checked` (both positions were due on the first pass).
+  assert.equal(rec.tick.quotes.fromSidecar, 1)
+  assert.equal(rec.tick.quotes.fromBroker, 1)
+  assert.equal(rec.tick.quotes.stale, 0)
+  assert.equal(rec.tick.quotes.checked, 2)
+  assert.equal(typeof rec.tick.quotes.at, 'string')
+  assert.ok(!Number.isNaN(Date.parse(rec.tick.quotes.at)))
   assert.equal(typeof rec.tick.skipShare10m === 'number' || rec.tick.skipShare10m === null, true, 'the older tick fields are still there')
 })
 
@@ -368,4 +375,137 @@ test('an injected runTick that returns a bare error or null still reads as befor
   assert.ok(b && b.info.ok === false && b.info.error === 'tick broke')
   const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
   assert.equal(rec.tick.quotes, null)
+})
+
+// --- 20-09-2026: the record is truthful about the LAST PASS THAT PRICED ---
+//
+// Measured on production 20-09: fastMonitor.quotes read all-zero on 30
+// samples over 90s while decision_log's fast_monitor rows showed the monitor
+// WAS pricing. Cause: `runFastMonitor` returns `quotes: quoteCounts` on
+// EVERY pass, and the all-zero object is truthy — a pass where nothing was
+// due (the common case at a 3s tick against per-position cadences of a
+// minute or more) overwrote the last pass that actually priced.
+
+test('THE DEFECT: a tick that prices, then a tick that prices nothing — the record still carries the priced triple and its own `at` (red before the fix)', async () => {
+  const db = initDB(':memory:')
+  const hb = { beat: () => {} }
+  // writeTickRecord throttles persistence to TICK_RECORD_MIN_MS (5s), so a
+  // short real-time sleep would only ever persist the FIRST tick's write —
+  // which would make this test pass by accident regardless of the fix.
+  // Force every tick's write through by advancing a mock clock past the
+  // throttle on every pass.
+  let simNow = 1_800_000_000_000
+  const clockFn = () => simNow
+  let call = 0
+  const stop = startFastMonitor(db, () => CREDS, {
+    tickMs: 5, bandMs: 10_000, heartbeat: hb, runBand: async () => {}, clock: clockFn,
+    runTick: async () => {
+      call++
+      simNow += 6_000 // past TICK_RECORD_MIN_MS, well inside the 10-minute window
+      if (call === 1) return { err: null, quotes: { fromSidecar: 3, fromBroker: 1, stale: 0 }, checked: 4 }
+      // every later pass: nothing was due — the all-zero object the ticker
+      // used to adopt unconditionally, blanking the priced pass above
+      return { err: null, quotes: { fromSidecar: 0, fromBroker: 0, stale: 0 }, checked: 0 }
+    },
+  })
+  await sleep(60)
+  stop()
+  assert.ok(call > 1, `need at least two ticks to exercise the overwrite; got ${call}`)
+  const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.equal(rec.tick.quotes.fromSidecar, 3, JSON.stringify(rec.tick.quotes))
+  assert.equal(rec.tick.quotes.fromBroker, 1)
+  assert.equal(rec.tick.quotes.stale, 0)
+  assert.equal(rec.tick.quotes.checked, 4, 'the priced pass\'s own checked count, not the empty pass that followed it')
+})
+
+test('quotes10m: sums across several PRICED passes and reports the sidecar share; unpriced passes contribute nothing', async () => {
+  const db = initDB(':memory:')
+  const hb = { beat: () => {} }
+  // writeTickRecord throttles persistence to TICK_RECORD_MIN_MS (5s) — a real
+  // wall-clock sleep short enough for a fast test never crosses that, so
+  // without a controlled clock only the very first tick's write would ever
+  // reach the DB. Advance the mock clock past the throttle every tick.
+  let simNow = 1_800_000_000_000
+  const clockFn = () => simNow
+  const priced = [] // every quote object this test actually handed back with a non-zero sum
+  const stop = startFastMonitor(db, () => CREDS, {
+    tickMs: 5, bandMs: 10_000, heartbeat: hb, runBand: async () => {}, clock: clockFn,
+    runTick: (() => {
+      const queue = [
+        { fromSidecar: 5, fromBroker: 0, stale: 0 },
+        { fromSidecar: 3, fromBroker: 1, stale: 0 },
+        { fromSidecar: 0, fromBroker: 0, stale: 0 }, // nothing due — must not count
+        { fromSidecar: 2, fromBroker: 1, stale: 1 },
+      ]
+      return async () => {
+        const q = queue.length ? queue.shift() : { fromSidecar: 0, fromBroker: 0, stale: 0 }
+        if (q.fromSidecar + q.fromBroker + q.stale > 0) priced.push(q)
+        simNow += 6_000 // past TICK_RECORD_MIN_MS, well inside the 10-minute window
+        return { err: null, quotes: q, checked: 1 }
+      }
+    })(),
+  })
+  await sleep(80)
+  stop()
+  const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
+  const q10 = rec.tick.quotes10m
+  assert.ok(q10, 'a 10-minute window is present once something has priced')
+  assert.equal(q10.passes, priced.length)
+  assert.equal(q10.fromSidecar, priced.reduce((a, s) => a + s.fromSidecar, 0))
+  assert.equal(q10.fromBroker, priced.reduce((a, s) => a + s.fromBroker, 0))
+  assert.equal(q10.stale, priced.reduce((a, s) => a + s.stale, 0))
+  const total = q10.fromSidecar + q10.fromBroker
+  assert.equal(q10.sidecarSharePct, total ? Math.round((q10.fromSidecar / total) * 1000) / 10 : null)
+})
+
+test('quotes10m: a sample older than the 10-minute window is dropped', async () => {
+  const db = initDB(':memory:')
+  const hb = { beat: () => {} }
+  let simNow = 1_800_000_000_000
+  const clockFn = () => simNow
+  let call = 0
+  const stop = startFastMonitor(db, () => CREDS, {
+    tickMs: 5, bandMs: 10_000, heartbeat: hb, runBand: async () => {}, clock: clockFn,
+    runTick: async () => {
+      call++
+      let q
+      if (call === 1) {
+        q = { fromSidecar: 4, fromBroker: 0, stale: 0 } // priced — this is the sample we expect dropped
+      } else if (call === 2) {
+        // nothing due on this pass, but the clock jumps 11 minutes — past
+        // RECORD_WINDOW_MS — so THIS tick's own write ages sample 1 out
+        simNow += 11 * 60_000
+        q = { fromSidecar: 0, fromBroker: 0, stale: 0 }
+      } else if (call === 3) {
+        q = { fromSidecar: 1, fromBroker: 2, stale: 0 } // priced — the sample we expect kept
+      } else {
+        q = { fromSidecar: 0, fromBroker: 0, stale: 0 }
+      }
+      if (call !== 2) simNow += 6_000 // past TICK_RECORD_MIN_MS so every write persists
+      return { err: null, quotes: q, checked: 1 }
+    },
+  })
+  await sleep(60)
+  stop()
+  const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
+  const q10 = rec.tick.quotes10m
+  assert.ok(q10, JSON.stringify(rec.tick))
+  assert.equal(q10.passes, 1, 'the first (now 11 minutes old) sample was dropped')
+  assert.equal(q10.fromSidecar, 1)
+  assert.equal(q10.fromBroker, 2)
+})
+
+test('quotes carries `at` (ISO, the priced pass\'s own timestamp) and `checked`', async () => {
+  const db = initDB(':memory:')
+  const hb = { beat: () => {} }
+  const stop = startFastMonitor(db, () => CREDS, {
+    tickMs: 5, bandMs: 10_000, heartbeat: hb, runBand: async () => {},
+    runTick: async () => ({ err: null, quotes: { fromSidecar: 7, fromBroker: 2, stale: 1 }, checked: 9 }),
+  })
+  await sleep(30)
+  stop()
+  const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.equal(rec.tick.quotes.checked, 9)
+  assert.equal(typeof rec.tick.quotes.at, 'string')
+  assert.ok(!Number.isNaN(Date.parse(rec.tick.quotes.at)), rec.tick.quotes.at)
 })
