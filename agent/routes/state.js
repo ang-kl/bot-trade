@@ -3721,11 +3721,16 @@ export default function stateRouter(db) {
   // (and the monitor refreshes the snapshot every ~30s), so the Desk paints
   // instantly with data at most a few loops old, then swaps in live truth.
   // -----------------------------------------------------------------------
-  router.get('/broker-cache', (_req, res) => {
+  router.get('/broker-cache', (req, res) => {
+    const accountId = String(req.query.account ?? getState(db, 'ctrader_account_id') ?? '')
+    if (!/^[1-9]\d*$/.test(accountId)) return res.status(400).json({ error: 'Choose one account for broker cache' })
     const parse = (k) => { try { return JSON.parse(getState(db, k) || 'null') } catch { return null } }
+    const snapshot = parse(`acct:${accountId}:broker_snapshot_cache_json`)
+    const history = parse(`acct:${accountId}:broker_history_cache_json`)
     res.json({
-      snapshot: parse('broker_snapshot_cache_json'),
-      history: parse('broker_history_cache_json'),
+      accountId,
+      snapshot: String(snapshot?.account?.accountId) === accountId ? snapshot : null,
+      history: String(history?.accountId) === accountId ? history : null,
     })
   })
 

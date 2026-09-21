@@ -1,3 +1,4 @@
+import { brokerReadAccount, brokerReadCache } from '../lib/broker-read-scope.js'
 // ---------------------------------------------------------------------------
 // agent/routes/actions.js — POST endpoints for manual triggers
 // ---------------------------------------------------------------------------
@@ -1923,21 +1924,18 @@ export default function actionsRouter(db, deps = {}) {
   // every tick (as often as every 5s with a position open). Uncoalesced, that
   // adds broker-WS pressure on top of the scan/monitor loop's own connections
   // — one in-flight fetch per `days` window is shared and reused briefly.
-  const bhShared = new Map()
-  const BH_TTL_MS = 12_000
+  const readHistory = brokerReadCache()
   router.post('/broker-history', async (req, res) => {
-    const days = Math.min(190, Math.max(1, Number(req.body?.days) || 7))
-    let slot = bhShared.get(days)
-    if (!slot) { slot = { at: 0, promise: null }; bhShared.set(days, slot) }
-    if (slot.promise && Date.now() - slot.at < BH_TTL_MS) {
-      try { return res.json(await slot.promise) } catch { /* stale failure — fall through to a fresh run */ }
-    }
-    slot.at = Date.now()
-    slot.promise = (async () => {
-      const creds = getCtraderCreds(db)
+    try {
+      const days = Math.min(190, Math.max(1, Math.floor(Number(req.body?.days) || 7)))
+      const requestedId = brokerReadAccount(req.body, getState(db, 'ctrader_account_id'))
+      const registered = db.prepare('SELECT account_id FROM accounts WHERE account_id = ?').get(requestedId)
+      if (!registered) throw Object.assign(new Error('Requested account is not registered'), { httpStatus: 404 })
+      const result = await readHistory(`${requestedId}:${days}`, async () => {
+      const creds = credsForAccountId(db, requestedId)
       if (!creds.ready) throw Object.assign(new Error('cTrader not connected'), { httpStatus: 400 })
       const { host, clientId, clientSecret, accessToken, accountId } = creds
-      const { wsGetDeals, wsSymbolsByIds, wsGetSymbolsList, wsGetTrader, wsGetAssets } = await import('../lib/ctrader-ws.js')
+      const { wsGetDeals, wsSymbolsByIds, wsGetSymbolsList, wsGetTrader, wsGetAssets } = deps.brokerHistoryTransport ?? await import('../lib/ctrader-ws.js')
 
       const WEEK = 7 * 24 * 3_600_000
       const from = Date.now() - days * 24 * 3_600_000
@@ -1996,8 +1994,8 @@ export default function actionsRouter(db, deps = {}) {
       if (positionIds.length > 0) {
         const placeholders = positionIds.map(() => '?').join(',')
         for (const t of db.prepare(
-          `SELECT ctrader_position_id, source, label_raw, opened_at, sl_price, tp_price FROM trades WHERE ctrader_position_id IN (${placeholders})`
-        ).all(...positionIds)) {
+          `SELECT ctrader_position_id, source, label_raw, opened_at, sl_price, tp_price FROM trades WHERE account_id = ? AND ctrader_position_id IN (${placeholders})`
+        ).all(accountId, ...positionIds)) {
           localByPosition.set(String(t.ctrader_position_id), t)
         }
       }
@@ -2064,17 +2062,16 @@ export default function actionsRouter(db, deps = {}) {
       const { backfilled } = applyBrokerHistoryMoney(db, byPosition, { accountId })
 
       const realized = Math.round(rows.reduce((s, r) => s + (r.netPnl || 0), 0) * 100) / 100
-      const payload = { ok: true, days, rows, realized, backfilled, fetchedAt: new Date().toISOString() }
+      const payload = { ok: true, accountId: String(accountId), days, rows, realized, backfilled, fetchedAt: new Date().toISOString() }
       // Cache the latest history so the Desk can paint instantly next visit
       // (GET /state/broker-cache) while the live fetch refreshes behind.
-      try { setState(db, 'broker_history_cache_json', JSON.stringify(payload)) } catch { /* cache is best-effort */ }
+      try { setState(db, `acct:${accountId}:broker_history_cache_json`, JSON.stringify(payload)) } catch { /* cache is best-effort */ }
       return payload
-    })()
-    try {
-      res.json(await slot.promise)
+      })
+      res.json(result)
     } catch (err) {
       console.error('[actions/broker-history] error:', err.message)
-      res.status(err.httpStatus === 400 ? 400 : 502).json({ error: err.message })
+      res.status(err.httpStatus || 502).json({ error: err.message })
     }
   })
 
@@ -4103,8 +4100,11 @@ export default function actionsRouter(db, deps = {}) {
   // The loop reads autopilot-enabled accounts and trades each one.
   // -----------------------------------------------------------------------
   // List every trading account an access token can operate, with balances.
-  async function listCtraderAccounts(accessToken) {
-    if (listAccountsImpl) return listAccountsImpl(accessToken)
+  async function listCtraderAccounts(accessToken, onlyAccountId = null) {
+    if (listAccountsImpl) {
+      const rows = await listAccountsImpl(accessToken)
+      return onlyAccountId == null ? rows : rows.filter(a => String(a.accountId) === onlyAccountId)
+    }
     const { ctraderEnv } = await import('../lib/ctrader-env.js')
     const clientId = ctraderEnv('clientId')
     const clientSecret = ctraderEnv('clientSecret')
@@ -4120,7 +4120,7 @@ export default function actionsRouter(db, deps = {}) {
       traderLogin: a.traderLogin ?? null,
       brokerTitle: a.brokerTitleShort || a.brokerName || null,
       balance: null,
-    }))
+    })).filter(a => onlyAccountId == null || String(a.accountId) === onlyAccountId)
     // Enrich each account with its balance + full trader object (best effort
     // — a failure just leaves balance null for that account). The trader
     // object is cached on the account (`_trader`) so a later snapshot in
@@ -4151,15 +4151,12 @@ export default function actionsRouter(db, deps = {}) {
   // so uncoalesced it runs dozens of overlapping 20s snapshots and starves the
   // box (the owner's "everything is stale"). One in-flight snapshot is shared
   // by every caller, and its result is reused for a short window.
-  const bpShared = { all: { at: 0, promise: null }, sel: { at: 0, promise: null } }
-  const BP_TTL_MS = 12_000
+  const readPositions = brokerReadCache()
   router.post('/broker-positions', async (req, res) => {
-    const slot = bpShared[req.body?.selectedOnly ? 'sel' : 'all']
-    if (slot.promise && Date.now() - slot.at < BP_TTL_MS) {
-      try { return res.json(await slot.promise) } catch { /* stale failure — fall through to a fresh run */ }
-    }
-    slot.at = Date.now()
-    slot.promise = (async () => {
+    try {
+      const selectedId = getState(db, 'ctrader_account_id')
+      const requestedId = brokerReadAccount(req.body, selectedId, { allowAll: true })
+      const result = await readPositions(requestedId ?? 'all', async () => {
       const { ctraderEnv } = await import('../lib/ctrader-env.js')
       const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
       if (!accessToken) throw Object.assign(new Error('No access token stored — connect cTrader first'), { httpStatus: 400 })
@@ -4167,15 +4164,13 @@ export default function actionsRouter(db, deps = {}) {
       const clientSecret = ctraderEnv('clientSecret')
       const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetDailyOhlcv, wsGetTrader, wsGetAssets, wsGetUnrealizedPnl, traderBalance } = await import('../lib/ctrader-ws.js')
 
-      let accounts = await listCtraderAccounts(accessToken)
-      const selectedId = getState(db, 'ctrader_account_id')
-      // selectedOnly: snapshot just the bot's account (Monitor uses this —
-      // 1 account × ~4 round-trips instead of 7 accounts' worth).
-      if (req.body?.selectedOnly && selectedId) {
-        accounts = accounts.filter(a => String(a.accountId) === String(selectedId))
+      const accounts = await listCtraderAccounts(accessToken, requestedId)
+      if (requestedId != null && accounts.length === 0) {
+        throw Object.assign(new Error('Requested account is not available on the broker token'), { httpStatus: 404 })
       }
 
       const snapshotAccount = async (acct) => {
+        if (deps.snapshotBrokerAccount) return deps.snapshotBrokerAccount(acct)
         const host = acct.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
         const { _trader, ...acctPublic } = acct
         const out = {
@@ -4532,11 +4527,9 @@ export default function actionsRouter(db, deps = {}) {
         }
       } catch { /* cache is best-effort */ }
       return { ok: true, accounts: results, fetchedAt }
-    })()
-    try {
-      res.json(await slot.promise)
+      })
+      res.json(result)
     } catch (err) {
-      slot.promise = null // never serve a cached failure
       console.error('[actions/broker-positions] error:', err.message)
       res.status(err.httpStatus || 502).json({ error: err.message })
     }

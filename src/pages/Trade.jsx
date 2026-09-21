@@ -1,7 +1,9 @@
+import { viewedAccountId } from '../lib/selected-account.js'
+import { createBrokerViewGuard } from '../lib/broker-view.js'
 // Trade — the single live view: agent health, current fib signals, open
 // positions, recent trades, and the risk manager's latest decisions.
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
-import { Fragment, useEffect, useState, useCallback } from 'react'
+import { Fragment, useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
@@ -418,6 +420,7 @@ export default function Trade() {
   // insightfulness ... as 'At the broker' in desk page". Same fields Desk
   // already shows, joined onto Trade's own DB-tracked rows by positionId.
   const [enrichById, setEnrichById] = useState({})
+  const [brokerRefresh, setBrokerRefresh] = useState({ at: null, error: null })
   const [liveOrders, setLiveOrders] = useState([]) // live resting orders (replaces the stale reconcile-cache list)
 
   // Live sub-second price ticks for whatever's actually active (open/pending
@@ -472,8 +475,12 @@ export default function Trade() {
     return m
   })()
 
+  const brokerViewGuard = useRef(null)
+  if (!brokerViewGuard.current) brokerViewGuard.current = createBrokerViewGuard(viewedAccountId)
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
+    const view = brokerViewGuard.current()
+    if (view.changed) { setEnrichById({}); setLiveOrders([]); setBroker(null); setBrokerRefresh({ at: null, error: null }) }
     try {
       // Slot count matters: destructure order must mirror the array below —
       // append new fetches at the END or every later variable shifts.
@@ -489,6 +496,7 @@ export default function Trade() {
         agentGet('/state/market-hours').catch(() => null),
         agentGet('/state/prices').catch(() => null),
       ])
+      if (!view.current()) return
       setHealth(h)
       setLatestPrices(px?.prices || {})
       // lastResults.scans is the CURRENT scan cycle's snapshot (one row per
@@ -515,27 +523,32 @@ export default function Trade() {
       setMarketHours(mh?.hours || null)
       setError('')
     } catch (e) {
-      setError(e.message)
+      if (view.current()) setError(e.message)
     }
+    if (!view.current()) return
     // Order-log insight: WHY the vetoes, grouped — non-blocking.
-    agentGet('/state/veto-breakdown?days=7').then(setVetoBd).catch(() => {})
+    agentGet('/state/veto-breakdown?days=7').then(v => { if (view.current()) setVetoBd(v) }).catch(() => {})
     // Live broker enrichment (P&L, ccy, margin, bid/ask, commission, swap)
     // + resting orders — the SAME live call Desk uses. Cache instant-paints
     // (`prev` guards below never let a stale cache clobber live data that
     // already landed, matching Desk's two-tier load pattern); the live
     // fetch overwrites the moment the WS answers.
-    agentPost('/actions/broker-positions', { selectedOnly: true })
+    if (view.single) agentPost('/actions/broker-positions', { accountId: view.id })
       .then(b => {
         const acct = b?.accounts?.[0]
-        if (acct) {
+        if (view.current() && view.matches(acct)) {
+          if (acct.error) { setBrokerRefresh(prev => ({ ...prev, error: acct.error })); return }
+          view.markLive()
+          setBrokerRefresh({ at: b.fetchedAt, error: null })
           setEnrichById(buildEnrichMap(acct.positions))
           setLiveOrders(acct.orders || [])
         }
       })
-      .catch(() => {})
-    agentGet('/state/broker-cache').then(bc => {
+      .catch(e => { if (view.current()) setBrokerRefresh(prev => ({ ...prev, error: e.message })) })
+    if (view.single) agentGet(`/state/broker-cache?account=${view.id}`).then(bc => {
       const acct = bc?.snapshot?.account
-      if (!acct) return
+      if (!view.acceptsCache() || !view.matches(acct)) return
+      setBrokerRefresh(prev => ({ ...prev, at: bc.snapshot.fetchedAt }))
       setEnrichById(prev => (Object.keys(prev).length ? prev : buildEnrichMap(acct.positions)))
       setLiveOrders(prev => (prev.length ? prev : (acct.orders || [])))
     }).catch(() => {})
@@ -776,6 +789,10 @@ export default function Trade() {
           <ScopeDot scope={positionsScope} />
         </h2>
         {positions.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">Flat.</div>}
+        {(brokerRefresh.at || brokerRefresh.error) && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+          Broker snapshot: {brokerRefresh.at ? new Date(brokerRefresh.at).toLocaleTimeString() : 'not available'}
+          {brokerRefresh.error ? ` · refresh failed: ${brokerRefresh.error}` : ' · refreshed on request'}
+        </p>}
         {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
