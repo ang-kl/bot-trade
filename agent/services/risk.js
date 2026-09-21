@@ -795,8 +795,8 @@ export function getAccountLeverage(db, config, accountId = null) {
  * Compute margin required for a proposed position (in the account's deposit
  * currency, approximated as USD). Returns { notional, marginRequired }.
  */
-export function requiredMargin(symbol, volumeLots, price, leverage, rates = null, perLot = null, marginRate = null) {
-  const notional = notionalUsd(symbol, volumeLots, price, rates, perLot)
+export function requiredMargin(symbol, volumeLots, price, leverage, rates = null, perLot = null, marginRate = null, quoteCurrency = undefined) {
+  const notional = notionalUsd(symbol, volumeLots, price, rates, perLot, quoteCurrency)
   // A per-class rate (see marginRateFor) is a fraction of notional and wins
   // over the account leverage; without one the FX convention stands.
   const rate = Number(marginRate)

@@ -9,6 +9,7 @@ import { tickTrialsView, importTickTrial } from './tick-research.js'
 import { costsForClass, loadRepoSchedule, sizedCommissionUsdRoundTrip } from '../lib/tick-cost-schedule.js'
 import { simulate, blockExpectancyLowerR, expectancyLowerR } from '../lib/tick-replay-sim.js'
 import { LOT_SIZE_KEY } from '../lib/lot-size-registry.js'
+import { setQuoteCurrencyOverrides } from '../lib/contracts.js'
 
 const A = '1234'
 function fixture(t) {
@@ -51,6 +52,50 @@ test('genuine pending orders on other symbols consume position capacity', t => {
   setState(db, `acct:${A}:risk_config_json`, JSON.stringify({ maxOpenPositions: 1 }))
   intent(db, { symbol: 'GBPUSD', sid: 2, producer: 'copilot' })
   assert.deepEqual(run(db).accounts[0].refusals, { position_cap: 1 })
+})
+
+test('broker-accepted resting orders consume capacity and block duplicate symbols', t => {
+  const db = fixture(t)
+  setState(db, `acct:${A}:risk_config_json`, JSON.stringify({ maxOpenPositions: 1 }))
+  intent(db, { symbol: 'GBPUSD', sid: 2, state: 'ACCEPTED' })
+  db.prepare("UPDATE entry_intents SET broker_order_id = 'order-1'").run()
+  assert.equal(run(db).accounts[0].executed, 1, 'historical acknowledgement alone is not pending exposure')
+  db.prepare("INSERT INTO broker_orders (order_id, account_id, status) VALUES ('order-1', 'another-account', 'working')").run()
+  assert.equal(run(db).accounts[0].executed, 1, 'another account cannot confirm this order')
+  db.prepare('UPDATE broker_orders SET account_id = ?').run(A)
+  assert.deepEqual(run(db).accounts[0].refusals, { position_cap: 1 })
+  db.prepare("UPDATE entry_intents SET symbol = 'EURUSD', symbol_id = 1").run()
+  assert.deepEqual(run(db).accounts[0].refusals, { intent_open: 1 })
+  db.prepare("UPDATE broker_orders SET status = 'gone'").run()
+  assert.equal(run(db).accounts[0].executed, 1, 'filled/cancelled order stops reserving capacity even when its intent remains ACCEPTED')
+  assert.equal(db.prepare('SELECT state FROM entry_intents').get().state, 'ACCEPTED')
+})
+
+test('persisted scenarios freeze quote currency for sizing, margin and commission', t => {
+  const db = fixture(t)
+  t.after(() => setQuoteCurrencyOverrides(null))
+  setState(db, 'symbol_id_map', JSON.stringify({ '0005.HK': 1 }))
+  setState(db, LOT_SIZE_KEY, JSON.stringify({ '0005.HK': { lotSize: 50000, minVolume: 100, stepVolume: 100 } }))
+  setState(db, 'last_scan_results', JSON.stringify({ scans: [{ symbol: 'USDHKD', price: 7.8 }] }))
+  db.prepare("UPDATE tick_shadow_trades SET cost_class = 'stock_hk', entry = 10000000, exit = 10300000, stop = 9900000, stop_distance = 100000").run()
+  const first = run(db, { persist: true })
+  assert.equal(first.accounts[0].executed, 1)
+  const saved = JSON.parse(db.prepare('SELECT inputs_json FROM tick_shadow_account_scenarios WHERE scenario_id = ?').get(first.scenario.id).inputs_json)
+  assert.equal(saved.contexts[0].contracts['0005.HK'].quoteCurrency, 'HKD')
+  setQuoteCurrencyOverrides({ '0005.HK': null })
+  const repeat = run(db, { scenario: saved })
+  assert.deepEqual(repeat.accounts, first.accounts)
+  assert.equal(repeat.scenario.id, first.scenario.id)
+  const current = run(db, { persist: true })
+  assert.notEqual(current.scenario.id, first.scenario.id)
+  assert.notDeepEqual(current.accounts, first.accounts)
+  const usd = JSON.parse(db.prepare('SELECT inputs_json FROM tick_shadow_account_scenarios WHERE scenario_id = ?').get(current.scenario.id).inputs_json)
+  assert.equal(usd.contexts[0].contracts['0005.HK'].quoteCurrency, null)
+  setQuoteCurrencyOverrides({ '0005.HK': 'JPY' })
+  assert.deepEqual(run(db, { scenario: usd }).accounts, current.accounts, 'explicit null stays USD after another override')
+  assert.throws(() => run(db, { scenario: { ...saved, version: 1 } }), /capture a new scenario/)
+  delete saved.contexts[0].contracts['0005.HK'].quoteCurrency
+  assert.throws(() => run(db, { scenario: saved }), /metadata missing/)
 })
 
 test('persisted scenarios reproduce results after balances, exposure and lot rules change', t => {

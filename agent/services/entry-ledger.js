@@ -365,9 +365,16 @@ export function intentCounts(db, accountId) {
 }
 
 /** Reserved-but-unfilled volume the margin pre-gate may count as used. PR-3: the tick feeder counts these rows against the account's ONE position budget, standing RESERVED rows excluded (a standing permit is capacity, not exposure) — `producerId` and `basis` are on the row for that. */
-export function pendingExposure(db, accountId) {
+export function pendingExposure(db, accountId, { includeAccepted = false } = {}) {
+  // ACCEPTED is a terminal acknowledgement in the intent ledger, so it may
+  // survive the order's later fill/cancellation. Count it only while this
+  // account's broker-order snapshot still names the order as working.
+  // Live permit callers retain their existing state set.
+  const accepted = includeAccepted ? `OR (state = 'ACCEPTED' AND EXISTS (
+    SELECT 1 FROM broker_orders bo WHERE bo.order_id = entry_intents.broker_order_id
+      AND bo.account_id = entry_intents.account_id AND bo.status = 'working'))` : ''
   return db.prepare(`SELECT symbol, symbol_id AS symbolId, side, volume, state, producer_id AS producerId, basis FROM entry_intents
-    WHERE account_id = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')})`).all(String(accountId), ...OPEN_STATES)
+    WHERE account_id = ? AND (state IN (${OPEN_STATES.map(() => '?').join(',')}) ${accepted})`).all(String(accountId), ...OPEN_STATES)
 }
 
 const posField = (p, key) => p?.tradeData?.[key] ?? p?.[key]

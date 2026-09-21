@@ -55,6 +55,17 @@ projection cache. Replaying stored inputs does not consult today's balance,
 exposure, lot rules or FX rates for its decisions. No account scenario is an
 additional independent market observation.
 
+The post-merge review identified two further corrections. Scenario snapshots
+now include `ACCEPTED` ledger orders in pending capacity and duplicate-symbol
+checks only when the same account's broker-order snapshot still marks that
+order working. Historical acknowledgements survive fills/cancellations in the
+intent ledger and cannot establish pending exposure on their own.
+This reporting change does not alter the live permit feeder's state
+set. Version 2 freezes each symbol's resolved quote currency, including an
+explicit null/USD assumption, and supplies it to sizing, margin and fees.
+Version 1 inputs lacked that information and must be recaptured; their stored
+results remain available but cannot claim immutable replay.
+
 ## Live activation procedure
 
 The user's continuation includes live observation activation. This is currently

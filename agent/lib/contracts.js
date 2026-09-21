@@ -318,9 +318,10 @@ export function usdRate(currency, rates) {
  * their quote-currency loss through `rates` — the scan's live closes of the
  * USD majors (GBP via GBPUSD, JPY via USDJPY …). Returns NaN only when no
  * conversion path exists, so the risk manager vetoes instead of mis-sizing.
+ * A supplied `quote` freezes currency resolution for saved scenarios; null
+ * explicitly means USD. Existing callers use the runtime currency mapping.
  */
-export function usdLossPerLot(symbol, priceDistance, price, rates = null, perLot = null) {
-  const quote = fxQuoteCurrency(symbol)
+export function usdLossPerLot(symbol, priceDistance, price, rates = null, perLot = null, quote = fxQuoteCurrency(symbol)) {
   // `perLot` lets a caller holding BROKER truth outrank this file's table.
   // Proven necessary 23-08-2026 with real fills: DOGEUSD closed at its stop
   // for -$0.03 on 0.01 lots — exactly move × 1000 (the broker's lot) × 0.01,
@@ -348,10 +349,10 @@ export function usdLossPerLot(symbol, priceDistance, price, rates = null, perLot
  * Exact for USD-quoted (EURUSD, XAUUSD, BTCUSD, US30, etc) and for USD-base
  * pairs (USDJPY etc — notional is simply volume × contract size in USD).
  * Crosses (no USD leg) fall back to quote-currency notional, which is only
- * an approximation for the margin headroom check.
+ * an approximation for the margin headroom check. A supplied `quote` freezes
+ * currency resolution; explicit null retains the USD assumption.
  */
-export function notionalUsd(symbol, volumeLots, price, rates = null, perLot = null) {
-  const quote = fxQuoteCurrency(symbol)
+export function notionalUsd(symbol, volumeLots, price, rates = null, perLot = null, quote = fxQuoteCurrency(symbol)) {
   const csize = Number.isFinite(Number(perLot)) && Number(perLot) > 0 ? Number(perLot) : null
   if (quote != null && quote !== 'USD') {
     const base = symbol.toUpperCase().slice(0, 3)
