@@ -460,7 +460,7 @@ test('wiring pins: the loop runs the book after the shadow with the real autoTra
   assert.ok(block.includes('accounts: getAutopilotAccounts(db)'))
   assert.ok(block.includes('credsFor: (a) => getCtraderCreds(db, a)'))
   assert.ok(block.includes('autoTrade,'))
-  assert.ok(block.includes('amend: (creds, args) => exec.amendPosition(creds, args)'), 'the loop forwards both protection legs')
+  assert.ok(block.includes('amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: args.takeProfit })'), 'the loop forwards both protection legs explicitly')
   assert.ok(block.includes('close: (creds, args) => exec.closePosition(creds, args)'))
   assert.ok(block.includes('positionVolume: async (creds, positionId) => brokerPositionVolume((await exec.reconcile(creds)).position || [], positionId)'), 'the loop hands the book the broker volume for its closes')
   assert.ok(block.includes('phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade'))

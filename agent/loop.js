@@ -4098,7 +4098,7 @@ async function runLoop(db) {
             spot: (creds, symbolId) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId).catch(() => null),
             // Amend replaces both protection legs. The book supplies the
             // recorded TP1 so a trail cannot silently clear it.
-            amend: (creds, args) => exec.amendPosition(creds, args),
+            amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: args.takeProfit }),
             // Price precision for the trailed stop (04-09-2026): the amend is
             // an absolute price and the broker rejects one with more decimals
             // than the symbol allows. Cached per process in lot-sizing.
