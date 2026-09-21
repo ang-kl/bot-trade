@@ -1,7 +1,7 @@
 import { isOurs, parseLabel, labelIntentId, ownedByIntent } from '../lib/trade-labels.js'
 import { recordTradePlan } from './trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
-import { getState, closeTradeRow } from '../db.js'
+import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 import { lotsFromUnits } from '../lib/lot-size-registry.js'
 
@@ -250,7 +250,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // Two-pass memory for the convergence rule below: `sl:<posId>` / `tp:<posId>`
   // → the disagreement signature we saw last time. Bounded by the number of
   // open positions, and entries are deleted the moment a row agrees again.
-  const RESYNC_WATCH_KEY = 'ledger_resync_watch_json'
+  // Read and write the SAME account namespace, independently of the caller's
+  // state callback (primary is global; other callers wrap it per account).
+  // Do not inherit the old global watch: its observations have no owner.
+  const RESYNC_WATCH_KEY = acct == null ? 'ledger_resync_watch_json' : `acct:${acct}:ledger_resync_watch_json`
   let resyncWatch = {}
   try { resyncWatch = JSON.parse(getState(db, RESYNC_WATCH_KEY) || '{}') || {} } catch { resyncWatch = {} }
 
@@ -802,7 +805,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     if (brokerIds.has(pid) && !knownIds.has(pid)) delete resyncWatch[k]
     else if (!brokerIds.has(pid) && knownIds.has(pid)) delete resyncWatch[k]
   }
-  try { setState(RESYNC_WATCH_KEY, JSON.stringify(resyncWatch)) } catch { /* non-fatal */ }
+  try { setAgentState(db, RESYNC_WATCH_KEY, JSON.stringify(resyncWatch)) } catch { /* non-fatal */ }
 
   return {
     newExternal, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified, sourcesRepaired,

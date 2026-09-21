@@ -34,6 +34,9 @@ positions were checked. The live records must not be counted as verified.
 - Relinking, close detection and duplicate/P&L cleanup had queries keyed only
   by position id. Scope them to the account being reconciled before extending
   coverage. Preserve the selected account's existing legacy-NULL convention.
+- Review found that the two-pass SL/TP convergence watch read globally while
+  other-account callers wrote it under account keys. Read and write the same
+  explicit per-account key; never inherit an ownerless legacy observation.
 - Log the applier's failure reason, attempted TP and retryable status once per
   permitted attempt. Existing retry windows and protection decisions stay in
   force. The former `apply refused` count could not diagnose these failures.

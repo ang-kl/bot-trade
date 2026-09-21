@@ -106,6 +106,26 @@ test('failed, malformed and wrong-account reads leave live positions active', as
   }
 })
 
+test('SL/TP convergence needs two observations from the SAME account despite shared position IDs', t => {
+  const db = fixture(t)
+  const demo = seed(db, '1'), live = seed(db, '2')
+  db.prepare('UPDATE monitored_positions SET current_sl = 99, broker_sl = 95, current_tp = 130, broker_tp = 120').run()
+  // This legacy marker has no trustworthy account owner and cannot count as
+  // the first observation for either named account after the change.
+  setState(db, 'ledger_resync_watch_json', JSON.stringify({ 'sl:700': '99|95', 'tp:700': '130|120' }))
+  const run = (id, sl, tp) => reconcilePositions(db,
+    [{ ...position, symbolName: 'LIVE.US', stopLoss: sl, takeProfit: tp }], [],
+    (key, value) => setState(db, id === '1' ? key : `acct:${id}:${key}`, value), { accountId: id })
+  assert.deepEqual(run('1', 95, 120).ledgerSynced, [])
+  assert.deepEqual(run('2', 95, 120).ledgerSynced, [], 'demo observation is not live evidence')
+  run('1', 99, 130) // demo's disagreement clears; live's evidence must survive
+  assert.equal(run('2', 95, 120).ledgerSynced.length, 2, 'live SL and TP converge on its own second observation')
+  assert.deepEqual(db.prepare('SELECT current_sl, current_tp FROM monitored_positions WHERE trade_id = ?').get(live),
+    { current_sl: 95, current_tp: 120 })
+  assert.deepEqual(db.prepare('SELECT current_sl, current_tp FROM monitored_positions WHERE trade_id = ?').get(demo),
+    { current_sl: 99, current_tp: 130 })
+})
+
 test('missing account symbol mapping refuses the entire snapshot before closing rows', async t => {
   const db = fixture(t)
   const live = seed(db, '2', { positionId: '900' })
