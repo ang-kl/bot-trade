@@ -18,13 +18,27 @@ test('broker bad-stops refusal is terminal; transport failures remain retryable'
   assert.equal(protectionFailure(new Error('socket timed out')).retryable, true)
 })
 
+test('JS transport formatted broker rejections retain their broker classification', async () => {
+  for (const code of ['TRADING_BAD_STOPS', 'TRADING_BAD_VOLUME', 'POSITION_NOT_FOUND', 'POSITION_CLOSED']) {
+    const apply = makeTargetApplier(null, { accountId: 'A' }, {
+      readPosition: async () => ({ positionId: '7', stopLoss: 90, tradeData: { tradeSide: 'BUY' } }),
+      amendPosition: async () => { throw new Error(`cTrader order rejected: ${code} — invalid request (positionId=7)`) },
+    })
+    const result = await apply({ positionId: '7', brokerSl: 90 }, { tp: 115 })
+    assert.equal(result.code, code)
+    assert.equal(result.retryable, false)
+  }
+  assert.equal(protectionFailure(new Error('socket timed out while checking TRADING_BAD_STOPS')).retryable, true)
+  assert.equal(protectionFailure(new Error('cTrader order rejected: MARKET_CLOSED — closed')).retryable, true)
+})
+
 test('identical rejected target is not resubmitted after the retry window; audit retains the incident', async t => {
   const db = initDB(':memory:'); t.after(() => db.close())
   const row = { id: 1, account_id: 'A', symbol: 'BTCUSD', source: 'autopilot', ctrader_position_id: '7', current_sl: 90 }
   const positions = [{ positionId: '7', stopLoss: 90, tradeData: { tradeSide: 'BUY' } }]
   let attempts = 0
   const opts = { accountId: 'A', suggestTarget: async () => ({ tp: 115 }), applyTarget: async () => {
-    attempts++; throw new Error('{"errorCode":"TRADING_BAD_STOPS","description":"TP below current BID"}')
+    attempts++; throw new Error('cTrader order rejected: TRADING_BAD_STOPS — TP below current BID')
   } }
   await runProtectionAudit(db, [row], positions, { ...opts, nowMs: 1000000 })
   await runProtectionAudit(db, [row], positions, { ...opts, nowMs: 1000000 + 7 * 3600000 })

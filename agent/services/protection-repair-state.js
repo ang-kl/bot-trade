@@ -8,7 +8,10 @@ export function protectionFailure(error, { retryableUnknown = true } = {}) {
   const message = String(error?.message ?? error?.error ?? error ?? 'protection amendment failed')
   let body = error
   try { body = JSON.parse(message) } catch { /* transport errors are plain text */ }
-  const code = body?.errorCode ?? body?.code ?? error?.errorCode ?? null
+  // Both JS transports currently wrap order errors in this formatted message;
+  // the C++ transport preserves the broker JSON. Accept both wire formats.
+  const formattedCode = message.match(/^cTrader order rejected:\s*([A-Z][A-Z0-9_]*)(?:\s|$)/)?.[1]
+  const code = body?.errorCode ?? body?.code ?? error?.errorCode ?? formattedCode ?? null
   const permanent = ['TRADING_BAD_STOPS', 'TRADING_BAD_VOLUME', 'POSITION_NOT_FOUND', 'POSITION_CLOSED'].includes(code)
   return { ok: false, retryable: !permanent && retryableUnknown, code, error: message,
     resolution: code === 'TRADING_BAD_STOPS' ? 'protection_price_decision_required'
