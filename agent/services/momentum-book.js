@@ -1173,23 +1173,28 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
                 `the standing stop ${row.stop} is already tighter`,
           atr)
       } else {
-        // Amend replaces the broker's complete protection set. Never clear a
-        // TP while ratcheting the stop, and never guess one: an old targetless
-        // row keeps its standing stop until TP1 is explicitly remediated.
-        const keepTp = Number(row.current_tp) > 0 ? Number(row.current_tp) : null
-        if (row.position_id && deps.amend && keepTp == null) {
-          noteTrail(row.id, 'trail blocked: recorded TP1 missing; refusing a target-clearing amend', atr)
-          summary.skipped.push(`${row.account_id} ${row.symbol}: trail blocked — recorded TP1 missing`)
-          continue
+        // The adapter reads both protection legs from the broker immediately
+        // before sending and again afterwards. A stale local TP must neither
+        // overwrite a newer broker TP nor freeze a safer stop on a legacy row.
+        if (!row.position_id || !deps.amend) throw new Error('book stop cannot be confirmed: no broker position or amendment adapter')
+        const result = await deps.amend(creds, { positionId: row.position_id, stopLoss: next,
+          takeProfit: Number(row.current_tp) > 0 ? Number(row.current_tp) : null, side: rowSide })
+        const confirmed = result?.protection
+        const stop = Number(confirmed?.stopLoss)
+        if (!confirmed?.verified || !(stop > 0) || (rowSide === 'short' ? stop > next : stop < next)) {
+          throw new Error('book stop not confirmed by broker read-back')
         }
-        if (row.position_id && deps.amend) await deps.amend(creds, { positionId: row.position_id, stopLoss: next, takeProfit: keepTp })
-        db.prepare(`UPDATE momentum_book SET stop = ?, atr = ? WHERE id = ?`).run(next, atr, row.id)
-        noteTrail(row.id, `trailed ${row.stop} -> ${next} on ${cfg.stopAtr}xATR ${atr}`, atr)
-        if (row.trade_id != null) {
-          db.prepare(`UPDATE trades SET sl_price = ? WHERE id = ?`).run(next, row.trade_id)
-          db.prepare(`UPDATE monitored_positions SET current_sl = ? WHERE trade_id = ?`).run(next, row.trade_id)
-        }
-        summary.trailed++
+        const tp = Number(confirmed.takeProfit) > 0 ? Number(confirmed.takeProfit) : null
+        db.transaction(() => {
+          db.prepare(`UPDATE momentum_book SET stop = ?, atr = ? WHERE id = ?`).run(stop, atr, row.id)
+          if (row.trade_id != null) {
+            db.prepare(`UPDATE trades SET sl_price = ? WHERE id = ?`).run(stop, row.trade_id)
+            db.prepare(`UPDATE monitored_positions SET current_sl = ?, current_tp = ? WHERE trade_id = ?`).run(stop, tp, row.trade_id)
+          }
+        })()
+        noteTrail(row.id, `${result.unchanged ? 'broker already tighter' : 'trailed'} ${row.stop} -> ${stop} on ${cfg.stopAtr}xATR ${atr}${tp == null ? '; TP1 still missing, decision required' : ''}`, atr)
+        if (!result.unchanged) summary.trailed++
+
       }
     } catch (err) {
       // PR-P: the trail already names this one; the brake needs the same fact
