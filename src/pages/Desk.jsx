@@ -1,3 +1,5 @@
+import { viewedAccountId } from '../lib/selected-account.js'
+import { createBrokerViewGuard } from '../lib/broker-view.js'
 import ControllerRuntime from '../components/ControllerRuntime.jsx'
 // Desk — THE one-screen workspace: a live chart wall on top (up to 30
 // charts: 3 columns × 10 rows — open positions first, then whatever the
@@ -7,7 +9,7 @@ import ControllerRuntime from '../components/ControllerRuntime.jsx'
 // the old Monitor was dropped — it lives here behind the triangles.
 // Everything reuses the endpoints/components the dedicated pages already
 // trust — this page assembles, it does not invent.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
@@ -239,14 +241,18 @@ export default function Desk() {
     total: c2 => c2.totalProfitPct,
   })
 
+  const brokerViewGuard = useRef(null)
+  if (!brokerViewGuard.current) brokerViewGuard.current = createBrokerViewGuard(viewedAccountId)
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
+    const view = brokerViewGuard.current()
+    if (view.changed) { setBroker(null); setBrokerHistory(null); setBrokerErr('') }
     // TWO-TIER LOAD (owner: "30s to load — make it 3"). The broker snapshot
     // and deal history are live cTrader WebSocket round-trips (slow, tens of
     // seconds on a cold link); everything else is a SQLite read (<100ms).
     // Paint from the fast tier immediately; the broker sections say
     // "fetching…" and fill in whenever the WS answers.
-    agentPost('/actions/broker-positions', { selectedOnly: true })
+    if (view.single) agentPost('/actions/broker-positions', { accountId: view.id })
       .then(b => {
         // Refreshes update the snapshot IN PLACE — never blank it. Setting
         // broker to null on a transient empty refresh collapsed the whole
@@ -255,25 +261,29 @@ export default function Desk() {
         // good snapshot; React then diffs only the changed cells (price/P&L),
         // no reflow. A real fetch failure is surfaced via brokerErr below.
         const next = b?.accounts?.[0]
-        if (next) { setBroker(next); setBrokerErr('') }
+        if (view.current() && view.matches(next)) {
+          if (next.error) { setBrokerErr(next.error); return }
+          view.markLive(); setBroker({ ...next, _cachedAt: b.fetchedAt }); setBrokerErr('')
+        }
       })
       // A failed LIVE refresh must be loud — silently keeping the cached
       // snapshot made the Desk look current while showing Friday's data
       // (owner hit this Monday morning). The interval retries every cycle.
-      .catch(e => setBrokerErr(`live broker refresh failed: ${e.message} — retrying`))
-    agentPost('/actions/broker-history', { days: historyDays })
-      .then(bh => { if (bh?.ok) setBrokerHistory(bh) }) // keep prev on a bad refresh — no collapse
+      .catch(e => { if (view.current()) setBrokerErr(`live broker refresh failed: ${e.message} — retrying`) })
+    if (view.single) agentPost('/actions/broker-history', { days: historyDays, accountId: view.id })
+      .then(bh => { if (view.current() && view.matches(bh) && bh?.ok) setBrokerHistory(bh) }) // keep prev on a bad refresh — no collapse
       .catch(() => {})
     // Instant paint: the agent's cached snapshot (refreshed ~every 30s by
     // the monitor) fills the broker sections in milliseconds; the live
     // fetches above overwrite it the moment the WS answers. `prev ??` makes
     // sure cache never clobbers live data that already landed.
-    agentGet('/state/broker-cache')
+    if (view.single) agentGet(`/state/broker-cache?account=${view.id}`)
       .then(bc => {
-        if (bc?.snapshot?.account) {
+        if (!view.current()) return
+        if (view.acceptsCache() && view.matches(bc?.snapshot?.account)) {
           setBroker(prev => prev ?? { ...bc.snapshot.account, _cachedAt: bc.snapshot.fetchedAt })
         }
-        if (bc?.history?.ok) setBrokerHistory(prev => prev ?? { ...bc.history, _cachedAt: bc.history.fetchedAt })
+        if (view.matches(bc?.history) && bc?.history?.ok && bc.history.days === historyDays) setBrokerHistory(prev => prev ?? { ...bc.history, _cachedAt: bc.history.fetchedAt })
       })
       .catch(() => {})
     try {
@@ -296,6 +306,7 @@ export default function Desk() {
         agentGet('/state/weekend-loss-flags').catch(() => null),
         agentGet('/state/prices').catch(() => null),
       ])
+      if (!view.current()) return
       setHealth(h)
       setLatestPrices(px?.prices || {})
       // lastResults.scans is the CURRENT scan cycle's snapshot — recentScans
@@ -321,7 +332,7 @@ export default function Desk() {
       setDupeTrades(dupe || null)
       setWeekendFlags(wlf?.flags || [])
       setError('')
-    } catch (e) { setError(e.message) }
+    } catch (e) { if (view.current()) setError(e.message) }
   }, [historyDays])
 
   const hasActivity = positions.length > 0 || (broker?.orders?.length || 0) > 0
@@ -999,7 +1010,7 @@ export default function Desk() {
           <Segmented label="History window" value={historyDays} onChange={setHistoryDays}
             options={[{ value: 7, label: '7d' }, { value: 30, label: '30d' }, { value: 90, label: '3mo' }, { value: 182, label: '6mo' }]} />
         </div>
-        {!brokerHistory && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Fetching deal history…</p>}
+        {!brokerHistory && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Choose one account to view broker history; that account’s history loads automatically.</p>}
         {brokerHistory?._cachedAt && (
           <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
         )}
