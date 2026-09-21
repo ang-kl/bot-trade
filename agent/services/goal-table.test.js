@@ -307,3 +307,32 @@ test('monitor_cadence: not_measurable without a record or with a stale one; on/o
   row = byId(await goalTable(db, { now })).monitor_cadence
   assert.equal(row.verdict, 'not_measurable'); assert.match(row.note, /predates/)
 })
+
+test('monitor_cadence: the note carries the quotes10m window figure when the record has one; unchanged (byte-identical) when it does not', async () => {
+  const db = initDB(':memory:')
+  const now = Date.parse('2026-09-20T12:00:00Z')
+  const withoutWindow = { at: new Date(now - 60_000).toISOString(), tick: { everyMs: 3000, lastMs: 120, max10mMs: 900, skipped10m: 4, skipShare10m: 0.02, busyShare10m: 0.1 } }
+  setState(db, 'fast_monitor_pass_json', JSON.stringify(withoutWindow))
+  const baseline = byId(await goalTable(db, { now })).monitor_cadence
+  assert.doesNotMatch(baseline.note, /quotes 10m/, 'no window on the record → no window text')
+
+  setState(db, 'fast_monitor_pass_json', JSON.stringify({
+    ...withoutWindow,
+    tick: { ...withoutWindow.tick, quotes10m: { fromSidecar: 412, fromBroker: 18, stale: 2, passes: 96, sidecarSharePct: 95.8 } },
+  }))
+  const withWindow = byId(await goalTable(db, { now })).monitor_cadence
+  assert.equal(withWindow.note, `${baseline.note} · quotes 10m: 412 sidecar / 18 broker (96% sidecar)`)
+  // verdict/target/current are untouched by the window figure
+  assert.equal(withWindow.verdict, baseline.verdict)
+  assert.equal(withWindow.current, baseline.current)
+  assert.equal(withWindow.target, baseline.target)
+
+  // an empty window (passes: 0, e.g. the monitor just started) is treated
+  // like "no window" — no dangling "0 sidecar / 0 broker (NaN%)" text
+  setState(db, 'fast_monitor_pass_json', JSON.stringify({
+    ...withoutWindow,
+    tick: { ...withoutWindow.tick, quotes10m: { fromSidecar: 0, fromBroker: 0, stale: 0, passes: 0, sidecarSharePct: null } },
+  }))
+  const emptyWindow = byId(await goalTable(db, { now })).monitor_cadence
+  assert.equal(emptyWindow.note, baseline.note)
+})

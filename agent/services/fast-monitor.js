@@ -855,12 +855,20 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   const tickSamples = []
   const bandSamples = []
   const tickSkips = []       // { at } per skipped tick, kept for the window
+  const quoteSamples = []    // { at, fromSidecar, fromBroker, stale } per PRICED pass, kept for the window
   let tickRunning = false
   let skipped = 0
   let bandRunning = false
   let bandSkipped = 0
   let lastTick = null
-  let lastQuotes = null   // { fromSidecar, fromBroker, stale } from the last pass that priced anything
+  // { fromSidecar, fromBroker, stale, at, checked } from the last pass that
+  // ACTUALLY PRICED something. 20-09-2026: a pass where no position was due
+  // — the common case at a 3s tick against per-position cadences of a minute
+  // or more — used to overwrite this with an all-zero object (truthy), so
+  // the record could read all-zero for minutes while the monitor was in fact
+  // pricing on every pass that had something due. `at` is this pass's own
+  // timestamp, not the record's write time, so staleness is verifiable.
+  let lastQuotes = null
   let lastBand = { ms: null, overran: false }
   let lastTickRecordAt = 0
   const startedMs = clock()
@@ -880,18 +888,36 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       bandSamples.splice(0, bandSamples.length, ...bd.kept)
       const skipsKept = tickSkips.filter(s => nowMs - s.at <= RECORD_WINDOW_MS)
       tickSkips.splice(0, tickSkips.length, ...skipsKept)
+      const quotesKept = quoteSamples.filter(s => nowMs - s.at <= RECORD_WINDOW_MS)
+      quoteSamples.splice(0, quoteSamples.length, ...quotesKept)
       const shares = tickShares({
         sampleMs: tk.kept.map(s => s.ms), skipped: skipsKept.length,
         windowMs: Math.min(RECORD_WINDOW_MS, Math.max(tickMs, nowMs - startedMs)), everyMs: tickMs,
       })
+      // 10-minute window over PRICED passes only (§ header). `sidecarSharePct`
+      // is against fromSidecar+fromBroker — `stale` is already counted inside
+      // fromBroker (the fallback path), not a third source.
+      const q10 = quotesKept.reduce((acc, s) => {
+        acc.fromSidecar += s.fromSidecar; acc.fromBroker += s.fromBroker; acc.stale += s.stale; acc.passes++
+        return acc
+      }, { fromSidecar: 0, fromBroker: 0, stale: 0, passes: 0 })
+      const q10Total = q10.fromSidecar + q10.fromBroker
+      const quotes10m = q10.passes
+        ? { ...q10, sidecarSharePct: q10Total ? Math.round((q10.fromSidecar / q10Total) * 1000) / 10 : null }
+        : null
       setState(db, PASS_RECORD_KEY, JSON.stringify({
         at: new Date(nowMs).toISOString(),
         tick: {
           everyMs: tickMs, lastMs: lastTick, max10mMs: tk.max, skippedTicks: skipped,
           skipped10m: skipsKept.length, skipShare10m: shares.skipShare, busyShare10m: shares.busyShare,
           // 19-09-2026: where the last pass's prices came from (see the
-          // header block) — the acceptance read for the sidecar path.
+          // header block) — the acceptance read for the sidecar path. This is
+          // the LAST PRICED pass, stamped with its own `at`/`checked`; a pass
+          // that priced nothing never overwrites it (20-09-2026).
           quotes: lastQuotes,
+          // 20-09-2026: the same figure over the last 10 minutes of priced
+          // passes, so the acceptance read is not one sample wide.
+          quotes10m,
         },
         band: { everyMs: bandMs, lastMs: band.ms, max10mMs: bd.max, overran: band.overran, skippedBands: bandSkipped },
       }))
@@ -905,14 +931,16 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     writeRecord(nowMs)
   }
 
-  // Returns { err, quotes }; an injected runTick may still return a bare
-  // error or null (older tests), which the caller below reads the same way.
+  // Returns { err, quotes, checked }; an injected runTick may still return a
+  // bare error or null (older tests), which the caller below reads the same
+  // way (and `checked` simply reads as undefined ⇒ 0).
   const runTick = deps.runTick ?? (async (creds) => {
     let tickErr = null
     let quotes = null
+    let checked = 0
     try {
       const r = await runFastMonitor(db, creds, deps)
-      if (r?.quotes) quotes = r.quotes
+      if (r?.quotes) { quotes = r.quotes; checked = r.checked ?? 0 }
     } catch (err) {
       tickErr = err
       console.error('[fast-monitor] tick failed:', err.message)
@@ -932,7 +960,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] session-open-guard failed:', err.message)
     }
-    return { err: tickErr, quotes }
+    return { err: tickErr, quotes, checked }
   })
 
   const t = setInterval(async () => {
@@ -960,7 +988,15 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       const creds = getCreds(db)
       const r = await runTick(creds, startedAt)
       const tickErr = r instanceof Error ? r : (r?.err ?? null)
-      if (r?.quotes) lastQuotes = r.quotes
+      // 20-09-2026: adopt the pass's quotes only when it PRICED something —
+      // see the `lastQuotes` declaration above. An all-zero object (the
+      // common case: nothing was due at this 3s tick) is truthy and must not
+      // overwrite the last pass that actually priced.
+      const q = r?.quotes
+      if (q && (q.fromSidecar || 0) + (q.fromBroker || 0) + (q.stale || 0) > 0) {
+        lastQuotes = { ...q, at: new Date(startedAt).toISOString(), checked: r.checked ?? 0 }
+        quoteSamples.push({ at: startedAt, fromSidecar: q.fromSidecar || 0, fromBroker: q.fromBroker || 0, stale: q.stale || 0 })
+      }
       const ms = clock() - startedAt
       lastTick = ms
       tickSamples.push({ at: startedAt, ms })
