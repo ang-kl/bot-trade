@@ -814,6 +814,22 @@ export async function probeCppExec(db, deps = {}) {
     const out = await probeOneSidecar(db, exec, side, deps)
     if (side.name === 'cpp_exec') primary = out
   }
+  // PR-1b (20-09-2026): the tick fire ledger turns each ACCEPTED tick fire in
+  // the sidecar's ring into the one approved risk_events row its close needs
+  // for `direction_reason` — the field that made every tick close fail capture
+  // with `missing: direction_reason`.
+  //
+  // ONCE PER HEARTBEAT, NOT ONCE PER SIDE (checker round). Its high-water mark
+  // is a single cursor over the `cpp_decisions` TABLE, which already holds
+  // every side's rows; running it inside the per-side probe would have driven
+  // one global cursor from a per-side call site — correct only by luck, and
+  // the shape this repo keeps paying for. Here it runs after BOTH sides'
+  // decision pulls, so one pass sees both sides' rows. Its own try: a ledger
+  // failure must never fail the beat.
+  try {
+    const run = deps.runTickFireLedger ?? (await import('./tick-fire-ledger.js')).runTickFireLedger
+    run(db, { now: nowMs })
+  } catch (err) { console.warn(`[heartbeat] tick fire ledger failed: ${err?.message || err}`) }
   return primary
 }
 

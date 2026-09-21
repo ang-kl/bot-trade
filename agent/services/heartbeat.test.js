@@ -229,6 +229,37 @@ test('probeCppExec: no-op in js mode; records ok/failed beats in cpp mode', asyn
   assert.equal(row.last_error, 'fetch failed')
 })
 
+// PR-1b (20-09-2026): the tick fire ledger's high-water mark is ONE cursor over
+// the cpp_decisions table, which already holds every side's rows. It therefore
+// has to run once per heartbeat — not once per side probe, which would drive a
+// global cursor from a per-side call site. This pins the count: two sides, one
+// pass. Without it, a refactor that moves the call back inside probeOneSidecar
+// is invisible.
+test('probeCppExec: the tick fire ledger runs ONCE per heartbeat, not once per side probe', async () => {
+  const db = initDB(':memory:')
+  const exec = {
+    execEngineMode: () => 'cpp',
+    EXEC_HOST_LIVE: 'live', EXEC_HOST_DEMO: 'demo',
+    execBaseFor: (h) => (h === 'live' ? 'https://live.example' : 'https://demo.example'),
+    pingSidecar: async () => ({ ok: true, mode: 'cpp', connected: true, lastReconcileAt: T0.getTime() - 30_000 }),
+  }
+  assert.equal(execSidesToProbe(exec).length, 2, 'two sides, so the per-side call site would run twice')
+  const calls = []
+  await probeCppExec(db, { exec, now: T0, runTickFireLedger: (_db, opts) => { calls.push(opts); return { written: 0 } } })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].now, T0.getTime(), 'the heartbeat\'s own clock, not a per-side one')
+})
+
+// A ledger that throws must not fail the beat — it is bookkeeping on top of a
+// probe whose job is to say whether the sidecar is alive.
+test('probeCppExec: a throwing tick fire ledger does not fail the probe', async () => {
+  const db = initDB(':memory:')
+  const exec = { execEngineMode: () => 'cpp', pingSidecar: async () => ({ ok: true, mode: 'cpp', connected: true, lastReconcileAt: T0.getTime() - 30_000 }) }
+  const r = await probeCppExec(db, { exec, now: T0, runTickFireLedger: () => { throw new Error('ledger boom') } })
+  assert.equal(r.ok, true)
+  assert.equal(db.prepare(`SELECT consecutive_failures FROM controller_heartbeats WHERE name = 'cpp_exec'`).get().consecutive_failures, 0)
+})
+
 test('probeCppExec: an answering HTTP server no longer masks a dead broker session', async () => {
   // Owner saw "C++ exec engine" beating steadily while pending-order-manager
   // failed 14× in a row with "no reconcile data yet" — /health says ok:true

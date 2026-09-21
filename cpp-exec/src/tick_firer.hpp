@@ -76,6 +76,15 @@ struct TickFire {
   std::string intentId;
   long long fillMs = 0;          // the fill's clock (feed receive time)
   long long maxFireDelayMs = 0;  // from the permit; 0 = no bound
+  // PR-1b (20-09-2026): the breakout fact the ShadowFill holds, carried to
+  // the fire thread so the `fire_result` ring line can state WHAT MOVED.
+  // Node has no other copy: signal→order is in-process here, no risk_events
+  // row is written, and `position_history` REQUIRES `direction_reason` — a
+  // tick close died with `missing: direction_reason` on ...0949. The payload
+  // carries only RELATIVE stop/target distances, so the absolute prices are
+  // kept here rather than re-derived.
+  long long entry = 0, stop = 0, target = 0;
+  std::string side;              // BUY | SELL, the fill's own side
 };
 
 class TickFirer {

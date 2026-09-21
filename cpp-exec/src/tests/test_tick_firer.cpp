@@ -133,6 +133,17 @@ static void test_refusals_and_payload() {
   assert(p.get("label").asString() == "tick:abcdef0123456789|||||||i1BUY" && p.get("comment").asString() == "abot-tick");
   assert(p.get("permit").isObject() && p.get("permit").get("id").asString() == "p1BUY" && p.get("intentId").asString() == "i1BUY");
   assert(countKind(ring, "fire") == 1 && countKind(ring, "fire_result", "ok") == 1);
+  // PR-1b (20-09-2026): the `fire_result` detail carries the breakout FACT —
+  // the keeper's fire ledger turns these four tokens into the risk event a
+  // tick close needs for `direction_reason` (position-history REQUIRED_FIELDS).
+  {
+    std::string detail;
+    for (const auto& r : ring.since(0)) if (r.component == "tick" && r.kind == "fire_result" && r.code == "ok") detail = r.detail;
+    assert(detail.find("entry=" + std::to_string(f.entry)) != std::string::npos);
+    assert(detail.find("stop=" + std::to_string(f.stop)) != std::string::npos);
+    assert(detail.find("target=" + std::to_string(f.target)) != std::string::npos);
+    assert(detail.find("side=BUY") != std::string::npos);
+  }
   assert(permits.size() == 0 && "the permit was one use");
   // a second fill on the same account/symbol/side has no permit until the keeper pushes again
   assert(firer.onFill(f, 1000) == 0 && firer.counters().refusedNoPermit == 3);

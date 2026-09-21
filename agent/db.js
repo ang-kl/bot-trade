@@ -1926,6 +1926,24 @@ export function initDB(dbPath) {
     }
   }
 
+  // PR-1b (20-09-2026): the risk event a tick fill's REASON lives on.
+  // `position_history` REQUIRES direction_reason and reads it only from
+  // risk_events via trades.risk_event_id; the tick path writes no risk event
+  // at all (signal → order is in-process on the sidecar), and the
+  // reconciler's ±5-minute window around the intent's created_at cannot find
+  // one for a STANDING permit reserved hours before its fill. So the fire
+  // ledger (services/tick-fire-ledger.js) writes the event and stamps its id
+  // HERE, and stampAdoptedFromIntent prefers it over the window.
+  // `signal_ref` is not free — reserveStandingPermits uses it as the
+  // standing-row lookup key — so this is its own column. Additive: every
+  // existing row keeps NULL, which reads as "no event written for it".
+  {
+    const cols = new Set(db.prepare('PRAGMA table_info(entry_intents)').all().map(c => c.name));
+    if (cols.size && !cols.has('risk_event_id')) {
+      db.exec('ALTER TABLE entry_intents ADD COLUMN risk_event_id INTEGER');
+    }
+  }
+
   // PR-AU: give back the attempts spent against a verifier that could not
   // answer. Measured 18-09-2026 04:08 UTC — "0 armed of 18 unverified, 0
   // eligible, 18 at the re-verify cap" — because all three attempts were

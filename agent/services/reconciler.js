@@ -82,8 +82,16 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
     const strategy = (parsed?.strategy && parsed.strategy !== 'other' ? parsed.strategy : null)
       || PRODUCER_STRATEGY[String(it.producer_id || '')] || null
     const createdMs = Date.parse(it.created_at)
-    let riskEventId = null
-    if (Number.isFinite(createdMs)) {
+    // PR-1b (20-09-2026): the intent may already NAME its risk event. The
+    // window below is anchored on the intent's created_at, and a STANDING
+    // tick permit is reserved by the feeder pass minutes-to-hours before its
+    // fill — so for a tick fill the window misses by construction and the
+    // close died with `missing: direction_reason` (…0949, COIN.US). The fire
+    // ledger stamps entry_intents.risk_event_id from the sidecar's own fire
+    // ring; when it is there it IS the answer. Strictly additive: an intent
+    // without one takes the same window as before.
+    let riskEventId = it.risk_event_id ?? null
+    if (riskEventId == null && Number.isFinite(createdMs)) {
       const ev = db.prepare(`SELECT id FROM risk_events WHERE account_id = ? AND symbol = ? AND side = ? AND approved = 1
         AND created_at <= ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1`)
         .get(String(acct), symbolName, sideWord, new Date(createdMs).toISOString(), new Date(createdMs - 5 * 60_000).toISOString())
