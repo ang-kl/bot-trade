@@ -18,7 +18,15 @@ export async function amendBookStop(creds, { positionId, stopLoss, side }, {
   if (!['long', 'short'].includes(side) || !Number.isFinite(stopLoss) || stopLoss <= 0) throw new Error('invalid book stop intent')
   const read = async () => {
     const began = clock(), readStartedAtMs = now()
-    const p = await readPosition(creds, positionId)
+    let timer, p
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('book protection read deadline exceeded')), BOOK_PROTECTION_MAX_READ_MS)
+    })
+    try {
+      // Includes pool queueing and authentication, not just time on the wire.
+      // A late READ may finish, but cannot resume this failed operation or amend.
+      p = await Promise.race([Promise.resolve().then(() => readPosition(creds, positionId)), deadline])
+    } finally { clearTimeout(timer) }
     const readDurationMs = clock() - began, checkedAtMs = now()
     if (!Number.isFinite(readDurationMs) || readDurationMs < 0 || readDurationMs > BOOK_PROTECTION_MAX_READ_MS
       || checkedAtMs < readStartedAtMs || checkedAtMs - readStartedAtMs > BOOK_PROTECTION_MAX_READ_MS) {

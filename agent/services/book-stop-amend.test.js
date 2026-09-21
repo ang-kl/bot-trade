@@ -55,6 +55,22 @@ test('an accepted amendment with a slow confirmation cannot advance the book', a
   assert.equal(amends, 1)
 })
 
+test('a pending broker read times out and its late answer cannot trigger an amendment', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let resolveRead, amends = 0
+  const pending = amendBookStop({}, { positionId: '7', stopLoss: 100, side: 'long' }, {
+    readPosition: () => new Promise(resolve => { resolveRead = resolve }),
+    amend: async () => { amends++ },
+  })
+  const rejected = assert.rejects(pending, /read deadline exceeded/)
+  await Promise.resolve()
+  t.mock.timers.tick(5000)
+  await rejected
+  resolveRead({ positionId: '7', stopLoss: 90, takeProfit: 140, tradeData: { tradeSide: 1 } })
+  await Promise.resolve()
+  assert.equal(amends, 0)
+})
+
 test('a genuinely missing TP does not block an existing-policy SL improvement or invent a target', async () => {
   let broker = { positionId: '7', stopLoss: 110, tradeData: { tradeSide: 'SELL' } }
   const result = await amendBookStop({}, { positionId: '7', stopLoss: 105, side: 'short' }, {
