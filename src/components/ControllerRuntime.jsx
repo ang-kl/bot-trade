@@ -40,7 +40,7 @@ export default function ControllerRuntime({ runtime }) {
       </div>
       {runtime.monitor && <p>Monitor interval: {count(runtime.monitor.tick?.everyMs)} ms; protection interval: {count(runtime.monitor.band?.everyMs)} ms; last protection duration: {count(runtime.monitor.band?.lastMs)} ms{runtime.monitor.band?.overran ? ' - OVERRAN' : ''}. Recorded: {stamp(runtime.monitor.at)}.</p>}
       {missing.length > 0 && <div role="status"><strong>Missing TP1 - last broker audit</strong>
-        <ul>{missing.map(p => <li key={`${p.account}:${p.positionId}`}>{p.account} / {p.symbol} / {p.positionId}: {p.recordedTarget == null ? 'Target decision required - no recorded target' : `Recorded target ${p.recordedTarget} available; broker confirmation pending`}{p.stale ? ' (audit stale or latest check failed)' : ''}</li>)}</ul>
+        <ul>{missing.map(p => <li key={`${p.account}:${p.positionId}`}>{p.account} / {p.symbol} / {p.positionId}: {p.repairFailure?.retryable === false && ['TRADING_BAD_STOPS', 'TRADING_BAD_VOLUME'].includes(p.repairFailure.code) ? `Action required: ${p.repairFailure.code || 'broker refusal'} at TP ${p.repairFailure.attemptedTarget}. ${p.repairFailure.error}. Identical automatic repair paused.` : p.recordedTarget == null ? 'Target decision required - no recorded target' : `Recorded target ${p.recordedTarget} available; broker confirmation pending`}{p.stale ? ' (audit stale or latest check failed)' : ''}</li>)}</ul>
       </div>}
     </div>
   )

@@ -15,6 +15,7 @@
 import { hvnTargetPrice } from '../lib/bracket-advice.js'
 import { minRrFor } from './strategies.js'
 import { normPosId } from '../lib/pos-id.js'
+import { protectionFailure } from './protection-repair-state.js'
 
 const HVN_TIMEFRAME = '15m' // same profile the manual-order advice uses
 const HVN_BAR_COUNT = 240   // ~2.5 days of 15m structure
@@ -357,11 +358,11 @@ export function makeTargetApplier(db, creds, {
       // `{error: 'POSITION_NOT_FOUND'}`, a shape the real amend never returns,
       // so it was green for the wrong reason.
       if (!res) return { ok: false, retryable: true, error: 'amend returned nothing' }
-      if (res.error) return { ok: false, error: String(res.error) }
+      if (res.error) return protectionFailure(res, { retryableUnknown: false })
       if (res.alreadyClosed) {
         return { ok: false, error: `position closed before the amend reached the broker — ${res.reason || res.rawError || 'alreadyClosed'}` }
       }
-      if (res.rawError) return { ok: false, error: String(res.rawError) }
+      if (res.rawError) return protectionFailure(res.rawError, { retryableUnknown: false })
       try {
         const rec = recordEvent
           ?? (await import('./position-events.js')).recordPositionEvent
@@ -402,7 +403,7 @@ export function makeTargetApplier(db, creds, {
       } catch { /* the journal must never undo the amend */ }
       return { ok: true }
     } catch (e) {
-      return { ok: false, retryable: true, error: e?.message || 'amend failed' }
+      return protectionFailure(e)
     }
   }
 }
