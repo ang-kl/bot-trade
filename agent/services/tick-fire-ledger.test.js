@@ -42,8 +42,11 @@ function ring(db, { kind = 'fire_result', code = 'ok', seq = 1, detail, symbolId
     .run(bootId, seq, tsMs, kind, String(accountId), symbolId, code, detail)
 }
 
+// Wire units (1e-5 of a price): entry=110000 → 1.1, stop=109500 → 1.095,
+// target=111000 → 1.11, ref=109900 → 1.099 (the signal ask this BUY crossed
+// — below entry, so the reason reads "entry ... over ref").
 const okDetail = (intent = INTENT) =>
-  `intent=${intent} pos=7001 order=9001 entry=110000 stop=109500 target=111000 side=BUY`
+  `intent=${intent} pos=7001 order=9001 entry=110000 stop=109500 target=111000 side=BUY ref=109900`
 
 // ---------------------------------------------------------------------------
 // 1. One accepted fire → exactly one approved risk event, linked, once.
@@ -72,10 +75,17 @@ test('an accepted tick fire writes ONE approved risk event whose reason states w
   // position-history.js:93-107 refuses: the reason must carry the prices that
   // were crossed, so a reader can check it against the chart.
   const reason = proposal.direction_reason
-  assert.match(reason, /entry=\d+/, 'the reason carries the entry price it broke out at')
-  assert.match(reason, /stop=\d+/, 'and the stop that defined the risk')
-  assert.match(reason, /^tick:breakout_BUY_entry=110000_stop=109500_target=111000$/)
+  assert.match(reason, /entry=[\d.]+/, 'the reason carries the entry price it broke out at')
+  assert.match(reason, /stop=[\d.]+/, 'and the stop that defined the risk')
+  assert.match(reason, /_over_ref=/, 'a BUY states what it broke ABOVE, not just its own levels')
+  assert.equal(reason, 'tick:breakout_BUY_entry=1.1_over_ref=1.099_stop=1.095_target=1.11')
   assert.ok(!/^tick$/.test(reason) && reason.length > 'tick'.length + 4, 'a bare producer name is not a reason')
+
+  // PRICE units, not wire units: the wire fixture (110000) is in the
+  // hundred-thousands; the price it converts to is under 1000.
+  assert.ok(proposal.entry < 1000, 'entry is stored in price units, not wire units')
+  assert.equal(proposal.entry, 1.1)
+  assert.equal(proposal.units, 'price')
 
   const it = db.prepare('SELECT risk_event_id FROM entry_intents WHERE id = ?').get(INTENT)
   assert.equal(it.risk_event_id, rows[0].id, 'the intent names its event — the link the ±5-min window could never find')
@@ -164,6 +174,24 @@ test('fire_reject and fire_refused write NO risk event, and the pass surfaces wh
   assert.equal(r2.written, 0)
   assert.equal(r2.unattributed, 1)
   assert.ok(r2.reasons.includes('no_breakout_fact'), 'the pass NAMES why, so a lost fact is visible not silent')
+})
+
+// ---------------------------------------------------------------------------
+// 3b. A fire_result whose OWN code is not 'ok' is neither a reject nor a
+// refused kind — it fell through both counts and vanished from every figure
+// this pass reports until this fix. Counted here under its own reason.
+// ---------------------------------------------------------------------------
+test('a fire_result with a non-ok code is counted as unattributed, not silently dropped', () => {
+  const db = fresh()
+  seedTickIntent(db)
+  ring(db, { kind: 'fire_result', code: 'partial_fill', seq: 1, detail: okDetail() })
+
+  const r = runTickFireLedger(db, { now: CLOSE_MS })
+  assert.equal(r.written, 0, 'a non-ok fire_result opened no approved risk')
+  assert.equal(r.rejects, 0, 'it is not a fire_reject or fire_refused kind')
+  assert.equal(r.unattributed, 1)
+  assert.ok(r.reasons.includes('result_not_ok'), 'the pass NAMES why, so a non-ok result is visible not silent')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_events').get().n, 0)
 })
 
 // ---------------------------------------------------------------------------
@@ -262,11 +290,40 @@ test('every pass persists its own figures, and the unattributed totals accumulat
   assert.ok(totals.firstAt && totals.lastAt, 'the span the totals cover is on the record, not inferred')
 })
 
-test('reasonFor refuses to invent: no side, no entry, or no stop yields null rather than a shorter sentence', () => {
-  assert.equal(reasonFor({ side: 'BUY', entry: 1, stop: 2, target: 3 }), 'tick:breakout_BUY_entry=1_stop=2_target=3')
-  assert.equal(reasonFor({ side: 'BUY', entry: 1, stop: 2, target: null }), 'tick:breakout_BUY_entry=1_stop=2')
-  assert.equal(reasonFor({ side: '', entry: 1, stop: 2, target: 3 }), null)
-  assert.equal(reasonFor({ side: 'BUY', entry: null, stop: 2, target: 3 }), null)
-  assert.equal(reasonFor({ side: 'BUY', entry: 1, stop: null, target: 3 }), null)
+test('reasonFor refuses to invent: no side, no entry, no stop or no ref yields null rather than a shorter sentence', () => {
+  assert.equal(reasonFor({ side: 'BUY', entry: 1, stop: 2, target: 3, ref: 0.5 }), 'tick:breakout_BUY_entry=1_over_ref=0.5_stop=2_target=3')
+  assert.equal(reasonFor({ side: 'SELL', entry: 1, stop: 2, target: null, ref: 1.5 }), 'tick:breakout_SELL_entry=1_under_ref=1.5_stop=2')
+  assert.equal(reasonFor({ side: '', entry: 1, stop: 2, target: 3, ref: 0.5 }), null)
+  assert.equal(reasonFor({ side: 'BUY', entry: null, stop: 2, target: 3, ref: 0.5 }), null)
+  assert.equal(reasonFor({ side: 'BUY', entry: 1, stop: null, target: 3, ref: 0.5 }), null)
+  // Missing ref (an older sidecar, no ref= token) is the same refusal as a
+  // missing entry/stop — absent is reported, never invented.
+  assert.equal(reasonFor({ side: 'BUY', entry: 1, stop: 2, target: 3, ref: null }), null)
   assert.deepEqual(parseDetail('intent=i1 entry=5 side=SELL'), { intent: 'i1', entry: '5', side: 'SELL' })
+})
+
+// ---------------------------------------------------------------------------
+// The comparator is derived from the NUMBERS, not the side (review bot on
+// #977). tick_shadow.cpp fills at the first tradable quote past the latency
+// window while `ref` is the signal's own quote, and the price bound permits
+// deviation on either side — a BUY can retrace during the latency and fill
+// AT OR BELOW ref. Side-derived wording ("BUY is always over") would then
+// write a false statement into an approved risk event.
+// ---------------------------------------------------------------------------
+test('reasonFor derives over/under/at from entry vs ref, never from the side', () => {
+  // BUY, ordinary breakout: entry above the signal ask it broke through.
+  assert.equal(reasonFor({ side: 'BUY', entry: 1.10014, stop: 1.09964, target: 1.10114, ref: 1.10000 }),
+    'tick:breakout_BUY_entry=1.10014_over_ref=1.1_stop=1.09964_target=1.10114')
+  // BUY, the retrace case the bot found: the fill lands BELOW the signal ask
+  // (latency + price-bound tolerance let it through) — must read "under",
+  // never "over" just because the side is BUY.
+  assert.equal(reasonFor({ side: 'BUY', entry: 1.09990, stop: 1.09964, target: 1.10114, ref: 1.10000 }),
+    'tick:breakout_BUY_entry=1.0999_under_ref=1.1_stop=1.09964_target=1.10114')
+  // SELL, rebound case: the fill lands ABOVE the signal bid — must read
+  // "over", never "under" just because the side is SELL.
+  assert.equal(reasonFor({ side: 'SELL', entry: 1.10010, stop: 1.10036, target: 1.09886, ref: 1.10000 }),
+    'tick:breakout_SELL_entry=1.1001_over_ref=1.1_stop=1.10036_target=1.09886')
+  // Exact equality: neither over nor under.
+  assert.equal(reasonFor({ side: 'BUY', entry: 1.1, stop: 1.0995, target: 1.101, ref: 1.1 }),
+    'tick:breakout_BUY_entry=1.1_at_ref=1.1_stop=1.0995_target=1.101')
 })

@@ -85,6 +85,10 @@ struct TickFire {
   // kept here rather than re-derived.
   long long entry = 0, stop = 0, target = 0;
   std::string side;              // BUY | SELL, the fill's own side
+  // PR-1b follow-up (21-09-2026): the signal quote the fill crossed —
+  // signalAsk for BUY, signalBid for SELL — so the ledger's reason can state
+  // what was crossed (`entry=…_over_ref=…`), not just where the fill landed.
+  long long ref = 0;
 };
 
 class TickFirer {

@@ -36,6 +36,7 @@
 // whose detail carries no prices (an older sidecar) writes NO risk event and is
 // counted as unattributed instead of being filled in with a guess.
 import { getState, setState } from '../db.js'
+import { WIRE_UNIT } from './tick-permits.js'
 
 export const TICK_FIRE_LEDGER_CURSOR_KEY = 'tick_fire_ledger_cursor_json'
 // THE COUNT OUTLIVES THE PASS (20-09-2026, checker round). A lost window
@@ -60,16 +61,43 @@ export function parseDetail(detail) {
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null }
 
+// The ring carries prices in WIRE units (1e-5 of a price; WIRE_UNIT,
+// tick-permits.js), not the symbol's own decimal places — a per-symbol
+// digits lookup is not reachable from this pass without a new symbol-table
+// join, so WIRE_UNIT is what converts. Rounded to 8 decimals to drop the
+// float noise a plain multiply leaves (e.g. 110000 * 1e-5 !== 1.1 exactly).
+function toPrice(wireValue) {
+  const n = num(wireValue)
+  if (n == null) return null
+  return Number((n * WIRE_UNIT).toFixed(8))
+}
+
 /**
- * The direction reason for one OK fire. Null when the ring line does not carry
- * the breakout — absent is reported, never invented.
+ * The direction reason for one OK fire, in PRICE units, stated as a
+ * comparison against the signal reference the fill crossed — not just the
+ * fill's own levels (position-history.js:93-107 refuses a tautology, and a
+ * reason with no reference is one step short of that). Null when the ring
+ * line does not carry the breakout fact or the reference — absent is
+ * reported, never invented.
+ *
+ * THE COMPARATOR IS DERIVED FROM THE NUMBERS, NOT THE SIDE (review bot on
+ * #977, confirmed at source). tick_shadow.cpp:125-127 fills at the first
+ * tradable quote PAST the latency window (q.ask + slip for BUY), while ref
+ * is the signal's OWN ask/bid (p.ask/p.bid, tick_shadow.cpp:140), and
+ * tick_firer.cpp:140's priceWithinBound(ref, f.entry, maxDev) permits
+ * deviation on EITHER side. A BUY can retrace during the latency and fill
+ * at entry <= ref — side-derived "over" would then be a false statement
+ * persisted into an approved risk event and into position history, exactly
+ * what the reason exists to prevent. The fill is still real and still gets
+ * a reason; only the wording must be true.
  */
-export function reasonFor({ side, entry, stop, target }) {
+export function reasonFor({ side, entry, stop, target, ref }) {
   const s = String(side || '').toUpperCase()
   if (s !== 'BUY' && s !== 'SELL') return null
-  if (entry == null || stop == null) return null
+  if (entry == null || stop == null || ref == null) return null
+  const cmp = entry > ref ? 'over' : entry < ref ? 'under' : 'at'
   const t = target == null ? '' : `_target=${target}`
-  return `tick:breakout_${s}_entry=${entry}_stop=${stop}${t}`
+  return `tick:breakout_${s}_entry=${entry}_${cmp}_ref=${ref}_stop=${stop}${t}`
 }
 
 /**
@@ -144,6 +172,11 @@ export function runTickFireLedger(db, { now = Date.now(), limit = MAX_ROWS } = {
     // A refusal or a broker rejection opened NO risk: no risk event, ever.
     if (r.kind !== 'fire_result' || String(r.code || '') !== 'ok') {
       if (r.kind === 'fire_reject' || r.kind === 'fire_refused') out.rejects++
+      // A fire_result whose own code is not 'ok' is neither a reject nor a
+      // refusal kind, so it fell through both counts above and vanished
+      // from every figure this pass reports — counted here instead, under
+      // its own reason, so it is visible rather than silently dropped.
+      else if (r.kind === 'fire_result') { out.unattributed++; out.reasons.push('result_not_ok') }
       continue
     }
     const d = parseDetail(r.detail)
@@ -157,8 +190,10 @@ export function runTickFireLedger(db, { now = Date.now(), limit = MAX_ROWS } = {
     if (!it) { out.unattributed++; out.reasons.push('intent_missing'); continue }
     if (it.risk_event_id != null) { out.skipped++; continue }
     const side = String(d.side || it.side || '').toUpperCase()
-    const entry = num(d.entry), stop = num(d.stop), target = num(d.target)
-    const reason = reasonFor({ side, entry, stop, target })
+    // The ring carries WIRE units; convert to price units BEFORE building
+    // the reason and the proposal — see toPrice() above.
+    const entry = toPrice(d.entry), stop = toPrice(d.stop), target = toPrice(d.target), ref = toPrice(d.ref)
+    const reason = reasonFor({ side, entry, stop, target, ref })
     if (!reason) { out.unattributed++; out.reasons.push('no_breakout_fact'); continue }
     const proposal = {
       direction_reason: reason,
@@ -171,6 +206,7 @@ export function runTickFireLedger(db, { now = Date.now(), limit = MAX_ROWS } = {
       entry,
       sl: it.sl ?? stop,
       tp: it.tp ?? target,
+      units: 'price',
       source: 'tick_fire_ledger',
       ring: { side: r.side, bootId: r.boot_id, seq: r.seq },
     }
