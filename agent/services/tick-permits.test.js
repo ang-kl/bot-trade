@@ -12,10 +12,10 @@ import { readFileSync } from 'node:fs'
 
 import { initDB, setState, getState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { engineStatusFor, requestEntryMode, acknowledgeEntryEpochs, writeEngineStatus } from './entry-mode.js'
-import { reconcileIntents, TICK_PRODUCER, reserveEntry, STANDING_PRODUCERS } from './entry-ledger.js'
+import { engineStatusFor, requestEntryMode, requestAdmittedBases, acknowledgeEntryEpochs, writeEngineStatus, admitEntry, _resetRefusalDedupe } from './entry-mode.js'
+import { reconcileIntents, TICK_PRODUCER, reserveEntry, resolveIntent, redeemPermit, STANDING_PRODUCERS } from './entry-ledger.js'
 import { profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
-import { permitSizing, tickEntryAccountsFor, runTickPermitFeeder, loadTickEntryConfig, PAUSE_CHECKS, WIRE_UNIT, PAUSED_KEY, openPositionsFor } from './tick-permits.js'
+import { permitSizing, tickEntryAccountsFor, runTickPermitFeeder, loadTickEntryConfig, PAUSE_CHECKS, WIRE_UNIT, PAUSED_KEY, openPositionsFor, heldWithPending, markTickRepush, takeTickRepush, tickRepushPending } from './tick-permits.js'
 import { labelIntentId } from '../lib/trade-labels.js'
 import { desiredGuardFor } from './exec-guard-sync.js'
 
@@ -287,4 +287,129 @@ test('RACE CHECKER: no permit for a symbol the account already holds, none at th
 test('the sidecar\'s tick label carries the intent in the 8th field, so a position the ring never settled is reconciled by its label', () => {
   assert.equal(labelIntentId('tick:abcdef0123456789|||||||i0123456789ab'), 'i0123456789ab')
   assert.equal(labelIntentId('tick:abcdef0123456789'), null)
+})
+
+// ---------------------------------------------------------------------------
+// PR-3 (dual-basis arbitration, 21-09-2026): admittedBases with ONE budget.
+// ---------------------------------------------------------------------------
+const dual = (db, id) => {
+  const r = requestAdmittedBases(db, id, ['bar', 'tick'], { expectedRevision: engineStatusFor(db, id).configRevision, readiness: () => ({ ready: true, blockedReasons: [] }) })
+  assert.equal(r.ok, true, r.reason)
+  return engineStatusFor(db, id)
+}
+const gbp = { EURUSD: 1, GBPUSD: 2 }
+const resolveGbp = async (_db, _c, name) => ({ id: gbp[name] ?? null, source: 'test' })
+
+test('PR-3: a TIME_BASED account admitting [bar, tick] is a tick account for the feeder AND the guard sync (the two pushes agree), stays a bar account for the fence, and is neither when the overlay is cleared', async () => {
+  const db = fresh()
+  _resetRefusalDedupe()
+  assert.deepEqual(tickEntryAccountsFor(db, side), [], 'TIME_BASED with no overlay: not a tick account')
+  dual(db, DEMO)
+  assert.equal(engineStatusFor(db, DEMO).effectiveEntryMode, 'TIME_BASED', 'the mode did not move')
+  assert.deepEqual(tickEntryAccountsFor(db, side), [DEMO], 'the feeder lists it')
+  assert.deepEqual(desiredGuardFor(db, side).tickEntryAccounts, [Number(DEMO)], 'the guard sync lists it — the same predicate, or the two pushes oscillate')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar' }).ok, true)
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: TICK_PRODUCER, basis: 'tick' }).ok, true)
+  setState(db, `acct:${DEMO}:account_balance_usd`, '10000')
+  const d = deps()
+  const r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 4); assert.deepEqual(d.pushes.at(-1).tickEntryAccounts, [Number(DEMO)])
+  assert.ok(d.pushes.at(-1).tickPermits.every(p => p.permit.epoch === engineStatusFor(db, DEMO).modeEpoch))
+  // the overlay cleared → not a tick account on either push; standing rows released by the feeder
+  assert.equal(requestAdmittedBases(db, DEMO, null, { expectedRevision: engineStatusFor(db, DEMO).configRevision }).ok, true)
+  assert.deepEqual(tickEntryAccountsFor(db, side), []); assert.deepEqual(desiredGuardFor(db, side).tickEntryAccounts, [])
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RELEASED' AND error_code = 'basis_withdrawn'`).get(TICK_PRODUCER).n, 4, 'the setter released them as basis_withdrawn')
+  const r2 = await runTickPermitFeeder(db, side, d.opts)
+  assert.deepEqual(d.pushes.at(-1), { tickEntryAccounts: [], tickPermits: [] }); assert.equal(r2.permits, 0)
+})
+
+test('PR-3 (one budget): a bar EURUSD intent and a tick GBPUSD permit are both admitted on [bar, tick]; the pending bar intent counts against the position cap, a standing tick row does not; after the bar fill held.total is 1, not 2', async () => {
+  const db = fresh()
+  setState(db, 'tick_symbols_json', JSON.stringify(['GBPUSD']))
+  dual(db, DEMO)
+  setState(db, `acct:${DEMO}:account_balance_usd`, '10000')
+  const d = deps({ resolveSymbolId: resolveGbp })
+  // the bar side reserves EURUSD BUY (RESERVED — pending, unfilled)
+  const bar = reserveEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar', symbolId: 1, symbol: 'EURUSD', side: 'BUY', volume: 100_000 })
+  assert.equal(bar.ok, true, bar.reason)
+  let r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 2, 'GBPUSD BUY/SELL permitted beside the bar intent'); assert.deepEqual(r.refused, [])
+  assert.deepEqual(r.budget[`…${DEMO.slice(-4)}`], { positions: 0, pending: 1, total: 1, cap: 5 }, 'the pending bar intent is spent capacity; the two standing tick rows are not')
+  let h = heldWithPending(db, DEMO)
+  assert.equal(h.total, 1); assert.equal(h.pending, 1); assert.equal(h.positions, 0)
+  // the bar side fills: the intent settles and the position appears in trades — counted ONCE
+  assert.equal(redeemPermit(db, bar.permit.id).ok, true)
+  assert.equal(resolveIntent(db, bar.intentId, { state: 'FILLED', positionId: '9001', source: 'event' }).ok, true)
+  db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id) VALUES ('EURUSD', 'BUY', 'open', ?, '9001')`).run(DEMO)
+  h = heldWithPending(db, DEMO)
+  assert.equal(h.total, 1, 'the filled intent is no longer pending: 1, not 2'); assert.equal(h.pending, 0); assert.equal(h.positions, 1)
+  r = await runTickPermitFeeder(db, side, d.opts)
+  assert.deepEqual(r.budget[`…${DEMO.slice(-4)}`], { positions: 1, pending: 0, total: 1, cap: 5 })
+  assert.equal(r.permits, 2, 'GBPUSD still permitted — EURUSD is the one held')
+  // the cap is ONE cap: four more pending bar intents fill it and the tick side gets nothing
+  for (const [sid, sym] of [[3, 'USDJPY'], [4, 'AUDUSD'], [5, 'NZDUSD'], [6, 'USDCAD']]) assert.equal(reserveEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar', symbolId: sid, symbol: sym, side: 'BUY', volume: 100_000 }).ok, true)
+  r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 0); assert.ok(r.refused.every(x => /^max_positions: 5\/5/.test(x.reason)), JSON.stringify(r.refused))
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED'`).get(TICK_PRODUCER).n, 0, 'the standing rows are withdrawn at the cap')
+})
+
+test('PR-3: a tick standing permit, then a bar signal on the same symbol and side — the bar is admitted (the permit never vetoes it), the tick permit is withdrawn on the next feeder pass and the sidecar\'s push no longer carries it; the account is marked for a re-push on the fill', async () => {
+  const db = fresh()
+  dual(db, DEMO)
+  setState(db, `acct:${DEMO}:account_balance_usd`, '10000')
+  const d = deps()
+  await runTickPermitFeeder(db, side, d.opts)
+  assert.ok(d.pushes.at(-1).tickPermits.some(p => p.symbolId === 1 && p.side === 'BUY'), 'EURUSD BUY standing permit pushed')
+  const standing = db.prepare(`SELECT id FROM entry_intents WHERE producer_id = ? AND symbol_id = 1 AND side = 'BUY' AND state = 'RESERVED'`).get(TICK_PRODUCER).id
+  const bar = reserveEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar', symbolId: 1, symbol: 'EURUSD', side: 'BUY', volume: 100_000 })
+  assert.equal(bar.ok, true, `a standing permit is capacity, not a veto: ${bar.reason}`)
+  const r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(db.prepare('SELECT state, error_code FROM entry_intents WHERE id = ?').get(standing).state, 'RELEASED')
+  assert.equal(db.prepare('SELECT error_code FROM entry_intents WHERE id = ?').get(standing).error_code, 'tick_permit_withdrawn')
+  assert.ok(!d.pushes.at(-1).tickPermits.some(p => p.symbolId === 1 && p.side === 'BUY'), 'the push no longer carries EURUSD BUY')
+  assert.ok(d.pushes.at(-1).tickPermits.some(p => p.symbolId === 1 && p.side === 'SELL'), 'EURUSD SELL is another key')
+  assert.equal(r.permits, 3)
+  assert.match(r.refused.find(x => x.symbol === 'EURUSD').reason, /^intent_open: RESERVED/)
+  // the re-push mark: the loop marks the account on a fill; the heartbeat takes it once, by side roster
+  assert.equal(tickRepushPending(), false)
+  markTickRepush(DEMO); markTickRepush(DEMO2)
+  assert.equal(tickRepushPending(), true)
+  assert.deepEqual(takeTickRepush([DEMO]), [DEMO], 'taken for this side\'s roster only')
+  assert.equal(tickRepushPending(), true, 'the other account\'s mark waits for its side')
+  assert.deepEqual(takeTickRepush(null), [DEMO2]); assert.equal(tickRepushPending(), false)
+  assert.deepEqual(takeTickRepush([DEMO]), [], 'a mark is taken once')
+})
+
+test('PR-3: the bar side\'s account pre-gate refusing (balance_not_account_scoped — the pure read, no decision row) gives the tick side zero permits, releases its standing rows and names the guard in out.paused; the guard sync agrees; an exhausted margin pool pauses the same way; both clear when the state does', async () => {
+  const db = fresh()
+  dual(db, DEMO)
+  setState(db, `acct:${DEMO}:account_balance_usd`, '10000')
+  const d = deps()
+  await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED'`).get(TICK_PRODUCER).n, 4)
+  // the account's stamp goes and only the shared legacy key is left: the pre-gate refuses the account
+  db.prepare(`DELETE FROM agent_state WHERE key = ?`).run(`acct:${DEMO}:account_balance_usd`)
+  setState(db, 'account_balance_usd', '25000')
+  const before = db.prepare(`SELECT COUNT(*) AS n FROM decision_log`).get().n
+  let r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 0); assert.equal(r.released, 4)
+  assert.equal(r.paused.length, 1); assert.equal(r.paused[0].reason, 'account_pregate:balance_not_account_scoped'); assert.match(r.paused[0].detail, /balance_not_account_scoped/)
+  assert.deepEqual(d.pushes.at(-1), { tickEntryAccounts: [], tickPermits: [] })
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RELEASED' AND error_code = 'account_pregate:balance_not_account_scoped'`).get(TICK_PRODUCER).n, 4)
+  assert.deepEqual(desiredGuardFor(db, side).tickEntryAccounts, [], 'the guard sync leaves the paused account out too')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM decision_log`).get().n, before, 'the PURE verdict wrote no decision row (the loop\'s memoising pre-gate does that)')
+  // the stamp returns: permits again
+  setState(db, `acct:${DEMO}:account_balance_usd`, '10000')
+  r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 4); assert.deepEqual(r.paused, [])
+  // the margin pool: the selected account's fresh broker snapshot shows the cap spent
+  setState(db, 'ctrader_account_id', DEMO)
+  setState(db, 'broker_snapshot_cache_json', JSON.stringify({ fetchedAt: new Date().toISOString(), account: { health: { usedMargin: 9_000 } } }))
+  r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 0); assert.equal(r.released, 4)
+  assert.equal(r.paused[0].reason, 'account_pregate:portfolio_margin_exhausted'); assert.match(r.paused[0].detail, /^headroom \$-4000\.00/)
+  assert.deepEqual(d.pushes.at(-1), { tickEntryAccounts: [], tickPermits: [] })
+  setState(db, 'broker_snapshot_cache_json', JSON.stringify({ fetchedAt: new Date().toISOString(), account: { health: { usedMargin: 100 } } }))
+  r = await runTickPermitFeeder(db, side, d.opts)
+  assert.equal(r.permits, 4); assert.deepEqual(r.paused, [])
 })

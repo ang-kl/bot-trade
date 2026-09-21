@@ -35,6 +35,7 @@ import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
 import { recordRegimeBlock, recordEvidenceShadow } from './services/gate-skips.js'
 import { accountPregate, proposalPregate, invalidateAccountPregate } from './services/account-pregate.js'
+import { markTickRepush } from './services/tick-permits.js'
 import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
 import { startLagMonitor, sampleLag } from './services/event-loop-lag.js'
@@ -1735,6 +1736,10 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
         // The book just changed: the next symbol re-asks the pre-gate for
         // this account instead of trusting a pre-fill verdict.
         invalidateAccountPregate(acct.accountId)
+        // PR-3: the tick side's companion — the next heartbeat re-pushes
+        // this account's permits so the sidecar's standing permit on the
+        // filled symbol is withdrawn (position_open), not left to expire.
+        markTickRepush(acct.accountId)
         if (process.env.TELEGRAM_BOT_TOKEN) {
           try {
             const { sendMessage } = await import('./services/telegram.js')

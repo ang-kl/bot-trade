@@ -500,3 +500,79 @@ test('PR-G (checker blocker 1): a HUMAN requestEntryMode zeroes the bot\'s strea
   assert.equal(engineModule.readAutoState(db, DEMO).readyStreak, 3, 'the bot\'s switch leaves the streak to the pass')
   assert.equal(engineModule.readAutoState(db, DEMO).humanOverride, null)
 })
+
+// ---------------------------------------------------------------------------
+// PR-3 (dual-basis arbitration, 21-09-2026): admittedBases.
+// ---------------------------------------------------------------------------
+test('PR-3: basesFor is the mode\'s own basis when admittedBases is null, the set when it is set, and nothing under STOPPED; admitEntry admits both producers on [bar, tick] and names the admitted set in its refusal', async () => {
+  const { basesFor, requestAdmittedBases } = engineModule
+  const db = fresh()
+  _resetRefusalDedupe()
+  assert.deepEqual(basesFor(engineStatusFor(db, DEMO)), ['bar'], 'no record: TIME_BASED admits bar')
+  assert.deepEqual(basesFor({ effectiveEntryMode: 'TICK_MOMENTUM', admittedBases: null }), ['tick'])
+  assert.deepEqual(basesFor({ effectiveEntryMode: 'TIME_BASED', admittedBases: ['bar', 'tick'] }), ['bar', 'tick'])
+  assert.deepEqual(basesFor({ effectiveEntryMode: 'STOPPED', admittedBases: ['bar', 'tick'] }), [], 'the overlay is not a way past the stop')
+  assert.deepEqual(basesFor(null), [])
+  const ready = () => ({ ready: true, blockedReasons: [] })
+  const r = requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: 0, readiness: ready })
+  assert.equal(r.ok, true, r.reason); assert.deepEqual(r.status.admittedBases, ['bar', 'tick']); assert.deepEqual(r.bases, ['bar', 'tick'])
+  assert.equal(r.status.configRevision, 1, 'the revision moves'); assert.equal(r.status.modeEpoch, 0, 'the epoch does not — this is not a mode change')
+  assert.equal(r.status.effectiveEntryMode, 'TIME_BASED'); assert.equal(r.status.transitionState, 'STABLE')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar' }).ok, true, 'bar still admitted')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum', basis: 'tick' }).ok, true, 'tick admitted beside it')
+  // narrowing to ['tick'] refuses bar by the admitted set's name
+  const n = requestAdmittedBases(db, DEMO, ['tick'], { expectedRevision: 1, readiness: ready })
+  assert.equal(n.ok, true); assert.deepEqual(n.removed, ['bar'])
+  const bar = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar' })
+  assert.equal(bar.ok, false); assert.equal(bar.reason, 'entry_mode_basis: TIME_BASED admits tick producers, daily_momentum_account is bar')
+  // null clears: the mode's own basis again, tick refused
+  const c = requestAdmittedBases(db, DEMO, null, { expectedRevision: 2 })
+  assert.equal(c.ok, true); assert.equal(c.status.admittedBases, null); assert.deepEqual(c.bases, ['bar']); assert.deepEqual(c.removed, ['tick'])
+  _resetRefusalDedupe()
+  assert.match(admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum', basis: 'tick' }).reason, /^entry_mode_basis: TIME_BASED admits bar producers/)
+  // the view carries both the stored set and the effective bases
+  const row = entryEnginesView(db).accounts.find(a => a.accountId === `…${DEMO.slice(-4)}`)
+  assert.equal(row.admittedBases, null); assert.deepEqual(row.bases, ['bar'])
+})
+
+test('PR-3: ADDING tick passes the readiness predicate that gates a promotion — a not-ready account cannot get [tick] or [bar, tick], with or without a readiness function; a stale revision, an auto actor on a manual account, and a malformed set are refused; nothing is written on a refusal', () => {
+  const { requestAdmittedBases } = engineModule
+  const db = fresh()
+  const notReady = () => ({ ready: false, blockedReasons: ['recorder_recording', 'validation_stage'] })
+  const ready = () => ({ ready: true, blockedReasons: [] })
+  let r = requestAdmittedBases(db, DEMO, ['tick'], { expectedRevision: 0 })
+  assert.equal(r.ok, false); assert.match(r.reason, /^tick_readiness_unavailable/, 'no readiness function → no path into tick')
+  r = requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: 0, readiness: notReady })
+  assert.equal(r.ok, false); assert.equal(r.reason, 'tick_not_ready: recorder_recording, validation_stage'); assert.deepEqual(r.blockedReasons, ['recorder_recording', 'validation_stage'])
+  r = requestAdmittedBases(db, DEMO, ['tick'], { expectedRevision: 0, readiness: () => { throw new Error('status table missing') } })
+  assert.equal(r.ok, false); assert.match(r.reason, /^tick_readiness_error: status table missing/)
+  r = requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: 3, readiness: ready })
+  assert.equal(r.ok, false); assert.equal(r.reason, 'revision_conflict'); assert.equal(r.current, 0)
+  r = requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: 0, readiness: ready, actor: 'auto:readiness' })
+  assert.equal(r.ok, false); assert.equal(r.reason, 'policy_manual')
+  for (const bad of [[], ['bar', 'bar'], ['candle'], 'tick', { bar: true }]) {
+    r = requestAdmittedBases(db, DEMO, bad, { expectedRevision: 0, readiness: ready })
+    assert.equal(r.ok, false, JSON.stringify(bad)); assert.match(r.reason, /^admitted_bases_invalid/, JSON.stringify(bad))
+  }
+  assert.equal(engineStatusFor(db, DEMO).configRevision, 0, 'every refusal wrote nothing'); assert.equal(engineStatusFor(db, DEMO).admittedBases, null)
+  // adding bar to a tick account needs no readiness: bar is the ordinary engine
+  const ok = requestAdmittedBases(db, DEMO, ['bar'], { expectedRevision: 0 })
+  assert.equal(ok.ok, true); assert.deepEqual(ok.status.admittedBases, ['bar'])
+  // a mode switch is a fresh one-basis declaration: the overlay is cleared
+  const ready2 = () => ({ ready: true, blockedReasons: [] })
+  assert.equal(requestAdmittedBases(db, DEMO, ['bar', 'tick'], { expectedRevision: 1, readiness: ready2 }).ok, true)
+  const sw = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: 2 })
+  assert.equal(sw.ok, true); assert.equal(sw.status.admittedBases, null, 'the switch drops the overlay; it is asked again through the same gate')
+  assert.equal(sw.status.modeEpoch, 1)
+})
+
+test('PR-3 wiring pin (comments stripped): POST /actions/entry-mode routes admittedBases to requestAdmittedBases with tickReadinessFor and marks the account for a permit re-push; the loop marks a re-push beside invalidateAccountPregate; the heartbeat takes the marks', () => {
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const route = strip(readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8'))
+  assert.ok(route.includes("requestAdmittedBases(db, String(accountId), req.body.admittedBases, { expectedRevision, actor: 'owner', readiness: tickReadinessFor })"), 'the route sets the bases through the readiness-gated setter')
+  assert.ok(/markTickRepush\(String\(accountId\)\)/.test(route), 'the route marks a re-push')
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  assert.ok(/invalidateAccountPregate\(acct\.accountId\)\s*markTickRepush\(acct\.accountId\)/.test(loop), 'a bar fill marks the tick re-push beside the pre-gate invalidation')
+  const hb = strip(readFileSync(new URL('./heartbeat.js', import.meta.url), 'utf8'))
+  assert.ok(hb.includes('const repush = takeTickRepush(want)') && hb.includes('&& !repush.length) return null'), 'the heartbeat runs the feeder for a marked account')
+})

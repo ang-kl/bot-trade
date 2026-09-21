@@ -34,11 +34,12 @@ import { execBaseFor, setExecGuard } from '../lib/exec-engine.js'
 import { usdLossPerLot } from '../lib/contracts.js'
 import { unitsPerLot } from '../lib/lot-size-registry.js'
 import { getState, setState } from '../db.js'
-import { engineStatusFor } from './entry-mode.js'
-import { reserveStandingPermits, releaseStandingReservations, TICK_PRODUCER, TICK_PERMIT_TTL_MS } from './entry-ledger.js'
+import { engineStatusFor, basesFor } from './entry-mode.js'
+import { reserveStandingPermits, releaseStandingReservations, pendingExposure, STANDING_PRODUCERS, TICK_PRODUCER, TICK_PERMIT_TTL_MS } from './entry-ledger.js'
 import { accountRiskPerTrade } from './tick-shadow.js'
 import { tickSymbolNames, resolveTickSymbolIds } from './exec-guard-sync.js'
-import { scanRates, loadRiskConfig } from './risk.js'
+import { scanRates, loadRiskConfig, accountMarginPool } from './risk.js'
+import { accountPregateVerdict } from './account-pregate.js'
 import { permittedSides, trendReadingFor } from './direction-policy.js'
 
 export const TICK_ENTRY_FILE = new URL('../config/tick-entry.json', import.meta.url)
@@ -108,7 +109,11 @@ export function tickEntryAccountsFor(db, side = { isLive: null }, { excludePause
   const out = []
   for (const r of rows) {
     const st = engineStatusFor(db, r.account_id)
-    if (st.effectiveEntryMode !== 'TICK_MOMENTUM' || st.transitionState !== 'STABLE') continue
+    // PR-3: "admits tick" is basesFor, not a mode string — an account on
+    // ['bar','tick'] is a tick account too. exec-guard-sync.js's placing list
+    // asks the same function; the two MUST move together (see the pause map
+    // note below: they used to oscillate).
+    if (!basesFor(st).includes('tick') || st.transitionState !== 'STABLE') continue
     // PR-B (owner principle 1): mode, STABLE and the pause map are the whole
     // test — the environment is not read here. `side` above is routing (which
     // sidecar), never a policy.
@@ -153,6 +158,38 @@ export function permitSizing({ risk, symbol, meta, price = null, rates = null, c
 
 const pausedLogged = new Map() // accountId → reason last logged
 
+// PR-3: accounts whose book just changed on the bar side (a fill the loop
+// placed). The heartbeat's feeder runs for a marked account's side even when
+// it would otherwise skip the pass, so the sidecar's standing permit on the
+// filled symbol is withdrawn on the NEXT heartbeat — the companion of
+// account-pregate.js invalidateAccountPregate, on the tick side.
+const repushDue = new Set()
+export function markTickRepush(accountId) { if (accountId != null) repushDue.add(String(accountId)) }
+/** Take (and clear) the marks; `accountIds` narrows to one side's roster, null takes every mark. */
+export function takeTickRepush(accountIds = null) {
+  const out = []
+  for (const id of [...repushDue]) {
+    if (accountIds == null || accountIds.map(String).includes(id)) { out.push(id); repushDue.delete(id) }
+  }
+  return out
+}
+export function tickRepushPending() { return repushDue.size > 0 }
+
+/**
+ * PR-3: ONE budget for both bases. The positions the keeper knows plus the
+ * account's pending (open, unfilled) intents — a bar entry RESERVED, SENT or
+ * UNKNOWN is capacity already spoken for — EXCLUDING standing RESERVED rows
+ * (a standing permit is capacity held in advance, not exposure; counting it
+ * would refuse the tick side its own permits). The position cap itself is
+ * unchanged (owner): this only makes both sides spend from the same count.
+ */
+export function heldWithPending(db, accountId) {
+  const held = openPositionsFor(db, accountId)
+  let pending = []
+  try { pending = pendingExposure(db, accountId).filter(r => !(r.state === 'RESERVED' && STANDING_PRODUCERS.includes(r.producerId))) } catch { pending = [] }
+  return { ...held, positions: held.total, pending: pending.length, total: held.total + pending.length }
+}
+
 
 /**
  * One feeder pass for one side: derive the TICK_MOMENTUM accounts, refresh
@@ -170,7 +207,7 @@ export async function runTickPermitFeeder(db, side, {
   now = Date.now(),
   log = (...a) => console.warn('[tick-permits]', ...a),
 } = {}) {
-  const out = { side: side?.name || 'exec', accounts: [], permits: 0, refused: [], released: 0, pushed: false, paused: [] }
+  const out = { side: side?.name || 'exec', accounts: [], permits: 0, refused: [], released: 0, pushed: false, paused: [], budget: {} }
   const accounts = tickEntryAccountsFor(db, side)
   // Accounts no longer in the mode: their standing permits go now, not at expiry.
   try {
@@ -209,14 +246,37 @@ export async function runTickPermitFeeder(db, side, {
       continue
     }
     if (pausedLogged.has(accountId)) { pausedLogged.delete(accountId); log(`…${accountId.slice(-4)}: tick entries resume — readiness checks clear`) }
+    // PR-3: the bar side's account-level guards (balance scope, daily loss,
+    // loss streak, position cap — account-pregate.js, the PURE read; the
+    // memoising one writes a decision row per cycle and this is not the
+    // loop) and the margin pool apply to tick capacity too. A refused
+    // account gets no permit and its standing rows go now, the guard named
+    // on `paused` — the same pause machinery as TM-40, so the guard sync's
+    // placing list agrees. The pool is not journaled here (the loop does).
+    let riskCfg = null
+    try { riskCfg = loadRiskConfig(db, accountId) } catch { riskCfg = null }
+    let pregate = null
+    try { pregate = accountPregateVerdict(db, accountId, { config: riskCfg || undefined, nowMs: now }) } catch (err) { pregate = { ok: false, guard: 'unreadable', reason: err?.message || String(err) } }
+    let poolStatus = null
+    try { poolStatus = accountMarginPool(db, riskCfg || loadRiskConfig(db), [accountId], { rates })[0] || null } catch { poolStatus = null }
+    if (!pregate?.ok || poolStatus?.exhausted) {
+      const guard = !pregate?.ok ? String(pregate?.guard || 'refused') : 'portfolio_margin_exhausted'
+      const reason = `account_pregate:${guard}`
+      out.paused.push({ accountId: `…${accountId.slice(-4)}`, reason, detail: !pregate?.ok ? String(pregate?.reason || '') : `headroom $${Number(poolStatus?.status?.headroom ?? 0).toFixed(2)}` })
+      out.released += releaseStandingReservations(db, accountId, TICK_PRODUCER, reason, { now }).released
+      if (pausedLogged.get(accountId) !== reason) { pausedLogged.set(accountId, reason); log(`…${accountId.slice(-4)}: new tick entries PAUSED — ${reason} (the bar side's account guard; exits keep running)`) }
+      continue
+    }
     const risk = accountRiskPerTrade(db, accountId)
     // RACE CHECKER 11-09-2026 (pyramiding): a FILLED intent frees its key
     // while the real position is still open, so the keeper — the only side
     // that knows the account's positions — issues no permit for a symbol the
     // account already holds, and none at all at the account's position cap.
-    const held = openPositionsFor(db, accountId)
+    // PR-3: the count includes the account's pending bar intents (ONE budget).
+    const held = heldWithPending(db, accountId)
     let maxOpen = 5
-    try { const n = Number(loadRiskConfig(db, accountId)?.maxOpenPositions); if (Number.isFinite(n) && n > 0) maxOpen = n } catch { /* default cap */ }
+    try { const n = Number(riskCfg?.maxOpenPositions); if (Number.isFinite(n) && n > 0) maxOpen = n } catch { /* default cap */ }
+    out.budget[`…${accountId.slice(-4)}`] = { positions: held.positions, pending: held.pending, total: held.total, cap: maxOpen }
     const entries = []
     const sizing = new Map()
     for (const [symbolId, symbol] of symbolById) {

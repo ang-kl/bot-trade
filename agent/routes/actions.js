@@ -1194,11 +1194,24 @@ export default function actionsRouter(db, deps = {}) {
   // { accountId, mode: TIME_BASED | TICK_MOMENTUM | STOPPED, expectedRevision }
   // — a stale revision is refused, never applied; TICK_MOMENTUM is judged on
   // the account's readiness at this moment (P6b, PR-B: the only gate).
+  // PR-3 (dual-basis arbitration): the same route carries `admittedBases`
+  // — an array of signal bases (['bar','tick']) or null for the mode's own —
+  // with `expectedRevision`; adding 'tick' is judged on tickReadinessFor
+  // exactly like a promotion. The revision moves, the epoch does not, and
+  // the next heartbeat re-pushes the account's permits.
   router.post('/entry-mode', async (req, res) => {
     try {
-      const { requestEntryMode } = await import('../services/entry-mode.js')
+      const { requestEntryMode, requestAdmittedBases } = await import('../services/entry-mode.js')
       const { tickReadinessFor } = await import('../services/tick-readiness.js')
       const { accountId, mode, expectedRevision = null } = req.body || {}
+      if (accountId && req.body && 'admittedBases' in req.body && !mode) {
+        const r = requestAdmittedBases(db, String(accountId), req.body.admittedBases, { expectedRevision, actor: 'owner', readiness: tickReadinessFor })
+        if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
+        const { markTickRepush } = await import('../services/tick-permits.js')
+        markTickRepush(String(accountId))
+        console.log(`[actions] entry-mode admittedBases → …${String(accountId).slice(-4)} ${JSON.stringify(r.status.admittedBases)} (bases ${r.bases.join('+') || 'none'}, revision ${r.status.configRevision}, released ${r.released})`)
+        return res.json({ ok: true, changed: r.changed, bases: r.bases, removed: r.removed, released: r.released, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` } })
+      }
       if (!accountId || !mode) return res.status(400).json({ error: 'accountId and mode are required' })
       const r = requestEntryMode(db, String(accountId), String(mode), { expectedRevision, actor: 'owner', readiness: tickReadinessFor })
       if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)

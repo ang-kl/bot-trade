@@ -998,15 +998,19 @@ export const TICK_SHADOW_CURSOR_KEY = 'tick_shadow_cursor_json'
 // one (its /health tick.entry.accounts > 0) — an idle side costs nothing.
 let lastTickEntryPush = new Map() // side.name → count pushed
 export async function feedTickPermits(db, exec, side, nowMs = Date.now()) {
-  const { tickEntryAccountsFor, runTickPermitFeeder } = await import('./tick-permits.js')
+  const { tickEntryAccountsFor, runTickPermitFeeder, takeTickRepush } = await import('./tick-permits.js')
   const want = tickEntryAccountsFor(db, side)
   let reported = null
   try { reported = JSON.parse(getState(db, `${side.name}_tick_json`) || 'null')?.status?.entry?.accounts ?? null } catch { reported = null }
-  if (!want.length && !(Number(reported) > 0) && !(lastTickEntryPush.get(side.name) > 0)) return null
+  // PR-3: a bar fill on an account of this side marks it for a re-push
+  // (loop.js markTickRepush); the marks are taken here so the pass runs
+  // even when nothing else asks for it.
+  const repush = takeTickRepush(want)
+  if (!want.length && !(Number(reported) > 0) && !(lastTickEntryPush.get(side.name) > 0) && !repush.length) return null
   const creds = await sideCreds(db, side)
   const r = await runTickPermitFeeder(db, side, { creds, now: nowMs })
   lastTickEntryPush.set(side.name, want.length)
-  if (r.pushed) console.warn(`[heartbeat] ${side.name}: tick permits pushed — ${r.accounts.length} account(s) placing [${r.accounts.join(', ')}], ${r.permits} permit(s), ${r.refused.length} refused${r.paused.length ? `, paused ${r.paused.map(p => `${p.accountId} (${p.reason})`).join('; ')}` : ''}`)
+  if (r.pushed) console.warn(`[heartbeat] ${side.name}: tick permits pushed${repush.length ? ` (re-push after a bar fill on ${repush.map(id => `…${id.slice(-4)}`).join(', ')})` : ''} — ${r.accounts.length} account(s) placing [${r.accounts.join(', ')}], ${r.permits} permit(s), ${r.refused.length} refused${r.paused.length ? `, paused ${r.paused.map(p => `${p.accountId} (${p.reason})`).join('; ')}` : ''}`)
   else if (r.error) console.warn(`[heartbeat] ${side.name}: tick permit push FAILED — ${r.error}`)
   for (const x of r.refused.slice(0, 5)) console.warn(`[heartbeat] ${side.name}: tick permit refused ${x.accountId} ${x.symbol}: ${x.reason}`)
   return r

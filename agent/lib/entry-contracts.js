@@ -271,6 +271,13 @@ export const ENGINE_STATUS_SHAPE = Object.freeze({
   transitionState: { type: 'string', required: true, enum: TRANSITION_STATES },
   tickObservation: { type: 'string', required: true, enum: OBSERVATION_MODES },
   entryModePolicy: { type: 'string', required: false, enum: ENTRY_MODE_POLICIES }, // PR-G: absent reads as 'manual'
+  // PR-3 (dual-basis arbitration, 21-09-2026): the signal bases this account
+  // ADMITS, overriding the one the effective mode implies (entry-mode.js
+  // basesFor). null / absent ⇒ the mode's own basis, exactly as before; a set
+  // is one or more of SIGNAL_BASES, no duplicates, never empty. Not a mode:
+  // ENTRY_MODES is unchanged and the set is settable only through the
+  // entry-mode route with its revision check.
+  admittedBases: { type: 'array', required: false, nullable: true, items: { type: 'string', enum: SIGNAL_BASES } },
   validationStage: { type: 'string', required: true, enum: VALIDATION_STAGES },
   configRevision: { type: 'number', required: true, integer: true, min: 0 },
   modeEpoch: { type: 'number', required: true, integer: true, min: 0 },
@@ -304,6 +311,10 @@ export function validateEngineStatus(obj) {
     if (e.entryCounts.unknown > 0 && e.transitionState === 'STABLE' && e.effectiveEntryMode !== 'STOPPED') {
       errors.push('entryCounts.unknown: an unresolved entry cannot coexist with a STABLE active engine')
     }
+    if (Array.isArray(e.admittedBases)) {
+      if (e.admittedBases.length === 0) errors.push('admittedBases: an empty set admits nothing — use null for the mode\'s own basis')
+      if (new Set(e.admittedBases).size !== e.admittedBases.length) errors.push('admittedBases: duplicate basis')
+    }
     for (const r of e.readiness) {
       if (!r.ok && r.blockClass == null) errors.push(`readiness[${r.check}].blockClass: a failed check says which kind of "no" it is`)
     }
@@ -320,7 +331,7 @@ export function defaultEngineStatus({ accountId, environment, riskGroupId = null
   return {
     accountId: String(accountId), environment, riskGroupId: riskGroupId || `${environment}:${accountId}`,
     requestedEntryMode: 'TIME_BASED', effectiveEntryMode: 'TIME_BASED', transitionState: 'STABLE',
-    tickObservation: 'OFF', entryModePolicy: 'manual', validationStage: 'UNVALIDATED',
+    tickObservation: 'OFF', entryModePolicy: 'manual', validationStage: 'UNVALIDATED', admittedBases: null,
     configRevision: 0, modeEpoch: 0, fenceAckEpoch: null,
     profileId: null, profileHash: null, implementationCommit: null,
     entryCounts: { unsent: 0, inFlight: 0, resting: 0, unknown: 0 },

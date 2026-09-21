@@ -30,7 +30,7 @@
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { classifyUniverse, normalizeSchedule, scheduleHash, TICK_COST_MAP_KEY, TICK_SHADOW_SIM_FILE } from '../lib/tick-cost-schedule.js'
-import { engineStatusFor, acknowledgeEntryEpochs } from './entry-mode.js'
+import { engineStatusFor, acknowledgeEntryEpochs, basesFor } from './entry-mode.js'
 import { alreadyTrippedToday } from './equity-stop.js'
 import { loadGlobalGuards } from './global-guards.js'
 import { loadPerformanceBreakerConfig } from './performance-breaker.js'
@@ -191,7 +191,10 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
       if (mode === 'SHADOW') out.tickShadow = true
       // A TM-40-paused account (tick-permits.js writes the map) is left out
       // here too, so this push and the feeder's never disagree.
-      if (st.effectiveEntryMode === 'TICK_MOMENTUM' && st.transitionState === 'STABLE' && !pausedTick[String(r.account_id)]) {
+      // PR-3: the same predicate as tick-permits.js tickEntryAccountsFor —
+      // basesFor, never the mode string — so the two pushes agree on an
+      // account admitting ['bar','tick'].
+      if (basesFor(st).includes('tick') && st.transitionState === 'STABLE' && !pausedTick[String(r.account_id)]) {
         out.tickEntryAccounts.push(Number(r.account_id))
       }
     }

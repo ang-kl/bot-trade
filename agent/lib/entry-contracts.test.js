@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  ENTRY_MODES, OBSERVATION_MODES, VALIDATION_STAGES, TRANSITION_STATES, PERMIT_STATES,
+  ENTRY_MODES, OBSERVATION_MODES, VALIDATION_STAGES, TRANSITION_STATES, PERMIT_STATES, SIGNAL_BASES,
   validateQuoteEvent, validateSignalIntent, validateExecutionPermit, validateEngineStatus,
   defaultEngineStatus,
 } from './entry-contracts.js'
@@ -147,4 +147,19 @@ test('PR-G: entryModePolicy is manual | auto, defaults to manual, and a pre-PR-G
   assert.equal(bad.ok, false); assert.match(bad.errors.join('; '), /entryModePolicy: 'sometimes' not in \[manual, auto\]/)
   const { entryModePolicy, ...legacy } = base // eslint-disable-line no-unused-vars
   assert.equal(validateEngineStatus(legacy).ok, true, 'a record written before the field existed is not refused')
+})
+
+test('PR-3: admittedBases is null by default (the mode\'s own basis), a set of SIGNAL_BASES is valid, and [] / duplicates / an unknown basis are refused by name; a record without the field still validates', () => {
+  const base = defaultEngineStatus({ accountId: '46130058', environment: 'demo' })
+  assert.equal(base.admittedBases, null)
+  assert.equal(validateEngineStatus({ ...base, admittedBases: ['bar', 'tick'] }).ok, true)
+  assert.equal(validateEngineStatus({ ...base, admittedBases: ['tick'] }).ok, true)
+  assert.match(validateEngineStatus({ ...base, admittedBases: [] }).errors.join('; '), /^admittedBases: an empty set/)
+  assert.match(validateEngineStatus({ ...base, admittedBases: ['bar', 'bar'] }).errors.join('; '), /^admittedBases: duplicate basis/)
+  assert.match(validateEngineStatus({ ...base, admittedBases: ['candle'] }).errors.join('; '), /admittedBases\[0\]: 'candle' not in \[bar, tick\]/)
+  assert.equal(validateEngineStatus({ ...base, admittedBases: 'tick' }).ok, false, 'a bare string is not a set')
+  const { admittedBases, ...legacy } = base // eslint-disable-line no-unused-vars
+  assert.equal(validateEngineStatus(legacy).ok, true, 'a record written before the field existed is not refused')
+  assert.deepEqual([...SIGNAL_BASES], ['bar', 'tick'])
+  assert.deepEqual([...ENTRY_MODES], ['TIME_BASED', 'TICK_MOMENTUM', 'STOPPED'], 'no DUAL mode: the set is an overlay, not a fourth mode')
 })
