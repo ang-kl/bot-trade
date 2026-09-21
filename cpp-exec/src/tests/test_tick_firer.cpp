@@ -143,6 +143,8 @@ static void test_refusals_and_payload() {
     assert(detail.find("stop=" + std::to_string(f.stop)) != std::string::npos);
     assert(detail.find("target=" + std::to_string(f.target)) != std::string::npos);
     assert(detail.find("side=BUY") != std::string::npos);
+    // the signal ask this BUY fill crossed (PR-1b follow-up)
+    assert(detail.find("ref=" + std::to_string(f.signalAsk)) != std::string::npos);
   }
   assert(permits.size() == 0 && "the permit was one use");
   // a second fill on the same account/symbol/side has no permit until the keeper pushes again

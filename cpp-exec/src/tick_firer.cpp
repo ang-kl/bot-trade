@@ -160,6 +160,7 @@ int TickFirer::onFill(const ShadowFill& f, long long nowMs) {
     fire.intentId = permit->get("intentId").asString();
     fire.fillMs = nowMs;
     fire.entry = f.entry; fire.stop = f.stop; fire.target = f.target; fire.side = f.side;
+    fire.ref = ref;
     fire.maxFireDelayMs = static_cast<long long>(permit->get("maxFireDelayMs").asNumber(0));
     bool full = false;
     {
@@ -216,7 +217,11 @@ void TickFirer::fireOne(const TickFire& fire) {
                           // fire ledger can write a direction_reason that states what
                           // moved instead of naming the strategy back at itself.
                           " entry=" + std::to_string(fire.entry) + " stop=" + std::to_string(fire.stop) +
-                          " target=" + std::to_string(fire.target) + " side=" + fire.side);
+                          " target=" + std::to_string(fire.target) + " side=" + fire.side +
+                          // PR-1b follow-up (21-09-2026): the signal reference the
+                          // fill crossed, so the ledger states what moved, not just
+                          // where the fill landed.
+                          " ref=" + std::to_string(fire.ref));
   } else {
     { std::lock_guard<std::mutex> lk(mtx_); counters_.rejected++; }
     if (ring_) ring_->log("tick", "fire_reject", fire.accountId, sym, r.body.get("errorCode").asString(), "intent=" + fire.intentId + " " + r.body.get("description").asString());
