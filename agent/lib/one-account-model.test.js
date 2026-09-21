@@ -66,6 +66,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/routes/state.js': { reason: 'health/roster views echo the side; the manual-order override resolves the account\'s creds', max: { is_live: 6, isLive: 4, live_str: 1, demo_str: 1 } },
   'agent/services/heartbeat.js': { reason: 'sidecar side routing (plan §3.1: heartbeat.js)', max: { is_live: 7, isLive: 28, live_str: 4, demo_str: 4 } },
   'agent/services/account-equity.js': { reason: 'cross-side equity sweep (plan §3.1)', max: { is_live: 3, isLive: 4 } },
+  'agent/services/cross-side-reconcile.js': { reason: 'route fresh ledger reads to the opposite account host; identical reconciliation and no broker writes', max: { is_live: 2, isLive: 2 } },
   'agent/services/equity-snapshot.js': { reason: 'the nightly equity pass routes each account to its own host (plan §3.1); the record carries no side (the SELECT and the host pick)', max: { is_live: 2 } },
   'agent/services/acting-layer.js': { reason: 'same-side roster filter (plan §3.1)', max: { is_live: 2, isLive: 3 } },
   'agent/services/naked-position-guard.js': { reason: 'route each protection sweep and its in-flight lock to its broker host; identical protection policy on both sides', max: { is_live: 2, isLive: 10, live_str: 1, demo_str: 1 } },

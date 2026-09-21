@@ -219,6 +219,9 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       : { sql: `AND ${col} = ?`, params: [acct] }
 
   const mpScope = scope('mp.account_id')
+  // Position ids can overlap across broker accounts/hosts. Relinking,
+  // closing and duplicate cleanup must share the snapshot's account scope.
+  const tScope = scope('account_id')
   const knownRows = db.prepare(
     `SELECT mp.id, mp.symbol, mp.source, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
             mp.broker_volume_units, mp.broker_sl, mp.broker_tp, mp.trade_id, mp.be_moved,
@@ -483,8 +486,8 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     // for this posId already exists, RE-LINK its management instead of spawning
     // a second row.
     const existingOpen = db.prepare(
-      `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`
-    ).get(posId)
+      `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open' ${tScope.sql} ORDER BY id DESC LIMIT 1`
+    ).get(posId, ...tScope.params)
     if (existingOpen) {
       // reaching this branch at all means `trades` still says 'open' but no
       // ACTIVE monitored_positions row maps to this broker position — the
@@ -600,8 +603,8 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       // ctrader_position_id, not a single trade id — could match more than one
       // 'open' row (the dedup sweep further down handles that garbage case).
       const openIds = db.prepare(
-        `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open'`
-      ).all(normPosId(row.ctrader_position_id))
+        `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open' ${tScope.sql}`
+      ).all(normPosId(row.ctrader_position_id), ...tScope.params)
       for (const { id } of openIds) {
         const attributed = attributeBrokerClose(db, { positionId: row.ctrader_position_id, tradeId: id, accountId: acct })
         closeTradeRow(db, id, { closeReason: attributed || GENERIC_BROKER_CLOSE })
@@ -628,13 +631,13 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   try {
     const dups = db.prepare(
       `SELECT id, symbol, ctrader_position_id FROM trades
-        WHERE status = 'open' AND ctrader_position_id IS NOT NULL
+        WHERE status = 'open' AND ctrader_position_id IS NOT NULL ${tScope.sql}
           AND id NOT IN (
             SELECT MAX(id) FROM trades
-             WHERE status = 'open' AND ctrader_position_id IS NOT NULL
+             WHERE status = 'open' AND ctrader_position_id IS NOT NULL ${tScope.sql}
              GROUP BY ctrader_position_id
           )`
-    ).all()
+    ).all(...tScope.params, ...tScope.params)
     const closeDupMon = db.prepare(`UPDATE monitored_positions SET status='closed' WHERE trade_id = ? AND status='active'`)
     // Duplicates are marked REJECTED, not closed: a 'closed' dup row with
     // net_pnl NULL gets the SAME broker P&L stamped onto it by pnl-backfill
@@ -673,20 +676,22 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // on a single row, never as multiple rows per position id.
   const dupPnlRepaired = []
   try {
+    const closedScope = scope('t.account_id')
+    const olderScope = scope('o.account_id')
     const badRows = db.prepare(
       `SELECT t.id, t.symbol, t.ctrader_position_id FROM trades t
-        WHERE t.status = 'closed' AND t.ctrader_position_id IS NOT NULL AND t.net_pnl IS NOT NULL
+        WHERE t.status = 'closed' AND t.ctrader_position_id IS NOT NULL AND t.net_pnl IS NOT NULL ${closedScope.sql}
           AND t.id NOT IN (
             SELECT MIN(id) FROM trades
-             WHERE status = 'closed' AND ctrader_position_id IS NOT NULL AND net_pnl IS NOT NULL
+             WHERE status = 'closed' AND ctrader_position_id IS NOT NULL AND net_pnl IS NOT NULL ${tScope.sql}
              GROUP BY ctrader_position_id, net_pnl
           )
           AND EXISTS (
             SELECT 1 FROM trades o
              WHERE o.ctrader_position_id = t.ctrader_position_id
-               AND o.net_pnl = t.net_pnl AND o.status = 'closed' AND o.id < t.id
+               AND o.net_pnl = t.net_pnl AND o.status = 'closed' AND o.id < t.id ${olderScope.sql}
           )`
-    ).all()
+    ).all(...closedScope.params, ...tScope.params, ...olderScope.params)
     const rejectRepair = db.prepare(
       `UPDATE trades SET status='rejected',
               close_reason = COALESCE(close_reason, '') || ' | repaired: duplicate row double-counting one broker P&L'
@@ -710,7 +715,6 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   }
 
   const orphansClosed = []
-  const tScope = scope('account_id')
   const openWithPosId = db.prepare(
     `SELECT id, symbol, ctrader_position_id FROM trades
       WHERE status = 'open' AND ctrader_position_id IS NOT NULL ${tScope.sql}`
