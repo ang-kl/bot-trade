@@ -1,52 +1,41 @@
 // node --test agent/services/horizon-protection.test.js
 //
 // §4-P (21-09-2026, owner: "verify that intraday management rules cannot
-// accidentally tighten or close weeks-horizon positions"). The answer at the
-// time of writing was NO, they cannot be verified — they can.
+// accidentally tighten or close weeks-horizon positions").
 //
 // THE SHAPE. Every protection a weeks-horizon position has is keyed on
 // MEMBERSHIP OF THE MOMENTUM BOOK (`book-held.js`) plus
-// `monitored_positions.paused`, never on the position's horizon. So the
-// protection is exactly as good as the book row, and the book row has a hole:
+// `monitored_positions.paused` — nothing reads a horizon. So the two writes
+// that create a book row and hand the position over ARE the protection, and
+// they were made in three places by three slightly different pieces of code.
 //
-//   `momentum-account.js` places the daily entry through `autoTrade`, then
-//   looks the filled trade up with a query that requires `status = 'open'`.
-//   On the CLOSED-MARKET path the order rests as a limit and no such trade
-//   exists yet, so the lookup misses and the book row is inserted with
-//   trade_id NULL *and* position_id NULL — an ORPHAN that names nothing.
+// A CORRECTION IS RECORDED HERE RATHER THAN QUIETLY DROPPED. The first draft
+// of this file asserted that the daily pass writes a book row naming neither a
+// trade nor a position on the closed-market path, and tested a "backfill" for
+// it. That was WRONG: on a closed market `autoTrade` rests the limit and
+// returns null (`loop.js:427`), so every caller's `if (!result) … continue`
+// fires ABOVE the row write. No such row is produced anywhere in this tree.
+// The backfill was removed. What follows is only what can actually happen.
 //
-// Two consequences, and the second is the expensive one:
-//
-//   1. `makeBookHeldCheck` cannot see an orphan row on either key, so the
-//      position it stands for is exempt from nothing.
-//   2. When the limit finally fills, `momentum-book.js`'s adopt pass asks
-//      `openRow.get(accountId, symbol)` and finds the orphan — so it
-//      `continue`s. The fill is NEVER adopted, the keeper is NEVER paused,
-//      and the 1.5R take profit a closed-market limit carries is NEVER
-//      cleared. Permanently, and silently: nothing counts or logs it.
-//
-// MEASURED IN PRODUCTION 21-09-2026 while writing this file: of 36 open book
-// positions, four still carry a `current_tp` — GD.US trade 1447 entry 363.61,
-// stop 345.46, target 390.84, i.e. a 1.5R ceiling (risk 18.15, reward 27.23)
-// on a trend position opened 03-09 and meant to run for weeks. Those four are
-// paused, so this file's cases are the mechanism, not that incident — but a
-// 1.5R cap on a weeks-horizon runner is precisely what the hole produces.
+// The two real defects, both measured at source:
+//   1. THE HAND-OVER HAD DRIFTED — `momentum-book.js` `tryEnter` paused the
+//      monitor but did NOT clear `current_tp` / `tp_price`, so a row entered
+//      through it kept the closed-market limit's 1.5R ceiling on a position
+//      meant to run for weeks. The other two writers cleared both.
+//   2. THE WINDOW — the row and the hand-over were two statements. A throw
+//      between them leaves the row written (so `book-held.js` exempts the
+//      position from keeper, guardian and weekend bank) while `paused` is
+//      still 0 (so the fast monitor still manages it): half in each regime.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { initDB } from '../db.js'
 import { makeBookHeldCheck } from './book-held.js'
-import { adoptOrBackfill, bookEntryWrite } from './book-entry-write.js'
+import { bookEntryWrite, pauseForBook } from './book-entry-write.js'
 
 const db0 = () => initDB(':memory:')
 
-/** A book row exactly as the daily pass writes it when its trade lookup misses. */
-const orphanRow = (db, { acct = 'A', symbol = 'GD.US' } = {}) =>
-  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entry_rank, entered_at, status, note)
-              VALUES (NULL, ?, ?, NULL, 'long', 363.61, 345.46, 0.02, '2026-09-03T13:41:09Z', 'open', 'daily pass: vol-target 4 lots')`)
-    .run(acct, symbol).lastInsertRowid
-
-/** The trade the resting limit becomes hours later, with its 1.5R target. */
+/** A filled tsmom trade carrying the 1.5R target a closed-market limit gets. */
 const filledTrade = (db, { acct = 'A', symbol = 'GD.US', posId = 240505687 } = {}) => {
   const id = db.prepare(
     `INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, label_strategy, entry_price, sl_price, tp_price)
@@ -62,149 +51,133 @@ const filledTrade = (db, { acct = 'A', symbol = 'GD.US', posId = 240505687 } = {
 const monitored = (db, tradeId) =>
   db.prepare('SELECT paused, current_tp FROM monitored_positions WHERE trade_id = ?').get(tradeId)
 
-// ───────────────────────────────────────────────────────────────────────────
-// 1. The orphan row itself
-// ───────────────────────────────────────────────────────────────────────────
-
-test('an orphan book row protects nothing — the exemption cannot see it on either key', () => {
-  const db = db0()
-  orphanRow(db)
-  const tradeId = filledTrade(db)
-  const holds = makeBookHeldCheck(db, 'A')
-  assert.equal(holds(240505687), false, 'position id: the row names none')
-  assert.equal(holds(240505687, tradeId), false, 'trade id: the row names none')
+const ROW = (tradeId) => ({
+  tradeId, symbol: 'GD.US', positionId: '240505687', side: 'long',
+  entry: 363.61, stop: 345.46, atr: 6, rank: 0.02,
+  enteredAt: '2026-09-03T13:41:09Z', note: 'daily pass',
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// 2. THE DEFECT — the fill is never adopted because the orphan blocks it
+// 1. The hand-over is ONE rule
 // ───────────────────────────────────────────────────────────────────────────
 
-test('THE DEFECT: an orphan row must be BACKFILLED by the fill, never skipped', () => {
+test('the hand-over pauses the keeper AND clears the limit target on both rows', () => {
   const db = db0()
-  const rowId = orphanRow(db)
-  const tradeId = filledTrade(db)
-
-  const out = adoptOrBackfill(db, {
-    accountId: 'A',
-    trade: db.prepare('SELECT id, symbol, side, ctrader_position_id, entry_price, sl_price FROM trades WHERE id = ?').get(tradeId),
-    existingRow: db.prepare('SELECT * FROM momentum_book WHERE id = ?').get(rowId),
-    now: Date.parse('2026-09-03T21:10:00Z'),
-  })
-
-  assert.equal(out.action, 'backfilled', 'the orphan is completed, not skipped')
-
-  const row = db.prepare('SELECT trade_id, position_id FROM momentum_book WHERE id = ?').get(rowId)
-  assert.equal(row.trade_id, tradeId, 'the row now names its trade')
-  assert.equal(row.position_id, '240505687', 'and its broker position')
-
-  const only = db.prepare("SELECT COUNT(*) AS n FROM momentum_book WHERE account_id = 'A' AND status = 'open'").get().n
-  assert.equal(only, 1, 'backfill completes the row, never duplicates it')
-})
-
-test('THE COST: backfilling pauses the keeper and clears the 1.5R limit target', () => {
-  const db = db0()
-  const rowId = orphanRow(db)
   const tradeId = filledTrade(db)
   assert.deepEqual(monitored(db, tradeId), { paused: 0, current_tp: 390.84 }, 'before: keeper-managed, capped at 1.5R')
 
-  adoptOrBackfill(db, {
-    accountId: 'A',
-    trade: db.prepare('SELECT id, symbol, side, ctrader_position_id, entry_price, sl_price FROM trades WHERE id = ?').get(tradeId),
-    existingRow: db.prepare('SELECT * FROM momentum_book WHERE id = ?').get(rowId),
-    now: Date.now(),
-  })
+  bookEntryWrite(db, { accountId: 'A', row: ROW(tradeId) })
 
   assert.deepEqual(monitored(db, tradeId), { paused: 1, current_tp: null }, 'after: book-managed, no ceiling')
-  assert.equal(db.prepare('SELECT tp_price FROM trades WHERE id = ?').get(tradeId).tp_price, null, 'and the trade carries no target')
+  assert.equal(db.prepare('SELECT tp_price FROM trades WHERE id = ?').get(tradeId).tp_price, null,
+    'and the trade carries no target, so target-restore has nothing to put back')
+  assert.equal(makeBookHeldCheck(db, 'A')(240505687), true, 'and the exemption sees it')
 })
 
-test('after the backfill the exemption sees it on both keys', () => {
+test('pauseForBook reports what it actually changed — the log cannot claim a pause that did not happen', () => {
   const db = db0()
-  const rowId = orphanRow(db)
-  const tradeId = filledTrade(db)
-  adoptOrBackfill(db, {
-    accountId: 'A',
-    trade: db.prepare('SELECT id, symbol, side, ctrader_position_id, entry_price, sl_price FROM trades WHERE id = ?').get(tradeId),
-    existingRow: db.prepare('SELECT * FROM momentum_book WHERE id = ?').get(rowId),
-    now: Date.now(),
-  })
-  const holds = makeBookHeldCheck(db, 'A')
-  assert.equal(holds(240505687), true)
-  assert.equal(holds(999, tradeId), true)
+  const orphanTrade = db.prepare(
+    `INSERT INTO trades (symbol, side, status, account_id, label_strategy) VALUES ('GD.US','BUY','open','A','tsmom_long')`,
+  ).run().lastInsertRowid // no monitored_positions row at all
+  const out = pauseForBook(db, orphanTrade)
+  assert.equal(out.monitorRows, 0, 'nothing was paused, and the caller is told so')
+
+  const real = filledTrade(db, { symbol: 'MRK.US', posId: 99 })
+  assert.equal(pauseForBook(db, real).monitorRows, 1)
+})
+
+test('a write with no trade id hands nothing over, and says so', () => {
+  const db = db0()
+  const out = bookEntryWrite(db, { accountId: 'A', row: { ...ROW(null), tradeId: null } })
+  assert.equal(out.handedOver, false)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM momentum_book WHERE account_id = 'A'").get().n, 1,
+    'the row still records the entry')
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// 3. A row that already names its trade is NOT touched
+// 2. The window is closed
 // ───────────────────────────────────────────────────────────────────────────
 
-test('a complete row is left alone — backfill never re-points a live row', () => {
-  const db = db0()
-  const other = filledTrade(db, { posId: 111 })
-  const rowId = db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
-                            VALUES (?, 'A', 'GD.US', '111', 'long', 363.61, 345.46, '2026-09-03T13:41:09Z', 'open')`).run(other).lastInsertRowid
-  const later = filledTrade(db, { posId: 222 })
-
-  const out = adoptOrBackfill(db, {
-    accountId: 'A',
-    trade: db.prepare('SELECT id, symbol, side, ctrader_position_id, entry_price, sl_price FROM trades WHERE id = ?').get(later),
-    existingRow: db.prepare('SELECT * FROM momentum_book WHERE id = ?').get(rowId),
-    now: Date.now(),
-  })
-
-  assert.equal(out.action, 'skipped', 'the book already holds this symbol through a real trade')
-  assert.equal(db.prepare('SELECT trade_id FROM momentum_book WHERE id = ?').get(rowId).trade_id, other, 'unchanged')
-})
-
-test('a half-orphan — position id NULL but trade id set — is already held and is left alone', () => {
-  // This is the ordinary resting-limit row `book-held.js` was written for.
+test('THE WINDOW: the row and the hand-over land together or not at all', () => {
+  // If the hand-over throws after the insert, the old code left the row
+  // written — so book-held.js exempted the position from the keeper, the
+  // guardian and the weekend bank — while `paused` stayed 0, so the fast
+  // monitor still managed it. Half in each regime, which no rule is written
+  // for. One transaction: a throw leaves the position plainly keeper-managed.
   const db = db0()
   const tradeId = filledTrade(db)
-  const rowId = db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
-                            VALUES (?, 'A', 'GD.US', NULL, 'long', 363.61, 345.46, '2026-09-03T13:41:09Z', 'open')`).run(tradeId).lastInsertRowid
-  const out = adoptOrBackfill(db, {
-    accountId: 'A',
-    trade: db.prepare('SELECT id, symbol, side, ctrader_position_id, entry_price, sl_price FROM trades WHERE id = ?').get(tradeId),
-    existingRow: db.prepare('SELECT * FROM momentum_book WHERE id = ?').get(rowId),
-    now: Date.now(),
-  })
-  assert.equal(out.action, 'skipped')
-  assert.equal(makeBookHeldCheck(db, 'A')(240505687), true, 'held through its trade, as before')
-})
-
-// ───────────────────────────────────────────────────────────────────────────
-// 4. The fill → book-row window is atomic
-// ───────────────────────────────────────────────────────────────────────────
-
-test('the book row and the keeper pause land together or not at all', () => {
-  // The daily pass writes the row and pauses the keeper in two statements. If
-  // the second never runs, the position is keeper-managed AND carries an
-  // orphan that blocks its own adoption for ever — the worst of both. The
-  // write must be one transaction, so a throw leaves the position simply
-  // keeper-managed, which is a state the rest of the system understands.
-  const db = db0()
-  const tradeId = filledTrade(db)
-  
 
   assert.throws(() => bookEntryWrite(db, {
-    accountId: 'A',
-    row: { tradeId, symbol: 'GD.US', positionId: '240505687', side: 'long', entry: 363.61, stop: 345.46, atr: 6, rank: 0.02, enteredAt: '2026-09-03T13:41:09Z', note: 'daily pass' },
+    accountId: 'A', row: ROW(tradeId),
     pause: () => { throw new Error('pause failed') },
   }), /pause failed/)
 
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM momentum_book WHERE account_id = 'A'").get().n, 0,
-    'the row is rolled back with the pause — no orphan is left behind')
+    'the row is rolled back with the hand-over — no half-owned position is left behind')
   assert.equal(monitored(db, tradeId).paused, 0, 'and the position is plainly keeper-managed')
+  assert.equal(makeBookHeldCheck(db, 'A')(240505687), false, 'the exemption does not fire for a row that was rolled back')
 })
 
-test('the happy path writes both', () => {
+// ───────────────────────────────────────────────────────────────────────────
+// 3. THE WIRING — a revert at the call site must go red here
+//
+// The checker's finding on the first draft: every test called the module
+// directly, so restoring the old two-statement code at the call sites turned
+// NOTHING red. These drive the real pass.
+// ───────────────────────────────────────────────────────────────────────────
+
+test('WIRING: the book ENTRY path clears the limit target, not just the pause', async () => {
+  // THE GAP THE CHECKER FOUND, and why it stayed open. `momentum-book.test.js`
+  // already drives an entry through `runMomentumBook` — but its fake autoTrade
+  // inserts `tp_price` NULL and a monitored row with no `current_tp`, so there
+  // was never a target for the entry path to fail to clear. The guard's
+  // trigger never arrived (CLAUDE.md failure mode #3). This gives the path a
+  // trade WITH the 1.5R target a closed-market limit really carries, and so
+  // goes red if the call site reverts to `SET paused = 1` alone.
+  const { runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, TSMOM_STRATEGY } = await import('./momentum-book.js')
+  const { setStage } = await import('./stage-matrix.js')
+  const { getState, setState } = await import('../db.js')
+
   const db = db0()
-  const tradeId = filledTrade(db)
-  
-  bookEntryWrite(db, {
-    accountId: 'A',
-    row: { tradeId, symbol: 'GD.US', positionId: '240505687', side: 'long', entry: 363.61, stop: 345.46, atr: 6, rank: 0.02, enteredAt: '2026-09-03T13:41:09Z', note: 'daily pass' },
-  })
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM momentum_book WHERE account_id = 'A'").get().n, 1)
-  assert.deepEqual(monitored(db, tradeId), { paused: 1, current_tp: null })
-  assert.equal(makeBookHeldCheck(db, 'A')(240505687), true)
+  const ACCT = '111'
+  db.prepare("INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, '1', 0, 1, 'active')").run(ACCT)
+  setState(db, 'symbol_id_map', JSON.stringify({ 'GD.US': 1 }))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: ACCT }, { getState, setState })
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true, bookExitCadence: 'every_pass' }))
+  db.prepare(`INSERT INTO momentum_shadow (symbol, action, side, rank_pct, conviction, price, timeframe, universe, applied, at)
+              VALUES ('GD.US', 'enter', 'long', 1, 9, 100, '1d', 20, 0, ?)`).run(new Date().toISOString())
+
+  let tradeId = null
+  const deps = {
+    symbolMap: { 'GD.US': 1 },
+    bars: async () => Array.from({ length: 30 }, (_, i) => ({ t: i, o: 100, h: 101 + i * 0.1, l: 99 + i * 0.1, c: 100 + i * 0.1 })),
+    spot: async () => ({ bid: 102.9, ask: 103 }),
+    amend: async () => ({}),
+    close: async () => ({}),
+    positionVolume: async () => 1000,
+    phasesOn: () => true,
+    mayTrade: () => ({ ok: true, item: null }),
+    // The real closed-market limit path stamps a 1.5R target on BOTH rows.
+    autoTrade: async (d, symbol, synth, _w, acct) => {
+      tradeId = d.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at)
+                           VALUES (?, 'BUY', 'open', ?, ?, ?, ?, ?, ?, 'bot_market_dispatch', ?, datetime('now'))`)
+        .run(symbol, synth.entry, synth.sl, 390.84, synth.strategy, synth.strategy, acct.accountId, 'pos-gd').lastInsertRowid
+      d.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, account_id, status, source)
+                 VALUES (?, ?, 'long', ?, ?, 390.84, ?, 'active', 'autopilot')`).run(symbol, tradeId, synth.entry, synth.sl, acct.accountId)
+      return { side: 'BUY', tradeId }
+    },
+  }
+
+  const r = await runMomentumBook(db, { accounts: [{ accountId: ACCT, isLive: false }], credsFor: (a) => ({ accountId: a.accountId, host: 'demo' }), deps, now: Date.now(), log: () => {} })
+  assert.equal(r.entries, 1, `the entry path ran — skipped: ${JSON.stringify(r.skipped)}`)
+  assert.ok(tradeId, 'a trade was created')
+  assert.deepEqual(monitored(db, tradeId), { paused: 1, current_tp: null },
+    'the ENTRY path must clear the 1.5R limit target as well as pause — this is the drift §4-P closes')
+  assert.equal(db.prepare('SELECT tp_price FROM trades WHERE id = ?').get(tradeId).tp_price, null,
+    'and on the trade, or target-restore puts the ceiling back at the broker')
 })
+
+// The ADOPT path's hand-over is already pinned, behaviourally and with a real
+// target, by momentum-book.test.js:515 ("an open tsmom_long trade with no book
+// row ... is adopted once, keeper paused" — it asserts current_tp and tp_price
+// are null). Not duplicated here.
