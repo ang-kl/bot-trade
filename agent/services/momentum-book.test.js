@@ -100,7 +100,7 @@ function fakes({ fill = true } = {}) {
       symbolMap: { BTCUSD: 1, NATGAS: 2 },
       bars: async () => bars,
       spot: async () => ({ bid: 102.9, ask: 103 }),
-      amend: async (_c, args) => { calls.amend.push(args); return {} },
+      amend: async (_c, args) => { calls.amend.push(args); return { protection: { stopLoss: args.stopLoss, takeProfit: args.takeProfit, verified: true } } },
       close: async (_c, args) => { calls.close.push(args); return {} },
       positionVolume: async () => 1000,
       phasesOn: () => true,
@@ -433,7 +433,7 @@ test('a shadow exit closes the position and marks the row; the trail ratchets th
   assert.equal(rep.config.enabled, true)
 })
 
-test('a legacy targetless book row is never amended in a way that could clear broker protection', async () => {
+test('a targetless book row never advances its ledger without broker read-back confirmation', async () => {
   const db = fresh()
   setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
@@ -444,11 +444,12 @@ test('a legacy targetless book row is never amended in a way that could clear br
   db.prepare(`UPDATE trades SET tp_price = NULL`).run()
   f.deps.bars = async () => f.bars.map(b => ({ ...b, h: b.h + 10, l: b.l + 10, c: b.c + 10 }))
 
+  const standing = db.prepare('SELECT stop FROM momentum_book').get().stop
+  f.deps.amend = async () => ({ ok: true }) // send acknowledgement alone is insufficient
   const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
   assert.equal(r.trailed, 0)
-  assert.equal(f.calls.amend.length, 0, 'no stop-only or null-target amend reaches the broker')
-  assert.ok(r.skipped.some(s => /trail blocked .* recorded TP1 missing/.test(s)), JSON.stringify(r.skipped))
-  assert.match(db.prepare(`SELECT trail_note FROM momentum_book`).get().trail_note, /recorded TP1 missing/)
+  assert.equal(db.prepare('SELECT stop FROM momentum_book').get().stop, standing)
+  assert.ok(r.skipped.some(s => /not confirmed/.test(s)), JSON.stringify(r.skipped))
 })
 
 test('wiring pins: the loop runs the book after the shadow with the real autoTrade and broker calls injected; the limit branch honours marketOnly (comments stripped)', () => {
@@ -456,11 +457,12 @@ test('wiring pins: the loop runs the book after the shadow with the real autoTra
   const shadow = src.indexOf("import('./services/momentum-shadow.js')")
   const book = src.indexOf("import('./services/momentum-book.js')")
   assert.ok(shadow > 0 && book > shadow, 'the book runs after the shadow')
-  const block = src.slice(book, book + 2600)
+  const block = src.slice(book, src.indexOf('momentum book:', book))
   assert.ok(block.includes('accounts: getAutopilotAccounts(db)'))
   assert.ok(block.includes('credsFor: (a) => getCtraderCreds(db, a)'))
   assert.ok(block.includes('autoTrade,'))
-  assert.ok(block.includes('amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: args.takeProfit })'), 'the loop forwards both protection legs explicitly')
+  assert.ok(block.includes('amend: (creds, args) => amendBookStop(creds, args,'), 'the loop uses the broker-confirmed stop adapter')
+  assert.ok(block.includes('await wsReconcile('), 'fresh reads bypass the sidecar snapshot cache')
   assert.ok(block.includes('close: (creds, args) => exec.closePosition(creds, args)'))
   assert.ok(block.includes('positionVolume: async (creds, positionId) => brokerPositionVolume((await exec.reconcile(creds)).position || [], positionId)'), 'the loop hands the book the broker volume for its closes')
   assert.ok(block.includes('phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade'))

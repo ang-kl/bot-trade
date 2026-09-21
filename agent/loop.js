@@ -4086,7 +4086,8 @@ async function runLoop(db) {
         const { runMomentumBook, atrOf } = await import('./services/momentum-book.js')
         const { scanRates } = await import('./services/risk.js')
         const { getRegimeBars } = await import('./services/fib-strategy.js')
-        const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
+        const { wsGetSpotOnce, wsReconcile } = await import('./lib/ctrader-ws.js')
+        const { amendBookStop } = await import('./services/book-stop-amend.js')
         const exec = await import('./lib/exec-engine.js')
         const { effectivePhases } = await import('./services/account-phases.js')
         const { accountMayTrade } = await import('./services/watchlists.js')
@@ -4105,9 +4106,16 @@ async function runLoop(db) {
             symbolIdFor: async (creds, symbol) => (await (await import('./lib/ctrader-creds.js')).resolveSymbolId(db, creds, symbol)).id,
             bars: async (creds, symbolId) => (await getRegimeBars(creds, symbolId, { preferredTfs: [bookCfg.timeframe], fallbackTf: bookCfg.timeframe, count: bookCfg.atrPeriod + 10 })).bars,
             spot: (creds, symbolId) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId).catch(() => null),
-            // Amend replaces both protection legs. The book supplies the
-            // recorded TP1 so a trail cannot silently clear it.
-            amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: args.takeProfit }),
+            // Read broker protection freshly, preserve its TP and confirm the
+            // resulting SL before the book updates its own records.
+            amend: (creds, args) => amendBookStop(creds, args, {
+              amend: exec.amendPosition,
+              readPosition: async (c, positionId) => {
+                const rec = await wsReconcile(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, 5000)
+                if (String(rec.ctidTraderAccountId) !== String(c.accountId)) throw new Error('book protection account identity mismatch')
+                return (rec.position || []).find(p => String(p.positionId) === String(positionId)) || null
+              },
+            }),
             // Price precision for the trailed stop (04-09-2026): the amend is
             // an absolute price and the broker rejects one with more decimals
             // than the symbol allows. Cached per process in lot-sizing.
