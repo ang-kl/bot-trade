@@ -394,6 +394,7 @@ export default function Trade() {
   // Newest close per symbol across ALL cycles — the currency-conversion base.
   const [latestPrices, setLatestPrices] = useState({})
   const [positions, setPositions] = useState([])
+  const [positionsLoaded, setPositionsLoaded] = useState(false)
   // Which account the positions payload says these rows belong to, plus how
   // many active rows it hid for carrying no account_id. Owner: "I still cannot
   // know which account I am trading in the page."
@@ -480,7 +481,7 @@ export default function Trade() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     const view = brokerViewGuard.current()
-    if (view.changed) { setEnrichById({}); setLiveOrders([]); setBroker(null); setBrokerRefresh({ at: null, error: null }) }
+    if (view.changed) { setEnrichById({}); setLiveOrders([]); setBroker(null); setBrokerRefresh({ at: null, error: null }); setPositions([]); setPositionsLoaded(false); setPosScope({ accountId: view.id || null, legacyRows: 0, scope: null }) }
     try {
       // Slot count matters: destructure order must mirror the array below —
       // append new fetches at the END or every later variable shifts.
@@ -505,6 +506,7 @@ export default function Trade() {
       // duplicate `key={symbol}` rows in the list below (Codex review).
       setScans(s.lastResults?.scans || [])
       setPositions(p.rows || p.positions || [])
+      setPositionsLoaded(true)
       setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0, scope: p?.scope ?? null })
       setTradeScope({ scope: t?.scope ?? null })
       setTrades((t.rows || t.trades || []).slice(0, 8)) // match the order log's page size
@@ -784,11 +786,11 @@ export default function Trade() {
       {/* Open positions */}
       <Card id="sec-positions">
         <h2 className="t-h3 mb-2 flex items-center gap-2">
-          <span>Open positions ({positions.length})</span>
+          <span>Open positions ({positionsLoaded ? positions.length : 'unverified'})</span>
           <AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />
           <ScopeDot scope={positionsScope} />
         </h2>
-        {positions.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">Flat.</div>}
+        {positions.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">{positionsLoaded ? 'Flat.' : 'Positions have not been read for this account yet.'}</div>}
         {(brokerRefresh.at || brokerRefresh.error) && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           Broker snapshot: {brokerRefresh.at ? new Date(brokerRefresh.at).toLocaleTimeString() : 'not available'}
           {brokerRefresh.error ? ` · refresh failed: ${brokerRefresh.error}` : ' · refreshed on request'}

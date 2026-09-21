@@ -246,7 +246,19 @@ export default function Desk() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
     const view = brokerViewGuard.current()
-    if (view.changed) { setBroker(null); setBrokerHistory(null); setBrokerErr('') }
+    if (view.changed) { setBroker(null); setBrokerHistory(null); setBrokerErr(''); setPositions([]); setPosScope({ accountId: view.id || null, legacyRows: 0, scope: null }) }
+    // Protection and position readings must paint even when analytics fail
+    // or take longer. Every response still belongs to this viewing session.
+    agentGet('/state/heartbeats').then(hb => {
+      if (!view.current()) return
+      setHeartbeats(hb?.controllers ?? null)
+      setControllerRuntime(hb?.runtime ?? null)
+    }).catch(() => {})
+    agentGet('/state/positions').then(p => {
+      if (!view.current()) return
+      setPositions(p.rows || p.positions || [])
+      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0, scope: p?.scope ?? null })
+    }).catch(() => {})
     // TWO-TIER LOAD (owner: "30s to load — make it 3"). The broker snapshot
     // and deal history are live cTrader WebSocket round-trips (slow, tens of
     // seconds on a cold link); everything else is a SQLite read (<100ms).
@@ -287,14 +299,12 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, hb, ls, ad, mh, ord, pms, corr, mp, dupe, wlf, px] = await Promise.all([
+      const [h, s, r, atf, c, ls, ad, mh, ord, pms, corr, mp, dupe, wlf, px] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
-        agentGet('/state/positions'),
         agentGet('/state/risk-events?limit=200'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/config').catch(() => null),
-        agentGet('/state/heartbeats').catch(() => null),
         agentGet('/state/llm-spend').catch(() => null),
         agentGet('/state/alpha-decay').catch(() => null),
         agentGet('/state/market-hours').catch(() => null),
@@ -315,13 +325,9 @@ export default function Desk() {
       // `key={symbol}` rows in lists keyed by symbol (Codex review).
       const rows = s.lastResults?.scans || []
       setScans(rows)
-      setPositions(p.rows || p.positions || [])
-      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0, scope: p?.scope ?? null })
       setEvents(r.rows || [])
       setArmed(atf)
       setConfig(c)
-      setHeartbeats(hb?.controllers ?? null)
-      setControllerRuntime(hb?.runtime ?? null)
       setLlmSpend(ls)
       setAlphaDecay(ad)
       setMarketHours(mh?.hours || null)

@@ -5,6 +5,7 @@ import { lastProtectionAudit } from './naked-position-guard.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { intentCounts } from './entry-ledger.js'
 import { independentProtectionView } from './independent-protection.js'
+import { effectivePhases } from './account-phases.js'
 
 const read = (db, key) => {
   try { return JSON.parse(getState(db, key) || 'null') } catch { return null }
@@ -56,6 +57,7 @@ export function controllerRuntimeView(db, { nowMs = Date.now() } = {}) {
     return {
       accountId: id, environment: row.is_live ? 'live' : 'demo', enabled: !!row.enabled,
       entryMode: tick.effectiveEntryMode, shadowReady: tick.shadowReady,
+      phases: effectivePhases(db, id),
       entryReady: tick.ready, tradingBlockers: tick.tradingBlockers,
       shadowBlockers: tick.shadowBlockers,
       brokerAccess: refused.has(id) ? 'TOKEN_REFUSED' : 'NOT_REFUSED',
@@ -67,6 +69,12 @@ export function controllerRuntimeView(db, { nowMs = Date.now() } = {}) {
   })
   return { at: new Date(nowMs).toISOString(), sides, accounts,
     monitor: read(db, 'fast_monitor_pass_json'),
+    process: {
+      phase: getState(db, 'loop_phase') || 'unknown',
+      lastScanAt: getState(db, 'last_scan_at') || null,
+      phaseLag: read(db, 'loop_phase_lag_json'),
+      profiles: read(db, 'loop_cpu_profile_json'),
+    },
     cadence: { entries: 'Quote events or the account’s scheduled strategy scan',
       volume: 'Tick momentum uses price, spread and volatility; no traded-volume confirmation' },
   }

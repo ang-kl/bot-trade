@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { controllerRuntimeView } from './controller-runtime.js'
+import { upsertAccount, setAccountEnabled } from './account-registry.js'
 
 const nowMs = Date.parse('2026-09-21T10:00:00Z')
 const at = new Date(nowMs).toISOString()
@@ -33,4 +34,17 @@ test('stale, future or absent readings cannot claim currently running', () => {
     assert.equal(live.trail, null)
     db.close()
   }
+})
+
+test('runtime reports effective pipeline permission separately from tick validation', t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  upsertAccount(db, { accountId: '11' })
+  setAccountEnabled(db, '11', true, 'active')
+  setState(db, 'autotrade_enabled', 'true')
+  setState(db, 'acct:11:scan_enabled', 'false')
+  const account = controllerRuntimeView(db, { nowMs }).accounts[0]
+  assert.equal(account.entryReady, false, 'no validated tick profile')
+  assert.equal(account.phases.autotrade, true, 'tick readiness is not the scheduled-entry master switch')
+  assert.equal(account.phases.scan, false)
+  assert.equal(account.phases.source.scan, 'account')
 })
