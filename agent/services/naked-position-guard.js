@@ -77,7 +77,7 @@
 //     the exit is a fact worth having on record even when it is not a fault.
 // ─────────────────────────────────────────────────────────────────────────────
 import { getState, setState } from '../db.js'
-import { singleFlight } from './acting-layer.js'
+import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { recordedTargetFor } from './target-restore.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { normPosId } from '../lib/pos-id.js'
@@ -848,10 +848,11 @@ export function recordAuditUnavailable(db, reason, { nowMs = Date.now(), account
       // the reader needs, and overwriting it with the failure would destroy
       // the only thing worth reporting during an outage.
       ...(prev.ok ? prev : { ...prev, at: prev.at ?? null }),
+      ...(accountId != null ? { accountId: String(accountId) } : {}),
       ok: prev.ok === true,
       lastAttemptAt: new Date(nowMs).toISOString(),
       lastAttemptOk: false,
-      lastAttemptError: String(reason || 'unknown').slice(0, 300),
+      lastAttemptError: `${accountId != null ? `${accountId}: ` : ''}${String(reason || 'unknown')}`.slice(0, 300),
     }))
   } catch { /* non-fatal */ }
 }
@@ -1134,11 +1135,40 @@ export async function runProtectionAuditBothSides(db, baseCreds, deps = {}) {
   return out
 }
 
-export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
-  return singleFlight(`protection_audit:${baseCreds?.isLive ? 'live' : 'demo'}`, () => protectionAuditPass(db, baseCreds, deps))
+// An account may still be reading or amending after its caller stops waiting.
+// Keep its lock until the WORK settles, but release the sweep so other accounts
+// can be checked again next time. Scope locks to the database and broker side.
+const auditFlights = new WeakMap()
+const ACCOUNT_BUDGET_MS = 4_000 // leave headroom inside the band's 5s wait
+function auditSingleFlight(db, key, work) {
+  let flights = auditFlights.get(db)
+  if (!flights) { flights = new Map(); auditFlights.set(db, flights) }
+  if (flights.has(key)) return flights.get(key)
+  const pass = Promise.resolve().then(work).finally(() => {
+    if (flights.get(key) === pass) flights.delete(key)
+  })
+  flights.set(key, pass)
+  return pass
 }
 
-async function protectionAuditPass(db, baseCreds, deps) {
+async function waitForAccount(work, budgetMs) {
+  let timer
+  try {
+    return await Promise.race([
+      work,
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`protection audit exceeded its ${budgetMs}ms account budget; work remains in flight`)), budgetMs)
+      }),
+    ])
+  } finally { clearTimeout(timer) }
+}
+
+export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
+  const side = baseCreds?.isLive ? 'live' : 'demo'
+  return auditSingleFlight(db, `sweep:${side}`, () => protectionAuditPass(db, baseCreds, deps, side))
+}
+
+async function protectionAuditPass(db, baseCreds, deps, side) {
   const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
@@ -1186,10 +1216,11 @@ async function protectionAuditPass(db, baseCreds, deps) {
         AND (mp.account_id = ? OR mp.account_id IS NULL)`
   )
 
-  for (const id of ids) {
+  const auditOne = async (id) => {
+    const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [] }
     try {
       const creds = id === primary ? baseCreds : { ...baseCreds, accountId: id }
-      if (!creds?.ready) continue
+      if (!creds?.ready) return out
       const rec = await exec.reconcile(creds)
       const positions = rec?.position || []
       const openRows = stmt.all(String(id))
@@ -1198,7 +1229,6 @@ async function protectionAuditPass(db, baseCreds, deps) {
       // for, so an empty openRows does not skip the pass.
       if (!openRows.length && !positions.length) {
         out.accounts++
-        if (obliged.has(String(id))) reachedObliged++
         // RECORD THE CLEAN PASS (02-09-2026). This branch used to skip the
         // per-account record, so an account with nothing open read as "NOT
         // audited for 12h" the moment the whole-book merge started naming
@@ -1210,7 +1240,7 @@ async function protectionAuditPass(db, baseCreds, deps) {
             checked: 0, unmatched: 0, naked: 0, targetless: 0, phantom: 0,
           }))
         } catch { /* non-fatal */ }
-        continue
+        return out
       }
       const brokerSl = positions.map(p => ({
         positionId: p.positionId,
@@ -1299,7 +1329,6 @@ async function protectionAuditPass(db, baseCreds, deps) {
         ...(deps.auditOpts || {}),
       })
       out.accounts++
-      if (obliged.has(String(id))) reachedObliged++
       out.naked += prot.naked.length
       out.targetless += prot.targetless.length
       out.phantom += prot.phantom.length
@@ -1405,6 +1434,35 @@ async function protectionAuditPass(db, baseCreds, deps) {
         recordAuditUnavailable(db, msg, { accountId: id, ...(deps.auditOpts?.nowMs ? { nowMs: deps.auditOpts.nowMs } : {}) })
       }
     }
+    return out
+  }
+
+  // Known broker refusals are maintained by the heartbeat's authorised roster.
+  // Repeated reads cannot grant access; they only trigger auth retry/refresh
+  // cascades. Keep each refused account visible, and retry when that set clears.
+  const refused = tokenRefusedAccounts(db)
+  const configuredBudget = Number(deps.accountBudgetMs)
+  const budgetMs = configuredBudget > 0 && Number.isFinite(configuredBudget)
+    ? configuredBudget : ACCOUNT_BUDGET_MS
+  const results = await Promise.all(ids.map(async id => {
+    try {
+      if (refused.has(id)) throw new Error('ACCOUNT_NOT_AUTHORIZED: broker token refused; awaiting authorisation')
+      return await waitForAccount(
+        auditSingleFlight(db, `account:${side}:${id}`, () => auditOne(id)), budgetMs,
+      )
+    } catch (err) {
+      const msg = String(err?.message || err)
+      recordAuditUnavailable(db, msg, { accountId: id, nowMs: deps.auditOpts?.nowMs ?? deps.nowMs ?? Date.now() })
+      return { accounts: 0, errors: UNAUDITABLE_RE.test(msg) ? [] : [`${id}: ${msg}`],
+        unauditable: UNAUDITABLE_RE.test(msg) ? [`${id}: ${msg}`] : [] }
+    }
+  }))
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]
+    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted']) out[key] += r[key] || 0
+    out.errors.push(...r.errors)
+    out.unauditable.push(...r.unauditable)
+    if (r.accounts && obliged.has(ids[i])) reachedObliged++
   }
   // AN AUDIT THAT REACHED NOTHING IS NOT A CLEAN AUDIT, and this is the price
   // of every widening of UNAUTHORISED_CODES above. `CANT_ROUTE_REQUEST` is an

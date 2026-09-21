@@ -98,6 +98,77 @@ test('one account failing does not silence the others', async () => {
   assert.equal(out.naked, 1, 'including its missing stop')
 })
 
+test('known token refusals are named without another broker call, and clear when authorisation returns', async () => {
+  const { setState } = await import('../db.js')
+  setState(db, 'cpp_exec_refused_accounts_json', JSON.stringify([A]))
+  const asked = []
+  const exec = { reconcile: async c => { asked.push(c.accountId); return { position: [] } } }
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  assert.deepEqual(asked, [B], 'do not trigger auth retries/refreshes for a known refusal')
+  assert.equal(out.accounts, 1)
+  assert.equal(out.blind, false)
+  assert.match(out.unauditable[0], new RegExp(A))
+  const failed = lastProtectionAudit(db, { accountId: A })
+  assert.equal(failed.hasRun, false, 'a skipped account was not checked')
+  assert.equal(failed.lastAttemptOk, false)
+  assert.match(lastProtectionAudit(db).summary, new RegExp(A), 'whole-book view keeps the named gap')
+  setState(db, 'cpp_exec_refused_accounts_json', '[]')
+  asked.length = 0
+  const recovered = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  assert.deepEqual(asked.sort(), [A, B].sort())
+  assert.equal(recovered.unauditable.length, 0)
+  assert.equal(lastProtectionAudit(db, { accountId: A }).ok, true)
+})
+
+test('a wholly token-refused roster is blind and never counted as audited', async () => {
+  const { setState } = await import('../db.js')
+  setState(db, 'cpp_exec_demo_refused_accounts_json', JSON.stringify([A, B]))
+  let reads = 0
+  const out = await runProtectionAuditAllAccounts(db, creds, {
+    tpSuggest: inertTp, exec: { reconcile: async () => { reads++; return { position: [] } } },
+  })
+  assert.equal(reads, 0)
+  assert.equal(out.accounts, 0)
+  assert.equal(out.unauditable.length, 2)
+  assert.equal(out.blind, true)
+})
+
+test('a hung account cannot starve healthy accounts or start overlapping reads on later sweeps', async () => {
+  let release
+  const blocked = new Promise(resolve => { release = resolve })
+  const reads = { [A]: 0, [B]: 0 }
+  const exec = { reconcile: async c => {
+    reads[c.accountId]++
+    return c.accountId === A ? blocked : { position: [] }
+  } }
+  const opts = { tpSuggest: inertTp, exec, accountBudgetMs: 20 }
+  let timer
+  const deadline = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('healthy account remained blocked')), 1000)
+  })
+  try {
+    const first = await Promise.race([runProtectionAuditAllAccounts(db, creds, { ...opts, tpSuggest: inertTp }), deadline])
+    assert.equal(first.accounts, 1)
+    assert.match(first.errors[0], new RegExp(`${A}.*budget`))
+    assert.equal(lastProtectionAudit(db, { accountId: A }).lastAttemptOk, false)
+    assert.equal(lastProtectionAudit(db, { accountId: B }).ok, true)
+    const second = await runProtectionAuditAllAccounts(db, creds, { ...opts, tpSuggest: inertTp })
+    assert.equal(second.accounts, 1)
+    assert.deepEqual(reads, { [A]: 1, [B]: 2 }, 'join the slow account, refresh the healthy one')
+    const snapshot = JSON.stringify(first)
+    release({ position: [] })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(JSON.stringify(first), snapshot, 'late completion cannot mutate a returned summary')
+    const third = await runProtectionAuditAllAccounts(db, creds, { ...opts, tpSuggest: inertTp })
+    assert.equal(third.accounts, 2)
+    assert.deepEqual(reads, { [A]: 2, [B]: 3 }, 'settled account is eligible on the next sweep')
+  } finally {
+    clearTimeout(timer)
+    release({ position: [] })
+    await new Promise(resolve => setImmediate(resolve))
+  }
+})
+
 test('an account clean on both sides is counted, not skipped', async () => {
   const exec = { exec: null, reconcile: async () => ({ position: [] }) }
   const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
@@ -516,6 +587,45 @@ const targetlessOn = (acct, symbol, posId, sl, extra = {}) => {
 
 const oneAccount = () => { db.prepare('UPDATE accounts SET enabled = 0 WHERE account_id = ?').run(B) }
 
+test('a timed-out target amend stays locked while the next sweep rechecks other accounts', async () => {
+  targetlessOn(A, 'EURUSD', '111', 1.05, { current_tp: 1.12, entry_price: 1.09, source: 'autopilot' })
+  let release
+  const blocked = new Promise(resolve => { release = resolve })
+  let amends = 0, healthyReads = 0
+  const snapshot = { position: [{ positionId: '111', stopLoss: 1.06, takeProfit: null }] }
+  const opts = {
+    accountBudgetMs: 20,
+    exec: { reconcile: async c => {
+      if (c.accountId === A) return snapshot
+      healthyReads++
+      return { position: [] }
+    } },
+    wsReconcile: async () => snapshot,
+    restoreOpts: { amend: async (_c, args) => {
+      amends++
+      assert.equal(args.takeProfit, 1.12)
+      assert.equal(args.stopLoss, 1.06)
+      return blocked
+    } },
+  }
+  try {
+    const first = await runProtectionAuditAllAccounts(db, creds, { ...opts, tpSuggest: inertTp })
+    assert.equal(first.accounts, 1)
+    assert.match(first.errors[0], new RegExp(`${A}.*budget`))
+    const second = await runProtectionAuditAllAccounts(db, creds, { ...opts, tpSuggest: inertTp })
+    assert.equal(second.accounts, 1)
+    assert.equal(healthyReads, 2)
+    assert.equal(amends, 1, 'an abandoned wait must not permit a duplicate amend')
+    const returned = JSON.stringify(first)
+    release({ executionType: 'OK' })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(JSON.stringify(first), returned, 'late repair cannot change an earlier result')
+  } finally {
+    release({ executionType: 'OK' })
+    await new Promise(resolve => setImmediate(resolve))
+  }
+})
+
 test('THE WIRING: this sweep now carries the applier, and the target lands on the position', async () => {
   oneAccount()
   targetlessOn(A, 'EURUSD', '111', 1.05)
@@ -605,7 +715,7 @@ test('a position whose BOOK target can be restored is not amended twice in one s
 for (const source of ['autopilot', 'copilot', 'preopen']) {
   test(`${source}: restore the recorded entry target and report it without a structural replacement`, async () => {
     oneAccount()
-    targetlessOn(A, 'EURUSD', '111', 1.05, { source, entry_price: 1.09 })
+    targetlessOn(A, 'EURUSD', '111', 1.05, { source, entry_price: 1.09, current_tp: 0 })
     db.prepare('UPDATE trades SET tp_price = 1.12 WHERE ctrader_position_id = ?').run('111')
     const amends = []
     let structuralCalls = 0

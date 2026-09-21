@@ -749,6 +749,15 @@ Measurement history — each line is a real run of the script, not a claim:
   is by replies, not by stamps. A later re-measure that reads below this
   line is missing these, not correcting them.
 
+- 2026-09-21 11:04 UTC, **Codex Work container, transcript corpus unavailable**:
+  `node scripts/count-interactions.js --serial` found no JSONL transcripts.
+  The owner supplied Claude's **`№ 8,325`** reply stamped 17:11 SGT and asked
+  to resume numbering. Codex's earlier `№ 8,305` / `№ 8,306` stamps were behind
+  that record. Explicit rebase to the supplied serial, not a measured count:
+  Codex continued with **`№ 8,326`** at 19:00 SGT and **`№ 8,327`** at 19:03
+  SGT. The next reply after this checkpoint is `№ 8,328`; later visible replies
+  take precedence. No claim is made to reconstruct the missing transcript.
+
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
