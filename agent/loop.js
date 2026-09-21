@@ -4114,7 +4114,7 @@ async function runLoop(db) {
             amend: (creds, args) => amendBookStop(creds, args, {
               amend: exec.amendPosition,
               readPosition: async (c, positionId) => {
-                const rec = await wsReconcile(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, 5000)
+                const rec = await wsReconcile(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, 5000, 0)
                 if (String(rec.ctidTraderAccountId) !== String(c.accountId)) throw new Error('book protection account identity mismatch')
                 return (rec.position || []).find(p => String(p.positionId) === String(positionId)) || null
               },

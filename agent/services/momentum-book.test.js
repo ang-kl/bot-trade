@@ -100,7 +100,7 @@ function fakes({ fill = true } = {}) {
       symbolMap: { BTCUSD: 1, NATGAS: 2 },
       bars: async () => bars,
       spot: async () => ({ bid: 102.9, ask: 103 }),
-      amend: async (_c, args) => { calls.amend.push(args); return { protection: { stopLoss: args.stopLoss, takeProfit: args.takeProfit, verified: true } } },
+      amend: async (_c, args) => { calls.amend.push(args); return { protection: { stopLoss: args.stopLoss, takeProfit: args.takeProfit, verified: true, source: 'broker_reconcile', readStartedAtMs: Date.now(), checkedAtMs: Date.now(), readDurationMs: 0 } } },
       close: async (_c, args) => { calls.close.push(args); return {} },
       positionVolume: async () => 1000,
       phasesOn: () => true,
@@ -450,6 +450,16 @@ test('a targetless book row never advances its ledger without broker read-back c
   assert.equal(r.trailed, 0)
   assert.equal(db.prepare('SELECT stop FROM momentum_book').get().stop, standing)
   assert.ok(r.skipped.some(s => /not confirmed/.test(s)), JSON.stringify(r.skipped))
+  assert.match(db.prepare('SELECT trail_note FROM momentum_book').get().trail_note, /broker protection failed/)
+  const state = JSON.parse(getState(db, MOMENTUM_BOOK_STATE_KEY))
+  assert.equal(state.markFail[`${DEMO}|BTCUSD`], undefined, 'fresh bar is not falsely labelled unavailable')
+  assert.ok(state.marks[`${DEMO}|BTCUSD`].c > 0)
+  const old = Date.now() - 5001
+  f.deps.amend = async (_c, args) => ({ protection: { verified: true, stopLoss: args.stopLoss,
+    takeProfit: null, source: 'broker_reconcile', readStartedAtMs: old, checkedAtMs: old, readDurationMs: 0 } })
+  const stale = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 3_000 })
+  assert.equal(stale.trailed, 0)
+  assert.equal(db.prepare('SELECT stop FROM momentum_book').get().stop, standing, 'expired proof cannot advance ledger')
 })
 
 test('wiring pins: the loop runs the book after the shadow with the real autoTrade and broker calls injected; the limit branch honours marketOnly (comments stripped)', () => {

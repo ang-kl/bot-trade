@@ -95,6 +95,7 @@
 // against an in-memory DB with fake fills.
 // ---------------------------------------------------------------------------
 
+import { freshBookProtection } from './book-stop-amend.js'
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { armedTradeKeys } from './stage-matrix.js'
@@ -1123,6 +1124,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       noteTrail(row.id, `not reached: ${markFail[mk]}`)
       continue
     }
+    let trailStage = 'bars'
     try {
       const bars = await deps.bars(creds, symbolId)
       const atr = atrOf(bars, cfg.atrPeriod)
@@ -1150,6 +1152,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       // distances; the amend sends an absolute price and must round it to the
       // symbol's digits itself. digitsFor is the same cached symbol record the
       // limit builder reads (lot-sizing.getVolumeMeta).
+      trailStage = 'symbol metadata'
       const digits = deps.digitsFor ? await deps.digitsFor(creds, symbolId) : null
       const next = raw != null && digits != null ? roundToDigits(raw, digits) : raw
       if (next == null || !trailImproves({ side: rowSide, prevStop: row.stop, nextStop: next })) {
@@ -1176,15 +1179,17 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         // The adapter reads both protection legs from the broker immediately
         // before sending and again afterwards. A stale local TP must neither
         // overwrite a newer broker TP nor freeze a safer stop on a legacy row.
+        trailStage = 'broker protection'
         if (!row.position_id || !deps.amend) throw new Error('book stop cannot be confirmed: no broker position or amendment adapter')
         const result = await deps.amend(creds, { positionId: row.position_id, stopLoss: next,
           takeProfit: Number(row.current_tp) > 0 ? Number(row.current_tp) : null, side: rowSide })
         const confirmed = result?.protection
         const stop = Number(confirmed?.stopLoss)
-        if (!confirmed?.verified || !(stop > 0) || (rowSide === 'short' ? stop > next : stop < next)) {
-          throw new Error('book stop not confirmed by broker read-back')
+        if (!freshBookProtection(confirmed) || !(stop > 0) || (rowSide === 'short' ? stop > next : stop < next)) {
+          throw new Error('book stop not confirmed by fresh broker read-back')
         }
         const tp = Number(confirmed.takeProfit) > 0 ? Number(confirmed.takeProfit) : null
+        trailStage = 'book persistence'
         db.transaction(() => {
           db.prepare(`UPDATE momentum_book SET stop = ?, atr = ? WHERE id = ?`).run(stop, atr, row.id)
           if (row.trade_id != null) {
@@ -1199,8 +1204,10 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     } catch (err) {
       // PR-P: the trail already names this one; the brake needs the same fact
       // in a form it can put next to the row it could not price.
-      markFail[mk] = `bars unavailable: ${String(err.message).slice(0, 60)}`
-      noteTrail(row.id, `not reached: ${markFail[mk]}`)
+      const failure = `${trailStage === 'bars' ? 'bars unavailable' : `${trailStage} failed`}: ${String(err.message).slice(0, 120)}`
+      // A protection failure does not invalidate a bar that was read successfully.
+      if (trailStage === 'bars') markFail[mk] = failure
+      noteTrail(row.id, `${trailStage === 'bars' ? 'not reached: ' : ''}${failure}`)
       summary.skipped.push(`${row.symbol} trail: ${err.message}`)
     }
   }
