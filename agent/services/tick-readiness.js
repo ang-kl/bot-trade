@@ -131,7 +131,7 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
   // workers (cpp-exec main.cpp), so its shadow switch can never converge —
   // the remedy must say so, not send the operator to wait for a probe.
   const noSpool = !!status && status.enabled === false
-  add('shadow_strategy_running', st.tickObservation !== 'SHADOW' ? true : !!(status?.strategy?.shadow), `${side}:/tick-status.strategy.shadow`, st.tickObservation === 'SHADOW' ? (noSpool ? 'sidecar has no TICK_SPOOL_PATH (no tick workers)' : String(!!status?.strategy?.shadow)) : 'n/a (not in SHADOW)', rec?.at ?? null, noSpool ? 'infrastructure' : 'integration_defect', noSpool ? 'the sidecar has no TICK_SPOOL_PATH and builds no tick workers without one, so SHADOW cannot run there: set TICK_SPOOL_PATH on that sidecar (a volume is needed — ask-first, TM-27)' : 'the guard sync has not converged the sidecar\'s shadow switch; check the next probe')
+  add('shadow_strategy_running', st.tickObservation !== 'SHADOW' ? true : !!(status?.strategy?.shadow), `${side}:/tick-status.strategy.shadow`, st.tickObservation === 'SHADOW' ? (noSpool ? 'sidecar has no TICK_SPOOL_PATH (no tick workers)' : String(!!status?.strategy?.shadow)) : 'n/a (not in SHADOW)', rec?.at ?? null, noSpool ? 'infrastructure' : 'integration_defect', noSpool ? 'the sidecar has no TICK_SPOOL_PATH and builds no tick workers without one, so SHADOW cannot run there: set TICK_SPOOL_PATH on that sidecar (ask-first — it restarts the sidecar; a VOLUME is not needed for shadow, only before arming, TM-27)' : 'the guard sync has not converged the sidecar\'s shadow switch; check the next probe')
   const trial = replayTrialFor(db, pinned)
   add('replay_evidence', !!trial, 'tick_trials', trial ? `trial ${trial.trialId} at ${trial.at}` : (pinned ? 'no trial for the pinned profile' : 'no profile pinned'), trial?.at ?? null, 'missing_evidence', 'POST /actions/tick-research (stage-A grid over the segments at TICK_SEGMENTS_DIR, imported into the ledger) — or scripts/tick-research.mjs beside the spool, then POST /actions/tick-trials')
   // PR-B (owner principle 1): ONE bar for every account — SHADOW_PASSED or
@@ -176,7 +176,26 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
   // "is the shadow running on THIS account", not "could it be" — see
   // SHADOW_OBSERVATION_BLOCKER. Derived, never a readiness check.
   if (st.tickObservation !== 'SHADOW') shadowBlockers.push(SHADOW_OBSERVATION_BLOCKER)
+  // §1 (21-09-2026), reporting only. `TICK_SPOOL_PATH` is the construction
+  // gate for the WHOLE tick block on a sidecar — recorder, workers, strategy,
+  // shadow books, firer and /tick-status alike (cpp-exec main.cpp:191-265,
+  // :764) — so "this side has no tick block" and "the recorder is not
+  // recording" are different facts with different remedies, and until now an
+  // operator had to read the sidecar log to tell them apart. This names the
+  // destination and why it is or is not there. It is DERIVED: it appears in
+  // no check, touches neither `ready` nor `shadowReady`, and the
+  // anti-regression test recomputes the old predicate over the old list.
+  const recorderDestination = {
+    path: status?.spoolDir ?? null,
+    state: status ? (status.enabled === false ? 'NO_SPOOL_PATH' : String(status.state || 'UNKNOWN')) : 'NO_STATUS',
+    reason: status
+      ? (status.enabled === false
+        ? (status.reason || 'TICK_SPOOL_PATH not set — the sidecar builds no tick block at all')
+        : (status.reason || null))
+      : 'the heartbeat has not pulled /tick-status from this side',
+  }
   return {
+    recorderDestination,
     accountId: `…${id.slice(-4)}`,
     environment: st.environment,
     side,
