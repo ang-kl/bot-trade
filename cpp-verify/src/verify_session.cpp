@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <set>
+#include <cmath>
 
 using std::chrono::steady_clock;
 using std::chrono::milliseconds;
@@ -27,6 +28,8 @@ constexpr int kTraderRes = 2122;
 constexpr int kDealListReq = 2133;
 constexpr int kDealListRes = 2134;
 constexpr int kErrorRes = 2142;
+constexpr int kReconcileReq = 2124;
+constexpr int kReconcileRes = 2125;
 
 // cTrader caps a DealList response; 1000 is the documented maximum and the
 // page walk below does not depend on the number being right.
@@ -163,6 +166,54 @@ std::optional<int> VerifySession::moneyDigits(long long accountId) const {
   auto it = moneyDigits_.find(accountId);
   if (it == moneyDigits_.end()) return std::nullopt;
   return it->second;
+}
+
+jsn::Value VerifySession::protection(long long accountId) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  jsn::Value out{jsn::Object{}};
+  out.set("accountId", std::to_string(accountId));
+  out.set("host", host_);
+  out.set("ok", false);
+  auto fail = [&](const std::string& error) {
+    out.set("error", error);
+    return out;
+  };
+  if (!ws_.isOpen()) return fail("not connected");
+  jsn::Value req{jsn::Object{}};
+  req.set("ctidTraderAccountId", static_cast<double>(accountId));
+  auto res = sendAndWait(kReconcileReq, req, kReconcileRes, 10000);
+  if (!res) {
+    // A late reconcile reply must not satisfy the next account's request.
+    if (lastError_.starts_with("timeout")) ws_.close();
+    return fail(lastError_);
+  }
+  if (asI64(res->get("ctidTraderAccountId")) != accountId) return fail("broker account identity mismatch");
+  const auto& positions = res->get("position");
+  if (!positions.isNull() && !positions.isArray()) return fail("malformed broker positions");
+  jsn::Array rows;
+  std::set<long long> seen;
+  int missingSl = 0, missingTp = 0;
+  for (const auto& p : positions.asArray()) {
+    const auto id = asI64(p.get("positionId"));
+    if (id <= 0 || !seen.insert(id).second) return fail("invalid or duplicate broker position identity");
+    const double sl = asF64(p.get("stopLoss")), tp = asF64(p.get("takeProfit"));
+    const bool hasSl = std::isfinite(sl) && sl > 0, hasTp = std::isfinite(tp) && tp > 0;
+    if (!hasSl) ++missingSl;
+    if (!hasTp) ++missingTp;
+    jsn::Value row{jsn::Object{}};
+    row.set("positionId", std::to_string(id));
+    row.set("symbolId", std::to_string(asI64(p.get("tradeData").get("symbolId"))));
+    row.set("stopLoss", hasSl ? jsn::Value(sl) : jsn::Value());
+    row.set("takeProfit", hasTp ? jsn::Value(tp) : jsn::Value());
+    rows.push_back(std::move(row));
+  }
+  out.set("ok", true);
+  out.set("source", std::string("broker_reconcile"));
+  out.set("positions", jsn::Value(std::move(rows)));
+  out.set("openCount", static_cast<double>(seen.size()));
+  out.set("missingSl", missingSl);
+  out.set("missingTp", missingTp);
+  return out;
 }
 
 DealFetch VerifySession::deals(long long accountId, long long fromMs, long long toMs) {

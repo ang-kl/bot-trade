@@ -59,7 +59,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/lib/tick-segment.js': { reason: 'the recorder segment header stamps which side it was recorded on (plan §3.1: main.cpp:192)', max: { live_str: 2, demo_str: 2, environment_cmp: 1 } },
   'agent/index.js': { reason: 'boots ctrader_is_live from the env and names the side in the roster-invariant boot line', max: { isLive: 2, live_str: 1, demo_str: 1 } },
   // ---- credentials / host choice (plan §3.1: ctrader-creds.js) -------------
-  'agent/lib/ctrader-creds.js': { reason: 'host choice and same-side roster for the credentials (plan §3.1 routing)', max: { is_live: 1, isLive: 5 } },
+  'agent/lib/ctrader-creds.js': { reason: 'host choice, registered-account credential routing and same-side roster (plan §3.1 routing); no policy distinction', max: { is_live: 3, isLive: 6 } },
   'agent/lib/exec-engine.js': { reason: 'sidecar roster per side (plan §3.1: exec-engine.js rosters); sidecarQuotes picks the side\'s base (19-09-2026)', max: { isLive: 7 } },
   'agent/loop.js': { reason: 'host choices and same-side fan-outs (plan §3.1: loop.js), side named in logs', max: { is_live: 4, isLive: 33, live_str: 5, demo_str: 5 } },
   'agent/routes/actions.js': { reason: 'account selection writes ctrader_is_live and picks the host; creds per account (the validation-fill refusal is in RESIDUAL_GATES)', max: { is_live: 2, isLive: 27, live_str: 1, demo_str: 1 } },

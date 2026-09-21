@@ -8,14 +8,16 @@ declares that history correct.
 
 ## What it is, structurally
 
-The binary links exactly four translation units:
+The binary links its own verifier code and vendored read-only transport:
 
 | File | Why |
 |---|---|
-| `src/verify_session.cpp` | app auth (2100), account auth (2102), deal list (2133) — nothing else |
-| `src/verdict.cpp` | a pure comparison of one keeper record against the broker's deals |
-| `src/main.cpp` | three HTTP routes |
-| `../cpp-exec/src/{ws_client,http_server}.cpp` | the shared transport, compiled from cpp-exec rather than copied |
+| `src/verify_session.cpp` | app auth, account auth, trader, deal list and open-position reconcile |
+| `src/protection_watch.cpp` | an independent clock for open-position SL/TP checks |
+| `src/verdict.cpp` | closed-position comparison against broker deals |
+| `src/journal.cpp` | the verifier's own verdict journal |
+| `src/main.cpp` | HTTP routes and separate history/protection sessions |
+| `src/{ws_client,http_server}.cpp` | vendored transport, pinned to cpp-exec by tests |
 
 `cpp-exec/src/engine.cpp` is **not** in that list, and that is the whole
 guarantee: there is no code path from an HTTP request to an order because the
@@ -29,7 +31,19 @@ change that links the engine breaks the only claim this service makes.
 |---|---|---|
 | `GET /health` | public (Railway's probe sends no headers) | sessions per host, whether `CTRADER_HOST` was set and ignored |
 | `POST /connect` | bearer `EXEC_SECRET` | `{host, clientId, clientSecret, accessToken, accountId, accountIds[]}` — opens or refreshes the session **for that host** and authorizes each account |
+| `GET /protection-status` | bearer `EXEC_SECRET` | latest independent open-position readings, account identities, errors and broker-check timestamps |
 | `POST /verify` | bearer `EXEC_SECRET` | `{host, accountId, fromMs, toMs, record{…}}` → a verdict |
+
+### Open-position protection
+
+`POST /connect` accepts `purpose: "protection"` to create a separate read-only
+session for that host. It cannot replace the history session. The verifier
+reconciles those accounts on its own thread, then waits 60 seconds after each
+pass. The Node relay provisions every registered account and polls results
+without supplying expected SL/TP values. Controllers marks missing, failed,
+future-dated or older-than-three-minute results unverified. The verifier only
+reports broker protection; it never changes an order or chooses an exit price.
+A Node outage stops the UI relay but does not stop this broker-check thread.
 
 ### One verifier, both environments
 

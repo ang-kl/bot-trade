@@ -6180,6 +6180,9 @@ export function startLoop(db) {
   import('./services/fast-monitor.js')
     .then(m => m.startFastMonitor(db, getCtraderCreds))
     .catch(err => log('fast-monitor failed to start:', err.message))
+  import('./services/independent-protection.js')
+    .then(m => m.startIndependentProtection(db))
+    .catch(err => log('independent protection relay failed to start:', err.message))
   // Per-minute review (§70.4) — §41's level 5, on its own ticker so it keeps
   // reviewing precisely when the loop or the fast monitor is the thing that
   // broke. Reads only: it reports when a lower-authority writer moved a stop

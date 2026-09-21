@@ -9,6 +9,12 @@ import { ctraderEnv } from './ctrader-env.js'
 import { admitEntry } from '../services/entry-mode.js'
 import { reserveEntry, redeemPermit, markSent, resolveIntent } from '../services/entry-ledger.js'
 
+/** Read credentials for one registered account; unknown never falls back. */
+export function credsForRegisteredAccount(db, accountId) {
+  const row = db.prepare('SELECT account_id, is_live FROM accounts WHERE account_id = ?').get(String(accountId))
+  return row ? getCtraderCreds(db, { accountId: row.account_id, isLive: Number(row.is_live) === 1 }) : null
+}
+
 /**
  * Assemble cTrader connection credentials from env + agent state.
  * `accountOverride` ({accountId, isLive}) supports multi-account autopilot.

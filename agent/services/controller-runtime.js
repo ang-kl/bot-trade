@@ -4,6 +4,7 @@ import { tickReadinessFor, RECORDER_STATUS_MAX_AGE_MS } from './tick-readiness.j
 import { lastProtectionAudit } from './naked-position-guard.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { intentCounts } from './entry-ledger.js'
+import { independentProtectionView } from './independent-protection.js'
 
 const read = (db, key) => {
   try { return JSON.parse(getState(db, key) || 'null') } catch { return null }
@@ -60,6 +61,7 @@ export function controllerRuntimeView(db, { nowMs = Date.now() } = {}) {
       brokerAccess: refused.has(id) ? 'TOKEN_REFUSED' : 'NOT_REFUSED',
       entryCounts: intentCounts(db, id),
       protection,
+      independentProtection: independentProtectionView(db, id, nowMs),
       missingTargets: audit?.missingTargets ?? null,
     }
   })
