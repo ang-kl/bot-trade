@@ -77,6 +77,17 @@ function openConflict(db, { accountId, symbolId, symbol, side, producerId = null
   // never blocks ANOTHER producer. It does block its own producer (one
   // standing permit per account/symbol/side), and everything else open
   // blocks everyone, the standing producers included.
+  //
+  // PR-3 (dual-basis arbitration, 21-09-2026): THE ASYMMETRY IS THE RULE,
+  // kept on purpose when an account admits both bases. A standing tick
+  // permit never vetoes a real bar signal on the same key — the signal is
+  // the commitment, the permit is only capacity; an in-flight bar intent
+  // (RESERVED / DISPATCHING / SENT / UNKNOWN) blocks new tick capacity on
+  // that key until it settles. The residual window — the sidecar holding a
+  // copy of the standing permit after the bar side committed — is bounded
+  // by reserveStandingPermits withdrawing a standing row whose key another
+  // producer now holds, and by the loop marking the account for a feeder
+  // re-push on a bar fill (tick-permits.js markTickRepush).
   const standing = STANDING_PRODUCERS.map(() => '?').join(',')
   return db.prepare(`SELECT id, state, producer_id, created_at FROM entry_intents
     WHERE account_id = ? AND ${sameKeySql(symbolId)} AND side = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')})
@@ -146,10 +157,17 @@ export function reserveStandingPermits(db, { accountId, producerId, basis = 'bar
           continue
         }
         let kept = null
+        // PR-3: a standing row whose key ANOTHER producer now holds open (a
+        // bar intent reserved since the last push) is withdrawn on this pass
+        // — the reuse path never re-asked openConflict, so the sidecar's
+        // copy stayed spendable until the bar side filled. No producer id on
+        // the ask: every standing RESERVED row (this one's own included) is
+        // then excluded and only a real open intent answers.
+        const taken = openConflict(db, { accountId: id, symbolId, symbol, side, producerId: null })
         for (const r of standing.all(id, producerId, String(key), side)) {
-          const same = usable && r.mode_epoch === st.modeEpoch && sameVolume(r) && Number(r.symbol_id) === Number(symbolId)
+          const same = usable && !taken && r.mode_epoch === st.modeEpoch && sameVolume(r) && Number(r.symbol_id) === Number(symbolId)
           if (same && !kept) { kept = r; continue }
-          release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + (usable ? 'permit_superseded' : 'no_sizing'), iso(now), iso(now), r.id)
+          release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + (taken ? 'permit_withdrawn' : usable ? 'permit_superseded' : 'no_sizing'), iso(now), iso(now), r.id)
           out.released++
         }
         if (!usable) continue
@@ -296,6 +314,21 @@ export function resolveIntent(db, intentId, { state, brokerOrderId = null, posit
   return { ok: r.changes === 1 }
 }
 
+/**
+ * PR-3: a basis the account no longer admits has its RESERVED intents
+ * released now (`basis_withdrawn`) — the entry-mode setter calls this when
+ * the admitted set narrows. In-flight rows (DISPATCHING / SENT / UNKNOWN)
+ * are left to settle on the broker's evidence, like a mode switch leaves
+ * them. Distinct from releaseOldEpoch: the epoch has not moved.
+ */
+export function releaseRemovedBases(db, accountId, removedBases, { now = Date.now() } = {}) {
+  const bases = (Array.isArray(removedBases) ? removedBases : [removedBases]).map(String).filter(Boolean)
+  if (!bases.length) return { released: 0 }
+  const r = db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = 'basis_withdrawn', resolution_source = 'epoch', resolved_at = ?, updated_at = ?
+    WHERE account_id = ? AND state = 'RESERVED' AND basis IN (${bases.map(() => '?').join(',')})`).run(iso(now), iso(now), String(accountId), ...bases)
+  return { released: r.changes }
+}
+
 /** RESERVED intents of an older epoch are never sent (plan §3 step 1). */
 export function releaseOldEpoch(db, accountId, epoch, { now = Date.now() } = {}) {
   const r = db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = 'epoch_stale', resolution_source = 'epoch', resolved_at = ?, updated_at = ?
@@ -331,9 +364,9 @@ export function intentCounts(db, accountId) {
   return { unsent: by.RESERVED || 0, inFlight: (by.DISPATCHING || 0) + (by.SENT || 0), unknown: by.UNKNOWN || 0 }
 }
 
-/** Reserved-but-unfilled volume the margin pre-gate may count as used. */
+/** Reserved-but-unfilled volume the margin pre-gate may count as used. PR-3: the tick feeder counts these rows against the account's ONE position budget, standing RESERVED rows excluded (a standing permit is capacity, not exposure) — `producerId` and `basis` are on the row for that. */
 export function pendingExposure(db, accountId) {
-  return db.prepare(`SELECT symbol, symbol_id AS symbolId, side, volume, state FROM entry_intents
+  return db.prepare(`SELECT symbol, symbol_id AS symbolId, side, volume, state, producer_id AS producerId, basis FROM entry_intents
     WHERE account_id = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')})`).all(String(accountId), ...OPEN_STATES)
 }
 

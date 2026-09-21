@@ -40,16 +40,33 @@ import { getState, setState } from '../db.js'
 import { getAccountState, setAccountState } from './account-registry.js'
 import { recordDecision } from './decision-log.js'
 import { recordProducerRetired } from './gate-skips.js'
-import { ENTRY_MODES, OBSERVATION_MODES, ENTRY_MODE_POLICIES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
+import { ENTRY_MODES, OBSERVATION_MODES, ENTRY_MODE_POLICIES, SIGNAL_BASES, defaultEngineStatus, validateEngineStatus } from '../lib/entry-contracts.js'
 import { ENTRY_PRODUCERS } from '../lib/entry-producers.js'
 // P2a: the intent ledger (a function-only cycle: entry-ledger imports the
 // fence from here; nothing on either side runs at module load).
-import { releaseOldEpoch, intentCounts } from './entry-ledger.js'
+import { releaseOldEpoch, releaseRemovedBases, intentCounts } from './entry-ledger.js'
 import { DEFAULT_GAP_MS } from './opportunity-identity.js'
 
 export const ENGINE_STATUS_KEY = 'engine_status_json'
 
 const MODE_BASIS = Object.freeze({ TIME_BASED: 'bar', TICK_MOMENTUM: 'tick', STOPPED: null })
+
+/**
+ * PR-3 (dual-basis arbitration, 21-09-2026): the signal bases an account
+ * admits right now. `admittedBases` on the record, when set, is the whole
+ * answer; null is the mode's own basis — the one-mode behaviour of before,
+ * byte for byte. STOPPED admits nothing whatever the overlay says: the
+ * overlay widens WHICH producers an active engine admits, it is not a way
+ * past the stop. Every reader of "is this account a tick account" asks this
+ * (admitEntry, the tick permit feeder, the guard sync's placing list) so the
+ * two pushes cannot disagree.
+ */
+export function basesFor(st) {
+  if (!st || st.effectiveEntryMode === 'STOPPED') return []
+  if (Array.isArray(st.admittedBases) && st.admittedBases.length) return [...st.admittedBases]
+  const b = MODE_BASIS[st.effectiveEntryMode]
+  return b ? [b] : []
+}
 
 function environmentOf(db, accountId) {
   try {
@@ -90,7 +107,7 @@ export function engineStatusFor(db, accountId) {
     const v = validateEngineStatus(stored)
     // PR-G: a record written before the policy existed reads as `manual` —
     // the bot is never handed an account by omission.
-    if (v.ok) return { ...stored, entryModePolicy: ENTRY_MODE_POLICIES.includes(stored.entryModePolicy) ? stored.entryModePolicy : 'manual', invalid: undefined }
+    if (v.ok) return { ...stored, entryModePolicy: ENTRY_MODE_POLICIES.includes(stored.entryModePolicy) ? stored.entryModePolicy : 'manual', admittedBases: Array.isArray(stored.admittedBases) ? stored.admittedBases : null, invalid: undefined }
     return { ...defaultEngineStatus({ accountId: id, environment }), stored: false, invalid: v.errors }
   }
   return { ...defaultEngineStatus({ accountId: id, environment }), stored: false }
@@ -205,6 +222,11 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
     transitionState,
     configRevision: cur.configRevision + 1,
     modeEpoch: nextEpoch,
+    // PR-3: a mode switch is a fresh declaration of ONE basis. The dual-basis
+    // overlay does not ride across it — it is asked again, through the same
+    // readiness gate, once the new mode is acknowledged. (The old epoch's
+    // RESERVED rows of every basis were released just above.)
+    admittedBases: null,
     // The ack is the sidecar's echo of THIS epoch, not our own write. Kept
     // as it was until then, so a reader can see the fence is not yet bound.
     fenceAckEpoch: cur.fenceAckEpoch,
@@ -224,6 +246,74 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
     try { writeAutoState(db, id, { ...readAutoState(db, id), readyStreak: 0, blockedCycles: 0, humanOverride: { mode, at: now.toISOString(), epoch: saved.modeEpoch, actor: String(actor) } }) } catch { /* memory best-effort */ }
   }
   return { ok: true, status: saved, changed: cur.requestedEntryMode !== mode || cur.effectiveEntryMode !== saved.effectiveEntryMode }
+}
+
+/**
+ * PR-3 (dual-basis arbitration, 21-09-2026): set — or clear with null — the
+ * bases the account admits on top of its mode. The ONLY writer of
+ * `admittedBases`, reached through POST /actions/entry-mode (the route that
+ * carries ENTRY_MODE_POLICIES) with `expectedRevision`; bumps
+ * configRevision, never modeEpoch — the fence's epoch names a mode change,
+ * and this is not one. Rules, in order: the revision check; the PR-G actor
+ * policy; the set validated by the contract (SIGNAL_BASES only, no
+ * duplicates, never empty); ADDING 'tick' to what the account admits today
+ * (basesFor) passes the SAME readiness predicate that gates a promotion to
+ * TICK_MOMENTUM — a not-ready account cannot get ['tick'] or ['bar','tick'],
+ * with or without a readiness function; a basis REMOVED has its RESERVED
+ * intents released now (`basis_withdrawn`, releaseRemovedBases), not left
+ * for the sidecar to spend.
+ */
+export function requestAdmittedBases(db, accountId, bases, { expectedRevision = null, actor = 'owner', now = new Date(), readiness = null } = {}) {
+  const id = String(accountId)
+  const cur = engineStatusFor(db, id)
+  if (cur.invalid) return { ok: false, reason: 'engine_record_invalid', current: cur.configRevision }
+  if (expectedRevision != null && Number(expectedRevision) !== cur.configRevision) {
+    return { ok: false, reason: 'revision_conflict', current: cur.configRevision, expected: Number(expectedRevision) }
+  }
+  if (String(actor).startsWith('auto:') && cur.entryModePolicy !== 'auto') {
+    return { ok: false, reason: 'policy_manual', current: cur.configRevision, policy: cur.entryModePolicy }
+  }
+  const want = bases == null ? null : bases
+  if (want != null) {
+    if (!Array.isArray(want)) return { ok: false, reason: 'admitted_bases_invalid: an array of bases or null', current: cur.configRevision }
+    const { stored, invalid, ...clean } = cur // eslint-disable-line no-unused-vars
+    const probe = validateEngineStatus({ ...clean, admittedBases: want })
+    const errs = probe.errors.filter(e => e.startsWith('admittedBases'))
+    if (errs.length) return { ok: false, reason: `admitted_bases_invalid: ${errs.join('; ')}`, current: cur.configRevision }
+    for (const b of want) if (!SIGNAL_BASES.includes(b)) return { ok: false, reason: `admitted_bases_invalid: '${b}' not in [${SIGNAL_BASES.join(', ')}]`, current: cur.configRevision }
+  }
+  const before = basesFor(cur)
+  const after = want == null ? basesFor({ ...cur, admittedBases: null }) : want
+  if (after.includes('tick') && !before.includes('tick')) {
+    if (typeof readiness !== 'function') return { ok: false, reason: 'tick_readiness_unavailable: admitting tick needs the readiness check the route supplies', current: cur.configRevision }
+    let rd = null
+    try { rd = readiness(db, id) } catch (err) { return { ok: false, reason: `tick_readiness_error: ${err?.message || err}`, current: cur.configRevision } }
+    if (!rd || rd.ready !== true) {
+      const blocked = Array.isArray(rd?.blockedReasons) && rd.blockedReasons.length ? rd.blockedReasons.join(', ') : 'readiness did not report ready'
+      return { ok: false, reason: `tick_not_ready: ${blocked}`, current: cur.configRevision, blockedReasons: rd?.blockedReasons || [] }
+    }
+  }
+  // PR-3 (checker, 21-09-2026): the contract's own evidence rules bind the
+  // admitted set too (entry-contracts.js: a pinned profile and SHADOW_PASSED
+  // while tick is admitted). Asked AFTER the readiness gate so the reason a
+  // caller sees is the readiness one when both would refuse, and asked as a
+  // refusal rather than left to writeEngineStatus's throw.
+  if (want != null) {
+    const { stored: st2, invalid: iv2, ...clean2 } = cur // eslint-disable-line no-unused-vars
+    const full = validateEngineStatus({ ...clean2, admittedBases: want })
+    if (!full.ok) return { ok: false, reason: `admitted_bases_refused: ${full.errors.join('; ')}`, current: cur.configRevision, errors: full.errors }
+  }
+  const removed = before.filter(b => !after.includes(b))
+  let released = 0
+  if (removed.length) { try { released = releaseRemovedBases(db, id, removed, { now: now.getTime() }).released } catch { /* ledger table absent */ } }
+  const next = { ...cur, admittedBases: want == null ? null : [...want], configRevision: cur.configRevision + 1, updatedAt: now.toISOString() }
+  const saved = writeEngineStatus(db, next)
+  try {
+    db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+      .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, admittedBases: { from: cur.admittedBases ?? null, to: saved.admittedBases ?? null }, effective: { from: before, to: basesFor(saved) }, released, revision: saved.configRevision, epoch: saved.modeEpoch, actor }), id)
+  } catch { /* audit best-effort */ }
+  const changed = JSON.stringify(cur.admittedBases ?? null) !== JSON.stringify(saved.admittedBases ?? null)
+  return { ok: true, status: saved, changed, bases: basesFor(saved), removed, released }
 }
 
 /**
@@ -576,7 +666,7 @@ export function admitEntry(db, { accountId, producerId, basis = 'bar', proposal 
   // by the owner" from "stopped until the broker's evidence arrives".
   if (st.transitionState !== 'STABLE') reason = `entry_mode_transition: ${st.transitionState}`
   else if (mode === 'STOPPED') reason = 'entry_mode_stopped'
-  else if (MODE_BASIS[mode] !== basis) reason = `entry_mode_basis: ${mode} admits ${MODE_BASIS[mode]} producers, ${producerId} is ${basis}`
+  else if (!basesFor(st).includes(basis)) reason = `entry_mode_basis: ${mode} admits ${basesFor(st).join('+')} producers, ${producerId} is ${basis}`
   if (reason) {
     const key = `${id}:${producerId}:${st.modeEpoch}`
     if (!refusalsSeen.has(key)) {
@@ -606,6 +696,8 @@ export function entryEnginesView(db) {
       transitionState: st.transitionState,
       tickObservation: st.tickObservation,
       entryModePolicy: st.entryModePolicy,
+      admittedBases: st.admittedBases ?? null,
+      bases: basesFor(st),
       validationStage: st.validationStage,
       configRevision: st.configRevision,
       modeEpoch: st.modeEpoch,

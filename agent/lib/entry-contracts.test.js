@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  ENTRY_MODES, OBSERVATION_MODES, VALIDATION_STAGES, TRANSITION_STATES, PERMIT_STATES,
+  ENTRY_MODES, OBSERVATION_MODES, VALIDATION_STAGES, TRANSITION_STATES, PERMIT_STATES, SIGNAL_BASES,
   validateQuoteEvent, validateSignalIntent, validateExecutionPermit, validateEngineStatus,
   defaultEngineStatus,
 } from './entry-contracts.js'
@@ -147,4 +147,29 @@ test('PR-G: entryModePolicy is manual | auto, defaults to manual, and a pre-PR-G
   assert.equal(bad.ok, false); assert.match(bad.errors.join('; '), /entryModePolicy: 'sometimes' not in \[manual, auto\]/)
   const { entryModePolicy, ...legacy } = base // eslint-disable-line no-unused-vars
   assert.equal(validateEngineStatus(legacy).ok, true, 'a record written before the field existed is not refused')
+})
+
+test('PR-3: admittedBases is null by default (the mode\'s own basis), a set of SIGNAL_BASES is valid, and [] / duplicates / an unknown basis are refused by name; a record without the field still validates', () => {
+  const base = defaultEngineStatus({ accountId: '46130058', environment: 'demo' })
+  assert.equal(base.admittedBases, null)
+  // The evidence bar follows the ADMITTED BASIS, not the mode string: a set
+  // containing 'tick' needs the pinned profile and SHADOW_PASSED that an
+  // effective TICK_MOMENTUM needs (checker, 21-09-2026).
+  const evidenced = { ...base, profileHash: 'a'.repeat(64), validationStage: 'SHADOW_PASSED' }
+  assert.equal(validateEngineStatus({ ...evidenced, admittedBases: ['bar', 'tick'] }).ok, true)
+  assert.equal(validateEngineStatus({ ...evidenced, admittedBases: ['tick'] }).ok, true)
+  assert.equal(validateEngineStatus({ ...base, admittedBases: ['bar'] }).ok, true, 'bar alone needs no tick evidence')
+  const bare = validateEngineStatus({ ...base, admittedBases: ['bar', 'tick'] })
+  assert.equal(bare.ok, false, 'TIME_BASED + UNVALIDATED + no profile must NOT validate while tick is admitted')
+  assert.match(bare.errors.join('; '), /profileHash: required while tick entries are admitted/)
+  assert.match(bare.errors.join('; '), /validationStage: admitting tick needs at least SHADOW_PASSED/)
+  assert.equal(validateEngineStatus({ ...evidenced, validationStage: 'REPLAY_PASSED', admittedBases: ['tick'] }).ok, false, 'REPLAY_PASSED is below the bar for the overlay too')
+  assert.match(validateEngineStatus({ ...base, admittedBases: [] }).errors.join('; '), /^admittedBases: an empty set/)
+  assert.match(validateEngineStatus({ ...base, admittedBases: ['bar', 'bar'] }).errors.join('; '), /^admittedBases: duplicate basis/)
+  assert.match(validateEngineStatus({ ...base, admittedBases: ['candle'] }).errors.join('; '), /admittedBases\[0\]: 'candle' not in \[bar, tick\]/)
+  assert.equal(validateEngineStatus({ ...base, admittedBases: 'tick' }).ok, false, 'a bare string is not a set')
+  const { admittedBases, ...legacy } = base // eslint-disable-line no-unused-vars
+  assert.equal(validateEngineStatus(legacy).ok, true, 'a record written before the field existed is not refused')
+  assert.deepEqual([...SIGNAL_BASES], ['bar', 'tick'])
+  assert.deepEqual([...ENTRY_MODES], ['TIME_BASED', 'TICK_MOMENTUM', 'STOPPED'], 'no DUAL mode: the set is an overlay, not a fourth mode')
 })

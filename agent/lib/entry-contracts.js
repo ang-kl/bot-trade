@@ -271,6 +271,13 @@ export const ENGINE_STATUS_SHAPE = Object.freeze({
   transitionState: { type: 'string', required: true, enum: TRANSITION_STATES },
   tickObservation: { type: 'string', required: true, enum: OBSERVATION_MODES },
   entryModePolicy: { type: 'string', required: false, enum: ENTRY_MODE_POLICIES }, // PR-G: absent reads as 'manual'
+  // PR-3 (dual-basis arbitration, 21-09-2026): the signal bases this account
+  // ADMITS, overriding the one the effective mode implies (entry-mode.js
+  // basesFor). null / absent ⇒ the mode's own basis, exactly as before; a set
+  // is one or more of SIGNAL_BASES, no duplicates, never empty. Not a mode:
+  // ENTRY_MODES is unchanged and the set is settable only through the
+  // entry-mode route with its revision check.
+  admittedBases: { type: 'array', required: false, nullable: true, items: { type: 'string', enum: SIGNAL_BASES } },
   validationStage: { type: 'string', required: true, enum: VALIDATION_STAGES },
   configRevision: { type: 'number', required: true, integer: true, min: 0 },
   modeEpoch: { type: 'number', required: true, integer: true, min: 0 },
@@ -294,15 +301,30 @@ export function validateEngineStatus(obj) {
     if (e.transitionState === 'STABLE' && e.requestedEntryMode !== e.effectiveEntryMode) {
       errors.push('transitionState: STABLE requires requested and effective modes to agree')
     }
-    if (e.effectiveEntryMode === 'TICK_MOMENTUM') {
-      if (e.profileHash == null) errors.push('profileHash: required while TICK_MOMENTUM is effective')
+    // PR-3 (21-09-2026): THE EVIDENCE RULES FOLLOW THE ADMITTED BASIS, not
+    // the mode string. An account admitting 'tick' through `admittedBases`
+    // places tick entries exactly as an effective TICK_MOMENTUM one does, so
+    // it carries the same bar — otherwise a record with TIME_BASED,
+    // UNVALIDATED and no pinned profile but ['bar','tick'] validates, and the
+    // backstop this contract provides is lost precisely where it is the last
+    // line: a record that admits tick without the evidence must not validate,
+    // so engineStatusFor falls back to the OFF default and the account drops
+    // off both tick rosters on the next read.
+    const admitsTick = e.effectiveEntryMode === 'TICK_MOMENTUM' ||
+      (Array.isArray(e.admittedBases) && e.admittedBases.includes('tick'))
+    if (admitsTick) {
+      if (e.profileHash == null) errors.push('profileHash: required while tick entries are admitted')
       // PR-B: one evidence bar for every account — no environment clause.
       if (!TICK_ENTRY_STAGES.includes(e.validationStage)) {
-        errors.push('validationStage: TICK_MOMENTUM needs at least SHADOW_PASSED — plan runbook "Stages"')
+        errors.push('validationStage: admitting tick needs at least SHADOW_PASSED — plan runbook "Stages"')
       }
     }
     if (e.entryCounts.unknown > 0 && e.transitionState === 'STABLE' && e.effectiveEntryMode !== 'STOPPED') {
       errors.push('entryCounts.unknown: an unresolved entry cannot coexist with a STABLE active engine')
+    }
+    if (Array.isArray(e.admittedBases)) {
+      if (e.admittedBases.length === 0) errors.push('admittedBases: an empty set admits nothing — use null for the mode\'s own basis')
+      if (new Set(e.admittedBases).size !== e.admittedBases.length) errors.push('admittedBases: duplicate basis')
     }
     for (const r of e.readiness) {
       if (!r.ok && r.blockClass == null) errors.push(`readiness[${r.check}].blockClass: a failed check says which kind of "no" it is`)
@@ -320,7 +342,7 @@ export function defaultEngineStatus({ accountId, environment, riskGroupId = null
   return {
     accountId: String(accountId), environment, riskGroupId: riskGroupId || `${environment}:${accountId}`,
     requestedEntryMode: 'TIME_BASED', effectiveEntryMode: 'TIME_BASED', transitionState: 'STABLE',
-    tickObservation: 'OFF', entryModePolicy: 'manual', validationStage: 'UNVALIDATED',
+    tickObservation: 'OFF', entryModePolicy: 'manual', validationStage: 'UNVALIDATED', admittedBases: null,
     configRevision: 0, modeEpoch: 0, fenceAckEpoch: null,
     profileId: null, profileHash: null, implementationCommit: null,
     entryCounts: { unsent: 0, inFlight: 0, resting: 0, unknown: 0 },
