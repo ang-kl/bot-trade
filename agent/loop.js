@@ -2842,6 +2842,9 @@ async function runLoop(db) {
   const takeProfile = (summary) => {
     cpuProfiles[summary.phase] = summary
     try { setState(db, 'loop_cpu_profile_json', JSON.stringify(cpuProfiles)) } catch { /* diagnostics are best-effort */ }
+    // Existing opt-in profiles must be usable while the dashboard times out.
+    // Bounded function names/timings only; no payloads or credentials.
+    if (summary.totalMs >= 1000) log(`CPU profile ${summary.phase}: ${JSON.stringify({ totalMs: summary.totalMs, idleMs: summary.idleMs, gcMs: summary.gcMs, top: summary.top.slice(0, 5) })}`)
   }
   const phase = (name, key = name) => {
     const now = Date.now()

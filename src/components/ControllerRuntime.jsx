@@ -27,19 +27,31 @@ export default function ControllerRuntime({ runtime }) {
       <div className="overflow-x-auto">
         <table className="w-full text-left">
           <caption className="text-left font-semibold">Account entry and protection status</caption>
-          <thead><tr>{['Account', 'Entry mode', 'Shadow / entry readiness', 'Broker protection', 'Independent cpp-verify check'].map(h => <th key={h} className="pr-3 py-1">{h}</th>)}</tr></thead>
+          <thead><tr>{['Account', 'Entry mode / effective switches', 'Tick shadow / tick entry readiness', 'Broker protection', 'Independent cpp-verify check'].map(h => <th key={h} className="pr-3 py-1">{h}</th>)}</tr></thead>
           <tbody>{runtime.accounts.map(a => <tr key={a.accountId}>
             <td className="pr-3 py-1">{a.accountId} ({a.environment}){a.enabled ? '' : ' - disabled'}{a.brokerAccess === 'TOKEN_REFUSED' && <div>Broker authorisation required</div>}</td>
-            <td className="pr-3">{a.entryMode}{a.entryCounts && <div>Intents: {a.entryCounts.unsent} reserved; {a.entryCounts.inFlight} in flight; {a.entryCounts.unknown} unknown</div>}</td>
-            <td className="pr-3">Shadow: {a.shadowReady ? 'READY' : 'BLOCKED'}; entries: {a.entryReady ? 'READY' : 'BLOCKED'}
+            <td className="pr-3">{a.entryMode}
+              {a.phases && ['scan', 'analyze', 'autotrade'].map(p => <div key={p}>{p}: {onOff(a.phases[p])} ({a.phases.source?.[p] || 'unknown source'})</div>)}
+              {a.entryCounts && <div>Intents: {a.entryCounts.unsent} reserved; {a.entryCounts.inFlight} in flight; {a.entryCounts.unknown} unknown</div>}</td>
+            <td className="pr-3">Tick shadow: {a.shadowReady ? 'READY' : 'BLOCKED'}; tick entries: {a.entryReady ? 'READY' : 'BLOCKED'}
               {!a.shadowReady && <div>Shadow: {a.shadowBlockers.join(', ')}</div>}
-              {!a.entryReady && <div>Entry: {a.tradingBlockers.join(', ')}</div>}</td>
+              {!a.entryReady && <div>Tick entry: {a.tradingBlockers.join(', ')}</div>}</td>
             <td className="pr-3">{a.protection.summary}</td>
             <td className="pr-3">{a.independentProtection?.summary || 'UNVERIFIED'}<br />{stamp(a.independentProtection?.checkedAt)}</td>
           </tr>)}</tbody>
         </table>
       </div>
       <p>Independent protection checks read every registered account directly from the broker in cpp-verify, on a separate session from closed-trade verification. Checks repeat 60 seconds after each pass; readings older than three minutes are unverified.</p>
+      <p>Effective switches show permission to run. Strategy, evidence and risk gates still decide whether a scheduled entry can proceed. A blocked tick entry does not mean scheduled entries or position management are switched off.</p>
+      {runtime.process && <details>
+        <summary>Process timing: {runtime.process.phase}</summary>
+        <p>Latest stored scan: {stamp(runtime.process.lastScanAt)}. These timings describe the last completed measurements.</p>
+        {Object.entries(runtime.process.phaseLag || {}).map(([phase, lag]) => <p key={phase}>{phase}: maximum event-loop delay {count(lag.maxMs)} ms; CPU/wall ratio during worst stall {count(lag.worstStallCpuRatio)}.</p>)}
+        {Object.entries(runtime.process.profiles || {}).map(([phase, profile]) => <div key={phase}>
+          <p>{phase}: sampled {count(profile.totalMs)} ms; idle {count(profile.idleMs)} ms.</p>
+          <ul>{(profile.top || []).slice(0, 5).map(f => <li key={f.frame}>{f.frame}: {f.selfMs} ms ({f.pct}%)</li>)}</ul>
+        </div>)}
+      </details>}
       {runtime.monitor && <p>Monitor interval: {count(runtime.monitor.tick?.everyMs)} ms; protection interval: {count(runtime.monitor.band?.everyMs)} ms; last protection duration: {count(runtime.monitor.band?.lastMs)} ms{runtime.monitor.band?.overran ? ' - OVERRAN' : ''}. Recorded: {stamp(runtime.monitor.at)}.</p>}
       {missing.length > 0 && <div role="status"><strong>Missing TP1 - last broker audit</strong>
         <ul>{missing.map(p => <li key={`${p.account}:${p.positionId}`}>{p.account} / {p.symbol} / {p.positionId}: {p.repairFailure?.retryable === false && ['TRADING_BAD_STOPS', 'TRADING_BAD_VOLUME'].includes(p.repairFailure.code) ? `Action required: ${p.repairFailure.code || 'broker refusal'} at TP ${p.repairFailure.attemptedTarget}. ${p.repairFailure.error}. Identical automatic repair paused.` : p.recordedTarget == null ? 'Target decision required - no recorded target' : `Recorded target ${p.recordedTarget} available; broker confirmation pending`}{p.stale ? ' (audit stale or latest check failed)' : ''}</li>)}</ul>
