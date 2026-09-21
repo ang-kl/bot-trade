@@ -301,3 +301,29 @@ test('reasonFor refuses to invent: no side, no entry, no stop or no ref yields n
   assert.equal(reasonFor({ side: 'BUY', entry: 1, stop: 2, target: 3, ref: null }), null)
   assert.deepEqual(parseDetail('intent=i1 entry=5 side=SELL'), { intent: 'i1', entry: '5', side: 'SELL' })
 })
+
+// ---------------------------------------------------------------------------
+// The comparator is derived from the NUMBERS, not the side (review bot on
+// #977). tick_shadow.cpp fills at the first tradable quote past the latency
+// window while `ref` is the signal's own quote, and the price bound permits
+// deviation on either side — a BUY can retrace during the latency and fill
+// AT OR BELOW ref. Side-derived wording ("BUY is always over") would then
+// write a false statement into an approved risk event.
+// ---------------------------------------------------------------------------
+test('reasonFor derives over/under/at from entry vs ref, never from the side', () => {
+  // BUY, ordinary breakout: entry above the signal ask it broke through.
+  assert.equal(reasonFor({ side: 'BUY', entry: 1.10014, stop: 1.09964, target: 1.10114, ref: 1.10000 }),
+    'tick:breakout_BUY_entry=1.10014_over_ref=1.1_stop=1.09964_target=1.10114')
+  // BUY, the retrace case the bot found: the fill lands BELOW the signal ask
+  // (latency + price-bound tolerance let it through) — must read "under",
+  // never "over" just because the side is BUY.
+  assert.equal(reasonFor({ side: 'BUY', entry: 1.09990, stop: 1.09964, target: 1.10114, ref: 1.10000 }),
+    'tick:breakout_BUY_entry=1.0999_under_ref=1.1_stop=1.09964_target=1.10114')
+  // SELL, rebound case: the fill lands ABOVE the signal bid — must read
+  // "over", never "under" just because the side is SELL.
+  assert.equal(reasonFor({ side: 'SELL', entry: 1.10010, stop: 1.10036, target: 1.09886, ref: 1.10000 }),
+    'tick:breakout_SELL_entry=1.1001_over_ref=1.1_stop=1.10036_target=1.09886')
+  // Exact equality: neither over nor under.
+  assert.equal(reasonFor({ side: 'BUY', entry: 1.1, stop: 1.0995, target: 1.101, ref: 1.1 }),
+    'tick:breakout_BUY_entry=1.1_at_ref=1.1_stop=1.0995_target=1.101')
+})

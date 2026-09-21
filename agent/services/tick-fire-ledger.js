@@ -79,12 +79,23 @@ function toPrice(wireValue) {
  * reason with no reference is one step short of that). Null when the ring
  * line does not carry the breakout fact or the reference — absent is
  * reported, never invented.
+ *
+ * THE COMPARATOR IS DERIVED FROM THE NUMBERS, NOT THE SIDE (review bot on
+ * #977, confirmed at source). tick_shadow.cpp:125-127 fills at the first
+ * tradable quote PAST the latency window (q.ask + slip for BUY), while ref
+ * is the signal's OWN ask/bid (p.ask/p.bid, tick_shadow.cpp:140), and
+ * tick_firer.cpp:140's priceWithinBound(ref, f.entry, maxDev) permits
+ * deviation on EITHER side. A BUY can retrace during the latency and fill
+ * at entry <= ref — side-derived "over" would then be a false statement
+ * persisted into an approved risk event and into position history, exactly
+ * what the reason exists to prevent. The fill is still real and still gets
+ * a reason; only the wording must be true.
  */
 export function reasonFor({ side, entry, stop, target, ref }) {
   const s = String(side || '').toUpperCase()
   if (s !== 'BUY' && s !== 'SELL') return null
   if (entry == null || stop == null || ref == null) return null
-  const cmp = s === 'BUY' ? 'over' : 'under'
+  const cmp = entry > ref ? 'over' : entry < ref ? 'under' : 'at'
   const t = target == null ? '' : `_target=${target}`
   return `tick:breakout_${s}_entry=${entry}_${cmp}_ref=${ref}_stop=${stop}${t}`
 }
