@@ -79,7 +79,6 @@
 import { getState, setState } from '../db.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { recordedTargetFor } from './target-restore.js'
-import { makeBookHeldCheck } from './book-held.js'
 import { normPosId } from '../lib/pos-id.js'
 
 /** Alert at most this often per position, so a persistent gap does not spam. */
@@ -458,22 +457,12 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     //    upper- or mixed-case `source` is latent rather than live, but an
     //    exemption that turns on the casing of a string column is not one to
     //    leave sharp.
-    //  · a momentum-book row (09-09-2026) — exits by the trail, never by a
-    //    target. The right tail is the whole edge (plan principle 2), and a
-    //    1.5R floor on a position meant to run for weeks caps exactly that.
-    //    Measured: three 0005.HK rows on ACCT-DEMO-1/2/3 were given a target
-    //    at 09:36 SGT with nothing on stdout to say so. Reported, never
-    //    amended — the same shape as the weekend bank's exemption (#851).
-    //
-    //    ASKED BY POSITION ID *AND* TRADE ID (16-09-2026, review), because the
-    //    position-id question fails OPEN on a book row whose `position_id` is
-    //    still NULL — the resting-limit path. See bookHeldTradeIds above.
+    // Book membership does not exempt legacy positions from mandatory TP1 (#984).
     //  · no computable suggestion — no target is better than an invented one.
     //    Checked in the apply loop, where the suggestion is in hand.
     //
-    // MAKING THE APPLIER REACHABLE MUST NOT MAKE IT REACH THESE. The first two
-    // are decided before a suggestion is even requested, so an exempt position
-    // costs no bar fetch and can reach no amend by any path.
+    // Human-owned positions are excluded before fetching a suggestion. Book
+    // membership does not remove the owner's mandatory TP1 requirement.
     const HUMAN_SOURCES = new Set(['external', 'manual'])
     const humanOwned = (f) => HUMAN_SOURCES.has(String(f.source || '').trim().toLowerCase())
     // TICK ROWS ARE IN SCOPE HERE AS OF 20-09-2026, and that is a change of
@@ -493,23 +482,11 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     // naked-position-guard.test.js. If a tick fill ever DOES arrive without a
     // target, the applier setting one is the right outcome; what must not
     // happen is it arriving here unnoticed.
-    // SCOPE NOTE, STATED IN BOTH PLACES (17-09-2026, third review).
-    // `accountId` defaults to null here, and null means "ask across every
-    // account" — so an unscoped audit pass treats a book row on ANY account as
-    // held. That is the conservative direction for THIS guard (the cost of
-    // over-exempting is a position that keeps its stop and gains no target),
-    // and it is the OPPOSITE of the choice weekend-bank.js makes with the same
-    // helper, where over-exempting means not closing before a gap. Two guards,
-    // two costs, two defaults — written down in both files so the difference
-    // reads as a decision rather than an inconsistency.
-    const bookHolds = makeBookHeldCheck(db, accountId)
-    const bookHeldFinding = (f) => bookHolds(f.positionId, f.tradeId)
     const excluded = applyExcludeIds instanceof Set
       ? applyExcludeIds
       : new Set((applyExcludeIds || []).map(String))
     const applyEligible = (f) =>
       !humanOwned(f) &&
-      !bookHeldFinding(f) &&
       !excluded.has(String(f.positionId))
 
     // Owner 01-08: propose a concrete price with a one-tap Set-TP button
@@ -543,7 +520,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     // of the pass that has one — see APPLY_STATE_KEY above for the measurement.
     //
     // STILL BOUNDED THE SAME WAY: only positions the bot owns, only where a
-    // suggestion actually computed, never a book row, never an external one.
+    // suggestion actually computed, never a human-owned position.
     // And a take profit can only ever close in profit, so the worst case is a
     // suboptimal exit, never a loss the position would not otherwise have taken.
     const applied = new Map()
@@ -642,10 +619,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     // ── WHAT CLASS IS EACH TARGETLESS POSITION? ──
     //
     // Production logged `17 targetless` every pass for 4.5 days and nothing
-    // else. That number cannot distinguish a momentum-book row holding no
-    // target BY DESIGN from a position that lost its target and should get one
-    // back, so nobody reading the log could tell whether it was a standing fact
-    // or a standing fault — which is exactly how it sat for days. The breakdown
+    // else. A targetless bot-owned book row is a coverage gap too. The breakdown
     // already existed in memory and went only to Telegram.
     if (audit.targetless.length) {
       const counts = new Map()
@@ -664,7 +638,6 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       // by the sweep after the restore has run.
       for (const f of audit.targetless) {
         if (humanOwned(f)) bump(`${String(f.source || 'unknown').toLowerCase()} (left alone — the human's own)`)
-        else if (bookHeldFinding(f)) bump('momentum-book (trail only)')
         else if (excluded.has(String(f.positionId))) bump('bot-owned (deferred to target-restore)')
         else if (applied.has(f)) bump('bot-owned (target applied)')
         else if (applyFailed.has(f)) bump('bot-owned (apply refused)')
@@ -693,7 +666,6 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       const lines = targetDue.map(f => {
         const s = suggestions.get(f)
         if (applied.has(f)) return `· ${f.symbol} (position ${f.positionId}) — TP SET to ${s.tp} (${s.basis})`
-        if (bookHeldFinding(f)) return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target · momentum-book row, exits by trail, left alone`
         return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${humanOwned(f) ? ' · opened outside the bot, left alone' : ''}` +
           (s ? `\n  suggested TP ${s.tp} (${s.basis})` : '')
       })

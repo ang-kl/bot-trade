@@ -1299,11 +1299,14 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
   // P3a TICK RECORDER PULL: the recorder's full status (GET /tick-status)
   // is stored per side and a STATE CHANGE is logged — the Railway log is the
   // owner's read-back path while the bearer token is lost. Gated on the
-  // sidecar reporting a `tick` object at all: an older sidecar, or one with
-  // no TICK_SPOOL_PATH, changes nothing here.
+  // A missing tick object in /health can mean no spool path. Ask /tick-status
+  // for that explicit disabled result too, so Controllers distinguish OFF
+  // from an unobserved service. Shadow and permit work still require workers.
   try {
-    if (r.ok !== undefined && r.tick && typeof r.tick === 'object' && typeof exec.sidecarTickStatus === 'function') {
+    if (r.ok === true && typeof exec.sidecarTickStatus === 'function') {
       await pullTickStatus(db, exec, side, nowMs)
+    }
+    if (r.ok !== undefined && r.tick && typeof r.tick === 'object' && typeof exec.sidecarTickStatus === 'function') {
       // P6a: the shadow portfolio's closed trades ride the same probe.
       if (typeof exec.pullSidecarShadow === 'function') {
         try { await pullTickShadow(db, exec, side) } catch (err) { console.warn(`[heartbeat] tick shadow pull failed (${side.name}): ${err.message}`) }

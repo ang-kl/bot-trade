@@ -16,7 +16,18 @@ function preflight(runtime) {
 const snapshot = () => ({ at: new Date().toISOString(),
   sides: [{ service: 'cpp-acct', healthFresh: true, connected: true, tickBlock: 'unavailable' }],
   accounts: [{ accountId: '123', environment: 'live', enabled: true,
+    entryMode: 'TIME_BASED', entryCounts: { unsent: 0, inFlight: 0, unknown: 0 },
     protection: { hasRun: true, ok: true, stale: false, naked: 0, targetless: 0, phantom: 0, unmatched: 0 } }],
+})
+
+test('restart preflight refuses unknown or missing intent state', () => {
+  for (const entryCounts of [null, { unsent: 0, inFlight: 0, unknown: 1 }, { unsent: 0, inFlight: 1, unknown: 0 }]) {
+    const runtime = snapshot()
+    runtime.accounts[0].entryCounts = entryCounts
+    const run = preflight(runtime)
+    assert.equal(run.status, 1)
+    assert.ok(JSON.parse(run.stdout).protectionBlockers.some(b => /intent/.test(b.reason)))
+  }
 })
 
 test('preflight prepares a change but requires approval even with clean evidence', () => {

@@ -12,8 +12,8 @@
 // ("ignores minimum lots, margin, per-symbol caps and the position cap; a
 // display, not evidence"). Retained, and labelled.
 //
-// WHAT THIS ADDS. For each shared shadow trade × each enabled account on that
-// side, whether THAT account could actually have executed it, under its own:
+// CURRENT-CONDITIONS SCENARIO, not historical account reconstruction. For each
+// shared shadow trade × enabled account, apply a frozen present-day snapshot:
 //
 //   · stamped balance — `acct:<id>:account_balance_usd`, the scoped key ONLY
 //   · perTradeRiskPct / perTradeRiskUsd / maxRiskCapPct, via `riskBudgetUsd`
@@ -57,11 +57,12 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { createHash } from 'node:crypto'
 import {
   drawdownDeriskFactor, getAccountLeverage, loadRiskConfig, marginRateFor,
   openPositionsForAccount, portfolioMarginStatus, requiredMargin, riskBudgetUsd, scanRates,
 } from './risk.js'
-import { pendingExposure } from './entry-ledger.js'
+import { pendingExposure, STANDING_PRODUCERS } from './entry-ledger.js'
 import { sharedShadowTrades, sideAccounts, sideCostSchedule } from './tick-shadow.js'
 import { brokerLotStep, brokerMinLots, unitsPerLot } from '../lib/lot-size-registry.js'
 import { usdLossPerLot } from '../lib/contracts.js'
@@ -142,7 +143,7 @@ export function accountContext(db, accountId, { sharedAccounts = 1, rates = null
   const open = openPositionsForAccount(db, id)
   const openCount = openPositionsForAccount(db, id, { countOnly: true }).length
   const margin = portfolioMarginStatus(db, cfg, { balance, leverage, rates, accountId: id })
-  const intents = pendingExposure(db, id)
+  const intents = pendingExposure(db, id).filter(i => !(i.state === 'RESERVED' && STANDING_PRODUCERS.includes(i.producerId)))
   return {
     accountId: id,
     balance,
@@ -155,6 +156,7 @@ export function accountContext(db, accountId, { sharedAccounts = 1, rates = null
     maxOpenPositions: cfg.maxOpenPositions,
     heldSymbols: new Set(open.map(p => String(p.symbol || '').toUpperCase()).filter(Boolean)),
     openCount,
+    pendingCount: intents.length,
     intentSymbols: new Set(intents.map(i => String(i.symbol || '').toUpperCase()).filter(Boolean)),
     intentSymbolIds: new Set(intents.map(i => (i.symbolId == null ? null : String(i.symbolId))).filter(Boolean)),
     marginUsedUsd: margin ? margin.usedMargin : null,
@@ -207,14 +209,15 @@ export function decideOne(db, trade, ctx, state, cost) {
   // this account trying to open risk there.
   if (ctx.intentSymbols.has(SYM) || (trade.symbol_id != null && ctx.intentSymbolIds.has(String(trade.symbol_id)))) return { ...base, reason: 'intent_open' }
   // The position cap — its value is read, never moved.
-  if (ctx.openCount + state.open.length >= ctx.maxOpenPositions) return { ...base, reason: 'position_cap' }
+  if (ctx.openCount + ctx.pendingCount + state.open.length >= ctx.maxOpenPositions) return { ...base, reason: 'position_cap' }
 
   const entryPrice = priceOf(trade.entry)
   const exitPrice = priceOf(trade.exit)
   const stopPriceDistance = priceOf(trade.stop_distance)
   if (!(entryPrice > 0) || !(exitPrice > 0) || !(stopPriceDistance > 0)) return { ...base, reason: 'unpriceable' }
 
-  const per = unitsPerLot(db, symbol)
+  const meta = ctx.contracts?.[symbol]
+  const per = meta?.per ?? unitsPerLot(db, symbol)
   const usdPerLot = usdLossPerLot(symbol, stopPriceDistance, entryPrice, ctx.rates, per.unitsPerLot)
   if (!Number.isFinite(usdPerLot) || !(usdPerLot > 0)) return { ...base, reason: 'unpriceable' }
 
@@ -222,8 +225,8 @@ export function decideOne(db, trade, ctx, state, cost) {
   // at this stop, snapped DOWN to the broker's step, THEN tested against the
   // broker's minimum. Step first: snapping after the minimum test turns a
   // refusable order into an apparently fillable one.
-  const bMin = brokerMinLots(db, symbol)
-  const bStep = brokerLotStep(db, symbol)
+  const bMin = meta?.min ?? brokerMinLots(db, symbol)
+  const bStep = meta?.step ?? brokerLotStep(db, symbol)
   const minLots = bMin.minLots ?? ctx.config.minLotSize
   const lots = snapToStep(ctx.riskBudgetUsd / usdPerLot, bStep.stepLots)
   base.lots = +lots.toFixed(6); base.lotStep = bStep.stepLots; base.minLots = minLots
@@ -248,8 +251,9 @@ export function decideOne(db, trade, ctx, state, cost) {
   const rowClass = trade.cost_class || cost.classOfSymbol(trade.symbol_id) || null
   const classRow = costsForClass(cost.schedule, rowClass)
   const comm = sizedCommissionUsdRoundTrip(classRow, classRow.class, {
-    entryUsd: entryPrice, exitUsd: exitPrice, lots, unitsPerLot: per.unitsPerLot, sized: cost.sized, multiple: 1,
+    entryUsd: entryPrice, exitUsd: exitPrice, symbol, rates: ctx.rates, lots, unitsPerLot: per.unitsPerLot, sized: cost.sized, multiple: 1,
   })
+  if (!Number.isFinite(comm.usd)) return { ...base, reason: 'unpriceable' }
   const grossUsd = grossR != null ? grossR * usdPerR : null
   const netUsd = grossUsd != null ? grossUsd - comm.usd : null
 
@@ -264,7 +268,7 @@ export function decideOne(db, trade, ctx, state, cost) {
   for (const k of [0, 1, 2]) {
     const rK = repriceNetR(trade, slipOnly, k)
     const cK = sizedCommissionUsdRoundTrip(classRow, classRow.class, {
-      entryUsd: entryPrice, exitUsd: exitPrice, lots, unitsPerLot: per.unitsPerLot, sized: cost.sized, multiple: k,
+      entryUsd: entryPrice, exitUsd: exitPrice, symbol, rates: ctx.rates, lots, unitsPerLot: per.unitsPerLot, sized: cost.sized, multiple: k,
     })
     sensitivityUsd[k] = rK == null ? null : +(rK * usdPerR - cK.usd).toFixed(2)
   }
@@ -305,8 +309,9 @@ export function evidenceCount(sharedTrades) {
  * @param {object} db
  * @param {{side:string, profilePrefix?:string|null, sinceMs?:number|null, persist?:boolean, limit?:number}} opts
  */
-export function accountExecutionSim(db, { side, profilePrefix = null, sinceMs = null, persist = false, limit = 5000 } = {}) {
-  const shared = sharedShadowTrades(db, { side, profilePrefix, sinceMs, limit })
+export function accountExecutionSim(db, { side, profilePrefix = null, sinceMs = null, persist = false, limit = 5000, scenario = null } = {}) {
+  if (scenario && (scenario.version !== 1 || scenario.side !== side || scenario.profile !== profilePrefix)) throw new Error('scenario scope mismatch')
+  const shared = (scenario?.shared ?? sharedShadowTrades(db, { side, profilePrefix, sinceMs, limit }))
     // The shared read orders by EXIT; an execution simulation has to run in
     // ENTRY order, because the cap and the margin are read when a position is
     // opened, not when it closes.
@@ -317,23 +322,38 @@ export function accountExecutionSim(db, { side, profilePrefix = null, sinceMs = 
   // through tick-shadow.js's `sideAccounts` — the one reader of `is_live` in
   // this stack (owner principle 1). Nothing here gates on it: every decision
   // below reads balance, limits and evidence.
-  const accounts = sideAccounts(db, side, { enabledOnly: true })
+  const accounts = scenario ? scenario.contexts.map(c => c.accountId) : sideAccounts(db, side, { enabledOnly: true })
 
   const sideCost = sideCostSchedule(db, side)
-  const cost = {
-    schedule: sideCost.schedule,
-    classOfSymbol: sideCost.classOfSymbol,
-    sized: loadSizedCommission(),
-    hash: Object.keys(sideCost.schedule.classes).length ? scheduleHash(sideCost.schedule) : null,
+  const frozenCost = scenario?.cost ?? {
+    schedule: sideCost.schedule, sized: loadSizedCommission(),
+    classes: Object.fromEntries(shared.map(t => [String(t.symbol_id), sideCost.classOfSymbol(t.symbol_id)])),
   }
-  const rates = scanRates(db)
+  const cost = {
+    schedule: frozenCost.schedule,
+    classOfSymbol: id => frozenCost.classes[String(id)],
+    sized: frozenCost.sized,
+    hash: Object.keys(frozenCost.schedule.classes).length ? scheduleHash(frozenCost.schedule) : null,
+  }
+  const rates = scenario ? scenario.rates : scanRates(db)
+  const contexts = scenario?.contexts ?? accounts.map(id => {
+    const ctx = accountContext(db, id, { sharedAccounts: accounts.length, rates })
+    const nameOf = symbolNameResolver(db, id)
+    const names = Object.fromEntries(shared.map(t => [String(t.symbol_id), nameOf(t.symbol_id)]))
+    const contracts = Object.fromEntries([...new Set(Object.values(names).filter(Boolean))].map(symbol => [symbol, {
+      per: unitsPerLot(db, symbol), min: brokerMinLots(db, symbol), step: brokerLotStep(db, symbol),
+    }]))
+    return { ...ctx, heldSymbols: [...(ctx.heldSymbols ?? [])], intentSymbols: [...(ctx.intentSymbols ?? [])], intentSymbolIds: [...(ctx.intentSymbolIds ?? [])], names, contracts }
+  })
+  const inputs = scenario ?? { version: 1, capturedAt: new Date().toISOString(), side, profile: profilePrefix, sinceMs, shared, rates, contexts, cost: frozenCost, costBasis: costBasis(db, { side }) }
+  // Identity excludes wall-clock capture time: identical inputs are one scenario.
+  const scenarioId = createHash('sha256').update(JSON.stringify({ ...inputs, capturedAt: undefined })).digest('hex')
 
   const perAccount = []
   const allRows = []
   for (const id of accounts) {
-    const ctx = accountContext(db, id, { sharedAccounts: accounts.length, rates })
-    ctx.rates = rates
-    ctx.nameOf = symbolNameResolver(db, id)
+    const frozen = contexts.find(c => c.accountId === id)
+    const ctx = { ...frozen, rates, heldSymbols: new Set(frozen.heldSymbols), intentSymbols: new Set(frozen.intentSymbols), intentSymbolIds: new Set(frozen.intentSymbolIds), nameOf: sid => frozen.names[String(sid)] }
     const state = { open: [], marginUsd: 0 }
     const rows = []
     for (const t of shared) {
@@ -374,7 +394,7 @@ export function accountExecutionSim(db, { side, profilePrefix = null, sinceMs = 
       sharedSplit: ctx.sharedSplit ?? null,
       maxOpenPositions: ctx.maxOpenPositions ?? null,
       openPositionsNow: ctx.openCount ?? null,
-      openIntentsNow: ctx.intentSymbols ? ctx.intentSymbols.size : null,
+      openIntentsNow: ctx.pendingCount ?? null,
       marginUsedUsd: ctx.marginUsedUsd != null ? +ctx.marginUsedUsd.toFixed(2) : null,
       marginCapUsd: ctx.marginCapUsd != null ? +ctx.marginCapUsd.toFixed(2) : null,
       marginSource: ctx.marginSource ?? null,
@@ -393,10 +413,11 @@ export function accountExecutionSim(db, { side, profilePrefix = null, sinceMs = 
   if (persist) persistFills(db, allRows)
 
   const sharedObservations = evidenceCount(shared)
-  return {
+  const result = {
     side,
     profile: profilePrefix,
-    since: sinceMs != null ? new Date(sinceMs).toISOString() : null,
+    scenario: { id: scenarioId, capturedAt: inputs.capturedAt, kind: 'current_conditions', historicalExecutionEvidence: false },
+    since: inputs.sinceMs != null ? new Date(inputs.sinceMs).toISOString() : null,
     // ---- THE COUNTING RULE, on the record with the figures it governs ----
     evidence: {
       sharedObservations,
@@ -405,11 +426,13 @@ export function accountExecutionSim(db, { side, profilePrefix = null, sinceMs = 
       rule: 'the evidence count is sharedObservations. The per-account rows are EXECUTIONS of those same shared observations by different accounts; they are never summed into an evidence total. Projecting one shadow trade onto N accounts is one observation with N projections, not N observations.',
     },
     accounts: perAccount,
-    costBasis: costBasis(db, { side }),
+    costBasis: inputs.costBasis,
     scheduleHash: cost.hash,
     sizedCommission: cost.sized,
-    note: 'the ACCOUNT EXECUTION simulation: each account\'s own balance, risk budget (with the real drawdown de-risk factor and the shared-signal split), broker minimum lot and lot increment, margin headroom, existing exposure, open/pending intents and position cap, applied to the SHARED shadow trades. Distinct from shadowPortfolio\'s per-account block, which is a 1R rescale and says so.',
+    note: 'Current-conditions scenario: historical signals evaluated against a frozen, dated snapshot of present account state, rates, lot rules and costs. This does not reconstruct historical execution and cannot validate a strategy. Persisted scenarios retain their original inputs and results; the fills table is only the latest projection cache.',
   }
+  if (persist) db.prepare('INSERT OR IGNORE INTO tick_shadow_account_scenarios (scenario_id, captured_at, inputs_json, result_json) VALUES (?, ?, ?, ?)').run(scenarioId, inputs.capturedAt, JSON.stringify(inputs), JSON.stringify(result))
+  return result
 }
 
 /** Write the decided rows; idempotent on (shadow_trade_id, account_id). */
@@ -449,7 +472,7 @@ export function tickShadowAccountsView(db, { persist = false } = {}) {
   const out = {
     at: new Date().toISOString(),
     sides: [],
-    note: 'S2 PR-2a: the account execution simulation, beside the shared market-signal simulation. The shared shadow trades are the observations and are counted once; the per-account rows are executions of those same observations and are never summed into an evidence total.',
+    note: 'Current-conditions account scenarios, not historical execution evidence. Shared shadow trades are counted once; account projections are never summed into an evidence total. Persisted scenarios retain their dated inputs for reproducibility.',
   }
   for (const side of ['cpp_exec_demo', 'cpp_exec']) {
     let profiles = []

@@ -204,14 +204,12 @@ test('symbol_already_held: a real open position on the symbol refuses the signal
 test('intent_open: an open entry intent on the symbol refuses the signal — pendingExposure is what reads it', () => {
   const db = fresh()
   shadowRow(db, 1)
-  // A RESERVED intent row — the state the permit ledger leaves behind while an
-  // entry is in flight. `pendingExposure` (entry-ledger.js, until now uncalled)
-  // is the real read under test.
+  // A SENT permit is exposure. An unused standing RESERVED permit is capacity.
   db.prepare(`INSERT INTO entry_intents
     (id, account_id, environment, symbol, symbol_id, side, order_type, volume, producer_id, basis, mode_epoch,
      permit_id, permit_expires_at, state)
     VALUES ('i1', ?, 'demo', 'EURUSD', 1, 'BUY', 'MARKET', 0.1, 'tick_momentum', 'tick', 1,
-     'p1', datetime('now','+5 minutes'), 'RESERVED')`).run(A)
+     'p1', datetime('now','+5 minutes'), 'SENT')`).run(A)
   assert.equal(pendingExposure(db, A).length, 1, 'the ledger reports the open intent')
   const a = accountExecutionSim(db, { side: 'cpp_exec_demo', profilePrefix: 'p1' }).accounts[0]
   assert.deepEqual(a.refusals, { intent_open: 1 })

@@ -28,7 +28,7 @@
 import { getState } from '../db.js'
 import { loadRiskConfig, riskBudgetUsd } from './risk.js'
 import { engineStatusFor } from './entry-mode.js'
-import { expectancyLowerR } from '../lib/tick-replay-sim.js'
+import { expectancyLowerR, blockExpectancyLowerR } from '../lib/tick-replay-sim.js'
 import { costSensitivity, loadRepoSchedule, rowChargedUnder, rowIsCosted, scheduleHash, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 
 export const SIDES = Object.freeze(['cpp_exec_demo', 'cpp_exec'])
@@ -108,6 +108,9 @@ export function portfolioStats(rows) {
     trades: n, wins, losses, winPct: n ? +(100 * wins / n).toFixed(1) : null,
     netR: +net.toFixed(4), avgR: n ? +(net / n).toFixed(4) : null,
     expectancyLowerR: expectancyLowerR(rs),
+    blockExpectancy: blockExpectancyLowerR(rs),
+    markToMarketDrawdownR: null,
+    drawdownBasis: 'closed_trades_only',
     grossWinR: +grossWin.toFixed(4), grossLossR: +grossLoss.toFixed(4), profitFactor,
     maxDrawdownR: +maxDD.toFixed(4), maxConcurrentOpen: maxConcurrentOpen(judged), exits, symbols: symbols.size,
     resets, lost, resetSharePct: (n + lost) ? +(100 * (resets + lost) / (n + lost)).toFixed(1) : null,

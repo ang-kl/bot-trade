@@ -883,19 +883,13 @@ test('the pre-per-account GLOBAL success record is a fossil once any account has
 })
 
 // ---------------------------------------------------------------------------
-// THE MOMENTUM BOOK'S ROWS ARE NEVER GIVEN A TARGET (09-09-2026)
-//
-// A book row exits by the trail; a 1.5R floor on a position meant to run for
-// weeks caps the right tail the system is built on. Measured: three 0005.HK
-// rows were amended at 09:36 SGT, six minutes after the HK open put hourly
-// bars under the suggester, with nothing on stdout to say so.
-// ---------------------------------------------------------------------------
+// Mandatory TP1 covers legacy momentum-book positions (#984).
 
 const bookRow = (db, positionId, accountId = 'A', symbol = '0005.HK', status = 'open') =>
   db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
               VALUES (1, ?, ?, ?, 'long', 160, 159.642, '2026-09-08T01:33:00Z', ?)`).run(accountId, symbol, positionId, status)
 
-test('a momentum-book row is reported but NEVER amended, and the alert says why', async () => {
+test('a legacy momentum-book row receives mandatory TP1 and reports the repair', async () => {
   const db = initDB(':memory:')
   bookRow(db, 'P7')
   const sent = []
@@ -904,17 +898,14 @@ test('a momentum-book row is reported but NEVER amended, and the alert says why'
     sendMessage: async (m, opts) => { sent.push([m, opts]) },
     accountId: 'A',
     suggestTarget: async () => ({ tp: 175, basis: '1.5R floor from entry' }),
-    applyTarget: async () => { applied.push('should not happen'); return { ok: true } },
+    applyTarget: async () => { applied.push('P7'); return { ok: true } },
   })
-  assert.deepEqual(applied, [], 'the book row must not be amended')
-  assert.match(sent[0][0], /0005\.HK .*momentum-book row, exits by trail, left alone/)
-  assert.ok(!/TP SET to/.test(sent[0][0]))
-  assert.ok(!/SET AUTOMATICALLY/.test(sent[0][0]))
-  // No one-tap button either — the button is the same amend by another door.
-  assert.equal(sent[0][1], undefined, 'no Set-TP button for a book row')
+  assert.deepEqual(applied, ['P7'])
+  assert.match(sent[0][0], /TP SET to 175/)
+  assert.equal(sent[0][1], undefined, 'no duplicate button after repair')
 })
 
-test('an exit_sent book row counts as held; a closed one does not', async () => {
+test('exit_sent book rows remain within the bounded TP repair queue', async () => {
   const db = initDB(':memory:')
   bookRow(db, 'P8', 'A', 'MSFT.US', 'exit_sent')
   bookRow(db, 'P9', 'A', 'AAPL.US', 'closed')
@@ -926,7 +917,7 @@ test('an exit_sent book row counts as held; a closed one does not', async () => 
       suggestTarget: async () => ({ tp: 999, basis: 'HVN' }),
       applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
     })
-  assert.deepEqual(applied, ['P9'], 'only the row the book has let go is fair game')
+  assert.deepEqual(applied, ['P8'], 'one repair per pass includes exit-pending book rows')
 })
 
 test('a book row on ANOTHER account does not shield this one', async () => {
@@ -1073,7 +1064,7 @@ test('a sendMessage that THROWS does not cost the target either', async () => {
   assert.equal(r.targetsApplied, 1)
 })
 
-test('WITHOUT TELEGRAM the exemptions still hold: external and book rows are untouched', async () => {
+test('WITHOUT TELEGRAM book TP1 is repaired while human-owned rows remain untouched', async () => {
   // Hoisting the apply loop out of the alert branch is exactly the change that
   // could have dropped the guards that lived beside it.
   const db = initDB(':memory:')
@@ -1086,16 +1077,16 @@ test('WITHOUT TELEGRAM the exemptions still hold: external and book rows are unt
       suggestTarget: async () => ({ tp: 999, basis: 'HVN' }),
       applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
     })
-  assert.deepEqual(applied, [], 'neither exemption may be reached by the hoisted loop')
+  assert.deepEqual(applied, ['PB1'])
 })
 
 test('an exempt position is never even asked for a suggestion', async () => {
   // The bar fetch is the expensive half and the amend is the dangerous half.
-  // A book row must reach neither.
+  // Human-owned positions remain exempt, including those in the book.
   const db = initDB(':memory:')
   bookRow(db, 'PB2')
   const asked = []
-  await runProtectionAudit(db, [targetlessRow('PB2', '0005.HK')], [targetlessPos('PB2', '0005.HK')], {
+  await runProtectionAudit(db, [targetlessRow('PB2', '0005.HK', { source: 'manual' })], [targetlessPos('PB2', '0005.HK')], {
     accountId: 'A',
     sendMessage: async () => {},
     suggestTarget: async (f) => { asked.push(f.positionId); return { tp: 175, basis: 'HVN' } },
@@ -1179,7 +1170,7 @@ test('the class breakdown reports the REAL counts, beside the bare total', async
   const line = lines.find(l => /targetless —/.test(l))
   assert.ok(line, lines.join('\n'))
   assert.match(line, /^\[protection\] A: 4 targetless — /)
-  assert.match(line, /2 momentum-book \(trail only\)/)
+  assert.match(line, /2 bot-owned \(over this pass’s work cap\)/)
   assert.match(line, /1 external \(left alone — the human's own\)/)
   assert.match(line, /1 bot-owned \(target applied\)/)
 })
@@ -1245,13 +1236,8 @@ test('the apply window is pruned when the position stops being targetless', asyn
 // of this change shipped, each reproduced before it was fixed.
 // ---------------------------------------------------------------------------
 
-test('BLOCKER: a book row whose position_id is still NULL is STILL exempt', async () => {
-  // `momentum_book.position_id` is written once at insert and is NULL whenever
-  // the trade had no broker position id yet — the resting-limit path the book
-  // uses at closed markets. Nothing backfills it. The exemption keyed only off
-  // position_id therefore failed OPEN, and `momentum-account.js` clears
-  // `current_tp` on exactly these rows so target-restore does not cover them
-  // either: a momentum runner capped at a 1.5R floor, by the fix meant to help.
+test('a book row with NULL position_id still receives mandatory TP1', async () => {
+  // NULL book position ids cannot hide mandatory TP1 repairs.
   const db = initDB(':memory:')
   db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
               VALUES (77, 'A', '0005.HK', NULL, 'long', 160, 159.642, '2026-09-08T01:33:00Z', 'open')`).run()
@@ -1262,8 +1248,8 @@ test('BLOCKER: a book row whose position_id is still NULL is STILL exempt', asyn
       suggestTarget: async () => ({ tp: 175, basis: '1.5R floor from entry' }),
       applyTarget: async (f) => { applied.push(f.positionId); return { ok: true } },
     }))
-  assert.deepEqual(applied, [], 'the trade_id key must catch what the position_id key misses')
-  assert.ok(lines.some(l => /1 momentum-book \(trail only\)/.test(l)), lines.join('\n'))
+  assert.deepEqual(applied, ['PN1'])
+  assert.ok(lines.some(l => /target SET on 0005.HK/.test(l)), lines.join('\n'))
 })
 
 test('the trade_id key is scoped by account, like the position_id key', async () => {

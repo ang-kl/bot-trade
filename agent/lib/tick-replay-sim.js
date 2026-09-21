@@ -76,6 +76,7 @@ function tradable(q) { return q.bid != null && q.ask != null && !q.snapshot && !
 export function simulate(events, params = {}, sim = {}, { signalsOverride = null } = {}) {
   const p = normalizeParams(params)
   const s = { ...DEFAULT_SIM, ...sim }
+  s.statisticsVersion = 'mtm-moving-block-v1'
   const maxHoldEvents = s.maxHoldEvents ?? 4 * p.rangeEvents
   const latency = resolveLatency(s.latencyMs, s.latencyPercentile)
   s.latencyMs = latency.ms
@@ -106,6 +107,16 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   const oracle = new TickMomentumOracle(p)
   const trades = []
   const rejected = { cost: 0, noFill: 0 }
+  let signals = 0
+  const mark = (position, q) => {
+    const exit = position.side === 'BUY' ? q.bid - slipAt(q.bid) : q.ask + slipAt(q.ask)
+    const gross = position.side === 'BUY' ? exit - position.entry : position.entry - exit
+    const r = (gross - commAt(position.entry) - commAt(exit)) / position.signal.stopDistance
+    position.markMinR = Math.min(position.markMinR, r)
+    position.markMaxR = Math.max(position.markMaxR, r)
+    position.markDrawdownR = Math.max(position.markDrawdownR, position.markMaxR - r)
+  }
+  const marks = position => ({ markMinR: position.markMinR, markMaxR: position.markMaxR, markDrawdownR: position.markDrawdownR, entryMs: position.entryMs })
   let open = null        // { side, signal, entry, stop, target, entryIdx, entryMs, tradableSeen }
   let pending = null     // a signal waiting for its fill
   const planted = signalsOverride ? new Map(signalsOverride.map(sg => [sg.seq, sg])) : null
@@ -113,6 +124,7 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
     const q = events[i]
     // 1. manage the open trade on this event (exits use THIS event's executable side)
     if (open && tradable(q)) {
+      mark(open, q)
       open.tradableSeen++
       let exit = null, reason = null
       if (open.side === 'BUY') {
@@ -129,7 +141,7 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
       if (exit != null) {
         const gross = open.side === 'BUY' ? exit - open.entry : open.entry - exit
         const net = gross - (commAt(open.entry) + commAt(exit))
-        trades.push({ side: open.side, signalSeq: open.signal.seq, entrySeq: open.entrySeq, exitSeq: q.seq, entry: open.entry, exit, stop: open.stop, target: open.target, stopDistance: open.signal.stopDistance, reason, holdEvents: open.tradableSeen, holdMs: q.recvMs - open.entryMs, grossR: +(gross / open.signal.stopDistance).toFixed(4), netR: +(net / open.signal.stopDistance).toFixed(4), entryIdx: open.entryIdx, exitIdx: i })
+        trades.push({ ...marks(open), side: open.side, signalSeq: open.signal.seq, entrySeq: open.entrySeq, exitSeq: q.seq, entry: open.entry, exit, stop: open.stop, target: open.target, stopDistance: open.signal.stopDistance, reason, holdEvents: open.tradableSeen, holdMs: q.recvMs - open.entryMs, grossR: +(gross / open.signal.stopDistance).toFixed(4), netR: +(net / open.signal.stopDistance).toFixed(4), entryIdx: open.entryIdx, exitIdx: i })
         open = null
       }
     }
@@ -138,11 +150,13 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
       const entry = pending.side === 'BUY' ? q.ask + slipAt(q.ask) : q.bid - slipAt(q.bid)
       const stop = pending.side === 'BUY' ? entry - pending.stopDistance : entry + pending.stopDistance
       const target = pending.side === 'BUY' ? entry + s.targetR * pending.stopDistance : entry - s.targetR * pending.stopDistance
-      open = { side: pending.side, signal: pending, entry, stop, target, entryIdx: i, entrySeq: q.seq, entryMs: q.recvMs, tradableSeen: 0 }
+      open = { side: pending.side, signal: pending, entry, stop, target, entryIdx: i, entrySeq: q.seq, entryMs: q.recvMs, tradableSeen: 0, markMinR: 0, markMaxR: 0, markDrawdownR: 0 }
+      mark(open, q)
       pending = null
     }
     // 3. the strategy sees the event AFTER the trade management (no lookahead on its own fill)
     const sig = planted ? (planted.get(q.seq) || null) : oracle.feed(q)
+    if (sig) signals++
     if (sig && !open && !pending) {
       // The screen prices the round trip at the signal's MID — one price for
       // both ends, so the same number reaches the sidecar's ShadowBook.
@@ -166,12 +180,20 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
       const exit = open.side === 'BUY' ? q.bid - slipAt(q.bid) : q.ask + slipAt(q.ask)
       const gross = open.side === 'BUY' ? exit - open.entry : open.entry - exit
       const net = gross - (commAt(open.entry) + commAt(exit))
-      trades.push({ side: open.side, signalSeq: open.signal.seq, entrySeq: open.entrySeq, exitSeq: q.seq, entry: open.entry, exit, stop: open.stop, target: open.target, stopDistance: open.signal.stopDistance, reason: 'data_end', holdEvents: open.tradableSeen, holdMs: q.recvMs - open.entryMs, grossR: +(gross / open.signal.stopDistance).toFixed(4), netR: +(net / open.signal.stopDistance).toFixed(4), entryIdx: open.entryIdx, exitIdx: i })
+      trades.push({ ...marks(open), side: open.side, signalSeq: open.signal.seq, entrySeq: open.entrySeq, exitSeq: q.seq, entry: open.entry, exit, stop: open.stop, target: open.target, stopDistance: open.signal.stopDistance, reason: 'data_end', holdEvents: open.tradableSeen, holdMs: q.recvMs - open.entryMs, grossR: +(gross / open.signal.stopDistance).toFixed(4), netR: +(net / open.signal.stopDistance).toFixed(4), entryIdx: open.entryIdx, exitIdx: i })
       break
     }
     open = null
   }
   const summary = summarize(trades)
+  const diagnostics = {
+    outcome: trades.length ? 'trades_observed' : oracle.warmedEvaluations === 0 && !planted ? 'insufficient_warmup' : signals === 0 ? 'no_signals' : rejected.cost === signals ? 'cost_screened' : 'no_executable_fills',
+    events: events.length, warmupPriorEvents: Math.max(p.rangeEvents + 1, p.momentumEvents),
+    acceptedEvents: oracle.accepted, warmedEvaluations: oracle.warmedEvaluations, signals, oracleRejected: { ...oracle.rejected },
+    costRejected: rejected.cost, noFill: rejected.noFill,
+    note: 'Zero trades are insufficient evidence of profitability, not a measured losing strategy. Warm-up resets on stale or invalid quotes; purge may also leave no evaluable validation block.',
+  }
+  summary.diagnostics = diagnostics
   const blocks = blockSummaries(trades, events.length, s.blocks, purgeEvents, { includeTest: s.includeTest === true })
   return { strategyId: STRATEGY_ID, strategyVersion: STRATEGY_VERSION, profileHash: profileHash(p), params: p, sim: s, trades, summary, blocks, rejected, events: events.length }
 }
@@ -210,6 +232,13 @@ export function summarize(trades) {
   const grossWin = wins.reduce((a, t) => a + t.netR, 0), grossLoss = -losses.reduce((a, t) => a + t.netR, 0)
   let eq = 0, peak = 0, maxDD = 0
   for (const t of trades) { eq += t.netR; peak = Math.max(peak, eq); maxDD = Math.max(maxDD, peak - eq) }
+  let markedEq = 0, markedPeak = 0, markedDD = 0
+  const hasMarks = trades.length > 0 && trades.every(t => [t.markMinR, t.markMaxR, t.markDrawdownR].every(Number.isFinite))
+  if (hasMarks) for (const t of trades) {
+    markedDD = Math.max(markedDD, markedPeak - (markedEq + t.markMinR), t.markDrawdownR)
+    markedPeak = Math.max(markedPeak, markedEq + t.markMaxR)
+    markedEq += t.netR
+  }
   const by = (k) => trades.filter(t => t.reason === k).length
   return {
     trades: n, wins: wins.length, losses: losses.length,
@@ -217,6 +246,10 @@ export function summarize(trades) {
     netR: +eq.toFixed(4), avgR: n ? +(eq / n).toFixed(4) : null,
     profitFactor: grossLoss > 0 ? +(grossWin / grossLoss).toFixed(4) : (grossWin > 0 ? Infinity : null),
     maxDrawdownR: +maxDD.toFixed(4),
+    markToMarketDrawdownR: hasMarks ? +markedDD.toFixed(4) : null,
+    drawdownBasis: 'closed_trades_only', // basis of the existing maxDrawdownR gate
+    markToMarketBasis: hasMarks ? 'executable_quotes_net_of_costs' : null,
+    blockExpectancy: blockExpectancyLowerR(trades.map(t => t.netR)),
     // PR-H: the bootstrap 5th-percentile expectancy in R, the replay
     // stage's `minExpectancyLowerR` when read from the TEST block
     expectancyLowerR: expectancyLowerR(trades.map(t => t.netR)),
@@ -255,8 +288,31 @@ export function blockSummaries(trades, totalEvents, blocks, purgeEvents, { inclu
       return true
     })
     const row = { name: names[b], fromIdx: lo, toIdx: hi, purged: inBlock.length - kept.length }
+    row.eligibleEntryEvents = Math.max(0, hi - lo - (b > 0 ? purgeEvents : 0) - (b < blocks - 1 ? purgeEvents : 0))
     if (b === blocks - 1 && blocks > 1 && !includeTest) { out.push({ ...row, withheld: true, trades: null }); continue }
     out.push({ ...row, ...summarize(kept) })
   }
   return out
+}
+
+/** Candidate dependent-trade statistic, reported beside the existing gate.
+ * Circular moving blocks retain adjacent outcomes; sqrt(n) is an explicit
+ * default assumption, not a measured independence horizon or a daily block.
+ */
+export function blockExpectancyLowerR(rs, { blockLength = null, resamples = 1000, seed = 7, pct = 0.05 } = {}) {
+  const xs = rs.filter(Number.isFinite)
+  const length = blockLength ?? Math.ceil(Math.sqrt(xs.length))
+  const result = { method: 'circular-moving-block-v1', blockLength: length, trades: xs.length, lowerR: null, resamples, seed, percentile: pct }
+  if (xs.length < 2 || !Number.isInteger(length) || length < 1 || length >= xs.length || !Number.isInteger(resamples) || resamples < 1 || !(pct >= 0 && pct <= 1)) return result
+  const rand = rng(seed), means = []
+  for (let b = 0; b < resamples; b++) {
+    let sum = 0, n = 0
+    while (n < xs.length) {
+      const start = Math.floor(rand() * xs.length)
+      for (let j = 0; j < length && n < xs.length; j++, n++) sum += xs[(start + j) % xs.length]
+    }
+    means.push(sum / xs.length)
+  }
+  means.sort((a, b) => a - b)
+  return { ...result, lowerR: +means[Math.min(means.length - 1, Math.floor(pct * means.length))].toFixed(4) }
 }
