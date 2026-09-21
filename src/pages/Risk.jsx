@@ -281,7 +281,7 @@ export default function Risk() {
       setData(r)
       if (apply.has('risk')) setRiskRaw(r.risk.effective)
       setAcct({ balance: r.account.balance, leverage: r.account.leverage })
-      if (apply.has('guard')) setGuardRaw({ requireBracket: true, requireTarget: true, halt: false, maxOrderVolume: 0, ...r.execGuard })
+      if (apply.has('guard')) setGuardRaw({ requireBracket: true, halt: false, maxOrderVolume: 0, ...r.execGuard, requireTarget: true })
       setGuardianPct(r.guardian.movePct)
       setWeekendBank(r.weekendBank)
       setWeekendLossFlag(r.weekendLossFlag)
@@ -1245,8 +1245,8 @@ export default function Risk() {
                 <Pill on={guard.requireBracket !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireBracket: !(g.requireBracket !== false) }))} />
               </div>
               <div className="flex items-center justify-between text-(length:--fs-body)">
-                <span className="text-[var(--color-text-sub)]" title="A market order with no take profit is refused.">Require Take Profit</span>
-                <Pill on={guard.requireTarget !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireTarget: !(g.requireTarget !== false) }))} />
+                <span className="text-[var(--color-text-sub)]" title="Every fillable entry must carry broker-native TP1; this safety invariant cannot be disabled.">Require Take Profit</span>
+                <Pill on label="Mandatory" />
               </div>
               <Field label="Max order volume" unit="×100" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}
                 hint="Hard cap on a single order's cTrader volume. 0 = no cap." recommend="0 — no cap." />
@@ -1263,7 +1263,7 @@ export default function Risk() {
               </div>
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <span data-save-pulse="exec-guard"><Button size="sm" className={SAVE_BTN} onClick={() => save('exec-guard', () => agentPost('/actions/exec-guard', guard))}>Save cpp guard</Button></span>
+              <span data-save-pulse="exec-guard"><Button size="sm" className={SAVE_BTN} onClick={() => save('exec-guard', () => agentPost('/actions/exec-guard', { ...guard, requireTarget: true }))}>Save cpp guard</Button></span>
             </div>
           </Card>
 
@@ -1312,7 +1312,7 @@ export default function Risk() {
               <div>Same order arrives at the C++ engine as volume {cppVolumeUnits.toLocaleString()}:</div>
               <div>{guard.halt ? '✗ REJECTED — engine halted (kill switch on)' : '✓ not halted'}</div>
               <div>{guard.requireBracket !== false ? '✓ stop loss attached — passes bracket guard' : '⚠ bracket guard OFF — naked orders allowed'}</div>
-              <div>{guard.requireTarget !== false ? '✓ take profit attached — passes target guard' : '⚠ target guard OFF'}</div>
+              <div>✓ take profit attached — mandatory target guard</div>
               <div>{guard.maxOrderVolume > 0 ? (volCapped ? `✗ REJECTED — volume ${cppVolumeUnits.toLocaleString()} exceeds cap ${Number(guard.maxOrderVolume).toLocaleString()}` : `✓ under the ${Number(guard.maxOrderVolume).toLocaleString()} volume cap`) : '— no volume cap set'}</div>
               <div className="text-[var(--color-text-sub)]">
                 VPO path: {vpoEnabled ? 'the dispatcher arms at the strategy level (violet line) and fires a market order the instant price touches it — sizing comes from the Node feeder; stale (>5 min) bars or sizing refuse to fire.' : 'VPO feeder is OFF — no virtual pending orders arm.'}

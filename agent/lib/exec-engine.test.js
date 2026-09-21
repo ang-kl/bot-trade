@@ -171,8 +171,17 @@ test('bracket guarantee: validateOrderBracket + orderHasBracket cover the cases'
   assert.equal(orderHasBracket({ stopLoss: 1.23 }), true)
   assert.equal(orderHasBracket({ volume: 100 }), false)
   assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100 }).ok, false)
-  assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100, allowNaked: true }).ok, true)
-  assert.equal(validateOrderBracket({ orderType: 'LIMIT', volume: 100 }).ok, true) // pending exempt
+  assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100, allowNaked: true }).ok, false, 'allowNaked cannot waive TP1')
+  assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100, allowNaked: true, relativeTakeProfit: 5 }).ok, true)
+  assert.equal(validateOrderBracket({ orderType: 'LIMIT', volume: 100 }).ok, false, 'resting entries can fill and must be protected')
+  assert.equal(validateOrderBracket({ orderType: 'LIMIT', volume: 100, relativeStopLoss: 5, relativeTakeProfit: 5 }).ok, true)
+  assert.equal(validateOrderBracket({ orderType: 'STOP', volume: 100, relativeStopLoss: 5 }).ok, false, 'stop entries require TP1')
+  assert.equal(validateOrderBracket({ orderType: 'STOP_LIMIT', volume: 100, relativeStopLoss: 5 }).ok, false, 'stop-limit entries require TP1')
+  assert.equal(validateOrderBracket({ orderType: 2, volume: 100, relativeStopLoss: 5 }).ok, false, 'numeric LIMIT enum requires TP1')
+  assert.equal(validateOrderBracket({ orderType: 3, volume: 100, relativeStopLoss: 5 }).ok, false, 'numeric STOP enum requires TP1')
+  for (const type of [4, 999, 2.5, true, '2']) {
+    assert.match(validateOrderBracket({ orderType: type, relativeStopLoss: 5, relativeTakeProfit: 5 }).reason, /^guard_bad_payload/)
+  }
   assert.equal(validateOrderBracket({ volume: 100, relativeStopLoss: 5, relativeTakeProfit: 5 }).ok, true)
 })
 
@@ -183,8 +192,8 @@ test('target guarantee: an SL-only market order (no TP) is refused — "a few op
   const v = validateOrderBracket({ orderType: 'MARKET', volume: 100, relativeStopLoss: 5 })
   assert.equal(v.ok, false)
   assert.match(v.reason, /guard_no_target/)
-  assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100, relativeStopLoss: 5, allowNaked: true }).ok, true)
-  assert.equal(validateOrderBracket({ orderType: 'LIMIT', volume: 100, relativeStopLoss: 5 }).ok, true) // pending exempt
+  assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100, relativeStopLoss: 5, allowNaked: true }).ok, false, 'allowNaked cannot waive TP1')
+  assert.equal(validateOrderBracket({ orderType: 'LIMIT', volume: 100, relativeStopLoss: 5 }).ok, false, 'resting entries require TP1 too')
 })
 
 test('exec guard: halt kill switch refuses orders in BOTH engine modes (5A parity with cpp order_guard)', async () => {

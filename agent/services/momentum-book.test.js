@@ -2,7 +2,8 @@
 //
 // The TS momentum book (owner order 03-09-2026; two-sided since PR-D,
 // 11-09-2026). Pinned: the pure arithmetic (ATR, the stop that only moves in
-// the trade's favour, the synth with no target and marketOnly); the cycle
+// the trade's favour, the targetless synth that execution must refuse and
+// marketOnly); the cycle
 // against an in-memory DB with fake broker calls — off writes nothing; a
 // shadow long entry becomes one autoTrade per armed account with the keeper
 // paused and a book row; a shadow SHORT is taken only at conviction ≥ 9 and
@@ -40,7 +41,7 @@ test('off by default; config repairs nonsense', () => {
   assert.deepEqual([c.atrPeriod, c.stopAtr, c.maxPositionsPerAccount], [5, 10, 1])
 })
 
-test('ATR, the stop that only rises, and the entry synth with no target', () => {
+test('ATR, the stop that only rises, and the targetless synth carries no waiver', () => {
   const bars = Array.from({ length: 30 }, (_, i) => ({ t: i, o: 100, h: 101 + i * 0.1, l: 99 + i * 0.1, c: 100 + i * 0.1 }))
   const a = atrOf(bars, 20)
   assert.ok(a > 1.9 && a < 2.2, `ATR ≈ 2 (range 2 + gap 0.1), got ${a}`)
@@ -67,6 +68,7 @@ test('ATR, the stop that only rises, and the entry synth with no target', () => 
   assert.equal(s.entry, 77000)
   assert.equal(s.sl, 77000 - 3 * 1500)
   assert.equal(s.tp1, null, 'no target: the exit is the ranking or the stop')
+  assert.equal(s.noTarget, undefined, 'a missing TP1 is never converted into an execution waiver')
   assert.equal(s.strategy, TSMOM_STRATEGY)
   assert.equal(s.marketOnly, true)
   assert.equal(s.auto_trade, true)
@@ -107,9 +109,13 @@ function fakes({ fill = true } = {}) {
         calls.autoTrade.push({ symbol, synth, acct })
         if (!fill) return null
         const orderSide = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
-        const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,?,'open',?,?,NULL,?,?,?,'bot_market_dispatch',?,datetime('now'))`)
-          .run(symbol, orderSide, synth.entry, synth.sl, synth.strategy, synth.strategy, acct.accountId, `pos-${symbol}-${acct.accountId}`)
-        db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, account_id, status, source) VALUES (?, ?, ?, ?, ?, ?, 'active', 'autopilot')`).run(symbol, t.lastInsertRowid, synth.consensus_bias, synth.entry, synth.sl, acct.accountId)
+        // Broker fixture: cycle tests need a protected filled position to
+        // exercise trailing. The real boundary refuses this synth until its
+        // strategy supplies an approved TP1.
+        const tp1 = synth.consensus_bias === 'short' ? synth.entry - 10 : synth.entry + 10
+        const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,?,'open',?,?,?,?,?,?,'bot_market_dispatch',?,datetime('now'))`)
+          .run(symbol, orderSide, synth.entry, synth.sl, tp1, synth.strategy, synth.strategy, acct.accountId, `pos-${symbol}-${acct.accountId}`)
+        db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, account_id, status, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 'autopilot')`).run(symbol, t.lastInsertRowid, synth.consensus_bias, synth.entry, synth.sl, tp1, acct.accountId)
         return { side: orderSide, tradeId: t.lastInsertRowid }
       },
     },
@@ -330,7 +336,7 @@ test('PR-D: the trail moves a short\'s stop DOWN and never up; the ledger follow
   assert.equal(r.trailed, 1)
   const after = db.prepare(`SELECT stop FROM momentum_book`).get().stop
   assert.ok(after < row.stop, `short stop fell: ${row.stop} → ${after}`)
-  assert.equal(f.calls.amend[0].stopLoss, after); assert.equal(f.calls.amend[0].takeProfit, null)
+  assert.equal(f.calls.amend[0].stopLoss, after); assert.equal(f.calls.amend[0].takeProfit, row.entry_price - 10)
   assert.equal(db.prepare(`SELECT sl_price FROM trades`).get().sl_price, after)
   // Price bounces back up: the short stop does NOT rise.
   f.deps.bars = async () => f.bars
@@ -390,17 +396,18 @@ test('a shadow exit closes the position and marks the row; the trail ratchets th
   assert.ok(after > before, `stop rose: ${before} → ${after}`)
   assert.equal(f.calls.amend.length, 1)
   assert.equal(f.calls.amend[0].stopLoss, after)
-  assert.equal(f.calls.amend[0].takeProfit, null, 'the book states it holds no target — a stop-only amend would clear one at the broker')
+  assert.equal(f.calls.amend[0].takeProfit, 113, 'the trail re-sends broker-native TP1')
   assert.equal(db.prepare(`SELECT sl_price FROM trades`).get().sl_price, after, 'the ledger follows the ratchet')
   assert.equal(db.prepare(`SELECT current_sl FROM monitored_positions`).get().current_sl, after)
-  // A target left on the record (a row adopted before the clearing shipped) goes with the amend that clears it at the broker.
+  // A target updated on the record survives the next trail amend.
   db.prepare(`UPDATE monitored_positions SET current_tp = 999`).run()
   db.prepare(`UPDATE trades SET tp_price = 999`).run()
   f.deps.bars = async () => f.bars.map(b => ({ ...b, h: b.h + 20, l: b.l + 20, c: b.c + 20 }))
   r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 2_500 })
   assert.equal(r.trailed, 1)
-  assert.equal(db.prepare(`SELECT current_tp FROM monitored_positions`).get().current_tp, null, 'the trail clears the recorded target with the broker amend')
-  assert.equal(db.prepare(`SELECT tp_price FROM trades`).get().tp_price, null)
+  assert.equal(f.calls.amend.at(-1).takeProfit, 999, 'the amended stop carries the updated TP1')
+  assert.equal(db.prepare(`SELECT current_tp FROM monitored_positions`).get().current_tp, 999, 'the trail preserves recorded TP1')
+  assert.equal(db.prepare(`SELECT tp_price FROM trades`).get().tp_price, 999)
   const after2 = db.prepare(`SELECT stop FROM momentum_book`).get().stop
   assert.ok(after2 > after)
   // Price falls back: the stop does NOT follow.
@@ -426,6 +433,24 @@ test('a shadow exit closes the position and marks the row; the trail ratchets th
   assert.equal(rep.config.enabled, true)
 })
 
+test('a legacy targetless book row is never amended in a way that could clear broker protection', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 1_000 })
+  db.prepare(`UPDATE monitored_positions SET current_tp = NULL`).run()
+  db.prepare(`UPDATE trades SET tp_price = NULL`).run()
+  f.deps.bars = async () => f.bars.map(b => ({ ...b, h: b.h + 10, l: b.l + 10, c: b.c + 10 }))
+
+  const r = await runMomentumBook(db, { accounts: [{ accountId: DEMO, isLive: false }], credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(r.trailed, 0)
+  assert.equal(f.calls.amend.length, 0, 'no stop-only or null-target amend reaches the broker')
+  assert.ok(r.skipped.some(s => /trail blocked .* recorded TP1 missing/.test(s)), JSON.stringify(r.skipped))
+  assert.match(db.prepare(`SELECT trail_note FROM momentum_book`).get().trail_note, /recorded TP1 missing/)
+})
+
 test('wiring pins: the loop runs the book after the shadow with the real autoTrade and broker calls injected; the limit branch honours marketOnly (comments stripped)', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
   const shadow = src.indexOf("import('./services/momentum-shadow.js')")
@@ -435,7 +460,7 @@ test('wiring pins: the loop runs the book after the shadow with the real autoTra
   assert.ok(block.includes('accounts: getAutopilotAccounts(db)'))
   assert.ok(block.includes('credsFor: (a) => getCtraderCreds(db, a)'))
   assert.ok(block.includes('autoTrade,'))
-  assert.ok(block.includes('amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: null })'), 'the loop states the book holds no target on every amend')
+  assert.ok(block.includes('amend: (creds, args) => exec.amendPosition(creds, args)'), 'the loop forwards both protection legs')
   assert.ok(block.includes('close: (creds, args) => exec.closePosition(creds, args)'))
   assert.ok(block.includes('positionVolume: async (creds, positionId) => brokerPositionVolume((await exec.reconcile(creds)).position || [], positionId)'), 'the loop hands the book the broker volume for its closes')
   assert.ok(block.includes('phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade'))
@@ -509,14 +534,14 @@ test('the symbol id is resolved PER ACCOUNT through symbolIdFor(creds, symbol); 
   assert.equal(r.entries, 1)
   assert.ok(r.skipped.some(s => s.startsWith(`${LIVE} BTCUSD: not in this account's symbol list`)), JSON.stringify(r.skipped))
   assert.equal(f.calls.autoTrade.length, 1)
-  assert.equal(f.calls.autoTrade[0].synth.noTarget, true, 'the no-target bracket is STATED on the synth')
+  assert.equal(f.calls.autoTrade[0].synth.noTarget, undefined, 'the synth carries no target waiver')
 })
 
 test('an open tsmom_long trade with no book row (a resting limit that filled later) is adopted once, keeper paused; an exited row is not re-adopted', async () => {
   const db = fresh()
   setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
   setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
-  // The limit path stamps a 1.5R target (3.45) on both rows; the book must clear it at adoption.
+  // The limit path stamps a 1.5R target (3.45); adoption must preserve it.
   const tid = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES ('NATGAS','BUY','open',3.0,2.7,3.45,?,?,?,'bot_market_dispatch','pos-late',datetime('now'))`)
     .run(TSMOM_STRATEGY, TSMOM_STRATEGY, DEMO).lastInsertRowid
   db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, account_id, status, source) VALUES ('NATGAS', ?, 'long', 3.0, 2.7, 3.45, ?, 'active', 'autopilot')`).run(tid, DEMO)
@@ -527,10 +552,8 @@ test('an open tsmom_long trade with no book row (a resting limit that filled lat
   assert.ok(row && row.status === 'open' && row.position_id === 'pos-late' && row.stop >= 2.7, JSON.stringify(row))
   const mp = db.prepare(`SELECT paused, current_tp FROM monitored_positions WHERE trade_id = ?`).get(tid)
   assert.equal(mp.paused, 1)
-  // 04-09-2026: the target-restore sweep reads current_tp and would put the
-  // limit's 1.5R target back at the broker after the book's amend cleared it.
-  assert.equal(mp.current_tp, null, 'the book holds no target — the record must say so, or the restore sweep re-caps the position')
-  assert.equal(db.prepare(`SELECT tp_price FROM trades WHERE id = ?`).get(tid).tp_price, null)
+  assert.equal(mp.current_tp, 3.45, 'adoption preserves broker-native TP1')
+  assert.equal(db.prepare(`SELECT tp_price FROM trades WHERE id = ?`).get(tid).tp_price, 3.45)
   // second pass: nothing new to adopt
   const r2 = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 5_100_000 })
   assert.equal(r2.adopted, 0)
@@ -1146,8 +1169,10 @@ test('considered-vs-ran is counted across a mix of armed, unarmed and throwing a
 function bleedingBook(db, account, { symbols = ['BTCUSD', 'NATGAS'], entry = 100, risk = 10, mark = 90, at = Date.now() } = {}) {
   const marks = {}
   for (const symbol of symbols) {
-    const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,'BUY','open',?,?,?,?,?,'bot_market_dispatch',?, datetime('now','-5 days'))`)
-      .run(symbol, entry, entry - risk, TSMOM_STRATEGY, TSMOM_STRATEGY, account, `pos-${symbol}-${account}`).lastInsertRowid
+    const t = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, tp_price, label_strategy, strategy, account_id, origin, ctrader_position_id, opened_at) VALUES (?,'BUY','open',?,?,?,?,?,?,'bot_market_dispatch',?, datetime('now','-5 days'))`)
+      .run(symbol, entry, entry - risk, entry + 2 * risk, TSMOM_STRATEGY, TSMOM_STRATEGY, account, `pos-${symbol}-${account}`).lastInsertRowid
+    db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, entry_price, current_sl, current_tp, account_id, status, source) VALUES (?,?,'long',?,?,?,?, 'active','autopilot')`)
+      .run(t, symbol, entry, entry - risk, entry + 2 * risk, account)
     db.prepare(`INSERT INTO trade_plans (trade_id, account_id, symbol, side, risk_dist) VALUES (?,?,?,'long',?)`).run(t, account, symbol, risk)
     db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entered_at, status) VALUES (?,?,?,?, 'long', ?, ?, 2, datetime('now','-5 days'), 'open')`)
       .run(t, account, symbol, `pos-${symbol}-${account}`, entry, entry - risk)
@@ -1700,7 +1725,7 @@ test('PR-AX: the trail STILL selects open alone — the sweep must not become a 
   // an exited row.
   const src = readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8')
   const code = src.replace(/^\s*\/\/.*$/gm, '')
-  assert.match(code, /FROM momentum_book WHERE status = 'open'`\)\.all\(\)/,
+  assert.match(code, /WHERE b\.status = 'open'`\)\.all\(\)/,
     'the trail loop keeps its own predicate')
   assert.match(code, /FROM momentum_book WHERE status = 'exit_sent'/,
     'and the reclassification is its own query')

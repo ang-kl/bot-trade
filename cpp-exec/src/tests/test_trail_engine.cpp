@@ -17,6 +17,8 @@ TrailSpec longSpec() {
   // that names no account, because amendPosition refuses an unstamped payload.
   // A helper without this would silently make every configure() test a no-op.
   s.accountId = 4002;
+  s.currentTp = 1.20000;
+  s.hasTp = true;
   return s;
 }
 
@@ -52,6 +54,16 @@ void testConfigureDropsSpecsWithNoAccount() {
   te.configure({ { 44, ok } });
   assert(te.tracked() == 1);
   assert(te.statusJson().find("\"specsDroppedNoAccount\":0") != std::string::npos);
+}
+
+void testConfigureDropsSpecsWithNoTarget() {
+  TrailSpec missing = longSpec();
+  missing.currentTp = 0;
+  missing.hasTp = false;
+  TrailEngine te;
+  te.configure({ { 55, missing } });
+  assert(te.tracked() == 0);
+  assert(te.statusJson().find("\"specsDroppedNoTarget\":1") != std::string::npos);
 }
 
 // SUPERSEDED CONVENTION (2026-08-01 audit #3): "no known SL → any target
@@ -154,6 +166,7 @@ int main() {
   testConfigureKeepsLocalProgress();
   testSymbolIdsDedupe();
   testConfigureDropsSpecsWithNoAccount();
+  testConfigureDropsSpecsWithNoTarget();
   std::puts("test_trail_engine: OK");
   return 0;
 }

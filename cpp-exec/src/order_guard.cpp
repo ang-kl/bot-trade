@@ -54,22 +54,29 @@ OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g) {
 
   // Order type: default MARKET when unspecified (matches the app's market path).
   const jsn::Value& ot = payload.get("orderType");
-  const std::string type = ot.isString() ? ot.asString() : "MARKET";
-  const bool isMarket = (type == "MARKET" || type == "MARKET_RANGE");
+  const std::string type = ot.isNull() ? "MARKET" : (ot.isString() ? ot.asString() : "");
+  const double rawTypeCode = ot.isNumber() ? ot.asNumber(0) : 0;
+  const bool isMarket = (type == "MARKET" || type == "MARKET_RANGE" ||
+                         (ot.isNumber() && (rawTypeCode == 1.0 || rawTypeCode == 5.0)));
+  const bool isEntry = isMarket || type == "LIMIT" || type == "STOP" || type == "STOP_LIMIT" ||
+                       (ot.isNumber() && (rawTypeCode == 2.0 || rawTypeCode == 3.0 || rawTypeCode == 6.0));
+  if (!isEntry) {
+    return { false, "guard_bad_payload: unsupported entry order type" };
+  }
 
-  // #4 bracket guarantee: a MARKET order with no attached stop is a naked
-  // position — the one thing the execution core must never let through. A
-  // caller that genuinely wants a stopless order must say so explicitly.
-  if (isMarket) {
+  // #4 bracket guarantee: a fillable entry with no attached stop is a naked
+  // position. A caller that genuinely wants a stopless order must say so.
+  if (isEntry) {
     const jsn::Value& allow = payload.get("allowNaked");
     const bool explicitlyAllowed = allow.isBool() && allow.asBool(false);
     if (g.requireBracket && !orderHasBracket(payload) && !explicitlyAllowed) {
-      return { false, "guard_naked_order: market order has no stop loss attached (set allowNaked to override)" };
+      return { false, "guard_naked_order: entry order has no stop loss attached (set allowNaked to override)" };
     }
-    // Owner-approved 2026-07-22: an SL-only position isn't "managed" either —
-    // several open positions had no Take Profit at all.
-    if (g.requireTarget && !orderHasTarget(payload) && !explicitlyAllowed) {
-      return { false, "guard_no_target: market order has no take profit attached (set allowNaked to override)" };
+    // Owner-confirmed 21-09-2026: TP1 is mandatory on every fillable entry.
+    // `allowNaked` can state an intentional missing stop, but it must never
+    // waive the independent target invariant.
+    if (!orderHasTarget(payload)) {
+      return { false, "guard_no_target: entry order has no take profit attached; TP1 is mandatory" };
     }
   }
 

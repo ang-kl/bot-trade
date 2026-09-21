@@ -51,7 +51,9 @@ public:
   // halted, no volume cap until the strategy sets one.
   void setHalt(bool v) { halt_.store(v, std::memory_order_relaxed); }
   void setRequireBracket(bool v) { requireBracket_.store(v, std::memory_order_relaxed); }
-  void setRequireTarget(bool v) { requireTarget_.store(v, std::memory_order_relaxed); }
+  // Compatibility setter for old config clients. TP1 is an invariant now;
+  // attempts to disable it are ignored and the reported snapshot stays true.
+  void setRequireTarget(bool) { requireTarget_.store(true, std::memory_order_relaxed); }
   void setMaxOrderVolume(double v) { maxOrderVolume_.store(v, std::memory_order_relaxed); }
   // Full replace (Node's guard sync derives the whole set declaratively each
   // push). A brief mutex here is a DELIBERATE deviation from the all-atomics
@@ -95,13 +97,12 @@ struct OrderVerdict {
 };
 
 // A market order carries a bracket when it has relativeStopLoss/relativeTakeProfit
-// (the app's normal path) OR an absolute stopLoss. LIMIT/STOP pending orders
-// are exempt from the bracket rule here — they carry their SL as a resting
-// distance and are validated on the pending path.
+// (the app's normal path) OR an absolute stopLoss. Pending LIMIT/STOP variants
+// are checked by the same entry guard because they can fill asynchronously.
 bool orderHasBracket(const jsn::Value& payload);
 
 // A market order carries a target when it has relativeTakeProfit or an
-// absolute takeProfit. Same LIMIT/STOP exemption as orderHasBracket.
+// absolute takeProfit.
 bool orderHasTarget(const jsn::Value& payload);
 
 // The pure guard. Pass the payload and a GuardSnapshot; get a verdict.

@@ -18,10 +18,9 @@
 // The backfill was removed. What follows is only what can actually happen.
 //
 // The two real defects, both measured at source:
-//   1. THE HAND-OVER HAD DRIFTED — `momentum-book.js` `tryEnter` paused the
-//      monitor but did NOT clear `current_tp` / `tp_price`, so a row entered
-//      through it kept the closed-market limit's 1.5R ceiling on a position
-//      meant to run for weeks. The other two writers cleared both.
+//   1. THE HAND-OVER HAD DRIFTED — some paths cleared TP1 while others kept
+//      it. The shared hand-over now pauses the keeper and preserves mandatory
+//      broker-native TP1 on every path.
 //   2. THE WINDOW — the row and the hand-over were two statements. A throw
 //      between them leaves the row written (so `book-held.js` exempts the
 //      position from keeper, guardian and weekend bank) while `paused` is
@@ -61,16 +60,15 @@ const ROW = (tradeId) => ({
 // 1. The hand-over is ONE rule
 // ───────────────────────────────────────────────────────────────────────────
 
-test('the hand-over pauses the keeper AND clears the limit target on both rows', () => {
+test('the hand-over pauses the keeper and preserves broker-native TP1 on both rows', () => {
   const db = db0()
   const tradeId = filledTrade(db)
   assert.deepEqual(monitored(db, tradeId), { paused: 0, current_tp: 390.84 }, 'before: keeper-managed, capped at 1.5R')
 
   bookEntryWrite(db, { accountId: 'A', row: ROW(tradeId) })
 
-  assert.deepEqual(monitored(db, tradeId), { paused: 1, current_tp: null }, 'after: book-managed, no ceiling')
-  assert.equal(db.prepare('SELECT tp_price FROM trades WHERE id = ?').get(tradeId).tp_price, null,
-    'and the trade carries no target, so target-restore has nothing to put back')
+  assert.deepEqual(monitored(db, tradeId), { paused: 1, current_tp: 390.84 }, 'after: book-managed, TP1 preserved')
+  assert.equal(db.prepare('SELECT tp_price FROM trades WHERE id = ?').get(tradeId).tp_price, 390.84, 'the trade retains TP1')
   assert.equal(makeBookHeldCheck(db, 'A')(240505687), true, 'and the exemption sees it')
 })
 
@@ -126,11 +124,11 @@ test('THE WINDOW: the row and the hand-over land together or not at all', () => 
 // NOTHING red. These drive the real pass.
 // ───────────────────────────────────────────────────────────────────────────
 
-test('WIRING: the book ENTRY path clears the limit target, not just the pause', async () => {
+test('WIRING: the book ENTRY path preserves the limit target while pausing the keeper', async () => {
   // THE GAP THE CHECKER FOUND, and why it stayed open. `momentum-book.test.js`
   // already drives an entry through `runMomentumBook` — but its fake autoTrade
   // inserts `tp_price` NULL and a monitored row with no `current_tp`, so there
-  // was never a target for the entry path to fail to clear. The guard's
+  // was never a target for the entry path to accidentally clear. The guard's
   // trigger never arrived (CLAUDE.md failure mode #3). This gives the path a
   // trade WITH the 1.5R target a closed-market limit really carries, and so
   // goes red if the call site reverts to `SET paused = 1` alone.
@@ -171,13 +169,13 @@ test('WIRING: the book ENTRY path clears the limit target, not just the pause', 
   const r = await runMomentumBook(db, { accounts: [{ accountId: ACCT, isLive: false }], credsFor: (a) => ({ accountId: a.accountId, host: 'demo' }), deps, now: Date.now(), log: () => {} })
   assert.equal(r.entries, 1, `the entry path ran — skipped: ${JSON.stringify(r.skipped)}`)
   assert.ok(tradeId, 'a trade was created')
-  assert.deepEqual(monitored(db, tradeId), { paused: 1, current_tp: null },
-    'the ENTRY path must clear the 1.5R limit target as well as pause — this is the drift §4-P closes')
-  assert.equal(db.prepare('SELECT tp_price FROM trades WHERE id = ?').get(tradeId).tp_price, null,
-    'and on the trade, or target-restore puts the ceiling back at the broker')
+  assert.deepEqual(monitored(db, tradeId), { paused: 1, current_tp: 390.84 },
+    'the ENTRY path must retain broker-native TP1 while the keeper is paused')
+  assert.equal(db.prepare('SELECT tp_price FROM trades WHERE id = ?').get(tradeId).tp_price, 390.84,
+    'the trade record must retain the same TP1')
 })
 
 // The ADOPT path's hand-over is already pinned, behaviourally and with a real
 // target, by momentum-book.test.js:515 ("an open tsmom_long trade with no book
 // row ... is adopted once, keeper paused" — it asserts current_tp and tp_price
-// are null). Not duplicated here.
+// retain their broker-native TP1). Not duplicated here.

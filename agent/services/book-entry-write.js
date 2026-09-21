@@ -19,17 +19,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // THE TWO DEFECTS THIS CLOSES, both measured at source 21-09-2026
 //
-// 1. THE HAND-OVER HAD DRIFTED. Of the three writers, two cleared the limit's
-//    take profit and one did not. `momentum-book.js` `tryEnter` ran
-//    `UPDATE monitored_positions SET paused = 1` and stopped there — it did
-//    NOT clear `monitored_positions.current_tp`, and did NOT clear
-//    `trades.tp_price`. A closed-market limit is placed WITH a 1.5R take
-//    profit, so a row entered through that path keeps a 1.5R ceiling on a
-//    position meant to run for weeks, and the target-restore sweep (which
-//    reads `current_tp`) puts the target back at the broker after the book's
-//    trail amend clears it. That is the exact incident recorded on
-//    04-09-2026 for LLY.US on ACCT-DEMO-1: target lost at the 08:46 SGT
-//    trail, held again by the evening.
+// 1. THE HAND-OVER HAD DRIFTED. Some writers cleared the broker target while
+//    others preserved it. Broker-native TP1 is now mandatory, so the shared
+//    hand-over has one rule: pause intraday management without changing TP1.
 //
 // 2. THE WINDOW. The row and the hand-over were two separate statements at
 //    every writer. A throw between them — and the callers catch into
@@ -52,14 +44,13 @@
 
 /**
  * The keeper hand-over. ONE rule, so it cannot drift again: the monitor is
- * paused AND the limit's target is cleared on both the monitor row and the
+ * paused while broker-native TP1 is preserved on both the monitor row and the
  * trade. Returns what it actually changed, because a caller that logs "keeper
  * paused" must be able to tell whether anything was.
  */
 export function pauseForBook(db, tradeId) {
-  const paused = db.prepare(`UPDATE monitored_positions SET paused = 1, current_tp = NULL WHERE trade_id = ?`).run(tradeId)
-  const cleared = db.prepare(`UPDATE trades SET tp_price = NULL WHERE id = ?`).run(tradeId)
-  return { monitorRows: paused.changes, tradeRows: cleared.changes }
+  const paused = db.prepare(`UPDATE monitored_positions SET paused = 1 WHERE trade_id = ?`).run(tradeId)
+  return { monitorRows: paused.changes, tradeRows: 0 }
 }
 
 /**

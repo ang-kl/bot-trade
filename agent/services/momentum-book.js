@@ -9,8 +9,8 @@
 // universe by trailing return every hour and logs would-be entries and exits
 // with hysteresis. This book turns the shadow's LONG decisions into real
 // positions on every account where `tsmom_long` is trade-armed, and manages
-// them the way a trend follower does: no target, a volatility-scaled stop
-// that only ever ratchets in the trade's favour, and an exit when the name
+// them with a volatility-scaled stop that only ever ratchets in the trade's
+// favour, and an exit when the name
 // leaves its band. A SHORT row is taken only when direction-policy.js says
 // ok: conviction at or above the short floor (longMin × 1.5 = 9/10 on the
 // defaults) AND not against an up-trend in `regimes.trend_direction`; the
@@ -288,8 +288,9 @@ export function trailImproves({ side = 'long', prevStop, nextStop }) {
 
 /**
  * The synth autoTrade() dispatches: a long (or, PR-D, a short) at the live
- * price with a volatility stop and NO target — the book's exit is the
- * ranking or the stop. `marketOnly` keeps it off the high-timeframe limit
+ * price with a volatility stop. Until the strategy supplies an approved TP1,
+ * the shared execution boundary refuses this proposal before dispatch.
+ * `marketOnly` keeps it off the high-timeframe limit
  * path (the entry is the live quote, not a bar close), `auto_trade` is what
  * the dispatch gate requires. `directionReason` is the policy's stated
  * reason for the side; without one the side's band is the reason. Pure.
@@ -314,12 +315,9 @@ export function buildEntrySynth({ symbol, price, atr, cfg, conviction = null, ra
     overall_conviction: Number.isFinite(Number(conviction)) ? Number(conviction) : cfg.conviction,
     auto_trade: true,
     marketOnly: true,
-    // Stated intent, not an omission: the book trails a stop and never holds a
-    // target. autoTrade turns this into allowNoTarget on the market payload.
-    noTarget: true,
     time_cap_minutes: null,
     source: 'momentum_book',
-    synthesis: `TS momentum ${side} — ${symbol} ranked ${rankPct != null ? Math.round(Number(rankPct) * 100) + 'th pct' : band} by trailing return; stop ${cfg.stopAtr}×ATR(${cfg.atrPeriod}) = ${sl.toFixed(5)}, trailing, no target. Exit when the name leaves the ${band} or the stop is hit.`,
+    synthesis: `TS momentum ${side} — ${symbol} ranked ${rankPct != null ? Math.round(Number(rankPct) * 100) + 'th pct' : band} by trailing return; stop ${cfg.stopAtr}×ATR(${cfg.atrPeriod}) = ${sl.toFixed(5)}. Entry remains blocked until an approved TP1 is supplied.`,
     invalidation_trigger: short ? 'rank leaves the bottom 40% of the universe, or the trailing stop' : 'rank leaves the top 40% of the universe, or the trailing stop',
   }
 }
@@ -568,13 +566,8 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       // transaction, through the one shared writer. They were two loose
       // statements here; see the note at the top of book-entry-write.js.
       // The row carries the trade's own side (PR-D): a SELL fill is a short
-      // row. The reason the hand-over clears the target at all is unchanged
-      // and measured: a closed-market limit is placed with a 1.5R take profit,
-      // so the row inherits `current_tp` / `tp_price`, the book's first trail
-      // amend clears the target at the broker, and the target-restore sweep
-      // puts it straight back (04-09-2026, LLY.US on ACCT-DEMO-1: lost its
-      // target at 08:46 SGT and held it again by the evening — a 1.5R cap on
-      // a trend position meant to run).
+      // row. The keeper is paused in the same transaction as the row insert,
+      // while broker-native TP1 is preserved on both persistence rows.
       const handed = bookEntryWrite(db, {
         accountId,
         row: {
@@ -598,7 +591,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       // The line says what was actually done, not what was attempted: a trade
       // with no monitor row is adopted into the book but has no keeper to
       // pause, and claiming otherwise is how a true-sounding log lies.
-      log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price}${handed.handedOver ? '; keeper paused, limit target cleared' : '; no monitor row to pause'})`)
+      log(`momentum book: adopted ${t.symbol} on …${accountId.slice(-4)} (trade ${t.id}, stop ${t.sl_price}${handed.handedOver ? '; keeper paused, TP1 preserved' : '; no monitor row to pause'})`)
     }
 
     // A MOMENTUM ACCOUNT (owner 07-09-2026, §7,386·D1; every enabled account
@@ -1088,7 +1081,11 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
           atr == null || !Number.isFinite(Number(atr)) ? null : Number(atr), id)
     } catch { /* the trail must not fail on its own bookkeeping */ }
   }
-  for (const row of db.prepare(`SELECT * FROM momentum_book WHERE status = 'open'`).all()) {
+  for (const row of db.prepare(`SELECT b.*, mp.current_tp
+                                  FROM momentum_book b
+                                  LEFT JOIN monitored_positions mp
+                                    ON mp.trade_id = b.trade_id AND mp.status = 'active'
+                                 WHERE b.status = 'open'`).all()) {
     const rowSide = row.side === 'short' ? 'short' : 'long'
     const mk = markKey(row.account_id, row.symbol)
     const acct = accounts.find(a => String(a.accountId) === String(row.account_id))
@@ -1176,17 +1173,21 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
                 `the standing stop ${row.stop} is already tighter`,
           atr)
       } else {
-        // A stop-only amend CLEARS the take profit at the broker; the book
-        // never holds one, and says so (assertAmendIntent).
-        if (row.position_id && deps.amend) await deps.amend(creds, { positionId: row.position_id, stopLoss: next, takeProfit: null })
+        // Amend replaces the broker's complete protection set. Never clear a
+        // TP while ratcheting the stop, and never guess one: an old targetless
+        // row keeps its standing stop until TP1 is explicitly remediated.
+        const keepTp = Number(row.current_tp) > 0 ? Number(row.current_tp) : null
+        if (row.position_id && deps.amend && keepTp == null) {
+          noteTrail(row.id, 'trail blocked: recorded TP1 missing; refusing a target-clearing amend', atr)
+          summary.skipped.push(`${row.account_id} ${row.symbol}: trail blocked — recorded TP1 missing`)
+          continue
+        }
+        if (row.position_id && deps.amend) await deps.amend(creds, { positionId: row.position_id, stopLoss: next, takeProfit: keepTp })
         db.prepare(`UPDATE momentum_book SET stop = ?, atr = ? WHERE id = ?`).run(next, atr, row.id)
         noteTrail(row.id, `trailed ${row.stop} -> ${next} on ${cfg.stopAtr}xATR ${atr}`, atr)
         if (row.trade_id != null) {
-          // The amend above clears the target at the broker; the record clears
-          // with it, so the target-restore sweep has nothing to put back (rows
-          // adopted before 04-09-2026 still carry the limit's 1.5R target).
-          db.prepare(`UPDATE trades SET sl_price = ?, tp_price = NULL WHERE id = ?`).run(next, row.trade_id)
-          db.prepare(`UPDATE monitored_positions SET current_sl = ?, current_tp = NULL WHERE trade_id = ?`).run(next, row.trade_id)
+          db.prepare(`UPDATE trades SET sl_price = ? WHERE id = ?`).run(next, row.trade_id)
+          db.prepare(`UPDATE monitored_positions SET current_sl = ? WHERE trade_id = ?`).run(next, row.trade_id)
         }
         summary.trailed++
       }
