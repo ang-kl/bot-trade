@@ -156,6 +156,9 @@ export default function Desk() {
   // Newest close per symbol across ALL cycles — the currency-conversion base.
   const [latestPrices, setLatestPrices] = useState({})
   const [positions, setPositions] = useState([])   // bot-tracked rows (chart lines)
+  const [positionsReadOk, setPositionsReadOk] = useState(false)
+  const [positionsReadError, setPositionsReadError] = useState('')
+  const [heartbeatReadError, setHeartbeatReadError] = useState('')
   // Whose positions the route says these are, + rows it hid for having no
   // account_id. /state/positions is account-scoped server-side now, so Desk
   // needs no query param — it gets the selected account by default.
@@ -246,19 +249,31 @@ export default function Desk() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
     const view = brokerViewGuard.current()
-    if (view.changed) { setBroker(null); setBrokerHistory(null); setBrokerErr(''); setPositions([]); setPosScope({ accountId: view.id || null, legacyRows: 0, scope: null }) }
+    if (view.changed) { setBroker(null); setBrokerHistory(null); setBrokerErr(''); setPositions([]); setPositionsReadOk(false); setPositionsReadError(''); setPosScope({ accountId: view.id || null, legacyRows: 0, scope: null }) }
     // Protection and position readings must paint even when analytics fail
     // or take longer. Every response still belongs to this viewing session.
     agentGet('/state/heartbeats').then(hb => {
       if (!view.current()) return
       setHeartbeats(hb?.controllers ?? null)
       setControllerRuntime(hb?.runtime ?? null)
-    }).catch(() => {})
+      setHeartbeatReadError('')
+    }).catch(err => {
+      if (!view.current()) return
+      setHeartbeats(null)
+      setControllerRuntime(null)
+      setHeartbeatReadError(`Controller readings unverified: ${err.message}`)
+    })
     agentGet('/state/positions').then(p => {
       if (!view.current()) return
       setPositions(p.rows || p.positions || [])
+      setPositionsReadOk(true)
+      setPositionsReadError('')
       setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0, scope: p?.scope ?? null })
-    }).catch(() => {})
+    }).catch(err => {
+      if (!view.current()) return
+      setPositionsReadOk(false)
+      setPositionsReadError(`Monitor records unverified: ${err.message}`)
+    })
     // TWO-TIER LOAD (owner: "30s to load — make it 3"). The broker snapshot
     // and deal history are live cTrader WebSocket round-trips (slow, tens of
     // seconds on a cold link); everything else is a SQLite read (<100ms).
@@ -414,10 +429,11 @@ export default function Desk() {
   // (owner: "check individually the 18 positions" after the LLM-monitor
   // broker-close bug — each broker row gets an Integrity column from this).
   const monitorByPid = useMemo(() => {
+    if (!positionsReadOk) return null
     const m = new Map()
     for (const r of positions) if (r.ctrader_position_id != null) m.set(String(r.ctrader_position_id), r)
     return m
-  }, [positions])
+  }, [positions, positionsReadOk])
 
   // Scan closes double as the FX rate map bracketMoney needs to convert a
   // cross's quote-currency risk into USD (GBPJPY risk lands in JPY). Without
@@ -447,7 +463,7 @@ export default function Desk() {
     return m
   }, [scans, latestPrices])
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const brokerPosRows = useMemo(() => brokerPositionRows(broker?.positions || [], { manageable: true, dbByPid: monitorByPid, rates: rateMap }), [posSig, monitorByPid, rateMap])
+  const brokerPosRows = useMemo(() => brokerPositionRows(broker?.positions || [], { manageable: true, dbByPid: monitorByPid, dbReadStatus: positionsReadOk ? 'verified' : 'unverified', rates: rateMap }), [posSig, monitorByPid, positionsReadOk, rateMap])
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const brokerOrderRowsM = useMemo(() => brokerOrderRows(broker?.orders || [], { manageable: true }), [ordSig])
 
@@ -456,12 +472,12 @@ export default function Desk() {
   // own next pass (closedDetected) — surfaced here so a stale one is VISIBLE
   // instead of only inferred from an empty broker table.
   const dbOnlyPositions = useMemo(() => {
-    if (!broker?.positions) return [] // snapshot not loaded yet — don't false-flag
+    if (!positionsReadOk || !broker?.positions) return [] // snapshot not loaded yet — don't false-flag
     const liveIds = new Set(broker.positions.map(p => String(p.positionId)))
     return positions.filter(r => r.ctrader_position_id != null && !liveIds.has(String(r.ctrader_position_id)))
-  }, [positions, broker?.positions])
+  }, [positions, positionsReadOk, broker?.positions])
   const gaugePositions = useMemo(() => (broker?.positions || []).map(bp => {
-    const mp = monitorByPid.get(String(bp.positionId))
+    const mp = monitorByPid?.get(String(bp.positionId))
     return mp
       ? { ...bp, lastCheckAt: mp.last_check_at, lastCheckAction: mp.last_check_action, thesisStatus: mp.thesis_status, monitorSl: mp.current_sl,
           // PHASE 1 (cockpit live-wiring): the DURABLE identity rides with the
@@ -664,6 +680,7 @@ export default function Desk() {
           <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
         )}
         {brokerErr && <p className="text-(length:--fs-body) text-[var(--color-warning-text)]">{brokerErr}</p>}
+        {!positionsReadOk && <p role="status" className="text-(length:--fs-body) text-[var(--color-warning-text)]">{positionsReadError || 'Monitor records not yet verified for this account. Broker positions below remain visible.'}</p>}
         {dbOnlyPositions.length > 0 && (
           <p className="text-(length:--fs-body) text-[var(--color-warning-text)] mb-1">
             ⚠ {dbOnlyPositions.length} position(s) marked active in the DB but not found at the broker: {' '}
@@ -1087,6 +1104,7 @@ export default function Desk() {
           <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">Now</span>
           <SplitFlapClock tickLive className="text-(length:--fs-body)" />
         </div>
+        {heartbeatReadError && <p role="status" className="text-(length:--fs-body) text-[var(--color-warning-text)]">{heartbeatReadError}</p>}
         <ControllerRuntime runtime={controllerRuntime} />
         {!heartbeats && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
         {heartbeats && (

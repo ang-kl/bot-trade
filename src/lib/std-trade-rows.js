@@ -164,7 +164,7 @@ function integrityOf(p2, dbRow) {
 /** Live broker positions → standard rows. manageable=true arms the panel.
  * dbByPid: optional Map<String(ctrader_position_id), dbRow> — when passed,
  * each row gets an `integrity` field cross-checking DB vs broker truth. */
-export function brokerPositionRows(positions, { manageable = false, dbByPid = null, rates = null } = {}) {
+export function brokerPositionRows(positions, { manageable = false, dbByPid = null, dbReadStatus = null, rates = null } = {}) {
   return (positions || []).map(p2 => {
     // The matching DB row (when the caller passed dbByPid) also carries the
     // DURABLE cockpit identity — monitored_positions.id + account — which the
@@ -217,7 +217,7 @@ export function brokerPositionRows(positions, { manageable = false, dbByPid = nu
       // structured label server-side; null for manual/external.
       timeframe: p2.timeframe ?? null,
       strategy: p2.strategy ?? null,
-      integrity: dbByPid ? integrityOf(p2, dbRow) : null,
+      integrity: dbReadStatus === 'unverified' ? 'monitor records unverified' : dbByPid ? integrityOf(p2, dbRow) : null,
       dbPositionId: dbRow?.id ?? null,
       accountId: dbRow?.account_id != null ? String(dbRow.account_id) : null,
       durationMs: p2.openedAt ? Math.max(0, Date.now() - toMs(p2.openedAt)) : null,
