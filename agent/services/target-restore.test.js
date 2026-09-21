@@ -17,7 +17,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
-import { planTargetRestore, restoreMissingTargets, restoreEnabled, MAX_PER_SWEEP } from './target-restore.js'
+import { planTargetRestore, restoreMissingTargets as restoreReal, restoreEnabled, MAX_PER_SWEEP } from './target-restore.js'
+
+// Each test supplies a broker snapshot; no test opens a network connection.
+const restoreMissingTargets = (db, creds, findings, rows, deps = {}) => restoreReal(db, creds, findings, rows, {
+  readPosition: async f => ({ positionId: f.positionId, stopLoss: f.brokerSl, takeProfit: null }), ...deps,
+})
 
 const LONG = { id: 1, symbol: 'EURUSD', side: 'long', entry_price: 1.10, current_tp: 1.15, account_id: 'A', trade_id: 7 }
 const SHORT = { id: 2, symbol: 'GBPUSD', side: 'short', entry_price: 1.30, current_tp: 1.25, account_id: 'A', trade_id: 8 }
@@ -185,4 +190,54 @@ test('positions with no target on record are counted in ONE line per sweep, not 
   assert.equal(out.restored, 0); assert.equal(amend.calls.length, 0)
   assert.equal(out.skipped.length, 1, JSON.stringify(out.skipped))
   assert.match(out.skipped[0], /^3 position\(s\) hold no target on record — nothing to restore \(EURUSD, GBPUSD, USDJPY\)$/)
+})
+
+
+test('restoration preserves a freshly tightened stop and never overwrites a newly set target', async () => {
+  const db = db0(), amend = spyAmend()
+  await restoreMissingTargets(db, { accountId: 'A' }, [finding], rows(db), {
+    amend: amend.fn, readPosition: async () => ({ positionId: '111', stopLoss: 1.095, takeProfit: null }),
+  })
+  assert.equal(amend.calls[0].stopLoss, 1.095)
+  setState(db, 'target_restore_attempts_json', '{}')
+  await restoreMissingTargets(db, { accountId: 'A' }, [finding], rows(db), {
+    amend: amend.fn, readPosition: async () => ({ positionId: '111', stopLoss: 1.095, takeProfit: 1.16 }),
+  })
+  assert.equal(amend.calls.length, 1)
+  db.close()
+})
+
+test('fresh lookup failure, closed position, missing stop and foreign account never amend', async () => {
+  for (const snapshot of [null, { positionId: '222', stopLoss: 1.09 }, { positionId: '111', stopLoss: 0 }]) {
+    const db = db0(), amend = spyAmend()
+    await restoreMissingTargets(db, { accountId: 'A' }, [finding], rows(db), { amend: amend.fn, readPosition: async () => snapshot })
+    assert.equal(amend.calls.length, 0)
+    db.close()
+  }
+  const db = db0(), amend = spyAmend()
+  const out = await restoreMissingTargets(db, { accountId: 'A' }, [finding], rows(db), {
+    amend: amend.fn, readPosition: async () => { throw new Error('read timed out') },
+  })
+  assert.match(out.errors.join(' '), /read timed out/)
+  await restoreMissingTargets(db, { accountId: 'B' }, [finding], rows(db), { amend: amend.fn })
+  assert.equal(amend.calls.length, 0)
+  db.close()
+})
+
+test('failed amends consume the sweep cap', async () => {
+  const db = db0(), row = rows(db).get('111')
+  const findings = Array.from({ length: 9 }, (_, i) => ({ ...finding, positionId: String(200 + i) }))
+  let attempted = 0
+  await restoreMissingTargets(db, { accountId: 'A' }, findings, new Map(findings.map(f => [f.positionId, row])), {
+    amend: async () => { attempted++; throw new Error('refused') },
+  })
+  assert.equal(attempted, MAX_PER_SWEEP)
+  db.close()
+})
+
+test('only bot-owned recorded entry targets may fill a missing current target', () => {
+  const row = { ...LONG, current_tp: null, entry_tp: 1.15, source: 'bot' }
+  assert.equal(planTargetRestore(row, { brokerSl: 1.09 }).tp, 1.15)
+  assert.equal(planTargetRestore({ ...row, source: 'external' }, { brokerSl: 1.09 }).action, 'skip')
+  assert.equal(planTargetRestore({ ...row, entry_tp: 1.05 }, { brokerSl: 1.09 }).action, 'skip')
 })

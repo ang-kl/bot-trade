@@ -4213,7 +4213,8 @@ export default function stateRouter(db) {
       // a halt the sidecar refused is otherwise invisible from the panel.
       let execGuardSync = null
       try { execGuardSync = JSON.parse(getState(db, 'exec_guard_sync_last_error_json') || 'null') } catch { execGuardSync = null }
-      res.json({ controllers: heartbeatView(db), atrRefresh, rosterInvariant, execGuardSync })
+      const { controllerRuntimeView } = await import('../services/controller-runtime.js')
+      res.json({ controllers: heartbeatView(db), atrRefresh, rosterInvariant, execGuardSync, runtime: controllerRuntimeView(db) })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }

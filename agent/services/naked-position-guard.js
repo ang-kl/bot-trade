@@ -77,6 +77,7 @@
 //     the exit is a fact worth having on record even when it is not a fault.
 // ─────────────────────────────────────────────────────────────────────────────
 import { getState, setState } from '../db.js'
+import { singleFlight } from './acting-layer.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { normPosId } from '../lib/pos-id.js'
 
@@ -786,6 +787,13 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
         unmatched: audit.unmatched,
         naked: audit.naked.length,
         targetless: audit.targetless.length,
+        missingTargets: audit.targetless.map(f => {
+          const row = openRows.find(r => String(r.ctrader_position_id) === String(f.positionId))
+          const recorded = Number(row?.current_tp) > 0 ? Number(row.current_tp)
+            : row?.source === 'bot' && Number(row?.entry_tp) > 0 ? Number(row.entry_tp) : null
+          return { positionId: String(f.positionId), symbol: f.symbol,
+            recordedTarget: recorded, resolution: recorded == null ? 'target_decision_required' : 'recorded_target_available' }
+        }),
         phantom: audit.phantom.length,
         tpDrift: audit.tpDrift.length,
       }))
@@ -1094,7 +1102,42 @@ const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
  *            targetsRestored:number, targetsSet:number,
  *            errors:string[], unauditable:string[]}}
  */
+// The independent protection clock must cover both broker hosts. Each host's
+// sweep remains account-scoped; one unavailable host cannot delay the other.
+export async function runProtectionAuditBothSides(db, baseCreds, deps = {}) {
+  const { getEnabledAccounts } = await import('./account-registry.js')
+  const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
+  const contexts = baseCreds?.ready ? [baseCreds] : []
+  for (const isLive of [false, true]) {
+    if (contexts.some(c => !!c.isLive === isLive)) continue
+    const account = getEnabledAccounts(db).find(a => (Number(a.is_live) === 1) === isLive)
+    if (!account) continue
+    const credentials = (deps.credsForSide ?? ((side, id) => getCtraderCreds(db, { accountId: id, isLive: side })))(isLive, String(account.account_id))
+    contexts.push(credentials)
+  }
+  const run = deps.auditSide ?? runProtectionAuditAllAccounts
+  const results = await Promise.allSettled(contexts.map(async c => {
+    if (!c?.ready) throw new Error('protection audit: credentials unavailable for a required broker side')
+    return run(db, c, deps)
+  }))
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0,
+    targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: contexts.length === 0 }
+  for (const result of results) {
+    if (result.status === 'rejected') { out.errors.push(result.reason?.message || String(result.reason)); continue }
+    const r = result.value
+    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted']) out[key] += r[key] || 0
+    out.errors.push(...(r.errors || []))
+    out.unauditable.push(...(r.unauditable || []))
+    out.blind ||= !!r.blind
+  }
+  return out
+}
+
 export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
+  return singleFlight(`protection_audit:${baseCreds?.isLive ? 'live' : 'demo'}`, () => protectionAuditPass(db, baseCreds, deps))
+}
+
+async function protectionAuditPass(db, baseCreds, deps) {
   const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
@@ -1133,7 +1176,9 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
     // out of reach of what it repairs.
     `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.current_tp, mp.side,
             mp.entry_price, mp.account_id, mp.source,
-            t.ctrader_position_id
+            t.ctrader_position_id,
+            CASE WHEN t.account_id = mp.account_id AND t.symbol = mp.symbol AND t.status = 'open'
+                 THEN t.tp_price END AS entry_tp
        FROM monitored_positions mp
        LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL
@@ -1220,6 +1265,11 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
             restoreMod.planTargetRestore(r, { brokerSl: slByPosition.get(String(r.ctrader_position_id)) ?? null }).action === 'restore')
           .map(r => String(r.ctrader_position_id)),
       )
+      const readPosition = async (finding) => {
+        const wsReconcile = deps.wsReconcile ?? (await import('../lib/ctrader-ws.js')).wsReconcile
+        const fresh = await wsReconcile(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, 5_000, 0)
+        return (fresh?.position || []).find(p => normPosId(p?.positionId) === normPosId(finding.positionId)) || null
+      }
       const { makeTargetSuggester, makeTargetApplier } = deps.tpSuggest ?? await import('./tp-suggest.js')
       const prot = await runProtectionAudit(db, openRows, brokerSl, {
         sendMessage,
@@ -1242,14 +1292,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
           // `wsReconcile` queries the broker. Injectable for tests, so no test
           // has to reach a real socket — but the production default is the live
           // path on both engines.
-          readPosition: async (finding) => {
-            const wsReconcile = deps.wsReconcile
-              ?? (await import('../lib/ctrader-ws.js')).wsReconcile
-            const fresh = await wsReconcile(
-              creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId)
-            return (fresh?.position || [])
-              .find(p => normPosId(p?.positionId) === normPosId(finding.positionId)) || null
-          },
+          readPosition,
         }),
         applyExcludeIds: restorable,
         ...(deps.auditOpts || {}),
@@ -1290,6 +1333,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       try {
         const rowsById = new Map(openRows.map(r => [String(r.ctrader_position_id), r]))
         const fix = await restoreMod.restoreMissingTargets(db, creds, prot.targetless, rowsById, {
+          readPosition,
           ...(deps.restoreOpts || {}),
           notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
         })

@@ -1,3 +1,4 @@
+import ControllerRuntime from '../components/ControllerRuntime.jsx'
 // Desk — THE one-screen workspace: a live chart wall on top (up to 30
 // charts: 3 columns × 10 rows — open positions first, then whatever the
 // scan currently finds active; the full watchlist only fills the wall when
@@ -162,6 +163,7 @@ export default function Desk() {
   const [config, setConfig] = useState(null)
   const [broker, setBroker] = useState(null)             // selected account at the BROKER
   const [brokerHistory, setBrokerHistory] = useState(null) // broker's closed deals, 7d
+  const [controllerRuntime, setControllerRuntime] = useState(null)
   const [heartbeats, setHeartbeats] = useState(null)       // controller reliability
   const [llmSpend, setLlmSpend] = useState(null)           // token usage + est cost
   const [alphaDecay, setAlphaDecay] = useState(null)       // edge-erosion read
@@ -308,6 +310,7 @@ export default function Desk() {
       setArmed(atf)
       setConfig(c)
       setHeartbeats(hb?.controllers ?? null)
+      setControllerRuntime(hb?.runtime ?? null)
       setLlmSpend(ls)
       setAlphaDecay(ad)
       setMarketHours(mh?.hours || null)
@@ -1067,6 +1070,7 @@ export default function Desk() {
           <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">Now</span>
           <SplitFlapClock tickLive className="text-(length:--fs-body)" />
         </div>
+        <ControllerRuntime runtime={controllerRuntime} />
         {!heartbeats && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
         {heartbeats && (
           // Two-column dot grid — half the height of the old pill list; a

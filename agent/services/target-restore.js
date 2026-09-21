@@ -25,6 +25,7 @@
 
 import { recordPositionEvent } from './position-events.js'
 import { getState, setState } from '../db.js'
+import { singleFlight } from './acting-layer.js'
 
 /** How long before the same position may be retried after a failed restore. */
 const RETRY_AFTER_MS = 30 * 60_000
@@ -53,7 +54,7 @@ export function restoreEnabled(db) {
  * @returns {{action:'restore', tp:number}|{action:'skip', reason:string}}
  */
 export function planTargetRestore(row, { brokerSl = null } = {}) {
-  const tp = num(row?.current_tp)
+  const tp = num(row?.current_tp) ?? (row?.source === 'bot' ? num(row?.entry_tp) : null)
   if (tp == null || tp <= 0) {
     // The overwhelmingly common case for an externally-opened position, and
     // the one where guessing would be worst. Reported, never invented.
@@ -79,7 +80,7 @@ export function planTargetRestore(row, { brokerSl = null } = {}) {
   }
   // The stop must survive the amend, so it has to be known. amendPosition
   // would clear it otherwise — the mirror image of the defect this exists for.
-  if (num(brokerSl) == null) {
+  if (!(num(brokerSl) > 0)) {
     return { action: 'skip', reason: 'no stop known at the broker — a TP-only amend here would risk the stop' }
   }
   return { action: 'restore', tp }
@@ -104,6 +105,10 @@ function writeAttempts(db, map) {
  * @returns {{restored:number, skipped:Array<string>, errors:Array<string>}}
  */
 export async function restoreMissingTargets(db, creds, findings, rowsById, deps = {}) {
+  return singleFlight(`target_restore:${creds?.accountId ?? 'none'}`, () => restorePass(db, creds, findings, rowsById, deps))
+}
+
+async function restorePass(db, creds, findings, rowsById, deps) {
   const out = { restored: 0, skipped: [], errors: [] }
   if (!findings?.length) return out
   if (!restoreEnabled(db)) {
@@ -114,17 +119,23 @@ export async function restoreMissingTargets(db, creds, findings, rowsById, deps 
   const nowMs = deps.nowMs ?? Date.now()
   const attempts = readAttempts(db)
   let done = 0
+  let visited = 0
   const noTarget = []
 
   for (const f of findings) {
     if (done >= MAX_PER_SWEEP) {
-      out.skipped.push(`${findings.length - done} more targetless position(s) not attempted this sweep (cap ${MAX_PER_SWEEP})`)
+      out.skipped.push(`${findings.length - visited} more targetless position(s) not attempted this sweep (cap ${MAX_PER_SWEEP})`)
       break
     }
+    visited++
     const row = rowsById?.get(String(f.positionId))
     if (!row) { out.skipped.push(`${f.symbol}: no local row`); continue }
 
-    const last = num(attempts[String(f.positionId)])
+    if (row.account_id != null && String(row.account_id) !== String(creds?.accountId)) {
+      out.skipped.push(`${f.symbol}: account mismatch`); continue
+    }
+    const attemptKey = `${creds?.accountId}:${f.positionId}`
+    const last = num(attempts[attemptKey] ?? attempts[String(f.positionId)])
     if (last != null && nowMs - last < RETRY_AFTER_MS) {
       out.skipped.push(`${f.symbol}: restore attempted ${Math.round((nowMs - last) / 60_000)}m ago, waiting`)
       continue
@@ -142,19 +153,35 @@ export async function restoreMissingTargets(db, creds, findings, rowsById, deps 
       out.skipped.push(`${f.symbol}: ${plan.reason}`); continue
     }
 
-    attempts[String(f.positionId)] = nowMs
+    attempts[attemptKey] = nowMs
+    writeAttempts(db, { ...readAttempts(db), [attemptKey]: nowMs })
+    done++ // failures consume the cap too
     try {
+      const readPosition = deps.readPosition ?? (async (finding) => {
+        const { wsReconcile } = await import('../lib/ctrader-ws.js')
+        const fresh = await wsReconcile(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, 5_000, 0)
+        return fresh?.position?.find(p => String(p.positionId) === String(finding.positionId)) ?? null
+      })
+      const fresh = await readPosition(f)
+      if (!fresh || String(fresh.positionId) !== String(f.positionId)) {
+        out.skipped.push(`${f.symbol}: position not confirmed by fresh broker read`); continue
+      }
+      if (num(fresh.takeProfit) > 0) {
+        out.skipped.push(`${f.symbol}: broker already holds a target; preserved`); continue
+      }
+      if (!(num(fresh.stopLoss) > 0)) {
+        out.skipped.push(`${f.symbol}: fresh broker stop missing; refusing amend`); continue
+      }
       // BOTH LEGS, ALWAYS. The stop is re-sent alongside the target for the
       // same reason the target is re-sent alongside a stop everywhere else:
       // amend replaces. Sending the TP alone would clear the stop and turn a
       // targetless position into a naked one — this defect, inverted.
       await amend(creds, {
         positionId: parseInt(f.positionId),
-        stopLoss: Number(f.brokerSl),
+        stopLoss: Number(fresh.stopLoss),
         takeProfit: plan.tp,
         ctidTraderAccountId: row.account_id ?? creds?.accountId ?? undefined,
       })
-      done++
       out.restored++
       try {
         db.prepare("UPDATE monitored_positions SET current_tp = ? WHERE id = ? AND status = 'active'")
@@ -173,6 +200,5 @@ export async function restoreMissingTargets(db, creds, findings, rowsById, deps 
   }
 
   if (noTarget.length) out.skipped.push(`${noTarget.length} position(s) hold no target on record — nothing to restore (${noTarget.join(', ')})`)
-  writeAttempts(db, attempts)
   return out
 }

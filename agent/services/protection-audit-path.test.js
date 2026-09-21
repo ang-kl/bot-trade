@@ -383,7 +383,7 @@ test('the sweep RESTORES a lost target, not just reports it', async () => {
   const out = await runProtectionAuditAllAccounts(db, creds, {
     tpSuggest: inertTp,
     exec,
-    restoreOpts: { amend: async (_c, args) => { amends.push(args); return { executionType: 'OK' } } },
+    restoreOpts: { readPosition: async f => ({ positionId: f.positionId, stopLoss: f.brokerSl, takeProfit: null }), amend: async (_c, args) => { amends.push(args); return { executionType: 'OK' } } },
   })
   assert.equal(out.targetless, 1, 'the fault is still reported')
   assert.equal(out.targetsRestored, 1, 'and it was actually repaired')
@@ -406,7 +406,7 @@ test('a targetless position with NO recorded target is reported and left alone',
   const out = await runProtectionAuditAllAccounts(db, creds, {
     tpSuggest: inertTp,
     exec,
-    restoreOpts: { amend: async (_c, args) => { amends.push(args); return { executionType: 'OK' } } },
+    restoreOpts: { readPosition: async f => ({ positionId: f.positionId, stopLoss: f.brokerSl, takeProfit: null }), amend: async (_c, args) => { amends.push(args); return { executionType: 'OK' } } },
   })
   assert.equal(out.targetless, 1)
   assert.equal(out.targetsRestored, 0)
@@ -425,7 +425,7 @@ test('a failing restore does NOT take down the audit that found the fault', asyn
   const out = await runProtectionAuditAllAccounts(db, creds, {
     tpSuggest: inertTp,
     exec,
-    restoreOpts: { amend: async () => { throw new Error('broker said no') } },
+    restoreOpts: { readPosition: async f => ({ positionId: f.positionId, stopLoss: f.brokerSl, takeProfit: null }), amend: async () => { throw new Error('broker said no') } },
   })
   assert.equal(out.targetless, 1, 'the audit still reported')
   assert.equal(out.targetsRestored, 0)
@@ -807,7 +807,7 @@ test('a position target-restore WILL repair is still deferred to it', async () =
       makeTargetSuggester: () => async () => ({ tp: 1.13, basis: 'HVN' }),
       makeTargetApplier: () => async (f) => { amends.push(f.positionId); return { ok: true } },
     },
-    restoreOpts: { amend: async () => ({ executionType: 'OK' }) },
+    restoreOpts: { readPosition: async f => ({ positionId: f.positionId, stopLoss: f.brokerSl, takeProfit: null }), amend: async () => ({ executionType: 'OK' }) },
   })
   assert.deepEqual(amends, [], 'the recorded target is the more faithful repair')
   assert.equal(out.targetsRestored, 1)
@@ -828,7 +828,7 @@ test('the deferred set gets an OUTCOME line, so neither log line over-claims', a
     await runProtectionAuditAllAccounts(db, creds, {
       exec,
       tpSuggest: { makeTargetSuggester: () => async () => null, makeTargetApplier: () => async () => ({ ok: true }) },
-      restoreOpts: { amend: async () => { throw new Error('broker said no') } },
+      restoreOpts: { readPosition: async f => ({ positionId: f.positionId, stopLoss: f.brokerSl, takeProfit: null }), amend: async () => { throw new Error('broker said no') } },
     })
   } finally { console.log = orig }
   assert.ok(lines.some(l => /1 bot-owned \(deferred to target-restore\)/.test(l)), lines.join('\n'))

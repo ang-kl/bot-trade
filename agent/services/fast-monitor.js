@@ -613,17 +613,41 @@ export function tickShares({ sampleMs = [], skipped = 0, windowMs, everyMs }) {
  * inspector, stall check, account authorization). Exported so a test can run
  * one pass directly; startFastMonitor schedules it on its own ticker.
  */
+// Keep the in-flight promise after the caller's wait expires. A timeout must
+// not start a second copy on the next band. Locks are scoped to the database.
+const bandFlights = new WeakMap()
+export function bandSingleFlight(db, key, work) {
+  let flights = bandFlights.get(db)
+  if (!flights) { flights = new Map(); bandFlights.set(db, flights) }
+  if (flights.has(key)) return flights.get(key)
+  const pass = Promise.resolve().then(work).finally(() => {
+    if (flights.get(key) === pass) flights.delete(key)
+  })
+  flights.set(key, pass)
+  return pass
+}
+
+export async function runBandStep(db, key, work, budgetMs = 5_000) {
+  const result = await withBudget(key, budgetMs, () => bandSingleFlight(db, key, work))
+  if (result.error) throw result.error
+  if (result.value?.errors?.length) throw new Error(result.value.errors.join(' · '))
+  return result.value
+}
+
 export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()) {
   const due = deps.due ?? makeCadenceGate()
   const hbMod = deps.heartbeat ?? await import('./heartbeat.js')
+  const failures = []
+  const step = (key, work) => runBandStep(db, key, work, deps.jobBudgetMs ?? 5_000)
   // P&L drift watch — Telegram warns when an open trade crosses ±N% of
   // balance (owner audit: nothing warned on drift).
   try {
     if (creds?.ready) {
       const { runPnlWatch } = await import('./pnl-watch.js')
-      await runPnlWatch(db, creds)
+      await step('pnl_watch', () => runPnlWatch(db, creds))
     }
   } catch (err) {
+    failures.push(err.message)
     console.error('[fast-monitor] pnl-watch failed:', err.message)
   }
   // Hard per-position loss cap (owner 2026-07-28, the GOOGL −$900 case):
@@ -637,10 +661,11 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
       // position reached −$2,186 against an $800 cap because the cap was
       // never asked about that account.
       const { runLossCapAllAccounts } = await import('./loss-cap.js')
-      const lc = await runLossCapAllAccounts(db, creds)
+      const lc = await step('loss_cap', () => runLossCapAllAccounts(db, creds))
       if (lc.closes || lc.errors.length) console.log(`[fast-monitor] loss-cap: ${lc.accounts} account(s), ${lc.closes} close(s), ${lc.errors.length} error(s) ${lc.errors.join(' · ')}`)
     }
   } catch (err) {
+    failures.push(err.message)
     console.error('[fast-monitor] loss-cap failed:', err.message)
   }
   // Profit ratchet v2 (owner-approved A4, reworked 01-08): PER-ACCOUNT
@@ -649,20 +674,21 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
   try {
     if (creds?.ready) {
       const { runProfitRatchet } = await import('./profit-ratchet.js')
-      const pr = await runProfitRatchet(db, creds)
+      const pr = await step('profit_ratchet', () => runProfitRatchet(db, creds))
       for (const a of pr?.accounts || []) {
         if (a.triggered) console.log(`[fast-monitor] profit-ratchet TRIGGERED on ${a.accountId} at equity ${a.equity} — ${a.closes} close(s)`)
         else if (a.rearmed) console.log(`[fast-monitor] profit-ratchet re-armed on ${a.accountId} at equity ${a.equity}`)
       }
     }
   } catch (err) {
+    failures.push(err.message)
     console.error('[fast-monitor] profit-ratchet failed:', err.message)
   }
   // TRADE GUARDS + PROFIT KEEPER — MOVED here from the loop, not copied.
   //
   // §43 wants protection on its own path; §36.2.3 forbids duplicating an
   // ACTING one: "Two components must not unknowingly write the same stop."
-  // The protection audit only reads, so it runs on both paths deliberately.
+  // The audit also restores targets; its own lock prevents overlapping sweeps.
   // These two MOVE stops and CLOSE positions, so their LOOP call sites are
   // gone — the loop no longer runs them at all.
   //
@@ -679,6 +705,9 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
   // singleFlight means a second caller JOINS the pass in flight instead of
   // starting another. Two clocks, one pass.
   //
+  // Five-second waits bound the eight I/O steps to 40 seconds, leaving room
+  // in the default 60-second band. Work is not cancelled; a later band joins
+  // the same pending pass. This cannot bound synchronous event-loop stalls.
   // Budgeted: the loop wrapped them in runBudgetedSubPhase for the same
   // reason, and the stake is higher here because a hung pass would hold
   // the band past its cadence — which the band's own record now reports.
@@ -697,19 +726,22 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
     try {
       if (!creds?.ready) break
       const m = await import(job.mod)
-      const res = await withBudget(job.key, 45_000, () => m[job.fn](db, creds, {
+      const res = await withBudget(job.key, deps.jobBudgetMs ?? 5_000, () => bandSingleFlight(db, job.key, () => m[job.fn](db, creds, {
         notify: (text) => import('./telegram-control.js').then(t => t.notifyOwner(text)).catch(() => {}),
-      }))
+      })))
       if (res.error) {
+        failures.push(res.error.message)
         console.error(`[fast-monitor] ${job.label} failed:`, res.error.message)
         hbMod.beat(db, job.key, { ok: false, error: res.error.message })
       } else {
         const line = job.say(res.value || {})
         if (line) console.log(`[fast-monitor] ${job.label}: ${line}`)
         if (res.value?.errors?.length) console.error(`[fast-monitor] ${job.label} errors: ${res.value.errors.join(' · ')}`)
-        hbMod.beat(db, job.key, { ok: true })
+        if (res.value?.errors?.length) failures.push(...res.value.errors)
+        hbMod.beat(db, job.key, { ok: !res.value?.errors?.length, error: res.value?.errors?.join(' · ') || null })
       }
     } catch (err) {
+      failures.push(err.message)
       console.error(`[fast-monitor] ${job.label} threw:`, err.message)
       try { hbMod.beat(db, job.key, { ok: false, error: err.message }) } catch { /* heartbeat is best-effort */ }
     }
@@ -741,14 +773,16 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
   // path (§43) is not protection having an unbounded one.
   try {
     if (creds?.ready) {
-      const { runProtectionAuditAllAccounts } = await import('./naked-position-guard.js')
-      const paRes = await withBudget('protection_audit', 45_000,
-        () => runProtectionAuditAllAccounts(db, creds, deps))
+      const { runProtectionAuditBothSides } = await import('./naked-position-guard.js')
+      const paRes = await withBudget('protection_audit', deps.jobBudgetMs ?? 5_000,
+        () => bandSingleFlight(db, 'protection_audit', () => runProtectionAuditBothSides(db, creds, deps)))
       if (paRes.error) throw paRes.error
       const pa = paRes.value
       if (pa.naked || pa.targetless || pa.phantom) {
         console.warn(`[fast-monitor] protection audit: ${pa.naked} naked, ${pa.targetless} targetless, ${pa.phantom} stop disagreement(s) across ${pa.accounts} account(s)`)
       }
+      if (pa.errors.length) failures.push(...pa.errors)
+      if (pa.blind) failures.push('protection audit did not reach a required account set')
       if (pa.errors.length) console.error(`[fast-monitor] protection audit errors: ${pa.errors.join(' · ')}`)
       if (pa.unauditable.length) console.warn(`[fast-monitor] protection audit could not reach: ${pa.unauditable.join(' · ')}`)
       // BEAT ON THIS PATH TOO. The controller is what tells the operator
@@ -756,7 +790,7 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
       // path could run perfectly while the panel still read "stalled".
       //
       // An UNAUDITABLE account does not fail the beat — see
-      // runProtectionAuditAllAccounts. LOGIN-4's token does not cover it,
+      // runProtectionAuditBothSides. LOGIN-4's token does not cover it,
       // and letting that hold the controller red forever would train the
       // operator to ignore the one light that says their positions are
       // being checked.
@@ -774,13 +808,19 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
       })
     }
   } catch (err) {
+    failures.push(err.message)
     console.error('[fast-monitor] protection-audit failed:', err.message)
     try { hbMod.beat(db, 'protection_audit', { ok: false, error: err.message }) } catch { /* heartbeat is best-effort */ }
   }
   // WATCHDOG BAND. Sub-cadences gated by `due()` — see makeCadenceGate for
   // why they are not tick counts.
   try {
-    if (due('cpp_probe', 120, nowMs)) await hbMod.probeCppExec(db)
+    if (due('cpp_probe', 120, nowMs)) {
+      try { await step('cpp_probe', () => hbMod.probeCppExec(db)) } catch (err) {
+        failures.push(err.message)
+        console.error('[fast-monitor] sidecar probe failed:', err.message)
+      }
+    }
     // The log inspector (owner invariants 2-4, 31-08) runs HERE, not in
     // loop.js, deliberately: it must keep inspecting when the 5-minute
     // loop is the broken thing — the same reasoning that moved the
@@ -798,6 +838,7 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
           console.log(`[fast-monitor] log inspector: +${out.inserted} finding(s), ${out.autoApplied} auto, ${out.confirmed}/${out.falsified}/${out.expired} confirmed/falsified/expired`)
         }
       } catch (err) {
+        failures.push(err.message)
         console.error('[fast-monitor] log inspector failed:', err.message)
         try { hbMod.beat(db, 'log_inspector', { ok: false, error: err.message }) } catch { /* best effort */ }
       }
@@ -818,8 +859,10 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
       hbMod.checkAccountAuthorization(db, { notify })
     }
   } catch (err) {
+    failures.push(err.message)
     console.error('[fast-monitor] watchdog failed:', err.message)
   }
+  if (failures.length) throw new Error(failures.join(' · '))
 }
 
 /**

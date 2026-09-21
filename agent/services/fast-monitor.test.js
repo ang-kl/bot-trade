@@ -283,7 +283,7 @@ test('the protection audit runs under the same band budget as every other job', 
     .split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n')
   assert.equal(src.includes('// withBudget'), false, 'comment stripper works')
 
-  const i = src.indexOf('runProtectionAuditAllAccounts(db, creds, deps)')
+  const i = src.indexOf('runProtectionAuditBothSides(db, creds, deps)')
   assert.ok(i > 0, "the audit call is gone — this test's anchor is with it")
   // The call must sit inside a withBudget(...) invocation, not merely near one.
   const before = src.slice(Math.max(0, i - 400), i)
@@ -364,4 +364,39 @@ test('the tick-path record is throttled to once per TICK_RECORD_MIN_MS (the firs
   const third = JSON.parse(getState(db, PASS_RECORD_KEY))
   assert.notEqual(third.at, first.at, 'past the throttle it is')
   stop()
+})
+
+
+test('a timed-out band step joins its in-flight work instead of duplicating it', async () => {
+  const { runBandStep } = await import('./fast-monitor.js')
+  const db = {}
+  let release, calls = 0
+  const work = () => { calls++; return new Promise(resolve => { release = resolve }) }
+  await assert.rejects(runBandStep(db, 'slow', work, 5), /budget/)
+  await assert.rejects(runBandStep(db, 'slow', work, 5), /budget/)
+  assert.equal(calls, 1)
+  assert.equal(await runBandStep(db, 'independent', async () => 'checked', 50), 'checked')
+  release('done')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(await runBandStep(db, 'slow', async () => 'next pass', 50), 'next pass')
+})
+
+test('band steps surface returned operation errors as failures', async () => {
+  const { runBandStep } = await import('./fast-monitor.js')
+  await assert.rejects(runBandStep({}, 'failure', async () => ({ errors: ['broker rejected'] })), /broker rejected/)
+})
+
+
+test('a failed sidecar probe cannot skip the protection watchdog', async () => {
+  const { runProtectionBand } = await import('./fast-monitor.js')
+  const checked = []
+  await assert.rejects(runProtectionBand({}, { ready: false }, {
+    due: key => key !== 'log_inspector',
+    heartbeat: {
+      probeCppExec: async () => { throw new Error('probe unavailable') },
+      checkHeartbeats: () => checked.push('heartbeats'),
+      checkAccountAuthorization: () => checked.push('accounts'),
+    },
+  }), /probe unavailable/)
+  assert.deepEqual(checked, ['heartbeats', 'accounts'])
 })
