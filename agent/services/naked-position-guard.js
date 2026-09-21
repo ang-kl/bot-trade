@@ -80,6 +80,7 @@ import { getState, setState } from '../db.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { recordedTargetFor } from './target-restore.js'
 import { normPosId } from '../lib/pos-id.js'
+import { protectionFailure, repairFailures, recordRepairFailure, sameRefusedTarget, retainUnresolvedRepairs } from './protection-repair-state.js'
 
 /** Alert at most this often per position, so a persistent gap does not spam. */
 const MUTE_MS = Math.max(60_000, Number(process.env.NAKED_ALERT_MUTE_MS) || 3600_000)
@@ -593,6 +594,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
         workedThisPass++
         const s = await getSuggestion(f)
         if (!s) { noSuggestion.add(f); continue }
+        if (sameRefusedTarget(repairFailures(db, accountId)[pid], s.tp)) { applyFailed.add(f); continue }
         try {
           const r = await applyTarget(f, s)
           if (r && r.ok) {
@@ -602,6 +604,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
             console.log(`[protection] ${accountId ?? '?'}: target SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp} (${s.basis})`)
           } else {
             applyFailed.add(f)
+            recordRepairFailure(db, accountId, f, s.tp, r || protectionFailure('applier returned no reason'), nowMs)
             console.log(`[protection] ${accountId ?? '?'}: target NOT SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp}; retryable=${r?.retryable === true}; ${String(r?.error || 'applier returned no reason').replace(/[\r\n]+/g, ' ').slice(0, 600)}`)
             // `retryable` marks a refusal about REACHING the broker. The
             // applier is the only layer that can tell those apart, so it says
@@ -609,11 +612,11 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
             if (r && r.retryable) backOffApply(pid)
           }
         } catch (error) {
-          // A throw is always transient from here: nothing was established
-          // about the position, so nothing justifies a six-hour silence.
+          const failure = protectionFailure(error)
           applyFailed.add(f)
-          backOffApply(pid)
-          console.log(`[protection] ${accountId ?? '?'}: target NOT SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp}; retryable=true; ${String(error?.message || error).replace(/[\r\n]+/g, ' ').slice(0, 600)}`)
+          recordRepairFailure(db, accountId, f, s.tp, failure, nowMs)
+          if (failure.retryable) backOffApply(pid)
+          console.log(`[protection] ${accountId ?? '?'}: target NOT SET on ${f.symbol} (position ${f.positionId}) — TP ${s.tp}; retryable=${failure.retryable}; ${String(error?.message || error).replace(/[\r\n]+/g, ' ').slice(0, 600)}`)
         }
       }
     }
@@ -752,6 +755,9 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       setState(db, muteKeyFor(accountId, LOG_STATE_KEY), JSON.stringify(logMutes))
     } catch { /* non-fatal */ }
 
+    const repairState = retainUnresolvedRepairs(db, accountId, openRows
+      .filter(row => !(brokerPositions || []).some(p => String(p.positionId) === String(row.ctrader_position_id) && Number(p.takeProfit) > 0))
+      .map(row => row.ctrader_position_id))
     // ¶D·2 — the audit must never simply go quiet. See recordAuditUnavailable.
     try {
       setState(db, auditKeyFor(accountId), JSON.stringify({
@@ -767,7 +773,8 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
           const target = recordedTargetFor(row)
           const recorded = target > 0 ? target : null
           return { positionId: String(f.positionId), symbol: f.symbol,
-            recordedTarget: recorded, resolution: recorded == null ? 'target_decision_required' : 'recorded_target_available' }
+            recordedTarget: recorded, repairFailure: repairState[String(f.positionId)] ?? null,
+            resolution: repairState[String(f.positionId)]?.resolution ?? (recorded == null ? 'target_decision_required' : 'recorded_target_available') }
         }),
         phantom: audit.phantom.length,
         tpDrift: audit.tpDrift.length,

@@ -14,20 +14,16 @@
 // cannot invent a level, cannot move an existing one, and cannot act on a
 // position it has no record of.
 //
-// ON A TARGET THE PRICE HAS ALREADY PASSED. cTrader's position snapshot
-// carries no current price, so this cannot know whether the market is already
-// beyond the recorded target; if it is, the broker fills it on the next tick.
-// That is not a hazard, it is the point: the counterfactual is a target that
-// was never deleted, in which case the position would ALREADY have closed
-// there. Restoring reproduces the world the deletion took away. What it must
-// never do is close a position at a level the bot never chose — hence the
-// record-only rule above and the direction check below.
+// A target already crossed by the market may be REFUSED by cTrader. Record
+// that broker refusal for an exit-policy decision; do not pretend restoration
+// closes the position and do not repeat the same invalid request indefinitely.
 // ---------------------------------------------------------------------------
 
 import { recordPositionEvent } from './position-events.js'
 import { getState, setState } from '../db.js'
 import { singleFlight } from './acting-layer.js'
 import { isOurs, SOURCES } from '../lib/trade-labels.js'
+import { protectionFailure, repairFailures, recordRepairFailure, sameRefusedTarget } from './protection-repair-state.js'
 
 /** How long before the same position may be retried after a failed restore. */
 const RETRY_AFTER_MS = 30 * 60_000
@@ -167,6 +163,9 @@ async function restorePass(db, creds, findings, rowsById, deps) {
       out.skipped.push(`${f.symbol}: ${plan.reason}`); continue
     }
 
+    if (sameRefusedTarget(repairFailures(db, creds?.accountId)[String(f.positionId)], plan.tp)) {
+      out.skipped.push(`${f.symbol}: broker refused recorded target ${plan.tp}; protection price decision required`); continue
+    }
     attempts[attemptKey] = nowMs
     writeAttempts(db, { ...readAttempts(db), [attemptKey]: nowMs })
     done++ // failures consume the cap too
@@ -190,12 +189,18 @@ async function restorePass(db, creds, findings, rowsById, deps) {
       // same reason the target is re-sent alongside a stop everywhere else:
       // amend replaces. Sending the TP alone would clear the stop and turn a
       // targetless position into a naked one — this defect, inverted.
-      await amend(creds, {
+      const result = await amend(creds, {
         positionId: parseInt(f.positionId),
         stopLoss: Number(fresh.stopLoss),
         takeProfit: plan.tp,
         ctidTraderAccountId: row.account_id ?? creds?.accountId ?? undefined,
       })
+      if (result?.error || result?.rawError || result?.alreadyClosed) {
+        const failure = protectionFailure(result.error || result.rawError || result.reason || 'position already closed', { retryableUnknown: false })
+        recordRepairFailure(db, creds?.accountId, f, plan.tp, failure, nowMs)
+        out.errors.push(`${f.symbol}: ${failure.error}`)
+        continue
+      }
       out.restored++
       try {
         db.prepare("UPDATE monitored_positions SET current_tp = ? WHERE id = ? AND status = 'active'")
@@ -209,6 +214,7 @@ async function restorePass(db, creds, findings, rowsById, deps) {
       })
       deps.notify?.(`🎯 ${f.symbol}: take profit restored to ${plan.tp} — the broker was holding none`)
     } catch (err) {
+      recordRepairFailure(db, creds?.accountId, f, plan.tp, protectionFailure(err), nowMs)
       out.errors.push(`${f.symbol}: ${err?.message || err}`)
     }
   }
