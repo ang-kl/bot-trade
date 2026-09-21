@@ -39,6 +39,8 @@ struct TrailSpec {
   double peakPrice = 0;      // best exit-side price seen (Node seeds, ticks advance)
   double lastSl = 0;         // last known broker SL (0 = none yet)
   bool hasSl = false;
+  double currentTp = 0;      // broker TP1 to preserve on a replacing amend
+  bool hasTp = false;
   int digits = 5;            // symbol price precision for rounding
   double pendingSl = 0;      // computed target awaiting the worker (0 = none)
 };
@@ -88,5 +90,6 @@ private:
   std::atomic<long long> amendsFailed_{0};
   // Specs the last configure() refused for naming no account — see configure().
   std::atomic<long long> specsDroppedNoAccount_{0};
+  std::atomic<long long> specsDroppedNoTarget_{0};
   class DecisionRing* ring_ = nullptr;
 };

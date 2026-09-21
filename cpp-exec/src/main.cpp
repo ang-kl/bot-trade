@@ -1107,7 +1107,7 @@ int main(int argc, char** argv) {
   // the full tracked set here every pass; this engine only executes the
   // ratchet at tick speed between pushes. Body:
   //   {positions: [{positionId, ctidTraderAccountId, symbolId, dir,
-  //                 trailDistance, peakPrice?, currentSl?, digits?}]}
+  //                 trailDistance, peakPrice?, currentSl?, currentTp, digits?}]}
   // Full replace: positions absent from the push stop tick-trailing.
   server.route("POST", "/trail-config", [&trailEngine, &spotFeed, &vpoMtx, trailTickEnabled](const HttpRequest& req) -> HttpResponse {
     if (!trailTickEnabled)
@@ -1132,8 +1132,10 @@ int main(int argc, char** argv) {
       s.peakPrice = p.get("peakPrice").asNumber(0);
       const jsn::Value& sl = p.get("currentSl");
       if (sl.isNumber()) { s.lastSl = sl.asNumber(0); s.hasSl = true; }
+      const jsn::Value& tp = p.get("currentTp");
+      if (tp.isNumber() && tp.asNumber(0) > 0) { s.currentTp = tp.asNumber(0); s.hasTp = true; }
       s.digits = static_cast<int>(p.get("digits").asNumber(5));
-      const bool valid = posId > 0 && s.symbolId > 0 && s.trailDist > 0 &&
+      const bool valid = posId > 0 && s.symbolId > 0 && s.trailDist > 0 && s.hasTp &&
                          (dirN == 1 || dirN == -1);
       if (valid) specs.emplace_back(posId, s);
       else ++rejected;
@@ -1317,7 +1319,7 @@ int main(int argc, char** argv) {
     if (v.get("degraded").isString() && !v.get("degraded").asString().empty())
       decisionRing.log("guard", "degraded", 0, 0, v.get("halt").asBool(false) ? "halt" : "", v.get("degraded").asString());
     if (v.get("requireBracket").isBool()) engine.guard().setRequireBracket(v.get("requireBracket").asBool());
-    if (v.get("requireTarget").isBool()) engine.guard().setRequireTarget(v.get("requireTarget").asBool());
+    if (v.get("requireTarget").isBool()) engine.guard().setRequireTarget(true);
     if (v.get("maxOrderVolume").isNumber()) engine.guard().setMaxOrderVolume(v.get("maxOrderVolume").asNumber());
     // Per-account halts (2026-08-31 supervision plan): FULL REPLACE, because
     // Node's guard sync derives the whole desired set declaratively on every

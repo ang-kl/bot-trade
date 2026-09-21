@@ -72,8 +72,8 @@ static void test_halt_outranks_missing_account() {
   assert(v.reason.find("guard_halt") != std::string::npos);
 }
 
-// A pending LIMIT order is exempt from the bracket rules but NOT from naming its
-// account — routing is not a risk policy that a pending order gets to skip.
+// Missing account is reported first; once routed, a pending LIMIT still needs
+// its complete bracket because it can fill asynchronously.
 static void test_pending_order_still_needs_an_account() {
   OrderGuard g;
   jsn::Value o{jsn::Object{}};
@@ -83,6 +83,9 @@ static void test_pending_order_still_needs_an_account() {
   assert(!v.ok);
   assert(v.reason.find("guard_no_account") != std::string::npos);
   o.set("ctidTraderAccountId", 4001.0);
+  assert(!validateOrder(o, g.snapshot()).ok);
+  o.set("relativeStopLoss", 500.0);
+  o.set("relativeTakeProfit", 500.0);
   assert(validateOrder(o, g.snapshot()).ok);
 }
 
@@ -115,7 +118,11 @@ static void test_allow_naked_override() {
   OrderGuard g;
   jsn::Value o = marketOrder(false, 100, false); // no stop, no target
   o.set("allowNaked", true);
-  assert(validateOrder(o, g.snapshot()).ok); // explicit override honoured for both
+  OrderVerdict v = validateOrder(o, g.snapshot());
+  assert(!v.ok); // the stop waiver must not waive mandatory TP1
+  assert(v.reason.find("guard_no_target") != std::string::npos);
+  o.set("relativeTakeProfit", 500.0);
+  assert(validateOrder(o, g.snapshot()).ok); // explicit stop waiver, TP1 present
 }
 
 static void test_absolute_stop_and_target_count_as_bracket() {
@@ -131,8 +138,49 @@ static void test_absolute_stop_and_target_count_as_bracket() {
 static void test_pending_orders_exempt() {
   OrderGuard g;
   jsn::Value o = marketOrder(false, 100, false);
-  o.set("orderType", std::string("LIMIT")); // resting order — not a naked market fill
+  o.set("orderType", std::string("LIMIT"));
+  OrderVerdict v = validateOrder(o, g.snapshot());
+  assert(!v.ok); // a resting entry can fill and must carry its protection
+  o.set("relativeStopLoss", 500.0);
+  o.set("relativeTakeProfit", 500.0);
   assert(validateOrder(o, g.snapshot()).ok);
+}
+
+static void test_stop_variants_and_numeric_enums_require_tp() {
+  OrderGuard g;
+  for (const char* type : {"STOP", "STOP_LIMIT"}) {
+    jsn::Value o = marketOrder(true);
+    o.set("orderType", std::string(type));
+    o.set("relativeTakeProfit", jsn::Value(nullptr));
+    OrderVerdict v = validateOrder(o, g.snapshot());
+    assert(!v.ok && v.reason.find("guard_no_target") != std::string::npos);
+  }
+  for (double code : {2.0, 3.0, 6.0}) {
+    jsn::Value o = marketOrder(true);
+    o.set("orderType", code);
+    o.set("relativeTakeProfit", jsn::Value(nullptr));
+    OrderVerdict v = validateOrder(o, g.snapshot());
+    assert(!v.ok && v.reason.find("guard_no_target") != std::string::npos);
+  }
+}
+
+static void test_unsupported_order_types_fail_closed() {
+  OrderGuard g;
+  for (double code : {4.0, 999.0, 2.5}) {
+    jsn::Value o = marketOrder(true);
+    o.set("orderType", code);
+    OrderVerdict v = validateOrder(o, g.snapshot());
+    assert(!v.ok && v.reason.find("guard_bad_payload") != std::string::npos);
+  }
+  for (const char* type : {"2", "UNKNOWN"}) {
+    jsn::Value o = marketOrder(true);
+    o.set("orderType", std::string(type));
+    OrderVerdict v = validateOrder(o, g.snapshot());
+    assert(!v.ok && v.reason.find("guard_bad_payload") != std::string::npos);
+  }
+  jsn::Value booleanType = marketOrder(true);
+  booleanType.set("orderType", true);
+  assert(!validateOrder(booleanType, g.snapshot()).ok);
 }
 
 static void test_halt_kill_switch() {
@@ -162,8 +210,10 @@ static void test_require_bracket_toggle() {
 
 static void test_require_target_toggle() {
   OrderGuard g;
-  g.setRequireTarget(false); // strategy explicitly disables the target requirement
-  assert(validateOrder(marketOrder(true, 100, false), g.snapshot()).ok);
+  g.setRequireTarget(false); // legacy knob cannot disable the invariant
+  assert(g.snapshot().requireTarget);
+  OrderVerdict v = validateOrder(marketOrder(true, 100, false), g.snapshot());
+  assert(!v.ok && v.reason.find("guard_no_target") != std::string::npos);
 }
 
 // Per-account halts (2026-08-31 supervision plan). The set must bind ONLY the
@@ -195,6 +245,8 @@ int main() {
   test_allow_naked_override();
   test_absolute_stop_and_target_count_as_bracket();
   test_pending_orders_exempt();
+  test_stop_variants_and_numeric_enums_require_tp();
+  test_unsupported_order_types_fail_closed();
   test_halt_kill_switch();
   test_volume_cap();
   test_require_bracket_toggle();

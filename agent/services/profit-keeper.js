@@ -643,6 +643,9 @@ async function profitKeeperPass(db, creds, deps = {}) {
             trailDistance: decision.trail.distance,
             peakPrice: decision.trail.peakPrice,
             currentSl: bp.stopLoss ?? r.current_sl ?? null,
+            // The sidecar's SL/TP amend replaces both legs. It must re-send
+            // the broker target; a targetless spec is rejected fail-closed.
+            currentTp: bp.takeProfit ?? r.current_tp ?? null,
             digits: meta.digits,
           })
         }

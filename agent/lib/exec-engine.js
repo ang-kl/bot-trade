@@ -565,9 +565,10 @@ export async function getTrailStatus(creds, { timeoutMs = 5_000 } = {}) {
 
 // Bracket guarantee, engine-agnostic (item #4). The C++ core enforces this
 // too, but the DEFAULT js path went straight to the broker — so this is the
-// parity guard: a MARKET order with no stop attached is a naked position and
-// is refused here, unless the caller explicitly sets allowNaked. Mirrors
-// cpp-exec/src/order_guard.cpp so both engines behave identically.
+// parity guard. `allowNaked` remains the explicit escape hatch for a missing
+// stop; it is NOT an escape hatch for a missing target. Owner requirement
+// 21-09-2026: every live entry carries broker-native TP1, including a resting
+// LIMIT that can fill later without another trip through this boundary.
 export function orderHasBracket(p) {
   const num = (k) => Number(p?.[k])
   return num('relativeStopLoss') > 0 || num('stopLoss') > 0
@@ -582,17 +583,18 @@ export function orderHasTarget(p) {
 }
 
 export function validateOrderBracket(p) {
-  const type = (p?.orderType || 'MARKET')
-  const isMarket = type === 'MARKET' || type === 'MARKET_RANGE'
-  if (isMarket && p?.allowNaked !== true) {
-    if (!orderHasBracket(p)) {
-      return { ok: false, reason: 'guard_naked_order: market order has no stop loss attached (set allowNaked to override)' }
+  const type = p?.orderType == null ? 'MARKET' : p.orderType
+  // cTrader callers use both names and ProtoOA numeric enum values:
+  // 1 MARKET, 2 LIMIT, 3 STOP, 5 MARKET_RANGE, 6 STOP_LIMIT.
+  const isEntry = ['MARKET', 'MARKET_RANGE', 'LIMIT', 'STOP', 'STOP_LIMIT'].includes(type) ||
+    (typeof type === 'number' && Number.isInteger(type) && [1, 2, 3, 5, 6].includes(type))
+  if (!isEntry) return { ok: false, reason: `guard_bad_payload: unsupported entry order type ${String(type)}` }
+  if (isEntry) {
+    if (!orderHasBracket(p) && p?.allowNaked !== true) {
+      return { ok: false, reason: 'guard_naked_order: entry order has no stop loss attached (set allowNaked to override)' }
     }
-    // allowNoTarget (03-09-2026): a STATED no-target bracket — the momentum
-    // book trails a stop and never holds a target, and said so on the synth.
-    // The stop guard above still applies; only the target check is waived.
-    if (!orderHasTarget(p) && p?.allowNoTarget !== true) {
-      return { ok: false, reason: 'guard_no_target: market order has no take profit attached (set allowNaked to override)' }
+    if (!orderHasTarget(p)) {
+      return { ok: false, reason: 'guard_no_target: entry order has no take profit attached; TP1 is mandatory' }
     }
   }
   return { ok: true }

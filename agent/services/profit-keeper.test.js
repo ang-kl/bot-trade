@@ -274,8 +274,8 @@ function mkKeeperDb({ keeperOptOut = 0 } = {}) {
   const tradeId = db.prepare(`SELECT id FROM trades WHERE ctrader_position_id = '9001'`).get().id
   db.prepare(`
     INSERT INTO monitored_positions
-      (symbol, side, entry_price, current_sl, status, source, trade_id, keeper_opt_out)
-    VALUES ('NATGAS', 'short', 2.8795, 2.918, 'active', 'external', ?, ?)
+      (symbol, side, entry_price, current_sl, current_tp, status, source, trade_id, keeper_opt_out)
+    VALUES ('NATGAS', 'short', 2.8795, 2.918, 1.8, 'active', 'external', ?, ?)
   `).run(tradeId, keeperOptOut)
   return db
 }
@@ -284,7 +284,7 @@ function keeperDeps() {
   return {
     exec: {
       reconcile: async () => ({
-        position: [{ positionId: 9001, price: 2.8795, stopLoss: 2.918, tradeData: { symbolId: 1, volume: 10000, tradeSide: 2 } }],
+        position: [{ positionId: 9001, price: 2.8795, stopLoss: 2.918, takeProfit: 1.8, tradeData: { symbolId: 1, volume: 10000, tradeSide: 2 } }],
       }),
     },
     ws: {
@@ -440,6 +440,7 @@ test('runProfitKeeper pushes armed trail specs to the sidecar (full replace)', a
   assert.equal(s.symbolId, 1)
   assert.equal(s.dir, -1) // short
   assert.ok(Math.abs(s.trailDistance - 0.125) < 1e-12)
+  assert.equal(s.currentTp, 1.8, 'tick trail re-sends TP1 on every replacing amend')
   assert.equal(s.digits, 3)
   assert.equal(out.trailPushed, 1)
 })

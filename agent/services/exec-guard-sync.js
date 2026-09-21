@@ -135,9 +135,9 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
   }
   haltAccounts.sort((a, b) => a - b)
 
-  const out = { halt, haltAccounts }
+  const out = { halt, haltAccounts, requireTarget: true }
   if (out_degraded) out.degraded = out_degraded
-  for (const k of ['requireBracket', 'requireTarget']) {
+  for (const k of ['requireBracket']) {
     if (typeof stored[k] === 'boolean') out[k] = stored[k]
   }
   if (Number.isFinite(Number(stored.maxOrderVolume))) out.maxOrderVolume = Number(stored.maxOrderVolume)

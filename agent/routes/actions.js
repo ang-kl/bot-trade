@@ -1540,7 +1540,10 @@ export default function actionsRouter(db, deps = {}) {
       const body = req.body || {}
       let stored = {}
       try { stored = JSON.parse(getState(db, 'exec_guard_json') || '{}') } catch { /* fresh */ }
-      for (const k of ['halt', 'requireBracket', 'requireTarget']) {
+      // Legacy clients may still post `requireTarget:false` alongside an
+      // urgent halt. Normalize it instead of rejecting the whole update.
+      stored.requireTarget = true
+      for (const k of ['halt', 'requireBracket']) {
         if (typeof body[k] === 'boolean') stored[k] = body[k]
       }
       if (body.maxOrderVolume !== undefined) {

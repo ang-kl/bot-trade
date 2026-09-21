@@ -32,7 +32,8 @@ test('derivation truth table: stored guard, 5A halt, equity trips per side', asy
   assert.equal(g0.halt, false); assert.deepEqual(g0.haltAccounts, [])
   assert.ok('111' in g0.entryEpochs, 'the demo account is fenced from epoch 0')
   assert.ok(Object.values(g0.entryEpochs).every(e => e === 0))
-  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'entryEpochs', 'tickRecord', 'tickShadow', 'tickShadowSim', 'tickEntryAccounts'])
+  assert.deepEqual(Object.keys(g0), ['halt', 'haltAccounts', 'requireTarget', 'entryEpochs', 'tickRecord', 'tickShadow', 'tickShadowSim', 'tickEntryAccounts'])
+  assert.equal(g0.requireTarget, true, 'legacy stored false cannot disable mandatory TP1')
   assert.deepEqual(g0.tickEntryAccounts, [], 'P6b: nobody places tick entries by default')
   {
     const { costs, ...flat } = g0.tickShadowSim
@@ -141,7 +142,7 @@ test('syncExecGuard pushes on diff, logs GUARD_SYNC, and stays silent in sync', 
 
   // Sidecar now reports the converged guard → NO push (absence asserted).
   const r2 = await syncExecGuard(db, exec, { isLive: false, name: 'cpp_exec_demo' },
-    { reportedGuard: { halt: false, haltAccountCount: 1, entryEpochs: pushes[0].entryEpochs }, creds: { ready: true } })
+    { reportedGuard: { halt: false, haltAccountCount: 1, requireTarget: true, entryEpochs: pushes[0].entryEpochs }, creds: { ready: true } })
   assert.equal(r2.pushed, false)
   assert.equal(pushes.length, 1, 'an in-sync sidecar gets no traffic')
 
@@ -172,7 +173,7 @@ test('AUDIT 11-09-2026 (plan §3.6): the sidecar\'s echoed epochs ACKNOWLEDGE a 
   const exec = { setExecGuard: async (_creds, cfg) => { pushes.push(cfg); return { ok: true, entryEpochs: cfg.entryEpochs } } }
   const side = { isLive: false, name: 'cpp_exec_demo' }
   // 1. a probe whose report already carries the epoch acknowledges without a push
-  const probe = await syncExecGuard(db, exec, side, { reportedGuard: { halt: false, haltAccounts: [], entryEpochs: { 111: 2, 333: 0 } }, creds: { ready: true } })
+  const probe = await syncExecGuard(db, exec, side, { reportedGuard: { halt: false, haltAccounts: [], requireTarget: true, entryEpochs: { 111: 2, 333: 0 } }, creds: { ready: true } })
   assert.equal(probe.pushed, false); assert.equal(probe.acked.length, 1); assert.equal(probe.acked[0].transitionState, 'STABLE')
   assert.equal(engineStatusFor(db, '111').effectiveEntryMode, 'TIME_BASED'); assert.equal(engineStatusFor(db, '111').fenceAckEpoch, 2)
   // 2. a new switch: the route's forced push binds it from the reply
@@ -228,7 +229,7 @@ test('P3a: an account in RECORD switches its side on; the names resolve to ids p
 
   // the diff: only against a sidecar that reports a recorder
   const desired = { halt: false, haltAccounts: [], entryEpochs: { 111: 0, 333: 0 }, tickRecord: true, tickSymbolIds: [1, 41] }
-  const base = { halt: false, haltAccountCount: 0, entryEpochs: { 111: 0, 333: 0 } } // the demo side's two registry rows, epoch 0
+  const base = { halt: false, haltAccountCount: 0, requireTarget: true, entryEpochs: { 111: 0, 333: 0 } } // the demo side's two registry rows, epoch 0
   assert.equal(guardDiffers(desired, { ...base, tick: null }), false, 'no recorder on that sidecar → nothing to converge')
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: false, subscribed: [1, 41] } }), true, 'switch differs')
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1] } }), true, 'a wanted symbol is not carried')
@@ -344,7 +345,7 @@ test('PR-L: a push with no resolved symbol OMITS the cost schedule rather than s
   requestTickObservation(db, '111', 'SHADOW')
   const side = { name: 'cpp_exec_demo', isLive: false }
   const now = Date.now()
-  const base = { halt: false, haltAccountCount: 0, entryEpochs: { 111: 0, 333: 0 } }
+  const base = { halt: false, haltAccountCount: 0, requireTarget: true, entryEpochs: { 111: 0, 333: 0 } }
   const resolve = async (_db, _creds, name) => ({ id: name === 'EURUSD' ? 1 : 41, source: 'account' })
   _resetTickResolveLogForTests(); _resetTickClassLogForTests()
 
@@ -420,7 +421,7 @@ test('19-09-2026 (checker SHOULD 2): the open positions\' symbols are pushed as 
   assert.equal(sentLive.tickSymbolIds, undefined)
   // the diff: an uncarried symbol on EITHER list is a push; both carried → quiet
   const desired = { halt: false, haltAccounts: [], entryEpochs: { 111: 0, 333: 0 }, tickRecord: true, tickSymbolIds: [1, 41], quoteSymbolIds: [2, 3] }
-  const base = { halt: false, haltAccountCount: 0, entryEpochs: { 111: 0, 333: 0 } }
+  const base = { halt: false, haltAccountCount: 0, requireTarget: true, entryEpochs: { 111: 0, 333: 0 } }
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 41] } }), true, 'an open position\'s symbol not carried → push')
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 2, 3] } }), true, 'a configured symbol not carried → push')
   assert.equal(guardDiffers(desired, { ...base, tick: { recording: true, subscribed: [1, 41, 2, 3, 7] } }), false, 'both carried → quiet (unchanged → no push)')

@@ -695,14 +695,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // 2-3 digit symbols allow and the broker rejects it (INVALID_REQUEST).
     ...(slDistance ? { relativeStopLoss: relativePoints(slDistance, symbolDigits) } : {}),
     ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, symbolDigits) } : {}),
-    // A STATED no-target bracket (momentum book: trailing stop, no target)
-    // waives the target guard. Node's exec-engine reads allowNoTarget; the
-    // C++ sidecar's order_guard knows only allowNaked (cpp-exec/src/
-    // order_guard.cpp) and refused every book market order on 03-09-2026
-    // ("order_ambiguous: guard_no_target") after the Node-only flag shipped.
-    // allowNaked is sent ONLY when a stop is attached (slDistance > 0), so
-    // the naked-order check it also waives can never be the one that mattered.
-    ...(synth.noTarget === true && !tpDistance && slDistance > 0 ? { allowNoTarget: true, allowNaked: true } : {}),
+    // No strategy may waive TP1 here. A synth without a target reaches the
+    // shared execution boundary and is refused before either engine sends it.
     // Spike protection: broker-side stop trigger method (config-gated no-op
     // when unset — see lib/order-protection.js).
     ...(await import('./lib/order-protection.js')).stopTriggerField(riskCfg),
@@ -4102,9 +4096,9 @@ async function runLoop(db) {
             symbolIdFor: async (creds, symbol) => (await (await import('./lib/ctrader-creds.js')).resolveSymbolId(db, creds, symbol)).id,
             bars: async (creds, symbolId) => (await getRegimeBars(creds, symbolId, { preferredTfs: [bookCfg.timeframe], fallbackTf: bookCfg.timeframe, count: bookCfg.atrPeriod + 10 })).bars,
             spot: (creds, symbolId) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId).catch(() => null),
-            // The book never holds a target: takeProfit null is the stated
-            // intent (a stop-only amend would clear one at the broker).
-            amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: null }),
+            // Amend replaces both protection legs. The book supplies the
+            // recorded TP1 so a trail cannot silently clear it.
+            amend: (creds, args) => exec.amendPosition(creds, { positionId: args.positionId, stopLoss: args.stopLoss, takeProfit: args.takeProfit }),
             // Price precision for the trailed stop (04-09-2026): the amend is
             // an absolute price and the broker rejects one with more decimals
             // than the symbol allows. Cached per process in lot-sizing.
