@@ -52,7 +52,7 @@ test('SHADOW admits NOTHING: not a basis, not the placing roster, not a permit',
     modeEpoch: after.modeEpoch,
     placingRoster: guard.tickEntryAccounts,
     tickIntents: intents,
-    tickAdmitted: admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum', basis: 'tick' }).ok,
+    tickRefusal: admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum', basis: 'tick' }).reason,
   }, {
     bases: ['bar'],
     effectiveEntryMode: 'TIME_BASED',
@@ -60,7 +60,7 @@ test('SHADOW admits NOTHING: not a basis, not the placing roster, not a permit',
     modeEpoch: before.modeEpoch,
     placingRoster: [],
     tickIntents: 0,
-    tickAdmitted: false,
+    tickRefusal: 'entry_mode_basis: TIME_BASED admits bar producers, tick_momentum is tick',
   }, 'observation moves the observation switch and nothing else')
 })
 
@@ -158,4 +158,42 @@ test('a restart re-reads the same record: still TIME_BASED, still no roster', ()
   assert.equal(st.admittedBases, null)
   assert.deepEqual(desiredGuardFor(db, side(true), Date.now()).tickEntryAccounts, [])
   assert.equal(tickReadinessFor(db, DEMO).ready, false)
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// The corrected remedy — the one thing this PR argues about, now falsifiable
+// ───────────────────────────────────────────────────────────────────────────
+
+test('the spool-path remedy does not tell the operator a volume is needed for shadow', () => {
+  // It said one was. It is not: TickRecorder::start() needs a creatable
+  // directory and a flock, the shadow reads the raw feed tap rather than the
+  // spool file, and a full spool stops only writeRecord. A volume matters
+  // before ARMING, because disk_reserve_clear is a PAUSE_CHECK. Without this
+  // case the old wording could be restored verbatim and every test stays green
+  // — which is what an independent check of the first draft demonstrated.
+  const db = dbWithAccount({ isLive: 1 })
+  requestTickObservation(db, DEMO, 'SHADOW')
+  setState(db, 'cpp_exec_tick_json', JSON.stringify({
+    at: new Date().toISOString(), status: { enabled: false, reason: 'TICK_SPOOL_PATH not set' },
+  }))
+  const remedy = tickReadinessFor(db, DEMO).readiness.find(c => c.check === 'shadow_strategy_running').remedy
+  assert.doesNotMatch(remedy, /a volume is needed/i, 'the false claim must not come back')
+  assert.match(remedy, /VOLUME is not needed for shadow/i)
+  assert.match(remedy, /restarts the sidecar/i, 'and the operator is told what the change costs')
+})
+
+test('a stale reading is reported as STALE, never present-tense RECORDING', () => {
+  // Every other value in the payload carries an `at`. A destination that did
+  // not would present an hour-old record as the sidecar's current state.
+  const db = dbWithAccount({ isLive: 1 })
+  requestTickObservation(db, DEMO, 'SHADOW')
+  const at = new Date(Date.now() - 60 * 60_000).toISOString()
+  setState(db, 'cpp_exec_tick_json', JSON.stringify({
+    at, status: { enabled: true, recording: true, state: 'RECORDING', spoolDir: '/data/tick', strategy: { shadow: true } },
+  }))
+  const rd = tickReadinessFor(db, DEMO).recorderDestination
+  assert.equal(rd.state, 'STALE', 'not RECORDING — the sidecar may have died an hour ago')
+  assert.equal(rd.stale, true)
+  assert.equal(rd.at, at, 'and the reading carries when it was taken')
+  assert.match(rd.reason, /too old/)
 })

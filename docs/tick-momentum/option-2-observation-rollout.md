@@ -30,12 +30,14 @@ push is silently dropped (`:1361`).
 **Why no volume.** `TickRecorder::start()` needs only a creatable directory and
 an exclusive `flock` (`tick_recorder.cpp:311-363`). The shadow reads the **raw
 feed tap**, not the spool file (`tick_tap.cpp:17-21`), and a full spool stops
-`writeRecord` alone (`:587-600`). A volume is required before **arming**, not
-before shadow, because `disk_reserve_clear` is a `PAUSE_CHECK`
-(`tick-permits.js:51`) that withholds live tick permits.
+`writeRecord` alone (`:587-600`). A volume may be required before **arming** — not before shadow — because
+`disk_reserve_clear` is a `PAUSE_CHECK` (`tick-permits.js:51`) that withholds
+live tick permits. "May": if the container filesystem happens to satisfy the
+reserve the check clears without one, which §2 below allows for. The honest
+rule is that the reserve must clear, not that a volume must exist.
 
-**Why `/data/tick` works with no volume.** `cpp-exec/entrypoint.sh:19` runs
-`mkdir -p "$TICK_SPOOL_PATH"` and `chown appuser` **as root** before dropping
+**Why `/data/tick` works with no volume.** `cpp-exec/entrypoint.sh:13` runs
+`mkdir -p "$dir"` and `chown appuser` **as root** (called for the spool at `:19`) before dropping
 privileges. cpp-acct runs the same image and root directory. (The C++ itself
 uses a single-level `::mkdir`, so without the entrypoint a multi-level path
 would fail — the entrypoint is what makes this safe.)
@@ -57,7 +59,7 @@ A Railway container filesystem is small. So the most likely steady state is:
 | `recorder_recording` | false |
 | `disk_reserve_clear` | false |
 | `shadow_strategy_running` | **true** — the shadow runs off the raw tap |
-| `shadowReady` on …3489 / …2148 / …9009 | **true** |
+| `shadowReady` on …3489 / …2148 / …9009 | **true** (predicted, not yet observed) |
 | `ready` on every account | **false** — `profile_pinned`, `replay_evidence`, `validation_stage` |
 | `entry.places` | **false** |
 | `entry.accounts` | **0** |
@@ -71,17 +73,22 @@ had room.
 (`entry-mode.js:188`, `:291`), and `ready` cannot become true without evidence
 that does not exist.
 
-### Capacity, measured not assumed
+### Capacity — PRODUCTION READINGS (not verifiable from the repo)
 
-From `/state/tick-recorder` on cpp-exec over 24 h (53 symbols):
+Every figure in this block was read from `/state/tick-recorder` on cpp-exec over
+24 h (53 symbols) on 21-09-2026. They are measurements of the running system,
+not facts about the source tree, and a reader checking this document against the
+repo alone cannot confirm them:
 
 - **12.353 events/s → 42.7 MB/day**, `dropped 0`, `gaps 0`
 - 2 GiB cap ⇒ **≈1,207 h (50 days)** of retention
 - workers 2, `consumed == dispatched`, **queue depth 0** — no backlog
 
 The live side carries 3 accounts and fewer monitored symbols, so its rate will
-be at or below this. The figure in `storage-capacity.csv` (0.83 / 3.3 / 16.6
-GB/day) is **20–400× above measurement** and should not be planned against.
+be at or below this. `storage-capacity.csv` gives 0.83 / 3.3 / 16.6 GB/day — **20–400× above what
+this recorder actually writes**. That file is not wrong: every row is stamped
+`SCENARIO_NOT_MEASURED` and assumes 20 symbols at 5/20/100 events/s. It is a
+scenario table, and the measured figure above is what to plan against.
 
 ---
 
