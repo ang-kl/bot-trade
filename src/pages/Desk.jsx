@@ -479,14 +479,14 @@ export default function Desk() {
   const gaugePositions = useMemo(() => (broker?.positions || []).map(bp => {
     const mp = monitorByPid?.get(String(bp.positionId))
     return mp
-      ? { ...bp, lastCheckAt: mp.last_check_at, lastCheckAction: mp.last_check_action, thesisStatus: mp.thesis_status, monitorSl: mp.current_sl,
+      ? { ...bp, monitorReadStatus: 'verified', lastCheckAt: mp.last_check_at, lastCheckAction: mp.last_check_action, thesisStatus: mp.thesis_status, monitorSl: mp.current_sl,
           // PHASE 1 (cockpit live-wiring): the DURABLE identity rides with the
           // row so a cockpit deep link can survive a reload — the broker id
           // alone cannot answer "which account, which db row".
           dbPositionId: mp.id, tradeId: mp.trade_id, accountId: mp.account_id }
-      : bp
+      : { ...bp, monitorReadStatus: positionsReadOk ? 'verified' : 'unverified' }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [posSig, monitorByPid])
+  }), [posSig, monitorByPid, positionsReadOk])
 
   return (
     <div className="space-y-2">
@@ -565,7 +565,8 @@ export default function Desk() {
           <ScopeDot scope={openPnlScope} />
         </>}
         summary={(() => {
-          const openPositions = broker?.positions || []
+          if (!broker) return 'UNVERIFIED - awaiting broker snapshot'
+          const openPositions = broker.positions || []
           if (openPositions.length === 0) return 'flat'
           const total = openPositions.reduce((s2, p) => {
             const v = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
@@ -586,7 +587,7 @@ export default function Desk() {
           <Segmented label="Gauge wall grid size" value={pnlGridN} onChange={pickPnlGrid}
             options={[1, 4, 8, 16].map(n => ({ value: n, label: String(n) }))} />
         </div>
-        <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} marketHours={marketHours} />
+        {broker ? <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} marketHours={marketHours} /> : <p>Broker positions not yet verified.</p>}
       </Section>
 
       {/* ---- Chart wall — full width; per-symbol candlestick charts.
@@ -1091,7 +1092,8 @@ export default function Desk() {
         id="controllers"
         title="Controllers — heartbeats"
         summary={(() => {
-          if (!heartbeats) return null
+          if (heartbeatReadError) return 'UNVERIFIED - refresh failed'
+          if (!heartbeats) return 'UNVERIFIED - awaiting reading'
           const bad = heartbeats.filter(c => c.status === 'stalled' || c.status === 'error').length
           const live = heartbeats.filter(c => c.status === 'ok' || c.status === 'warn').length
           return bad ? `${bad} STALLED/FAILING` : `${live} beating`

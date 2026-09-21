@@ -17,6 +17,8 @@
 // PROXY for "how is this trade doing right now," not a replacement for the
 // exact money number.
 import { useEffect, useState } from 'react'
+import PositionMonitorStatus from './PositionMonitorStatus.jsx'
+import { useTableClock } from '../lib/table-clock.js'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import { STRAT_SHORT } from '../lib/strategy-labels.js'
 import TradeChronograph from './TradeChronograph.jsx'
@@ -77,27 +79,9 @@ function useTileSeries(r) {
   }
 }
 
-// Minutes since an ISO timestamp, or null. Framework-free so the monitor-review
-// line reads the same everywhere.
-function minsSince(iso) {
-  if (!iso) return null
-  const t = Date.parse(iso)
-  if (!Number.isFinite(t)) return null
-  return Math.max(0, Math.round((Date.now() - t) / 60000))
-}
-
-function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClosed, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl, onOpen, onDetail = null }) {
+function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClosed, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl, monitorReadStatus, nowMs, onOpen, onDetail = null }) {
   const { ratePerMin } = useTileSeries(r)
   const pnlOk = Number.isFinite(pnl)
-  // Proof the monitor is actually reviewing THIS position (owner: "how do I know
-  // you are reviewing each one ... watch stop-loss"). Green when reviewed
-  // recently, amber when the review is stale (>15m), red when never reviewed —
-  // so a silent/stalled monitor is visible, not hidden behind a promise.
-  const reviewAge = minsSince(lastCheckAt)
-  const reviewColor = reviewAge == null ? 'var(--color-down)' : reviewAge > 15 ? 'var(--color-warning-text)' : 'var(--color-up)'
-  const reviewText = reviewAge == null
-    ? 'not yet reviewed'
-    : `reviewed ${reviewAge === 0 ? 'just now' : `${reviewAge}m ago`}${lastCheckAction ? ` · ${String(lastCheckAction).toUpperCase()}` : ''}${thesisStatus ? ` · thesis ${thesisStatus}` : ''}`
   // Attribution: bot positions carry a strategy; adopted/manual broker fills
   // don't (owner: "why missing Strategies in the open trade"). Show the short
   // strategy code when known, else flag it as an external/manual position so a
@@ -149,15 +133,8 @@ function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClose
         {pnlOk ? money(pnl) : '—'}
         <span className="text-(length:--fs-body) font-normal text-[var(--color-text-sub)] ml-1">{ratePerMin == null ? '' : `${ratePerMin >= 0 ? '+' : ''}${ratePerMin.toFixed(2)}R/min`}</span>
       </div>
-      {/* Monitor review record — the verifiable proof each position is watched. */}
-      <div className="mt-1 pt-1 border-t border-[var(--color-border)] text-(length:--fs-body) leading-tight flex items-center justify-between gap-1">
-        <span style={{ color: reviewColor }} className="truncate" title={lastCheckAt ? `Last monitor review at ${lastCheckAt}` : 'The monitor has not reviewed this position yet'}>
-          ● {reviewText}
-        </span>
-        <span className={`shrink-0 tabular-nums ${monitorSl != null ? 'text-[var(--color-text-sub)]' : 'text-[var(--color-down)]'}`} title={monitorSl != null ? 'Stop-loss the monitor is managing' : 'NO stop-loss tracked by the monitor'}>
-          {monitorSl != null ? `SL ${Number(monitorSl).toLocaleString(undefined, { maximumFractionDigits: 5 })}` : 'no SL'}
-        </span>
-      </div>
+      {side != null && <PositionMonitorStatus readStatus={monitorReadStatus} lastCheckAt={lastCheckAt}
+        lastCheckAction={lastCheckAction} thesisStatus={thesisStatus} monitorSl={monitorSl} nowMs={nowMs} />}
     </div>
   )
 }
@@ -166,6 +143,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
   const symbols = [...new Set(positions.map(p => p.symbol).filter(Boolean))]
   const ticks = useLiveTicks(symbols)
   const [selected, setSelected] = useState(null)
+  const nowMs = useTableClock(60_000)
 
   if (positions.length === 0) {
     return <p className="text-(length:--fs-body) text-[var(--color-text-sub)] py-1">Flat — no open positions.</p>
@@ -230,10 +208,10 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
     <div>
       <div className={`grid ${cols} gap-2 max-h-[70vh] overflow-y-auto overscroll-contain pr-1`}>
         {withR.map(({ p, r, pnl, marketClosed, noReason }) => (
-          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r}
+          <GaugeTile nowMs={nowMs} key={p.positionId} label={p.symbol} side={p.side} r={r}
             entry={p.entry ?? null} sl={p.monitorSl ?? p.sl ?? null} tp={p.tp1 ?? p.tp ?? null}
             price={liveMid(ticks, p.symbol) ?? p.currentPrice ?? null}
-            noReason={noReason} marketClosed={marketClosed} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl}
+            noReason={noReason} marketClosed={marketClosed} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl} monitorReadStatus={p.monitorReadStatus}
             // Owner (2026-07-25): tapping an open-trade tile must show the
             // Trade Cockpit. The WHOLE tile is the target — making only the
             // ~55px symbol label open it left every other pixel opening the
