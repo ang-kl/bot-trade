@@ -996,3 +996,7 @@ position had been amended after the fill. The prediction that followed
 
 **A diagnosis that does not predict something checkable is a guess.** Three
 guesses were published as findings before the mechanism was found.
+
+- 2026-09-22 11:53 UTC, continuation executor, partial transcript corpus:
+  last visible reply **№ 8,429**; next reply **№ 8,430**. Continued from the
+  recorded rebase and visible replies; not a full-corpus measurement.

@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
+import { scannerMirrorStatus } from '../services/scanner-candidates.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
@@ -62,6 +63,10 @@ export default function stateRouter(db) {
   // client-ping is excluded: each ping must register (it IS a write in
   // read-clothing), and the roster must stay per-second live.
   // -----------------------------------------------------------------------
+  router.get('/scanner-mirrors', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(scannerMirrorStatus(db))
+  })
   const respCache = new Map() // originalUrl → { body, etag, at }
   const STATE_CACHE_MS = Math.max(1000, Number(process.env.STATE_CACHE_MS || 10_000))
   // /sessions is excluded too: it reports a live "seen 3s ago" age, and a 10s

@@ -274,3 +274,50 @@ No storage deletion, volume/configuration mutation or process restart was made.
 Rollback owner remains Adrian Ang. Preserve each PR and deployment SHA. A revert
 also deploys all four services and requires the controlled scope/preflight in
 [the prepared rollout runbook](controlled-rollout-preparation-2026-09-22.md).
+
+
+## Continuation checkpoint — 22 September 2026, 19:53 SGT
+
+The owner directed continuation through P5 in reply №8,395B·1. Main remains
+`e8b9cd98180bc965493469c1c2f553499de2025c` at the latest repository check.
+The following packages are implemented, tested and published as **draft PRs**;
+none was merged, deployed or runtime-verified by this continuation:
+
+| Package | PR | Evidence |
+|---|---|---|
+| P2 native account-money producer | #1019 | Full local gate and PR CI passed |
+| P4 scoped monitoring/completed-work receipts | #1020 | Full local gate and PR CI passed |
+| P5 Controllers grouping | #1021 | Full local gate and PR CI passed |
+| P5 complete hourly activity | #1022 | Full local gate and PR CI passed |
+| P5 native account/cashflow history | #1023, based on #1019 | Full local gate and PR CI passed |
+| P5 independent watchdog/calendar/notification contracts | #1024 | Full local/C++ gate and PR CI passed |
+| P5 two scanner service boundaries | #1025 | Full local gate and both C++ suites; PR CI passed |
+
+This package adds a bounded, durable scanner **observation** collector. Candidate
+identity/expiry/account-feed/profile checks, restart/gap accounting, immutable
+conflict refusal and always-denied mirror admission are implemented. The collector
+runs only when explicitly invoked with registered comparison profiles and its
+own scanner credentials; no timer, config or candidate ownership was activated.
+The status route is read-only and unknown before a verified observation. See
+[scanner comparison records](scanner-candidate-records-2026-09-22.md).
+
+Validation on this package: Node 22.23.2 full suite **5,247 passed, one existing
+skip**; ESLint zero warnings; Vitest **911 passed**; production build, no-green
+and required syntax checks passed. An initial full Node run stalled in an
+existing route fixture and was stopped; the unchanged route file passed alone
+and the complete rerun passed with a 120-second per-test timeout. No assertion,
+trading threshold or gate was relaxed. The earlier native Node 24 SQLite cleanup
+crash was resolved by using CI's Node 22 major with its native SQLite build.
+
+Gateway mirror transport remains a separate uncommitted work package under
+full gate. Full timeframe strategy ports, actual producer comparison/handoff,
+scanner calendar/work integration, remaining complete reporting populations and
+ordered blockers remain executable work. P2 missing-currency risk policy, P3
+momentum TP1 semantics, P4 ownership/freshness decisions and runtime acceptance
+remain separately unresolved. The baseline timeframe C++ port is not full
+strategy parity. No new scanner is deployed.
+
+All main merges still trigger the four running services. The controlled rollout
+preflight and explicit deployment boundary therefore keep these packages draft.
+Historical broker observations are not current verification. No broker targets,
+credentials, trading modes, risk caps or research thresholds were changed.
