@@ -4,6 +4,7 @@ import express from 'express'
 import { initDB, getState, setState } from '../db.js'
 import actionsRouter from './actions.js'
 import stateRouter from './state.js'
+import { accountInputDraft, editAccountInput, accountInputPatch } from '../../src/lib/account-input-draft.js'
 
 async function server(t) {
   const db = initDB(':memory:')
@@ -83,4 +84,20 @@ test('a known non-USD deposit currency cannot be entered as a USD balance', asyn
   assert.equal((await post({ accountId: '22', balance: 100, leverage: 20 })).status, 400)
   assert.equal(getState(db, 'acct:22:account_leverage'), null, 'rejection is atomic')
   assert.equal((await post({ accountId: '22', leverage: 20 })).status, 200, 'leverage has no money unit')
+})
+
+test('a one-field form save preserves the other value refreshed by the broker after load', async t => {
+  const { db, post, read } = await server(t)
+  setState(db, 'acct:22:account_balance_usd', '100')
+  setState(db, 'acct:22:account_leverage', '20')
+  const form = accountInputDraft((await read('22')).account)
+  setState(db, 'acct:22:account_balance_usd', '75') // independent broker update
+  assert.equal((await post(accountInputPatch(editAccountInput(form, 'leverage', 30)))).status, 200)
+  assert.equal(getState(db, 'acct:22:account_balance_usd'), '75')
+  assert.equal(getState(db, 'acct:22:account_leverage'), '30')
+  const reloaded = accountInputDraft((await read('22')).account)
+  setState(db, 'acct:22:account_leverage', '50')
+  assert.equal((await post(accountInputPatch(editAccountInput(reloaded, 'balance', 0)))).status, 200)
+  assert.equal(getState(db, 'acct:22:account_balance_usd'), '0')
+  assert.equal(getState(db, 'acct:22:account_leverage'), '50')
 })
