@@ -38,7 +38,7 @@ test('recorded first reason and short-circuit evidence remain distinct from unkn
   risk('11', null, 1); risk('11', 'broken checks', 0, '{oops')
   const r = read(), records = r.records
   assert.deepEqual(Object.fromEntries(Object.entries(r.summary).map(([k,v]) => [k, v.records])), {
-    upstream_stop: 2, risk_refusal: 2, post_approval_failure: 2, approved: 1, other_stop: 2,
+    upstream_stop: 2, risk_refusal: 2, post_approval_failure: 2, approved: 1, placement_receipt: 0, other_stop: 2,
   })
   const stage = s => records.find(r => r.stage === s)
   assert.equal(stage('margin_pool').firstBlocker.reason, 'recorded first reason')
@@ -53,4 +53,54 @@ test('recorded first reason and short-circuit evidence remain distinct from unkn
 test('explicit identity and bounded reporting windows are required', t => {
   const { read } = fixture(t)
   for (const options of [{ accountId: undefined }, { accountId: '999' }, { from: NaN }, { from: now }, { limit: 201 }, { offset: -1 }, { to: now + 120_000 }]) assert.throws(() => read(options), RangeError)
+})
+
+test('placement receipts retain evidence without inflating approvals or fabricating a new risk evaluation', t => {
+  const { risk, read } = fixture(t)
+  risk('11', null, 1, '{"volume":true}')
+  for (const key of ['pending_order_placed', 'closed_market_limit_placed', 'htf_limit_placed']) {
+    risk('11', null, 1, JSON.stringify({ [key]: true, orderId: 'fixture-order' }, null, 2))
+  }
+  for (const checks of ['{"pending_order_placed":false}', '{"pending_order_placed":"true"}', '{"pending_order_placed":1}', '{"nested":{"pending_order_placed":true}}', '{broken']) {
+    risk('11', null, 1, checks)
+  }
+  risk('22', null, 1, '{"pending_order_placed":true}')
+  risk(null, null, 1, '{"pending_order_placed":true}')
+  const r = read({ limit: 2 })
+  assert.equal(r.totalRecords, 9)
+  assert.equal(r.summary.approved.records, 6)
+  assert.equal(r.summary.placement_receipt.records, 3)
+  assert.equal(r.summary.placement_receipt.recordedEvaluations, 3)
+  assert.equal(r.unattributedRecordsInWindow, 1)
+  assert.equal(read({ accountId: 'all' }).summary.placement_receipt.records, 5)
+  const receipts = read().records.filter(row => row.kind === 'placement_receipt')
+  assert.equal(receipts.length, 3)
+  for (const row of receipts) {
+    assert.equal(row.stage, 'submission_receipt')
+    assert.equal(row.firstBlocker, null)
+    assert.equal(row.disposition, 'placed')
+    assert.equal(row.diagnostics[1].status, 'not_recorded')
+    assert.equal(row.diagnostics[2].status, 'placed')
+    assert.equal(row.recordedChecks.orderId, 'fixture-order')
+  }
+})
+
+test('known upstream fences and submission-boundary caps preserve the actual gate boundary', t => {
+  const { risk, stop, read } = fixture(t)
+  for (const stage of ['regime_block', 'evidence_gate', 'producer_retired']) stop(stage)
+  stop('symbol_position_cap', '11', 'veto')
+  risk('11', 'symbol cap rejected', 0, '{"post_approval":true}')
+  const r = read()
+  assert.equal(r.summary.upstream_stop.records, 3)
+  assert.equal(r.summary.post_approval_failure.records, 2)
+  assert.equal(r.summary.other_stop.records, 0)
+  for (const row of r.records) {
+    if (row.kind === 'upstream_stop') assert.equal(row.diagnostics[1].status, 'not_evaluated')
+    else {
+      assert.equal(row.kind, 'post_approval_failure')
+      assert.equal(row.diagnostics[1].status, 'approved')
+      assert.equal(row.diagnostics[2].status, 'stopped')
+    }
+    assert.ok(row.firstBlocker.reason)
+  }
 })

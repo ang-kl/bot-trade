@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { agentConfigured, agentGet, pageAsleep } from '../lib/agent-api.js'
 
-const LABELS = { upstream_stop: 'Upstream stops', risk_refusal: 'Risk refusals', post_approval_failure: 'After-approval failures', approved: 'Risk approvals', other_stop: 'Other recorded stops' }
+const LABELS = { upstream_stop: 'Upstream stops', risk_refusal: 'Risk refusals', post_approval_failure: 'After-approval failures', approved: 'Risk approvals', placement_receipt: 'Placement receipts', other_stop: 'Other recorded stops' }
 
 export function BlockerReading({ report, error }) {
   if (!report) return <p role="status">Blocker report unavailable{error ? `: ${error}` : '.'}</p>
@@ -9,7 +9,7 @@ export function BlockerReading({ report, error }) {
     <p>{report.totalRecords} retained records in this window. {report.countBasis}</p>
     <p>{report.scopeNote} Unassigned records in the window: {report.unattributedRecordsInWindow}.</p>
     <dl className="flex flex-wrap gap-4 my-2">{Object.entries(LABELS).map(([key, label]) => <div key={key}>
-      <dt>{label}</dt><dd className="font-semibold">{report.summary[key].records} records</dd>
+      <dt>{label}</dt><dd className="font-semibold">{report.summary[key]?.records ?? 'Not recorded'} records</dd>
     </div>)}</dl>
     {report.records.length === 0 ? <p>No retained decision records in this window. This does not prove that scanning ran or found no signals.</p>
       : <div className="overflow-x-auto"><table className="w-full text-left text-(length:--fs-body)">
@@ -18,7 +18,7 @@ export function BlockerReading({ report, error }) {
           <td className="pr-3 py-2">{row.at}</td>
           <td className="pr-3">{row.accountId || 'Unattributed'} / {row.symbol || 'Account-wide'}</td>
           <td className="pr-3">{LABELS[row.kind]}<br />{row.stage}</td>
-          <td className="pr-3 max-w-md whitespace-normal">{row.firstBlocker ? row.firstBlocker.reason || 'Reason not recorded' : 'None recorded; approval does not prove a fill'}</td>
+          <td className="pr-3 max-w-md whitespace-normal">{row.firstBlocker ? row.firstBlocker.reason || 'Reason not recorded' : row.kind === 'placement_receipt' ? 'None recorded; placement does not prove a fill' : 'None recorded; approval does not prove a fill'}</td>
           <td><details><summary>Recorded checks</summary>
             <p>{row.recordId} · {row.recordedEvaluations} recorded evaluations · {row.disposition || 'No terminal disposition recorded'}</p>
             <ul>{row.diagnostics.map(d => <li key={d.stage}>{d.stage}: {d.status.replaceAll('_', ' ')}</li>)}</ul>

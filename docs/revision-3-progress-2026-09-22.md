@@ -560,3 +560,45 @@ acceptance, then scanner feed/comparison and watchdog integration. Target-policy
 changes and scanner activation remain distinct approval boundaries. The blocker
 and history implementation/acceptance evidence is recorded in
 `reporting-acceptance-2026-09-23.md`; full gate/publication is in progress.
+
+## Continuation checkpoint — 23 September 2026, 07:50 SGT
+
+Blocker reporting/history evidence changes merged in #1029 as
+`3c15b37e65fc6cfe67ce52763b39d786f1622d53`. The full local gate passed:
+5,287 agent tests with no skips, 922 frontend tests, lint/build/no-green/syntax
+and inventory. PR CI passed and all four Railway deployments succeeded.
+The 07:45 SGT seven-account audit still showed zero missing SL and the two
+pre-existing TP1 exceptions. No targets were amended.
+
+Post-merge review identified three reporting classification corrections:
+placement receipts must not inflate approvals; symbol-cap submission vetoes
+are post-approval; regime, evidence and producer-retirement fences are upstream.
+This follow-up adds structural JSON receipt classification, preserved receipt
+evidence, stage corrections and behavioural/UI regressions. Publication uses
+GitHub because the workspace is offline. The full PR CI gate is required;
+no local validation is claimed for this follow-up.
+
+Scanner feed/comparison and watchdog producer integration were implemented
+locally in `scanner-integration` on `codex/rev3-scanner-integration-20260923`,
+but remain uncommitted/unpublished at this checkpoint. Targeted integration
+tests and the tick/timeframe native tests passed; tick ThreadSanitizer passed.
+The combined agent gate returned 5,294 passes and one failure; its diagnostic
+log is inaccessible while the workspace is offline. UI/lint/build/no-green,
+syntax and inventory passed. The gateway C++ command exited 2 and needs log
+inspection; verifier tests passed before its latest source edit, so that edit
+needs revalidation. These are not a passing final integration gate.
+
+Recovery must inspect `gates/scanner/agent.log` and `gateway-cpp.log`, preserve
+the uncommitted work, integrate this reporting correction, finish the native
+and sanitizer gates, then publish/merge and verify deployments. The scanner
+work includes bounded off-thread bar/comparison polling, actual native tick
+comparison inputs, account/feed/profile identity, retained comparison evidence,
+scanner/calendar/completed-work producers, gateway receipts, watchdog no-order
+evidence and an external observer with a manual-only CI workflow. No scanner
+bridge, new scanner service, target policy or outbound notification was activated.
+
+Authenticated production reporting/history acceptance remains outstanding.
+Before the workspace outage, the browser showed the disconnected-agent screen.
+Fixtures and deployment success do not establish real-account cashflow/history
+or retention acceptance. Target-policy changes and scanner activation remain
+the owner's distinct approval boundaries.

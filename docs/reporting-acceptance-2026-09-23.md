@@ -32,3 +32,15 @@ Production acceptance is not complete: the available browser session is not
 connected to the agent. Its unavailable state was observed; authenticated real
 account API/UI and mounted retention/cashflow coverage still need readback.
 Fixture results must not be represented as production history acceptance.
+
+Post-merge classification review: successful pending, closed-market and HTF
+placement receipts are retained as `placement_receipt`, outside risk-approval
+totals. A receipt proves recorded placement, not a fill or a second gate
+evaluation. JSON boolean checks are parsed structurally. The submission-boundary
+`symbol_position_cap` is a post-approval failure; the established
+`regime_block`, `evidence_gate` and `producer_retired` stages are upstream.
+Fixture regressions cover these cases, account scope, pagination and rendering.
+
+The workspace disconnected during the scanner integration gate on 23 September.
+These reporting corrections are therefore published through GitHub and require
+the full PR CI gate; no local execution is claimed for this follow-up.
