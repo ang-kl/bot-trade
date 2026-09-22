@@ -1,6 +1,7 @@
 import { viewedAccountId } from '../lib/selected-account.js'
 import { createBrokerViewGuard } from '../lib/broker-view.js'
 import ControllerRuntime from '../components/ControllerRuntime.jsx'
+import ControllerGroups from '../components/ControllerGroups.jsx'
 // Desk — THE one-screen workspace: a live chart wall on top (up to 30
 // charts: 3 columns × 10 rows — open positions first, then whatever the
 // scan currently finds active; the full watchlist only fills the wall when
@@ -1090,7 +1091,7 @@ export default function Desk() {
           Telegram; this panel is the always-on visual. */}
       <Section
         id="controllers"
-        title="Controllers — heartbeats"
+        title="Controllers — services and completed work"
         summary={(() => {
           if (heartbeatReadError) return 'UNVERIFIED - refresh failed'
           if (!heartbeats) return 'UNVERIFIED - awaiting reading'
@@ -1108,57 +1109,7 @@ export default function Desk() {
         </div>
         {heartbeatReadError && <p role="status" className="text-(length:--fs-body) text-[var(--color-warning-text)]">{heartbeatReadError}</p>}
         <ControllerRuntime runtime={controllerRuntime} />
-        {!heartbeats && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
-        {heartbeats && (
-          // Two-column dot grid — half the height of the old pill list; a
-          // healthy controller earns a dot, only trouble earns words.
-          <ul className="text-(length:--fs-body) grid gap-x-6 sm:grid-cols-2">
-            {heartbeats.map(c => {
-              const dot = c.status === 'ok' ? 'var(--color-accent)' : c.status === 'warn' ? '#c2410c' : c.status === 'idle' ? '#94a3b8' : 'var(--color-down)'
-              return (
-                // An idle row has two very different causes and the grey dot reads
-                // the same for both: never armed, or nothing to serve. The second
-                // arrived here as ERROR with a climbing failure count until 08-08,
-                // so it earns its own words.
-                <li key={c.name} className="flex items-baseline gap-1.5 min-w-0 py-px" title={c.status === 'idle' ? (c.dormant ? c.last_error : 'never ran (not armed / not applicable)') : `${c.status} · last beat ${c.last_run_at ?? '—'} · ${c.age_sec ?? '?'}s ago`}>
-                  <span aria-hidden="true" style={{ color: dot }}>●</span>
-                  <span className="font-semibold shrink-0">{c.label}</span>
-                  {(c.status === 'stalled' || c.status === 'error' || c.consecutive_failures > 0) && (
-                    <span className="text-[var(--color-down)] truncate">
-                      {/* `error_is_current === false` means the controller has
-                          since run clean and last_error is history. Printing it
-                          bare put `CH_CLIENT_AUTH_FAILURE — clientId or
-                          clientSecret is incorrect` (a 03:02 UTC fault, long
-                          resolved) beside a live stall on 22-08, which sent the
-                          diagnosis at the wrong credential for an hour.
-                          AgentHealthPanel.jsx has honoured this flag since
-                          04-08; these two readers never got the fix. */}
-                      {c.status.toUpperCase()}{c.consecutive_failures > 0 ? ` · ${c.consecutive_failures} failing` : ''}{c.last_error ? (c.error_is_current === false ? ` · last error (resolved): ${c.last_error}` : ` · ${c.last_error}`) : ''}
-                    </span>
-                  )}
-                  {/* Owner: "I need to know you are active ... not a feature or
-                      blinking, show that network interaction" — a relative
-                      timestamp alone can look static between polls; the run
-                      COUNT only ever climbs, so it's undeniable proof this
-                      controller keeps firing, not a hardcoded dot. Last-beat
-                      time now renders as a split-flap HH:MM:SS (airport-board
-                      flip on change) instead of a plain "ago" string. */}
-                  <span className="ml-auto flex items-center gap-1.5 text-[var(--color-text-sub)] shrink-0">
-                    {c.status === 'idle'
-                      ? 'idle'
-                      : <>
-                          <SplitFlapClock iso={c.last_run_at} title={`last beat ${c.last_run_at ?? '—'} (${ago(c.last_run_at)} ago)`} />
-                          <span>· {(c.runs ?? 0).toLocaleString()} runs</span>
-                        </>}
-                  </span>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
-          A beat means the controller's code ran (even if it chose to do nothing). Stalls alert on Telegram once, and once again on recovery.
-        </p>
+        <ControllerGroups controllers={heartbeats} />
       </Section>
 
       {/* LLM spend — the no-bill-shock dashboard: real token usage priced

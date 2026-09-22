@@ -79,7 +79,7 @@ export function aggregateAccounts(cards) {
   const rows = Array.isArray(cards) ? cards : []
   const byCcy = new Map()
   for (const c of rows) {
-    const key = c.ccy || '—'
+    const key = c.moneyVerified === false ? `Account ${c.id} · unverified units` : c.ccy || '—'
     if (!byCcy.has(key)) byCcy.set(key, [])
     byCcy.get(key).push(c)
   }
@@ -107,7 +107,7 @@ export function aggregateAccounts(cards) {
       cap,
       lossToday,
       // Σloss / Σcap — never the mean of the per-account percentages.
-      usedPct: cap && cap > 0 ? Math.min(100, Math.round(lossToday / cap * 100)) : null,
+      usedPct: list.every(r => r.moneyVerified !== false) && cap && cap > 0 ? Math.min(100, Math.round(lossToday / cap * 100)) : null,
       hasToday: list.some(r => r.hasToday),
     }
   }).sort((a, b) => (n(b.bal) ?? -Infinity) - (n(a.bal) ?? -Infinity))

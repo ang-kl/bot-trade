@@ -1,3 +1,4 @@
+import { performanceCurve } from '../lib/performance-curve.js'
 // ReportChart — rebuilt 2026-07-25 after the owner asked whether the old
 // control set made sense to a reader. My answer was no, and this is the
 // consequence.
@@ -42,7 +43,6 @@ const W = 860
 const EQ_H = 150, DEC_H = 76, PL = 58, PR = 18, PT = 14, PB = 26
 const CHART_MAX_W = 900
 const GRID = 'var(--color-text-sub)' // gridlines: visible, but at low opacity
-const DAY = 86_400_000
 
 // Four ranges, not eight. Add more when there is history that distinguishes
 // them — a pill that renders the same chart as its neighbour is noise.
@@ -52,7 +52,6 @@ function fmtN(v, d = 2) {
   if (v == null || Number.isNaN(v)) return '—'
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: d })
 }
-const dayKey = (iso) => String(iso || '').slice(0, 10)
 const shortDate = (ms) => new Date(ms).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })
 const NICE = [1, 2, 5]
 function niceCeil(v) {
@@ -71,59 +70,13 @@ function niceTicks(lo, hi, target = 4) {
   return out.length >= 2 ? out : [lo, hi]
 }
 
-export default function ReportChart({ allTrades, events, daily }) {
+export default function ReportChart({ populationReport, accountId = 'all', daily }) {
   const [range, setRange] = useState('30D')
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
 
-  const model = useMemo(() => {
-    const rangeDays = RANGE_DAYS[range]
-    const cutoff = rangeDays == null ? 0 : Date.now() - rangeDays * DAY
-    const days = new Map()
-    const bucket = (k) => {
-      if (!days.has(k)) days.set(k, { t: new Date(k).getTime(), approved: 0, vetoed: 0, pnl: 0 })
-      return days.get(k)
-    }
-    // Decision counts: prefer the server-side daily aggregate — the raw
-    // risk-events page is capped at a few hundred rows, which on a busy
-    // agent spans MINUTES, not days, and made this panel a sliver of today.
-    if (Array.isArray(daily) && daily.length > 0) {
-      for (const d of daily) {
-        const k = dayKey(d.day)
-        if (!k || new Date(k).getTime() < cutoff) continue
-        const b = bucket(k)
-        b.approved += Number(d.approved) || 0
-        b.vetoed += Number(d.vetoed) || 0
-      }
-    } else {
-      for (const e of events || []) {
-        const k = dayKey(e.created_at)
-        if (!k || new Date(k).getTime() < cutoff) continue
-        const b = bucket(k)
-        if (e.approved) b.approved++; else b.vetoed++
-      }
-    }
-    for (const t of allTrades) {
-      // trades rows carry net_pnl — the old `t.pnl` read matched NOTHING, so
-      // the equity panel summed an empty set and drew a flat zero line.
-      const pnl = t.net_pnl ?? t.pnl
-      const k = dayKey(t.closed_at)
-      if (!k || pnl == null || t.status !== 'closed' || new Date(k).getTime() < cutoff) continue
-      bucket(k).pnl += Number(pnl)
-    }
-    const rows = [...days.values()].sort((a, b) => a.t - b.t)
-    // Equity, its running high-water mark, and the gap between them. The gap
-    // IS the drawdown — the thing the old chart never showed.
-    let eq = 0, peak = 0
-    for (const r of rows) {
-      eq += r.pnl
-      peak = Math.max(peak, eq)
-      r.equity = eq
-      r.peak = peak
-      r.dd = eq - peak // ≤ 0
-    }
-    return rows
-  }, [allTrades, events, daily, range])
+  const curve = useMemo(() => performanceCurve(populationReport, accountId, daily, RANGE_DAYS[range]), [populationReport, accountId, daily, range])
+  const model = curve.rows
 
   const hasData = model.length >= 1
   // 1–2 active days: dots, no path. Two points joined by a line is a straight
@@ -178,9 +131,9 @@ export default function ReportChart({ allTrades, events, daily }) {
   return (
     <Card>
       <div className="flex flex-wrap items-baseline gap-2 mb-1">
-        <h2 className="text-(length:--fs-h) font-extrabold text-[var(--color-accent)]">Equity &amp; Drawdown · Decisions per Day chart</h2>
+        <h2 className="text-(length:--fs-h) font-extrabold text-[var(--color-accent)]">Recorded realised P&amp;L · Decisions per Day chart</h2>
         <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-          top: where the account is against its own high-water mark · bottom: what the bot decided, and how much it refused
+          top: cumulative recorded realised P&L from zero in this range · bottom: recorded daily decisions (up to 90 days)
         </span>
         <div className="ml-auto">
           <Segmented label="Chart range" value={range} onChange={setRange}
@@ -190,21 +143,21 @@ export default function ReportChart({ allTrades, events, daily }) {
 
       {hasData && (
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-1 text-(length:--fs-body)">
-          <span className="text-[var(--color-text-sub)]">max drawdown in range <span className="tabular-nums" style={{ color: 'var(--color-down)' }}>{totals.maxDd < 0 ? fmtN(totals.maxDd) : '—'}</span></span>
-          <span className="text-[var(--color-text-sub)]">{totals.decisions} decisions · <span className="tabular-nums">{totals.vetoPct == null ? '—' : `${totals.vetoPct}% vetoed`}</span></span>
+          <span className="text-[var(--color-text-sub)]">daily realised-P&L drawdown in range <span className="tabular-nums" style={{ color: 'var(--color-down)' }}>{curve.moneyAvailable ? fmtN(totals.maxDd) : '—'}</span></span>
+          <span className="text-[var(--color-text-sub)]">{curve.decisionState === 'unavailable' ? 'Daily decisions unavailable' : `${totals.decisions} recorded decisions · ${totals.vetoPct == null ? '—' : totals.vetoPct + '% vetoed'}`}</span>
         </div>
       )}
 
       {!hasData && (
         <div className="text-(length:--fs-body) text-[var(--color-text-sub)] py-6">
-          No activity in this range — this draws from the bot&apos;s decisions and closed trades. Widen the range to see more.
+          {populationReport ? 'No recorded closes or supplied daily decisions in this range.' : 'Performance evidence unavailable.'}
         </div>
       )}
 
       {hasData && (
         <div className="relative overflow-x-auto" style={{ maxWidth: CHART_MAX_W }}>
           <svg ref={svgRef} viewBox={`0 0 ${W} ${EQ_H + DEC_H + 6}`} className="w-full min-w-[680px] select-none" role="img"
-            aria-label="equity, drawdown and daily decisions" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+            aria-label="recorded realised profit, daily drawdown and decisions" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
             <defs>
               <linearGradient id="rcDd" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="var(--color-down)" stopOpacity="0.26" />
@@ -213,7 +166,7 @@ export default function ReportChart({ allTrades, events, daily }) {
             </defs>
 
             {/* ---- equity panel ---- */}
-            {geom.ticksE.map(t => (
+            {curve.moneyAvailable && geom.ticksE.map(t => (
               <g key={t.y}>
                 <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke={GRID} strokeWidth="1" opacity={t.zero ? 0.55 : 0.22} strokeDasharray={t.zero ? '5 4' : undefined} />
                 <line x1={PL - 4} x2={PL} y1={t.y} y2={t.y} stroke="var(--color-text-sub)" strokeWidth="1" />
@@ -224,17 +177,17 @@ export default function ReportChart({ allTrades, events, daily }) {
               <line key={`v${r.t}`} x1={geom.X(r.t)} x2={geom.X(r.t)} y1={PT} y2={EQ_H - PB}
                 stroke={GRID} strokeWidth="1" opacity="0.16" strokeDasharray="2 4" />
             ))}
-            {!sparse && <path d={geom.ddArea} fill="url(#rcDd)" />}
-            {!sparse && <path d={geom.peakPath} fill="none" stroke="var(--color-text-sub)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8" />}
-            {!sparse && <path d={geom.eqPath} fill="none" stroke="var(--color-accent)" strokeWidth="2.4" strokeLinejoin="round" />}
-            {sparse && model.map(r => <circle key={r.t} cx={geom.X(r.t)} cy={geom.Ye(r.equity)} r="4" fill="var(--color-accent)" />)}
+            {curve.moneyAvailable && !sparse && <path d={geom.ddArea} fill="url(#rcDd)" />}
+            {curve.moneyAvailable && !sparse && <path d={geom.peakPath} fill="none" stroke="var(--color-text-sub)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8" />}
+            {curve.moneyAvailable && !sparse && <path d={geom.eqPath} fill="none" stroke="var(--color-accent)" strokeWidth="2.4" strokeLinejoin="round" />}
+            {curve.moneyAvailable && sparse && model.map(r => <circle key={r.t} cx={geom.X(r.t)} cy={geom.Ye(r.equity)} r="4" fill="var(--color-accent)" />)}
             <line x1={PL} x2={PL} y1={PT} y2={EQ_H - PB} stroke="var(--color-text-sub)" strokeWidth="1" />
             <line x1={PL} x2={W - PR} y1={EQ_H - PB} y2={EQ_H - PB} stroke="var(--color-text-sub)" strokeWidth="1" />
             <text x={PL - 44} y={PT + (EQ_H - PT - PB) / 2} fontSize="10" textAnchor="middle" fill="var(--color-text-sub)"
-              transform={`rotate(-90 ${PL - 44} ${PT + (EQ_H - PT - PB) / 2})`}>Equity</text>
+              transform={`rotate(-90 ${PL - 44} ${PT + (EQ_H - PT - PB) / 2})`}>Realised P&L</text>
 
             {/* ---- decisions panel ---- */}
-            {model.map(r => {
+            {curve.decisionState !== 'unavailable' && model.map(r => {
               const ah = geom.barH(r.approved), vh = geom.barH(r.vetoed)
               const x = geom.X(r.t) - geom.barW / 2
               return (
@@ -263,7 +216,7 @@ export default function ReportChart({ allTrades, events, daily }) {
             {hv && (
               <>
                 <line x1={geom.X(hv.t)} x2={geom.X(hv.t)} y1={PT} y2={geom.decBase} stroke="var(--color-text-sub)" strokeWidth="0.8" strokeDasharray="3 3" />
-                <circle cx={geom.X(hv.t)} cy={geom.Ye(hv.equity)} r="4" fill="var(--color-accent)" />
+                {curve.moneyAvailable && <circle cx={geom.X(hv.t)} cy={geom.Ye(hv.equity)} r="4" fill="var(--color-accent)" />}
               </>
             )}
           </svg>
@@ -271,18 +224,19 @@ export default function ReportChart({ allTrades, events, daily }) {
             <div className="pointer-events-none absolute pos-absolute top-1 glass-panel rounded-[10px] px-3 py-1.5 text-(length:--fs-body) leading-5"
               style={{ left: `${Math.min(74, Math.max(2, (geom.X(hv.t) / W) * 100))}%` }}>
               <div>{shortDate(hv.t)}</div>
-              <div>equity <span className="tabular-nums">{fmtN(hv.equity)}</span></div>
-              <div style={{ color: 'var(--color-down)' }}>drawdown <span className="tabular-nums">{hv.dd < 0 ? fmtN(hv.dd) : '0'}</span></div>
-              <div><span style={{ color: 'var(--color-up)' }}>●</span> {hv.approved} approved · <span style={{ color: 'var(--color-down)' }}>●</span> {hv.vetoed} vetoed</div>
+              <div>realised P&amp;L <span className="tabular-nums">{fmtN(hv.equity)}</span></div>
+              <div style={{ color: 'var(--color-down)' }}>drawdown <span className="tabular-nums">{curve.moneyAvailable ? fmtN(hv.dd) : '—'}</span></div>
+              <div>{curve.decisionState === 'unavailable' ? 'Daily decisions unavailable' : <><span style={{ color: 'var(--color-up)' }}>●</span> {hv.approved} approved · <span style={{ color: 'var(--color-down)' }}>●</span> {hv.vetoed} vetoed</>}</div>
             </div>
           )}
         </div>
       )}
       <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
-        Dashed grey is the equity high-water mark; the red band between it and the curve is the drawdown you were actually in.
-        Bars are that day&apos;s decisions, vetoed stacked on approved. Both panels share one date axis — decisions and equity are
-        NOT plotted against each other, because nothing here shows that one drives the other.
-        {sparse && ' Only 1–2 active days in this range, so equity is drawn as dots — a connecting line would imply a trend that is not there.'}
+        {curve.moneyAvailable ? 'The curve includes every priced recorded close in the selected UTC days. Its drawdown uses daily realised totals and can miss intraday moves.' : `The money curve is unavailable: ${curve.reason.replaceAll('_', ' ')}.`}
+        {' '}This is not broker balance, floating equity or a cashflow-adjusted account return. Deposits and withdrawals are excluded.
+        {' '}Decision bars use the supplied daily aggregate; an unavailable daily feed is not replaced with the capped event journal.
+        {curve.decisionState === 'unavailable' && ' Daily decision evidence is unavailable.'}
+
       </p>
     </Card>
   )
