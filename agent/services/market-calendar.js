@@ -12,15 +12,25 @@ const keyFor = identity => `market_calendar:v1:${marketIdentityKey(identity)}`
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const integer = (n, min, max) => typeof n === 'number' && Number.isInteger(n) && n >= min && n <= max
 
-function zonedParts(now, timeZone) {
-  return Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+// A symbol batch can repeat the same holiday zone thousands of times. Cache
+// only bounded, immutable formatters; never calendar observations or status.
+const zoneFormatters = new Map()
+function formatterFor(timeZone) {
+  if (zoneFormatters.has(timeZone)) return zoneFormatters.get(timeZone)
+  const formatter = new Intl.DateTimeFormat('en-GB', {
     timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
     weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-  }).formatToParts(now).map(p => [p.type, p.value]))
+  })
+  if (zoneFormatters.size >= 32) zoneFormatters.delete(zoneFormatters.keys().next().value)
+  zoneFormatters.set(timeZone, formatter)
+  return formatter
+}
+function zonedParts(now, timeZone) {
+  return Object.fromEntries(formatterFor(timeZone).formatToParts(now).map(p => [p.type, p.value]))
 }
 function validZone(zone) {
   if (typeof zone !== 'string' || !zone || zone.length > 100) return false
-  try { zonedParts(new Date(0), zone); return true } catch { return false }
+  try { formatterFor(zone); return true } catch { return false }
 }
 
 // Validate the full message. Silently dropping an invalid interval can turn

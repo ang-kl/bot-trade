@@ -1,7 +1,9 @@
 // Conservative P2c identity: an account's feed is isolated until equivalence
 // with another account has actually been established. Ticker names alone are
 // never instrument identity, and credentials are never part of this record.
-export function marketIdentity({ provider, host, accountId, symbolId } = {}) {
+export function marketIdentity(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const { provider, host, accountId, symbolId } = input
   const id = value => {
     if (typeof value !== 'string' && typeof value !== 'number') return null
     if (typeof value === 'number' && !Number.isSafeInteger(value)) return null
