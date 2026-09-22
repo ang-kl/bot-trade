@@ -1,5 +1,40 @@
 # Trading coverage follow-up, 21 September 2026
 
+## Current priority order, 22 September 2026
+
+This table supersedes the implementation order below. The older observations
+remain dated evidence, not current production state. Latest independent broker
+readings: 08:16 SGT, relayed from cpp-verify by production on `d1c7f79` (#999).
+
+| Order | Work | Verified state | Remaining acceptance |
+|---|---|---|---|
+| P0 | TP1 and SL coverage | Seven accounts independently read; 39 positions, zero missing SL, two missing TP1. Missing targets are on accounts ending 9908 and 0949. #992 exposes broker target refusals. #995/#998 require confirmed, bounded broker protection reads for book stop updates. | Identify the two current position exceptions from an authenticated detailed audit and apply a valid authorised target policy. Earlier recorded targets were behind the market; do not choose replacements merely to make coverage green. |
+| P1 | Controllers accuracy and runtime delays | #997 deployed unknown/error states through collapsed Controllers, position rows and gauges. #999 deployed bounded calendar memoization and verifier diagnostics. Recent production monitor profiles were about 12 seconds; calendar conversion was no longer a top-five frame. | Reconnect the authenticated dashboard and verify rendered states. Attribute remaining synchronous work and I/O delays before claiming a one-second management cadence. |
+| P2 | Independent cpp-verify checks | Fresh broker reads across all seven accounts are now visible in production logs, including the two TP exceptions. #1000 is merged and adds keepalives during idle periods and pending reads. | Verify deployment and subsequent checks remain fresh across multiple poll intervals; show exceptions in Controllers. |
+| P3 | Tick protection on both services | Recording/shadow observation was previously verified on both services; tick trailing remains disabled. This PR makes tick stop updates preserve freshly read broker TP and require broker read-back. | Complete account-scoped configuration, ownership/concurrent-writer and feed identity checks, then verify bounded configuration/quote freshness and safe activation. This PR alone is not activation approval evidence. |
+| P4 | Account coverage | #993 scoped broker positions/history/cache to the viewed account. Independent protection reads now cover all seven registered accounts, including empty accounts. | Recheck rendered account switching and every account's management path; a successful protection read does not prove entry or management eligibility. |
+| P5 | Simulation, statistics and replay | #985 and follow-ups corrected scenario inputs, replay MTM, candidate block bootstrap, profile attribution and empty-replay diagnostics. | Run diagnostics against current production inputs and compare matching profile hashes. Zero trades means insufficient evidence, not a losing strategy. Validation thresholds remain unchanged. |
+| P6 | Strategy and configuration | No unsupported strategy promotion or risk-limit change has been made. | Publish the effective strategy/blocker matrix from fresh runtime evidence; sunset or promote only from valid, attributable results. |
+| P7 | Symbol universe and capacity | No blanket increase to 500 symbols per account. | Measure account eligibility, subscription/request budgets, processing latency and open-position protection coverage before expansion. |
+| Maintenance | Temporary storage | The two large test fixture producers clean up their own directories. | Final production disk trend read-back remains outstanding. |
+
+Independent protection counts at 08:16 SGT:
+
+| Account suffix | Open | Missing SL | Missing TP1 |
+|---|---:|---:|---:|
+| 3489 | 1 | 0 | 0 |
+| 2148 | 0 | 0 | 0 |
+| 9009 | 0 | 0 | 0 |
+| 7342 | 7 | 0 | 0 |
+| 0058 | 8 | 0 | 0 |
+| 9908 | 9 | 0 | 1 |
+| 0949 | 14 | 0 | 1 |
+
+The authenticated browser connection was lost when the session resumed. Railway
+deployment and runtime evidence remained accessible. Therefore deployment status
+and broker readings above are verified, while current rendered UI acceptance is
+explicitly incomplete.
+
 ## Priority and acceptance record
 
 | Order | Work | Change in this PR | Production acceptance still required |

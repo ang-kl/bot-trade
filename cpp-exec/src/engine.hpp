@@ -237,6 +237,11 @@ public:
   void runLoop();
 
 private:
+  // All sidecar SL/TP writers share a position lock. Weak entries are pruned
+  // so closed positions do not grow an unbounded lock registry.
+  std::mutex protectionLocksMtx_;
+  std::map<std::pair<long long, long long>, std::weak_ptr<std::mutex>> protectionLocks_;
+  std::shared_ptr<std::mutex> protectionLock(long long accountId, long long positionId);
   // One request in flight: its id, what answers it, and the promise the
   // reader settles. `extraAuth` marks an EXTRA account's ACCOUNT_AUTH so an
   // auth-family rejection there is charged to that account, not the session
@@ -276,7 +281,7 @@ private:
   // ACCOUNT_AUTH_REQ for one id. Caller must hold mtx_.
   EngineResult authAccountLocked(long long accountId, bool extra);
   // Reconcile one id (no lock needed: the request is a future).
-  EngineResult reconcileOne(long long accountId);
+  EngineResult reconcileOne(long long accountId, int timeoutMs = 10000);
 
   // The reader thread: recvText slices, heartbeat, dispatch. Owns teardown.
   void readerLoop(long long generation);
