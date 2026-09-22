@@ -1,15 +1,19 @@
 import { accountWhere } from '../lib/account-scope.js'
 
 const HOUR = 3600_000
+// Reporting tolerance only, matching the browser evidence reader. An accepted
+// future boundary is explicitly incomplete; it never extends observed data.
+export const OPENINGS_MAX_CLOCK_SKEW_MS = 120_000
 
 // The population is all confirmed ledger trade rows, including still-open
 // trades and closes awaiting P&L. Rejected orders and unresolved intents did
 // not establish an opening. This is ledger evidence, not broker reconciliation.
 export function hourlyOpenings(db, scope, { to, nowMs = Date.now() }) {
-  if (!Number.isSafeInteger(to) || to < 24 * HOUR || to > nowMs) {
-    throw new RangeError('to must be a past/current UTC epoch millisecond')
+  if (!Number.isSafeInteger(to) || to < 24 * HOUR || to > nowMs + OPENINGS_MAX_CLOCK_SKEW_MS) {
+    throw new RangeError('to must be a UTC epoch millisecond no more than 2 minutes ahead')
   }
   const from = to - 24 * HOUR
+  const observedThrough = Math.min(to, nowMs)
   const account = accountWhere(scope)
   const filter = account.active ? ` AND ${account.where}` : ''
   // SQL aggregation avoids fetching an unbounded journal into Node or using
@@ -29,22 +33,27 @@ export function hourlyOpenings(db, scope, { to, nowMs = Date.now() }) {
     FROM population
     WHERE opened_ms IS NULL OR (opened_ms >= ? AND opened_ms < ?)
     GROUP BY bucket
-  `).all(...account.params, from, HOUR, from, to)
+  `).all(...account.params, from, HOUR, from, observedThrough)
   const rows = Array.from({ length: 24 }, (_, i) => ({
     from: from + i * HOUR, to: from + (i + 1) * HOUR,
     openedN: 0, legacyN: 0, adoptedN: 0,
   }))
-  let unknownTimeN = 0
+  let unknownTimeN = 0, unknownTimeLegacyN = 0, unknownTimeAdoptedN = 0
   for (const group of groups) {
-    if (group.bucket === -1) unknownTimeN = group.n
+    if (group.bucket === -1) {
+      unknownTimeN = group.n
+      unknownTimeLegacyN = group.legacy
+      unknownTimeAdoptedN = group.adopted
+    }
     else Object.assign(rows[group.bucket], { openedN: group.n, legacyN: group.legacy, adoptedN: group.adopted })
   }
   return {
     accountId: scope.all ? 'all' : scope.accountId,
     source: 'local_trade_ledger', brokerReconciled: false,
-    generatedAt: new Date(nowMs).toISOString(), from, to, rows, unknownTimeN,
+    generatedAt: new Date(nowMs).toISOString(), from, to, observedThrough, rows,
+    unknownTimeN, unknownTimeLegacyN, unknownTimeAdoptedN,
     openedN: rows.reduce((n, r) => n + r.openedN, 0),
-    legacyN: rows.reduce((n, r) => n + r.legacyN, 0),
-    adoptedN: rows.reduce((n, r) => n + r.adoptedN, 0),
+    legacyN: unknownTimeLegacyN + rows.reduce((n, r) => n + r.legacyN, 0),
+    adoptedN: unknownTimeAdoptedN + rows.reduce((n, r) => n + r.adoptedN, 0),
   }
 }
