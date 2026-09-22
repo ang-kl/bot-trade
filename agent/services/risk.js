@@ -716,13 +716,11 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
 
 /**
  * Read the configured account balance (USD) from agent_state, or null when
- * unset. Any non-positive or malformed value is treated as unset.
+ * unset. A scoped zero is a real reading; malformed/negative values are unset.
  */
 export function getAccountBalance(db, accountId = null) {
-  // M1c: per-account balance seam. When a worker passes an account id, its
-  // `acct:<id>:account_balance_usd` value (stamped by the loop's balance
-  // refresh) wins; the legacy global key remains the fallback so the
-  // single-account era behaves identically.
+  // Both a named and a selected account read only their own sizing input.
+  // A global value has no account identity and cannot fill a missing stamp.
   // RESOLVE, don't fall through to an unowned number (owner 04-08-2026, with
   // a screenshot: "conflicting account numbers … cause the user distrust the
   // page information"). The Trade header printed
@@ -742,18 +740,14 @@ export function getAccountBalance(db, accountId = null) {
   // account refreshed it last"). The 25 callers that size, pool margin or
   // cap on this number all pass the account they mean; falling through to
   // another account's balance here multiplied every risk percentage by the
-  // ratio between two accounts, invisibly. The selected-account path (no
-  // account named) keeps its single-account-era fallback.
-  if (accountId != null) {
-    const raw = getState(db, `acct:${accountId}:account_balance_usd`)
+  // ratio between two accounts, invisibly. The selected-account path now
+  // applies the same ownership rule, including a genuine zero balance.
+  const resolved = accountId ?? getState(db, 'ctrader_account_id')
+  if (resolved != null) {
+    const raw = getState(db, `acct:${resolved}:account_balance_usd`)
     if (raw == null || raw === '') return null
     const scoped = Number(raw)
     return Number.isFinite(scoped) && scoped >= 0 ? scoped : null
-  }
-  const resolved = getState(db, 'ctrader_account_id')
-  if (resolved != null) {
-    const scoped = Number(getState(db, `acct:${resolved}:account_balance_usd`))
-    if (Number.isFinite(scoped) && scoped > 0) return scoped
   }
   const raw = getState(db, 'account_balance_usd')
   if (raw == null) return null
