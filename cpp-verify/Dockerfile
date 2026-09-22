@@ -6,7 +6,7 @@
 # path-based and two paths to one header is a class redefinition.
 FROM debian:stable-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        g++ make libssl-dev \
+        g++ make libssl-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Makefile ./
@@ -15,7 +15,7 @@ RUN make CXX=g++ all
 
 FROM debian:stable-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libssl3 ca-certificates \
+        libssl3 libcurl4 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home appuser
 COPY --from=build /app/bin/cpp-verify /usr/local/bin/cpp-verify

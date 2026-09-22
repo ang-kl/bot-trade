@@ -56,14 +56,14 @@ function addPos(db, symbol, accountId, { source = 'autopilot', sl = 1.0950 } = {
 // uses a distinct fake clock far enough ahead that the cadence has elapsed.
 let clockBase = 1_800_000_000_000
 function deps({ quotesBody, quotesBySide = null, now }) {
-  const calls = { sidecar: [], ws: [] }
+  const calls = { sidecar: [], ws: [], brokerRoutes: [] }
   const t = now ?? (clockBase += 60 * 60_000)
   return {
     calls,
     now: () => t,
     ws: {
       wsGetTrendbarsBatch: async () => ({ '1m': [] }),
-      wsGetSpotOnce: async (_h, _c, _s, _t, _a, symbolId) => { calls.ws.push(symbolId); return { bid: 1.1005, ask: 1.1007 } },
+      wsGetSpotOnce: async (_h, _c, _s, _t, _a, symbolId) => { calls.ws.push(symbolId); calls.brokerRoutes.push({ host: _h, accountId: _a, symbolId }); return { bid: 1.1005, ask: 1.1007 } },
     },
     exec: {
       sidecarQuotes: async (isLive, opts) => {
@@ -165,7 +165,7 @@ test('CHECKER 1 (blocker): a same-name symbol with different ids on two same-sid
   const row = db.prepare('SELECT last_check_action, status FROM monitored_positions').get()
   assert.equal(out.quotes.fromSidecar, 0, `priced from the sidecar by another account's id space: ${JSON.stringify(out.quotes)} → ${row.last_check_action}`)
   assert.deepEqual(d.calls.sidecar, [{ isLive: false, ids: null }], 'one pull for the side; the answer\'s accountId (111) is the space the lookup is refused in')
-  assert.deepEqual(d.calls.ws, [1], 'priced through the broker, as before this change')
+  assert.deepEqual(d.calls.ws, [2], 'fallback uses the held account instrument ID')
   assert.equal(row.status, 'active')
   assert.ok(String(row.last_check_action).startsWith('FAST:HOLD'), row.last_check_action)
 })
@@ -289,14 +289,14 @@ test('wiring pin: ONE sidecarQuotes call per side per tick (the whole table); an
   }
   const out2 = await runFastMonitor(db2, CREDS, d2)
   assert.deepEqual(out2.quotes, { fromSidecar: 1, fromBroker: 1, stale: 0 })
-  assert.deepEqual(d2.calls.ws, [3], 'the live position still prices — through the broker, as before')
+  assert.deepEqual(d2.calls.ws, [903], 'fallback uses the live account instrument ID')
   // the live feed reports an account with NO map on file → broker too
   const db3 = mkDb()
   addPos(db3, 'USDJPY', '222')
   const d3 = deps({ quotesBody: (t3) => ({ feed: 'up', generation: 1, accountId: '777', count: 1, quotes: [fresh(t3, 3, 150.1, 150.12)] }) })
   const out3 = await runFastMonitor(db3, CREDS, d3)
-  assert.deepEqual(out3.quotes, { fromSidecar: 0, fromBroker: 1, stale: 0 })
-  assert.deepEqual(d3.calls.ws, [3])
+  assert.deepEqual(out3.quotes, { fromSidecar: 0, fromBroker: 0, stale: 0 })
+  assert.deepEqual(d3.calls.ws, [], 'no own map is unknown, never the selected account instrument')
 })
 
 test('R3-1a: the feed account IS the selected account and its own map (built later) differs from the global map — the own map is the space, the global map is no fallback', async () => {
@@ -508,4 +508,49 @@ test('quotes carries `at` (ISO, the priced pass\'s own timestamp) and `checked`'
   assert.equal(rec.tick.quotes.checked, 9)
   assert.equal(typeof rec.tick.quotes.at, 'string')
   assert.ok(!Number.isNaN(Date.parse(rec.tick.quotes.at)), rec.tick.quotes.at)
+})
+
+
+test('P4 fallback routes each position to its own account and host and records actual evaluation completion', async () => {
+  const db = mkDb()
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 903 } }))
+  addPos(db, 'EURUSD', '222')
+  addPos(db, 'EURUSD', '111')
+  const d = deps({ quotesBody: null })
+  await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.brokerRoutes, [
+    { host: 'live.ctraderapi.com', accountId: '222', symbolId: 903 },
+    { host: 'demo.ctraderapi.com', accountId: '111', symbolId: 1 },
+  ])
+  const record = JSON.parse(getState(db, 'fast_monitor_position_work_json'))
+  assert.equal(record.positions.length, 2)
+  assert.equal(record.complete, true)
+  for (const p of record.positions) {
+    assert.equal(p.state, 'evaluated')
+    assert.equal(p.quoteSource, 'broker')
+    assert.equal(p.lastCompletedAt, new Date(d.now()).toISOString())
+    assert.equal(Date.parse(p.nextDueAt) - Date.parse(p.lastCompletedAt), p.cadenceMs)
+  }
+})
+
+test('P4 invalid or future quotes cannot complete a position check; missing map never borrows a global ID', async () => {
+  const now = 1000
+  for (const q of [
+    { bid: 2, ask: 1, recvMs: now }, { bid: Infinity, ask: Infinity, recvMs: now },
+    { bid: 1, ask: 2, recvMs: now + 1 }, { bid: 1, ask: 2, ageMs: -1 },
+  ]) assert.equal(pickSidecarQuote(new Map([[1, q]]), 1, now).quote, null)
+  const db = mkDb()
+  addPos(db, 'EURUSD', '222')
+  const d = deps({ quotesBody: null })
+  await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.brokerRoutes, [])
+  let record = JSON.parse(getState(db, 'fast_monitor_position_work_json'))
+  assert.equal(record.positions[0].state, 'symbol_unmapped')
+  assert.equal(record.positions[0].lastCompletedAt, null)
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ map: { EURUSD: 903 } }))
+  d.ws.wsGetSpotOnce = async () => ({ bid: 2, ask: 1 })
+  await runFastMonitor(db, CREDS, d)
+  record = JSON.parse(getState(db, 'fast_monitor_position_work_json'))
+  assert.equal(record.positions[0].state, 'quote_unavailable')
+  assert.equal(record.positions[0].lastCompletedAt, null)
 })

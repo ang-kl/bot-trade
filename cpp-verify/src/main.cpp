@@ -34,6 +34,7 @@
 #include "verdict.hpp"
 #include "verify_session.hpp"
 #include "protection_watch.hpp"
+#include "watchdog.hpp"
 
 namespace {
 
@@ -122,7 +123,7 @@ int main() {
   sidecar_log::logInfoF("[verify]",
                "cpp-verify starting on :%d — READ-ONLY AT THE BROKER: "
                "app auth, account auth, trader, deals and reconcile; it never places, amends or "
-               "cancels. The only thing it writes is its own verdict journal. "
+               "cancels. It writes its verdict journal and, when configured, watchdog state. "
                "Sessions are per host%s",
                port, hostPinIgnored ? "; CTRADER_HOST is set and IGNORED" : "");
   if (!verify::journal().configured()) {
@@ -139,7 +140,12 @@ int main() {
 
   verify::ProtectionWatch protection;
   protection.start();
+  verify::Watchdog watchdog([&] { return protection.status(); });
+  watchdog.start();
   HttpServer server(port, secret);
+  server.route("GET", "/watchdog-status", [&](const HttpRequest&) {
+    return jsonRes(200, jsn::dump(watchdog.status()));
+  });
   server.route("GET", "/protection-status", [&](const HttpRequest&) {
     return jsonRes(200, jsn::dump(protection.status()));
   });
@@ -156,7 +162,12 @@ int main() {
     o.set("readOnlyScope", std::string("broker: never places, amends or cancels"));
     jsn::Array writes;
     writes.push_back(jsn::Value(std::string("verdict journal")));
+    const auto watch = watchdog.status();
+    if (watch.get("enabled").asBool()) writes.push_back(jsn::Value("watchdog incidents and outbox"));
     o.set("writes", jsn::Value(std::move(writes)));
+    o.set("watchdog", jsn::Value(jsn::Object{{"enabled", watch.get("enabled")},
+      {"durable", watch.get("durable")}, {"error", watch.get("error")},
+      {"effectivePolicyAllowsUrgent", watch.get("effectivePolicyAllowsUrgent")}}));
     o.set("hostPinIgnored", hostPinIgnored);
     jsn::Value j{jsn::Object{}};
     j.set("configured", verify::journal().configured());

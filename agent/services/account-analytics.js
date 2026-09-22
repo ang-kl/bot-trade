@@ -40,7 +40,7 @@ import { closedAtMs } from '../shared/formulas.js'
  *   days: rolling window ending now; null/0 = every closed trade on record.
  * @returns {object} whole-period statistics (nulls where undefined, never 0)
  */
-export function accountAnalytics(db, { accountId = null, days = null, now = Date.now(), unstamped = 'include' } = {}) {
+export function accountAnalytics(db, { accountId = null, days = null, now = Date.now(), unstamped = 'include', reporting = false } = {}) {
   const acct = accountId && accountId !== 'all' ? String(accountId) : null
   // NULL account_id rows predate per-account stamping — they belong to
   // whichever account is asking, the same convention accountWhere() uses.
@@ -57,13 +57,27 @@ export function accountAnalytics(db, { accountId = null, days = null, now = Date
   const rows = db.prepare(
     `SELECT net_pnl, closed_at, closed_at_ms, opened_at, hold_duration_ms, account_id
        FROM trades
-      WHERE status = 'closed' AND net_pnl IS NOT NULL ${scope.sql}`
+      WHERE status = 'closed' ${reporting ? '' : 'AND net_pnl IS NOT NULL'} ${scope.sql}`
   ).all(...scope.params)
 
   // Canonical millisecond close stamp, ASCENDING. Every path-dependent
   // figure below depends on this order being real chronology.
   const cutoff = days && days > 0 ? now - days * 86_400_000 : null
-  const chron = rows
+  const eligible = reporting ? rows.filter(r => { const t = closedAtMs(r); return t != null && t > 0 && t < now && (cutoff == null || t >= cutoff) }) : []
+  const identities = new Set(eligible.map(r => r.account_id == null || String(r.account_id).trim() === '' ? null : String(r.account_id)))
+  const moneyComparable = !identities.has(null) && identities.size <= 1 && (identities.size === 1 || acct != null)
+  const finish = value => {
+    if (!reporting) return value
+    const result = { ...value, closedTrades: eligible.length, pricedTrades: value.trades,
+      unpricedTrades: eligible.length - value.trades,
+      unknownCloseTimeN: rows.filter(r => closedAtMs(r) == null).length,
+      population: 'all_recorded_closes', currency: null, generatedAt: new Date(now).toISOString(),
+      moneyState: moneyComparable ? 'recorded_account_units' : 'unverified_cross_account_units',
+      profitFactorInfinite: moneyComparable && value.grossWin > 0 && value.grossLoss === 0 }
+    if (!moneyComparable) for (const key of ['net', 'expectancy', 'profitFactor', 'payoff', 'avgWin', 'avgLoss', 'grossWin', 'grossLoss', 'maxDrawdown', 'bestTrade', 'worstTrade', 'bestDay', 'worstDay', 'greenDays']) result[key] = null
+    return result
+  }
+  const chron = (reporting ? eligible.filter(r => r.net_pnl != null && String(r.net_pnl).trim() !== '' && Number.isFinite(Number(r.net_pnl))) : rows)
     .map(r => ({
       ms: closedAtMs(r),
       pnl: Number(r.net_pnl) || 0,
@@ -76,7 +90,7 @@ export function accountAnalytics(db, { accountId = null, days = null, now = Date
 
   const n = chron.length
   if (n === 0) {
-    return {
+    return finish({
       trades: 0, windowDays: days || null, accountId: acct,
       net: null, winRate: null, expectancy: null, profitFactor: null,
       payoff: null, avgWin: null, avgLoss: null, grossWin: 0, grossLoss: 0,
@@ -84,7 +98,7 @@ export function accountAnalytics(db, { accountId = null, days = null, now = Date
       bestDay: null, worstDay: null, greenDays: 0, tradingDays: 0,
       winStreak: 0, lossStreak: 0, medianHoldMin: null,
       firstMs: null, lastMs: null, truncated: false,
-    }
+    })
   }
 
   const pnls = chron.map(t => t.pnl)
@@ -128,7 +142,7 @@ export function accountAnalytics(db, { accountId = null, days = null, now = Date
         : (holds[holds.length / 2 - 1] + holds[holds.length / 2]) / 2)
     : null
 
-  return {
+  return finish({
     trades: n,
     windowDays: days || null,
     accountId: acct,
@@ -161,7 +175,7 @@ export function accountAnalytics(db, { accountId = null, days = null, now = Date
     // Explicitly false: this figure covers the whole window, not a page of
     // it. The UI says so, so a future regression to a LIMIT is visible.
     truncated: false,
-  }
+  })
 }
 
 function round2(v) {

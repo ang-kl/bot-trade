@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and run the verifier's unit tests
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev
+          sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev libcurl4-openssl-dev
           make -C cpp-verify CXX=g++ -j$(nproc) test
           make -C cpp-verify CXX=g++ -j$(nproc) all
       - name: The binary links no order-writing code

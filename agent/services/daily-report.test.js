@@ -48,7 +48,7 @@ test('the builder reads real rows: an off_track goal is named with its current, 
   setState(db, 'fast_monitor_pass_json', JSON.stringify({ at: new Date(NOW - 60_000).toISOString(), tick: { everyMs: 3000, skipShare10m: 0.4 } }))
   const r = await buildDailyReport(db, { now: NOW })
   assert.match(r.text, /off track: monitor_cadence — 40% \(target ≤ 10%\)/)
-  assert.match(r.text, /Equity …0949: 1025\.50 on 2026-09-18 \(\+25\.50 vs 2026-09-17\)/)
+  assert.match(r.text, /Equity …0949: 1025\.50 \(currency unrecorded\) on 2026-09-18 \(comparison unavailable without matching currency\)/)
   assert.match(r.text, /Open positions: 2 \(…0949 2\)/)
 })
 

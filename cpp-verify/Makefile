@@ -28,7 +28,7 @@ OPENSSL_PREFIX := $(if $(BREW_OPENSSL),$(BREW_OPENSSL),/usr)
 CXX      := clang++
 CXXFLAGS := -std=c++20 -Wall -Wextra -I$(OPENSSL_PREFIX)/include
 LDFLAGS  := -L$(OPENSSL_PREFIX)/lib
-LDLIBS   := -lssl -lcrypto
+LDLIBS   := -lssl -lcrypto -lcurl
 
 # The vendored transport sits in src/ alongside this service's own sources, so
 # the wildcard covers it and every vendored file keeps cpp-exec's own relative
