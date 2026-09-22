@@ -274,3 +274,36 @@ No storage deletion, volume/configuration mutation or process restart was made.
 Rollback owner remains Adrian Ang. Preserve each PR and deployment SHA. A revert
 also deploys all four services and requires the controlled scope/preflight in
 [the prepared rollout runbook](controlled-rollout-preparation-2026-09-22.md).
+
+
+## Continuation checkpoint — 22 September 2026, 20:15 SGT
+
+Draft PRs #1019–#1026 are published, unmerged and undeployed. Their CI checks
+were observed green: native account money (#1019), scoped monitoring receipts
+(#1020), Controllers groups (#1021), complete hourly activity (#1022), native
+account/cashflow history (#1023, based on #1019), independent watchdog (#1024),
+both scanner boundaries (#1025), and isolated mirror records (#1026). This is
+code/test evidence, not authenticated UI or live runtime acceptance.
+
+This gateway mirror package completed the full Node/UI gate and full native
+build/test plus all 15 ThreadSanitizer tests. See
+[gateway mirror evidence](gateway-scanner-mirror-2026-09-22.md). It adds no broker
+connection or trading authority and is disabled without explicit configuration.
+Execution-permission failures on rebuilt local binaries were diagnosed; the
+unchanged full reruns passed after restoring the local executable bits.
+
+The complete reporting-populations package is undergoing its full gate. It
+replaces remaining 100-row journal-derived totals, separates account units,
+records unpriced/undated coverage and replaces the mislabeled equity curve with
+complete daily realised-close aggregates. First-blocker attribution, integration,
+full timeframe parity, calendar/work producers and candidate comparison/handoff
+remain executable work. They are not reported complete.
+
+Main remains e8b9cd98180bc965493469c1c2f553499de2025c at the last check. Every
+main merge still triggers all four services; revision-3 §18 rollout preflight
+remains a release boundary. No deployment, credentials, account amendments,
+trading modes, numerical risk caps, mandatory TP1 or validation thresholds were
+changed. Historical broker exceptions and account roster observations have not
+been relabeled as current. Runtime shell and authenticated browser acceptance
+remain unavailable; editing, GitHub publication, Node22/native SQLite and all
+local repository toolchains are available.

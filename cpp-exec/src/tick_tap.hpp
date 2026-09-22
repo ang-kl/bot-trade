@@ -81,5 +81,7 @@ private:
  *  when workers exist, to the workers as the classified observation the
  *  recorder produced. Non-owning pointers; `workers` and `gate` may be null. */
 SpotRawTap makeRecorderTap(TickRecorder* rec, SymbolWorkers* workers, const QuoteOnlyGate* gate);
+SpotObservedRawTap makeObservedRecorderTap(TickRecorder* rec, SymbolWorkers* workers, const QuoteOnlyGate* gate,
+  std::function<void(const Record&, long long)> mirror);
 
 } // namespace tick

@@ -38,6 +38,9 @@ using SpotTickCallback = std::function<void(long long symbolId, double bid, doub
 using SpotRawTap = std::function<void(long long symbolId, bool hasBid, long long bid,
                                       bool hasAsk, long long ask, long long generation)>;
 
+// Identified mirror metadata; an absent broker timestamp stays zero/unknown.
+using SpotObservedRawTap = std::function<void(long long, bool, long long, bool, long long, long long, long long, long long)>;
+
 // The feed's LATEST quote for one symbol (19-09-2026, fast-monitor quotes
 // from the sidecar). bid/ask are descaled price units, carried forward the
 // same way SpotTickCallback's callers carry them; a side never seen is 0.
@@ -148,6 +151,7 @@ public:
   void setDecisionRing(class DecisionRing* r) { ring_ = r; }
   // P3a: the recorder's tap on the raw event. Set before the feed thread starts.
   void setRawTap(SpotRawTap t) { rawTap_ = std::move(t); }
+  void setObservedRawTap(SpotObservedRawTap t) { observedRawTap_ = std::move(t); }
   // The symbols this feed subscribes to (current + queued). Thread-safe; for
   // /health so the keeper can see whether its tick symbols are carried.
   std::vector<long long> subscribedSymbols();
@@ -210,4 +214,5 @@ private:
   std::map<long long, SpotQuote> latestQuotes_; // guarded by tickMtx_; survives reconnects (recvMs says how old)
   class DecisionRing* ring_ = nullptr;
   SpotRawTap rawTap_;
+  SpotObservedRawTap observedRawTap_;
 };

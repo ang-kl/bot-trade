@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and run C++ unit tests
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev
+          sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev libcurl4-openssl-dev
           make -C cpp-exec CXX=g++ -j$(nproc) test
           make -C cpp-exec CXX=g++ -j$(nproc) all
       - name: Threading tests under ThreadSanitizer

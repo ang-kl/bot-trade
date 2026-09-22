@@ -1,7 +1,7 @@
 # Build stage: full toolchain, not shipped in the runtime image.
 FROM debian:stable-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        g++ make libssl-dev \
+        g++ make libssl-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Makefile ./
@@ -12,7 +12,7 @@ RUN make CXX=g++ all
 # Runtime stage: only libssl + the binary, run as non-root.
 FROM debian:stable-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libssl3 ca-certificates \
+        libssl3 libcurl4 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home appuser
 COPY --from=build /app/bin/cpp-exec /usr/local/bin/cpp-exec

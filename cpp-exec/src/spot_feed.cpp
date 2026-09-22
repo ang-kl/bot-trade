@@ -310,7 +310,14 @@ void SpotFeed::runOnce() {
     if (symbolId == 0) continue;
     // P3a: the recorder sees the frame as it came — which sides it carried,
     // in wire units — before the last-known carry below.
-    if (rawTap_) {
+    const long long receivedAtMs = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    if (observedRawTap_) {
+      const auto& rb = p.get("bid"); const auto& ra = p.get("ask"); const auto& ts = p.get("timestamp");
+      const auto sourceMs = ts.isNumber() && std::isfinite(ts.asNumber()) && ts.asNumber() > 0 && ts.asNumber() <= 9007199254740991.0
+        ? static_cast<long long>(ts.asNumber()) : 0;
+      observedRawTap_(symbolId, rb.isNumber(), static_cast<long long>(rb.asNumber(0)),
+        ra.isNumber(), static_cast<long long>(ra.asNumber(0)), reconnects_.load(std::memory_order_relaxed) + 1, receivedAtMs, sourceMs);
+    } else if (rawTap_) {
       const jsn::Value& rb = p.get("bid");
       const jsn::Value& ra = p.get("ask");
       rawTap_(symbolId, rb.isNumber(), static_cast<long long>(rb.asNumber(0)),
