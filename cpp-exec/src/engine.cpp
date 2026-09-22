@@ -872,7 +872,10 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   const auto readProtection = [&](BrokerProtection& p) {
     p.readStartedAtMs = nowMs();
     const auto start = steady_clock::now();
-    auto r = reconcileOne(accountId, 5000);
+    // These reads are part of protection, so scanning cannot consume their
+    // reserve or defer them. Leave 1s for beginRequest's bounded pacer wait
+    // within the complete five-second freshness budget.
+    auto r = reconcileOne(accountId, 4000, RequestClass::Protection);
     p.checkedAtMs = nowMs();
     p.readDurationMs = duration_cast<milliseconds>(steady_clock::now() - start).count();
     if (!r.ok) return r;
@@ -947,12 +950,12 @@ EngineResult ExecEngine::cancelOrder(const jsn::Value& payload) {
   return request(pt::CANCEL_ORDER_REQ, payload, pt::EXECUTION_EVENT, 20000, RequestClass::Protection);
 }
 
-EngineResult ExecEngine::reconcileOne(long long accountId, int timeoutMs) {
+EngineResult ExecEngine::reconcileOne(long long accountId, int timeoutMs, RequestClass cls) {
   jsn::Value p{jsn::Object{}};
   p.set("ctidTraderAccountId", accountId);
   // 10s: a hung reconcile no longer holds the order path (the request is a
   // future), but the loop's own cadence still wants a tight bound.
-  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, timeoutMs);
+  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, timeoutMs, cls);
   if (r.ok) {
     std::lock_guard sk(stateMtx_);
     reconcileByAccount_[accountId] = {jsn::dump(r.body), nowMs()};

@@ -19,6 +19,10 @@ struct BrokerState {
     if (type == pt::APP_AUTH_REQ || type == pt::ACCOUNT_AUTH_REQ) {
       b.reply(f, type + 1, f.get("payload")); return;
     }
+    if (type == pt::CANCEL_ORDER_REQ) {
+      b.reply(f, pt::ERROR_RES, *jsn::parse(R"({"errorCode":"BLOCKED_PAYLOAD_TYPE","description":"test throttle","retryAfter":5})"));
+      return;
+    }
     if (type == pt::RECONCILE_REQ) {
       if (mode == 1) return;
       // cTrader encodes int64 identities as strings as well as numbers.
@@ -87,6 +91,19 @@ void missingTargetAndWrongIdentity() {
   assert(!engine.amendPosition(wrong).ok && state.amends == 0);
 }
 
+void readsForRatchetsRetainProtectionPriority() {
+  BrokerState state;
+  FakeBroker broker([&](auto& b, const auto& f) { state.handle(b, f); });
+  ExecEngine engine; connect(engine, broker);
+  const auto cancel = *jsn::parse(R"({"ctidTraderAccountId":4002,"orderId":8})");
+  assert(!engine.cancelOrder(cancel).ok); // Starts a five-second read/entry deferral.
+  assert(!engine.reconcile().ok); // The ordinary read path is actually blocked.
+  const auto ratchet = engine.amendPosition(intent());
+  assert(ratchet.ok && state.amends == 1);
+  assert(ratchet.body.get("protection").get("confirmation").asString() == "amend_readback");
+  assert(!engine.reconcile().ok); // The deferral did not merely expire during the test.
+}
+
 void overlappingRatchets() {
   BrokerState state; state.delayAmendMs = 100;
   FakeBroker broker([&](auto& b, const auto& f) { state.handle(b, f); });
@@ -144,6 +161,7 @@ void tickWorker(bool badReadback, bool replaceConfig = false) {
 int main() {
   directTransactions();
   missingTargetAndWrongIdentity();
+  readsForRatchetsRetainProtectionPriority();
   overlappingRatchets();
   shortRatchet();
   tickWorker(false); tickWorker(true);

@@ -4,21 +4,25 @@
 
 This table supersedes the implementation order below. The older observations
 remain dated evidence, not current production state. Latest independent broker
-readings: 08:16 SGT, relayed from cpp-verify by production on `d1c7f79` (#999).
+readings: 08:47 SGT, relayed from cpp-verify by production on `a82740d` (#1001).
+All four Railway services deployed that commit successfully. #1001 merged at
+08:40 SGT without the later protection-priority review correction; that correction
+is the separate follow-up in this branch.
 
 | Order | Work | Verified state | Remaining acceptance |
 |---|---|---|---|
 | P0 | TP1 and SL coverage | Seven accounts independently read; 39 positions, zero missing SL, two missing TP1. Missing targets are on accounts ending 9908 and 0949. #992 exposes broker target refusals. #995/#998 require confirmed, bounded broker protection reads for book stop updates. | Identify the two current position exceptions from an authenticated detailed audit and apply a valid authorised target policy. Earlier recorded targets were behind the market; do not choose replacements merely to make coverage green. |
-| P1 | Controllers accuracy and runtime delays | #997 deployed unknown/error states through collapsed Controllers, position rows and gauges. #999 deployed bounded calendar memoization and verifier diagnostics. Recent production monitor profiles were about 12 seconds; calendar conversion was no longer a top-five frame. | Reconnect the authenticated dashboard and verify rendered states. Attribute remaining synchronous work and I/O delays before claiming a one-second management cadence. |
-| P2 | Independent cpp-verify checks | Fresh broker reads across all seven accounts are now visible in production logs, including the two TP exceptions. #1000 is merged and adds keepalives during idle periods and pending reads. | Verify deployment and subsequent checks remain fresh across multiple poll intervals; show exceptions in Controllers. |
-| P3 | Tick protection on both services | Recording/shadow observation was previously verified on both services; tick trailing remains disabled. This PR makes tick stop updates preserve freshly read broker TP and require broker read-back. | Complete account-scoped configuration, ownership/concurrent-writer and feed identity checks, then verify bounded configuration/quote freshness and safe activation. This PR alone is not activation approval evidence. |
-| P4 | Account coverage | #993 scoped broker positions/history/cache to the viewed account. Independent protection reads now cover all seven registered accounts, including empty accounts. | Recheck rendered account switching and every account's management path; a successful protection read does not prove entry or management eligibility. |
-| P5 | Simulation, statistics and replay | #985 and follow-ups corrected scenario inputs, replay MTM, candidate block bootstrap, profile attribution and empty-replay diagnostics. | Run diagnostics against current production inputs and compare matching profile hashes. Zero trades means insufficient evidence, not a losing strategy. Validation thresholds remain unchanged. |
-| P6 | Strategy and configuration | No unsupported strategy promotion or risk-limit change has been made. | Publish the effective strategy/blocker matrix from fresh runtime evidence; sunset or promote only from valid, attributable results. |
-| P7 | Symbol universe and capacity | No blanket increase to 500 symbols per account. | Measure account eligibility, subscription/request budgets, processing latency and open-position protection coverage before expansion. |
+| P1 | Finish the protection-priority review correction | #1001 is merged and deployed. Its broker reads still use the ordinary read budget; a separately tested follow-up routes prerequisite and confirmation reads through the protection reserve. | PR #1003 is open; merge after its gates. The regression must demonstrate ordinary reads are throttled while the complete stop-protection transaction succeeds. |
+| P2 | Account identity in risk decisions | #993 scoped broker positions/history/cache to the viewed account. Independent protection covers all seven accounts. Source review of #1002 confirms risk.js, vpo-feeder.js and /state/risk-full still read the global broker snapshot for account-specific margin/balance decisions. | Use the matching account snapshot and test cross-account contamination before enabling more trading. Preserve risk thresholds. Recheck rendered account switching and management coverage. |
+| P3 | Momentum entry TP1 policy | Source inspection confirms momentum proposals set tp1 and tp2 to null, while the entry guard requires TP1. | Establish and validate the intended TP1 policy without bypassing the mandatory-target guard. Then expose the actual upstream blocker for each account. A position cap can mask this missing-target blocker. |
+| P4 | Tick protection on both services | #1001 preserves freshly read broker TP and requires broker read-back. Recording/shadow observation was previously verified on both services; tick trailing remains disabled. | Complete account-scoped configuration, ownership/concurrent-writer and feed identity checks, then verify bounded configuration/quote freshness and safe activation. A merged safety patch is not evidence of active tick management. |
+| P5 | Independent verification, Controllers and runtime | #997 corrected unknown/error states; the disconnected dashboard was verified to show UNVERIFIED. #999 reduced calendar cache churn. #1000 is deployed; all seven accounts have fresh independent readings over consecutive cycles, including 08:45, 08:46 and 08:47 SGT. | Verify authenticated Controllers/account views. Diagnose remaining loop delays before claiming a one-second management cadence. Keep missing TP exceptions visible. |
+| P6 | Simulation, statistics and replay | #985 and follow-ups corrected scenario inputs, replay MTM, candidate block bootstrap, profile attribution and empty-replay diagnostics. | Run diagnostics against current production inputs and compare matching profile hashes. Zero trades means insufficient evidence, not a losing strategy. Validation thresholds remain unchanged. |
+| P7 | Strategy and configuration | No unsupported strategy promotion or risk-limit change has been made. | Publish the effective strategy/blocker matrix from fresh runtime evidence; sunset or promote only from valid, attributable results. |
+| P8 | Symbol universe and capacity | No blanket increase to 500 symbols per account. | Measure account eligibility, subscription/request budgets, processing latency and open-position protection coverage before expansion. |
 | Maintenance | Temporary storage | The two large test fixture producers clean up their own directories. | Final production disk trend read-back remains outstanding. |
 
-Independent protection counts at 08:16 SGT:
+Independent protection counts at 08:47 SGT:
 
 | Account suffix | Open | Missing SL | Missing TP1 |
 |---|---:|---:|---:|
@@ -32,8 +36,8 @@ Independent protection counts at 08:16 SGT:
 
 The authenticated browser connection was lost when the session resumed. Railway
 deployment and runtime evidence remained accessible. Therefore deployment status
-and broker readings above are verified, while current rendered UI acceptance is
-explicitly incomplete.
+and broker readings above are verified. Disconnected UI failure states are also
+verified; authenticated account and management views remain incomplete.
 
 ## Priority and acceptance record
 

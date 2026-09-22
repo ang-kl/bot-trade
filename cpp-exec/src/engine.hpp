@@ -281,7 +281,8 @@ private:
   // ACCOUNT_AUTH_REQ for one id. Caller must hold mtx_.
   EngineResult authAccountLocked(long long accountId, bool extra);
   // Reconcile one id (no lock needed: the request is a future).
-  EngineResult reconcileOne(long long accountId, int timeoutMs = 10000);
+  EngineResult reconcileOne(long long accountId, int timeoutMs = 10000,
+                            RequestClass cls = RequestClass::Read);
 
   // The reader thread: recvText slices, heartbeat, dispatch. Owns teardown.
   void readerLoop(long long generation);
