@@ -1,10 +1,12 @@
+import { REGIME_BLOCK_STAGE, EVIDENCE_GATE_STAGE, PRODUCER_RETIRED_STAGE } from './gate-skips.js'
+
 const DAY = 86400_000
 const parse = value => { try { return value?.length <= 16_000 ? JSON.parse(value) : null } catch { return null } }
 const text = value => value == null ? null : String(value).slice(0, 500)
 const UPSTREAM = ['account_horizon', 'account_probe', 'account_watchlist', 'armed_scope_prefilter',
   'cluster_conviction', 'equity_stop', 'fundable_universe', 'horizon', 'lesson_decay', 'margin_pool',
-  'ratchet_gate', 'stage_matrix', 'style_filter', 'symbol_position_cap', 'symbol_strategy',
-  'watchlist_override', 'weekend_quiet', 'entry_mode', 'regime_gate']
+  'ratchet_gate', 'stage_matrix', 'style_filter', 'symbol_strategy',
+  'watchlist_override', 'weekend_quiet', 'entry_mode', 'regime_gate', REGIME_BLOCK_STAGE, EVIDENCE_GATE_STAGE, PRODUCER_RETIRED_STAGE]
 
 // These are evidence boundaries, not a reconstructed execution trace. A
 // short-circuited decision cannot establish that any later check passed.
@@ -14,6 +16,7 @@ export function blockerEvidence(row) {
   const reason = text(row.reason)
   const post = row.kind === 'post_approval_failure'
   const approved = row.kind === 'approved'
+  const receipt = row.kind === 'placement_receipt'
   const upstream = row.kind === 'upstream_stop'
   const risk = row.kind === 'risk_refusal'
   return {
@@ -21,18 +24,18 @@ export function blockerEvidence(row) {
     accountId: row.account_id, symbol: row.symbol, strategy: row.strategy,
     timeframe: row.timeframe, at: row.created_at, lastAt: row.last_at || row.created_at,
     kind: row.kind, stage: row.stage, reason,
-    firstBlocker: approved ? null : { stage: row.stage, reason, status: reason ? 'recorded' : 'reason_unrecorded' },
-    disposition: row.disposition || null, recordedEvaluations: row.reps,
+    firstBlocker: approved || receipt ? null : { stage: row.stage, reason, status: reason ? 'recorded' : 'reason_unrecorded' },
+    disposition: row.disposition || (receipt ? 'placed' : null), recordedEvaluations: row.reps,
     opportunityKey: row.opportunity_key || null,
     diagnostics: [
       { stage: 'upstream', status: upstream ? 'stopped' : 'not_recorded' },
       { stage: 'risk_gate', status: upstream ? 'not_evaluated' : post || approved ? 'approved' : risk ? 'stopped' : 'not_recorded' },
-      { stage: 'submission', status: post ? 'stopped' : upstream || risk ? 'not_evaluated' : 'not_recorded' },
+      { stage: 'submission', status: receipt ? 'placed' : post ? 'stopped' : upstream || risk ? 'not_evaluated' : 'not_recorded' },
     ],
     recordedChecks: checks && typeof checks === 'object' && !Array.isArray(checks) ? checks : null,
     recordedChecksStatus: row.checks_json?.length > 16_000 ? 'size_limit' : checks ? 'recorded' : 'unavailable',
     detail: details && typeof details === 'object' ? details : null,
-    diagnosticNote: 'Only recorded outcomes are shown. Missing checks are unrecorded; later checks after a stop are not evaluated. Approval is not proof of an order or fill.',
+    diagnosticNote: 'Only recorded outcomes are shown. Missing checks are unrecorded; later checks after a stop are not evaluated. Approval is not proof of an order or fill. A placement receipt is not a second risk approval or proof of a fill.',
   }
 }
 
@@ -47,13 +50,22 @@ export function blockerReport(db, { accountId, from, to = Date.now(), limit = 50
   const params = { from: bounds[0], to: bounds[1], account: String(accountId), floor: bounds[0].replace('T', ' ').slice(0, 19) }
   // Read retained rows in one unit. No LIMIT is applied to the population or
   // totals. Only details are paged. ISO and SQLite timestamps share UTC.
+  // Placement writers also use approved=1. Their boolean *_placed checks
+  // record submission receipts, not a second risk-gate evaluation. Parse JSON
+  // structurally so whitespace is immaterial and string/false values do not count.
+  const receipt = `approved = 1 AND EXISTS (
+    SELECT 1 FROM json_each(CASE WHEN json_valid(checks_json) THEN checks_json ELSE '{}' END)
+    WHERE key GLOB '*_placed' AND type = 'true'
+  )`
   const population = `WITH records AS (
     SELECT 'risk_events' source, id, account_id, symbol, created_at, last_at,
-      CASE WHEN symbol = 'PORTFOLIO' AND approved IS NOT 1 THEN 'upstream_stop'
+      CASE WHEN ${receipt} THEN 'placement_receipt'
+           WHEN symbol = 'PORTFOLIO' AND approved IS NOT 1 THEN 'upstream_stop'
            WHEN approved = 1 THEN 'approved'
            WHEN json_valid(checks_json) AND json_extract(checks_json, '$.post_approval') = 1 THEN 'post_approval_failure'
            ELSE 'risk_refusal' END kind,
-      CASE WHEN symbol = 'PORTFOLIO' AND approved IS NOT 1 THEN 'margin_pool'
+      CASE WHEN ${receipt} THEN 'submission_receipt'
+           WHEN symbol = 'PORTFOLIO' AND approved IS NOT 1 THEN 'margin_pool'
            WHEN approved = 1 THEN 'risk_gate'
            WHEN json_valid(checks_json) AND json_extract(checks_json, '$.post_approval') = 1 THEN 'post_approval'
            ELSE 'risk_gate' END stage,
@@ -66,7 +78,7 @@ export function blockerReport(db, { accountId, from, to = Date.now(), limit = 50
     UNION ALL
     SELECT 'decision_log', id, account_id, symbol, created_at, created_at,
       CASE WHEN stage = 'gate_redirect' THEN 'risk_refusal'
-           WHEN stage = 'submission_dedupe' THEN 'post_approval_failure'
+           WHEN stage IN ('submission_dedupe', 'symbol_position_cap') THEN 'post_approval_failure'
            WHEN stage IN (${UPSTREAM.map(s => `'${s}'`).join(',')}) OR stage GLOB 'account_pregate:*' THEN 'upstream_stop'
            ELSE 'other_stop' END,
       stage, reason, NULL, detail_json, NULL, NULL, 1, strategy, timeframe
@@ -74,7 +86,7 @@ export function blockerReport(db, { accountId, from, to = Date.now(), limit = 50
       AND julianday(created_at) < julianday(@to) AND decision IN ('skip', 'veto') ${scope}
   )`
   const groups = db.prepare(`${population} SELECT kind, COUNT(*) records, SUM(reps) recordedEvaluations FROM records GROUP BY kind`).all(params)
-  const summary = Object.fromEntries(['upstream_stop', 'risk_refusal', 'post_approval_failure', 'approved', 'other_stop'].map(kind => {
+  const summary = Object.fromEntries(['upstream_stop', 'risk_refusal', 'post_approval_failure', 'approved', 'placement_receipt', 'other_stop'].map(kind => {
     const g = groups.find(g => g.kind === kind)
     return [kind, { records: g?.records || 0, recordedEvaluations: g?.recordedEvaluations || 0 }]
   }))
@@ -90,7 +102,7 @@ export function blockerReport(db, { accountId, from, to = Date.now(), limit = 50
     summary, totalRecords, perAccount: counts, unattributedRecordsInWindow: unattributed,
     records: rows.map(blockerEvidence), offset, limit, hasMore: offset + rows.length < totalRecords,
     nextOffset: offset + rows.length < totalRecords ? offset + rows.length : null,
-    countBasis: 'Complete retained records first created in the requested window. The same event may appear in both logs. Repeated risk refusals share a record; recordedEvaluations covers that record’s lifetime, not exact attempts within the window. Records are not distinct opportunities or orders. Other stops include management records whose entry phase is unrecorded.',
+    countBasis: 'Complete retained records first created in the requested window. The same event may appear in both logs. Repeated risk refusals share a record; recordedEvaluations covers that record’s lifetime, not exact attempts within the window. Records are not distinct opportunities or orders. Placement receipts are retained separately from risk approvals. Other stops include management records whose entry phase is unrecorded.',
     scopeNote: accountId === 'all' ? 'Unassigned records stay explicitly unattributed.' : 'Only this registered account is included. Unassigned records are excluded and counted separately.',
   }
 }

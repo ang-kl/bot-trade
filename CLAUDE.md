@@ -1018,3 +1018,7 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
 - 2026-09-22 23:02 UTC, Work Mode continuation with partial transcript corpus:
   visible continuation replies through **№ 8,490**; next **№ 8,491**.
   No full-corpus count is claimed.
+
+- 2026-09-22 23:50 UTC, Work Mode continuation with partial transcript corpus:
+  visible replies through **№ 8,503**; next **№ 8,504**. Workspace is offline;
+  this follows the recorded rebase and visible replies, not a full-corpus count.
