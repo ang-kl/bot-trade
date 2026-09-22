@@ -40,6 +40,8 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
+import { readPerformancePopulations, readPerformanceAnalytics } from '../services/performance-populations.js'
+import { reportLedger } from '../shared/performance-populations.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -2172,16 +2174,25 @@ export default function stateRouter(db) {
   // GET /state/perf-ledger — the Performance Ledger aggregation (design_
   // claude PR B): timeframe windows × market categories × account, with
   // carry-forward. ?account=<id>|all (default all).
+  router.get('/performance-populations', async (_req, res) => {
+    try { res.json(await readPerformancePopulations(db)) }
+    catch (err) { res.status(503).json({ status: 'unavailable', reason: err.message }) }
+  })
   router.get('/perf-ledger', async (req, res) => {
     try {
-      const { buildPerfLedger } = await import('../services/perf-ledger.js')
       const accountId = req.query.account ? String(req.query.account) : null
-      const ledger = buildPerfLedger(db, { accountId })
+      const ledger = reportLedger(await readPerformancePopulations(db), accountId || 'all')
       // The daily-loss fraction THIS account trades under (its overlay merged
       // over the global), so a per-account card computes its daily stop from
       // its own balance and its own limit — not the global limit applied to
       // another account's money (11-09-2026, the Performance cards).
       const scoped = accountId && accountId !== 'all' ? accountId : null
+      // Preserve the account's stored display input, explicitly unverified.
+      // It is not a reconstructed balance history or a portfolio balance.
+      const rawBalance = scoped ? getState(db, `acct:${scoped}:account_balance_usd`) : null
+      ledger.balance = rawBalance != null && String(rawBalance).trim() !== '' && Number.isFinite(Number(rawBalance)) ? Number(rawBalance) : null
+      ledger.balanceSource = ledger.balance == null ? null : 'scoped'
+      ledger.balanceStatus = 'legacy_stored_input_unverified'
       // null means "check off" (risk.js DEFAULT_RISK_CONFIG) and stays null:
       // Number(null) is 0, and 0 would print as a zero-loss daily stop where
       // there is no stop at all (independent checker, 11-09-2026).
@@ -2206,9 +2217,8 @@ export default function stateRouter(db) {
   // described the latest hundred, not the record). days omitted/0 = all time.
   router.get('/account-analytics', async (req, res) => {
     try {
-      const { accountAnalytics } = await import('../services/account-analytics.js')
       const days = Number(req.query.days)
-      res.json(accountAnalytics(db, {
+      res.json(await readPerformanceAnalytics(db, {
         accountId: req.query.account ? String(req.query.account) : null,
         days: Number.isFinite(days) && days > 0 ? days : null,
       }))
