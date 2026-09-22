@@ -9,15 +9,15 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { recalibrateLevels, auditRisk, restrategizeAfterTamper, summarize } from './restrategize.js'
 
-function seed(db, { positionId = '42', side = 'long', entry = 100, sl = 99, tp = 102, lots = 0.1 } = {}) {
+function seed(db, { positionId = '42', accountId = '11', monitorAccountId = accountId, side = 'long', entry = 100, sl = 99, tp = 102, lots = 0.1 } = {}) {
   const tradeId = db.prepare(
-    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
-     VALUES ('XAUUSD', ?, ?, ?, ?, 'autopilot', 'open', datetime('now'))`
-  ).run(side === 'long' ? 'BUY' : 'SELL', entry, lots, positionId).lastInsertRowid
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, account_id, source, status, opened_at)
+     VALUES ('XAUUSD', ?, ?, ?, ?, ?, 'autopilot', 'open', datetime('now'))`
+  ).run(side === 'long' ? 'BUY' : 'SELL', entry, lots, positionId, accountId).lastInsertRowid
   db.prepare(
-    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, source, status)
-     VALUES ('XAUUSD', ?, ?, ?, ?, ?, 'test', 'autopilot', 'active')`
-  ).run(tradeId, side, entry, sl, tp)
+    `INSERT INTO monitored_positions (symbol, trade_id, account_id, side, entry_price, current_sl, current_tp, thesis, source, status)
+     VALUES ('XAUUSD', ?, ?, ?, ?, ?, ?, 'test', 'autopilot', 'active')`
+  ).run(tradeId, monitorAccountId, side, entry, sl, tp)
   return tradeId
 }
 
@@ -50,7 +50,7 @@ test('reversal → fresh SL/TP amended at the broker and persisted, momentum ver
   const db = initDB(':memory:')
   seed(db, { side: 'long' }) // owner reversed TO long; market is rising → aligned
   const amends = []
-  const out = await restrategizeAfterTamper(db, { host: 'h' }, { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'short', to: 'long' }, {
+  const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'short', to: 'long' }, {
     fetchBars: async () => risingBars,
     amend: async (_c, args) => { amends.push(args); return { ok: true } },
   })
@@ -71,7 +71,7 @@ test('reversal with recalibration disabled → verdict only, no amend', async ()
   seed(db, { side: 'short' }) // reversed to short while market rises → NOT aligned
   setState(db, 'tamper_restrategize', 'false')
   const amends = []
-  const out = await restrategizeAfterTamper(db, { host: 'h' }, { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'long', to: 'short' }, {
+  const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'long', to: 'short' }, {
     fetchBars: async () => risingBars,
     amend: async (_c, args) => { amends.push(args) },
   })
@@ -86,7 +86,7 @@ test('volume change → trades.volume synced by ratio and risk audited', async (
   const db = initDB(':memory:')
   const tradeId = seed(db, { lots: 0.1 })
   setState(db, 'account_balance_usd', '10000')
-  const out = await restrategizeAfterTamper(db, { host: 'h' }, { kind: 'volume', symbol: 'XAUUSD', positionId: '42', from: 10, to: 50 })
+  const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, { kind: 'volume', symbol: 'XAUUSD', positionId: '42', from: 10, to: 50 })
   assert.equal(out.did, 'risk_audit')
   assert.equal(out.lots, 0.5) // 0.1 × (50/10)
   assert.equal(db.prepare('SELECT volume FROM trades WHERE id = ?').get(tradeId).volume, 0.5)
@@ -96,7 +96,7 @@ test('owner-moved SL/TP → audit only, never amends', async () => {
   const db = initDB(':memory:')
   seed(db)
   const amends = []
-  const out = await restrategizeAfterTamper(db, { host: 'h' }, { kind: 'sl_moved', symbol: 'XAUUSD', positionId: '42', from: 99, to: 95 }, {
+  const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, { kind: 'sl_moved', symbol: 'XAUUSD', positionId: '42', from: 99, to: 95 }, {
     amend: async () => { amends.push(1) },
   })
   assert.equal(out.did, 'risk_audit')
@@ -107,4 +107,77 @@ test('summarize renders momentum disagreement and risk issues', () => {
   assert.match(summarize({ did: 'recalibrated', aligned: false, sl: 1, tp: 2, issues: [] }), /does NOT support/)
   assert.match(summarize({ did: 'risk_audit', riskUsd: 50, capUsd: 10, rr: 2, issues: ['risk $50 exceeds your 1.0% cap ($10)'] }), /exceeds/)
   assert.match(summarize({ did: 'risk_audit', riskUsd: 5, capUsd: 10, rr: 2, issues: [] }), /Within your risk limits/)
+})
+
+test('same broker position ID on two accounts changes only the supplied account and uses its risk inputs', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const a = seed(db, { accountId: '11', lots: 0.1 })
+  const b = seed(db, { accountId: '22', lots: 0.2 })
+  setState(db, 'ctrader_account_id', '11')
+  setState(db, 'account_balance_usd', '100000')
+  setState(db, 'acct:11:account_balance_usd', '100000')
+  setState(db, 'acct:22:account_balance_usd', '1000')
+  setState(db, 'acct:22:risk_config_json', JSON.stringify({ perTradeRiskPct: 0.01 }))
+  const out = await restrategizeAfterTamper(db, { accountId: '22' }, { kind: 'volume', positionId: '42', from: 10, to: 20 })
+  assert.equal(out.did, 'risk_audit')
+  assert.equal(out.capUsd, 10)
+  assert.equal(out.lots, 0.4)
+  assert.equal(db.prepare('SELECT volume FROM trades WHERE id = ?').get(a).volume, 0.1)
+  assert.equal(db.prepare('SELECT volume FROM trades WHERE id = ?').get(b).volume, 0.4)
+})
+
+test('scoped reversal preserves the other account, and manual level moves still never amend', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const a = seed(db, { accountId: '11', side: 'short', sl: 101, tp: 98 })
+  const b = seed(db, { accountId: '22', side: 'long' })
+  const amends = []
+  const deps = { fetchBars: async () => risingBars, amend: async (creds, args) => { amends.push({ creds, args }) } }
+  const change = { kind: 'reversed', positionId: '42' }
+  const out = await restrategizeAfterTamper(db, { accountId: '22' }, change, deps)
+  assert.equal(out.did, 'recalibrated')
+  assert.equal(amends.length, 1)
+  assert.equal(amends[0].creds.accountId, '22')
+  assert.equal(db.prepare('SELECT current_sl FROM monitored_positions WHERE trade_id = ?').get(a).current_sl, 101)
+  assert.equal(db.prepare('SELECT current_sl FROM monitored_positions WHERE trade_id = ?').get(b).current_sl, out.sl)
+  for (const kind of ['sl_moved', 'tp_moved']) {
+    const audit = await restrategizeAfterTamper(db, { accountId: '22' }, { ...change, kind }, deps)
+    assert.equal(audit.did, 'risk_audit')
+    assert.equal(audit.capUsd, null)
+    assert.match(summarize(audit), /incomplete/)
+  }
+  assert.equal(amends.length, 1)
+})
+
+test('unowned, foreign, contradictory and duplicate identity evidence never authorises work', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  seed(db, { accountId: null, positionId: 'unknown' })
+  seed(db, { accountId: '11', monitorAccountId: '22', positionId: 'conflict' })
+  const duplicate = seed(db, { accountId: '11', positionId: 'duplicate' })
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, account_id, side, entry_price, status)
+    VALUES ('XAUUSD', ?, '11', 'long', 100, 'active')`).run(duplicate)
+  let calls = 0
+  const deps = { fetchBars: async () => { calls++; return risingBars }, amend: async () => { calls++ } }
+  for (const [creds, positionId, reason] of [
+    [{}, 'duplicate', 'account_required'],
+    [{ accountId: '11' }, 'unknown', 'position_not_found'],
+    [{ accountId: '11' }, 'conflict', 'position_not_found'],
+    [{ accountId: '33' }, 'duplicate', 'position_not_found'],
+    [{ accountId: '11' }, 'duplicate', 'position_identity_ambiguous'],
+  ]) {
+    const out = await restrategizeAfterTamper(db, creds, { kind: 'reversed', positionId }, deps)
+    assert.equal(out.did, 'skipped')
+    assert.equal(out.reason, reason)
+    assert.match(summarize(out), /skipped/)
+  }
+  assert.equal(calls, 0)
+})
+
+test('one uncontradicted account stamp identifies a legacy linked row without claiming NULL ownership', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  seed(db, { accountId: '11', monitorAccountId: null, positionId: 'trade-owned' })
+  seed(db, { accountId: null, monitorAccountId: '11', positionId: 'monitor-owned' })
+  for (const positionId of ['trade-owned', 'monitor-owned']) {
+    const out = await restrategizeAfterTamper(db, { accountId: '11' }, { kind: 'sl_moved', positionId })
+    assert.equal(out.did, 'risk_audit')
+  }
 })
