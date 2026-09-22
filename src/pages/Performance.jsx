@@ -18,6 +18,7 @@ import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '../lib/hourly-order.js'
+import { openingEvidence, openingCountLabel } from '../lib/hourly-openings.js'
 import { hourLabel, dateFlags } from '../lib/hour-label.js'
 import { useTableClock } from '../lib/table-clock.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
@@ -718,7 +719,7 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
     <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
       <div ref={animRef} style={{ minWidth: 454 }}>
         <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
-          <span>Hour (SGT)</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
+          <span>Hour (SGT)</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span title="Recorded openings, including trades still open and closes awaiting P&L">Opened</span><span>Closed</span>
         </div>
         {rows.map((r) => {
           const L = hourLabel(r.at)
@@ -753,7 +754,7 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
               )}
             </span>
             <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{r.closeBal != null ? money(r.closeBal) : '—'}</span>
-            <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{r.openedN || '—'}</span>
+            <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{openingCountLabel(r.openedN, r.unknownOpeningTimeN)}</span>
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{r.closedN || '—'}</span>
           </div>
         )})}
@@ -1095,6 +1096,7 @@ export default function Performance() {
   // two pages disagreed about whose numbers you were looking at.
   const [acct, setAcct] = useLensAccount('all')
   const [allTrades, setAllTrades] = useState([])
+  const [openingReport, setOpeningReport] = useState(null)
   // Portfolio-wide closed trades, fetched alongside the scoped set. The
   // per-account cards and the two "× account" gradients are CROSS-account by
   // definition: fed the scoped set they showed every other account's day P&L as
@@ -1250,6 +1252,27 @@ export default function Performance() {
   // hour, never a short interval; see lib/use-hour-tick.js.
   const hourNow = useTableClock()
 
+  // Independent, bounded aggregate: the journal contains only closed/rejected
+  // rows and is capped at 100. It cannot answer "how many trades opened?".
+  // Cancellation/generation checks stop an older account or poll painting
+  // over the latest one. An unavailable response never becomes zero.
+  useEffect(() => {
+    let stopped = false, generation = 0
+    const refresh = async () => {
+      const mine = ++generation
+      let report = null
+      if (agentConfigured()) {
+        try { report = await agentGet(`/state/hourly-openings?account=${encodeURIComponent(acct)}&to=${hourNow}`) }
+        catch { /* unavailable evidence is distinct from zero */ }
+      }
+      if (!stopped && mine === generation) setOpeningReport(report)
+    }
+    const kick = setTimeout(refresh, 0)
+    const interval = setInterval(() => { if (!pageAsleep()) refresh() }, REFRESH_MS)
+    return () => { stopped = true; clearTimeout(kick); clearInterval(interval) }
+  }, [acct, hourNow])
+  const openings = openingEvidence(openingReport, { accountId: acct, to: hourNow })
+
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
   const scopedClosed = useMemo(() => {
@@ -1318,8 +1341,9 @@ export default function Performance() {
     const slots = rollingHourWindows(hourNow, 24)
     const withStats = slots.map(s => {
       const closedIn = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= s.from && ms < s.to })
-      const openedIn = scopedClosed.filter(t2 => { const ms = closedMs({ closed_at: t2.opened_at }); return ms != null && ms >= s.from && ms < s.to })
-      return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length, openedN: openedIn.length }
+      const opened = openings?.rows.find(r => r.from === s.from && r.to === s.to)
+      return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length,
+        openedN: opened?.openedN ?? null, unknownOpeningTimeN: openings?.unknownTimeN ?? 0 }
     })
     // Carry back from the CURRENT stamped balance — anything closed after the
     // newest window's end is subtracted first. With a rolling window that end
@@ -1355,7 +1379,7 @@ export default function Performance() {
     // `loadedAt` is deliberately NOT a dependency: it was only ever here to
     // supply "now", and now comes from the clock. The figures still refresh,
     // through scopedClosed and ledger.
-  }, [scopedClosed, ledger, hourNow])
+  }, [scopedClosed, ledger, hourNow, openings])
 
   // UI-2 — floating P&L for the LIVE hour. Summed across every open position
   // regardless of which sub-table it renders in (market-open, market-closed,
@@ -2357,7 +2381,7 @@ export default function Performance() {
                 toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
                   // The copied text carries the same label the row shows — the
                   // END of the window, in SGT over UTC — not the window start.
-                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`),
+                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN)} opened / ${r.closedN || 0} closed`),
                   '', `Closed trades (${todayTrades.length})`,
                   ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
                 render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} /></>} />
@@ -2371,6 +2395,12 @@ export default function Performance() {
             <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}
               initialIndex={0}>
               {(pageRows) => <TodayHourlyBody rows={pageRows} floatingNow={liveFloating} />}</PagedRows>
+            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>
+              {openings
+                ? `Openings: all confirmed ledger rows, including still-open trades; queried ${new Date(openings.generatedAt).toUTCString()}. ${openings.legacyN} unattributed; ${openings.adoptedN} adopted (may use reconciliation time).${openings.unknownTimeN ? ` ${openings.unknownTimeN} rows have unknown opening times; ≥ marks a lower bound.` : ''}`
+                : 'Opening counts unavailable or stale — a dash is not zero.'}
+              {' '}Broker completeness is unverified. Closed-trade columns use the journal sample; balances are reconstructed and cashflows are unreconciled.
+            </span>
             {/* Owner (2026-07-25): "itemised today's closed trades list back"
                 — alongside the hourly aggregate, not replacing it. */}
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderTop: `1px solid ${P_EDG}`, paddingTop: 2 }}>

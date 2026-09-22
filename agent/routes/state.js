@@ -35,6 +35,7 @@ import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
+import { hourlyOpenings } from '../services/hourly-openings.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -3041,6 +3042,18 @@ export default function stateRouter(db) {
       try { hist = JSON.parse(getState(db, 'watchlist_removed_json') || '[]') || [] } catch { hist = [] }
       res.json({ removed: hist })
     } catch (err) { res.status(500).json({ error: err.message }) }
+  })
+
+  // Confirmed opening population, independent of closed-journal pagination.
+  router.get('/hourly-openings', (req, res) => {
+    const scope = requestedAccount(db, req)
+    if (typeof req.query.account !== 'string' || !scope.explicit
+      || (!scope.all && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(scope.accountId))) {
+      return res.status(400).json({ error: 'explicit registered account or all required' })
+    }
+    const to = typeof req.query.to === 'string' && /^\d{1,16}$/.test(req.query.to) ? Number(req.query.to) : NaN
+    try { return res.json(hourlyOpenings(db, scope, { to })) }
+    catch (err) { return res.status(err instanceof RangeError ? 400 : 503).json({ error: err instanceof RangeError ? err.message : 'opening evidence unavailable' }) }
   })
 
   // GET /state/trades?limit=&offset= — trade journal (closed + rejected).
