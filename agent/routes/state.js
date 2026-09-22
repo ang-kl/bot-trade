@@ -35,6 +35,8 @@ import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
+import { readMarketCalendar } from '../services/market-calendar.js'
+import { marketIdentity } from '../lib/market-identity.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -71,7 +73,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -144,6 +146,23 @@ export default function stateRouter(db) {
       settleWaiters(key, myFlight, (w) => w.res.status(503).json({ error: 'busy — retry shortly' }))
     })
     next()
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/market-calendar?account=<id>&symbolId=<broker instrument id>
+  // Advisory evidence only. Explicit identity avoids an account switch or a
+  // matching ticker name silently changing the feed being diagnosed.
+  // -----------------------------------------------------------------------
+  router.get('/market-calendar', (req, res) => {
+    const accountId = typeof req.query.account === 'string' ? req.query.account : null
+    const account = accountId && db.prepare('SELECT account_id, is_live FROM accounts WHERE account_id = ?').get(accountId)
+    const identity = account && marketIdentity({
+      accountId, symbolId: req.query.symbolId,
+      host: Number(account.is_live) === 1 ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
+    })
+    if (!identity) return res.status(400).json({ error: 'registered account and broker symbolId are required' })
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(readMarketCalendar(db, identity))
   })
 
   // -----------------------------------------------------------------------

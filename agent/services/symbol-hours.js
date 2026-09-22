@@ -19,6 +19,7 @@
 // ---------------------------------------------------------------------------
 
 import { isSymbolMarketOpen } from '../lib/sessions.js'
+import { recordMarketCalendar } from './market-calendar.js'
 
 const WEEK_SECONDS = 7 * 24 * 3600
 
@@ -120,6 +121,15 @@ export async function refreshSymbolHours(db, creds, deps = {}) {
     try {
       const res = await fetch(chunk.map(([, id]) => Number(id)))
       for (const sym of res?.symbol || []) {
+        // P2c observation-only side channel. Reuse this exact broker response,
+        // identified by the requested account/host/instrument, with no new
+        // requests or change to the legacy entry calendar below. Unexpected
+        // symbols/accounts cannot manufacture calendar evidence.
+        if (chunk.some(([, id]) => String(id) === String(sym.symbolId))
+          && (res.ctidTraderAccountId == null || String(res.ctidTraderAccountId) === String(creds.accountId))) {
+          try { recordMarketCalendar(db, { ...creds, symbolId: sym.symbolId }, sym) }
+          catch (err) { out.errors.push(`calendar observation: ${err.message}`) }
+        }
         const name = idToName.get(String(sym.symbolId)) || sym.symbolName
         if (!name) continue
         const schedule = normSchedule(sym)
