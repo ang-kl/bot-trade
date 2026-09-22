@@ -274,3 +274,31 @@ No storage deletion, volume/configuration mutation or process restart was made.
 Rollback owner remains Adrian Ang. Preserve each PR and deployment SHA. A revert
 also deploys all four services and requires the controlled scope/preflight in
 [the prepared rollout runbook](controlled-rollout-preparation-2026-09-22.md).
+
+## Continuation to P5 - 22 September 2026, 17:34 SGT
+
+Owner instruction: continue the scope described in reply 8,395B paragraph 1
+through P5 Reporting/history. Main is `e8b9cd98180bc965493469c1c2f553499de2025c`;
+#1015, #1016, #1017 and #1018 have all merged. No open PRs were returned at
+this continuation's reconciliation. The earlier 16:10/16:19 status is historical.
+Railway previously reported all four services successful on this SHA; that is
+not authenticated account, scanner or management acceptance.
+
+Fresh P0 broker checks at 17:19:11-12 SGT, relayed 17:19:27, report 39 positions,
+zero missing SL and two missing TP1 (demo suffixes 9908/0949). The intended
+roster and position-specific target policy remain unresolved. No broker action
+was taken.
+
+P2 native-money evidence is implemented on the continuation branch. The full
+local gate passed: 5,247 Node tests, one existing skip; 911 Vitest tests;
+ESLint with zero warnings, production build, no-green and syntax checks.
+See [the currency contract](account-money-evidence-2026-09-22.md). This adds
+account/host/deposit-asset/receipt/currency evidence without a new broker read.
+It does not complete the risk-input currency migration: the legacy scalar's
+missing-conversion and loss-cap policy still needs explicit review.
+
+At this checkpoint: implemented and locally tested; PR CI/publication pending;
+not merged, not deployed and not runtime verified. Subsequent PR metadata or a
+later checkpoint supersedes those states. Work continues on P4 monitor account
+routing and actual completion evidence, then P5 Controllers/watchdog/scanners
+and accounting/history. The full scope is not declared complete.

@@ -35,6 +35,7 @@ import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
+import { accountMoney } from '../services/account-money.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
@@ -74,7 +75,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/account-money'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -150,6 +151,13 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  router.get('/account-money', (req, res) => {
+    const id = typeof req.query.account === 'string' ? req.query.account : null
+    if (!id || !/^[1-9]\d*$/.test(id)) return res.status(400).json({ error: 'explicit account required' })
+    if (!db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(id)) return res.status(404).json({ error: 'account not registered' })
+    res.set('Cache-Control', 'no-store').json(accountMoney(db, id))
+  })
+
   // GET /state/market-calendar?account=<id>&symbolId=<broker instrument id>
   // Advisory evidence only. Explicit identity avoids an account switch or a
   // matching ticker name silently changing the feed being diagnosed.
