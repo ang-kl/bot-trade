@@ -65,6 +65,9 @@ bool handleAuth(FakeBroker& b, const jsn::Value& f) {
   int t = typeOf(f);
   if (t == kAppAuthReq) { b.reply(f, kAppAuthRes, jsn::Value{jsn::Object{}}); return true; }
   if (t == kAccountAuthReq) { b.reply(f, kAccountAuthRes, jsn::Value{jsn::Object{}}); return true; }
+  // Paging scenarios do not supply a money scale. Answer explicitly instead
+  // of making every fixture wait 20 seconds for this unrelated metadata.
+  if (t == 2121) { b.reply(f, 2122, jsn::Value{jsn::Object{}}); return true; }
   return false;
 }
 
