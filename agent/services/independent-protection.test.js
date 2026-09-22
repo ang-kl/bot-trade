@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { independentProtectionView, makeIndependentProtectionPoll } from './independent-protection.js'
+import { independentProtectionView, makeIndependentProtectionPoll, startIndependentProtection } from './independent-protection.js'
 import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 
 test('independent readings expire and failures cannot inherit a healthy result', t => {
@@ -29,11 +29,12 @@ test('provisions all registered accounts, keeps hosts separate, reconnects after
   upsertAccount(db, { accountId: '11', isLive: false })
   upsertAccount(db, { accountId: '12', isLive: false })
   upsertAccount(db, { accountId: '22', isLive: true })
-  let sessions = []; const connects = []; let offline = false
-  const poll = makeIndependentProtectionPoll(db, { env: { VERIFY_URL: 'https://verifier.test', EXEC_SECRET: 'fixture' },
+  let sessions = []; const connects = []; const reports = []; let offline = false, refuse = false
+  const poll = makeIndependentProtectionPoll(db, { env: { VERIFY_URL: 'https://verifier.test', EXEC_SECRET: 'fixture' }, log: line => reports.push(line),
     fetchImpl: async (url, options) => {
       if (offline) throw new Error('offline')
       if (url.endsWith('/connect')) {
+        if (refuse) return { ok: false, status: 502 }
         const b = JSON.parse(options.body); connects.push(b)
         assert.equal(b.purpose, 'protection')
         sessions = sessions.filter(s => s.host !== b.host)
@@ -52,4 +53,19 @@ test('provisions all registered accounts, keeps hosts separate, reconnects after
   assert.equal(connects.length, 4)
   offline = true; await poll()
   assert.equal(independentProtectionView(db, '22').ok, false)
+  offline = false; refuse = true; sessions = []; await poll()
+  assert.match(independentProtectionView(db, '22').summary, /HTTP 502/, 'a missing row still reports its host authorisation failure')
+  assert.ok(reports.some(line => line.includes('missing TP1')))
+  assert.ok(reports.some(line => line.includes('HTTP 502')))
+  assert.ok(reports.every(line => !line.includes('fixture')), 'credentials never enter the audit summary')
+})
+
+
+test('an unconfigured independent checker reports the missing configuration instead of staying silent', t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const previous = process.env.VERIFY_URL; delete process.env.VERIFY_URL
+  t.after(() => { if (previous === undefined) delete process.env.VERIFY_URL; else process.env.VERIFY_URL = previous })
+  const stop = startIndependentProtection(db)
+  stop()
+  assert.match(independentProtectionView(db, '22').summary, /not configured: VERIFY_URL/)
 })

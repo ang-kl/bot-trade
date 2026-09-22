@@ -53,7 +53,11 @@ const NY_HMS = new Intl.DateTimeFormat('en-US', {
 // within one UTC hour shares one FX-day open. Bounded so a long backtest
 // cannot grow it without limit.
 const dayOpenCache = new Map()
-const DAY_OPEN_CACHE_MAX = 512
+// Mixed intraday/daily/weekly/monthly scans exceed 512 distinct hours and
+// repeatedly flushed the whole cache. Production profiles again measured
+// 6-7 seconds in fxDayOpenMs. Keep a bounded multi-timeframe working set;
+// evict one old entry instead of invalidating every recent answer.
+const DAY_OPEN_CACHE_MAX = 16384
 
 export function fxDayOpenMs(nowMs = Date.now()) {
   const hourKey = Math.floor(nowMs / 3_600_000)
@@ -65,7 +69,7 @@ export function fxDayOpenMs(nowMs = Date.now()) {
   const anchorMin = 17 * 60
   const sinceMin = min >= anchorMin ? min - anchorMin : min + 24 * 60 - anchorMin
   const open = nowMs - sinceMin * 60_000 - get('second') * 1000 - (nowMs % 1000)
-  if (dayOpenCache.size >= DAY_OPEN_CACHE_MAX) dayOpenCache.clear()
+  if (dayOpenCache.size >= DAY_OPEN_CACHE_MAX) dayOpenCache.delete(dayOpenCache.keys().next().value)
   dayOpenCache.set(hourKey, open)
   return open
 }

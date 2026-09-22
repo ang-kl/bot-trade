@@ -11,7 +11,7 @@ export function independentProtectionView(db, accountId, nowMs = Date.now()) {
   const checkedAt = Number(row?.checkedAtMs)
   const ageMs = checkedAt > 0 ? nowMs - checkedAt : null
   const stale = ageMs == null || ageMs < 0 || ageMs > MAX_AGE_MS
-  const readError = state?.error || state?.hostErrors?.[row?.host] || row?.error
+  const readError = state?.error || state?.accountErrors?.[String(accountId)] || state?.hostErrors?.[row?.host] || row?.error
   const valid = ['openCount', 'missingSl', 'missingTp'].every(k => Number.isInteger(row?.[k]) && row[k] >= 0)
     && row.missingSl <= row.openCount && row.missingTp <= row.openCount && row.source === 'broker_reconcile'
   const ok = !readError && row?.ok === true && valid && !stale
@@ -24,8 +24,8 @@ export function independentProtectionView(db, accountId, nowMs = Date.now()) {
 
 // Node only provisions read sessions and relays cpp-verify's results. The
 // independent process performs its own reconcile every 60s after each pass.
-export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  const base = String(env.VERIFY_URL || '').replace(/\/$/, '')
+export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl = globalThis.fetch, log = console.log } = {}) {
+  const base = String(env.VERIFY_URL || '').trim().replace(/\/+$/, '')
   const secret = String(env.EXEC_SECRET || '')
   if (!base || !secret) return null
   let running = false
@@ -37,6 +37,16 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
     return res.json()
   }
   const fingerprints = new Map()
+  let lastReport = null
+  const report = () => {
+    const accounts = db.prepare('SELECT account_id FROM accounts ORDER BY account_id').all()
+    const checks = accounts.map(a => {
+      const v = independentProtectionView(db, a.account_id)
+      return { accountId: a.account_id, checkedAt: v.checkedAt, ok: v.ok, summary: v.summary }
+    })
+    const message = JSON.stringify(checks)
+    if (message !== lastReport) { log(`[independent-protection] ${message}`); lastReport = message }
+  }
   return async () => {
     if (running) return
     running = true
@@ -47,9 +57,10 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
       // of existing protection, including manage-only or zero-balance accounts.
       const accounts = db.prepare('SELECT account_id FROM accounts ORDER BY account_id').all()
       const groups = new Map()
+      const accountErrors = {}
       for (const a of accounts) {
         const creds = credsForRegisteredAccount(db, a.account_id)
-        if (!creds?.ready) continue
+        if (!creds?.ready) { accountErrors[String(a.account_id)] = 'Broker credentials unavailable for independent check'; continue }
         if (!groups.has(creds.host)) groups.set(creds.host, { creds, ids: [] })
         groups.get(creds.host).ids.push(String(a.account_id))
       }
@@ -68,23 +79,36 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
         fingerprints.set(host, signature)
       }))
       connections.forEach((result, i) => {
-        if (result.status === 'rejected') hostErrors[groupList[i][0]] = result.reason.message
+        if (result.status === 'rejected') {
+          const [host, group] = groupList[i]
+          hostErrors[host] = result.reason.message
+          for (const id of group.ids) accountErrors[id] = result.reason.message
+        }
       })
       status = await request('/protection-status')
       if (status?.source !== 'cpp-verify' || !Array.isArray(status.accounts)) throw new Error('Invalid independent protection reply')
       const rows = status.accounts.filter(row => groups.get(row.host)?.ids.includes(String(row.accountId)))
-      setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, readAt: new Date().toISOString(), error: null }))
+      setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, accountErrors, readAt: new Date().toISOString(), error: null }))
     } catch (error) {
       let previous = {}
       try { previous = JSON.parse(getState(db, STATE_KEY) || '{}') } catch { /* preserve unknown */ }
       setState(db, STATE_KEY, JSON.stringify({ ...previous, readAt: new Date().toISOString(), error: error.message }))
-    } finally { running = false }
+    } finally {
+      running = false
+      try { report() } catch { /* diagnostics must not interrupt protection polling */ }
+    }
   }
 }
 
 export function startIndependentProtection(db) {
   const poll = makeIndependentProtectionPoll(db)
-  if (!poll) return () => {}
+  if (!poll) {
+    const missing = ['VERIFY_URL', 'EXEC_SECRET'].filter(k => !String(process.env[k] || '').trim())
+    const error = `Independent checker not configured: ${missing.join(', ')} missing`
+    setState(db, STATE_KEY, JSON.stringify({ accounts: [], error, readAt: new Date().toISOString() }))
+    console.log(`[independent-protection] ${error}`)
+    return () => {}
+  }
   void poll()
   const timer = setInterval(() => { void poll() }, 30_000)
   timer.unref?.()
