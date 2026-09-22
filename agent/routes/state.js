@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
+import { nodeWatchdogContract } from '../services/watchdog-contract.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
@@ -48,6 +49,9 @@ import { marketIdentity } from '../lib/market-identity.js'
  */
 export default function stateRouter(db) {
   const router = Router()
+  router.get('/watchdog', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json(nodeWatchdogContract(db))
+  })
 
   // -----------------------------------------------------------------------
   // Server-side response cache (owner 2026-07-28: "some information already
@@ -74,7 +78,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/watchdog'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads

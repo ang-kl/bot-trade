@@ -27,6 +27,7 @@ import { refusedKeyFor } from '../lib/token-refused.js'
 import { auditControllerEvent } from './phase-audit.js'
 import { checkProtectionFreshness, protectionFreshnessFrom } from './protection-freshness.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
+import { independentWatchdogOwns } from './watchdog-ownership.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
@@ -417,6 +418,7 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
     if (!def) continue
     // A retired controller is not scheduled, so its silence is not a stall.
     if (def.retired) continue
+    const report = independentWatchdogOwns(db, 'service_liveness') && ['cpp_exec', 'cpp_exec_demo', 'fast_monitor'].includes(row.name) ? () => {} : say
     const expected = expectedSecFor(def, lsec)
     const limit = expected * def.factor
     const age = ageSecOf(row, now)
@@ -436,7 +438,7 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
       }
       db.prepare('UPDATE controller_heartbeats SET stalled = 1 WHERE name = ?').run(row.name)
       const ageMin = Math.round(age / 60)
-      say(`🔴 CONTROLLER STALLED: ${def.label} last ran ${ageMin}m ago (expected every ~${Math.round(expected / 60) || 1}m). Positions may be unmanaged — check the Railway service.`)
+      report(`🔴 CONTROLLER STALLED: ${def.label} last ran ${ageMin}m ago (expected every ~${Math.round(expected / 60) || 1}m). Positions may be unmanaged — check the Railway service.`)
       events.push({ name: row.name, event: 'stalled', ageSec: Math.round(age) })
       auditControllerEvent(db, { controller: row.name, event: 'stalled', detail: `last ran ${ageMin}m ago (expected ~${Math.round(expected / 60) || 1}m)` })
     } else if (age <= limit && row.stalled) {
@@ -445,19 +447,19 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
         events.push({ name: row.name, event: 'recovered_silent' })
         continue
       }
-      say(`🔵 CONTROLLER RECOVERED: ${def.label} is beating again.`)
+      report(`🔵 CONTROLLER RECOVERED: ${def.label} is beating again.`)
       events.push({ name: row.name, event: 'recovered' })
       auditControllerEvent(db, { controller: row.name, event: 'recovered' })
     }
 
     if (row.consecutive_failures >= FAIL_ALERT_AT && !row.fail_alerted) {
       db.prepare('UPDATE controller_heartbeats SET fail_alerted = 1 WHERE name = ?').run(row.name)
-      say(`🔴 CONTROLLER FAILING: ${def.label} has failed ${row.consecutive_failures}× in a row — last error: ${row.last_error || 'unknown'}`)
+      report(`🔴 CONTROLLER FAILING: ${def.label} has failed ${row.consecutive_failures}× in a row — last error: ${row.last_error || 'unknown'}`)
       events.push({ name: row.name, event: 'failing', failures: row.consecutive_failures })
       auditControllerEvent(db, { controller: row.name, event: 'failing', detail: `${row.consecutive_failures}x in a row — last error: ${row.last_error || 'unknown'}` })
     } else if (row.consecutive_failures === 0 && row.fail_alerted) {
       db.prepare('UPDATE controller_heartbeats SET fail_alerted = 0 WHERE name = ?').run(row.name)
-      say(`🔵 CONTROLLER RECOVERED: ${def.label} succeeded after a failure streak.`)
+      report(`🔵 CONTROLLER RECOVERED: ${def.label} succeeded after a failure streak.`)
       events.push({ name: row.name, event: 'failure_recovered' })
     }
   }

@@ -68,6 +68,7 @@ export function controllerRuntimeView(db, { nowMs = Date.now() } = {}) {
     }
   })
   return { at: new Date(nowMs).toISOString(), sides, accounts,
+    watchdog: read(db, 'independent_watchdog_json'),
     monitor: read(db, 'fast_monitor_pass_json'),
     process: {
       phase: getState(db, 'loop_phase') || 'unknown',
