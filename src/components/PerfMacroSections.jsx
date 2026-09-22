@@ -1,3 +1,4 @@
+import { reportStats } from '../../agent/shared/performance-populations.js'
 // PerfMacroSections — the last three Page-1 sections of the design_claude
 // Performance Dashboard, exact ports: the macro regime matrix (SVG rings +
 // asset-group dots + quadrant cards + O-I-A applications), Balance in/out,
@@ -104,7 +105,7 @@ function QuadCard({ q }) {
 }
 
 /** trades30: [{sym, cat, pnl}] real closed 30D · positions: monitored rows */
-export function RegimeMatrix({ trades30, positions, accounts, account, onAccount, inModal = false }) {
+export function RegimeMatrix({ populationReport, positions, accounts, account, onAccount, inModal = false }) {
   // ONE SCOPE, NOT TWO. Owner 05-08-2026: "Macro regime matrix doesn't refresh
   // when selected by account."
   //
@@ -130,18 +131,18 @@ export function RegimeMatrix({ trades30, positions, accounts, account, onAccount
   // playbook copy with no plotted trade group — legend footnote, not a dot.
   const KEYS = { 'Energy WTI/Gas': 'A', 'Alt crypto SOL/XRP': 'B', 'Crypto BTC/ETH': 'C', 'Comdoll AUD/NZD': 'D', 'Asia indices JPN/HK/AUS': 'E', 'EU indices GER40/UK100': 'F', 'US indices': 'G', 'USD majors': 'H', 'JPY crosses': 'J', 'Gold XAU': 'K', 'Silver XAG': 'L', 'Grains': 'M', 'Exotics ZAR/TRY/MXN': 'N' }
   const dots = RGM.map(({ name, syms, cat, gx, iy }) => {
-    const l = trades30.filter(t => syms.includes(t.sym) || (cat && t.cat === cat))
-    const p = l.reduce((s, t) => s + t.pnl, 0)
+    const st = reportStats(populationReport, '30d', rAcct, g => syms.includes(g.sym) || (cat && g.market === cat))
+    const p = st.pnl
     // Taller plot (spec A1): 720×620 viewBox, center (360, 310) — the
     // volatility rings become visibly concentric instead of squashed.
     const cx = 360 + gx * 300, cy = 310 - iy * 258
-    const col = l.length ? (p >= 0 ? UP : DN) : MU
+    const col = p == null ? MU : p >= 0 ? UP : DN
     const r2 = Math.max(Math.abs(gx), Math.abs(iy))
     return {
       key: KEYS[name] || '·', name, cx, cy, tx: cx + (gx > 0.6 ? -9 : 9), anc: gx > 0.6 ? 'end' : 'start',
-      pnl: l.length ? signed(p) : 'no trades', col, dot: col,
+      pnl: p == null ? 'P&L unavailable' : signed(p), col, dot: col,
       volBand: r2 < 0.35 ? 'low' : r2 < 0.6 ? 'mid' : 'high',
-      tip: `${name} · 30D ${l.length ? `${signed(p)} · ${l.length} trades` : 'no trades'}`,
+      tip: `${name} · 30D ${st.n ?? 'unavailable'} closes · ${st.pricedN ?? '—'} priced · ${st.moneyState}`,
     }
   })
   const scoped = positions.filter(p => rAcct === 'all' || String(p.account_id ?? '') === rAcct)
@@ -173,7 +174,7 @@ export function RegimeMatrix({ trades30, positions, accounts, account, onAccount
           <SectionTools id="regime" title="Macro Regime Matrix — Where the Book Sits table" window="30D"
             data={dots.map(d => ({ group: d.name, net30d: d.pnl }))}
             toText={() => ['Macro regime matrix — 30D net per asset group', ...dots.map(d => `${d.name} · ${d.pnl}`)].join('\n')}
-            render={() => <RegimeMatrix trades30={trades30} positions={positions} accounts={accounts} account={account} onAccount={onAccount} inModal />} />
+            render={() => <RegimeMatrix populationReport={populationReport} positions={positions} accounts={accounts} account={account} onAccount={onAccount} inModal />} />
         )}
       </div>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>

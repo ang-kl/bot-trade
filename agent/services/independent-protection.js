@@ -89,6 +89,15 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
       if (status?.source !== 'cpp-verify' || !Array.isArray(status.accounts)) throw new Error('Invalid independent protection reply')
       const rows = status.accounts.filter(row => groups.get(row.host)?.ids.includes(String(row.accountId)))
       setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, accountErrors, readAt: new Date().toISOString(), error: null }))
+      // Optional read-only watchdog status. Its failure must not invalidate
+      // the independent broker protection reading just completed above.
+      try {
+        const watchdog = await request('/watchdog-status')
+        if (watchdog?.schemaVersion !== 1) throw new Error('Invalid watchdog status')
+        setState(db, 'independent_watchdog_json', JSON.stringify({ status: watchdog, readAt: new Date().toISOString(), error: null }))
+      } catch {
+        setState(db, 'independent_watchdog_json', JSON.stringify({ status: null, readAt: new Date().toISOString(), error: 'Independent watchdog status unavailable' }))
+      }
     } catch (error) {
       let previous = {}
       try { previous = JSON.parse(getState(db, STATE_KEY) || '{}') } catch { /* preserve unknown */ }

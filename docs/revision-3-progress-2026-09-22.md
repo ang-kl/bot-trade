@@ -275,6 +275,118 @@ Rollback owner remains Adrian Ang. Preserve each PR and deployment SHA. A revert
 also deploys all four services and requires the controlled scope/preflight in
 [the prepared rollout runbook](controlled-rollout-preparation-2026-09-22.md).
 
+## Continuation to P5 - 22 September 2026, 17:34 SGT
+
+Owner instruction: continue the scope described in reply 8,395B paragraph 1
+through P5 Reporting/history. Main is `e8b9cd98180bc965493469c1c2f553499de2025c`;
+#1015, #1016, #1017 and #1018 have all merged. No open PRs were returned at
+this continuation's reconciliation. The earlier 16:10/16:19 status is historical.
+Railway previously reported all four services successful on this SHA; that is
+not authenticated account, scanner or management acceptance.
+
+Fresh P0 broker checks at 17:19:11-12 SGT, relayed 17:19:27, report 39 positions,
+zero missing SL and two missing TP1 (demo suffixes 9908/0949). The intended
+roster and position-specific target policy remain unresolved. No broker action
+was taken.
+
+P2 native-money evidence is implemented on the continuation branch. The full
+local gate passed: 5,247 Node tests, one existing skip; 911 Vitest tests;
+ESLint with zero warnings, production build, no-green and syntax checks.
+See [the currency contract](account-money-evidence-2026-09-22.md). This adds
+account/host/deposit-asset/receipt/currency evidence without a new broker read.
+It does not complete the risk-input currency migration: the legacy scalar's
+missing-conversion and loss-cap policy still needs explicit review.
+
+At this checkpoint: implemented and locally tested; PR CI/publication pending;
+not merged, not deployed and not runtime verified. Subsequent PR metadata or a
+later checkpoint supersedes those states. Work continues on P4 monitor account
+routing and actual completion evidence, then P5 Controllers/watchdog/scanners
+and accounting/history. The full scope is not declared complete.
+
+
+## Continuation checkpoint — 22 September 2026, 19:15 SGT
+
+Scope remains the approved implementation through P5. Current main was read
+back at 19:11 SGT as `e8b9cd98180bc965493469c1c2f553499de2025c`.
+The following are separate draft review packages, **not merged or deployed**:
+
+| Package | PR / dependency | Implemented and tested evidence |
+| --- | --- | --- |
+| P2 native account money | #1019, main | Currency/asset/account identity and freshness evidence; full local repository gate and PR test/review checks passed. Legacy risk consumers are not changed by this package. |
+| P4 monitor work | #1020, main | Account/host scoped fallback quotes and completed per-position receipts; full local gate and PR checks passed. Exclusive writer/config freshness and latency acceptance remain open. |
+| P5 Controllers | #1021, main | Six groups, retired history and actual completion evidence; full local gate and PR checks passed. Authenticated visual acceptance remains unavailable. |
+| P5 activity | #1022, main | Full-ledger hourly opening/closing populations and currency-aware recorded P&L; full local gate and PR checks passed. Other capped performance panels remain separate work. |
+| P5 account history | #1023, based on #1019 | Retained snapshots, native currencies, independently identified cashflows and bounded history API/UI; 5,254 Node tests passed (one skip), 912 Vitest tests passed, remaining local gate passed. PR test/review checks passed, read back at 19:10 SGT. |
+| P5 independent watchdog | Current branch | Independent bounded probes, incident/outbox persistence, outbound-only Telegram implementation, canonical policy/ownership handoff contract, shared broker-calendar intervals and Controllers read model. Local C++ gate passed after recovery; final Node/UI gate running at this checkpoint. |
+| P5 scanner extraction | Local work branch | Both new service binaries compile. Tick service reuses existing strategy/workers. Timeframe service currently covers only baseline closed-bar Fibonacci; full strategy parity, feed producers, Node comparison/admission boundary and runtime acceptance are outstanding. No ownership activation. |
+
+The previous scratch Git metadata and shared dependency directory expired at
+approximately 18:55 SGT. Source files survived. Recovery verified all 1,440
+base blobs/tree against GitHub and reconstructed the exact five published
+commits; no source work was discarded. Native SQLite was rebuilt successfully
+against the actual Node 24 headers. The interrupted test run failed from
+missing packages and is **not a passing gate**; the complete gate is rerunning.
+
+The watchdog uses separate process and completed-work evidence; an idle
+quote-driven scanner is not considered stalled, but its feed-age check remains
+independent. A configured account without its first completed broker audit is
+unknown. Missing/stale calendars cannot clear prior faults. Node retains alert
+ownership by default; generic duplicate alerts transfer only under the explicit
+handoff declaration, with manual approval buttons retained. No notifications,
+credentials, settings, broker amendments, deployments or ownership handoffs
+were performed. See `independent-watchdog-2026-09-22.md` for the contract and
+remaining producer/rollout acceptance.
+
+A main merge still automatically deploys all four existing Railway services.
+The controlled restart/rollout boundary in revision 3 section 18 therefore
+continues to apply despite green PR checks. Publishing reviewable branches does
+not satisfy deployment or runtime verification. The external verifier-outage
+observer is unselected/unprovisioned; authenticated visual/runtime acceptance,
+P2 risk evidence policy, P3 momentum TP1 semantics and applicable P4 policy
+limits remain precise open items, not reasons to stop unrelated implementation.
+The 17:19 SGT broker audit is historical, not a current protection guarantee.
+
+### Watchdog gate completion — 19:27 SGT
+
+The recovered Node 24/better-sqlite3 combination crashed during native environment
+cleanup; that run is not accepted. Local tooling was aligned with repository
+CI's Node 22 (22.23.2), without changing dependency locks or application code to
+hide the failure. On that runtime the complete watchdog branch gate passed:
+**5,251 Node tests passed, one skipped, none failed**; **911 Vitest tests passed**;
+ESLint zero warnings, production build, no-green and required syntax checks
+passed. The C++ verifier binary and complete unit suite passed, including new
+work/unknown-account cases. CI now explicitly installs the required libcurl
+headers. This is local implementation/test evidence only; PR CI, merge,
+deployment and runtime acceptance remain separate states.
+
+## Shared scanner services — 22 September 2026, 19:38 SGT
+
+Both new C++ services are implemented as independently buildable mirror-only
+executables with bounded input/work/output, scoped feed identity, explicit
+profile/version/expiry and completed-work receipts. `cpp-scan-tick` preserves
+the existing incremental strategy and workers byte-for-byte and matches the
+frozen JavaScript oracle with 1/2/4 workers. Tests also cover account/host
+collisions, retries, restart-stable candidate IDs, gaps, warm-up, stale expiry
+and bounded output. A process instance ID makes output-cursor resets explicit.
+
+`cpp-scan-timeframe` currently implements only the original closed-bar FX
+Fibonacci baseline without optional confluence filters. Frozen actual-JavaScript
+fixtures match long/short/no-signal/warm-up decisions and numerical outputs;
+unsupported strategy/options/partial-bar inputs are refused, retaining the
+reference owner. **The full timeframe C++ target remains incomplete.** Gateway
+feed transport and the Node comparison ledger are separate work branches.
+
+Local gate: 5,245 Node tests passed, one skipped; 911 Vitest tests passed;
+ESLint zero warnings, production build, no-green and required syntax checks
+passed. Both service binaries and C++ suites passed again after adding process
+identity and timeframe identity to output. No scanner service was provisioned,
+activated or runtime-verified. See `shared-scanner-boundary-2026-09-22.md`.
+
+The preceding watchdog is published as draft PR #1024 at
+`0792280dc2cedef81cc2e786c9634e89a26df77b`. Its Node, review and C++ CI checks
+were read back green at 19:38 SGT. It remains unmerged/undeployed because the
+recorded controlled-rollout boundary still applies to main's automatic deploys.
+
 
 ## Continuation checkpoint — 22 September 2026, 19:53 SGT
 
@@ -321,3 +433,39 @@ All main merges still trigger the four running services. The controlled rollout
 preflight and explicit deployment boundary therefore keep these packages draft.
 Historical broker observations are not current verification. No broker targets,
 credentials, trading modes, risk caps or research thresholds were changed.
+
+## Continuation checkpoint — 22 September 2026, 20:25 SGT
+
+Fresh GitHub reconciliation: main is
+`c74165e2b1f5186a5bfe9925093d6e466025b3ea`. #1019 native money merged at
+19:58:05 SGT and #1020 scoped monitor receipts at 19:58:27 SGT independently
+of this continuation. Their deployment and runtime acceptance on this new SHA
+have not been verified here. #1021's head advanced to
+`e9231e162d8b5d1c80494062c96b2ac9dfebae22`, integrating that main and regenerating
+the inventory; preserve that work. Its commit records its own full gate.
+
+#1022–#1026 remain draft/unmerged. #1026 CI is green. The gateway mirror is
+published as draft #1027, head `81728dfa26cc79da3262703b585201d606d79261`:
+full local Node/C++/all 15 TSan tests and UI gate passed; CI pending at publication.
+No endpoint, credential, scanner service, writer or production mode was activated.
+
+This package completes the remaining journal-derived reporting populations and
+corrects their units/availability and the realised-P&L curve. Full local gate:
+5,252 Node tests passed with one skip; 918 Vitest tests passed; lint zero warnings,
+build, no-green, syntax and generated inventory passed. It depends on #1022;
+see [complete populations](performance-populations-2026-09-22.md). Implemented
+and tested are not merged, deployed or runtime verified.
+
+An independent blocker package is in progress: actual recorded first refusals,
+post-approval failures, explicit unevaluated/unrecorded downstream diagnostics,
+strict account scope, bounded details and complete record counts. Focused tests
+pass; its full gate is pending. The complete history/reporting/Controllers
+integration still needs its own combined gate. Full timeframe strategy parity,
+bar supply, scanner calendars/work producers and legacy/new comparison remain
+executable P5c work. P2 currency-risk policy, P3 target policy, P4 ownership/age
+decisions and production acceptance remain separate unresolved boundaries.
+
+All main merges still have the recorded four-service deployment coupling. No
+merge/deploy, broker amendment, credential or mode change was performed here;
+risk caps, mandatory TP1, manual ownership and validation thresholds stand.
+Historical broker reports have not been described as current.

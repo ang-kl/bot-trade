@@ -1,13 +1,25 @@
+import { useTableClock } from '../lib/table-clock.js'
 const onOff = value => value === true ? 'ON' : value === false ? 'OFF' : 'UNVERIFIED'
 const count = value => value == null ? 'Unverified' : String(value)
 const stamp = value => value ? new Date(value).toLocaleString() : 'No reading'
 
 export default function ControllerRuntime({ runtime }) {
+  const now = useTableClock(1000)
   if (!runtime) return <p role="status">Tick and protection status unavailable.</p>
   const missing = runtime.accounts.flatMap(a => (a.missingTargets || []).map(p => ({ ...p, account: a.accountId, stale: a.protection.stale || a.protection.lastAttemptOk === false })))
   return (
     <div className="text-(length:--fs-body) mb-3 space-y-2">
       <p>The clock updates every second. Strategy checks follow quote events or scheduled scans. A heartbeat does not confirm an entry or a protected position.</p>
+      <details><summary>Independent service watchdog</summary>
+        {runtime.watchdog?.status && now - Date.parse(runtime.watchdog.readAt) >= 0 && now - Date.parse(runtime.watchdog.readAt) < 90_000 ? <>
+          <p>Supervision: {onOff(runtime.watchdog.status.enabled)}. Durable incident record: {onOff(runtime.watchdog.status.durable)}. Urgent notifications permitted: {onOff(runtime.watchdog.status.effectivePolicyAllowsUrgent)}.</p>
+          <p>Master notification permission: {onOff(runtime.watchdog.status.masterEnabled)}. Delivery credentials configured: {onOff(runtime.watchdog.status.deliveryCredentialsConfigured)}. Incident owner configured: {onOff(runtime.watchdog.status.incidentOwnerConfigured)}.</p>
+          <p>{runtime.watchdog.status.error || 'No reported storage error'}. External verifier observer: {runtime.watchdog.status.externalObserver}.</p>
+          <p>Effective probe interval: {count(runtime.watchdog.status.policy?.probeMs)} ms; service grace: {count(runtime.watchdog.status.policy?.serviceGraceMs)} ms; management overdue grace: {count(runtime.watchdog.status.policy?.managementGraceMs)} ms; scanner overdue grace: {count(runtime.watchdog.status.policy?.scannerGraceMs)} ms.</p>
+          <p>Pending deliveries: {Object.keys(runtime.watchdog.status.outbox || {}).length}; capacity refusals: {count(runtime.watchdog.status.dropped)}. Telegram acceptance is not confirmation that the message was read.</p>
+          <ul>{Object.entries(runtime.watchdog.status.incidents || {}).filter(([, i]) => i.active).map(([id, i]) => <li key={id}>{i.severity}: {i.detail?.service} — {i.detail?.reason || i.detail?.role || 'evidence unavailable'}; account …{String(i.detail?.accountId || '').slice(-4)}; last observed {stamp(i.lastObservedAtMs)}.</li>)}</ul>
+        </> : <p>Independent watchdog evidence unavailable or stale.</p>}
+      </details>
       <div className="overflow-x-auto">
         <table className="w-full text-left">
           <caption className="text-left font-semibold">Tick processing by service</caption>
@@ -53,6 +65,20 @@ export default function ControllerRuntime({ runtime }) {
         </div>)}
       </details>}
       {runtime.monitor && <p>Monitor interval: {count(runtime.monitor.tick?.everyMs)} ms; protection interval: {count(runtime.monitor.band?.everyMs)} ms; last protection duration: {count(runtime.monitor.band?.lastMs)} ms{runtime.monitor.band?.overran ? ' - OVERRAN' : ''}. Recorded: {stamp(runtime.monitor.at)}.</p>}
+      {runtime.managementWork && <details>
+        <summary>Position evaluations · recorded {stamp(runtime.managementWork.at)}{runtime.managementWork.complete === false ? ' · COVERAGE TRUNCATED' : ''}</summary>
+        <p>Evaluation completion and broker amendment outcomes are separate. This record does not establish exclusive writer ownership or broker confirmation.</p>
+        <div className="overflow-x-auto"><table className="w-full text-left">
+          <thead><tr>{['Account / position', 'Evaluation', 'Last completed', 'Next due', 'Action outcome'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
+          <tbody>{(runtime.managementWork.positions || []).map(p => <tr key={`${p.accountId}:${p.positionId}`}>
+            <td className="pr-3">{p.accountId} / {p.symbol} / {p.brokerPositionId || p.positionId}</td>
+            <td className="pr-3">{p.state}{p.error ? ` — ${p.error}` : ''}</td>
+            <td className="pr-3">{stamp(p.lastCompletedAt)}</td>
+            <td className="pr-3">{stamp(p.nextDueAt)}</td>
+            <td className="pr-3">{p.actionOutcome || (p.action === 'HOLD' ? 'No amendment needed' : 'No outcome recorded')}</td>
+          </tr>)}</tbody>
+        </table></div>
+      </details>}
       {missing.length > 0 && <div role="status"><strong>Missing TP1 - last broker audit</strong>
         <ul>{missing.map(p => <li key={`${p.account}:${p.positionId}`}>{p.account} / {p.symbol} / {p.positionId}: {p.repairFailure?.retryable === false && ['TRADING_BAD_STOPS', 'TRADING_BAD_VOLUME'].includes(p.repairFailure.code) ? `Action required: ${p.repairFailure.code || 'broker refusal'} at TP ${p.repairFailure.attemptedTarget}. ${p.repairFailure.error}. Identical automatic repair paused.` : p.recordedTarget == null ? 'Target decision required - no recorded target' : `Recorded target ${p.recordedTarget} available; broker confirmation pending`}{p.stale ? ' (audit stale or latest check failed)' : ''}</li>)}</ul>
       </div>}

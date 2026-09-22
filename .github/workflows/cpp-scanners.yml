@@ -1,0 +1,24 @@
+name: cpp-scanners
+on:
+  pull_request:
+    paths: ['cpp-scan-tick/**', 'cpp-scan-timeframe/**', 'cpp-exec/src/tick_*', 'cpp-exec/src/spsc_ring.hpp', 'cpp-exec/src/json.hpp', 'cpp-exec/src/http_server.*', 'cpp-exec/src/backtest.*', 'cpp-exec/src/vpo_indicators.*', '.github/workflows/cpp-scanners.yml']
+  push:
+    branches: [main]
+    paths: ['cpp-scan-tick/**', 'cpp-scan-timeframe/**']
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and exercise both mirror services
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev
+          make -C cpp-scan-tick CXX=g++ -j2 all test
+          make -C cpp-scan-timeframe CXX=g++ -j2 all test
+      - name: No broker or order authority in scanner binaries
+        run: |
+          for binary in cpp-scan-tick/bin/cpp-scan-tick cpp-scan-timeframe/bin/cpp-scan-timeframe; do
+            if nm -C "$binary" | grep -iE 'ExecEngine|CtraderWs|placeOrder|amendPosition|closePosition|cancelOrder'; then
+              exit 1
+            fi
+          done

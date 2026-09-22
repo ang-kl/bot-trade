@@ -276,7 +276,7 @@ test('PR-AS: the read-only claim names its scope and what it writes', () => {
     'the boot line must scope the claim to the broker, not assert it bare')
   assert.match(code, /never places, amends or cancels/,
     'and say what read-only actually forbids')
-  assert.match(code, /The only thing it writes is its own verdict journal/,
+  assert.match(code, /It writes its verdict journal and, when configured, watchdog state/,
     'and name what it DOES write, in the same breath')
 
   assert.match(code, /o\.set\("readOnlyScope"/, '/health carries the scope, not just a bare boolean')
