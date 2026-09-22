@@ -60,7 +60,7 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `e8b9cd9` · 119 action call sites · 94 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `567e2f2` · 119 action call sites · 95 state routes read.
 
 Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -193,6 +193,7 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | `/state/account-analytics` | yes |
 | `/state/account-chrome` | yes |
 | `/state/account-engineering` | yes |
+| `/state/account-history` | yes |
 | `/state/account-phases` | yes |
 | `/state/account-settings` | yes |
 | `/state/account-traffic-lights` | yes |

@@ -4262,6 +4262,7 @@ export default function actionsRouter(db, deps = {}) {
           let pnlMap = {}
           try {
             pnlMap = await wsGetUnrealizedPnl(host, clientId, clientSecret, accessToken, acct.accountId)
+            out.pnlReceivedAt = new Date().toISOString()
           } catch { /* fall back to estimates */ }
           // Live bid/ask for position symbols only (cTrader's compulsory
           // columns) — a handful of one-shot quotes, fetched in parallel.
@@ -4531,7 +4532,9 @@ export default function actionsRouter(db, deps = {}) {
         // but one away was the whole defect. Bounded by the number of
         // registered accounts, and only successful snapshots are written — a
         // failed fetch must not overwrite a good cache with an empty one.
+        const { captureSnapshotHistory } = await import('../services/account-history.js')
         for (const a of results) {
+          captureSnapshotHistory(db, a, fetchedAt)
           if (a.error || a.accountId == null) continue
           setState(db, `acct:${String(a.accountId)}:broker_snapshot_cache_json`,
             JSON.stringify({ account: a, fetchedAt }))

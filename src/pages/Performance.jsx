@@ -16,6 +16,7 @@ import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
+import AccountHistory from '../components/AccountHistory.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '../lib/hourly-order.js'
 import { openingEvidence, openingCountLabel } from '../lib/hourly-openings.js'
@@ -2021,6 +2022,7 @@ export default function Performance() {
     <div className="space-y-2">
       <SwitchingNote to={switchingTo} />
       <SectionNavFab />
+      <AccountHistory accountId={acct} />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}
       <style>{'@keyframes perf-pulse{0%,100%{opacity:1}50%{opacity:.3}}'}</style>

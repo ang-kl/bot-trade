@@ -1,3 +1,4 @@
+import { recordAccountHistory } from './account-history.js'
 import { getState, setState } from '../db.js'
 import { RISK_DISPLAY_SNAPSHOT_MAX_AGE_MS } from './account-snapshot.js'
 
@@ -26,6 +27,8 @@ export function recordAccountMoney(db, { accountId, host, trader, balance, recei
   const id = idOf(accountId), route = hostOf(host), asset = idOf(trader?.depositAssetId)
   if (!id || !route || !Number.isFinite(receivedAt)) return false
   if (trader?.ctidTraderAccountId != null && idOf(trader.ctidTraderAccountId) !== id) return false
+  const previous = read(db, key(id))
+  if (previous?.host === route && Number.isFinite(previous.receivedAt) && previous.receivedAt > receivedAt) return false
   const metadata = read(db, currencyKey(id))
   const currencyVerified = !!asset && metadata?.accountId === id && metadata?.host === route
     && metadata?.depositAssetId === asset && currencyOf(metadata?.currency) != null
@@ -39,6 +42,7 @@ export function recordAccountMoney(db, { accountId, host, trader, balance, recei
     currencySource: currencyVerified ? metadata.source : null,
     reason: amount == null ? 'balance_unavailable' : currencyVerified ? null : 'deposit_currency_unverified' }
   setState(db, key(id), JSON.stringify(evidence))
+  recordAccountHistory(db, evidence)
   return evidence
 }
 
