@@ -777,6 +777,14 @@ Measurement history — each line is a real run of the script, not a claim:
   failure reporting. This continues the supplied rebase, not a new measured
   transcript count. Later visible replies take precedence.
 
+- 2026-09-22, **Codex Work revision 3 continuation, transcript corpus unavailable**:
+  The serial-count script again found no JSONL transcripts. Visible replies
+  continued from the recorded 8,356 through **`№ 8,389`** at 16:06 SGT while
+  reconciling main, recovering account edits, and implementing separate account,
+  calendar, reporting and ownership corrections. This is a continuation of the
+  recorded rebase, not a new measured transcript count. Later visible replies
+  take precedence; no cumulative agent/token count is inferred.
+
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

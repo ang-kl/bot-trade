@@ -4,6 +4,15 @@ This runbook records concrete release scope for the continuation PRs. It does
 not grant approval or alter Railway configuration. Authority is revision 3
 section 18 and CLAUDE.md's deployment boundary.
 
+Latest reconciliation (22 September, 16:10 SGT): #1008-#1014 have merged;
+all four services were observed SUCCESS on
+`39fd687d0feb6a9b5614cee093dfc3aaedabd71c`. #1015-#1017 are separately reviewed
+follow-ups. The deployment discussion below records earlier checkpoints;
+[the continuation record](revision-3-progress-2026-09-22.md) gives exact states,
+post-deployment audit timestamps, remaining TP1 exceptions and capability limits.
+No account-level writer/intent recovery or management-latency acceptance is
+inferred from those successful deployments.
+
 ## Verified deployment coupling
 
 Project: `1832aca1-bc68-4bba-834f-cb0b3c4c05ca`.

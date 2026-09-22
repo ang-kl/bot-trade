@@ -1,5 +1,8 @@
 # Revision 3 continuation - implementation evidence
 
+Read the latest dated checkpoint at the end for current status. Earlier
+tables and observations are historical snapshots, not continuing runtime claims.
+
 Working authority: [revision 3](performance-cards-reassessment-2026-09-22-revision-3.md)
 and `CLAUDE.md`. Reconciled on 22 September 2026, 14:30 SGT.
 
@@ -142,3 +145,132 @@ P2 leverage isolation is being prepared separately: account-owned scalar input
 or the existing labelled 1:100 assumption, never another account's global
 leverage. Calendar malformed-identity handling has also been reproduced and is
 being corrected separately. Neither is claimed complete by the earlier table.
+
+## Continuation checkpoint - 22 September 2026, 16:10 SGT
+
+Current inspected main is `39fd687d0feb6a9b5614cee093dfc3aaedabd71c`.
+The earlier 159-branch reconciliation stands: old squash ancestors are not
+outstanding features. Subsequent work used separate branches/PRs and the full
+repository gate; no new repository, harness or architecture was substituted.
+
+| Change | Implementation and tests | Merge evidence | Deployment | Runtime acceptance |
+|---|---|---|---|---|
+| #1008 account-edit recovery | Full local/PR gate; review race followed up in #1009 | `f06030f9ebb1fb11a64bdb06709577d6d522d8d2` | Included in observed main | Authenticated UI not verified |
+| #1009 submit only edited fields | Full local/PR gate; concurrent broker refresh regression | `8c0a54aafbf247a9314347f6ff7f3afbc26f547e` | Included | Authenticated UI not verified |
+| #1010 identified calendar evidence | Full local/PR gate; advisory model, legacy trading calendar unchanged | `4dbdc82996b97a7ace526c5e0dade7b4ff5d4c69` | Included | Real broker fixtures/all-account coverage not verified |
+| #1011 all recorded hourly openings | Full local/PR gate; all confirmed ledger rows, exact 24 windows | `d2a660c8e5b1ea8b1697f58d3c5a857c89af6bbb` | Included | Authenticated UI/population reconciliation not verified |
+| #1012 leverage isolation | Full local/PR gate; unchanged 1:100 assumption explicitly unverified | `f7255df9f77e925462fa23b4b2f14bc34de417b9` | Included | Broker leverage provenance remains unresolved |
+| #1013 calendar malformed-input follow-up | 5,232 Node + 909 Vitest passes, one existing skip; full local/PR gate | `90ef5597bd298bb69768e067c03e7f8811b08ca5` at 15:55:40 SGT | Included | Advisory contract only; bounded formatter cache does not cache status |
+| #1014 hourly provenance/clock follow-up | 5,233 Node + 911 Vitest passes, one existing skip; full local/PR gate | `39fd687d0feb6a9b5614cee093dfc3aaedabd71c` at 15:56:26 SGT | Railway reports all four services SUCCESS at this SHA, read 16:00 SGT | Incomplete future window explicitly marked; live UI not verified |
+| #1015 selected-balance isolation | 5,233 Node + 909 Vitest passes on f7255df, one existing skip; full local gate; PR CI green after rebase onto 39fd687 | Open draft at checkpoint | No claim | No claim |
+| #1016 tamper account/position lookup | 5,238 Node + 911 Vitest passes, one existing skip; full local/PR gate | Open draft | No | No |
+| #1017 P&L alert account isolation | 5,237 Node + 911 Vitest passes, one existing skip; full local gate; PR CI pending | Open draft | No | No; test message sinks only |
+
+Merged PRs were recorded as merged by `ang-kl`. This continuation did not call
+merge/deploy tools or alter Railway configuration. The actual four-service
+auto-deployment coupling still applies, including to documentation-only merges.
+An owner's individual merge is not blanket approval for subsequent gateway
+restarts, account amendments, mode activation or credential changes.
+
+The #1010 review's suggested holiday unit change was checked against official
+Spotware sources: `holidayDate` is epoch days. The implementation retains that
+contract. The two valid #1011 findings were corrected in #1014 and replied to.
+
+### Broker evidence and remaining exceptions
+
+Last protection evidence at this checkpoint was checked **16:03:06-08 SGT** and
+relayed at 16:03:36 SGT. All seven account reads succeeded: 39 positions, zero
+missing SL, two missing TP1 on demo suffixes 9908 and 0949. These checks follow the
+15:56 main deployment; they verify that audit reads resumed, not writer ownership,
+management latency, authenticated UI correctness or continuous broker coverage.
+Live suffixes 3489/2148/9009 held 1/0/0 positions; demo 7342/0058/9908/0949 held
+7/8/9/14. Intended 5-demo/1-live versus connected 4-demo/3-live is unreconciled.
+The exact intended roster cannot be inferred from empty balances or position counts.
+
+No position-specific approved target price or fresh ownership/amendment proposal
+has been established for the two TP1 exceptions. Existing valid stops remain
+untouched. Read-only account summaries do not supply the evidence needed to
+authorise a particular live action or claim continuous protection coverage.
+
+### Exact remaining boundaries and next work
+
+1. **P2 money contract:** native deposit-currency values still reach USD-named
+   balance/P&L/history fields. Balance producers include boot, the primary loop,
+   account selection, account-equity and nightly snapshots. Clearing them alone
+   can remove percentage-based protection caps. Define consistent amount/currency
+   and conversion evidence, plus explicit missing/stale-data behaviour for both
+   new entries and existing positions. A fail-open/fail-closed policy change
+   needs review under plan section 11; changing numerical limits is not a repair.
+2. **P2c coverage:** capture currently observes existing symbol-detail requests.
+   It is not an exhaustive intended-account/instrument refresh. Complete the
+   intended roster, account/feed instrument map, source-event/receipt distinction,
+   gaps/reconnect and broker fixture acceptance before consuming it as an entry
+   or protection gate. Unknown remains unknown; no fictional market-open state.
+3. **P3:** agree mandatory broker TP1 versus managed partial TP1/optional TP2
+   semantics for momentum and existing positions. Null-target proposals stay
+   blocked. Prepare position-specific repairs from fresh evidence; do not invent
+   target prices or lift upstream caps to make reporting look active.
+4. **P4:** the tamper identity correction is not the complete single-writer
+   contract. Fresh quote/configuration/feed checks, reversal no-read behaviour,
+   ownership transfer, broker read-back, fair/coalesced scheduling and completed
+   work evidence remain. Protection latency/age limits and scoped runtime flags
+   need the recorded policy/operational evidence before activation acceptance.
+5. **P5a/P5c:** independent watchdog delivery, verifier-outage observation,
+   six Controllers groups with all 34 children/eight profiles, and scanner
+   extraction remain. Implement from shared contracts, test outages/parity/load,
+   and retain the existing order path until ownership transfer is proven.
+6. **P5b/P5d:** opening populations are corrected; closed P&L/detail populations
+   still use the capped journal and say so. Cashflow-aware balances, complete
+   close populations, first-blocker attribution and useful retained history
+   remain separate authorised work. Do not call them completed or blanket-blocked.
+7. **P6/maintenance:** reuse #985 and its corrections. Production replay inputs,
+   profile hashes, storage contents/checkpoints and authenticated runtime state
+   are not accessible in this executor. Empty/synthetic inputs cannot substitute
+   for attributable production validation. P7/P8 promotion/capacity gates stay.
+
+Unresolved policy or runtime access constrains the affected step. It does not
+revoke authorised branch implementation, read-only profiling or corrective work.
+The next developer should start from current main/open PRs, finish outstanding
+reviews, then take the next contract/reporting slice in dependency order.
+
+### Capabilities and verification limits
+
+Editing, local Git worktrees, connector publication, local HTTP regression tests,
+native SQLite, Node/ESLint/Vitest/Vite and the C++ verifier toolchain work. Native
+GitHub fetch returns HTTP 502 and `gh` is absent; the GitHub connector provides
+the available repository transport. Node is 24.19 locally versus 22 in PR CI.
+All tested files were included. UTC matches CI. Existing timing-sensitive Node
+checks occasionally fail on this host; complete serial reruns passed without
+relaxing the 100-ms check, disabling tests or changing any trading threshold.
+
+Authenticated visual acceptance remains unavailable: the production browser says
+"Agent not connected", localhost is blocked by browser policy, no local Chromium
+is installed, and wildcard Vite binding hits `uv_interface_addresses`. No secret
+was extracted or changed to work around this. Railway metadata/log reads work;
+production shell/filesystem access and authenticated state/actions access are
+not available. Tests are not a substitute for those acceptance observations.
+
+### Read-only resource checkpoint
+
+Railway metrics read at approximately 16:10 SGT cover the previous 24 hours,
+sampled every 300 seconds (289 samples per measurement). Units below are the
+tool's reported GB. These span deployments and cannot establish short-duration
+peaks, a protection deadline or a filesystem quota.
+
+| Service | Memory current / maximum GB | Disk current GB | Disk sampled minimum / maximum GB |
+|---|---:|---:|---:|
+| bot-trade | 2.067 / 5.715 | 3.855 | 3.779 / 3.885 |
+| cpp-exec | 0.022 / 0.072 | 2.010 | 1.864 / 2.010 |
+| cpp-acct | 0.021 / 0.074 | 0 | 0 / 0 |
+| cpp-verify | 0.004 / 0.022 | 0.793 | 0.792 / 0.793 |
+
+Reported memory limit was 24 GB for each service. The zero disk series for
+cpp-acct is a metric observation, not proof of empty storage or recorder
+persistence. Current disk use near the sampled maximum on cpp-exec/verify
+does not establish remaining capacity; quota, mount durability, segment/WAL/log
+breakdown, retention and restart-recovery acceptance still need runtime evidence.
+No storage deletion, volume/configuration mutation or process restart was made.
+
+Rollback owner remains Adrian Ang. Preserve each PR and deployment SHA. A revert
+also deploys all four services and requires the controlled scope/preflight in
+[the prepared rollout runbook](controlled-rollout-preparation-2026-09-22.md).
