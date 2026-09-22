@@ -76,12 +76,14 @@ void TrailEngine::configure(const std::vector<std::pair<long long, TrailSpec>>& 
       continue;
     }
     TrailSpec s = incoming;
+    s.generation = ++generation_;
     auto it = byPosition_.find(id);
     if (it != byPosition_.end()) {
       const TrailSpec& cur = it->second;
       // Keep local progress when it is further along than Node's snapshot
       // (ticks between keeper passes may have advanced peak and stop).
-      if (cur.dir == s.dir) {
+      if (cur.accountId == s.accountId && cur.symbolId == s.symbolId && cur.dir == s.dir) {
+        s.protectionCheckedAtMs = cur.protectionCheckedAtMs;
         if (s.dir == 1 ? cur.peakPrice > s.peakPrice : (cur.peakPrice > 0 && (s.peakPrice <= 0 || cur.peakPrice < s.peakPrice)))
           s.peakPrice = cur.peakPrice;
         if (cur.hasSl && (!s.hasSl || (s.dir == 1 ? cur.lastSl > s.lastSl : cur.lastSl < s.lastSl))) {
@@ -138,6 +140,7 @@ std::string TrailEngine::statusJson() {
   v.set("tracked", static_cast<double>(byPosition_.size()));
   v.set("amendsOk", static_cast<double>(amendsOk_.load()));
   v.set("amendsFailed", static_cast<double>(amendsFailed_.load()));
+  v.set("alreadyTighter", static_cast<double>(alreadyTighter_.load()));
   // Visible loss of coverage: specs the last configure() refused because they
   // named no account. Non-zero means some positions are NOT being ratcheted here.
   v.set("specsDroppedNoAccount", static_cast<double>(specsDroppedNoAccount_.load()));
@@ -146,11 +149,13 @@ std::string TrailEngine::statusJson() {
   for (const auto& [id, s] : byPosition_) {
     jsn::Value r{jsn::Object{}};
     r.set("positionId", id);
+    r.set("accountId", s.accountId);
     r.set("symbolId", s.symbolId);
     r.set("dir", s.dir);
     r.set("peakPrice", s.peakPrice);
     r.set("lastSl", s.hasSl ? jsn::Value(s.lastSl) : jsn::Value(nullptr));
     r.set("pendingSl", s.pendingSl != 0 ? jsn::Value(s.pendingSl) : jsn::Value(nullptr));
+    r.set("protectionCheckedAtMs", s.protectionCheckedAtMs > 0 ? jsn::Value(s.protectionCheckedAtMs) : jsn::Value(nullptr));
     rows.push_back(std::move(r));
   }
   v.set("positions", jsn::Value(std::move(rows)));
@@ -185,7 +190,12 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
     jsn::Value payload{jsn::Object{}};
     payload.set("positionId", posId);
     payload.set("stopLoss", snap.pendingSl);
-    payload.set("takeProfit", snap.currentTp);
+    // The configured TP can be several Node passes old. The engine reads
+    // current broker protection, preserves that TP, then confirms the amend.
+    payload.set("ratchetOnly", true);
+    payload.set("requireTakeProfit", true);
+    payload.set("expectedDirection", snap.dir);
+    payload.set("expectedSymbolId", snap.symbolId);
     // UNCONDITIONAL. configure() refuses any spec with accountId <= 0, so every
     // stored spec names its account. It used to be `if (accountId > 0)`, which is
     // exactly how an unstamped amend would sneak back in if that invariant ever
@@ -194,22 +204,28 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
     auto r = engine.amendPosition(payload);
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = byPosition_.find(posId);
+    const bool sameConfig = it != byPosition_.end() && it->second.generation == snap.generation;
     if (r.ok) {
-      amendsOk_.fetch_add(1);
-      if (it != byPosition_.end()) {
-        it->second.lastSl = snap.pendingSl;
+      const bool unchanged = r.body.get("unchanged").asBool();
+      if (unchanged) alreadyTighter_.fetch_add(1); else amendsOk_.fetch_add(1);
+      const auto& protection = r.body.get("protection");
+      const double confirmedSl = protection.get("stopLoss").asNumber();
+      if (sameConfig) {
+        it->second.lastSl = confirmedSl;
         it->second.hasSl = true;
+        it->second.currentTp = protection.get("takeProfit").asNumber();
+        it->second.protectionCheckedAtMs = static_cast<long long>(protection.get("checkedAtMs").asNumber());
         // Clear only if no newer target arrived while we were amending.
         if (it->second.pendingSl == snap.pendingSl) it->second.pendingSl = 0;
       }
-      logInfo("SL ratcheted pos=" + std::to_string(posId) + " -> " + std::to_string(snap.pendingSl));
-      if (ring_) ring_->log("trail", "amend_ok", snap.accountId, snap.symbolId, "",
-                            "pos=" + std::to_string(posId) + " sl=" + std::to_string(snap.pendingSl));
+      logInfo(std::string(unchanged ? "SL already tighter pos=" : "SL confirmed pos=") + std::to_string(posId) + " -> " + std::to_string(confirmedSl));
+      if (ring_) ring_->log("trail", unchanged ? "already_tighter" : "amend_ok", snap.accountId, snap.symbolId, "",
+                            "pos=" + std::to_string(posId) + " sl=" + std::to_string(confirmedSl) + " " + protection.get("confirmation").asString());
     } else {
       amendsFailed_.fetch_add(1);
       // Drop the pending target — the next tick recomputes from live state,
       // so a broker rejection (stop too close, position gone) cannot loop.
-      if (it != byPosition_.end() && it->second.pendingSl == snap.pendingSl) it->second.pendingSl = 0;
+      if (sameConfig && it->second.pendingSl == snap.pendingSl) it->second.pendingSl = 0;
       logError("SL amend FAILED pos=" + std::to_string(posId) + ": " +
               r.body.get("errorCode").asString() + " " + r.body.get("description").asString());
       if (ring_) ring_->log("trail", "amend_fail", snap.accountId, snap.symbolId,

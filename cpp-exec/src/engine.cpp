@@ -1,5 +1,6 @@
 // cpp-exec/src/engine.cpp
 #include "engine.hpp"
+#include "protection_ratchet.hpp"
 
 #include <algorithm>
 #include "heartbeat.hpp"
@@ -844,8 +845,65 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
   return r;
 }
 
+std::shared_ptr<std::mutex> ExecEngine::protectionLock(long long accountId, long long positionId) {
+  std::lock_guard lock(protectionLocksMtx_);
+  for (auto it = protectionLocks_.begin(); it != protectionLocks_.end();) {
+    if (it->second.expired()) it = protectionLocks_.erase(it); else ++it;
+  }
+  auto& weak = protectionLocks_[{accountId, positionId}];
+  auto ptr = weak.lock();
+  if (!ptr) { ptr = std::make_shared<std::mutex>(); weak = ptr; }
+  return ptr;
+}
+
 EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
+  const auto accountId = protectionId(payload.get("ctidTraderAccountId"));
+  const auto positionId = protectionId(payload.get("positionId"));
+  if (positionId <= 0) return errResult("guard_no_position", "positionId required", false);
+  const auto positionMutex = protectionLock(accountId, positionId);
+  std::lock_guard positionLock(*positionMutex);
+  // Automatic stop updates never trust the caller's old TP or SL snapshot.
+  // No failover bypass: a failed/ambiguous read or amend remains unconfirmed.
+  const bool ratchet = payload.get("ratchetOnly").asBool();
+  const double stop = payload.get("stopLoss").asNumber();
+  const double deadline = payload.get("amendBeforeMs").asNumber();
+  const auto expired = [&] { return deadline > 0 && nowMs() > deadline; };
+  const auto readProtection = [&](BrokerProtection& p) {
+    p.readStartedAtMs = nowMs();
+    const auto start = steady_clock::now();
+    auto r = reconcileOne(accountId, 5000);
+    p.checkedAtMs = nowMs();
+    p.readDurationMs = duration_cast<milliseconds>(steady_clock::now() - start).count();
+    if (!r.ok) return r;
+    if (p.readDurationMs > 5000 || p.checkedAtMs < p.readStartedAtMs ||
+        p.checkedAtMs - p.readStartedAtMs > 5000)
+      return errResult("guard_ratchet_stale_read", "broker protection read exceeded freshness bound", false);
+    const auto error = readBrokerProtection(r.body, accountId, positionId, p);
+    return error.empty() ? r : errResult("guard_ratchet_read", error, false);
+  };
+  BrokerProtection before;
+  jsn::Value wire = payload;
+  if (ratchet) {
+    if (!std::isfinite(stop) || stop <= 0 || expired())
+      return errResult("guard_ratchet_intent", "invalid stop or expired quote", false);
+    auto read = readProtection(before);
+    if (!read.ok) return read;
+    const auto expectedDir = payload.get("expectedDirection").asNumber();
+    const auto expectedSymbol = payload.get("expectedSymbolId").asNumber();
+    if ((expectedDir != 1 && expectedDir != -1) || expectedDir != before.dir ||
+        (expectedSymbol > 0 && expectedSymbol != before.symbolId))
+      return errResult("guard_ratchet_identity", "broker position direction/symbol mismatch", false);
+    if (payload.get("requireTakeProfit").asBool() && before.tp <= 0)
+      return errResult("guard_ratchet_target", "broker TP1 missing", false);
+    if (stopAtLeastAsTight(before.sl, stop, before.dir))
+      return {true, confirmedProtection(before, true), false};
+    wire = jsn::Value{jsn::Object{}};
+    wire.set("ctidTraderAccountId", accountId);
+    wire.set("positionId", positionId);
+    wire.set("stopLoss", stop);
+    if (before.tp > 0) wire.set("takeProfit", before.tp);
+  }
   // The kill switch freezes everything except REDUCING risk: closes and
   // cancels stay allowed, but an amend can widen a stop — during a halt that
   // is new risk, so it is refused (audit #7). The trail engine's tighten-only
@@ -859,7 +917,17 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   }
   // No engine lock: the request is a future, and a protection request must
   // never queue behind an entry's wait for the broker.
-  EngineResult r = request(pt::AMEND_POSITION_SLTP_REQ, payload, pt::EXECUTION_EVENT, 15000, RequestClass::Protection);
+  if (ratchet && expired()) return errResult("guard_ratchet_expired", "quote expired before amend", false);
+  EngineResult r = request(pt::AMEND_POSITION_SLTP_REQ, wire, pt::EXECUTION_EVENT, 15000, RequestClass::Protection);
+  if (ratchet && r.ok) {
+    BrokerProtection after;
+    auto read = readProtection(after);
+    if (!read.ok) return read;
+    if (after.dir != before.dir || after.symbolId != before.symbolId ||
+        !stopAtLeastAsTight(after.sl, stop, before.dir) || after.tp != before.tp)
+      return errResult("guard_ratchet_unconfirmed", "broker read-back did not confirm SL and preserved TP", false);
+    r.body = confirmedProtection(after, false);
+  }
   // Amends never had telemetry (it covers placeOrder only, a measured gap) —
   // the ring is where amend outcomes become inspectable.
   if (ring_) ring_->log("engine", r.ok ? "amend_result" : "amend_reject",
@@ -879,12 +947,12 @@ EngineResult ExecEngine::cancelOrder(const jsn::Value& payload) {
   return request(pt::CANCEL_ORDER_REQ, payload, pt::EXECUTION_EVENT, 20000, RequestClass::Protection);
 }
 
-EngineResult ExecEngine::reconcileOne(long long accountId) {
+EngineResult ExecEngine::reconcileOne(long long accountId, int timeoutMs) {
   jsn::Value p{jsn::Object{}};
   p.set("ctidTraderAccountId", accountId);
   // 10s: a hung reconcile no longer holds the order path (the request is a
   // future), but the loop's own cadence still wants a tight bound.
-  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, 10000);
+  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, timeoutMs);
   if (r.ok) {
     std::lock_guard sk(stateMtx_);
     reconcileByAccount_[accountId] = {jsn::dump(r.body), nowMs()};
