@@ -22,6 +22,7 @@ import { setPhaseFlag } from '../services/phase-audit.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard, execBaseFor } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
+import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { setStage, accountStageTallies, unpinTradeStageEverywhere } from '../services/stage-matrix.js'
 import { recordArmingChange } from '../services/arming-log.js'
 import { loadManualGuards, checkAddCap, inheritedBracket, mirroredBracket, isDuplicateCall } from '../services/manual-position-guards.js'
@@ -5553,41 +5554,62 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/balance — set account balance (USD) and optionally leverage.
-  // Body: { balance?: number, leverage?: number } or { clear: true }.
+  // POST /actions/balance — set one account's stored sizing inputs.
+  // Body: { accountId, balance?: number, leverage?: number } or { accountId, clear: true }.
   // Leverage is e.g. 200 for 1:200, 1000 for 1:1000.
   // -----------------------------------------------------------------------
   router.post('/balance', (req, res) => {
     try {
       const body = req.body || {}
-      if (body.clear === true) {
-        setState(db, 'account_balance_usd', null)
-        setState(db, 'account_leverage', null)
-        console.log('[actions] account balance + leverage cleared')
-        return res.json({ ok: true, balance: null, leverage: null })
+      const accountId = body.accountId == null ? '' : String(body.accountId)
+      if (!/^[1-9]\d*$/.test(accountId)) {
+        return res.status(400).json({ error: 'accountId must name the account being edited' })
       }
+      const account = db.prepare('SELECT base_currency FROM accounts WHERE account_id = ?').get(accountId)
+      if (!account) return res.status(400).json({ error: 'unknown accountId' })
+      if (body.clear === true) {
+        if (body.balance !== undefined || body.leverage !== undefined) {
+          return res.status(400).json({ error: 'clear cannot be combined with balance or leverage' })
+        }
+        db.transaction(() => {
+          setState(db, `acct:${accountId}:account_balance_usd`, null)
+          setState(db, `acct:${accountId}:account_leverage`, null)
+        })()
+        console.log(`[actions] account …${accountId.slice(-4)} balance + leverage cleared`)
+        return res.json({ ok: true, accountId, balance: null, leverage: null })
+      }
+      // Validate the complete request before writing either field. Previously
+      // a valid balance followed by invalid leverage returned 400 after changing
+      // the global balance, so the rejected request had already changed sizing.
       const updates = {}
       if (body.balance !== undefined) {
-        const n = Number(body.balance)
-        if (!Number.isFinite(n) || n <= 0) {
-          return res.status(400).json({ error: 'balance must be a positive number' })
+        const n = body.balance
+        if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) {
+          return res.status(400).json({ error: 'balance must be a nonnegative number in USD' })
         }
-        setState(db, 'account_balance_usd', String(n))
+        const { currency } = readAccountSnapshot(db, accountId)
+        const currencies = [currency, account.base_currency?.trim().toUpperCase()].filter(Boolean)
+        if (currencies.some(c => c !== 'USD')) {
+          return res.status(400).json({ error: 'deposit currency is not USD; a converted balance requires verified currency data' })
+        }
         updates.balance = n
       }
       if (body.leverage !== undefined) {
-        const n = Number(body.leverage)
-        if (!Number.isFinite(n) || n <= 0) {
+        const n = body.leverage
+        if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
           return res.status(400).json({ error: 'leverage must be a positive number (e.g. 200)' })
         }
-        setState(db, 'account_leverage', String(n))
         updates.leverage = n
       }
       if (Object.keys(updates).length === 0) {
         return res.status(400).json({ error: 'nothing to update — provide balance or leverage' })
       }
-      console.log('[actions] balance/leverage updated:', updates)
-      res.json({ ok: true, ...updates })
+      db.transaction(() => {
+        if (updates.balance !== undefined) setState(db, `acct:${accountId}:account_balance_usd`, String(updates.balance))
+        if (updates.leverage !== undefined) setState(db, `acct:${accountId}:account_leverage`, String(updates.leverage))
+      })()
+      console.log(`[actions] account …${accountId.slice(-4)} balance/leverage updated:`, updates)
+      res.json({ ok: true, accountId, ...updates })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
