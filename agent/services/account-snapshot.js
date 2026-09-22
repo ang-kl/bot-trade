@@ -5,6 +5,8 @@ import { getState } from '../db.js'
 // nor changes a risk policy. Broker money fields are already decoded by the
 // snapshot producer and remain in the account's deposit currency.
 export const RISK_DISPLAY_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000
+// Existing entry-margin policy, deliberately stricter than the display cache.
+export const RISK_MARGIN_SNAPSHOT_MAX_AGE_MS = 5 * 60 * 1000
 
 export function readAccountSnapshot(db, accountId, {
   nowMs = Date.now(),

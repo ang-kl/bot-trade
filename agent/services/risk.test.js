@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import fs from 'node:fs'
+import { setState } from '../db.js'
 import { effectiveCapUsd } from './loss-cap.js'
 import {
   DEFAULT_RISK_CONFIG,
@@ -111,6 +112,89 @@ function setLeverage(db, leverage) {
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   ).run(String(leverage))
 }
+
+function accountSnapshot(db, accountId, health, { ageMs = 0, currency = 'USD', payloadAccountId = accountId } = {}) {
+  setState(db, `acct:${accountId}:broker_snapshot_cache_json`, JSON.stringify({
+    fetchedAt: new Date(Date.now() - ageMs).toISOString(),
+    account: { accountId: payloadAccountId, currency, health },
+  }))
+}
+
+function riskAccount(db, accountId, balance = 10000) {
+  setState(db, `acct:${accountId}:account_balance_usd`, String(balance))
+  setState(db, `acct:${accountId}:account_leverage`, '100')
+}
+
+function selectedSnapshot(db, health, options = {}) {
+  setState(db, 'ctrader_account_id', '11')
+  riskAccount(db, '11')
+  accountSnapshot(db, '11', health, options)
+}
+
+test('account margin: the proposal account wins over selected and legacy snapshots', t => {
+  const db = freshDB(); t.after(() => db.close())
+  setState(db, 'ctrader_account_id', '11')
+  riskAccount(db, '11'); riskAccount(db, '22')
+  accountSnapshot(db, '11', { usedMargin: 0, marginLevelPct: 900 })
+  accountSnapshot(db, '22', { usedMargin: 6000, marginLevelPct: 900 })
+  setState(db, 'broker_snapshot_cache_json', JSON.stringify({
+    fetchedAt: new Date().toISOString(), account: { accountId: '11', currency: 'USD', health: { usedMargin: 0, marginLevelPct: 900 } },
+  }))
+  const result = evaluateTrade(db, goodProposal({ accountId: '22' }), NO_SYMBOL_COOLDOWN)
+  assert.equal(result.approved, false)
+  assert.match(result.veto_reason, /insufficient_margin/)
+  assert.equal(result.checks.margin_used_usd, 6000)
+  assert.equal(result.checks.margin_snapshot.accountId, '22')
+})
+
+test('margin level: foreign distress cannot veto a healthy proposal account, own zero does veto', t => {
+  const db = freshDB(); t.after(() => db.close())
+  setState(db, 'ctrader_account_id', '11')
+  riskAccount(db, '22')
+  setState(db, 'broker_snapshot_cache_json', JSON.stringify({
+    fetchedAt: new Date().toISOString(), account: { accountId: '11', health: { marginLevelPct: 1 } },
+  }))
+  accountSnapshot(db, '22', { usedMargin: 0, marginLevelPct: 900 })
+  const healthy = evaluateTrade(db, goodProposal({ accountId: '22' }), NO_SYMBOL_COOLDOWN)
+  assert.equal(healthy.approved, true, healthy.veto_reason)
+  accountSnapshot(db, '22', { usedMargin: 100, marginLevelPct: 0 }, { currency: 'EUR' })
+  const distressed = evaluateTrade(db, goodProposal({ accountId: '22' }), NO_SYMBOL_COOLDOWN)
+  assert.match(distressed.veto_reason, /margin_level_floor/)
+  assert.equal(distressed.checks.margin_level_pct, 0, 'a dimensionless ratio is valid in every deposit currency')
+})
+
+test('margin evidence: missing, foreign, stale and future snapshots preserve the existing estimate/fail-open policy', t => {
+  const db = freshDB(); t.after(() => db.close())
+  riskAccount(db, '22')
+  for (const [options, expected] of [
+    [{ payloadAccountId: '11' }, 'account_mismatch'],
+    [{ ageMs: 300001 }, 'snapshot_stale'],
+    [{ ageMs: -60000 }, 'snapshot_time_future'],
+  ]) {
+    accountSnapshot(db, '22', { usedMargin: 999999, marginLevelPct: 1 }, options)
+    const result = evaluateTrade(db, goodProposal({ accountId: '22' }), NO_SYMBOL_COOLDOWN)
+    assert.equal(result.approved, true, result.veto_reason)
+    assert.equal(result.checks.margin_source, 'estimate')
+    assert.equal(result.checks.margin_snapshot.reason, expected)
+    assert.equal(result.checks.margin_level_snapshot.reason, expected)
+    assert.equal(result.checks.margin_level_pct, undefined)
+  }
+  setState(db, 'acct:22:broker_snapshot_cache_json', '')
+  const missing = evaluateTrade(db, goodProposal({ accountId: '22' }), NO_SYMBOL_COOLDOWN)
+  assert.equal(missing.approved, true, missing.veto_reason)
+  assert.equal(missing.checks.margin_snapshot.reason, 'snapshot_missing')
+})
+
+test('margin money: zero is broker evidence, non-USD and unknown currency use the labelled estimate', t => {
+  const db = freshDB(); t.after(() => db.close())
+  for (const [currency, source, reason] of [['USD', 'broker', null], ['EUR', 'estimate', 'currency_mismatch'], [null, 'estimate', 'currency_unknown']]) {
+    accountSnapshot(db, '22', { usedMargin: 0 }, { currency })
+    const result = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { accountId: '22', balance: 1000, leverage: 100 })
+    assert.equal(result.source, source)
+    assert.equal(result.usedMargin, 0)
+    assert.equal(result.brokerSnapshot.reason, reason)
+  }
+})
 
 // Tests below exercise gates that fire BEFORE the per-symbol re-entry
 // cooldown; recent EURUSD closed trades would otherwise trip the 60m
@@ -871,8 +955,7 @@ test('margin gate — BROKER TRUTH: a fresh broker snapshot overrides the local 
   setLeverage(db, 100)
   // No local open positions at all (estimate would say used=0)…
   // …but the broker says $6000 is already locked — over the cap on its own.
-  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
-    .run(JSON.stringify({ account: { health: { usedMargin: 6000 } }, fetchedAt: new Date().toISOString() }))
+  selectedSnapshot(db, { usedMargin: 6000 })
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /insufficient_margin/)
@@ -885,8 +968,7 @@ test('margin gate — BROKER TRUTH: a STALE broker snapshot falls back to the es
   const db = freshDB()
   setBalance(db, 10000)
   setLeverage(db, 100)
-  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
-    .run(JSON.stringify({ account: { health: { usedMargin: 6000 } }, fetchedAt: new Date(Date.now() - 10 * 60_000).toISOString() }))
+  selectedSnapshot(db, { usedMargin: 6000 }, { ageMs: 10 * 60_000 })
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, true, `stale snapshot must not veto: ${res.veto_reason}`)
   assert.equal(res.checks.margin_source, 'estimate')
@@ -896,8 +978,7 @@ test('margin gate — BROKER TRUTH: a STALE broker snapshot falls back to the es
 test('portfolioMarginStatus: reports headroom and source for the loop pre-gate', () => {
   const db = freshDB()
   setBalance(db, 10000)
-  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
-    .run(JSON.stringify({ account: { health: { usedMargin: 5200 } }, fetchedAt: new Date().toISOString() }))
+  selectedSnapshot(db, { usedMargin: 5200 })
   const pm = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 10000, leverage: 100 })
   assert.equal(pm.source, 'broker')
   assert.equal(pm.usedMargin, 5200)
@@ -1145,8 +1226,7 @@ test('evaluateTrade — commission gate enabled but too few trades still approve
 test('margin-level floor vetoes new entries when the live level is below the floor', () => {
   const db = freshDB()
   setBalance(db, 10000)
-  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
-    .run(JSON.stringify({ account: { health: { marginLevelPct: 120, usedMargin: 100 } }, fetchedAt: new Date().toISOString() }))
+  selectedSnapshot(db, { marginLevelPct: 120, usedMargin: 100 })
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /margin_level_floor/)
@@ -1156,8 +1236,7 @@ test('margin-level floor vetoes new entries when the live level is below the flo
 test('margin-level floor passes when the level is above the floor', () => {
   const db = freshDB()
   setBalance(db, 10000)
-  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
-    .run(JSON.stringify({ account: { health: { marginLevelPct: 900, usedMargin: 100 } }, fetchedAt: new Date().toISOString() }))
+  selectedSnapshot(db, { marginLevelPct: 900, usedMargin: 100 })
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, true, `healthy margin level must pass: ${res.veto_reason}`)
 })
@@ -1166,16 +1245,14 @@ test('margin-level floor fails OPEN on a stale snapshot and a flat account (null
   const db = freshDB()
   setBalance(db, 10000)
   // Stale snapshot with a terrible level — must NOT veto.
-  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
-    .run(JSON.stringify({ account: { health: { marginLevelPct: 60, usedMargin: 100 } }, fetchedAt: new Date(Date.now() - 10 * 60_000).toISOString() }))
+  selectedSnapshot(db, { marginLevelPct: 60, usedMargin: 100 }, { ageMs: 10 * 60_000 })
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, true, `stale snapshot must fail open: ${res.veto_reason}`)
 
   // Flat account: marginLevelPct null (no positions) — must NOT veto.
   const db2 = freshDB()
   setBalance(db2, 10000)
-  db2.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
-    .run(JSON.stringify({ account: { health: { marginLevelPct: null, usedMargin: 0 } }, fetchedAt: new Date().toISOString() }))
+  selectedSnapshot(db2, { marginLevelPct: null, usedMargin: 0 })
   const res2 = evaluateTrade(db2, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }), NO_SYMBOL_COOLDOWN)
   assert.equal(res2.approved, true, `flat account must fail open: ${res2.veto_reason}`)
 })
@@ -1183,8 +1260,7 @@ test('margin-level floor fails OPEN on a stale snapshot and a flat account (null
 test('margin-level floor is disableable with null', () => {
   const db = freshDB()
   setBalance(db, 10000)
-  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
-    .run(JSON.stringify({ account: { health: { marginLevelPct: 60, usedMargin: 100 } }, fetchedAt: new Date().toISOString() }))
+  selectedSnapshot(db, { marginLevelPct: 60, usedMargin: 100 })
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }),
     { ...NO_SYMBOL_COOLDOWN, marginLevelFloorPct: null })
   assert.equal(res.approved, true, `null floor must disable the gate: ${res.veto_reason}`)

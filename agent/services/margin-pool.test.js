@@ -23,16 +23,23 @@ function hold(db, accountId, { symbol = 'EURUSD', volume = 1, entry = 1.1 } = {}
   db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, status, account_id) VALUES (?, ?, 'long', ?, 'active', ?)`).run(symbol, t, entry, accountId)
 }
 
-test('portfolioMarginStatus: named, it is THAT account — the broker snapshot applies to the selected account only', () => {
+test('portfolioMarginStatus: every named account uses its own snapshot; missing uses its own estimate', t => {
   const db = initDB(':memory:')
-  setState(db, 'ctrader_account_id', 'A')
-  setState(db, 'broker_snapshot_cache_json', JSON.stringify({ account: { health: { usedMargin: 100 } }, fetchedAt: new Date().toISOString() }))
-  hold(db, 'B') // 1 lot EURUSD @ 1.10 at 1:100 → $1,100 of margin on B
-  const a = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 1000, leverage: 100, accountId: 'A' })
-  const b = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 1000, leverage: 100, accountId: 'B' })
+  t.after(() => db.close())
+  setState(db, 'ctrader_account_id', '11')
+  for (const [accountId, usedMargin] of [['11', 100], ['22', 200]]) {
+    setState(db, `acct:${accountId}:broker_snapshot_cache_json`, JSON.stringify({ account: { accountId, currency: 'USD', health: { usedMargin } }, fetchedAt: new Date().toISOString() }))
+  }
+  hold(db, '22') // Its broker margin wins over the $1,100 local estimate.
+  hold(db, '33')
+  const a = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 1000, leverage: 100, accountId: '11' })
+  const b = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 1000, leverage: 100, accountId: '22' })
+  const c = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 1000, leverage: 100, accountId: '33' })
   const unnamed = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 1000, leverage: 100 })
   assert.equal(a.source, 'broker'); assert.equal(a.usedMargin, 100)
-  assert.equal(b.source, 'estimate'); assert.equal(Math.round(b.usedMargin), 1100, 'B is estimated from its OWN rows, not read from A’s snapshot')
+  assert.equal(b.source, 'broker'); assert.equal(b.usedMargin, 200)
+  assert.equal(c.source, 'estimate'); assert.equal(Math.round(c.usedMargin), 1100)
+  assert.equal(c.brokerSnapshot.reason, 'snapshot_missing')
   assert.equal(unnamed.source, 'broker', 'no name means the selected account, as before')
 })
 
