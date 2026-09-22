@@ -63,7 +63,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/lib/exec-engine.js': { reason: 'sidecar roster per side (plan §3.1: exec-engine.js rosters); sidecarQuotes picks the side\'s base (19-09-2026)', max: { isLive: 7 } },
   'agent/loop.js': { reason: 'host choices and same-side fan-outs (plan §3.1: loop.js), side named in logs', max: { is_live: 4, isLive: 33, live_str: 5, demo_str: 5 } },
   'agent/routes/actions.js': { reason: 'account selection writes ctrader_is_live and picks the host; creds per account (the validation-fill refusal is in RESIDUAL_GATES)', max: { is_live: 2, isLive: 27, live_str: 1, demo_str: 1 } },
-  'agent/routes/state.js': { reason: 'health/roster views echo the side; the manual-order override resolves the account\'s creds', max: { is_live: 6, isLive: 4, live_str: 1, demo_str: 1 } },
+  'agent/routes/state.js': { reason: 'health/roster views echo the side; risk display resolves the requested account snapshot/registry badge without a policy gate; the manual-order override resolves the account\'s creds', max: { is_live: 10, isLive: 6, live_str: 1, demo_str: 1 } },
   'agent/services/heartbeat.js': { reason: 'sidecar side routing (plan §3.1: heartbeat.js)', max: { is_live: 7, isLive: 28, live_str: 4, demo_str: 4 } },
   'agent/services/account-equity.js': { reason: 'cross-side equity sweep (plan §3.1)', max: { is_live: 3, isLive: 4 } },
   'agent/services/cross-side-reconcile.js': { reason: 'route fresh ledger reads to the opposite account host; identical reconciliation and no broker writes', max: { is_live: 2, isLive: 2 } },
@@ -135,7 +135,7 @@ export const ALLOWLIST = Object.freeze({
   'src/pages/Connect.jsx': { reason: 'LIVE/DEMO badge; the isLive field the select route needs; no typed-word prompt since PR-B', max: { isLive: 5, live_str: 2, demo_str: 2 } },
   'src/pages/Desk.jsx': { reason: 'LIVE/DEMO label on the broker session', max: { isLive: 2, demo_str: 1 } },
   'src/pages/Performance.jsx': { reason: 'Live/Demo labels in the account filters; `isLive` on the hourly row means the running window', max: { is_live: 5, isLive: 5, live_str: 4, demo_str: 4 } },
-  'src/pages/Risk.jsx': { reason: 'LIVE/DEMO badge', max: { isLive: 1 } },
+  'src/pages/Risk.jsx': { reason: 'LIVE/DEMO/UNVERIFIED badge; unknown evidence is not labelled demo', max: { isLive: 2, demo_str: 1 } },
   'src/pages/Trade.jsx': { reason: 'LIVE/DEMO label on the broker session and in the validation-fill confirm text', max: { isLive: 3, demo_str: 2 } },
   'src/pages/Tune.jsx': { reason: 'LIVE/DEMO label on the account row', max: { isLive: 2, live_str: 1, demo_str: 1 } },
 })
