@@ -274,3 +274,31 @@ No storage deletion, volume/configuration mutation or process restart was made.
 Rollback owner remains Adrian Ang. Preserve each PR and deployment SHA. A revert
 also deploys all four services and requires the controlled scope/preflight in
 [the prepared rollout runbook](controlled-rollout-preparation-2026-09-22.md).
+
+## Shared scanner services — 22 September 2026, 19:38 SGT
+
+Both new C++ services are implemented as independently buildable mirror-only
+executables with bounded input/work/output, scoped feed identity, explicit
+profile/version/expiry and completed-work receipts. `cpp-scan-tick` preserves
+the existing incremental strategy and workers byte-for-byte and matches the
+frozen JavaScript oracle with 1/2/4 workers. Tests also cover account/host
+collisions, retries, restart-stable candidate IDs, gaps, warm-up, stale expiry
+and bounded output. A process instance ID makes output-cursor resets explicit.
+
+`cpp-scan-timeframe` currently implements only the original closed-bar FX
+Fibonacci baseline without optional confluence filters. Frozen actual-JavaScript
+fixtures match long/short/no-signal/warm-up decisions and numerical outputs;
+unsupported strategy/options/partial-bar inputs are refused, retaining the
+reference owner. **The full timeframe C++ target remains incomplete.** Gateway
+feed transport and the Node comparison ledger are separate work branches.
+
+Local gate: 5,245 Node tests passed, one skipped; 911 Vitest tests passed;
+ESLint zero warnings, production build, no-green and required syntax checks
+passed. Both service binaries and C++ suites passed again after adding process
+identity and timeframe identity to output. No scanner service was provisioned,
+activated or runtime-verified. See `shared-scanner-boundary-2026-09-22.md`.
+
+The preceding watchdog is published as draft PR #1024 at
+`0792280dc2cedef81cc2e786c9634e89a26df77b`. Its Node, review and C++ CI checks
+were read back green at 19:38 SGT. It remains unmerged/undeployed because the
+recorded controlled-rollout boundary still applies to main's automatic deploys.

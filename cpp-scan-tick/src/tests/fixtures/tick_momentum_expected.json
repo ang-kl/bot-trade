@@ -1,0 +1,49 @@
+{
+ "params": {
+  "rangeEvents": 64,
+  "momentumEvents": 16,
+  "minEfficiency": 0.4,
+  "spreadBufferMult": 0.5,
+  "confirmations": 2,
+  "stopVolMult": 2,
+  "minStopPrice": 1,
+  "priceIncrement": 1,
+  "maxSpread": 200,
+  "maxQuoteAgeMs": 60000,
+  "expiryEvents": 64,
+  "rearmCooldownEvents": 16
+ },
+ "profileHash": "a15a82842ecf30e4",
+ "signals": [
+  {
+   "seq": 118,
+   "side": "BUY",
+   "dirReason": "tick:break_high",
+   "trigger2": 200078,
+   "bid": 100034,
+   "ask": 100044,
+   "stopDistance": 80,
+   "setupId": 1,
+   "confirmations": 2,
+   "H": 200034,
+   "L": 200004,
+   "B": 10,
+   "D": 64
+  },
+  {
+   "seq": 284,
+   "side": "SELL",
+   "dirReason": "tick:break_low",
+   "trigger2": 199976,
+   "bid": 99983,
+   "ask": 99993,
+   "stopDistance": 53,
+   "setupId": 2,
+   "confirmations": 2,
+   "H": 200164,
+   "L": 200032,
+   "B": 10,
+   "D": -32
+  }
+ ]
+}
