@@ -71,6 +71,40 @@ VerifySession::VerifySession(std::string host, std::string clientId,
       clientSecret_(std::move(clientSecret)),
       accessToken_(std::move(accessToken)) {}
 
+VerifySession::~VerifySession() {
+  idleThread_.request_stop();
+  if (idleThread_.joinable()) idleThread_.join();
+}
+
+bool VerifySession::heartbeatIfDue() {
+  if (!appAuthed_ || !ws_.isOpen()) return true;
+  const auto now = steady_clock::now();
+  if (now - lastHeartbeat_ < milliseconds(heartbeatMs_)) return true;
+  jsn::Value frame{jsn::Object{}};
+  frame.set("payloadType", kHeartbeat);
+  frame.set("payload", jsn::Value{jsn::Object{}});
+  if (!ws_.sendText(jsn::dump(frame))) {
+    lastError_ = "heartbeat failed: " + ws_.lastError();
+    ws_.close();
+    appAuthed_ = false;
+    return false;
+  }
+  lastHeartbeat_ = now;
+  return true;
+}
+
+void VerifySession::idleLoop(std::stop_token stop) {
+  while (!stop.stop_requested()) {
+    std::this_thread::sleep_for(milliseconds(25));
+    std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+    if (!lk.owns_lock() || !appAuthed_ || !ws_.isOpen()) continue;
+    if (!heartbeatIfDue()) continue;
+    // No request can be in flight while we own mtx_. Drain unsolicited
+    // heartbeats and detect disconnects without racing a request's reader.
+    ws_.recvText(1);
+  }
+}
+
 std::optional<jsn::Value> VerifySession::sendAndWait(int reqType, const jsn::Value& payload,
                                                      int expectType, int timeoutMs) {
   jsn::Value frame{jsn::Object{}};
@@ -83,9 +117,11 @@ std::optional<jsn::Value> VerifySession::sendAndWait(int reqType, const jsn::Val
 
   auto deadline = steady_clock::now() + milliseconds(timeoutMs);
   while (steady_clock::now() < deadline) {
+    if (!heartbeatIfDue()) return std::nullopt;
     int remain = static_cast<int>(duration_cast<milliseconds>(deadline - steady_clock::now()).count());
     if (remain <= 0) break;
-    auto text = ws_.recvText(remain > 5000 ? 5000 : remain);
+    const int slice = appAuthed_ ? std::min(1000, heartbeatMs_) : 1000;
+    auto text = ws_.recvText(std::min(remain, slice));
     if (!text) {
       if (!ws_.isOpen()) { lastError_ = "connection closed: " + ws_.lastError(); return std::nullopt; }
       continue;
@@ -111,6 +147,7 @@ std::optional<jsn::Value> VerifySession::sendAndWait(int reqType, const jsn::Val
 bool VerifySession::connect(long long accountId) {
   std::lock_guard<std::mutex> lk(mtx_);
   if (!ws_.isOpen()) {
+    appAuthed_ = false;
     bool ok = loopbackPort_ > 0 ? ws_.connect("127.0.0.1", loopbackPort_, false)
                                 : ws_.connect(host_, 5036, true);
     if (!ok) { lastError_ = "connect failed: " + ws_.lastError(); return false; }
@@ -122,6 +159,11 @@ bool VerifySession::connect(long long accountId) {
       logError(host_ + ": app auth failed — " + lastError_);
       ws_.close();
       return false;
+    }
+    appAuthed_ = true;
+    lastHeartbeat_ = steady_clock::now();
+    if (!idleThread_.joinable()) {
+      idleThread_ = std::jthread([this](std::stop_token stop) { idleLoop(stop); });
     }
   }
 
@@ -163,6 +205,7 @@ bool VerifySession::connect(long long accountId) {
 }
 
 std::optional<int> VerifySession::moneyDigits(long long accountId) const {
+  std::lock_guard<std::mutex> lk(mtx_);
   auto it = moneyDigits_.find(accountId);
   if (it == moneyDigits_.end()) return std::nullopt;
   return it->second;

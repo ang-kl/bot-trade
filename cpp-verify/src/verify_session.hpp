@@ -24,6 +24,8 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <chrono>
+#include <thread>
 
 #include "json.hpp"
 #include "ws_client.hpp"
@@ -71,6 +73,7 @@ class VerifySession {
 public:
   VerifySession(std::string host, std::string clientId, std::string clientSecret,
                 std::string accessToken);
+  ~VerifySession();
 
   /** App auth + account auth. Returns false and sets lastError() on failure. */
   bool connect(long long accountId);
@@ -91,21 +94,28 @@ public:
   jsn::Value protection(long long accountId);
 
   bool isOpen() const { return ws_.isOpen(); }
-  std::string lastError() const { return lastError_; }
+  std::string lastError() const { std::lock_guard<std::mutex> lk(mtx_); return lastError_; }
   const std::string& host() const { return host_; }
 
   /** Tests only: plain TCP to a loopback fake broker instead of TLS. */
   void setLoopbackTransportForTests(int port) { loopbackPort_ = port; }
+  void setHeartbeatIntervalForTests(int ms) { heartbeatMs_ = ms; }
 
 private:
   std::optional<jsn::Value> sendAndWait(int reqType, const jsn::Value& payload,
                                         int expectType, int timeoutMs);
+  bool heartbeatIfDue(); // caller holds mtx_, including while awaiting replies
+  void idleLoop(std::stop_token stop);
 
   std::string host_, clientId_, clientSecret_, accessToken_, lastError_;
   std::map<long long, int> moneyDigits_;   // accountId -> broker's moneyDigits
   int loopbackPort_ = 0;
   CtraderWs ws_;
-  std::mutex mtx_;              // one request at a time on this socket
+  mutable std::mutex mtx_;      // one socket owner, including idle reads/close
+  bool appAuthed_ = false;
+  int heartbeatMs_ = 9000;       // cTrader requires a heartbeat every 10 seconds
+  std::chrono::steady_clock::time_point lastHeartbeat_{};
+  std::jthread idleThread_;     // stopped/joined before the socket is destroyed
 };
 
 } // namespace verify
