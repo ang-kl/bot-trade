@@ -4135,6 +4135,7 @@ export default function actionsRouter(db, deps = {}) {
         const bal = traderBalance(trader)
         if (bal != null) a.balance = bal
         a._trader = trader
+        a._traderReceivedAt = Date.now()
       } catch { /* leave null */ }
     }))
     return accounts
@@ -4173,11 +4174,13 @@ export default function actionsRouter(db, deps = {}) {
       const snapshotAccount = async (acct) => {
         if (deps.snapshotBrokerAccount) return deps.snapshotBrokerAccount(acct)
         const host = acct.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-        const { _trader, ...acctPublic } = acct
+        const { _trader, _traderReceivedAt, ...acctPublic } = acct
         const out = {
           ...acctPublic,
           selected: String(acct.accountId) === String(selectedId),
           currency: null,
+          host, depositAssetId: _trader?.depositAssetId ?? null,
+          balanceReceivedAt: _traderReceivedAt ? new Date(_traderReceivedAt).toISOString() : null,
           moneyDigits: _trader?.moneyDigits ?? 2,
           positions: [],
           orders: [],
@@ -4200,7 +4203,14 @@ export default function actionsRouter(db, deps = {}) {
               wsGetAssets(host, clientId, clientSecret, accessToken, acct.accountId),
             ])
             for (const a of (assets.asset || [])) assetNameById[a.assetId] = a.displayName || a.name || null
-            out.currency = assetNameById[trader.depositAssetId] || null
+            const depositAsset = (assets.asset || []).find(a => String(a.assetId) === String(trader.depositAssetId))
+            out.currency = /^[A-Z]{3}$/.test(depositAsset?.name) ? depositAsset.name
+              : /^[A-Z]{3}$/.test(depositAsset?.displayName) ? depositAsset.displayName : null
+            out.depositAssetId = trader.depositAssetId ?? null
+            const { recordDepositCurrency, recordAccountMoney } = await import('../services/account-money.js')
+            const receivedAt = Date.now()
+            recordDepositCurrency(db, { accountId: acct.accountId, host, depositAssetId: trader.depositAssetId, currency: out.currency, receivedAt })
+            recordAccountMoney(db, { accountId: acct.accountId, host, trader, balance: traderBalance(trader), receivedAt: _traderReceivedAt || receivedAt })
             out.moneyDigits = trader.moneyDigits ?? 2
           } catch { /* currency stays null */ }
 
@@ -4808,6 +4818,8 @@ export default function actionsRouter(db, deps = {}) {
       try {
         const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
         balance = traderBalance(trader)
+        const { recordAccountMoney } = await import('../services/account-money.js')
+        recordAccountMoney(db, { accountId, host, trader, balance })
         const { setAccountState } = await import('../services/account-registry.js')
         if (balance != null) {
           setState(db, 'account_balance_usd', String(balance))
