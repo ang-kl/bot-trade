@@ -491,6 +491,42 @@ The repository's merge gate remains the one in CLAUDE.md: all Node agent tests, 
 
 ## 20. Implementation handover
 
+**Continuation update, 22 September 2026:** the detailed, dated status and
+capability record is [revision-3-progress-2026-09-22.md](revision-3-progress-2026-09-22.md).
+Read its latest checkpoint before resuming; the initial handover below is
+historical. #1008-#1014 have since merged. They cover account edits and per-field
+save races, identified advisory calendar evidence and malformed-input handling,
+all recorded hourly openings and provenance/clock corrections, and isolated
+leverage assumptions. Main was inspected at
+`39fd687d0feb6a9b5614cee093dfc3aaedabd71c`; Railway reported all four services
+successful on that SHA. This is deployment evidence, not complete P2/P4 or
+authenticated runtime acceptance.
+
+Selected-balance isolation is [#1015](https://github.com/ang-kl/bot-trade/pull/1015),
+and tamper account/position isolation is
+[#1016](https://github.com/ang-kl/bot-trade/pull/1016). P&L alert isolation is
+[#1017](https://github.com/ang-kl/bot-trade/pull/1017). Their exact test, merge and deployment states are in the
+progress record. The initial P2 packages, #1003 protection reserve and #985
+research harness were reused. Numeric limits, mandatory TP1, manual ownership,
+account separation and validation thresholds remain unchanged.
+
+At the most recent read-only protection checkpoint, **16:03:06-08 SGT**, the
+independent account reads still reported 39 positions, zero missing SL and two
+missing TP1 on demo suffixes 9908 and 0949. No target was amended. The intended
+5-demo/1-live roster remains unreconciled with four demo and three live
+connections. Native-currency producer semantics, P3 targets, P4 freshness/writer
+contracts, independent alerts, full accounting/history and production research
+acceptance remain open. The progress record separates policy/access blockers
+from further authorised implementation; do not treat either as blanket approval
+for deployment or as a reason to stop unrelated correctness work.
+
+Rollback owner remains Adrian Ang. All main changes trigger four production
+deployments, including docs-only changes. See the concrete
+[controlled rollout preparation](controlled-rollout-preparation-2026-09-22.md)
+and section 18 before a gateway restart. No gateway/account activation, broker
+amendment, credential change or deployment action was performed by the
+continuation assistant.
+
 Continuation evidence and the repository/deployment reconciliation are recorded
 in [revision-3-progress-2026-09-22.md](revision-3-progress-2026-09-22.md). Its dated
 observations supersede historical runtime claims only for the times measured.
