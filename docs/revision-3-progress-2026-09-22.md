@@ -123,3 +123,22 @@ activation. These do not prohibit separate reporting/contract implementation.
 The main-triggered four-service deployment remains a release boundary, not a
 reason to claim unmerged code is deployed. No blanket activation approval is
 inferred from the owner's individual #1008 merge.
+
+## Main advanced - 22 September 2026, 15:16 SGT
+
+GitHub records `ang-kl` merging #1009 at 15:10:33 SGT into
+`8c0a54aafbf247a9314347f6ff7f3afbc26f547e`, then #1010 at 15:10:47 SGT into
+`4dbdc82996b97a7ace526c5e0dade7b4ff5d4c69`. Both had green PR CI. Railway reports
+all four services successful on the latter SHA. Neither authenticated account
+save acceptance nor real calendar/management acceptance is thereby established.
+
+The accompanying hourly change is [#1011](https://github.com/ang-kl/bot-trade/pull/1011).
+Its original CI passed. Imports and generated inventory were reconciled against
+the new main; the updated local gate is 5,225 Node passes, one existing skip,
+and 909 Vitest passes, plus ESLint/build/no-green/syntax checks. Updated-head CI
+is required. It remains unmerged/undeployed at this checkpoint.
+
+P2 leverage isolation is being prepared separately: account-owned scalar input
+or the existing labelled 1:100 assumption, never another account's global
+leverage. Calendar malformed-identity handling has also been reproduced and is
+being corrected separately. Neither is claimed complete by the earlier table.

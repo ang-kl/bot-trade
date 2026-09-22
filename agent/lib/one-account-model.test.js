@@ -63,7 +63,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/lib/exec-engine.js': { reason: 'sidecar roster per side (plan §3.1: exec-engine.js rosters); sidecarQuotes picks the side\'s base (19-09-2026)', max: { isLive: 7 } },
   'agent/loop.js': { reason: 'host choices and same-side fan-outs (plan §3.1: loop.js), side named in logs', max: { is_live: 4, isLive: 33, live_str: 5, demo_str: 5 } },
   'agent/routes/actions.js': { reason: 'account selection writes ctrader_is_live and picks the host; creds per account (the validation-fill refusal is in RESIDUAL_GATES)', max: { is_live: 2, isLive: 27, live_str: 1, demo_str: 1 } },
-  'agent/routes/state.js': { reason: 'health/roster views echo the side; risk display resolves the requested account snapshot/registry badge without a policy gate; the manual-order override resolves the account\'s creds', max: { is_live: 10, isLive: 6, live_str: 1, demo_str: 1 } },
+  'agent/routes/state.js': { reason: 'health/roster views echo the side; risk display resolves the requested account snapshot/registry badge and calendar identity selects its registered broker host without a policy gate; the manual-order override resolves the account\'s creds', max: { is_live: 12, isLive: 6, live_str: 1, demo_str: 1 } },
   'agent/services/heartbeat.js': { reason: 'sidecar side routing (plan §3.1: heartbeat.js)', max: { is_live: 7, isLive: 28, live_str: 4, demo_str: 4 } },
   'agent/services/account-equity.js': { reason: 'cross-side equity sweep (plan §3.1)', max: { is_live: 3, isLive: 4 } },
   'agent/services/cross-side-reconcile.js': { reason: 'route fresh ledger reads to the opposite account host; identical reconciliation and no broker writes', max: { is_live: 2, isLive: 2 } },

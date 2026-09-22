@@ -45,3 +45,12 @@ capped journal sample; a visible note states that limitation. Reconstructed
 balances are labelled and cashflows remain unreconciled. Complete close
 populations, cashflow-aware accounting and first-blocker attribution remain
 separate follow-ups. This patch does not silently claim those are fixed.
+
+## Integration checkpoint
+
+Reconciled #1009/#1010 after the owner's merges. Both new state imports are
+preserved and the control inventory is regenerated. Against main `4dbdc82`,
+the full gate passes: 5,225 Node tests, one existing skip; 909 Vitest tests;
+ESLint, build and no-green pass. On a synthetic 100,000-row in-memory ledger,
+the aggregate returned all 1,000 in-window rows in 31.2 ms on this executor.
+That is a local profiling observation, not a production latency guarantee.
