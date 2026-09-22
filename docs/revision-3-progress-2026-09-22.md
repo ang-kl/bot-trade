@@ -275,6 +275,35 @@ Rollback owner remains Adrian Ang. Preserve each PR and deployment SHA. A revert
 also deploys all four services and requires the controlled scope/preflight in
 [the prepared rollout runbook](controlled-rollout-preparation-2026-09-22.md).
 
+## Continuation to P5 - 22 September 2026, 17:34 SGT
+
+Owner instruction: continue the scope described in reply 8,395B paragraph 1
+through P5 Reporting/history. Main is `e8b9cd98180bc965493469c1c2f553499de2025c`;
+#1015, #1016, #1017 and #1018 have all merged. No open PRs were returned at
+this continuation's reconciliation. The earlier 16:10/16:19 status is historical.
+Railway previously reported all four services successful on this SHA; that is
+not authenticated account, scanner or management acceptance.
+
+Fresh P0 broker checks at 17:19:11-12 SGT, relayed 17:19:27, report 39 positions,
+zero missing SL and two missing TP1 (demo suffixes 9908/0949). The intended
+roster and position-specific target policy remain unresolved. No broker action
+was taken.
+
+P2 native-money evidence is implemented on the continuation branch. The full
+local gate passed: 5,247 Node tests, one existing skip; 911 Vitest tests;
+ESLint with zero warnings, production build, no-green and syntax checks.
+See [the currency contract](account-money-evidence-2026-09-22.md). This adds
+account/host/deposit-asset/receipt/currency evidence without a new broker read.
+It does not complete the risk-input currency migration: the legacy scalar's
+missing-conversion and loss-cap policy still needs explicit review.
+
+At this checkpoint: implemented and locally tested; PR CI/publication pending;
+not merged, not deployed and not runtime verified. Subsequent PR metadata or a
+later checkpoint supersedes those states. Work continues on P4 monitor account
+routing and actual completion evidence, then P5 Controllers/watchdog/scanners
+and accounting/history. The full scope is not declared complete.
+
+
 ## Continuation checkpoint — 22 September 2026, 19:15 SGT
 
 Scope remains the approved implementation through P5. Current main was read
@@ -329,3 +358,39 @@ passed. The C++ verifier binary and complete unit suite passed, including new
 work/unknown-account cases. CI now explicitly installs the required libcurl
 headers. This is local implementation/test evidence only; PR CI, merge,
 deployment and runtime acceptance remain separate states.
+
+## Continuation checkpoint — 22 September 2026, 20:25 SGT
+
+Fresh GitHub reconciliation: main is
+`c74165e2b1f5186a5bfe9925093d6e466025b3ea`. #1019 native money merged at
+19:58:05 SGT and #1020 scoped monitor receipts at 19:58:27 SGT independently
+of this continuation. Their deployment and runtime acceptance on this new SHA
+have not been verified here. #1021's head advanced to
+`e9231e162d8b5d1c80494062c96b2ac9dfebae22`, integrating that main and regenerating
+the inventory; preserve that work. Its commit records its own full gate.
+
+#1022–#1026 remain draft/unmerged. #1026 CI is green. The gateway mirror is
+published as draft #1027, head `81728dfa26cc79da3262703b585201d606d79261`:
+full local Node/C++/all 15 TSan tests and UI gate passed; CI pending at publication.
+No endpoint, credential, scanner service, writer or production mode was activated.
+
+This package completes the remaining journal-derived reporting populations and
+corrects their units/availability and the realised-P&L curve. Full local gate:
+5,252 Node tests passed with one skip; 918 Vitest tests passed; lint zero warnings,
+build, no-green, syntax and generated inventory passed. It depends on #1022;
+see [complete populations](performance-populations-2026-09-22.md). Implemented
+and tested are not merged, deployed or runtime verified.
+
+An independent blocker package is in progress: actual recorded first refusals,
+post-approval failures, explicit unevaluated/unrecorded downstream diagnostics,
+strict account scope, bounded details and complete record counts. Focused tests
+pass; its full gate is pending. The complete history/reporting/Controllers
+integration still needs its own combined gate. Full timeframe strategy parity,
+bar supply, scanner calendars/work producers and legacy/new comparison remain
+executable P5c work. P2 currency-risk policy, P3 target policy, P4 ownership/age
+decisions and production acceptance remain separate unresolved boundaries.
+
+All main merges still have the recorded four-service deployment coupling. No
+merge/deploy, broker amendment, credential or mode change was performed here;
+risk caps, mandatory TP1, manual ownership and validation thresholds stand.
+Historical broker reports have not been described as current.

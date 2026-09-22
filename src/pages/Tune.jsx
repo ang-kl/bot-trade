@@ -2116,7 +2116,7 @@ export default function Tune() {
                 forex/indices/commodities... trading like a beginner." A
                 EURUSD and a NatGas trade shouldn't be managed identically. */}
             <div className="mt-3">
-              <div className="text-(length:--fs-body) font-semibold mb-1">Asset-class controllers</div>
+              <div className="text-(length:--fs-body) font-semibold mb-1">Management profiles by asset class</div>
               <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
                 per-class breakeven / partial / runner triggers (in R). Whippy classes (energy, crypto) lock in sooner; clean trenders (indices, gold) give runners more room. Blank = class default.
               </span>

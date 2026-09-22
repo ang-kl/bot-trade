@@ -26,6 +26,7 @@
 // ever needs the unowned global.
 // ---------------------------------------------------------------------------
 
+import { recordAccountMoney } from './account-money.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 
 /**
@@ -52,6 +53,7 @@ export async function stampAccountEquity(db, creds, accountId, deps = {}) {
       creds.host, creds.clientId, creds.clientSecret, creds.accessToken, accountId,
     )
     const bal = ws.traderBalance(trader)
+    recordAccountMoney(db, { accountId, host: creds.host, trader, balance: bal })
     // A finite, non-negative balance is a READING — including zero. An
     // unfunded live account answered 0 by the broker used to be left
     // unstamped (the `> 0` gate matched getAccountBalance's), so every

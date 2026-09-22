@@ -65,6 +65,20 @@ export default function ControllerRuntime({ runtime }) {
         </div>)}
       </details>}
       {runtime.monitor && <p>Monitor interval: {count(runtime.monitor.tick?.everyMs)} ms; protection interval: {count(runtime.monitor.band?.everyMs)} ms; last protection duration: {count(runtime.monitor.band?.lastMs)} ms{runtime.monitor.band?.overran ? ' - OVERRAN' : ''}. Recorded: {stamp(runtime.monitor.at)}.</p>}
+      {runtime.managementWork && <details>
+        <summary>Position evaluations · recorded {stamp(runtime.managementWork.at)}{runtime.managementWork.complete === false ? ' · COVERAGE TRUNCATED' : ''}</summary>
+        <p>Evaluation completion and broker amendment outcomes are separate. This record does not establish exclusive writer ownership or broker confirmation.</p>
+        <div className="overflow-x-auto"><table className="w-full text-left">
+          <thead><tr>{['Account / position', 'Evaluation', 'Last completed', 'Next due', 'Action outcome'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
+          <tbody>{(runtime.managementWork.positions || []).map(p => <tr key={`${p.accountId}:${p.positionId}`}>
+            <td className="pr-3">{p.accountId} / {p.symbol} / {p.brokerPositionId || p.positionId}</td>
+            <td className="pr-3">{p.state}{p.error ? ` — ${p.error}` : ''}</td>
+            <td className="pr-3">{stamp(p.lastCompletedAt)}</td>
+            <td className="pr-3">{stamp(p.nextDueAt)}</td>
+            <td className="pr-3">{p.actionOutcome || (p.action === 'HOLD' ? 'No amendment needed' : 'No outcome recorded')}</td>
+          </tr>)}</tbody>
+        </table></div>
+      </details>}
       {missing.length > 0 && <div role="status"><strong>Missing TP1 - last broker audit</strong>
         <ul>{missing.map(p => <li key={`${p.account}:${p.positionId}`}>{p.account} / {p.symbol} / {p.positionId}: {p.repairFailure?.retryable === false && ['TRADING_BAD_STOPS', 'TRADING_BAD_VOLUME'].includes(p.repairFailure.code) ? `Action required: ${p.repairFailure.code || 'broker refusal'} at TP ${p.repairFailure.attemptedTarget}. ${p.repairFailure.error}. Identical automatic repair paused.` : p.recordedTarget == null ? 'Target decision required - no recorded target' : `Recorded target ${p.recordedTarget} available; broker confirmation pending`}{p.stale ? ' (audit stale or latest check failed)' : ''}</li>)}</ul>
       </div>}
