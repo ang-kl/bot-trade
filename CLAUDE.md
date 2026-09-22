@@ -996,3 +996,21 @@ position had been amended after the fill. The prediction that followed
 
 **A diagnosis that does not predict something checkable is a guess.** Three
 guesses were published as findings before the mechanism was found.
+
+### Continuation ledger — 22 September 2026
+
+The Work Mode corpus remains partial. Continued from the recorded rebase and
+visible replies through **`№ 8,424`**, 19:27 SGT, during revision-3 P0–P5 work.
+The next substantive reply is `№ 8,425`. No full-corpus or token count is claimed.
+
+- 2026-09-22 11:53 UTC, continuation executor, partial transcript corpus:
+  last visible reply **№ 8,429**; next reply **№ 8,430**. Continued from the
+  recorded rebase and visible replies; not a full-corpus measurement.
+
+- 2026-09-22 12:25 UTC, continuation executor with partial transcript corpus:
+  last visible reply **№ 8,438**; next **№ 8,439**. The recorded rebase plus
+  visible continuation replies was used, not an unavailable full-corpus reading.
+
+- 2026-09-22 17:32 UTC, Work Mode continuation with partial transcript corpus:
+  continued from the recorded 8,438 and visible replies through **№ 8,464**;
+  next **№ 8,465**. Full-corpus measurement remains unavailable.

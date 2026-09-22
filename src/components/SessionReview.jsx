@@ -181,6 +181,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
           sym: String(t.symbol || '').toUpperCase(),
           side: sideLabelUpper(t.side) ?? '—',
           pnl: Number(t.net_pnl),
+          accountId: t.account_id == null ? null : String(t.account_id),
           hm: new Date(t.ms).toISOString().slice(11, 16),
           strat: t.label_strategy || t.strategy || null,
           who: a.who, how: a.how,
@@ -196,7 +197,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       for (const r of list) m.set(r[key], (m.get(r[key]) || 0) + 1)
       return [...m.entries()].sort((a, b) => b[1] - a[1])
     }
-    const netOf = (list) => list.reduce((s, r) => s + r.pnl, 0)
+    const netOf = list => { const ids = new Set(list.map(r => r.accountId)); return ids.size === 1 && !ids.has(null) ? list.reduce((sum, r) => sum + r.pnl, 0) : null }
     return {
       from, rows, wins, losses,
       net: netOf(rows),

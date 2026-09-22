@@ -85,7 +85,7 @@ async function equitySection(db, now) {
     const pts = a.points.filter(p => p.equity != null).slice(-2)
     if (!pts.length) { lines.push(`Equity ${short(a.accountId)}: no reading (${a.points[a.points.length - 1]?.error ?? 'unread'})`); continue }
     const last = pts[pts.length - 1], prev = pts.length > 1 ? pts[0] : null
-    lines.push(`Equity ${short(a.accountId)}: ${num(last.equity)} on ${String(last.at).slice(0, 10)}` + (prev ? ` (${money(last.equity - prev.equity)} vs ${String(prev.at).slice(0, 10)})` : ' (first night)'))
+    lines.push(`Equity ${short(a.accountId)}: ${num(last.equity)} ${last.currency || '(currency unrecorded)'} on ${String(last.at).slice(0, 10)}` + (prev && prev.currency && prev.currency === last.currency ? ` (${num(last.equity - prev.equity)} equity change vs ${String(prev.at).slice(0, 10)}; cashflows unadjusted)` : ' (comparison unavailable without matching currency)'))
   }
   return lines
 }

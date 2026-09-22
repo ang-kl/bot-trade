@@ -1237,6 +1237,8 @@ async function start() {
       if (!haveBalance) {
         const trader = await wsGetTrader(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId);
         const bal = traderBalance(trader);
+        const { recordAccountMoney } = await import('./services/account-money.js');
+        recordAccountMoney(db, { accountId: creds.accountId, host: creds.host, trader, balance: bal });
         const { setAccountState } = await import('./services/account-registry.js');
         if (bal != null) {
           setState(db, 'account_balance_usd', String(bal));

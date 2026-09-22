@@ -222,13 +222,15 @@ static void test_stop_floor_stale_and_abandon() {
   firer.setClockForTests([&] { return clock; });
   firer.start();
   assert(firer.onFill(fillAt(41, "BUY", 240000000, 400000, 239990000, 239980000), 1000) == 1);
-  for (int i = 0; i < 200 && firer.counters().refusedStale == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  // The worker increments the counter before publishing its decision record.
+  // Wait for both observations within the same budget before asserting them.
+  for (int i = 0; i < 200 && (firer.counters().refusedStale == 0 || countKind(ring, "fire_refused", "fire_stale") == 0); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
   assert(firer.counters().refusedStale == 1 && sent.load() == 0 && countKind(ring, "fire_refused", "fire_stale") == 1);
   // in time: sent
   clock = 3000;
   permits.set(1, 41, "BUY", slow);
   assert(firer.onFill(fillAt(41, "BUY", 240000000, 400000, 239990000, 239980000), 1000) == 1);
-  for (int i = 0; i < 200 && sent.load() == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  for (int i = 0; i < 200 && (sent.load() == 0 || firer.counters().sent == 0); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
   assert(sent.load() == 1 && firer.counters().sent == 1);
   firer.stop();
   // abandon: queued fires are dropped by stop(), never sent after it

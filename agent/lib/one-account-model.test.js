@@ -52,6 +52,7 @@ export const PATTERNS = Object.freeze({
  * carry NONE of the tokens; a listed file may carry exactly the counts named.
  */
 export const ALLOWLIST = Object.freeze({
+  'agent/services/scanner-candidates.js': { reason: 'verify registered account/feed routing for mirror observations only; no eligibility gate', max: { is_live: 2 } },
   // ---- schema and env ------------------------------------------------------
   'agent/db.js': { reason: 'the accounts.is_live column and the entry_intents.environment enum comment — storage, not a gate', max: { is_live: 1, live_str: 1, demo_str: 1 } },
   'agent/lib/entry-contracts.js': { reason: 'ENVIRONMENTS enum on the tick contracts (which sidecar an intent belongs to)', max: { live_str: 1, demo_str: 1 } },
@@ -71,6 +72,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/acting-layer.js': { reason: 'same-side roster filter (plan §3.1)', max: { is_live: 2, isLive: 3 } },
   'agent/services/naked-position-guard.js': { reason: 'route each protection sweep and its in-flight lock to its broker host; identical protection policy on both sides', max: { is_live: 2, isLive: 10, live_str: 1, demo_str: 1 } },
   'agent/services/controller-runtime.js': { reason: 'display the two sidecars and account environment; read-only, no policy gates', max: { is_live: 3, live_str: 2, demo_str: 2 } },
+  'agent/services/watchdog-contract.js': { reason: 'select the registered broker host for identified calendar evidence; identical watchdog policy for every account', max: { is_live: 2 } },
   'scripts/tick-shadow-preflight.mjs': { reason: 'read-only deployment preparation for cpp-acct; never changes eligibility or sends orders', max: { live_str: 1, environment_cmp: 1 } },
   'agent/services/entry-drain.js': { reason: 'creds per account for the drain (plan §3.1)', max: { is_live: 3, isLive: 1 } },
   'agent/services/exec-guard-sync.js': { reason: 'the side\'s roster for the guard push (plan §3.1); the tick-entry roster reads mode + STABLE only; the open positions carried on the side\'s sidecar (19-09-2026)', max: { is_live: 4, isLive: 14 } },

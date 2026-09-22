@@ -3,6 +3,8 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
+import { scannerMirrorStatus } from '../services/scanner-candidates.js'
+import { nodeWatchdogContract } from '../services/watchdog-contract.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
@@ -35,9 +37,14 @@ import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
+import { accountMoney } from '../services/account-money.js'
+import { accountHistory } from '../services/account-history.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
+import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
+import { readPerformancePopulations, readPerformanceAnalytics } from '../services/performance-populations.js'
+import { reportLedger } from '../shared/performance-populations.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -48,6 +55,9 @@ import { marketIdentity } from '../lib/market-identity.js'
  */
 export default function stateRouter(db) {
   const router = Router()
+  router.get('/watchdog', (_req, res) => {
+    res.set('Cache-Control', 'no-store').json(nodeWatchdogContract(db))
+  })
 
   // -----------------------------------------------------------------------
   // Server-side response cache (owner 2026-07-28: "some information already
@@ -62,6 +72,10 @@ export default function stateRouter(db) {
   // client-ping is excluded: each ping must register (it IS a write in
   // read-clothing), and the roster must stay per-second live.
   // -----------------------------------------------------------------------
+  router.get('/scanner-mirrors', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(scannerMirrorStatus(db))
+  })
   const respCache = new Map() // originalUrl → { body, etag, at }
   const STATE_CACHE_MS = Math.max(1000, Number(process.env.STATE_CACHE_MS || 10_000))
   // /sessions is excluded too: it reports a live "seen 3s ago" age, and a 10s
@@ -74,7 +88,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/watchdog', '/account-money', '/account-history'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -150,6 +164,27 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  router.get('/account-history', (req, res) => {
+    const id = typeof req.query.account === 'string' ? req.query.account : null
+    if (!id || !/^[1-9]\d*$/.test(id) || !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(id)) {
+      return res.status(400).json({ error: 'explicit registered account required' })
+    }
+    try {
+      const to = req.query.to == null ? Date.now() : Number(req.query.to)
+      const from = req.query.from == null ? to - 86400_000 : Number(req.query.from)
+      res.set('Cache-Control', 'no-store').json(accountHistory(db, id, { from, to,
+        limit: req.query.limit == null ? 2000 : Number(req.query.limit),
+        before: req.query.before == null ? null : Number(req.query.before) }))
+    } catch (err) { res.status(err instanceof RangeError ? 400 : 503).json({ error: err instanceof RangeError ? err.message : 'history unavailable' }) }
+  })
+
+  router.get('/account-money', (req, res) => {
+    const id = typeof req.query.account === 'string' ? req.query.account : null
+    if (!id || !/^[1-9]\d*$/.test(id)) return res.status(400).json({ error: 'explicit account required' })
+    if (!db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(id)) return res.status(404).json({ error: 'account not registered' })
+    res.set('Cache-Control', 'no-store').json(accountMoney(db, id))
+  })
+
   // GET /state/market-calendar?account=<id>&symbolId=<broker instrument id>
   // Advisory evidence only. Explicit identity avoids an account switch or a
   // matching ticker name silently changing the feed being diagnosed.
@@ -2163,16 +2198,25 @@ export default function stateRouter(db) {
   // GET /state/perf-ledger — the Performance Ledger aggregation (design_
   // claude PR B): timeframe windows × market categories × account, with
   // carry-forward. ?account=<id>|all (default all).
+  router.get('/performance-populations', async (_req, res) => {
+    try { res.json(await readPerformancePopulations(db)) }
+    catch (err) { res.status(503).json({ status: 'unavailable', reason: err.message }) }
+  })
   router.get('/perf-ledger', async (req, res) => {
     try {
-      const { buildPerfLedger } = await import('../services/perf-ledger.js')
       const accountId = req.query.account ? String(req.query.account) : null
-      const ledger = buildPerfLedger(db, { accountId })
+      const ledger = reportLedger(await readPerformancePopulations(db), accountId || 'all')
       // The daily-loss fraction THIS account trades under (its overlay merged
       // over the global), so a per-account card computes its daily stop from
       // its own balance and its own limit — not the global limit applied to
       // another account's money (11-09-2026, the Performance cards).
       const scoped = accountId && accountId !== 'all' ? accountId : null
+      // Preserve the account's stored display input, explicitly unverified.
+      // It is not a reconstructed balance history or a portfolio balance.
+      const rawBalance = scoped ? getState(db, `acct:${scoped}:account_balance_usd`) : null
+      ledger.balance = rawBalance != null && String(rawBalance).trim() !== '' && Number.isFinite(Number(rawBalance)) ? Number(rawBalance) : null
+      ledger.balanceSource = ledger.balance == null ? null : 'scoped'
+      ledger.balanceStatus = 'legacy_stored_input_unverified'
       // null means "check off" (risk.js DEFAULT_RISK_CONFIG) and stays null:
       // Number(null) is 0, and 0 would print as a zero-loss daily stop where
       // there is no stop at all (independent checker, 11-09-2026).
@@ -2197,9 +2241,8 @@ export default function stateRouter(db) {
   // described the latest hundred, not the record). days omitted/0 = all time.
   router.get('/account-analytics', async (req, res) => {
     try {
-      const { accountAnalytics } = await import('../services/account-analytics.js')
       const days = Number(req.query.days)
-      res.json(accountAnalytics(db, {
+      res.json(await readPerformanceAnalytics(db, {
         accountId: req.query.account ? String(req.query.account) : null,
         days: Number.isFinite(days) && days > 0 ? days : null,
       }))
@@ -3065,6 +3108,17 @@ export default function stateRouter(db) {
   })
 
   // Confirmed opening population, independent of closed-journal pagination.
+  router.get('/hourly-activity', (req, res) => {
+    const scope = requestedAccount(db, req)
+    if (typeof req.query.account !== 'string' || !scope.explicit
+      || (!scope.all && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(scope.accountId))) {
+      return res.status(400).json({ error: 'explicit registered account or all required' })
+    }
+    const to = typeof req.query.to === 'string' && /^\d{1,16}$/.test(req.query.to) ? Number(req.query.to) : NaN
+    try { return res.json(hourlyActivity(db, scope, { to })) }
+    catch (err) { return res.status(err instanceof RangeError ? 400 : 503).json({ error: err instanceof RangeError ? err.message : 'activity evidence unavailable' }) }
+  })
+
   router.get('/hourly-openings', (req, res) => {
     const scope = requestedAccount(db, req)
     if (typeof req.query.account !== 'string' || !scope.explicit

@@ -427,7 +427,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       } catch { /* audit best-effort */ }
     }
 
-    if (due.length && typeof sendMessage === 'function') {
+    if (due.length && typeof sendMessage === 'function' && getState(db, 'watchdog_incident_owner') !== 'cpp-verify') {
       const lines = due.map(f => `· ${f.symbol} (position ${f.positionId}) — ${f.detail}`)
       try {
         await sendMessage(
@@ -693,7 +693,10 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       const buttons = targetDue
         .filter(f => suggestions.get(f) && !applied.has(f) && applyEligible(f))
         .map(f => [{ text: `Set TP ${suggestions.get(f).tp} on ${f.symbol}`, callback_data: `prottp|${f.positionId}|${suggestions.get(f).tp}` }])
-      try {
+      // Incident ownership never removes the owner's approval controls or
+      // confirmation of an actual repair. Generic missing-TP alerts transfer;
+      // actionable approval/repair messages remain Node's responsibility.
+      if (getState(db, 'watchdog_incident_owner') !== 'cpp-verify' || buttons.length || applied.size) try {
         await sendMessage(
           `\u{26A0}\u{FE0F} ${targetDue.length} OPEN POSITION${targetDue.length > 1 ? 'S' : ''} WITH NO TAKE PROFIT${applied.size ? ` — ${applied.size} SET AUTOMATICALLY` : ''}\n${lines.join('\n')}\n\nThese were adopted from the broker, so the entry guard never saw them. The bot now sets a target on its OWN adopted positions where it can compute one; anything opened outside the bot is left for you. Tap a button below, or set your own with POST /actions/position-protect {positionId, tp}.`,
           buttons.length ? { buttons } : undefined,

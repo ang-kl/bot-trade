@@ -240,7 +240,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
               <Metric label="Day P&L" value={a.hasToday ? signed(a.day) : '—'} palette={palette}
                 tone={!a.hasToday ? null : a.day >= 0 ? P_UP : P_DN} />
               <Metric label="TP nett today" value={a.hasToday ? signed(a.gw) : '—'} palette={palette} tone={P_UP} />
-              <Metric label="SL nett today" value={a.hasToday ? signed(-a.gl) : '—'} palette={palette} tone={P_DN} />
+              <Metric label="SL nett today" value={a.hasToday ? signed(a.gl == null ? null : -a.gl) : '—'} palette={palette} tone={P_DN} />
               <Metric label="30D pace" value={a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'} palette={palette}
                 tone={a.n30 == null ? null : a.n30 >= 0 ? P_UP : P_DN} />
               <Metric label="Loss-cap used"

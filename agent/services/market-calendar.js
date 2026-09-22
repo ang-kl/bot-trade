@@ -99,7 +99,7 @@ export function recordMarketCalendar(db, input, symbol, { nowMs = Date.now() } =
 }
 
 /** Pure evaluation, using each holiday's own zone and the symbol's IANA zone. */
-function calendarAt(calendar, now) {
+export function calendarAt(calendar, now) {
   for (const h of calendar.holiday) {
     const p = zonedParts(now, h.scheduleTimeZone)
     const date = new Date(h.holidayDate * DAY * 1000).toISOString().slice(0, 10)
