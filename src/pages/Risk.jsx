@@ -556,7 +556,7 @@ export default function Risk() {
       {/* /actions/balance takes no accountId — one stored balance and leverage
           for the whole bot, which is why an account switch never changes it. */}
       <Card id="sec-account" data-risk-card className="w3-hover-shadow">
-        <SectionTitle badge={data?.account?.isLive ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">DEMO</Badge>}>
+        <SectionTitle badge={data?.account?.isLive === true ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">{data?.account?.isLive === false ? 'DEMO' : 'UNVERIFIED'}</Badge>}>
           Global Account — cTrader risk configuration
         </SectionTitle>
         <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
@@ -565,8 +565,8 @@ export default function Risk() {
               hint="The balance every % figure below is computed from." />
             <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
               {data?.account?.balanceSource === 'broker'
-                ? `live from the broker (snapshot ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}) — edits here override until the next sync`
-                : 'stored value — connect/refresh the broker for live truth'}
+                ? `cached broker balance (snapshot ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''})`
+                : data?.account?.balanceSource === 'stored' ? 'stored account value — broker freshness is not verified' : 'account balance unavailable'}
             </div>
           </div>
           <Field label="Leverage (1:N)" value={acct.leverage} onChange={v => setAcct(a => ({ ...a, leverage: v }))}
@@ -584,6 +584,13 @@ export default function Risk() {
             <Button size="sm" className={SAVE_BTN} onClick={() => save('account', () => agentPost('/actions/balance', { balance: acct.balance, leverage: acct.leverage }))}>Save account</Button>
           </span>
         </div>
+        {data?.account?.brokerSnapshot?.reason && (
+          <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-2">
+            Broker evidence: {data.account.brokerSnapshot.reason.replaceAll('_', ' ')}.
+            {data.account.depositCurrency && <> Deposit currency: {data.account.depositCurrency}.</>}
+            {' '}Sizing fields use USD; unavailable broker margin is left blank.
+          </p>
+        )}
       </Card>
 
       {/* ---- Position protection: the three layers that answer "you didn't
@@ -1208,11 +1215,11 @@ export default function Risk() {
                       ? <>fixed <b>${fmt$(budget, 3)}</b> (absolute mode)</>
                       : <>balance ${fmt$(bal)} × {fmt$((risk.perTradeRiskPct || 0) * 100, 3)}% = <b>${fmt$(budget, 3)}</b></>}, capped by the hard caps and the drawdown de-risk factor.<br />
                     2. Lots = budget ÷ $-loss-per-lot at the forecast SL distance, floored to broker 0.01-lot granularity.<br />
-                    3. Margin fit: the new position's margin must fit the <b>real-time headroom</b> = (balance × max-margin {fmt$((risk.maxMarginUsagePct || 0) * 100, 1)}% = ${fmt$(cap, 3)}) − broker-reported used margin. It shrinks to fit; if even the minimum lot doesn't fit, the trade is skipped before any sizing work.
+                    3. Displayed margin headroom = (balance × max-margin {fmt$((risk.maxMarginUsagePct || 0) * 100, 1)}% = ${fmt$(cap, 3)}) − cached broker used margin. This is a snapshot preview; the execution risk gate makes the entry decision.
                   </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                    <span className="text-[var(--color-text-sub)]">Used margin (broker, live)</span>
-                    <span className="text-right tabular-nums">{m?.usedMargin != null ? `$${fmt$(m.usedMargin, 3)}` : 'no snapshot yet'}</span>
+                    <span className="text-[var(--color-text-sub)]">Used margin (cached broker)</span>
+                    <span className="text-right tabular-nums">{m?.usedMargin != null ? `$${fmt$(m.usedMargin, 3)}` : 'unavailable'}</span>
                     <span className="text-[var(--color-text-sub)]">Margin cap</span>
                     <span className="text-right tabular-nums">${fmt$(cap, 3)}</span>
                     <span className="text-[var(--color-text-sub)]">Headroom left for new lots</span>
@@ -1299,7 +1306,7 @@ export default function Risk() {
               <div>SL {sl.toFixed(4)} (min distance {Number(risk.minSLDistancePct) || 0.15}%) · TP {tp.toFixed(4)} ({Number(risk.minRR) || 1.5}R).</div>
               <div>Risk budget: <AnimatedNumber value={budget} className="font-semibold" />{budget < budgetBase ? ` (capped from ${fmt$(budgetBase)})` : ''} → <AnimatedNumber value={lots} className="font-semibold" /> lots at ~<AnimatedNumber value={usdPerLot} />/lot.</div>
               <div className="text-[var(--color-text-sub)]">
-                Then the gate still checks: daily cap, loss streak, max {risk.maxOpenPositions ?? 5} open, one-per-symbol, spread ≤ {((Number(risk.maxSpreadFracOfSL) || 0.25) * 100).toFixed(0)}% of SL, cluster/currency exposure, margin headroom at 1:{acct.leverage || 100} — ANY failure vetoes with a logged reason.
+                Then the gate still checks: daily cap, loss streak, max {risk.maxOpenPositions ?? 5} open, one-per-symbol, spread ≤ {((Number(risk.maxSpreadFracOfSL) || 0.25) * 100).toFixed(0)}% of SL, cluster/currency exposure and margin headroom. Account leverage: {acct.leverage != null ? `1:${acct.leverage}` : 'unverified'} — ANY failure vetoes with a logged reason.
               </div>
             </div>
           </Card>

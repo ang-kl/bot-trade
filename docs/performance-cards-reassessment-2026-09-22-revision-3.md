@@ -488,3 +488,14 @@ The repository's merge gate remains the one in CLAUDE.md: all Node agent tests, 
 - Performance and research evidence distinguish zero, sparse, stale/unknown, empty replay and losses; #985 and subsequent fixes are reused and validated.
 - Strategy promotion, volume confirmation and symbol expansion have their own evidence and unchanged owner risk boundaries.
 - Production storage, restart recovery, service cost/capacity and rollback are evidenced. Six services is the approved architecture, not proof of throughput or profitability.
+
+## 20. Implementation handover
+
+| Item | Recorded state | Evidence and remaining work |
+|---|---|---|
+| Revision 3 publication | Merged in [#1005](https://github.com/ang-kl/bot-trade/pull/1005), main `e366effa8b9f74bc1a7f9542b0257592ca1822ae` | GitHub file read-back and PR CI passed. Earlier revisions are preserved. |
+| P0 protection | Exceptions unresolved at the dated 12:03 SGT check | 39 positions, zero missing SL, two missing TP1. This code package makes no broker amendment. |
+| P2a snapshot read model | Implemented in the accompanying change; live acceptance pending | Shared identity/age/currency validation now feeds `/state/risk-full`; account-specific balance, margin, leverage and route labels no longer borrow global values. Regression tests reproduced foreign-account balance leakage before the route fix. Risk-page labels distinguish cached, stored and unavailable evidence. Full gate results belong to the PR record. |
+| P2b and later packages | Pending | Risk/VPO admission consumers still need migration. Account edit routing, full currency conversion, shared feed/calendar identity and authenticated UI acceptance remain explicit follow-ups. No risk thresholds, entry modes, tick flags or management ownership changed in P2a. |
+
+P2a uses the existing 15-minute display snapshot limit, rejects future/invalid timestamps, preserves valid zero values and leaves known non-USD amounts out of USD sizing fields. A same-account stored fallback has no invented broker timestamp; its source is visible and its freshness remains unverified. It is not an accepted input for future risk gates merely because this display can show it. Broker snapshot `fetchedAt` remains the existing fetch-completion timestamp, not a new source-event freshness guarantee. P2c/P4 must address deeper feed and work-age contracts.

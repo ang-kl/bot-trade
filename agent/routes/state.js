@@ -34,6 +34,7 @@ import { overlayKeys as acctOverlayKeys } from '../services/account-overlay.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
+import { readAccountSnapshot } from '../services/account-snapshot.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -3742,7 +3743,7 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/risk-full', async (req, res) => {
     try {
-      const { DEFAULT_RISK_CONFIG, loadRiskConfig, getAccountBalance, getAccountLeverage, accountRiskOverlay } = await import('../services/risk.js')
+      const { DEFAULT_RISK_CONFIG, loadRiskConfig, getAccountBalance, accountRiskOverlay } = await import('../services/risk.js')
       const { accountKnown, effectiveRiskEntries, unknownQueryParams } = await import('../services/risk-effective.js')
       // STRICT PARAMETERS. This route used to read `?account=` and ignore
       // everything else, so `?accountId=ACCT-DEMO-4` returned the GLOBAL config
@@ -3782,12 +3783,34 @@ export default function stateRouter(db) {
       const overlayKeys = overlay ? Object.keys(overlay).filter(k => k in DEFAULT_RISK_CONFIG) : []
       const globalCfg = loadRiskConfig(db, null)
       const parse = (k, dflt) => { try { return JSON.parse(getState(db, k) || dflt) } catch { return JSON.parse(dflt) } }
-      // BROKER truth wins for balance (owner saw a stale figure: the stored
-      // account_balance_usd lags the broker between loop refreshes). Use the
-      // latest broker snapshot when it's fresh; fall back to the stored value.
-      const snap = parse('broker_snapshot_cache_json', 'null')
-      const snapAgeMs = snap?.fetchedAt ? Date.now() - new Date(snap.fetchedAt).getTime() : Infinity
-      const brokerBalance = snapAgeMs < 15 * 60 * 1000 ? (snap?.account?.health?.balance ?? snap?.account?.balance ?? null) : null
+      // Global risk configuration still has a selected account for its money
+      // display. Every account fact below must belong to that same identity;
+      // the legacy global snapshot may belong to another account entirely.
+      const displayAccountId = acct ?? (getState(db, 'ctrader_account_id') || null)
+      const { snapshot: snap, ...brokerSnapshot } = readAccountSnapshot(db, displayAccountId, {
+        // This page's sizing and stored balance fields are USD. A deposit-
+        // currency snapshot is not a USD conversion merely because it is fresh.
+        expectedCurrency: 'USD',
+      })
+      const finite = v => typeof v === 'number' && Number.isFinite(v) ? v : null
+      let registeredAccount = null
+      if (displayAccountId) {
+        try {
+          registeredAccount = db.prepare('SELECT is_live, base_currency FROM accounts WHERE account_id = ?').get(displayAccountId)
+        } catch { /* unavailable registry is not evidence of demo, live or currency */ }
+      }
+      const depositCurrency = brokerSnapshot.currency || registeredAccount?.base_currency?.toUpperCase() || null
+      const brokerBalance = finite(snap?.account?.health?.balance) ?? finite(snap?.account?.balance)
+      // Legacy refreshes can stamp native money into a key named _usd. Do not
+      // let that fallback undo a known deposit-currency mismatch.
+      const storedBalance = displayAccountId && (!depositCurrency || depositCurrency === 'USD')
+        ? getAccountBalance(db, displayAccountId) : null
+      const displayBalance = brokerBalance ?? storedBalance
+      const scopedLeverage = displayAccountId ? Number(getState(db, `acct:${displayAccountId}:account_leverage`)) : NaN
+      let accountIsLive = typeof snap?.account?.isLive === 'boolean' ? snap.account.isLive : null
+      if (accountIsLive == null && (registeredAccount?.is_live === 0 || registeredAccount?.is_live === 1)) {
+        accountIsLive = registeredAccount.is_live === 1
+      }
       res.json({
         ok: true,
         risk: {
@@ -3813,16 +3836,19 @@ export default function stateRouter(db) {
           // Balance and leverage follow the same scope: an account's risk is
           // sized off ITS balance, and showing another's would make every
           // derived lot figure on the page wrong.
-          balance: (acct ? getAccountBalance(db, acct) : null) ?? brokerBalance ?? getAccountBalance(db),
-          balanceSource: acct ? 'stored' : (brokerBalance != null ? 'broker' : 'stored'),
-          balanceFetchedAt: !acct && brokerBalance != null ? snap.fetchedAt : null,
-          leverage: getAccountLeverage(db, effective, acct),
+          balance: displayBalance,
+          balanceSource: brokerBalance != null ? 'broker' : storedBalance != null ? 'stored' : null,
+          balanceFetchedAt: brokerBalance != null ? snap.fetchedAt : null,
+          currency: displayBalance != null ? 'USD' : null,
+          depositCurrency,
+          brokerSnapshot,
+          leverage: Number.isFinite(scopedLeverage) && scopedLeverage > 0 ? scopedLeverage : null,
           // Pepperstone forces liquidation at 50% margin level on this
           // account — real observed history (risk.js: owner hit 16 open,
           // margin level 126% vs 50% stop-out). Broker-set, not editable.
           brokerStopOutPct: 50,
-          accountId: acct ?? (getState(db, 'ctrader_account_id') || null),
-          isLive: getState(db, 'ctrader_is_live') === 'true',
+          accountId: displayAccountId,
+          isLive: accountIsLive,
         },
         // TODAY'S ACTUAL ALLOWANCE, computed by the same function the risk
         // gate uses. The paced cap is a moving number, and the one thing worse
@@ -3833,13 +3859,13 @@ export default function stateRouter(db) {
         dailyPacing: await (async () => {
           const { fxDayOpenMs, fxDayStartSql } = await import('../services/risk.js')
           const { pacedDailyCap } = await import('../services/daily-loss-pacing.js')
-          const balance = (acct ? getAccountBalance(db, acct) : null) ?? brokerBalance ?? getAccountBalance(db)
+          const balance = displayBalance
           // No balance no longer means nothing to report: the flat $ cap is a
           // live check of its own now, and with the % check inapplicable it is
           // the ONLY thing standing between the account and an uncapped day —
           // exactly the state the Risk page has to be able to warn about.
           const nowMs = Date.now()
-          const id = acct ?? (getState(db, 'ctrader_account_id') || null)
+          const id = displayAccountId
           let spent = 0
           try {
             const row = db.prepare(
@@ -3861,7 +3887,7 @@ export default function stateRouter(db) {
               ? Number(effective.perTradeRiskUsd)
               : (balance > 0 ? balance * effective.perTradeRiskPct : 0),
           })
-          return { ...p, spentUsd: spent, accountId: id, balance: balance > 0 ? balance : null }
+          return { ...p, spentUsd: spent, accountId: id, balance }
         })(),
         guardian: {
           enabled: (getState(db, 'guardian') || 'true') !== 'false',
@@ -3869,22 +3895,19 @@ export default function stateRouter(db) {
         },
         weekendBank: (getState(db, 'weekend_bank') || 'true') !== 'false',
         weekendLossFlag: (getState(db, 'weekend_loss_flag') || 'true') !== 'false',
-        // Real-time margin (broker truth) — the monitor refreshes the broker
-        // snapshot ~30s; the Risk page's lot-sizing card explains sizing
-        // against THESE numbers, the same ones the risk gate now uses.
+        // Display only the matching, fresh USD snapshot. Risk-gate/VPO
+        // migration is P2b; this read-only change does not alter admission.
         margin: (() => {
-          try {
-            const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
-            const h = snap?.account?.health
-            if (!h) return null
-            return {
-              usedMargin: h.usedMargin ?? null,
-              freeMargin: h.freeMargin ?? null,
-              equity: h.equity ?? null,
-              marginLevelPct: h.marginLevelPct ?? null,
-              fetchedAt: snap.fetchedAt ?? null,
-            }
-          } catch { return null }
+          const h = snap?.account?.health
+          if (!h) return null
+          const values = {
+            usedMargin: finite(h.usedMargin),
+            freeMargin: finite(h.freeMargin),
+            equity: finite(h.equity),
+            marginLevelPct: finite(h.marginLevelPct),
+          }
+          if (Object.values(values).every(v => v == null)) return null
+          return { ...values, accountId: displayAccountId, currency: brokerSnapshot.currency, fetchedAt: snap.fetchedAt }
         })(),
         execGuard: parse('exec_guard_json', '{}'),
         globalGuards: parse('global_guards_json', '{}'),
