@@ -1,0 +1,38 @@
+name: Revision 3 isolated review workspace
+
+# Development-only branch. No deployment, secrets, broker credentials or writes.
+on:
+  push:
+    branches: [work/rev3-workspace-export-20260922]
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm ci --prefix agent
+      - name: Package public source and locked development dependencies
+        run: |
+          mkdir -p /tmp/rev3-review
+          git archive --format=tar HEAD | tar -x -C /tmp/rev3-review
+          cp -a node_modules /tmp/rev3-review/node_modules
+          cp -a agent/node_modules /tmp/rev3-review/agent/node_modules
+          git rev-parse HEAD > /tmp/rev3-review/WORKSPACE_COMMIT
+          tar -czf /tmp/rev3-workspace.tgz -C /tmp/rev3-review .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rev3-review-workspace
+          path: /tmp/rev3-workspace.tgz
+          retention-days: 1
+          compression-level: 0
