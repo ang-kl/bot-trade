@@ -7,7 +7,7 @@ import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { llmDisabled as llmDisabledFlag, llmDisabledReason as llmDisabledWhy } from '../lib/llm-switch.js'
-import { loadRiskConfig, accountRiskOverlay, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
+import { loadRiskConfig, accountRiskOverlay, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverageEvidence } from '../services/risk.js'
 // Static, not the dynamic import used further down: /config is a SYNC handler.
 import { readWatchlist, hasOwnWatchlist } from '../services/watchlists.js'
 import { tierForBalance } from '../lib/contracts.js'
@@ -2063,7 +2063,7 @@ export default function stateRouter(db) {
     try {
       const { listAccounts } = await import('../services/account-registry.js')
       const { readWatchlist, hasOwnWatchlist, diffWatchlists } = await import('../services/watchlists.js')
-      const { loadRiskConfig, getAccountLeverage, requiredMargin } = await import('../services/risk.js')
+      const { requiredMargin } = await import('../services/risk.js')
 
       // LAST TRADED, per account per symbol — the operator's sketch asks for
       // it because "this account has never touched that symbol" is the thing
@@ -2086,7 +2086,6 @@ export default function stateRouter(db) {
       // THIS account, at its own leverage. It is an estimate off the last
       // scanned price, so a symbol with no cached price reports null and the
       // UI shows a dash rather than a confident zero.
-      const riskCfg = loadRiskConfig(db)
       const prices = {}
       try {
         const last = JSON.parse(getState(db, 'last_scan_results') || 'null')
@@ -2104,7 +2103,8 @@ export default function stateRouter(db) {
       }
       const accounts = listAccounts(db).map(a => {
         const rawItems = readWatchlist(db, a.account_id)
-        const lev = getAccountLeverage(db, riskCfg, a.account_id)
+        const leverageEvidence = getAccountLeverageEvidence(db, a.account_id)
+        const lev = leverageEvidence.value
         const traded = lastTraded[String(a.account_id)] || {}
         const items = rawItems.map(i => {
           const px = prices[i.symbol]
@@ -2136,6 +2136,7 @@ export default function stateRouter(db) {
           tokenRefused: tokenRefused.has(String(a.account_id)),
           mode: a.mode,
           leverage: lev,
+          leverageEvidence,
           inherited: !hasOwnWatchlist(db, a.account_id),
           count: items.length,
           enabledCount: items.filter(i => i.enabled !== false).length,
@@ -3473,7 +3474,8 @@ export default function stateRouter(db) {
     const effective = loadRiskConfig(db, acctParam)
     const overlay = acctParam ? accountRiskOverlay(db, acctParam) : null
     const balance = getAccountBalance(db, acctParam)
-    const leverage = getAccountLeverage(db, effective, acctParam)
+    const leverageEvidence = getAccountLeverageEvidence(db, acctParam)
+    const leverage = leverageEvidence.value
     const tier = balance != null ? tierForBalance(balance) : null
     const derived = balance != null
       ? {
@@ -3521,6 +3523,7 @@ export default function stateRouter(db) {
       // one account's balance beside another's name on the Trade header.
       accountId: acctParam,
       resolvedAccountId,
+      leverageEvidence,
       overlay,
     })
   })

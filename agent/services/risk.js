@@ -772,24 +772,30 @@ export function getAccountBalance(db, accountId = null) {
 export const DEFAULT_LEVERAGE = 100
 
 /**
- * Read the account leverage (e.g. 200 → 1:200): the account's own stamp,
- * then the legacy global stamp, then DEFAULT_LEVERAGE when unset or
- * malformed. Leverage ≤0 is ignored. The second argument is kept for the
- * call sites that pass the risk config; it is not read.
+ * Leverage evidence for one account. A named/selected account can use only
+ * its own stored value, otherwise the unchanged DEFAULT_LEVERAGE assumption.
+ * The global value is only a legacy no-account input. Existing state keys
+ * carry no provenance timestamp, so none is labelled fresh broker evidence.
  */
-export function getAccountLeverage(db, config, accountId = null) {
-  void config // kept for the callers that pass the risk config; not read since Wave 4b
-  // Same resolution rule as getAccountBalance above, for the same reason.
+export function getAccountLeverageEvidence(db, accountId = null) {
   const resolvedAcct = accountId != null ? accountId : getState(db, 'ctrader_account_id')
-  if (resolvedAcct != null) {
-    const scoped = Number(getState(db, `acct:${resolvedAcct}:account_leverage`))
-    if (Number.isFinite(scoped) && scoped > 0) return scoped
-  }
-  const raw = getState(db, 'account_leverage')
-  if (raw == null) return DEFAULT_LEVERAGE
+  const hasAccount = resolvedAcct != null
+  const raw = getState(db, hasAccount ? `acct:${resolvedAcct}:account_leverage` : 'account_leverage')
   const n = Number(raw)
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_LEVERAGE
-  return n
+  const valid = raw != null && raw !== '' && Number.isFinite(n) && n > 0
+  return {
+    accountId: hasAccount ? String(resolvedAcct) : null,
+    value: valid ? n : DEFAULT_LEVERAGE,
+    source: valid ? (hasAccount ? 'account_stored' : 'legacy_global') : 'assumed_default',
+    verified: false, observedAt: null,
+    reason: valid ? 'stored_provenance_unverified' : raw == null || raw === '' ? 'leverage_missing' : 'leverage_invalid',
+  }
+}
+
+/** Numeric compatibility seam; the risk config is not a leverage setting. */
+export function getAccountLeverage(db, config, accountId = null) {
+  void config
+  return getAccountLeverageEvidence(db, accountId).value
 }
 
 /**
@@ -900,10 +906,11 @@ export function accountMarginPool(db, config, accountIds, { rates = null } = {})
   for (const id of accountIds || []) {
     const accountId = String(id)
     const balance = getAccountBalance(db, accountId)
+    const leverageEvidence = getAccountLeverageEvidence(db, accountId)
     const status = balance > 0
-      ? portfolioMarginStatus(db, config, { balance, leverage: getAccountLeverage(db, config, accountId), rates, accountId })
+      ? portfolioMarginStatus(db, config, { balance, leverage: leverageEvidence.value, rates, accountId })
       : null
-    out.push({ accountId, balance: balance > 0 ? balance : null, status, exhausted: !!(status && status.headroom <= 0) })
+    out.push({ accountId, balance: balance > 0 ? balance : null, leverageEvidence, status, exhausted: !!(status && status.headroom <= 0) })
   }
   const key = (p) => p.status ? p.status.headroom : 0
   return out.sort((a, b) => key(b) - key(a))
@@ -1618,10 +1625,11 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   const overlay = accountRiskOverlay(db, acct)
   const base = configOverride || loadRiskConfig(db)
   const config = overlay ? mergeRiskConfig(base, migrateLegacyRiskKeys(overlay)) : base
-  // M1c: balance/leverage resolve per-account too (acct:<id>: keys when
-  // stamped, legacy global keys otherwise) so caps size off the right equity.
+  // Named accounts use their own sizing inputs. A missing leverage retains
+  // the existing default assumption, never another account's global value.
   const balance = getAccountBalance(db, acct)
-  const leverage = getAccountLeverage(db, config, acct)
+  const leverageEvidence = getAccountLeverageEvidence(db, acct)
+  const leverage = leverageEvidence.value
   // WHOSE BALANCE IS THIS? (owner, 06-08-2026, two screenshots.) The same
   // 5,000-unit 0003.HK position sat on a USD 46,073 account and a USD 1,984
   // one — 0.3% of one account's budget and 7.5x the other's. getAccountBalance
@@ -1640,6 +1648,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   const bal = sizingBalance(db, acct)
   const checks = {
     balance, leverage, account_id: acct,
+    leverage_evidence: leverageEvidence,
     account_source: acctExplicit ? 'proposal' : 'selected',
     balance_source: bal.source,
     balance_is_account_scoped: bal.ok,

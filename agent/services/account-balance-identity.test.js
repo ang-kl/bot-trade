@@ -35,12 +35,16 @@ test('a selected account with no stamped balance still falls back rather than re
   assert.equal(getAccountBalance(db), 500)
 })
 
-test('leverage resolves the same way', () => {
+test('leverage resolves selected ownership and never borrows a global value for another account', () => {
   setState(db, 'ctrader_account_id', '47790949')
   setState(db, 'acct:47790949:account_leverage', '200')
   setState(db, 'account_leverage', '25')
   assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), 200)
-  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG, '43097342'), 25)
+  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG, '43097342'), 100, 'missing own value uses the unchanged default, not global 25')
+  setState(db, 'account_leverage', '1000')
+  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG, '43097342'), 100, 'another account cannot alter this assumption')
+  setState(db, 'acct:43097342:account_leverage', '50')
+  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG, '43097342'), 50)
 })
 
 
