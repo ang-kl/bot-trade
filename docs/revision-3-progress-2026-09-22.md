@@ -5,7 +5,7 @@ and `CLAUDE.md`. Reconciled on 22 September 2026, 14:30 SGT.
 
 ## Repository reconciliation
 
-GitHub main is `7bf5bd1699b02422ab74588b7a62025e7a8edb10` (#1007).
+At the initial reconciliation GitHub main was `7bf5bd1699b02422ab74588b7a62025e7a8edb10` (#1007).
 All 159 remote branches and the latest 30 PRs were inspected; the separate open-PR
 query returned none. #985, #992-#1001, #1003, #1005, #1006 and #1007 are merged.
 P1 and the P2a/P2b packages are reused, not rebuilt. These PRs do not complete
@@ -87,3 +87,58 @@ Rollback owner: repository owner, Adrian Ang. Before rollout, preserve each
 reviewed branch/PR and the current deployed SHA. A code revert is itself subject
 to the deployment boundary; no automated live rollback or account action is
 authorised by this record.
+
+## Continuation checkpoint - 22 September 2026, 15:02 SGT
+
+The owner (`ang-kl`) marked #1008 ready at 14:40:10 SGT and merged it at
+14:40:15 SGT. Current main is `f06030f9ebb1fb11a64bdb06709577d6d522d8d2`.
+Both PR checks passed. Railway reports successful deployments of all four
+services from this SHA between 14:41:10 and 14:41:33 SGT. No deployment or
+account mutation was requested by this continuation. Authenticated UI and
+management-latency acceptance remain unverified.
+
+| Reviewable change | Implemented | Tested | Merged | Deployed | Runtime verified |
+|---|---|---|---|---|---|
+| Account-edit recovery, [#1008](https://github.com/ang-kl/bot-trade/pull/1008) | Yes | Local gate + PR CI | Owner merged, `f06030f` | Railway reports success, all four services | No authenticated UI acceptance; subsequent review found the race below |
+| Per-field account saves, [#1009](https://github.com/ang-kl/bot-trade/pull/1009) | Yes; prevents overwriting an untouched broker-refreshed value | 5,206 Node + 904 Vitest passes, one existing Node skip; full local gate + PR CI green | No at checkpoint | No | No |
+| Identified calendar evidence, [#1010](https://github.com/ang-kl/bot-trade/pull/1010) | First P2c slice; advisory capture/read model | 5,217 Node + 900 Vitest passes, one existing Node skip; full local gate + PR CI green | No at checkpoint | No | No; all-account coverage/real broker fixtures remain |
+| Hourly opening population, accompanying change | First P5b slice; all confirmed ledger rows | 5,212 Node + 905 Vitest passes, one existing Node skip; full local gate | No | No | No |
+
+Detailed evidence and scope: `account-edit-delta-2026-09-22.md` on #1009,
+`market-calendar-contract-2026-09-22.md` on #1010, and
+[hourly-opening-population-2026-09-22.md](hourly-opening-population-2026-09-22.md).
+The new branch trees were compared with the tested local trees before publication.
+Native Git transport remains unavailable; authenticated GitHub publication works.
+
+Fresh protection read after the owner's merge: broker checks at 14:49:39-40 SGT,
+relayed at 14:49:49 SGT, still show 39 positions, zero missing SL and two missing
+TP1 (demo suffixes 9908 and 0949). This is dated evidence, not a continuing
+coverage guarantee. Node logs name ETHUSD and XRPUSD respectively, but no
+position-specific target proposal or approved amendment is established.
+
+Remaining dependency boundaries are unchanged: intended-versus-connected roster,
+currency/leverage provenance, P3 target policy, P4 quote/configuration freshness
+and writer/latency acceptance, then independent watchdog delivery and scanner
+activation. These do not prohibit separate reporting/contract implementation.
+The main-triggered four-service deployment remains a release boundary, not a
+reason to claim unmerged code is deployed. No blanket activation approval is
+inferred from the owner's individual #1008 merge.
+
+## Main advanced - 22 September 2026, 15:16 SGT
+
+GitHub records `ang-kl` merging #1009 at 15:10:33 SGT into
+`8c0a54aafbf247a9314347f6ff7f3afbc26f547e`, then #1010 at 15:10:47 SGT into
+`4dbdc82996b97a7ace526c5e0dade7b4ff5d4c69`. Both had green PR CI. Railway reports
+all four services successful on the latter SHA. Neither authenticated account
+save acceptance nor real calendar/management acceptance is thereby established.
+
+The accompanying hourly change is [#1011](https://github.com/ang-kl/bot-trade/pull/1011).
+Its original CI passed. Imports and generated inventory were reconciled against
+the new main; the updated local gate is 5,225 Node passes, one existing skip,
+and 909 Vitest passes, plus ESLint/build/no-green/syntax checks. Updated-head CI
+is required. It remains unmerged/undeployed at this checkpoint.
+
+P2 leverage isolation is being prepared separately: account-owned scalar input
+or the existing labelled 1:100 assumption, never another account's global
+leverage. Calendar malformed-identity handling has also been reproduced and is
+being corrected separately. Neither is claimed complete by the earlier table.
