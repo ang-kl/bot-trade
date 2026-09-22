@@ -58,16 +58,26 @@ export function auditRisk({ symbol, side, entry, sl, tp, lots, balance, riskCfg,
  */
 export async function restrategizeAfterTamper(db, creds, change, deps = {}) {
   try {
-    const mp = db.prepare(
+    const accountId = creds?.accountId == null ? null : String(creds.accountId)
+    if (!accountId) return { did: 'skipped', reason: 'account_required' }
+    // A broker position ID is only meaningful within its account. One known
+    // owner may identify a legacy NULL stamp, but conflicting or wholly
+    // unattributed rows cannot authorise a ledger or broker amendment.
+    const matches = db.prepare(
       `SELECT mp.*, t.volume AS lots, t.ctrader_position_id AS position_id
        FROM monitored_positions mp
        LEFT JOIN trades t ON t.id = mp.trade_id
-       WHERE mp.status = 'active' AND t.ctrader_position_id = ?`
-    ).get(String(change.positionId))
+       WHERE mp.status = 'active' AND t.ctrader_position_id = ?
+         AND (t.account_id = ? OR mp.account_id = ?)
+         AND (t.account_id IS NULL OR t.account_id = ?)
+         AND (mp.account_id IS NULL OR mp.account_id = ?)`
+    ).all(String(change.positionId), accountId, accountId, accountId, accountId)
+    if (matches.length > 1) return { did: 'skipped', reason: 'position_identity_ambiguous' }
+    const mp = matches[0]
     if (!mp) return { did: 'skipped', reason: 'position_not_found' }
 
-    const riskCfg = loadRiskConfig(db)
-    const balance = getAccountBalance(db)
+    const riskCfg = loadRiskConfig(db, accountId)
+    const balance = getAccountBalance(db, accountId)
     const rates = scanRates(db)
 
     // ---- volume change: levels keep, risk re-audited, ledger synced ------
@@ -149,12 +159,14 @@ export function summarize(outcome) {
   }
   if (outcome.did === 'risk_audit') {
     const base = outcome.riskUsd != null ? ` Risk now $${outcome.riskUsd}${outcome.capUsd != null ? ` (cap $${outcome.capUsd})` : ''}${outcome.rr != null ? ` · R:R ${outcome.rr}` : ''}.` : ''
-    const iss = outcome.issues?.length ? ` ⚠ ${outcome.issues.join('; ')}.` : ' Within your risk limits.'
-    return `${base}${iss}`
+    const incomplete = outcome.riskUsd == null || outcome.capUsd == null || outcome.rr == null
+    const iss = outcome.issues?.length ? ` ⚠ ${outcome.issues.join('; ')}.` : incomplete ? '' : ' Within your risk limits.'
+    return `${base}${iss}${incomplete ? ' Risk comparison incomplete; one or more inputs are unavailable.' : ''}`
   }
   if (outcome.did === 'verified_only') {
     return outcome.proposed ? ` Recalibration is OFF — proposed SL ${outcome.proposed.sl} · TP ${outcome.proposed.tp} not applied.` : ''
   }
   if (outcome.did === 'error') return ` (re-strategize failed: ${outcome.error})`
+  if (outcome.did === 'skipped') return ` (re-strategize skipped: ${outcome.reason})`
   return ''
 }
