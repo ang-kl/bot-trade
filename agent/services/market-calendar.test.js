@@ -158,6 +158,22 @@ test('foreign identity, corrupt payloads, altered versions and oversized data st
   assert.equal(write(db, spec({ symbolId: 8 })).recorded, false)
 })
 
+test('a malformed identity in persisted evidence or caller input returns unknown instead of throwing', t => {
+  const db = fixture(t); write(db)
+  const saved = getState(db, cacheKey(ID))
+  for (const identity of [null, false, 11, '11', [], {}]) {
+    assert.equal(marketIdentity(identity), null)
+    assert.equal(readMarketCalendar(db, identity, { nowMs: NOW }).reason, 'identity_required')
+    const broken = JSON.parse(saved); broken.latest.identity = identity
+    setState(db, cacheKey(ID), JSON.stringify(broken))
+    assert.equal(read(db).reason, 'identity_mismatch')
+    const brokenLast = JSON.parse(saved); brokenLast.lastVerified.identity = identity
+    setState(db, cacheKey(ID), JSON.stringify(brokenLast))
+    assert.equal(read(db).marketStatus, 'OPEN')
+    assert.equal(read(db).lastVerified, null)
+  }
+})
+
 test('existing refresh captures real identified responses without extra fetches or changing legacy gates', async t => {
   const db = fixture(t)
   setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 7 }))
