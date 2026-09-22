@@ -3604,6 +3604,8 @@ async function runLoop(db) {
             const { wsGetTrader, traderBalance } = await import('./lib/ctrader-ws.js')
             const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
             const bal = traderBalance(trader)
+            const { recordAccountMoney } = await import('./services/account-money.js')
+            recordAccountMoney(db, { accountId, host, trader, balance: bal })
             if (bal != null) {
               setState(db, 'account_balance_usd', String(bal))
               setAccountState(db, accountId, 'account_balance_usd', String(bal))
