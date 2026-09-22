@@ -77,7 +77,8 @@ test('a timed-out nightly read cannot write a successful late snapshot', async t
 })
 
 test('nightly integration records native currency and completed cashflow coverage without converting to USD', async t => {
-  const { db, read } = fixture(t)
+  const { db, read, point } = fixture(t)
+  point(T - 60_000, 100, { currency: 'EUR' })
   const ws = {
     wsGetTrader: async () => ({ balance: 10000, moneyDigits: 2, depositAssetId: 2 }),
     traderBalance: t => t.balance / 100,
@@ -89,9 +90,22 @@ test('nightly integration records native currency and completed cashflow coverag
   assert.equal(out.currency, 'EUR'); assert.equal(out.equity, 105)
   const stored = db.prepare('SELECT * FROM equity_snapshots').get()
   assert.equal(stored.currency, 'EUR'); assert.equal(stored.broker_host, host)
-  assert.equal(read().points.find(p => p.source === 'nightly_equity').equity, 105)
+  assert.equal(read().points.findLast(p => p.source === 'nightly_equity').equity, 105)
   assert.equal(read().currency, 'EUR')
   assert.equal(read().cashflows.complete, true)
+  assert.equal(read().equityChange, 5)
+})
+
+test('one receipt or simultaneous receipts cannot manufacture zero change or zero drawdown', t => {
+  const { point, cashflows, read } = fixture(t)
+  point(T, 100); cashflows()
+  point(T, 101, { source: 'broker_snapshot' })
+  assert.equal(read().currency, 'USD')
+  assert.equal(read().equityChange, null)
+  assert.equal(read().sampledDrawdown, null)
+  assert.equal(read().externalFlowAdjustedChange, null)
+  point(T - 60_000, 100)
+  assert.equal(read().equityChange, 1)
 })
 
 test('a missing position P&L cannot be quietly summed as zero', async t => {

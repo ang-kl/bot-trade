@@ -17,6 +17,7 @@ import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountHistory from '../components/AccountHistory.jsx'
+import BlockerReport from '../components/BlockerReport.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '../lib/hourly-order.js'
 import { openingCountLabel } from '../lib/hourly-openings.js'
@@ -149,7 +150,7 @@ function SessionClock() {
       <span style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, fontSize: 'var(--fs-body)', fontWeight: 600, color: P_SB, fontVariantNumeric: 'tabular-nums' }}>
         <span>{p(now.getUTCHours())}:{p(now.getUTCMinutes())}:{p(now.getUTCSeconds())} UTC</span>
         {/* Device-local clock — owner (2026-07-27): "have a user's timezone below the UTC". */}
-        <span>🇸🇬 {p(now.getHours())}:{p(now.getMinutes())}:{p(now.getSeconds())}</span>
+        <span>{p(now.getHours())}:{p(now.getMinutes())}:{p(now.getSeconds())} {Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local'}</span>
       </span>
     </>
   )
@@ -1792,7 +1793,8 @@ export default function Performance() {
     <div className="space-y-2">
       <SwitchingNote to={switchingTo} />
       <SectionNavFab />
-      <AccountHistory accountId={acct} />
+      <AccountHistory key={acct} accountId={acct} />
+      <BlockerReport key={acct} accountId={acct} />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}
       <style>{'@keyframes perf-pulse{0%,100%{opacity:1}50%{opacity:.3}}'}</style>

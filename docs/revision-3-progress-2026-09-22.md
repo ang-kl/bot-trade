@@ -547,3 +547,16 @@ seven-account independent audit. Six of the seven requested PRs are merged;
 #1027 is the final PR. Its integrated local JavaScript/UI/build gates, full C++
 suite and all 15 ThreadSanitizer tests passed. Its remaining boundary is green
 PR CI and the same deployment/audit gate, followed by final deployment readback.
+
+## 23 September continuation
+
+The seven-PR batch #1022–#1028 is merged, ending at main
+`bf927258b34085517438137653e7b2fd35bda37a`. All four service deployments succeeded.
+Readback at 06:43 SGT found no missing SL and the same two existing missing-TP
+exceptions, one each on accounts 46979908 and 47790949. No target was amended.
+
+Current authorized sequence: finish blocker reporting and reporting/history
+acceptance, then scanner feed/comparison and watchdog integration. Target-policy
+changes and scanner activation remain distinct approval boundaries. The blocker
+and history implementation/acceptance evidence is recorded in
+`reporting-acceptance-2026-09-23.md`; full gate/publication is in progress.
