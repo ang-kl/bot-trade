@@ -872,6 +872,25 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_equity_snapshots_acct_at ON equity_snapshots(account_id, at);
 
+  -- Revision 3 P5d: native observations and independently dated cashflow coverage.
+  CREATE TABLE IF NOT EXISTS account_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, host TEXT NOT NULL,
+    source TEXT NOT NULL, bucket_ms INTEGER NOT NULL, received_ms INTEGER NOT NULL, observation_json TEXT NOT NULL,
+    UNIQUE(account_id, host, source, bucket_ms)
+  );
+  CREATE INDEX IF NOT EXISTS idx_account_history_account_time ON account_history(account_id, received_ms);
+  CREATE TABLE IF NOT EXISTS account_cashflows (
+    account_id TEXT NOT NULL, host TEXT NOT NULL, event_id TEXT NOT NULL, at_ms INTEGER NOT NULL,
+    currency TEXT NOT NULL, delta REAL NOT NULL, operation_type INTEGER NOT NULL, kind TEXT NOT NULL,
+    received_ms INTEGER NOT NULL, PRIMARY KEY(account_id, host, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_account_cashflows_account_time ON account_cashflows(account_id,host,at_ms);
+  CREATE TABLE IF NOT EXISTS account_cashflow_windows (
+    account_id TEXT NOT NULL, host TEXT NOT NULL, currency TEXT NOT NULL,
+    from_ms INTEGER NOT NULL, to_ms INTEGER NOT NULL, received_ms INTEGER NOT NULL,
+    PRIMARY KEY(account_id,host,currency,from_ms,to_ms)
+  );
+
   -- Backtest→live divergence tracker (owner "plan #1", 02-09-2026).
   -- combo_arms: the EVIDENCE a combo was armed on, snapshotted at arm time —
   -- the arm decision used to record nothing about which verdict justified
@@ -1314,6 +1333,11 @@ export function initDB(dbPath) {
   const hbColNames = new Set(db.prepare("PRAGMA table_info(controller_heartbeats)").all().map(c => c.name));
   if (!hbColNames.has('last_detail_json')) {
     db.exec('ALTER TABLE controller_heartbeats ADD COLUMN last_detail_json TEXT');
+  }
+
+  const equityHistoryCols = new Set(db.prepare('PRAGMA table_info(equity_snapshots)').all().map(c => c.name));
+  for (const [name, type] of [['currency','TEXT'], ['broker_host','TEXT'], ['balance_received_at','TEXT'], ['pnl_received_at','TEXT']]) {
+    if (!equityHistoryCols.has(name)) db.exec(`ALTER TABLE equity_snapshots ADD COLUMN ${name} ${type}`);
   }
 
   // Repair float-formatted broker position ids (2026-08-02). Some open paths

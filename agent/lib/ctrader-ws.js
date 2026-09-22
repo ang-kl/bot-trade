@@ -1066,3 +1066,14 @@ export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, a
 
 // Exposed for tests that need to stub WebSocket behaviour.
 export const _internal = { wsRun }
+
+
+/** One bounded, read-only cashflow interval (cTrader permits at most one week). */
+export async function wsGetCashflowHistory(host, clientId, clientSecret, accessToken, accountId, fromTimestamp, toTimestamp, timeoutMs = 10_000) {
+  if (!Number.isSafeInteger(fromTimestamp) || !Number.isSafeInteger(toTimestamp) || fromTimestamp < 0
+    || toTimestamp <= fromTimestamp || toTimestamp - fromTimestamp > 604800_000 || toTimestamp > 2147483646000) throw new RangeError('invalid cashflow interval')
+  return wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.CASH_FLOW_HISTORY_REQ, payload: { ctidTraderAccountId: parseInt(accountId), fromTimestamp, toTimestamp } }, expect: PT.CASH_FLOW_HISTORY_RES },
+  ], timeoutMs)
+}

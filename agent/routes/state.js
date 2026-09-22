@@ -36,6 +36,7 @@ import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { accountMoney } from '../services/account-money.js'
+import { accountHistory } from '../services/account-history.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
@@ -78,7 +79,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/account-money'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/account-money', '/account-history'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -154,6 +155,20 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  router.get('/account-history', (req, res) => {
+    const id = typeof req.query.account === 'string' ? req.query.account : null
+    if (!id || !/^[1-9]\d*$/.test(id) || !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(id)) {
+      return res.status(400).json({ error: 'explicit registered account required' })
+    }
+    try {
+      const to = req.query.to == null ? Date.now() : Number(req.query.to)
+      const from = req.query.from == null ? to - 86400_000 : Number(req.query.from)
+      res.set('Cache-Control', 'no-store').json(accountHistory(db, id, { from, to,
+        limit: req.query.limit == null ? 2000 : Number(req.query.limit),
+        before: req.query.before == null ? null : Number(req.query.before) }))
+    } catch (err) { res.status(err instanceof RangeError ? 400 : 503).json({ error: err instanceof RangeError ? err.message : 'history unavailable' }) }
+  })
+
   router.get('/account-money', (req, res) => {
     const id = typeof req.query.account === 'string' ? req.query.account : null
     if (!id || !/^[1-9]\d*$/.test(id)) return res.status(400).json({ error: 'explicit account required' })
