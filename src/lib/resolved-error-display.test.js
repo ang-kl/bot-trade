@@ -21,6 +21,9 @@
 import { describe, test, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { toText } from './agent-health-view.js'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import ControllerGroups from '../components/ControllerGroups.jsx'
 
 const stalled = (extra) => ({
   health: { uptime: 60, lastLoopMs: 1000, errorsToday: 0 },
@@ -64,23 +67,18 @@ describe('a resolved error is labelled as history', () => {
   })
 })
 
-describe('the Desk page reads the same flag', () => {
-  // Desk.jsx is a full page component that mounts the entire desk; there is no
-  // seam to render this one row through. Source is a last resort and treated
-  // as one — comments are stripped first, because this file's own prose and
-  // Desk's explanatory comment both contain the string being asserted on
-  // (failure mode #2).
-  const src = readFileSync(new URL('../pages/Desk.jsx', import.meta.url), 'utf8')
-  const start = src.indexOf('{heartbeats.map(c => {')
-  const code = src.slice(start, start + 3000)
-    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*\/\/.*$/gm, '')
-
-  test('the controller row consults error_is_current before printing last_error', () => {
-    expect(start).toBeGreaterThan(0)
-    expect(code).toContain('c.last_error')          // the slice really holds the row
-    expect(code).toContain('error_is_current')
-    expect(code).toContain('last error (resolved)')
+describe('the Desk controller component reads the same flag', () => {
+  test('resolved errors remain history and current or unlabelled errors remain current', () => {
+    const desk = readFileSync(new URL('../pages/Desk.jsx', import.meta.url), 'utf8')
+    expect(desk).toContain('<ControllerGroups controllers={heartbeats}')
+    for (const flag of [false, true, undefined]) {
+      const html = renderToStaticMarkup(createElement(ControllerGroups, { controllers: [{
+        name: 'fast_monitor', label: 'Monitor', status: 'stalled',
+        last_error: 'broker timeout', error_is_current: flag,
+      }] }))
+      expect(html).toContain('broker timeout')
+      expect(html).toContain(flag === false ? 'Previous error (resolved)' : 'Current error')
+      expect(html).toContain('STALLED')
+    }
   })
 })
