@@ -36,7 +36,7 @@ test('the ledger reply names each account\'s own daily-loss fraction and its own
     assert.equal(live.dailyLossPct, 0.01, 'the account overlay, not the global')
     assert.equal(live.balance, null, 'never the connected account\'s balance'); assert.equal(live.balanceSource, null)
     const all = await fetch(s.url('/state/perf-ledger')).then(r => r.json())
-    assert.equal(all.dailyLossPct, 0.03); assert.equal(all.dailyLossScope, 'global'); assert.equal(all.balanceSource, 'global')
+    assert.equal(all.dailyLossPct, 0.03); assert.equal(all.dailyLossScope, 'global'); assert.equal(all.balanceSource, null); assert.equal(all.balance, null, 'a connected account balance is not a portfolio balance')
     assert.equal(live.dailyLossScope, 'account', 'the overlay names the limit')
   } finally { s.close() }
 })

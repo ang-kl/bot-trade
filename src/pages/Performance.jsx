@@ -11,7 +11,7 @@
 // design's phone screens (Now / Ledger / Markets / Trades / Accounts pill
 // nav, hit targets ≥44px) below lg. Theme is the app-wide system-default
 // toggle — mobile follows the system exactly as the design asks.
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
@@ -37,15 +37,16 @@ import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import NumberFlow from '@number-flow/react'
 import { useAutoAnimate } from '@formkit/auto-animate/react'
-import { MARKET_COLS, categorize as catOf, dayAnchorMs, isFxWeekend, closedAtMs as closedMs } from '../../agent/shared/formulas.js'
+import { MARKET_COLS, dayAnchorMs, isFxWeekend, closedAtMs as closedMs } from '../../agent/shared/formulas.js'
 import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 import Collapse from '../components/common/Collapse.jsx'
 import { accountNumbers } from "../lib/scope-label.js"
+import { reportStats, reportGroups, reportLedger } from '../../agent/shared/performance-populations.js'
+import { performanceGradients } from '../lib/performance-gradients.js'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
-const D = 24 * H
 
 // Same W3C international formatting convention as Risk: everything
 // DISPLAYED goes through Intl.NumberFormat in the viewer's own locale.
@@ -114,24 +115,6 @@ const FX_BANDS = [
 
 const CRYPTO_SYMS = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD']
 
-// Prototype agg(): win%, PF, TP/part/SL counts, planned R:R → edge.
-function aggRows(list) {
-  const n = list.length
-  const wins = list.filter(t2 => t2.pnl > 0)
-  const gw = wins.reduce((s, t2) => s + t2.pnl, 0)
-  const gl = list.filter(t2 => t2.pnl <= 0).reduce((s, t2) => s + -t2.pnl, 0)
-  const rrs = list.filter(t2 => t2.rr != null)
-  const rr = rrs.length ? rrs.reduce((s, t2) => s + t2.rr, 0) / rrs.length : null
-  const wr = n ? Math.round((wins.length / n) * 100) : 0
-  const needs = rr != null ? Math.round(100 / (1 + rr)) : null
-  return {
-    n, wr, pnl: list.reduce((s, t2) => s + t2.pnl, 0),
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    tp: list.filter(t2 => t2.tpHit).length, part: list.filter(t2 => t2.part).length, sl: list.filter(t2 => t2.slHit).length,
-    edge: needs != null && n ? wr - needs : null,
-  }
-}
-
 // Prototype token → app CSS-var map (same convention as WorkflowAudit.jsx).
 const P_ACC = 'var(--color-accent)', P_UP = 'var(--color-up)', P_DN = 'var(--color-down)'
 const P_TX = 'var(--color-text)', P_SB = 'var(--color-text-sub)', P_MU = 'var(--color-muted)'
@@ -181,7 +164,7 @@ function MarketCell({ st }) {
           size; the subline below keeps its own tiny 9px (owner: "except those
           tiny information like '5t · 40% · PF 0.76'"). */}
       <div className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</div>
-      <div className={`text-(length:--fs-body) ${SUB}`}>{st.trades}t · {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : '—'}</div>
+      <div className={`text-(length:--fs-body) ${SUB}`}>{st.trades}t · {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : st.pfInfinite ? '∞' : '—'}</div>
     </td>
   )
 }
@@ -237,7 +220,7 @@ function WindowDetail({ w }) {
           <div key={m.key}>
             <div className={`text-(length:--fs-body) uppercase font-bold ${SUB}`}>{m.label}</div>
             <div className="tabular-nums">
-              <span className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</span> · {st.trades}t · win {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : '—'} · <span className={UP}>{st.tp} TP</span>/<span className={DOWN}>{st.sl} SL</span>
+              <span className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</span> · {st.trades}t · win {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : st.pfInfinite ? '∞' : '—'} · <span className={UP}>{st.tp} TP</span>/<span className={DOWN}>{st.sl} SL</span>
             </div>
           </div>
         )
@@ -330,7 +313,7 @@ function GradientBody({
   const chipS = { ...pillS, color: P_ACC, borderColor: P_ACC }
   // Empty means empty across the rows you can SEE — hide the only row with a
   // number in it and the column is honestly empty for what is displayed.
-  const emptyCol = visCols.map(c => visRows.length > 0 && visRows.every(r => r.cells[c.i]?.zero))
+  const emptyCol = visCols.map(c => visRows.length > 0 && visRows.every(r => r.cells[c.i]?.raw == null))
 
   // Explicit placement for every child. Auto-placement cannot coexist with the
   // row-spanning "No data" cell: it packs siblings into free slots and shifts
@@ -416,7 +399,7 @@ function GradientBody({
               ? (
                 <span key={`nd-${c.name}`} title={`${c.name} — no closed trades in any shown window`}
                   style={{ gridColumn: ci + 2, gridRow: `${firstDataRow} / ${lastDataRow + 1}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: GRAD_FONT, color: P_MU, background: 'var(--table-head-bg)', borderRadius: 0 }}>
-                  No data
+                  Unavailable
                 </span>
               )
               : visRows.map((row, ri) => (
@@ -830,7 +813,7 @@ function SessionStatsBody({ stats }) {
     <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
       <div style={{ minWidth: 700 }}>
         <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
-          <span>Session</span><span style={{ textAlign: 'right' }}>Trades</span><span style={{ textAlign: 'right' }}>+$</span><span style={{ textAlign: 'right' }}>−$</span><span style={{ textAlign: 'right' }}>Highest</span><span style={{ textAlign: 'right' }}>Lowest</span><span style={{ textAlign: 'right' }}>Average</span><span style={{ textAlign: 'right' }}>Sum</span><span style={{ textAlign: 'right' }}>Median</span>
+          <span>Session</span><span style={{ textAlign: 'right' }}>Trades</span><span style={{ textAlign: 'right' }}>Gains</span><span style={{ textAlign: 'right' }}>Losses</span><span style={{ textAlign: 'right' }}>Highest</span><span style={{ textAlign: 'right' }}>Lowest</span><span style={{ textAlign: 'right' }}>Average</span><span style={{ textAlign: 'right' }}>Sum</span><span style={{ textAlign: 'right' }}>Median</span>
         </div>
         {rows.map(s => (
           <div key={s.key} title={s.hint} style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', fontWeight: s.key === 'ALL' ? 800 : undefined }}>
@@ -843,7 +826,7 @@ function SessionStatsBody({ stats }) {
                 <span title={`Same UTC cash-hours window as ${twins[s.key]} this time of year — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={twins[s.key]}</span>
               )}
             </span>
-            <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n || '—'}</span>
+            <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n ?? '—'}</span>
             {s.n
               ? <>{cell(s.pos, P_UP)}{cell(s.neg, P_DN)}{cell(s.high)}{cell(s.low)}{cell(s.avg)}{cell(s.sum)}{cell(s.median)}</>
               : <>{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}</>}
@@ -861,10 +844,10 @@ function SessionStatsBody({ stats }) {
 // an identity line that always fits (symbol · side · P&L), the window, then
 // the anatomy as short POINTS, one per line. Same markup at every width, so
 // there is no narrow-viewport variant to keep in sync.
-function WlBody({ rows }) {
+function WlBody({ rows, available = true }) {
   return (
     <>
-      {rows.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: P_MU, padding: '4px 0' }}>No closed trades in the last 30 days.</span>}
+      {rows.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: P_MU, padding: '4px 0' }}>{available ? 'No priced closes in the last 30 days.' : 'Report unavailable.'}</span>}
       {/* Owner (2026-07-25): "each symbol only two rows. dense the row" —
           this was four lines per trade (identity, window, then one line per
           anatomy point). Now exactly two: the identity line, and everything
@@ -901,7 +884,7 @@ function AcctCardsGrid({ acctCards }) {
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, borderTop: `1px solid ${P_EDG}`, paddingTop: 4 }}>
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>TP nett today</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett today</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett today</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(a.gl == null ? null : -a.gl) : '—'}</span></span>
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Forecast · 30D pace</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
                 </div>
                 <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop</span>
@@ -993,7 +976,7 @@ function LedgerRow({ w, forceOpen = null, nowMs }) {
           {empty ? <span className={SUB}>—</span> : (
             <>
               <div className="font-semibold">{w.trades}t · {w.winPct != null ? `${nf(0).format(w.winPct)}%` : '—'}</div>
-              <div className={`text-(length:--fs-body) ${SUB}`}>PF {w.pf != null ? nf(2).format(w.pf) : '—'}</div>
+              <div className={`text-(length:--fs-body) ${SUB}`}>PF {w.pf != null ? nf(2).format(w.pf) : w.pfInfinite ? '∞' : '—'}</div>
             </>
           )}
         </td>
@@ -1011,7 +994,7 @@ function LedgerRow({ w, forceOpen = null, nowMs }) {
         <tr className="border-b border-[var(--color-border)] bg-[var(--color-accent-soft)]/40">
           <td colSpan={6 + MARKET_COLS.length} className="py-2 px-3">
             {empty
-              ? <p className={`text-(length:--fs-body) ${SUB}`}>No closed trades in this window{w.carryIn == null ? ' — carry appears once a balance is stamped for this scope' : ''}{last ? ` · last fill ${last} (${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC)` : ''}.</p>
+              ? <p className={`text-(length:--fs-body) ${SUB}`}>No closed trades in this window{w.carryIn == null ? ' — balances require cashflow-reconciled history' : ''}{last ? ` · last fill ${last} (${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC)` : ''}.</p>
               : <WindowDetail w={w} />}
           </td>
         </tr>
@@ -1078,6 +1061,9 @@ const MOBILE_SCREENS = [
 
 export default function Performance() {
   const [ledger, setLedger] = useState(null)
+  const [populationReport, setPopulationReport] = useState(null)
+  const [tradeScope, setTradeScope] = useState(null)
+  const loadGeneration = useRef(0)
   const [accounts, setAccounts] = useState([])
   const [selectedAccountId, setSelectedAccountId] = useState(null)
   // Filter: 'all' | account_id. It STARTS on the account the app is showing.
@@ -1104,7 +1090,7 @@ export default function Performance() {
   // a confident 0.00 — a wrong number, not a missing one. Identical to
   // `allTrades` while the filter is 'all', so it costs a second query only when
   // one account is selected.
-  const [portfolioTrades, setPortfolioTrades] = useState([])
+
   // Whole-period statistics, computed SERVER-SIDE over every closed trade.
   // The tiles used to derive these from `allTrades`, which is /state/trades —
   // capped at 100 rows — so past 100 trades "All time" quietly meant "the
@@ -1112,8 +1098,8 @@ export default function Performance() {
   // factor are the live-trading gate numbers, so a truncated denominator is
   // not a display nit. The 100-row set still feeds the trade JOURNAL below.
   const [analytics, setAnalytics] = useState(null)
-  const [events, setEvents] = useState([])
-  const [decisionsDaily, setDecisionsDaily] = useState([])
+  
+  const [decisionsDaily, setDecisionsDaily] = useState(null)
   // Written post-mortems, for the debrief card. Best-effort: an agent without
   // the route, or a DB with none written, leaves this empty and the card says
   // "no post-mortem written" per trade rather than implying one exists.
@@ -1132,6 +1118,7 @@ export default function Performance() {
   const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current
     if (!agentConfigured()) { setError('Agent not connected — set it up on Connect.'); return }
     try {
       // ONE account for the whole page. The ledger already honoured `acct`;
@@ -1141,20 +1128,23 @@ export default function Performance() {
       // switch account"). `?account=` is now threaded through all four —
       // 'all' means the portfolio view, explicitly.
       const q = acct === 'all' ? '?account=all' : `?account=${encodeURIComponent(acct)}`
-      const [led, ac, t, r, p, pm, dd] = await Promise.all([
+      const [led, ac, t, p, pm, dd, populations] = await Promise.all([
         agentGet(`/state/perf-ledger${acct === 'all' ? '' : `?account=${encodeURIComponent(acct)}`}`),
         agentGet('/state/accounts').catch(() => null),
         agentGet(`/state/trades${q}`).catch(() => null),
-        agentGet(`/state/risk-events?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
         agentGet(`/state/positions${q}`).catch(() => null),
         agentGet(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
         // Daily decision counts for the equity chart — the raw risk-events
         // page above spans minutes on a busy agent, not days.
         agentGet(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}`).catch(() => null),
+        agentGet('/state/performance-populations').catch(() => null),
       ])
       // Whole-period statistics — NOT derived from the 100-row trades
       // response above (audit 2.1). Same account scope, all closed trades.
       const an = await agentGet(`/state/account-analytics?account=${encodeURIComponent(acct)}`).catch(() => null)
+      if (generation !== loadGeneration.current) return
+      setPopulationReport(populations?.status === 'complete' ? populations : null)
+      setTradeScope(acct)
       setAnalytics(an && !an.error ? an : null)
       setLedger(led)
       setAccounts(ac?.accounts || [])
@@ -1162,9 +1152,8 @@ export default function Performance() {
       setAllTrades(t?.rows || t?.trades || [])
       // With 'all' the scoped fetch above already IS the portfolio; the
       // cross-account fetch below only runs when one account is selected.
-      if (acct === 'all') setPortfolioTrades(t?.rows || t?.trades || [])
-      setEvents(r?.rows || [])
-      setDecisionsDaily(dd?.rows || [])
+
+      setDecisionsDaily(dd?.rows ?? null)
       setPositions(p?.rows || p?.positions || [])
       setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
       setPostmortems(pm?.rows || pm?.postmortems || [])
@@ -1173,7 +1162,7 @@ export default function Performance() {
       // registry row. risk-full supplies the real daily-loss config + the
       // selected account's broker equity.
       const accRows = ac?.accounts || []
-      const [perAcct, rf, pfolio] = await Promise.all([
+      const [perAcct, rf] = await Promise.all([
         Promise.all(accRows.map(a =>
           agentGet(`/state/perf-ledger?account=${encodeURIComponent(a.account_id)}`)
             .then(l => [a.account_id, l]).catch(() => null))),
@@ -1181,14 +1170,15 @@ export default function Performance() {
         // Cross-account sections (per-account cards, the two "× account"
         // gradients) need every account's closed trades, not the selected
         // account's. Runs in this second wave so it never delays the first paint.
-        acct === 'all' ? Promise.resolve(null) : agentGet('/state/trades?account=all').catch(() => null),
+
       ])
+      if (generation !== loadGeneration.current) return
       setLedgers(Object.fromEntries(perAcct.filter(Boolean)))
       setRiskFull(rf)
-      if (pfolio) setPortfolioTrades(pfolio.rows || pfolio.trades || [])
-      setLoadedAt(Date.now())
+
+      setLoadedAt(populations?.asOfMs ?? Date.now())
       setError('')
-    } catch (e) { setError(e.message) }
+    } catch (e) { if (generation === loadGeneration.current) setError(e.message) }
   }, [acct])
 
   // Instant paint (owner 2026-07-28: "not able to see the information now
@@ -1207,8 +1197,6 @@ export default function Performance() {
     const q = acct === 'all' ? '?account=all' : `?account=${encodeURIComponent(acct)}`
     const t2 = swrPeek(`/state/trades${q}`)
     if (t2) setAllTrades(t2.rows || t2.trades || [])
-    const r2 = swrPeek(`/state/risk-events?limit=200&account=${encodeURIComponent(acct)}`)
-    if (r2) setEvents(r2.rows || [])
     const dd2 = swrPeek(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}`)
     if (dd2) setDecisionsDaily(dd2.rows || [])
     const p2 = swrPeek(`/state/positions${q}`)
@@ -1217,17 +1205,19 @@ export default function Performance() {
     if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
     const rf2 = swrPeek('/state/risk-full')
     if (rf2) setRiskFull(rf2)
-    const pf2 = acct === 'all' ? t2 : swrPeek('/state/trades?account=all')
-    if (pf2) setPortfolioTrades(pf2.rows || pf2.trades || [])
+    if (t2) setTradeScope(acct)
+    const populations = swrPeek('/state/performance-populations')
+    if (populations?.status === 'complete') setPopulationReport(populations)
     if (led || t2) setLoadedAt(Date.now())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const invalidateLoad = useCallback(() => { loadGeneration.current++ }, [])
   useEffect(() => {
     const kick = setTimeout(load, 0)
     const t = setInterval(() => { if (!pageAsleep()) load() }, REFRESH_MS)
-    return () => { clearTimeout(kick); clearInterval(t) }
-  }, [load])
+    return () => { clearTimeout(kick); clearInterval(t); invalidateLoad() }
+  }, [load, invalidateLoad])
 
   // An account switch must not wait out this page's poll interval (see
   // src/lib/selected-account.js — it was up to 70s with the server cache), and
@@ -1277,10 +1267,11 @@ export default function Performance() {
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
   const scopedClosed = useMemo(() => {
+    if (tradeScope !== acct) return []
     const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
     if (acct === 'all') return closed
-    return closed.filter(t2 => t2.account_id == null || String(t2.account_id) === acct)
-  }, [allTrades, acct])
+    return closed.filter(t2 => String(t2.account_id ?? '') === acct)
+  }, [allTrades, acct, tradeScope])
 
   // The "Today" window. Owner (2026-07-25, Saturday): "under today should
   // show Friday past 24h closure trades — don't leave it blank as today is
@@ -1371,53 +1362,24 @@ export default function Performance() {
   // numbers reconcile; each trade is bucketed by its CLOSE time (when the
   // P&L was realized).
   const sessionStats = useMemo(() => {
-    // Same window as the Today card (weekend → Friday's completed FX day)
-    // so the two blocks always reconcile.
-    const rows = scopedClosed
-      .map(t2 => ({ ms: closedMs(t2), pnl: Number(t2.net_pnl) }))
-      .filter(r => r.ms != null && r.ms >= todayWin.from && r.ms < todayWin.to && Number.isFinite(r.pnl))
-    const minOfDay = (ms) => { const d = new Date(ms); return d.getUTCHours() * 60 + d.getUTCMinutes() }
-    const stat = (list) => {
-      if (!list.length) return { n: 0 }
-      const pnls = list.map(r => r.pnl).sort((a, b) => a - b)
-      const sum = pnls.reduce((s, v) => s + v, 0)
-      const mid = pnls.length >> 1
-      return {
-        n: pnls.length,
-        pos: pnls.filter(v => v > 0).reduce((s, v) => s + v, 0),
-        neg: pnls.filter(v => v < 0).reduce((s, v) => s + v, 0),
-        high: pnls[pnls.length - 1],
-        low: pnls[0],
-        avg: sum / pnls.length,
-        sum,
-        median: pnls.length % 2 ? pnls[mid] : (pnls[mid - 1] + pnls[mid]) / 2,
-      }
+    const stat = key => { const a = reportStats(populationReport, `session:${key}`, acct)
+      return { n: a.n, pricedN: a.pricedN, pos: a.gw, neg: a.gl == null ? null : -a.gl,
+        high: a.high, low: a.low, avg: a.avg, sum: a.pnl, median: a.median }
     }
-    const inWin = (m, s) => m >= s.fromMin && m < s.toMin
-    const nowMin = minOfDay(loadedAt)
-    // Owner (2026-07-24): "put in the last computation... and a tiny closed
-    // sign like SYD closed" — the stats themselves are already the last
-    // computed value (historical closes, frozen once the session ends); what
-    // was missing was a live open/closed flag per session, evaluated at the
-    // current minute, so a closed market can be labeled instead of looking
-    // like a stalled table.
-    const buckets = STAT_SESSIONS.map(s => ({ ...s, open: !todayWin.weekend && inWin(nowMin, s), ...stat(rows.filter(r => inWin(minOfDay(r.ms), s))) }))
-    const off = stat(rows.filter(r => !STAT_SESSIONS.some(s => inWin(minOfDay(r.ms), s))))
-    return { buckets, off, total: stat(rows) }
-  }, [scopedClosed, loadedAt, todayWin])
+    return { buckets: STAT_SESSIONS.map(s => ({ ...s, ...stat(s.key) })), off: stat('OFF'), total: stat('ALL') }
+  }, [populationReport, acct])
 
   // Per-account cards for the accounts detail row (prototype ACC block).
   // Real sources only: registry row + that account's ledger balance/30D +
   // today's strictly-stamped trades + risk config dailyLossPct; equity and
   // floating exist only for the broker-selected account (risk-full margin).
   const acctCards = useMemo(() => {
-    const anchor = dayAnchorMs(loadedAt)
-    // PORTFOLIO trades, not the scoped set: this grid has one card PER ACCOUNT,
+    // PORTFOLIO population, not the scoped set: this grid has one card PER ACCOUNT,
     // so reading it from the filtered rows made every other account's day P&L,
     // gross win and gross loss render as 0.00 — a stated figure that was simply
     // false, and worse than a dash. bal/n30 always came from each account's own
     // ledger, which is why only the day columns were affected.
-    const closed = portfolioTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
+
     // WHAT IS ACTUALLY IN PLAY — not every row in the registry.
     //
     // Owner (2026-07-30, screenshot): "i only select 3 trading-account but
@@ -1435,11 +1397,8 @@ export default function Performance() {
     //   · closed today       → it contributed to today's P&L, so omitting it
     //                          would make the day's totals not reconcile.
     // Everything else is dormant and only adds noise.
-    const withOpen = new Set(positions.map(p2 => String(p2.account_id ?? '')))
-    const withToday = new Set(
-      closed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= anchor })
-        .map(t2 => String(t2.account_id ?? ''))
-    )
+    const withOpen = new Set((populationReport?.openByAccount || []).map(p => String(p.account_id ?? '')))
+    const withToday = new Set(reportGroups(populationReport, 'day').map(g => g.accountId).filter(Boolean))
     const inPlay = accounts.filter(a => {
       const id = String(a.account_id)
       return a.enabled === 1 || withOpen.has(id) || withToday.has(id)
@@ -1454,17 +1413,15 @@ export default function Performance() {
       // −1,375 daily stop under two unfunded live logins.
       const bal = led?.balance ?? null
       const dailyLossPct = led?.dailyLossPct ?? null
-      const rows = closed.filter(t2 => String(t2.account_id ?? '') === a.account_id && (() => { const ms = closedMs(t2); return ms != null && ms >= anchor })())
-      const day = rows.reduce((s, t2) => s + Number(t2.net_pnl), 0)
-      const gw = rows.filter(t2 => Number(t2.net_pnl) > 0).reduce((s, t2) => s + Number(t2.net_pnl), 0)
-      const gl = rows.filter(t2 => Number(t2.net_pnl) <= 0).reduce((s, t2) => s + -Number(t2.net_pnl), 0)
+      const dayStats = reportStats(populationReport, 'day', String(a.account_id))
+      const day = dayStats.pnl, gw = dayStats.gw, gl = dayStats.gl
       const w30 = led?.windows?.find(w => w.key === '30d')
       const n30 = w30?.net ?? null
       // E·3: the 30-day money this account made or lost on closes the bot
       // did not decide (adopted, manual in the broker app, another system).
       const ext30 = w30?.external && w30.external.n > 0 ? { n: w30.external.n, net: w30.external.net, byOrigin: w30.external.byOrigin || {} } : null
       const cap = bal != null && dailyLossPct != null ? bal * dailyLossPct : null
-      const used = cap ? Math.min(100, Math.round(Math.max(0, -day) / cap * 100)) : null
+      const used = null // historical P&L units are not verified against the sizing input
       const isSel = a.account_id === selectedAccountId
       const equity = isSel ? riskFull?.margin?.equity ?? null : null
       const live = isSel && equity != null && bal != null ? equity - bal : null
@@ -1480,13 +1437,14 @@ export default function Performance() {
         // 0 live · 0 demo for exactly this reason.)
         isLive: a.is_live === 1,
         name: `${a.is_live ? 'Live' : 'Demo'} · ${accountNumbers(a)}${dormantButHeld ? ' · OFF' : ''}`,
-        ccy: a.base_currency || '—',
+        ccy: 'stored units · unverified',
         bal, day, gw, gl, n30, ext30, cap, used, equity, live,
-        hasToday: rows.length > 0,
+        hasToday: dayStats.n != null,
+        moneyVerified: false,
         usedCol: used == null ? P_MU : used > 66 ? P_DN : used > 33 ? P_WRN : P_ACC,
       }
     })
-  }, [accounts, ledgers, riskFull, portfolioTrades, loadedAt, selectedAccountId, positions])
+  }, [accounts, ledgers, riskFull, populationReport, selectedAccountId])
 
   // The Data-feed card's cash / margin / equity — WHOSE, stated.
   //
@@ -1573,7 +1531,7 @@ export default function Performance() {
       weekend24 = floating.filter(r => r.marketOpen === true)
       floating = floating.filter(r => r.marketOpen !== true)
     }
-    const tot = (l) => (l.some(r => r.pnl != null) ? l.reduce((s, r) => s + (r.pnl ?? 0), 0) : null)
+    const tot = l => { const ids = new Set(l.map(r => r.acc)); return ids.size === 1 && !ids.has(null) && l.every(r => r.pnl != null) ? l.reduce((s, r) => s + r.pnl, 0) : null }
     return { floating, closed, weekend24, floatTot: tot(floating), closedTot: tot(closed), weekendTot: tot(weekend24) }
   }, [positions, loadedAt])
 
@@ -1584,8 +1542,8 @@ export default function Performance() {
   // main bundle, so the throw took out the whole app: every page rendered
   // blank. Shipped in #482 and live until 2026-07-29.
   const liveFloating = useMemo(
-    () => totalFloating(openSplit.floatTot, openSplit.closedTot, openSplit.weekendTot),
-    [openSplit])
+    () => { const ids = new Set(positions.map(p => p.account_id)); return ids.size === 1 && !ids.has(null) ? totalFloating(openSplit.floatTot, openSplit.closedTot, openSplit.weekendTot) : null },
+    [openSplit, positions])
 
 
   // Stat tiles migrated verbatim from Desk's old Performance section —
@@ -1596,21 +1554,22 @@ export default function Performance() {
   // once the account passed a hundred closes. Shape is kept flat and
   // scalar: there is no local trade array to recount, which is the point.
   const tiles = useMemo(() => {
-    if (!analytics || !analytics.trades) return null
+    if (!analytics || !analytics.trades || String(analytics.accountId ?? 'all') !== acct) return null
     return {
       n: analytics.trades,
-      total: analytics.net ?? 0,
+      total: analytics.net ?? null,
       winCount: analytics.wins,
       lossCount: analytics.losses,
       winRate: analytics.winRate,
       expectancy: analytics.expectancy,
       pf: analytics.profitFactor,
+      pfInfinite: analytics.profitFactorInfinite,
       payoff: analytics.payoff,
       avgWin: analytics.avgWin,
       avgLoss: analytics.avgLoss,
       grossWin: analytics.grossWin,
       grossLoss: analytics.grossLoss,
-      mdd: analytics.maxDrawdown ?? 0,
+      mdd: analytics.maxDrawdown ?? null,
       bestTrade: analytics.bestTrade,
       worstTrade: analytics.worstTrade,
       bestDay: analytics.bestDay,
@@ -1623,9 +1582,9 @@ export default function Performance() {
       firstMs: analytics.firstMs,
       lastMs: analytics.lastMs,
     }
-  }, [analytics])
+  }, [analytics, acct])
 
-  const windows = useMemo(() => ledger?.windows || [], [ledger])
+  const windows = useMemo(() => reportLedger(populationReport, acct).windows, [populationReport, acct])
 
   // Shared client-side aggregation for the FX bands / strategy matrix —
   // mirrors the server ledger's stats (win%, PF, planned R:R → required
@@ -1681,73 +1640,39 @@ export default function Performance() {
       }
     }), [shapedTrades, rollingWin])
 
-  const fxBands = useMemo(() => {
-    const wk = shapedTrades.filter(t2 => t2.t >= loadedAt - 7 * D)
-    return FX_BANDS.map(([band, syms]) => {
-      const l = wk.filter(t2 => syms.includes(t2.sym))
-      const a = aggRows(l)
-      return {
-        band,
-        net: l.length ? signed(a.pnl) : '—', col: l.length ? (a.pnl >= 0 ? P_UP : P_DN) : P_MU,
-        meta: `${a.n} tr · ${a.wr}% · PF ${Number.isFinite(a.pf) ? a.pf.toFixed(1) : '∞'} · edge ${a.edge != null ? `${a.edge >= 0 ? '+' : ''}${a.edge}%` : '—'}`,
-        pairs: syms.map(sym => {
-          const pl = l.filter(t2 => t2.sym === sym)
-          const pa = aggRows(pl)
-          return {
-            sym: sym.slice(0, 3) + '/' + sym.slice(3),
-            v: pa.n ? signed(pa.pnl) : '·', col: pa.n ? (pa.pnl >= 0 ? P_UP : P_DN) : P_MU,
-            tip: `${sym} · ${pa.n} trades · ${pa.wr}% win · ${pa.tp + pa.part} TP / ${pa.sl} SL`,
-          }
-        }),
-      }
-    })
-  }, [shapedTrades, loadedAt])
+  const fxBands = useMemo(() => FX_BANDS.map(([band, syms]) => {
+    const a = reportStats(populationReport, '1w', acct, g => syms.includes(g.sym))
+    const pf = a.pfInfinite ? '∞' : a.pf == null ? '—' : a.pf.toFixed(1)
+    return { band, net: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN,
+      meta: `${a.n ?? '—'} closes · ${a.pricedN ?? '—'} priced · ${a.wr == null ? '—' : a.wr.toFixed(1)}% · PF ${pf}`,
+      pairs: syms.map(sym => { const p = reportStats(populationReport, '1w', acct, g => g.sym === sym)
+        return { sym: sym.slice(0, 3) + '/' + sym.slice(3), v: signed(p.pnl), col: p.pnl == null ? P_MU : p.pnl >= 0 ? P_UP : P_DN,
+          tip: `${sym} · ${p.n ?? 'unavailable'} closes · ${p.pricedN ?? '—'} priced · ${p.moneyState}` }
+      }) }
+  }), [populationReport, acct])
 
-  // Strategy × market matrix — the prototype's 30D re-slice, but over the
-  // strategies actually present in the data (never a hardcoded list).
   const stratMx = useMemo(() => {
-    const m30 = shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D)
-    // Full roster union (owner 02-08): every canonical strategy gets a row
-    // even with zero 30D trades, so the matrix never hides an armed one.
-    const names = [...new Set([...m30.map(t2 => t2.strat).filter(Boolean), ...STRATEGY_KEYS])]
+    const names = [...new Set([...reportGroups(populationReport, '30d', acct).map(g => g.strat), ...STRATEGY_KEYS])]
     return names.map(name => {
-      const sl = m30.filter(t2 => t2.strat === name)
-      const a = aggRows(sl)
-      return {
-        // `name` stays the raw key — it is the React key and the join key.
-        // `label` is the only thing rendered: CSS `capitalize` over a raw key
-        // is what produced "Rsi2_reversion" and "Vwap_trend" here.
-        name, label: strategyLabel(name) || name,
-        net: signed(a.pnl), col: a.pnl >= 0 ? P_UP : P_DN,
-        edge: a.edge != null ? `${a.edge >= 0 ? '+' : ''}${a.edge}%` : '—', edgeCol: a.edge == null ? P_MU : a.edge >= 0 ? P_UP : P_DN,
-        cells: MARKET_COLS.map(m => {
-          const l = sl.filter(t2 => catOf(t2.sym) === m.key)
-          const p = l.reduce((s, t2) => s + t2.pnl, 0)
-          return { v: l.length ? signed(p) : '·', col: l.length ? (p >= 0 ? P_UP : P_DN) : P_MU, tip: `${l.length} trades` }
-        }),
-      }
+      const a = reportStats(populationReport, '30d', acct, g => g.strat === name)
+      return { name, label: strategyLabel(name) || name, net: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN,
+        edge: a.edge == null ? '—' : signed(a.edge, 1) + '%', edgeCol: a.edge == null ? P_MU : a.edge >= 0 ? P_UP : P_DN,
+        cells: MARKET_COLS.map(m => { const v = reportStats(populationReport, '30d', acct, g => g.strat === name && g.market === m.key)
+          return { v: signed(v.pnl), col: v.pnl == null ? P_MU : v.pnl >= 0 ? P_UP : P_DN, tip: `${v.n ?? 'unavailable'} closes · ${v.pricedN ?? '—'} priced · ${v.moneyState}` }
+        }) }
     })
-  }, [shapedTrades, loadedAt])
+  }, [populationReport, acct])
 
-  // Crypto 24/7 panel — prototype cryptoK chips + rows. Live price/Δ are
-  // simulated ticks in the prototype; this page has no price stream, so
-  // those cells show — (never simulated). P&L and win stats are real.
-  const crypto = useMemo(() => {
-    const k = [[24, '24H'], [168, '7D'], [720, '30D']].map(([h, kk]) => {
-      const l = shapedTrades.filter(t2 => catOf(t2.sym) === 'crypto' && t2.t >= loadedAt - h * 36e5)
-      const p = l.reduce((s, t2) => s + t2.pnl, 0)
-      return { k: kk, v: l.length ? signed(p) : '—', col: l.length ? (p >= 0 ? P_UP : P_DN) : P_MU }
-    })
-    const rows = CRYPTO_SYMS.map(sym => {
-      const a = aggRows(shapedTrades.filter(t2 => t2.sym === sym && t2.t >= loadedAt - 7 * D))
-      return {
-        sym,
-        pnl: a.n ? signed(a.pnl) : '—', col: a.n ? (a.pnl >= 0 ? P_UP : P_DN) : P_MU,
-        meta: a.n ? `${a.n} tr · ${a.wr}% win · PF ${Number.isFinite(a.pf) ? a.pf.toFixed(2) : '∞'}` : 'no closed trades 7D',
-      }
-    })
-    return { k, rows }
-  }, [shapedTrades, loadedAt])
+  const crypto = useMemo(() => ({
+    k: [['24h', '24H'], ['1w', '7D'], ['30d', '30D']].map(([key, label]) => {
+      const a = reportStats(populationReport, key, acct, g => g.market === 'crypto')
+      return { k: label, v: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN }
+    }),
+    rows: CRYPTO_SYMS.map(sym => { const a = reportStats(populationReport, '1w', acct, g => g.sym === sym)
+      return { sym, pnl: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN,
+        meta: `${a.n ?? 'unavailable'} closes · ${a.pricedN ?? '—'} priced · ${a.wr == null ? '—' : a.wr.toFixed(1)}% win` }
+    }),
+  }), [populationReport, acct])
 
   // Winners & Laggards explained — the prototype's anat() over the REAL
   // best/worst closed trades (30D): outcome · planned R:R · risked · held,
@@ -1758,7 +1683,7 @@ export default function Performance() {
     const anat = (t2) => {
       const d2 = new Date(t2.t)
       const out = t2.part ? 'TP partial' : t2.tpHit ? 'TP full' : t2.slHit ? 'SL hit' : 'manual close'
-      const risked = t2.slHit ? Math.abs(t2.pnl) : (t2.rr ? Math.abs(t2.pnl / t2.rr) : null)
+      const risked = null // booked P&L / planned RR cannot establish actual initial monetary risk
       const held = t2.durMin == null ? '—' : (t2.durMin >= 60 ? `${Math.floor(t2.durMin / 60)}h ` : '') + `${t2.durMin % 60}m`
       const inSide = t2.rvO != null || t2.vwO ? `RVOL ${t2.rvO != null ? `${nf(1).format(t2.rvO)}×` : '—'} · ${t2.vwO ? `${t2.vwO} VWAP` : '—'} · OBV ${t2.obv || '—'}` : null
       // Owner (2026-07-25, iPad mini): "cell data with so many wording must
@@ -1786,146 +1711,19 @@ export default function Performance() {
         pnl: signed(t2.pnl), col: t2.pnl >= 0 ? P_UP : P_DN,
       }
     }
-    const sorted30 = [...shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D)].sort((a, b) => a.pnl - b.pnl)
-    return { lag: sorted30.slice(0, 6).map(anat), win: sorted30.slice(-6).reverse().map(anat) }
-  }, [shapedTrades, loadedAt])
+    const perAccount = Object.entries(populationReport?.bestByAccount || {}).filter(([id]) => acct === 'all' || id === acct)
+    const ranked = kind => perAccount.flatMap(([id, lists]) => lists[kind].map(t => ({ ...anat(t), sym: `${t.sym} · acct ${id}` })))
+    return { lag: ranked('lag'), win: ranked('win') }
+  }, [populationReport, acct])
 
   // Performance gradients — exact prototype maths (cell alpha pow(|v|/max,.6),
   // rgba(79,140,255,…)/rgba(255,77,109,…) fills, per-column peak scaling,
   // k-notation values). Columns = registry accounts + Overall; rows use the
   // ledger's own window bounds. Trades without an account stamp count only
   // in Overall (never guessed onto an account).
-  const gradients = useMemo(() => {
-    // Classifier: shared/formulas.js `categorize` (imported as catOf). This
-    // card used to carry its own stock-aware copy while the rest of the page
-    // filed equities under Indices — the "Stocks −$953 here, Indices −$404
-    // there" contradiction. One classifier now serves every lens.
-    // PORTFOLIO trades: the account dimension IS this table. Fed the scoped set
-    // it silently became a one-column chart of the selected account compared
-    // with itself — no error, no gap, just a cross-account comparison quietly
-    // reduced to nothing. The heading and the sub-line both say so.
-    const rows = portfolioTrades
-      .filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
-      .map(t2 => ({
-        t: closedMs(t2), pnl: Number(t2.net_pnl), cat: catOf(t2.symbol),
-        acc: t2.account_id != null ? String(t2.account_id) : null,
-        strat: t2.label_strategy || t2.strategy || null,
-        stratLabel: strategyLabel(t2.label_strategy || t2.strategy),
-      }))
-      .filter(t2 => t2.t != null)
-    const AC3 = [...accounts.map(a => ({ name: `${a.is_live ? 'Live' : 'Demo'} ·${String(accountNumbers(a)).slice(-3)}`, id: a.account_id })), { name: 'Overall', id: null }]
-    // Owner (2026-07-25): "add strategy column, asset columns" to the
-    // timeframe gradient. Column axis becomes three GROUPS sharing the window
-    // rows: account, strategy, asset class. Strategies come from the data
-    // rather than a hardcoded list — whatever actually traded, ranked by
-    // absolute contribution, capped at 6 so the table stays readable, with
-    // anything past that folded into "other" instead of vanishing.
-    const stratTotals = new Map()
-    for (const r of rows) {
-      const k = r.strat || 'unlabelled'
-      stratTotals.set(k, (stratTotals.get(k) || 0) + Math.abs(r.pnl))
-    }
-    const stratNames = [...stratTotals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
-    const topStrats = stratNames.slice(0, 6)
-    const restStrats = new Set(stratNames.slice(6))
-    const SC = [
-      ...topStrats.map(n => ({ name: strategyLabel(n) || n, pick: (t2) => (t2.strat || 'unlabelled') === n })),
-      ...(restStrats.size ? [{ name: 'Other', pick: (t2) => restStrats.has(t2.strat || 'unlabelled') }] : []),
-    ]
-    const KC = MARKET_COLS.map(m => ({ name: m.label, pick: (t2) => t2.cat === m.key }))
-    const kf = (v) => (v < 0 ? '−' : '+') + '$' + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + 'k' : String(Math.round(Math.abs(v))))
-    // Owner (2026-07-25): "the red or blue pill like data and the gradient
-    // colours look unprofessional for presentation". The old cell was a
-    // saturated filled pill, up to 0.85 alpha with white-on-colour text —
-    // dashboard-toy styling. Professional heat tables (terminals, annual
-    // reports) do the opposite: the NUMBER carries the signal in the
-    // semantic colour, the fill is a whisper capped low enough that text
-    // contrast never changes, and zeros recede to a dot instead of shouting
-    // "+$0" in a coloured chip.
-    const cell = (v, max) => {
-      const zero = Math.round(v * 100) === 0
-      const a2 = Math.pow(Math.abs(v) / (max || 1), 0.6)
-      return {
-        v: zero ? '·' : kf(v),
-        bg: zero ? 'transparent' : (v > 0 ? 'rgba(79,140,255,' : 'rgba(255,77,109,') + (0.04 + 0.14 * a2).toFixed(2) + ')',
-        col: zero ? P_MU : v > 0 ? P_UP : P_DN,
-        zero,
-      }
-    }
-    // colDefs: [{ name, pick(trade) }] — one shaded column each, scaled
-    // against its OWN peak window so a quiet account/strategy still shows
-    // structure instead of washing out next to a loud one.
-    const build = (rowDefs, colDefs) => {
-      const raw = rowDefs.map(r => colDefs.map(c => r.list.reduce((s2, t2) => s2 + (c.pick(t2) ? t2.pnl : 0), 0)))
-      const colMax = colDefs.map((x, ci) => Math.max(1, ...raw.map(rw => Math.abs(rw[ci]))))
-      return rowDefs.map((r, ri) => ({ label: r.label, cells: raw[ri].map((v, ci) => cell(v, colMax[ci])) }))
-    }
-    // Owner: "sub-total on each column". Summed from the DISPLAYED rows, and
-    // labelled a subtotal rather than a total because the windows overlap —
-    // 1W is inside 2W is inside 30D, so this column sum deliberately
-    // double-counts the same trade and is a column footing, not a P&L figure.
-    const subtotal = (built) => {
-      if (!built.length) return null
-      const n = built[0].cells.length
-      return Array.from({ length: n }, (_, ci) => {
-        const v = built.reduce((s2, r) => {
-          const raw = String(r.cells[ci].v).replace(/[+$,]/g, '').replace('−', '-')
-          const mult = raw.endsWith('k') ? 1000 : 1
-          const num = parseFloat(raw.replace('k', ''))
-          return s2 + (Number.isFinite(num) ? num * mult : 0)
-        }, 0)
-        return { v: Math.round(v * 100) === 0 ? '·' : kf(v), col: v > 0 ? P_UP : v < 0 ? P_DN : P_MU }
-      })
-    }
-    const acctCols = AC3.map(c => ({ name: c.name, pick: (t2) => c.id == null || t2.acc === c.id }))
-    // Owner (2026-07-25): "why last month is zero". Because no trade CLOSED
-    // inside that calendar month — the server's window is prevMonthStart →
-    // monthStart (perf-ledger.js), and the account's whole closed history
-    // starts later than that. A zero here is a true zero, not a gap: the row
-    // label now carries "no closes" so an empty window reads as answered
-    // rather than broken.
-    const firstClose = rows.length ? Math.min(...rows.map(t2 => t2.t)) : null
-    const wDefs = windows.map(w => {
-      const from = Date.parse(w.from), to = Date.parse(w.to)
-      const list = rows.filter(t2 => t2.t >= from && t2.t < to)
-      const beforeHistory = firstClose != null && Number.isFinite(to) && to <= firstClose
-      return {
-        label: w.label + (list.length ? '' : beforeHistory ? ' · pre-history' : ' · no closes'),
-        list,
-      }
-    })
-    const cut30 = loadedAt - 30 * D
-    const aDefs = MARKET_COLS.map(m => ({ label: m.label, list: rows.filter(t2 => t2.cat === m.key && t2.t >= cut30) }))
-    const wideCols = [...acctCols, ...SC, ...KC]
-    // Owner (2026-07-25): "remove the overall if there isn't two active
-    // account trading" — with one account carrying every trade, Overall is a
-    // verbatim copy of that account's column and the table asserts a
-    // portfolio view it does not have. Counted on accounts that actually have
-    // a closed trade, not on how many are enabled.
-    const tradingAccts = new Set(rows.map(t2 => t2.acc).filter(Boolean))
-    const assetCols = tradingAccts.size >= 2
-      ? acctCols
-      : acctCols.filter(c => c.name !== 'Overall')
-    return {
-      cols: AC3.map(x => ({ name: x.name })),
-      // Column groups for the wide timeframe table's header band.
-      groups: [
-        { name: 'Account', span: acctCols.length },
-        ...(SC.length ? [{ name: 'Strategy', span: SC.length }] : []),
-        { name: 'Asset class', span: KC.length },
-      ],
-      wideCols: wideCols.map(c => ({ name: c.name })),
-      // t = accounts only, for the phone screens where 15 columns cannot fit.
-      // tWide = the grouped account + strategy + asset table for the section.
-      t: build(wDefs, acctCols),
-      tWide: build(wDefs, wideCols),
-      a: build(aDefs, assetCols),
-      assetCols: assetCols.map(c => ({ name: c.name })),
-      overallDropped: assetCols.length !== acctCols.length,
-      tWideSub: subtotal(build(wDefs, wideCols)),
-      aSub: subtotal(build(aDefs, assetCols)),
-    }
-  }, [portfolioTrades, accounts, windows, loadedAt])
+  const gradients = useMemo(() => performanceGradients(populationReport, accounts.map(a => ({
+    id: String(a.account_id), name: `${a.is_live ? 'Live' : 'Demo'} ·${String(accountNumbers(a)).slice(-3)}`,
+  })), strategyLabel), [populationReport, accounts])
 
   // Owner (2026-07-25): "redo the All-time tiles & equity table from the
   // ground up." It was nine loose boxes in a wrapping row — no grouping, no
@@ -1942,13 +1740,13 @@ export default function Performance() {
       : '—'
     return [
       ['Outcome', [
-        ['Net P&L', signed(tiles.total), pnlTone(tiles.total), 'every closed trade on record, after swap and commission'],
-        ['Closed trades', String(n), '', `over ${tiles.tradingDays} day${tiles.tradingDays === 1 ? '' : 's'} with a close · ${span}`],
+        ['Net P&L', signed(tiles.total), pnlTone(tiles.total), 'recorded account units after swap and commission; cross-account sums unavailable'],
+        ['Priced closes', String(n), '', `over ${tiles.tradingDays} day${tiles.tradingDays === 1 ? '' : 's'} with a close · ${span}`],
         ['Win rate', `${tiles.winRate}%`, '', `${tiles.winCount} up · ${tiles.lossCount} down (a scratch counts as down)`],
         ['Expectancy', `${m2(tiles.expectancy)} / trade`, pnlTone(tiles.total), 'net divided by trade count — what one more trade is worth on this record'],
       ]],
       ['Edge', [
-        ['Profit factor', tiles.pf != null ? nf(2).format(tiles.pf) : tiles.winCount ? '∞' : '—', tiles.pf == null || tiles.pf >= 1 ? UP : DOWN, `gross win ${m2(tiles.grossWin)} ÷ gross loss ${m2(tiles.grossLoss)} · above 1.0 is profitable`],
+        ['Profit factor', tiles.pf != null ? nf(2).format(tiles.pf) : tiles.pfInfinite ? '∞' : '—', tiles.pf == null || tiles.pf >= 1 ? UP : DOWN, `gross win ${m2(tiles.grossWin)} ÷ gross loss ${m2(tiles.grossLoss)} · above 1.0 is profitable`],
         ['Payoff ratio', tiles.payoff != null ? `${nf(2).format(tiles.payoff)} : 1` : '—', '', 'average win against average loss — the size edge, independent of win rate'],
         ['Avg win', tiles.avgWin != null ? `+${m2(tiles.avgWin)}` : '—', UP, `across ${tiles.winCount} winner${tiles.winCount === 1 ? '' : 's'}`],
         ['Avg loss', tiles.avgLoss != null ? `−${m2(tiles.avgLoss)}` : '—', DOWN, `across ${tiles.lossCount} loser${tiles.lossCount === 1 ? '' : 's'}`],
@@ -2012,6 +1810,10 @@ export default function Performance() {
         </span>
       </div>
 
+      <p style={{ fontSize: 'var(--fs-body)', color: P_SB }}>
+        {populationReport ? `Portfolio coverage of recorded closes as of ${populationReport.generatedAt}. ${populationReport.coverage.unpricedN} closes without P&L; ${populationReport.coverage.unknownCloseTimeN} without a usable close time; ${populationReport.coverage.unattributedAccountN} without an account.` : 'Complete performance report unavailable; missing evidence is not zero activity.'}
+        {' '}Money is shown in recorded account units; historical currency conversion is unverified. Cross-account money sums and reconstructed balances are unavailable. Rankings are within each account; the journal remains a recent sample.
+      </p>
       {error && <Card><p className="text-(length:--fs-body) font-semibold text-[var(--color-down)]">{error}</p></Card>}
 
       {/* ================= MOBILE (below lg): the design's phone screens ====
@@ -2072,14 +1874,14 @@ export default function Performance() {
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, borderTop: `1px solid ${P_EDG}`, paddingTop: 4 }}>
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>TP nett</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(a.gl == null ? null : -a.gl) : '—'}</span></span>
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>30D pace</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <div style={{ height: 4, borderRadius: 999, background: P_EDG }}>
                     <div style={{ height: 4, borderRadius: 999, width: `${Math.max(a.used ?? 0, a.used != null ? 1 : 0)}%`, background: a.usedCol }} />
                   </div>
-                  <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} · at 100% bot closes all &amp; disarms</span>
+                  <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} · configured daily stop; usage requires verified comparable money</span>
                 </div>
               </div>
             ))}
@@ -2215,7 +2017,7 @@ export default function Performance() {
               { title: 'Laggards — worst closed', tcol: P_DN, rows: winLag.lag }].map(panel => (
               <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
                 <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
-                {panel.rows.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>No closed trades in the last 30 days.</span>}
+                {panel.rows.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{populationReport ? 'No priced closes in the last 30 days.' : 'Report unavailable.'}</span>}
                 {panel.rows.map((t2, ti) => (
                   <div key={ti} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
@@ -2264,7 +2066,7 @@ export default function Performance() {
                 variants share their data model; the desktop components carry
                 the same honest-— rules). */}
             <RegimeMatrix
-              trades30={shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D).map(t2 => ({ sym: t2.sym, cat: catOf(t2.sym), pnl: t2.pnl }))}
+              populationReport={populationReport}
               positions={positions}
               accounts={accounts}
               account={acct}
@@ -2285,9 +2087,9 @@ export default function Performance() {
             />
             <Card>
               <h3 className="t-h3 mb-1.5">All-time tiles &amp; equity</h3>
-              {!tiles && <p className={`text-(length:--fs-body) mb-2 ${SUB}`}>No closed trades yet.</p>}
+              {!tiles && <p className={`text-(length:--fs-body) mb-2 ${SUB}`}>{analytics && String(analytics.accountId ?? 'all') === acct ? `${analytics.closedTrades ?? analytics.trades} recorded closes; ${analytics.unpricedTrades ?? 0} without P&L.` : 'All-time analytics unavailable.'}</p>}
               {tilesRow}
-              <div className="overflow-x-auto"><ReportChart allTrades={allTrades} events={events} daily={decisionsDaily} /></div>
+              <div className="overflow-x-auto"><ReportChart populationReport={populationReport} accountId={acct} daily={tradeScope === acct ? decisionsDaily : null} /></div>
             </Card>
           </>
         )}
@@ -2308,7 +2110,7 @@ export default function Performance() {
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
             <SectionTools id="accounts" title="Accounts — Capital Safety table"
-              data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
+              data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday && a.gl != null ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
               toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
               render={() => <AcctCardsGrid acctCards={acctCards} />} />
           </div>
@@ -2475,7 +2277,7 @@ export default function Performance() {
         <Card id="sec-sessions">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
-            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · fixed UTC windows (current DST) · sessions overlap{todayWin.weekend ? ' · ' : ''}{todayWin.weekend && <span style={{ color: P_WRN }}>{todayWin.label}</span>}</span>
+            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · approximate fixed UTC reporting buckets · sessions overlap{todayWin.weekend ? ' · ' : ''}{todayWin.weekend && <span style={{ color: P_WRN }}>{todayWin.label}</span>}</span>
             <SectionTools id="sessions" title="Today by Market Session table" window="today"
               data={[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]}
               toText={() => ['Today by market session',
@@ -2516,7 +2318,7 @@ export default function Performance() {
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Timeframe ledger</h3>
             <span className={`text-(length:--fs-body) ${SUB}`}>
-              carry in → net → carry out · day rolls at FX open (5pm NY) here · server ledger windows still anchor 22:00 UTC{ledger ? ` · balance ${money(ledger.balance)}` : ''}
+              all recorded closes · FX day rolls at 5pm New York, DST-aware · historical balances require reconciled cashflows
             </span>
             <SectionTools id="ledger" title="Timeframe Ledger table" data={windows} toText={ledgerToText}
               render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />} />
@@ -2552,11 +2354,11 @@ export default function Performance() {
                 data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.assetCols[ci]?.name || ci, c.v])) }))}
                 render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradients.overallDropped
                   ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
-                  : 'same closed-trade ledger, account dimension — totals reconcile with the Overall column'} />} />
+                  : 'complete recorded closes per account; Overall money needs verified comparable currency units'} />} />
             </div>
             <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradients.overallDropped
                   ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
-                  : 'same closed-trade ledger, account dimension — totals reconcile with the Overall column'} />
+                  : 'complete recorded closes per account; Overall money needs verified comparable currency units'} />
           </div>
         </div>
 
@@ -2622,9 +2424,9 @@ export default function Performance() {
                 <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{panel.sub}</span>
                 <SectionTools id={panel.title.startsWith('Winners') ? 'winners' : 'laggards'} title={panel.title} window="30D" data={panel.rows}
                   toText={(rows) => [panel.title, ...(rows || []).map(t2 => `${t2.when} · ${t2.sym} · ${t2.sd} · ${t2.why} · ${t2.stratLabel || t2.strat} · ${t2.pnl}`)].join('\n')}
-                  render={() => <WlBody rows={panel.rows} />} />
+                  render={() => <WlBody available={populationReport != null} rows={panel.rows} />} />
               </div>
-              <WlBody rows={panel.rows} />
+              <WlBody available={populationReport != null} rows={panel.rows} />
             </div>
           ))}
         </div>
@@ -2633,7 +2435,7 @@ export default function Performance() {
             the final Page-1 sections (exact ports, see PerfMacroSections). */}
         <div id="sec-regime">
           <RegimeMatrix
-            trades30={shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D).map(t2 => ({ sym: t2.sym, cat: catOf(t2.sym), pnl: t2.pnl }))}
+            populationReport={populationReport}
             positions={positions}
             accounts={accounts}
             account={acct}
@@ -2667,22 +2469,23 @@ export default function Performance() {
               data={tileGroups ? tileGroups.flatMap(([group, items]) => items.map(([metric, value, , note]) => ({ group, metric, value, measures: note }))) : []}
               toText={() => (tileGroups
                 ? ['All-time', ...tileGroups.flatMap(([group, items]) => [group.toUpperCase(), ...items.map(([metric, value, , note]) => `  ${metric} ${value} — ${note}`)])].join('\n')
-                : 'All-time — no closed trades yet')}
+                : 'All-time analytics unavailable or no priced closes')}
               render={() => (
                 <div>
                   {tilesRow}
-                  <ReportChart allTrades={allTrades} events={events} daily={decisionsDaily} />
+                  <ReportChart populationReport={populationReport} accountId={acct} daily={tradeScope === acct ? decisionsDaily : null} />
                 </div>
               )} />
           </div>
-          {!tiles && <p className={`text-(length:--fs-body) mb-2 ${SUB}`}>No closed trades yet — tiles and chart fill from the first completed round-trip.</p>}
+          {!tiles && <p className={`text-(length:--fs-body) mb-2 ${SUB}`}>{analytics ? `${analytics.closedTrades ?? analytics.trades} recorded closes; ${analytics.unpricedTrades ?? 0} without P&L.` : 'All-time analytics unavailable.'}</p>}
           {tilesRow}
           {/* Owner (2026-07-25): end-of-day / end-of-week debrief — who opened
               it, why it won or lost, what was written down. */}
           <div className="mb-2">
-            <SessionReview allTrades={allTrades} postmortems={postmortems} nowMs={loadedAt} />
+            <p className={SUB}>Debrief of the recent journal sample; period totals come from the complete aggregates above.</p>
+            <SessionReview allTrades={tradeScope === acct ? allTrades : []} postmortems={postmortems} nowMs={loadedAt} />
           </div>
-          <ReportChart allTrades={allTrades} events={events} daily={decisionsDaily} />
+          <ReportChart populationReport={populationReport} accountId={acct} daily={tradeScope === acct ? decisionsDaily : null} />
         </Card>
       </div>
     </div>
