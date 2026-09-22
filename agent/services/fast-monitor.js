@@ -6,7 +6,7 @@
 // instrument reduces from 5 minutes to # minutes — and is also based on
 // active market volume." So:
 //
-// - A dedicated 30s ticker (startFastMonitor) runs alongside the main loop.
+// - A dedicated ticker (3s by default; startFastMonitor) runs alongside the main loop.
 // - Each ACTIVE bot position gets its own cadence:
 //     cadence = base (`monitor_interval_min`, default 1m) scaled by the
 //     instrument's relative 1-minute volume — busy market → base interval,
@@ -61,9 +61,9 @@ export function quoteMaxAgeMs(env = process.env) {
  */
 export function pickSidecarQuote(quotes, symbolId, nowMs, maxAgeMs = QUOTE_MAX_AGE_DEFAULT_MS) {
   const q = quotes?.get?.(Number(symbolId))
-  if (!q || !(q.bid > 0) || !(q.ask > 0)) return { quote: null, source: 'missing' }
+  if (!q || !Number.isFinite(q.bid) || !Number.isFinite(q.ask) || !(q.bid > 0) || q.ask < q.bid) return { quote: null, source: 'missing' }
   const age = Number.isFinite(q.ageMs) ? q.ageMs : Number.isFinite(q.recvMs) ? nowMs - q.recvMs : Infinity
-  if (age > maxAgeMs) return { quote: null, source: 'stale' }
+  if (!Number.isFinite(age) || age < 0 || age > maxAgeMs) return { quote: null, source: 'stale' }
   return { quote: { bid: q.bid, ask: q.ask }, source: 'sidecar' }
 }
 
@@ -295,7 +295,10 @@ export async function runFastMonitor(db, creds, deps = {}) {
     const positions = db.prepare(
       `SELECT * FROM monitored_positions WHERE status = 'active' AND paused IS NOT 1`
     ).all()
-    if (positions.length === 0) return { skipped: 'no positions', checked: 0 }
+    if (positions.length === 0) {
+      setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, at: new Date(now()).toISOString(), positions: [], complete: true }))
+      return { skipped: 'no positions', checked: 0, completed: true }
+    }
 
     const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
     const symbolMap = (() => { try { return JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { return {} } })()
@@ -340,17 +343,37 @@ export async function runFastMonitor(db, creds, deps = {}) {
     const lookupId = (pos) => sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache, feedAccountBySide.get(String(sideOf(pos))) ?? null)
     const quoteCounts = { fromSidecar: 0, fromBroker: 0, stale: 0 }
 
+    let previous = []
+    try { previous = JSON.parse(getState(db, POSITION_WORK_KEY) || '{}').positions || [] } catch { /* no preceding receipt */ }
+    const previousById = new Map((Array.isArray(previous) ? previous : []).map(p => [`${p.accountId}:${p.positionId}`, p]))
+    const work = []
     let checked = 0
     let acted = 0
     for (const pos of positions) {
+      const accountId = pos.account_id != null ? String(pos.account_id) : String(creds.accountId)
+      const prior = previousById.get(`${accountId}:${pos.id}`)
+      const receipt = { accountId, positionId: pos.id, brokerPositionId: pos.broker_position_id ?? null,
+        symbol: pos.symbol, strategy: pos.strategy, owner: 'node_fast_monitor',
+        lastCompletedAt: prior?.lastCompletedAt ?? null, nextDueAt: prior?.nextDueAt ?? null,
+        lastAttemptAt: null, state: 'not_due', quoteSource: null, error: null }
+      work.push(receipt)
       try {
-        if (pos.source === 'external') continue            // observe-only
+        if (pos.source === 'external') { receipt.state = 'observe_only'; continue }
         if (!manageStageAllows(db, getState, pos.strategy)) {
+          receipt.state = 'manage_off'
           noteFastDecision(db, pos, 'manage_off', `Live Tweak & Close is OFF for strategy '${pos.strategy}' — position unmonitored by this pass`)
           continue
         }
-        const symbolId = symbolMap[String(pos.symbol).toUpperCase()]
+        const ownMap = accountMap(db, accountId, acctMapCache)
+          ?? ((primaryId == null || String(primaryId) === accountId) && String(creds.accountId) === accountId ? symbolMap : null)
+        const knownSide = acctLive.get(accountId)
+        const host = typeof knownSide === 'boolean' ? (knownSide ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')
+          : accountId === String(creds.accountId) ? creds.host : null
+        const symbolId = ownMap?.[String(pos.symbol).toUpperCase()]
+        const feedKey = `${host}:${accountId}:${symbolId}`
+        if (!host) { receipt.state = 'account_route_unknown'; continue }
         if (!symbolId) {
+          receipt.state = 'symbol_unmapped'
           noteFastDecision(db, pos, 'symbol_unmapped', `${pos.symbol} not in symbol_id_map — no quote, no checks`)
           continue
         }
@@ -361,30 +384,33 @@ export async function runFastMonitor(db, creds, deps = {}) {
         const overrideMin = overrides[String(pos.symbol).toUpperCase()]
         let relVol = NaN
         if (!(Number(overrideMin) > 0)) {
-          let vc = volCache.get(pos.symbol)
+          let vc = volCache.get(feedKey)
           if (!vc || now() - vc.at > VOL_TTL_MS) {
             try {
-              const byTf = await ws.wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], 21, 15_000)
+              const byTf = await ws.wsGetTrendbarsBatch(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId, ['1m'], 21, 15_000)
               relVol = relVolFromBars(byTf['1m'] || [])
             } catch { /* unknown volume → middle pace */ }
             vc = { relVol, at: now() }
-            volCache.set(pos.symbol, vc)
+            volCache.set(feedKey, vc)
           }
           relVol = vc.relVol
           // A recent spike is a leading signal relVol (5min-stale) hasn't
           // caught up to yet — hold this symbol at the fastest cadence
           // regardless of what the lagging volume read says.
-          const spikeExpiry = spikeUntil.get(pos.symbol)
+          const spikeExpiry = spikeUntil.get(feedKey)
           if (spikeExpiry && now() < spikeExpiry) relVol = Math.max(relVol || 0, 2)
         }
         // During an active spike window the per-position cadence is bypassed
         // entirely — the position re-prices on EVERY ticker tick (default 3s)
         // so profit-banking/exit rules act inside the spike, not after it
         // (owner 2026-07-24: sub-3-second spike losses).
-        const spikeActive = (spikeUntil.get(pos.symbol) || 0) > now()
+        const spikeActive = (spikeUntil.get(feedKey) || 0) > now()
         const due = spikeActive ||
           now() - (lastCheckAt.get(pos.id) || 0) >= effectiveCadenceMs(overrideMin, relVol, baseMin)
+        receipt.cadenceMs = effectiveCadenceMs(overrideMin, relVol, baseMin)
+        if (!receipt.nextDueAt) receipt.nextDueAt = new Date(now()).toISOString()
         if (!due) continue
+        receipt.lastAttemptAt = new Date(now()).toISOString()
         lastCheckAt.set(pos.id, now())
 
         // Sidecar first (fresh within maxAgeMs on the sidecar's receipt
@@ -394,15 +420,17 @@ export async function runFastMonitor(db, creds, deps = {}) {
           ? { quote: null, source: 'missing' }
           : pickSidecarQuote(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)
         let q = pick.quote
+        receipt.quoteSource = q ? 'sidecar' : 'broker'
         if (q) {
           quoteCounts.fromSidecar++
         } else {
           if (pick.source === 'stale') quoteCounts.stale++
           quoteCounts.fromBroker++
-          q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+          q = await ws.wsGetSpotOnce(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId)
         }
-        const mid = q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null
+        const mid = Number.isFinite(q?.bid) && Number.isFinite(q?.ask) && q.bid > 0 && q.ask >= q.bid ? (q.bid + q.ask) / 2 : null
         if (mid == null) {
+          receipt.state = 'quote_unavailable'
           noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
           continue
         }
@@ -413,8 +441,8 @@ export async function runFastMonitor(db, creds, deps = {}) {
         // frozen feed. One alert per episode, self-clearing on movement.
         const frozenMin = Number(process.env.FROZEN_QUOTE_MIN ?? FROZEN_QUOTE_DEFAULT_MIN)
         if (frozenMin > 0) {
-          const fq = frozenQuoteUpdate(quoteFreeze.get(pos.symbol), mid, now(), frozenMin * 60_000)
-          quoteFreeze.set(pos.symbol, fq.rec)
+          const fq = frozenQuoteUpdate(quoteFreeze.get(feedKey), mid, now(), frozenMin * 60_000)
+          quoteFreeze.set(feedKey, fq.rec)
           if (fq.alert) {
             let open = true
             try { open = isSymbolOpenCached(db, pos.symbol).open !== false } catch { /* unknown → assume open, alert */ }
@@ -425,7 +453,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
               import('./telegram-control.js').then(m => m.notifyOwner(msg)).catch(() => {})
             } else {
               // Closed market → not a freeze; restart the episode quietly.
-              quoteFreeze.set(pos.symbol, { mid, changedAt: now(), alerted: false })
+              quoteFreeze.set(feedKey, { mid, changedAt: now(), alerted: false })
             }
           } else if (fq.recovered) {
             console.log(`[fast-monitor] ${pos.symbol}: quote moving again after freeze`)
@@ -434,12 +462,11 @@ export async function runFastMonitor(db, creds, deps = {}) {
 
         const prevPrice = lastPriceAt.get(pos.id)
         if (isSpikeMove(prevPrice?.mid, prevPrice?.at, mid, now())) {
-          spikeUntil.set(pos.symbol, now() + SPIKE_HOLD_MS)
+          spikeUntil.set(feedKey, now() + SPIKE_HOLD_MS)
           console.log(`[fast-monitor] ${pos.symbol}: volatility spike detected — fast-tracking checks for ${Math.round(SPIKE_HOLD_MS / 60000)}m`)
         }
         lastPriceAt.set(pos.id, { mid, at: now() })
 
-        checked++
         // applyManagedRules, same as the slow monitor: this evaluator ran the
         // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
         // 0016.HK one minute after HK open — beating the managed trail the
@@ -458,6 +485,11 @@ export async function runFastMonitor(db, creds, deps = {}) {
           eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
           pos.id,
         )
+        checked++
+        receipt.state = 'evaluated'
+        receipt.action = eval_.action
+        receipt.lastCompletedAt = new Date(now()).toISOString()
+        receipt.nextDueAt = new Date(now() + receipt.cadenceMs).toISOString()
         if (eval_.action === 'HOLD') {
           // Same truthfulness fix as the main loop's monitor phase (owner:
           // "why are you not monitoring") — a HOLD verdict used to write
@@ -472,6 +504,8 @@ export async function runFastMonitor(db, creds, deps = {}) {
         // PR-J stamps from the OUTCOME, same helper as the slow monitor.
         loopMod.stampExitMarks(s, pos, eval_, outcome)
         acted++
+        receipt.actionOutcome = outcome.error ? 'error' : outcome.skipped ? 'skipped' : 'reported_success'
+        receipt.error = outcome.error || null
         const summary = outcome.error
           ? `${eval_.reason} | broker_error: ${outcome.error}`
           : outcome.skipped
@@ -486,10 +520,14 @@ export async function runFastMonitor(db, creds, deps = {}) {
         )
         console.log(`[fast-monitor] ${pos.symbol}: ${eval_.action} — ${summary}`)
       } catch (err) {
+        receipt.state = 'error'
+        receipt.error = err.message
         console.error('[fast-monitor]', pos.symbol, err.message)
       }
     }
-    return { checked, acted, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size }
+    setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, at: new Date(now()).toISOString(),
+      positions: work.slice(0, 2048), total: work.length, complete: work.length <= 2048 }))
+    return { checked, acted, completed: true, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size }
   } finally {
     running = false
   }
@@ -570,6 +608,7 @@ export function makeCadenceGate() {
 
 /** Where the band writes what it measured; the protection_band controller's declared effect. */
 export const PASS_RECORD_KEY = 'fast_monitor_pass_json'
+export const POSITION_WORK_KEY = 'fast_monitor_position_work_json'
 const RECORD_WINDOW_MS = 10 * 60_000
 
 /** Rolling maximum of {at, ms} samples inside `windowMs` of `nowMs`. Pure. */
@@ -904,6 +943,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   let bandRunning = false
   let bandSkipped = 0
   let lastTick = null
+  let lastCompletedAt = null
   // { fromSidecar, fromBroker, stale, at, checked } from the last pass that
   // ACTUALLY PRICED something. 20-09-2026: a pass where no position was due
   // — the common case at a 3s tick against per-position cadences of a minute
@@ -951,7 +991,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       setState(db, PASS_RECORD_KEY, JSON.stringify({
         at: new Date(nowMs).toISOString(),
         tick: {
-          everyMs: tickMs, lastMs: lastTick, max10mMs: tk.max, skippedTicks: skipped,
+          everyMs: tickMs, lastCompletedAt, lastMs: lastTick, max10mMs: tk.max, skippedTicks: skipped,
           skipped10m: skipsKept.length, skipShare10m: shares.skipShare, busyShare10m: shares.busyShare,
           // 19-09-2026: where the last pass's prices came from (see the
           // header block) — the acceptance read for the sidecar path. This is
@@ -981,8 +1021,10 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     let tickErr = null
     let quotes = null
     let checked = 0
+    let completed = false
     try {
       const r = await runFastMonitor(db, creds, deps)
+      completed = r?.completed === true
       if (r?.quotes) { quotes = r.quotes; checked = r.checked ?? 0 }
     } catch (err) {
       tickErr = err
@@ -1003,7 +1045,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] session-open-guard failed:', err.message)
     }
-    return { err: tickErr, quotes, checked }
+    return { err: tickErr, quotes, checked, completed }
   })
 
   const t = setInterval(async () => {
@@ -1015,7 +1057,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       // heartbeat would trip the watchdog's stall alert on our own backlog.
       try {
         const hb = deps.heartbeat ?? await import('./heartbeat.js')
-        hb.beat(db, 'fast_monitor', { ok: true, error: null, detail: { busy: true, skipped } })
+        hb.beat(db, 'fast_monitor', { ok: true, error: null, detail: { busy: true, skipped, completed: false, lastCompletedAt } })
       } catch { /* heartbeat is best-effort */ }
       // console.LOG, not warn (2026-08-22). Overlap protection working is not
       // an error: this is the ticker declining to start a second pass while
@@ -1041,12 +1083,13 @@ export function startFastMonitor(db, getCreds, deps = {}) {
         quoteSamples.push({ at: startedAt, fromSidecar: q.fromSidecar || 0, fromBroker: q.fromBroker || 0, stale: q.stale || 0 })
       }
       const ms = clock() - startedAt
+      if (!tickErr && r?.completed === true) lastCompletedAt = new Date(clock()).toISOString()
       lastTick = ms
       tickSamples.push({ at: startedAt, ms })
       writeTickRecord(clock())
       try {
         const hb = deps.heartbeat ?? await import('./heartbeat.js')
-        hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null, detail: { ms, skipped } })
+        hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null, detail: { ms, skipped, completed: !tickErr && r?.completed === true, checked: r?.checked ?? null, lastCompletedAt } })
       } catch { /* heartbeat is best-effort */ }
       skipped = 0
     } finally {
