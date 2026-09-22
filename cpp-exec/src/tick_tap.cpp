@@ -22,4 +22,18 @@ SpotRawTap makeRecorderTap(TickRecorder* rec, SymbolWorkers* workers, const Quot
   };
 }
 
+SpotObservedRawTap makeObservedRecorderTap(TickRecorder* rec, SymbolWorkers* workers, const QuoteOnlyGate* gate,
+  std::function<void(const Record&, long long)> mirror) {
+  return [rec, workers, gate, mirror = std::move(mirror)](long long symbolId, bool hasBid, long long bid,
+      bool hasAsk, long long ask, long long generation, long long receivedAtMs, long long sourceTimestampMs) {
+    if (!rec || (gate && !gate->admits(symbolId))) return;
+    const auto r = rec->onQuote(symbolId, hasBid, bid, hasAsk, ask, receivedAtMs, static_cast<uint32_t>(generation));
+    if (workers) {
+      WorkerEvent ev; ev.recvMs = r.recvMs; ev.seq = r.seq; ev.symbolId = r.symbolId;
+      ev.bid = r.bid; ev.ask = r.ask; ev.flags = r.flags; workers->dispatch(ev);
+    }
+    if (mirror) mirror(r, sourceTimestampMs); // bounded ring push only
+  };
+}
+
 } // namespace tick

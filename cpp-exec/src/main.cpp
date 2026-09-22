@@ -23,6 +23,7 @@
 #include "tick_segment_routes.hpp"
 #include "spot_quote_routes.hpp"
 #include "tick_tap.hpp"
+#include "scanner_mirror.hpp"
 #include "tick_firer.hpp"
 #include "tick_shadow.hpp"
 #include "tick_strategy.hpp"
@@ -414,6 +415,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<vpo::VpoDispatcher> vpoDispatcher;
   std::vector<long long> vpoSymbolIds;
   std::unique_ptr<SpotFeed> spotFeed;
+  std::shared_ptr<ScannerMirror> scannerMirror;
   std::thread spotFeedThread;
   // The inputs the LIVE feed was constructed from. /connect compares against
   // these to decide whether a push actually requires a new feed, instead of
@@ -918,7 +920,13 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder, &tickWorkers, &liveFeedHost, &liveFeedAccountId, &liveFeedVpoSymbolIds, &liveFeedTrailEnabled, &liveFeedDepthEnabled, &liveFeedRecorderAttached, &tickUniverse](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/scanner-mirror", [&scannerMirror, &vpoMtx](const HttpRequest&) -> HttpResponse {
+    std::shared_ptr<ScannerMirror> mirror;
+    { std::lock_guard<std::mutex> lock(vpoMtx); mirror = scannerMirror; }
+    return {200, mirror ? jsn::dump(mirror->status()) : "{\"enabled\":false,\"mode\":\"mirror\",\"orderAuthority\":false}"};
+  });
+
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled, pinnedHost, &decisionRing, &tickRecorder, &tickWorkers, &liveFeedHost, &liveFeedAccountId, &liveFeedVpoSymbolIds, &liveFeedTrailEnabled, &liveFeedDepthEnabled, &liveFeedRecorderAttached, &tickUniverse, &scannerMirror, &tickParams](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -1083,6 +1091,21 @@ int main(int argc, char** argv) {
       if (tick::TickRecorder* rec = tickRecorder.get()) {
         // The tap lives in tick_tap.cpp (testable); the universe gates it.
         spotFeed->setRawTap(tick::makeRecorderTap(rec, tickWorkers.get(), &tickUniverse));
+        scannerMirror.reset();
+        if (!envOr("TICK_SCANNER_MIRROR_URL", "").empty()) {
+          try {
+            const auto ttlText = envOr("TICK_SCANNER_CANDIDATE_TTL_MS", ""); size_t used = 0;
+            const auto ttl = std::stoll(ttlText, &used);
+            if (used != ttlText.size()) throw std::invalid_argument("explicit candidate lifetime required");
+            scannerMirror = std::make_shared<ScannerMirror>(useHost, accountId,
+              envOr("TICK_SCANNER_CONFIG_VERSION", ""), ttl, tickParams,
+              ScannerMirror::httpSender(envOr("TICK_SCANNER_MIRROR_URL", ""), envOr("TICK_SCANNER_MIRROR_SECRET", "")));
+            spotFeed->setObservedRawTap(tick::makeObservedRecorderTap(rec, tickWorkers.get(), &tickUniverse,
+              [mirror = scannerMirror](const tick::Record& r, long long sourceMs) { mirror->observe(r, sourceMs); }));
+          } catch (const std::exception&) {
+            logError("tick scanner mirror unavailable: invalid endpoint, identity, explicit policy, or bounded transport");
+          }
+        }
       }
       if (trailPtr) spotFeed->ensureSymbols(trailEngine.symbolIds());
       // A rebuilt feed starts from the VPO + trail subscription: a formerly

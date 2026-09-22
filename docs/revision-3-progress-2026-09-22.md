@@ -434,6 +434,39 @@ preflight and explicit deployment boundary therefore keep these packages draft.
 Historical broker observations are not current verification. No broker targets,
 credentials, trading modes, risk caps or research thresholds were changed.
 
+
+## Continuation checkpoint — 22 September 2026, 20:15 SGT
+
+Draft PRs #1019–#1026 are published, unmerged and undeployed. Their CI checks
+were observed green: native account money (#1019), scoped monitoring receipts
+(#1020), Controllers groups (#1021), complete hourly activity (#1022), native
+account/cashflow history (#1023, based on #1019), independent watchdog (#1024),
+both scanner boundaries (#1025), and isolated mirror records (#1026). This is
+code/test evidence, not authenticated UI or live runtime acceptance.
+
+This gateway mirror package completed the full Node/UI gate and full native
+build/test plus all 15 ThreadSanitizer tests. See
+[gateway mirror evidence](gateway-scanner-mirror-2026-09-22.md). It adds no broker
+connection or trading authority and is disabled without explicit configuration.
+Execution-permission failures on rebuilt local binaries were diagnosed; the
+unchanged full reruns passed after restoring the local executable bits.
+
+The complete reporting-populations package is undergoing its full gate. It
+replaces remaining 100-row journal-derived totals, separates account units,
+records unpriced/undated coverage and replaces the mislabeled equity curve with
+complete daily realised-close aggregates. First-blocker attribution, integration,
+full timeframe parity, calendar/work producers and candidate comparison/handoff
+remain executable work. They are not reported complete.
+
+Main remains e8b9cd98180bc965493469c1c2f553499de2025c at the last check. Every
+main merge still triggers all four services; revision-3 §18 rollout preflight
+remains a release boundary. No deployment, credentials, account amendments,
+trading modes, numerical risk caps, mandatory TP1 or validation thresholds were
+changed. Historical broker exceptions and account roster observations have not
+been relabeled as current. Runtime shell and authenticated browser acceptance
+remain unavailable; editing, GitHub publication, Node22/native SQLite and all
+local repository toolchains are available.
+
 ## Continuation checkpoint — 22 September 2026, 20:25 SGT
 
 Fresh GitHub reconciliation: main is
@@ -469,3 +502,48 @@ All main merges still have the recorded four-service deployment coupling. No
 merge/deploy, broker amendment, credential or mode change was performed here;
 risk caps, mandatory TP1, manual ownership and validation thresholds stand.
 Historical broker reports have not been described as current.
+
+## Conflict-resolution checkpoint — 23 September 2026, 01:23 SGT
+
+The owner explicitly requested resolving and merging all seven open PRs
+#1022–#1028 after the four-service automatic deployment coupling had been
+identified. Their conflicts were reconciled cumulatively in dependency order:
+#1022, #1028, #1023, #1024, #1025, #1026, #1027. Historical checkpoints above
+remain historical; this approval supersedes their draft merge holds for this
+batch, without changing risk limits, credentials, trading modes, mandatory TP1,
+manual ownership or validation thresholds. No new scanner service or optional
+quote-mirror configuration was activated.
+
+At this checkpoint #1022, #1028, #1023 and #1024 are squash-merged. Each merge
+required the full local gate, green PR CI, a clean merge state and exact equality
+between GitHub's proposed merged source tree and the tested integration tree.
+Before each subsequent merge, all four previous deployments had to succeed and
+the independent broker audit had to refresh across all seven accounts. The
+17:20 UTC audit showed no missing SL and the same two pre-existing missing-TP1
+exceptions on accounts ending 9908 and 0949. Existing P&L-watch budget failures
+remain visible; this is not a claim of complete runtime acceptance or P5 parity.
+
+All seven integrated branches passed the local Node, ESLint, Vitest, production
+build, no-green, syntax and generated-inventory gates. The watchdog Node suite
+was rerun serially after a responsiveness test missed its existing deadline
+under compilation load; the deadline and assertions were not changed. The
+watchdog and both scanners passed their C++ suites and no-order-authority symbol
+checks. The gateway's full C++ suite passed after rebuilding an empty local
+binary and correcting a pre-existing test synchronization race: the stale-fire
+test now waits for both the counter and decision record within the same budget,
+and the send check likewise waits for both observations. Production code and
+final assertions are unchanged. ThreadSanitizer and the remaining merges are
+still pending at this checkpoint.
+
+At 01:30 SGT, #1025 is merged and #1026 has green PR CI. The gateway's
+full C++ suite and all 15 ThreadSanitizer tests have passed locally. One
+generated sanitizer binary needed its executable permission restored before
+that successful run; no sanitizer setting, assertion or time budget changed.
+#1026's deployment-audit gate and #1027's final publication/CI/merge remain.
+
+At 01:32 SGT, #1026 is also merged as
+`2c909165fe4c1330c1b8b2f4fc886ce70faf035b`, after the fresh 17:31 UTC
+seven-account independent audit. Six of the seven requested PRs are merged;
+#1027 is the final PR. Its integrated local JavaScript/UI/build gates, full C++
+suite and all 15 ThreadSanitizer tests passed. Its remaining boundary is green
+PR CI and the same deployment/audit gate, followed by final deployment readback.
