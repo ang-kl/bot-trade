@@ -25,6 +25,7 @@ import { execBaseFor } from '../lib/exec-engine.js'
 import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume, persistRiskEvent } from './risk.js'
 import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
+import { readAccountSnapshot, RISK_MARGIN_SNAPSHOT_MAX_AGE_MS } from './account-snapshot.js'
 
 // ---------------------------------------------------------------------------
 // Pre-arm risk gate (owner-approved build 5, 2026-07-27 — audit finding
@@ -39,16 +40,18 @@ import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 // run pre-arm because there is no concrete entry/SL yet — this is the
 // subset that needs no proposal to evaluate.
 // ---------------------------------------------------------------------------
-export function vpoPreArmVeto(db, cfg, symbol) {
+export function vpoPreArmVeto(db, cfg, symbol, accountId = getState(db, 'ctrader_account_id')) {
   const gg = evaluateGlobalGuards(db)
   if (!gg.ok) return gg.reason
 
   const dup = db.prepare(
-    `SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active' AND symbol = ?`
-  ).get(symbol)?.n || 0
+    `SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active' AND symbol = ?
+      AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+  ).get(symbol, accountId, accountId)?.n || 0
   const dupTrades = db.prepare(
-    `SELECT COUNT(*) AS n FROM trades WHERE status = 'open' AND symbol = ?`
-  ).get(symbol)?.n || 0
+    `SELECT COUNT(*) AS n FROM trades WHERE status = 'open' AND symbol = ?
+      AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+  ).get(symbol, accountId, accountId)?.n || 0
   if (dup + dupTrades > 0) return `duplicate_symbol: ${symbol} already has an open position — VPO must not stack`
 
   if (cfg.newsGate?.on) {
@@ -63,14 +66,11 @@ export function vpoPreArmVeto(db, cfg, symbol) {
 
   // Margin-level floor (build 3's key; undefined on configs predating it → skip).
   if (cfg.marginLevelFloorPct != null && Number.isFinite(Number(cfg.marginLevelFloorPct))) {
-    try {
-      const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
-      const lvl = snap?.account?.health?.marginLevelPct
-      const ageMs = snap?.fetchedAt ? Date.now() - Date.parse(snap.fetchedAt) : Infinity
-      if (Number.isFinite(lvl) && ageMs < 5 * 60_000 && lvl < Number(cfg.marginLevelFloorPct)) {
-        return `margin_level_floor: live margin level ${lvl.toFixed(1)}% < floor ${Number(cfg.marginLevelFloorPct)}%`
-      }
-    } catch { /* unreadable snapshot → fail open, same as the main gate */ }
+    const { snapshot } = readAccountSnapshot(db, accountId, { maxAgeMs: RISK_MARGIN_SNAPSHOT_MAX_AGE_MS })
+    const lvl = snapshot?.account?.health?.marginLevelPct
+    if (Number.isFinite(lvl) && lvl < Number(cfg.marginLevelFloorPct)) {
+      return `margin_level_floor: live margin level ${lvl.toFixed(1)}% < floor ${Number(cfg.marginLevelFloorPct)}%`
+    }
   }
   return null
 }
@@ -164,8 +164,9 @@ export async function runVpoFeeder(db, deps = {}) {
   const { getVolumeMeta, lotsToVolume } = deps.sizing || await import('../lib/lot-sizing.js')
   const push = deps.push || pushToSidecar
 
-  const cfg = loadRiskConfig(db)
-  const balance = getAccountBalance(db)
+  const accountId = String(creds.accountId)
+  const cfg = loadRiskConfig(db, accountId)
+  const balance = getAccountBalance(db, accountId)
 
   const barsOut = []
   const volumesOut = []
@@ -210,13 +211,13 @@ export async function runVpoFeeder(db, deps = {}) {
       const lastClose = micro.length ? micro[micro.length - 1].c : null
       // Pre-arm gate BEFORE sizing: a vetoed symbol pushes volume -1, which
       // the C++ fire site hard-refuses (no_sizing) — the bypass-closing seam.
-      const vetoReason = vpoPreArmVeto(db, cfg, symbol)
+      const vetoReason = vpoPreArmVeto(db, cfg, symbol, accountId)
       if (vetoReason) {
         volumesOut.push({ key: `${key}:${symbol}`, volume: -1 })
         permitEntries.push({ key, symbol, symbolId, volume: -1 })
         try {
           persistRiskEvent(db,
-            { symbol, side: null, strategy: `vpo:${key}`, source: 'vpo_pre_arm' },
+            { symbol, side: null, strategy: `vpo:${key}`, source: 'vpo_pre_arm', accountId },
             { approved: false, veto_reason: `vpo_pre_arm ${vetoReason}` })
         } catch { /* visibility only — never block the push */ }
         console.log(`[vpo-feeder] ${key}/${symbol} VETOED pre-arm: ${vetoReason}`)

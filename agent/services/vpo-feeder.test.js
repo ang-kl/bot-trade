@@ -123,7 +123,7 @@ test('pushes real bars + resolved volume for a configured entry', async () => {
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  setState(db, 'account_balance_usd', '10000')
+  setState(db, 'acct:42:account_balance_usd', '10000')
 
   let pushed = null
   const ws = fakeWs()
@@ -175,7 +175,7 @@ test('one bad entry does not stop the others from being pushed', async () => {
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  setState(db, 'account_balance_usd', '10000')
+  setState(db, 'acct:42:account_balance_usd', '10000')
 
   const ws = {
     wsGetTrendbarsBatch: async (host, clientId, clientSecret, accessToken, accountId, symbolId) => {
@@ -238,26 +238,61 @@ test('vpoPreArmVeto: news window vetoes when the gate is enabled, not when disab
 
 test('vpoPreArmVeto: margin-level floor vetoes on a fresh low snapshot, fails open on stale', () => {
   const db = freshDB()
+  setState(db, 'ctrader_account_id', '42')
   const cfg = { ...loadRiskConfig(db), marginLevelFloorPct: 150 }
-  setState(db, 'broker_snapshot_cache_json', JSON.stringify({
+  setState(db, 'acct:42:broker_snapshot_cache_json', JSON.stringify({
     fetchedAt: new Date().toISOString(),
-    account: { health: { marginLevelPct: 120 } },
+    account: { accountId: '42', health: { marginLevelPct: 120 } },
   }))
   assert.match(vpoPreArmVeto(db, cfg, 'EURUSD'), /margin_level_floor/)
 
   // Healthy level → pass
-  setState(db, 'broker_snapshot_cache_json', JSON.stringify({
+  setState(db, 'acct:42:broker_snapshot_cache_json', JSON.stringify({
     fetchedAt: new Date().toISOString(),
-    account: { health: { marginLevelPct: 400 } },
+    account: { accountId: '42', health: { marginLevelPct: 400 } },
   }))
   assert.equal(vpoPreArmVeto(db, cfg, 'EURUSD'), null)
 
   // Stale low snapshot → fail open (same convention as the main gate)
-  setState(db, 'broker_snapshot_cache_json', JSON.stringify({
+  setState(db, 'acct:42:broker_snapshot_cache_json', JSON.stringify({
     fetchedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
-    account: { health: { marginLevelPct: 120 } },
+    account: { accountId: '42', health: { marginLevelPct: 120 } },
   }))
   assert.equal(vpoPreArmVeto(db, cfg, 'EURUSD'), null)
+})
+
+test('VPO margin and duplicate checks use the execution account, not the selected account', t => {
+  const db = freshDB(); t.after(() => db.close())
+  setState(db, 'ctrader_account_id', '11')
+  const cfg = { ...loadRiskConfig(db), marginLevelFloorPct: 150 }
+  setState(db, 'broker_snapshot_cache_json', JSON.stringify({ fetchedAt: new Date().toISOString(), account: { accountId: '11', health: { marginLevelPct: 1 } } }))
+  db.prepare("INSERT INTO trades (symbol, status, account_id) VALUES ('EURUSD', 'open', '11')").run()
+  assert.equal(vpoPreArmVeto(db, cfg, 'EURUSD', '42'), null)
+  setState(db, 'acct:42:broker_snapshot_cache_json', JSON.stringify({ fetchedAt: new Date().toISOString(), account: { accountId: '42', health: { marginLevelPct: 0 } } }))
+  assert.match(vpoPreArmVeto(db, cfg, 'EURUSD', '42'), /margin_level_floor/)
+  db.prepare("INSERT INTO monitored_positions (symbol, status, account_id) VALUES ('EURUSD', 'active', '42')").run()
+  assert.match(vpoPreArmVeto(db, cfg, 'EURUSD', '42'), /duplicate_symbol/)
+})
+
+test('VPO cannot size the execution account from a selected or global balance', async t => {
+  const db = freshDB(); t.after(() => db.close())
+  setState(db, 'vpo_enabled', 'true')
+  setState(db, 'vpo_config_json', JSON.stringify([{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1 }]))
+  setState(db, 'ctrader_account_id', '11')
+  setState(db, 'account_balance_usd', '900000')
+  setState(db, 'acct:11:account_balance_usd', '900000')
+  const pushes = []
+  const deps = { ws: fakeWs(), sizing: fakeSizing(), creds: READY_CREDS, push: async p => pushes.push(p) }
+  await runVpoFeeder(db, deps)
+  assert.equal(pushes.at(-1).volumes[0].volume, -1, 'no account-owned balance means no VPO size')
+  setState(db, 'acct:42:account_balance_usd', '10000')
+  await runVpoFeeder(db, deps)
+  assert.ok(pushes.at(-1).volumes[0].volume > 0)
+  assert.equal(pushes.at(-1).ctidTraderAccountId, 42)
+  setState(db, 'acct:42:risk_config_json', JSON.stringify({ marginLevelFloorPct: 500 }))
+  setState(db, 'acct:42:broker_snapshot_cache_json', JSON.stringify({ fetchedAt: new Date().toISOString(), account: { accountId: '42', health: { marginLevelPct: 400 } } }))
+  await runVpoFeeder(db, deps)
+  assert.equal(pushes.at(-1).volumes[0].volume, -1, 'the execution account overlay supplies its own floor')
 })
 
 test('feeder: a vetoed symbol pushes volume -1 (bars still pushed) and records a risk event', async () => {
@@ -268,7 +303,7 @@ test('feeder: a vetoed symbol pushes volume -1 (bars still pushed) and records a
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  setState(db, 'account_balance_usd', '10000')
+  setState(db, 'acct:42:account_balance_usd', '10000')
   setState(db, 'global_guards_json', JSON.stringify({ halt: true }))
 
   let pushed = null
@@ -300,7 +335,7 @@ test('feeder: an unvetoed symbol still sizes normally with the gate present', as
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  setState(db, 'account_balance_usd', '10000')
+  setState(db, 'acct:42:account_balance_usd', '10000')
 
   let pushed = null
   const r = await runVpoFeeder(db, {
@@ -342,7 +377,7 @@ test('feeder: a STOPPED account is not armed — no /vpo-config push, the reason
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  setState(db, 'account_balance_usd', '10000')
+  setState(db, 'acct:42:account_balance_usd', '10000')
   const { upsertAccount } = await import('./account-registry.js')
   const { requestEntryMode } = await import('./entry-mode.js')
   upsertAccount(db, { accountId: '42', isLive: false })
@@ -380,7 +415,7 @@ test('feeder: the push carries two permits per sized strategy, reused on the nex
   ]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  setState(db, 'account_balance_usd', '10000')
+  setState(db, 'acct:42:account_balance_usd', '10000')
   const { upsertAccount } = await import('./account-registry.js')
   const { requestEntryMode } = await import('./entry-mode.js')
   const { _resetDisarmPushedForTests } = await import('./vpo-feeder.js')
@@ -415,7 +450,7 @@ test('the injected fence is a test fixture, not a hole: through the REAL fence t
   setState(db, 'vpo_config_json', JSON.stringify([{ key: 'vwap_trend', symbol: 'EURUSD', symbolId: 1 }]))
   setState(db, 'ctrader_access_token', 'tok')
   setState(db, 'ctrader_account_id', '42')
-  setState(db, 'account_balance_usd', '10000')
+  setState(db, 'acct:42:account_balance_usd', '10000')
   let pushed = null
   // The REAL fence (no deps.admit): the inventory's retirement stands.
   const r = await runVpoFeederReal(db, {

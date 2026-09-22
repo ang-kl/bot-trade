@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { readAccountSnapshot, RISK_MARGIN_SNAPSHOT_MAX_AGE_MS } from './account-snapshot.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { sizingBalance } from '../lib/sizing-balance.js'
@@ -826,14 +827,9 @@ export function marginRateFor(config, symbol) {
   }
 }
 
-// Broker snapshot fresher than this still counts as truth; older falls back
-// to the local estimate. The monitor refreshes it every ~30s, so 5 minutes
-// of grace only matters across agent restarts / broker-route hiccups.
-const BROKER_MARGIN_MAX_AGE_MS = 5 * 60_000
-
 /**
  * Portfolio margin status — BROKER TRUTH FIRST. cTrader reports each open
- * position's real margin (summed into broker_snapshot_cache_json.account
+ * position's real margin (summed into the account's snapshot.account
  * .health.usedMargin by /actions/broker-positions, refreshed ~30s by the
  * monitor); our own requiredMargin() sum is only an estimate that drifts
  * from the broker (owner 2026-07-24: estimated used margin sat 28% above
@@ -845,29 +841,26 @@ const BROKER_MARGIN_MAX_AGE_MS = 5 * 60_000
  * or null when balance is unknown (margin checks are skipped then, same
  * as the gate itself).
  */
-export function portfolioMarginStatus(db, config, { balance, leverage, openPositions = null, rates = null, accountId = null } = {}) {
+export function portfolioMarginStatus(db, config, { balance, leverage, openPositions = null, rates = null, accountId = null, nowMs = Date.now() } = {}) {
   if (!(balance > 0)) return null
   let usedMargin = null
   let source = 'broker'
-  // WHOSE margin (owner § 7,453·A, 08-09-2026). With no accountId this is the
-  // selected account's status, as it always was. Named, it is THAT account's:
-  // the broker snapshot is the selected account's and is used only for it;
-  // every other account is estimated from its own rows.
   const selected = getState(db, 'ctrader_account_id') || null
   const scopedTo = accountId != null ? String(accountId) : selected
-  const snapshotApplies = accountId == null || (selected != null && String(accountId) === String(selected))
-  try {
-    const snap = snapshotApplies ? JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null') : null
-    const bm = snap?.account?.health?.usedMargin
-    const ageMs = snap?.fetchedAt ? Date.now() - Date.parse(snap.fetchedAt) : Infinity
-    if (Number.isFinite(bm) && bm >= 0 && ageMs < BROKER_MARGIN_MAX_AGE_MS) usedMargin = bm
-  } catch { /* unreadable snapshot → estimate */ }
+  // Every account can supply its own broker truth. Never borrow the selected
+  // account's snapshot. Money must be USD to compare with the existing USD
+  // estimates/caps; a margin-level percentage below has no currency unit.
+  const { snapshot, ...brokerSnapshot } = readAccountSnapshot(db, scopedTo, {
+    nowMs, maxAgeMs: RISK_MARGIN_SNAPSHOT_MAX_AGE_MS, expectedCurrency: 'USD',
+  })
+  const bm = snapshot?.account?.health?.usedMargin
+  if (Number.isFinite(bm) && bm >= 0) usedMargin = bm
+  else if (snapshot) brokerSnapshot.reason = 'used_margin_unavailable'
   if (usedMargin == null) {
     source = 'estimate'
     usedMargin = 0
-    // M1 scoping: margin is a per-account quantity. The broker-truth branch
-    // above reads the SELECTED account's snapshot and applies only to it;
-    // any other account is estimated from its own rows via this filter.
+    // Preserve the existing conservative estimate, including unattributed
+    // legacy positions. Missing evidence is an estimate, not a verified zero.
     const acct = scopedTo
     const rows = openPositions ?? db.prepare(`
       SELECT mp.symbol, mp.entry_price, t.volume AS volume
@@ -884,7 +877,7 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
     }
   }
   const cap = balance * config.maxMarginUsagePct
-  return { usedMargin, cap, headroom: cap - usedMargin, source }
+  return { usedMargin, cap, headroom: cap - usedMargin, source, brokerSnapshot }
 }
 
 /**
@@ -1778,20 +1771,20 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // reads fail OPEN — this floor exists to stop digging when the account is
   // measurably distressed, not to halt trading on a data hiccup.
   if (config.marginLevelFloorPct != null && Number.isFinite(Number(config.marginLevelFloorPct))) {
-    try {
-      const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
-      const lvl = snap?.account?.health?.marginLevelPct
-      const ageMs = snap?.fetchedAt ? Date.now() - Date.parse(snap.fetchedAt) : Infinity
-      if (Number.isFinite(lvl) && ageMs < BROKER_MARGIN_MAX_AGE_MS) {
-        checks.margin_level_pct = Number(lvl.toFixed(1))
-        if (lvl < Number(config.marginLevelFloorPct)) {
-          return veto(
-            `margin_level_floor: live margin level ${lvl.toFixed(1)}% < floor ${Number(config.marginLevelFloorPct)}% — no new entries while the account is this close to stop-out`,
-            checks, proposal,
-          )
-        }
+    const { snapshot, ...evidence } = readAccountSnapshot(db, acct, {
+      nowMs: opts.nowMs ?? Date.now(), maxAgeMs: RISK_MARGIN_SNAPSHOT_MAX_AGE_MS,
+    })
+    checks.margin_level_snapshot = evidence
+    const lvl = snapshot?.account?.health?.marginLevelPct
+    if (Number.isFinite(lvl)) {
+      checks.margin_level_pct = Number(lvl.toFixed(1))
+      if (lvl < Number(config.marginLevelFloorPct)) {
+        return veto(
+          `margin_level_floor: live margin level ${lvl.toFixed(1)}% < floor ${Number(config.marginLevelFloorPct)}% — no new entries while the account is this close to stop-out`,
+          checks, proposal,
+        )
       }
-    } catch { /* unreadable snapshot → fail open */ }
+    } else if (snapshot) evidence.reason = 'margin_level_unavailable'
   }
 
   // Slippage-drift gate — historical-only, same shape as the two above:
@@ -2349,13 +2342,14 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     )
     // Margin already committed — broker truth when the snapshot is fresh,
     // the per-row estimate otherwise (see portfolioMarginStatus).
-    const pm = portfolioMarginStatus(db, config, { balance, leverage, openPositions, rates })
+    const pm = portfolioMarginStatus(db, config, { balance, leverage, openPositions, rates, accountId: acct, nowMs: opts.nowMs ?? Date.now() })
     const usedMargin = pm.usedMargin
     const marginCap = pm.cap
     const headroom = pm.headroom
     checks.margin_used_usd = Number(usedMargin.toFixed(2))
     checks.margin_cap_usd = Number(marginCap.toFixed(2))
     checks.margin_source = pm.source
+    checks.margin_snapshot = pm.brokerSnapshot
 
     if (headroom <= 0) {
       // Existing positions alone already consume the whole cap — no amount
