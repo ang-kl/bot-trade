@@ -36,6 +36,7 @@ import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
+import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
 
@@ -3065,6 +3066,17 @@ export default function stateRouter(db) {
   })
 
   // Confirmed opening population, independent of closed-journal pagination.
+  router.get('/hourly-activity', (req, res) => {
+    const scope = requestedAccount(db, req)
+    if (typeof req.query.account !== 'string' || !scope.explicit
+      || (!scope.all && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(scope.accountId))) {
+      return res.status(400).json({ error: 'explicit registered account or all required' })
+    }
+    const to = typeof req.query.to === 'string' && /^\d{1,16}$/.test(req.query.to) ? Number(req.query.to) : NaN
+    try { return res.json(hourlyActivity(db, scope, { to })) }
+    catch (err) { return res.status(err instanceof RangeError ? 400 : 503).json({ error: err instanceof RangeError ? err.message : 'activity evidence unavailable' }) }
+  })
+
   router.get('/hourly-openings', (req, res) => {
     const scope = requestedAccount(db, req)
     if (typeof req.query.account !== 'string' || !scope.explicit

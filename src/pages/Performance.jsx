@@ -18,7 +18,8 @@ import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '../lib/hourly-order.js'
-import { openingEvidence, openingCountLabel } from '../lib/hourly-openings.js'
+import { openingCountLabel } from '../lib/hourly-openings.js'
+import { activityEvidence } from '../lib/hourly-activity.js'
 import { hourLabel, dateFlags } from '../lib/hour-label.js'
 import { useTableClock } from '../lib/table-clock.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
@@ -719,7 +720,7 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
     <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
       <div ref={animRef} style={{ minWidth: 454 }}>
         <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
-          <span>Hour (SGT)</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span title="Recorded openings, including trades still open and closes awaiting P&L">Opened</span><span>Closed</span>
+          <span>Hour (SGT)</span><span>Open bal*</span><span>Recorded P&amp;L</span><span>Close bal*</span><span title="Recorded openings, including trades still open and closes awaiting P&L">Opened</span><span>Closed</span>
         </div>
         {rows.map((r) => {
           const L = hourLabel(r.at)
@@ -745,7 +746,7 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
                 and belongs to no single hour, so it is never summed into
                 `net` and never touches the balance columns. */}
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>
-              {r.closedN ? signed(r.net) : '—'}
+              {r.net != null ? signed(r.net) : '—'}
               {r.isLive && floatingNow != null && (
                 <span title="Floating (unrealized) P&L on the positions open right now. Not part of this hour's realized figure and not in the balance columns — balance is realized-only; equity is balance + floating."
                   style={{ fontSize: 'var(--fs-body)', marginLeft: 3, color: floatingNow > 0 ? P_UP : floatingNow < 0 ? P_DN : P_MU }}>
@@ -755,7 +756,7 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
             </span>
             <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{r.closeBal != null ? money(r.closeBal) : '—'}</span>
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)}</span>
-            <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{r.closedN || '—'}</span>
+            <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{openingCountLabel(r.closedN, r.unknownCloseTimeN, r.incompleteOpeningWindow)}</span>
           </div>
         )})}
       </div>
@@ -1262,7 +1263,7 @@ export default function Performance() {
       const mine = ++generation
       let report = null
       if (agentConfigured()) {
-        try { report = await agentGet(`/state/hourly-openings?account=${encodeURIComponent(acct)}&to=${hourNow}`) }
+        try { report = await agentGet(`/state/hourly-activity?account=${encodeURIComponent(acct)}&to=${hourNow}`) }
         catch { /* unavailable evidence is distinct from zero */ }
       }
       if (!stopped && mine === generation) setOpeningReport(report)
@@ -1271,7 +1272,7 @@ export default function Performance() {
     const interval = setInterval(() => { if (!pageAsleep()) refresh() }, REFRESH_MS)
     return () => { stopped = true; clearTimeout(kick); clearInterval(interval) }
   }, [acct, hourNow])
-  const openings = openingEvidence(openingReport, { accountId: acct, to: hourNow })
+  const openings = activityEvidence(openingReport, { accountId: acct, to: hourNow })
 
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
@@ -1311,18 +1312,11 @@ export default function Performance() {
 
   // The card's headline number, over the rolling window, plus the TP/SL split
   // the prototype's meta line shows (evidence: close_reason).
-  const today = useMemo(() => {
-    const rows = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= rollingWin.from && ms < rollingWin.to })
-    const wins = rows.filter(t2 => Number(t2.net_pnl) > 0)
-    const isTp = (r) => /\btp\b|take.?profit|target|bank|partial|scale/.test(String(r || '').toLowerCase())
-    const isSl = (r) => /\bsl\b|stop.?loss|stopped|stop hit/.test(String(r || '').toLowerCase())
-    return {
-      net: rows.reduce((s, t2) => s + Number(t2.net_pnl), 0), n: rows.length,
-      wr: rows.length ? Math.round((wins.length / rows.length) * 100) : null,
-      tp: rows.filter(t2 => isTp(t2.close_reason) && !isSl(t2.close_reason)).length,
-      sl: rows.filter(t2 => isSl(t2.close_reason) && !isTp(t2.close_reason)).length,
-    }
-  }, [scopedClosed, rollingWin])
+  const today = useMemo(() => ({
+    net: openings?.net ?? null, n: openings?.closedN ?? null,
+    pricedN: openings?.pricedN ?? null,
+    wr: openings?.pricedN ? Math.round(openings.wins / openings.pricedN * 100) : null,
+  }), [openings])
 
   // Owner (2026-07-24 evening): "the today card cannot be empty... it
   // should show across a 24 hours (1hr timeframe) the Open balance, P/L,
@@ -1332,37 +1326,15 @@ export default function Performance() {
   // Timeframe ledger's carry-in/carry-out does, so an hour with no closes
   // still shows a real (flat) balance line instead of nothing at all.
   const todayHourly = useMemo(() => {
-    const curBal = ledger?.balance ?? null
-    // ROLLING WINDOW (owner, 2026-07-31): 24 windows of [t−1h, t) ending at the
-    // captured clock time, newest first, the live minute preserved in every
-    // row. This replaces the FX-day slots — including their dashed `pending`
-    // future rows, which a rolling window cannot have: every row is history.
-    // See hourly-order.js for why the labels were allowed to move the buckets.
     const slots = rollingHourWindows(hourNow, 24)
-    const withStats = slots.map(s => {
-      const closedIn = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= s.from && ms < s.to })
-      const opened = openings?.rows.find(r => r.from === s.from && r.to === s.to)
-      return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length,
-        openedN: opened?.openedN ?? null, unknownOpeningTimeN: openings?.unknownTimeN ?? 0,
-        incompleteOpeningWindow: Boolean(opened && opened.to > openings.observedThrough) }
+    const withBal = slots.map(s => {
+      const row = openings?.rows.find(r => r.from === s.from && r.to === s.to)
+      return { ...s, net: row?.net ?? null, closedN: row?.closedN ?? null,
+        openBal: null, closeBal: null,
+        openedN: row?.openedN ?? null, unknownOpeningTimeN: openings?.unknownTimeN ?? 0,
+        unknownCloseTimeN: openings?.unknownCloseTimeN ?? 0,
+        incompleteOpeningWindow: Boolean(row && row.to > openings.observedThrough) }
     })
-    // Carry back from the CURRENT stamped balance — anything closed after the
-    // newest window's end is subtracted first. With a rolling window that end
-    // is `now`, so this is normally zero; it stays because a close stamped a
-    // few seconds ahead (clock skew between the broker and this box) would
-    // otherwise be counted twice into the top row's open balance.
-    const newestTo = slots.length ? slots[slots.length - 1].to : hourNow
-    const netAfter = scopedClosed.reduce((n, t2) => { const ms = closedMs(t2); return ms != null && ms >= newestTo ? n + Number(t2.net_pnl) : n }, 0)
-    let closeBal = curBal != null ? Number((curBal - netAfter).toFixed(2)) : null
-    const withBal = []
-    for (let i = withStats.length - 1; i >= 0; i--) {
-      const s = withStats[i]
-      const cb = closeBal
-      const ob = cb != null ? Number((cb - s.net).toFixed(2)) : null
-      withBal.unshift({ ...s, openBal: ob, closeBal: cb })
-      closeBal = ob
-    }
-
     // Newest first for reading. The reversal happens AFTER the carry above,
     // which must run oldest-to-newest; see hourly-order.js for why touching the
     // order before it would invert every balance on the page.
@@ -1380,7 +1352,7 @@ export default function Performance() {
     // `loadedAt` is deliberately NOT a dependency: it was only ever here to
     // supply "now", and now comes from the clock. The figures still refresh,
     // through scopedClosed and ledger.
-  }, [scopedClosed, ledger, hourNow, openings])
+  }, [hourNow, openings])
 
   // UI-2 — floating P&L for the LIVE hour. Summed across every open position
   // regardless of which sub-table it renders in (market-open, market-closed,
@@ -2118,9 +2090,9 @@ export default function Performance() {
                     Both read the same `today`, which is now on rollingWin. */}
                 <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
                 <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
-                <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.net != null ? signed(today.net) : '—'}</span>
               </div>
-              <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades in the last 24 hours'}</span>
+              <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
             </div>
             {[{ key: 'float', title: 'Open positions — floating', rows: openSplit.floating, tot: openSplit.floatTot, border: P_GBD, titleCol: P_MU },
               { key: 'closed', title: 'Open trade but market closed', rows: openSplit.closed, tot: openSplit.closedTot, border: 'var(--color-warning-border)', titleCol: P_WRN }]
@@ -2379,18 +2351,18 @@ export default function Performance() {
                   the period is simply the last 24 hours, ending now. */}
               <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
               <SectionTools id="today" title="Rolling 24 Hours table" data={{ hourly: todayHourly, closedTrades: todayTrades }}
-                toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
+                toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.net != null ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr ?? 'unknown'}% wins among ${today.pricedN} priced closes` : ''}`,
                   // The copied text carries the same label the row shows — the
                   // END of the window, in SGT over UTC — not the window start.
-                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)} opened / ${r.closedN || 0} closed`),
+                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.net != null ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)} opened / ${openingCountLabel(r.closedN, r.unknownCloseTimeN, r.incompleteOpeningWindow)} closed`),
                   '', `Closed trades (${todayTrades.length})`,
                   ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
                 render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} /></>} />
             </span>
-            <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
-              {today.n ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
+            <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
+              {today.net != null ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
             </span>
-            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades in the last 24 hours'}</span>
+            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
             {/* Owner (2026-07-25): "Today table must be longer in length" —
                 8 rows per page (3 pages over a full day) instead of 4. */}
             <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}
@@ -2400,12 +2372,18 @@ export default function Performance() {
               {openings
                 ? `Openings: all confirmed ledger rows, including still-open trades; queried ${new Date(openings.generatedAt).toUTCString()}. ${openings.legacyN} unattributed; ${openings.adoptedN} adopted (may use reconciliation time); totals include undated rows.${openings.unknownTimeN ? ` ${openings.unknownTimeN} rows have unknown opening times; ≥ marks a lower bound.` : ''}${openings.observedThrough < openings.to ? ' Browser time is ahead of the server; the newest opening window is incomplete (≥ is a lower bound, unknown is not zero).' : ''}`
                 : 'Opening counts unavailable or stale — a dash is not zero.'}
-              {' '}Broker completeness is unverified. Closed-trade columns use the journal sample; balances are reconstructed and cashflows are unreconciled.
+              {' '}Close counts cover the full ledger, including closes awaiting P&L. Currency was not recorded on historical trades; amounts from different accounts are not combined. Balance columns await currency and cashflow reconciliation. Broker completeness remains unverified.
             </span>
+            {openings && <details><summary>Recorded P&L by account · currency not recorded</summary>
+              <ul>{openings.moneyByAccount.map(a => <li key={a.accountId ?? 'legacy'}>
+                {a.accountId ?? 'Unattributed legacy'}: {signed(a.recordedNet)} recorded units · {a.pricedN}/{a.closedN} closes priced{a.pricedN < a.closedN ? ' · PARTIAL P&L' : ''}
+              </li>)}</ul>
+              <p>{openings.unknownCloseTimeN} closed rows have unknown closing dates; window counts are lower bounds when this is nonzero. Small samples support factual activity, not a reliable performance conclusion.</p>
+            </details>}
             {/* Owner (2026-07-25): "itemised today's closed trades list back"
                 — alongside the hourly aggregate, not replacing it. */}
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderTop: `1px solid ${P_EDG}`, paddingTop: 2 }}>
-              Closed trades ({todayTrades.length}) · tap a row
+              Journal sample ({todayTrades.length} of {today.n ?? 'unknown'} recorded closes) · tap a row
             </span>
             <PagedRows rows={todayTrades} pageSize={8} maxHeight={300}>{(pageRows) => <TodayTradesBody rows={pageRows} />}</PagedRows>
           </div>
