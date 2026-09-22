@@ -39,6 +39,7 @@ import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { accountMoney } from '../services/account-money.js'
 import { accountHistory } from '../services/account-history.js'
+import { blockerReport } from '../services/blocker-report.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
@@ -55,6 +56,17 @@ import { reportLedger } from '../shared/performance-populations.js'
  */
 export default function stateRouter(db) {
   const router = Router()
+  router.get('/blocker-report', (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    try {
+      res.json(blockerReport(db, { accountId: req.query.account,
+        from: Number(req.query.from), to: Number(req.query.to),
+        limit: req.query.limit == null ? 50 : Number(req.query.limit),
+        offset: req.query.offset == null ? 0 : Number(req.query.offset) }))
+    } catch (error) {
+      res.status(error instanceof RangeError ? 400 : 500).json({ error: error.message })
+    }
+  })
   router.get('/watchdog', (_req, res) => {
     res.set('Cache-Control', 'no-store').json(nodeWatchdogContract(db))
   })

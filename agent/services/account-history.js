@@ -71,11 +71,12 @@ export function accountHistory(db, accountId, { from, to = Date.now(), limit = 2
   const valued = points.filter(p => p.equity != null && p.currency && !p.error)
   const first = valued[0], last = valued.at(-1)
   const sameUnits = first && last && valued.every(p => p.currency === first.currency && p.host === first.host)
-  const coverage = sameUnits ? cashflowCoverage(db, { accountId, host: first.host, currency: first.currency,
+  const comparable = sameUnits && first.receivedAt < last.receivedAt
+  const coverage = comparable ? cashflowCoverage(db, { accountId, host: first.host, currency: first.currency,
     from: first.receivedAt, to: last.receivedAt }) : { complete: false, reason: 'comparable_equity_unavailable', externalNet: null }
-  const change = sameUnits ? last.equity - first.equity : null
+  const change = comparable ? last.equity - first.equity : null
   let peak = -Infinity, sampledDrawdown = null
-  if (sameUnits && !hasMore && before == null) {
+  if (comparable && !hasMore && before == null) {
     sampledDrawdown = 0
     for (const p of valued) { peak = Math.max(peak, p.equity); sampledDrawdown = Math.max(sampledDrawdown, peak - p.equity) }
   }
@@ -84,6 +85,7 @@ export function accountHistory(db, accountId, { from, to = Date.now(), limit = 2
     retentionDays: ACCOUNT_HISTORY_RETENTION_DAYS, sampling: 'latest observation per source per minute; no interpolation',
     summaryComplete: !hasMore && before == null, currency: sameUnits ? first.currency : null,
     equityChange: change, cashflows: coverage,
+    observationSpan: comparable ? { from: first.receivedAt, to: last.receivedAt } : null,
     externalFlowAdjustedChange: !hasMore && before == null && coverage.complete && change != null ? change - coverage.externalNet : null,
     sampledDrawdown, drawdownBasis: 'unadjusted observed equity; includes cashflows; not exact intraminute drawdown',
     note: 'External-flow-adjusted equity change is not a time-weighted return or closed-trade P&L. Gaps and missing currencies remain unknown.' }
