@@ -3837,6 +3837,7 @@ export default function stateRouter(db) {
           // sized off ITS balance, and showing another's would make every
           // derived lot figure on the page wrong.
           balance: displayBalance,
+          storedBalance,
           balanceSource: brokerBalance != null ? 'broker' : storedBalance != null ? 'stored' : null,
           balanceFetchedAt: brokerBalance != null ? snap.fetchedAt : null,
           currency: displayBalance != null ? 'USD' : null,

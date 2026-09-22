@@ -491,12 +491,17 @@ The repository's merge gate remains the one in CLAUDE.md: all Node agent tests, 
 
 ## 20. Implementation handover
 
+Continuation evidence and the repository/deployment reconciliation are recorded
+in [revision-3-progress-2026-09-22.md](revision-3-progress-2026-09-22.md). Its dated
+observations supersede historical runtime claims only for the times measured.
+
 | Item | Recorded state | Evidence and remaining work |
 |---|---|---|
 | Revision 3 publication | Merged in [#1005](https://github.com/ang-kl/bot-trade/pull/1005), main `e366effa8b9f74bc1a7f9542b0257592ca1822ae` | GitHub file read-back and PR CI passed. Earlier revisions are preserved. |
 | P0 protection | Exceptions unresolved at the dated 12:45 SGT check | 39 positions, zero missing SL, two missing TP1. This code package makes no broker amendment. |
 | P2a snapshot read model | Merged in [#1006](https://github.com/ang-kl/bot-trade/pull/1006), main `3a942d0b38d56dd1726d08f1d5f2d4a6376e82bf`; authenticated UI acceptance pending | Shared identity/age/currency validation now feeds `/state/risk-full`; account-specific balance, margin, leverage and route labels no longer borrow global values. Full local and PR gates passed. Railway reports all four deployments successful; that does not establish authenticated UI acceptance. |
-| P2b margin and permit inputs | Implemented in the accompanying change; merge/runtime acceptance recorded in its PR | Own-account snapshots now feed risk margin, the margin pool used by tick permits and VPO margin checks. The omitted proposal-account argument is repaired. VPO uses its execution account's balance/configuration and records that identity. Five-minute freshness, existing fallback policy, producer retirement and numeric thresholds are preserved. See [evidence policy](account-risk-inputs-2026-09-22.md). |
-| P2 remaining and later packages | Pending | Account edit routing, balance-currency and leverage provenance, shared feed/calendar identity and authenticated UI acceptance remain explicit follow-ups. No entry modes, tick flags or management ownership changed in P2a/P2b. |
+| P2b margin and permit inputs | Merged in [#1007](https://github.com/ang-kl/bot-trade/pull/1007), main `7bf5bd1699b02422ab74588b7a62025e7a8edb10` | Own-account snapshots now feed risk margin, the margin pool used by tick permits and VPO margin checks. The omitted proposal-account argument is repaired. VPO uses its execution account's balance/configuration and records that identity. Full local/PR gate passed. Five-minute freshness, existing fallback policy, producer retirement and numeric thresholds are preserved. See [evidence policy](account-risk-inputs-2026-09-22.md). |
+| P2 account-edit routing | Implemented in the accompanying change; live UI acceptance pending | `/actions/balance` requires a registered account and validates the entire request before updating its scoped fields. Global keys remain untouched. The Risk form sends the displayed account identity, preserves unsaved same-account edits and rejects superseded loads. Stored sizing input and broker observation are separately visible. |
+| P2 remaining and later packages | Pending | Balance-currency and leverage provenance, shared feed/calendar identity and authenticated UI acceptance remain explicit follow-ups. No entry modes, tick flags or management ownership changed in these P2 packages. |
 
 P2a uses the existing 15-minute display snapshot limit, rejects future/invalid timestamps, preserves valid zero values and leaves known non-USD amounts out of USD sizing fields. A same-account stored fallback has no invented broker timestamp; its source is visible and its freshness remains unverified. It is not an accepted input for future risk gates merely because this display can show it. Broker snapshot `fetchedAt` remains the existing fetch-completion timestamp, not a new source-event freshness guarantee. P2c/P4 must address deeper feed and work-age contracts.

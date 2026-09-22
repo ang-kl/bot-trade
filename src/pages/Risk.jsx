@@ -125,7 +125,7 @@ const SAVE_BTN = '!text-(length:--fs-body)'
 // Every independently-saved form on this page, and the three that make up the
 // Position Protection card. Module scope so load() can name them without
 // taking a dependency that changes every render.
-const SECTIONS = ['risk', 'guard', 'loss-cap', 'ratchet', 'loss-guardian']
+const SECTIONS = ['risk', 'account', 'guard', 'loss-cap', 'ratchet', 'loss-guardian']
 const PROTECTION_SECTIONS = ['loss-cap', 'ratchet', 'loss-guardian']
 
 // Compact labelled field. `pct` fields edit in % but store fractions.
@@ -212,7 +212,8 @@ export default function Risk() {
   // The sidebar lens decides where this page starts and where it lands when
   // you switch; the dropdown below still overrides for a one-off comparison.
   const [riskAcct, setRiskAcct] = useLensAccount('all')
-  const [acct, setAcct] = useState({ balance: null, leverage: null })
+  const [acct, setAcctRaw] = useState({ accountId: null, balance: null, leverage: null })
+  const [accountLoading, setAccountLoading] = useState(true)
   const [guard, setGuardRaw] = useState({})
   const [guardianPct, setGuardianPct] = useState(0.05)
   const [weekendBank, setWeekendBank] = useState(true)
@@ -250,11 +251,16 @@ export default function Risk() {
   // The setters the forms call. Same names and signatures as before, so no
   // field changed — they just record that the form is now unsaved.
   const setRisk = useCallback((v) => { setRiskRaw(v); touch('risk') }, [touch])
+  const setAcct = useCallback((v) => { setAcctRaw(v); touch('account') }, [touch])
   const setGuard = useCallback((v) => { setGuardRaw(v); touch('guard') }, [touch])
   const setLossCap = useCallback((v) => { setLossCapRaw(v); touch('loss-cap') }, [touch])
   const setRatchet = useCallback((v) => { setRatchetRaw(v); touch('ratchet') }, [touch])
   const setGuardian2 = useCallback((v) => { setGuardian2Raw(v); touch('loss-guardian') }, [touch])
   const loadedScope = useRef(null)
+  const loadedAccount = useRef(null)
+  const loadGeneration = useRef(0)
+  const requestedScope = useRef(riskAcct || 'all')
+  requestedScope.current = riskAcct || 'all'
 
   // HOW MUCH IS ON SCREEN (owner 04-08-2026: "i find the RISK page becomes
   // complicated"). Essentials is the default and shows the knobs that actually
@@ -265,22 +271,28 @@ export default function Risk() {
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
+    const generation = ++loadGeneration.current
+    const scope = riskAcct || 'all'
+    setAccountLoading(true)
     try {
       // Scoped read: the config an ACCOUNT actually trades under is the global
       // one with its overlay merged on top. 'all' = the global config itself,
       // which is what this page has always shown.
       const r = await agentGet(`/state/risk-full${riskAcct && riskAcct !== 'all' ? `?account=${encodeURIComponent(riskAcct)}` : ''}`)
+      if (generation !== loadGeneration.current || scope !== requestedScope.current) return
       // A scope change REPLACES everything: the incoming numbers belong to a
       // different account, and carrying edits across would write one
       // account's limits onto another. Same scope = keep unsaved work.
-      const scope = riskAcct || 'all'
       const scopeChanged = loadedScope.current !== scope
+      const accountChanged = loadedAccount.current !== r.account.accountId
       loadedScope.current = scope
+      loadedAccount.current = r.account.accountId
       if (scopeChanged) { dirtyRef.current = {}; setDirty({}) }
+      else if (accountChanged) { dirtyRef.current = clearDirty(dirtyRef.current, 'account'); setDirty(dirtyRef.current) }
       const apply = new Set(sectionsToApply(SECTIONS, dirtyRef.current, { scopeChanged }))
       setData(r)
       if (apply.has('risk')) setRiskRaw(r.risk.effective)
-      setAcct({ balance: r.account.balance, leverage: r.account.leverage })
+      if (accountChanged || apply.has('account')) setAcctRaw({ accountId: r.account.accountId, balance: r.account.storedBalance ?? r.account.balance, leverage: r.account.leverage })
       if (apply.has('guard')) setGuardRaw({ requireBracket: true, halt: false, maxOrderVolume: 0, ...r.execGuard, requireTarget: true })
       setGuardianPct(r.guardian.movePct)
       setWeekendBank(r.weekendBank)
@@ -295,7 +307,11 @@ export default function Risk() {
       }
       if (r.lossGuardian && apply.has('loss-guardian')) setGuardian2Raw(r.lossGuardian.effective)
       setError('')
-    } catch (e) { setError(e.message) }
+    } catch (e) {
+      if (generation === loadGeneration.current && scope === requestedScope.current) setError(e.message)
+    } finally {
+      if (generation === loadGeneration.current) setAccountLoading(false)
+    }
   }, [riskAcct])
   useEffect(() => { load() }, [load])
 
@@ -552,25 +568,24 @@ export default function Risk() {
           apart was the whole reason minRR 1.5 survived a 34% win rate. */}
       <ConfigProposals />
 
-      {/* ---- Global Account aka cTrader Risk Configuration ---- */}
-      {/* /actions/balance takes no accountId — one stored balance and leverage
-          for the whole bot, which is why an account switch never changes it. */}
+      {/* Stored sizing inputs are edited for the named account, even when
+          the surrounding risk configuration is in the global view. */}
       <Card id="sec-account" data-risk-card className="w3-hover-shadow">
         <SectionTitle badge={data?.account?.isLive === true ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">{data?.account?.isLive === false ? 'DEMO' : 'UNVERIFIED'}</Badge>}>
-          Global Account — cTrader risk configuration
+          Account sizing inputs
         </SectionTitle>
         <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
           <div>
-            <Field label="Account balance (USD)" value={acct.balance} onChange={v => setAcct(a => ({ ...a, balance: v }))}
-              hint="The balance every % figure below is computed from." />
+            <Field label="Stored balance (USD)" value={acct.balance} onChange={v => setAcct(a => ({ ...a, balance: v }))}
+              hint="Sizing input for the named account. The next broker balance refresh can replace a manual value." />
             <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
               {data?.account?.balanceSource === 'broker'
-                ? `cached broker balance (snapshot ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''})`
+                ? `Broker cache: USD ${data.account.balance}; observed ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}`
                 : data?.account?.balanceSource === 'stored' ? 'stored account value — broker freshness is not verified' : 'account balance unavailable'}
             </div>
           </div>
           <Field label="Leverage (1:N)" value={acct.leverage} onChange={v => setAcct(a => ({ ...a, leverage: v }))}
-            hint="Used for margin-headroom checks before approving a position. Stamped from the broker on every balance refresh; this form overrides the stamp until the next sync." recommend="1:100 — match whatever your broker account actually offers." />
+            hint="Used for margin-headroom checks for this account. Broker refresh replaces a manual value; use the account's actual leverage." />
           <div className="text-(length:--fs-body)">
             <span className="text-[var(--color-text-sub)]">Broker stop-out level </span>
             <span className="font-semibold">{data?.account?.brokerStopOutPct ?? 50}%</span>
@@ -578,10 +593,16 @@ export default function Risk() {
           </div>
           <div className="text-(length:--fs-body)">
             <span className="text-[var(--color-text-sub)]">Account </span>
-            <span className="font-semibold">{data?.account?.accountId || '—'}</span>
+            <span className="font-semibold">{acct.accountId || '—'}</span>
           </div>
           <span data-save-pulse="account">
-            <Button size="sm" className={SAVE_BTN} onClick={() => save('account', () => agentPost('/actions/balance', { balance: acct.balance, leverage: acct.leverage }))}>Save account</Button>
+            <Button size="sm" className={SAVE_BTN}
+              disabled={accountLoading || !!switchingTo || !!saving || !acct.accountId || loadedScope.current !== (riskAcct || 'all')}
+              onClick={() => save('account', () => agentPost('/actions/balance', {
+                accountId: acct.accountId,
+                ...(acct.balance != null ? { balance: acct.balance } : {}),
+                ...(acct.leverage != null ? { leverage: acct.leverage } : {}),
+              }))}>Save account</Button>
           </span>
         </div>
         {data?.account?.brokerSnapshot?.reason && (
