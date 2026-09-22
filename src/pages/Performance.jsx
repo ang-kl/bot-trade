@@ -754,7 +754,7 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
               )}
             </span>
             <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{r.closeBal != null ? money(r.closeBal) : '—'}</span>
-            <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{openingCountLabel(r.openedN, r.unknownOpeningTimeN)}</span>
+            <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)}</span>
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{r.closedN || '—'}</span>
           </div>
         )})}
@@ -1343,7 +1343,8 @@ export default function Performance() {
       const closedIn = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= s.from && ms < s.to })
       const opened = openings?.rows.find(r => r.from === s.from && r.to === s.to)
       return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length,
-        openedN: opened?.openedN ?? null, unknownOpeningTimeN: openings?.unknownTimeN ?? 0 }
+        openedN: opened?.openedN ?? null, unknownOpeningTimeN: openings?.unknownTimeN ?? 0,
+        incompleteOpeningWindow: Boolean(opened && opened.to > openings.observedThrough) }
     })
     // Carry back from the CURRENT stamped balance — anything closed after the
     // newest window's end is subtracted first. With a rolling window that end
@@ -2381,7 +2382,7 @@ export default function Performance() {
                 toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
                   // The copied text carries the same label the row shows — the
                   // END of the window, in SGT over UTC — not the window start.
-                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN)} opened / ${r.closedN || 0} closed`),
+                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)} opened / ${r.closedN || 0} closed`),
                   '', `Closed trades (${todayTrades.length})`,
                   ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
                 render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} /></>} />
@@ -2397,7 +2398,7 @@ export default function Performance() {
               {(pageRows) => <TodayHourlyBody rows={pageRows} floatingNow={liveFloating} />}</PagedRows>
             <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>
               {openings
-                ? `Openings: all confirmed ledger rows, including still-open trades; queried ${new Date(openings.generatedAt).toUTCString()}. ${openings.legacyN} unattributed; ${openings.adoptedN} adopted (may use reconciliation time).${openings.unknownTimeN ? ` ${openings.unknownTimeN} rows have unknown opening times; ≥ marks a lower bound.` : ''}`
+                ? `Openings: all confirmed ledger rows, including still-open trades; queried ${new Date(openings.generatedAt).toUTCString()}. ${openings.legacyN} unattributed; ${openings.adoptedN} adopted (may use reconciliation time); totals include undated rows.${openings.unknownTimeN ? ` ${openings.unknownTimeN} rows have unknown opening times; ≥ marks a lower bound.` : ''}${openings.observedThrough < openings.to ? ' Browser time is ahead of the server; the newest opening window is incomplete (≥ is a lower bound, unknown is not zero).' : ''}`
                 : 'Opening counts unavailable or stale — a dash is not zero.'}
               {' '}Broker completeness is unverified. Closed-trade columns use the journal sample; balances are reconstructed and cashflows are unreconciled.
             </span>

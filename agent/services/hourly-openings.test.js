@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
 import { initDB } from '../db.js'
-import { hourlyOpenings } from './hourly-openings.js'
+import { hourlyOpenings, OPENINGS_MAX_CLOCK_SKEW_MS } from './hourly-openings.js'
 import stateRouter from '../routes/state.js'
 import { openingEvidence, openingCountLabel } from '../../src/lib/hourly-openings.js'
 
@@ -85,6 +85,39 @@ test('a successful empty read is zero; a broken ledger query is not', t => {
   assert.throws(read)
 })
 
+test('unknown-time legacy and adopted provenance remains visible without assigning an hour', t => {
+  const { add, read } = fixture(t)
+  add({ at: null, account: null, origin: 'reconciler_adopted' })
+  add({ at: 'invalid', account: '11', origin: 'reconciler_adopted' })
+  add({ at: null, account: '22', origin: 'reconciler_adopted' })
+  const r = read()
+  assert.equal(r.openedN, 0)
+  assert.equal(r.unknownTimeN, 2)
+  assert.equal(r.unknownTimeLegacyN, 1)
+  assert.equal(r.unknownTimeAdoptedN, 2)
+  assert.equal(r.legacyN, 1)
+  assert.equal(r.adoptedN, 2)
+  assert.ok(r.rows.every(row => row.openedN === 0 && row.legacyN === 0 && row.adoptedN === 0))
+  assert.ok(openingEvidence(r, { accountId: '11', to: TO, nowMs: TO + 1000 }))
+  assert.equal(read({ all: true }).unknownTimeAdoptedN, 3)
+})
+
+test('bounded browser clock skew keeps the exact window but never claims future observations', t => {
+  const { db, add } = fixture(t)
+  add({ at: TO - 30_001 }); add({ at: TO - 30_000 }); add({ at: TO - 1 })
+  const r = hourlyOpenings(db, scope, { to: TO, nowMs: TO - 30_000 })
+  assert.equal(r.to, TO)
+  assert.equal(r.observedThrough, TO - 30_000)
+  assert.equal(r.openedN, 1)
+  assert.ok(openingEvidence(r, { accountId: '11', to: TO, nowMs: TO }))
+  assert.equal(openingCountLabel(r.openedN, 0, r.observedThrough < r.to), '≥1')
+  const behind = hourlyOpenings(db, scope, { to: TO, nowMs: TO + 30_000 })
+  assert.equal(behind.observedThrough, TO)
+  assert.ok(openingEvidence(behind, { accountId: '11', to: TO, nowMs: TO }))
+  assert.doesNotThrow(() => hourlyOpenings(db, scope, { to: TO, nowMs: TO - OPENINGS_MAX_CLOCK_SKEW_MS }))
+  assert.throws(() => hourlyOpenings(db, scope, { to: TO, nowMs: TO - OPENINGS_MAX_CLOCK_SKEW_MS - 1 }), RangeError)
+})
+
 test('the real HTTP consumer validates explicit scope/window and handles ledger unavailability', async t => {
   const { db, add } = fixture(t)
   add()
@@ -99,6 +132,12 @@ test('the real HTTP consumer validates explicit scope/window and handles ledger 
   assert.equal(report.openedN, 1)
   assert.ok(openingEvidence(report, { accountId: '11', to: TO }))
   assert.equal(openingEvidence(report, { accountId: '22', to: TO }), null)
+  const browserNow = Date.now() + 30_000
+  const aheadResponse = await get(`?account=11&to=${browserNow}`)
+  assert.equal(aheadResponse.status, 200)
+  const ahead = await aheadResponse.json()
+  assert.ok(ahead.observedThrough < ahead.to)
+  assert.ok(openingEvidence(ahead, { accountId: '11', to: browserNow, nowMs: browserNow }))
   db.exec('DROP TABLE trades')
   const failed = await get(`?account=22&to=${TO}`)
   assert.equal(failed.status, 503)
