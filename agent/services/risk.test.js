@@ -1841,7 +1841,7 @@ test('strategyPerfStats: scoped to the account being evaluated (02-09-2026) — 
 })
 
 // ---------------------------------------------------------------------------
-// CHARACTERISATION — the unowned balance. Documents CURRENT behaviour,
+// HISTORICAL CHARACTERISATION — the unowned balance. Documents prior behaviour,
 // including the part that is wrong, because changing it is not safe to do
 // blind and the next person needs to know the trap is here.
 //
@@ -1886,8 +1886,8 @@ test('B5 (18-09-2026): an unstamped account named by the caller reads NULL — t
   // An unstamped account is unknown, not the selected account's number.
   assert.equal(getAccountBalance(db, '43002148'), null, 'no stamp → null, never 35,319.8')
   assert.equal(getAccountBalance(db, '43069009'), null)
-  // The selected-account path (no account named) keeps the single-account-era fallback.
-  assert.equal(getAccountBalance(db), 35319.8)
+  // Revision 3: a selected account applies the same isolation as a named one.
+  assert.equal(getAccountBalance(db), null)
   // The safety consequence the old test priced: a % cap on an unknown balance
   // is now NO cap (nothing to size against), not a cap priced off equity the
   // account does not have.

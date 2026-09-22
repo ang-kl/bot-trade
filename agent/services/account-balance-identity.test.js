@@ -29,10 +29,22 @@ test('the legacy global key survives ONLY when there is no selected account', ()
   assert.equal(getAccountBalance(db), 1370.44, 'single-account era is unchanged')
 })
 
-test('a selected account with no stamped balance still falls back rather than returning null', () => {
+test('a selected account with no stamped balance returns unavailable rather than a foreign global', () => {
   setState(db, 'ctrader_account_id', '47790949')
   setState(db, 'account_balance_usd', '500')
-  assert.equal(getAccountBalance(db), 500)
+  assert.equal(getAccountBalance(db), null)
+  setState(db, 'account_balance_usd', '50000')
+  assert.equal(getAccountBalance(db), null)
+})
+
+test('selected zero, malformed and negative readings never borrow a global balance', () => {
+  setState(db, 'ctrader_account_id', '47790949')
+  setState(db, 'account_balance_usd', '50000')
+  for (const [raw, expected] of [['0', 0], ['', null], ['bad', null], ['-1', null], ['Infinity', null], ['25.5', 25.5]]) {
+    setState(db, 'acct:47790949:account_balance_usd', raw)
+    assert.equal(getAccountBalance(db), expected, raw)
+    assert.equal(getAccountBalance(db, '47790949'), expected, raw)
+  }
 })
 
 test('leverage resolves selected ownership and never borrows a global value for another account', () => {
