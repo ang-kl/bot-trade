@@ -7,8 +7,6 @@ import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { categorize, MARKETS, closedAtMs, dayAnchorMs, isFxWeekend } from '../shared/formulas.js'
 import { emptyPopulation, REPORT_SESSIONS } from '../shared/performance-populations.js'
 import { cupHandleFunnel } from './cup-handle-funnel.js'
-import { stageMatrixStats } from './stage-matrix.js'
-import { getState } from '../db.js'
 
 const DAY = 86400_000
 const NUMBER = v => v == null || String(v).trim() === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null
@@ -186,12 +184,18 @@ export function buildLatestPrices(db) {
   for (const r of rows) prices[r.symbol] = { price: r.price, bias: r.bias, confidence: r.confidence, at: r.scanned_at }
   return prices
 }
-function buildReport(db, kind, options) {
+async function buildReport(db, kind, options) {
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })
   if (kind === 'decisions-daily') return buildDecisionsDaily(db, options)
   if (kind === 'latest-prices') return buildLatestPrices(db)
-  if (kind === 'stage-matrix-stats') return stageMatrixStats(db, getState)
+  if (kind === 'stage-matrix-stats') {
+    // Keep the common funnel/population worker lightweight. Loading the stage
+    // registry only for this report also avoids widening unrelated worker
+    // module graphs during the full parallel test gate.
+    const [{ stageMatrixStats }, { getState }] = await Promise.all([import('./stage-matrix.js'), import('../db.js')])
+    return stageMatrixStats(db, getState)
+  }
   return buildPerformancePopulations(db)
 }
 if (!isMainThread && workerData?.path) {
