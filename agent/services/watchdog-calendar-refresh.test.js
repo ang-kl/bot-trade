@@ -87,4 +87,41 @@ test('active feed calendars are exported before unrelated historical universe en
   const own = output.calendars.find(c => c.identity.accountId === '22' && c.identity.symbolId === '8')
   assert.equal(own.calendar.identity.accountId, '22')
   assert.equal(output.calendars.find(c => c.identity.accountId === '11').reason, 'calendar_missing')
+  assert.equal(output.calendarsComplete, false, 'retained cache truncation is not complete coverage')
+})
+
+test('all 512 failing identities receive an attempt before any expired cooldown is retried', async t => {
+  const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
+  let at = now; const seen = []
+  const refresh = createWatchdogCalendarRefresh(db, { now: () => at, credentials, fetchSymbols: async (_c, ids) => {
+    seen.push(...ids); throw new Error('unavailable')
+  } })
+  for (let minute = 0; minute < 21; minute++) {
+    at = now + minute * 60_000
+    setState(db, 'independent_watchdog_json', JSON.stringify({ readAt: new Date(at).toISOString(), status: { enabled: true } }))
+    setState(db, 'cpp_exec_demo_tick_json', JSON.stringify({ at: new Date(at).toISOString(), status: { feedAccountId: 11, subscribed: Array.from({ length: 512 }, (_, i) => i + 1) } }))
+    const result = await refresh(); assert.ok(result.requested <= 25)
+  }
+  assert.equal(new Set(seen.slice(0,512)).size, 512)
+  assert.deepEqual(seen.slice(0,512), Array.from({ length: 512 }, (_, i) => i + 1))
+  assert.ok(seen.length >= 512)
+})
+
+test('staging disarm blocks the timer and broker reads even with fresh enabled observation', async t => {
+  const db = fixture(t), env = { RAILWAY_ENVIRONMENT_NAME: 'staging' }
+  const forbidden = () => { throw new Error('staging must not start broker work') }
+  const deps = { env, now: () => now, credentials: forbidden, fetchSymbols: forbidden, setInterval: forbidden }
+  startWatchdogCalendarRefresh(db, deps)()
+  assert.deepEqual(await createWatchdogCalendarRefresh(db, deps)(), { skipped: 'environment_disarmed' })
+  assert.equal(getState(db, 'watchdog_calendar_refresh_json'), null)
+})
+
+test('malformed retained calendars make completeness false even without active demand', async t => {
+  const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
+  const { watchdogCalendars } = await import('./scanner-work.js')
+  assert.equal(watchdogCalendars(db, now).calendarsComplete, true)
+  setState(db, 'market_calendar:v1:broken', '{invalid')
+  assert.equal(watchdogCalendars(db, now).calendarsComplete, false)
+  setState(db, 'market_calendar:v1:broken', '{"latest":{"identity":{}}}')
+  assert.equal(watchdogCalendars(db, now).calendarsComplete, false)
 })

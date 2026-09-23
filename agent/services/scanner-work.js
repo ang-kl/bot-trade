@@ -87,13 +87,18 @@ export function watchdogCalendars(db, now) {
   const demand = watchdogCalendarDemand(db, now)
   const identities = new Map(demand.identities.map(id => [marketIdentityKey(id), id]))
   const rows = db.prepare("SELECT value FROM agent_state WHERE key LIKE 'market_calendar:v1:%' ORDER BY key LIMIT 513").all()
+  let complete = demand.complete && rows.length <= 512
   for (const row of rows) {
     try {
       const identity = JSON.parse(row.value)?.latest?.identity, key = marketIdentityKey(identity)
-      if (key && !identities.has(key) && identities.size < 512) identities.set(key, identity)
-    } catch { /* malformed cache is not calendar evidence */ }
+      if (!key) { complete = false; continue }
+      if (!identities.has(key)) {
+        if (identities.size < 512) identities.set(key, identity)
+        else complete = false
+      }
+    } catch { complete = false /* malformed cache is not calendar evidence */ }
   }
-  const calendars = []; let size = 0, complete = demand.complete
+  const calendars = []; let size = 0
   for (const identity of identities.values()) {
     const evidence = readMarketCalendar(db, identity, { nowMs: now })
     const calendar = projectCalendar(evidence, now)

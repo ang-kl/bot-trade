@@ -3,6 +3,7 @@ import { getState, setState } from '../db.js'
 import { credsForRegisteredAccount, getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
 import { readMarketCalendar, recordMarketCalendar } from './market-calendar.js'
+import { disarmReason } from '../lib/env-disarm.js'
 
 const read = (db, key) => { try { return JSON.parse(getState(db, key) || 'null') } catch { return null } }
 const fresh = (at, now) => Number.isFinite(Date.parse(at)) && now >= Date.parse(at) && now - Date.parse(at) < 360_000
@@ -48,6 +49,7 @@ export function createWatchdogCalendarRefresh(db, deps = {}) {
   let running = false, cursor = 0
   const attempted = new Map()
   return async function refresh() {
+    if (disarmReason(deps.env)) return { skipped: 'environment_disarmed' }
     if (running) return { skipped: 'in_flight' }
     const now = clock(), observer = read(db, 'independent_watchdog_json')
     if (!fresh(observer?.readAt, now) || observer?.status?.enabled !== true) return { skipped: 'observation_disabled_or_stale' }
@@ -65,7 +67,11 @@ export function createWatchdogCalendarRefresh(db, deps = {}) {
       const out = { at: new Date(now).toISOString(), demand: demand.identities.length, complete: demand.complete, requested: 0, recorded: 0, unknown: 0, errors: [] }
       if (accounts.length) {
         const accountId = accounts[cursor++ % accounts.length]
-        const batch = due.filter(id => id.accountId === accountId).slice(0, BATCH)
+        // Never-attempted work leads; then oldest attempts. A short cooldown
+        // must not keep recycling the first failing pages of a large account.
+        const batch = due.filter(id => id.accountId === accountId)
+          .sort((a, b) => (attempted.get(marketIdentityKey(a)) ?? -1) - (attempted.get(marketIdentityKey(b)) ?? -1))
+          .slice(0, BATCH)
         for (const id of batch) attempted.set(marketIdentityKey(id), now)
         out.accountId = accountId
         const c = credentials(accountId)
@@ -93,6 +99,7 @@ export function createWatchdogCalendarRefresh(db, deps = {}) {
 }
 
 export function startWatchdogCalendarRefresh(db, deps = {}) {
+  if (disarmReason(deps.env)) return () => {}
   const refresh = createWatchdogCalendarRefresh(db, deps)
   const timer = (deps.setInterval ?? setInterval)(() => { refresh().catch(() => {}) }, 60_000)
   timer.unref?.()
