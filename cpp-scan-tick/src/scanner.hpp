@@ -32,6 +32,8 @@ private:
   std::map<uint32_t, std::shared_ptr<Slot>> slots_;
   uint32_t nextId_ = 0;
   CandidateRing output_, comparisons_;
+  const size_t queueCapacity_;
+  std::vector<std::atomic<size_t>> pendingPerWorker_;
   tick::SymbolWorkers workers_;
 };
 }
