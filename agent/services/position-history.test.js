@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import {
-  REQUIRED_FIELDS, buildPositionRecord, capturePosition, backfillPositionHistory,
+  REQUIRED_FIELDS, buildPositionRecord, capturePosition, backfillPositionHistory, backfillPositionHistoryCooperatively,
   recordVerdict, positionHistoryView, directionReasonFor, managementFor,
 } from './position-history.js'
 
@@ -20,6 +20,21 @@ const OPEN_MS = Date.parse('2026-09-15T08:00:00Z')
 const CLOSE_MS = Date.parse('2026-09-15T12:00:00Z')
 
 const fresh = () => initDB(':memory:')
+
+test('scheduled history capture yields between positions and preserves completeness outcomes', async () => {
+  const db = fresh()
+  try {
+    const ins = db.prepare("INSERT INTO trades (symbol,status,closed_at_ms,ctrader_position_id,account_id) VALUES ('X','closed',?,?,?)")
+    for (let i = 1; i <= 12; i++) ins.run(CLOSE_MS + i, String(i), ACCT)
+    let observed
+    setImmediate(() => { observed = db.prepare('SELECT COUNT(*) n FROM position_history_incomplete').get().n })
+    const result = await backfillPositionHistoryCooperatively(db)
+    assert.ok(observed > 0 && observed < 12)
+    assert.deepEqual(result, backfillPositionHistory(db))
+    assert.equal(result.seen, 12)
+    assert.equal(result.incomplete, 12)
+  } finally { db.close() }
+})
 
 /** A position with every source row present — the complete case. */
 function seedComplete(db, over = {}) {
@@ -315,7 +330,7 @@ test('the sweep and the route are WIRED — a builder nothing calls is a dead on
   // its own prose).
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
-  assert.match(loop, /backfillPositionHistory\(db, \{ sinceMs:/,
+  assert.match(loop, /await backfillPositionHistoryCooperatively\(db, \{ sinceMs:/,
     'the loop must run the sweep, not merely be able to')
   assert.match(loop, /name: 'position-history'/,
     'and as a named housekeeping step, so a throw in it is reported rather than silent')

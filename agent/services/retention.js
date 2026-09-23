@@ -140,45 +140,52 @@ export function pruneTradeHistory(db, cfg = null) {
  *   the S.A.T./controller audit trail and the raw-write tracer, and evidence
  *   does not expire. Everything else (request exhaust) ages out at a year.
  */
-export function pruneOperationalTables(db, cfg = null) {
+function operationalPruners(db, cfg) {
   const c = cfg || loadRetentionConfig(db)
-  const out = { cupHandle: 0, analyses: 0, actionLog: 0 }
-
-  const horizon = (days) => {
+  const horizon = days => {
     const d = Number(days)
-    if (!Number.isFinite(d) || d <= 0) return null
-    return new Date(Date.now() - d * 86_400_000).toISOString().replace('T', ' ')
+    return Number.isFinite(d) && d > 0
+      ? new Date(Date.now() - d * 86_400_000).toISOString().replace('T', ' ') : null
   }
+  return [
+    { key: 'cupHandle', table: 'cup_handle_diagnostics', cutoff: horizon(c.cupHandleDays),
+      where: "REPLACE(created_at, 'T', ' ') < ?" },
+    { key: 'analyses', table: 'analyses', cutoff: horizon(c.analysesDays),
+      where: "REPLACE(analyzed_at, 'T', ' ') < ? AND id NOT IN (SELECT analysis_id FROM trades WHERE analysis_id IS NOT NULL)" },
+    { key: 'actionLog', table: 'action_log', cutoff: horizon(c.actionLogDays),
+      where: "REPLACE(at, 'T', ' ') < ? AND (method IS NULL OR method NOT IN ('AUDIT', 'PHASE_RAW_WRITE'))" },
+  ].filter(p => p.cutoff !== null)
+}
 
-  const chCut = horizon(c.cupHandleDays)
-  if (chCut) {
-    try {
-      out.cupHandle = db.prepare(
-        `DELETE FROM cup_handle_diagnostics WHERE REPLACE(created_at, 'T', ' ') < ?`
-      ).run(chCut).changes
-    } catch { /* table absent on very old DBs */ }
+export function pruneOperationalTables(db, cfg = null) {
+  const out = { cupHandle: 0, analyses: 0, actionLog: 0 }
+  for (const p of operationalPruners(db, cfg)) {
+    try { out[p.key] = db.prepare(`DELETE FROM ${p.table} WHERE ${p.where}`).run(p.cutoff).changes }
+    catch { /* retain the existing compatibility path for manual callers */ }
   }
+  return out
+}
 
-  const aCut = horizon(c.analysesDays)
-  if (aCut) {
+// Housekeeping must yield between bounded primary-key windows. Bounding only
+// DELETE matches still permits a full-table scan when few rows have expired.
+// A fixed high-water mark excludes new rows until the next scheduled pass.
+export async function pruneOperationalTablesCooperatively(db, cfg = null) {
+  const out = { cupHandle: 0, analyses: 0, actionLog: 0, errors: [] }
+  for (const p of operationalPruners(db, cfg)) {
     try {
-      out.analyses = db.prepare(
-        `DELETE FROM analyses
-          WHERE REPLACE(analyzed_at, 'T', ' ') < ?
-            AND id NOT IN (SELECT analysis_id FROM trades WHERE analysis_id IS NOT NULL)`
-      ).run(aCut).changes
-    } catch { /* never let one table's sweep stop the others */ }
-  }
-
-  const alCut = horizon(c.actionLogDays)
-  if (alCut) {
-    try {
-      out.actionLog = db.prepare(
-        `DELETE FROM action_log
-          WHERE REPLACE(at, 'T', ' ') < ?
-            AND (method IS NULL OR method NOT IN ('AUDIT', 'PHASE_RAW_WRITE'))`
-      ).run(alCut).changes
-    } catch { /* never let one table's sweep stop the others */ }
+      const end = db.prepare(`SELECT MAX(id) id FROM ${p.table}`).get().id
+      let cursor = 0
+      const page = db.prepare(`SELECT id FROM ${p.table} WHERE id > ? AND id <= ? ORDER BY id LIMIT 200`)
+      const remove = db.prepare(`DELETE FROM ${p.table} WHERE id > ? AND id <= ? AND ${p.where}`)
+      while (end != null && cursor < end) {
+        const ids = page.all(cursor, end)
+        if (!ids.length) break
+        const next = ids.at(-1).id
+        out[p.key] += remove.run(cursor, next, p.cutoff).changes
+        cursor = next
+        await new Promise(resolve => setImmediate(resolve))
+      }
+    } catch (error) { out.errors.push({ table: p.table, message: error.message }) }
   }
   return out
 }
