@@ -3789,7 +3789,7 @@ async function runLoop(db) {
             const { backfillCrossSidePnl } = await import('./services/cross-side-pnl.js')
             const recovered = await backfillCrossSidePnl(db, getCtraderCreds(db), crossReconciled)
             for (const r of recovered) {
-              if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read`)
+              if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read; ${r.result.lifetimeSkipped || 0} positions outside verified lifetime window`)
               else log(`P&L backfill [${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
             }
           } catch (err) { log(`Cross-side P&L recovery failed (non-fatal): ${err.message}`) }

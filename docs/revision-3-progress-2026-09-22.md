@@ -839,3 +839,27 @@ references were inspected: opposite-host selection, credential assembly and
 registered-host verification only. The routing inventory now records those
 exact counts and purpose; its detection rules remain intact. Other local gates
 passed (930 frontend tests). The complete gate is rerun on this corrected tree.
+
+## Recovery deadline and per-position coverage follow-up - 23 September 2026, 11:53 SGT
+
+#1035 merged as `fa6ae4c826278b0b333279968cd2058c0eb5d5d7` after all seven
+local gates (5,309 agent / 930 frontend tests), green CI and clean merge state.
+All four Railway services deployed successfully. Fresh independent reads at
+11:49:58-11:50:00 SGT found the same 32 positions, zero missing SL and two TP1
+exceptions. No numerical limit, ownership, target or activation changed.
+
+Post-merge automated review identified two defects, now corrected in this
+follow-up: socket timeouts excluded queue/token waits, and one position whose
+lifetime preceded the query aborted all recovery on its account. Production
+confirmed the latter at 11:50:58 SGT for account 42993489; the three rows are
+not claimed recovered. The wrapper now enforces a wall-clock deadline while
+retaining an in-flight lock until the underlying read settles. An old, unknown
+or future lifetime is excluded individually from monetary/price writes and
+attempt counts; covered peers can recover. Raw deal receipts remain evidence.
+Expired work is checked again after asynchronous module loading before writes.
+
+Ten focused tests pass, including a never-returning queued read, later-account
+progress, no repeated overlapping request, ignored late response and mixed
+covered/uncovered trades. The full gate and production readback are pending.
+Cashflow continuation work is isolated on its own branch while this correction
+is completed. The older-position gaps remain explicit outstanding evidence.

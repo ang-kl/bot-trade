@@ -110,9 +110,34 @@ test('no gap avoids network I/O; refused/disabled accounts are omitted explicitl
 
 test('a position predating the fetched window cannot receive a partial lifetime P&L', async t => {
   const db = fixture(t), id = seed(db, '2')
+  const safe = seed(db, '2', { positionId: '701' })
+  const missing = seed(db, '2', { positionId: '702' })
   db.prepare('UPDATE trades SET opened_at = ? WHERE id = ?').run(new Date(now - 20 * 86400_000).toISOString(), id)
-  const result = await backfillCrossSidePnl(db, base, [], { getCreds, getDeals: getter([]), clock: () => now })
-  assert.match(result.find(r => r.accountId === '2').error, /lifetime outside/)
+  const result = await backfillCrossSidePnl(db, base, [], { getCreds, getDeals: getter([], [close(), { ...close('701'), dealId: '901' }]), clock: () => now })
+  assert.equal(result.find(r => r.accountId === '2').result.lifetimeSkipped, 1)
+  assert.equal(row(db, id).net_pnl, null)
+  assert.equal(row(db, id).pnl_attempts, 0)
+  assert.equal(row(db, safe).net_pnl, -5.5)
+  assert.equal(row(db, missing).pnl_attempts, 1)
+})
+
+test('a queued broker read releases the loop at the wall deadline without overlapping or writing late', async t => {
+  const db = fixture(t), id = seed(db, '2'), peer = seed(db, '3')
+  let release, calls = 0
+  const queued = new Promise(r => { release = r })
+  const deps = { getCreds, clock: () => now, budgetMs: 20, getDeals: async (...args) => {
+    if (args[4] === '2') { calls++; return queued }
+    return getter([])(...args)
+  } }
+  const started = Date.now()
+  const results = await backfillCrossSidePnl(db, base, [], deps)
+  assert.ok(Date.now() - started < 1000, 'the socket helper never settles, but the outer deadline does')
+  assert.match(results.find(r => r.accountId === '2').error, /deadline/)
+  assert.equal(row(db, peer).net_pnl, -5.5)
+  assert.equal((await backfillCrossSidePnl(db, base, [], deps)).find(r => r.accountId === '2').skipped, 'read_still_in_flight')
+  assert.equal(calls, 1)
+  release({ ctidTraderAccountId: '2', deal: [close()] })
+  await new Promise(r => setImmediate(r))
   assert.equal(row(db, id).net_pnl, null)
   assert.equal(row(db, id).pnl_attempts, 0)
 })
