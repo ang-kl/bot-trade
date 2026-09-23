@@ -1028,3 +1028,8 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   recorded rebase and visible replies, not a full-corpus measurement. #1030,
   #1031 and #1032 are merged and all four deployments verified. Authenticated
   acceptance remains blocked after the secure connection was interrupted.
+
+- 2026-09-23 02:53 UTC, Work Mode continuation with partial transcript corpus:
+  visible replies through **№ 8,563**; next **№ 8,564**. The owner completed
+  sign-in; authenticated scope acceptance found and verified the #1033 fix.
+  Count follows the recorded rebase and visible replies, not a full-corpus read.

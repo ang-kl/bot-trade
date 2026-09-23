@@ -1,6 +1,14 @@
 import { test, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AccountHistoryReading } from './AccountHistory.jsx'
+import AccountHistory, { AccountHistoryReading } from './AccountHistory.jsx'
+import BlockerReport from './BlockerReport.jsx'
+
+test('history and blockers name their own requested account even before evidence loads', () => {
+  expect(renderToStaticMarkup(<AccountHistory accountId="46979908" />)).toContain('History scope: Account 46979908')
+  expect(renderToStaticMarkup(<BlockerReport accountId="46979908" />)).toContain('Report scope: Account 46979908')
+  expect(renderToStaticMarkup(<AccountHistory accountId="all" />)).toContain('History scope: All accounts')
+  expect(renderToStaticMarkup(<BlockerReport accountId="all" />)).toContain('Report scope: All registered accounts')
+})
 test('history shows zero observations separately from unavailable data and names cashflow limitations', () => {
   expect(renderToStaticMarkup(<AccountHistoryReading report={null} />)).toContain('unavailable')
   const html = renderToStaticMarkup(<AccountHistoryReading report={{ points: [], retentionDays: 90,

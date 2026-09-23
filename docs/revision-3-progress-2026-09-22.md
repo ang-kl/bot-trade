@@ -714,3 +714,54 @@ account switch. The full gate and production multi-account readback are required
 No broker action or trading-account selection was changed. Acceptance uses the
 Performance view-only filters; the floating account switch explicitly changes
 the traded account and is outside this read-only check.
+
+## Authenticated readback — 23 September 2026, 10:53 SGT
+
+#1033 merged as `212c095c538bedf9befa305b7c32f2bb59a26df6`, with the exact
+tested source tree `775a787d7f94db0e161f02d911b8e863be67bb91`. The local gate
+passed 5,300 agent tests, 929 frontend tests, lint/build/no-green/syntax and
+inventory; both PR workflows passed. All four services deployed successfully.
+The seven-account audit at 10:46:33–35 SGT reported 32 open positions, zero
+missing SL and the same two TP1 exceptions. No target was amended.
+
+The original browser tab stalled during reload. A fresh tab in the same browser
+successfully retained the authenticated session; no new credential prompt or
+deployment was needed. The new bundle was exercised against all seven accounts
+using only Performance's view filters. Each change left exactly one history
+section and one blocker section, reset history to 24 hours/page 1, and showed
+only that account's IDs in every displayed blocker detail row. The all-account
+history view required selection of a single account instead of summing money.
+
+| Account suffix | History observations in sampled 24-hour window | Blocker records in sampled 24-hour window |
+|---|---:|---:|
+| 9908 | 182 | 70 |
+| 3489 | 191 | 62 |
+| 2148 | 191 | 0 |
+| 9009 | 191 | 4 |
+| 7342 | 182 | 31 |
+| 0949 | 182 | 94 |
+| 0058 | 191 | 7,085 |
+
+These were sequential reads at 10:49–10:50 SGT, not simultaneous population
+counts to sum. History's 24-hour, 7-day and 30-day selectors worked. Older
+observations preserved the observed interval; account changes reset both the
+window and pagination. Frozen blocker pages 2 and 3 retained the same 7,085
+total. Expanded evidence named an upstream stage-matrix refusal and marked
+risk/submission as not evaluated. Pre-deployment history remained present after
+restart, including comparable observations from 22 September 22:44 UTC.
+
+Visual review found a remaining identity ambiguity: the global account FAB
+could say All accounts while the Performance-local filter selected one account.
+History and blockers now name their own requested account directly above their
+contents. This display-only follow-up preserves the global trading-account
+control and the independent report filters. Its own gate and deployed label
+readback remain required before acceptance.
+
+Reporting behavior is verified for the observed cases; data completeness is
+not complete. All seven sampled histories report cashflow_coverage_gap and
+withhold external-flow-adjusted change. The full population report named 23
+unpriced closes and four closes without account identity. At 10:42 SGT the
+health panel also reported three overdue, never-attempted P&L backfills. These
+are explicit remaining data-quality work; no missing value was invented,
+written off or turned into a successful zero during acceptance. No 90-day
+production depth or complete historical cashflow reconciliation is claimed.
