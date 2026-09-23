@@ -54,17 +54,20 @@ export function createObserverDelivery({ path, enabled = false, send, now = Date
         state.pending.push({ id, incidentId, kind, reason: observation.state, observedAt: at, attempts: 0, nextAttemptAt: at })
         state.active = kind === 'failure' ? incidentId : null
       }
-      if (!observation.ok && !state.active) enqueue('failure')
-      if (observation.ok && state.active) enqueue('recovery')
+      let deferredTransition = !observation.ok && !state.active ? 'failure' : observation.ok && state.active ? 'recovery' : null
+      if (deferredTransition && state.pending.length < CAP) { enqueue(deferredTransition); deferredTransition = null }
       await save(path, state)
       const event = state.pending[0]
-      if (!event || event.nextAttemptAt > at) return { state: event ? 'retry_wait' : 'idle', pending: state.pending.length, accepted: false }
+      if (!event || event.nextAttemptAt > at) return { state: event ? 'retry_wait' : 'idle', pending: state.pending.length, accepted: false, capacityBlocked: deferredTransition !== null }
       event.attempts++; event.nextAttemptAt = at + Math.min(300000, 1000 * 2 ** Math.min(event.attempts, 8))
       await save(path, state) // attempt survives process loss before/after send
       let receipt
-      try { receipt = await send(event) } catch { return { state: 'delivery_failed', eventId: event.id, pending: state.pending.length, accepted: false } }
-      if (!Number.isSafeInteger(receipt?.messageId)) return { state: 'delivery_unconfirmed', eventId: event.id, pending: state.pending.length, accepted: false }
+      try { receipt = await send(event) } catch { return { state: 'delivery_failed', eventId: event.id, pending: state.pending.length, accepted: false, capacityBlocked: deferredTransition !== null } }
+      if (!Number.isSafeInteger(receipt?.messageId)) return { state: 'delivery_unconfirmed', eventId: event.id, pending: state.pending.length, accepted: false, capacityBlocked: deferredTransition !== null }
       state.pending.shift(); state.lastAccepted = { eventId: event.id, at: now(), messageId: receipt.messageId }
+      // A full journal must still drain. Only after a confirmed removal may
+      // the deferred transition occupy its slot; persist both atomically.
+      if (deferredTransition) enqueue(deferredTransition)
       await save(path, state)
       return { state: 'telegram_accepted', eventId: event.id, pending: state.pending.length, accepted: true, readConfirmed: false }
     } finally { running = false }
