@@ -36,6 +36,16 @@ int main() {
   bad = body; bad.set("timeframe", "4h"); refuses(bad);
   bad = body; auto bars = bad.get("bars").asArray(); bars.back().set("t", now); bad.set("bars", bars); refuses(bad);
   assert(scanner.status().get("work").asArray().empty());
+  auto ema = read("src/tests/fixtures/ema-options-parity.json").asArray().front().get("request");
+  bad = ema; bad.set("profileHash",scan::nativeProfileHash("ema_pullback")); refuses(bad);
+  bad = ema; auto settings = bad.get("options"); settings.set("minSlAtr",1.25); bad.set("options",settings); refuses(bad);
+  for (const auto& settings : std::vector<Value>{Value(),Array{},Object{{"pendingSetup",true}}}) {
+    bad = ema; bad.set("options",settings); refuses(bad);
+  }
+  bad = ema; settings = bad.get("options"); settings.set("pendingSetup",1); bad.set("options",settings); refuses(bad);
+  bad = ema; settings = bad.get("options"); settings.set("maxSlAtr",-1); bad.set("options",settings); refuses(bad);
+  bad = ema; settings = bad.get("options"); settings.set("extra",true); bad.set("options",settings); refuses(bad);
+  assert(scanner.status().get("work").asArray().empty());
   const auto identity = scan::identity(body);
   const auto one = scan::candidate(identity, "fib_618_fade", now, now, Value(), now, Value(), "1h");
   const auto four = scan::candidate(identity, "fib_618_fade", now, now, Value(), now, Value(), "4h");
