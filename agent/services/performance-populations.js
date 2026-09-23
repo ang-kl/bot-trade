@@ -155,7 +155,7 @@ export function readCupHandleFunnel(db, options) { return isolatedReport(db, 'cu
 export function readDecisionsDaily(db, options) { return isolatedReport(db, 'decisions-daily', options) }
 export function readLatestPrices(db) { return isolatedReport(db, 'latest-prices') }
 export function readStageMatrixStats(db) { return isolatedReport(db, 'stage-matrix-stats') }
-function decisionsDaily(db, { days = 90, accountId = null } = {}) {
+export function buildDecisionsDaily(db, { days = 90, accountId = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
   const params = [`-${safeDays} days`]
@@ -170,7 +170,7 @@ function decisionsDaily(db, { days = 90, accountId = null } = {}) {
       GROUP BY day ORDER BY day`
   ).all(...params)
 }
-function latestPrices(db) {
+export function buildLatestPrices(db) {
   const rows = db.prepare(`
     SELECT symbol, price, bias, confidence, scanned_at
     FROM scans
@@ -184,8 +184,8 @@ function latestPrices(db) {
 function buildReport(db, kind, options) {
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })
-  if (kind === 'decisions-daily') return decisionsDaily(db, options)
-  if (kind === 'latest-prices') return latestPrices(db)
+  if (kind === 'decisions-daily') return buildDecisionsDaily(db, options)
+  if (kind === 'latest-prices') return buildLatestPrices(db)
   if (kind === 'stage-matrix-stats') return stageMatrixStats(db, getState)
   return buildPerformancePopulations(db)
 }
