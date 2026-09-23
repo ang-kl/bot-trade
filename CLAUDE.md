@@ -1044,6 +1044,11 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   and unchanged-commit CI retry passed; native parity work continues. Count
   follows the recorded rebase and visible replies, not a full-corpus reading.
 
+- 2026-09-23 07:29 UTC, Work Mode continuation with partial transcript corpus:
+  checkpoint through **№ 8,647**; next **№ 8,648**. This records the visible
+  continuation sequence, not an unavailable full-corpus measurement. #1042 is
+  prepared and updated; native default coverage is under final integrated gate.
+
 - 2026-09-23 04:57 UTC, Work Mode continuation with partial transcript corpus:
   visible replies through **№ 8,609**; next **№ 8,610**. #1037 cashflow
   readback passed on seven accounts; #1038 is merged and deploying. Count

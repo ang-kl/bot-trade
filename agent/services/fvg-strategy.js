@@ -189,5 +189,6 @@ export function computeFvgSignal(bars, timeframe, opts = {}) {
 }
 
 computeFvgSignal.minBars = MIN_BARS
+computeFvgSignal.nativeDefaults = Object.freeze({ minGapAtr: MIN_GAP_ATR, maxGapAtr: MAX_GAP_ATR, maxAgeBars: MAX_AGE_BARS })
 
 export const _internal = { MIN_BARS, MIN_GAP_ATR, MAX_GAP_ATR, MAX_AGE_BARS, MIN_RR, SL_ATR_BUFFER }

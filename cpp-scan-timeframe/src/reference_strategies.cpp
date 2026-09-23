@@ -1,6 +1,7 @@
 // Ports of the identically named agent/services functions. Keep expression
 // order and strict comparison boundaries aligned with the JavaScript source.
 #include "reference_strategies.hpp"
+#include "extended_strategies.hpp"
 #include "vpo_indicators.hpp"
 #include <algorithm>
 #include <cmath>
@@ -89,12 +90,12 @@ static Value fibConfluence(const Bars& bars, const bt::Options& opts) {
     price,sl,tp1,tp2,std::max(6,std::min(10,6+static_cast<int>(levels.size())-3+1)),rr);
   out.set("confluenceCount",static_cast<int>(levels.size())); return out;
 }
-bool supports(const std::string& s) { return s == "donchian_breakout" || s == "rsi2_reversion" || s == "vwap_trend" || s == "fib_confluence"; }
+bool supports(const std::string& s) { return s == "donchian_breakout" || s == "rsi2_reversion" || s == "vwap_trend" || s == "fib_confluence" || supportsExtended(s); }
 Value compute(const std::string& strategy, const Bars& bars, const bt::Options& opts) {
   if (strategy == "donchian_breakout") return donchian(bars,opts);
   if (strategy == "rsi2_reversion") return rsi2(bars,opts);
   if (strategy == "vwap_trend") return vwapTrend(bars,opts);
   if (strategy == "fib_confluence") return fibConfluence(bars,opts);
-  throw std::invalid_argument("native_strategy_unsupported");
+  return computeExtended(strategy,bars,opts);
 }
 }

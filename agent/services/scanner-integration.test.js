@@ -119,7 +119,7 @@ test('real timeframe HTTP feed, candidate collector and actual JavaScript refere
   assert.equal((await fetch(`${url}/watchdog`)).status, 401)
 })
 
-test('all four added strategy ports traverse the actual HTTP comparison path without order authority', { skip: !has('cpp-scan-timeframe') }, async t => {
+test('all native default strategy ports traverse the actual HTTP comparison path without order authority', { skip: !has('cpp-scan-timeframe') }, async t => {
   const url = await nativeService(t, 'cpp-scan-timeframe'), fixtures = fixture('cpp-scan-timeframe/src/tests/fixtures/reference-parity.json')
   const start = Date.now() - fixtures.length * 1000 - 100
   const jobs = fixtures.map(({ request }, i) => {
