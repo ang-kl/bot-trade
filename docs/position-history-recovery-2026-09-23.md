@@ -51,3 +51,11 @@ The durable rotation prevents expired retry cooldowns from starving later
 positions. The corrected full gate and PR review remain required.
 No broker write, account selection, numerical risk setting, target policy or
 scanner activation changes. Rollback owner: Adrian Ang.
+
+The next review identified that the same-side loop still used the older
+account-window-only repair. Both callers now use one account-scoped service:
+selected account, other enabled same-side accounts and opposite-side accounts
+share strict history proof, pacing, the ten-second account budget, five-second
+read deadline and real unresolved-transport lock. Selected/peer demo recovery
+and a still-pending transport across a selection change pass focused tests.
+No account selection is changed by recovery. Final combined gates are required.

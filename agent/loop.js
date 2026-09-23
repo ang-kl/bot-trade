@@ -3203,7 +3203,7 @@ async function runLoop(db) {
           // unnecessary broker calls. Best-effort (a deal-history hiccup must
           // never stall the loop).
           try {
-            const { backfillClosedPnl, shouldRunPnlBackfill, dueForBackfill, noteBackfillAttempt } =
+            const { shouldRunPnlBackfill, dueForBackfill } =
               await import('./services/pnl-backfill.js')
             // TRIGGER ON A GAP, NOT ON A DETECTED CLOSE (2026-07-29).
             //
@@ -3295,8 +3295,12 @@ async function runLoop(db) {
                     if (sw.flagged || sw.cleared) log(`Exit-price suspects [${acct}]: ${sw.flagged} flagged, ${sw.cleared} cleared of ${sw.scanned} scanned`)
                   }
                   const creds = { host, clientId, clientSecret, accessToken, accountId: acct }
-                  const bf = await backfillClosedPnl(db, creds, { accountId: acct })
-                  noteBackfillAttempt(acct, bf)
+                  const { backfillAccountPnl } = await import('./services/cross-side-pnl.js')
+                  const recovered = await backfillAccountPnl(db, { ...creds, ready: true }, { closeSeen })
+                  if (recovered.skipped) { skipped++; continue }
+                  if (recovered.error) throw new Error(recovered.error)
+                  const bf = recovered.result
+                  if (bf.positionHistory) log(`P&L position history [${acct}]: ${JSON.stringify(bf.positionHistory)}`)
                   if (bf.backfilled > 0) {
                     filled += bf.backfilled
                     log(`P&L backfill [${acct}]: filled ${bf.backfilled} broker-closed trade(s) with realized P&L`)
