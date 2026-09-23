@@ -1093,3 +1093,27 @@ live default, strategy settings and admission/risk limits are unchanged.
 Remaining option ports, representative load/protection latency, watchdog
 runtime acceptance, old-history reconciliation and P0–P8 decisions remain open.
 No fresh broker audit or complete Version 3 acceptance is claimed here.
+
+## Acceptance sequence - 23 September 2026, 18:08 SGT
+
+The owner requested protection exceptions, watchdog/scanner load acceptance,
+then a scoped production end-to-end test. The [acceptance record](v3-acceptance-sequence-2026-09-23.md)
+retains current broker findings, watchdog observation configuration, reviewed
+Railway watch-filter updates and the exact synthetic scanner workload/results.
+All 32 independently checked open positions retain SL; two TP1 exceptions still
+need a position-specific target or exit decision. No trading setting changed.
+
+Watchdog supervision and durable storage are ON; delivery remains muted. Its
+existing service receipts and incident causes are now exposed by the status
+component instead of rendering indistinguishable warnings. Native service watch
+filters were applied and read back to constrain the next status release to Node;
+actual deployment event scope remains a required post-merge check.
+
+The 500-stream synthetic timeframe workload completed. The tick burst explicitly
+dropped 48,591 of 194,500 records, so lossless tick-load acceptance FAILED. The
+runner retains the workload, returns nonzero for input drops, verifies the 512
+stream bound and reports the undrained output gap. This is local capacity
+evidence, not production peak-feed or protection-latency acceptance. Scanner
+feeds remain disabled; no credentials, risk limits, strategy authority or broker
+orders were changed. Production delivery/drills and end-to-end trading acceptance
+remain gated by the named prerequisites. V3 is not complete.
