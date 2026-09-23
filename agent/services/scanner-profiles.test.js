@@ -39,7 +39,7 @@ test('EMA observation profiles bind every effective option and reject malformed 
   for (const bad of [null, [], { ...options, extra: 1 }, { ...options, timeCapMinutes: NaN }, { ...options, pendingSetup: 1 }])
     assert.equal(nativeProfileHash('ema_pullback', bad), null)
   assert.equal(nativeProfileHash('rsi_meanrev', options), null)
-  assert.equal(nativeOptionsFor('rsi_meanrev', { minRr: 1 }), null)
+  assert.deepEqual(nativeOptionsFor('rsi_meanrev', { minRr: 1 }), { minRr: 1 })
 })
 
 test('native comparisons include nested pattern provenance and stop treatment', () => {
@@ -50,4 +50,25 @@ test('native comparisons include nested pattern provenance and stop treatment', 
   assert.deepEqual(compareSignals(reference, { ...reference, cup: { leftRim: 12 } }, fields), ['cup'])
   assert.deepEqual(compareSignals(reference, { ...reference, stack_confirmed: false }, fields), ['stack_confirmed'])
   assert.deepEqual(compareSignals(reference, { ...reference, cup: { ...reference.cup, leftRim: NaN } }, fields), ['cup'])
+})
+
+
+test('RSI observation profiles bind the reference floor without changing defaults', () => {
+  for (const minRr of [undefined, null, 1.5]) assert.deepEqual(nativeOptionsFor('rsi_meanrev', { minRr }), {})
+  const hashes = new Set()
+  for (const minRr of [0, 0.1, 1, 1.51, Number.MAX_SAFE_INTEGER]) {
+    const options = nativeOptionsFor('rsi_meanrev', { minRr })
+    assert.deepEqual(options, { minRr })
+    const hash = nativeProfileHash('rsi_meanrev', options)
+    assert.match(hash, /^[a-f0-9]{64}$/)
+    assert.notEqual(hash, nativeProfileHash('rsi_meanrev'))
+    hashes.add(hash)
+  }
+  assert.equal(hashes.size, 5)
+  assert.equal(nativeProfileHash('rsi_meanrev', { minRr: -0 }), nativeProfileHash('rsi_meanrev', { minRr: 0 }))
+  for (const minRr of ['1', false, -1, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(nativeOptionsFor('rsi_meanrev', { minRr }), null)
+    assert.equal(nativeProfileHash('rsi_meanrev', { minRr }), null)
+  }
+  assert.equal(nativeProfileHash('rsi_meanrev', { minRr: 1, extra: true }), null)
 })

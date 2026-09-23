@@ -1074,3 +1074,22 @@ watchdog runtime delivery/drills, target policy, intended account roster and
 P6-P8 evidence/decisions remain open. The existing controlled rollout boundary
 still applies to all three packages; scanner feeds and trading activation stay
 unchanged. V3 is not complete.
+
+## RSI option continuation — 23 September 2026
+
+The owner reported #1045 merged and requested continued implementation. GitHub
+confirmed main `761bf3810851aa757636c94fa1d56ecd451bd236`; Railway confirmed all
+six successful deployments at 17:25 SGT. This includes the previously stacked
+default and EMA parity work. Both scanner feeds remain unconfigured at Node,
+the scanners remain private without broker credentials, and no trading
+activation or production configuration was changed. Both gateways restarted
+from existing main tracking; service filters are still unset.
+
+The [RSI option package](native-rsi-options-parity-2026-09-23.md) mirrors the
+reference's existing minRr calculation in the observation worker, with exact
+profile identity and 76 frozen cases. Native parity and actual local HTTP
+comparison pass across 262 default/EMA/RSI cases without entry intents. The
+live default, strategy settings and admission/risk limits are unchanged.
+Remaining option ports, representative load/protection latency, watchdog
+runtime acceptance, old-history reconciliation and P0–P8 decisions remain open.
+No fresh broker audit or complete Version 3 acceptance is claimed here.
