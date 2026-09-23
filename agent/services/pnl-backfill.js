@@ -306,16 +306,16 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     throw new Error(!pull.complete ? `deal history incomplete: ${pull.reason}` : 'backfill deadline elapsed')
   }
   const deals = pull.deals
+  const uncoveredPositions = new Set()
   if (strictAccount) {
     // A completed 14-day query is not a complete lifetime P&L for a position
     // opened earlier. Do not silently omit an older partial close.
-    const matched = new Set(deals.filter(d => d.closePositionDetail).map(d => normPosId(d.positionId)))
     const rows = db.prepare(`SELECT ctrader_position_id, opened_at FROM trades
-      WHERE account_id = ? AND status = 'closed' AND net_pnl IS NULL`).all(acct)
+      WHERE account_id = ? AND status = 'closed'`).all(acct)
     for (const row of rows) {
-      if (!matched.has(normPosId(row.ctrader_position_id))) continue
-      const opened = Date.parse(String(row.opened_at || '').replace(' ', 'T').replace(/(?<!Z)$/, 'Z'))
-      if (!Number.isFinite(opened) || opened < from || opened > now) throw new Error('position lifetime outside verified deal window')
+      const raw = String(row.opened_at || '').replace(' ', 'T')
+      const opened = Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`)
+      if (!Number.isFinite(opened) || opened < from || opened > now) uncoveredPositions.add(normPosId(row.ctrader_position_id))
     }
   }
   if (!pull.complete) {
@@ -356,11 +356,13 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
         for (const [name, id] of Object.entries(idMap)) symMeta[id] = { symbolName: name }
       } catch { symMeta = {} }
       const shaped = shapeDeals(deals, symMeta, acct)
+      if (strictAccount && opts.isCurrent && !opts.isCurrent()) throw new Error('backfill deadline elapsed')
       dealsPersisted = persistDeals(db, shaped)?.seen || 0
     }
   } catch (e) {
     console.warn('[pnl-backfill] deal persistence skipped:', e.message)
   }
+  if (strictAccount && opts.isCurrent && !opts.isCurrent()) throw new Error('backfill deadline elapsed')
 
   // Only deals that CLOSE (part of) a position carry realised P&L. Aggregate
   // per position so a scaled-out close (several partial deals) sums to one
@@ -372,6 +374,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     if (!cpd) continue
     const positionId = normPosId(d.positionId)
     if (!positionId) continue
+    if (uncoveredPositions.has(positionId)) continue
     closingDeals++
     const scale = Math.pow(10, cpd.moneyDigits ?? 2)
     const m = (v) => (v == null ? 0 : v / scale)
@@ -559,9 +562,11 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // Per TRADE, not per account, because that is the granularity the decision
   // is made at. Rows that just filled are excluded — their net_pnl is no
   // longer NULL, so the UPDATE below cannot reach them.
-  noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString(), includeUnattributed: !strictAccount })
+  noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString(), includeUnattributed: !strictAccount,
+    eligibleSince: strictAccount ? new Date(from).toISOString() : null, eligibleThrough: strictAccount ? new Date(now).toISOString() : null })
 
-  return { backfilled, attributed, exitsRepaired, exitsFilled, dealsPersisted, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap }
+  return { backfilled, attributed, exitsRepaired, exitsFilled, dealsPersisted, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap,
+    lifetimeSkipped: uncoveredPositions.size }
 }
 
 // ---------------------------------------------------------------------------
@@ -688,15 +693,18 @@ export function exhaustedAccounts() {
  * the gap check above. An orphan row's close may live in ANY account's deal
  * history, so every pass genuinely did try it.
  */
-export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOString(), includeUnattributed = true } = {}) {
+export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOString(), includeUnattributed = true,
+  eligibleSince = null, eligibleThrough = null } = {}) {
   try {
     const scope = accountId == null ? '' : includeUnattributed ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
     const args = accountId == null ? [at] : [at, String(accountId)]
+    const lifetime = eligibleSince != null && eligibleThrough != null ? 'AND julianday(opened_at) >= julianday(?) AND julianday(opened_at) <= julianday(?)' : ''
+    if (lifetime) args.push(eligibleSince, eligibleThrough)
     return db.prepare(`
       UPDATE trades
          SET pnl_attempts = COALESCE(pnl_attempts, 0) + 1,
              pnl_last_attempt_at = ?
-       WHERE status = 'closed' AND net_pnl IS NULL ${scope}
+       WHERE status = 'closed' AND net_pnl IS NULL ${scope} ${lifetime}
     `).run(...args).changes
   } catch { return 0 }
 }
