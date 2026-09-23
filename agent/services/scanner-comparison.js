@@ -5,7 +5,7 @@ import { TickMomentumOracle, profileHash, DEFAULT_PARAMS } from '../lib/tick-str
 const canonical = v => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object'
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v
 const hash = v => createHash('sha256').update(JSON.stringify(canonical(v))).digest('hex')
-export const FIB_PROFILE = createHash('sha256').update('fib_618_fade;closed;FX_DEFAULT;strict_without_filters;schema1').digest('hex')
+export { FIB_PROFILE } from './scanner-profiles.js'
 const RETAIN = 7 * 86400_000, CAP = 100_000
 const exists = db => db.prepare("SELECT 1 FROM sqlite_master WHERE name='scanner_comparisons'").get()
 function trimOne(db, table) {
@@ -69,7 +69,8 @@ export function compareTimeframeResult(db, row, now = Date.now()) {
   schema(db)
   const saved = db.prepare('SELECT payload FROM scanner_references WHERE id=?').get(id)
   const reference = saved ? JSON.parse(saved.payload).reference : null
-  const differences = saved ? compareSignals(reference, row.candidate?.signal) : []
+  const fields = input.strategy === 'fib_618_fade' ? TF_FIELDS : [...TF_FIELDS, 'strategy', 'direction_reason', 'confluenceCount']
+  const differences = saved ? compareSignals(reference, row.candidate?.signal, fields) : []
   const validOutcome = ['candidate', 'no_signal', 'expired'].includes(row.outcome) && (row.outcome === 'candidate') === !!row.candidate
   const state = !validOutcome ? 'contract_rejected' : !saved ? 'reference_missing' : row.outcome === 'expired' ? 'native_expired' : differences.length ? 'mismatch' : 'matched'
   comparisonRecord(db, id, 'cpp-scan-timeframe', state, { feed: input.feed, timeframe: input.timeframe,
