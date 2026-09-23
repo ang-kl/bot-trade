@@ -28,6 +28,7 @@ const finiteNonnegative = n => typeof n === 'number' && Number.isFinite(n) && n 
 const numberBits = n => { const bytes = Buffer.alloc(8); bytes.writeDoubleBE(n === 0 ? 0 : n); return bytes.toString('hex') }
 export function nativeOptionsFor(strategy, opts = {}, fvgDefaults) {
   if (nativeDefaultCompatible(strategy, opts, fvgDefaults)) return {}
+  if (strategy === 'rsi_meanrev') return finiteNonnegative(opts.minRr) ? { minRr: opts.minRr } : null
   if (strategy !== 'ema_pullback') return null
   const { pendingSetup = false, requireStack = true, minSlAtr = 0.8, maxSlAtr = 3,
     timeCapBars = null, timeframeMinutes = null } = opts
@@ -44,6 +45,10 @@ export function nativeOptionsFor(strategy, opts = {}, fvgDefaults) {
 export function nativeProfileHash(strategy, options = {}) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) return null
   if (Object.keys(options).length) {
+    if (strategy === 'rsi_meanrev') {
+      if (Object.keys(options).join(',') !== 'minRr' || !finiteNonnegative(options.minRr)) return null
+      return hash(`rsi_meanrev;closed;reference_options;schema1;${numberBits(options.minRr)}`)
+    }
     const { pendingSetup, requireStack, minSlAtr, maxSlAtr, timeCapMinutes } = options
     if (strategy !== 'ema_pullback' || Object.keys(options).sort().join(',') !== 'maxSlAtr,minSlAtr,pendingSetup,requireStack,timeCapMinutes'
       || typeof pendingSetup !== 'boolean' || typeof requireStack !== 'boolean'

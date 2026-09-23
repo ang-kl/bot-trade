@@ -1208,6 +1208,12 @@ async function start() {
     console.warn('[agent] loop.js not loaded — loop will not run:', err.message);
   }
 
+  // Bounded read-only calendar coverage follows fresh watchdog observation.
+  try {
+    const { startWatchdogCalendarRefresh } = await import('./services/watchdog-calendar-refresh.js');
+    startWatchdogCalendarRefresh(db);
+  } catch (err) { console.warn('[agent] watchdog calendar refresh unavailable:', err.message); }
+
   // Self-link cTrader when credentials exist (env-seeded or pushed earlier)
   // but the symbol map or balance is missing — so setting
   // CTRADER_ACCESS_TOKEN + CTRADER_ACCOUNT_ID (+ CTRADER_IS_LIVE) in the

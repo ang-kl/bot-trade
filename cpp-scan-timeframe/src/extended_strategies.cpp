@@ -49,7 +49,7 @@ static Value emaPullback(const Bars& b, const bt::Options& o, const Value& setti
   auto out = signal("ema_pullback",o,dir,reason,entry,sl,tp1,tp2,conviction,rr,configured ? settings.get("timeCapMinutes") : Value{});
   out.set("sl_atr_mult",rounded(risk/a)); out.set("sl_widened_to_floor",risk > rawDist); out.set("stack_confirmed",stack); return out;
 }
-static Value rsiMeanrev(const Bars& b, const bt::Options& o) {
+static Value rsiMeanrev(const Bars& b, const bt::Options& o, const Value& settings) {
   if (b.size() < 75) return {};
   const double now = vpo::rsi(b), prev = vpo::rsi(prefix(b,b.size()-1)), mean = vpo::sma(b,20);
   const auto prior = prefix(b,b.size()-15); const double trend = prior.back().c-vpo::sma(prior,50);
@@ -60,7 +60,8 @@ static Value rsiMeanrev(const Bars& b, const bt::Options& o) {
   for (size_t i = b.size()-5; i < b.size(); ++i) extremePrice = dir > 0 ? std::min(extremePrice,b[i].l) : std::max(extremePrice,b[i].h);
   const double sl = extremePrice-dir*0.25*a, risk = std::fabs(bar.c-sl);
   if (dir*(mean-bar.c) <= 0 || !(risk > 0)) return {};
-  const double rr = rounded(std::fabs(mean-bar.c)/risk); if (rr < 1.5) return {};
+  const double minRr = settings.get("minRr").isNumber() ? settings.get("minRr").asNumber() : 1.5;
+  const double rr = rounded(std::fabs(mean-bar.c)/risk); if (rr < minRr) return {};
   double extreme = prev;
   for (size_t i = 1; i <= 10; ++i) { const double r = vpo::rsi(prefix(b,b.size()-i)); if (!std::isfinite(r)) break; extreme = dir > 0 ? std::min(extreme,r) : std::max(extreme,r); }
   int conviction = 8 + (dir > 0 ? extreme < 25 : extreme > 75);
@@ -191,7 +192,7 @@ Value computeExtended(const std::string& s, const Bars& b, const bt::Options& o,
   if (s == "cup_handle") return cupHandle(b,o,1);
   if (s == "inv_cup_handle") return cupHandle(b,o,-1);
   if (s == "ema_pullback") return emaPullback(b,o,settings);
-  if (s == "rsi_meanrev") return rsiMeanrev(b,o);
+  if (s == "rsi_meanrev") return rsiMeanrev(b,o,settings);
   if (s == "fvg_retrace") return fvg(b,o);
   if (s == "vp_value") return vpValue(b,o);
   if (s == "va_breakout") return vaBreakout(b,o);

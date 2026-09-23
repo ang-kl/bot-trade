@@ -62,3 +62,13 @@ test('frozen EMA option results retain the actual reference decisions and profil
     assert.equal(nativeProfileHash(request.strategy, request.options), request.profileHash, name)
   }
 })
+
+
+test('frozen RSI option results retain reference floor decisions and profile identity', () => {
+  const compute = STRATEGY_REGISTRY.find(s => s.key === 'rsi_meanrev').compute
+  for (const { request, referenceOptions, expected, name } of JSON.parse(read('cpp-scan-timeframe/src/tests/fixtures/rsi-options-parity.json'))) {
+    assert.deepEqual(compute(request.bars, request.timeframe, referenceOptions), expected, name)
+    assert.deepEqual(nativeOptionsFor(request.strategy, referenceOptions), request.options, name)
+    assert.equal(nativeProfileHash(request.strategy, request.options), request.profileHash, name)
+  }
+})

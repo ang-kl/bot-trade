@@ -21,6 +21,8 @@ int main() {
   auto all = fixtures.asArray();
   const auto optionsFixtures = read("src/tests/fixtures/ema-options-parity.json");
   for (const auto& row : optionsFixtures.asArray()) all.push_back(row);
+  const auto rsiFixtures = read("src/tests/fixtures/rsi-options-parity.json");
+  for (const auto& row : rsiFixtures.asArray()) all.push_back(row);
   fixtures = all;
   std::map<std::string, std::map<std::string,int>> outcomes;
   for (const auto& fixture : fixtures.asArray()) {

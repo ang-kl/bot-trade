@@ -187,7 +187,32 @@ test('keptReferenced is 0 when nothing is referenced, and the sweep is unchanged
 // production's DB to 526MB. The rules that matter: referenced analyses are
 // spared (enforced FK), and the AUDIT/PHASE_RAW_WRITE trail never expires.
 // ---------------------------------------------------------------------------
-import { pruneOperationalTables } from './retention.js'
+import { pruneOperationalTables, pruneOperationalTablesCooperatively } from './retention.js'
+
+test('scheduled retention yields during backlog and preserves the same owner retention predicates', async () => {
+  const db = freshDB()
+  try {
+    const old = new Date(Date.now() - 500 * 86400_000).toISOString()
+    const insert = db.prepare("INSERT INTO cup_handle_diagnostics (symbol,scanned_at,created_at) VALUES ('X',?,?)")
+    db.transaction(() => { for (let i = 0; i < 1001; i++) insert.run(old, old) })()
+    insert.run(new Date().toISOString(), new Date().toISOString())
+    db.prepare("INSERT INTO analyses (id,symbol,analyzed_at) VALUES (1,'X',?),(2,'X',?)").run(old,old)
+    db.prepare("INSERT INTO trades (symbol,status,analysis_id) VALUES ('X','closed',1)").run()
+    db.prepare("INSERT INTO action_log (method,path,at) VALUES ('AUDIT','/keep',?),('PHASE_RAW_WRITE','/keep',?),('GET','/old',?)").run(old,old,old)
+    let remainingAtYield, progressAtYield
+    const progress = []
+    setImmediate(() => { remainingAtYield = db.prepare('SELECT COUNT(*) n FROM cup_handle_diagnostics').get().n; progressAtYield = progress.length })
+    const out = await pruneOperationalTablesCooperatively(db, null, { onProgress: page => progress.push(page) })
+    assert.ok(remainingAtYield > 1 && remainingAtYield < 1002, 'protection callback runs before backlog finishes')
+    assert.equal(progressAtYield, 1, 'real page progress refreshes the watchdog before yielding')
+    assert.deepEqual(progress.filter(p => p.table === 'cup_handle_diagnostics').map(p => p.cursor), [200,400,600,800,1000,1002])
+    assert.equal(progress.length, 8, 'all operational tables report bounded scan progress, including preserved rows')
+    assert.deepEqual(out, { cupHandle: 1001, analyses: 1, actionLog: 1, errors: [] })
+    assert.deepEqual(db.prepare('SELECT id FROM analyses').all(), [{ id: 1 }])
+    assert.deepEqual(db.prepare('SELECT method FROM action_log ORDER BY id').all().map(r => r.method), ['AUDIT','PHASE_RAW_WRITE'])
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM cup_handle_diagnostics').get().n, 1)
+  } finally { db.close() }
+})
 
 const oldTs = (days) => new Date(Date.now() - days * 86_400_000).toISOString()
 

@@ -46,6 +46,15 @@ int main() {
   bad = ema; settings = bad.get("options"); settings.set("maxSlAtr",-1); bad.set("options",settings); refuses(bad);
   bad = ema; settings = bad.get("options"); settings.set("extra",true); bad.set("options",settings); refuses(bad);
   assert(scanner.status().get("work").asArray().empty());
+  auto rsi = read("src/tests/fixtures/rsi-options-parity.json").asArray().front().get("request");
+  bad = rsi; bad.set("profileHash",scan::nativeProfileHash("rsi_meanrev")); refuses(bad);
+  bad = rsi; bad.set("options",Object{{"minRr",1.2}}); refuses(bad);
+  for (const auto& value : std::vector<Value>{Value(),Value("1"),Value(false),Value(-1),Value(1e16)}) {
+    assert(scan::nativeProfileHash("rsi_meanrev",Object{{"minRr",value}}).empty());
+    bad = rsi; bad.set("options",Object{{"minRr",value}}); refuses(bad);
+  }
+  assert(scan::nativeProfileHash("rsi_meanrev",Object{{"minRr",0},{"extra",true}}).empty());
+  assert(scanner.status().get("work").asArray().empty());
   const auto identity = scan::identity(body);
   const auto one = scan::candidate(identity, "fib_618_fade", now, now, Value(), now, Value(), "1h");
   const auto four = scan::candidate(identity, "fib_618_fade", now, now, Value(), now, Value(), "4h");

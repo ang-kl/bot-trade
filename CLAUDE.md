@@ -1059,3 +1059,17 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   checkpoint 8,636; visible continuation replies have reached **8,645**. This is
   that supplied rebase plus visible replies, not a full-corpus measurement.
   Later visible replies take precedence. No agent/token totals are inferred.
+
+
+- 2026-09-23, Work Mode continuation, PARTIAL corpus: the counting script
+  found no JSONL transcripts. Continued the supplied rebase through replies
+  **№ 8,655–8,658**, including the initial unstamped continuation update.
+  This records visible replies, not a new full-corpus measurement.
+
+- 2026-09-23 17:12 UTC, Work Mode partial-corpus continuation: visible prior
+  checkpoint was **№ 8,709**; the current merge continuation reached **№ 8,720**,
+  next **№ 8,721**. No transcript corpus or agent/token totals are inferred.
+  #1046 and #1049–#1052 are merged after review corrections and green gates.
+  #1048 remains held: the newly demonstrated caller-retry correction additionally
+  restarts both broker gateways and needs the scoped release approval. Scanner
+  feeds, trading activation, credentials and notification permission are unchanged.

@@ -13,6 +13,12 @@ static std::string numberBits(double n) {
 std::string nativeProfileHash(const std::string& strategy, const jsn::Value& settings) {
   if (!settings.isObject()) return "";
   if (!settings.asObject().empty()) {
+    if (strategy == "rsi_meanrev") {
+      const auto& v = settings.get("minRr");
+      if (settings.asObject().size() != 1 || !v.isNumber() || !std::isfinite(v.asNumber())
+          || v.asNumber() < 0 || v.asNumber() > 9007199254740991.0) return "";
+      return hash("rsi_meanrev;closed;reference_options;schema1;" + numberBits(v.asNumber()));
+    }
     if (strategy != "ema_pullback" || settings.asObject().size() != 5) return "";
     for (const auto name : {"pendingSetup", "requireStack", "minSlAtr", "maxSlAtr", "timeCapMinutes"})
       if (!settings.asObject().count(name)) return "";
@@ -133,6 +139,6 @@ void TimeframeScanner::flush() { std::unique_lock lock(mutex_); drained_.wait(lo
 jsn::Value TimeframeScanner::status() {
   std::lock_guard lock(mutex_); jsn::Array work; for (const auto& [id, row] : work_) work.push_back(row);
   return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-timeframe"}, {"observedAtMs", clock_()}, {"workComplete", true}, {"work", work},
-    {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "closed bars: all 12 per-symbol default strategies; EMA pending/stack/stop/time-cap option parity; fib_618_fade FX baseline only; other non-default semantics remain with reference owner"}});
+    {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "closed bars: all 12 per-symbol default strategies; EMA pending/stack/stop/time-cap and RSI minRr option parity; fib_618_fade FX baseline only; other non-default semantics remain with reference owner"}});
 }
 }
