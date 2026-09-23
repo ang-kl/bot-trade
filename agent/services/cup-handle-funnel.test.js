@@ -11,6 +11,7 @@ import path from 'node:path'
 import { initDB } from '../db.js'
 import { GATE_ORDER } from './cup-handle.js'
 import { cupHandleFunnel, funnelLine } from './cup-handle-funnel.js'
+import { readCupHandleFunnel } from './performance-populations.js'
 
 const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'chf-')), 'agent.db'))
 
@@ -149,4 +150,34 @@ test('funnelLine names the numbers a reader acts on', () => {
   assert.match(line, /25 traces/)
   assert.match(line, /would have fired 0/)
   assert.match(line, /deepest handle_volume/)
+})
+
+test('aggregated window preserves both timestamp formats at the exact boundary', t => {
+  const db = tmpDb(); t.after(() => db.close())
+  const since = new Date(nowMs - 7 * 86400_000).toISOString()
+  const before = new Date(Date.parse(since) - 1).toISOString()
+  for (const at of [since, since.replace('T', ' '), before, before.replace('T', ' ')]) {
+    seed(db, [{ n: 1, at: () => at, uptrend_ok: true, candidate: true, blocked_at: 'rr_floor' }])
+  }
+  const report = cupHandleFunnel(db, { now: nowMs })
+  assert.equal(report.traces, 2)
+  assert.equal(report.stages.at(-1).stopped, 2)
+})
+
+test('disk funnel coalesces reads, bounds concurrent reports and yields to protection work', async t => {
+  const db = tmpDb(); t.after(() => db.close())
+  seed(db, [{ n: 50000, uptrend_ok: true, candidate: true, blocked_at: 'handle_range' },
+    { n: 100, bias: 'short', uptrend_ok: false, at: sqlAgo }])
+  const expected = cupHandleFunnel(db, { now: nowMs })
+  let yielded = false
+  const heartbeat = new Promise(resolve => setImmediate(() => { yielded = true; resolve() }))
+  const a = readCupHandleFunnel(db, { now: nowMs })
+  assert.equal(a, readCupHandleFunnel(db, { now: nowMs }))
+  const b = readCupHandleFunnel(db, { now: nowMs, bias: 'short' })
+  await assert.rejects(readCupHandleFunnel(db, { now: nowMs, bias: 'long' }), /worker_capacity/)
+  assert.deepEqual(await a, expected)
+  assert.equal(yielded, true, 'the protection thread must run before reporting completes')
+  assert.equal((await b).traces, 100)
+  await heartbeat
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entry_intents').get().n, 0)
 })
