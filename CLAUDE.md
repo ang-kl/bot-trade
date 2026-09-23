@@ -1073,3 +1073,11 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   #1048 remains held: the newly demonstrated caller-retry correction additionally
   restarts both broker gateways and needs the scoped release approval. Scanner
   feeds, trading activation, credentials and notification permission are unchanged.
+
+- 2026-09-23 23:19 UTC, Work Mode partial-corpus handover: visible replies
+  reached **№ 8,752**, next **№ 8,753**. No JSONL corpus was available; this
+  follows the recorded checkpoint and visible continuation, not a full-corpus
+  measurement. #1053 and #1054 are merged. Main is `391d5a2`; its Node
+  deployment succeeded, but production acceptance remains unfinished. The
+  handover records newly attributed synchronous report stalls and current
+  independent coverage. No agent/token totals are inferred.
