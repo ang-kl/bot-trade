@@ -36,7 +36,8 @@ export async function publishTimeframeEvaluation(db, job, { env = process.env, f
   const source = 'cpp-scan-timeframe', profile = matchingProfile(db, source, job)
   if (!profile) return { state: 'profile_unregistered' }
   const id = hash(JSON.stringify([job.feed, job.feedEpoch, job.configVersion, job.profileHash, job.timeframe, job.bars?.at(-1)?.t]))
-  const supportedProfile = nativeProfileHash(job.strategy)
+  const options = job.nativeOptions ?? {}
+  const supportedProfile = nativeProfileHash(job.strategy, options)
   const unsupported = !supportedProfile || job.profileHash !== supportedProfile || job.nativeCompatible !== true
   if (unsupported) { comparisonRecord(db, id, source, 'unsupported_reference_semantics', { feed: job.feed, strategy: job.strategy, timeframe: job.timeframe }, now); return { state: 'unsupported' } }
   const duration = tfMs(job.timeframe)
@@ -49,7 +50,7 @@ export async function publishTimeframeEvaluation(db, job, { env = process.env, f
     throw new Error('bar_input_invalid')
   let body = { schemaVersion: 1, purpose: 'mirror', feed: job.feed, feedEpoch: job.feedEpoch,
     configVersion: job.configVersion, profileHash: job.profileHash, candidateTtlMs: profile.candidateTtlMs,
-    strategy: job.strategy, timeframe: job.timeframe, barMode: 'closed', barDurationMs: duration, options: {},
+    strategy: job.strategy, timeframe: job.timeframe, barMode: 'closed', barDurationMs: duration, options,
     receivedAtMs: job.receivedAtMs, sourceTimestampMs: job.bars.at(-1).t,
     barCloseAtMs: job.bars.at(-1).t + duration, bars: job.bars,
     inputHash: hash(JSON.stringify(job.bars)), calendar: projectCalendar(readMarketCalendar(db, job.feed, { nowMs: now }), now) }

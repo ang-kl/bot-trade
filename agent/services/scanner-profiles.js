@@ -22,5 +22,35 @@ export function nativeDefaultCompatible(strategy, opts = {}, fvgDefaults) {
     && fvgDefaults?.minGapAtr === 0.25 && fvgDefaults?.maxGapAtr === 3 && fvgDefaults?.maxAgeBars === 40
   return false
 }
-export const nativeProfileHash = strategy => strategy === 'fib_618_fade' ? FIB_PROFILE
-  : NATIVE_DEFAULT_STRATEGIES.includes(strategy) ? hash(`${strategy};closed;reference_defaults;schema1`) : null
+const finiteNonnegative = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= Number.MAX_SAFE_INTEGER
+// Hash numeric parameters by IEEE-754 bits, avoiding JS/C++ decimal-printer
+// differences. These are observation profiles, never strategy configuration.
+const numberBits = n => { const bytes = Buffer.alloc(8); bytes.writeDoubleBE(n === 0 ? 0 : n); return bytes.toString('hex') }
+export function nativeOptionsFor(strategy, opts = {}, fvgDefaults) {
+  if (nativeDefaultCompatible(strategy, opts, fvgDefaults)) return {}
+  if (strategy !== 'ema_pullback') return null
+  const { pendingSetup = false, requireStack = true, minSlAtr = 0.8, maxSlAtr = 3,
+    timeCapBars = null, timeframeMinutes = null } = opts
+  if (typeof pendingSetup !== 'boolean' || typeof requireStack !== 'boolean'
+    || !finiteNonnegative(minSlAtr) || !finiteNonnegative(maxSlAtr)) return null
+  let timeCapMinutes = null
+  if (timeCapBars != null && timeframeMinutes != null) {
+    if (!finiteNonnegative(timeCapBars) || !finiteNonnegative(timeframeMinutes)) return null
+    timeCapMinutes = timeCapBars * timeframeMinutes
+    if (!finiteNonnegative(timeCapMinutes)) return null
+  }
+  return { pendingSetup, requireStack, minSlAtr, maxSlAtr, timeCapMinutes }
+}
+export function nativeProfileHash(strategy, options = {}) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return null
+  if (Object.keys(options).length) {
+    const { pendingSetup, requireStack, minSlAtr, maxSlAtr, timeCapMinutes } = options
+    if (strategy !== 'ema_pullback' || Object.keys(options).sort().join(',') !== 'maxSlAtr,minSlAtr,pendingSetup,requireStack,timeCapMinutes'
+      || typeof pendingSetup !== 'boolean' || typeof requireStack !== 'boolean'
+      || !finiteNonnegative(minSlAtr) || !finiteNonnegative(maxSlAtr)
+      || (timeCapMinutes !== null && !finiteNonnegative(timeCapMinutes))) return null
+    return hash(`ema_pullback;closed;reference_options;schema1;${Number(pendingSetup)};${Number(requireStack)};${numberBits(minSlAtr)};${numberBits(maxSlAtr)};${timeCapMinutes === null ? 'null' : numberBits(timeCapMinutes)}`)
+  }
+  return strategy === 'fib_618_fade' ? FIB_PROFILE
+    : NATIVE_DEFAULT_STRATEGIES.includes(strategy) ? hash(`${strategy};closed;reference_defaults;schema1`) : null
+}

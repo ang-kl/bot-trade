@@ -17,6 +17,11 @@ publication/merge policy remains subject to the controlled-rollout runbook.
 - Watchdog feed producers, independent incident state and outer-observer
   implementation are already merged. Current-source state and HTTP/persistence
   tests pass. No new watchdog implementation is claimed by this checkpoint.
+- Follow-on EMA option package: adds pending-entry, optional stacking, stop
+  floor/ceiling and time-cap reference parity to the observation-only timeframe
+  worker. It is stacked on #1043, with the same Node/timeframe-only proposed
+  release scope and no activation permission. See
+  `native-ema-options-parity-2026-09-23.md` for exact tests and remaining limits.
 
 ## Why a green merge still needs a rollout decision
 

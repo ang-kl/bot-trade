@@ -1053,3 +1053,9 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   visible replies through **№ 8,609**; next **№ 8,610**. #1037 cashflow
   readback passed on seven accounts; #1038 is merged and deploying. Count
   follows the recorded rebase and visible replies, not a full-corpus reading.
+
+- 2026-09-23 08:59 UTC, fresh Work Mode continuation with no accessible
+  transcript corpus: the counting script found no JSONL files. The owner supplied
+  checkpoint 8,636; visible continuation replies have reached **8,645**. This is
+  that supplied rebase plus visible replies, not a full-corpus measurement.
+  Later visible replies take precedence. No agent/token totals are inferred.

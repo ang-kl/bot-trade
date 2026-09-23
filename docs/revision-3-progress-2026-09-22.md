@@ -1043,3 +1043,34 @@ No status-only merge or silent deployment reconfiguration was performed.
 
 The release document gives conditional effort ranges and exact outstanding
 decisions. V3 is not complete. Rollback owner remains Adrian Ang.
+
+## EMA option continuation - 23 September 2026, 16:59 SGT
+
+The owner resumed implementation with both new scanner feeds disabled and no
+trading activation changes. Main remains `44fb54d2438ca240d4955a29431508b7dae4722a`.
+#1042 and #1043 were read back open with passing PR checks. This continuation
+builds on #1043; it does not recreate either pending package or merge the stack.
+
+Fresh Railway reads report six successful deployments of the same main. Both
+new scanners expose only PORT/SCANNER_SECRET as application variable names,
+without broker credentials; Node has no scanner bridge/feed variables. Variable
+values are redacted by the connector. The returned configs still have no watch
+filters. Only verifier startup logs were available from this read, so no fresh
+position-level protection audit is claimed; the earlier 15:16 protection result
+remains historical. No production setting or broker state was changed.
+
+The [EMA option parity package](native-ema-options-parity-2026-09-23.md) adds
+pending/stack/stop/time-cap calculation parity to the observation-only worker,
+with exact option-profile identity and 32 additional frozen reference cases.
+The actual local HTTP publisher/collector path passes. Complete local gates
+passed with Node 22 and TZ=UTC: 5,362 backend tests without skips, 935 frontend
+tests, lint, build, no-green, syntax, inventory and the native scanner tests.
+Native executables were built locally. Git command-line publication lacks
+credentials in this workspace; the connected GitHub API is used for publication
+and exact tree readback. CI on this new package remains a separate requirement.
+
+Other non-default strategy profiles, representative protection/load evidence,
+watchdog runtime delivery/drills, target policy, intended account roster and
+P6-P8 evidence/decisions remain open. The existing controlled rollout boundary
+still applies to all three packages; scanner feeds and trading activation stay
+unchanged. V3 is not complete.

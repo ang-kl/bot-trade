@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { nativeDefaultCompatible, nativeProfileHash, NATIVE_DEFAULT_STRATEGIES } from './scanner-profiles.js'
+import { nativeDefaultCompatible, nativeOptionsFor, nativeProfileHash, NATIVE_DEFAULT_STRATEGIES } from './scanner-profiles.js'
 import { computeFvgSignal } from './fvg-strategy.js'
 import { compareSignals } from './scanner-comparison.js'
 
@@ -22,6 +22,24 @@ test('default native coverage refuses option changes that alter reference semant
   assert.equal(nativeDefaultCompatible('fvg_retrace', {}, { ...computeFvgSignal.nativeDefaults, minGapAtr: 0.5 }), false)
   assert.equal(nativeDefaultCompatible('fvg_retrace', {}), false)
   assert.equal(nativeDefaultCompatible('not_a_strategy'), false)
+})
+
+test('EMA observation profiles bind every effective option and reject malformed settings', () => {
+  assert.deepEqual(nativeOptionsFor('ema_pullback'), {})
+  const options = nativeOptionsFor('ema_pullback', { pendingSetup: true, timeCapBars: 4, timeframeMinutes: 60 })
+  assert.deepEqual(options, { pendingSetup: true, requireStack: true, minSlAtr: 0.8, maxSlAtr: 3, timeCapMinutes: 240 })
+  const original = nativeProfileHash('ema_pullback', options)
+  assert.notEqual(original, nativeProfileHash('ema_pullback'))
+  for (const change of [{ pendingSetup: false }, { requireStack: false }, { minSlAtr: 1 }, { maxSlAtr: 4 }, { timeCapMinutes: null }])
+    assert.notEqual(nativeProfileHash('ema_pullback', { ...options, ...change }), original)
+  assert.equal(nativeProfileHash('ema_pullback', { ...options, minSlAtr: -0 }), nativeProfileHash('ema_pullback', { ...options, minSlAtr: 0 }))
+  for (const change of [{ pendingSetup: 'true' }, { requireStack: null }, { minSlAtr: null }, { maxSlAtr: Infinity },
+    { minSlAtr: -1 }, { timeCapBars: '4', timeframeMinutes: 60 }, { timeCapBars: 1e16, timeframeMinutes: 60 }])
+    assert.equal(nativeOptionsFor('ema_pullback', { pendingSetup: true, ...change }), null)
+  for (const bad of [null, [], { ...options, extra: 1 }, { ...options, timeCapMinutes: NaN }, { ...options, pendingSetup: 1 }])
+    assert.equal(nativeProfileHash('ema_pullback', bad), null)
+  assert.equal(nativeProfileHash('rsi_meanrev', options), null)
+  assert.equal(nativeOptionsFor('rsi_meanrev', { minRr: 1 }), null)
 })
 
 test('native comparisons include nested pattern provenance and stop treatment', () => {
