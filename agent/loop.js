@@ -3325,10 +3325,11 @@ async function runLoop(db) {
               // the repair's own cadence (a row closed seconds ago is not a
               // failure, the paced pass may not have reached it yet).
               try {
-                const { pnlReconciliationState } = await import('./services/pnl-backfill.js')
+                const { pnlReconciliationState, pnlUnreachedRows } = await import('./services/pnl-backfill.js')
                 const st = pnlReconciliationState(db)
                 const hb = await import('./services/heartbeat.js')
                 const unreached = st.unresolved >= 0 && st.neverTriedOverdue > 0
+                const detail = unreached ? { ...st, unreachedRows: pnlUnreachedRows(db) } : st
                 hb.beat(db, 'pnl_reconcile', {
                   ok: st.unresolved >= 0 && !unreached,
                   error: st.unresolved < 0
@@ -3336,7 +3337,7 @@ async function runLoop(db) {
                     : unreached
                       ? `${st.neverTriedOverdue} closed trade(s) with no realised P&L have never been attempted (15+ min after close)`
                       : null,
-                  detail: st,
+                  detail,
                 })
               } catch { /* observability only */ }
 
