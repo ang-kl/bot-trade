@@ -863,3 +863,55 @@ progress, no repeated overlapping request, ignored late response and mixed
 covered/uncovered trades. The full gate and production readback are pending.
 Cashflow continuation work is isolated on its own branch while this correction
 is completed. The older-position gaps remain explicit outstanding evidence.
+
+The follow-up review also found that uncovered rows still voted on retry
+pacing. The same lifetime predicate now scopes the eligible-work gate and
+live/blocking pacing counts. The full ledger gap remains reported; an
+uncovered-only account performs no futile bounded read, and a later eligible
+close is immediately reachable. This does not write off or clear old money.
+The added regression passes; the full gate is repeated on this exact fix.
+
+## Continuous cashflow reporting package - 23 September 2026, 12:00 SGT
+
+The nightly-only collection left current equity observations outside verified
+cashflow history. A reporting-only collector now runs independently of the
+main loop and UI, requesting at most one account/one seven-day interval every
+30 seconds. Fresh account/host/currency evidence is required before and after
+the read. Registered manage-only accounts are included; token refusals remain
+respected. The transport has a five-second outer deadline, and a transport
+that still has not settled holds the overlap lock. No late result can commit.
+
+Completed intervals are the durable continuation cursor. Account rotation
+persists even on failure so an unavailable peer cannot starve another account.
+Intervals resume at the earliest retained uncovered observation within the
+current observed currency/host regime. The record store compacts only proven
+touching/overlapping windows of the same identity and currency, preserving
+real gaps and atomic conflict handling. Broker error/partial payloads cannot
+be marked complete. No failure increments coverage.
+
+The history response and display carry collection status, its last successful
+read and an optional dated reconciled portion. A later uncovered observation
+still makes the full-window figure unavailable; unknown cashflow classes,
+mixed currencies or partial pages cannot yield a complete monetary result.
+The collector is registered and grouped with account records: 35 controller
+names in total, 34 active and the existing one retired.
+
+Focused validation: 20 backend tests and four history UI tests pass, including
+the real producer-to-report path, deposits versus profit, bounded catchup,
+restart continuation, failure fairness, non-overlap, stop/late response,
+identity changes, transitive window compaction and honest partial reporting.
+The full local gate, PR CI, production rollout and authenticated readback are
+pending. Numerical risk thresholds, TP1, account ownership/selection, target
+policy and scanner activation are unchanged. No broker writes or notifications
+are issued by this collector. Rollback owner: Adrian Ang.
+
+GitHub readback at 12:08 SGT showed #1036 already merged at 12:04:33 SGT as
+`80cf59341d4b013d33bb469850e1a6bf381587df` with its original reviewed head.
+All four new deployments succeeded. The later pacing correction was pushed
+after that merge and is therefore included in this cashflow continuation PR.
+It is not yet production evidence. The first isolated-checkout gate had three
+native integration skips; its matching previously built executables were made
+available. The next run exercised all 5,321 tests, with one legacy no-work
+return-shape failure caused by an added zero-valued diagnostic. That field is
+now strict-path-only, preserving the existing caller contract. No test was
+removed or weakened. Full verification is repeated on the combined change.

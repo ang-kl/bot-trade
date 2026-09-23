@@ -49,12 +49,13 @@ export function cashflowCoverage(db, { accountId, host, currency, from, to }) {
     .all(String(accountId), host, currency, from, to)
   let through = from
   for (const w of windows) { if (w.from_ms > through) break; through = Math.max(through, w.to_ms) }
-  if (through < to || !windows.length) return { complete: false, reason: 'cashflow_coverage_gap', externalNet: null }
+  const coveredThrough = through > from ? Math.min(through, to) : null
+  if (through < to || !windows.length) return { complete: false, reason: 'cashflow_coverage_gap', externalNet: null, coveredThrough }
   const rows = db.prepare(`SELECT kind, delta FROM account_cashflows WHERE account_id = ? AND host = ?
     AND currency = ? AND at_ms > ? AND at_ms <= ?`).all(String(accountId), host, currency, from, to)
   const unknown = rows.filter(r => r.kind === 'unclassified').length
   return { complete: !unknown, reason: unknown ? 'cashflow_classification_unknown' : null,
-    externalNet: unknown ? null : rows.filter(r => r.kind === 'external').reduce((n, r) => n + r.delta, 0),
+    externalNet: unknown ? null : rows.filter(r => r.kind === 'external').reduce((n, r) => n + r.delta, 0), coveredThrough,
     otherAdjustments: rows.filter(r => r.kind === 'adjustment').reduce((n, r) => n + r.delta, 0), events: rows.length }
 }
 
@@ -75,6 +76,23 @@ export function accountHistory(db, accountId, { from, to = Date.now(), limit = 2
   const coverage = comparable ? cashflowCoverage(db, { accountId, host: first.host, currency: first.currency,
     from: first.receivedAt, to: last.receivedAt }) : { complete: false, reason: 'comparable_equity_unavailable', externalNet: null }
   const change = comparable ? last.equity - first.equity : null
+  // Collection can trail the latest observation by one bounded polling round.
+  // Show a proven, dated subset separately; never relabel the whole window.
+  let reconciledSpan = null, collection = null
+  if (comparable && !hasMore && before == null && !coverage.complete && coverage.coveredThrough != null) {
+    const end = valued.findLast(p => p.receivedAt <= coverage.coveredThrough)
+    if (end && end.receivedAt > first.receivedAt) {
+      const covered = cashflowCoverage(db, { accountId, host: first.host, currency: first.currency, from: first.receivedAt, to: end.receivedAt })
+      if (covered.complete) reconciledSpan = { from: first.receivedAt, to: end.receivedAt, currency: first.currency,
+        equityChange: end.equity - first.equity, externalNet: covered.externalNet,
+        externalFlowAdjustedChange: end.equity - first.equity - covered.externalNet,
+        pendingObservations: valued.filter(p => p.receivedAt > end.receivedAt).length }
+    }
+  }
+  try {
+    const status = JSON.parse(getState(db, `acct:${accountId}:cashflow_collection_json`) || 'null')
+    if (status?.accountId === String(accountId)) collection = status
+  } catch { /* no collector evidence */ }
   let peak = -Infinity, sampledDrawdown = null
   if (comparable && !hasMore && before == null) {
     sampledDrawdown = 0
@@ -84,7 +102,7 @@ export function accountHistory(db, accountId, { from, to = Date.now(), limit = 2
     nextBefore: hasMore ? Math.min(...points.map(p => p.rowId)) : null,
     retentionDays: ACCOUNT_HISTORY_RETENTION_DAYS, sampling: 'latest observation per source per minute; no interpolation',
     summaryComplete: !hasMore && before == null, currency: sameUnits ? first.currency : null,
-    equityChange: change, cashflows: coverage,
+    equityChange: change, cashflows: coverage, cashflowCollection: collection, reconciledSpan,
     observationSpan: comparable ? { from: first.receivedAt, to: last.receivedAt } : null,
     externalFlowAdjustedChange: !hasMore && before == null && coverage.complete && change != null ? change - coverage.externalNet : null,
     sampledDrawdown, drawdownBasis: 'unadjusted observed equity; includes cashflows; not exact intraminute drawdown',

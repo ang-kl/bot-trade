@@ -9,6 +9,11 @@ export function AccountHistoryReading({ report, page = 0 }) {
     <p>Equity change: {value(report.equityChange)} {report.currency || '(currency unverified)'}. External-flow-adjusted change: {value(report.externalFlowAdjustedChange)}.</p>
     <p>{report.observationSpan ? `Change covers comparable observations on this page from ${new Date(report.observationSpan.from).toISOString()} to ${new Date(report.observationSpan.to).toISOString()}.` : 'At least two comparable observations at different times are required to measure change.'}</p>
     <p>Cashflow coverage: {report.cashflows.complete ? 'Complete for comparable equity observations' : report.cashflows.reason}. {report.note}</p>
+    {report.cashflowCollection && <p>Cashflow collection: {report.cashflowCollection.status}{report.cashflowCollection.reason ? ` (${report.cashflowCollection.reason})` : ''}.
+      {' '}Last successful read: {report.cashflowCollection.lastSuccessAt ? new Date(report.cashflowCollection.lastSuccessAt).toISOString() : 'Not yet observed'}.</p>}
+    {report.reconciledSpan && <p>Reconciled portion only: {new Date(report.reconciledSpan.from).toISOString()} to {new Date(report.reconciledSpan.to).toISOString()}.
+      {' '}External-flow-adjusted change: {value(report.reconciledSpan.externalFlowAdjustedChange)} {report.reconciledSpan.currency}.
+      {' '}{report.reconciledSpan.pendingObservations} later equity observations await cashflow coverage. The full-window change remains unavailable.</p>}
     <p>Sampled drawdown: {value(report.sampledDrawdown)}. {report.drawdownBasis}.</p>
     {!report.summaryComplete && <p>This is a partial history window. Full-window adjusted change and drawdown are unavailable.</p>}
     <div className="overflow-x-auto"><table className="w-full text-left text-(length:--fs-body)">
