@@ -202,7 +202,9 @@ if (!isMainThread && workerData?.path) {
   let db
   try {
     db = new Database(workerData.path, { readonly: true, fileMustExist: true, timeout: 1000 })
-    const report = db.transaction(() => buildReport(db, workerData.kind, workerData.options))()
+    // Every report is read-only. Async is needed only so the stage registry
+    // can be loaded lazily without widening the common worker module graph.
+    const report = await buildReport(db, workerData.kind, workerData.options)
     if (Buffer.byteLength(JSON.stringify(report)) > 8 * 1024 * 1024) throw new Error('performance_report_response_bound')
     parentPort.postMessage({ ok: true, report })
   } catch (e) { parentPort.postMessage({ ok: false, error: e.message }) }
