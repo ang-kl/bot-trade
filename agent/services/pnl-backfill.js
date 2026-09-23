@@ -85,7 +85,11 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     catch { return null }
   })()
   const acct = opts.accountId != null ? String(opts.accountId) : selected
-  const includeNull = acct == null || acct === selected
+  const strictAccount = opts.strictAccount === true
+  if (strictAccount && (!/^[1-9]\d*$/.test(acct || '') || String(creds.accountId) !== acct)) {
+    throw new Error('backfill account identity required')
+  }
+  const includeNull = !strictAccount && (acct == null || acct === selected)
   const scopeSql = acct == null
     ? ''
     : includeNull ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
@@ -104,7 +108,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // window counts as work that can never be done and pins the gate open for
   // ever — a broker round-trip every cycle, permanently, for nothing.
   const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
-  const gapScopeSql = acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
+  const gapScopeSql = acct == null ? '' : strictAccount ? 'AND account_id = ?' : 'AND (account_id = ? OR account_id IS NULL)'
   const gap = db.prepare(
     `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql}`
   ).get(...scopeParams)
@@ -296,7 +300,24 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // wrong while looking exactly like a right one. lib/deal-paging.js follows
   // both limits and reports whether the walk finished.
   const pull = await pageDeals(getDeals, from, now)
+  // The cross-environment recovery must not stamp money or attempt evidence
+  // from partial history, nor write after its bounded read deadline.
+  if (strictAccount && (!pull.complete || (opts.isCurrent && !opts.isCurrent()))) {
+    throw new Error(!pull.complete ? `deal history incomplete: ${pull.reason}` : 'backfill deadline elapsed')
+  }
   const deals = pull.deals
+  if (strictAccount) {
+    // A completed 14-day query is not a complete lifetime P&L for a position
+    // opened earlier. Do not silently omit an older partial close.
+    const matched = new Set(deals.filter(d => d.closePositionDetail).map(d => normPosId(d.positionId)))
+    const rows = db.prepare(`SELECT ctrader_position_id, opened_at FROM trades
+      WHERE account_id = ? AND status = 'closed' AND net_pnl IS NULL`).all(acct)
+    for (const row of rows) {
+      if (!matched.has(normPosId(row.ctrader_position_id))) continue
+      const opened = Date.parse(String(row.opened_at || '').replace(' ', 'T').replace(/(?<!Z)$/, 'Z'))
+      if (!Number.isFinite(opened) || opened < from || opened > now) throw new Error('position lifetime outside verified deal window')
+    }
+  }
   if (!pull.complete) {
     console.warn(`[pnl-backfill] deal pull INCOMPLETE (${pull.reason}) after ${pull.pages} page(s) — figures below cover PART of the window`)
   }
@@ -329,9 +350,9 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       // size is honest where a guessed one would be the JPN225 mistake again.
       let symMeta = {}
       try {
-        const idMap = JSON.parse((db.prepare(
-          `SELECT value FROM agent_state WHERE key = 'symbol_id_map'`
-        ).get()?.value) || '{}') || {}
+        const idMap = strictAccount
+          ? (await import('../lib/ctrader-creds.js')).getAccountSymbolMap(db, acct)?.map ?? {}
+          : JSON.parse((db.prepare(`SELECT value FROM agent_state WHERE key = 'symbol_id_map'`).get()?.value) || '{}') || {}
         for (const [name, id] of Object.entries(idMap)) symMeta[id] = { symbolName: name }
       } catch { symMeta = {} }
       const shaped = shapeDeals(deals, symMeta, acct)
@@ -474,10 +495,10 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // helper shared with closeTradeRow and the loop's price-reconcile step, so
   // the three writers cannot disagree about what the columns mean.
   const closedIds = db.prepare(
-    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'`
+    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed' ${scopeSql}`
   )
   const restampPosition = (positionId) => {
-    try { for (const { id } of closedIds.all(positionId)) stampRealisedAudit(db, id) } catch { /* audit columns never fail a backfill */ }
+    try { for (const { id } of closedIds.all(positionId, ...scopeParams)) stampRealisedAudit(db, id) } catch { /* audit columns never fail a backfill */ }
   }
   const tx = db.transaction((entries) => {
     for (const [positionId, agg] of entries) {
@@ -492,7 +513,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       // Only when the scoped update did not already take the row — the
       // selected-account pass covers NULL rows itself via includeNull.
       let moneyLanded = r.changes
-      if (acct != null && r.changes === 0) {
+      if (!strictAccount && acct != null && r.changes === 0) {
         const c = claim.run(String(acct), ...money, positionId)
         attributed += c.changes
         backfilled += c.changes
@@ -538,7 +559,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // Per TRADE, not per account, because that is the granularity the decision
   // is made at. Rows that just filled are excluded — their net_pnl is no
   // longer NULL, so the UPDATE below cannot reach them.
-  noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString() })
+  noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString(), includeUnattributed: !strictAccount })
 
   return { backfilled, attributed, exitsRepaired, exitsFilled, dealsPersisted, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap }
 }
@@ -667,9 +688,9 @@ export function exhaustedAccounts() {
  * the gap check above. An orphan row's close may live in ANY account's deal
  * history, so every pass genuinely did try it.
  */
-export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOString() } = {}) {
+export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOString(), includeUnattributed = true } = {}) {
   try {
-    const scope = accountId == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
+    const scope = accountId == null ? '' : includeUnattributed ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
     const args = accountId == null ? [at] : [at, String(accountId)]
     return db.prepare(`
       UPDATE trades

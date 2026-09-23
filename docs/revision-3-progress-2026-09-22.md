@@ -765,3 +765,77 @@ health panel also reported three overdue, never-attempted P&L backfills. These
 are explicit remaining data-quality work; no missing value was invented,
 written off or turned into a successful zero during acceptance. No 90-day
 production depth or complete historical cashflow reconciliation is claimed.
+
+## Acceptance closure checkpoint — 23 September 2026, 11:05 SGT
+
+#1034 is merged as `044788dc7d25a472e5228ed5e7b4329203a2a067`. Its exact
+source tree `9d4ec40121bb6b3e22017ac5e380c7fd8220b20d` passed 5,300 agent tests
+without skips, 930 frontend tests, zero-warning lint, build, no-green, syntax
+and inventory. Both PR workflows passed, and all four Railway services deployed
+successfully. Fetched main matched that source tree; no open PRs remained.
+
+The final authenticated readback verified explicit aggregate headings and
+correct history/blocker account labels for accounts ending 9908 and 0058,
+with one panel of each type retained after switching. This completes the
+display follow-up to the seven-account behavior checks above. A privately
+saved screenshot records both scope labels; no credential or private screenshot
+was published in the repository. Cloud-browser reload stalled twice during
+this acceptance session; fresh tabs retained authentication and worked, and
+the stale agent tabs were closed. This was not a reason to repeat deployments.
+
+The final independent audit checked all seven accounts at 11:02:30–32 SGT:
+32 positions, zero missing SL, and the same two missing-TP1 exceptions on
+9908/0949. Initial startup UNVERIFIED readings were superseded by this fresh
+successful audit. No target, numerical limit, trading-account selection,
+credential or scanner activation setting was changed.
+
+**Accepted:** authenticated reporting behavior for the observed account,
+window, pagination, unavailable/zero, blocker-diagnostic and restart-persistence
+cases. **Still incomplete:** full historical cashflow/P&L reconciliation,
+including the seven cashflow-coverage gaps, 23 unpriced closes, four unattributed
+closes and three overdue never-attempted P&L backfills observed earlier in this
+session. Those dated observations are not continuously current readings.
+P5c remaining native strategy ports/parity/load acceptance, P5a real alert
+delivery and outage drills, and the other P0–P8 completion criteria remain as
+listed above. Target policy and scanner activation retain distinct approvals.
+
+This documentation/serial checkpoint is published on the continuation branch
+for the next code PR. It does not trigger another status-only deployment.
+
+
+## Version 3 continuation - 23 September 2026, 11:35 SGT
+
+The owner requested continued implementation through Version 3 completion with
+interval reports. Separate target-policy and scanner-activation approvals remain.
+GitHub main remains `044788dc7d25a472e5228ed5e7b4329203a2a067`; all four Railway
+deployments are successful. The 11:24:05-07 SGT independent broker reads again
+reported 32 positions, zero missing stops and the same two TP1 exceptions.
+
+P5 history diagnosis found that cashflow collection is tied to the nightly equity
+pass, leaving newer observations outside its verified interval. A bounded
+continuation collector is the next reporting package; no complete cashflow
+reconciliation is claimed yet.
+
+The P&L loop at 11:25 SGT still reported 23 unpriced closes: 20 previously
+written off and three overdue never-attempted rows. Code inspection found that
+cross-side reconciliation can close local trades but the P&L pass visits only
+the selected broker environment. The accompanying correction wires a paced
+read-only deal-history recovery after cross-side reconciliation. It uses each
+registered account's own host and symbol map, and rejects account mismatches,
+malformed monetary evidence, partial history, expired reads and a matched
+position whose lifetime predates the verified window. Unattributed rows cannot
+be claimed by this new path. Audit restamping is restricted to the same account.
+
+Nine focused behavioural/wiring tests pass, including broker closure through
+actual recovery, collision isolation, failed-read isolation, pacing, refused
+accounts, strict unknown-row handling and partial-lifetime refusal. Full local
+and PR gates, production rollout and the three-row readback remain required.
+No target, numerical risk limit, ownership, selected account or scanner mode
+changes. Rollback owner remains Adrian Ang.
+
+The first full gate ran 5,309 agent tests: 5,308 passed and the exact routing
+inventory failed because the new module was not listed. Its five environment
+references were inspected: opposite-host selection, credential assembly and
+registered-host verification only. The routing inventory now records those
+exact counts and purpose; its detection rules remain intact. Other local gates
+passed (930 frontend tests). The complete gate is rerun on this corrected tree.
