@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import { backfillClosedPnl, resetBackfillPacing } from './pnl-backfill.js'
-import { backfillCrossSidePnl } from './cross-side-pnl.js'
+import { backfillAccountPnl, backfillCrossSidePnl } from './cross-side-pnl.js'
 import { recoverOldPositionPnl } from './old-position-pnl.js'
 import { verifiedPositionHistory } from '../lib/position-deal-history.js'
 import { EventEmitter } from 'node:events'
@@ -139,6 +139,36 @@ test('the existing cross-side pass reaches old position history on its own accou
   assert.equal(row(db, target).net_pnl, 1.3); assert.equal(calls.length, 1)
   assert.equal(calls[0][0], 'live.ctraderapi.com'); assert.equal(calls[0][4], '2'); assert.equal(calls[0][5], '700')
   assert.ok(calls[0][7] <= 5000); assert.equal(getState(db, 'ctrader_account_id'), '1')
+})
+
+test('same-side account passes recover the selected and other enabled accounts with their own history', async t => {
+  const db = fixture(t), selected = seed(db, '1'), otherSide = seed(db, '2'), calls = []
+  db.prepare("INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES ('4',0,1,'active')").run()
+  const peer = seed(db, '4'), orphan = seed(db, null)
+  for (const accountId of ['1', '4']) {
+    const result = await backfillAccountPnl(db, { ...creds, host: 'demo.ctraderapi.com', isLive: false, accountId }, {
+      clock: () => now, getDeals: async () => { throw Error('no recent account query needed') },
+      getPositionDeals: async (...a) => { calls.push(a); return history(a[5], a[4]) },
+    })
+    assert.equal(result.result.positionHistory.state, 'recovered')
+    assert.equal(result.result.backfilled, 1)
+  }
+  assert.equal(row(db, selected).net_pnl, 1.3); assert.equal(row(db, peer).net_pnl, 1.3)
+  assert.equal(row(db, otherSide).net_pnl, null); assert.equal(row(db, orphan).net_pnl, null)
+  assert.deepEqual(calls.map(a => [a[0], a[4], a[5]]), [['demo.ctraderapi.com', '1', '700'], ['demo.ctraderapi.com', '4', '700']])
+  assert.ok(calls.every(a => a[7] <= 5000)); assert.equal(getState(db, 'ctrader_account_id'), '1')
+})
+
+test('a same-side transport still pending also blocks a later opposite-side pass after selection changes', async t => {
+  const db = fixture(t), target = seed(db); let release, calls = 0
+  const deps = { budgetMs: 10, getCreds: (_db, { accountId }) => ({ ...creds, accountId }),
+    getPositionDeals: async () => { calls++; return new Promise(resolve => { release = resolve }) } }
+  const first = await backfillAccountPnl(db, creds, deps)
+  assert.equal(first.result.positionHistory.state, 'failed')
+  const second = await backfillCrossSidePnl(db, base, [], deps)
+  assert.equal(second.find(r => r.accountId === '2').skipped, 'read_still_in_flight')
+  assert.equal(calls, 1); release(history()); await new Promise(resolve => setTimeout(resolve, 1))
+  assert.equal(row(db, target).net_pnl, null); assert.equal(row(db, target).pnl_attempts, 0)
 })
 
 test('expired failure cooldowns cannot starve later old positions across repeated loop passes', async t => {

@@ -175,7 +175,7 @@ test('the suspect sweep runs on the loop, per account, before the P&L backfill (
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
   const sweep = src.indexOf('sweepSuspects(db, { accountId: acct })')
-  const backfill = src.indexOf('backfillClosedPnl(db, creds, { accountId: acct })')
+  const backfill = src.indexOf('backfillAccountPnl(db, { ...creds, ready: true }, { closeSeen })')
   assert.ok(sweep > 0, 'the loop must call the sweep')
   assert.ok(backfill > sweep, 'and call it BEFORE the backfill fetch')
   assert.match(src, /import\('\.\/services\/exit-price-suspects\.js'\)/)
