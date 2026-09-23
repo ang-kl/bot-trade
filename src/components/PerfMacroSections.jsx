@@ -99,13 +99,13 @@ function QuadCard({ q }) {
           <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, color: MU }}>{r.pnl}</span>
         </div>
       ))}
-      {q.rows.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: MU, borderTop: `1px solid ${EDG}`, paddingTop: 3 }}>no open trades in this quadrant</span>}
+      {q.rows.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: MU, borderTop: `1px solid ${EDG}`, paddingTop: 3 }}>{q.available ? 'No recorded open positions in this quadrant.' : 'Position evidence unavailable.'}</span>}
     </div>
   )
 }
 
 /** trades30: [{sym, cat, pnl}] real closed 30D · positions: monitored rows */
-export function RegimeMatrix({ populationReport, positions, accounts, account, onAccount, inModal = false }) {
+export function RegimeMatrix({ populationReport, positions, positionsAvailable = false, accounts, account, onAccount, inModal = false }) {
   // ONE SCOPE, NOT TWO. Owner 05-08-2026: "Macro regime matrix doesn't refresh
   // when selected by account."
   //
@@ -145,7 +145,7 @@ export function RegimeMatrix({ populationReport, positions, accounts, account, o
       tip: `${name} · 30D ${st.n ?? 'unavailable'} closes · ${st.pricedN ?? '—'} priced · ${st.moneyState}`,
     }
   })
-  const scoped = positions.filter(p => rAcct === 'all' || String(p.account_id ?? '') === rAcct)
+  const scoped = positionsAvailable ? positions.filter(p => rAcct === 'all' || String(p.account_id ?? '') === rAcct) : []
   const qsum = { q1: [], q2: [], q3: [], q4: [] }
   const unclassified = []
   for (const p of scoped) {
@@ -153,7 +153,7 @@ export function RegimeMatrix({ populationReport, positions, accounts, account, o
     if (q) qsum[q].push(p); else unclassified.push(p)
   }
   const quadCards = ['q2', 'q1', 'q3', 'q4'].map(q => ({
-    id: q, title: QTXT[q][0], txt: QTXT[q][1],
+    id: q, title: QTXT[q][0], txt: QTXT[q][1], available: positionsAvailable,
     rows: qsum[q].map(p => ({
       sym: p.symbol,
       sd: `${sideLabelUpper(p.side) ?? '—'} ${p.volume ?? '—'}`,
@@ -174,7 +174,7 @@ export function RegimeMatrix({ populationReport, positions, accounts, account, o
           <SectionTools id="regime" title="Macro Regime Matrix — Where the Book Sits table" window="30D"
             data={dots.map(d => ({ group: d.name, net30d: d.pnl }))}
             toText={() => ['Macro regime matrix — 30D net per asset group', ...dots.map(d => `${d.name} · ${d.pnl}`)].join('\n')}
-            render={() => <RegimeMatrix populationReport={populationReport} positions={positions} accounts={accounts} account={account} onAccount={onAccount} inModal />} />
+            render={() => <RegimeMatrix populationReport={populationReport} positions={positions} positionsAvailable={positionsAvailable} accounts={accounts} account={account} onAccount={onAccount} inModal />} />
         )}
       </div>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -291,11 +291,11 @@ export function BalanceInOut({ inModal = false }) {
     <div style={{ ...panel, gap: 3 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Balance in / out — deposits, withdrawals &amp; transfers</span>
-        <span style={{ fontSize: 'var(--fs-body)', color: SB }}>non-trading cash flows · excluded from P&amp;L, carry-forward adjusts on the transaction date</span>
+        <span style={{ fontSize: 'var(--fs-body)', color: SB }}>cashflow detail not connected to this legacy panel</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: MU }}>net —</span>
         {!inModal && (
           <SectionTools id="balance-in-out" title="Balance In / Out table" data={[]}
-            toText={() => 'Balance in / out — no transfers recorded (cash-flow ingestion not built yet)'}
+            toText={() => 'Cashflow detail unavailable here; consult Account balance, equity and cashflows for retained coverage.'}
             render={() => <BalanceInOut inModal />} />
         )}
       </div>
@@ -309,7 +309,7 @@ export function BalanceInOut({ inModal = false }) {
           <span>Date</span><span>Time (UTC · AEST)</span><span>Type</span><span>Account</span><span>Counterparty / note</span><span style={{ textAlign: 'right' }}>Amount · ccy</span><span style={{ textAlign: 'right' }}>Status</span>
         </div>
         <span style={{ display: 'block', fontSize: 'var(--fs-body)', color: MU, padding: '4px 0' }}>
-          No transfers recorded — the agent does not ingest broker cash-flow events yet. Rows appear collect-forward once deposit/withdrawal tracking is built; nothing here is ever reconstructed by guesswork.
+          Cashflow detail unavailable here. Consult Account balance, equity and cashflows for retained account coverage. This panel cannot establish zero transfers or a reconciled balance.
         </span>
       </div>
     </div>
@@ -323,10 +323,10 @@ export function BalanceInOut({ inModal = false }) {
  * multi-account desk the card has to name the account rather than let the
  * reader assume it follows the page's filter.
  */
-export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, clock, scopeNote = null, inModal = false }) {
+export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scopeNote = null, inModal = false }) {
   const box = { border: `1px solid ${EDG}`, borderRadius: 10, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 3 }
   const chip = { fontSize: 'var(--fs-body)', fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: ACS, border: `1px solid ${GBD}` }
-  const money = (v) => (v == null ? '—' : '$' + Math.round(v).toLocaleString('en-US'))
+  const money = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
   return (
     <div style={{ ...panel, gap: 4 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
@@ -335,7 +335,7 @@ export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct,
         {!inModal && (
           <SectionTools id="data-feed" title="Data Feed — Core Universal Essentials table"
             data={[{ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scope: scopeNote }]}
-            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} clock={clock} scopeNote={scopeNote} inModal />} />
+            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} scopeNote={scopeNote} inModal />} />
         )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
@@ -345,14 +345,15 @@ export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct,
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
             {['1m', '15m', '1h', '4h', '1D'].map(tf => <span key={tf} style={chip}>{tf}</span>)}
           </div>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>watchlist symbols stream per scan cycle · {clock}</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Feed freshness unavailable here; a page refresh is not a completed market-data receipt.</span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Account &amp; portfolio state</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Live cash, available margin, open positions, unrealized P&amp;L</span>
           <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>cash {money(balance)} · margin avail {money(freeMargin)}</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Recorded units; currency not verified by this panel.</span>
           {scopeNote && <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>{scopeNote}</span>}
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>{openCount} open · unrealized <span style={{ fontWeight: 800, color: equity != null && balance != null ? (equity - balance >= 0 ? UP : DN) : MU }}>{equity != null && balance != null ? signed(equity - balance) : '—'}</span></span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>{openCount ?? '—'} recorded open · unrealized <span style={{ fontWeight: 800, color: equity != null && balance != null ? (equity - balance >= 0 ? UP : DN) : MU }}>{equity != null && balance != null ? signed(equity - balance) : '—'}</span></span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Execution parameters</span>
@@ -363,8 +364,8 @@ export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct,
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Risk controls</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Stop-loss limits, take-profit triggers, max drawdown caps</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>SL set {slSet}/{openCount} open · TP set {tpSet}/{openCount}</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>max drawdown {dailyLossPct != null ? `${(dailyLossPct * 100).toFixed(0)}%/day` : '—'} · equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed ? 'armed' : 'off'}</span></span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>Recorded SL set {slSet ?? '—'}/{openCount ?? '—'} open · TP set {tpSet ?? '—'}/{openCount ?? '—'}</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>daily loss limit {dailyLossPct != null ? `${(dailyLossPct * 100).toFixed(0)}%/day` : '—'} · equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed == null ? 'unverified' : equityStopArmed ? 'armed' : 'off'}</span></span>
         </div>
       </div>
     </div>

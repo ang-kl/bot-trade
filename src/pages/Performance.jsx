@@ -46,6 +46,7 @@ import Collapse from '../components/common/Collapse.jsx'
 import { accountNumbers } from "../lib/scope-label.js"
 import { reportStats, reportGroups, reportLedger } from '../../agent/shared/performance-populations.js'
 import { performanceGradients } from '../lib/performance-gradients.js'
+import { scopedPerformanceRows } from '../lib/performance-evidence.js'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -754,10 +755,11 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
 // lost that". One dense line per trade — time · symbol · side/lots · P&L —
 // and tapping it prints the rest (outcome, prices, hold, plan) on one line.
 const TODAY_TRADE_COLS = '14px 42px 66px 74px 1fr'
-function TodayTradesBody({ rows }) {
+function TodayTradesBody({ rows, available = false }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
   const [openId, setOpenId] = useState(null)
-  if (!rows.length) return <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>no closed trades in this window</span>
+  if (!available) return <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>Journal evidence unavailable.</span>
+  if (!rows.length) return <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>No priced closes in this journal sample for the window.</span>
   return (
     <div ref={animRef}>
       {rows.map(t2 => {
@@ -1118,10 +1120,15 @@ export default function Performance() {
   // Whose positions the route says these are (owner: state the account beside
   // the Open positions table).
   const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
+  const journalAvailable = agentConfigured() && !error && tradeScope === acct
+  const positionsAvailable = agentConfigured() && !error && posScope.accountId === acct
 
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current
-    if (!agentConfigured()) { setError('Agent not connected — set it up on Connect.'); return }
+    if (!agentConfigured()) {
+      setPopulationReport(null); setAnalytics(null); setRiskFull(null)
+      setError('Agent not connected — set it up on Connect.'); return
+    }
     try {
       // ONE account for the whole page. The ledger already honoured `acct`;
       // trades, risk events and positions did not, so the page mixed one
@@ -1146,18 +1153,20 @@ export default function Performance() {
       const an = await agentGet(`/state/account-analytics?account=${encodeURIComponent(acct)}`).catch(() => null)
       if (generation !== loadGeneration.current) return
       setPopulationReport(populations?.status === 'complete' ? populations : null)
-      setTradeScope(acct)
+      const tradeRows = scopedPerformanceRows(t, acct, 'trades')
+      const positionRows = scopedPerformanceRows(p, acct, 'positions')
+      setTradeScope(tradeRows ? acct : null)
       setAnalytics(an && !an.error ? an : null)
       setLedger(led)
       setAccounts(ac?.accounts || [])
       setSelectedAccountId(ac?.selectedAccountId || null)
-      setAllTrades(t?.rows || t?.trades || [])
+      setAllTrades(tradeRows || [])
       // With 'all' the scoped fetch above already IS the portfolio; the
       // cross-account fetch below only runs when one account is selected.
 
       setDecisionsDaily(dd?.rows ?? null)
-      setPositions(p?.rows || p?.positions || [])
-      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
+      setPositions(positionRows || [])
+      setPosScope({ accountId: positionRows ? acct : null, legacyRows: p?.legacyRows ?? 0 })
       setPostmortems(pm?.rows || pm?.postmortems || [])
       // Per-account ledgers feed the accounts detail row (balance, day P&L
       // scope, 30D forecast pace) — small server-side aggregations, one per
@@ -1180,7 +1189,12 @@ export default function Performance() {
 
       setLoadedAt(populations?.asOfMs ?? Date.now())
       setError('')
-    } catch (e) { if (generation === loadGeneration.current) setError(e.message) }
+    } catch (e) {
+      if (generation === loadGeneration.current) {
+        setPopulationReport(null); setAnalytics(null); setRiskFull(null)
+        setError(e.message)
+      }
+    }
   }, [acct])
 
   // Instant paint (owner 2026-07-28: "not able to see the information now
@@ -1198,16 +1212,18 @@ export default function Performance() {
     // rows over the scoped ones.
     const q = acct === 'all' ? '?account=all' : `?account=${encodeURIComponent(acct)}`
     const t2 = swrPeek(`/state/trades${q}`)
-    if (t2) setAllTrades(t2.rows || t2.trades || [])
+    const tradeRows = scopedPerformanceRows(t2, acct, 'trades')
+    if (tradeRows) setAllTrades(tradeRows)
     const dd2 = swrPeek(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}`)
     if (dd2) setDecisionsDaily(dd2.rows || [])
     const p2 = swrPeek(`/state/positions${q}`)
-    if (p2) { setPositions(p2.rows || p2.positions || []); setPosScope({ accountId: p2?.accountId ?? null, legacyRows: p2?.legacyRows ?? 0 }) }
+    const positionRows = scopedPerformanceRows(p2, acct, 'positions')
+    if (positionRows) { setPositions(positionRows); setPosScope({ accountId: acct, legacyRows: p2?.legacyRows ?? 0 }) }
     const pm2 = swrPeek(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`)
     if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
     const rf2 = swrPeek('/state/risk-full')
     if (rf2) setRiskFull(rf2)
-    if (t2) setTradeScope(acct)
+    if (tradeRows) setTradeScope(acct)
     const populations = swrPeek('/state/performance-populations')
     if (populations?.status === 'complete') setPopulationReport(populations)
     if (led || t2) setLoadedAt(Date.now())
@@ -1269,11 +1285,11 @@ export default function Performance() {
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
   const scopedClosed = useMemo(() => {
-    if (tradeScope !== acct) return []
+    if (!journalAvailable) return []
     const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
     if (acct === 'all') return closed
     return closed.filter(t2 => String(t2.account_id ?? '') === acct)
-  }, [allTrades, acct, tradeScope])
+  }, [allTrades, acct, journalAvailable])
 
   // The "Today" window. Owner (2026-07-25, Saturday): "under today should
   // show Friday past 24h closure trades — don't leave it blank as today is
@@ -1481,7 +1497,7 @@ export default function Performance() {
   // rides in the floating table marked '?'. SL/TP distances stay
   // entry-based (tooltip says so).
   const openSplit = useMemo(() => {
-    const rows = positions.map(p2 => {
+    const rows = (positionsAvailable ? positions : []).map(p2 => {
       const e = Number(p2.entry_price), sl = Number(p2.current_sl), tp = Number(p2.current_tp)
       const pct = (v) => (Number.isFinite(e) && e !== 0 && Number.isFinite(v) ? (Math.abs(e - v) / e * 100).toFixed(1) + '%' : '—')
       return {
@@ -1535,7 +1551,7 @@ export default function Performance() {
     }
     const tot = l => { const ids = new Set(l.map(r => r.acc)); return ids.size === 1 && !ids.has(null) && l.every(r => r.pnl != null) ? l.reduce((s, r) => s + r.pnl, 0) : null }
     return { floating, closed, weekend24, floatTot: tot(floating), closedTot: tot(closed), weekendTot: tot(weekend24) }
-  }, [positions, loadedAt])
+  }, [positions, positionsAvailable, loadedAt])
 
   // MUST stay BELOW openSplit. It was declared ~80 lines above it and read
   // openSplit inside the useMemo factory, which React runs during render —
@@ -1907,7 +1923,7 @@ export default function Performance() {
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
                   <AccountTag accountId={posScope.accountId} legacyRows={t2.key === 'float' ? posScope.legacyRows : 0} />
-                  <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>{t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : '—'}` : 'flat'}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>{!positionsAvailable ? 'Position evidence unavailable' : t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : '—'}` : 'No recorded positions in this group'}</span>
                 </div>
                 {t2.key === 'closed' && <span style={{ fontSize: 'var(--fs-body)', color: P_WRN }}>market closed — cannot exit until reopen · latest computed P&amp;L shown</span>}
                 {t2.rows.map(p2 => (
@@ -2072,6 +2088,7 @@ export default function Performance() {
             <RegimeMatrix
               populationReport={populationReport}
               positions={positions}
+              positionsAvailable={positionsAvailable}
               accounts={accounts}
               account={acct}
               onAccount={setAcct}
@@ -2082,18 +2099,17 @@ export default function Performance() {
               freeMargin={feed.freeMargin}
               equity={feed.equity}
               scopeNote={feed.note}
-              openCount={positions.length}
+              openCount={positionsAvailable ? positions.length : null}
               dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
-              equityStopArmed={riskFull?.risk?.effective?.equityStopPct != null}
-              slSet={positions.filter(p2 => p2.current_sl != null).length}
-              tpSet={positions.filter(p2 => p2.current_tp != null).length}
-              clock={`last refresh ${new Date(loadedAt).toUTCString().slice(17, 25)} UTC`}
+              equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
+              slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
+              tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
             />
             <Card>
               <h3 className="t-h3 mb-1.5">All-time tiles &amp; equity</h3>
               {!tiles && <p className={`text-(length:--fs-body) mb-2 ${SUB}`}>{analytics && String(analytics.accountId ?? 'all') === acct ? `${analytics.closedTrades ?? analytics.trades} recorded closes; ${analytics.unpricedTrades ?? 0} without P&L.` : 'All-time analytics unavailable.'}</p>}
               {tilesRow}
-              <div className="overflow-x-auto"><ReportChart populationReport={populationReport} accountId={acct} daily={tradeScope === acct ? decisionsDaily : null} /></div>
+              <div className="overflow-x-auto"><ReportChart populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} /></div>
             </Card>
           </>
         )}
@@ -2161,9 +2177,9 @@ export default function Performance() {
                   // The copied text carries the same label the row shows — the
                   // END of the window, in SGT over UTC — not the window start.
                   ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.net != null ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)} opened / ${openingCountLabel(r.closedN, r.unknownCloseTimeN, r.incompleteOpeningWindow)} closed`),
-                  '', `Closed trades (${todayTrades.length})`,
+                  '', `Journal sample (${journalAvailable ? todayTrades.length : 'unavailable'})`,
                   ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
-                render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} /></>} />
+                render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} available={journalAvailable} /></>} />
             </span>
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
               {today.net != null ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
@@ -2189,11 +2205,12 @@ export default function Performance() {
             {/* Owner (2026-07-25): "itemised today's closed trades list back"
                 — alongside the hourly aggregate, not replacing it. */}
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderTop: `1px solid ${P_EDG}`, paddingTop: 2 }}>
-              Journal sample ({todayTrades.length} of {today.n ?? 'unknown'} recorded closes) · tap a row
+              Journal sample ({journalAvailable ? todayTrades.length : 'unavailable'} of {today.n ?? 'unknown'} recorded closes) · tap a row
             </span>
-            <PagedRows rows={todayTrades} pageSize={8} maxHeight={300}>{(pageRows) => <TodayTradesBody rows={pageRows} />}</PagedRows>
+            <PagedRows rows={todayTrades} pageSize={8} maxHeight={300}>{(pageRows) => <TodayTradesBody rows={pageRows} available={journalAvailable} />}</PagedRows>
           </div>
           {(() => {
+            if (!positionsAvailable) return <p role="status">Position evidence unavailable; an empty display is not a flat account.</p>
             const defs = [{
               key: 'float', title: 'Open now — floating', rows: openSplit.floating, tot: openSplit.floatTot,
               border: P_GBD, titleCol: P_MU,
@@ -2441,6 +2458,7 @@ export default function Performance() {
           <RegimeMatrix
             populationReport={populationReport}
             positions={positions}
+            positionsAvailable={positionsAvailable}
             accounts={accounts}
             account={acct}
             onAccount={setAcct}
@@ -2453,12 +2471,11 @@ export default function Performance() {
             freeMargin={feed.freeMargin}
             equity={feed.equity}
             scopeNote={feed.note}
-            openCount={positions.length}
+            openCount={positionsAvailable ? positions.length : null}
             dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
-            equityStopArmed={riskFull?.risk?.effective?.equityStopPct != null}
-            slSet={positions.filter(p2 => p2.current_sl != null).length}
-            tpSet={positions.filter(p2 => p2.current_tp != null).length}
-            clock={`last refresh ${new Date(loadedAt).toUTCString().slice(17, 25)} UTC`}
+            equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
+            slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
+            tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
           />
         </div>
 
@@ -2477,7 +2494,7 @@ export default function Performance() {
               render={() => (
                 <div>
                   {tilesRow}
-                  <ReportChart populationReport={populationReport} accountId={acct} daily={tradeScope === acct ? decisionsDaily : null} />
+                  <ReportChart populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} />
                 </div>
               )} />
           </div>
@@ -2487,9 +2504,9 @@ export default function Performance() {
               it, why it won or lost, what was written down. */}
           <div className="mb-2">
             <p className={SUB}>Debrief of the recent journal sample; period totals come from the complete aggregates above.</p>
-            <SessionReview allTrades={tradeScope === acct ? allTrades : []} postmortems={postmortems} nowMs={loadedAt} />
+            <SessionReview available={journalAvailable} allTrades={journalAvailable ? allTrades : []} postmortems={postmortems} nowMs={loadedAt} />
           </div>
-          <ReportChart populationReport={populationReport} accountId={acct} daily={tradeScope === acct ? decisionsDaily : null} />
+          <ReportChart populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} />
         </Card>
       </div>
     </div>

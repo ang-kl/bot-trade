@@ -145,7 +145,7 @@ function Bar({ label, n, of, tone }) {
 // nowMs is REQUIRED from the caller (the page's loadedAt), not defaulted to
 // Date.now() — a Date.now() default is an impure render and would make the
 // reviewed window drift on every re-render.
-export default function SessionReview({ allTrades = [], postmortems = [], nowMs, inModal = false }) {
+export default function SessionReview({ allTrades = [], postmortems = [], available = false, nowMs, inModal = false }) {
   const at = nowMs ?? 0
   const [period, setPeriod] = useState('day')
   const [openId, setOpenId] = useState(null)
@@ -167,7 +167,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       const ms = Date.parse(String(v).includes('T') ? v : String(v).replace(' ', 'T') + 'Z')
       return Number.isFinite(ms) ? ms : null
     }
-    const rows = allTrades
+    const rows = (available ? allTrades : [])
       .filter(t => t.status === 'closed' && t.net_pnl != null)
       .map(t => ({ ...t, ms: closedMs(t) }))
       .filter(t => t.ms != null && t.ms >= from)
@@ -211,7 +211,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       unknown: rows.filter(r => r.onPlan === null).length,
       lessons: rows.filter(r => r.lesson),
     }
-  }, [allTrades, postmortems, at, period])
+  }, [allTrades, postmortems, available, at, period])
 
   const pill = (on) => ({
     cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-body)', fontWeight: W_CELL,
@@ -233,12 +233,12 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
         {!inModal && (
           <SectionTools id="session-review" title="Debrief — Why We Won and Lost card" window={period === 'day' ? '1D' : '1W'}
             data={model.rows.map(r => ({ time: r.hm, symbol: r.sym, side: r.side, pnl: r.pnl, who: r.who, how: r.how, outcome: r.bucket, onPlan: r.onPlan, note: r.note, lesson: r.lesson }))}
-            toText={() => [
+            toText={() => !available ? 'Debrief unavailable; journal evidence could not be read.' : [
               `Debrief — ${label}`,
               `net ${signed(model.net)} · ${model.wins.length} up · ${model.losses.length} down`,
               ...model.rows.map(r => `${r.hm} ${r.sym} ${r.side} ${signed(r.pnl)} · ${r.who} (${r.how}) · ${r.bucket} — ${r.note}${r.lesson ? ` · lesson: ${r.lesson}` : ''}`),
             ].join('\n')}
-            render={() => <SessionReview allTrades={allTrades} postmortems={postmortems} nowMs={at} inModal />} />
+            render={() => <SessionReview allTrades={allTrades} postmortems={postmortems} available={available} nowMs={at} inModal />} />
         )}
       </div>
 
@@ -250,7 +250,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
 
       {model.rows.length === 0 && (
         <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
-          Nothing closed in {label} — there is nothing to review. This is the honest state, not a loading failure.
+          {available ? `No priced closes in the retained journal sample for ${label}; this is not the complete period population.` : 'Debrief unavailable; journal evidence could not be read.'}
         </span>
       )}
 
