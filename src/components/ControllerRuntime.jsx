@@ -25,7 +25,29 @@ export default function ControllerRuntime({ runtime }) {
           <p>{runtime.watchdog.status.error || 'No reported storage error'}. External verifier observer: {runtime.watchdog.status.externalObserver}.</p>
           <p>Effective probe interval: {count(runtime.watchdog.status.policy?.probeMs)} ms; service grace: {count(runtime.watchdog.status.policy?.serviceGraceMs)} ms; management overdue grace: {count(runtime.watchdog.status.policy?.managementGraceMs)} ms; scanner overdue grace: {count(runtime.watchdog.status.policy?.scannerGraceMs)} ms.</p>
           <p>Pending deliveries: {Object.keys(runtime.watchdog.status.outbox || {}).length}; capacity refusals: {count(runtime.watchdog.status.dropped)}. Telegram acceptance is not confirmation that the message was read.</p>
-          <ul>{Object.entries(runtime.watchdog.status.incidents || {}).filter(([, i]) => i.active).map(([id, i]) => <li key={id}>{i.severity}: {i.detail?.service} — {i.detail?.reason || i.detail?.role || 'evidence unavailable'}; account …{String(i.detail?.accountId || '').slice(-4)}; last observed {stamp(i.lastObservedAtMs)}.</li>)}</ul>
+          <div className="overflow-x-auto"><table className="w-full text-left">
+            <caption className="text-left font-semibold">Independent watchdog service receipts</caption>
+            <thead><tr>{['Service', 'Latest probe', 'Reachable / valid work contract', 'Last valid receipt', 'Retained work items'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
+            <tbody>{['node', 'cpp-exec', 'cpp-acct', 'cpp-scan-tick', 'cpp-scan-timeframe'].map(service => {
+              const receipt = runtime.watchdog.status.services?.[service]
+              const age = now - Number(receipt?.attemptedAtMs)
+              const fresh = receipt?.attemptedAtMs > 0 && age >= 0 && age < (runtime.watchdog.status.policy?.serviceGraceMs || 60000)
+              return <tr key={service}>
+                <td className="pr-3">{service}</td>
+                <td className="pr-3">{stamp(receipt?.attemptedAtMs)}{receipt && !fresh ? ' · STALE' : ''}</td>
+                <td className="pr-3">{fresh ? `${onOff(receipt?.reachable)} / ${onOff(receipt?.validContract)}` : 'UNVERIFIED'}</td>
+                <td className="pr-3">{stamp(receipt?.lastContractAtMs)}</td>
+                <td className="pr-3">{count(receipt?.workCount)}</td>
+              </tr>
+            })}</tbody>
+          </table></div>
+          <p>A valid receipt with zero work items does not establish active feed coverage. Probe time and completed work time are separate evidence.</p>
+          <ul>{Object.entries(runtime.watchdog.status.incidents || {}).filter(([, i]) => i.active).map(([id, i]) => <li key={id}>
+            {i.severity}: {i.detail?.service} — {id.includes(':no_orders:') ? 'no recorded orders' : id.split(':').at(-1).replaceAll('_', ' ')}; {i.detail?.reason || i.detail?.role || 'evidence unavailable'};
+            {' '}account …{String(i.detail?.accountId || '').slice(-4)}{i.detail?.symbolId != null ? `; symbol ID ${i.detail.symbolId}` : ''};
+            {' '}market {i.detail?.marketStatus || 'unverified'}; work completed {stamp(i.detail?.lastCompletedAtMs)}; next due {stamp(i.detail?.nextDueMs)};
+            {' '}opened {stamp(i.openedAtMs)}; last observed {stamp(i.lastObservedAtMs)}.
+          </li>)}</ul>
         </> : <p>Independent watchdog evidence unavailable or stale.</p>}
       </details>
       <div className="overflow-x-auto">
