@@ -297,6 +297,18 @@ Additional full-plan findings:
 
 ## Native-call attribution release proposal
 
+A second demonstrated collection defect was found at 19:00Z: the collector
+looked for subscription IDs and feed account in `/tick-status`, which contains
+recorder statistics. Native `main.cpp` publishes those identities in the
+authenticated `/health.tick` object. The heartbeat previously discarded that
+object from its durable health receipt. The correction retains it there and
+consumes that exact account/feed identity. Stale, failed or redacted active
+feed evidence marks inventory incomplete. No broker operation or refresh
+rate is added; the existing 25-symbol, one-account, one-minute collection
+budget remains unchanged. A behaviour test runs the real heartbeat and
+collector with the native response shapes and verifies the requested IDs.
+This addresses missing collection demand, not ambiguous holiday semantics.
+
 The follow-up diagnostic retains up to three nearest application callers for
 native profiler frames, with a 32-parent traversal bound and cycle detection.
 It skips dependency wrappers and leaves idle/program/GC accounting unchanged.

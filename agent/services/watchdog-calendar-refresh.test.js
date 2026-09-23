@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { initDB, setState, getState } from '../db.js'
 import { createWatchdogCalendarRefresh, watchdogCalendarDemand, startWatchdogCalendarRefresh } from './watchdog-calendar-refresh.js'
 import { readMarketCalendar } from './market-calendar.js'
+import { probeOneSidecar } from './heartbeat.js'
 const now = Date.parse('2026-09-23T12:00Z'), host = 'demo.ctraderapi.com'
 const symbol = id => ({ symbolId: id, scheduleTimeZone: 'UTC', schedule: [{ startSecond: 0, endSecond: 604800 }], holiday: [] })
 function fixture(t) {
@@ -17,10 +18,45 @@ function fixture(t) {
   return db
 }
 const credentials = accountId => ({ ready: true, accountId, host })
+test('real heartbeat health receipt supplies feed identities absent from recorder status', async t => {
+  const db = fixture(t)
+  db.prepare('DELETE FROM monitored_positions').run()
+  const exec = {
+    pingSidecar: async () => ({ ok: true, tick: { enabled: true, feedAccountId: 11, subscribed: [7, 9] },
+      spotFeed: { connected: true, symbols: [{ id: 7, lastTickAtMs: now }] } }),
+    sidecarTickStatus: async () => ({ enabled: true, recording: false, state: 'OFF', events: { total: 0 } }),
+  }
+  await probeOneSidecar(db, exec, { name: 'cpp_exec_demo', isLive: false }, { now: new Date(now) })
+  assert.equal(JSON.parse(getState(db, 'cpp_exec_demo_tick_json')).status.subscribed, undefined)
+  const demand = watchdogCalendarDemand(db, now)
+  assert.deepEqual(demand.identities.map(i => [i.accountId, i.symbolId]), [['11', '7'], ['11', '9']])
+  assert.equal(demand.complete, true)
+  let requested
+  const result = await createWatchdogCalendarRefresh(db, { now: () => now, credentials, fetchSymbols: async (c, ids) => {
+    requested = [c.accountId, ids]; return { ctidTraderAccountId: c.accountId, symbol: ids.map(symbol) }
+  } })()
+  assert.deepEqual(requested, ['11', [7, 9]])
+  assert.equal(result.recorded, 2)
+})
+
+test('missing active feed identity and stale or failed health never assert complete inventory', t => {
+  const db = fixture(t)
+  for (const health of [
+    { at: new Date(now).toISOString(), ok: true, spotFeed: { connected: true }, tick: { enabled: true } },
+    { at: new Date(now - 360_000).toISOString(), ok: true, tick: { feedAccountId: 11, subscribed: [9] } },
+    { at: new Date(now).toISOString(), ok: false, tick: { feedAccountId: 11, subscribed: [9] } },
+  ]) {
+    setState(db, 'cpp_exec_demo_health_json', JSON.stringify(health))
+    const demand = watchdogCalendarDemand(db, now)
+    assert.equal(demand.complete, false)
+    assert.equal(demand.identities.length, 2, 'only independently identified positions remain')
+  }
+})
+
 test('real account map envelope supplies isolated identities; native feed demand rejects wrong host and stale receipts', t => {
   const db = fixture(t)
-  setState(db, 'cpp_exec_demo_tick_json', JSON.stringify({ at: new Date(now).toISOString(), status: { feedAccountId: 11, subscribed: [9] } }))
-  setState(db, 'cpp_exec_tick_json', JSON.stringify({ at: new Date(now).toISOString(), status: { feedAccountId: 22, subscribed: [10] } }))
+  setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ at: new Date(now).toISOString(), ok: true, tick: { feedAccountId: 11, subscribed: [9] } }))
+  setState(db, 'cpp_exec_health_json', JSON.stringify({ at: new Date(now).toISOString(), ok: true, tick: { feedAccountId: 22, subscribed: [10] } }))
   const demand = watchdogCalendarDemand(db, now)
   assert.deepEqual(demand.identities.map(i => [i.accountId, i.symbolId]), [['11', '7'], ['22', '8'], ['11', '9']])
   assert.equal(demand.complete, false)
@@ -63,7 +99,7 @@ test('one in-flight batch, fresh enabled observation required; muted notificatio
 })
 test('batch and inventory bounds; timer is wired at actual boot and can be stopped', async t => {
   const db = fixture(t)
-  setState(db, 'cpp_exec_demo_tick_json', JSON.stringify({ at: new Date(now).toISOString(), status: { feedAccountId: 11, subscribed: Array.from({ length: 600 }, (_, i) => 100 + i) } }))
+  setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ at: new Date(now).toISOString(), ok: true, tick: { feedAccountId: 11, subscribed: Array.from({ length: 600 }, (_, i) => 100 + i) } }))
   assert.equal(watchdogCalendarDemand(db, now).identities.length, 512)
   assert.equal(watchdogCalendarDemand(db, now).complete, false)
   const refresh = createWatchdogCalendarRefresh(db, { now: () => now, credentials, fetchSymbols: async (_c, ids) => { assert.equal(ids.length, 25); return { symbol: ids.map(symbol) } } })
@@ -99,7 +135,7 @@ test('all 512 failing identities receive an attempt before any expired cooldown 
   for (let minute = 0; minute < 21; minute++) {
     at = now + minute * 60_000
     setState(db, 'independent_watchdog_json', JSON.stringify({ readAt: new Date(at).toISOString(), status: { enabled: true } }))
-    setState(db, 'cpp_exec_demo_tick_json', JSON.stringify({ at: new Date(at).toISOString(), status: { feedAccountId: 11, subscribed: Array.from({ length: 512 }, (_, i) => i + 1) } }))
+    setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ at: new Date(at).toISOString(), ok: true, tick: { feedAccountId: 11, subscribed: Array.from({ length: 512 }, (_, i) => i + 1) } }))
     const result = await refresh(); assert.ok(result.requested <= 25)
   }
   assert.equal(new Set(seen.slice(0,512)).size, 512)
