@@ -12,7 +12,9 @@
 // It owns only the new scanner's credential, never a broker/Node credential.
 class ScannerMirror {
 public:
-  using Send = std::function<bool(const std::string&)>;
+  enum class Delivery { Accepted, Retryable, Rejected };
+  using Send = std::function<Delivery(const std::string&)>;
+  static constexpr unsigned maxDeliveryAttempts = 6;
   ScannerMirror(std::string host, long long account, std::string configVersion,
                 long long candidateTtlMs, tick::StrategyParams profile, Send send,
                 size_t queueCapacity = 16384);
@@ -30,6 +32,7 @@ private:
   Send send_;
   SpscRing<Event> queue_;
   std::atomic<uint64_t> accepted_{0}, consumed_{0}, dropped_{0}, failed_{0}, delivered_{0};
+  std::atomic<uint64_t> attempts_{0}, retries_{0}, retryRecords_{0}, exhausted_{0}, rejected_{0}, pending_{0};
   std::atomic<long long> lastInput_{0}, lastDelivered_{0};
   std::atomic<bool> workerFailed_{false};
   std::jthread worker_;

@@ -55,15 +55,35 @@ void ScannerMirror::run(std::stop_token stop) {
         {"flags",r.flags},{"gapBefore",gap}}));
     }
     if(batches.empty()){std::this_thread::sleep_for(std::chrono::milliseconds(5));continue;}
+    size_t pending=0;for(const auto& [symbol,records]:batches)pending+=records.size();
+    pending_.store(pending);
     for(auto& [symbol,records]:batches) {
       if(stop.stop_requested())return;
       auto body=jsn::Value(jsn::Object{{"schemaVersion",1},{"purpose","mirror"},
         {"feed",jsn::Object{{"provider","ctrader"},{"host",host_},{"accountId",account_},{"symbolId",std::to_string(symbol)}}},
         {"feedEpoch",epoch_},{"configVersion",config_},{"profileHash",profileHash_},{"profile",profile_},
         {"candidateTtlMs",ttl_},{"records",records}});
-      bool ok=false;try{ok=send_(jsn::dump(body));}catch(...){/* mirror failure cannot terminate gateway */}
-      if(ok){delivered_.fetch_add(records.size());lastDelivered_.store(clockMs());}
-      else{failed_.fetch_add(records.size());streams[symbol].uncertain=true;}
+      // Keep the same bytes, epoch and sequence until delivery is acknowledged
+      // or this bounded retry window ends. Do not pop later records meanwhile.
+      // An ambiguous acknowledgement can be replayed: scanner admission dedupes.
+      const auto payload=jsn::dump(body);
+      Delivery result=Delivery::Retryable;
+      for(unsigned attempt=0;attempt<maxDeliveryAttempts;++attempt) {
+        if(stop.stop_requested())return;
+        if(attempt){retries_.fetch_add(1);retryRecords_.fetch_add(records.size());}
+        attempts_.fetch_add(1);
+        try{result=send_(payload);}catch(...){result=Delivery::Retryable;}
+        if(result!=Delivery::Retryable || attempt+1==maxDeliveryAttempts)break;
+        // Stop-aware backoff; only this optional mirror consumer ever waits.
+        for(unsigned ms=0;ms<(5u<<attempt)&&!stop.stop_requested();++ms)
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      if(result==Delivery::Accepted){delivered_.fetch_add(records.size());lastDelivered_.store(clockMs());}
+      else{
+        failed_.fetch_add(records.size());streams[symbol].uncertain=true;
+        (result==Delivery::Retryable?exhausted_:rejected_).fetch_add(records.size());
+      }
+      pending_.fetch_sub(records.size());
     }
   }
 }
@@ -73,6 +93,10 @@ jsn::Value ScannerMirror::status() const {
     {"workerFailed",workerFailed_.load()},
     {"accepted",static_cast<long long>(accepted_.load())},{"consumed",static_cast<long long>(consumed_.load())},
     {"queueDrops",static_cast<long long>(dropped_.load())},{"deliveryFailures",static_cast<long long>(failed_.load())},
+    {"deliveryAttempts",static_cast<long long>(attempts_.load())},{"retryAttempts",static_cast<long long>(retries_.load())},
+    {"retriedRecords",static_cast<long long>(retryRecords_.load())},{"pendingRecords",static_cast<long long>(pending_.load())},
+    {"retryExhaustedRecords",static_cast<long long>(exhausted_.load())},{"rejectedRecords",static_cast<long long>(rejected_.load())},
+    {"maxDeliveryAttempts",static_cast<long long>(maxDeliveryAttempts)},
     {"delivered",static_cast<long long>(delivered_.load())},{"lastInputAtMs",lastInput_.load()},
     {"lastDeliveredAtMs",lastDelivered_.load()},{"queueCapacity",static_cast<long long>(queue_.capacity()-1)}});
 }
@@ -82,7 +106,7 @@ ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::
   static const int initialized=curl_global_init(CURL_GLOBAL_DEFAULT);
   if(initialized!=CURLE_OK || !(curl_version_info(CURLVERSION_NOW)->features&CURL_VERSION_ASYNCHDNS))throw std::runtime_error("bounded_dns_unavailable");
   return [url,secret](const std::string& body) {
-    CURL* c=curl_easy_init();if(!c)return false;
+    CURL* c=curl_easy_init();if(!c)return Delivery::Retryable;
     curl_slist* headers=nullptr;headers=curl_slist_append(headers,("Authorization: Bearer "+secret).c_str());headers=curl_slist_append(headers,"Content-Type: application/json");
     size_t received=0;
     curl_easy_setopt(c,CURLOPT_URL,url.c_str());curl_easy_setopt(c,CURLOPT_HTTPHEADER,headers);
@@ -91,6 +115,10 @@ ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::
     curl_easy_setopt(c,CURLOPT_FOLLOWLOCATION,0L);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"http,https");
     curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,boundedBody);curl_easy_setopt(c,CURLOPT_WRITEDATA,&received);
     const auto rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);
-    curl_slist_free_all(headers);curl_easy_cleanup(c);return rc==CURLE_OK&&status==202;
+    curl_slist_free_all(headers);curl_easy_cleanup(c);
+    if(rc!=CURLE_OK)return Delivery::Retryable;
+    if(status==202)return Delivery::Accepted;
+    if(status==408 || status==429 || status>=500)return Delivery::Retryable;
+    return Delivery::Rejected;
   };
 }

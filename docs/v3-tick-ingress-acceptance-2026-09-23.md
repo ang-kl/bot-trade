@@ -45,3 +45,44 @@ sole backend failure was the unchanged CPU-ratio timing assertion while two
 full suites competed for CPU. Its unchanged seven-test file passed when run
 alone on each tree. No skip or threshold change was introduced. Tick-readiness
 HTTP timing tests ran separately (28 passed). CI must still pass on the PR.
+
+## Review follow-up and expanded release proposal - 24 September 2026
+
+The fresh review correctly found that the gateway's actual ScannerMirror caller
+discarded a batch after any non-202 reply. The earlier synthetic client retried;
+that result therefore never proved lossless gateway-to-scanner transport.
+
+The correction retains the identical serialized batch while retrying transient
+transport errors, HTTP 408/429 and server errors. It permits at most six attempts
+with 5/10/20/40/80 ms backoff; each existing HTTP call remains bounded at 2 seconds.
+The quote producer still performs only a bounded ring push and never waits.
+Later records do not overtake the retained batch. Permanent rejection and retry
+exhaustion remain counted losses, with explicit gap/rewarm on the next record.
+The bounded queue and 256-record consumer batch are unchanged. New counters
+separate attempts, retried records, pending records, permanent rejection and
+retry exhaustion. This is not durable across gateway restart: a new feed epoch
+still explicitly resets observation continuity.
+
+Focused tests cover identical-byte retries, ambiguous transport replay, sequence
+order, permanent rejection, bounded exhaustion/recovery, nonblocking quote
+ingestion and actual loopback HTTP 429/202/403/503/408 handling. Complete cpp-exec
+CI, including its applicable threading tests, is required before release.
+
+**New approval required:** this follow-up changes `cpp-exec/**`, so the current
+Railway filters now redeploy BOTH broker gateways as well as Node and the tick
+scanner. The earlier scanner-only release scope does not cover those additional
+gateway restarts. Keep #1048 held until the owner approves this exact expansion.
+Neither scanner feed, trading activation, credentials, notification policy nor
+any broker order/position may be changed. No deliberate outage drill is included.
+
+Proposed verification: after green repository/native gates, merge #1048; verify
+the four expected deployments, both unchanged feed-OFF configurations and fresh
+seven-account independent protection receipts. Abort the rollout/acceptance on
+unhealthy services, unexpected service changes or degraded protection coverage;
+do not alter positions to make the test pass. Roll back affected services to
+their pre-release images with feeds still OFF. The pre-follow-up gateway images
+are `4d0ff3e6-edcb-46dc-aec1-7b0459c7f46b` (exec) and
+`9dc816ab-5bab-4b3a-be76-3859016ccbb1` (account gateway); the tick image is
+`3350d396-4b70-4297-a052-4cbd3e6cf48c`. Record the then-current Node image before
+release. Rollback restores the known transport/ingress limitation; it does not
+establish full V3 acceptance or trading readiness.
