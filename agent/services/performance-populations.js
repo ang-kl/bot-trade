@@ -135,7 +135,12 @@ function isolatedReport(db, kind, options = {}) {
       settled = true; clearTimeout(timer); void worker.terminate()
       if (error) reject(error); else resolve(value)
     }
-    const timer = setTimeout(() => finish(new Error('performance_report_deadline')), 15000)
+    // Production profiling measured the legacy prices/decision scans at up to
+    // ~47s/~24s. Isolation protects the event loop; these two preserve their
+    // exact historical output instead of converting a slow-but-valid report
+    // into a 15s error while follow-up query optimisation is measured.
+    const deadlineMs = kind === 'latest-prices' ? 60000 : kind === 'decisions-daily' ? 30000 : 15000
+    const timer = setTimeout(() => finish(new Error('performance_report_deadline')), deadlineMs)
     worker.once('message', msg => finish(msg.ok ? null : new Error(msg.error), msg.report))
     worker.once('error', error => finish(error))
     worker.once('exit', () => {
