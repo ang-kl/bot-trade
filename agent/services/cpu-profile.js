@@ -61,6 +61,27 @@ export function summarizeProfile(profile, { phase = null, topN = 12 } = {}) {
   const samples = profile?.samples || []
   const deltas = profile?.timeDeltas || []
   const byId = new Map(nodes.map(n => [n.id, n]))
+  const parentOf = new Map()
+  for (const node of nodes) {
+    for (const child of node.children || []) parentOf.set(child, node.id)
+  }
+
+  // Native SQLite samples have names such as `all` or `run` but no URL.
+  // Collapsing every call site under that name loses the query's owner.
+  // Keep a bounded attribution to the nearest application frame, skipping
+  // dependency wrappers. This contains code locations only, never SQL or args.
+  const applicationCaller = id => {
+    const seen = new Set([id])
+    for (let depth = 0; depth < 32; depth++) {
+      id = parentOf.get(id)
+      if (id == null || seen.has(id)) break
+      seen.add(id)
+      const f = byId.get(id)?.callFrame
+      if (!f?.url || f.url.includes('/node_modules/') || !f.url.includes('/agent/')) continue
+      return `${f.functionName || '(anonymous)'} @ ${shortUrl(f.url)}:${(f.lineNumber ?? -1) + 1}`
+    }
+    return null
+  }
 
   const selfUs = new Map()
   let totalUs = 0
@@ -74,6 +95,7 @@ export function summarizeProfile(profile, { phase = null, topN = 12 } = {}) {
   // Same function sampled under different call paths appears as several nodes;
   // merge them, otherwise a hot function hides as ten small ones.
   const byFrame = new Map()
+  const callersByFrame = new Map()
   for (const [id, us] of selfUs) {
     const f = byId.get(id)?.callFrame
     if (!f) continue
@@ -81,6 +103,16 @@ export function summarizeProfile(profile, { phase = null, topN = 12 } = {}) {
     const label = f.functionName || (where ? '(anonymous)' : '(unknown)')
     const key = where ? `${label} @ ${where}:${(f.lineNumber ?? -1) + 1}` : label
     byFrame.set(key, (byFrame.get(key) || 0) + us)
+    // Idle/program/GC are runtime buckets, not work caused by the interrupted
+    // caller. Do not relabel them as database or application execution.
+    if (!where && !label.startsWith('(')) {
+      const caller = applicationCaller(id)
+      if (caller) {
+        if (!callersByFrame.has(key)) callersByFrame.set(key, new Map())
+        const callers = callersByFrame.get(key)
+        callers.set(caller, (callers.get(caller) || 0) + us)
+      }
+    }
   }
 
   const ms = (us) => Math.round(us / 100) / 10
@@ -91,6 +123,9 @@ export function summarizeProfile(profile, { phase = null, topN = 12 } = {}) {
       frame,
       selfMs: ms(us),
       pct: totalUs > 0 ? Math.round((us / totalUs) * 1000) / 10 : null,
+      ...(callersByFrame.has(frame) ? { callers: [...callersByFrame.get(frame)]
+        .sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([caller, callerUs]) => ({ frame: caller, selfMs: ms(callerUs) })) } : {}),
     }))
 
   // (idle) and (program) are V8's "not running JS" buckets. Splitting them out

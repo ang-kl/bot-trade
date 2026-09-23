@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "scope": "Read-only acceptance evidence after PR1053; not full V3 acceptance",
+  "collectedAt": "2026-09-23T18:54:22Z",
+  "main": "7981227e833c7877f9e66236c1aa9ba5cb63242c",
+  "sourceCommit": "0d5cb46169d6e3e40649247cd35fba338bf3c6f4",
+  "nodeDeployment": {
+    "id": "1038a226-04a5-463c-b663-eca7eae4ed11",
+    "successAt": "2026-09-23T18:39:55.818Z"
+  },
+  "independentProtection": [
+    {
+      "accountId": "42993489",
+      "checkedAt": "2026-09-23T18:50:22.473Z",
+      "ok": true,
+      "summary": "1 open; 0 missing SL; 0 missing TP1"
+    },
+    {
+      "accountId": "43002148",
+      "checkedAt": "2026-09-23T18:50:22.720Z",
+      "ok": true,
+      "summary": "0 open; 0 missing SL; 0 missing TP1"
+    },
+    {
+      "accountId": "43069009",
+      "checkedAt": "2026-09-23T18:50:22.966Z",
+      "ok": true,
+      "summary": "0 open; 0 missing SL; 0 missing TP1"
+    },
+    {
+      "accountId": "43097342",
+      "checkedAt": "2026-09-23T18:50:21.481Z",
+      "ok": true,
+      "summary": "4 open; 0 missing SL; 0 missing TP1"
+    },
+    {
+      "accountId": "46130058",
+      "checkedAt": "2026-09-23T18:50:21.729Z",
+      "ok": true,
+      "summary": "7 open; 0 missing SL; 0 missing TP1"
+    },
+    {
+      "accountId": "46979908",
+      "checkedAt": "2026-09-23T18:50:21.977Z",
+      "ok": true,
+      "summary": "7 open; 0 missing SL; 1 missing TP1"
+    },
+    {
+      "accountId": "47790949",
+      "checkedAt": "2026-09-23T18:50:22.226Z",
+      "ok": true,
+      "summary": "13 open; 0 missing SL; 1 missing TP1"
+    }
+  ],
+  "reportRead": {
+    "at": "2026-09-23T18:49:52.465106131Z",
+    "path": "/state/cup-handle-funnel",
+    "windowDays": 1,
+    "httpStatus": 200,
+    "proxyDurationMs": 1096,
+    "applicationDurationMs": 1061,
+    "traces": 331349,
+    "symbols": 46
+  },
+  "startup": {
+    "stallAt": "2026-09-23T18:42:03.505140899Z",
+    "eventLoopLagMs": 73349,
+    "firstLoopDurationMs": 210949
+  },
+  "calendar": {
+    "at": "2026-09-23T18:46:59Z",
+    "demand": 51,
+    "inventoryComplete": true,
+    "requested": 1,
+    "recorded": 1,
+    "unknown": 1,
+    "accountId": "42993489",
+    "errors": [
+      "12097:calendar_holiday_window_unknown"
+    ],
+    "sourceReference": "https://help.ctrader.com/open-api/model-messages/#protooaholiday",
+    "limitation": "Optional holiday start/end semantics absent from retrieved reference; no assumed replacement boundaries"
+  },
+  "watchdog": {
+    "probeAt": "2026-09-23T18:47:29Z",
+    "servicesValid": [
+      "node",
+      "cpp-exec",
+      "cpp-acct",
+      "cpp-scan-tick",
+      "cpp-scan-timeframe"
+    ],
+    "scannerWorkItems": 0,
+    "masterPermission": false,
+    "deliveryCredentialsConfigured": false,
+    "incidentOwnerConfigured": false,
+    "externalObserver": "unconfigured",
+    "pendingDeliveries": 512,
+    "capacityRefusals": 88,
+    "productionDrills": "Not Verifiable: unexecuted"
+  },
+  "limitations": [
+    "Protection snapshots show broker-held SL/TP coverage; they do not measure amendment-to-broker confirmation latency.",
+    "CPU profile native frames identify synchronous database work but not the caller in released instrumentation.",
+    "The report read is one ordinary bounded query, not a representative feed-capacity or protection load test.",
+    "Both new scanner feeds stay disabled and trading activation is unchanged.",
+    "Multiple verification tabs were present; this observation is not a controlled workload baseline."
+  ]
+}

@@ -1338,6 +1338,9 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       // inspector see what the probe saw without an HTTP hop. null = the
       // sidecar did not report it (older build), never a verdict.
       spotFeed: r.spotFeed ?? null,
+      // Subscription IDs and their account belong to authenticated /health.
+      // /tick-status reports recorder statistics, not this feed inventory.
+      tick: r.tick ?? null,
       trail: r.trail ?? null,
       vpo: r.vpo ?? null,
       guard: r.guard ?? null,

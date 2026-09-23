@@ -32,10 +32,18 @@ export function watchdogCalendarDemand(db, now) {
     if (scan.instruments.length > 512) complete = false
   }
   for (const [key, host] of [['cpp_exec_demo', 'demo.ctraderapi.com'], ['cpp_exec', 'live.ctraderapi.com']]) {
-    const tick = read(db, `${key}_tick_json`)
-    if (!fresh(tick?.at, now) || !Array.isArray(tick?.status?.subscribed)) continue
-    for (const symbolId of tick.status.subscribed.slice(0, 512)) add({ host, accountId: tick.status.feedAccountId, symbolId })
-    if (tick.status.subscribed.length > 512) complete = false
+    const health = read(db, `${key}_health_json`)
+    if (!health || health.dormant === true) continue
+    if (!fresh(health.at, now) || health.ok !== true) { complete = false; continue }
+    const tick = health.tick
+    if (!Array.isArray(tick?.subscribed)) {
+      // An active feed with absent/redacted identity is missing coverage,
+      // never evidence of an empty subscription list.
+      if (health.spotFeed || tick?.enabled === true) complete = false
+      continue
+    }
+    for (const symbolId of tick.subscribed.slice(0, 512)) add({ host, accountId: tick.feedAccountId, symbolId })
+    if (tick.subscribed.length > 512) complete = false
   }
   return { identities: [...wanted.values()], complete }
 }
