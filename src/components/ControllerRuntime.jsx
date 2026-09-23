@@ -19,6 +19,13 @@ export default function ControllerRuntime({ runtime }) {
         <p>Counts retain seven days and are bounded. Missing inputs, gaps, unsupported profiles and mismatches require investigation before activation.</p>
       </details>
       <details><summary>Independent service watchdog</summary>
+        {runtime.calendarRefresh ? <p>Broker calendar collection: {stamp(runtime.calendarRefresh.at)}
+          {now - Date.parse(runtime.calendarRefresh.at) >= 180_000 || now < Date.parse(runtime.calendarRefresh.at) ? ' · STALE' : ''}.
+          {' '}Demand: {count(runtime.calendarRefresh.demand)}; inventory complete: {onOff(runtime.calendarRefresh.complete)};
+          {' '}last batch requested {count(runtime.calendarRefresh.requested)}, recorded {count(runtime.calendarRefresh.recorded)}, unknown {count(runtime.calendarRefresh.unknown)}.
+          {' '}Account: {runtime.calendarRefresh.accountId || 'no batch due'}.
+          {' '}{runtime.calendarRefresh.errors?.length ? `Errors: ${runtime.calendarRefresh.errors.join('; ')}` : 'No batch error reported. This does not prove that every demanded calendar is available.'}</p>
+          : <p>Broker calendar collection receipt unavailable.</p>}
         {runtime.watchdog?.status && now - Date.parse(runtime.watchdog.readAt) >= 0 && now - Date.parse(runtime.watchdog.readAt) < 90_000 ? <>
           <p>Supervision: {onOff(runtime.watchdog.status.enabled)}. Durable incident record: {onOff(runtime.watchdog.status.durable)}. Urgent notifications permitted: {onOff(runtime.watchdog.status.effectivePolicyAllowsUrgent)}.</p>
           <p>Master notification permission: {onOff(runtime.watchdog.status.masterEnabled)}. Delivery credentials configured: {onOff(runtime.watchdog.status.deliveryCredentialsConfigured)}. Incident owner configured: {onOff(runtime.watchdog.status.incidentOwnerConfigured)}.</p>

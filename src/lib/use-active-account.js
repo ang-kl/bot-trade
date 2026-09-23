@@ -42,6 +42,24 @@ function readCache() {
   } catch { return null }
 }
 
+function setAccount(acct) {
+  if (acct?.accountId !== shared.acct?.accountId) shared.ccy = null
+  shared.acct = acct
+  emit()
+}
+
+function loadCurrency(accountId) {
+  // This header describes the trading selection, independently of the report
+  // lens. An aggregate lens cannot be sent to the single-account broker cache.
+  return agentGet(`/state/broker-cache?account=${encodeURIComponent(accountId)}`).then(bc => {
+    if (String(shared.acct?.accountId) !== String(accountId)) return
+    const account = bc?.snapshot?.account
+    const dep = String(account?.accountId) === String(accountId)
+      ? account.currency || account.positions?.find(p => p.depositCcy)?.depositCcy || null : null
+    if (dep !== shared.ccy) { shared.ccy = dep; emit() }
+  }).catch(() => {})
+}
+
 // PER-ACCOUNT phases, extracted so the sidebar's switches can force an
 // immediate re-read after a write (owner 01-08: switches move into the
 // sidebar; a toggle must repaint on the SERVER's answer, not on hope).
@@ -85,8 +103,7 @@ function start() {
   // up without a page reload (and so a switch made in another tab is caught).
   const readRoster = () => {
     const sel = readCache()
-    if (sel && sel.accountId !== shared.acct?.accountId) { shared.acct = sel; emit() }
-    else if (sel && sel.balance !== shared.acct?.balance) { shared.acct = sel; emit() }
+    if (sel && (sel.accountId !== shared.acct?.accountId || sel.balance !== shared.acct?.balance)) setAccount(sel)
   }
   readRoster()
   setInterval(readRoster, 2_000)
@@ -108,8 +125,9 @@ function start() {
       const cached = readCache()
       if (cached && Number(cached.accountId) === sid) {
         if (cached.accountId !== shared.acct?.accountId || cached.balance !== shared.acct?.balance) {
-          shared.acct = cached; emit()
+          setAccount(cached)
         }
+        void loadCurrency(sid)
         return
       }
       // Selected account is not in the roster cache (fresh browser, or the
@@ -118,14 +136,14 @@ function start() {
       // keep showing the PREVIOUS account's name and money.
       const row = (r.accounts || []).find(a => Number(a.account_id) === sid)
       if (row && shared.acct?.accountId !== sid) {
-        shared.acct = {
+        setAccount({
           accountId: sid,
           traderLogin: row.trader_login ?? null,
           isLive: row.is_live === 1,
           balance: null,
-        }
-        emit()
+        })
       }
+      void loadCurrency(sid)
     }).catch(() => {})
     // PER-ACCOUNT phases, not the global flags. /state/health still reports the
     // three master flags, and reading those here was correct only while they
@@ -136,12 +154,6 @@ function start() {
     // were wired at all. `master` is kept as the fallback for an account the
     // registry does not know (or before the roster resolves).
     loadPhases()
-    // Deposit currency rides on the cached broker snapshot's positions. No
-    // positions → no currency → the number prints bare rather than guessing $.
-    agentGet('/state/broker-cache').then(bc => {
-      const dep = bc?.snapshot?.account?.positions?.find(p => p.depositCcy)?.depositCcy
-      if (dep && dep !== shared.ccy) { shared.ccy = dep; emit() }
-    }).catch(() => {})
   }
   load()
   setInterval(load, POLL_MS)

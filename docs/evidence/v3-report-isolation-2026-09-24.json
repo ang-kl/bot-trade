@@ -1,0 +1,33 @@
+{
+  "question": "diagnostic report isolation, not broker-confirmed protection latency",
+  "timestamp": "2026-09-23T18:20:15.455Z",
+  "baselineRef": "92e01e4aa228d621b286c41b4e36d9dc00acf2c2",
+  "rows": 2600000,
+  "symbols": 500,
+  "parity": "passed",
+  "baseline": {
+    "elapsedMs": 2391.7529490000015,
+    "heartbeat": {
+      "n": 5,
+      "p95Ms": 2396.9907789999997,
+      "p99Ms": 2396.9907789999997,
+      "maxMs": 2396.9907789999997
+    }
+  },
+  "worker": {
+    "elapsedMs": 2718.976891000002,
+    "heartbeat": {
+      "n": 536,
+      "p95Ms": 5.180344000000332,
+      "p99Ms": 5.383201000004192,
+      "maxMs": 6.985549999997602
+    }
+  },
+  "productionIncident": {
+    "observedAt": "2026-09-23T18:10:10.512Z",
+    "nodeDeployment": "255e6de8-d02b-4902-8c3d-6acb03fd51c0",
+    "eventLoopLagMs": 87137,
+    "funnelRequestMs": 108579,
+    "scope": "Temporal association plus synchronous query source review, not a complete CPU trace"
+  }
+}

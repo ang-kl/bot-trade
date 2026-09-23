@@ -2462,10 +2462,11 @@ export default function stateRouter(db) {
   // market structure at scan time, which is the same for every account.
   router.get('/cup-handle-funnel', async (req, res) => {
     try {
-      const { cupHandleFunnel } = await import('../services/cup-handle-funnel.js')
-      const days = Number(req.query.days) > 0 ? Number(req.query.days) : 7
+      const { readCupHandleFunnel } = await import('../services/performance-populations.js')
+      const requestedDays = Number(req.query.days)
+      const days = Number.isFinite(requestedDays) && requestedDays > 0 ? requestedDays : 7
       const bias = req.query.bias === 'long' || req.query.bias === 'short' ? req.query.bias : null
-      res.json(cupHandleFunnel(db, { days, bias }))
+      res.json(await readCupHandleFunnel(db, { days, bias }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

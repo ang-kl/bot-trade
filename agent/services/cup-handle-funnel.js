@@ -52,25 +52,20 @@ export function cupHandleFunnel(db, { days = 7, bias = null, now = Date.now() } 
   if (bias === 'long' || bias === 'short') { where.push('bias = ?'); args.push(bias) }
   const W = where.join(' AND ')
 
-  const row = (sql, extra = []) => db.prepare(sql).get(...args, ...extra) || {}
-
-  const traces = row(`SELECT COUNT(*) AS n FROM cup_handle_diagnostics WHERE ${W}`).n || 0
-  const symbols = row(`SELECT COUNT(DISTINCT symbol) AS n FROM cup_handle_diagnostics WHERE ${W}`).n || 0
+  // One pass over detector exhaust, instead of six full scans. Gate names are
+  // fixed source constants, never request input.
+  const candidate = 'uptrend_ok = 1 AND candidate_json IS NOT NULL'
+  const counts = db.prepare(`SELECT COUNT(*) AS traces, COUNT(DISTINCT symbol) AS symbols,
+    COALESCE(SUM(uptrend_ok = 1), 0) AS contextOk,
+    COALESCE(SUM(${candidate}), 0) AS withCandidate,
+    COALESCE(SUM(${candidate} AND blocked_at IS NULL), 0) AS wouldHaveFired,
+    ${GATE_ORDER.map((g, i) => `COALESCE(SUM(${candidate} AND blocked_at = '${g}'), 0) AS gate${i}`).join(', ')}
+    FROM cup_handle_diagnostics WHERE ${W}`).get(...args)
+  const { traces, symbols, contextOk, withCandidate, wouldHaveFired } = counts
   // uptrend_ok is named for the classic direction but means "the required
   // trend context holds" in both — above all three SMAs for the long search,
   // below all three for the short one.
-  const contextOk = row(`SELECT COUNT(*) AS n FROM cup_handle_diagnostics WHERE ${W} AND uptrend_ok = 1`).n || 0
-  const withCandidate = row(
-    `SELECT COUNT(*) AS n FROM cup_handle_diagnostics WHERE ${W} AND uptrend_ok = 1 AND candidate_json IS NOT NULL`).n || 0
-  const wouldHaveFired = row(
-    `SELECT COUNT(*) AS n FROM cup_handle_diagnostics
-      WHERE ${W} AND uptrend_ok = 1 AND candidate_json IS NOT NULL AND blocked_at IS NULL`).n || 0
-
-  const byGate = new Map()
-  for (const r of db.prepare(
-    `SELECT blocked_at AS g, COUNT(*) AS n FROM cup_handle_diagnostics
-      WHERE ${W} AND uptrend_ok = 1 AND candidate_json IS NOT NULL AND blocked_at IS NOT NULL
-      GROUP BY blocked_at`).all(...args)) byGate.set(r.g, r.n)
+  const byGate = new Map(GATE_ORDER.map((g, i) => [g, counts[`gate${i}`]]))
 
   // Walk the gates in the order the search applies them, subtracting as we go,
   // so `reached` is genuinely "got this far" rather than "was counted here".

@@ -71,6 +71,7 @@ export function controllerRuntimeView(db, { nowMs = Date.now() } = {}) {
   return { at: new Date(nowMs).toISOString(), sides, accounts,
     scannerComparison: scannerMirrorStatus(db, { now: nowMs }),
     watchdog: read(db, 'independent_watchdog_json'),
+    calendarRefresh: read(db, 'watchdog_calendar_refresh_json'),
     monitor: read(db, 'fast_monitor_pass_json'),
     managementWork: read(db, 'fast_monitor_position_work_json'),
     process: {

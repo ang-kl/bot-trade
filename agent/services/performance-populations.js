@@ -6,6 +6,7 @@ import { realisedRR, checkTradeConsistency } from './trade-consistency.js'
 import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { categorize, MARKETS, closedAtMs, dayAnchorMs, isFxWeekend } from '../shared/formulas.js'
 import { emptyPopulation, REPORT_SESSIONS } from '../shared/performance-populations.js'
+import { cupHandleFunnel } from './cup-handle-funnel.js'
 
 const DAY = 86400_000
 const NUMBER = v => v == null || String(v).trim() === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null
@@ -111,14 +112,21 @@ const flights = new WeakMap()
 /** Disk-backed reports run in one read-only worker per database, off the
  * protection event loop, within a deadline and bounded response. */
 function isolatedReport(db, kind, options = {}) {
-  const run = () => kind === 'analytics' ? accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true }) : buildPerformancePopulations(db)
+  const run = () => buildReport(db, kind, options)
   if (db.memory || db.name === ':memory:') return Promise.resolve(run())
   if (!flights.has(db)) flights.set(db, new Map())
   const active = flights.get(db), key = JSON.stringify([kind, options])
   if (active.has(key)) return active.get(key)
   if (active.size >= 2) return Promise.reject(new Error('performance_report_worker_capacity'))
   const job = new Promise((resolve, reject) => {
-    const worker = new Worker(new URL(import.meta.url), { workerData: { path: db.name, kind, options }, resourceLimits: { maxOldGenerationSizeMb: 128 } })
+    let worker
+    try {
+      worker = new Worker(new URL(import.meta.url), { workerData: { path: db.name, kind, options }, resourceLimits: { maxOldGenerationSizeMb: 128 } })
+    } catch (error) {
+      queueMicrotask(() => active.delete(key))
+      reject(error)
+      return
+    }
     let settled = false
     const finish = (error, value) => {
       if (settled) return
@@ -128,19 +136,30 @@ function isolatedReport(db, kind, options = {}) {
     const timer = setTimeout(() => finish(new Error('performance_report_deadline')), 15000)
     worker.once('message', msg => finish(msg.ok ? null : new Error(msg.error), msg.report))
     worker.once('error', error => finish(error))
-    worker.once('exit', () => { if (!settled) finish(new Error('performance_report_worker_exit')) })
-  }).finally(() => active.delete(key))
+    worker.once('exit', () => {
+      // A timed-out native SQLite call may not terminate immediately. Keep its
+      // capacity slot until the worker actually exits, preventing retry storms
+      // from starting unbounded workers against the protection database.
+      active.delete(key)
+      if (!settled) finish(new Error('performance_report_worker_exit'))
+    })
+  })
   active.set(key, job)
   return job
 }
 export function readPerformancePopulations(db) { return isolatedReport(db, 'populations') }
 export function readPerformanceAnalytics(db, options) { return isolatedReport(db, 'analytics', options) }
+export function readCupHandleFunnel(db, options) { return isolatedReport(db, 'cup-funnel', options) }
+function buildReport(db, kind, options) {
+  if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
+  if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })
+  return buildPerformancePopulations(db)
+}
 if (!isMainThread && workerData?.path) {
   let db
   try {
     db = new Database(workerData.path, { readonly: true, fileMustExist: true, timeout: 1000 })
-    const report = db.transaction(() => workerData.kind === 'analytics'
-      ? accountAnalytics(db, { ...workerData.options, unstamped: 'exclude', reporting: true }) : buildPerformancePopulations(db))()
+    const report = db.transaction(() => buildReport(db, workerData.kind, workerData.options))()
     if (Buffer.byteLength(JSON.stringify(report)) > 8 * 1024 * 1024) throw new Error('performance_report_response_bound')
     parentPort.postMessage({ ok: true, report })
   } catch (e) { parentPort.postMessage({ ok: false, error: e.message }) }
