@@ -22,7 +22,7 @@ export function verifiedPositionHistory(response, { accountId, positionId, now }
     const c = d.closePositionDetail
     if (c) {
       if (!Number.isInteger(c.moneyDigits) || c.moneyDigits < 0 || c.moneyDigits > 10
-        || ![c.grossProfit, c.swap, c.commission].every(integer) || !positive(c.closedVolume)
+        || ![c.grossProfit, c.swap ?? 0, c.commission ?? 0].every(integer) || !positive(c.closedVolume)
         || Number(c.closedVolume) !== Number(d.filledVolume)
         || !integer(c.pnlConversionFee ?? 0) || Number(c.pnlConversionFee ?? 0) !== 0) {
         throw new Error('position closing money or volume unsupported')

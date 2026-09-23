@@ -59,13 +59,34 @@ test('empty complete history stamps only the searched position, never peers or u
   assert.equal(row(db, other).pnl_attempts, 0); assert.equal(row(db, orphan).pnl_attempts, 0)
 })
 
+test('omitted zero-valued swap and commission preserve complete broker P&L', async t => {
+  const db = fixture(t), target = seed(db), response = history()
+  for (const d of response.deal.filter(d => d.closePositionDetail)) {
+    delete d.closePositionDetail.swap; delete d.closePositionDetail.commission
+  }
+  await backfillClosedPnl(db, creds, args(async () => response))
+  assert.deepEqual([row(db, target).net_pnl, row(db, target).commission], [2, 0])
+})
+
+test('complete broker lifecycles recover missing, invalid or future local opening dates', async t => {
+  const db = fixture(t)
+  for (const [index, opened] of [null, 'unparseable', new Date(now + day).toISOString()].entries()) {
+    const position = String(700 + index), target = seed(db, '2', position)
+    db.prepare('UPDATE trades SET opened_at=? WHERE id=?').run(opened, target)
+    const recovered = await recoverOldPositionPnl(db, creds, { now: now + index * 30_000, isCurrent: () => true,
+      getPositionDeals: async p => history(p) })
+    assert.equal(recovered.state, 'recovered'); assert.equal(recovered.positionId, position)
+    assert.equal(row(db, target).net_pnl, 1.3)
+  }
+})
+
 test('partial, malformed, mismatched, missing-opening and unclosed histories cannot stamp money or attempts', async t => {
   const db = fixture(t), target = seed(db)
   const mutations = [
     r => { r.hasMore = true }, r => { delete r.hasMore }, r => { r.ctidTraderAccountId = '3' },
     r => { r.deal[1].positionId = '701' }, r => { r.deal.push(r.deal[1]) },
     r => { r.deal.shift() }, r => { r.deal.pop() }, r => { r.deal[1].closePositionDetail.closedVolume = 41 },
-    r => { r.deal[1].closePositionDetail.grossProfit = 'bad' }, r => { delete r.deal[1].closePositionDetail.commission },
+    r => { r.deal[1].closePositionDetail.grossProfit = 'bad' }, r => { r.deal[1].closePositionDetail.commission = 'bad' },
     r => { r.deal[1].closePositionDetail.pnlConversionFee = 5 }, r => { r.deal[2].executionTimestamp = now + 1 },
     r => { r.deal[2].symbolId = 11 }, r => { r.deal[1].dealStatus = 4 },
   ]

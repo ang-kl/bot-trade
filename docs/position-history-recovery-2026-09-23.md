@@ -41,5 +41,13 @@ Seventy-three focused tests passed, including the actual WS message helper,
 partial/duplicate/malformed evidence, account isolation, ambiguous local rows,
 durable failure fairness, late replies and a permanently queued transport.
 The complete repository gate, CI/review and broker readback remain required.
+The first full gate subsequently passed all seven checks, with 5,346 agent
+tests without skips and 932 frontend tests; PR #1040 CI passed. Review found
+two additional cases, now corrected: JSON-omitted zero swap/commission follow
+the existing broker validator's zero-default convention, and missing/invalid
+local opening dates may be resolved from independently complete broker
+lifecycles. Future local dates are likewise outside the recent verified window.
+The durable rotation prevents expired retry cooldowns from starving later
+positions. The corrected full gate and PR review remain required.
 No broker write, account selection, numerical risk setting, target policy or
 scanner activation changes. Rollback owner: Adrian Ang.

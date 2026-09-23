@@ -14,8 +14,10 @@ export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPosi
   if (Number.isSafeInteger(prior.lastReadAt) && prior.lastReadAt <= now && now - prior.lastReadAt < 30_000) return { state: 'paced' }
   const candidates = db.prepare(`SELECT id, ctrader_position_id FROM trades WHERE account_id = ?
     AND status = 'closed' AND net_pnl IS NULL AND COALESCE(pnl_unresolvable, 0) = 0
-    AND julianday(opened_at) < julianday(?) ORDER BY (id <= ?), id LIMIT 128`)
-    .all(accountId, new Date(now - 14 * 86400_000).toISOString(), Number.isSafeInteger(prior.lastTradeId) ? prior.lastTradeId : 0)
+    AND (julianday(opened_at) IS NULL OR julianday(opened_at) < julianday(?) OR julianday(opened_at) > julianday(?))
+    ORDER BY (id <= ?), id LIMIT 128`)
+    .all(accountId, new Date(now - 14 * 86400_000).toISOString(), new Date(now).toISOString(),
+      Number.isSafeInteger(prior.lastTradeId) ? prior.lastTradeId : 0)
   const candidate = candidates.find(row => {
     const id = normPosId(row.ctrader_position_id)
     return /^[1-9]\d*$/.test(id || '') && Number.isSafeInteger(Number(id)) && !attempts[id]
