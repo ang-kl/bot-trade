@@ -185,7 +185,7 @@ export async function pollScannerMirrors(db, { env = process.env, fetchImpl = fe
       let page = await scannerPage(url, secret, old?.cursor || 0, fetchImpl)
       if (old && page.instanceId !== old.instance_id) page = await scannerPage(url, secret, 0, fetchImpl)
       const result = recordScannerMirrorPage(db, source, page, { policies, now: typeof now === 'function' ? now() : now })
-      outcomes.push({ source, ...result })
+      outcomes.push({ source, ...result, latestCursor: page.latestCursor, backlog: result.cursor < page.latestCursor })
     } catch { outcomes.push({ source, status: 'unavailable', reason: 'scanner_read_or_contract_failed' }) }
   }
   return { configured: true, outcomes, orderAuthority: false }
