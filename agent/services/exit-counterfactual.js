@@ -177,6 +177,7 @@ export function exitCounterfactual(db, {
   const verdict = best > 0 ? 'OK' : 'INSUFFICIENT'
   return {
     verdict,
+    accountId: accountId == null ? null : String(accountId),
     days,
     cleanOnly,
     strategy,

@@ -1738,7 +1738,7 @@ export default function stateRouter(db) {
     try {
       const { exitPriceSuspects, sweepExitPriceSuspects } = await import('../services/exit-price-suspects.js')
       const days = Math.max(1, Math.min(3650, Number(req.query.days) || 90))
-      const acct = req.query.account == null || req.query.account === '' ? null : String(req.query.account)
+      const acct = req.query.account == null || req.query.account === '' || req.query.account === 'all' ? null : String(req.query.account)
       const opts = {
         tolerance: Number(req.query.tolerance) || undefined,
         minTrades: Number(req.query.minTrades) || undefined,
@@ -1781,7 +1781,7 @@ export default function stateRouter(db) {
       const { goLiveReadiness } = await import('../services/go-live-readiness.js')
       const { loadGoal } = await import('../services/goal-tracker.js')
       const days = Math.max(1, Math.min(365, Number(req.query.days) || 30))
-      const acct = req.query.account == null || req.query.account === '' ? null : String(req.query.account)
+      const acct = req.query.account == null || req.query.account === '' || req.query.account === 'all' ? null : String(req.query.account)
       // Every closed row with money, flags and attribution — the integrity
       // check needs the rows it would otherwise exclude, so this deliberately
       // does NOT filter on entry/exit being present the way an edge query

@@ -42,6 +42,18 @@ function seed(db, { n, origin = 'bot_market_dispatch', bars = STOPPED, actualR =
 
 const fresh = () => initDB(':memory:')
 
+test('report identity describes the same account population used by the replay', t => {
+  const db = fresh(); t.after(() => db.close())
+  seed(db, { n: 2 })
+  db.prepare('UPDATE trades SET account_id=? WHERE id=(SELECT max(id) FROM trades)').run('46130058')
+  const own = exitCounterfactual(db, { accountId: '43097342' })
+  const other = exitCounterfactual(db, { accountId: '46130058' })
+  const all = exitCounterfactual(db)
+  assert.deepEqual([own.accountId, own.considered], ['43097342', 1])
+  assert.deepEqual([other.accountId, other.considered], ['46130058', 1])
+  assert.deepEqual([all.accountId, all.considered], [null, 2])
+})
+
 test('only CLEAN bot origins are replayable by default', () => {
   const db = fresh()
   seed(db, { n: 3, origin: 'bot_market_dispatch' })
