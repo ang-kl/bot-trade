@@ -863,3 +863,10 @@ progress, no repeated overlapping request, ignored late response and mixed
 covered/uncovered trades. The full gate and production readback are pending.
 Cashflow continuation work is isolated on its own branch while this correction
 is completed. The older-position gaps remain explicit outstanding evidence.
+
+The follow-up review also found that uncovered rows still voted on retry
+pacing. The same lifetime predicate now scopes the eligible-work gate and
+live/blocking pacing counts. The full ledger gap remains reported; an
+uncovered-only account performs no futile bounded read, and a later eligible
+close is immediately reachable. This does not write off or clear old money.
+The added regression passes; the full gate is repeated on this exact fix.

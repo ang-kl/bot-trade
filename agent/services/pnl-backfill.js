@@ -108,10 +108,16 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // window counts as work that can never be done and pins the gate open for
   // ever — a broker round-trip every cycle, permanently, for nothing.
   const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
+  const now = opts.now ?? Date.now()
+  const from = now - days * 24 * 3_600_000
+  const lifetimeSql = strictAccount ? 'AND julianday(opened_at) >= julianday(?) AND julianday(opened_at) <= julianday(?)' : ''
+  const lifetimeParams = strictAccount ? [new Date(from).toISOString(), new Date(now).toISOString()] : []
   const gapScopeSql = acct == null ? '' : strictAccount ? 'AND account_id = ?' : 'AND (account_id = ? OR account_id IS NULL)'
   const gap = db.prepare(
     `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql}`
   ).get(...scopeParams)
+  const eligibleGap = strictAccount ? db.prepare(`SELECT COUNT(*) AS n FROM trades
+    WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql} ${lifetimeSql}`).get(...scopeParams, ...lifetimeParams).n : gap.n
   // `gap` travels back out so the caller can tell "nothing was missing" from
   // "something was missing and the broker had no matching close". Those two
   // look identical from backfilled === 0 alone, and only the second one
@@ -137,8 +143,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       return db.prepare(
         `SELECT COUNT(*) AS n FROM trades
           WHERE status = 'closed'
-            AND (pnl_price_mismatch = 1 OR exit_price_suspect = 1) ${gapScopeSql}`
-      ).get(...scopeParams)?.n || 0
+            AND (pnl_price_mismatch = 1 OR exit_price_suspect = 1) ${gapScopeSql} ${lifetimeSql}`
+      ).get(...scopeParams, ...lifetimeParams)?.n || 0
     } catch {
       // A schema without `exit_price_suspect` must still fetch for the sign
       // flag alone, exactly as before — a missing column is not a reason to
@@ -146,8 +152,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       try {
         return db.prepare(
           `SELECT COUNT(*) AS n FROM trades
-            WHERE status = 'closed' AND pnl_price_mismatch = 1 ${gapScopeSql}`
-        ).get(...scopeParams)?.n || 0
+            WHERE status = 'closed' AND pnl_price_mismatch = 1 ${gapScopeSql} ${lifetimeSql}`
+        ).get(...scopeParams, ...lifetimeParams)?.n || 0
       } catch { return 0 }
     }
   })()
@@ -166,13 +172,14 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       return db.prepare(
         `SELECT COUNT(*) AS n FROM trades
           WHERE status = 'closed' AND net_pnl IS NOT NULL AND exit_price IS NULL
-            AND REPLACE(closed_at, 'T', ' ') >= datetime('now', ?) ${gapScopeSql}`
-      ).get(`-${days} days`, ...scopeParams)?.n || 0
+            AND REPLACE(closed_at, 'T', ' ') >= datetime('now', ?) ${gapScopeSql} ${lifetimeSql}`
+      ).get(`-${days} days`, ...scopeParams, ...lifetimeParams)?.n || 0
     } catch { return 0 }
   })()
 
-  if ((!gap || gap.n === 0) && repairable === 0 && missingExits === 0) {
-    return { backfilled: 0, attributed: 0, exitsRepaired: 0, exitsFilled: 0, dealsPersisted: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0, blockingGap: 0 }
+  if (eligibleGap === 0 && repairable === 0 && missingExits === 0) {
+    return { backfilled: 0, attributed: 0, exitsRepaired: 0, exitsFilled: 0, dealsPersisted: 0, closingDeals: 0, scanned: 0,
+      gap: gap.n, liveGap: 0, blockingGap: 0, lifetimeSkipped: strictAccount ? gap.n : 0 }
   }
 
   // THE LIVE GAP — rows still worth retrying for, which is NOT the same set.
@@ -215,8 +222,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       if (hasAttempts) { clauses.push('AND COALESCE(pnl_attempts, 0) < ?'); args.push(LIVE_GAP_MAX_ATTEMPTS) }
       const row = db.prepare(
         `SELECT COUNT(*) AS n FROM trades
-          WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql} ${clauses.join(' ')}`
-      ).get(...args)
+          WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql} ${clauses.join(' ')} ${lifetimeSql}`
+      ).get(...args, ...lifetimeParams)
       return row?.n ?? gap.n
     } catch {
       // A schema without the columns behaves exactly as before: every missing
@@ -270,8 +277,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       args.push(`-${grace} minutes`)
       const row = db.prepare(
         `SELECT COUNT(*) AS n FROM trades
-          WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql} ${clauses.join(' ')}`
-      ).get(...args)
+          WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql} ${clauses.join(' ')} ${lifetimeSql}`
+      ).get(...args, ...lifetimeParams)
       return row?.n ?? 0
     } catch {
       // Unknown means "do not claim the desk is blocked", which leaves pacing
@@ -281,9 +288,6 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       return 0
     }
   })()
-
-  const now = opts.now ?? Date.now()
-  const from = now - days * 24 * 3_600_000
 
   let getDeals = opts.getDeals
   if (!getDeals) {

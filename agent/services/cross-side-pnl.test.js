@@ -142,6 +142,21 @@ test('a queued broker read releases the loop at the wall deadline without overla
   assert.equal(row(db, id).pnl_attempts, 0)
 })
 
+test('uncovered lifetimes retain their ledger gap but cannot pace or repeatedly trigger this bounded repair', async t => {
+  const db = fixture(t), old = seed(db, '2'), calls = []
+  db.prepare('UPDATE trades SET opened_at=? WHERE id=?').run(new Date(now - 20 * 86400_000).toISOString(), old)
+  const deps = { getCreds, getDeals: getter(calls), clock: () => now }
+  const first = (await backfillCrossSidePnl(db, base, [], deps)).find(r => r.accountId === '2').result
+  assert.deepEqual([first.gap, first.liveGap, first.blockingGap, first.lifetimeSkipped], [1, 0, 0, 1])
+  await backfillCrossSidePnl(db, base, [], deps)
+  assert.equal(calls.length, 0)
+  const recent = seed(db, '2', { positionId: '701' })
+  const result = (await backfillCrossSidePnl(db, base, [], { ...deps, getDeals: getter(calls, [{ ...close('701'), dealId: '901' }]) })).find(r => r.accountId === '2').result
+  assert.equal(result.backfilled, 1, 'an older uncovered row never postpones a later eligible close')
+  assert.equal(row(db, recent).net_pnl, -5.5)
+  assert.equal(row(db, old).pnl_attempts, 0)
+})
+
 test('existing pacing applies, but a newly reconciled close gets an immediate attempt', async t => {
   const db = fixture(t), id = seed(db, '2')
   const calls = [], deps = { getCreds, getDeals: getter(calls, []), clock: () => now }
