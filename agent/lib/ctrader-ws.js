@@ -26,6 +26,7 @@
 
 import WebSocket from 'ws'
 import { parseTimeframe, fetchPlan, aggregateBars } from './timeframes.js'
+import { emitBrokerRead } from './broker-read-observer.js'
 
 // Payload-type constants live in their own module so ctrader-session.js can
 // share them without an import cycle. Re-exported here so existing importers
@@ -616,7 +617,10 @@ export function wsReconcile(host, clientId, clientSecret, accessToken, accountId
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.RECONCILE_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.RECONCILE_RES },
-  ], timeoutMs), retries, 'wsReconcile')
+  ], timeoutMs), retries, 'wsReconcile').then(payload => {
+    emitBrokerRead({ kind: 'reconcile', host, accountId: String(accountId), receivedAt: Date.now(), payload })
+    return payload
+  })
 }
 
 /**
@@ -816,6 +820,7 @@ export async function wsGetTrader(host, clientId, clientSecret, accessToken, acc
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.TRADER_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.TRADER_RES },
   ], timeoutMs).catch((err) => { throw tagAccount(err, accountId) }), 2, 'wsGetTrader')
+  emitBrokerRead({ kind: 'trader', host, accountId: String(accountId), receivedAt: Date.now(), payload })
   return payload.trader || {}
 }
 
@@ -841,6 +846,7 @@ export async function wsGetUnrealizedPnl(host, clientId, clientSecret, accessTok
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.GET_POSITION_UNREALIZED_PNL_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.GET_POSITION_UNREALIZED_PNL_RES },
   ], timeoutMs), 2, 'wsGetUnrealizedPnl')
+  emitBrokerRead({ kind: 'pnl', host, accountId: String(accountId), receivedAt: Date.now(), payload })
   const digits = payload.moneyDigits != null ? payload.moneyDigits : 2
   const div = Math.pow(10, digits)
   const out = {}

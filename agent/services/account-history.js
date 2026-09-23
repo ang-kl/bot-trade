@@ -1,4 +1,5 @@
 import { getState, setState } from '../db.js'
+import { brokerReadObservationStatus } from '../lib/broker-read-observer.js'
 
 export const ACCOUNT_HISTORY_RETENTION_DAYS = 90
 const DAY = 86400_000
@@ -11,7 +12,7 @@ const finite = n => typeof n === 'number' && Number.isFinite(n) ? n : null
 export function recordAccountHistory(db, input) {
   const { accountId, host, source, receivedAt } = input
   if (!idOk(accountId) || !hostOk(host) || !Number.isSafeInteger(receivedAt)
-    || !['broker_trader', 'broker_snapshot', 'nightly_equity'].includes(source)) return false
+    || !['broker_trader', 'broker_snapshot', 'nightly_equity', 'broker_reconcile', 'broker_equity'].includes(source)) return false
   const currency = /^[A-Z]{3}$/.test(input.currency || '') ? input.currency : null
   const point = { accountId: String(accountId), host, source, receivedAt, currency,
     sourceTimestamp: null, balance: finite(input.balance), equity: finite(input.equity),
@@ -20,7 +21,7 @@ export function recordAccountHistory(db, input) {
     equitySource: input.equitySource ?? null,
     openPositions: Number.isSafeInteger(input.openPositions) ? input.openPositions : null,
     exposure: Array.isArray(input.exposure) ? input.exposure.slice(0, 256) : null,
-    exposureComplete: Array.isArray(input.exposure) ? input.exposure.length <= 256 : false,
+    exposureComplete: Array.isArray(input.exposure) ? input.exposureComplete !== false && input.exposure.length <= 256 : false,
     protection: input.protection ?? null, error: input.error ?? null }
   const json = JSON.stringify(point)
   if (json.length > 64_000) return false
@@ -99,6 +100,9 @@ export function accountHistory(db, accountId, { from, to = Date.now(), limit = 2
     for (const p of valued) { peak = Math.max(peak, p.equity); sampledDrawdown = Math.max(sampledDrawdown, peak - p.equity) }
   }
   return { accountId: String(accountId), from, to, points, hasMore,
+    recording: brokerReadObservationStatus(),
+    latestObservationAt: points.at(-1)?.receivedAt ?? null,
+    latestEquityAt: last?.receivedAt ?? null,
     nextBefore: hasMore ? Math.min(...points.map(p => p.rowId)) : null,
     retentionDays: ACCOUNT_HISTORY_RETENTION_DAYS, sampling: 'latest observation per source per minute; no interpolation',
     summaryComplete: !hasMore && before == null, currency: sameUnits ? first.currency : null,

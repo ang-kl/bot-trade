@@ -45,3 +45,11 @@ test('a reconciled portion has its own dates and cannot imply that the newer ful
   expect(html).toContain('full-window change remains unavailable')
   expect(html).toContain('cashflow_read_timeout')
 })
+
+test('recorder registration does not imply fresh equity and recording failures stay visible', () => {
+  const html=renderToStaticMarkup(<AccountHistoryReading report={{ points:[],retentionDays:90,
+    cashflows:{complete:false},recording:{active:true,dropped:2,failed:1},latestObservationAt:120000,latestEquityAt:null }} />)
+  expect(html).toContain('Background broker recording: active')
+  expect(html).toContain('Latest comparable equity: Not observed')
+  expect(html).toContain('2 observations dropped; 1 recording failures')
+})

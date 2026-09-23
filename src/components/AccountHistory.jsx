@@ -6,6 +6,10 @@ export function AccountHistoryReading({ report, page = 0 }) {
   if (!report) return <p>Account history unavailable.</p>
   return <>
     <p>{report.points.length} retained observations in this page · {report.retentionDays} days of observation retention. {report.sampling}.</p>
+    {report.recording && <p>Background broker recording: {report.recording.active ? 'active' : 'unavailable'}.
+      {' '}Latest observation in this page: {report.latestObservationAt ? new Date(report.latestObservationAt).toISOString() : 'Not observed'}.
+      {' '}Latest comparable equity: {report.latestEquityAt ? new Date(report.latestEquityAt).toISOString() : 'Not observed'}.
+      {(report.recording.dropped > 0 || report.recording.failed > 0) && ` ${report.recording.dropped} observations dropped; ${report.recording.failed} recording failures in this process.`}</p>}
     <p>Equity change: {value(report.equityChange)} {report.currency || '(currency unverified)'}. External-flow-adjusted change: {value(report.externalFlowAdjustedChange)}.</p>
     <p>{report.observationSpan ? `Change covers comparable observations on this page from ${new Date(report.observationSpan.from).toISOString()} to ${new Date(report.observationSpan.to).toISOString()}.` : 'At least two comparable observations at different times are required to measure change.'}</p>
     <p>Cashflow coverage: {report.cashflows.complete ? 'Complete for comparable equity observations' : report.cashflows.reason}. {report.note}</p>
