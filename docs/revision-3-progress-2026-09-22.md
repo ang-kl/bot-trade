@@ -915,3 +915,19 @@ available. The next run exercised all 5,321 tests, with one legacy no-work
 return-shape failure caused by an added zero-valued diagnostic. That field is
 now strict-path-only, preserving the existing caller contract. No test was
 removed or weakened. Full verification is repeated on the combined change.
+
+## Native strategy parity continuation - 23 September 2026, 12:27 SGT
+
+#1037's complete local gate passed: 5,321 agent tests without skips, 931
+frontend tests and all seven checks. Its first CI attempt failed the unchanged
+health-latency test at 404 ms against 100 ms. One diagnostic retry of the same
+commit passed CI without any code, test or threshold change. Review is running;
+no merge or production cashflow acceptance is claimed at this checkpoint.
+
+The next isolated package adds four native strategy ports and corrects strict
+swing-pivot parity in both existing C++ copies. The
+[parity record](scanner-native-parity-2026-09-23.md) lists supported semantics,
+64 frozen cases, four pivot boundaries, real HTTP comparison evidence and
+remaining gaps. Five of twelve per-symbol strategies have partial native
+coverage; full strategy coverage, production load and activation remain open.
+Numerical settings, target policy, ownership and scanner activation are unchanged.

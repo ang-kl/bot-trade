@@ -4,7 +4,8 @@ import { getState } from '../db.js'
 import { tfMs } from '../lib/timeframes.js'
 import { readMarketCalendar } from './market-calendar.js'
 import { projectCalendar } from '../lib/calendar-intervals.js'
-import { FIB_PROFILE, matchingProfile, recordReference, comparisonRecord, claimReferenceDelivery, markReferenceDelivery } from './scanner-comparison.js'
+import { matchingProfile, recordReference, comparisonRecord, claimReferenceDelivery, markReferenceDelivery } from './scanner-comparison.js'
+import { nativeProfileHash } from './scanner-profiles.js'
 
 const bridges = new WeakMap(), epoch = randomUUID()
 const hash = text => createHash('sha256').update(text).digest('hex')
@@ -35,7 +36,8 @@ export async function publishTimeframeEvaluation(db, job, { env = process.env, f
   const source = 'cpp-scan-timeframe', profile = matchingProfile(db, source, job)
   if (!profile) return { state: 'profile_unregistered' }
   const id = hash(JSON.stringify([job.feed, job.feedEpoch, job.configVersion, job.profileHash, job.timeframe, job.bars?.at(-1)?.t]))
-  const unsupported = job.strategy !== 'fib_618_fade' || job.profileHash !== FIB_PROFILE || job.nativeCompatible !== true
+  const supportedProfile = nativeProfileHash(job.strategy)
+  const unsupported = !supportedProfile || job.profileHash !== supportedProfile || job.nativeCompatible !== true
   if (unsupported) { comparisonRecord(db, id, source, 'unsupported_reference_semantics', { feed: job.feed, strategy: job.strategy, timeframe: job.timeframe }, now); return { state: 'unsupported' } }
   const duration = tfMs(job.timeframe)
   if (!duration || !Array.isArray(job.bars) || !job.bars.length || job.bars.length > 4096

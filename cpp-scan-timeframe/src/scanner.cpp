@@ -1,14 +1,21 @@
 #include "scanner.hpp"
+#include "reference_strategies.hpp"
 #include <regex>
 
 namespace scan {
+std::string nativeProfileHash(const std::string& strategy) {
+  if (strategy == "fib_618_fade") return fibProfileHash();
+  return tfscan::supports(strategy) ? hash(strategy + ";closed;reference_defaults;schema1") : "";
+}
 TimeframeScanner::TimeframeScanner(std::function<long long()> clock) : clock_(std::move(clock)), worker_([this](std::stop_token s) { run(s); }) {}
 TimeframeScanner::~TimeframeScanner() { flush(); worker_.request_stop(); ready_.notify_all(); worker_.join(); }
 jsn::Value TimeframeScanner::submit(const jsn::Value& body) {
   Job job; job.identity = identity(body);
   // A narrower native port must be explicit. VPO arm-before-touch routines
   // are not substitutes for closed-bar strategies or their volume filters.
-  if (body.get("strategy").asString() != "fib_618_fade" || job.identity.profile != fibProfileHash()
+  job.strategy = body.get("strategy").asString();
+  const auto profile = nativeProfileHash(job.strategy);
+  if (profile.empty() || job.identity.profile != profile
       || body.get("barMode").asString() != "closed" || !body.get("options").isObject() || !body.get("options").asObject().empty())
     throw std::invalid_argument("native_strategy_or_options_not_yet_supported; retain_reference_owner");
   job.received = integer(body.get("receivedAtMs"), 1, clock_());
@@ -50,7 +57,7 @@ jsn::Value TimeframeScanner::submit(const jsn::Value& body) {
     auto row = work_[job.key].asObject();
     row["id"] = hash(job.key); row["role"] = "scanner"; row["state"] = "queued"; row["nextDueMs"] = job.received;
     row["accountId"] = job.identity.feed.get("accountId"); row["host"] = job.identity.feed.get("host"); row["symbolId"] = job.identity.feed.get("symbolId");
-    row["calendar"] = job.calendar; row["timeframe"] = job.options.timeframe;
+    row["calendar"] = job.calendar; row["timeframe"] = job.options.timeframe; row["strategy"] = job.strategy;
     work_[job.key] = jsn::Value(std::move(row)); jobs_.push_back(std::move(job));
   }
   ready_.notify_one(); return jsn::Value(jsn::Object{{"queued", true}, {"orderAuthority", false}});
@@ -63,16 +70,19 @@ void TimeframeScanner::run(std::stop_token stop) {
       if (stop.stop_requested() && jobs_.empty()) return;
       job = std::move(jobs_.front()); jobs_.pop_front(); ++active_;
     }
-    const auto signal = bt::computeFibSignal(job.bars, job.bars.size(), job.options, false);
+    jsn::Value signal;
+    if (job.strategy == "fib_618_fade") {
+      const auto fib = bt::computeFibSignal(job.bars, job.bars.size(), job.options, false);
+      if (fib.valid) signal = jsn::Value(jsn::Object{{"bias", fib.dir > 0 ? "long" : "short"}, {"entry", fib.entry}, {"sl", fib.sl},
+        {"tp1", fib.tp1}, {"tp2", fib.tp2}, {"conviction", fib.conviction}, {"rr", fib.rr}, {"time_cap_minutes", fib.timeCapMinutes}, {"timeframe", job.options.timeframe}});
+    } else signal = tfscan::compute(job.strategy, job.bars, job.options);
     const auto completed = clock_(); const bool expired = job.received + job.identity.ttl <= completed;
-    jsn::Value result(jsn::Object{{"outcome", expired ? "expired" : signal.valid ? "candidate" : "no_signal"},
+    jsn::Value result(jsn::Object{{"outcome", expired ? "expired" : !signal.isNull() ? "candidate" : "no_signal"},
       {"feed", job.identity.feed}, {"feedEpoch", job.identity.epoch}, {"configVersion", job.identity.config},
-      {"profileHash", job.identity.profile}, {"strategy", "fib_618_fade"}, {"receivedAtMs", job.received},
+      {"profileHash", job.identity.profile}, {"strategy", job.strategy}, {"receivedAtMs", job.received},
       {"timeframe", job.options.timeframe}, {"barCloseAtMs", job.closeAt}, {"completedAtMs", completed}, {"orderAuthority", false}});
-    if (signal.valid && !expired) {
-      jsn::Value s(jsn::Object{{"bias", signal.dir > 0 ? "long" : "short"}, {"entry", signal.entry}, {"sl", signal.sl},
-        {"tp1", signal.tp1}, {"tp2", signal.tp2}, {"conviction", signal.conviction}, {"rr", signal.rr}, {"time_cap_minutes", signal.timeCapMinutes}, {"timeframe", job.options.timeframe}});
-      auto c = candidate(job.identity, "fib_618_fade", job.closeAt, job.received, job.source, completed, std::move(s), job.options.timeframe);
+    if (!signal.isNull() && !expired) {
+      auto c = candidate(job.identity, job.strategy, job.closeAt, job.received, job.source, completed, signal, job.options.timeframe);
       c.set("timeframe", job.options.timeframe);
       // Closed-bar economic identity survives gateway/scanner process epochs.
       c.set("basisId", hash(jsn::dump(jsn::Value(jsn::Array{job.identity.feed, job.identity.config, job.identity.profile, job.options.timeframe, job.closeAt}))));
@@ -88,7 +98,7 @@ void TimeframeScanner::run(std::stop_token stop) {
       for (const auto& pending : jobs_) if (pending.key == job.key) {
         row["state"] = "queued"; row["nextDueMs"] = pending.received; break;
       }
-      row["outcome"] = expired ? "expired" : signal.valid ? "candidate" : "no_signal";
+      row["outcome"] = expired ? "expired" : !signal.isNull() ? "candidate" : "no_signal";
       work_[job.key] = jsn::Value(std::move(row)); --active_;
     }
     drained_.notify_all();
@@ -98,6 +108,6 @@ void TimeframeScanner::flush() { std::unique_lock lock(mutex_); drained_.wait(lo
 jsn::Value TimeframeScanner::status() {
   std::lock_guard lock(mutex_); jsn::Array work; for (const auto& [id, row] : work_) work.push_back(row);
   return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-timeframe"}, {"observedAtMs", clock_()}, {"workComplete", true}, {"work", work},
-    {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "fib_618_fade baseline closed bars only; other strategies remain with reference owner"}});
+    {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "closed bars: fib_618_fade FX baseline, donchian_breakout, rsi2_reversion, vwap_trend, fib_confluence; other semantics remain with reference owner"}});
 }
 }

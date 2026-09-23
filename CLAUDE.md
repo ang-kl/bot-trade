@@ -1038,3 +1038,8 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   visible replies through **№ 8,570**; next **№ 8,571**. #1033 and #1034 merged
   and deployed; authenticated reporting behavior passed with explicit remaining
   cashflow/P&L data gaps. Count follows visible replies, not a full-corpus read.
+
+- 2026-09-23 04:27 UTC, Work Mode continuation with partial transcript corpus:
+  visible replies through **№ 8,598**; next **№ 8,599**. The #1037 local gate
+  and unchanged-commit CI retry passed; native parity work continues. Count
+  follows the recorded rebase and visible replies, not a full-corpus reading.

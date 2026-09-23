@@ -39,8 +39,9 @@ Swings findSwings(const std::vector<Bar>& bars, size_t n, int fractalWidth) {
   for (long long i = fractalWidth; i < len - fractalWidth; i++) {  // js:174
     bool isHigh = true, isLow = true;                              // js:175-176
     for (long long j = i - fractalWidth; j <= i + fractalWidth; j++) {  // js:177
-      if (bars[j].h > bars[i].h) isHigh = false;                   // js:178
-      if (bars[j].l < bars[i].l) isLow = false;                    // js:179
+      if (j == i) continue;
+      if (bars[j].h >= bars[i].h) isHigh = false;
+      if (bars[j].l <= bars[i].l) isLow = false;
       if (!isHigh && !isLow) break;                                // js:180
     }
     if (isHigh) out.highs.push_back({static_cast<int>(i), bars[i].h, bars[i].t});  // js:182

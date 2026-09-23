@@ -12,6 +12,8 @@ import { pollScannerMirrors } from './scanner-candidates.js'
 import { recordScannerWork } from './scanner-work.js'
 import { nodeWatchdogContract } from './watchdog-contract.js'
 import { recordMarketCalendar } from './market-calendar.js'
+import { STRATEGY_REGISTRY } from './strategies.js'
+import { nativeProfileHash } from './scanner-profiles.js'
 
 const feed = { provider: 'ctrader', host: 'demo.ctraderapi.com', accountId: '11', symbolId: '7' }
 const fixture = name => JSON.parse(readFileSync(new URL(`../../${name}`, import.meta.url)))
@@ -115,6 +117,46 @@ test('real timeframe HTTP feed, candidate collector and actual JavaScript refere
   assert.deepEqual(comparisonStatus(db).populations.map(p => [p.state, p.records]), [['matched', 1]])
   assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)
   assert.equal((await fetch(`${url}/watchdog`)).status, 401)
+})
+
+test('all four added strategy ports traverse the actual HTTP comparison path without order authority', { skip: !has('cpp-scan-timeframe') }, async t => {
+  const url = await nativeService(t, 'cpp-scan-timeframe'), fixtures = fixture('cpp-scan-timeframe/src/tests/fixtures/reference-parity.json')
+  const start = Date.now() - fixtures.length * 1000 - 100
+  const jobs = fixtures.map(({ request }, i) => {
+    const receivedAtMs = start + i * 1000, shift = receivedAtMs - request.receivedAtMs
+    const bars = request.bars.map(b => ({ ...b, t: b.t + shift }))
+    const compute = STRATEGY_REGISTRY.find(s => s.key === request.strategy).compute
+    return { ...request, feed, receivedAtMs, bars, nativeCompatible: true,
+      profileHash: nativeProfileHash(request.strategy), reference: compute(bars, request.timeframe) }
+  })
+  const policies = [...new Map(jobs.map(j => [`${j.strategy}:${j.timeframe}`, { source: 'cpp-scan-timeframe', feed,
+    strategy: j.strategy, timeframe: j.timeframe, configVersion: j.configVersion, profileHash: j.profileHash, candidateTtlMs: 3600000 }])).values()]
+  const db = database(t, policies), env = { SCANNER_TIMEFRAME_URL: url, SCANNER_TIMEFRAME_SECRET: 'fixture' }
+  for (const job of jobs) {
+    assert.equal((await publishTimeframeEvaluation(db, job, { env })).state, 'delivered')
+    await pollScannerMirrors(db, { env })
+  }
+  for (let i = 0; i < 50; i++) {
+    await pollScannerMirrors(db, { env })
+    if (comparisonStatus(db).populations.reduce((sum, p) => sum + p.records, 0) === jobs.length) break
+    await delay(10)
+  }
+  assert.deepEqual(comparisonStatus(db).populations.map(p => [p.state, p.records]), [['matched', jobs.length]],
+    JSON.stringify(db.prepare("SELECT detail FROM scanner_comparisons WHERE state != 'matched'").all()))
+  assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)
+})
+
+test('comparison includes added strategy direction and confluence metadata', t => {
+  const f = fixture('cpp-scan-timeframe/src/tests/fixtures/reference-parity.json').find(f => f.request.strategy === 'fib_confluence' && f.expected)
+  const db = database(t), body = { ...f.request, barCloseAtMs: f.request.receivedAtMs, inputHash: 'frozen' }
+  recordReference(db, body, f.expected)
+  const row = { ...body, outcome: 'candidate', candidate: { ...body, sourceSequence: body.barCloseAtMs,
+    signal: { ...f.expected, confluenceCount: f.expected.confluenceCount + 1 } } }
+  assert.equal(compareTimeframeResult(db, row), 'mismatch')
+  row.candidate.signal = { ...f.expected, direction_reason: 'wrong' }
+  assert.equal(compareTimeframeResult(db, row), 'mismatch')
+  row.candidate.signal = f.expected
+  assert.equal(compareTimeframeResult(db, row), 'matched')
 })
 
 test('real native tick evaluations match the JavaScript oracle; gaps remain visible and replay is not extra evidence', { skip: !has('cpp-scan-tick') }, async t => {
