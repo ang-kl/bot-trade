@@ -819,6 +819,23 @@ export function pnlGapBreakdown(db, { overdueMin = 15 } = {}) {
   } catch { return { ...zero, error: true } }
 }
 
+export function pnlUnreachedRows(db, { overdueMin = 15, limit = 20 } = {}) {
+  try {
+    return db.prepare(`
+      SELECT id, symbol, account_id AS accountId, ctrader_position_id AS positionId,
+             opened_at AS openedAt, closed_at AS closedAt
+        FROM trades
+       WHERE status = 'closed' AND net_pnl IS NULL
+         AND COALESCE(pnl_unresolvable, 0) = 0
+         AND COALESCE(pnl_attempts, 0) = 0
+         AND closed_at IS NOT NULL
+         AND datetime(REPLACE(closed_at, 'T', ' ')) < datetime('now', ?)
+       ORDER BY datetime(REPLACE(closed_at, 'T', ' ')) ASC, id ASC
+       LIMIT ?
+    `).all(`-${Math.max(0, Number(overdueMin) || 0)} minutes`, Math.max(1, Math.min(100, Number(limit) || 20)))
+  } catch { return [] }
+}
+
 export function pnlReconciliationState(db, { accountId = null, overdueMin = 15 } = {}) {
   try {
     const scope = accountId == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
