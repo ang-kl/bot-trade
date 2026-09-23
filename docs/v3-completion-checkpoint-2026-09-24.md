@@ -4,7 +4,7 @@
 
 This continues revision 3. No scanner feed, entry activation, risk limit,
 credential, notification setting or broker position was changed by this work.
-Main refreshed to `92e01e4aa228d621b286c41b4e36d9dc00acf2c2`. GitHub reports
+Main initially refreshed to `92e01e4aa228d621b286c41b4e36d9dc00acf2c2`. GitHub reports
 #1048 merged at **2026-09-23T17:34:05Z**, superseding its historical release hold.
 The earlier checkpoint is historical, not evidence of a current open PR.
 Its source head was `1e16010da634e21c69d58fcb2ec93c70e9f7b5dc`.
@@ -215,3 +215,105 @@ Count retained evidence only with matching configuration, timestamps, identity
 and eligible continuity. Do not restart that clock automatically. Broker latency
 limits, retention requirements, external observer provisioning and service cost
 evidence remain specific completion dependencies, not reasons to claim readiness.
+
+## Post-release evidence at 18:50Z
+
+PR #1053 merged as `7981227e833c7877f9e66236c1aa9ba5cb63242c` from tested
+source `0d5cb46169d6e3e40649247cd35fba338bf3c6f4`. Node deployment
+`1038a226-04a5-463c-b663-eca7eae4ed11` succeeded at **18:39:55.818Z**.
+All five native services skipped this release, matching their actual filters.
+Both scanner feeds and trading activation remained unchanged.
+
+The full source gate passed: **5,390 backend tests, zero skipped; 937 frontend
+tests; ESLint; Vite build; no-green; tick native behaviour; timeframe native,
+session/DST and frozen parity; gateway/native-backtest parity**. CI run
+`35903161231` and PR review `35903161237` succeeded. Local final tests used Node
+22.23.2 and UTC, matching the date assumptions in existing tests. The initial
+UTC+7 run exposed timezone-sensitive assertions; no assertion was relaxed.
+
+At **18:49:52.465Z**, one ordinary one-day funnel read returned HTTP 200 in
+**1,096 ms proxy / 1,061 ms application time**: 331,349 traces and 46 symbols.
+The test question was whether the deployed off-thread report returned a real
+population without another long main-thread report stall. Workload: one UI
+read; stop after its response or deadline. This narrow report verification
+passed. It does not establish peak-load protection acceptance.
+
+Production acceptance did **not** pass. At **18:42:03.505Z**, Node recorded
+**73,349 ms event-loop lag** during the first post-release loop, which completed
+in 210,949 ms. The recorded scan CPU profile at **18:43:17.844Z** sampled
+202,463.3 ms: native `all` 121,428.8 ms, `get` 23,137.6 ms, `run` 20,241.4 ms,
+idle 33,891.2 ms. These are sampled frame times, not proof of CPU consumption
+versus synchronous I/O. Existing summaries discard the native callers, so they
+cannot identify the responsible SQL read sites. Concurrent report requests
+shared the same event loop, and several verification tabs were open; the phase
+name alone does not prove the scanner caused all the delay. Retained evidence
+is in [the runtime receipt](evidence/v3-production-checkpoint-2026-09-24.json).
+
+Independent broker reads recovered. Receipts **18:50:21.481Z to 18:50:22.966Z**
+again showed the same seven accounts and 32 positions: all stops present,
+two TP1 absent. The UI showed zero reserved/in-flight/unknown intents on all
+seven accounts at the subsequent read. Later short protection cycles do not
+erase the startup overrun. Production protection p95/p99/max remains
+**Not Verifiable** because complete, attributable broker-confirmation events
+and a representative workload were not captured.
+
+The calendar diagnostic now names the reason: account 42993489, symbol 12097,
+`calendar_holiday_window_unknown` at **18:46:59Z**; earlier batches reported
+the same condition for account 46979908, symbols 12095 and 11766. The official
+[ProtoOAHoliday reference](https://help.ctrader.com/open-api/model-messages/#protooaholiday)
+marks the boundaries optional but supplies no omitted-value business meaning.
+Do not infer a full-day holiday or ignore it. Exact broker holiday payloads and
+confirmed boundary semantics remain necessary before changing classification.
+This explains these collected UNKNOWNs; it does not explain every gateway
+UNKNOWN or prove full subscription/calendar identity coverage.
+
+Watchdog receipts at **18:47:29Z** were reachable and valid for all five targets.
+Delivery remained disabled: **512 pending records and 88 capacity refusals**.
+Backlog disposition, sender ownership, verified recipient/credentials and the
+independent host must be resolved before the proposed bounded delivery drill.
+No backlog was purged and no notification was sent.
+
+Additional full-plan findings:
+
+- Boot at 18:39:48Z reported 1,308 closed positions in 90 days, 53 complete and
+  1,252 incomplete. The source summary's categories do not fully sum to 1,308;
+  preserve that discrepancy for identity reconciliation. Of 117 refused records
+  since the clean-data cutoff, 72 opened after it. These are real provenance
+  gaps, not a reason to fabricate historical reasons.
+- Seventeen symbols are armed only on timeframes absent from the scan ladder;
+  21 have some unreachable cells. Examples: ASML.US 8h, EURUSD/GBPUSD 3d,
+  EURAUD 12h/8h. The current ladder is 1mo/1w/1d/4h/1h/30m/15m/5m.
+  Strategy/configuration decisions must choose the intended profiles before
+  adding native semantics or rearming cells. No settings were changed.
+- One-hour Railway metrics sampled 61 points per service. Node memory peaked
+  at 3.867 GB and disk was approximately 4.032 GB; cpp-exec disk 2.264 GB and
+  verifier disk 0.924 GB. Scanners were idle with feeds OFF. cpp-acct and the
+  new scanners had no mounted volume. These observations do not prove service
+  quotas, billing, retention under peak recording, or restart durability.
+- Attributable replay remains dependent on exact pinned profiles and eligible
+  segment provenance. The implemented replay endpoint has no operator UI;
+  available Railway access provides logs/configuration, not remote shell or
+  authenticated application invocation. No replacement dataset was invented.
+
+## Native-call attribution release proposal
+
+The follow-up diagnostic retains up to three nearest application callers for
+native profiler frames, with a 32-parent traversal bound and cycle detection.
+It skips dependency wrappers and leaves idle/program/GC accounting unchanged.
+Only code locations and sampled durations are retained; no SQL, parameters,
+credentials, extra profiler activation or trading behaviour is introduced.
+Focused tests verify caller attribution, merged totals and bounded malformed
+profiles. The full repository gate is required before a qualifying merge.
+
+Actual deployment scope is **Node only**, affecting management scheduling for
+all seven registered accounts during its normal release restart. Existing
+broker-held stops remain at the broker. Prerequisites: green full merge gate,
+unchanged filters and feeds, fresh independent coverage and no unresolved
+in-flight intents. Observe the already-enabled first scan/monitor profile and
+at most two normal subsequent cycles; stop after obtaining attribution or six
+minutes. Do not run a load test, force a signal, or enable another profiler.
+Any unexplained delay remains failed acceptance; loss of coverage, duplicate
+intents or a new functional regression stops the release observation. Restore
+Node deployment `1038a226-04a5-463c-b663-eca7eae4ed11` for a regression. That
+rollback preserves the report isolation but also the unresolved startup hazard.
+This proposal is not approval for any gateway, feed, Telegram or outage drill.

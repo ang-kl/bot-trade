@@ -139,3 +139,45 @@ test('an empty profile summarises to zeros, never NaN', () => {
   assert.deepEqual(s.top, [])
   assert.equal(s.samples, 0)
 })
+
+test('native database samples retain distinct application callers through dependency wrappers', () => {
+  const frame = (id, name, url, children = [], lineNumber = 0) => ({
+    id, children, callFrame: { functionName: name, url, lineNumber },
+  })
+  const s = summarizeProfile({
+    nodes: [
+      frame(1, '(root)', '', [2, 5, 7]),
+      frame(2, 'report', 'file:///app/agent/routes/state.js', [3], 100),
+      frame(3, 'wrapped', 'file:///app/agent/node_modules/sql/wrapper.js', [4]),
+      frame(4, 'all', ''),
+      frame(5, 'scan', 'file:///app/agent/services/scanner.js', [6], 200),
+      frame(6, 'all', ''),
+      frame(7, '(idle)', ''),
+    ],
+    samples: [4, 6, 4, 7], timeDeltas: [2000, 3000, 4000, 1000],
+  })
+  assert.equal(s.totalMs, 10)
+  assert.equal(s.top[0].frame, 'all')
+  assert.equal(s.top[0].selfMs, 9, 'caller breakdown must not double count self time')
+  assert.deepEqual(s.top[0].callers, [
+    { frame: 'report @ routes/state.js:101', selfMs: 6 },
+    { frame: 'scan @ services/scanner.js:201', selfMs: 3 },
+  ])
+  assert.equal(s.idleMs, 1)
+  assert.equal(s.top[1].callers, undefined)
+})
+
+test('native attribution is bounded and tolerates cyclic or missing profile parents', () => {
+  const nodes = Array.from({ length: 5 }, (_, n) => ({
+    id: n * 2 + 1, children: [n * 2 + 2],
+    callFrame: { functionName: `caller${n}`, url: 'file:///app/agent/services/load.js', lineNumber: n },
+  })).flatMap(parent => [parent, { id: parent.id + 1, callFrame: { functionName: 'get', url: '' } }])
+  nodes.push({ id: 11, children: [12], callFrame: { functionName: 'a', url: 'node:internal' } },
+    { id: 12, children: [11, 13], callFrame: { functionName: 'b', url: 'node:internal' } },
+    { id: 13, callFrame: { functionName: 'run', url: '' } })
+  const s = summarizeProfile({ nodes, samples: [2, 4, 6, 8, 10, 13, 99], timeDeltas: [1000, 2000, 3000, 4000, 5000, 1000, 1000] })
+  const top = s.top.find(f => f.frame === 'get')
+  assert.equal(top.callers.length, 3)
+  assert.deepEqual(top.callers.map(f => f.selfMs), [5, 4, 3])
+  assert.equal(s.top.find(f => f.frame === 'run').callers, undefined)
+})
