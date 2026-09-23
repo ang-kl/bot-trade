@@ -8,17 +8,19 @@ import { useCallback, useEffect, useState } from 'react'
 import Card from '../components/common/Card.jsx'
 import Button from '../components/common/Button.jsx'
 import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
-import { REASON_ENDPOINTS, shapeBody, blockState, fmtCell } from '../lib/reasons-view.js'
+import { REASON_ENDPOINTS, shapeBody, blockState, fmtCell, reasonScope } from '../lib/reasons-view.js'
 
 export function ReasonsBlock({ def, result, at }) {
   const st = blockState(result)
+  const scope = reasonScope(def, result)
   return (
-    <Card className="p-3" kind="reasons" data-reasons-block={def.key} data-status={st.status} scope="all">
+    <Card className="p-3" kind="reasons" data-reasons-block={def.key} data-status={st.status} scope={scope}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 mb-1">
         <h3 className="text-(length:--fs-h) font-bold">{def.title}</h3>
         <code className="text-(length:--fs-body) text-[var(--color-text-sub)]">GET {def.path}</code>
         {at && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">read {at}</span>}
       </div>
+      {scope === undefined && <p className="text-(length:--fs-body) text-[var(--color-warning-text)]" data-scope-unavailable>Scope unavailable for this read</p>}
       <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">{def.why}</p>
       {st.status === 'error'
         ? <p className="text-(length:--fs-body) font-semibold text-[var(--color-down)]" data-not-read>{st.message}</p>

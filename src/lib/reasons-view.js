@@ -64,3 +64,23 @@ export function blockState(result) {
   const msg = result?.error ?? 'not read'
   return { status: 'error', message: /401|unauthori[sz]ed|bearer/i.test(String(msg)) ? `not read — ${msg} (the state routes need the bearer token)` : `not read — ${msg}` }
 }
+
+// These five routes intentionally report across the ledger regardless of the
+// viewed account. Other routes must identify their actual returned scope.
+const portfolioReports = new Set(['entry-intents', 'trade-plans', 'unknown-pnl', 'unresolvable-plan', 'refusal-cost'])
+const nullableAllReports = new Set(['go-live-readiness', 'exit-price-suspects', 'exit-counterfactual'])
+export function reasonScope(def, result) {
+  if (!result?.ok || !isObj(result.body)) return undefined
+  const body = result.body
+  const account = body.accountId ?? (isObj(body.scope) ? body.scope.account : undefined)
+  if (/^[1-9]\d*$/.test(String(account))) return String(account)
+  if (account === 'all' || body.scope === 'all') return 'all'
+  if (def.key === 'phase-audit' && typeof body.scope === 'string') {
+    const id = /^account ([1-9]\d*)(?: |$)/.exec(body.scope)?.[1]
+    if (id) return id
+    if (/^all accounts(?: |$)/.test(body.scope)) return 'all'
+  }
+  if (nullableAllReports.has(def.key) && Object.hasOwn(body, 'accountId') && body.accountId === null) return 'all'
+  if (portfolioReports.has(def.key)) return 'all'
+  return undefined
+}

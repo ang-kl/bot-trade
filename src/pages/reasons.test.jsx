@@ -4,11 +4,34 @@ import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { readFileSync } from 'node:fs'
 import { ReasonsBlock } from './Reasons.jsx'
-import { REASON_ENDPOINTS, shapeBody, blockState } from '../lib/reasons-view.js'
+import { REASON_ENDPOINTS, shapeBody, blockState, reasonScope } from '../lib/reasons-view.js'
 
 const def = k => REASON_ENDPOINTS.find(d => d.key === k)
 
 describe('ReasonsBlock', () => {
+  it('shows the returned account and never labels its selected-account data as all accounts', () => {
+    const result = { ok: true, body: { accountId: '46130058', scope: 'account', rows: [] } }
+    const html = renderToStaticMarkup(<ReasonsBlock def={def('trade-consistency')} result={result} />)
+    expect(html).toContain('Account 46130058')
+    expect(html).not.toContain('All accounts')
+    expect(reasonScope(def('attribution'), { ok: true, body: { scope: { account: '77' } } })).toBe('77')
+    expect(reasonScope(def('phase-audit'), { ok: true, body: { scope: 'account 77 (the trading account)' } })).toBe('77')
+  })
+  it('distinguishes explicit portfolio and global-ledger reads from missing or failed scope evidence', () => {
+    for (const key of ['entry-intents', 'trade-plans', 'unknown-pnl', 'unresolvable-plan', 'refusal-cost']) {
+      expect(reasonScope(def(key), { ok: true, body: { rows: [] } })).toBe('all')
+    }
+    for (const key of ['exit-counterfactual', 'exit-price-suspects', 'go-live-readiness']) {
+      expect(reasonScope(def(key), { ok: true, body: { accountId: null } })).toBe('all')
+      expect(reasonScope(def(key), { ok: true, body: {} })).toBeUndefined()
+    }
+    expect(reasonScope(def('open-duplicates'), { ok: true, body: { scope: { account: 'all' } } })).toBe('all')
+    for (const result of [undefined, { ok: false, error: 'HTTP 500' }, { ok: true, body: { accountId: null, scope: 'account' } }]) {
+      const html = renderToStaticMarkup(<ReasonsBlock def={def('trade-consistency')} result={result} />)
+      expect(html).toContain('Scope unavailable for this read')
+      expect(html).not.toContain('All accounts')
+    }
+  })
   it('entry-intents: scalars as a summary, the rows array as a table with the rows\' own columns', () => {
     const body = { count: 2, unknown: 1, rows: [
       { id: 7, symbol: 'EURUSD', state: 'FILLED', producer: 'tick_momentum', reason: 'breakout' },
