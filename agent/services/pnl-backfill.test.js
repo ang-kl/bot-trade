@@ -687,7 +687,7 @@ test('a persistence failure never fails the backfill — the receipt is not the 
 // compared to zero — true unless the SQL threw — so the failure its own
 // comment described could never be reported.
 // ---------------------------------------------------------------------------
-import { pnlReconciliationState } from './pnl-backfill.js'
+import { pnlReconciliationState, pnlUnreachedRows } from './pnl-backfill.js'
 import { readFileSync } from 'node:fs'
 
 test('pnlReconciliationState separates "never tried, just closed" from "never tried, overdue"', () => {
@@ -706,11 +706,19 @@ test('pnlReconciliationState separates "never tried, just closed" from "never tr
   assert.equal(pnlReconciliationState(db, { overdueMin: 0 }).neverTriedOverdue, 2)
 })
 
+test('pnlUnreachedRows names only overdue, repairable, never-attempted identities', () => {
+  const db = gapDb()
+  const rows = pnlUnreachedRows(db)
+  assert.deepEqual(rows.map(r => r.id), [905])
+  assert.equal(rows[0].symbol, 'NAS100')
+  assert.equal(rows[0].accountId, '111')
+})
+
 test('the pnl_reconcile heartbeat can actually fail: ok keys on overdue never-tried rows (source pin, comments stripped)', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
   const block = src.slice(src.indexOf("hb.beat(db, 'pnl_reconcile'"), src.indexOf("hb.beat(db, 'pnl_reconcile'") + 600)
   assert.match(block, /ok: st\.unresolved >= 0 && !unreached/)
-  assert.match(src, /const unreached = st\.unresolved >= 0 && st\.neverTriedOverdue > 0/)
+  assert.match(src, /const unreached = st\.unresolved >= 0 && st\.neverTriedOverdue > 0/)\n  assert.match(src, /unreachedRows: pnlUnreachedRows\(db\)/)
   assert.doesNotMatch(block, /ok: st\.unresolved >= 0,/, 'the old predicate — a count compared to zero — must be gone')
 })
 
