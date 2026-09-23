@@ -19,7 +19,8 @@ broker mutations, credentials, external alert provisioning or outage drills.
 The fresh review found a real end-to-end omission: the scanner's new HTTP 429
 was retryable, but the gateway discarded the batch. Corrected source is retained
 at `c067b9402c725eb45add03e68bba44c316fa770d`, with current main incorporated in
-the follow-up branch. No force push or merge-gate bypass was used.
+PR head `1e16010da634e21c69d58fcb2ec93c70e9f7b5dc`. GitHub confirms that head is
+mergeable and draft. No force push or merge-gate bypass was used.
 
 The gateway now retains identical bytes and sequence for bounded transient
 retries. Failure/exhaustion remains explicit, bounded memory remains, and the
@@ -58,10 +59,20 @@ the timeframe scanner deploys for #1046. All gateway, verifier and tick-scanner
 deployment events were correctly skipped. Node intermediate builds were
 superseded by later main commits; this is not evidence of a runtime failure.
 
-At 17:11 UTC on 23 September (01:11 SGT on 24 September), Node and timeframe
-deployments for #1046 were successful. Final Node deployment
+At 17:17 UTC on 23 September (01:17 SGT on 24 September), all six production
+services have successful active deployments. Final Node deployment
 `37676b36-464c-4fa4-bdbd-79f5bdd10fec`, source `f8f02515716e667a407434f1e1fdbca954687258`,
-was still building. Post-final-release health/protection readback is pending.
+is successful. Timeframe deployment `2eddcee9-60c9-4189-b28d-4e712b33c269`, source
+`82cf0258399f85e6cdd029ba459f99b395e6007a`, is successful. Both broker gateways,
+cpp-verify and the tick scanner remain on their pre-release deployments at
+`761bf3810851aa757636c94fa1d56ecd451bd236`.
+
+The initial Node startup receipt at 17:16:32 UTC correctly reported unverified
+broker observations. Fresh independent receipts at 17:16:44.149–17:16:45.605 UTC
+then verified all seven connected accounts: 32 positions, 32 stops, 30 TP1s,
+unchanged from before release. The aggregate was logged at 17:16:59.692 UTC.
+Startup recovery and a successful health check do not measure broker-confirmed
+protection latency under load. Two TP1 exceptions remain unresolved.
 
 Fresh configuration names show no scanner bridge/feed variables on Node or
 either gateway; both scanners have only PORT and SCANNER_SECRET. No configuration

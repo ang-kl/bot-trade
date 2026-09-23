@@ -1073,3 +1073,9 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   #1048 remains held: the newly demonstrated caller-retry correction additionally
   restarts both broker gateways and needs the scoped release approval. Scanner
   feeds, trading activation, credentials and notification permission are unchanged.
+
+- 2026-09-23 17:17 UTC, same partial-corpus continuation: visible replies
+  through **№ 8,722**; next **№ 8,723**. Final released Node and timeframe
+  deployments are successful; fresh independent broker evidence covers all
+  seven accounts (32 positions, 32 SLs, 30 TP1s). #1048 is conflict-free but
+  draft/held for expanded gateway restarts and the complete updated CI gate.
