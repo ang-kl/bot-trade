@@ -19,5 +19,9 @@ int main() {
     try { const auto raw = queryParam(req.query, "after", "0"); size_t end; const auto after = std::stoll(raw, &end); if (after < 0 || end != raw.size()) throw std::invalid_argument("cursor"); return HttpResponse{200, jsn::dump(scanner.candidates(after))}; }
     catch (...) { return HttpResponse{400, "{\"error\":\"invalid_cursor\"}"}; }
   });
+  server.route("GET", "/comparisons", [&](const HttpRequest& req) {
+    try { const auto raw = queryParam(req.query, "after", "0"); size_t end; const auto after = std::stoll(raw, &end); if (after < 0 || end != raw.size()) throw std::invalid_argument("cursor"); return HttpResponse{200, jsn::dump(scanner.comparisons(after))}; }
+    catch (...) { return HttpResponse{400, "{\"error\":\"invalid_cursor\"}"}; }
+  });
   return server.run() ? 0 : 1;
 }

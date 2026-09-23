@@ -139,7 +139,18 @@ void WatchState::evaluate(long long now) {
     // Retained deadlines/calendars continue through Node loss, without stamping
     // retained work fresh. Only an actual new receipt advances lastCompleted.
     const auto& contract = s.get("contract");
-    for (const auto& w : contract.get("work").asArray()) {
+    for (const auto& raw : contract.get("work").asArray()) {
+      auto w = copy(raw);
+      // The actual owner supplies progress; Node supplies only the shared
+      // broker calendar. Keep its original observation/expiry through Node
+      // loss. A fresh probe never refreshes calendar evidence.
+      const auto node = services_.find("node");
+      if (node != services_.end()) for (const auto& c : node->second.get("contract").get("calendars").asArray()) {
+        const auto& identity = c.get("identity");
+        if (identity.get("accountId").asString() == w.get("accountId").asString()
+            && identity.get("host").asString() == w.get("host").asString()
+            && identity.get("symbolId").asString() == w.get("symbolId").asString()) { w.set("calendar", c.get("calendar")); break; }
+      }
       const std::string id = w.get("id").asString(), role = w.get("role").asString();
       if (id.empty() || id.size() > 256) continue;
       const auto key = service + ":work:" + id;
@@ -151,6 +162,12 @@ void WatchState::evaluate(long long now) {
       const auto completed = number(w.get("lastCompletedAtMs"));
       incident(key + ":clock", completed > now, "warning", d, now);
       if (completed > now) continue;
+      if (role == "gateway") {
+        const auto due = number(w.get("nextDueMs"));
+        incident(key + ":deadline_unknown", due == 0, "warning", d, now);
+        if (due > 0) incident(key + ":stalled", now >= due + policy_.serviceGraceMs, "urgent", d, now);
+        continue;
+      }
       if (role == "intent") {
         const auto state = w.get("state").asString();
         const bool terminal = state == "ACCEPTED" || state == "FILLED" || state == "REJECTED" || state == "RELEASED" || state == "EXPIRED";
@@ -181,9 +198,13 @@ void WatchState::evaluate(long long now) {
       if (m == "OPEN" && quoteLimit > 0) incident(key + ":quote", !fresh(number(w.get("lastQuoteAtMs")), now, quoteLimit), "urgent", d, now);
       const auto opened = number(w.get("sessionOpenedAtMs"));
       const auto session = w.get("sessionId").asString();
-      if (role == "entry_activity" && m == "OPEN" && opened > 0 && opened <= now && !session.empty()
+      if (role == "entry_activity" && w.get("activityComplete").asBool() && completed >= opened
+          && number(w.get("nextDueMs")) + policy_.scannerGraceMs > now
+          && m == "OPEN" && opened > 0 && opened <= now && !session.empty()
           && now - opened >= policy_.noOrdersMs && w.get("ordersSinceOpen").isNumber() && w.get("ordersSinceOpen").asNumber() == 0)
         incident(service + ":no_orders:" + w.get("accountId").asString() + ":" + session, true, "info", d, now, true);
+      if (role == "entry_activity" && w.get("activityComplete").asBool() && w.get("hasRecordedOrder").asBool() && !session.empty())
+        incident(service + ":no_orders:" + w.get("accountId").asString() + ":" + session, false, "info", d, now, true);
     }
   }
   // Retain resolved history for 30 days, bounded independently of the outbox.
@@ -248,6 +269,7 @@ jsn::Value WatchState::status(long long now) const {
   // persisted calendar and broker position payload on each UI refresh.
   jsn::Object services, incidents, outbox;
   for (const auto& [id, row] : services_) services[id] = jsn::Value(jsn::Object{
+    {"attemptedAtMs", row.get("attemptedAtMs")},
     {"reachable", row.get("reachable")}, {"lastReachableAtMs", row.get("lastReachableAtMs")},
     {"lastContractAtMs", row.get("lastContractAtMs")}, {"validContract", row.get("validContract")},
     {"workCount", static_cast<long long>(row.get("contract").get("work").asArray().size())}});

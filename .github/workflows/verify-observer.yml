@@ -1,0 +1,21 @@
+name: Independent verifier observation
+# Manual acceptance entry point outside Railway. Scheduling/notification
+# routing follows the reviewed runtime rollout, never a hidden cron activation.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check actual watchdog probe progress
+        env:
+          VERIFY_OBSERVER_URL: ${{ secrets.VERIFY_OBSERVER_URL }}
+          VERIFY_OBSERVER_SECRET: ${{ secrets.VERIFY_OBSERVER_SECRET }}
+        run: node scripts/verify-observer.mjs

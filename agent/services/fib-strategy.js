@@ -521,10 +521,12 @@ function strategyFns(opts) {
  * being armed". That fixed the case where the winner could not trade. It does
  * nothing when BOTH are armed — which is this case.
  */
-export function pickAllSignals(fns, closed, timeframe, opts, barsFor = null) {
+export function pickAllSignals(fns, closed, timeframe, opts, barsFor = null, observe = null) {
   const out = []
   for (const fn of fns) {
-    const c = fn(barsFor ? barsFor(fn) : closed, timeframe, opts)
+    const input = barsFor ? barsFor(fn) : closed
+    const c = fn(input, timeframe, opts)
+    if (observe) { try { observe(fn, input, c) } catch { /* observation never changes the strategy result */ } }
     if (c) out.push(c)
   }
   return out
@@ -588,7 +590,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
       const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, fetchBars)
       const now = Date.now()
       for (const tf of stale) {
-        barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt: now })
+        barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt: now, host, accountId })
       }
     } catch (err) {
       return { symbol, signal: null, lastPrice: null, error: `trendbar fetch failed: ${err.message}` }
@@ -651,7 +653,17 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     // preferred hit. That early exit was what made a strategy invisible when a
     // louder one fired on an earlier timeframe, so it cannot stay; the scan
     // deadline (`options.deadlineAt` in runFibScan) remains the bound on cost.
-    for (const cand of pickAllSignals(fns, closed, timeframe, opts, barsFor)) {
+    const observe = opts.onEvaluation ? (fn, input, reference) => {
+      const cache = barCache.get(`${symbolId}|${timeframe}`)
+      const strategy = fn === computeFibSignal ? 'fib_618_fade'
+        : opts.strategies?.find(s => s.compute === fn)?.key || reference?.strategy || fn.name
+      opts.onEvaluation({ symbolId, strategy, timeframe, reference,
+        bars: input.map(({ t, o, h, l, c, v }) => ({ t, o, h, l, c, v })),
+        receivedAtMs: cache?.fetchedAt, cacheIdentity: { host: cache?.host, accountId: cache?.accountId },
+        nativeCompatible: fn === computeFibSignal && !opts.pendingSetup && !opts.rsiFilter && !opts.vwapFilter && !opts.fvgFilter
+          && Object.keys(DEFAULT_TUNING).every(k => opts.classTuning[k] === DEFAULT_TUNING[k]) })
+    } : null
+    for (const cand of pickAllSignals(fns, closed, timeframe, opts, barsFor, observe)) {
       cand._preferred = isPreferred(timeframe)
       const prev = bestByStrategy.get(cand.strategy)
       // Per strategy: a preferred (armed) timeframe wins outright; within the
@@ -727,6 +739,7 @@ export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cur
 export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hotThreshold = Number(options.hotThreshold) || 6
   const scanOpts = {
+    onEvaluation: options.onEvaluation || null,
     rsiFilter: options.rsiFilter || null,
     vwapFilter: options.vwapFilter || null,
     fvgFilter: options.fvgFilter || null,
@@ -843,6 +856,8 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     errors,
     next_cursor: nextCursor,
     coverage: { scanned: scannedSymbols, total: symbols.length, rows: scans.length },
+    rotationRuns: rounds,
+    expectedSymbols: selectScanBatch(symbols, { heldSymbols: options.prioritySymbols || [], batchSize: Math.max(1, symbols.length), cursor: 0 }).batch.map(s => s.symbol),
     cupHandleDiagnostics,
   }
 }

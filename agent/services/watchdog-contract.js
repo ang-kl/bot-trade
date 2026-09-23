@@ -3,6 +3,7 @@ import { readMarketCalendar } from './market-calendar.js'
 import { projectCalendar, calendarIntervals } from '../lib/calendar-intervals.js'
 import { loadNotifyConfig } from './telegram-digest.js'
 import { DEFAULT_SENT_TIMEOUT_MS } from './entry-ledger.js'
+import { scannerWork, watchdogCalendars } from './scanner-work.js'
 
 const read = (db, key) => { try { return JSON.parse(getState(db, key) || 'null') } catch { return null } }
 const time = value => { const n = Date.parse(value); return Number.isFinite(n) ? n : null }
@@ -65,9 +66,10 @@ export function nodeWatchdogContract(db, { now = Date.now() } = {}) {
     symbolId: row.symbol_id == null ? null : String(row.symbol_id), state: row.state,
     deadlineMs: time(row.updated_at) == null ? null : time(row.updated_at) + (row.state === 'UNKNOWN' ? 0 : DEFAULT_SENT_TIMEOUT_MS),
     reason: 'terminal_acknowledgement', blocker: row.error_code || null })
-  const out = { schemaVersion: 1, service: 'node', observedAtMs: now, workComplete: positions.length <= 2048 && intents.length <= 2048 && work.length <= 2048,
+  work.push(...scannerWork(db, accounts, now))
+  const out = { schemaVersion: 1, service: 'node', observedAtMs: now, ...watchdogCalendars(db, now), workComplete: positions.length <= 2048 && intents.length <= 2048 && work.length <= 2048 && !work.some(w => w.inventoryComplete === false),
     work: work.slice(0, 2048), notificationPolicy: notificationPolicy(db, now),
     limitations: ['Scanner work is published by its actual owner; a Node timer is not a scanner receipt.', 'No closed-market management deadline has been invented.'] }
-  if (Buffer.byteLength(JSON.stringify(out)) > 256 * 1024) { out.workComplete = false; out.work = []; out.reason = 'work_contract_size_bound' }
+  if (Buffer.byteLength(JSON.stringify(out)) > 256 * 1024) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.reason = 'work_contract_size_bound' }
   return out
 }
