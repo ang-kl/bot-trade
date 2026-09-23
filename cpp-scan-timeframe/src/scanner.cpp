@@ -1,5 +1,6 @@
 #include "scanner.hpp"
 #include "reference_strategies.hpp"
+#include "volume_structure.hpp"
 #include <regex>
 
 namespace scan {
@@ -34,6 +35,7 @@ jsn::Value TimeframeScanner::submit(const jsn::Value& body) {
   long long previous = -1;
   for (const auto& b : body.get("bars").asArray()) {
     const auto t = integer(b.get("t"), 0, job.received - duration);
+    if (job.strategy == "vp_value" || job.strategy == "va_breakout") tfscan::fxDayOpenMs(t);
     if (t <= previous) throw std::invalid_argument("bar_order");
     previous = t;
     bt::Bar bar; bar.t = t;
@@ -108,6 +110,6 @@ void TimeframeScanner::flush() { std::unique_lock lock(mutex_); drained_.wait(lo
 jsn::Value TimeframeScanner::status() {
   std::lock_guard lock(mutex_); jsn::Array work; for (const auto& [id, row] : work_) work.push_back(row);
   return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-timeframe"}, {"observedAtMs", clock_()}, {"workComplete", true}, {"work", work},
-    {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "closed bars: fib_618_fade FX baseline, donchian_breakout, rsi2_reversion, vwap_trend, fib_confluence; other semantics remain with reference owner"}});
+    {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "closed bars: all 12 per-symbol strategies with reference-default options; fib_618_fade FX baseline only; pending and non-default semantics remain with reference owner"}});
 }
 }

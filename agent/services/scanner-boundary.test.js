@@ -2,10 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { computeFibSignal, findSwings } from './fib-strategy.js'
-import { computeDonchianBreakout } from './donchian-breakout.js'
-import { computeRsi2 } from './rsi2-reversion.js'
-import { computeVwapTrend } from './vwap-trend.js'
-import { computeFibConfluence } from './fib-confluence.js'
+import { STRATEGY_REGISTRY } from './strategies.js'
+import { NATIVE_DEFAULT_STRATEGIES } from './scanner-profiles.js'
+import { fxDayOpenMs, volumeStructure } from '../lib/volume-structure.js'
 const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8')
 
 test('extracted scanners keep the reference algorithms and transport byte-identical', () => {
@@ -35,16 +34,22 @@ test('the frozen native timeframe fixture still agrees with the actual JavaScrip
   assert.ok(long && short && noSignal, 'frozen coverage must include both directions and no-signal/warm-up outcomes')
 })
 
-test('all four native reference fixtures retain full current JavaScript outcomes and strict pivot boundaries', () => {
-  const owners = { donchian_breakout: computeDonchianBreakout, rsi2_reversion: computeRsi2,
-    vwap_trend: computeVwapTrend, fib_confluence: computeFibConfluence }
+test('all native default reference fixtures retain full current JavaScript outcomes and strict pivot boundaries', () => {
+  const owners = Object.fromEntries(NATIVE_DEFAULT_STRATEGIES.map(key => [key, STRATEGY_REGISTRY.find(s => s.key === key).compute]))
   const coverage = {}
   for (const { request, expected, name } of JSON.parse(read('cpp-scan-timeframe/src/tests/fixtures/reference-parity.json'))) {
     const actual = owners[request.strategy](request.bars, request.timeframe)
     assert.deepEqual(actual, expected, `${request.strategy}/${name}`)
     ;(coverage[request.strategy] ||= new Set()).add(actual?.bias || 'none')
   }
-  for (const strategy of Object.keys(owners)) assert.deepEqual([...coverage[strategy]].sort(), ['long', 'none', 'short'])
+  for (const strategy of Object.keys(owners)) assert.deepEqual([...coverage[strategy]].sort(),
+    strategy === 'cup_handle' ? ['long', 'none'] : strategy === 'inv_cup_handle' ? ['none', 'short'] : ['long', 'none', 'short'])
   for (const { bars, expected, name } of JSON.parse(read('cpp-scan-timeframe/src/tests/fixtures/pivots-parity.json')))
     assert.deepEqual(findSwings(bars), expected, name)
+})
+
+test('native calendar and volume structure fixtures retain the current JavaScript session contract', () => {
+  const { calendar, structures } = JSON.parse(read('cpp-scan-timeframe/src/tests/fixtures/volume-parity.json'))
+  for (const row of calendar) assert.equal(fxDayOpenMs(row.t), row.open)
+  for (const row of structures) assert.deepEqual(volumeStructure(row.bars), row.expected, row.name)
 })

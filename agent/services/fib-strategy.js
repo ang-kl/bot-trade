@@ -15,7 +15,7 @@ import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { tfMs } from '../lib/timeframes.js'
 import { computeCupHandleSignal, computeInvCupHandleSignal, traceCupHandleSearch, traceInvCupHandleSearch } from './cup-handle.js'
 import { categoriseSymbol } from '../lib/sessions.js'
-import { NATIVE_DEFAULT_STRATEGIES } from './scanner-profiles.js'
+import { nativeDefaultCompatible } from './scanner-profiles.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
@@ -661,7 +661,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
       opts.onEvaluation({ symbolId, strategy, timeframe, reference,
         bars: input.map(({ t, o, h, l, c, v }) => ({ t, o, h, l, c, v })),
         receivedAtMs: cache?.fetchedAt, cacheIdentity: { host: cache?.host, accountId: cache?.accountId },
-        nativeCompatible: NATIVE_DEFAULT_STRATEGIES.includes(strategy) || (fn === computeFibSignal && !opts.pendingSetup && !opts.rsiFilter && !opts.vwapFilter && !opts.fvgFilter
+        nativeCompatible: nativeDefaultCompatible(strategy, opts, fn.nativeDefaults) || (fn === computeFibSignal && !opts.pendingSetup && !opts.rsiFilter && !opts.vwapFilter && !opts.fvgFilter
           && Object.keys(DEFAULT_TUNING).every(k => opts.classTuning[k] === DEFAULT_TUNING[k])) })
     } : null
     for (const cand of pickAllSignals(fns, closed, timeframe, opts, barsFor, observe)) {
