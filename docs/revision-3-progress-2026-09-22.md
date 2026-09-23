@@ -931,3 +931,32 @@ swing-pivot parity in both existing C++ copies. The
 remaining gaps. Five of twelve per-symbol strategies have partial native
 coverage; full strategy coverage, production load and activation remain open.
 Numerical settings, target policy, ownership and scanner activation are unchanged.
+
+## Cashflow acceptance and background recording - 23 September 2026, 12:57 SGT
+
+#1037 merged as `b08817d705b4092d194aa805ca6157c593c2e0db`; all four
+deployments succeeded. All seven accounts subsequently completed cashflow
+collection and authenticated history readback. Account 43002148 first showed
+its failed collection and incomplete coverage, then automatically recovered
+and showed complete coverage at the next successful read. No event was
+invented to fill a gap. This accepts cashflow collection for the observed
+intervals, not all Version 3 history requirements.
+
+Acceptance found that equity/exposure/protection history stopped advancing
+after the monitor view closed. The [background recorder](background-history-recording-2026-09-23.md)
+now retains existing broker responses independently of the browser. Its first
+full local gate passed 5,332 agent tests without skips, 932 frontend tests and
+all seven checks. It requires a final gate with the new main, CI, review,
+deployment and fresh receipt readback. Missing broker P&L remains missing.
+
+#1038 merged as `5965f578274b4aeb90cdec1a0e700dab2315e3a6` after its complete
+local gate, all four CI workflows and completed review without findings.
+Deployment is running. This adds four native ports and comparison evidence;
+it does not activate scanners or complete the remaining strategy/load gates.
+
+The latest measured independent protection read still had 32 positions,
+zero missing SL and two TP1 exceptions. Two overdue unpriced closed rows and
+20 previously written-off gaps remain; position-specific broker history is
+the next recovery investigation. The target-policy and scanner-activation
+decisions remain separate owner approvals. Real alert-delivery/outage
+acceptance and the other P0-P8 criteria are still outstanding.

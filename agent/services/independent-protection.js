@@ -1,5 +1,6 @@
 import { getState, setState } from '../db.js'
 import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
+import { emitBrokerRead } from '../lib/broker-read-observer.js'
 
 const STATE_KEY = 'independent_protection_json'
 const MAX_AGE_MS = 180_000
@@ -89,6 +90,8 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
       if (status?.source !== 'cpp-verify' || !Array.isArray(status.accounts)) throw new Error('Invalid independent protection reply')
       const rows = status.accounts.filter(row => groups.get(row.host)?.ids.includes(String(row.accountId)))
       setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, accountErrors, readAt: new Date().toISOString(), error: null }))
+      for (const row of rows) if (!accountErrors[String(row.accountId)] && !hostErrors[row.host])
+        emitBrokerRead({ kind: 'protection', accountId: String(row.accountId), host: row.host, receivedAt: row.checkedAtMs, payload: row })
       // Optional read-only watchdog status. Its failure must not invalidate
       // the independent broker protection reading just completed above.
       try {

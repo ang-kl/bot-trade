@@ -6204,6 +6204,9 @@ export function startLoop(db) {
   // loop_inflight_json from here on, so the watchdog's finding survives the
   // restart it triggers.
   configureInflight({ db, setState })
+  import('./services/broker-history-recorder.js')
+    .then(m => m.startBrokerHistoryRecording(db))
+    .catch(err => log('broker history recording failed to start:', err.message))
   startLoopWatchdog(db)
   // Fast position monitor — 30s ticker, volume-aware cadence per open
   // position (owner: active positions are watched in ~1 minute, not 5).
