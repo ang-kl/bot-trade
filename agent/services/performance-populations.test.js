@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDB } from '../db.js'
-import { buildPerformancePopulations, readPerformancePopulations } from './performance-populations.js'
+import { buildPerformancePopulations, readPerformancePopulations, buildDecisionsDaily, buildLatestPrices, readDecisionsDaily, readLatestPrices, readStageMatrixStats } from './performance-populations.js'
+import { stageMatrixStats } from './stage-matrix.js'
+import { getState } from '../db.js'
 import { reportStats, reportLedger } from '../shared/performance-populations.js'
 import { accountAnalytics } from './account-analytics.js'
 const NOW = Date.UTC(2026, 8, 22, 12)
@@ -85,4 +87,34 @@ test('reporting analytics expose unpriced coverage and isolate currencies withou
   assert.equal(all.net, null); assert.equal(all.profitFactor, null); assert.equal(all.profitFactorInfinite, false)
   // Legacy callers have an unchanged policy until their own risk decision.
   assert.equal(accountAnalytics(db, { now: NOW }).net, 105)
+})
+
+
+test('decisions, prices and stage statistics preserve exact output in read-only workers', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'state-report-isolation-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const { db } = setup(t, join(dir, 'fixture.db'))
+  const at = new Date().toISOString()
+  const risk = db.prepare(`INSERT INTO risk_events
+    (symbol,side,approved,proposal_json,account_id,created_at,repeat_count)
+    VALUES(?,'BUY',?,'{}',?,?,?)`)
+  risk.run('EURUSD', 1, '11', at, 1)
+  risk.run('EURUSD', 0, '22', at, 3)
+  risk.run('EURUSD', 0, null, at, 2)
+  const scan = db.prepare(`INSERT INTO scans
+    (symbol,bias,confidence,timeframe,price,scanned_at) VALUES(?,?,?,?,?,?)`)
+  scan.run('EURUSD', 'long', 7, '1h', 1.1, at)
+  scan.run('EURUSD', 'short', 8, '1h', 1.2, at)
+  scan.run('GBPUSD', 'long', 6, '1h', 1.3, at)
+
+  const directDecisions = buildDecisionsDaily(db, { days: 1, accountId: '11' })
+  const directPrices = buildLatestPrices(db)
+  const directStage = stageMatrixStats(db, getState)
+  assert.deepEqual(await readDecisionsDaily(db, { days: 1, accountId: '11' }), directDecisions)
+  assert.deepEqual(await readLatestPrices(db), directPrices)
+  assert.deepEqual(await readStageMatrixStats(db), directStage)
+  assert.equal(directDecisions.reduce((n, r) => n + r.approved + r.vetoed_distinct, 0), 2)
+  assert.equal(directPrices.EURUSD.price, 1.2)
+  assert.equal(directPrices.GBPUSD.price, 1.3)
+  assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)
 })
