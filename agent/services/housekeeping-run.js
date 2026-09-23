@@ -33,6 +33,7 @@
 // so "housekeeping ran" stops being a claim and becomes a list.
 // ---------------------------------------------------------------------------
 
+import { performance } from 'node:perf_hooks'
 import { getState } from '../db.js'
 import { housekeepingDue, LAST_RUN_KEY, DEFAULT_INTERVAL_MS } from './housekeeping-due.js'
 
@@ -47,13 +48,18 @@ import { housekeepingDue, LAST_RUN_KEY, DEFAULT_INTERVAL_MS } from './housekeepi
 export async function runHousekeepingSteps(steps, { log } = {}) {
   const results = {}
   const failed = []
+  const timings = []
   let ran = 0
   for (const step of Array.isArray(steps) ? steps : []) {
     if (!step || typeof step.run !== 'function') continue
     const name = String(step.name || 'unnamed')
+    const startedAt = Date.now(), start = performance.now()
+    let ok = false
     try {
       results[name] = await step.run()
-      ran++
+      if (Array.isArray(results[name]?.errors) && results[name].errors.length)
+        throw new Error(results[name].errors.map(e => typeof e === 'string' ? e : `${e.table}: ${e.message}`).join(' · '))
+      ran++; ok = true
     } catch (err) {
       const message = err?.message ? String(err.message) : String(err)
       failed.push({ name, message })
@@ -61,9 +67,14 @@ export async function runHousekeepingSteps(steps, { log } = {}) {
       // step that fails every pass for a week is a thing worth reading in the
       // log; a step that fails silently is how this file came to exist.
       if (typeof log === 'function') log(`Housekeeping step "${name}" failed (non-fatal): ${message}`)
+    } finally {
+      const elapsedMs = Math.round((performance.now() - start) * 100) / 100
+      timings.push({ name, startedAt, elapsedMs, ok })
+      if (elapsedMs >= 1000 && typeof log === 'function') log(`Housekeeping step "${name}" took ${elapsedMs}ms`)
+      await new Promise(resolve => setImmediate(resolve))
     }
   }
-  return { results, failed, ran }
+  return { results, failed, ran, timings }
 }
 
 /**

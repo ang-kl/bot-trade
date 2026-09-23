@@ -3,6 +3,18 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runHousekeepingSteps, changesOf } from './housekeeping-run.js'
 
+test('housekeeping permits ready protection callbacks between synchronous steps and retains timings', async () => {
+  const order = []
+  setImmediate(() => order.push('protection'))
+  const result = await runHousekeepingSteps([
+    { name: 'first', run: () => order.push('first') },
+    { name: 'second', run: () => order.push('second') },
+  ])
+  assert.deepEqual(order, ['first', 'protection', 'second'])
+  assert.equal(result.timings.length, 2)
+  assert.ok(result.timings.every(t => t.ok && t.elapsedMs >= 0 && t.startedAt > 0))
+})
+
 test('a throwing step does NOT cancel the steps after it — the 55,443 case', async () => {
   // THE REGRESSION. In loop.js the retention deletes ran unguarded ahead of the
   // disposition sweep, so one failing delete skipped the sweep — and because
@@ -30,6 +42,17 @@ test('an async step that rejects is isolated the same way', async () => {
   assert.equal(r.results.b, 'done')
   assert.equal(r.failed.length, 1)
   assert.equal(r.failed[0].name, 'a')
+})
+
+test('partial operational errors retain counts and mark the step failed without cancelling later work', async () => {
+  const result = await runHousekeepingSteps([
+    { name: 'retention', run: () => ({ cupHandle: 200, errors: [{ table: 'analyses', message: 'locked' }] }) },
+    { name: 'next', run: () => 'done' },
+  ])
+  assert.equal(result.results.retention.cupHandle, 200)
+  assert.equal(result.results.next, 'done')
+  assert.deepEqual(result.failed, [{ name: 'retention', message: 'analyses: locked' }])
+  assert.equal(result.timings[0].ok, false)
 })
 
 test('failures are reported to the log, once each, by name', async () => {
