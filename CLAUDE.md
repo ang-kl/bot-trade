@@ -1059,3 +1059,13 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   checkpoint 8,636; visible continuation replies have reached **8,645**. This is
   that supplied rebase plus visible replies, not a full-corpus measurement.
   Later visible replies take precedence. No agent/token totals are inferred.
+
+- 2026-09-23 13:17 UTC, Work Mode continuation with partial transcript corpus:
+  visible replies through **№ 8,708**; next **№ 8,709**. Count follows the
+  recorded rebase and visible continuation replies, not a full-corpus reading.
+  Five gates 1–3 correction PRs are prepared; production release/drills remain
+  held for the documented scoped decisions. No trading/feed activation changed.
+
+- 2026-09-23 13:19 UTC, same partial-corpus continuation: closing report
+  serial **№ 8,709**; next **№ 8,710**. All five PR CI gates passed. The
+  tested integration and evidence are retained without production activation.

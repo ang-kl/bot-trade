@@ -1,3 +1,4 @@
+import scannerProfileRoutes from './scanner-profile-routes.js'
 import { brokerReadAccount, brokerReadCache } from '../lib/broker-read-scope.js'
 // ---------------------------------------------------------------------------
 // agent/routes/actions.js — POST endpoints for manual triggers
@@ -248,6 +249,8 @@ export default function actionsRouter(db, deps = {}) {
     res.on('finish', () => { if (res.statusCode < 400) invalidateStateCache() })
     next()
   })
+
+  router.use('/scanner-profiles', scannerProfileRoutes(db, deps.scannerProfiles))
 
   // -----------------------------------------------------------------------
   // POST /actions/backtest — walk-forward backtest of the fib strategy on

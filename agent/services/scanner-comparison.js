@@ -1,3 +1,4 @@
+import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { TickMomentumOracle, profileHash, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
@@ -98,7 +99,7 @@ export function matchingProfile(db, source, value) {
   if (!f || f.provider !== 'ctrader' || !/^[1-9]\d*$/.test(f.accountId) || !/^[1-9]\d*$/.test(f.symbolId)) return null
   const account = db.prepare('SELECT is_live FROM accounts WHERE account_id=?').get(f.accountId)
   if (!account || f.host !== (account.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')) return null
-  let map; try { map = JSON.parse(getState(db, `symbol_id_map:${f.accountId}`)) } catch { return null }
+  const map = getAccountSymbolMap(db, f.accountId)?.map
   if (!map || !Object.values(map).some(id => String(id) === f.symbolId)) return null
   return comparisonProfiles(db).find(p => p.source === source && hash(p.feed) === hash(f)
     && p.strategy === value.strategy && p.configVersion === value.configVersion && p.profileHash === value.profileHash
@@ -138,7 +139,8 @@ export class TickComparisonReader {
       }
       const id = hash([page.instanceId, row.cursor]), q = row.quote
       let state = 'contract_rejected', differences = []
-      if (matchingProfile(db, 'cpp-scan-tick', row) && row.profile && Object.keys(DEFAULT_PARAMS).every(k => Object.hasOwn(row.profile, k))
+      const policy = matchingProfile(db, 'cpp-scan-tick', row)
+      if (policy && Number.isSafeInteger(policy.candidateTtlMs) && policy.candidateTtlMs >= 1 && policy.candidateTtlMs <= 3600000 && row.profile && Object.keys(DEFAULT_PARAMS).every(k => Object.hasOwn(row.profile, k))
         && profileHash(row.profile) === row.profileHash
         && ['candidate', 'no_signal', 'expired'].includes(row.outcome) && (row.outcome === 'candidate') === !!row.signal
         && row.orderAuthority === false && Number.isSafeInteger(row.completedAtMs) && row.completedAtMs <= now
@@ -160,8 +162,13 @@ export class TickComparisonReader {
           const native = row.signal ? { ...row.signal,
             V: typeof row.signal.V === 'number' ? +row.signal.V.toFixed(6) : row.signal.V,
             E: typeof row.signal.E === 'number' ? +row.signal.E.toFixed(6) : row.signal.E } : null
-          differences = compareSignals(reference, native, TICK_FIELDS)
-          state = !stream.known ? 'reference_warmup_unknown' : row.outcome === 'expired' ? 'native_expired' : differences.length ? 'mismatch' : 'matched'
+          // Expiry suppresses dispatch, not oracle state advancement. Verify
+          // it independently against the registered TTL; an 'expired' label
+          // must not hide either a premature suppression or a late signal.
+          const expired = q.recvMs + policy.candidateTtlMs <= row.completedAtMs
+          differences = compareSignals(expired ? null : reference, native, TICK_FIELDS)
+          if ((row.outcome === 'expired') !== expired) differences.push('expiry')
+          state = !stream.known ? 'reference_warmup_unknown' : differences.length ? 'mismatch' : expired ? 'native_expired' : 'matched'
         } else state = stream ? 'source_sequence_invalid' : 'reference_capacity'
       }
       comparisonRecord(db, id, 'cpp-scan-tick', state, { feed: row.feed, sourceSequence: q?.seq, differences, orderAuthority: false }, now)

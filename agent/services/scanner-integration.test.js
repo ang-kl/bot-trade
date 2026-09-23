@@ -21,7 +21,7 @@ function database(t, policies = []) {
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (11,0)').run()
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (22,0)').run()
-  setState(db, 'symbol_id_map:11', '{"EURUSD":7}'); setState(db, 'symbol_id_map:22', '{"EURUSD":8}')
+  setState(db, 'symbol_id_map:11', '{"map":{"EURUSD":7}}'); setState(db, 'symbol_id_map:22', '{"map":{"EURUSD":8}}')
   setState(db, 'scanner_mirror_profiles_json', JSON.stringify(policies)); return db
 }
 function fibJob() {
@@ -217,4 +217,17 @@ test('rotating scan batches retain unvisited work and its original deadline', t 
   assert.equal(second.instruments[0].lastCompletedAt, start + 300000)
   const changed = recordScannerWork(db, { ...input, symbolMap: { EURUSD: 7, GBPUSD: 9 }, completedAt: start + 600000 })
   assert.equal(changed.instruments[1].registeredAt, start + 600000)
+})
+
+test('tick expiry is checked against registered TTL and cannot hide an incorrect suppression', t => {
+  const f = fixture('cpp-scan-tick/src/tests/fixtures/tick_momentum_fixture.json'), expected = fixture('cpp-scan-tick/src/tests/fixtures/tick_momentum_expected.json')
+  const now = Date.now(), policy = { source: 'cpp-scan-tick', feed, strategy: 'tick_momentum_breakout', configVersion: 'v1', profileHash: expected.profileHash, candidateTtlMs: 60000 }
+  const db = database(t, [policy]), reader = new TickComparisonReader()
+  const row = (cursor, age, outcome) => ({ ...policy, cursor, feedEpoch: 'expiry-test', profile: f.params, completedAtMs: now, receivedAtMs: now-age, outcome, orderAuthority: false,
+    quote: { seq: cursor, recvMs: now-age, bid: 100, ask: 101, snapshot: true, crossed: false, changed: true } })
+  reader.consume(db, { instanceId: 'e'.repeat(64), orderAuthority: false, oldestCursor: 1, latestCursor: 3, gap: false,
+    candidates: [row(1, 0, 'expired'), row(2, 60001, 'expired'), row(3, 60001, 'no_signal')] }, now)
+  assert.deepEqual(db.prepare('SELECT state,detail FROM scanner_comparisons ORDER BY rowid').all().map(r => [r.state, JSON.parse(r.detail).differences]), [
+    ['mismatch', ['expiry']], ['native_expired', []], ['mismatch', ['expiry']],
+  ])
 })

@@ -32,6 +32,36 @@ int main() {
   const auto fixture = read("src/tests/fixtures/tick_momentum_fixture.json");
   const auto expected = read("src/tests/fixtures/tick_momentum_expected.json");
   const long long now = fixture.get("events").asArray().back().get("recvMs").asNumber() + 1;
+  {
+    scan::TickScanner scanner(1, 8, [=] { return now; });
+    auto body = batch(fixture, expected, "11"); const auto records = body.get("records").asArray();
+    bool refused = false;
+    try { scanner.submit(body); } catch (const std::runtime_error&) { refused = true; }
+    assert(refused); assert(scanner.status().get("work").asArray().empty());
+    // A refused batch must remain entirely retryable, even after previous
+    // batches have completed. Replayed prefixes consume no queue capacity.
+    for (size_t start = 0; start < records.size(); start += 7) {
+      auto tooBig = body;
+      if (records.size() - start > 7) {
+        tooBig.set("records", Array(records.begin() + start, records.end()));
+        refused = false;
+        try { scanner.submit(tooBig); } catch (const std::runtime_error&) { refused = true; }
+        assert(refused);
+      }
+      const auto end = std::min(start + 7, records.size());
+      const auto prefix = start > 0 ? start - 7 : start;
+      auto part = body; part.set("records", Array(records.begin() + prefix, records.begin() + end));
+      const auto receipt = scanner.submit(part);
+      assert(receipt.get("accepted").asNumber() == end - start);
+      assert(receipt.get("duplicates").asNumber() == start - prefix);
+      assert(receipt.get("dropped").asNumber() == 0); scanner.flush();
+    }
+    assert(scanner.status().get("processed").asNumber() == records.size());
+    assert(scanner.status().get("dropped").asNumber() == 0);
+    const auto candidates = scanner.candidates(0).get("candidates").asArray();
+    assert(candidates.size() == expected.get("signals").asArray().size());
+    for (size_t i = 0; i < candidates.size(); ++i) matches(candidates[i], expected.get("signals").asArray()[i]);
+  }
   std::set<std::string> referenceIds;
   for (int workers : {1, 2, 4}) {
     scan::TickScanner scanner(workers, 4096, [=] { return now; });

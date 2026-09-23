@@ -1,4 +1,5 @@
 import { getState } from '../db.js'
+import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { readMarketCalendar } from './market-calendar.js'
 import { projectCalendar, calendarIntervals } from '../lib/calendar-intervals.js'
 import { loadNotifyConfig } from './telegram-digest.js'
@@ -46,7 +47,7 @@ export function nodeWatchdogContract(db, { now = Date.now() } = {}) {
     const accountId = p.account_id == null ? null : String(p.account_id), account = accounts.get(accountId)
     const r = byPosition.get(`${accountId}:${p.id}`)
     const host = account == null ? null : account.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-    if (!maps.has(accountId)) maps.set(accountId, read(db, `symbol_id_map:${accountId}`))
+    if (!maps.has(accountId)) maps.set(accountId, getAccountSymbolMap(db, accountId)?.map)
     const symbolId = maps.get(accountId)?.[String(p.symbol).toUpperCase()]
     const identity = { provider: 'ctrader', accountId, host, symbolId }
     let calendar = null

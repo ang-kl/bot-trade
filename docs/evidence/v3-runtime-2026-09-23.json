@@ -1,0 +1,540 @@
+{
+  "observedAt": "2026-09-23T13:17:00Z",
+  "protection": {
+    "deploymentId": "da18316b-6be1-4bd8-83b0-2d56e8b64d63",
+    "serviceId": "04945f5c-03d4-4d3f-bec1-f4debcefe5e6",
+    "environmentId": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+    "status": "SUCCESS",
+    "deploy": [
+      {
+        "timestamp": "2026-09-23T13:10:07.044240322Z",
+        "severity": "info",
+        "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-23T13:09:54.193Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-23T13:09:54.428Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-23T13:09:54.664Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-23T13:09:53.215Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-23T13:09:53.462Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-23T13:09:53.710Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-23T13:09:53.958Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]",
+        "attributes": [
+          {
+            "key": "level",
+            "value": "\"info\""
+          }
+        ]
+      },
+      {
+        "timestamp": "2026-09-23T13:11:06.342340078Z",
+        "severity": "info",
+        "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-23T13:10:55.896Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-23T13:10:56.130Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-23T13:10:56.365Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-23T13:10:54.918Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-23T13:10:55.165Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-23T13:10:55.412Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-23T13:10:55.661Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]",
+        "attributes": [
+          {
+            "key": "level",
+            "value": "\"info\""
+          }
+        ]
+      },
+      {
+        "timestamp": "2026-09-23T13:12:07.778205601Z",
+        "severity": "info",
+        "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-23T13:11:57.663Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-23T13:11:57.898Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-23T13:11:58.132Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-23T13:11:56.686Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-23T13:11:56.934Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-23T13:11:57.181Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-23T13:11:57.429Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]",
+        "attributes": [
+          {
+            "key": "level",
+            "value": "\"info\""
+          }
+        ]
+      },
+      {
+        "timestamp": "2026-09-23T13:13:05.595917799Z",
+        "severity": "info",
+        "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-23T13:12:59.399Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-23T13:12:59.635Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-23T13:12:59.971Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-23T13:12:58.421Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-23T13:12:58.669Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-23T13:12:58.917Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-23T13:12:59.164Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]",
+        "attributes": [
+          {
+            "key": "level",
+            "value": "\"info\""
+          }
+        ]
+      },
+      {
+        "timestamp": "2026-09-23T13:14:07.885622751Z",
+        "severity": "info",
+        "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-23T13:14:01.161Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-23T13:14:01.397Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-23T13:14:01.632Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-23T13:14:00.220Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-23T13:14:00.456Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-23T13:14:00.691Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-23T13:14:00.927Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]",
+        "attributes": [
+          {
+            "key": "level",
+            "value": "\"info\""
+          }
+        ]
+      },
+      {
+        "timestamp": "2026-09-23T13:15:09.179334207Z",
+        "severity": "info",
+        "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-23T13:15:02.818Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-23T13:15:03.056Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-23T13:15:03.291Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-23T13:15:01.873Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-23T13:15:02.109Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-23T13:15:02.344Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-23T13:15:02.582Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]",
+        "attributes": [
+          {
+            "key": "level",
+            "value": "\"info\""
+          }
+        ]
+      },
+      {
+        "timestamp": "2026-09-23T13:16:10.687520063Z",
+        "severity": "info",
+        "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-23T13:15:02.818Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-23T13:15:03.056Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-23T13:15:03.291Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-23T13:16:03.544Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-23T13:16:03.780Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-23T13:16:04.015Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-23T13:15:02.582Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]",
+        "attributes": [
+          {
+            "key": "level",
+            "value": "\"info\""
+          }
+        ]
+      },
+      {
+        "timestamp": "2026-09-23T13:16:36.100612741Z",
+        "severity": "info",
+        "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-23T13:16:04.485Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-23T13:16:04.719Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-23T13:16:04.953Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-23T13:16:03.544Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-23T13:16:03.780Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-23T13:16:04.015Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-23T13:16:04.251Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]",
+        "attributes": [
+          {
+            "key": "level",
+            "value": "\"info\""
+          }
+        ]
+      }
+    ]
+  },
+  "deployments": {
+    "deployments": [
+      {
+        "id": "da18316b-6be1-4bd8-83b0-2d56e8b64d63",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T10:18:23.516Z",
+        "updatedAt": "2026-09-23T10:19:41.577Z",
+        "serviceId": "04945f5c-03d4-4d3f-bec1-f4debcefe5e6",
+        "environmentId": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "url": null,
+        "snapshotId": "e66888b5-0d46-4fd0-bcbe-72aa326d09a1",
+        "meta": {
+          "reason": "deploy",
+          "commitMessage": "fix(observability): expose watchdog receipts and retain scanner load failure (#1047)\n\n* fix(observability): expose watchdog receipts and retain failed scanner load evidence\n\n* fix(observability): retain incident opening time for restart acceptance",
+          "commitHash": "d9d4d232ce3c0b2a672065a5a6be9576def62188",
+          "branch": "main"
+        }
+      },
+      {
+        "id": "a901bb2e-7eb0-441e-976d-a886ca222bf9",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T09:49:54.567Z",
+        "updatedAt": "2026-09-23T09:50:29.035Z",
+        "serviceId": "bc8fcb8d-8194-4acd-9a82-4098751e43cc",
+        "environmentId": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "url": null,
+        "snapshotId": "c556788e-1b4f-47bd-a407-37d35d0fd48b",
+        "meta": {
+          "reason": "deploy",
+          "commitMessage": "feat(scanner): carry verified default and EMA parity to current main (#1045)",
+          "commitHash": "761bf3810851aa757636c94fa1d56ecd451bd236",
+          "branch": "main"
+        }
+      },
+      {
+        "id": "866cb701-78ff-4ff9-a5fd-046177b1b6a2",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T09:23:25.360Z",
+        "updatedAt": "2026-09-23T09:24:12.321Z",
+        "serviceId": "c8e47534-3488-4591-b361-c85366c550e0",
+        "environmentId": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "url": null,
+        "snapshotId": "81b34547-50cc-471c-963d-bb2532cc80a1",
+        "meta": {
+          "reason": "deploy",
+          "commitMessage": "feat(scanner): carry verified default and EMA parity to current main (#1045)",
+          "commitHash": "761bf3810851aa757636c94fa1d56ecd451bd236",
+          "branch": "main"
+        }
+      },
+      {
+        "id": "3350d396-4b70-4297-a052-4cbd3e6cf48c",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T09:23:25.360Z",
+        "updatedAt": "2026-09-23T09:23:45.384Z",
+        "serviceId": "f716e9cf-7a7b-4a04-b484-49b05b698e6a",
+        "environmentId": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "url": null,
+        "snapshotId": "a70a03a4-afbc-4127-84d4-37d8d1ae086f",
+        "meta": {
+          "reason": "deploy",
+          "commitMessage": "feat(scanner): carry verified default and EMA parity to current main (#1045)",
+          "commitHash": "761bf3810851aa757636c94fa1d56ecd451bd236",
+          "branch": "main"
+        }
+      },
+      {
+        "id": "9dc816ab-5bab-4b3a-be76-3859016ccbb1",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T09:23:25.359Z",
+        "updatedAt": "2026-09-23T09:23:51.160Z",
+        "serviceId": "a370f641-1e1b-4893-83af-e5eb1e8ffb3c",
+        "environmentId": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "url": null,
+        "snapshotId": "9e7dfddd-ff6c-44e4-92db-de6454c5ada8",
+        "meta": {
+          "reason": "deploy",
+          "commitMessage": "feat(scanner): carry verified default and EMA parity to current main (#1045)",
+          "commitHash": "761bf3810851aa757636c94fa1d56ecd451bd236",
+          "branch": "main"
+        }
+      },
+      {
+        "id": "4d0ff3e6-edcb-46dc-aec1-7b0459c7f46b",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T09:23:25.360Z",
+        "updatedAt": "2026-09-23T09:23:47.824Z",
+        "serviceId": "f5a3ba4a-52c0-4f4f-999b-45f758d607f0",
+        "environmentId": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "url": null,
+        "snapshotId": "b8e0a7f0-90cf-4642-97d4-9f1c274880e7",
+        "meta": {
+          "reason": "deploy",
+          "commitMessage": "feat(scanner): carry verified default and EMA parity to current main (#1045)",
+          "commitHash": "761bf3810851aa757636c94fa1d56ecd451bd236",
+          "branch": "main"
+        }
+      }
+    ]
+  },
+  "configs": [
+    {
+      "service": {
+        "id": "04945f5c-03d4-4d3f-bec1-f4debcefe5e6",
+        "name": "bot-trade"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "config": {
+        "source": {
+          "repo": "ang-kl/bot-trade",
+          "branch": "main",
+          "rootDirectory": "/",
+          "checkSuites": false
+        },
+        "networking": {
+          "serviceDomains": {
+            "sg-trade.up.railway.app": {
+              "port": 3001
+            }
+          }
+        },
+        "build": {
+          "builder": "RAILPACK",
+          "buildEnvironment": "V3"
+        },
+        "deploy": {
+          "startCommand": "npm run start",
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "runtime": "V2",
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          }
+        },
+        "volumeMounts": {
+          "054a2e47-0932-4766-a5f4-1617c0518bf1": {
+            "mountPath": "/data"
+          }
+        }
+      },
+      "variableNames": [
+        "AGENT_SECRET",
+        "AGENT_SECRET_READ",
+        "CPU_PROFILE_PHASES",
+        "CTRADER_REFRESH_TOKEN",
+        "CTRADER_WS_POOL",
+        "DB_PATH",
+        "EXEC_ENGINE",
+        "EXEC_SECRET",
+        "EXEC_URL",
+        "EXEC_URL_DEMO",
+        "EXEC_URL_LIVE",
+        "GEMINI_MODEL",
+        "LLM_DISABLED",
+        "OPENAI_MODEL_DEFAULT",
+        "OPENAI_MODEL_PREMIUM",
+        "OPENAI_MODEL_REASONING",
+        "PORT",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_OWNER_CHAT_ID",
+        "VERIFY_URL",
+        "cTrader_Access_Token",
+        "cTrader_ClientID",
+        "cTrader_Secret"
+      ],
+      "staged": null
+    },
+    {
+      "service": {
+        "id": "f5a3ba4a-52c0-4f4f-999b-45f758d607f0",
+        "name": "cpp-exec"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "config": {
+        "source": {
+          "repo": "ang-kl/bot-trade",
+          "branch": "main",
+          "rootDirectory": "/cpp-exec",
+          "checkSuites": false
+        },
+        "networking": {
+          "serviceDomains": {
+            "cpp-exec-production.up.railway.app": {}
+          }
+        },
+        "build": {
+          "builder": "DOCKERFILE",
+          "watchPatterns": [
+            "/cpp-exec/**",
+            "/agent/lib/exec-engine.*"
+          ],
+          "buildEnvironment": "V3",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "healthcheckPath": "/health",
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "runtime": "V2",
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          }
+        },
+        "volumeMounts": {
+          "fe9db4a1-d816-4d84-8c58-34d530aef654": {
+            "mountPath": "/data"
+          }
+        }
+      },
+      "variableNames": [
+        "CTRADER_HOST",
+        "EXEC_SECRET",
+        "PEER_URL",
+        "TICK_SPOOL_PATH",
+        "TRAIL_TICK_ENABLED"
+      ],
+      "staged": null
+    },
+    {
+      "service": {
+        "id": "a370f641-1e1b-4893-83af-e5eb1e8ffb3c",
+        "name": "cpp-acct"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "config": {
+        "source": {
+          "repo": "ang-kl/bot-trade",
+          "branch": "main",
+          "rootDirectory": "/cpp-exec",
+          "checkSuites": false
+        },
+        "networking": {
+          "serviceDomains": {
+            "cpp-acct-production.up.railway.app": {
+              "port": 8080
+            }
+          }
+        },
+        "build": {
+          "builder": "RAILPACK",
+          "watchPatterns": [
+            "/cpp-exec/**",
+            "/agent/lib/exec-engine.*"
+          ],
+          "buildEnvironment": "V3"
+        },
+        "deploy": {
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "runtime": "V2",
+          "multiRegionConfig": {
+            "asia-southeast1-eqsg3a": {
+              "numReplicas": 1
+            }
+          }
+        }
+      },
+      "variableNames": [
+        "CTRADER_HOST",
+        "EXEC_SECRET",
+        "EXEC_URL",
+        "EXEC_URL_DEMO",
+        "EXEC_URL_LIVE",
+        "PEER_URL",
+        "TICK_SPOOL_PATH",
+        "TRAIL_TICK_ENABLED"
+      ],
+      "staged": null
+    },
+    {
+      "service": {
+        "id": "bc8fcb8d-8194-4acd-9a82-4098751e43cc",
+        "name": "cpp-verify"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "config": {
+        "source": {
+          "repo": "ang-kl/bot-trade",
+          "branch": "main",
+          "rootDirectory": "/cpp-verify",
+          "checkSuites": false
+        },
+        "networking": {
+          "serviceDomains": {
+            "cpp-verify-production.up.railway.app": {}
+          }
+        },
+        "build": {
+          "builder": "DOCKERFILE",
+          "watchPatterns": [
+            "/cpp-verify/**",
+            "/cpp-exec/src/ws_client.*",
+            "/cpp-exec/src/http_server.*"
+          ],
+          "buildEnvironment": "V3",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "healthcheckPath": "/health",
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "runtime": "V2",
+          "multiRegionConfig": {
+            "asia-southeast1-eqsg3a": {
+              "numReplicas": 1
+            }
+          }
+        },
+        "volumeMounts": {
+          "a83c474c-3f12-4ede-ba14-0699fa90b912": {
+            "mountPath": "/data"
+          }
+        }
+      },
+      "variableNames": [
+        "CTRADER_ACCESS_TOKEN",
+        "CTRADER_CLIENT",
+        "CTRADER_SECRET",
+        "EXEC_SECRET",
+        "VERIFY_JOURNAL_DIR",
+        "WATCHDOG_ACCT_SECRET",
+        "WATCHDOG_ACCT_URL",
+        "WATCHDOG_ENABLED",
+        "WATCHDOG_EXEC_SECRET",
+        "WATCHDOG_EXEC_URL",
+        "WATCHDOG_INCIDENT_OWNER",
+        "WATCHDOG_MASTER_ENABLED",
+        "WATCHDOG_NODE_SECRET",
+        "WATCHDOG_NODE_URL",
+        "WATCHDOG_TICK_SECRET",
+        "WATCHDOG_TICK_URL",
+        "WATCHDOG_TIMEFRAME_SECRET",
+        "WATCHDOG_TIMEFRAME_URL"
+      ],
+      "staged": null
+    },
+    {
+      "service": {
+        "id": "f716e9cf-7a7b-4a04-b484-49b05b698e6a",
+        "name": "cpp-scan-tick"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "config": {
+        "source": {
+          "repo": "ang-kl/bot-trade",
+          "branch": "main",
+          "rootDirectory": "/cpp-scan-tick",
+          "checkSuites": false
+        },
+        "build": {
+          "builder": "DOCKERFILE",
+          "watchPatterns": [
+            "/cpp-scan-tick/**"
+          ],
+          "buildEnvironment": "V3",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "healthcheckPath": "/health",
+          "healthcheckTimeout": 120,
+          "restartPolicyMaxRetries": 3,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "runtime": "V2",
+          "multiRegionConfig": {
+            "asia-southeast1-eqsg3a": {
+              "numReplicas": 1
+            }
+          }
+        }
+      },
+      "variableNames": [
+        "PORT",
+        "SCANNER_SECRET"
+      ],
+      "staged": null
+    },
+    {
+      "service": {
+        "id": "c8e47534-3488-4591-b361-c85366c550e0",
+        "name": "cpp-scan-timeframe"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "config": {
+        "source": {
+          "repo": "ang-kl/bot-trade",
+          "branch": "main",
+          "rootDirectory": "/cpp-scan-timeframe",
+          "checkSuites": false
+        },
+        "build": {
+          "builder": "DOCKERFILE",
+          "watchPatterns": [
+            "/cpp-scan-timeframe/**"
+          ],
+          "buildEnvironment": "V3",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "healthcheckPath": "/health",
+          "healthcheckTimeout": 120,
+          "restartPolicyMaxRetries": 3,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "runtime": "V2",
+          "multiRegionConfig": {
+            "asia-southeast1-eqsg3a": {
+              "numReplicas": 1
+            }
+          }
+        }
+      },
+      "variableNames": [
+        "PORT",
+        "SCANNER_SECRET"
+      ],
+      "staged": null
+    }
+  ]
+}

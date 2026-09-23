@@ -403,7 +403,7 @@ export function capturePosition(db, { accountId, positionId }) {
  * This is the writer that makes the table real rather than a schema nobody
  * fills — CLAUDE.md failure mode #4, a repair nothing calls.
  */
-export function backfillPositionHistory(db, { sinceMs = 0, limit = 5000 } = {}) {
+function* positionHistoryBackfill(db, { sinceMs = 0, limit = 5000 } = {}) {
   const rows = db.prepare(`
     SELECT DISTINCT ctrader_position_id AS pid, account_id AS acct
       FROM trades
@@ -417,12 +417,31 @@ export function backfillPositionHistory(db, { sinceMs = 0, limit = 5000 } = {}) 
   const out = { seen: rows.length, complete: 0, incomplete: 0, skipped: 0, missingCounts: {} }
   for (const r of rows) {
     const res = capturePosition(db, { accountId: r.acct, positionId: r.pid })
-    if (res.ok) { out.complete++; continue }
-    if (res.reason === 'no_identity') { out.skipped++; continue }
-    out.incomplete++
-    for (const f of res.missing || []) out.missingCounts[f] = (out.missingCounts[f] || 0) + 1
+    if (res.ok) out.complete++
+    else if (res.reason === 'no_identity') out.skipped++
+    else {
+      out.incomplete++
+      for (const f of res.missing || []) out.missingCounts[f] = (out.missingCounts[f] || 0) + 1
+    }
+    yield out
   }
   return out
+}
+
+// Preserve the synchronous public helper for its existing callers. The
+// scheduled bulk backfill uses the same capture logic with a real event-loop
+// yield after each position; no transaction spans a yield.
+export function backfillPositionHistory(db, options) {
+  const work = positionHistoryBackfill(db, options)
+  for (;;) { const step = work.next(); if (step.done) return step.value }
+}
+export async function backfillPositionHistoryCooperatively(db, options) {
+  const work = positionHistoryBackfill(db, options)
+  for (;;) {
+    const step = work.next()
+    if (step.done) return step.value
+    await new Promise(resolve => setImmediate(resolve))
+  }
 }
 
 /**

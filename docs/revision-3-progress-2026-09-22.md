@@ -1098,3 +1098,21 @@ evidence, not production peak-feed or protection-latency acceptance. Scanner
 feeds remain disabled; no credentials, risk limits, strategy authority or broker
 orders were changed. Production delivery/drills and end-to-end trading acceptance
 remain gated by the named prerequisites. V3 is not complete.
+
+## Gates 1–3 correction checkpoint — 23 September, 21:17 SGT
+
+Continuation reused the completed deployments, independent watchdog and native
+parity work. PRs #1048–#1052 prepare bounded ingress, cooperative housekeeping,
+actual account-calendar coverage, operator profile registration/continuous
+comparison, and an opt-in independent alert outbox. The combined local gate
+passed 5,383 backend tests without skips, 936 frontend tests, lint, build and
+no-green. Local 500-stream ingress and continuous worker/shared-SQLite evidence
+are retained with the reproduced failures. None is a production peak-load or
+broker-confirmed protection-latency claim.
+
+Production remains unreleased for these corrections. Fresh all-account reads
+still show two TP1 exceptions; delivery and production outage drills remain
+unverified; scanner feeds stay OFF. See the exact commits, runtime timestamps,
+remaining decisions and rollback in
+[v3-gates-1-3-review-2026-09-23.md](v3-gates-1-3-review-2026-09-23.md).
+Other V3 gates and the separate draft #1046 RSI package remain outstanding.

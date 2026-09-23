@@ -5669,7 +5669,7 @@ async function runLoop(db) {
           // nothing, and repeat every 8 hours.
           name: 'prune-scans',
           run: async () => (await import('./services/prune-scans.js'))
-            .pruneScans(db, cutoff30d, { onProgress: () => { lastLoopActivityAt = Date.now() } }),
+            .pruneScans(db, cutoff30d, { batch: 200, maxBatches: 5000, onProgress: () => { lastLoopActivityAt = Date.now() } }),
         },
         { name: 'prune-signals', run: () => db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d) },
         { name: 'prune-regimes', run: () => db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d) },
@@ -5700,7 +5700,7 @@ async function runLoop(db) {
         { name: 'prune-trade-history', run: async () => (await import('./services/retention.js')).pruneTradeHistory(db) },
         // Owner-approved 01-08 ("approve retention") — the three tables that
         // grew production's DB to 526MB, cup_handle_diagnostics alone 40%.
-        { name: 'prune-operational', run: async () => (await import('./services/retention.js')).pruneOperationalTables(db) },
+        { name: 'prune-operational', run: async () => (await import('./services/retention.js')).pruneOperationalTablesCooperatively(db) },
         // Owner 29-08 ("I don't think I need old data") — the two growers
         // housekeeping never touched: the backtest-results folder (measured
         // 4.7GB of autopilot HTML reports, ~40 new/day, never deleted) and
@@ -5793,8 +5793,8 @@ async function runLoop(db) {
         {
           name: 'position-history',
           run: async () => {
-            const { backfillPositionHistory } = await import('./services/position-history.js')
-            const out = backfillPositionHistory(db, { sinceMs: Date.now() - 30 * 86400_000 })
+            const { backfillPositionHistoryCooperatively } = await import('./services/position-history.js')
+            const out = await backfillPositionHistoryCooperatively(db, { sinceMs: Date.now() - 30 * 86400_000 })
             const worst = Object.entries(out.missingCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
             log(`[position-history] ${out.complete} complete · ${out.incomplete} incomplete of ${out.seen} closed position(s)` +
                 (worst.length ? ` — most often missing: ${worst.map(([f, n]) => `${f} (${n})`).join(', ')}` : ''))
@@ -6075,6 +6075,8 @@ async function runLoop(db) {
           at: new Date().toISOString(),
           ran: pass.ran,
           failed: pass.failed,
+          timings: pass.timings,
+          operationalPruneErrors: pass.results['prune-operational']?.errors || [],
           dispositions: { written: sw.written, batches: sw.batches, drained: sw.drained, pending: sw.pending },
           unresolvableWriteOff: writeOff
             ? { found: writeOff.found, marked: writeOff.marked, exhaustedRows: writeOff.exhaustedRows, exhaustedAccounts: writeOff.exhaustedAccounts, ids: (writeOff.rows || []).map(r => r.id) }

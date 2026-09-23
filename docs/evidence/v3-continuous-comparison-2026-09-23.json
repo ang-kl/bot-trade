@@ -1,0 +1,219 @@
+{
+  "scope": "loopback-only synthetic acceptance; not production peak or broker latency",
+  "sourceBase": "d9d4d232ce3c0b2a672065a5a6be9576def62188",
+  "integrationPrerequisites": [
+    "1048",
+    "1049",
+    "1050",
+    "1051",
+    "1052"
+  ],
+  "tickBinarySha256": "f9c9494f11521f7f676729c4b67499d7b6aec7167a27edb482f45043c5488670",
+  "scriptSha256": "7eb51ff815af5b29ae903c3404e87cf35bc47c39c02e5eb94fb01fff016170e6",
+  "trials": [
+    {
+      "verdict": "Failed",
+      "reason": "Assertion incorrectly required archived quotes to remain unexpired.",
+      "result": {
+        "observedAt": "2026-09-23T13:09:59.602Z",
+        "scope": "local paced synthetic comparison, not production peak",
+        "streams": 50,
+        "pacingMs": 100,
+        "submitted": 19450,
+        "accepted": 19450,
+        "processed": 19450,
+        "dropped": 0,
+        "retried": 0,
+        "inputMs": 8395.280096999999,
+        "elapsedMs": 8984.755009,
+        "populations": [
+          {
+            "state": "matched",
+            "n": 1100
+          },
+          {
+            "state": "native_expired",
+            "n": 18350
+          }
+        ],
+        "collector": {
+          "readAtMs": 1790168999426,
+          "orderAuthority": false,
+          "tickPages": 2,
+          "tickRecords": 183,
+          "tickBacklog": false,
+          "mirrors": {
+            "configured": true,
+            "outcomes": [
+              {
+                "source": "cpp-scan-tick",
+                "recorded": 0,
+                "duplicates": 0,
+                "rejected": 0,
+                "noSignal": 0,
+                "expired": 0,
+                "gap": false,
+                "cursor": 0,
+                "instanceId": "9ff599480643bdce6238b70fb4d222ac6630de627fe58191c487141c53a77dcc",
+                "orderAuthority": false,
+                "latestCursor": 0,
+                "backlog": false
+              },
+              {
+                "source": "cpp-scan-timeframe",
+                "status": "unconfigured"
+              }
+            ],
+            "orderAuthority": false
+          },
+          "delayMs": 100,
+          "tickCursor": 19450,
+          "durationMs": 92
+        },
+        "sqliteProbeMs": {
+          "samples": 118,
+          "p95": 179.386211,
+          "p99": 364.94905199999994,
+          "max": 529.6704980000004
+        },
+        "orderIntents": 0
+      }
+    },
+    {
+      "verdict": "Failed",
+      "reason": "100 expired signal rows had oracle differences hidden by expiry-first classification.",
+      "result": {
+        "observedAt": "2026-09-23T13:10:53.182Z",
+        "scope": "local paced synthetic comparison, not production peak",
+        "streams": 50,
+        "pacingMs": 100,
+        "submitted": 19450,
+        "accepted": 19450,
+        "processed": 19450,
+        "dropped": 0,
+        "retried": 0,
+        "inputMs": 8649.583772,
+        "elapsedMs": 8660.791955,
+        "populations": [
+          {
+            "state": "matched",
+            "n": 1100
+          },
+          {
+            "state": "native_expired",
+            "n": 18350
+          }
+        ],
+        "collector": {
+          "readAtMs": 1790169052953,
+          "orderAuthority": false,
+          "tickPages": 4,
+          "tickRecords": 429,
+          "tickBacklog": false,
+          "mirrors": {
+            "configured": true,
+            "outcomes": [
+              {
+                "source": "cpp-scan-tick",
+                "recorded": 0,
+                "duplicates": 0,
+                "rejected": 0,
+                "noSignal": 0,
+                "expired": 0,
+                "gap": false,
+                "cursor": 0,
+                "instanceId": "034a76a265deeb4b6142569bd6bd5bb5cee702e5e1a2b9cad0697c05876e355c",
+                "orderAuthority": false,
+                "latestCursor": 0,
+                "backlog": false
+              },
+              {
+                "source": "cpp-scan-timeframe",
+                "status": "unconfigured"
+              }
+            ],
+            "orderAuthority": false
+          },
+          "delayMs": 100,
+          "tickCursor": 19450,
+          "durationMs": 200
+        },
+        "sqliteProbeMs": {
+          "samples": 107,
+          "p95": 329.0900679999995,
+          "p99": 329.4473619999999,
+          "max": 629.9039940000002
+        },
+        "orderIntents": 0
+      }
+    },
+    {
+      "verdict": "Passed",
+      "reason": "Every input reconciled, zero gaps/drops/oracle differences; verified expiration remains distinct.",
+      "result": {
+        "observedAt": "2026-09-23T13:15:02.036Z",
+        "scope": "local paced synthetic comparison, not production peak",
+        "streams": 50,
+        "pacingMs": 100,
+        "submitted": 19450,
+        "accepted": 19450,
+        "processed": 19450,
+        "dropped": 0,
+        "retried": 0,
+        "inputMs": 7762.9387,
+        "elapsedMs": 8329.676599999999,
+        "populations": [
+          {
+            "state": "matched",
+            "n": 1100
+          },
+          {
+            "state": "native_expired",
+            "n": 18350
+          }
+        ],
+        "collector": {
+          "readAtMs": 1790169301804,
+          "orderAuthority": false,
+          "tickPages": 4,
+          "tickRecords": 429,
+          "tickBacklog": false,
+          "mirrors": {
+            "configured": true,
+            "outcomes": [
+              {
+                "source": "cpp-scan-tick",
+                "recorded": 0,
+                "duplicates": 0,
+                "rejected": 0,
+                "noSignal": 0,
+                "expired": 0,
+                "gap": false,
+                "cursor": 0,
+                "instanceId": "79b5e61c2b3abd77799d7727be38bedff6a4df8786d1b36f8e0647aa5754d967",
+                "orderAuthority": false,
+                "latestCursor": 0,
+                "backlog": false
+              },
+              {
+                "source": "cpp-scan-timeframe",
+                "status": "unconfigured"
+              }
+            ],
+            "orderAuthority": false
+          },
+          "delayMs": 100,
+          "tickCursor": 19450,
+          "durationMs": 216
+        },
+        "sqliteProbeMs": {
+          "samples": 114,
+          "p95": 229.4967660000002,
+          "p99": 330.43340699999953,
+          "max": 330.66121999999996
+        },
+        "orderIntents": 0
+      }
+    }
+  ]
+}

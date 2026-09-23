@@ -1,0 +1,163 @@
+{
+  "baselineSourceCommit": "d9d4d232ce3c0b2a672065a5a6be9576def62188",
+  "scope": "Isolated local synthetic HTTP workload; no production feed or broker access",
+  "baseline": {
+    "observedAt": "2026-09-23T12:31:46.294Z",
+    "results": [
+      {
+        "service": "cpp-scan-tick",
+        "scope": "local synthetic HTTP load only",
+        "streams": 500,
+        "concurrency": 8,
+        "inputPerStream": 389,
+        "inputKind": "classified quote records",
+        "elapsedMs": 2578,
+        "acknowledgmentLatencyMs": {
+          "samples": 500,
+          "p50": 22.4,
+          "p95": 128.59,
+          "p99": 216.84,
+          "max": 286.62
+        },
+        "concurrentHealthLatencyMs": {
+          "samples": 205,
+          "p50": 2.17,
+          "p95": 7.21,
+          "p99": 13.12,
+          "max": 20.79
+        },
+        "peakRssMiB": 42.77,
+        "backpressureResponses": 1571,
+        "acceptedRecords": 159344,
+        "droppedInputRecords": 35156,
+        "losslessInput": false,
+        "completedStreams": 500,
+        "stream513Status": 429,
+        "retainedStreams": 512,
+        "undrainedOutputGap": true,
+        "latestOutputCursor": 164012,
+        "orderAuthority": false,
+        "unauthenticatedStatus": 401
+      },
+      {
+        "service": "cpp-scan-timeframe",
+        "scope": "local synthetic HTTP load only",
+        "streams": 500,
+        "concurrency": 8,
+        "inputPerStream": 450,
+        "inputKind": "closed EMA bars",
+        "elapsedMs": 647,
+        "acknowledgmentLatencyMs": {
+          "samples": 500,
+          "p50": 9.29,
+          "p95": 16.63,
+          "p99": 22.03,
+          "max": 25.66
+        },
+        "concurrentHealthLatencyMs": {
+          "samples": 39,
+          "p50": 5.5,
+          "p95": 13.31,
+          "p99": 14.36,
+          "max": 14.36
+        },
+        "peakRssMiB": 13.87,
+        "backpressureResponses": 0,
+        "acceptedRecords": null,
+        "droppedInputRecords": null,
+        "losslessInput": true,
+        "completedStreams": 500,
+        "stream513Status": 429,
+        "retainedStreams": 512,
+        "undrainedOutputGap": false,
+        "latestOutputCursor": 512,
+        "orderAuthority": false,
+        "unauthenticatedStatus": 401
+      }
+    ]
+  },
+  "corrected": {
+    "observedAt": "2026-09-23T12:44:32.599Z",
+    "results": [
+      {
+        "service": "cpp-scan-tick",
+        "scope": "local synthetic HTTP load only",
+        "streams": 500,
+        "concurrency": 8,
+        "inputPerStream": 389,
+        "inputKind": "classified quote records",
+        "elapsedMs": 3546,
+        "acknowledgmentLatencyMs": {
+          "samples": 500,
+          "p50": 35.74,
+          "p95": 167.57,
+          "p99": 239.97,
+          "max": 395.73
+        },
+        "concurrentHealthLatencyMs": {
+          "samples": 255,
+          "p50": 2.61,
+          "p95": 8.63,
+          "p99": 10.25,
+          "max": 19.06
+        },
+        "peakRssMiB": 41.23,
+        "backpressureResponses": 2412,
+        "acceptedRecords": 194500,
+        "droppedInputRecords": 0,
+        "losslessInput": true,
+        "completedStreams": 500,
+        "stream513Status": 429,
+        "retainedStreams": 512,
+        "undrainedOutputGap": true,
+        "latestOutputCursor": 196348,
+        "orderAuthority": false,
+        "unauthenticatedStatus": 401
+      },
+      {
+        "service": "cpp-scan-timeframe",
+        "scope": "local synthetic HTTP load only",
+        "streams": 500,
+        "concurrency": 8,
+        "inputPerStream": 450,
+        "inputKind": "closed EMA bars",
+        "elapsedMs": 552,
+        "acknowledgmentLatencyMs": {
+          "samples": 500,
+          "p50": 8.16,
+          "p95": 12.62,
+          "p99": 15.07,
+          "max": 18.93
+        },
+        "concurrentHealthLatencyMs": {
+          "samples": 36,
+          "p50": 5.55,
+          "p95": 9.9,
+          "p99": 10.58,
+          "max": 10.58
+        },
+        "peakRssMiB": 14.12,
+        "backpressureResponses": 0,
+        "acceptedRecords": null,
+        "droppedInputRecords": null,
+        "losslessInput": true,
+        "completedStreams": 500,
+        "stream513Status": 429,
+        "retainedStreams": 512,
+        "undrainedOutputGap": false,
+        "latestOutputCursor": 512,
+        "orderAuthority": false,
+        "unauthenticatedStatus": 401
+      }
+    ]
+  },
+  "correctedBinarySha256": {
+    "cpp-scan-tick": "f9c9494f11521f7f676729c4b67499d7b6aec7167a27edb482f45043c5488670",
+    "cpp-scan-timeframe": "b3d9acfa9c8b321fe592fd317725c7ba9688d05345cfc963e9529f5c7c0f904f"
+  },
+  "limits": [
+    "Not representative production peak evidence",
+    "Undrained comparison output still reports an overwrite gap",
+    "Broker protection latency not measured"
+  ]
+}
