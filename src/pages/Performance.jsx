@@ -1809,8 +1809,8 @@ export default function Performance() {
     <div className="space-y-2">
       <SwitchingNote to={switchingTo} />
       <SectionNavFab />
-      <AccountHistory key={acct} accountId={acct} />
-      <BlockerReport key={acct} accountId={acct} />
+      <AccountHistory key={`history:${acct}`} accountId={acct} />
+      <BlockerReport key={`blockers:${acct}`} accountId={acct} />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}
       <style>{'@keyframes perf-pulse{0%,100%{opacity:1}50%{opacity:.3}}'}</style>
