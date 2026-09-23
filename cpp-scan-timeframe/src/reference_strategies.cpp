@@ -91,11 +91,11 @@ static Value fibConfluence(const Bars& bars, const bt::Options& opts) {
   out.set("confluenceCount",static_cast<int>(levels.size())); return out;
 }
 bool supports(const std::string& s) { return s == "donchian_breakout" || s == "rsi2_reversion" || s == "vwap_trend" || s == "fib_confluence" || supportsExtended(s); }
-Value compute(const std::string& strategy, const Bars& bars, const bt::Options& opts) {
+Value compute(const std::string& strategy, const Bars& bars, const bt::Options& opts, const Value& settings) {
   if (strategy == "donchian_breakout") return donchian(bars,opts);
   if (strategy == "rsi2_reversion") return rsi2(bars,opts);
   if (strategy == "vwap_trend") return vwapTrend(bars,opts);
   if (strategy == "fib_confluence") return fibConfluence(bars,opts);
-  return computeExtended(strategy,bars,opts);
+  return computeExtended(strategy,bars,opts,settings);
 }
 }

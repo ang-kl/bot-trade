@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { computeFibSignal, findSwings } from './fib-strategy.js'
 import { STRATEGY_REGISTRY } from './strategies.js'
-import { NATIVE_DEFAULT_STRATEGIES } from './scanner-profiles.js'
+import { NATIVE_DEFAULT_STRATEGIES, nativeOptionsFor, nativeProfileHash } from './scanner-profiles.js'
 import { fxDayOpenMs, volumeStructure } from '../lib/volume-structure.js'
 const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8')
 
@@ -52,4 +52,13 @@ test('native calendar and volume structure fixtures retain the current JavaScrip
   const { calendar, structures } = JSON.parse(read('cpp-scan-timeframe/src/tests/fixtures/volume-parity.json'))
   for (const row of calendar) assert.equal(fxDayOpenMs(row.t), row.open)
   for (const row of structures) assert.deepEqual(volumeStructure(row.bars), row.expected, row.name)
+})
+
+test('frozen EMA option results retain the actual reference decisions and profile identity', () => {
+  const compute = STRATEGY_REGISTRY.find(s => s.key === 'ema_pullback').compute
+  for (const { request, referenceOptions, expected, name } of JSON.parse(read('cpp-scan-timeframe/src/tests/fixtures/ema-options-parity.json'))) {
+    assert.deepEqual(compute(request.bars, request.timeframe, referenceOptions), expected, name)
+    assert.deepEqual(nativeOptionsFor(request.strategy, referenceOptions), request.options, name)
+    assert.equal(nativeProfileHash(request.strategy, request.options), request.profileHash, name)
+  }
 })

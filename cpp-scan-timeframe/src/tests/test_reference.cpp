@@ -17,11 +17,15 @@ static bool same(const Value& a, const Value& b) {
   return jsn::dump(a) == jsn::dump(b);
 }
 int main() {
-  const auto fixtures = read("src/tests/fixtures/reference-parity.json");
+  auto fixtures = read("src/tests/fixtures/reference-parity.json");
+  auto all = fixtures.asArray();
+  const auto optionsFixtures = read("src/tests/fixtures/ema-options-parity.json");
+  for (const auto& row : optionsFixtures.asArray()) all.push_back(row);
+  fixtures = all;
   std::map<std::string, std::map<std::string,int>> outcomes;
   for (const auto& fixture : fixtures.asArray()) {
     const auto& body = fixture.get("request");
-    assert(body.get("profileHash").asString() == scan::nativeProfileHash(body.get("strategy").asString()));
+    assert(body.get("profileHash").asString() == scan::nativeProfileHash(body.get("strategy").asString(),body.get("options")));
     const long long now = body.get("receivedAtMs").asNumber();
     scan::TimeframeScanner scanner([=] { return now; });
     assert(scanner.submit(body).get("queued").asBool()); scanner.flush();

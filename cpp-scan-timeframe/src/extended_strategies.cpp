@@ -16,27 +16,38 @@ static Value signal(const std::string& strategy, const bt::Options& opts, int di
     {"timeframe",opts.timeframe},{"time_cap_minutes",cap}});
 }
 static Bars prefix(const Bars& b, size_t n) { return Bars(b.begin(),b.begin()+n); }
-static Value emaPullback(const Bars& b, const bt::Options& o) {
+static Value emaPullback(const Bars& b, const bt::Options& o, const Value& settings) {
   if (b.size() < 450) return {};
+  const bool configured = !settings.asObject().empty();
+  const bool pending = configured && settings.get("pendingSetup").asBool(), stack = !configured || settings.get("requireStack").asBool();
+  const double floor = configured ? settings.get("minSlAtr").asNumber() : 0.8, ceiling = configured ? settings.get("maxSlAtr").asNumber() : 3;
   const auto& bar = b.back(); const double e20 = vpo::ema(b,20), e50 = vpo::ema(b,50), e200 = vpo::ema(b,200), a = vpo::atr(b);
   if (!(a > 0)) return {};
   int dir = 0;
-  if (e20 > e50 && e50 > e200 && bar.l <= e20 && bar.c > e20 && bar.c > e50) {
+  const bool up = e20 > e50 && (!stack || e50 > e200), down = e20 < e50 && (!stack || e50 < e200);
+  if (pending) {
+    if (up && bar.c > e20) dir = 1;
+    else if (down && bar.c < e20) dir = -1;
+  } else if (up && bar.l <= e20 && bar.c > e20 && bar.c > e50) {
     if (e20-bar.l > 2*a) return {};
     dir = 1;
-  } else if (e20 < e50 && e50 < e200 && bar.h >= e20 && bar.c < e20 && bar.c < e50) {
+  } else if (down && bar.h >= e20 && bar.c < e20 && bar.c < e50) {
     if (bar.h-e20 > 2*a) return {};
     dir = -1;
   }
   if (!dir) return {};
-  const double rawSl = dir > 0 ? bar.l-0.25*a : bar.h+0.25*a, rawDist = std::fabs(bar.c-rawSl);
-  if (!(rawDist > 0) || rawDist > 3*a) return {};
-  const double risk = std::max(rawDist,0.8*a), sl = bar.c-dir*risk, tp1 = bar.c+dir*2*risk, tp2 = bar.c+dir*3*risk;
-  const double rr = rounded(std::fabs(tp1-bar.c)/risk); if (rr < 1.5) return {};
+  double lo = bar.l, hi = bar.h;
+  if (pending) for (size_t i = b.size()-10; i < b.size(); ++i) { lo = std::min(lo,b[i].l); hi = std::max(hi,b[i].h); }
+  const double entry = pending ? e20 : bar.c, rawSl = dir > 0 ? lo-0.25*a : hi+0.25*a, rawDist = std::fabs(entry-rawSl);
+  if (!(rawDist > 0) || rawDist > ceiling*a) return {};
+  const double risk = std::max(rawDist,floor*a), sl = entry-dir*risk, tp1 = entry+dir*2*risk, tp2 = entry+dir*3*risk;
+  const double rr = rounded(std::fabs(tp1-entry)/risk); if (rr < 1.5) return {};
   const double ePrev = vpo::ema(prefix(b,b.size()-5),20), r = vpo::rsi(b);
-  const int conviction = 8 + (dir*(e20-ePrev) > 0) + (std::isfinite(r) && r >= 40 && r <= 60);
-  auto out = signal("ema_pullback",o,dir,dir > 0 ? "ema:uptrend_dip_held_ema20" : "ema:downtrend_pop_held_ema20",bar.c,sl,tp1,tp2,conviction,rr);
-  out.set("sl_atr_mult",rounded(risk/a)); out.set("sl_widened_to_floor",risk > rawDist); out.set("stack_confirmed",true); return out;
+  const int conviction = pending ? 8 : 8 + (dir*(e20-ePrev) > 0) + (std::isfinite(r) && r >= 40 && r <= 60);
+  const std::string reason = pending ? (dir > 0 ? "ema:ema20>ema50,close>ema20" : "ema:ema20<ema50,close<ema20")
+    : (dir > 0 ? "ema:uptrend_dip_held_ema20" : "ema:downtrend_pop_held_ema20");
+  auto out = signal("ema_pullback",o,dir,reason,entry,sl,tp1,tp2,conviction,rr,configured ? settings.get("timeCapMinutes") : Value{});
+  out.set("sl_atr_mult",rounded(risk/a)); out.set("sl_widened_to_floor",risk > rawDist); out.set("stack_confirmed",stack); return out;
 }
 static Value rsiMeanrev(const Bars& b, const bt::Options& o) {
   if (b.size() < 75) return {};
@@ -176,10 +187,10 @@ static Value vaBreakout(const Bars& b, const bt::Options& o) {
   return signal("va_breakout",o,dir,reason,bar.c,bar.c-dir*risk,tp1,tp2,8+(vs.migration == (dir > 0 ? "up" : "down"))+(vs.structure != "ranging"),rr);
 }
 bool supportsExtended(const std::string& s) { return s == "cup_handle" || s == "inv_cup_handle" || s == "ema_pullback" || s == "rsi_meanrev" || s == "fvg_retrace" || s == "vp_value" || s == "va_breakout"; }
-Value computeExtended(const std::string& s, const Bars& b, const bt::Options& o) {
+Value computeExtended(const std::string& s, const Bars& b, const bt::Options& o, const Value& settings) {
   if (s == "cup_handle") return cupHandle(b,o,1);
   if (s == "inv_cup_handle") return cupHandle(b,o,-1);
-  if (s == "ema_pullback") return emaPullback(b,o);
+  if (s == "ema_pullback") return emaPullback(b,o,settings);
   if (s == "rsi_meanrev") return rsiMeanrev(b,o);
   if (s == "fvg_retrace") return fvg(b,o);
   if (s == "vp_value") return vpValue(b,o);
