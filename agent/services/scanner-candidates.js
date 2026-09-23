@@ -1,3 +1,4 @@
+import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { compareTimeframeResult, comparisonStatus } from './scanner-comparison.js'
@@ -47,7 +48,7 @@ function identityReason(db, source, value, policies) {
   if (!account) return 'account_unregistered'
   const host = account.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   if (host !== f.host) return 'account_feed_mismatch'
-  const map = read(db, `symbol_id_map:${f.accountId}`)
+  const map = getAccountSymbolMap(db, f.accountId)?.map
   if (!object(map) || !Object.values(map).some(id => String(id) === f.symbolId)) return 'account_symbol_unmapped'
   if (![value.feedEpoch, value.configVersion, value.profileHash].every(v => typeof v === 'string' && VERSION.test(v))) return 'version_unavailable'
   if (source === 'cpp-scan-tick' ? value.strategy !== 'tick_momentum_breakout' : value.strategy === 'tick_momentum_breakout') return 'strategy_source_mismatch'

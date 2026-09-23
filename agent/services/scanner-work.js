@@ -1,7 +1,10 @@
 import { getState, setState } from '../db.js'
+import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { readMarketCalendar } from './market-calendar.js'
 import { projectCalendar } from '../lib/calendar-intervals.js'
 import { blockerReport } from './blocker-report.js'
+import { watchdogCalendarDemand } from './watchdog-calendar-refresh.js'
+import { marketIdentityKey } from '../lib/market-identity.js'
 
 export function recordScannerWork(db, { creds, scopeAccounts, symbolMap, result, completedAt, nextDue, cadenceMs = nextDue - completedAt }) {
   let previous; try { previous = JSON.parse(getState(db, 'legacy_scanner_work_json') || 'null') } catch { /* no prior receipt */ }
@@ -42,7 +45,7 @@ export function scannerWork(db, accounts, now) {
       if (work.length >= 2048 || ++lookups > 2048) { work.push({ id: 'legacy-inventory-capacity', inventoryComplete: false }); return work }
       const account = accounts.get(accountId); if (!account) continue
       let symbolId; try {
-        if (!maps.has(accountId)) maps.set(accountId, JSON.parse(getState(db, `symbol_id_map:${accountId}`) || '{}'))
+        if (!maps.has(accountId)) maps.set(accountId, getAccountSymbolMap(db, accountId)?.map || {})
         symbolId = maps.get(accountId)[instrument.symbol.toUpperCase()]
       } catch { continue }
       if (!symbolId) continue
@@ -79,17 +82,24 @@ export function scannerWork(db, accounts, now) {
 }
 
 export function watchdogCalendars(db, now) {
+  // Active work leads. A daily universe refresh can retain thousands of
+  // calendars; alphabetic LIMIT must not crowd out a held position/feed.
+  const demand = watchdogCalendarDemand(db, now)
+  const identities = new Map(demand.identities.map(id => [marketIdentityKey(id), id]))
   const rows = db.prepare("SELECT value FROM agent_state WHERE key LIKE 'market_calendar:v1:%' ORDER BY key LIMIT 513").all()
-  const calendars = []; let size = 0, complete = rows.length <= 512
-  for (const row of rows.slice(0, 512)) {
+  for (const row of rows) {
     try {
-      const identity = JSON.parse(row.value)?.latest?.identity
-      if (!identity) continue
-      const calendar = projectCalendar(readMarketCalendar(db, identity, { nowMs: now }), now)
-      const entry = { identity, calendar }; size += Buffer.byteLength(JSON.stringify(entry))
-      if (size > 96 * 1024) { complete = false; break }
-      calendars.push(entry)
-    } catch { complete = false }
+      const identity = JSON.parse(row.value)?.latest?.identity, key = marketIdentityKey(identity)
+      if (key && !identities.has(key) && identities.size < 512) identities.set(key, identity)
+    } catch { /* malformed cache is not calendar evidence */ }
+  }
+  const calendars = []; let size = 0, complete = demand.complete
+  for (const identity of identities.values()) {
+    const evidence = readMarketCalendar(db, identity, { nowMs: now })
+    const calendar = projectCalendar(evidence, now)
+    const entry = { identity, calendar, reason: evidence.reason }; size += Buffer.byteLength(JSON.stringify(entry))
+    if (size > 96 * 1024) { complete = false; break }
+    calendars.push(entry)
   }
   return { calendars, calendarsComplete: complete }
 }
