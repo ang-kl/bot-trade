@@ -1059,3 +1059,9 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   checkpoint 8,636; visible continuation replies have reached **8,645**. This is
   that supplied rebase plus visible replies, not a full-corpus measurement.
   Later visible replies take precedence. No agent/token totals are inferred.
+
+
+- 2026-09-23, Work Mode continuation, PARTIAL corpus: the counting script
+  found no JSONL transcripts. Continued the supplied rebase through replies
+  **№ 8,655–8,658**, including the initial unstamped continuation update.
+  This records visible replies, not a new full-corpus measurement.
