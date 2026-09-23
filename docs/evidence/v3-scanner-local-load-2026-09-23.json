@@ -1,0 +1,83 @@
+{
+  "observedAt": "2026-09-23T10:02:39.219Z",
+  "results": [
+    {
+      "service": "cpp-scan-tick",
+      "scope": "local synthetic HTTP load only",
+      "streams": 500,
+      "concurrency": 8,
+      "inputPerStream": 389,
+      "inputKind": "classified quote records",
+      "elapsedMs": 3063,
+      "acknowledgmentLatencyMs": {
+        "samples": 500,
+        "p50": 28.08,
+        "p95": 150.02,
+        "p99": 312.72,
+        "max": 659.33
+      },
+      "concurrentHealthLatencyMs": {
+        "samples": 250,
+        "p50": 1.97,
+        "p95": 6.64,
+        "p99": 12.7,
+        "max": 16.83
+      },
+      "peakRssMiB": 43.17,
+      "backpressureResponses": 2005,
+      "acceptedRecords": 145909,
+      "droppedInputRecords": 48591,
+      "losslessInput": false,
+      "completedStreams": 500,
+      "stream513Status": 429,
+      "retainedStreams": 512,
+      "undrainedOutputGap": true,
+      "latestOutputCursor": 150577,
+      "orderAuthority": false,
+      "unauthenticatedStatus": 401
+    },
+    {
+      "service": "cpp-scan-timeframe",
+      "scope": "local synthetic HTTP load only",
+      "streams": 500,
+      "concurrency": 8,
+      "inputPerStream": 450,
+      "inputKind": "closed EMA bars",
+      "elapsedMs": 559,
+      "acknowledgmentLatencyMs": {
+        "samples": 500,
+        "p50": 8.27,
+        "p95": 13.25,
+        "p99": 15.97,
+        "max": 20.47
+      },
+      "concurrentHealthLatencyMs": {
+        "samples": 34,
+        "p50": 5.73,
+        "p95": 11.1,
+        "p99": 16.01,
+        "max": 16.01
+      },
+      "peakRssMiB": 14.35,
+      "backpressureResponses": 0,
+      "acceptedRecords": null,
+      "droppedInputRecords": null,
+      "losslessInput": true,
+      "completedStreams": 500,
+      "stream513Status": 429,
+      "retainedStreams": 512,
+      "undrainedOutputGap": false,
+      "latestOutputCursor": 512,
+      "orderAuthority": false,
+      "unauthenticatedStatus": 401
+    }
+  ],
+  "binarySourceCommit": "38476cf6d843a749352880f742dea76661dd3665",
+  "nodeVersion": "22.23.2",
+  "compiler": "g++ 13.3.0",
+  "architecture": "x86_64",
+  "binarySha256": {
+    "cpp-scan-tick": "0b7a5159f0eb265a9e4c5d3f67221493e49467751d0e98476799d586e1fb38cf",
+    "cpp-scan-timeframe": "b3d9acfa9c8b321fe592fd317725c7ba9688d05345cfc963e9529f5c7c0f904f"
+  }
+}

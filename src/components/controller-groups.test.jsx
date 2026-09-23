@@ -4,6 +4,28 @@ import ControllerGroups from './ControllerGroups.jsx'
 import ControllerRuntime from './ControllerRuntime.jsx'
 
 describe('controller evidence presentation', () => {
+  it('distinguishes stale service probes, empty work inventories and calendar faults', () => {
+    const now = Date.now()
+    const html = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: {
+      readAt: new Date(now).toISOString(), status: {
+        enabled: true, durable: true, policy: { serviceGraceMs: 60000 },
+        services: {
+          node: { attemptedAtMs: now - 65000, reachable: true, validContract: true, workCount: 20 },
+          'cpp-scan-tick': { attemptedAtMs: now - 1000, lastContractAtMs: now - 1000, reachable: true, validContract: true, workCount: 0 },
+        },
+        incidents: { 'node:work:fixture:calendar': { active: true, severity: 'warning', lastObservedAtMs: now,
+          detail: { service: 'node', role: 'scanner', accountId: '11', symbolId: '7', marketStatus: 'UNKNOWN' } } },
+      },
+    } }} />)
+    expect(html).toContain('STALE')
+    expect(html).toContain('UNVERIFIED')
+    expect(html).toContain('ON / ON')
+    expect(html).toContain('zero work items does not establish active feed coverage')
+    expect(html).toContain('calendar; scanner')
+    expect(html).toContain('symbol ID 7')
+    expect(html).toContain('market UNKNOWN')
+    expect(html).toContain('cpp-scan-timeframe')
+  })
   it('keeps absent scanner evidence unknown and shows actual mismatches and worker failures', () => {
     const runtime = { accounts: [], sides: [] }
     const empty = renderToStaticMarkup(<ControllerRuntime runtime={runtime} />)
