@@ -630,3 +630,87 @@ remaining timeframe strategy ports, authenticated production acceptance,
 peak-load measurements and actual alert delivery remain explicit incomplete
 work; scanner activation and target-policy changes still require their
 distinct approvals.
+
+## Acceptance checkpoint — 23 September 2026, 09:56 SGT
+
+#1031 merged as `0b8a60041e51931a801d00981968ff61ac6cfc4b`. All seven
+application gates passed: 5,300 agent tests without skips, 924 frontend tests,
+zero-warning lint, build, no-green, syntax and inventory. Gateway/verifier and
+both scanner native suites passed; all 15 gateway ThreadSanitizer tests passed.
+All five PR workflows succeeded. All four Railway services deployed that SHA.
+The 09:30:47–49 SGT seven-account audit showed zero missing SL and the same two
+TP1 exceptions. The observation bridge and scanner services were not activated.
+
+A real disk-backed isolated retention check verified the 90-day boundary,
+account isolation, preserved cashflow events and equity ledger, and identical
+results after database close/reopen. Production configuration and startup logs
+confirmed Node's `/data/agent.db` mount. This does not prove that production
+contains 90 days of complete cashflow/history coverage. cpp-acct still has no
+volume listed; recorder/storage acceptance is not closed.
+
+The secure browser connection request was interrupted by the user. It was not
+retried. Fresh production readback remained disconnected, so authenticated
+account, cashflow and historical coverage acceptance is still blocked. No
+credential was extracted from another source and no successful login is claimed.
+
+That disconnected read exposed lower Performance panels claiming empty results
+despite unavailable evidence. #1032 corrected those panels and exports, cashflow
+copy, fake feed-refresh evidence and unverified currency labels. It merged as
+`0f32770ace275432ae806c2551ffff614f7ae3ca`; the proposed and deployed source tree
+both matched `336e04c5acc5baa118aa7bda7d61c125c94ee2d2`. The final seven-part gate
+passed with 5,300 agent tests, 929 frontend tests and no skips; both PR workflows
+passed. All four services deployed successfully. A fresh production DOM read
+verified journal/position/debrief unavailable states, unknown SL/TP counts and
+unverified equity-stop state; the previous confident-empty claims were absent.
+
+The post-deployment broker audit checked all seven accounts at 09:55:46–47 SGT:
+32 open positions, zero missing SL, one missing TP1 on each of 46979908 and
+47790949. No target was amended. GitHub returned no open PRs after #1032.
+
+### Remaining work and explicit stop boundaries
+
+| Priority | Verified progress | Remaining completion evidence |
+|---|---|---|
+| P0 / P3 targets | Fresh seven-account protection observation; blocker reporting merged | Position-specific TP1 resolution and momentum target semantics require the distinct target-policy approval; do not invent prices |
+| P1 | Protection reserve implementation reused | Saturated ordinary-read/protection latency acceptance |
+| P2 | Account identity/isolation and reporting packages merged | Authenticated account switching, intended roster reconciliation and currency/risk-policy completion |
+| P4 | Gateway readback/receipts and protection fixes merged | Account-scoped quote/configuration freshness, writer ownership, latency and failure acceptance |
+| P5a | Controllers/watchdog producers and independent observer integration merged | Approved delivery destination/settings, real alert and Node-down drill, external observer credentials/schedule; no outbound test or activation performed |
+| P5b / P5d | Blocker/population/history code and disconnected UI acceptance passed | Authenticated real-account cashflow/history/retention coverage; allow 30–60 minutes for the first acceptance pass after secure connection, excluding fixes |
+| P5c | Bounded feed/comparison integration and native baseline tests passed | Eleven remaining bar strategies plus remaining Fibonacci options, attributable parity, peak-load/protection measurements and handoff acceptance; scanner activation is separately approved |
+| P6 | Existing research machinery reused | Current attributable datasets and matching-profile evidence validation |
+| P7 | No new promotion or policy changes | Decisions after P3/P6 evidence |
+| P8 | No symbol expansion | Account tradability, broker budgets and protection-safe load acceptance |
+| Maintenance | Local retention/reopen and Node mount verified | Production quota/disk trend, recorder retention and per-service restart recovery |
+
+This is not Version 3 completion. No honest whole-programme finish date can be
+derived from a green merge gate: policy choices, authenticated data and remaining
+strategy ports still affect scope. Fifteen-minute task reports were given while
+actively working; no unattended fifteen-minute automation was created because
+the exposed scheduling service supports at most hourly recurrence. This
+documentation-only checkpoint is published on its continuation branch for the
+next code PR, without another four-service deployment merely to update status.
+Rollback owner remains Adrian Ang; a revert still follows the deployment gate.
+
+## Authenticated continuation — 23 September 2026, 10:38 SGT
+
+The owner entered credentials through the control browser and authorized
+continuation. Fresh visible evidence confirmed an active application session
+and all seven accounts. Production remained on #1032; its four services were
+still successful. The authentication blocker is resolved for this session.
+
+Real reporting showed retained account history with native currency, explicit
+cashflow-coverage gaps, and unknown adjusted returns. Browsing older history
+preserved its observed interval. Blocker pages 2 and 3 both reported 7,065 total
+records for the frozen account window, rather than using the 50-row detail cap.
+
+Account switching exposed a client reconciliation defect: AccountHistory and
+BlockerReport were siblings with the same `key={acct}`. Switching the report
+filter left both the previous account's 187-observation history and the newly
+selected account's 178-observation history in the DOM. The duplicate persisted;
+this was not merely a transient loading state. The fix gives the two sibling
+types distinct account-specific keys, retaining deliberate remount/reset on an
+account switch. The full gate and production multi-account readback are required.
+No broker action or trading-account selection was changed. Acceptance uses the
+Performance view-only filters; the floating account switch explicitly changes
+the traded account and is outside this read-only check.

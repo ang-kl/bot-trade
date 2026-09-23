@@ -1022,3 +1022,9 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
 - 2026-09-22 23:50 UTC, Work Mode continuation with partial transcript corpus:
   visible replies through **№ 8,503**; next **№ 8,504**. Workspace is offline;
   this follows the recorded rebase and visible replies, not a full-corpus count.
+
+- 2026-09-23 01:56 UTC, Work Mode continuation with partial transcript corpus:
+  visible replies through **№ 8,548**; next **№ 8,549**. Continued from the
+  recorded rebase and visible replies, not a full-corpus measurement. #1030,
+  #1031 and #1032 are merged and all four deployments verified. Authenticated
+  acceptance remains blocked after the secure connection was interrupted.
