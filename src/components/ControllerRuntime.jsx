@@ -43,10 +43,10 @@ export default function ControllerRuntime({ runtime }) {
           </table></div>
           <p>A valid receipt with zero work items does not establish active feed coverage. Probe time and completed work time are separate evidence.</p>
           <ul>{Object.entries(runtime.watchdog.status.incidents || {}).filter(([, i]) => i.active).map(([id, i]) => <li key={id}>
-            {i.severity}: {i.detail?.service} — {id.split(':').at(-1).replaceAll('_', ' ')}; {i.detail?.reason || i.detail?.role || 'evidence unavailable'};
+            {i.severity}: {i.detail?.service} — {id.includes(':no_orders:') ? 'no recorded orders' : id.split(':').at(-1).replaceAll('_', ' ')}; {i.detail?.reason || i.detail?.role || 'evidence unavailable'};
             {' '}account …{String(i.detail?.accountId || '').slice(-4)}{i.detail?.symbolId != null ? `; symbol ID ${i.detail.symbolId}` : ''};
             {' '}market {i.detail?.marketStatus || 'unverified'}; work completed {stamp(i.detail?.lastCompletedAtMs)}; next due {stamp(i.detail?.nextDueMs)};
-            {' '}last observed {stamp(i.lastObservedAtMs)}.
+            {' '}opened {stamp(i.openedAtMs)}; last observed {stamp(i.lastObservedAtMs)}.
           </li>)}</ul>
         </> : <p>Independent watchdog evidence unavailable or stale.</p>}
       </details>
