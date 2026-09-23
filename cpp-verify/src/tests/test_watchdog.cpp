@@ -50,12 +50,35 @@ int main() {
   }
   {
     verify::WatchState s; auto w = work("orders", "entry_activity"); w.set("ordersSinceOpen", 0); w.set("sessionOpenedAtMs", T); w.set("sessionId", "actual-broker-open");
+    healthy(s, {w}, T + 300000); assert(!active(s, "node:no_orders:11:actual-broker-open"));
+    w.set("activityComplete", true); w.set("nextDueMs", T + 600000);
     healthy(s, {w}, T + 300000);
     const auto id = "node:no_orders:11:actual-broker-open";
     assert(s.snapshot().get("incidents").get(id).get("severity").asString() == "info");
     const auto serial = s.snapshot().get("incidents").get(id).get("serial").asNumber();
     verify::WatchState reboot; assert(reboot.restore(s.snapshot())); healthy(reboot, {w}, T + 3600000);
     assert(reboot.snapshot().get("incidents").get(id).get("serial").asNumber() == serial);
+    w.set("hasRecordedOrder", true); w.set("ordersSinceOpen", Value());
+    w.set("lastCompletedAtMs", T + 3600000); w.set("nextDueMs", T + 3900000);
+    healthy(reboot, {w}, T + 3600000); assert(!active(reboot, id));
+    assert(reboot.snapshot().get("incidents").get(id).get("serial").asNumber() == serial); // informational resolution sends no recovery alert
+    w.set("hasRecordedOrder", false); w.set("ordersSinceOpen", 0);
+    healthy(reboot, {w}, T + 3600001); assert(!active(reboot, id)); // one notice per account/session
+  }
+  {
+    verify::WatchState s;
+    auto quote = work("quote", "quote_flow"); quote.set("calendar", Value()); quote.set("lastQuoteAtMs", T); quote.set("quoteMaxAgeMs", 60000);
+    auto gateway = work("reconcile", "gateway"); gateway.set("calendar", Value()); gateway.set("nextDueMs", T + 30000);
+    auto node = contract(); node.set("calendars", Array{Value(Object{{"identity", calendar().get("identity")}, {"calendar", calendar()}})});
+    s.probe("node", true, node, T);
+    auto c = contract({quote, gateway}); c.set("service", "cpp-exec"); s.probe("cpp-exec", true, c, T); s.evaluate(T);
+    assert(!active(s, "cpp-exec:work:quote:calendar"));
+    s.probe("node", false, {}, T + 1);
+    c.set("observedAtMs", T + 90000); s.probe("cpp-exec", true, c, T + 90000); s.evaluate(T + 90000);
+    assert(active(s, "cpp-exec:work:quote:quote")); assert(active(s, "cpp-exec:work:reconcile:stalled"));
+    assert(!active(s, "cpp-exec:work:quote:calendar")); // original verified calendar survives Node loss
+    c.set("observedAtMs", T + 86400001); s.probe("cpp-exec", true, c, T + 86400001); s.evaluate(T + 86400001);
+    assert(active(s, "cpp-exec:work:quote:calendar")); assert(active(s, "cpp-exec:work:quote:quote")); // expiry cannot clear it
   }
   {
     verify::WatchState s; auto accepted = work("limit", "intent"), missing = work("lost", "intent");

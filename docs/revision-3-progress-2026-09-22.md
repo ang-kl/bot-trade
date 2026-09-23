@@ -602,3 +602,31 @@ Before the workspace outage, the browser showed the disconnected-agent screen.
 Fixtures and deployment success do not establish real-account cashflow/history
 or retention acceptance. Target-policy changes and scanner activation remain
 the owner's distinct approval boundaries.
+
+## Recovery checkpoint — 23 September 2026, 09:08 SGT
+
+The owner resumed work with task-list reports every fifteen minutes or on
+completion/blockage. Reporting correction #1030 merged as
+`0d10cf2bb2a6db5ee2726415696beae10d221278`; PR CI and all four Railway
+deployments passed. Authenticated history/cashflow/retention acceptance is
+still outstanding. The current app is served at `sg-trade.up.railway.app`;
+the old Vercel homepage is not the acceptance target.
+
+The scanner work survived the workspace outage and was committed locally,
+then integrated with current main. The earlier Node failure was the explicit
+one-account routing allowlist: the new account-host identity reads are routing
+only, now registered and behaviourally tested on both hosts. The interrupted
+gateway build left one zero-filled generated binary; it was removed and
+rebuilt from unchanged source. Gateway and verifier full native suites now
+pass, including the final watchdog source edits. The combined application gate
+and gateway ThreadSanitizer run are in progress, not yet claimed complete.
+
+Additional regressions cover transactional comparison rollback, missing and
+out-of-order native cursors, a latest entry blocker obscured by newer placement
+receipts, no-order notice recovery, and honest absent/mismatched UI evidence.
+The bounded feed/comparison and watchdog integration is being published as a
+separate PR so recovery no longer depends on uncommitted local files. The
+remaining timeframe strategy ports, authenticated production acceptance,
+peak-load measurements and actual alert delivery remain explicit incomplete
+work; scanner activation and target-policy changes still require their
+distinct approvals.

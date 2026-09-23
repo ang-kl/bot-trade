@@ -24,6 +24,7 @@
 #include "spot_quote_routes.hpp"
 #include "tick_tap.hpp"
 #include "scanner_mirror.hpp"
+#include "watchdog_contract.hpp"
 #include "tick_firer.hpp"
 #include "tick_shadow.hpp"
 #include "tick_strategy.hpp"
@@ -526,6 +527,23 @@ int main(int argc, char** argv) {
           std::to_string(kHeartbeatIdleSeconds) + " s)");
 
   HttpServer server(port, execSecret);
+  registerGatewayWatchdog(server, execSecret, [&]() {
+    GatewayWorkView v; v.service = envOr("RAILWAY_SERVICE_NAME", "cpp-exec"); v.host = pinnedHost;
+    v.now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    v.startedAt = startedAtMs; v.connected = engine.isConnected(); v.credentials = engine.hasCredentials();
+    for (auto id : engine.accountIds()) v.reconciles.emplace_back(id, engine.lastReconcileAtMs(id));
+    { std::lock_guard<std::mutex> lock(vpoMtx);
+      if (spotFeed) {
+        v.host = liveFeedHost; v.feedAccount = spotFeed->accountId(); v.quoteMaxAgeMs = tickParams.maxQuoteAgeMs;
+        const auto received = spotFeed->lastTickBySymbol();
+        for (auto id : spotFeed->subscribedSymbols()) {
+          long long at = 0; for (const auto& q : received) if (q.first == id) { at = q.second; break; }
+          v.quotes.emplace_back(id, at);
+        }
+      }
+    }
+    return v;
+  });
 
   server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim, &tickFirer, &tickUniverse](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};

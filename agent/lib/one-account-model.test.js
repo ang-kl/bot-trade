@@ -52,6 +52,8 @@ export const PATTERNS = Object.freeze({
  * carry NONE of the tokens; a listed file may carry exactly the counts named.
  */
 export const ALLOWLIST = Object.freeze({
+  'agent/services/scanner-comparison.js': { reason: 'verify the registered broker host for comparison evidence; identical profile rules for every account', max: { is_live: 2 } },
+  'agent/services/scanner-work.js': { reason: 'select each registered account host for calendar identity; identical activity and deadline rules for every account', max: { is_live: 1 } },
   'agent/services/scanner-candidates.js': { reason: 'verify registered account/feed routing for mirror observations only; no eligibility gate', max: { is_live: 2 } },
   // ---- schema and env ------------------------------------------------------
   'agent/db.js': { reason: 'the accounts.is_live column and the entry_intents.environment enum comment — storage, not a gate', max: { is_live: 1, live_str: 1, demo_str: 1 } },

@@ -11,6 +11,7 @@ public:
   jsn::Value submit(const jsn::Value& batch);
   jsn::Value status();
   jsn::Value candidates(long long after) { return output_.read(after); }
+  jsn::Value comparisons(long long after) { return comparisons_.read(after, 128); }
   void flush() { workers_.flush(); }
 private:
   struct Meta { long long sourceSequence = 0, receivedAt = 0; jsn::Value sourceTime; bool gap = false; };
@@ -30,7 +31,7 @@ private:
   std::map<std::string, uint32_t> ids_;
   std::map<uint32_t, std::shared_ptr<Slot>> slots_;
   uint32_t nextId_ = 0;
-  CandidateRing output_;
+  CandidateRing output_, comparisons_;
   tick::SymbolWorkers workers_;
 };
 }

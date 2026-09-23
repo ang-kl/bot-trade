@@ -93,12 +93,26 @@ void TickScanner::consume(const tick::WorkerEvent& event) {
   if (q.snapshot) ++slot->resets;
   const auto signal = slot->strategy.onQuote(q); const auto evaluated = clock_();
   slot->lastCompleted = evaluated; slot->lastReceived = event.recvMs;
-  if (!signal) return;
-  if (static_cast<long long>(event.recvMs) + slot->identity.ttl <= evaluated) { ++slot->expired; return; }
+  const bool expired = static_cast<long long>(event.recvMs) + slot->identity.ttl <= evaluated;
+  jsn::Value comparison(jsn::Object{{"schemaVersion", 1}, {"orderAuthority", false},
+    {"feed", slot->identity.feed}, {"feedEpoch", slot->identity.epoch}, {"configVersion", slot->identity.config},
+    {"profileHash", slot->identity.profile}, {"profile", *jsn::parse(slot->strategy.params().canonicalJson())},
+    {"strategy", "tick_momentum_breakout"}, {"completedAtMs", evaluated}, {"receivedAtMs", static_cast<long long>(event.recvMs)},
+    {"outcome", expired ? "expired" : signal ? "candidate" : "no_signal"},
+    {"quote", jsn::Object{{"seq", static_cast<long long>(q.seq)}, {"recvMs", static_cast<long long>(q.recvMs)},
+      {"bid", q.hasBid ? jsn::Value(static_cast<long long>(q.bid)) : jsn::Value()},
+      {"ask", q.hasAsk ? jsn::Value(static_cast<long long>(q.ask)) : jsn::Value()},
+      {"snapshot", q.snapshot}, {"crossed", q.crossed}, {"changed", q.changed}}}});
+  if (!signal || expired) {
+    if (signal && expired) ++slot->expired;
+    comparisons_.push(std::move(comparison)); return;
+  }
   const auto& s = *signal;
   jsn::Value result(jsn::Object{{"side", s.side}, {"directionReason", s.dirReason}, {"bid", s.bid}, {"ask", s.ask},
     {"trigger2", s.trigger2}, {"stopDistance", s.stopDistance}, {"spread", s.spread}, {"V", s.V}, {"E", s.E},
     {"D", s.D}, {"H", s.H}, {"L", s.L}, {"B", s.B}, {"setupId", s.setupId}, {"confirmations", s.confirmations}});
+  comparison.set("signal", result);
+  comparisons_.push(std::move(comparison));
   output_.push(candidate(slot->identity, "tick_momentum_breakout", meta.sourceSequence, event.recvMs, meta.sourceTime, evaluated, std::move(result)));
 }
 jsn::Value TickScanner::status() {

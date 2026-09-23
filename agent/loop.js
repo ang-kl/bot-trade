@@ -5,6 +5,8 @@
 import { createLLMClient } from './lib/llm-provider.js'
 import { disarmReason } from './lib/env-disarm.js'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
+import { scannerObserver } from './services/scanner-feed.js'
+import { recordScannerWork } from './services/scanner-work.js'
 import { enabledStrategies } from './services/strategies.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
@@ -4042,7 +4044,7 @@ async function runLoop(db) {
     // cycle moves on; the rotation cursor keeps coverage honest over runs.
     const scanDeadlineAt = start + Math.floor(CYCLE_SOFT_DEADLINE_MS / 2)
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, armedStrategyKeys, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols, prioritySpikeSymbols, deadlineAt: scanDeadlineAt })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, armedStrategyKeys, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols, prioritySpikeSymbols, deadlineAt: scanDeadlineAt, onEvaluation: scannerObserver(db, ctraderCreds) })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
     if (scanResult.deadlineHit) log(`Scan hit its deadline (${Math.round((Date.now() - scanT0) / 1000)}s) — partial batch, broker calls running slow`)
     const scanMs = Date.now() - scanT0
@@ -4559,6 +4561,10 @@ async function runLoop(db) {
       if (wasteLine) log(wasteLine)
     }
 
+      try {
+        recordScannerWork(db, { creds: ctraderCreds, scopeAccounts: rosterIds, symbolMap, result: scanResult,
+          completedAt: Date.now(), cadenceMs: loopIntervalMs(db), nextDue: Math.max(start + loopIntervalMs(db), Date.now() + 10_000) })
+      } catch { /* observation never controls the scanner or order owner */ }
       } // end scanEnabled + symbols (scan+analyze branch)
 
       // ---------------------------------------------------------------------

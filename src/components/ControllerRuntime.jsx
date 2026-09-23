@@ -10,6 +10,14 @@ export default function ControllerRuntime({ runtime }) {
   return (
     <div className="text-(length:--fs-body) mb-3 space-y-2">
       <p>The clock updates every second. Strategy checks follow quote events or scheduled scans. A heartbeat does not confirm an entry or a protected position.</p>
+      <details><summary>Scanner comparison observations</summary>
+        <p>Mirror observations have no order authority. Existing strategy ownership remains in place.</p>
+        <p>Observation worker: {onOff(runtime.scannerComparison?.bridge?.enabled)}; queued: {count(runtime.scannerComparison?.bridge?.pending)}; dropped: {count(runtime.scannerComparison?.bridge?.dropped)}{runtime.scannerComparison?.bridge?.failed ? ' · Worker failed' : ''}.</p>
+        {runtime.scannerComparison?.comparison?.populations?.length ? <ul>{runtime.scannerComparison.comparison.populations.map(p =>
+          <li key={`${p.source}:${p.state}`}>{p.source}: {p.state.replaceAll('_', ' ')} — {p.records} retained observations; last recorded {stamp(p.lastObservedAtMs)}.</li>)}</ul>
+          : <p>Comparison evidence unavailable. No parity or readiness claim can be made.</p>}
+        <p>Counts retain seven days and are bounded. Missing inputs, gaps, unsupported profiles and mismatches require investigation before activation.</p>
+      </details>
       <details><summary>Independent service watchdog</summary>
         {runtime.watchdog?.status && now - Date.parse(runtime.watchdog.readAt) >= 0 && now - Date.parse(runtime.watchdog.readAt) < 90_000 ? <>
           <p>Supervision: {onOff(runtime.watchdog.status.enabled)}. Durable incident record: {onOff(runtime.watchdog.status.durable)}. Urgent notifications permitted: {onOff(runtime.watchdog.status.effectivePolicyAllowsUrgent)}.</p>

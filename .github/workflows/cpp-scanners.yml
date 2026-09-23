@@ -1,7 +1,7 @@
 name: cpp-scanners
 on:
   pull_request:
-    paths: ['cpp-scan-tick/**', 'cpp-scan-timeframe/**', 'cpp-exec/src/tick_*', 'cpp-exec/src/spsc_ring.hpp', 'cpp-exec/src/json.hpp', 'cpp-exec/src/http_server.*', 'cpp-exec/src/backtest.*', 'cpp-exec/src/vpo_indicators.*', '.github/workflows/cpp-scanners.yml']
+    paths: ['cpp-scan-tick/**', 'cpp-scan-timeframe/**', 'agent/services/scanner-*', 'agent/services/fib-strategy.js', 'cpp-exec/src/tick_*', 'cpp-exec/src/spsc_ring.hpp', 'cpp-exec/src/json.hpp', 'cpp-exec/src/http_server.*', 'cpp-exec/src/backtest.*', 'cpp-exec/src/vpo_indicators.*', '.github/workflows/cpp-scanners.yml']
   push:
     branches: [main]
     paths: ['cpp-scan-tick/**', 'cpp-scan-timeframe/**']
@@ -22,3 +22,10 @@ jobs:
               exit 1
             fi
           done
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --prefix agent
+      - name: Real HTTP feed and JavaScript reference integration
+        run: node --test agent/services/scanner-integration.test.js

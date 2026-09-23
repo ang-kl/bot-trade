@@ -55,6 +55,18 @@ test('explicit identity and bounded reporting windows are required', t => {
   for (const options of [{ accountId: undefined }, { accountId: '999' }, { from: NaN }, { from: now }, { limit: 201 }, { offset: -1 }, { to: now + 120_000 }]) assert.throws(() => read(options), RangeError)
 })
 
+test('latest entry blocker remains available when approvals and placement receipts fill the detail page', t => {
+  const { risk, stop, read } = fixture(t)
+  stop('evidence_gate')
+  risk('11', null, 1, '{}', '2026-09-22T11:50:00Z')
+  risk('11', null, 1, '{"pending_order_placed":true}', '2026-09-22T11:51:00Z')
+  const r = read({ limit: 1 })
+  assert.equal(r.records[0].kind, 'placement_receipt')
+  assert.equal(r.latestEntryStop.stage, 'evidence_gate')
+  assert.equal(r.latestEntryStop.firstBlocker.reason, 'recorded first reason')
+  assert.equal(r.latestEntryStop.diagnostics[1].status, 'not_evaluated')
+})
+
 test('placement receipts retain evidence without inflating approvals or fabricating a new risk evaluation', t => {
   const { risk, read } = fixture(t)
   risk('11', null, 1, '{"volume":true}')

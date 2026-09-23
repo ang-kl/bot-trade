@@ -6,6 +6,7 @@ import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { intentCounts } from './entry-ledger.js'
 import { independentProtectionView } from './independent-protection.js'
 import { effectivePhases } from './account-phases.js'
+import { scannerMirrorStatus } from './scanner-candidates.js'
 
 const read = (db, key) => {
   try { return JSON.parse(getState(db, key) || 'null') } catch { return null }
@@ -68,6 +69,7 @@ export function controllerRuntimeView(db, { nowMs = Date.now() } = {}) {
     }
   })
   return { at: new Date(nowMs).toISOString(), sides, accounts,
+    scannerComparison: scannerMirrorStatus(db, { now: nowMs }),
     watchdog: read(db, 'independent_watchdog_json'),
     monitor: read(db, 'fast_monitor_pass_json'),
     managementWork: read(db, 'fast_monitor_position_work_json'),

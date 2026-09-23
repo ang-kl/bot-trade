@@ -94,12 +94,14 @@ export function blockerReport(db, { accountId, from, to = Date.now(), limit = 50
   const rows = db.prepare(`${population} SELECT * FROM records ORDER BY julianday(created_at) DESC, source, id DESC LIMIT @limit OFFSET @offset`)
     .all({ ...params, limit, offset })
   const counts = db.prepare(`${population} SELECT account_id accountId, kind, COUNT(*) records FROM records GROUP BY account_id, kind ORDER BY account_id, kind`).all(params)
+  const stop = db.prepare(`${population} SELECT * FROM records WHERE kind IN ('upstream_stop','risk_refusal','post_approval_failure') ORDER BY julianday(created_at) DESC, source, id DESC LIMIT 1`).get(params)
   const unattributed = db.prepare(`SELECT
     (SELECT COUNT(*) FROM risk_events WHERE account_id IS NULL AND created_at >= @floor AND julianday(created_at) >= julianday(@from) AND julianday(created_at) < julianday(@to)) +
     (SELECT COUNT(*) FROM decision_log WHERE account_id IS NULL AND created_at >= @floor AND julianday(created_at) >= julianday(@from) AND julianday(created_at) < julianday(@to) AND decision IN ('skip','veto')) n`).get(params).n
   return {
     status: 'complete', accountId: String(accountId), from, to, generatedAt: new Date(now).toISOString(),
     summary, totalRecords, perAccount: counts, unattributedRecordsInWindow: unattributed,
+    latestEntryStop: stop ? blockerEvidence(stop) : null,
     records: rows.map(blockerEvidence), offset, limit, hasMore: offset + rows.length < totalRecords,
     nextOffset: offset + rows.length < totalRecords ? offset + rows.length : null,
     countBasis: 'Complete retained records first created in the requested window. The same event may appear in both logs. Repeated risk refusals share a record; recordedEvaluations covers that record’s lifetime, not exact attempts within the window. Records are not distinct opportunities or orders. Placement receipts are retained separately from risk approvals. Other stops include management records whose entry phase is unrecorded.',

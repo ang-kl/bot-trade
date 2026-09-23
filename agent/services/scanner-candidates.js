@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
+import { compareTimeframeResult, comparisonStatus } from './scanner-comparison.js'
+import { scannerBridgeStatus } from './scanner-feed.js'
 
 const SOURCES = new Set(['cpp-scan-tick', 'cpp-scan-timeframe'])
 const ID = /^[1-9][0-9]{0,18}$/
@@ -129,6 +131,7 @@ export function recordScannerMirrorPage(db, source, page, { policies = [], now =
         outcome = row.outcome; if (outcome === 'no_signal') noSignal++; else expired++
       } else reason = 'completed_evaluation_unverified'
       if (reason) { rejected++; lastError = reason }
+      if (!reason && source === 'cpp-scan-timeframe') compareTimeframeResult(db, row, now)
       db.prepare('INSERT OR IGNORE INTO scanner_mirror_outcomes VALUES(?,?,?,?,?,?)').run(source, page.instanceId, row.cursor, outcome, reason, now)
     }
     if (!page.candidates.length && restarted) cursor = 0
@@ -144,11 +147,12 @@ export function recordScannerMirrorPage(db, source, page, { policies = [], now =
 
 export function scannerMirrorStatus(db, { now = Date.now() } = {}) {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scanner_mirror_cursors'").get())
-    return { observedAtMs: now, status: 'unavailable', sources: [], orderAuthority: false, reason: 'no_scanner_observation' }
+    return { observedAtMs: now, status: 'unavailable', sources: [], orderAuthority: false, reason: 'no_scanner_observation', comparison: comparisonStatus(db), bridge: scannerBridgeStatus(db) }
   return { observedAtMs: now, orderAuthority: false, mode: 'mirror', retentionDays: 7, capacity: MAX_ROWS,
     sources: db.prepare('SELECT * FROM scanner_mirror_cursors ORDER BY source').all(),
     outcomes: db.prepare('SELECT source,outcome,reason,count(*) AS count FROM scanner_mirror_outcomes GROUP BY source,outcome,reason').all(),
-    candidates: db.prepare('SELECT source,account_id,host,strategy,count(*) AS count FROM scanner_mirror_candidates GROUP BY source,account_id,host,strategy').all() }
+    candidates: db.prepare('SELECT source,account_id,host,strategy,count(*) AS count FROM scanner_mirror_candidates GROUP BY source,account_id,host,strategy').all(),
+    comparison: comparisonStatus(db), bridge: scannerBridgeStatus(db) }
 }
 
 async function scannerPage(url, secret, after, fetchImpl) {
