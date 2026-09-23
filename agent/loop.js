@@ -3791,6 +3791,7 @@ async function runLoop(db) {
             for (const r of recovered) {
               if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read; ${r.result.lifetimeSkipped || 0} positions outside verified lifetime window`)
               else log(`P&L backfill [${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
+              if (r.result?.positionHistory) log(`P&L position history [${r.accountId}]: ${JSON.stringify(r.result.positionHistory)}`)
             }
           } catch (err) { log(`Cross-side P&L recovery failed (non-fatal): ${err.message}`) }
 
