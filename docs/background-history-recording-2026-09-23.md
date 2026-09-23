@@ -41,5 +41,11 @@ money/identity, confirmed-empty versus partial coverage, stale/repeated/future
 receipts, currency changes, bounded queue copies and failed observers. The
 first complete local gate passed all seven checks, with 5,332 agent tests,
 zero skips and 932 frontend tests. The package is now integrated with #1038;
-the combined gate, PR checks and fresh production evidence remain required.
+the combined gate then passed 5,335 agent tests without skips and all seven
+checks. PR CI failed only the existing 100 ms health acceptance at 146 ms,
+the same scheduling-sensitive check that failed on #1037. The runner now
+executes its entire file before competing agent test processes, then every
+other agent test exactly once with concurrency two. Its workload, health and
+event-loop thresholds, and assertions are unchanged. The full gate and CI
+are repeated on that corrected runner; production evidence remains required.
 Rollback owner: Adrian Ang.

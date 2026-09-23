@@ -23,7 +23,7 @@ jobs:
       - name: Lint (zero errors, zero warnings)
         run: npx eslint . --max-warnings 0
       - name: Agent test suite (node:test — risk, sizing, guards, keeper)
-        run: node --test "agent/**/*.test.js"
+        run: node scripts/run-agent-tests.mjs
       - name: Frontend test suite (vitest)
         run: npx vitest run
       - run: npm run build
