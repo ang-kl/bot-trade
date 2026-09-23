@@ -626,7 +626,7 @@ export function wsReconcile(host, clientId, clientSecret, accessToken, accountId
  * Returns the raw payload: { deal: [{ dealId, positionId, symbolId, volume,
  * tradeSide, executionPrice, executionTimestamp, dealStatus, ... }] }
  */
-export function wsGetDeals(host, clientId, clientSecret, accessToken, accountId, fromTimestamp, toTimestamp, timeoutMs = 25_000) {
+export function wsGetDeals(host, clientId, clientSecret, accessToken, accountId, fromTimestamp, toTimestamp, timeoutMs = 25_000, retries = 2) {
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.DEAL_LIST_REQ, payload: {
@@ -635,7 +635,7 @@ export function wsGetDeals(host, clientId, clientSecret, accessToken, accountId,
       toTimestamp: Math.floor(toTimestamp),
       maxRows: 500,
     } }, expect: PT.DEAL_LIST_RES },
-  ], timeoutMs), 2, 'wsGetDeals')
+  ], timeoutMs), retries, 'wsGetDeals')
 }
 
 /**

@@ -3782,6 +3782,17 @@ async function runLoop(db) {
             if (r.result) log(`Reconcile[${r.accountId}] cross-side: ${r.result.newExternal.length} new external, ${r.result.closedDetected.length} closed, ${(r.result.orphansClosed || []).length} orphan(s)`)
             else log(`Reconcile[${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
           }
+          // Closing a local row must reach the P&L repair on the same host.
+          // The earlier same-side pass cannot fetch the opposite account's
+          // deals. Report these reads separately, preserving its own pacing.
+          try {
+            const { backfillCrossSidePnl } = await import('./services/cross-side-pnl.js')
+            const recovered = await backfillCrossSidePnl(db, getCtraderCreds(db), crossReconciled)
+            for (const r of recovered) {
+              if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read`)
+              else log(`P&L backfill [${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
+            }
+          } catch (err) { log(`Cross-side P&L recovery failed (non-fatal): ${err.message}`) }
 
           // ---- CROSS-SIDE EQUITY (READ ONLY) -----------------------------
           // An account whose balance is

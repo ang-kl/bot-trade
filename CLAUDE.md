@@ -1033,3 +1033,8 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   visible replies through **№ 8,563**; next **№ 8,564**. The owner completed
   sign-in; authenticated scope acceptance found and verified the #1033 fix.
   Count follows the recorded rebase and visible replies, not a full-corpus read.
+
+- 2026-09-23 03:05 UTC, Work Mode continuation with partial transcript corpus:
+  visible replies through **№ 8,570**; next **№ 8,571**. #1033 and #1034 merged
+  and deployed; authenticated reporting behavior passed with explicit remaining
+  cashflow/P&L data gaps. Count follows visible replies, not a full-corpus read.
