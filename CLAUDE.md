@@ -1059,3 +1059,10 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   checkpoint 8,636; visible continuation replies have reached **8,645**. This is
   that supplied rebase plus visible replies, not a full-corpus measurement.
   Later visible replies take precedence. No agent/token totals are inferred.
+
+- 2026-09-23 10:26 UTC, same Work Mode continuation, partial transcript corpus:
+  visible progress replies through **№ 8,685**; next **№ 8,686**. #1047 merged
+  and deployed only Node; acceptance findings are retained in
+  `docs/v3-acceptance-sequence-2026-09-23.md`. Counts follow the prior visible
+  sequence, not an unavailable full-corpus measurement. Production order-flow
+  acceptance remains blocked; scanner feeds and trading activation are unchanged.

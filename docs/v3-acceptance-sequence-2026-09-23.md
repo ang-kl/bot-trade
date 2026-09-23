@@ -109,3 +109,70 @@ This PR changes the read-only status display, a local acceptance runner and its
 evidence. It requires only the Node release. A Node restart may briefly pause
 its management loop; broker-held stops were present on all reviewed positions.
 The two TP1 exceptions prevent declaring full protection acceptance.
+
+## Released and observed — approximately 18:26 SGT
+
+#1047 merged as `d9d4d232ce3c0b2a672065a5a6be9576def62188` after 5,362
+local backend tests, 936 frontend tests, lint, build, no-green and syntax/diff
+checks passed. Local native watchdog failure/recovery/restart and bounded
+HTTP/exclusive durable-state checks passed. GitHub test job `107137135959`
+passed on final PR head `198db3da3372b9262481c6875ae5c7a11d4dec64`.
+The review wrapper succeeded but its AI review step was skipped; no independent
+review is claimed.
+
+Only Node deployed: `da18316b-6be1-4bd8-83b0-2d56e8b64d63`, SUCCESS at
+10:19:41Z. All five native services produced SKIPPED merge events, confirming
+the watch filters worked. The previous Node deployment received SIGTERM and
+was then marked REMOVED. Broker-held protection and trading settings were not
+changed by the release.
+
+The first Node independent-protection polls were absent/timed out. Successful
+reads were relayed again at 10:21:45Z and 10:22:26Z. Final authenticated UI reads
+at approximately 18:26 SGT exposed independent broker timestamps of
+10:25:19–21Z: seven accounts, 32 open positions, zero missing stops, two missing
+TP1, and zero reserved/in-flight/unknown intents on every account. Management
+audits resumed and continued reporting zero naked positions and two targetless
+positions. This is fresh point-in-time coverage, not a continuous latency claim.
+
+The released watchdog table showed all five services reachable with valid
+contracts at 10:22:46Z and again at 10:24:47Z:
+
+| Service | Retained work items | Evidence |
+|---|---:|---|
+| node | 51 | Fresh valid receipt |
+| cpp-exec | 62 | Fresh valid receipt |
+| cpp-acct | 57 | Fresh valid receipt |
+| cpp-scan-tick | 0 | Fresh valid receipt; feed inactive |
+| cpp-scan-timeframe | 0 | Fresh valid receipt; feed inactive |
+
+At the earlier reading, 145 active calendar warnings were visible (54 cpp-acct,
+47 cpp-exec, 44 Node). Two Node scanner work items were overdue: account suffix
+0058, symbol IDs 10014 and 10015, last completed 10:17:16Z, due 10:20:16Z,
+incidents opened 10:22:17Z. The watchdog also retained the two independently
+observed missing-target incidents, opened 09:51:26Z. There were 203 pending
+delivery records then, 204 at the later reading, and zero capacity refusals.
+Delivery permission remained OFF; no delivery acceptance is claimed.
+
+Node's 10:22:26Z logs additionally recorded a loss-cap/protection-band step
+exceeding its 5-second budget after 32 seconds, and later overlap skips.
+Protection timing acceptance therefore remains FAILED, even though broker-held
+stops and subsequent audits were present. Calendar coverage and scanner work
+freshness also remain acceptance gaps. No freshness/risk threshold was relaxed.
+
+The production verifier restart drill could not be completed with the available
+deployment control. `redeploy` refuses the latest SKIPPED event
+`2be17938-9be8-45e0-8160-18e7c201b491` because it has no build snapshot.
+Reapplying the existing `WATCHDOG_ENABLED=1` with deployment enabled did not
+produce a new deployment in the observed events. No functioning configuration
+was changed to force a restart. The Railway CLI is unavailable in this workspace.
+Verifier `a901bb2e-7eb0-441e-976d-a886ca222bf9` remains running; a controlled
+restart of its successful snapshot and durable-state readback remain required.
+
+The scoped production read-only chain was exercised: broker → independent
+verifier → Node relay → authenticated status UI, alongside five watchdog
+contracts and actual overdue-work detection. A production order-flow test was
+NOT conducted: target exceptions, timing/load failures, inactive scanner feeds,
+missing profile registration, delivery handoff and external observation remain
+unresolved. No V3 trading activation or test order was performed. Existing
+time-based trading permissions remain as they were. #1046 remains a separate
+unmerged RSI observation-parity package.
