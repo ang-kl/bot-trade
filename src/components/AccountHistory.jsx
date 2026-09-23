@@ -59,6 +59,7 @@ export default function AccountHistory({ accountId }) {
     else { setCursors(cursors.slice(0, -1)); setPage(Math.ceil(2000 / 24) - 1) }
   }
   return <section className="my-3 p-3 border border-[var(--color-border)] rounded" aria-label="Account history">
+    <p className="font-semibold">History scope: {accountId === 'all' ? 'All accounts — select an account to inspect history' : `Account ${accountId}`}</p>
     <details><summary className="font-semibold">Account balance, equity and cashflows</summary>
     {accountId === 'all' ? <p>Select an account to inspect its native-currency history.</p> : <>
       <label>History window <select value={days} onChange={e => { setDays(Number(e.target.value)); reset() }}>

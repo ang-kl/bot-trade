@@ -55,6 +55,7 @@ export default function BlockerReport({ accountId }) {
   const report = valid ? reading.report : null
   return <section className="my-3 p-3 border border-[var(--color-border)] rounded" aria-label="Recorded entry blockers">
     <h2 className="font-semibold">Recorded entry blockers</h2>
+    <p className="font-semibold">Report scope: {accountId === 'all' ? 'All registered accounts' : `Account ${accountId}`}</p>
     <label>Decision window <select value={hours} onChange={e => { setHours(Number(e.target.value)); setOffset(0); setWindowEnd(null) }}>
       <option value={6}>6 hours</option><option value={24}>24 hours</option><option value={72}>72 hours</option>
     </select></label>
