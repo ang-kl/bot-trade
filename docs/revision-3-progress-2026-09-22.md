@@ -765,3 +765,39 @@ health panel also reported three overdue, never-attempted P&L backfills. These
 are explicit remaining data-quality work; no missing value was invented,
 written off or turned into a successful zero during acceptance. No 90-day
 production depth or complete historical cashflow reconciliation is claimed.
+
+## Acceptance closure checkpoint — 23 September 2026, 11:05 SGT
+
+#1034 is merged as `044788dc7d25a472e5228ed5e7b4329203a2a067`. Its exact
+source tree `9d4ec40121bb6b3e22017ac5e380c7fd8220b20d` passed 5,300 agent tests
+without skips, 930 frontend tests, zero-warning lint, build, no-green, syntax
+and inventory. Both PR workflows passed, and all four Railway services deployed
+successfully. Fetched main matched that source tree; no open PRs remained.
+
+The final authenticated readback verified explicit aggregate headings and
+correct history/blocker account labels for accounts ending 9908 and 0058,
+with one panel of each type retained after switching. This completes the
+display follow-up to the seven-account behavior checks above. A privately
+saved screenshot records both scope labels; no credential or private screenshot
+was published in the repository. Cloud-browser reload stalled twice during
+this acceptance session; fresh tabs retained authentication and worked, and
+the stale agent tabs were closed. This was not a reason to repeat deployments.
+
+The final independent audit checked all seven accounts at 11:02:30–32 SGT:
+32 positions, zero missing SL, and the same two missing-TP1 exceptions on
+9908/0949. Initial startup UNVERIFIED readings were superseded by this fresh
+successful audit. No target, numerical limit, trading-account selection,
+credential or scanner activation setting was changed.
+
+**Accepted:** authenticated reporting behavior for the observed account,
+window, pagination, unavailable/zero, blocker-diagnostic and restart-persistence
+cases. **Still incomplete:** full historical cashflow/P&L reconciliation,
+including the seven cashflow-coverage gaps, 23 unpriced closes, four unattributed
+closes and three overdue never-attempted P&L backfills observed earlier in this
+session. Those dated observations are not continuously current readings.
+P5c remaining native strategy ports/parity/load acceptance, P5a real alert
+delivery and outage drills, and the other P0–P8 completion criteria remain as
+listed above. Target policy and scanner activation retain distinct approvals.
+
+This documentation/serial checkpoint is published on the continuation branch
+for the next code PR. It does not trigger another status-only deployment.
