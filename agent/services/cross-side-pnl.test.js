@@ -113,7 +113,8 @@ test('a position predating the fetched window cannot receive a partial lifetime 
   const safe = seed(db, '2', { positionId: '701' })
   const missing = seed(db, '2', { positionId: '702' })
   db.prepare('UPDATE trades SET opened_at = ? WHERE id = ?').run(new Date(now - 20 * 86400_000).toISOString(), id)
-  const result = await backfillCrossSidePnl(db, base, [], { getCreds, getDeals: getter([], [close(), { ...close('701'), dealId: '901' }]), clock: () => now })
+  const result = await backfillCrossSidePnl(db, base, [], { getCreds, getDeals: getter([], [close(), { ...close('701'), dealId: '901' }]),
+    getPositionDeals: async () => ({ ctidTraderAccountId: '2', hasMore: true, deal: [close()] }), clock: () => now })
   assert.equal(result.find(r => r.accountId === '2').result.lifetimeSkipped, 1)
   assert.equal(row(db, id).net_pnl, null)
   assert.equal(row(db, id).pnl_attempts, 0)
@@ -145,7 +146,8 @@ test('a queued broker read releases the loop at the wall deadline without overla
 test('uncovered lifetimes retain their ledger gap but cannot pace or repeatedly trigger this bounded repair', async t => {
   const db = fixture(t), old = seed(db, '2'), calls = []
   db.prepare('UPDATE trades SET opened_at=? WHERE id=?').run(new Date(now - 20 * 86400_000).toISOString(), old)
-  const deps = { getCreds, getDeals: getter(calls), clock: () => now }
+  const deps = { getCreds, getDeals: getter(calls), clock: () => now,
+    getPositionDeals: async () => ({ ctidTraderAccountId: '2', hasMore: true, deal: [close()] }) }
   const first = (await backfillCrossSidePnl(db, base, [], deps)).find(r => r.accountId === '2').result
   assert.deepEqual([first.gap, first.liveGap, first.blockingGap, first.lifetimeSkipped], [1, 0, 0, 1])
   await backfillCrossSidePnl(db, base, [], deps)

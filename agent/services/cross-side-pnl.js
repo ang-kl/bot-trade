@@ -2,10 +2,11 @@
 // environment is selected. Recover their money through their OWN deal history.
 // No broker writes, account selection, unknown-row attribution or risk changes.
 import { getCtraderCreds } from '../lib/ctrader-creds.js'
-import { wsGetDeals } from '../lib/ctrader-ws.js'
+import { wsGetDeals, wsGetPositionDeals } from '../lib/ctrader-ws.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { getEnabledAccounts } from './account-registry.js'
 import { backfillClosedPnl, dueForBackfill, noteBackfillAttempt, shouldRunPnlBackfill } from './pnl-backfill.js'
+import { recoverOldPositionPnl } from './old-position-pnl.js'
 
 const pendingReads = new WeakMap()
 
@@ -15,6 +16,7 @@ export async function backfillCrossSidePnl(db, baseCreds, reconciled = [], deps 
   const refused = tokenRefusedAccounts(db)
   const credentials = deps.getCreds ?? getCtraderCreds
   const read = deps.getDeals ?? wsGetDeals
+  const readPosition = deps.getPositionDeals ?? wsGetPositionDeals
   const clock = deps.clock ?? Date.now
   const results = []
   if (!pendingReads.has(db)) pendingReads.set(db, new Map())
@@ -32,14 +34,12 @@ export async function backfillCrossSidePnl(db, baseCreds, reconciled = [], deps 
       const host = account.is_live === 1 ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       if (!creds?.ready || String(creds.accountId) !== accountId || creds.host !== host) throw new Error('account credentials unavailable or mismatched')
       const started = clock(), deadline = started + Math.min(10_000, deps.budgetMs ?? 10_000)
-      const result = await backfillClosedPnl(db, creds, { accountId, strictAccount: true, now: started,
-        isCurrent: () => clock() < deadline,
-        getDeals: async (from, to) => {
+      const isCurrent = () => clock() < deadline
+      const boundedRead = async operation => {
           const remaining = deadline - clock()
           if (remaining <= 0) throw new Error('backfill deadline elapsed')
           const timeout = Math.min(5000, remaining)
-          const task = Promise.resolve().then(() => read(host, creds.clientId, creds.clientSecret, creds.accessToken,
-            accountId, from, to, timeout, 0))
+          const task = Promise.resolve().then(() => operation(timeout))
           pending.set(accountId, task)
           task.finally(() => { if (pending.get(accountId) === task) pending.delete(accountId) }).catch(() => {})
           let timer, response
@@ -50,6 +50,13 @@ export async function backfillCrossSidePnl(db, baseCreds, reconciled = [], deps 
               timer = setTimeout(() => reject(new Error('backfill deadline elapsed')), timeout)
             })])
           } finally { clearTimeout(timer) }
+          return response
+      }
+      const result = await backfillClosedPnl(db, creds, { accountId, strictAccount: true, now: started,
+        isCurrent,
+        getDeals: async (from, to) => {
+          const response = await boundedRead(timeout => read(host, creds.clientId, creds.clientSecret, creds.accessToken,
+            accountId, from, to, timeout, 0))
           if (!response || String(response.ctidTraderAccountId) !== accountId || response.error || response.errorCode
             || (response.deal != null && !Array.isArray(response.deal))) throw new Error('deal history missing, malformed or belongs to another account')
           for (const deal of response.deal ?? []) {
@@ -62,6 +69,16 @@ export async function backfillCrossSidePnl(db, baseCreds, reconciled = [], deps 
           return response
         },
       })
+      const oldHistory = await recoverOldPositionPnl(db, creds, { now: started, isCurrent,
+        getPositionDeals: positionId => boundedRead(timeout => readPosition(host, creds.clientId, creds.clientSecret,
+          creds.accessToken, accountId, positionId, started, timeout)),
+      })
+      if (oldHistory.state !== 'no_old_gap') result.positionHistory = oldHistory
+      if (oldHistory.result?.backfilled) {
+        for (const field of ['backfilled', 'scanned', 'closingDeals', 'dealsPersisted', 'exitsRepaired', 'exitsFilled']) {
+          result[field] = (result[field] || 0) + (oldHistory.result[field] || 0)
+        }
+      }
       noteBackfillAttempt(accountId, result, clock())
       results.push({ accountId, result })
     } catch (error) {

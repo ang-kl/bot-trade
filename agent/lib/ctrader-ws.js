@@ -94,7 +94,7 @@ export const TRENDBAR_PERIODS = Object.freeze({
 // concurrent ephemeral sockets all spend from the same allowance. Normal
 // requests (auth, reconcile, spot, trader) are untouched.
 // ---------------------------------------------------------------------------
-const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ])
+const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ, PT.DEAL_LIST_BY_POSITION_ID_REQ])
 // 4/s against a documented 5/s: headroom for clock skew and for the broker
 // counting arrival rather than send time. Override for probes/tests.
 const HIST_RATE_PER_SEC = Math.max(1, Number(process.env.CTRADER_HIST_RATE_PER_SEC) || 4)
@@ -640,6 +640,21 @@ export function wsGetDeals(host, clientId, clientSecret, accessToken, accountId,
       maxRows: 500,
     } }, expect: PT.DEAL_LIST_RES },
   ], timeoutMs), retries, 'wsGetDeals')
+}
+
+// Position-specific history has no account-window truncation. The consumer
+// must still reject hasMore and verify a complete closed position lifecycle.
+export function wsGetPositionDeals(host, clientId, clientSecret, accessToken, accountId, positionId, toTimestamp, timeoutMs = 5000) {
+  if (![accountId, positionId].every(v => /^[1-9]\d*$/.test(String(v)) && Number.isSafeInteger(Number(v)))) {
+    throw new Error('position history identity invalid')
+  }
+  return wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.DEAL_LIST_BY_POSITION_ID_REQ, payload: {
+      ctidTraderAccountId: Number(accountId), positionId: Number(positionId), fromTimestamp: 0,
+      toTimestamp: Math.floor(toTimestamp),
+    } }, expect: PT.DEAL_LIST_BY_POSITION_ID_RES },
+  ], timeoutMs)
 }
 
 /**

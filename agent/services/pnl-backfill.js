@@ -29,6 +29,7 @@ import { normPosId } from '../lib/pos-id.js'
 import { stampRealisedAudit } from './trade-consistency.js'
 import { DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
 import { pageDeals } from '../lib/deal-paging.js'
+import { verifiedPositionHistory } from '../lib/position-deal-history.js'
 
 
 /**
@@ -86,14 +87,24 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   })()
   const acct = opts.accountId != null ? String(opts.accountId) : selected
   const strictAccount = opts.strictAccount === true
+  const positionId = opts.positionId == null ? null : String(opts.positionId)
+  if (positionId != null && (!strictAccount || !/^[1-9]\d*$/.test(positionId) || typeof opts.getPositionDeals !== 'function')) {
+    throw new Error('strict position history reader required')
+  }
   if (strictAccount && (!/^[1-9]\d*$/.test(acct || '') || String(creds.accountId) !== acct)) {
     throw new Error('backfill account identity required')
   }
   const includeNull = !strictAccount && (acct == null || acct === selected)
-  const scopeSql = acct == null
+  const accountScopeSql = acct == null
     ? ''
     : includeNull ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
-  const scopeParams = acct == null ? [] : [acct]
+  const positionScopeSql = positionId == null ? '' : 'AND CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)'
+  const scopeSql = `${accountScopeSql} ${positionScopeSql}`
+  const scopeParams = [...(acct == null ? [] : [acct]), ...(positionId == null ? [] : [positionId])]
+  if (positionId != null) {
+    const rows = db.prepare(`SELECT status FROM trades WHERE account_id = ? ${positionScopeSql}`).all(acct, positionId)
+    if (rows.length !== 1 || rows[0].status !== 'closed') throw new Error('position ledger identity ambiguous or not closed')
+  }
 
   // Nothing to do unless some closed trade ON THIS ACCOUNT is actually
   // missing its P&L. This cheap check gates the broker round-trip so we don't
@@ -110,9 +121,9 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
   const now = opts.now ?? Date.now()
   const from = now - days * 24 * 3_600_000
-  const lifetimeSql = strictAccount ? 'AND julianday(opened_at) >= julianday(?) AND julianday(opened_at) <= julianday(?)' : ''
-  const lifetimeParams = strictAccount ? [new Date(from).toISOString(), new Date(now).toISOString()] : []
-  const gapScopeSql = acct == null ? '' : strictAccount ? 'AND account_id = ?' : 'AND (account_id = ? OR account_id IS NULL)'
+  const lifetimeSql = strictAccount && positionId == null ? 'AND julianday(opened_at) >= julianday(?) AND julianday(opened_at) <= julianday(?)' : ''
+  const lifetimeParams = lifetimeSql ? [new Date(from).toISOString(), new Date(now).toISOString()] : []
+  const gapScopeSql = `${acct == null ? '' : strictAccount ? 'AND account_id = ?' : 'AND (account_id = ? OR account_id IS NULL)'} ${positionScopeSql}`
   const gap = db.prepare(
     `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql}`
   ).get(...scopeParams)
@@ -303,7 +314,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // back short with no error — and a net P&L summed over a partial set is
   // wrong while looking exactly like a right one. lib/deal-paging.js follows
   // both limits and reports whether the walk finished.
-  const pull = await pageDeals(getDeals, from, now)
+  const pull = positionId == null ? await pageDeals(getDeals, from, now)
+    : verifiedPositionHistory(await opts.getPositionDeals(positionId), { accountId: acct, positionId, now })
   // The cross-environment recovery must not stamp money or attempt evidence
   // from partial history, nor write after its bounded read deadline.
   if (strictAccount && (!pull.complete || (opts.isCurrent && !opts.isCurrent()))) {
@@ -311,7 +323,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   }
   const deals = pull.deals
   const uncoveredPositions = new Set()
-  if (strictAccount) {
+  if (strictAccount && positionId == null) {
     // A completed 14-day query is not a complete lifetime P&L for a position
     // opened earlier. Do not silently omit an older partial close.
     const rows = db.prepare(`SELECT ctrader_position_id, opened_at FROM trades
@@ -395,7 +407,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     // source that can settle them.
     {
       const px = Number(d.executionPrice)
-      const vol = Number(d.volume ?? d.filledVolume ?? 0)
+      const vol = Number(opts.positionId == null ? (d.volume ?? d.filledVolume ?? 0) : d.filledVolume)
       if (Number.isFinite(px) && px > 0 && Number.isFinite(vol) && vol > 0) {
         agg.pxVol += px * vol
         agg.vol += vol
@@ -567,7 +579,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // is made at. Rows that just filled are excluded — their net_pnl is no
   // longer NULL, so the UPDATE below cannot reach them.
   noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString(), includeUnattributed: !strictAccount,
-    eligibleSince: strictAccount ? new Date(from).toISOString() : null, eligibleThrough: strictAccount ? new Date(now).toISOString() : null })
+    positionId, eligibleSince: lifetimeSql ? new Date(from).toISOString() : null, eligibleThrough: lifetimeSql ? new Date(now).toISOString() : null })
 
   return { backfilled, attributed, exitsRepaired, exitsFilled, dealsPersisted, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap,
     ...(strictAccount ? { lifetimeSkipped: uncoveredPositions.size } : {}) }
@@ -698,17 +710,19 @@ export function exhaustedAccounts() {
  * history, so every pass genuinely did try it.
  */
 export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOString(), includeUnattributed = true,
-  eligibleSince = null, eligibleThrough = null } = {}) {
+  eligibleSince = null, eligibleThrough = null, positionId = null } = {}) {
   try {
     const scope = accountId == null ? '' : includeUnattributed ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
     const args = accountId == null ? [at] : [at, String(accountId)]
     const lifetime = eligibleSince != null && eligibleThrough != null ? 'AND julianday(opened_at) >= julianday(?) AND julianday(opened_at) <= julianday(?)' : ''
     if (lifetime) args.push(eligibleSince, eligibleThrough)
+    const position = positionId == null ? '' : 'AND CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)'
+    if (positionId != null) args.push(String(positionId))
     return db.prepare(`
       UPDATE trades
          SET pnl_attempts = COALESCE(pnl_attempts, 0) + 1,
              pnl_last_attempt_at = ?
-       WHERE status = 'closed' AND net_pnl IS NULL ${scope} ${lifetime}
+       WHERE status = 'closed' AND net_pnl IS NULL ${scope} ${lifetime} ${position}
     `).run(...args).changes
   } catch { return 0 }
 }
