@@ -2,7 +2,9 @@
 
 This connects observation paths while retaining existing strategy, admission,
 order and protection ownership. Scanner services and their mirror transport
-remain unconfigured. No target policy, risk limit, credential, market mode,
+were initially unconfigured. Both scanner services were subsequently provisioned
+and platform-health-checked on 23 September; their market-data bridge remains
+disabled. No target policy, risk limit, credential, market mode,
 notification recipient or deployment setting is changed.
 
 ## Feed and comparison
@@ -10,8 +12,10 @@ notification recipient or deployment setting is changed.
 The existing timeframe evaluation offers the exact closed-bar input and actual
 reference result to a bounded observer. A cache from another account/host is
 never relabelled. Only the implemented FX-tuned baseline Fibonacci profile is
-eligible for native delivery; other strategies, filters, tuning and partial
-bars remain explicitly unsupported. The strategy still returns its existing
+eligible in the original integration baseline. The subsequent
+[native default profile package](native-default-strategy-parity-2026-09-23.md)
+extends coverage to all twelve per-symbol strategies. Non-default semantics
+and partial bars remain explicitly unsupported. The strategy still returns its existing
 result even if observation fails.
 
 `SCANNER_BRIDGE_ENABLED=1` is an explicit runtime activation step. Without it,
@@ -78,10 +82,18 @@ duplicate prevention, expected-work rotation, cross-account identity, resting
 orders, stale evidence and Node-outage calendar continuity. Fake transports and
 isolated databases create no broker order and send no real notification.
 
-Runtime acceptance still requires approved scanner provisioning/activation,
+Runtime acceptance still requires approved scanner activation,
 measured peak-feed/protection latency, authenticated real account/UI readback,
 recipient/settings verification and a real Node-down alert drill. The outer
 observer still needs its deployed credentials, schedule and alert destination.
-The remaining timeframe strategy ports are not implemented by this baseline
-feed/comparison package. No full scanner parity, live rollout or notification
+The default-profile ports are a separate package from the original integration
+baseline; pending/non-default parity remains open. No full scanner parity, live rollout or notification
 delivery is claimed from these tests.
+
+At 15:11 SGT on 23 September, authenticated Controllers showed supervision,
+durable incidents, urgent notifications, credentials and incident ownership
+OFF; the external observer was unconfigured. In this continuation the current-source
+C++ watchdog state and HTTP/persistence suites passed locally. Node-down policy
+fixtures are not proof that a real recipient received an outage alert. The
+[reviewable release and acceptance sequence](v3-release-readiness-2026-09-23.md)
+keeps observation, sender handoff, external delivery and fault drills explicit.

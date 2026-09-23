@@ -119,17 +119,18 @@ test('real timeframe HTTP feed, candidate collector and actual JavaScript refere
   assert.equal((await fetch(`${url}/watchdog`)).status, 401)
 })
 
-test('all four added strategy ports traverse the actual HTTP comparison path without order authority', { skip: !has('cpp-scan-timeframe') }, async t => {
-  const url = await nativeService(t, 'cpp-scan-timeframe'), fixtures = fixture('cpp-scan-timeframe/src/tests/fixtures/reference-parity.json')
+test('native defaults and EMA options traverse the actual HTTP comparison path without order authority', { skip: !has('cpp-scan-timeframe') }, async t => {
+  const url = await nativeService(t, 'cpp-scan-timeframe'), fixtures = [...fixture('cpp-scan-timeframe/src/tests/fixtures/reference-parity.json'),
+    ...fixture('cpp-scan-timeframe/src/tests/fixtures/ema-options-parity.json')]
   const start = Date.now() - fixtures.length * 1000 - 100
-  const jobs = fixtures.map(({ request }, i) => {
+  const jobs = fixtures.map(({ request, referenceOptions }, i) => {
     const receivedAtMs = start + i * 1000, shift = receivedAtMs - request.receivedAtMs
     const bars = request.bars.map(b => ({ ...b, t: b.t + shift }))
     const compute = STRATEGY_REGISTRY.find(s => s.key === request.strategy).compute
     return { ...request, feed, receivedAtMs, bars, nativeCompatible: true,
-      profileHash: nativeProfileHash(request.strategy), reference: compute(bars, request.timeframe) }
+      nativeOptions: request.options, profileHash: nativeProfileHash(request.strategy, request.options), reference: compute(bars, request.timeframe, referenceOptions) }
   })
-  const policies = [...new Map(jobs.map(j => [`${j.strategy}:${j.timeframe}`, { source: 'cpp-scan-timeframe', feed,
+  const policies = [...new Map(jobs.map(j => [`${j.strategy}:${j.timeframe}:${j.profileHash}`, { source: 'cpp-scan-timeframe', feed,
     strategy: j.strategy, timeframe: j.timeframe, configVersion: j.configVersion, profileHash: j.profileHash, candidateTtlMs: 3600000 }])).values()]
   const db = database(t, policies), env = { SCANNER_TIMEFRAME_URL: url, SCANNER_TIMEFRAME_SECRET: 'fixture' }
   for (const job of jobs) {

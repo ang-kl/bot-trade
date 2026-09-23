@@ -960,3 +960,117 @@ zero missing SL and two TP1 exceptions. Two overdue unpriced closed rows and
 the next recovery investigation. The target-policy and scanner-activation
 decisions remain separate owner approvals. Real alert-delivery/outage
 acceptance and the other P0-P8 criteria are still outstanding.
+
+## Continuation checkpoint — 23 September 2026, 15:29 SGT
+
+The owner resumed V3 after approving only provisioning/health checks of the two
+scanner services in the preceding limited turn. Target-policy and scanner-feed
+activation remain distinct decisions. No production setting, account switch,
+trade, alert recipient or deployment was changed in this continuation.
+
+Repository readback: #1039 merged as `0f62947326fe8418e68a166348913316ea114b52`,
+#1040 as `8d3bbd39bb4c32f06973300b2f395992dbde9822`, and #1041 as
+`44fb54d2438ca240d4955a29431508b7dae4722a`, the current main. The two scanner
+services now exist and have successful Railway health-checked deployments of
+that main. All six application services were observed successful. Node's scanner
+bridge/endpoints remain unconfigured, so container existence is not live feed
+or trading acceptance.
+
+Authenticated Reasons acceptance confirms the #1041 scope labels on all twelve
+reports: returned selected-account data is identified separately from explicit
+all-account ledger populations. Performance shows actual upstream entry stops;
+no inactivity inference was drawn from balance or elapsed time. The current-day
+Unknown P&L report is clear but cannot establish historical completeness.
+
+Production logs still show two old positions refused for ambiguous local ledger
+identity or a non-closed peer, plus twenty previously written-off gaps. Direct
+SQL/remote execution is unavailable through the connected deployment tools.
+#1042 therefore combines selected/peer recovery through the shared strict service
+with a bounded read-only history diagnostic that exposes actual matching local
+rows and their statuses. No ambiguity safeguard is weakened and no missing money
+is manufactured. Its local seven-check gate passes: 5,357 agent tests exercised
+successfully (one initially skipped missing-binary parity case was subsequently
+run successfully against the matching executable), and 935 frontend tests.
+The remote tree `1fea44012f479749a6cf3e7224aa81da930b7a59` exactly matches
+the tested local tree. Updated PR head `dd81f5119f5110784e55b6b831c078934470f39d`
+awaits its new CI result and scoped release; no deployed-history acceptance is
+claimed for this addition.
+
+The native package adds the seven remaining default-profile strategy ports.
+All twelve per-symbol default strategies now have closed-bar calculation
+coverage; non-default/pending semantics remain explicitly unsupported. Native
+checks cover 154 frozen reference cases, 900 New York session-hour cases and
+24 volume-profile cases. The actual HTTP feed/collector comparison tests passed.
+The first native full gate passed with one missing-cpp-exec parity skip; the
+matching executable has now been supplied for the final integrated gate. This
+is not evidence of representative peak-load/protection latency or activation.
+
+Watchdog implementation and feed producers are already merged. The current
+source tree matches the built C++ watchdog fixtures; failure/recovery/restart
+and bounded HTTP/exclusive persistence checks pass. Authenticated Controllers
+at 15:11 SGT showed supervision, durable incidents, notification credentials,
+urgent delivery and incident ownership OFF, with no configured external observer.
+The verifier has a persistent `/data` volume, but no real delivery or outage
+drill is claimed. The original integration document now points to the later
+default-profile coverage and records these runtime limits.
+
+Fresh independent protection reads at 15:16:36–38 SGT found 32 positions across
+all seven accounts, zero missing SL and the same two missing TP1 exceptions.
+Every account reported zero reserved, in-flight and unknown intents. No target
+was amended. Connected identity remains four demo/three live; this does not
+resolve the intended five-demo/one-live roster.
+
+The deployment review confirmed the existing controlled-rollout boundary.
+Gateway/verifier watch patterns are at an undocumented top-level JSON location,
+while live settings return none. Railway documents `build.watchPatterns`.
+The [prepared release sequence](v3-release-readiness-2026-09-23.md) proposes exact
+service filters and Node/timeframe-only release acceptance. It requires approval
+before changing production settings or merging changes that restart gateways.
+No status-only merge or silent deployment reconfiguration was performed.
+
+| Priority | Current state / remaining acceptance |
+|---|---|
+| P0 | Fresh stops present; two TP1 exceptions still require position-specific policy resolution |
+| P1 | Reserved protection capacity implemented; ordinary-load saturation acceptance remains |
+| P2 | Identity/reporting fixes and authenticated scope evidence available; intended roster and complete native-currency provenance remain |
+| P3 | Blocker attribution implemented/observed; target-policy decisions separate |
+| P4 | Ownership/freshness contracts retained; representative protection latency and handover acceptance incomplete |
+| P5b/P5d | Reporting/cashflow/background recording merged; #1042 prepared; actual old-history identity diagnosis and full reconciliation remain |
+| P5c | Six services deployed; twelve default ports prepared; non-default/pending parity, peak load and explicit activation remain |
+| P5a | Watchdog producers/engine integrated and locally tested; supervision, delivery and external-observer acceptance remain |
+| P6/P7 | Current attributable replay evidence and resulting strategy decisions remain; no threshold or promotion change |
+| P8 | Capacity/storage/cost acceptance follows measured protection and scanner load; no scaling change |
+
+The release document gives conditional effort ranges and exact outstanding
+decisions. V3 is not complete. Rollback owner remains Adrian Ang.
+
+## EMA option continuation - 23 September 2026, 16:59 SGT
+
+The owner resumed implementation with both new scanner feeds disabled and no
+trading activation changes. Main remains `44fb54d2438ca240d4955a29431508b7dae4722a`.
+#1042 and #1043 were read back open with passing PR checks. This continuation
+builds on #1043; it does not recreate either pending package or merge the stack.
+
+Fresh Railway reads report six successful deployments of the same main. Both
+new scanners expose only PORT/SCANNER_SECRET as application variable names,
+without broker credentials; Node has no scanner bridge/feed variables. Variable
+values are redacted by the connector. The returned configs still have no watch
+filters. Only verifier startup logs were available from this read, so no fresh
+position-level protection audit is claimed; the earlier 15:16 protection result
+remains historical. No production setting or broker state was changed.
+
+The [EMA option parity package](native-ema-options-parity-2026-09-23.md) adds
+pending/stack/stop/time-cap calculation parity to the observation-only worker,
+with exact option-profile identity and 32 additional frozen reference cases.
+The actual local HTTP publisher/collector path passes. Complete local gates
+passed with Node 22 and TZ=UTC: 5,362 backend tests without skips, 935 frontend
+tests, lint, build, no-green, syntax, inventory and the native scanner tests.
+Native executables were built locally. Git command-line publication lacks
+credentials in this workspace; the connected GitHub API is used for publication
+and exact tree readback. CI on this new package remains a separate requirement.
+
+Other non-default strategy profiles, representative protection/load evidence,
+watchdog runtime delivery/drills, target policy, intended account roster and
+P6-P8 evidence/decisions remain open. The existing controlled rollout boundary
+still applies to all three packages; scanner feeds and trading activation stay
+unchanged. V3 is not complete.

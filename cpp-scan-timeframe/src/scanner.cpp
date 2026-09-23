@@ -1,9 +1,32 @@
 #include "scanner.hpp"
 #include "reference_strategies.hpp"
+#include "volume_structure.hpp"
 #include <regex>
+#include <bit>
+#include <iomanip>
+#include <sstream>
 
 namespace scan {
-std::string nativeProfileHash(const std::string& strategy) {
+static std::string numberBits(double n) {
+  std::ostringstream s; s << std::hex << std::setfill('0') << std::setw(16) << std::bit_cast<uint64_t>(n == 0 ? 0.0 : n); return s.str();
+}
+std::string nativeProfileHash(const std::string& strategy, const jsn::Value& settings) {
+  if (!settings.isObject()) return "";
+  if (!settings.asObject().empty()) {
+    if (strategy != "ema_pullback" || settings.asObject().size() != 5) return "";
+    for (const auto name : {"pendingSetup", "requireStack", "minSlAtr", "maxSlAtr", "timeCapMinutes"})
+      if (!settings.asObject().count(name)) return "";
+    if (!settings.get("pendingSetup").isBool() || !settings.get("requireStack").isBool()) return "";
+    for (const auto name : {"minSlAtr", "maxSlAtr", "timeCapMinutes"}) {
+      const auto& v = settings.get(name);
+      if (std::string(name) == "timeCapMinutes" && v.isNull()) continue;
+      if (!v.isNumber() || !std::isfinite(v.asNumber()) || v.asNumber() < 0 || v.asNumber() > 9007199254740991.0) return "";
+    }
+    return hash("ema_pullback;closed;reference_options;schema1;" + std::string(settings.get("pendingSetup").asBool() ? "1" : "0")
+      + ";" + (settings.get("requireStack").asBool() ? "1" : "0") + ";" + numberBits(settings.get("minSlAtr").asNumber())
+      + ";" + numberBits(settings.get("maxSlAtr").asNumber()) + ";"
+      + (settings.get("timeCapMinutes").isNull() ? "null" : numberBits(settings.get("timeCapMinutes").asNumber())));
+  }
   if (strategy == "fib_618_fade") return fibProfileHash();
   return tfscan::supports(strategy) ? hash(strategy + ";closed;reference_defaults;schema1") : "";
 }
@@ -14,9 +37,10 @@ jsn::Value TimeframeScanner::submit(const jsn::Value& body) {
   // A narrower native port must be explicit. VPO arm-before-touch routines
   // are not substitutes for closed-bar strategies or their volume filters.
   job.strategy = body.get("strategy").asString();
-  const auto profile = nativeProfileHash(job.strategy);
+  job.settings = body.get("options");
+  const auto profile = nativeProfileHash(job.strategy, job.settings);
   if (profile.empty() || job.identity.profile != profile
-      || body.get("barMode").asString() != "closed" || !body.get("options").isObject() || !body.get("options").asObject().empty())
+      || body.get("barMode").asString() != "closed")
     throw std::invalid_argument("native_strategy_or_options_not_yet_supported; retain_reference_owner");
   job.received = integer(body.get("receivedAtMs"), 1, clock_());
   const auto duration = integer(body.get("barDurationMs"), 60000, 12 * 30 * 86400000LL);
@@ -34,6 +58,7 @@ jsn::Value TimeframeScanner::submit(const jsn::Value& body) {
   long long previous = -1;
   for (const auto& b : body.get("bars").asArray()) {
     const auto t = integer(b.get("t"), 0, job.received - duration);
+    if (job.strategy == "vp_value" || job.strategy == "va_breakout") tfscan::fxDayOpenMs(t);
     if (t <= previous) throw std::invalid_argument("bar_order");
     previous = t;
     bt::Bar bar; bar.t = t;
@@ -75,7 +100,7 @@ void TimeframeScanner::run(std::stop_token stop) {
       const auto fib = bt::computeFibSignal(job.bars, job.bars.size(), job.options, false);
       if (fib.valid) signal = jsn::Value(jsn::Object{{"bias", fib.dir > 0 ? "long" : "short"}, {"entry", fib.entry}, {"sl", fib.sl},
         {"tp1", fib.tp1}, {"tp2", fib.tp2}, {"conviction", fib.conviction}, {"rr", fib.rr}, {"time_cap_minutes", fib.timeCapMinutes}, {"timeframe", job.options.timeframe}});
-    } else signal = tfscan::compute(job.strategy, job.bars, job.options);
+    } else signal = tfscan::compute(job.strategy, job.bars, job.options, job.settings);
     const auto completed = clock_(); const bool expired = job.received + job.identity.ttl <= completed;
     jsn::Value result(jsn::Object{{"outcome", expired ? "expired" : !signal.isNull() ? "candidate" : "no_signal"},
       {"feed", job.identity.feed}, {"feedEpoch", job.identity.epoch}, {"configVersion", job.identity.config},
@@ -108,6 +133,6 @@ void TimeframeScanner::flush() { std::unique_lock lock(mutex_); drained_.wait(lo
 jsn::Value TimeframeScanner::status() {
   std::lock_guard lock(mutex_); jsn::Array work; for (const auto& [id, row] : work_) work.push_back(row);
   return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-timeframe"}, {"observedAtMs", clock_()}, {"workComplete", true}, {"work", work},
-    {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "closed bars: fib_618_fade FX baseline, donchian_breakout, rsi2_reversion, vwap_trend, fib_confluence; other semantics remain with reference owner"}});
+    {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "closed bars: all 12 per-symbol default strategies; EMA pending/stack/stop/time-cap option parity; fib_618_fade FX baseline only; other non-default semantics remain with reference owner"}});
 }
 }

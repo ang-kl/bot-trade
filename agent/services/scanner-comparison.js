@@ -58,18 +58,25 @@ export function markReferenceDelivery(db, id, state) {
 }
 const TF_FIELDS = ['bias', 'entry', 'sl', 'tp1', 'tp2', 'conviction', 'rr', 'time_cap_minutes', 'timeframe']
 const TICK_FIELDS = ['side', 'bid', 'ask', 'trigger2', 'stopDistance', 'spread', 'V', 'E', 'D', 'H', 'L', 'B', 'confirmations']
+function sameField(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-9
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const keys = Object.keys(a)
+    return keys.length === Object.keys(b).length && keys.every(k => Object.hasOwn(b, k) && sameField(a[k], b[k]))
+  }
+  return a === b
+}
 export function compareSignals(reference, native, fields = TF_FIELDS) {
   if (reference == null || native == null) return reference == null && native == null ? [] : ['signal_presence']
-  return fields.filter(k => typeof reference[k] === 'number' && typeof native[k] === 'number'
-    ? !Number.isFinite(reference[k]) || !Number.isFinite(native[k]) || Math.abs(reference[k] - native[k]) > 1e-9
-    : reference[k] !== native[k])
+  return fields.filter(k => !sameField(reference[k], native[k]))
 }
 export function compareTimeframeResult(db, row, now = Date.now()) {
   const input = row.candidate || row, id = basis(input)
   schema(db)
   const saved = db.prepare('SELECT payload FROM scanner_references WHERE id=?').get(id)
   const reference = saved ? JSON.parse(saved.payload).reference : null
-  const fields = input.strategy === 'fib_618_fade' ? TF_FIELDS : [...TF_FIELDS, 'strategy', 'direction_reason', 'confluenceCount']
+  const fields = input.strategy === 'fib_618_fade' ? TF_FIELDS : [...TF_FIELDS, 'strategy', 'direction_reason', 'confluenceCount',
+    'sl_atr_mult', 'sl_widened_to_floor', 'stack_confirmed', 'cup', 'fvg']
   const differences = saved ? compareSignals(reference, row.candidate?.signal, fields) : []
   const validOutcome = ['candidate', 'no_signal', 'expired'].includes(row.outcome) && (row.outcome === 'candidate') === !!row.candidate
   const state = !validOutcome ? 'contract_rejected' : !saved ? 'reference_missing' : row.outcome === 'expired' ? 'native_expired' : differences.length ? 'mismatch' : 'matched'
