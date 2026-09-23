@@ -17,7 +17,9 @@ tick::StrategyParams params(const jsn::Value& input) {
 }
 }
 TickScanner::TickScanner(int workers, size_t queue, std::function<long long()> clock)
-  : clock_(std::move(clock)), workers_(workers, queue, [this](int, const auto& event) { consume(event); }) { workers_.start(); }
+  : clock_(std::move(clock)), queueCapacity_(SpscRing<tick::WorkerEvent>(queue).capacity() - 1),
+    pendingPerWorker_(workers > 0 ? workers : 1),
+    workers_(workers, queue, [this](int, const auto& event) { consume(event); }) { workers_.start(); }
 TickScanner::~TickScanner() { workers_.stop(); }
 jsn::Value TickScanner::submit(const jsn::Value& batch) {
   std::unique_lock oneProducer(producer_, std::try_to_lock);
@@ -44,25 +46,36 @@ jsn::Value TickScanner::submit(const jsn::Value& batch) {
     if (!in.meta.sourceTime.isNull()) integer(in.meta.sourceTime, 1, 9007199254740991LL);
     in.meta.gap = r.get("gapBefore").asBool(); inputs.push_back(std::move(in));
   }
-  uint32_t slotId; std::shared_ptr<Slot> slot;
+  uint32_t slotId; std::shared_ptr<Slot> slot; bool newSlot = false;
   {
     std::lock_guard lock(registry_);
     auto found = ids_.find(ident.key);
     if (found == ids_.end()) {
       if (slots_.size() >= 512) throw std::runtime_error("stream_capacity; retire_or_restart_with_rewarm");
-      slotId = ++nextId_; ids_[ident.key] = slotId;
-      slot = std::make_shared<Slot>(ident, p); slots_[slotId] = slot;
+      slotId = nextId_ + 1; newSlot = true;
+      slot = std::make_shared<Slot>(ident, p);
     } else { slotId = found->second; slot = slots_.at(slotId); }
   }
+  size_t required = 0;
   {
     std::lock_guard lock(slot->mutex);
     if (slot->identity.ttl != ident.ttl) throw std::invalid_argument("expiry_change_requires_config_version");
     auto sourceSequence = slot->lastSourceSequence;
     for (const auto& in : inputs) if (in.event.seq > slot->lastSubmitted) {
       if (in.meta.sourceSequence <= sourceSequence) throw std::invalid_argument("source_sequence_regression_requires_epoch");
-      sourceSequence = in.meta.sourceSequence;
+      sourceSequence = in.meta.sourceSequence; ++required;
     }
+    // HTTP can refuse the entire batch for retry. Never advance identity,
+    // sequence or metadata for an input the bounded worker cannot accept.
+    // producer_ is held, so the consumer can only increase available space.
+    if (required > queueCapacity_ - pendingPerWorker_[workers_.workerFor(slotId)].load(std::memory_order_acquire))
+      throw std::runtime_error("ingress_capacity_retry_batch");
   }
+  if (newSlot) {
+    std::lock_guard lock(registry_);
+    nextId_ = slotId; ids_[ident.key] = slotId; slots_[slotId] = slot;
+  }
+  pendingPerWorker_[workers_.workerFor(slotId)].fetch_add(required, std::memory_order_relaxed);
   long long accepted = 0, duplicate = 0, dropped = 0;
   for (auto& in : inputs) {
     {
@@ -82,6 +95,10 @@ jsn::Value TickScanner::submit(const jsn::Value& batch) {
   return jsn::Value(jsn::Object{{"accepted", accepted}, {"duplicates", duplicate}, {"dropped", dropped}, {"orderAuthority", false}});
 }
 void TickScanner::consume(const tick::WorkerEvent& event) {
+  struct Completion {
+    std::atomic<size_t>& pending;
+    ~Completion() { pending.fetch_sub(1, std::memory_order_release); }
+  } completion{pendingPerWorker_[workers_.workerFor(event.symbolId)]};
   std::shared_ptr<Slot> slot;
   { std::lock_guard lock(registry_); slot = slots_.at(event.symbolId); }
   std::lock_guard lock(slot->mutex);
