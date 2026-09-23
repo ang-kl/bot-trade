@@ -35,6 +35,7 @@
 
 import { fxDayStartSql } from './risk.js'
 import { DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
+import { pnlHistoryReport } from './pnl-history-report.js'
 
 /**
  * The rows currently making the daily-loss total untrustworthy, each with the
@@ -164,5 +165,6 @@ export function unknownPnlReport(db, {
             : 'all blocking rows are ordinary pending backfills — they should clear once the deal history covers them',
     },
     rows: out,
+    ...pnlHistoryReport(db, { nowMs: clock }),
   }
 }

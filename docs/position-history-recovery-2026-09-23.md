@@ -59,3 +59,18 @@ share strict history proof, pacing, the ten-second account budget, five-second
 read deadline and real unresolved-transport lock. Selected/peer demo recovery
 and a still-pending transport across a selection change pass focused tests.
 No account selection is changed by recovery. Final combined gates are required.
+
+The 23 September acceptance read exposed a separate diagnostic gap: the
+current-day Unknown P&L report was clear while older unresolved rows were
+refused for ambiguous local identity. The same read-only report now includes
+all-history gap counts and at most 100 detailed rows, prioritising records
+not already written off. Each identified position shows its matching local
+row count, open/closed counts and up to ten row IDs/statuses. Both limits are
+explicit; full totals are not calculated from the returned page. Account
+boundaries and numeric-position matching follow the strict recovery guard.
+Unique identities still require complete broker history. A failed diagnostic
+is unavailable, never zero. No ledger value is modified by the report.
+
+The deployment remains subject to the approved controlled-rollout boundary:
+current Railway main triggers also restart both gateways. Scanner activation,
+target changes, notification delivery and live-position amendments are excluded.

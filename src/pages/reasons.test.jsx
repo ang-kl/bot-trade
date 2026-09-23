@@ -9,6 +9,18 @@ import { REASON_ENDPOINTS, shapeBody, blockState, reasonScope } from '../lib/rea
 const def = k => REASON_ENDPOINTS.find(d => d.key === k)
 
 describe('ReasonsBlock', () => {
+  it('keeps older unresolved history visible beside a clear current daily report', () => {
+    const body = { summary: { blocking: 0 }, rows: [],
+      history: { ok: true, total: 2, truncated: false, scope: 'all retained closed trades with unknown P&L; all accounts' },
+      historyRows: [{ id: 9, reason: 'position_ledger_ambiguous', ledgerRows: ['9:closed', '10:open'] }],
+    }
+    const html = renderToStaticMarkup(<ReasonsBlock def={def('unknown-pnl')} result={{ ok: true, body }} />)
+    expect(html).toContain('All accounts')
+    expect(html).toContain('all retained closed trades with unknown P&amp;L; all accounts')
+    expect(html).toContain('position_ledger_ambiguous')
+    expect(html).toContain('9:closed, 10:open')
+    expect(html).toMatch(/<dt[^>]*>total<\/dt><dd[^>]*>2<\/dd>/)
+  })
   it('shows the returned account and never labels its selected-account data as all accounts', () => {
     const result = { ok: true, body: { accountId: '46130058', scope: 'account', rows: [] } }
     const html = renderToStaticMarkup(<ReasonsBlock def={def('trade-consistency')} result={result} />)
