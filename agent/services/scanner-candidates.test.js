@@ -7,8 +7,8 @@ function setup(t) {
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES(?,?)').run('11', 0)
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES(?,?)').run('22', 1)
-  setState(db, 'symbol_id_map:11', JSON.stringify({ EURUSD: 7 }))
-  setState(db, 'symbol_id_map:22', JSON.stringify({ EURUSD: 8 }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ map: { EURUSD: 7 } }))
+  setState(db, 'symbol_id_map:22', JSON.stringify({ map: { EURUSD: 8 } }))
   const c = { schemaVersion: 1, purpose: 'mirror', orderAuthority: false, feed: { provider: 'ctrader', host: 'demo.ctraderapi.com', accountId: '11', symbolId: '7' },
     feedEpoch: 'epoch1', configVersion: 'v1', profileHash: 'abcdef0123456789', strategy: 'tick_momentum_breakout', sourceSequence: 18,
     sourceTimestampMs: null, receivedAtMs: NOW - 100, evaluatedAtMs: NOW - 50, expiresAtMs: NOW + 900, signal: { side: 'BUY', bid: 100, ask: 102, stopDistance: 3 } }

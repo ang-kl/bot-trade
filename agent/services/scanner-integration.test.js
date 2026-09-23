@@ -21,7 +21,7 @@ function database(t, policies = []) {
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (11,0)').run()
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (22,0)').run()
-  setState(db, 'symbol_id_map:11', '{"EURUSD":7}'); setState(db, 'symbol_id_map:22', '{"EURUSD":8}')
+  setState(db, 'symbol_id_map:11', '{"map":{"EURUSD":7}}'); setState(db, 'symbol_id_map:22', '{"map":{"EURUSD":8}}')
   setState(db, 'scanner_mirror_profiles_json', JSON.stringify(policies)); return db
 }
 function fibJob() {

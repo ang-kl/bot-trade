@@ -51,7 +51,7 @@ function fixture(t) {
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,?)').run('11', 0)
   db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,?)').run('22', 1)
-  setState(db, 'symbol_id_map:11', JSON.stringify({ EURUSD: 7 }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
   recordMarketCalendar(db, { host, accountId: '11', symbolId: '7' }, { symbolId: 7, ...calendar([{ startSecond: 21 * H, endSecond: 5 * D + 21 * H }]) }, { nowMs: now })
   const insert = db.prepare("INSERT INTO monitored_positions (symbol,account_id,source,created_at,paused) VALUES ('EURUSD',?,?,?,?)")
   insert.run('11', 'autopilot', new Date(now - 120000).toISOString(), 0)

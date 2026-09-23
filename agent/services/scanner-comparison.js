@@ -1,3 +1,4 @@
+import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { TickMomentumOracle, profileHash, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
@@ -98,7 +99,7 @@ export function matchingProfile(db, source, value) {
   if (!f || f.provider !== 'ctrader' || !/^[1-9]\d*$/.test(f.accountId) || !/^[1-9]\d*$/.test(f.symbolId)) return null
   const account = db.prepare('SELECT is_live FROM accounts WHERE account_id=?').get(f.accountId)
   if (!account || f.host !== (account.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')) return null
-  let map; try { map = JSON.parse(getState(db, `symbol_id_map:${f.accountId}`)) } catch { return null }
+  const map = getAccountSymbolMap(db, f.accountId)?.map
   if (!map || !Object.values(map).some(id => String(id) === f.symbolId)) return null
   return comparisonProfiles(db).find(p => p.source === source && hash(p.feed) === hash(f)
     && p.strategy === value.strategy && p.configVersion === value.configVersion && p.profileHash === value.profileHash
