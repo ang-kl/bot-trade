@@ -6213,6 +6213,9 @@ export function startLoop(db) {
   import('./services/independent-protection.js')
     .then(m => m.startIndependentProtection(db))
     .catch(err => log('independent protection relay failed to start:', err.message))
+  import('./services/cashflow-collector.js')
+    .then(m => m.startCashflowCollector(db))
+    .catch(err => log('cashflow collector failed to start:', err.message))
   // Per-minute review (§70.4) — §41's level 5, on its own ticker so it keeps
   // reviewing precisely when the loop or the fast monitor is the thing that
   // broke. Reads only: it reports when a lower-authority writer moved a stop

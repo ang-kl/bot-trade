@@ -32,3 +32,16 @@ test('history pagination exposes older observations without presenting a page as
   expect(older).toContain('partial history window')
   expect(older).toContain('Change covers comparable observations on this page')
 })
+
+test('a reconciled portion has its own dates and cannot imply that the newer full window is verified', () => {
+  const html = renderToStaticMarkup(<AccountHistoryReading report={{ points: [], retentionDays: 90,
+    equityChange: 50, currency: 'EUR', externalFlowAdjustedChange: null, cashflows: { complete: false, reason: 'cashflow_coverage_gap' },
+    cashflowCollection: { status: 'failed', reason: 'cashflow_read_timeout', lastSuccessAt: 60000 },
+    reconciledSpan: { from: 0, to: 60000, externalFlowAdjustedChange: 20, currency: 'EUR', pendingObservations: 3 } }} />)
+  expect(html).toContain('External-flow-adjusted change: Unavailable')
+  expect(html).toContain('Reconciled portion only: 1970-01-01T00:00:00.000Z to 1970-01-01T00:01:00.000Z')
+  expect(html).toContain('20 EUR')
+  expect(html).toContain('3 later equity observations await cashflow coverage')
+  expect(html).toContain('full-window change remains unavailable')
+  expect(html).toContain('cashflow_read_timeout')
+})
