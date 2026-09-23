@@ -832,3 +832,10 @@ accounts, strict unknown-row handling and partial-lifetime refusal. Full local
 and PR gates, production rollout and the three-row readback remain required.
 No target, numerical risk limit, ownership, selected account or scanner mode
 changes. Rollback owner remains Adrian Ang.
+
+The first full gate ran 5,309 agent tests: 5,308 passed and the exact routing
+inventory failed because the new module was not listed. Its five environment
+references were inspected: opposite-host selection, credential assembly and
+registered-host verification only. The routing inventory now records those
+exact counts and purpose; its detection rules remain intact. Other local gates
+passed (930 frontend tests). The complete gate is rerun on this corrected tree.
