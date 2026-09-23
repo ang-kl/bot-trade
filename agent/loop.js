@@ -5700,7 +5700,7 @@ async function runLoop(db) {
         { name: 'prune-trade-history', run: async () => (await import('./services/retention.js')).pruneTradeHistory(db) },
         // Owner-approved 01-08 ("approve retention") — the three tables that
         // grew production's DB to 526MB, cup_handle_diagnostics alone 40%.
-        { name: 'prune-operational', run: async () => (await import('./services/retention.js')).pruneOperationalTablesCooperatively(db) },
+        { name: 'prune-operational', run: async () => (await import('./services/retention.js')).pruneOperationalTablesCooperatively(db, null, { onProgress: () => { lastLoopActivityAt = Date.now() } }) },
         // Owner 29-08 ("I don't think I need old data") — the two growers
         // housekeeping never touched: the backtest-results folder (measured
         // 4.7GB of autopilot HTML reports, ~40 new/day, never deleted) and

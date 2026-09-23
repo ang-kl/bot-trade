@@ -169,7 +169,7 @@ export function pruneOperationalTables(db, cfg = null) {
 // Housekeeping must yield between bounded primary-key windows. Bounding only
 // DELETE matches still permits a full-table scan when few rows have expired.
 // A fixed high-water mark excludes new rows until the next scheduled pass.
-export async function pruneOperationalTablesCooperatively(db, cfg = null) {
+export async function pruneOperationalTablesCooperatively(db, cfg = null, { onProgress } = {}) {
   const out = { cupHandle: 0, analyses: 0, actionLog: 0, errors: [] }
   for (const p of operationalPruners(db, cfg)) {
     try {
@@ -183,6 +183,7 @@ export async function pruneOperationalTablesCooperatively(db, cfg = null) {
         const next = ids.at(-1).id
         out[p.key] += remove.run(cursor, next, p.cutoff).changes
         cursor = next
+        onProgress?.({ table: p.table, cursor, end })
         await new Promise(resolve => setImmediate(resolve))
       }
     } catch (error) { out.errors.push({ table: p.table, message: error.message }) }
