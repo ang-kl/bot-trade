@@ -38,3 +38,22 @@ completed at 16:55:05.384Z in 3,178 ms, no overrun or skipped band. Seven broker
 receipts at 16:54:43.664–45.073Z covered 32 positions, no missing SL/TP. Entry
 configuration matched preflight exactly. Account report browser elapsed 323 ms.
 This is a passing routine sample, not production percentile/load acceptance.
+
+## Release gate and foundation readback — 17:07 UTC
+
+The final combined source (`c36430e`, including #1077) passed 5,502 backend
+tests (28 isolated plus 5,474 remaining; four existing native-environment
+skips), 943 frontend tests with two workers, full ESLint, production build,
+no-green, control inventory and whitespace checks. Exact-head CI run
+36031261376 passed at 17:04:42Z; review also passed and merge state was CLEAN.
+This documentation update still requires its own exact-head CI before merge.
+
+#1077 merge `8bcb708` deployed successfully as
+`1d0fafae-df75-4281-80cf-1b261e3abddb`. DB initialization was 654.04 ms and
+the service listened at 17:03:01.252Z. The account report took 81 ms in the
+application / 454 ms in the browser. Its first full loop was 125,069 ms;
+startup/load acceptance remains open. At 17:07:49Z, all seven fresh broker
+readings covered 32 positions with no missing SL/TP; the new protection band
+completed in 1,830 ms without overruns or skipped bands. Account phases and
+entry mode/revision/epoch/policy matched preflight exactly. No producer invokes
+the new target policy or partial manager yet; this release did not activate it.
