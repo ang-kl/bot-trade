@@ -158,6 +158,7 @@ export function readCupHandleFunnel(db, options) { return isolatedReport(db, 'cu
 export function readDecisionsDaily(db, options) { return isolatedReport(db, 'decisions-daily', options) }
 export function readLatestPrices(db) { return isolatedReport(db, 'latest-prices') }
 export function readStageMatrixStats(db) { return isolatedReport(db, 'stage-matrix-stats') }
+export function readDecisionAudit(db, options) { return isolatedReport(db, 'decision-audit', options) }
 export function buildDecisionsDaily(db, { days = 90, accountId = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -195,6 +196,14 @@ async function buildReport(db, kind, options) {
     // module graphs during the full parallel test gate.
     const [{ stageMatrixStats }, { getState }] = await Promise.all([import('./stage-matrix.js'), import('../db.js')])
     return stageMatrixStats(db, getState)
+  }
+  if (kind === 'decision-audit') {
+    const { auditDecisions } = await import('./decision-audit.js')
+    return auditDecisions(db, {
+      accountId: options?.accountId ?? null,
+      marketOpen: options?.marketOpen !== false,
+      now: Number.isFinite(Number(options?.nowMs)) ? new Date(Number(options.nowMs)) : new Date(),
+    })
   }
   return buildPerformancePopulations(db)
 }
