@@ -7,6 +7,16 @@
 export const MODE_LABEL = Object.freeze({ TIME_BASED: 'Time-based', TICK_MOMENTUM: 'Tick momentum', STOPPED: 'Stopped' })
 export const STALE_AFTER_MS = 60_000
 
+/** Resolve a displayed identity only against the complete registered roster. */
+export function engineAccountId(accountIds, displayed) {
+  const ids = [...new Set((accountIds || []).map(String).filter(id => /^[1-9]\d*$/.test(id)))]
+  const value = String(displayed ?? '')
+  if (/^[1-9]\d*$/.test(value)) return ids.includes(value) ? value : null
+  if (!/^…\d{4}$/.test(value)) return null
+  const matches = ids.filter(id => id.endsWith(value.slice(1)))
+  return matches.length === 1 ? matches[0] : null
+}
+
 /** 'stopped' | 'active' | 'warming' | 'switching' | 'blocked' | 'unknown' */
 export function engineState(row) {
   if (!row) return 'unknown'

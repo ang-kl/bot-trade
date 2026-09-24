@@ -1,0 +1,543 @@
+{
+  "recordedAt": "2026-09-24T13:20:23Z",
+  "scope": "Frozen P1/P4/P5a recovery and P2/P5d authenticated account checks",
+  "release": {
+    "pr": 1070,
+    "implementation": "f5edfc8e5ec4e648bb9245b0b7ee6454914ac5b3",
+    "merge": "80945cb5eedf0c546c59725d373a594d38d01c3e",
+    "mergedBy": "ang-kl",
+    "mergedAt": "2026-09-24T13:08:22Z",
+    "nodeDeployment": "bbe66501-5771-411d-a6ee-a5ba1472a849",
+    "deploymentSuccessAt": "2026-09-24T13:09:48.976Z",
+    "mergeCI": "https://github.com/ang-kl/bot-trade/actions/runs/36003627968",
+    "nativeDeploymentsUnchanged": true,
+    "preStartupReadAt": "2026-09-24T13:08:44.776Z",
+    "preMergeCheck": false,
+    "watchdogSamples": [
+      {
+        "http": 200,
+        "elapsedMs": 504,
+        "readAt": "2026-09-24T13:11:45.671Z",
+        "observedAtMs": 1790255505382,
+        "workComplete": true,
+        "calendarsComplete": false,
+        "workCount": 60,
+        "notificationPolicy": {
+          "enabled": false,
+          "owner": "node",
+          "observedAtMs": 1790255505382,
+          "expiresAtMs": 1790341905382,
+          "quietIntervals": [],
+          "urgentBypass": true,
+          "source": "telegram_notify_json"
+        }
+      },
+      {
+        "http": 200,
+        "elapsedMs": 503,
+        "readAt": "2026-09-24T13:12:08.690Z",
+        "observedAtMs": 1790255528406,
+        "workComplete": true,
+        "calendarsComplete": false,
+        "workCount": 60,
+        "notificationPolicy": {
+          "enabled": false,
+          "owner": "node",
+          "observedAtMs": 1790255528406,
+          "expiresAtMs": 1790341928406,
+          "quietIntervals": [],
+          "urgentBypass": true,
+          "source": "telegram_notify_json"
+        }
+      },
+      {
+        "http": 200,
+        "elapsedMs": 587,
+        "readAt": "2026-09-24T13:13:31.488Z",
+        "observedAtMs": 1790255611175,
+        "workComplete": true,
+        "calendarsComplete": false,
+        "workCount": 60,
+        "notificationPolicy": {
+          "enabled": false,
+          "owner": "node",
+          "observedAtMs": 1790255611175,
+          "expiresAtMs": 1790342011175,
+          "quietIntervals": [],
+          "urgentBypass": true,
+          "source": "telegram_notify_json"
+        }
+      }
+    ],
+    "checks": {
+      "positionProtectionExactlyEqual": true,
+      "notificationSettingsExactlyEqual": true
+    },
+    "settings": {
+      "accountPhasesUnchanged": true,
+      "momentumConfigUnchanged": true,
+      "scannerBridgeEnabled": false,
+      "notificationEnabled": false,
+      "notificationOwner": "node"
+    },
+    "accounts": [
+      {
+        "accountId": "43097342",
+        "entryCounts": {
+          "unsent": 0,
+          "inFlight": 0,
+          "unknown": 0
+        },
+        "checkedAt": "2026-09-24T13:12:39.503Z",
+        "stale": false,
+        "openCount": 4,
+        "missingSl": 0,
+        "missingTp": 0
+      },
+      {
+        "accountId": "46130058",
+        "entryCounts": {
+          "unsent": 0,
+          "inFlight": 0,
+          "unknown": 0
+        },
+        "checkedAt": "2026-09-24T13:12:39.751Z",
+        "stale": false,
+        "openCount": 8,
+        "missingSl": 0,
+        "missingTp": 0
+      },
+      {
+        "accountId": "46979908",
+        "entryCounts": {
+          "unsent": 0,
+          "inFlight": 0,
+          "unknown": 0
+        },
+        "checkedAt": "2026-09-24T13:12:40.000Z",
+        "stale": false,
+        "openCount": 7,
+        "missingSl": 0,
+        "missingTp": 1
+      },
+      {
+        "accountId": "47790949",
+        "entryCounts": {
+          "unsent": 0,
+          "inFlight": 0,
+          "unknown": 0
+        },
+        "checkedAt": "2026-09-24T13:12:40.248Z",
+        "stale": false,
+        "openCount": 13,
+        "missingSl": 0,
+        "missingTp": 1
+      },
+      {
+        "accountId": "42993489",
+        "entryCounts": {
+          "unsent": 0,
+          "inFlight": 0,
+          "unknown": 0
+        },
+        "checkedAt": "2026-09-24T13:12:40.484Z",
+        "stale": false,
+        "openCount": 1,
+        "missingSl": 0,
+        "missingTp": 0
+      },
+      {
+        "accountId": "43002148",
+        "entryCounts": {
+          "unsent": 0,
+          "inFlight": 0,
+          "unknown": 0
+        },
+        "checkedAt": "2026-09-24T13:12:40.718Z",
+        "stale": false,
+        "openCount": 0,
+        "missingSl": 0,
+        "missingTp": 0
+      },
+      {
+        "accountId": "43069009",
+        "entryCounts": {
+          "unsent": 0,
+          "inFlight": 0,
+          "unknown": 0
+        },
+        "checkedAt": "2026-09-24T13:12:40.953Z",
+        "stale": false,
+        "openCount": 0,
+        "missingSl": 0,
+        "missingTp": 0
+      }
+    ],
+    "limitations": [
+      "Early verifier Node probe missed; later observed probes valid. Not continuous or load acceptance.",
+      "Calendars incomplete; two existing missing TP1 positions unchanged.",
+      "Approximately 8.6 seconds database opening to boot diagnostic includes initialization, not isolated index timing.",
+      "Closed-market and unavailable-quote management work not accepted as completed protection.",
+      "Old deployment reports REMOVED; direct rollback availability must be checked."
+    ]
+  },
+  "research": {
+    "at": "2026-09-24T13:12:22.822Z",
+    "accounts": [
+      {
+        "accountId": "\u20267342",
+        "validationStage": "UNVALIDATED",
+        "profileHash": null,
+        "sidecarProfileHash": "967c1defd6e78d09",
+        "ready": false,
+        "shadowReady": true,
+        "blockedReasons": [
+          "profile_pinned",
+          "profile_matches_sidecar",
+          "replay_evidence",
+          "validation_stage"
+        ]
+      },
+      {
+        "accountId": "\u20260058",
+        "validationStage": "UNVALIDATED",
+        "profileHash": null,
+        "sidecarProfileHash": "967c1defd6e78d09",
+        "ready": false,
+        "shadowReady": true,
+        "blockedReasons": [
+          "profile_pinned",
+          "profile_matches_sidecar",
+          "replay_evidence",
+          "validation_stage"
+        ]
+      },
+      {
+        "accountId": "\u20269908",
+        "validationStage": "UNVALIDATED",
+        "profileHash": null,
+        "sidecarProfileHash": "967c1defd6e78d09",
+        "ready": false,
+        "shadowReady": true,
+        "blockedReasons": [
+          "profile_pinned",
+          "profile_matches_sidecar",
+          "replay_evidence",
+          "validation_stage"
+        ]
+      },
+      {
+        "accountId": "\u20260949",
+        "validationStage": "UNVALIDATED",
+        "profileHash": null,
+        "sidecarProfileHash": "967c1defd6e78d09",
+        "ready": false,
+        "shadowReady": true,
+        "blockedReasons": [
+          "profile_pinned",
+          "profile_matches_sidecar",
+          "replay_evidence",
+          "validation_stage"
+        ]
+      },
+      {
+        "accountId": "\u20263489",
+        "validationStage": "UNVALIDATED",
+        "profileHash": null,
+        "sidecarProfileHash": "967c1defd6e78d09",
+        "ready": false,
+        "shadowReady": true,
+        "blockedReasons": [
+          "profile_pinned",
+          "profile_matches_sidecar",
+          "replay_evidence",
+          "validation_stage"
+        ]
+      },
+      {
+        "accountId": "\u20262148",
+        "validationStage": "UNVALIDATED",
+        "profileHash": null,
+        "sidecarProfileHash": "967c1defd6e78d09",
+        "ready": false,
+        "shadowReady": true,
+        "blockedReasons": [
+          "profile_pinned",
+          "profile_matches_sidecar",
+          "replay_evidence",
+          "validation_stage"
+        ]
+      },
+      {
+        "accountId": "\u20269009",
+        "validationStage": "UNVALIDATED",
+        "profileHash": null,
+        "sidecarProfileHash": "967c1defd6e78d09",
+        "ready": false,
+        "shadowReady": true,
+        "blockedReasons": [
+          "profile_pinned",
+          "profile_matches_sidecar",
+          "replay_evidence",
+          "validation_stage"
+        ]
+      }
+    ],
+    "latestFiveTrials": [
+      {
+        "trialId": "f808068dc63321131734",
+        "at": "2026-09-20 03:53:45",
+        "profileHash": "498439d200112736",
+        "evidenceState": "EMPTY",
+        "trades": 0
+      },
+      {
+        "trialId": "1767504c145dc413ab55",
+        "at": "2026-09-20 03:53:45",
+        "profileHash": "498439d200112736",
+        "evidenceState": "EMPTY",
+        "trades": 0
+      },
+      {
+        "trialId": "1355dc96f1575ad90d92",
+        "at": "2026-09-20 03:53:45",
+        "profileHash": "498439d200112736",
+        "evidenceState": "EMPTY",
+        "trades": 0
+      },
+      {
+        "trialId": "2a946dd9018a033248b1",
+        "at": "2026-09-20 03:53:45",
+        "profileHash": "498439d200112736",
+        "evidenceState": "EMPTY",
+        "trades": 0
+      },
+      {
+        "trialId": "6ff27466fef2ed2d7d0f",
+        "at": "2026-09-20 03:53:45",
+        "profileHash": "498439d200112736",
+        "evidenceState": "EMPTY",
+        "trades": 0
+      }
+    ],
+    "shadow": [
+      {
+        "side": "cpp_exec_demo",
+        "cursor": {
+          "bootId": "8f749acd52515e32",
+          "lastSeq": 220
+        },
+        "profiles": [
+          {
+            "profile": "967c1defd6e78d09",
+            "trades": 2266,
+            "wins": 434,
+            "losses": 1832,
+            "netR": -1347.8672,
+            "profitFactor": 0.342,
+            "expectancyLowerR": -0.6361,
+            "maxDrawdownR": 1350.7404,
+            "hours": 308.7,
+            "firstExitAt": "2026-09-11T16:17:20.146Z",
+            "lastExitAt": "2026-09-24T12:59:11.515Z",
+            "costAudit": {
+              "rows": 2266,
+              "closed": 2266,
+              "lostRestart": 0,
+              "charged": null,
+              "refused": null,
+              "preCostModel": 487,
+              "scheduleHash": null,
+              "note": "no schedule asked for: every closed row is shown, none is treated as evidence"
+            }
+          }
+        ]
+      },
+      {
+        "side": "cpp_exec",
+        "cursor": {
+          "bootId": "87fb4820ab1b6d9c",
+          "lastSeq": 228
+        },
+        "profiles": [
+          {
+            "profile": "967c1defd6e78d09",
+            "trades": 928,
+            "wins": 147,
+            "losses": 781,
+            "netR": -675.4338,
+            "profitFactor": 0.234,
+            "expectancyLowerR": -0.7822,
+            "maxDrawdownR": 675.8831,
+            "hours": 70.02,
+            "firstExitAt": "2026-09-21T15:06:26.847Z",
+            "lastExitAt": "2026-09-24T13:07:42.175Z",
+            "costAudit": {
+              "rows": 928,
+              "closed": 928,
+              "lostRestart": 0,
+              "charged": null,
+              "refused": null,
+              "preCostModel": 0,
+              "scheduleHash": null,
+              "note": "no schedule asked for: every closed row is shown, none is treated as evidence"
+            }
+          }
+        ]
+      }
+    ],
+    "limitation": "Unfiltered historical shadow summaries are not cost-qualified evidence and cannot establish an eligible 48-hour window; no window restarted."
+  },
+  "reporting": {
+    "moneyAccountsChecked": 7,
+    "allFresh": true,
+    "brokerCurrency": "Two accounts SGD, five USD; SGD observations correctly withhold balanceUsd.",
+    "unknownPnl": {
+      "ok": true,
+      "scope": "all retained closed trades with unknown P&L; all accounts",
+      "observedAt": "2026-09-24T13:14:04.462Z",
+      "total": 22,
+      "writtenOff": 20,
+      "unattributed": 0,
+      "ambiguousPositionRows": 5,
+      "returned": 22,
+      "limit": 100,
+      "truncated": false,
+      "evidence": "Local ledger diagnosis only. A unique closed row still requires complete broker history; no money is inferred and no row is repaired or written off."
+    },
+    "unwrittenAmbiguities": [
+      {
+        "id": 774,
+        "accountId": "42993489",
+        "brokerPositionId": "517869182",
+        "symbol": "AVY.US",
+        "side": "BUY",
+        "closedAt": "2026-09-21 14:57:15",
+        "closeReason": "closed at the broker (manual close or broker-side SL/TP fill) \u2014 not closed by the bot",
+        "source": "external",
+        "reason": "position_ledger_ambiguous",
+        "attempts": null,
+        "lastAttemptAt": null,
+        "writtenOffReason": null,
+        "matchingLedgerRows": 2,
+        "matchingOpenRows": 0,
+        "matchingClosedRows": 2,
+        "ledgerRows": [
+          "372:closed",
+          "774:closed"
+        ],
+        "ledgerRowsTruncated": false
+      },
+      {
+        "id": 775,
+        "accountId": "42993489",
+        "brokerPositionId": "299683664",
+        "symbol": "GEV.US",
+        "side": "BUY",
+        "closedAt": "2026-09-21 14:57:15",
+        "closeReason": "closed at the broker (manual close or broker-side SL/TP fill) \u2014 not closed by the bot",
+        "source": "external",
+        "reason": "position_ledger_ambiguous",
+        "attempts": null,
+        "lastAttemptAt": null,
+        "writtenOffReason": null,
+        "matchingLedgerRows": 2,
+        "matchingOpenRows": 0,
+        "matchingClosedRows": 2,
+        "ledgerRows": [
+          "373:closed",
+          "775:closed"
+        ],
+        "ledgerRowsTruncated": false
+      }
+    ],
+    "limit": "Money and scoped history endpoint checks; not complete financial reconciliation or all UI acceptance."
+  },
+  "entryControls": {
+    "productionObservedAt": "2026-09-24T13:15:00Z",
+    "page": "https://sg-trade.up.railway.app/accounts",
+    "defect": "Six of seven entry-control rows lack full identity until lazy broker snapshots load; first suffix match can misroute colliding identities.",
+    "regressionsBeforeFix": {
+      "unnecessarilyDisabledStops": 6,
+      "ambiguousAccountMatched": true
+    },
+    "fix": "Use complete existing account-phase registry keys; resolve full IDs exactly and masked IDs only if unique; block bulk mutations if any row identity is unresolved.",
+    "productionActionExecuted": false,
+    "isolatedBrowser": {
+      "at": "2026-09-24T13:20:38.247Z",
+      "origin": "isolated localhost fixture; all API responses mocked",
+      "registeredAccounts": 7,
+      "stopControlsEnabled": 7,
+      "tickControlsDisabled": 7,
+      "postsBeforeClick": 0,
+      "requests": [
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "43097342",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
+        },
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "43097342",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
+        },
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "46130058",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
+        },
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "46979908",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
+        },
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "47790949",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
+        },
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "42993489",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
+        },
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "43002148",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
+        },
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "43069009",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
+        }
+      ],
+      "ambiguousControlsDisabled": true,
+      "externalRequestsAllowed": false
+    }
+  }
+}

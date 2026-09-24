@@ -37,19 +37,14 @@ import Collapse from './common/Collapse.jsx'
 import EntryModePolicySwitch from './EntryModePolicySwitch.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { useEngineStatus, refreshEngineStatus } from '../lib/use-engine-status.js'
-import { engineReading, blockerGroups, tickBlockedReason, ackLine, mixedSummary, MODE_LABEL } from '../lib/engine-status-view.js'
+import { useAccountPhases } from '../lib/use-active-account.js'
+import { engineAccountId, engineReading, blockerGroups, tickBlockedReason, ackLine, mixedSummary, MODE_LABEL } from '../lib/engine-status-view.js'
 import { unknownRows, resolveUnknownIntent, runOriginBackfill, backfillSummary, RESOLVE_STATES, MIN_REASON_LEN } from '../lib/unknown-intents.js'
 
 function ageLabel(at) {
   if (!at) return 'not answered'
   const s = Math.round((Date.now() - at) / 1000)
   return s < 5 ? 'just now' : `${s} s ago`
-}
-
-function fullIdFor(accounts, redacted) {
-  const tail = String(redacted || '').slice(-4)
-  const hit = (accounts || []).find(a => String(a.accountId).endsWith(tail))
-  return hit ? String(hit.accountId) : null
 }
 
 /** The failed checks by class, each with the server's own remedy. */
@@ -73,7 +68,7 @@ export function EngineRow({ row, readiness, fullId, busy, onMode, at }) {
   const groups = blockerGroups(readiness)
   const tickWhy = tickBlockedReason(readiness)
   const disabledAll = busy || !fullId
-  const why = !fullId ? 'the full account id is not on this page yet' : null
+  const why = !fullId ? 'the full account id is not on this page yet or the displayed identity is ambiguous' : null
   return (
     <div className="border-b border-[var(--glass-edge)] py-2 last:border-b-0" data-testid={`engine-row-${row.accountId}`}>
       <div className="flex flex-wrap items-center gap-2">
@@ -192,11 +187,18 @@ export function UnknownsBlock({ scope = 'all' }) {
   )
 }
 
-export default function EngineStatusPanel({ accounts = null, scope = 'all' }) {
+export default function EngineStatusPanel({ scope = 'all' }) {
   const snap = useEngineStatus()
+  // Reuse the existing registry poll, not the lazily loaded broker snapshots.
+  // A partial snapshot roster both disables known accounts and can make a
+  // colliding masked suffix look unique. No new broker read is needed here.
+  const phases = useAccountPhases()
+  const accountIds = Object.keys(phases?.byId || {})
   const [busy, setBusy] = useState(false)
   const [acks, setAcks] = useState([])
   const rows = snap.engines?.accounts || []
+  const allIdentified = rows.length > 0 && rows.every(row => engineAccountId(accountIds, row.accountId))
+  const bulkWhy = allIdentified ? null : 'Every displayed account must have one unambiguous registered identity before a bulk change.'
 
   async function setMode(fullId, mode, expectedRevision) {
     if (!fullId) return { accountId: fullId, error: 'no full account id' }
@@ -216,12 +218,13 @@ export default function EngineStatusPanel({ accounts = null, scope = 'all' }) {
     } finally { setBusy(false); refreshEngineStatus() }
   }
   async function onBulk(mode) {
+    if (!allIdentified) return
     setBusy(true)
     const out = []
     try {
       for (const row of rows) {
         if (row.requestedEntryMode === mode) { out.push({ accountId: row.accountId, mode, skipped: true }); continue }
-        out.push(await setMode(fullIdFor(accounts, row.accountId), mode, row.configRevision))
+        out.push(await setMode(engineAccountId(accountIds, row.accountId), mode, row.configRevision))
       }
       setAcks(out)
     } finally { setBusy(false); refreshEngineStatus() }
@@ -235,15 +238,15 @@ export default function EngineStatusPanel({ accounts = null, scope = 'all' }) {
           <span className="ml-2 text-(length:--fs-body) text-[var(--color-text-sub)]">{mixedSummary(rows)} · answered {ageLabel(snap.at)}{snap.engines?.globalHalt ? ' · GLOBAL HALT' : ''}</span>
         </div>
         <div className="flex gap-1">
-          <Button size="sm" variant="danger" disabled={busy || !rows.length || !accounts} title="stop entries on EVERY account, one request each; each account's own acknowledgement is listed below" onClick={() => onBulk('STOPPED')}>Stop all</Button>
-          <Button size="sm" variant="primary" disabled={busy || !rows.length || !accounts} title="time-based entries on EVERY account, one request each" onClick={() => onBulk('TIME_BASED')}>Time-based all</Button>
+          <Button size="sm" variant="danger" disabled={busy || !allIdentified} title={bulkWhy || "stop entries on EVERY account, one request each; each account's own acknowledgement is listed below"} onClick={() => onBulk('STOPPED')}>Stop all</Button>
+          <Button size="sm" variant="primary" disabled={busy || !allIdentified} title={bulkWhy || 'time-based entries on EVERY account, one request each'} onClick={() => onBulk('TIME_BASED')}>Time-based all</Button>
         </div>
       </div>
       {snap.error && <div className="mt-1 text-(length:--fs-body) text-[var(--color-down)]">{snap.error}</div>}
       {!snap.engines && !snap.error && <div className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">waiting for /state/entry-engines…</div>}
       <div className="mt-2 text-(length:--fs-body)">
-        {rows.map(row => (
-          <EngineRow key={row.accountId} row={row} at={snap.at} busy={busy} fullId={fullIdFor(accounts, row.accountId)}
+        {rows.map((row, index) => (
+          <EngineRow key={`${row.accountId}:${index}`} row={row} at={snap.at} busy={busy} fullId={engineAccountId(accountIds, row.accountId)}
             readiness={snap.readiness?.accounts?.find(a => a.accountId === row.accountId) || null} onMode={onMode} />
         ))}
       </div>
