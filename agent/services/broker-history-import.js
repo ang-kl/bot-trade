@@ -119,21 +119,35 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
   return rows
 }
 
-/** Upsert shaped rows, linking each to a local trades row by position id. */
+/** Upsert shaped rows, linking only an unambiguous account+position identity. */
 export function persistDeals(db, rows) {
-  const localByPosition = new Map()
+  const localByIdentity = new Map()
   const pids = [...new Set(rows.map(r => r.position_id).filter(Boolean))]
   if (pids.length) {
-    // Chunked — SQLite's default parameter limit is 999.
+    // Position IDs are broker identities only inside their account/server
+    // context. Never let a row from another account win a Map overwrite, and
+    // never choose arbitrarily when the local ledger itself contains duplicate
+    // account+position rows. Production 24-09-2026 exposed exactly that shape.
     for (let i = 0; i < pids.length; i += 500) {
       const slice = pids.slice(i, i + 500)
       const placeholders = slice.map(() => '?').join(',')
+      const grouped = new Map()
       for (const t of db.prepare(
-        `SELECT id, ctrader_position_id FROM trades WHERE ctrader_position_id IN (${placeholders})`,
+        `SELECT id, account_id, ctrader_position_id FROM trades WHERE ctrader_position_id IN (${placeholders})`,
       ).all(...slice)) {
-        localByPosition.set(String(t.ctrader_position_id), t.id)
+        const key = `${t.account_id ?? ''}:${String(t.ctrader_position_id)}`
+        const list = grouped.get(key) || []
+        list.push(t.id); grouped.set(key, list)
       }
+      for (const [key, ids] of grouped) if (ids.length === 1) localByIdentity.set(key, ids[0])
     }
+  }
+  const localIdFor = (r) => {
+    if (!r.position_id) return null
+    // An unscoped imported row cannot prove which account's local position it
+    // belongs to. Leave it unmatched rather than crossing account boundaries.
+    if (r.account_id == null) return null
+    return localByIdentity.get(`${String(r.account_id)}:${String(r.position_id)}`) ?? null
   }
 
   const up = db.prepare(`
@@ -157,12 +171,12 @@ export function persistDeals(db, rows) {
   const before = db.prepare('SELECT COUNT(*) AS c FROM broker_deals').get().c
   const write = db.transaction(() => {
     for (const r of rows) {
-      up.run({ ...r, matched_trade_id: r.position_id ? (localByPosition.get(r.position_id) ?? null) : null })
+      up.run({ ...r, matched_trade_id: localIdFor(r) })
     }
   })
   write()
   const after = db.prepare('SELECT COUNT(*) AS c FROM broker_deals').get().c
-  const matched = rows.filter(r => r.position_id && localByPosition.has(r.position_id)).length
+  const matched = rows.filter(r => localIdFor(r) != null).length
   return {
     seen: rows.length,
     inserted: after - before,
