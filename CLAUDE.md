@@ -1,5 +1,13 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 16:18 UTC: partial local corpus (script 8);
+visible replies reached № 8,909, next № 8,910. Later visible replies win.
+#1075 merged 47a0268 and deployed successfully; current DB init 391.5 ms,
+account report 81 ms, protection band 1,633 ms; full loop 133,787 ms remains
+outside a closed performance claim. Seven-account broker protection preserved.
+Independent-checker reconnect correction is in release; partial TP integration
+is not active. V3 acceptance remains open; no live execution was activated. -->
+
 <!-- Continuation ledger 2026-09-24 16:03 UTC: partial local corpus;
 visible replies reached № 8,900, next № 8,901. Later visible replies win.
 #1074 merged fac2a6d and deployed successfully. Fresh independent readings

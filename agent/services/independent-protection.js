@@ -25,7 +25,7 @@ export function independentProtectionView(db, accountId, nowMs = Date.now()) {
 
 // Node only provisions read sessions and relays cpp-verify's results. The
 // independent process performs its own reconcile every 60s after each pass.
-export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl = globalThis.fetch, log = console.log } = {}) {
+export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl = globalThis.fetch, log = console.log, now = Date.now } = {}) {
   const base = String(env.VERIFY_URL || '').trim().replace(/\/+$/, '')
   const secret = String(env.EXEC_SECRET || '')
   if (!base || !secret) return null
@@ -72,7 +72,24 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
         const session = status.sessions.find(s => s.host === host)
         const signature = JSON.stringify([creds.clientId, creds.clientSecret, creds.accessToken, ids])
         const authorised = new Set((session?.accounts || []).map(String))
-        if (session?.open && ids.every(id => authorised.has(id)) && fingerprints.get(host) === signature) return
+        const exactRoster = authorised.size === ids.length && ids.every(id => authorised.has(id))
+        // Node's fingerprint map disappears on restart; cpp-verify's healthy
+        // broker session does not. Reconnecting would replace it and clear its
+        // observations. Adopt only an exact roster with fresh broker evidence.
+        const freshCoverage = () => !status.error && !status.hostErrors?.[host] && ids.every(id => {
+          const rows = status.accounts.filter(row => String(row.accountId) === id && row.host === host)
+          if (rows.length !== 1 || status.accountErrors?.[id]) return false
+          const row = rows[0], at = Number(row.checkedAtMs), current = now()
+          return row.ok === true && !row.error && row.source === 'broker_reconcile'
+            && Number.isFinite(current) && at > 0 && at <= current && current - at <= MAX_AGE_MS
+            && ['openCount', 'missingSl', 'missingTp'].every(k => Number.isInteger(row[k]) && row[k] >= 0)
+            && row.missingSl <= row.openCount && row.missingTp <= row.openCount
+        })
+        if (session?.open === true && exactRoster && (fingerprints.get(host) === signature
+          || (!fingerprints.has(host) && freshCoverage()))) {
+          fingerprints.set(host, signature)
+          return
+        }
         const result = await request('/connect', { purpose: 'protection', host,
           clientId: creds.clientId, clientSecret: creds.clientSecret, accessToken: creds.accessToken, accountIds: ids })
         const accepted = new Set((result.accounts || []).filter(a => a.authorized).map(a => String(a.accountId)))
