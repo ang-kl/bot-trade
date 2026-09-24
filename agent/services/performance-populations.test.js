@@ -4,11 +4,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDB } from '../db.js'
-import { buildPerformancePopulations, readPerformancePopulations, buildDecisionsDaily, buildLatestPrices, readDecisionsDaily, readLatestPrices, readStageMatrixStats } from './performance-populations.js'
+import { buildPerformancePopulations, readPerformancePopulations, buildDecisionsDaily, buildLatestPrices, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readDecisionAudit } from './performance-populations.js'
 import { stageMatrixStats } from './stage-matrix.js'
 import { getState } from '../db.js'
 import { reportStats, reportLedger } from '../shared/performance-populations.js'
 import { accountAnalytics } from './account-analytics.js'
+import { auditDecisions } from './decision-audit.js'
 const NOW = Date.UTC(2026, 8, 22, 12)
 function setup(t, file = ':memory:') {
   const db = initDB(file); t.after(() => db.close())
@@ -116,5 +117,21 @@ test('decisions, prices and stage statistics preserve exact output in read-only 
   assert.equal(directDecisions.reduce((n, r) => n + r.approved + r.vetoed_distinct, 0), 2)
   assert.equal(directPrices.EURUSD.price, 1.2)
   assert.equal(directPrices.GBPUSD.price, 1.3)
+  assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)
+})
+
+
+test('post-decision audit preserves the synchronous verdict in a read-only worker', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'decision-audit-isolation-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const { db } = setup(t, join(dir, 'fixture.db'))
+  const at = new Date().toISOString()
+  db.prepare(`INSERT INTO decision_log(symbol,stage,decision,reason,account_id,created_at)
+    VALUES('EURUSD','stage_matrix','skip','strategy','11',?)`).run(at)
+  const nowMs = Date.now()
+  const direct = auditDecisions(db, { marketOpen: true, now: new Date(nowMs) })
+  const isolated = await readDecisionAudit(db, { marketOpen: true, nowMs })
+  assert.deepEqual(isolated, direct)
+  assert.equal(isolated.verdict, 'blocked')
   assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)
 })
