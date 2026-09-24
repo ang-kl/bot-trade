@@ -37,6 +37,7 @@ import { weekAnchorMs } from '../shared/formulas.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { lotsToVolume } from '../lib/lot-sizing.js'
 import { bookCloseVolume } from './book-close-volume.js'
+import { runMomentumRankExit } from './momentum-rank-exit.js'
 import { notionalUsd } from '../lib/contracts.js'
 import { loadMomentumShadow, MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 // PR-K (16-09-2026): the minimum hold a rank exit must respect. Its own module
@@ -545,10 +546,12 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
     }
     try {
       if (row.position_id && deps.close) {
-        // Same rule as the row-cursor exit (09-09-2026): no volume, no close.
-        const volume = await bookCloseVolume(db, creds, row, deps)
-        if (volume == null) throw new Error('unknown volume — close not sent')
-        await deps.close(creds, { positionId: row.position_id, volume })
+        const coordinated = await runMomentumRankExit(db, creds, row, deps)
+        if (!coordinated.handled) {
+          const volume = await bookCloseVolume(db, creds, row, deps)
+          if (volume == null) throw new Error('unknown volume — close not sent')
+          await deps.close(creds, { positionId: row.position_id, volume })
+        }
       }
       db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
       // Same journal line as the row-cursor exit (fix-the-exits BA).
