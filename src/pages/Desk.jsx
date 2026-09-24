@@ -1,4 +1,5 @@
 import { viewedAccountId } from '../lib/selected-account.js'
+import { refreshBrokerOverview } from '../lib/broker-overview.js'
 import { useAccountOverview } from '../lib/use-account-overview.js'
 import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
 import { createBrokerViewGuard } from '../lib/broker-view.js'
@@ -283,7 +284,7 @@ export default function Desk() {
     // seconds on a cold link); everything else is a SQLite read (<100ms).
     // Paint from the fast tier immediately; the broker sections say
     // "fetching…" and fill in whenever the WS answers.
-    if (view.single) agentPost('/actions/broker-positions', { accountId: view.id })
+    if (view.single) refreshBrokerOverview()
       .then(b => {
         // Refreshes update the snapshot IN PLACE — never blank it. Setting
         // broker to null on a transient empty refresh collapsed the whole
@@ -291,7 +292,7 @@ export default function Desk() {
         // so the page jumped up/down every few seconds (owner). Keep the last
         // good snapshot; React then diffs only the changed cells (price/P&L),
         // no reflow. A real fetch failure is surfaced via brokerErr below.
-        const next = b?.accounts?.[0]
+        const next = b?.accounts?.find(a => view.matches(a))
         if (view.current() && view.matches(next)) {
           if (next.error) { setBrokerErr(next.error); return }
           view.markLive(); setBroker({ ...next, _cachedAt: b.fetchedAt }); setBrokerErr('')

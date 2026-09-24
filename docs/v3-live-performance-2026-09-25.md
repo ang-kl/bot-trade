@@ -68,3 +68,13 @@ currency verification and missing retained evidence remain explicit.
 V3 acceptance is not implied by this reporting change. The frozen closure
 register still governs; the partial-TP producer-to-fill path remains incomplete
 and no activation or new entry permission is introduced.
+
+Source-refresh finding (23:12 UTC): current trader balances continued arriving,
+but detailed P&L/position snapshots and retained equity stopped at 22:53 UTC
+when no view requested them. Polling the saved snapshot alone cannot provide
+current readings. Performance and Desk now share the existing read-only
+`broker-positions` request at most once per minute per browser credential,
+including one in-flight request. The server also coalesces concurrent readers.
+The cheap overview still paints first and polls independently; sleeping tabs
+start no broker refresh. Desk selects its own account from the shared response
+before painting scoped controls. No new background broker scheduler is added.
