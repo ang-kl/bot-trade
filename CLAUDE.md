@@ -1,5 +1,14 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 17:34 UTC: partial local corpus;
+visible replies reached № 8,934, next № 8,935. Later visible replies win.
+#1079/#1080 merged 4472e91/d878ea9 after full gates. Seven-account entry settings
+and 32 broker-protected positions were preserved on #1079. Its first loop took
+124,390 ms; performance acceptance remains open. Decision-audit indexed-range
+fixtures retain exact report JSON, improving synthetic reads from 257-295 ms
+to 2.47-4.48 ms. #1081 corrects misleading target-outcome counts in release.
+New target-policy producer wiring remains incomplete; no live activation. -->
+
 <!-- Continuation ledger 2026-09-24 17:07 UTC: partial local corpus (script 8);
 visible replies reached № 8,921, next № 8,922. Later visible replies win.
 #1077 merged 8bcb708 and deployed; seven accounts retain 32 protected positions

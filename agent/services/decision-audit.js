@@ -124,6 +124,12 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     const acctSql = accountId == null ? '' : ' AND (account_id = ? OR account_id IS NULL)'
     const acctArgs = accountId == null ? [] : [String(accountId)]
 
+    // REPLACE(T, space) only lowers a timestamp lexicographically. Any row
+    // passing the normalized boundary necessarily passes the raw boundary.
+    // Keep both: the raw comparison seeks the existing time index, while the
+    // normalized comparison still rejects earlier same-day ISO timestamps.
+    // This avoids scanning retained history without a new startup migration.
+
     // EVERY upstream decision, including 'proceed'. Filtering to skip/veto
     // here was a real bug caught by this module's own first test run: a
     // pipeline that ran fine and simply found no setup writes only 'proceed'
@@ -133,9 +139,9 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     const upstream = db.prepare(`
       SELECT stage, reason, decision, COUNT(*) AS n
         FROM decision_log
-       WHERE REPLACE(created_at, 'T', ' ') >= ?${acctSql}
+       WHERE created_at >= ? AND REPLACE(created_at, 'T', ' ') >= ?${acctSql}
        GROUP BY stage, reason, decision
-    `).all(dayStart, ...acctArgs)
+    `).all(dayStart, dayStart, ...acctArgs)
     const skips = upstream.filter(r => r.decision === 'skip' || r.decision === 'veto')
 
     // PLACEMENT RECEIPTS ARE NOT GATE DECISIONS.
@@ -185,9 +191,9 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
              COUNT(*) AS n,
              SUM(COALESCE(repeat_count, 1)) AS reps
         FROM risk_events
-       WHERE REPLACE(created_at, 'T', ' ') >= ?${acctSql}
+       WHERE created_at >= ? AND REPLACE(created_at, 'T', ' ') >= ?${acctSql}
        GROUP BY approved, veto_reason, symbol, side, is_receipt, is_resolution
-    `).all(dayStart, ...acctArgs)
+    `).all(dayStart, dayStart, ...acctArgs)
 
     const placementReceipts = gate
       .filter(r => int(r.approved) === 1 && int(r.is_receipt) === 1)
@@ -273,12 +279,12 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
       const last = db.prepare(`
         SELECT MAX(t) AS t FROM (
           SELECT MAX(REPLACE(created_at, 'T', ' ')) AS t FROM decision_log
-           WHERE REPLACE(created_at, 'T', ' ') >= ?
+           WHERE created_at >= ? AND REPLACE(created_at, 'T', ' ') >= ?
           UNION ALL
           SELECT MAX(REPLACE(created_at, 'T', ' ')) AS t FROM risk_events
-           WHERE REPLACE(created_at, 'T', ' ') >= ?
+           WHERE created_at >= ? AND REPLACE(created_at, 'T', ' ') >= ?
         )
-      `).get(dayStart, dayStart)?.t
+      `).get(dayStart, dayStart, dayStart, dayStart)?.t
       const ms = last ? Date.parse(String(last).replace(' ', 'T') + 'Z') : NaN
       if (Number.isFinite(ms)) quietMinutes = Math.max(0, Math.round((now.getTime() - ms) / 60_000))
     } catch { quietMinutes = null }
@@ -384,6 +390,7 @@ export function unlinkedApprovals(db, dayStart, { accountId = null, limit = 20 }
         FROM risk_events re
        WHERE re.approved = 1
          AND re.id >= ?
+         AND re.created_at >= ?
          AND REPLACE(re.created_at, 'T', ' ') >= ?
          AND COALESCE(re.checks_json, '') NOT LIKE '%_placed":true%'
          AND COALESCE(re.checks_json, '') NOT LIKE '%_placed": true%'
@@ -391,7 +398,7 @@ export function unlinkedApprovals(db, dayStart, { accountId = null, limit = 20 }
          AND NOT EXISTS (SELECT 1 FROM pending_orders p WHERE p.risk_event_id = re.id)
          ${acct}
        ORDER BY re.id DESC LIMIT ?
-    `).all(floor, dayStart, ...args, Math.max(1, Math.min(100, Number(limit) || 20)))
+    `).all(floor, dayStart, dayStart, ...args, Math.max(1, Math.min(100, Number(limit) || 20)))
   } catch {
     // Same rule as everything else here: an auditor that throws is worse than
     // an auditor that reports less.
