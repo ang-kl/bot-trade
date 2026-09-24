@@ -122,5 +122,5 @@ test('explicit incident handoff keeps observations and approval controls, with o
     suggestTarget: async () => ({ tp: 1885.5, basis: 'fixture' }),
   })
   assert.equal(approvals.length, 1)
-  assert.match(approvals[0].opts.buttons[0][0].callback_data, /^prottp\|555\|1885.5$/)
+  assert.match(approvals[0].opts.buttons[0][0].callback_data, /^prottp\|11\|555\|1885.5$/)
 })

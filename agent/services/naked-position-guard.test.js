@@ -600,7 +600,7 @@ test('targetless alert includes the suggested TP and a prottp button', async () 
   assert.equal(sent.length, 1)
   assert.match(sent[0].m, /suggested TP 1885.5 \(HVN volume node, 2.1R\)/)
   const btn = sent[0].opts.buttons[0][0]
-  assert.equal(btn.callback_data, 'prottp|555|1885.5')
+  assert.equal(btn.callback_data, 'prottp|43097342|555|1885.5')
   assert.match(btn.text, /Set TP 1885.5 on ETHUSD/)
 })
 

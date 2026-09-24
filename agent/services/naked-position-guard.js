@@ -80,6 +80,7 @@ import { getState, setState } from '../db.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { recordedTargetFor } from './target-restore.js'
 import { normPosId } from '../lib/pos-id.js'
+import { protectionCallback } from './protection-account.js'
 import { protectionFailure, repairFailures, recordRepairFailure, sameRefusedTarget, retainUnresolvedRepairs } from './protection-repair-state.js'
 
 /** Alert at most this often per position, so a persistent gap does not spam. */
@@ -675,7 +676,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
           (s ? `\n  suggested TP ${s.tp} (${s.basis})` : '')
       })
       // One button row per suggested position. callback_data is capped at 64
-      // bytes by Telegram — `prottp|<id>|<price>` fits comfortably.
+      // bytes by Telegram. Include the observed account; never truncate identity.
       // No button for a target already set — offering to do what was just done
       // is how an operator learns to distrust the buttons.
       //
@@ -692,7 +693,12 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       // claims a test proves it.
       const buttons = targetDue
         .filter(f => suggestions.get(f) && !applied.has(f) && applyEligible(f))
-        .map(f => [{ text: `Set TP ${suggestions.get(f).tp} on ${f.symbol}`, callback_data: `prottp|${f.positionId}|${suggestions.get(f).tp}` }])
+        .flatMap(f => {
+          if (accountId != null && f.accountId != null && String(accountId) !== String(f.accountId)) return []
+          const account = f.accountId ?? accountId
+          const callback = protectionCallback(account, f.positionId, suggestions.get(f).tp)
+          return callback ? [[{ text: `Set TP ${suggestions.get(f).tp} on ${f.symbol} (${account})`, callback_data: callback }]] : []
+        })
       // Incident ownership never removes the owner's approval controls or
       // confirmation of an actual repair. Generic missing-TP alerts transfer;
       // actionable approval/repair messages remain Node's responsibility.

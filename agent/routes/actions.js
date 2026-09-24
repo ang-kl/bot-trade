@@ -2125,12 +2125,13 @@ export default function actionsRouter(db, deps = {}) {
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
       // PR-F checker M1: was getCtraderCreds(db) — the primary account for
       // every position. The position's own record names the account.
-      const creds = req.body?.account ? { ...credsForAccountId(db, req.body.account), accountSource: 'body' } : credsForPosition(db, positionId)
+      const { protectionCredentials } = await import('../services/protection-account.js')
+      const creds = protectionCredentials(db, { positionId, accountId: req.body?.account })
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       // Shared with the Telegram "Set TP" button (services/position-protect.js)
       // so the two entry points cannot drift.
       const { protectPosition } = await import('../services/position-protect.js')
-      const out = await protectPosition(db, creds, { positionId, sl, tp, source: 'manual' }, { amend: execAmendPosition })
+      const out = await protectPosition(db, creds, { positionId, sl, tp, source: 'manual' }, deps.positionProtection ?? { amend: execAmendPosition })
       res.json({ ...out, accountId: creds.accountId, accountSource: creds.accountSource })
     } catch (err) {
       const code = /required/.test(err.message) ? 400 : 502
