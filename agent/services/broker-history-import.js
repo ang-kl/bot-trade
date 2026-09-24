@@ -12,7 +12,8 @@
 // perf-ledger, edge-health, the metrics snapshot and the lessons tuner all
 // count every closed trades row that has a net_pnl, and NONE of them filter
 // on source (verified: the only source filters in the codebase are in
-// loss-guardian, profit-keeper, session-open-guard and label work). Writing imported rows there would
+// loss-guardian, profit-keeper, session-open-guard and label-backfill, all on
+// monitored_positions or label work). Writing imported history there would
 // silently move the win rate, profit factor, strategy attribution and the
 // lessons decay keys, and the owner would have no way to tell that a stat
 // changed because of an import rather than because of trading. So broker
