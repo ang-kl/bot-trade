@@ -829,11 +829,11 @@ export function stageMatrixStats(db, getState) {
 }
 
 /** Matrix + stats + column metadata in one payload for GET /state/stage-matrix. */
-export function stageMatrixView(db, getState) {
+export function stageMatrixView(db, getState, statsOverride = null) {
   return {
     columns: STAGES.map(s => ({ key: s, label: STAGE_LABELS[s] })),
     ...loadStageMatrix(db, getState),
-    stats: stageMatrixStats(db, getState),
+    stats: statsOverride ?? stageMatrixStats(db, getState),
     windowDays: 30,
   }
 }
