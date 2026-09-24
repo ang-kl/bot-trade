@@ -102,8 +102,16 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   const scopeSql = `${accountScopeSql} ${positionScopeSql}`
   const scopeParams = [...(acct == null ? [] : [acct]), ...(positionId == null ? [] : [positionId])]
   if (positionId != null) {
-    const rows = db.prepare(`SELECT status FROM trades WHERE account_id = ? ${positionScopeSql}`).all(acct, positionId)
-    if (rows.length !== 1 || rows[0].status !== 'closed') throw new Error('position ledger identity ambiguous or not closed')
+    const rows = db.prepare(`SELECT id,status,symbol,opened_at,closed_at FROM trades WHERE account_id = ? ${positionScopeSql} ORDER BY id LIMIT 6`).all(acct, positionId)
+    const count = db.prepare(`SELECT COUNT(*) n FROM trades WHERE account_id = ? ${positionScopeSql}`).get(acct, positionId)?.n ?? rows.length
+    if (count !== 1 || rows[0]?.status !== 'closed') {
+      // Bounded identity detail is safe operational evidence: it contains only
+      // local trade IDs/status/timestamps already in the ledger, never broker
+      // credentials or prices. Production 24-09-2026 exposed two old positions
+      // that were repeatedly reached but could not explain why identity proof
+      // failed. Keep the refusal; make its exact local contradiction observable.
+      throw new Error(`position ledger identity ambiguous or not closed: count=${count}; rows=${JSON.stringify(rows)}`)
+    }
   }
 
   // Nothing to do unless some closed trade ON THIS ACCOUNT is actually

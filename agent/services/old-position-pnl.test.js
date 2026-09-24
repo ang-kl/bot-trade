@@ -102,7 +102,13 @@ test('an ambiguous local position, open peer or non-strict caller is refused bef
   const db = fixture(t), target = seed(db), duplicate = seed(db)
   let reads = 0
   const read = async () => { reads++; return history() }
-  await assert.rejects(backfillClosedPnl(db, creds, args(read)), /ambiguous/)
+  await assert.rejects(backfillClosedPnl(db, creds, args(read)), error => {
+    assert.match(error.message, /ambiguous/)
+    assert.match(error.message, /count=2/)
+    assert.match(error.message, new RegExp(`"id":${target}`))
+    assert.match(error.message, new RegExp(`"id":${duplicate}`))
+    return true
+  })
   db.prepare('DELETE FROM trades WHERE id=?').run(duplicate)
   db.prepare("UPDATE trades SET status='open' WHERE id=?").run(target)
   await assert.rejects(backfillClosedPnl(db, creds, args(read)), /not closed/)
