@@ -1367,9 +1367,15 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
         // the first draft asserted one. This is the other half: how many of
         // the deferred set restore actually repaired, printed after it ran, so
         // the pair of lines is complete and neither one over-claims.
-        if (restorable.size) {
-          const stillOpen = restorable.size - fix.restored
-          printOnChange(id, 'deferred_restore', `[protection] ${id}: ${restorable.size} deferred to target-restore — ${fix.restored} restored, ${Math.max(0, stillOpen)} still without a target`, deps.nowMs ?? Date.now())
+        // Eligibility alone says nothing about a target being absent. Count
+        // only the audited missing-target subset, then account separately
+        // for a target discovered by restore's fresh broker recheck.
+        const deferredCount = new Set(prot.targetless
+          .map(f => String(f.positionId)).filter(positionId => restorable.has(positionId))).size
+        if (deferredCount) {
+          const alreadyProtected = fix.alreadyProtected || 0
+          const unresolved = Math.max(0, deferredCount - fix.restored - alreadyProtected)
+          printOnChange(id, 'deferred_restore', `[protection] ${id}: ${deferredCount} deferred to target-restore — ${fix.restored} restored, ${unresolved} still without a target in the audited snapshot (resolution unconfirmed), ${alreadyProtected} already protected on fresh recheck`, deps.nowMs ?? Date.now())
         }
       } catch (err) {
         // A failed repair must never take down the audit that found the fault.

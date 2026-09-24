@@ -1,5 +1,14 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 23:16 UTC: partial corpus, visible replies
+through № 8,968; later visible replies win. Owner merged #1081 at 23:13 UTC;
+Railway deployed b95975f successfully. Reporting PR #1083 incorporates it.
+Before that merge: 5,535 backend checks and 955 frontend checks passed locally.
+Final combined-source/CI gates remain required. A stale broker-position source
+was identified: active Performance/Desk now share its read-only refresh.
+Partial-TP cost-reserve treatment and session-expiry origin remain pending;
+new partial execution is inactive and V3 acceptance is still open. -->
+
 <!-- Continuation ledger 2026-09-24 23:09 UTC: partial corpus remains 8,
 not adopted. Visible continuation reached № 8,964; later visible replies win.
 Local reporting build uses the owner-confirmed local Performance calendar day,
@@ -9,6 +18,25 @@ No trading settings or broker positions were changed. P0/P3 remains incomplete;
 explicit carry-reserve treatment and 24-hour session-expiry origin await owner
 answers. The older #1081 test-clock fixture proposal remains unapplied. -->
 
+<!-- Continuation ledger 2026-09-24 22:10 UTC: partial local corpus (script 8);
+visible replies reached № 8,945, next № 8,946. Later visible replies win.
+#1082 is deployed ba1b16f; first loop remains 122,773 ms. Fresh authenticated
+readback covers seven accounts and 32 positions with SL/TP. #1081 exact-head
+CI passed, but the interrupted combined backend run had no final summary;
+it is being rerun rather than counted as complete. New partial-policy
+production integration remains INCOMPLETE and inactive; V3 is not accepted.
+The audit work-product timestamp is request time, not completion: its gap to
+the heartbeat does not prove an outbound-notification delay. -->
+
+<!-- Continuation ledger 2026-09-24 17:44 UTC: partial local corpus;
+visible replies reached № 8,940, next № 8,941. Later visible replies win.
+#1079/#1080 deployed with seven-account settings and 32 protected positions
+preserved. #1082 merged ba1b16f after 5,526 backend/943 frontend checks and
+exact-head CI; production timing readback is pending. #1081 passed 5,527
+backend checks before incorporating #1082; combined-source checks follow.
+Current frozen-group evidence is summarized at the top of the closure register.
+V3 is not accepted; target-policy producer wiring and operational trials remain. -->
+
 <!-- Continuation ledger 2026-09-24 17:34 UTC: partial local corpus;
 visible replies reached № 8,934, next № 8,935. Later visible replies win.
 #1079/#1080 merged 4472e91/d878ea9 after full gates. Seven-account entry settings
@@ -17,6 +45,14 @@ and 32 broker-protected positions were preserved on #1079. Its first loop took
 fixtures retain exact report JSON, improving synthetic reads from 257-295 ms
 to 2.47-4.48 ms. #1081 corrects misleading target-outcome counts in release.
 New target-policy producer wiring remains incomplete; no live activation. -->
+
+<!-- Continuation ledger 2026-09-24 17:28 UTC: partial local corpus;
+visible replies reached № 8,931, next № 8,932. Later visible replies win.
+#1079 merged 4472e91 after full gates; #1080 final exact-head CI is running.
+Both leave new target-policy production integration incomplete and inactive.
+Two false target-outcome regressions reproduced, then 171 focused checks
+passed. Latest completed first-loop sample 121,886 ms still fails the proposed
+60-second goal. V3 acceptance remains open; no live execution was activated. -->
 
 <!-- Continuation ledger 2026-09-24 17:07 UTC: partial local corpus (script 8);
 visible replies reached № 8,921, next № 8,922. Later visible replies win.

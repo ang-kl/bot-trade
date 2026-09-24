@@ -78,3 +78,11 @@ including one in-flight request. The server also coalesces concurrent readers.
 The cheap overview still paints first and polls independently; sleeping tabs
 start no broker refresh. Desk selects its own account from the shared response
 before painting scoped controls. No new background broker scheduler is added.
+
+Validation update (23:16 UTC): before incorporating the owner's #1081 merge,
+5,535 backend checks passed (four skipped), 955 frontend checks passed, and
+desktop/mobile sleep/wake checks also covered the broker-source refresh.
+Exact final combined-source gates and deployed readback remain outstanding.
+A production read at 23:14 UTC overlapped Railway's #1081 deployment and
+returned a gateway error; health subsequently confirmed b95975f running.
+That interrupted read is not counted as successful snapshot verification.
