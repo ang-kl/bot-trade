@@ -43,7 +43,7 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering } from '../services/performance-populations.js'
 import { reportLedger } from '../shared/performance-populations.js'
 
 /**
@@ -105,7 +105,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/watchdog', '/account-money', '/account-history'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/watchdog', '/account-money', '/account-history', '/account-engineering'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -2094,11 +2094,13 @@ export default function stateRouter(db) {
   // persisted, never from an HTTP hop inside a cached GET.
   // -----------------------------------------------------------------------
   router.get('/account-engineering', async (_req, res) => {
+    // A worker snapshot can span a control write. Never cache it as if it
+    // described the newer configuration epoch at response completion.
+    res.set('Cache-Control', 'no-store')
     try {
-      const { engineeringView } = await import('../services/account-engineering.js')
-      res.json(engineeringView(db))
-    } catch (err) {
-      res.status(500).json({ error: err.message })
+      res.json(await readAccountEngineering(db))
+    } catch {
+      res.status(503).json({ error: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })
     }
   })
 
