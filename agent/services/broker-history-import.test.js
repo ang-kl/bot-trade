@@ -66,17 +66,39 @@ test('an unknown symbol id still produces a stable key, not a crash', () => {
 
 test('persistDeals links a deal to the local trade that placed it', () => {
   const db = initDB(':memory:')
-  db.prepare("INSERT INTO trades (symbol, side, status, opened_at, ctrader_position_id) VALUES ('EURUSD','BUY','closed',datetime('now'),'900')").run()
+  db.prepare("INSERT INTO trades (symbol, side, status, opened_at, ctrader_position_id, account_id) VALUES ('EURUSD','BUY','closed',datetime('now'),'900','47790949')").run()
   const localId = db.prepare("SELECT id FROM trades WHERE ctrader_position_id = '900'").get().id
   const out = persistDeals(db, shapeDeals([
     closingDeal({ dealId: 2, positionId: 900, ms: NOW }),
     closingDeal({ dealId: 3, positionId: 999, ms: NOW }), // no local row
-  ], SYM))
+  ], SYM, '47790949'))
   assert.equal(out.inserted, 2)
   assert.equal(out.matchedToLocalTrades, 1)
   assert.equal(out.unmatched, 1)
   assert.equal(db.prepare("SELECT matched_trade_id FROM broker_deals WHERE deal_id = '2'").get().matched_trade_id, localId)
   assert.equal(db.prepare("SELECT matched_trade_id FROM broker_deals WHERE deal_id = '3'").get().matched_trade_id, null)
+})
+
+test('persistDeals requires one local row on the same account before linking broker evidence', () => {
+  const db = initDB(':memory:')
+  const ins = db.prepare("INSERT INTO trades (symbol, side, status, opened_at, ctrader_position_id, account_id) VALUES ('EURUSD','BUY','closed',datetime('now'),'900',?)")
+  const a = Number(ins.run('11').lastInsertRowid)
+  ins.run('22')
+  let out = persistDeals(db, shapeDeals([closingDeal({ dealId: 20, positionId: 900, ms: NOW })], SYM, '11'))
+  assert.equal(out.matchedToLocalTrades, 1)
+  assert.equal(db.prepare("SELECT matched_trade_id FROM broker_deals WHERE deal_id='20'").get().matched_trade_id, a)
+
+  // A duplicate inside the same account makes the identity ambiguous. Broker
+  // evidence remains stored, but is deliberately not attached to either row.
+  ins.run('11')
+  out = persistDeals(db, shapeDeals([closingDeal({ dealId: 21, positionId: 900, ms: NOW })], SYM, '11'))
+  assert.equal(out.matchedToLocalTrades, 0)
+  assert.equal(db.prepare("SELECT matched_trade_id FROM broker_deals WHERE deal_id='21'").get().matched_trade_id, null)
+
+  // Unscoped imported history cannot prove which account owns a reused id.
+  out = persistDeals(db, shapeDeals([closingDeal({ dealId: 22, positionId: 900, ms: NOW })], SYM, null))
+  assert.equal(out.matchedToLocalTrades, 0)
+  assert.equal(db.prepare("SELECT matched_trade_id FROM broker_deals WHERE deal_id='22'").get().matched_trade_id, null)
 })
 
 test('re-importing the same window updates instead of duplicating', () => {
