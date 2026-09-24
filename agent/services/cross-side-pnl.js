@@ -17,11 +17,11 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
   const pending = pendingReads.get(db)
   if (pending.has(accountId)) return { accountId, skipped: 'read_still_in_flight' }
   if (tokenRefusedAccounts(db).has(accountId)) return { accountId, skipped: 'token_refused' }
-  if (!deps.closeSeen && !dueForBackfill(accountId, clock())) return { accountId, skipped: 'paced' }
   try {
     const host = creds?.host
     if (!creds?.ready || !['live.ctraderapi.com', 'demo.ctraderapi.com'].includes(host) || !/^[1-9]\d*$/.test(accountId)) throw new Error('account credentials unavailable or mismatched')
     const started = clock(), deadline = started + Math.min(10_000, deps.budgetMs ?? 10_000)
+    const recentDue = deps.closeSeen || dueForBackfill(accountId, started)
     const isCurrent = () => clock() < deadline
     const boundedRead = async operation => {
       const remaining = deadline - clock()
@@ -40,23 +40,33 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
       } finally { clearTimeout(timer) }
       return response
     }
-    const result = await backfillClosedPnl(db, creds, { accountId, strictAccount: true, now: started,
-      isCurrent,
-      getDeals: async (from, to) => {
-        const response = await boundedRead(timeout => read(host, creds.clientId, creds.clientSecret, creds.accessToken,
-          accountId, from, to, timeout, 0))
-        if (!response || String(response.ctidTraderAccountId) !== accountId || response.error || response.errorCode
-          || (response.deal != null && !Array.isArray(response.deal))) throw new Error('deal history missing, malformed or belongs to another account')
-        for (const deal of response.deal ?? []) {
-          if (!deal || !/^[1-9]\d*$/.test(String(deal.dealId)) || !/^[1-9]\d*$/.test(String(deal.positionId))) throw new Error('deal identity invalid')
-          const c = deal.closePositionDetail
-          if (c && (!Number.isInteger(c.moneyDigits) || c.moneyDigits < 0 || c.moneyDigits > 10
-            || c.grossProfit == null || ![c.grossProfit, c.swap ?? 0, c.commission ?? 0]
-              .every(v => /^-?\d+$/.test(String(v)) && Number.isSafeInteger(Number(v))))) throw new Error('closing deal money invalid')
-        }
-        return response
-      },
-    })
+    // Recent-window deal pulls have account-level exponential backoff. Old
+    // positions use verified whole-position history with their own durable
+    // 30s/15m pacing and must not sit behind that unrelated backoff. Production
+    // 24-09-2026 exposed two 50-day-old positions with pnl_attempts=0 while the
+    // account-level path was paced off. Keep the recent pull paced, but always
+    // give the old-position collector its independently bounded chance.
+    let result = { backfilled: 0, attributed: 0, exitsRepaired: 0, exitsFilled: 0,
+      dealsPersisted: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0, blockingGap: 0 }
+    if (recentDue) {
+      result = await backfillClosedPnl(db, creds, { accountId, strictAccount: true, now: started,
+        isCurrent,
+        getDeals: async (from, to) => {
+          const response = await boundedRead(timeout => read(host, creds.clientId, creds.clientSecret, creds.accessToken,
+            accountId, from, to, timeout, 0))
+          if (!response || String(response.ctidTraderAccountId) !== accountId || response.error || response.errorCode
+            || (response.deal != null && !Array.isArray(response.deal))) throw new Error('deal history missing, malformed or belongs to another account')
+          for (const deal of response.deal ?? []) {
+            if (!deal || !/^[1-9]\d*$/.test(String(deal.dealId)) || !/^[1-9]\d*$/.test(String(deal.positionId))) throw new Error('deal identity invalid')
+            const c = deal.closePositionDetail
+            if (c && (!Number.isInteger(c.moneyDigits) || c.moneyDigits < 0 || c.moneyDigits > 10
+              || c.grossProfit == null || ![c.grossProfit, c.swap ?? 0, c.commission ?? 0]
+                .every(v => /^-?\d+$/.test(String(v)) && Number.isSafeInteger(Number(v))))) throw new Error('closing deal money invalid')
+          }
+          return response
+        },
+      })
+    }
     const oldHistory = await recoverOldPositionPnl(db, creds, { now: started, isCurrent,
       getPositionDeals: positionId => boundedRead(timeout => readPosition(host, creds.clientId, creds.clientSecret,
         creds.accessToken, accountId, positionId, started, timeout)),
@@ -67,7 +77,8 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
         result[field] = (result[field] || 0) + (oldHistory.result[field] || 0)
       }
     }
-    noteBackfillAttempt(accountId, result, clock())
+    if (recentDue) noteBackfillAttempt(accountId, result, clock())
+    if (!recentDue && ['no_old_gap', 'paced'].includes(oldHistory.state)) return { accountId, skipped: 'paced' }
     return { accountId, result }
   } catch (error) {
     // A failed read is not evidence that a trade was searched or exhausted.
