@@ -108,6 +108,7 @@ import { roundToDigits } from './trade-guard.js'
 import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDue, thresholdMs } from './momentum-account.js'
 import { bookEntryWrite } from './book-entry-write.js'
 import { bookCloseVolume } from './book-close-volume.js'
+import { runMomentumRankExit } from './momentum-rank-exit.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 // PR-K: the hold-age rule lives in its own module because the momentum-account
 // path enforces the SAME minimum hold and may not import this file (cycle).
@@ -778,11 +779,12 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
       }
       try {
         if (row.position_id && deps.close) {
-          // The close needs a volume (09-09-2026): broker position first,
-          // trade lots × lot size second; none → not sent, row stays open.
-          const volume = await bookCloseVolume(db, creds, row, deps)
-          if (volume == null) throw new Error('unknown volume — close not sent')
-          await deps.close(creds, { positionId: row.position_id, volume })
+          const coordinated = await runMomentumRankExit(db, creds, row, deps)
+          if (!coordinated.handled) {
+            const volume = await bookCloseVolume(db, creds, row, deps)
+            if (volume == null) throw new Error('unknown volume — close not sent')
+            await deps.close(creds, { positionId: row.position_id, volume })
+          }
         }
         const why = acctExits.get(symbol)?.flip ? 'rank exit (flip)' : 'rank exit'
         db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = ? WHERE id = ?`).run(new Date(now).toISOString(), why, row.id)
