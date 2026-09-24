@@ -29,6 +29,7 @@
 // ---------------------------------------------------------------------------
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Link } from 'react-router-dom'
 import { useAnchoredPopover } from '../lib/use-anchored-popover.js'
 import { agentGet, agentPost, agentConfigured, pageAsleep, getIdleMinutes, setIdleMinutes } from '../lib/agent-api.js'
 import {
@@ -52,6 +53,7 @@ export default function SessionFooter({ appVersion, buildSha }) {
     if (!agentConfigured()) return undefined
     let alive = true
     const poll = () => {
+      if (pageAsleep()) return
       agentGet('/state/sessions')
         .then(v => { if (alive) { setView(v); setErr(null) } })
         // A failed read must not blank the line — a stale reading with an
@@ -65,7 +67,7 @@ export default function SessionFooter({ appVersion, buildSha }) {
       // Applying it while the popover is OPEN would be wrong — that is
       // precisely when the ages need to be live — so it only gates the
       // closed state.
-      if (!open && pageAsleep()) return
+      if (pageAsleep()) return
       poll()
     }, open ? 5_000 : POLL_MS)
     return () => { alive = false; clearInterval(id) }
@@ -76,7 +78,7 @@ export default function SessionFooter({ appVersion, buildSha }) {
   const reload = useCallback(() => setReloadKey(k => k + 1), [])
 
   const { current, others } = splitSessions(view)
-  const line = statusLine(current)
+  const line = view?.currentIsMaster ? { browser: 'This device', stateLabel: 'Primary login', state: 'active', age: '' } : statusLine(current)
 
   // Dismissal, viewport clamping and the zoom conversion live in
   // useAnchoredPopover — every clause in it was learned here, and a second
@@ -96,6 +98,7 @@ export default function SessionFooter({ appVersion, buildSha }) {
   return (
     <section className="sidebar-session-footer pt-1.5 mt-1.5" aria-label="Browser session status">
       <div className="flex items-center gap-1">
+        <Link to="/browser-sessions" title="Open browser sessions page" className="compact-control">Sessions</Link>
         <button
           ref={buttonRef}
           type="button"
@@ -359,7 +362,7 @@ const IDLE_CHOICES = [
   { min: 240, label: '4h' },
 ]
 
-function SleepAfter() {
+export function SleepAfter() {
   const [idleMin, setIdleMin] = useState(getIdleMinutes)
   return (
     <fieldset className="mt-3 border-t border-[var(--glass-edge)] pt-1.5">
@@ -380,9 +383,10 @@ function SleepAfter() {
       </div>
       <p className="mt-1 text-[var(--color-text-sub)]">
         An idle countdown, wired into every poll loop: each click, keypress or
-        scroll resets it, and after the chosen time with no activity the tab
-        sleeps — all polling stops, so it costs the agent nothing. The next
-        interaction starts it fresh.
+        wheel gesture resets it. After the chosen time, report polling and
+        price streams pause. A small presence heartbeat remains so other tabs
+        can show that this tab is asleep. Interaction resumes updates; the bot
+        continues trading independently of this screen.
       </p>
     </fieldset>
   )
@@ -411,7 +415,7 @@ function Row({ k, v, note }) {
 // focus, because it is a deliberate two-step for an action that signs another
 // device out — the one place the brief asks for "a deliberate confirmation".
 // ---------------------------------------------------------------------------
-function ConfirmDisconnect({ session, busy, onCancel, onConfirm }) {
+export function ConfirmDisconnect({ session, busy, onCancel, onConfirm }) {
   const copy = confirmCopy(session)
   const boxRef = useRef(null)
   const cancelRef = useRef(null)

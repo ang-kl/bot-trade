@@ -9,11 +9,12 @@
 // spot subscription per connected browser tab).
 import { useEffect, useState } from 'react'
 import { agentStreamPrices } from './agent-api.js'
+import { mergeDisplayQuote } from './display-quote.js'
 
 const MAX_SYMBOLS = 10
 
 /** @returns {Record<string, {symbol,bid,ask,t}>} keyed by uppercased symbol */
-export function useLiveTicks(symbols) {
+export function useLiveTicks(symbols, accountId = null) {
   const key = [...new Set((symbols || []).filter(Boolean).map(s => String(s).toUpperCase()))]
     .sort().slice(0, MAX_SYMBOLS).join(',')
   const [ticks, setTicks] = useState({})
@@ -27,11 +28,13 @@ export function useLiveTicks(symbols) {
     if (!key) return undefined
     const stream = agentStreamPrices(
       key.split(','),
-      (t) => setTicks(prev => (t.symbol ? { ...prev, [t.symbol]: t } : prev)),
+      (t) => setTicks(prev => (t.symbol && (accountId == null || t.accountId === String(accountId))
+        ? { ...prev, [t.symbol]: mergeDisplayQuote(prev[t.symbol], t) } : prev)),
       () => {}, // stream ended/dropped — components just keep their last tick
+      accountId,
     )
     return () => stream.close()
-  }, [key])
+  }, [key, accountId])
 
   return ticks
 }

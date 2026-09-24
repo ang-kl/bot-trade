@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { agentConfigured, agentGet, pageAsleep } from '../lib/agent-api.js'
+import Card from './common/Card.jsx'
 
 const LABELS = { upstream_stop: 'Upstream stops', risk_refusal: 'Risk refusals', post_approval_failure: 'After-approval failures', approved: 'Risk approvals', placement_receipt: 'Placement receipts', other_stop: 'Other recorded stops' }
 
@@ -53,9 +54,10 @@ export default function BlockerReport({ accountId }) {
   }, [accountId, hours, offset, windowEnd])
   const valid = reading?.accountId === accountId && reading?.hours === hours && reading?.offset === offset
   const report = valid ? reading.report : null
-  return <section className="my-3 p-3 border border-[var(--color-border)] rounded" aria-label="Recorded entry blockers">
+  return <Card className="my-3 text-(length:--fs-body)" aria-label="Recorded entry blockers" scope={accountId}>
     <h2 className="font-semibold">Recorded entry blockers</h2>
     <p className="font-semibold">Report scope: {accountId === 'all' ? 'All registered accounts' : `Account ${accountId}`}</p>
+    {report && <p>Through {new Date(report.to).toLocaleString()}{windowEnd ? ' · browsing a fixed history window' : ' · updates every minute while active'}. Counts apply only to this account scope.</p>}
     <label>Decision window <select value={hours} onChange={e => { setHours(Number(e.target.value)); setOffset(0); setWindowEnd(null) }}>
       <option value={6}>6 hours</option><option value={24}>24 hours</option><option value={72}>72 hours</option>
     </select></label>
@@ -63,5 +65,5 @@ export default function BlockerReport({ accountId }) {
     <div className="flex gap-3 mt-2"><button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>Newer records</button>
       <button disabled={!report?.hasMore} onClick={() => { setWindowEnd(report.to); setOffset(report.nextOffset) }}>Older records</button>
       <button onClick={() => { setWindowEnd(null); setOffset(0) }}>Latest decisions</button></div>
-  </section>
+  </Card>
 }

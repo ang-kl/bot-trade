@@ -36,6 +36,7 @@ import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { accountMoney } from '../services/account-money.js'
+import { accountOverview } from '../services/account-overview.js'
 import { accountHistory } from '../services/account-history.js'
 import { blockerReport } from '../services/blocker-report.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
@@ -114,7 +115,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/watchdog', '/account-money', '/account-history', '/account-engineering'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -202,6 +203,15 @@ export default function stateRouter(db) {
         limit: req.query.limit == null ? 2000 : Number(req.query.limit),
         before: req.query.before == null ? null : Number(req.query.before) }))
     } catch (err) { res.status(err instanceof RangeError ? 400 : 503).json({ error: err instanceof RangeError ? err.message : 'history unavailable' }) }
+  })
+
+  router.get('/account-overview', (_req, res) => {
+    try {
+      const report = accountOverview(db)
+      for (const a of report.accounts) a.dailyLossPct = loadRiskConfig(db, a.accountId)?.dailyLossPct ?? null
+      res.set('Cache-Control', 'no-store').json(report)
+    }
+    catch { res.status(503).json({ error: 'account readings unavailable' }) }
   })
 
   router.get('/account-money', (req, res) => {
@@ -2180,8 +2190,13 @@ export default function stateRouter(db) {
   // GET /state/perf-ledger — the Performance Ledger aggregation (design_
   // claude PR B): timeframe windows × market categories × account, with
   // carry-forward. ?account=<id>|all (default all).
-  router.get('/performance-populations', async (_req, res) => {
-    try { res.json(await readPerformancePopulations(db)) }
+  router.get('/performance-populations', async (req, res) => {
+    const timeZone = typeof req.query.timeZone === 'string' ? req.query.timeZone : null
+    if (timeZone) {
+      try { new Intl.DateTimeFormat('en', { timeZone }).format() }
+      catch { return res.status(400).json({ error: 'valid reporting timezone required' }) }
+    }
+    try { res.json(await readPerformancePopulations(db, timeZone ? { timeZone } : undefined)) }
     catch (err) { res.status(503).json({ status: 'unavailable', reason: err.message }) }
   })
   router.get('/perf-ledger', async (req, res) => {
@@ -3467,8 +3482,13 @@ export default function stateRouter(db) {
       const days = Math.min(365, Math.max(1, parseInt(req.query.days || '90', 10)))
       const scope = requestedAccount(db, req)
       const acct = accountWhere(scope, 'account_id')
-      const rows = await readDecisionsDaily(db, { days, accountId: acct.active ? scope.accountId : null })
-      res.json({ days, rows, accountId: scope.all ? 'all' : (scope.accountId ?? null) })
+      const timeZone = typeof req.query.timeZone === 'string' ? req.query.timeZone : null
+      if (timeZone) {
+        try { new Intl.DateTimeFormat('en', { timeZone }).format() }
+        catch { return res.status(400).json({ error: 'valid reporting timezone required' }) }
+      }
+      const rows = await readDecisionsDaily(db, { days, accountId: acct.active ? scope.accountId : null, ...(timeZone ? { timeZone } : {}) })
+      res.json({ days, rows, timeZone, accountId: scope.all ? 'all' : (scope.accountId ?? null) })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 

@@ -5,6 +5,7 @@
 
 import { viewedAccountId, isViewingOther } from './selected-account.js'
 import { parseConnHash } from './conn-hash.js'
+import { sleepingStream } from './sleeping-stream.js'
 
 const LS_URL = 'agent_url'
 const LS_SECRET = 'agent_secret'
@@ -280,8 +281,13 @@ export function setIdleMinutes(min) {
 }
 let lastActivityAt = Date.now()
 if (typeof window !== 'undefined') {
-  for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll']) {
-    window.addEventListener(ev, () => { lastActivityAt = Date.now() }, { passive: true, capture: true })
+  for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+    window.addEventListener(ev, (event) => {
+      if (!event.isTrusted) return
+      const wasIdle = pageIdle()
+      lastActivityAt = Date.now()
+      if (wasIdle) window.dispatchEvent(new Event('agent-wake'))
+    }, { passive: true, capture: true })
   }
 }
 export const pageIdle = () => Date.now() - lastActivityAt > getIdleMinutes() * 60_000
@@ -314,6 +320,7 @@ export function setPollPaused(on) {
   for (const l of pauseListeners) {
     try { l() } catch { /* one bad subscriber must not stop the rest */ }
   }
+  if (!on && typeof window !== 'undefined') window.dispatchEvent(new Event('agent-wake'))
 }
 /** Subscribe to pause changes; returns an unsubscribe. For useSyncExternalStore. */
 export function subscribePollPaused(cb) {
@@ -438,12 +445,16 @@ export const agentPost = async (path, body) => {
  * Returns { close() }; onTick gets {symbol, bid, ask, t}; onEnd gets a
  * reason string when the server or network drops the stream.
  */
-export function agentStreamPrices(symbols, onTick, onEnd = () => {}) {
+export function agentStreamPrices(symbols, onTick, onEnd = () => {}, accountId = null) {
+  return sleepingStream(ended => openPriceStream(symbols, onTick, reason => { ended(); onEnd(reason) }, accountId), pageAsleep)
+}
+
+function openPriceStream(symbols, onTick, onEnd, accountId) {
   const c = getAgentConn()
   const ctrl = new AbortController()
   ;(async () => {
     try {
-      const res = await fetch(`${c.base}/actions/stream-prices?symbols=${encodeURIComponent(symbols.join(','))}`, {
+      const res = await fetch(`${c.base}/actions/stream-prices?symbols=${encodeURIComponent(symbols.join(','))}${accountId == null ? '' : `&account=${encodeURIComponent(accountId)}`}`, {
         headers: { authorization: `Bearer ${c.secret}` },
         signal: ctrl.signal,
       })
@@ -467,7 +478,9 @@ export function agentStreamPrices(symbols, onTick, onEnd = () => {}) {
           if (!dataLine || frame.startsWith(':')) continue
           if (frame.startsWith('event: end')) return onEnd('server closed stream')
           if (frame.startsWith('event: hello')) continue
-          try { onTick(JSON.parse(dataLine.slice(6))) } catch { /* skip bad frame */ }
+          if (!ctrl.signal.aborted && !pageAsleep()) {
+            try { onTick(JSON.parse(dataLine.slice(6))) } catch { /* skip bad frame */ }
+          }
         }
       }
     } catch (e) {

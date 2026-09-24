@@ -60,9 +60,9 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `85cb5f8` · 119 action call sites · 97 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `ba1b16f` · 120 action call sites · 97 state routes read.
 
-Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
+Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
 | # | File:line | Label | Route | Backend reads | UI reads back | Class |
 |---|---|---|---|---|---|---|
@@ -94,7 +94,7 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 26 | `src/components/RiskReassess.jsx:162` | run | `/actions/risk-reassess` | via runReassessment(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
 | 27 | `src/components/RiskReassess.jsx:178` | apply | `/actions/risk-reassess-apply` | `risk_config_json` ✓, via setState(db, …), markApplied(db, …), executes | reload (heuristic) | WIRED |
 | 28 | `src/components/ScreenerChat.jsx:50` | send | `/actions/screener-search` | read over POST — the reply is the value | the reply itself (heuristic) | WIRED |
-| 29 | `src/components/SessionFooter.jsx:175` | revoke | `/actions/sessions/${encodeURIComponent(session.id)}/revoke` | via revokeSession(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 29 | `src/components/SessionFooter.jsx:178` | revoke | `/actions/sessions/${encodeURIComponent(session.id)}/revoke` | via revokeSession(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 30 | `src/components/TradeChronograph.jsx:45` | (inline) | `/actions/chart` | executes | the reply — route returns the effective value (heuristic) | WIRED |
 | 31 | `src/components/watchlist/WatchlistCompare.jsx:357` | (inline) | `/actions/watchlist-copy` | via copyWatchlist(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 32 | `src/lib/entry-mode-policy.js:12` | submitEntryModePolicy | `/actions/entry-mode-policy` | via requestEntryModePolicy(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
@@ -102,89 +102,90 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 34 | `src/lib/unknown-intents.js:76` | runOriginBackfill | `/actions/backfill-trade-origin` | via runOriginBackfill(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 35 | `src/pages/Accounts.jsx:137` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), executes | `/state/positions` | WIRED |
 | 36 | `src/pages/Accounts.jsx:193` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), executes | `/state/positions` | WIRED |
-| 37 | `src/pages/Connect.jsx:46` | (inline) | `/actions/ctrader-accounts` | via recordBrokerRoster(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 38 | `src/pages/Connect.jsx:54` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), executes | `/state/positions` | WIRED |
-| 39 | `src/pages/Connect.jsx:101` | cTrader connected — now tap the account the bot should trade | `/actions/ctrader-token` | `ctrader_access_token` ✓, `ctrader_refresh_token` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 40 | `src/pages/Connect.jsx:151` | loadAccounts | `/actions/ctrader-token` | `ctrader_access_token` ✓, `ctrader_refresh_token` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 41 | `src/pages/Connect.jsx:165` | selectAccount | `/actions/ctrader-select-account` | `ctrader_account_id` ✓, `ctrader_is_live` ✓, `ctrader_account_roles_json` ✓, `ctrader_trader_login` ✓, `symbol_id_map` ✓, `account_balance_usd` ✓, `account_leverage` ✓, via sweepMonitoredPositionsForAccounts(db, …), setState(db, …), recordAccountMoney(db, …), setAccountState(db, …), executes | `/state/health`, `/state/accounts`, `/state/watchlists`, `/state/config`, `/state/risk-config`, `/state/broker-cache`, `/state/risk-full`, `/state/symbol-map` | WIRED |
-| 42 | `src/pages/Desk.jsx:283` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), executes | `/state/positions` | WIRED |
-| 43 | `src/pages/Desk.jsx:301` | (inline) | `/actions/broker-history` | dynamic key(s) — per-account/overlay write, via applyBrokerHistoryMoney(db, …), setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 44 | `src/pages/Desk.jsx:810` | (inline) | `/actions/postmortem-sweep` | via runLossPostmortems(db, …), refreshLessonTuning(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 45 | `src/pages/Desk.jsx:1201` | (inline) | `/actions/llm-budget` | `llm_daily_cost_alert_usd` ✓, `llm_spend_alerted_day` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 46 | `src/pages/Desk.jsx:1247` | (inline) | `/actions/backfill-label-strategy` | via backfillLabelStrategy(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 47 | `src/pages/Risk.jsx:351` | saveRisk | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
-| 48 | `src/pages/Risk.jsx:354` | saveRisk | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 49 | `src/pages/Risk.jsx:361` | clearOverlay | `/actions/close-all` | via recordPositionEvent(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 50 | `src/pages/Risk.jsx:606` | (inline) | `/actions/balance` | dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
-| 51 | `src/pages/Risk.jsx:653` | (inline) | `/actions/loss-cap` | via clearOverlay(db, …), saveWithOverlay(db, …) | reload (heuristic) | WIRED |
-| 52 | `src/pages/Risk.jsx:654` | (inline) | `/actions/profit-ratchet` | `profit_ratchet_state_json` ✓, dynamic key(s) — per-account/overlay write, via clearOverlay(db, …), saveWithOverlay(db, …), setState(db, …) | reload (heuristic) | WIRED |
-| 53 | `src/pages/Risk.jsx:655` | (inline) | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | reload (heuristic) | WIRED |
-| 54 | `src/pages/Risk.jsx:712` | On | `/actions/loss-cap` | via clearOverlay(db, …), saveWithOverlay(db, …) | reload (heuristic) | WIRED |
-| 55 | `src/pages/Risk.jsx:753` | (inline) | `/actions/ratchet-account` | executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 56 | `src/pages/Risk.jsx:760` | (inline) | `/actions/ratchet-account` | executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 57 | `src/pages/Risk.jsx:798` | What that will look like | `/actions/profit-ratchet` | `profit_ratchet_state_json` ✓, dynamic key(s) — per-account/overlay write, via clearOverlay(db, …), saveWithOverlay(db, …), setState(db, …) | reload (heuristic) | WIRED |
-| 58 | `src/pages/Risk.jsx:802` | What that will look like | `/actions/profit-ratchet` | `profit_ratchet_state_json` ✓, dynamic key(s) — per-account/overlay write, via clearOverlay(db, …), saveWithOverlay(db, …), setState(db, …) | reload (heuristic) | WIRED |
-| 59 | `src/pages/Risk.jsx:834` | Protective stop distance | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | reload (heuristic) | WIRED |
-| 60 | `src/pages/Risk.jsx:1045` | (inline) | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
-| 61 | `src/pages/Risk.jsx:1187` | Guardian move | `/actions/weekend-bank` | `weekend_bank` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
-| 62 | `src/pages/Risk.jsx:1195` | On | `/actions/weekend-loss-flag` | `weekend_loss_flag` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
-| 63 | `src/pages/Risk.jsx:1205` | (inline) | `/actions/guardian-move-pct` | `guardian_move_pct` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
-| 64 | `src/pages/Risk.jsx:1287` | Mandatory | `/actions/vpo-settings` | `vpo_enabled` ✓, `vpo_config_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
-| 65 | `src/pages/Risk.jsx:1295` | (inline) | `/actions/exec-guard` | `exec_guard_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
-| 66 | `src/pages/Trade.jsx:538` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), executes | `/state/positions` | WIRED |
-| 67 | `src/pages/Trade.jsx:594` | (inline) | `/actions/validation-fill` | executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 68 | `src/pages/Trade.jsx:621` | placeOrder | `/actions/manual-order` | `api_ctrader_last_ok` ✓, via resolveSymbolId(db, …), setState(db, …), recordManualOrderTrade(db, …), executes | `/state/health` | WIRED |
-| 69 | `src/pages/Trade.jsx:698` | act('breaker', '/actions/reset-breaker')}>Reset breaker | `/actions/scan` | `last_scan_at` ✓, `last_scan_results` ✓, via setState(db, …), recordFxRates(db, …), executes | `/state/health`, `/state/scans`, `/state/watchlists` | WIRED |
-| 70 | `src/pages/Trade.jsx:706` | act('breaker', '/actions/reset-breaker')}>Reset breaker | `/actions/reset-breaker` | `circuit_breaker_tripped_at` ✓, via setState(db, …), clearErrorLog(db, …) | `/state/health` | WIRED |
-| 71 | `src/pages/Trade.jsx:710` | kill | `/actions/kill-all` | via setPhaseFlag(db, …), executes | reload (heuristic) | WIRED |
-| 72 | `src/pages/Trade.jsx:887` | Cancel BOT-placed resting orders that the bot | `/actions/reconcile-pending` | via reconcileBrokerPendingOrders(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 73 | `src/pages/Trade.jsx:935` | (inline) | `/actions/position-keeper-optout` | executes | reload (heuristic) | WIRED |
-| 74 | `src/pages/Trade.jsx:963` | (inline) | `/actions/reconcile-trades` | executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 75 | `src/pages/Trade.jsx:990` | (inline) | `/actions/exec-parity` | executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 76 | `src/pages/Tune.jsx:528` | apply | `/actions/stage-matrix` | via setStage(db, …), unpinTradeStageEverywhere(db, …), recordComboArms(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 77 | `src/pages/Tune.jsx:1291` | toggle | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
-| 78 | `src/pages/Tune.jsx:1320` | pushSymbols | `/actions/symbols` | `autopilot_symbols_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), writeWatchlist(db, …) | `/state/health`, `/state/config`, `/state/market-hours` | WIRED |
-| 79 | `src/pages/Tune.jsx:1412` | btAllStrategies | `/actions/backtest` | `backtest_baseline_json` ✓, `backtest_baselines_json` ✓, via setState(db, …), runEdgeWatchdog(db, …), executes | poll `/state/backtest-job` (background job) (heuristic) | WIRED |
-| 80 | `src/pages/Tune.jsx:1674` | Scan | `/actions/scan-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 81 | `src/pages/Tune.jsx:1678` | Scan | `/actions/analyze-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 82 | `src/pages/Tune.jsx:1699` | Autotrade scope | `/actions/autotrade-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 83 | `src/pages/Tune.jsx:1711` | Autotrade scope | `/actions/autotrade-scope` | `autotrade_scope` ✓, via setState(db, …) | `/state/config` | WIRED |
-| 84 | `src/pages/Tune.jsx:1813` | Strategy Autopilot mode | `/actions/pending-mode` | `pending_matrix_json` ✓, `pending_mode_enabled` ✓, via setState(db, …) | `/state/config`, `/state/health` | WIRED |
-| 85 | `src/pages/Tune.jsx:1831` | (inline) | `/actions/autopilot` | `autopilot_mode` ✓, `autopilot_max_changes` ✓, `autopilot_interval_ms` ✓, `autopilot_arm_bar_json` ✓, `autopilot_last_run_ms` ✓, via setState(db, …) | `/state/config` | WIRED |
-| 86 | `src/pages/Tune.jsx:1876` | Adaptive breaker | `/actions/adaptive-breaker` | `adaptive_breaker_json` ✓, via setState(db, …) | `/state/config` | WIRED |
-| 87 | `src/pages/Tune.jsx:1893` | Performance breaker (all hands on deck) | `/actions/performance-breaker` | `performance_breaker_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 88 | `src/pages/Tune.jsx:1904` | also auto-disarm autotrade | `/actions/performance-breaker` | `performance_breaker_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 89 | `src/pages/Tune.jsx:1916` | Regime gate | `/actions/regime-gate` | `regime_gate_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 90 | `src/pages/Tune.jsx:1931` | Session-open guard | `/actions/session-open-guard` | `session_open_guard_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 91 | `src/pages/Tune.jsx:1952` | Scan every | `/actions/loop-interval` | `loop_interval_min` ✓, via setState(db, …) | `/state/protection-audit`, `/state/config` | WIRED |
-| 92 | `src/pages/Tune.jsx:1982` | (inline) | `/actions/monitor-interval` | `monitor_interval_min` ✓, via setState(db, …) | `/state/config` | WIRED |
-| 93 | `src/pages/Tune.jsx:2009` | (inline) | `/actions/monitor-override` | `monitor_overrides_json` ✓, via setState(db, …) | `/state/config` | WIRED |
-| 94 | `src/pages/Tune.jsx:2035` | Override minutes | `/actions/monitor-override` | `monitor_overrides_json` ✓, via setState(db, …) | `/state/config` | WIRED |
-| 95 | `src/pages/Tune.jsx:2160` | (inline) | `/actions/asset-controller` | via setAssetController(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 96 | `src/pages/Tune.jsx:2181` | Weekend profit bank | `/actions/weekend-bank` | `weekend_bank` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
-| 97 | `src/pages/Tune.jsx:2201` | Tick guardian threshold | `/actions/guardian-move-pct` | `guardian_move_pct` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
-| 98 | `src/pages/Tune.jsx:2215` | Burn-in (track record) | `/actions/burn-in` | `burn_in_json` ✓, via setState(db, …) | `/state/config` | WIRED |
-| 99 | `src/pages/Tune.jsx:2238` | Loss Guardian | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 100 | `src/pages/Tune.jsx:2248` | Time cap | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 101 | `src/pages/Tune.jsx:2267` | Worked example | `/actions/closed-market-limits` | `closed_market_limits_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 102 | `src/pages/Tune.jsx:2284` | Worked example | `/actions/profit-keeper` | `profit_keeper_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 103 | `src/pages/Tune.jsx:2290` | Profit Keeper | `/actions/profit-keeper` | `profit_keeper_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 104 | `src/pages/Tune.jsx:2604` | (inline) | `/actions/cup-screener` | executes | poll `/state/job/` (background job) (heuristic) | WIRED |
-| 105 | `src/pages/Tune.jsx:3017` | (inline) | `/actions/instrument-tree` | dynamic key(s) — per-account/overlay write, via setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 106 | `src/pages/Tune.jsx:3460` | (inline) | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
-| 107 | `src/pages/Tune.jsx:3468` | (inline) | `/actions/arm-benchmarks` | `arm_benchmarks_json` ✓, via setState(db, …) | `/state/arm-benchmarks` | WIRED |
-| 108 | `src/pages/Tune.jsx:3491` | (inline) | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
-| 109 | `src/pages/Tune.jsx:3499` | (inline) | `/actions/arm-benchmarks` | `arm_benchmarks_json` ✓, via setState(db, …) | `/state/arm-benchmarks` | WIRED |
-| 110 | `src/pages/Tune.jsx:3500` | (inline) | `/actions/scan-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 111 | `src/pages/Tune.jsx:3501` | (inline) | `/actions/analyze-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 112 | `src/pages/Tune.jsx:3502` | (inline) | `/actions/autotrade-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
-| 113 | `src/pages/Tune.jsx:3525` | (inline) | `/actions/pending-mode` | `pending_matrix_json` ✓, `pending_mode_enabled` ✓, via setState(db, …) | `/state/config`, `/state/health` | WIRED |
-| 114 | `src/pages/Tune.jsx:3769` | Preset imported | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
-| 115 | `src/pages/Tune.jsx:3770` | Preset imported | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
-| 116 | `src/pages/Tune.jsx:3771` | Preset imported | `/actions/fib-rsi-filter` | `fib_rsi_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-rsi-filter` | WIRED |
-| 117 | `src/pages/Tune.jsx:3772` | Preset imported | `/actions/fib-vwap-filter` | `fib_vwap_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-vwap-filter` | WIRED |
-| 118 | `src/pages/Tune.jsx:3773` | Preset imported | `/actions/fib-fvg-filter` | `fib_fvg_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-fvg-filter` | WIRED |
-| 119 | `src/pages/Tune.jsx:3774` | Preset imported | `/actions/symbols` | `autopilot_symbols_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), writeWatchlist(db, …) | `/state/health`, `/state/config`, `/state/market-hours` | WIRED |
+| 37 | `src/pages/BrowserSessions.jsx:26` | disconnect | `/actions/sessions/${encodeURIComponent(pending.id)}/revoke` | via revokeSession(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 38 | `src/pages/Connect.jsx:46` | (inline) | `/actions/ctrader-accounts` | via recordBrokerRoster(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 39 | `src/pages/Connect.jsx:54` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), executes | `/state/positions` | WIRED |
+| 40 | `src/pages/Connect.jsx:101` | cTrader connected — now tap the account the bot should trade | `/actions/ctrader-token` | `ctrader_access_token` ✓, `ctrader_refresh_token` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 41 | `src/pages/Connect.jsx:151` | loadAccounts | `/actions/ctrader-token` | `ctrader_access_token` ✓, `ctrader_refresh_token` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 42 | `src/pages/Connect.jsx:165` | selectAccount | `/actions/ctrader-select-account` | `ctrader_account_id` ✓, `ctrader_is_live` ✓, `ctrader_account_roles_json` ✓, `ctrader_trader_login` ✓, `symbol_id_map` ✓, `account_balance_usd` ✓, `account_leverage` ✓, via sweepMonitoredPositionsForAccounts(db, …), setState(db, …), recordAccountMoney(db, …), setAccountState(db, …), executes | `/state/health`, `/state/accounts`, `/state/watchlists`, `/state/config`, `/state/risk-config`, `/state/broker-cache`, `/state/risk-full`, `/state/symbol-map` | WIRED |
+| 43 | `src/pages/Desk.jsx:286` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), executes | `/state/positions` | WIRED |
+| 44 | `src/pages/Desk.jsx:304` | (inline) | `/actions/broker-history` | dynamic key(s) — per-account/overlay write, via applyBrokerHistoryMoney(db, …), setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 45 | `src/pages/Desk.jsx:825` | (inline) | `/actions/postmortem-sweep` | via runLossPostmortems(db, …), refreshLessonTuning(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 46 | `src/pages/Desk.jsx:1216` | (inline) | `/actions/llm-budget` | `llm_daily_cost_alert_usd` ✓, `llm_spend_alerted_day` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 47 | `src/pages/Desk.jsx:1262` | (inline) | `/actions/backfill-label-strategy` | via backfillLabelStrategy(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 48 | `src/pages/Risk.jsx:351` | saveRisk | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
+| 49 | `src/pages/Risk.jsx:354` | saveRisk | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 50 | `src/pages/Risk.jsx:361` | clearOverlay | `/actions/close-all` | via recordPositionEvent(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 51 | `src/pages/Risk.jsx:606` | (inline) | `/actions/balance` | dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
+| 52 | `src/pages/Risk.jsx:653` | (inline) | `/actions/loss-cap` | via clearOverlay(db, …), saveWithOverlay(db, …) | reload (heuristic) | WIRED |
+| 53 | `src/pages/Risk.jsx:654` | (inline) | `/actions/profit-ratchet` | `profit_ratchet_state_json` ✓, dynamic key(s) — per-account/overlay write, via clearOverlay(db, …), saveWithOverlay(db, …), setState(db, …) | reload (heuristic) | WIRED |
+| 54 | `src/pages/Risk.jsx:655` | (inline) | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | reload (heuristic) | WIRED |
+| 55 | `src/pages/Risk.jsx:712` | On | `/actions/loss-cap` | via clearOverlay(db, …), saveWithOverlay(db, …) | reload (heuristic) | WIRED |
+| 56 | `src/pages/Risk.jsx:753` | (inline) | `/actions/ratchet-account` | executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 57 | `src/pages/Risk.jsx:760` | (inline) | `/actions/ratchet-account` | executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 58 | `src/pages/Risk.jsx:798` | What that will look like | `/actions/profit-ratchet` | `profit_ratchet_state_json` ✓, dynamic key(s) — per-account/overlay write, via clearOverlay(db, …), saveWithOverlay(db, …), setState(db, …) | reload (heuristic) | WIRED |
+| 59 | `src/pages/Risk.jsx:802` | What that will look like | `/actions/profit-ratchet` | `profit_ratchet_state_json` ✓, dynamic key(s) — per-account/overlay write, via clearOverlay(db, …), saveWithOverlay(db, …), setState(db, …) | reload (heuristic) | WIRED |
+| 60 | `src/pages/Risk.jsx:834` | Protective stop distance | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | reload (heuristic) | WIRED |
+| 61 | `src/pages/Risk.jsx:1045` | (inline) | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
+| 62 | `src/pages/Risk.jsx:1187` | Guardian move | `/actions/weekend-bank` | `weekend_bank` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
+| 63 | `src/pages/Risk.jsx:1195` | On | `/actions/weekend-loss-flag` | `weekend_loss_flag` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
+| 64 | `src/pages/Risk.jsx:1205` | (inline) | `/actions/guardian-move-pct` | `guardian_move_pct` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
+| 65 | `src/pages/Risk.jsx:1287` | Mandatory | `/actions/vpo-settings` | `vpo_enabled` ✓, `vpo_config_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
+| 66 | `src/pages/Risk.jsx:1295` | (inline) | `/actions/exec-guard` | `exec_guard_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
+| 67 | `src/pages/Trade.jsx:538` | (inline) | `/actions/broker-positions` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), executes | `/state/positions` | WIRED |
+| 68 | `src/pages/Trade.jsx:594` | (inline) | `/actions/validation-fill` | executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 69 | `src/pages/Trade.jsx:621` | placeOrder | `/actions/manual-order` | `api_ctrader_last_ok` ✓, via resolveSymbolId(db, …), setState(db, …), recordManualOrderTrade(db, …), executes | `/state/health` | WIRED |
+| 70 | `src/pages/Trade.jsx:698` | act('breaker', '/actions/reset-breaker')}>Reset breaker | `/actions/scan` | `last_scan_at` ✓, `last_scan_results` ✓, via setState(db, …), recordFxRates(db, …), executes | `/state/health`, `/state/scans`, `/state/watchlists` | WIRED |
+| 71 | `src/pages/Trade.jsx:706` | act('breaker', '/actions/reset-breaker')}>Reset breaker | `/actions/reset-breaker` | `circuit_breaker_tripped_at` ✓, via setState(db, …), clearErrorLog(db, …) | `/state/health` | WIRED |
+| 72 | `src/pages/Trade.jsx:710` | kill | `/actions/kill-all` | via setPhaseFlag(db, …), executes | reload (heuristic) | WIRED |
+| 73 | `src/pages/Trade.jsx:887` | Cancel BOT-placed resting orders that the bot | `/actions/reconcile-pending` | via reconcileBrokerPendingOrders(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 74 | `src/pages/Trade.jsx:935` | (inline) | `/actions/position-keeper-optout` | executes | reload (heuristic) | WIRED |
+| 75 | `src/pages/Trade.jsx:963` | (inline) | `/actions/reconcile-trades` | executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 76 | `src/pages/Trade.jsx:990` | (inline) | `/actions/exec-parity` | executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 77 | `src/pages/Tune.jsx:528` | apply | `/actions/stage-matrix` | via setStage(db, …), unpinTradeStageEverywhere(db, …), recordComboArms(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 78 | `src/pages/Tune.jsx:1291` | toggle | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
+| 79 | `src/pages/Tune.jsx:1320` | pushSymbols | `/actions/symbols` | `autopilot_symbols_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), writeWatchlist(db, …) | `/state/health`, `/state/config`, `/state/market-hours` | WIRED |
+| 80 | `src/pages/Tune.jsx:1412` | btAllStrategies | `/actions/backtest` | `backtest_baseline_json` ✓, `backtest_baselines_json` ✓, via setState(db, …), runEdgeWatchdog(db, …), executes | poll `/state/backtest-job` (background job) (heuristic) | WIRED |
+| 81 | `src/pages/Tune.jsx:1674` | Scan | `/actions/scan-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 82 | `src/pages/Tune.jsx:1678` | Scan | `/actions/analyze-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 83 | `src/pages/Tune.jsx:1699` | Autotrade scope | `/actions/autotrade-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 84 | `src/pages/Tune.jsx:1711` | Autotrade scope | `/actions/autotrade-scope` | `autotrade_scope` ✓, via setState(db, …) | `/state/config` | WIRED |
+| 85 | `src/pages/Tune.jsx:1813` | Strategy Autopilot mode | `/actions/pending-mode` | `pending_matrix_json` ✓, `pending_mode_enabled` ✓, via setState(db, …) | `/state/config`, `/state/health` | WIRED |
+| 86 | `src/pages/Tune.jsx:1831` | (inline) | `/actions/autopilot` | `autopilot_mode` ✓, `autopilot_max_changes` ✓, `autopilot_interval_ms` ✓, `autopilot_arm_bar_json` ✓, `autopilot_last_run_ms` ✓, via setState(db, …) | `/state/config` | WIRED |
+| 87 | `src/pages/Tune.jsx:1876` | Adaptive breaker | `/actions/adaptive-breaker` | `adaptive_breaker_json` ✓, via setState(db, …) | `/state/config` | WIRED |
+| 88 | `src/pages/Tune.jsx:1893` | Performance breaker (all hands on deck) | `/actions/performance-breaker` | `performance_breaker_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 89 | `src/pages/Tune.jsx:1904` | also auto-disarm autotrade | `/actions/performance-breaker` | `performance_breaker_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 90 | `src/pages/Tune.jsx:1916` | Regime gate | `/actions/regime-gate` | `regime_gate_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 91 | `src/pages/Tune.jsx:1931` | Session-open guard | `/actions/session-open-guard` | `session_open_guard_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 92 | `src/pages/Tune.jsx:1952` | Scan every | `/actions/loop-interval` | `loop_interval_min` ✓, via setState(db, …) | `/state/protection-audit`, `/state/config` | WIRED |
+| 93 | `src/pages/Tune.jsx:1982` | (inline) | `/actions/monitor-interval` | `monitor_interval_min` ✓, via setState(db, …) | `/state/config` | WIRED |
+| 94 | `src/pages/Tune.jsx:2009` | (inline) | `/actions/monitor-override` | `monitor_overrides_json` ✓, via setState(db, …) | `/state/config` | WIRED |
+| 95 | `src/pages/Tune.jsx:2035` | Override minutes | `/actions/monitor-override` | `monitor_overrides_json` ✓, via setState(db, …) | `/state/config` | WIRED |
+| 96 | `src/pages/Tune.jsx:2160` | (inline) | `/actions/asset-controller` | via setAssetController(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 97 | `src/pages/Tune.jsx:2181` | Weekend profit bank | `/actions/weekend-bank` | `weekend_bank` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
+| 98 | `src/pages/Tune.jsx:2201` | Tick guardian threshold | `/actions/guardian-move-pct` | `guardian_move_pct` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
+| 99 | `src/pages/Tune.jsx:2215` | Burn-in (track record) | `/actions/burn-in` | `burn_in_json` ✓, via setState(db, …) | `/state/config` | WIRED |
+| 100 | `src/pages/Tune.jsx:2238` | Loss Guardian | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 101 | `src/pages/Tune.jsx:2248` | Time cap | `/actions/loss-guardian` | via clearG(db, …), saveG(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 102 | `src/pages/Tune.jsx:2267` | Worked example | `/actions/closed-market-limits` | `closed_market_limits_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 103 | `src/pages/Tune.jsx:2284` | Worked example | `/actions/profit-keeper` | `profit_keeper_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 104 | `src/pages/Tune.jsx:2290` | Profit Keeper | `/actions/profit-keeper` | `profit_keeper_json` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 105 | `src/pages/Tune.jsx:2604` | (inline) | `/actions/cup-screener` | executes | poll `/state/job/` (background job) (heuristic) | WIRED |
+| 106 | `src/pages/Tune.jsx:3017` | (inline) | `/actions/instrument-tree` | dynamic key(s) — per-account/overlay write, via setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 107 | `src/pages/Tune.jsx:3460` | (inline) | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
+| 108 | `src/pages/Tune.jsx:3468` | (inline) | `/actions/arm-benchmarks` | `arm_benchmarks_json` ✓, via setState(db, …) | `/state/arm-benchmarks` | WIRED |
+| 109 | `src/pages/Tune.jsx:3491` | (inline) | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
+| 110 | `src/pages/Tune.jsx:3499` | (inline) | `/actions/arm-benchmarks` | `arm_benchmarks_json` ✓, via setState(db, …) | `/state/arm-benchmarks` | WIRED |
+| 111 | `src/pages/Tune.jsx:3500` | (inline) | `/actions/scan-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 112 | `src/pages/Tune.jsx:3501` | (inline) | `/actions/analyze-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 113 | `src/pages/Tune.jsx:3502` | (inline) | `/actions/autotrade-toggle` | via setPhaseFlag(db, …) | reload (heuristic) | WIRED |
+| 114 | `src/pages/Tune.jsx:3525` | (inline) | `/actions/pending-mode` | `pending_matrix_json` ✓, `pending_mode_enabled` ✓, via setState(db, …) | `/state/config`, `/state/health` | WIRED |
+| 115 | `src/pages/Tune.jsx:3769` | Preset imported | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
+| 116 | `src/pages/Tune.jsx:3770` | Preset imported | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
+| 117 | `src/pages/Tune.jsx:3771` | Preset imported | `/actions/fib-rsi-filter` | `fib_rsi_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-rsi-filter` | WIRED |
+| 118 | `src/pages/Tune.jsx:3772` | Preset imported | `/actions/fib-vwap-filter` | `fib_vwap_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-vwap-filter` | WIRED |
+| 119 | `src/pages/Tune.jsx:3773` | Preset imported | `/actions/fib-fvg-filter` | `fib_fvg_filter` ✓, via setState(db, …), recordArmingChange(db, …) | `/state/fib-fvg-filter` | WIRED |
+| 120 | `src/pages/Tune.jsx:3774` | Preset imported | `/actions/symbols` | `autopilot_symbols_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), writeWatchlist(db, …) | `/state/health`, `/state/config`, `/state/market-hours` | WIRED |
 
 ### State routes read by src/ (GET)
 
@@ -194,6 +195,7 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | `/state/account-chrome` | yes |
 | `/state/account-engineering` | yes |
 | `/state/account-history` | yes |
+| `/state/account-overview` | yes |
 | `/state/account-phases` | yes |
 | `/state/account-settings` | yes |
 | `/state/account-traffic-lights` | yes |
@@ -244,7 +246,6 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | `/state/market-pulse` | yes |
 | `/state/open-duplicates` | yes |
 | `/state/orders` | yes |
-| `/state/perf-ledger` | yes |
 | `/state/performance-populations` | yes |
 | `/state/phase-audit` | yes |
 | `/state/position/` | yes |

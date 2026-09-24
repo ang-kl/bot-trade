@@ -16,10 +16,16 @@ import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
-import AccountHistory from '../components/AccountHistory.jsx'
+import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
+import { useAccountOverview } from '../lib/use-account-overview.js'
+import { currentAccountTotals } from '../lib/current-account-totals.js'
+import { calendarDay } from '../../agent/shared/performance-calendar.js'
+import { useLiveTicks } from '../lib/useLiveTicks.js'
+import { displayQuote } from '../lib/display-quote.js'
+import AllTimeAccounts from '../components/AllTimeAccounts.jsx'
 import BlockerReport from '../components/BlockerReport.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
-import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '../lib/hourly-order.js'
+import { rollingHourWindows, rollingWindow, displayOrder } from '../lib/hourly-order.js'
 import { openingCountLabel } from '../lib/hourly-openings.js'
 import { activityEvidence } from '../lib/hourly-activity.js'
 import { hourLabel, dateFlags } from '../lib/hour-label.js'
@@ -39,7 +45,7 @@ import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import NumberFlow from '@number-flow/react'
 import { useAutoAnimate } from '@formkit/auto-animate/react'
-import { MARKET_COLS, dayAnchorMs, isFxWeekend, closedAtMs as closedMs } from '../../agent/shared/formulas.js'
+import { MARKET_COLS, isFxWeekend, closedAtMs as closedMs } from '../../agent/shared/formulas.js'
 import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 import Collapse from '../components/common/Collapse.jsx'
@@ -495,14 +501,15 @@ function StratMxBody({ stratMx }) {
 function CryptoBody({ crypto }) {
   return (
     <>
+      <p style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{crypto.feedNote}</p>
       <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
         <span>Symbol</span><span>Live price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
       </div>
       {crypto.rows.map(c2 => (
         <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
           <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{c2.sym}</span>
-          <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: P_MU }}>—</span>
-          <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 6, color: P_MU }}>—</span>
+          <span title={c2.quoteNote} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: P_MU }}>{fmtPx(c2.price)}</span>
+          <span title={c2.quoteNote} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 6, color: P_MU }}>{c2.delta == null ? '—' : `${signed(c2.delta)}%`}</span>
           <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: c2.col }}>{c2.pnl}</span>
           <span style={{ fontSize: 'var(--fs-body)', color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
         </div>
@@ -1064,6 +1071,9 @@ const MOBILE_SCREENS = [
 
 
 export default function Performance() {
+  const overview = useAccountOverview()
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  const populationUrl = `/state/performance-populations?timeZone=${encodeURIComponent(timeZone)}`
   const [ledger, setLedger] = useState(null)
   const [populationReport, setPopulationReport] = useState(null)
   const [tradeScope, setTradeScope] = useState(null)
@@ -1086,6 +1096,9 @@ export default function Performance() {
   // worse, Risk started on 'all' while this started on the traded account, so
   // two pages disagreed about whose numbers you were looking at.
   const [acct, setAcct] = useLensAccount('all')
+  const quoteAccount = acct === 'all' ? selectedAccountId == null ? null : String(selectedAccountId) : acct
+  const cryptoTicks = useLiveTicks(quoteAccount ? CRYPTO_SYMS : [], quoteAccount)
+  const quoteNow = useTableClock(5000)
   const [allTrades, setAllTrades] = useState([])
   const [openingReport, setOpeningReport] = useState(null)
   // Portfolio-wide closed trades, fetched alongside the scoped set. The
@@ -1109,7 +1122,8 @@ export default function Performance() {
   // "no post-mortem written" per trade rather than implying one exists.
   const [postmortems, setPostmortems] = useState([])
   const [positions, setPositions] = useState([])
-  const [ledgers, setLedgers] = useState({}) // per-account ledgers (balance + windows)
+  const ledgers = useMemo(() => Object.fromEntries((overview?.accounts || []).map(a => [a.accountId,
+    { ...reportLedger(populationReport, a.accountId), dailyLossPct: a.dailyLossPct }])), [overview, populationReport])
   const [riskFull, setRiskFull] = useState(null)
   const [screen, setScreen] = useState('now') // mobile pill nav
   const [error, setError] = useState('')
@@ -1124,6 +1138,7 @@ export default function Performance() {
   const positionsAvailable = agentConfigured() && !error && posScope.accountId === acct
 
   const load = useCallback(async () => {
+    if (pageAsleep()) return
     const generation = ++loadGeneration.current
     if (!agentConfigured()) {
       setPopulationReport(null); setAnalytics(null); setRiskFull(null)
@@ -1137,54 +1152,38 @@ export default function Performance() {
       // switch account"). `?account=` is now threaded through all four —
       // 'all' means the portfolio view, explicitly.
       const q = acct === 'all' ? '?account=all' : `?account=${encodeURIComponent(acct)}`
-      const [led, ac, t, p, pm, dd, populations] = await Promise.all([
-        agentGet(`/state/perf-ledger${acct === 'all' ? '' : `?account=${encodeURIComponent(acct)}`}`),
+      const [ac, t, p, populations, an] = await Promise.all([
         agentGet('/state/accounts').catch(() => null),
         agentGet(`/state/trades${q}`).catch(() => null),
         agentGet(`/state/positions${q}`).catch(() => null),
-        agentGet(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
-        // Daily decision counts for the equity chart — the raw risk-events
-        // page above spans minutes on a busy agent, not days.
-        agentGet(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}`).catch(() => null),
-        agentGet('/state/performance-populations').catch(() => null),
+        agentGet(populationUrl).catch(() => null),
+        agentGet(`/state/account-analytics?account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
-      // Whole-period statistics — NOT derived from the 100-row trades
-      // response above (audit 2.1). Same account scope, all closed trades.
-      const an = await agentGet(`/state/account-analytics?account=${encodeURIComponent(acct)}`).catch(() => null)
       if (generation !== loadGeneration.current) return
       setPopulationReport(populations?.status === 'complete' ? populations : null)
       const tradeRows = scopedPerformanceRows(t, acct, 'trades')
       const positionRows = scopedPerformanceRows(p, acct, 'positions')
       setTradeScope(tradeRows ? acct : null)
       setAnalytics(an && !an.error ? an : null)
-      setLedger(led)
+      setLedger(populations?.status === 'complete' ? reportLedger(populations, acct) : null)
       setAccounts(ac?.accounts || [])
       setSelectedAccountId(ac?.selectedAccountId || null)
       setAllTrades(tradeRows || [])
       // With 'all' the scoped fetch above already IS the portfolio; the
       // cross-account fetch below only runs when one account is selected.
 
-      setDecisionsDaily(dd?.rows ?? null)
       setPositions(positionRows || [])
       setPosScope({ accountId: positionRows ? acct : null, legacyRows: p?.legacyRows ?? 0 })
-      setPostmortems(pm?.rows || pm?.postmortems || [])
-      // Per-account ledgers feed the accounts detail row (balance, day P&L
-      // scope, 30D forecast pace) — small server-side aggregations, one per
-      // registry row. risk-full supplies the real daily-loss config + the
-      // selected account's broker equity.
-      const accRows = ac?.accounts || []
-      const [perAcct, rf] = await Promise.all([
-        Promise.all(accRows.map(a =>
-          agentGet(`/state/perf-ledger?account=${encodeURIComponent(a.account_id)}`)
-            .then(l => [a.account_id, l]).catch(() => null))),
-        agentGet('/state/risk-full').catch(() => null),
-        // Cross-account sections (per-account cards, the two "× account"
-        // gradients) need every account's closed trades, not the selected
-        // account's. Runs in this second wave so it never delays the first paint.
-
+      // Two bounded history workers at a time. Current money refreshes
+      // independently; no seven-fold rerun of the same close population.
+      const [pm, dd, rf] = await Promise.all([
+        agentGet(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
+        agentGet(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
+        acct === 'all' ? null : agentGet(`/state/risk-full?account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
       if (generation !== loadGeneration.current) return
-      setLedgers(Object.fromEntries(perAcct.filter(Boolean)))
+      setPostmortems(pm?.rows || pm?.postmortems || [])
+      setDecisionsDaily(dd?.rows ?? null)
       setRiskFull(rf)
 
       setLoadedAt(populations?.asOfMs ?? Date.now())
@@ -1195,7 +1194,7 @@ export default function Performance() {
         setError(e.message)
       }
     }
-  }, [acct])
+  }, [acct, populationUrl, timeZone])
 
   // Instant paint (owner 2026-07-28: "not able to see the information now
   // is frustrating") — hydrate every section synchronously from the last
@@ -1203,8 +1202,6 @@ export default function Performance() {
   // then updates in place. A revisit or slow agent shows numbers
   // immediately instead of a blank page.
   useEffect(() => {
-    const led = swrPeek(`/state/perf-ledger${acct !== 'all' ? `?account=${encodeURIComponent(acct)}` : ''}`)
-    if (led) setLedger(led)
     const ac = swrPeek('/state/accounts')
     if (ac) { setAccounts(ac.accounts || []); setSelectedAccountId(ac.selectedAccountId || null) }
     // These keys MUST match the URLs `load` fetches, or the instant-paint layer
@@ -1214,27 +1211,32 @@ export default function Performance() {
     const t2 = swrPeek(`/state/trades${q}`)
     const tradeRows = scopedPerformanceRows(t2, acct, 'trades')
     if (tradeRows) setAllTrades(tradeRows)
-    const dd2 = swrPeek(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}`)
+    const dd2 = swrPeek(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`)
     if (dd2) setDecisionsDaily(dd2.rows || [])
     const p2 = swrPeek(`/state/positions${q}`)
     const positionRows = scopedPerformanceRows(p2, acct, 'positions')
     if (positionRows) { setPositions(positionRows); setPosScope({ accountId: acct, legacyRows: p2?.legacyRows ?? 0 }) }
     const pm2 = swrPeek(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`)
     if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
-    const rf2 = swrPeek('/state/risk-full')
+    const rf2 = acct === 'all' ? null : swrPeek(`/state/risk-full?account=${encodeURIComponent(acct)}`)
     if (rf2) setRiskFull(rf2)
     if (tradeRows) setTradeScope(acct)
-    const populations = swrPeek('/state/performance-populations')
-    if (populations?.status === 'complete') setPopulationReport(populations)
-    if (led || t2) setLoadedAt(Date.now())
+    const populations = swrPeek(populationUrl)
+    if (populations?.status === 'complete') {
+      setPopulationReport(populations); setLedger(reportLedger(populations, acct)); setLoadedAt(populations.asOfMs)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const invalidateLoad = useCallback(() => { loadGeneration.current++ }, [])
   useEffect(() => {
     const kick = setTimeout(load, 0)
-    const t = setInterval(() => { if (!pageAsleep()) load() }, REFRESH_MS)
-    return () => { clearTimeout(kick); clearInterval(t); invalidateLoad() }
+    const refresh = () => { if (!pageAsleep()) load() }
+    const t = setInterval(refresh, REFRESH_MS)
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('agent-wake', refresh)
+    return () => { clearTimeout(kick); clearInterval(t); invalidateLoad()
+      document.removeEventListener('visibilitychange', refresh); window.removeEventListener('agent-wake', refresh) }
   }, [load, invalidateLoad])
 
   // An account switch must not wait out this page's poll interval (see
@@ -1259,7 +1261,7 @@ export default function Performance() {
   // order and NOW marker are the only things on this page that must follow the
   // wall clock rather than the data poll. One timer aimed at the next exact
   // hour, never a short interval; see lib/use-hour-tick.js.
-  const hourNow = useTableClock()
+  const hourNow = useTableClock(60_000)
 
   // Independent, bounded aggregate: the journal contains only closed/rejected
   // rows and is capped at 100. It cannot answer "how many trades opened?".
@@ -1268,6 +1270,7 @@ export default function Performance() {
   useEffect(() => {
     let stopped = false, generation = 0
     const refresh = async () => {
+      if (pageAsleep()) return
       const mine = ++generation
       let report = null
       if (agentConfigured()) {
@@ -1291,18 +1294,11 @@ export default function Performance() {
     return closed.filter(t2 => String(t2.account_id ?? '') === acct)
   }, [allTrades, acct, journalAvailable])
 
-  // The "Today" window. Owner (2026-07-25, Saturday): "under today should
-  // show Friday past 24h closure trades — don't leave it blank as today is
-  // SAT" — during the FX weekend the current FX day is an empty gap (market
-  // closed since Fri 17:00 NY), so the card falls back to the last
-  // COMPLETED FX day: Thu 17:00 NY → Fri 17:00 NY, Friday's full 24 hours.
+  // Owner 25 September: Performance uses local calendar midnight. Broker-day
+  // limits remain on their separate risk clock, including on weekends.
   const todayWin = useMemo(() => {
-    const anchor = dayAnchorMs(loadedAt)
-    if (isFxWeekend(loadedAt)) {
-      return { from: anchor - 24 * 3600_000, to: anchor, weekend: true, label: "market closed — showing Friday's full FX day" }
-    }
-    return { from: anchor, to: loadedAt, weekend: false, label: null }
-  }, [loadedAt])
+    return { from: calendarDay(loadedAt, timeZone), to: loadedAt, weekend: false, label: `midnight in ${timeZone}` }
+  }, [loadedAt, timeZone])
 
   // ROLLING 24 HOURS (owner ruling, 2026-07-31): "The entire card must
   // represent one consistent rolling 24-hour period. Do not leave the card
@@ -1314,7 +1310,7 @@ export default function Performance() {
   // closing on a boundary belongs to one row and one row only.
   //
   // `todayWin` survives for the SEPARATE "Today by market session" card lower
-  // down, which is still an FX-day view and which this ruling does not touch.
+  // down, which follows the separately confirmed local-calendar day.
   // Bounds come from rollingWindow(), the same helper the hourly rows are
   // built from, so the two cannot drift apart under a later edit.
   const rollingWin = useMemo(() => rollingWindow(hourNow, 24), [hourNow])
@@ -1419,7 +1415,7 @@ export default function Performance() {
     const withToday = new Set(reportGroups(populationReport, 'day').map(g => g.accountId).filter(Boolean))
     const inPlay = accounts.filter(a => {
       const id = String(a.account_id)
-      return a.enabled === 1 || withOpen.has(id) || withToday.has(id)
+      return a.enabled === 1 || withOpen.has(id) || withToday.has(id) || overview?.accounts.some(r => r.accountId === id)
     })
     return inPlay.map(a => {
       const led = ledgers[a.account_id]
@@ -1429,7 +1425,8 @@ export default function Performance() {
       // limit this account trades under. The global risk-full figure used
       // to stand in for every card, which put the selected demo account's
       // −1,375 daily stop under two unfunded live logins.
-      const bal = led?.balance ?? null
+      const current = overview?.accounts.find(r => r.accountId === String(a.account_id))
+      const bal = current?.balance ?? null
       const dailyLossPct = led?.dailyLossPct ?? null
       const dayStats = reportStats(populationReport, 'day', String(a.account_id))
       const day = dayStats.pnl, gw = dayStats.gw, gl = dayStats.gl
@@ -1440,9 +1437,8 @@ export default function Performance() {
       const ext30 = w30?.external && w30.external.n > 0 ? { n: w30.external.n, net: w30.external.net, byOrigin: w30.external.byOrigin || {} } : null
       const cap = bal != null && dailyLossPct != null ? bal * dailyLossPct : null
       const used = null // historical P&L units are not verified against the sizing input
-      const isSel = a.account_id === selectedAccountId
-      const equity = isSel ? riskFull?.margin?.equity ?? null : null
-      const live = isSel && equity != null && bal != null ? equity - bal : null
+      const equity = current?.equity ?? null
+      const live = current?.openPnl ?? null
       // A card shown DESPITE being disabled is labelled, so "why is this here"
       // never needs asking: it is here because it still carries risk.
       const dormantButHeld = a.enabled !== 1
@@ -1455,14 +1451,16 @@ export default function Performance() {
         // 0 live · 0 demo for exactly this reason.)
         isLive: a.is_live === 1,
         name: `${a.is_live ? 'Live' : 'Demo'} · ${accountNumbers(a)}${dormantButHeld ? ' · OFF' : ''}`,
-        ccy: 'stored units · unverified',
+        ccy: current?.currency || 'currency unavailable',
+        currentMoneyVerified: !!current?.currency,
+        readingAt: current?.snapshotAt,
         bal, day, gw, gl, n30, ext30, cap, used, equity, live,
         hasToday: dayStats.n != null,
         moneyVerified: false,
         usedCol: used == null ? P_MU : used > 66 ? P_DN : used > 33 ? P_WRN : P_ACC,
       }
     })
-  }, [accounts, ledgers, riskFull, populationReport, selectedAccountId])
+  }, [accounts, ledgers, populationReport, overview])
 
   // The Data-feed card's cash / margin / equity — WHOSE, stated.
   //
@@ -1474,21 +1472,7 @@ export default function Performance() {
   // margin (nothing streams it), so it is a dash and the card says why; the
   // balance does exist, in that account's own ledger. Same convention acctCards
   // already uses for per-card equity.
-  const feed = useMemo(() => {
-    const sel = selectedAccountId == null ? null : String(selectedAccountId)
-    const isSel = acct === 'all' ? true : acct === sel
-    const live = isSel ? riskFull?.margin ?? null : null
-    return {
-      balance: isSel ? riskFull?.account?.balance ?? null : ledgers[acct]?.balance ?? null,
-      freeMargin: live?.freeMargin ?? null,
-      equity: live?.equity ?? null,
-      note: acct === 'all'
-        ? `cash, margin and equity are the broker-connected account${sel ? ` · ${sel}` : ''} — the only one with a live session`
-        : isSel
-          ? 'broker-connected account — live margin and equity'
-          : 'not the broker-connected account: balance comes from its own ledger; live margin and equity are not streamed for it',
-    }
-  }, [acct, selectedAccountId, riskFull, ledgers])
+  const feed = useMemo(() => currentAccountTotals(overview, acct), [overview, acct])
 
   // Open positions split by MARKET STATE (owner 2026-07-24: open trades sat
   // stuck through a Friday close the UI never surfaced). /state/positions
@@ -1559,9 +1543,7 @@ export default function Performance() {
   // before initialization". Performance is the landing route AND is in the
   // main bundle, so the throw took out the whole app: every page rendered
   // blank. Shipped in #482 and live until 2026-07-29.
-  const liveFloating = useMemo(
-    () => { const ids = new Set(positions.map(p => p.account_id)); return ids.size === 1 && !ids.has(null) ? totalFloating(openSplit.floatTot, openSplit.closedTot, openSplit.weekendTot) : null },
-    [openSplit, positions])
+  const liveFloating = feed.openPnl
 
 
   // Stat tiles migrated verbatim from Desk's old Performance section —
@@ -1682,15 +1664,20 @@ export default function Performance() {
   }, [populationReport, acct])
 
   const crypto = useMemo(() => ({
+    feedNote: `Price feed: account ${quoteAccount || 'not selected'} · midpoint · Δ now = change since this page’s first tick · quotes older than 15 seconds are unavailable.`,
     k: [['24h', '24H'], ['1w', '7D'], ['30d', '30D']].map(([key, label]) => {
       const a = reportStats(populationReport, key, acct, g => g.market === 'crypto')
       return { k: label, v: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN }
     }),
     rows: CRYPTO_SYMS.map(sym => { const a = reportStats(populationReport, '1w', acct, g => g.sym === sym)
-      return { sym, pnl: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN,
+      const tick = cryptoTicks[sym]
+      const { price, delta } = displayQuote(tick?.accountId === quoteAccount ? tick : null, quoteNow)
+      return { sym, price, delta, spread: price == null ? null : tick.ask - tick.bid,
+        quoteNote: tick?.receivedAtMs ? `Broker receipt ${new Date(tick.receivedAtMs).toLocaleTimeString()}` : 'No quote received',
+        pnl: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN,
         meta: `${a.n ?? 'unavailable'} closes · ${a.pricedN ?? '—'} priced · ${a.wr == null ? '—' : a.wr.toFixed(1)}% win` }
     }),
-  }), [populationReport, acct])
+  }), [populationReport, acct, cryptoTicks, quoteAccount, quoteNow])
 
   // Winners & Laggards explained — the prototype's anat() over the REAL
   // best/worst closed trades (30D): outcome · planned R:R · risked · held,
@@ -1809,8 +1796,6 @@ export default function Performance() {
     <div className="space-y-2">
       <SwitchingNote to={switchingTo} />
       <SectionNavFab />
-      <AccountHistory key={`history:${acct}`} accountId={acct} />
-      <BlockerReport key={`blockers:${acct}`} accountId={acct} />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}
       <style>{'@keyframes perf-pulse{0%,100%{opacity:1}50%{opacity:.3}}'}</style>
@@ -1829,6 +1814,13 @@ export default function Performance() {
           <SessionClock />
         </span>
       </div>
+
+      <Card className="my-3 text-(length:--fs-body)" scope={acct}>
+        <h2 className="t-h3">Account balance, floating profit and equity</h2>
+        <p>Today: midnight–now in {timeZone}. Broker day: 5pm New York for risk limits.</p>
+        <CurrentAccountReadings report={overview} accountId={acct} history />
+      </Card>
+      <BlockerReport key={`blockers:${acct}`} accountId={acct} />
 
       <p style={{ fontSize: 'var(--fs-body)', color: P_SB }}>
         {populationReport ? `Portfolio coverage of recorded closes as of ${populationReport.generatedAt}. ${populationReport.coverage.unpricedN} closes without P&L; ${populationReport.coverage.unknownCloseTimeN} without a usable close time; ${populationReport.coverage.unattributedAccountN} without an account.` : 'Complete performance report unavailable; missing evidence is not zero activity.'}
@@ -1983,7 +1975,7 @@ export default function Performance() {
 
         {screen === 'markets' && (
           <>
-            {/* Crypto — exact mobile panel (price/Δ not streamed → —). */}
+            {/* Crypto — account-scoped live quotes on mobile. */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
@@ -1995,14 +1987,15 @@ export default function Performance() {
                   ))}
                 </div>
               </div>
+              <p style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{crypto.feedNote}</p>
               <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
                 <span>Symbol</span><span>Price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
               </div>
               {crypto.rows.map(c2 => (
                 <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
                   <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{c2.sym}</span>
-                  <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: P_MU }}>—</span>
-                  <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 5, color: P_MU }}>—</span>
+                  <span title={c2.quoteNote} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: P_MU }}>{fmtPx(c2.price)}</span>
+                  <span title={c2.quoteNote} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 5, color: P_MU }}>{c2.delta == null ? '—' : `${signed(c2.delta)}%`}</span>
                   <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: c2.col }}>{c2.pnl}</span>
                   <span style={{ fontSize: 'var(--fs-body)', color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
                 </div>
@@ -2099,6 +2092,10 @@ export default function Performance() {
               freeMargin={feed.freeMargin}
               equity={feed.equity}
               scopeNote={feed.note}
+              marketReadings={positionsAvailable ? positions : null}
+              quotes={crypto.rows} quoteSource={quoteAccount}
+              currency={feed.currency}
+              floating={feed.openPnl}
               openCount={positionsAvailable ? positions.length : null}
               dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
               equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
@@ -2107,9 +2104,10 @@ export default function Performance() {
             />
             <Card>
               <h3 className="t-h3 mb-1.5">All-time tiles &amp; equity</h3>
+              <AllTimeAccounts report={populationReport} overview={overview} accountId={acct} />
               {!tiles && <p className={`text-(length:--fs-body) mb-2 ${SUB}`}>{analytics && String(analytics.accountId ?? 'all') === acct ? `${analytics.closedTrades ?? analytics.trades} recorded closes; ${analytics.unpricedTrades ?? 0} without P&L.` : 'All-time analytics unavailable.'}</p>}
               {tilesRow}
-              <div className="overflow-x-auto"><ReportChart populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} /></div>
+              <div className="overflow-x-auto"><ReportChart accounts={accounts} populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} /></div>
             </Card>
           </>
         )}
@@ -2140,6 +2138,8 @@ export default function Performance() {
               a card re-renders only this section's detail panel — the rest of
               the page, its filters and its scroll position are untouched. */}
           <PerfAccountScope
+            currentReport={overview}
+            timeZone={timeZone}
             scope={acct}
             onScopeChange={(s2) => setAcct(String(s2))}
             acctCards={acctCards}
@@ -2298,7 +2298,7 @@ export default function Performance() {
         <Card id="sec-sessions">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
-            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · approximate fixed UTC reporting buckets · sessions overlap{todayWin.weekend ? ' · ' : ''}{todayWin.weekend && <span style={{ color: P_WRN }}>{todayWin.label}</span>}</span>
+            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>realised closes since {todayWin.label} · refreshes every minute while active · approximate UTC session buckets overlap; floating profit appears in current account readings</span>
             <SectionTools id="sessions" title="Today by Market Session table" window="today"
               data={[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]}
               toText={() => ['Today by market session',
@@ -2339,7 +2339,7 @@ export default function Performance() {
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Timeframe ledger</h3>
             <span className={`text-(length:--fs-body) ${SUB}`}>
-              all recorded closes · FX day rolls at 5pm New York, DST-aware · historical balances require reconciled cashflows
+              all recorded closes · calendar periods in {timeZone} · rolling 1H, 4H and 12H end at the latest report · historical balances require reconciled cashflows
             </span>
             <SectionTools id="ledger" title="Timeframe Ledger table" data={windows} toText={ledgerToText}
               render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />} />
@@ -2471,6 +2471,10 @@ export default function Performance() {
             freeMargin={feed.freeMargin}
             equity={feed.equity}
             scopeNote={feed.note}
+            marketReadings={positionsAvailable ? positions : null}
+            quotes={crypto.rows} quoteSource={quoteAccount}
+            currency={feed.currency}
+            floating={feed.openPnl}
             openCount={positionsAvailable ? positions.length : null}
             dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
             equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
@@ -2483,6 +2487,7 @@ export default function Performance() {
             chart (owner: "move the performance in the desk to a page by its
             own"). */}
         <Card id="sec-tiles">
+          <AllTimeAccounts report={populationReport} overview={overview} accountId={acct} />
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
             <h3 className="t-h3">All-time tiles &amp; equity</h3>
             {tiles && <span className={`text-(length:--fs-body) ${SUB}`}>{tiles.n} closed · {signed(tiles.total)}</span>}
@@ -2494,7 +2499,7 @@ export default function Performance() {
               render={() => (
                 <div>
                   {tilesRow}
-                  <ReportChart populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} />
+                  <ReportChart accounts={accounts} populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} />
                 </div>
               )} />
           </div>
@@ -2506,7 +2511,7 @@ export default function Performance() {
             <p className={SUB}>Debrief of the recent journal sample; period totals come from the complete aggregates above.</p>
             <SessionReview available={journalAvailable} allTrades={journalAvailable ? allTrades : []} postmortems={postmortems} nowMs={loadedAt} />
           </div>
-          <ReportChart populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} />
+          <ReportChart accounts={accounts} populationReport={populationReport} accountId={acct} daily={journalAvailable ? decisionsDaily : null} />
         </Card>
       </div>
     </div>

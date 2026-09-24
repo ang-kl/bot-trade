@@ -3292,7 +3292,11 @@ export default function actionsRouter(db, deps = {}) {
     try {
       const names = String(req.query.symbols || '').toUpperCase().split(',').map(s => s.trim()).filter(Boolean).slice(0, 10)
       if (names.length === 0) return res.status(400).json({ error: 'symbols query param required' })
-      const creds = getCtraderCreds(db)
+      const requested = typeof req.query.account === 'string' ? req.query.account : null
+      const row = requested && /^[1-9]\d*$/.test(requested)
+        ? db.prepare('SELECT account_id,is_live FROM accounts WHERE account_id=?').get(requested) : null
+      if (req.query.account != null && !row) return res.status(400).json({ error: 'explicit registered price-feed account required' })
+      const creds = getCtraderCreds(db, row ? { accountId: row.account_id, isLive: !!row.is_live } : undefined)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
 
       const map = await ensureSymbolMap(db, creds)
@@ -3330,7 +3334,8 @@ export default function actionsRouter(db, deps = {}) {
       try {
         stream = await wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, ids,
           (tick) => {
-            res.write(`data: ${JSON.stringify({ symbol: idToName[tick.symbolId], bid: tick.bid, ask: tick.ask, t: tick.t })}\n\n`)
+            res.write(`data: ${JSON.stringify({ symbol: idToName[tick.symbolId], symbolId: tick.symbolId,
+              accountId: String(accountId), host, bid: tick.bid, ask: tick.ask, t: tick.t, receivedAtMs: Date.now() })}\n\n`)
           },
           (reason) => {
             res.write(`event: end\ndata: ${JSON.stringify({ reason })}\n\n`)

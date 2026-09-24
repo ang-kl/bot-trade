@@ -1,5 +1,14 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 23:09 UTC: partial corpus remains 8,
+not adopted. Visible continuation reached № 8,964; later visible replies win.
+Local reporting build uses the owner-confirmed local Performance calendar day,
+account-owned current money for all seven accounts, read-only Desk overview,
+and browser-session/sleep corrections. Full release gates are in progress.
+No trading settings or broker positions were changed. P0/P3 remains incomplete;
+explicit carry-reserve treatment and 24-hour session-expiry origin await owner
+answers. The older #1081 test-clock fixture proposal remains unapplied. -->
+
 <!-- Continuation ledger 2026-09-24 17:34 UTC: partial local corpus;
 visible replies reached № 8,934, next № 8,935. Later visible replies win.
 #1079/#1080 merged 4472e91/d878ea9 after full gates. Seven-account entry settings
