@@ -5009,14 +5009,21 @@ async function runLoop(db) {
       // and this closes it for the entry path.
       // ---------------------------------------------------------------
       try {
-        const { auditDecisions, shouldAlert, toText: auditText } =
-          await import('./services/decision-audit.js')
+        const [{ shouldAlert, toText: auditText }, { readDecisionAudit }] = await Promise.all([
+          import('./services/decision-audit.js'),
+          import('./services/performance-populations.js'),
+        ])
         // Re-derived rather than reusing the scan phase's `weekendQuiet` —
         // that binding lives inside the scan block, and reaching for it here
         // would be a ReferenceError at runtime that no test covers.
         const { weekendQuietNow } = await import('./lib/quiet-hours.js')
         const marketOpen = !weekendQuietNow()
-        const audit = auditDecisions(db, { marketOpen })
+        // Post-decision auditing is reporting/observability. Production
+        // measured a 40.5s event-loop stall between scan completion and this
+        // verdict on the first #1056 loop. Run the historical reads on the
+        // bounded read-only report worker; a slow audit may fail its heartbeat
+        // but cannot starve protection or HTTP on the trading event loop.
+        const audit = await readDecisionAudit(db, { marketOpen, nowMs: Date.now() })
         setState(db, 'decision_audit_last_json', JSON.stringify(audit))
         // Verdict HISTORY (invariant 2's series, 31-08): the single state key
         // above is overwritten every cycle, so "how often was the pipeline
