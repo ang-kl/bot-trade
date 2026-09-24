@@ -42,6 +42,8 @@
 // docstring says. The correction is recorded here rather than quietly dropped.
 // ---------------------------------------------------------------------------
 
+import { enrollMomentumBook } from './momentum-entry-contract.js'
+
 /**
  * The keeper hand-over. ONE rule, so it cannot drift again: the monitor is
  * paused while broker-native TP1 is preserved on both the monitor row and the
@@ -63,6 +65,7 @@ export function pauseForBook(db, tradeId) {
 export function bookEntryWrite(db, { accountId, row, pause = null } = {}) {
   const acct = String(accountId)
   let handed = { monitorRows: 0, tradeRows: 0 }
+  let targetPolicy = null
   const tx = db.transaction(() => {
     db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, atr, entry_rank, entered_at, status, note)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`)
@@ -72,8 +75,10 @@ export function bookEntryWrite(db, { accountId, row, pause = null } = {}) {
     if (row.tradeId != null) {
       if (pause) pause()
       else handed = pauseForBook(db, row.tradeId)
+      targetPolicy = enrollMomentumBook(db, { accountId: acct, tradeId: row.tradeId,
+        positionId: row.positionId == null ? null : String(row.positionId) })
     }
   })
   tx()
-  return { ok: true, handedOver: handed.monitorRows > 0, handed }
+  return { ok: true, handedOver: handed.monitorRows > 0, handed, ...(targetPolicy ? { targetPolicy } : {}) }
 }
