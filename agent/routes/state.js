@@ -46,6 +46,7 @@ import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
 import { readPerformancePopulations, readPerformanceAnalytics } from '../services/performance-populations.js'
 import { reportLedger } from '../shared/performance-populations.js'
+import { readHeavyStateReport } from '../services/heavy-state-reports.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -3492,24 +3493,16 @@ export default function stateRouter(db) {
   // "daily" bars were one sliver of today and the 7D/30D range pills were
   // furniture. Aggregate in SQL over the real window instead.
   // -----------------------------------------------------------------------
-  router.get('/decisions-daily', (req, res) => {
+  router.get('/decisions-daily', async (req, res) => {
     try {
       const days = Math.min(365, Math.max(1, parseInt(req.query.days || '90', 10)))
       const scope = requestedAccount(db, req)
       const acct = accountWhere(scope, 'account_id')
-      const clauses = [`created_at >= datetime('now', ?)`]
-      const params = [`-${days} days`]
-      if (acct.active) { clauses.push(acct.where); params.push(...acct.params) }
-      const rows = db.prepare(
-        `SELECT substr(created_at, 1, 10) AS day,
-                SUM(approved = 1) AS approved,
-                SUM(CASE WHEN approved = 1 THEN 0 ELSE COALESCE(repeat_count, 1) END) AS vetoed,
-                SUM(approved != 1 OR approved IS NULL) AS vetoed_distinct
-           FROM risk_events
-          WHERE ${clauses.join(' AND ')}
-          GROUP BY day ORDER BY day`
-      ).all(...params)
-      res.json({ days, rows, accountId: scope.all ? 'all' : (scope.accountId ?? null) })
+      const report = await readHeavyStateReport(db, 'decisions-daily', {
+        days,
+        accountId: acct.active ? scope.accountId : null,
+      })
+      res.json({ ...report, accountId: scope.all ? 'all' : (scope.accountId ?? null) })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -4288,14 +4281,15 @@ export default function stateRouter(db) {
   // per-cell on/off (trade column derived live from the legacy keys) plus
   // 30-day usage counts per cell.
   // -----------------------------------------------------------------------
-  router.get('/stage-matrix', (req, res) => {
+  router.get('/stage-matrix', async (req, res) => {
     try {
       // ?account=<id> returns what THAT account actually trades under: the
       // global matrix with its overlay merged on top, plus the list of cells
       // it has pinned so the UI can badge them rather than leaving an override
       // invisible.
       const acct = req.query?.account && req.query.account !== 'all' ? String(req.query.account) : null
-      const view = stageMatrixView(db, getState)
+      const { stats } = await readHeavyStateReport(db, 'stage-matrix-stats')
+      const view = stageMatrixView(db, getState, stats)
       // A TALLY PER ACCOUNT (owner 04-08-2026: "have a count of tick/cross per
       // account"). The matrix shows one scope at a time, so "how much is armed
       // over there" was a question you could only answer by switching scope
@@ -4498,19 +4492,9 @@ export default function stateRouter(db) {
     }
   })
 
-  router.get('/prices', (_req, res) => {
+  router.get('/prices', async (_req, res) => {
     try {
-      const rows = db.prepare(`
-        SELECT symbol, price, bias, confidence, scanned_at
-        FROM scans
-        WHERE id IN (SELECT MAX(id) FROM scans WHERE price IS NOT NULL GROUP BY symbol)
-        ORDER BY symbol
-      `).all()
-      const prices = {}
-      for (const r of rows) {
-        prices[r.symbol] = { price: r.price, bias: r.bias, confidence: r.confidence, at: r.scanned_at }
-      }
-      res.json({ prices })
+      res.json(await readHeavyStateReport(db, 'prices'))
     } catch (e) {
       res.json({ prices: {}, error: e.message })
     }
