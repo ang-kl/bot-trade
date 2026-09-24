@@ -1014,6 +1014,10 @@ const INDEXES = `
   -- dispatch receipts instead of scanning every retained scan/skip decision.
   CREATE INDEX IF NOT EXISTS idx_decision_log_dispatch_account
     ON decision_log(account_id, created_at) WHERE stage='dispatch' AND decision='proceed';
+  -- Account status needs one latest receipt, not a GROUP BY over all retained
+  -- history. Equal timestamps keep the first row id, as the old table scan did.
+  CREATE INDEX IF NOT EXISTS idx_decision_log_account_latest
+    ON decision_log(account_id, created_at DESC) WHERE account_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_position_events_pos    ON position_events(position_id, at);
   CREATE INDEX IF NOT EXISTS idx_position_events_at     ON position_events(at);
   CREATE INDEX IF NOT EXISTS idx_scans_symbol_at        ON scans   (symbol, scanned_at);
@@ -1066,6 +1070,8 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_perf_computed          ON performance_snapshots(computed_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_at         ON risk_events(created_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_symbol     ON risk_events(symbol, created_at);
+  CREATE INDEX IF NOT EXISTS idx_risk_events_account_latest
+    ON risk_events(account_id, created_at DESC) WHERE account_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_pending_signals_status ON pending_signals(status, symbol);
   CREATE INDEX IF NOT EXISTS idx_cup_handle_diag_symbol_at ON cup_handle_diagnostics(symbol, scanned_at);
   -- The funnel readout (services/cup-handle-funnel.js) scans a TIME window

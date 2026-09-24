@@ -999,6 +999,14 @@ guesses were published as findings before the mechanism was found.
 
 ### Continuation ledger — 22 September 2026
 
+- 2026-09-24 14:27 UTC, **Codex desktop, PARTIAL corpus**: the count script
+  still reports 8, below the established rebase. Visible replies continued
+  through **№ 8,862** while #1072 passed, merged and was observed in production,
+  the supplied flow-kit source was recovered, and the bounded P1/P4 history
+  query correction passed focused tests and synthetic migration/report checks.
+  The next reply is **№ 8,863**. This is the carried transcript ratchet, not a
+  complete-corpus measurement. Later visible replies take precedence.
+
 The Work Mode corpus remains partial. Continued from the recorded rebase and
 visible replies through **`№ 8,424`**, 19:27 SGT, during revision-3 P0–P5 work.
 The next substantive reply is `№ 8,425`. No full-corpus or token count is claimed.
