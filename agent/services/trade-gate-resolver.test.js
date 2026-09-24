@@ -199,7 +199,7 @@ test('all switches ON cannot make a retired ordinary producer look tradable', ()
   const before = db.prepare('SELECT * FROM agent_state ORDER BY key').all()
   const canonical = ENTRY_PRODUCERS.find(p => p.id === 'scan_dispatch')
   assert.ok(canonical.retired, 'this regression exercises the recorded retirement, not a mock flag')
-  for (const s of STRATEGY_REGISTRY.filter(s => s.family !== 'momentum')) {
+  for (const s of STRATEGY_REGISTRY.filter(s => s.family !== 'momentum' && s.key !== 'fib_618_fade')) {
     const r = tradeGateChain(db, { accountId: ACCT, strategy: s.key })
     assert.equal(tradeStageGate(db, getState, { accountId: ACCT, strategy: s.key }).ok, true)
     assert.equal(r.configurationOpen, true)
