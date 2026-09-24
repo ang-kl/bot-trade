@@ -48,9 +48,11 @@ const routeBody = (src, path) => {
   return src.slice(start, end)
 }
 
-test('/position-close and /position-protect resolve the position\'s account when the body names none, and echo accountSource', () => {
+test('/position-close resolves the position\'s account when the body names none, and echoes accountSource', () => {
   const src = strip(readFileSync(new URL('./actions.js', import.meta.url), 'utf8'))
-  for (const path of ['/position-close', '/position-protect']) {
+  // Protection now has behavioural HTTP tests in protection-account.test.js
+  // for its stricter missing/ambiguous-account contract.
+  for (const path of ['/position-close']) {
     const body = routeBody(src, path)
     assert.ok(body.includes("credsForAccountId(db, req.body.account), accountSource: 'body' } : credsForPosition(db, positionId)"), `${path}: body account wins, else the position record`)
     assert.ok(!body.includes('getCtraderCreds(db)'), `${path}: no primary-only creds left`)

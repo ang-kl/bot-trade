@@ -1117,3 +1117,26 @@ evidence, not production peak-feed or protection-latency acceptance. Scanner
 feeds remain disabled; no credentials, risk limits, strategy authority or broker
 orders were changed. Production delivery/drills and end-to-end trading acceptance
 remain gated by the named prerequisites. V3 is not complete.
+
+## Continuation — 24 September 2026, after #1068
+
+Current main and Railway Node were reconciled to
+`0d127431b597b28386d1eca42a79ba60ead359bf` and deployment
+`3e2fef06-7844-406a-8175-b8a666c8f4f8`. The older scanner-load failure above
+is historical: the corrected synthetic result and its remaining production
+limits are recorded in `v3-completion-checkpoint-2026-09-24.md`.
+
+The [account-safe protection package](v3-protection-account-isolation-2026-09-24.md)
+reproduces and corrects cross-account local protection updates, ambiguous local
+lifecycle attribution, and selected-account fallback in manual/Telegram
+protection. Both failing regression fixtures were run against the original
+implementation before correction. The package remains separate from target
+policy, historical accounting and production activation. See its PR for exact
+tested source and gate results; this checkpoint does not claim a merge or deploy.
+
+Independent broker receipts at 11:53:28–29 UTC report 33 positions, all with SL
+and two without TP1. Detailed authenticated UI access is unavailable because
+the browser connection cannot initialise. Momentum TP1 choices, concrete
+implementation implications and the outstanding P0–P8 acceptance dependencies
+are recorded in the linked package. No target, order, account setting, scanner
+feed or notification setting was changed. Full V3 remains unaccepted.

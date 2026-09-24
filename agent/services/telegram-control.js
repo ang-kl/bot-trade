@@ -40,6 +40,7 @@ import { loadGlobalGuards, evaluateGlobalGuards } from './global-guards.js'
 import { setPhaseFlag } from './phase-audit.js'
 import * as notify from './telegram-digest.js'
 import { recordArmingChange } from './arming-log.js'
+import { parseProtectionCallback, protectionCredentials } from './protection-account.js'
 
 const TG_API = 'https://api.telegram.org'
 
@@ -342,6 +343,16 @@ function fmtStatus(db) {
   ].join('\n')
 }
 
+/** Apply only a validated, account-scoped protection callback. */
+export async function handleProtectionCallback(db, parts, deps = {}) {
+  const { accountId, positionId, tp } = parseProtectionCallback(parts)
+  const creds = protectionCredentials(db, { accountId, positionId })
+  if (!creds.ready) throw new Error('cTrader not connected')
+  const { protectPosition } = await import('./position-protect.js')
+  const result = await protectPosition(db, creds, { positionId, tp, source: 'telegram' }, deps)
+  return { ...result, accountId: creds.accountId }
+}
+
 /**
  * One poll pass — called once per loop cycle. Never throws (a Telegram
  * outage must not touch trading). Returns how many commands were handled.
@@ -436,26 +447,14 @@ export async function pollTelegramCommands(db, deps = {}) {
             // Owner 01-08: one-tap "Set TP <price>" on the targetless alert.
             // Same logic as POST /actions/position-protect — an amend to a
             // position the owner already holds, at the price the alert showed.
-            const [, positionId, tpRaw] = parts
-            const tp = Number(tpRaw)
-            if (!positionId || !(tp > 0)) {
-              await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'Bad button payload' })
-              continue
-            }
-            const { protectPosition } = await import('./position-protect.js')
-            const creds = deps.creds ?? (await import('../lib/ctrader-creds.js')).getCtraderCreds(db)
-            if (!creds?.ready) {
-              await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'cTrader not connected', show_alert: true })
-              continue
-            }
-            await protectPosition(db, creds, { positionId, tp, source: 'telegram' })
-            toast = `✅ TP set at ${tp} on position ${positionId}`
+            const { positionId, tp, accountId, ledgerUpdated } = await handleProtectionCallback(db, parts, deps.positionProtection)
+            toast = `✅ TP set at ${tp} on position ${positionId} (account ${accountId})${ledgerUpdated ? '' : ' — local attribution unresolved'}`
             await tg('answerCallbackQuery', { callback_query_id: cq.id, text: toast, show_alert: false })
             await tg('sendMessage', { chat_id: owner, text: toast })
             handled++
             try {
               db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
-                .run('TG_BTN', 'prottp', JSON.stringify({ positionId, tp }))
+                .run('TG_BTN', 'prottp', JSON.stringify({ accountId, positionId, tp }))
             } catch { /* audit best-effort */ }
             continue
           }

@@ -7,6 +7,7 @@
 // drift: same amend call, same book update, same position_events trail.
 import { recordPositionEvent } from './position-events.js'
 import { normPosId } from '../lib/pos-id.js'
+import { protectionPositionId } from './protection-account.js'
 
 /** Pre-amend read timeout. See readLiveProtection for why the 25s default is wrong here. */
 const PROTECT_READ_TIMEOUT_MS = Math.max(2_000, Number(process.env.PROTECT_READ_TIMEOUT_MS) || 8_000)
@@ -70,7 +71,9 @@ async function readLiveProtection(creds, positionId, deps) {
  * @throws on broker refusal — callers translate to their own surface
  */
 export async function protectPosition(db, creds, { positionId, sl, tp, source = 'manual' }, deps = {}) {
-  if (!positionId) throw new Error('positionId is required')
+  positionId = protectionPositionId(positionId)
+  const accountId = String(creds?.accountId ?? '').trim()
+  if (!accountId || accountId === 'all' || accountId === '_all') throw new Error('one accountId is required for protection')
   const amend = deps.amend ?? (await import('../lib/exec-engine.js')).amendPosition
   const args = { positionId: parseInt(positionId) }
   // What the CALLER asked for, kept apart from what gets carried through, so
@@ -92,6 +95,7 @@ export async function protectPosition(db, creds, { positionId, sl, tp, source = 
     if (!live) {
       throw new Error(`position ${positionId} is not in a live broker read — refusing to amend, because amend REPLACES both legs`)
     }
+    if (normPosId(live.positionId) !== positionId) throw new Error('protection read position identity mismatch')
     if (args.stopLoss == null) {
       const keep = live.stopLoss
       if (typeof keep === 'number' && Number.isFinite(keep) && keep > 0) args.stopLoss = keep
@@ -104,33 +108,47 @@ export async function protectPosition(db, creds, { positionId, sl, tp, source = 
       else args.clearTakeProfit = true
     }
   }
-  const before = db.prepare(
-    `SELECT mp.id, mp.trade_id, mp.account_id, mp.symbol, mp.current_sl, mp.current_tp
-       FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id
-      WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
-  ).get(String(positionId)) || null
-  await amend(creds, args)
-  db.prepare(
-    "UPDATE monitored_positions SET current_sl = COALESCE(?, current_sl), current_tp = COALESCE(?, current_tp) WHERE trade_id IN (SELECT id FROM trades WHERE ctrader_position_id = ?) AND status = 'active'"
-  ).run(args.stopLoss ?? null, args.takeProfit ?? null, String(positionId))
-  // A LEG THE CALLER DID NOT ASK FOR IS NOT A MOVE. It is carried through so
-  // the amend does not delete it, and journalling every re-send as `sl_moved`
-  // would bury the timeline the journal exists to make readable — so a carried
-  // leg is recorded only when it actually differs from the book's record, which
-  // is a correction worth having.
-  const slIsNews = requestedSl || (before && Number(before.current_sl) !== args.stopLoss)
-  const tpIsNews = requestedTp || (before && Number(before.current_tp) !== args.takeProfit)
-  if (before && args.stopLoss != null && slIsNews) {
-    recordPositionEvent(db, {
-      accountId: before.account_id, positionId, tradeId: before.trade_id, symbol: before.symbol,
-      kind: 'sl_moved', fromValue: before.current_sl, toValue: args.stopLoss, source,
-    })
+  const sent = await amend(creds, args)
+  if (sent?.error || sent?.rawError || sent?.alreadyClosed || sent?.ok === false) {
+    throw new Error(`protection amendment not accepted: ${sent.error || sent.rawError || 'position unavailable'}`)
   }
-  if (before && args.takeProfit != null && tpIsNews) {
-    recordPositionEvent(db, {
-      accountId: before.account_id, positionId, tradeId: before.trade_id, symbol: before.symbol,
-      kind: 'tp_moved', fromValue: before.current_tp, toValue: args.takeProfit, source,
-    })
-  }
-  return { ok: true, positionId, sl: args.stopLoss ?? null, tp: args.takeProfit ?? null }
+  // Re-read local attribution AFTER the broker await. A reconcile can close,
+  // replace or duplicate a row while the request is in flight. Never rewrite
+  // another account or pick one of several active lifecycle claims.
+  const ledger = db.transaction(() => {
+    const candidates = db.prepare(
+      `SELECT mp.id, mp.trade_id, mp.account_id, mp.symbol, mp.current_sl, mp.current_tp
+         FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id
+        WHERE t.ctrader_position_id = ? AND t.account_id = ? AND t.status = 'open' AND mp.status = 'active'
+        LIMIT 2`
+    ).all(positionId, accountId)
+    if (candidates.length !== 1 || String(candidates[0].account_id ?? '') !== accountId) {
+      return { ledgerUpdated: false, ledgerReason: candidates.length > 1 ? 'ambiguous active lifecycle' : 'no matching account-owned active lifecycle' }
+    }
+    const before = candidates[0]
+    db.prepare(
+      "UPDATE monitored_positions SET current_sl = COALESCE(?, current_sl), current_tp = COALESCE(?, current_tp) WHERE id = ? AND account_id = ? AND status = 'active'"
+    ).run(args.stopLoss ?? null, args.takeProfit ?? null, before.id, accountId)
+    // A LEG THE CALLER DID NOT ASK FOR IS NOT A MOVE. It is carried through so
+    // the amend does not delete it, and journalling every re-send as `sl_moved`
+    // would bury the timeline the journal exists to make readable — so a carried
+    // leg is recorded only when it actually differs from the book's record, which
+    // is a correction worth having.
+    const slIsNews = requestedSl || (before && Number(before.current_sl) !== args.stopLoss)
+    const tpIsNews = requestedTp || (before && Number(before.current_tp) !== args.takeProfit)
+    if (before && args.stopLoss != null && slIsNews) {
+      recordPositionEvent(db, {
+        accountId: before.account_id, positionId, tradeId: before.trade_id, symbol: before.symbol,
+        kind: 'sl_moved', fromValue: before.current_sl, toValue: args.stopLoss, source,
+      })
+    }
+    if (before && args.takeProfit != null && tpIsNews) {
+      recordPositionEvent(db, {
+        accountId: before.account_id, positionId, tradeId: before.trade_id, symbol: before.symbol,
+        kind: 'tp_moved', fromValue: before.current_tp, toValue: args.takeProfit, source,
+      })
+    }
+    return { ledgerUpdated: true, ledgerReason: null }
+  })()
+  return { ok: true, positionId, sl: args.stopLoss ?? null, tp: args.takeProfit ?? null, ...ledger }
 }
