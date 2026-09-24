@@ -38,9 +38,12 @@ import { STRATEGY_REGISTRY } from './strategies.js'
 import { loadStageMatrix } from './stage-matrix.js'
 import { effectivePhases, masterPhases, accountOverrides } from './account-phases.js'
 import { accountCapabilities } from './account-capabilities.js'
+import { ENTRY_PRODUCERS } from '../lib/entry-producers.js'
+import { automaticProducerAvailability } from './automatic-producer-availability.js'
 
 /** Where the owner goes to change each gate — the half a verdict usually omits. */
 export const GATE_WHERE = Object.freeze({
+  producer_available: 'Producer inventory - an owner-approved policy change is required to revive a retired path',
   registry_enabled: 'Accounts → enable the account',
   account_mode: 'Accounts → set the mode to Active',
   master_scan: 'Sidebar → Scan',
@@ -72,6 +75,13 @@ export function tradeGateChain(db, { accountId, strategy } = {}) {
   if (!known) {
     return { ok: false, blockedBy: null, strategy: key, accountId: acct, gates, error: `unknown strategy '${key}'` }
   }
+
+  // A switch cannot revive a structurally retired producer. Report the
+  // inventory fence before suggesting that the owner toggle another switch.
+  // This is ONLY the automatic bar read-model; it neither changes admission
+  // nor claims that a configured producer has passed risk or tick validation.
+  const producer = automaticProducerAvailability(known.family, ENTRY_PRODUCERS)
+  add('producer_available', 'Automatic bar producer', producer.available, producer.reason)
 
   // --- account-level -------------------------------------------------------
   let caps = { enabled: true, enter: true, mode: null, known: false }
@@ -113,7 +123,12 @@ export function tradeGateChain(db, { accountId, strategy } = {}) {
   return {
     ok: !blocked,
     blockedBy: blocked ? blocked.key : null,
-    reason: blocked ? `${blocked.label} is OFF${blocked.where ? ` — ${blocked.where}` : ''}` : null,
+    reason: blocked?.key === 'producer_available' ? producer.reason
+      : blocked ? `${blocked.label} is OFF${blocked.where ? ` — ${blocked.where}` : ''}` : null,
+    scope: 'automatic_bar_configuration',
+    configurationOpen: gates.filter(g => g.key !== 'producer_available').every(g => g.pass),
+    producer,
+    note: 'Configuration and producer availability only; account funding, live risk, timing and validation still apply. Manual and tick entry paths are separate.',
     strategy: key,
     accountId: acct,
     gates,
@@ -123,7 +138,7 @@ export function tradeGateChain(db, { accountId, strategy } = {}) {
 /** One line, for a log or a card. */
 export const gateLine = (r) =>
   r.ok
-    ? `${r.strategy}: all ${r.gates.length} gates open${r.accountId ? ` on ${r.accountId}` : ''}`
+    ? `${r.strategy}: all ${r.gates.length} configuration/producer checks open${r.accountId ? ` on ${r.accountId}` : ''}; not an entry approval`
     : `${r.strategy}: blocked at ${r.reason}${r.accountId ? ` (${r.accountId})` : ''}`
 
 /**
@@ -136,6 +151,9 @@ export function tradeGateMatrix(db, { accountId } = {}) {
   const rows = STRATEGY_REGISTRY.map(s => tradeGateChain(db, { accountId, strategy: s.key }))
   return {
     accountId: accountId != null && accountId !== 'all' ? String(accountId) : null,
+    scope: 'automatic_bar_configuration',
+    note: 'Counts are configuration/producer availability, not live order approval.',
+    retired: rows.filter(r => r.producer?.state === 'retired').length,
     tradable: rows.filter(r => r.ok).length,
     blocked: rows.filter(r => !r.ok).length,
     // Which single switch is stopping the most strategies — the one worth
