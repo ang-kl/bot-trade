@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
-import { backfillClosedPnl, resetBackfillPacing } from './pnl-backfill.js'
+import { backfillClosedPnl, noteBackfillAttempt, resetBackfillPacing } from './pnl-backfill.js'
 import { backfillAccountPnl, backfillCrossSidePnl } from './cross-side-pnl.js'
 import { recoverOldPositionPnl } from './old-position-pnl.js'
 import { verifiedPositionHistory } from '../lib/position-deal-history.js'
@@ -157,6 +157,22 @@ test('same-side account passes recover the selected and other enabled accounts w
   assert.equal(row(db, otherSide).net_pnl, null); assert.equal(row(db, orphan).net_pnl, null)
   assert.deepEqual(calls.map(a => [a[0], a[4], a[5]]), [['demo.ctraderapi.com', '1', '700'], ['demo.ctraderapi.com', '4', '700']])
   assert.ok(calls.every(a => a[7] <= 5000)); assert.equal(getState(db, 'ctrader_account_id'), '1')
+})
+
+test('recent-window backoff cannot starve independently paced old-position recovery', async t => {
+  const db = fixture(t), target = seed(db), calls = []
+  // Put the recent account-wide fetch on its backoff ladder. The old position
+  // has never been attempted and has its own bounded position-history reader.
+  noteBackfillAttempt('2', { gap: 1, liveGap: 1, blockingGap: 0, backfilled: 0 }, now)
+  const result = await backfillAccountPnl(db, creds, {
+    clock: () => now + 1000,
+    getDeals: async () => { throw Error('recent-window fetch must stay paced') },
+    getPositionDeals: async (...a) => { calls.push(a); return history(a[5], a[4]) },
+  })
+  assert.equal(result.result.positionHistory.state, 'recovered')
+  assert.equal(result.result.backfilled, 1)
+  assert.equal(row(db, target).net_pnl, 1.3)
+  assert.equal(calls.length, 1)
 })
 
 test('a same-side transport still pending also blocks a later opposite-side pass after selection changes', async t => {
