@@ -1,5 +1,10 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 15:45 UTC: partial local corpus retained;
+visible replies reached № 8,889, next № 8,890. Later visible replies win.
+ETHUSD/XRPUSD demo targets acknowledged and broker-read back with existing stops
+preserved. Startup-price correction is in release checks; V3 remains open. -->
+
 This file is bot-trade's, and only bot-trade's. It used to import a
 project-neutral `CLAUDE-protocol.md` shared with other repositories; the owner
 scoped this session to bot-trade alone on 2026-08-22, so the protocol is folded
@@ -1136,3 +1141,15 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   61.7-second synchronous account report is under correction within P1/P4;
   target-policy values remain requested, not invented. The previous local
   ledger write-back is carried with this source change, not a separate restart.
+
+- 2026-09-24 14:47 UTC, Codex desktop partial-corpus continuation: visible
+  replies reached **№ 8,880**; the closing report is **№ 8,881**, next
+  **№ 8,882**. The script still reads 8, so this follows the established
+  transcript ratchet, not a complete-corpus measurement. #1072 and #1073
+  passed their gates, merged and deployed. Final #1073 readback at 14:46:11Z
+  preserves seven-account protection/configuration and five native deployments;
+  startup performance remains Failed despite later routine recovery. The
+  supplied flow-kit source was read in the requested order and recovered;
+  no installer, permissions, hooks or approval records were changed. The eight
+  groups and pending partial-TP1 policy values remain unchanged. This local
+  write-back is for the next code PR, not a documentation-only Node restart.

@@ -1021,6 +1021,10 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_position_events_pos    ON position_events(position_id, at);
   CREATE INDEX IF NOT EXISTS idx_position_events_at     ON position_events(at);
   CREATE INDEX IF NOT EXISTS idx_scans_symbol_at        ON scans   (symbol, scanned_at);
+  -- Fundability reads the latest positive price by insertion id, not bar time.
+  -- A timestamp index sorts every retained row for that symbol on each lookup.
+  CREATE INDEX IF NOT EXISTS idx_scans_symbol_positive_id
+    ON scans(symbol, id DESC, price) WHERE price > 0;
   CREATE INDEX IF NOT EXISTS idx_analyses_symbol_at     ON analyses(symbol, analyzed_at);
   -- The FK child key. Deleting a PARENT row (a scan) with foreign_keys ON
   -- makes SQLite prove no child references it; without this index that is a

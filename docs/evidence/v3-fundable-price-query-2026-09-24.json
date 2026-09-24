@@ -1,0 +1,71 @@
+{
+  "generatedAt": "2026-09-24T15:39:30.356Z",
+  "baselineRef": "b5a57a157b79f8478da0f62bf08b6e1c12a8f43a",
+  "purpose": "Local synthetic lookup and index-migration evidence, not production acceptance",
+  "environment": {
+    "node": "v24.14.0",
+    "platform": "darwin",
+    "arch": "x64"
+  },
+  "fixture": {
+    "rows": 250000,
+    "symbols": [
+      "ETHUSD",
+      "XRPUSD",
+      "ABSENT"
+    ],
+    "includesNullPrice": true,
+    "nonChronologicalTimestamps": true
+  },
+  "beforeMs": [
+    176.76412100000016,
+    186.51521300000059,
+    143.3023919999996,
+    159.45640000000003,
+    163.27638799999932
+  ],
+  "afterMs": [
+    0.11839699999927689,
+    0.07784700000047451,
+    0.1252230000000054,
+    0.08219600000029459,
+    0.05301199999939854
+  ],
+  "beforePlan": [
+    {
+      "id": 5,
+      "parent": 0,
+      "notused": 62,
+      "detail": "SEARCH scans USING INDEX idx_scans_symbol_at (symbol=?)"
+    },
+    {
+      "id": 26,
+      "parent": 0,
+      "notused": 0,
+      "detail": "USE TEMP B-TREE FOR ORDER BY"
+    }
+  ],
+  "afterPlan": [
+    {
+      "id": 4,
+      "parent": 0,
+      "notused": 53,
+      "detail": "SEARCH scans USING COVERING INDEX idx_scans_symbol_positive_id (symbol=?)"
+    }
+  ],
+  "reopenIncludingIndexMs": 233.9071330000006,
+  "additionalAllocatedBytes": 6553600,
+  "validation": {
+    "exactPriceParity": true,
+    "retainedRowDigest": "849e31c03549b6f5f93da0d85c7d411e2ff856fa9adb5bff55d5a44c951edfe6",
+    "retainedRowsUnchanged": true,
+    "secondReopenIdempotent": true,
+    "journalMode": "wal",
+    "synchronous": 2
+  },
+  "limitations": [
+    "Synthetic local storage; production first index creation scans retained scans once.",
+    "Reopen includes all initDB work. Index adds insert and retention maintenance cost.",
+    "Main-thread state writes and other startup work remain outside this correction."
+  ]
+}
