@@ -66,12 +66,12 @@ test('an unknown symbol id still produces a stable key, not a crash', () => {
 
 test('persistDeals links a deal to the local trade that placed it', () => {
   const db = initDB(':memory:')
-  db.prepare("INSERT INTO trades (symbol, side, status, opened_at, ctrader_position_id) VALUES ('EURUSD','BUY','closed',datetime('now'),'900')").run()
+  db.prepare("INSERT INTO trades (symbol, side, status, opened_at, ctrader_position_id, account_id) VALUES ('EURUSD','BUY','closed',datetime('now'),'900','47790949')").run()
   const localId = db.prepare("SELECT id FROM trades WHERE ctrader_position_id = '900'").get().id
   const out = persistDeals(db, shapeDeals([
     closingDeal({ dealId: 2, positionId: 900, ms: NOW }),
     closingDeal({ dealId: 3, positionId: 999, ms: NOW }), // no local row
-  ], SYM))
+  ], SYM, '47790949'))
   assert.equal(out.inserted, 2)
   assert.equal(out.matchedToLocalTrades, 1)
   assert.equal(out.unmatched, 1)
