@@ -1081,3 +1081,14 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   deployment succeeded, but production acceptance remains unfinished. The
   handover records newly attributed synchronous report stalls and current
   independent coverage. No agent/token totals are inferred.
+
+- 2026-09-24, Codex desktop continuation, PARTIAL corpus: the repository
+  counting script returned 8, below the recorded rebase, and was not adopted.
+  The owner-supplied attachment starts at **№ 8,774**. Counting this task's
+  recorded assistant text replies continued through **№ 8,800** at 20:38 SGT;
+  later visible replies take precedence. This is supplied rebase plus local
+  continuation, not a full-corpus measurement. The owner froze the eight V3
+  closure groups, selected partial TP1 plus runner (numerical policy still
+  outstanding), and confirmed seven connected accounts/four demo/three live.
+  No total agent/token count is inferred. `.claude/rules/flow.md` was absent
+  from current main and searched local copies; its location was requested.

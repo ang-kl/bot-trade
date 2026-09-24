@@ -1,0 +1,441 @@
+{
+  "capturedAt": "2026-09-24 12:35:35 UTC",
+  "scope": "Read-only V3 closure baseline; not a broker amendment, outage, feed or load trial.",
+  "main": "d50ec9a975bc6e59e2fcf54e27240cb6fab47761",
+  "deploymentStatus": [
+    {
+      "name": "bot-trade",
+      "id": "04945f5c-03d4-4d3f-bec1-f4debcefe5e6",
+      "deployment": {
+        "id": "707e9cbd-8768-4671-9821-477f6bf72e5c",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-24T12:13:36.141Z",
+        "url": null
+      },
+      "volumes": [
+        {
+          "id": "054a2e47-0932-4766-a5f4-1617c0518bf1",
+          "name": "bot-trade-vol",
+          "mountPath": "/data",
+          "sizeMB": 10000,
+          "region": "us-west2"
+        }
+      ]
+    },
+    {
+      "name": "cpp-exec",
+      "id": "f5a3ba4a-52c0-4f4f-999b-45f758d607f0",
+      "deployment": {
+        "id": "3bbc8730-f05a-4d86-a8f9-6b74f51a6cb5",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T17:34:07.741Z",
+        "url": null
+      },
+      "volumes": [
+        {
+          "id": "fe9db4a1-d816-4d84-8c58-34d530aef654",
+          "name": "pure-volume",
+          "mountPath": "/data",
+          "sizeMB": 50000,
+          "region": "us-west2"
+        }
+      ]
+    },
+    {
+      "name": "cpp-acct",
+      "id": "a370f641-1e1b-4893-83af-e5eb1e8ffb3c",
+      "deployment": {
+        "id": "565b6db5-de06-494b-abed-8d9e07854159",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T17:34:07.738Z",
+        "url": null
+      },
+      "volumes": []
+    },
+    {
+      "name": "cpp-verify",
+      "id": "bc8fcb8d-8194-4acd-9a82-4098751e43cc",
+      "deployment": {
+        "id": "a901bb2e-7eb0-441e-976d-a886ca222bf9",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T09:49:54.567Z",
+        "url": null
+      },
+      "volumes": [
+        {
+          "id": "a83c474c-3f12-4ede-ba14-0699fa90b912",
+          "name": "cpp-verify-vol",
+          "mountPath": "/data",
+          "sizeMB": 50000,
+          "region": "asia-southeast1-eqsg3a"
+        }
+      ]
+    },
+    {
+      "name": "cpp-scan-tick",
+      "id": "f716e9cf-7a7b-4a04-b484-49b05b698e6a",
+      "deployment": {
+        "id": "9ee1fc23-71ac-4c47-8495-b1c9e4b9d209",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T17:34:07.739Z",
+        "url": null
+      },
+      "volumes": []
+    },
+    {
+      "name": "cpp-scan-timeframe",
+      "id": "c8e47534-3488-4591-b361-c85366c550e0",
+      "deployment": {
+        "id": "2eddcee9-60c9-4189-b28d-4e712b33c269",
+        "status": "SUCCESS",
+        "createdAt": "2026-09-23T17:02:16.908Z",
+        "url": null
+      },
+      "volumes": []
+    }
+  ],
+  "protectionReceipts": [
+    {
+      "timestamp": "2026-09-24T12:28:51.047412224Z",
+      "message": "[independent-protection] [{\"accountId\":\"42993489\",\"checkedAt\":\"2026-09-24T12:28:27.198Z\",\"ok\":true,\"summary\":\"1 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43002148\",\"checkedAt\":\"2026-09-24T12:28:27.445Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43069009\",\"checkedAt\":\"2026-09-24T12:28:27.692Z\",\"ok\":true,\"summary\":\"0 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"43097342\",\"checkedAt\":\"2026-09-24T12:28:26.244Z\",\"ok\":true,\"summary\":\"4 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46130058\",\"checkedAt\":\"2026-09-24T12:28:26.480Z\",\"ok\":true,\"summary\":\"8 open; 0 missing SL; 0 missing TP1\"},{\"accountId\":\"46979908\",\"checkedAt\":\"2026-09-24T12:28:26.714Z\",\"ok\":true,\"summary\":\"7 open; 0 missing SL; 1 missing TP1\"},{\"accountId\":\"47790949\",\"checkedAt\":\"2026-09-24T12:28:26.950Z\",\"ok\":true,\"summary\":\"13 open; 0 missing SL; 1 missing TP1\"}]"
+    }
+  ],
+  "watchdogAttribution": [
+    {
+      "timestamp": "2026-09-24T12:15:49.525375141Z",
+      "message": "[loop] CPU profile scan: {\"totalMs\":59587.3,\"idleMs\":29877.3,\"gcMs\":54.1,\"top\":[{\"frame\":\"(idle)\",\"selfMs\":29877.3,\"pct\":50.1},{\"frame\":\"run\",\"selfMs\":16013,\"pct\":26.9,\"callers\":[{\"frame\":\"setState @ agent/db.js:2149\",\"selfMs\":14502.7},{\"frame\":\"insertCupHandleDiagnostic @ agent/db.js:2310\",\"selfMs\":770.4},{\"frame\":\"runLoop @ agent/loop.js:2675\",\"selfMs\":208.1}]},{\"frame\":\"get\",\"selfMs\":12148.6,\"pct\":20.4,\"callers\":[{\"frame\":\"scannerWork @ services/scanner-work.js:31\",\"selfMs\":9451.7},{\"frame\":\"nextCashflowWindow @ services/cashflow-collector.js:18\",\"selfMs\":2319.8},{\"frame\":\"getState @ agent/db.js:2120\",\"selfMs\":189.2}]},{\"frame\":\"all\",\"selfMs\":324.4,\"pct\":0.5,\"callers\":[{\"frame\":\"blockerReport @ services/blocker-report.js:42\",\"selfMs\":298.7},{\"frame\":\"watchdogCalendars @ services/scanner-work.js:84\",\"selfMs\":15.5},{\"frame\":\"nodeWatchdogContract @ services/watchdog-contract.js:39\",\"selfMs\":10.3}]},{\"frame\":\"flagScanPriority @ services/guardian.js:139\",\"selfMs\":129.1,\"pct\":0.2}]}"
+    },
+    {
+      "timestamp": "2026-09-24T12:20:20.553121220Z",
+      "message": "[loop] CPU profile scan: {\"totalMs\":14703.6,\"idleMs\":8479.7,\"gcMs\":18.1,\"top\":[{\"frame\":\"(idle)\",\"selfMs\":8479.7,\"pct\":57.7},{\"frame\":\"run\",\"selfMs\":5391.9,\"pct\":36.7,\"callers\":[{\"frame\":\"setState @ agent/db.js:2149\",\"selfMs\":4258.9},{\"frame\":\"insertCupHandleDiagnostic @ agent/db.js:2310\",\"selfMs\":614.9},{\"frame\":\"detectFlip @ quant/signals.js:17\",\"selfMs\":185.5}]},{\"frame\":\"get\",\"selfMs\":308.7,\"pct\":2.1,\"callers\":[{\"frame\":\"scannerWork @ services/scanner-work.js:31\",\"selfMs\":228.3},{\"frame\":\"blockerReport @ services/blocker-report.js:42\",\"selfMs\":45.7},{\"frame\":\"getState @ agent/db.js:2120\",\"selfMs\":19.5}]},{\"frame\":\"dispatch\",\"selfMs\":69.5,\"pct\":0.5,\"callers\":[{\"frame\":\"startPhaseProfile @ services/cpu-profile.js:151\",\"selfMs\":69.5}]},{\"frame\":\"all\",\"selfMs\":60.9,\"pct\":0.4,\"callers\":[{\"frame\":\"blockerReport @ services/blocker-report.js:42\",\"selfMs\":60.9}]}]}"
+    },
+    {
+      "timestamp": "2026-09-24T12:20:59.279092724Z",
+      "message": "[loop] CPU profile monitor: {\"totalMs\":7400.6,\"idleMs\":5175.3,\"gcMs\":0,\"top\":[{\"frame\":\"(idle)\",\"selfMs\":5175.3,\"pct\":69.9},{\"frame\":\"run\",\"selfMs\":1651.5,\"pct\":22.3,\"callers\":[{\"frame\":\"setState @ agent/db.js:2149\",\"selfMs\":1633.2},{\"frame\":\"monitorOnePosition @ agent/loop.js:2244\",\"selfMs\":13.6},{\"frame\":\"beat @ services/heartbeat.js:329\",\"selfMs\":4.7}]},{\"frame\":\"get\",\"selfMs\":274,\"pct\":3.7,\"callers\":[{\"frame\":\"scannerWork @ services/scanner-work.js:31\",\"selfMs\":243.6},{\"frame\":\"blockerReport @ services/blocker-report.js:42\",\"selfMs\":20.3},{\"frame\":\"getState @ agent/db.js:2120\",\"selfMs\":10.1}]},{\"frame\":\"all\",\"selfMs\":76.1,\"pct\":1,\"callers\":[{\"frame\":\"blockerReport @ services/blocker-report.js:42\",\"selfMs\":76.1}]},{\"frame\":\"dispatch\",\"selfMs\":70.6,\"pct\":1,\"callers\":[{\"frame\":\"startPhaseProfile @ services/cpu-profile.js:151\",\"selfMs\":70.6}]}]}"
+    },
+    {
+      "timestamp": "2026-09-24T12:21:29.825416290Z",
+      "message": "[loop] CPU profile scan: {\"totalMs\":14768.7,\"idleMs\":9662.6,\"gcMs\":43.2,\"top\":[{\"frame\":\"(idle)\",\"selfMs\":9662.6,\"pct\":65.4},{\"frame\":\"run\",\"selfMs\":4386.3,\"pct\":29.7,\"callers\":[{\"frame\":\"setState @ agent/db.js:2149\",\"selfMs\":3219.7},{\"frame\":\"insertCupHandleDiagnostic @ agent/db.js:2310\",\"selfMs\":705},{\"frame\":\"runLoop @ agent/loop.js:2675\",\"selfMs\":156.5}]},{\"frame\":\"get\",\"selfMs\":293.2,\"pct\":2,\"callers\":[{\"frame\":\"scannerWork @ services/scanner-work.js:31\",\"selfMs\":233.3},{\"frame\":\"blockerReport @ services/blocker-report.js:42\",\"selfMs\":35.5},{\"frame\":\"getState @ agent/db.js:2120\",\"selfMs\":24.4}]},{\"frame\":\"dispatch\",\"selfMs\":74.3,\"pct\":0.5,\"callers\":[{\"frame\":\"startPhaseProfile @ services/cpu-profile.js:151\",\"selfMs\":74.3}]},{\"frame\":\"all\",\"selfMs\":66,\"pct\":0.4,\"callers\":[{\"frame\":\"blockerReport @ services/blocker-report.js:42\",\"selfMs\":66}]}]}"
+    }
+  ],
+  "resourceMetrics": [
+    {
+      "service": {
+        "id": "04945f5c-03d4-4d3f-bec1-f4debcefe5e6",
+        "name": "bot-trade"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "metrics": [
+        {
+          "measurement": "CPU_USAGE",
+          "current": 0.07769056666666667,
+          "average": 0.09205038852459017,
+          "min": 0,
+          "max": 0.3409411666666667,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "CPU_LIMIT",
+          "current": 24,
+          "average": 23.60655737704918,
+          "min": 0,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_USAGE_GB",
+          "current": 2.484535296,
+          "average": 2.5339285571147534,
+          "min": 0,
+          "max": 3.909482496,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_LIMIT_GB",
+          "current": 24,
+          "average": 23.60655737704918,
+          "min": 0,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "DISK_USAGE_GB",
+          "current": 4.050386944,
+          "average": 3.996789978229507,
+          "min": 0,
+          "max": 4.07384064,
+          "sampleCount": 61
+        }
+      ]
+    },
+    {
+      "service": {
+        "id": "f5a3ba4a-52c0-4f4f-999b-45f758d607f0",
+        "name": "cpp-exec"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "metrics": [
+        {
+          "measurement": "CPU_USAGE",
+          "current": 0.019202,
+          "average": 0.03434411803278688,
+          "min": 0,
+          "max": 0.11495356666666666,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "CPU_LIMIT",
+          "current": 24,
+          "average": 23.60655737704918,
+          "min": 0,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_USAGE_GB",
+          "current": 0.047009792,
+          "average": 0.042181648786885254,
+          "min": 0,
+          "max": 0.047009792,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_LIMIT_GB",
+          "current": 24,
+          "average": 23.60655737704918,
+          "min": 0,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "DISK_USAGE_GB",
+          "current": 2.379087872,
+          "average": 2.3361082082622957,
+          "min": 0,
+          "max": 2.379087872,
+          "sampleCount": 61
+        }
+      ]
+    },
+    {
+      "service": {
+        "id": "a370f641-1e1b-4893-83af-e5eb1e8ffb3c",
+        "name": "cpp-acct"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "metrics": [
+        {
+          "measurement": "CPU_USAGE",
+          "current": 0.049374216666666665,
+          "average": 0.08289792240437159,
+          "min": 0,
+          "max": 0.107909,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "CPU_LIMIT",
+          "current": 24,
+          "average": 23.60655737704918,
+          "min": 0,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_USAGE_GB",
+          "current": 0.050061312,
+          "average": 0.04530263291803279,
+          "min": 0,
+          "max": 0.050061312,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_LIMIT_GB",
+          "current": 24,
+          "average": 23.60655737704918,
+          "min": 0,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "DISK_USAGE_GB",
+          "current": 0,
+          "average": 0,
+          "min": 0,
+          "max": 0,
+          "sampleCount": 61
+        }
+      ]
+    },
+    {
+      "service": {
+        "id": "bc8fcb8d-8194-4acd-9a82-4098751e43cc",
+        "name": "cpp-verify"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "metrics": [
+        {
+          "measurement": "CPU_USAGE",
+          "current": 0.01776216666666667,
+          "average": 0.025609501092896184,
+          "min": 0.012702083333333334,
+          "max": 0.03754801666666667,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "CPU_LIMIT",
+          "current": 24,
+          "average": 24,
+          "min": 24,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_USAGE_GB",
+          "current": 0.08773632,
+          "average": 0.08869001652459017,
+          "min": 0.087212032,
+          "max": 0.094261248,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_LIMIT_GB",
+          "current": 24,
+          "average": 24,
+          "min": 24,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "DISK_USAGE_GB",
+          "current": 1.062117376,
+          "average": 1.0621265080655753,
+          "min": 1.062117376,
+          "max": 1.062674432,
+          "sampleCount": 61
+        }
+      ]
+    },
+    {
+      "service": {
+        "id": "f716e9cf-7a7b-4a04-b484-49b05b698e6a",
+        "name": "cpp-scan-tick"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "metrics": [
+        {
+          "measurement": "CPU_USAGE",
+          "current": 0.03643565,
+          "average": 0.06121632814207649,
+          "min": 0.034558066666666665,
+          "max": 0.10455111666666667,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "CPU_LIMIT",
+          "current": 24,
+          "average": 24,
+          "min": 24,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_USAGE_GB",
+          "current": 0.002015232,
+          "average": 0.0020345369180327895,
+          "min": 0.002015232,
+          "max": 0.002136064,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_LIMIT_GB",
+          "current": 24,
+          "average": 24,
+          "min": 24,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "DISK_USAGE_GB",
+          "current": 0,
+          "average": 0,
+          "min": 0,
+          "max": 0,
+          "sampleCount": 61
+        }
+      ]
+    },
+    {
+      "service": {
+        "id": "c8e47534-3488-4591-b361-c85366c550e0",
+        "name": "cpp-scan-timeframe"
+      },
+      "environment": {
+        "id": "7bc0dfc6-82c5-406c-a621-fd3ff549674d",
+        "name": "production"
+      },
+      "metrics": [
+        {
+          "measurement": "CPU_USAGE",
+          "current": 0.0000108,
+          "average": 0.000022753005464480865,
+          "min": 0.000009316666666666667,
+          "max": 0.000042583333333333336,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "CPU_LIMIT",
+          "current": 24,
+          "average": 24,
+          "min": 24,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_USAGE_GB",
+          "current": 0.001560576,
+          "average": 0.0015610460327868838,
+          "min": 0.001560576,
+          "max": 0.001564672,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "MEMORY_LIMIT_GB",
+          "current": 24,
+          "average": 24,
+          "min": 24,
+          "max": 24,
+          "sampleCount": 61
+        },
+        {
+          "measurement": "DISK_USAGE_GB",
+          "current": 0,
+          "average": 0,
+          "min": 0,
+          "max": 0,
+          "sampleCount": 61
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Observed ordinary phases and startup attribution are sampled wall time, not broker-confirmed protection latency.",
+    "All metrics are dated one-hour platform aggregates, not a retention, billing, durability or peak-capacity result.",
+    "Zero reported disk usage without a mounted volume does not prove a recorder has no data or no persistence need.",
+    "No authenticated endpoint response bodies were available; no secret values were retrieved."
+  ]
+}

@@ -4,7 +4,6 @@
 
 import { Router } from 'express'
 import { scannerMirrorStatus } from '../services/scanner-candidates.js'
-import { nodeWatchdogContract } from '../services/watchdog-contract.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
@@ -44,7 +43,7 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readDecisionsDaily, readLatestPrices, readStageMatrixStats } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract } from '../services/performance-populations.js'
 import { reportLedger } from '../shared/performance-populations.js'
 
 /**
@@ -67,8 +66,14 @@ export default function stateRouter(db) {
       res.status(error instanceof RangeError ? 400 : 500).json({ error: error.message })
     }
   })
-  router.get('/watchdog', (_req, res) => {
-    res.set('Cache-Control', 'no-store').json(nodeWatchdogContract(db))
+  router.get('/watchdog', async (_req, res) => {
+    res.set('Cache-Control', 'no-store')
+    try {
+      res.json(await readNodeWatchdogContract(db))
+    } catch {
+      // Failure is unavailable evidence, never a new healthy/empty receipt.
+      res.status(503).json({ error: 'watchdog_contract_unavailable', workComplete: false })
+    }
   })
 
   // -----------------------------------------------------------------------
