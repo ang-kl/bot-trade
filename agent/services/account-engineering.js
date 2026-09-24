@@ -196,16 +196,26 @@ export function engineeringView(db) {
     if (!prev || String(at) > String(prev.at)) decByAcct.set(key, { at, stage, decision })
   }
   try {
-    for (const r of db.prepare(
-      `SELECT account_id, MAX(created_at) AS at, stage, decision
-         FROM decision_log WHERE account_id IS NOT NULL GROUP BY account_id`
-    ).all()) noteDecision(r.account_id, r.at, r.stage, r.decision)
+    // Seek one row for each registered account. Preserve text MAX ordering and
+    // the first-row tie result of the former full-table GROUP BY scan.
+    const latest = db.prepare(
+      `SELECT created_at AS at, stage, decision FROM decision_log
+        WHERE account_id = ? ORDER BY created_at DESC, id ASC LIMIT 1`
+    )
+    for (const { account_id: id } of rows) {
+      const r = latest.get(id)
+      if (r) noteDecision(id, r.at, r.stage, r.decision)
+    }
   } catch { /* pre-3A database */ }
   try {
-    for (const r of db.prepare(
-      `SELECT account_id, MAX(created_at) AS at, approved
-         FROM risk_events WHERE account_id IS NOT NULL GROUP BY account_id`
-    ).all()) noteDecision(r.account_id, r.at, 'risk_gate', r.approved ? 'approved' : 'veto')
+    const latest = db.prepare(
+      `SELECT created_at AS at, approved FROM risk_events
+        WHERE account_id = ? ORDER BY created_at DESC, id ASC LIMIT 1`
+    )
+    for (const { account_id: id } of rows) {
+      const r = latest.get(id)
+      if (r) noteDecision(id, r.at, 'risk_gate', r.approved ? 'approved' : 'veto')
+    }
   } catch { /* pre-M1 database */ }
 
   const master = masterPhases(db)

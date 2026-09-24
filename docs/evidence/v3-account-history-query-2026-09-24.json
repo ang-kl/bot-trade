@@ -1,0 +1,69 @@
+{
+  "generatedAt": "2026-09-24T14:26:47.185Z",
+  "baselineRef": "55b286b47e13450160c4092215488d07d35aa07c",
+  "purpose": "Local synthetic account-report query and index-migration evidence; not a production SLA",
+  "environment": {
+    "node": "v24.14.0",
+    "platform": "darwin",
+    "arch": "x64",
+    "sqlite": "3.49.2"
+  },
+  "fixture": {
+    "registeredAccounts": 7,
+    "decisionRows": 250000,
+    "riskRows": 250000,
+    "includesNullAndUnregistered": true
+  },
+  "beforeMs": [
+    621.4505879999997,
+    626.0627910000003,
+    575.5518620000003,
+    560.7529810000051,
+    589.7830580000009
+  ],
+  "afterMs": [
+    4.258406999993895,
+    3.1348649999999907,
+    4.919158000004245,
+    2.4165219999995315,
+    2.474214000001666
+  ],
+  "reopenIncludingIndexMs": 1665.2662349999955,
+  "additionalAllocatedBytes": 20070400,
+  "plans": [
+    {
+      "table": "decision_log",
+      "steps": [
+        {
+          "id": 5,
+          "parent": 0,
+          "notused": 62,
+          "detail": "SEARCH decision_log USING INDEX idx_decision_log_account_latest (account_id=?)"
+        }
+      ]
+    },
+    {
+      "table": "risk_events",
+      "steps": [
+        {
+          "id": 5,
+          "parent": 0,
+          "notused": 61,
+          "detail": "SEARCH risk_events USING INDEX idx_risk_events_account_latest (account_id=?)"
+        }
+      ]
+    }
+  ],
+  "validation": {
+    "fullReportParity": true,
+    "retainedRowDigestsUnchanged": true,
+    "secondReopenIdempotent": true,
+    "journalMode": "wal",
+    "synchronous": 2
+  },
+  "limitations": [
+    "Local storage and synthetic data; first production creation scans both history tables once.",
+    "Reopen timing includes all normal initDB work. Added indexes also add normal insert and retention maintenance cost.",
+    "Other report queries and management writers remain unchanged; this does not close P1/P4 acceptance."
+  ]
+}
