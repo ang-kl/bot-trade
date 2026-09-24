@@ -15,7 +15,10 @@ async function fixture(t) {
   setState(db, 'telegram_notify_json', '{"enabled":false}')
   const app = express(); app.use('/state', stateRouter(db))
   // Keep expected failures quiet and explicit, instead of Express's HTML error.
-  app.use((error, _req, res, _next) => res.status(500).json({ error: error.message }))
+  app.use((error, _req, res, next) => {
+    if (res.headersSent) return next(error)
+    return res.status(500).json({ error: error.message })
+  })
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)) })
   t.after(async () => {
     server.closeAllConnections()
