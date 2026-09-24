@@ -1,0 +1,303 @@
+{
+  "at": "2026-09-24T15:38:09.326Z",
+  "proposals": [
+    {
+      "account": "46979908",
+      "positionId": "242004561",
+      "symbol": "ETHUSD",
+      "tp": 2873.75,
+      "before": {
+        "positionId": 242004561,
+        "symbol": "ETHUSD",
+        "side": "BUY",
+        "lots": 0.01,
+        "rawVolume": 1,
+        "minLot": 0.01,
+        "entry": 2410.85,
+        "currentPrice": 2677.31,
+        "deltaPips": 2664.6,
+        "estPnlQuote": 2.66,
+        "estNetPnl": 2.59,
+        "netPnl": 2.61,
+        "grossPnl": 2.68,
+        "pnlSource": "broker",
+        "pipSize": 0.1,
+        "digits": 2,
+        "sl": 2447.97,
+        "tp": null,
+        "slGrossImpact": 0.37,
+        "slNetImpact": 0.3,
+        "tpGrossImpact": null,
+        "tpNetImpact": null,
+        "tps": null,
+        "bid": 2679.6,
+        "ask": 2682.21,
+        "day": {
+          "t": 1790110800000,
+          "o": 2751.14,
+          "h": 2789.04,
+          "l": 2629.24,
+          "c": 2668.8,
+          "v": 572375
+        },
+        "swap": -0.07,
+        "commission": 0,
+        "usedMargin": 1.21,
+        "openedAt": 1789593022581,
+        "lastModifiedAt": 1790197200107,
+        "quoteCcy": "USD",
+        "depositCcy": "USD",
+        "label": "PRE|v1|TSM|HI|OFF|1d|-|i1qgcr4790aot",
+        "strategy": "tsmom_long",
+        "timeframe": "1d",
+        "comment": "pending-closed",
+        "guaranteedSl": false,
+        "marketOpen": true
+      },
+      "basis": {
+        "day": {
+          "t": 1790110800000,
+          "o": 2751.14,
+          "h": 2789.04,
+          "l": 2629.24,
+          "c": 2668.8,
+          "v": 572375
+        },
+        "retainedInitialRisk": 308.5999999999999,
+        "rrFloor": 1.5,
+        "snapshotAt": "2026-09-24T15:37:22.886Z"
+      }
+    },
+    {
+      "account": "47790949",
+      "positionId": "242243017",
+      "symbol": "XRPUSD",
+      "tp": 1.6555,
+      "before": {
+        "positionId": 242243017,
+        "symbol": "XRPUSD",
+        "side": "BUY",
+        "lots": 4.49,
+        "rawVolume": 44900,
+        "minLot": 0.1,
+        "entry": 1.2977,
+        "currentPrice": 1.5101,
+        "deltaPips": 212.4,
+        "estPnlQuote": 95.37,
+        "estNetPnl": 94.45,
+        "netPnl": 94.94,
+        "grossPnl": 95.86,
+        "pnlSource": "broker",
+        "pipSize": 0.001,
+        "digits": 4,
+        "sl": 1.309,
+        "tp": null,
+        "slGrossImpact": 5.07,
+        "slNetImpact": 4.15,
+        "tpGrossImpact": null,
+        "tpNetImpact": null,
+        "tps": null,
+        "bid": 1.5112,
+        "ask": 1.5167,
+        "day": {
+          "t": 1790110800000,
+          "o": 1.5712,
+          "h": 1.6555,
+          "l": 1.4769,
+          "c": 1.4802,
+          "v": 316072
+        },
+        "swap": -0.92,
+        "commission": 0,
+        "usedMargin": 291.34,
+        "openedAt": 1789679526468,
+        "lastModifiedAt": 1790197200203,
+        "quoteCcy": "USD",
+        "depositCcy": "USD",
+        "label": "PRE|v1|TSM|HI|OFF|1d|-|i2568u6se6r72",
+        "strategy": "tsmom_long",
+        "timeframe": "1d",
+        "comment": "pending-closed",
+        "guaranteedSl": false,
+        "marketOpen": true
+      },
+      "basis": {
+        "day": {
+          "t": 1790110800000,
+          "o": 1.5712,
+          "h": 1.6555,
+          "l": 1.4769,
+          "c": 1.4802,
+          "v": 316072
+        },
+        "retainedInitialRisk": 0.23070000000000013,
+        "rrFloor": 1.5,
+        "snapshotAt": "2026-09-24T15:37:28.484Z"
+      }
+    }
+  ],
+  "receipts": [
+    {
+      "account": "46979908",
+      "positionId": "242004561",
+      "status": 200,
+      "data": {
+        "ok": true,
+        "positionId": "242004561",
+        "sl": 2447.97,
+        "tp": 2873.75,
+        "ledgerUpdated": true,
+        "ledgerReason": null,
+        "accountId": "46979908",
+        "accountSource": "body"
+      }
+    },
+    {
+      "account": "47790949",
+      "positionId": "242243017",
+      "status": 200,
+      "data": {
+        "ok": true,
+        "positionId": "242243017",
+        "sl": 1.309,
+        "tp": 1.6555,
+        "ledgerUpdated": true,
+        "ledgerReason": null,
+        "accountId": "47790949",
+        "accountSource": "body"
+      }
+    }
+  ],
+  "readback": [
+    {
+      "accountId": "46979908",
+      "status": 200,
+      "fetchedAt": "2026-09-24T15:38:33.284Z",
+      "isLive": false,
+      "host": "demo.ctraderapi.com",
+      "error": null,
+      "positions": [
+        {
+          "positionId": 242004561,
+          "symbol": "ETHUSD",
+          "side": "BUY",
+          "lots": 0.01,
+          "rawVolume": 1,
+          "minLot": 0.01,
+          "entry": 2410.85,
+          "currentPrice": 2681.66,
+          "deltaPips": 2708.1,
+          "estPnlQuote": 2.71,
+          "estNetPnl": 2.64,
+          "netPnl": 2.63,
+          "grossPnl": 2.7,
+          "pnlSource": "broker",
+          "pipSize": 0.1,
+          "digits": 2,
+          "sl": 2447.97,
+          "tp": 2873.75,
+          "slGrossImpact": 0.37,
+          "slNetImpact": 0.3,
+          "tpGrossImpact": 4.63,
+          "tpNetImpact": 4.56,
+          "tps": [
+            {
+              "n": 1,
+              "price": 2873.75,
+              "lots": 0.01,
+              "at": 1790264289826
+            }
+          ],
+          "bid": 2680.33,
+          "ask": 2682.64,
+          "day": {
+            "t": 1790110800000,
+            "o": 2751.14,
+            "h": 2789.04,
+            "l": 2629.24,
+            "c": 2668.8,
+            "v": 572375
+          },
+          "swap": -0.07,
+          "commission": 0,
+          "usedMargin": 1.21,
+          "openedAt": 1789593022581,
+          "lastModifiedAt": 1790264289826,
+          "quoteCcy": "USD",
+          "depositCcy": "USD",
+          "label": "PRE|v1|TSM|HI|OFF|1d|-|i1qgcr4790aot",
+          "strategy": "tsmom_long",
+          "timeframe": "1d",
+          "comment": "pending-closed",
+          "guaranteedSl": false,
+          "marketOpen": true
+        }
+      ]
+    },
+    {
+      "accountId": "47790949",
+      "status": 200,
+      "fetchedAt": "2026-09-24T15:38:48.383Z",
+      "isLive": false,
+      "host": "demo.ctraderapi.com",
+      "error": null,
+      "positions": [
+        {
+          "positionId": 242243017,
+          "symbol": "XRPUSD",
+          "side": "BUY",
+          "lots": 4.49,
+          "rawVolume": 44900,
+          "minLot": 0.1,
+          "entry": 1.2977,
+          "currentPrice": 1.5131,
+          "deltaPips": 215.4,
+          "estPnlQuote": 96.71,
+          "estNetPnl": 95.79,
+          "netPnl": 95.26,
+          "grossPnl": 96.18,
+          "pnlSource": "broker",
+          "pipSize": 0.001,
+          "digits": 4,
+          "sl": 1.309,
+          "tp": 1.6555,
+          "slGrossImpact": 5.07,
+          "slNetImpact": 4.15,
+          "tpGrossImpact": 160.65,
+          "tpNetImpact": 159.73,
+          "tps": [
+            {
+              "n": 1,
+              "price": 1.6555,
+              "lots": 4.49,
+              "at": 1790264290759
+            }
+          ],
+          "bid": 1.5114,
+          "ask": 1.5164,
+          "day": {
+            "t": 1790110800000,
+            "o": 1.5712,
+            "h": 1.6555,
+            "l": 1.4769,
+            "c": 1.4802,
+            "v": 316072
+          },
+          "swap": -0.92,
+          "commission": 0,
+          "usedMargin": 291.34,
+          "openedAt": 1789679526468,
+          "lastModifiedAt": 1790264290759,
+          "quoteCcy": "USD",
+          "depositCcy": "USD",
+          "label": "PRE|v1|TSM|HI|OFF|1d|-|i2568u6se6r72",
+          "strategy": "tsmom_long",
+          "timeframe": "1d",
+          "comment": "pending-closed",
+          "guaranteedSl": false,
+          "marketOpen": true
+        }
+      ]
+    }
+  ]
+}
