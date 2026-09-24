@@ -12,8 +12,7 @@
 // perf-ledger, edge-health, the metrics snapshot and the lessons tuner all
 // count every closed trades row that has a net_pnl, and NONE of them filter
 // on source (verified: the only source filters in the codebase are in
-// loss-guardian, profit-keeper, session-open-guard and label-backfill, all on
-// monitored_positions or label work). Writing imported history there would
+// loss-guardian, profit-keeper, session-open-guard and label work). Writing imported rows there would
 // silently move the win rate, profit factor, strategy attribution and the
 // lessons decay keys, and the owner would have no way to tell that a stat
 // changed because of an import rather than because of trading. So broker
@@ -165,7 +164,10 @@ export function persistDeals(db, rows) {
       opened_at = COALESCE(excluded.opened_at, broker_deals.opened_at),
       closed_at = excluded.closed_at, gross_pnl = excluded.gross_pnl,
       swap = excluded.swap, commission = excluded.commission, net_pnl = excluded.net_pnl,
-      matched_trade_id = COALESCE(excluded.matched_trade_id, broker_deals.matched_trade_id),
+      -- Null is a failed identity proof, not a missing update. Keeping an old
+      -- link would contradict the unmatched receipt and allow the downstream
+      -- price reconciler to keep using an arbitrary local trade.
+      matched_trade_id = excluded.matched_trade_id,
       imported_at = datetime('now')
   `)
   const before = db.prepare('SELECT COUNT(*) AS c FROM broker_deals').get().c
