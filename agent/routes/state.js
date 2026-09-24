@@ -54,6 +54,16 @@ import { reportLedger } from '../shared/performance-populations.js'
  */
 export default function stateRouter(db) {
   const router = Router()
+  router.get('/momentum-targets', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    try {
+      const { momentumTargetStatus } = await import('../services/momentum-entry-contract.js')
+      res.json(momentumTargetStatus(db, { ...requestedAccount(db, req), limit: req.query.limit == null ? 50 : Number(req.query.limit) }))
+    } catch (error) {
+      if (error instanceof RangeError) return res.status(400).json({ error: error.message })
+      res.status(503).json({ error: 'Momentum target status is temporarily unavailable.', code: 'momentum_target_status_unavailable' })
+    }
+  })
   router.get('/blocker-report', (req, res) => {
     res.set('Cache-Control', 'no-store')
     try {
