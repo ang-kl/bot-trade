@@ -133,7 +133,12 @@ function isolatedReport(db, kind, options = {}) {
       settled = true; clearTimeout(timer); void worker.terminate()
       if (error) reject(error); else resolve(value)
     }
-    const timer = setTimeout(() => finish(new Error('performance_report_deadline')), 15000)
+    // Production profiling measured the legacy prices/decision scans at up to
+    // ~47s/~24s. Isolation protects the event loop; these two preserve their
+    // exact historical output instead of converting a slow-but-valid report
+    // into a 15s error while follow-up query optimisation is measured.
+    const deadlineMs = kind === 'latest-prices' ? 60000 : kind === 'decisions-daily' ? 30000 : 15000
+    const timer = setTimeout(() => finish(new Error('performance_report_deadline')), deadlineMs)
     worker.once('message', msg => finish(msg.ok ? null : new Error(msg.error), msg.report))
     worker.once('error', error => finish(error))
     worker.once('exit', () => {
@@ -150,18 +155,65 @@ function isolatedReport(db, kind, options = {}) {
 export function readPerformancePopulations(db) { return isolatedReport(db, 'populations') }
 export function readPerformanceAnalytics(db, options) { return isolatedReport(db, 'analytics', options) }
 export function readCupHandleFunnel(db, options) { return isolatedReport(db, 'cup-funnel', options) }
-function buildReport(db, kind, options) {
+export function readDecisionsDaily(db, options) { return isolatedReport(db, 'decisions-daily', options) }
+export function readLatestPrices(db) { return isolatedReport(db, 'latest-prices') }
+export function readStageMatrixStats(db) { return isolatedReport(db, 'stage-matrix-stats') }
+export function buildDecisionsDaily(db, { days = 90, accountId = null } = {}) {
+  const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
+  const clauses = ["created_at >= datetime('now', ?)"]
+  const params = [`-${safeDays} days`]
+  if (accountId != null) { clauses.push('(account_id = ? OR account_id IS NULL)'); params.push(String(accountId)) }
+  return db.prepare(
+    `SELECT substr(created_at, 1, 10) AS day,
+            SUM(approved = 1) AS approved,
+            SUM(CASE WHEN approved = 1 THEN 0 ELSE COALESCE(repeat_count, 1) END) AS vetoed,
+            SUM(approved != 1 OR approved IS NULL) AS vetoed_distinct
+       FROM risk_events
+      WHERE ${clauses.join(' AND ')}
+      GROUP BY day ORDER BY day`
+  ).all(...params)
+}
+export function buildLatestPrices(db) {
+  const rows = db.prepare(`
+    SELECT symbol, price, bias, confidence, scanned_at
+    FROM scans
+    WHERE id IN (SELECT MAX(id) FROM scans WHERE price IS NOT NULL GROUP BY symbol)
+    ORDER BY symbol
+  `).all()
+  const prices = {}
+  for (const r of rows) prices[r.symbol] = { price: r.price, bias: r.bias, confidence: r.confidence, at: r.scanned_at }
+  return prices
+}
+async function buildReport(db, kind, options) {
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })
+  if (kind === 'decisions-daily') return buildDecisionsDaily(db, options)
+  if (kind === 'latest-prices') return buildLatestPrices(db)
+  if (kind === 'stage-matrix-stats') {
+    // Keep the common funnel/population worker lightweight. Loading the stage
+    // registry only for this report also avoids widening unrelated worker
+    // module graphs during the full parallel test gate.
+    const [{ stageMatrixStats }, { getState }] = await Promise.all([import('./stage-matrix.js'), import('../db.js')])
+    return stageMatrixStats(db, getState)
+  }
   return buildPerformancePopulations(db)
 }
 if (!isMainThread && workerData?.path) {
   let db
   try {
     db = new Database(workerData.path, { readonly: true, fileMustExist: true, timeout: 1000 })
-    const report = db.transaction(() => buildReport(db, workerData.kind, workerData.options))()
-    if (Buffer.byteLength(JSON.stringify(report)) > 8 * 1024 * 1024) throw new Error('performance_report_response_bound')
-    parentPort.postMessage({ ok: true, report })
-  } catch (e) { parentPort.postMessage({ ok: false, error: e.message }) }
-  finally { db?.close() }
+    // Keep this module synchronous on import. Only the stage report loads its
+    // larger registry lazily inside the worker; the promise is resolved here
+    // without turning every importer into an async ESM module.
+    Promise.resolve(buildReport(db, workerData.kind, workerData.options))
+      .then(report => {
+        if (Buffer.byteLength(JSON.stringify(report)) > 8 * 1024 * 1024) throw new Error('performance_report_response_bound')
+        parentPort.postMessage({ ok: true, report })
+      })
+      .catch(e => parentPort.postMessage({ ok: false, error: e.message }))
+      .finally(() => db?.close())
+  } catch (e) {
+    parentPort.postMessage({ ok: false, error: e.message })
+    db?.close()
+  }
 }
