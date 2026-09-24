@@ -8,7 +8,7 @@ The cause is an eligibility set being counted as a missing-target set.
 
 Scope: agent/services/naked-position-guard.js, target-restore.js and their
 existing protection-audit-path/target-restore tests; this evidence file and the
-CLAUDE.md continuation ledger. No order, price, eligibility, retry, ownership,
+CLAUDE.md continuation ledger and frozen closure-register evidence. No order, price, eligibility, retry, ownership,
 account setting or position mutation policy changes.
 
 Assumptions: the audit snapshot is a point-in-time observation (confirmed by
@@ -36,3 +36,11 @@ tests, full lint/build/color/inventory/whitespace checks and exact-head CI.
 #1080 has 5,525 backend and 943 frontend passing locally; the final main merge
 changed ancestry only (identical tree), with its new exact-head CI required.
 The new policy still has no production producer and remains inactive.
+
+Full local checks subsequently passed 5,527 backend tests (four existing
+native-environment skips), 943 frontend tests, lint, build, color, inventory
+and whitespace checks. The first frontend run used local SGT and failed an
+unchanged UTC date expectation; the same suite passed unchanged in UTC.
+Main then advanced to the separately tested audit optimization #1082.
+Both continuation ledger entries were preserved when resolving their text
+conflict. The resulting combined source requires fresh local/CI checks.
