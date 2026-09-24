@@ -1109,3 +1109,22 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   account acceptance demonstrated the P2 entry-control identity defect now
   under correction. Numerical partial-TP1 policy remains outstanding. This
   follows the recorded rebase and visible replies, not a full-corpus count.
+
+- 2026-09-24 13:41 UTC, Codex desktop partial-corpus continuation: visible
+  replies continued through **№ 8,839**; the closing report is **№ 8,840**,
+  next **№ 8,841**; later visible replies take precedence. #1071 passed its
+  full gate, was merged under standing approval as `e60064c`, and deployed.
+  Production controls and protection/configuration preservation were checked;
+  startup latency failure remains open despite subsequent normal recovery.
+  The eight V3 groups remain frozen and numerical partial-TP1 policy is still
+  outstanding. This local ledger write-back is intentionally uncommitted to
+  avoid a documentation-only Node restart. It is not a full-corpus recount.
+
+- 2026-09-24 14:02 UTC, Codex desktop resumed continuation: visible replies
+  reached **№ 8,844**, next **№ 8,845**; later visible replies take precedence.
+  The first resumed reply, № 8,841, carried the prior 21:42 display time;
+  the fresh clock read was 13:57:52 UTC (21:57 SGT). Subsequent stamps use it.
+  The owner asked to continue toward tonight's V3 closure. The demonstrated
+  61.7-second synchronous account report is under correction within P1/P4;
+  target-policy values remain requested, not invented. The previous local
+  ledger write-back is carried with this source change, not a separate restart.

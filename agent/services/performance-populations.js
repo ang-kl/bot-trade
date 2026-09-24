@@ -165,6 +165,7 @@ export function readLatestPrices(db) { return isolatedReport(db, 'latest-prices'
 export function readStageMatrixStats(db) { return isolatedReport(db, 'stage-matrix-stats') }
 export function readDecisionAudit(db, options) { return isolatedReport(db, 'decision-audit', options) }
 export function readNodeWatchdogContract(db, options) { return isolatedReport(db, 'node-watchdog', options) }
+export function readAccountEngineering(db) { return isolatedReport(db, 'account-engineering') }
 export function buildDecisionsDaily(db, { days = 90, accountId = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -192,6 +193,12 @@ export function buildLatestPrices(db) {
   return prices
 }
 async function buildReport(db, kind, options) {
+  if (kind === 'account-engineering') {
+    const { engineeringView } = await import('./account-engineering.js')
+    // The account panel aggregates retained decisions. Keep the coherent
+    // read-only snapshot off management, using the existing report bounds.
+    return db.transaction(() => engineeringView(db))()
+  }
   if (kind === 'node-watchdog') {
     const { nodeWatchdogContract } = await import('./watchdog-contract.js')
     // All account/work/calendar reads describe one database snapshot. The
@@ -223,8 +230,8 @@ if (!isMainThread && workerData?.path) {
   let db
   try {
     db = new Database(workerData.path, { readonly: true, fileMustExist: true, timeout: 1000 })
-    // Keep this module synchronous on import. Only the stage report loads its
-    // larger registry lazily inside the worker; the promise is resolved here
+    // Keep this module synchronous on import. Specialized reports load their
+    // larger registries lazily inside the worker; the promise is resolved here
     // without turning every importer into an async ESM module.
     Promise.resolve(buildReport(db, workerData.kind, workerData.options))
       .then(report => {
