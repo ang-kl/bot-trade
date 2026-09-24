@@ -3,15 +3,22 @@
 // This describes those automatic bar paths, NOT manual orders or tick-entry
 // readiness. Retirement reasons come from entry-producers.js, never a second
 // on/off flag. A new family must be mapped explicitly instead of reading ready.
+// Strategy-specific paths are additive: fib_618_fade can also open through
+// pending_fib_orders, so family-only resolution would hide a real producer.
 const FAMILY_PRODUCERS = Object.freeze({
   mean_reversion: ['scan_dispatch'],
   breakout: ['scan_dispatch'],
   trend: ['scan_dispatch'],
   momentum: ['daily_momentum_account', 'cross_sectional_book'],
 })
+const STRATEGY_PRODUCERS = Object.freeze({
+  fib_618_fade: ['pending_fib_orders'],
+})
 
-export function automaticProducerAvailability(family, inventory) {
-  const ids = Object.hasOwn(FAMILY_PRODUCERS, family) ? FAMILY_PRODUCERS[family] : []
+export function automaticProducerAvailability({ strategy = null, family = null } = {}, inventory) {
+  const familyIds = Object.hasOwn(FAMILY_PRODUCERS, family) ? FAMILY_PRODUCERS[family] : []
+  const strategyIds = Object.hasOwn(STRATEGY_PRODUCERS, strategy) ? STRATEGY_PRODUCERS[strategy] : []
+  const ids = [...new Set([...familyIds, ...strategyIds])]
   const source = Array.isArray(inventory) ? inventory : []
   const producers = ids.map(id => {
     const matches = source.filter(p => p?.id === id && p.family === 'automatic' && p.basis === 'bar')
