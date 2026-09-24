@@ -109,15 +109,20 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
 }
 
 const flights = new WeakMap()
-/** Disk-backed reports run in one read-only worker per database, off the
- * protection event loop, within a deadline and bounded response. */
+const watchdogFlights = new WeakMap()
+/** Disk-backed reads stay off the protection event loop: at most two report
+ * workers and one reserved watchdog worker per database, bounded until exit. */
 function isolatedReport(db, kind, options = {}) {
   const run = () => buildReport(db, kind, options)
   if (db.memory || db.name === ':memory:') return Promise.resolve(run())
-  if (!flights.has(db)) flights.set(db, new Map())
-  const active = flights.get(db), key = JSON.stringify([kind, options])
+  // The independently polled watchdog must not compete with slow dashboard
+  // reports for both slots. Reserve one bounded flight; retain it until exit
+  // even on timeout, just like the existing two report slots.
+  const watchdog = kind === 'node-watchdog', pool = watchdog ? watchdogFlights : flights
+  if (!pool.has(db)) pool.set(db, new Map())
+  const active = pool.get(db), key = JSON.stringify([kind, options])
   if (active.has(key)) return active.get(key)
-  if (active.size >= 2) return Promise.reject(new Error('performance_report_worker_capacity'))
+  if (active.size >= (watchdog ? 1 : 2)) return Promise.reject(new Error(watchdog ? 'watchdog_report_worker_capacity' : 'performance_report_worker_capacity'))
   const job = new Promise((resolve, reject) => {
     let worker
     try {
@@ -159,6 +164,7 @@ export function readDecisionsDaily(db, options) { return isolatedReport(db, 'dec
 export function readLatestPrices(db) { return isolatedReport(db, 'latest-prices') }
 export function readStageMatrixStats(db) { return isolatedReport(db, 'stage-matrix-stats') }
 export function readDecisionAudit(db, options) { return isolatedReport(db, 'decision-audit', options) }
+export function readNodeWatchdogContract(db, options) { return isolatedReport(db, 'node-watchdog', options) }
 export function buildDecisionsDaily(db, { days = 90, accountId = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -186,6 +192,12 @@ export function buildLatestPrices(db) {
   return prices
 }
 async function buildReport(db, kind, options) {
+  if (kind === 'node-watchdog') {
+    const { nodeWatchdogContract } = await import('./watchdog-contract.js')
+    // All account/work/calendar reads describe one database snapshot. The
+    // builder retains its original receipt times; completion is not freshness.
+    return db.transaction(() => nodeWatchdogContract(db, options))()
+  }
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })
   if (kind === 'decisions-daily') return buildDecisionsDaily(db, options)
