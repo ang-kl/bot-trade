@@ -2100,7 +2100,7 @@ export default function stateRouter(db) {
     try {
       res.json(await readAccountEngineering(db))
     } catch {
-      res.status(503).json({ error: 'account_engineering_unavailable' })
+      res.status(503).json({ error: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })
     }
   })
 

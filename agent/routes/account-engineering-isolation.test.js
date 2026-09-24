@@ -56,5 +56,5 @@ test('unavailable account report is a 503 and never falls back to management SQL
   const response = await fetch(url)
   assert.equal(response.status, 503)
   assert.equal(response.headers.get('cache-control'), 'no-store')
-  assert.deepEqual(await response.json(), { error: 'account_engineering_unavailable' })
+  assert.deepEqual(await response.json(), { error: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })
 })
