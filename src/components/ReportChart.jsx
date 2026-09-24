@@ -30,7 +30,8 @@ import { performanceCurve } from '../lib/performance-curve.js'
 //    refuse": approved/vetoed as stacked daily bars, which is the mark daily
 //    counts actually want, with the veto rate as the headline.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { agentGet, pageAsleep } from '../lib/agent-api.js'
+import { pageAsleep } from '../lib/agent-api.js'
+import { readPerformanceReport } from '../lib/performance-report-reader.js'
 import Card from './common/Card.jsx'
 import Segmented from './common/Segmented.jsx'
 
@@ -84,7 +85,7 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
       if (stopped || running || pageAsleep()) return
       running = true
       try {
-        const r = await agentGet(`/state/decisions-daily?days=90&account=${encodeURIComponent(chartAccount)}&timeZone=${encodeURIComponent(zone)}`)
+        const r = await readPerformanceReport(`/state/decisions-daily?days=90&account=${encodeURIComponent(chartAccount)}&timeZone=${encodeURIComponent(zone)}`)
         if (!stopped) setDecisions({ accountId: chartAccount, zone, rows: r.accountId === String(chartAccount) ? r.rows : null })
       } catch { if (!stopped) setDecisions(null) }
       finally { running = false }

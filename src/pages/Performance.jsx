@@ -1,9 +1,8 @@
 // Performance — the design_claude Performance Ledger, first tab of the app
 // (owner: "it will be before desk"). One closed-trade ledger sliced three
-// ways — 14 time windows × 6 market categories × accounts — served whole by
-// GET /state/perf-ledger so this page only renders. Carry-forward maths
-// (carry in → net → carry out) reconcile by construction; the day rolls at
-// 22:00 UTC (AU open) and the broker week anchors Sunday 22:00 UTC.
+// ways — time windows × market categories × accounts — from complete recorded
+// populations. Calendar periods use the displayed timezone; rolling periods
+// end at the report timestamp. Carry balances require reconciled cashflows.
 // Collect-forward everywhere: history the agent never captured shows an
 // honest "—", never a fabricated number.
 //
@@ -13,6 +12,7 @@
 // toggle — mobile follows the system exactly as the design asks.
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api.js'
+import { readPerformanceReport } from '../lib/performance-report-reader.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
@@ -193,9 +193,9 @@ function insight(w) {
   return bits.join(' · ') || null
 }
 
-const dRange = (fromIso, toIso) => {
+const dRange = (fromIso, toIso, timeZone) => {
   const f = new Date(fromIso), t = new Date(toIso)
-  const one = (d) => d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', timeZone: 'UTC' })
+  const one = (d) => d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', timeZone })
   return `${one(f)} → ${one(t)}`
 }
 
@@ -915,7 +915,7 @@ function ledgerToText(windows) {
 // The ledger table body — one component for both the card and the expanded
 // modal (variant prop, never forked markup). The modal adds the owner's
 // "expand all / collapse all" toggle driving every row's detail.
-function LedgerBody({ variant, windows, ledger, error, nowMs }) {
+function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone }) {
   const [expandAll, setExpandAll] = useState(false)
   const modal = variant === 'modal'
   return (
@@ -943,13 +943,13 @@ function LedgerBody({ variant, windows, ledger, error, nowMs }) {
               </tr>
             </thead>
             <tbody>
-              {windows.map(w => <LedgerRow key={w.key} w={w} nowMs={nowMs} forceOpen={modal ? (expandAll || null) : null} />)}
+              {windows.map(w => <LedgerRow key={w.key} w={w} nowMs={nowMs} timeZone={timeZone} forceOpen={modal ? (expandAll || null) : null} />)}
             </tbody>
           </table>
         </div>
       )}
       <p className={`mt-1.5 text-(length:--fs-body) ${SUB}`}>
-        Rolling windows (1H…12M) end now; Yesterday/3D/WTD/MTD use the 22:00-UTC trading-day anchor. Carry-forward reconstructs balances backwards from the current stamped balance — windows older than the recorded history show the maths honestly rather than guessing. Unknown symbols count in totals but not the six market columns.
+        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry balances require cashflow-reconciled history and remain unavailable here. Unknown symbols are included under Other.
       </p>
     </>
   )
@@ -958,7 +958,7 @@ function LedgerBody({ variant, windows, ledger, error, nowMs }) {
 // One desktop ledger row, expandable into the market breakdown.
 // `forceOpen` (boolean) overrides the internal state — the expanded modal's
 // "expand all / collapse all" toggle drives it.
-function LedgerRow({ w, forceOpen = null, nowMs }) {
+function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
   const [openState, setOpen] = useState(false)
   const open = forceOpen ?? openState
   const empty = !w.trades
@@ -976,7 +976,7 @@ function LedgerRow({ w, forceOpen = null, nowMs }) {
           {/* 10px: the app-wide first-column-head size, not the 9.5px cell size —
               the window label is the row's head. */}
           <span className="text-(length:--fs-body) font-extrabold">{w.label}</span>
-          <div className={`ml-3 text-(length:--fs-body) ${SUB}`}>{dRange(w.from, w.to)}</div>
+          <div className={`ml-3 text-(length:--fs-body) ${SUB}`}>{dRange(w.from, w.to, timeZone)}</div>
         </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${SUB}`}>{money(w.carryIn)}</td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${pnlTone(empty ? null : w.net)}`}>
@@ -1017,7 +1017,7 @@ function LedgerRow({ w, forceOpen = null, nowMs }) {
 // Mobile ledger card — exact port of the Ledger phone screen's row:
 // 76px 1fr 82px grid, carry in → carry out line, expand → 3-col market
 // mini-cells on the accent tint + the insight line.
-function MobileWindowCard({ w }) {
+function MobileWindowCard({ w, timeZone }) {
   const [open, setOpen] = useState(false)
   const empty = !w.trades
   return (
@@ -1026,7 +1026,7 @@ function MobileWindowCard({ w }) {
         style={{ cursor: 'pointer', fontFamily: 'inherit', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', color: P_TX, display: 'grid', gridTemplateColumns: '76px 1fr 82px', gap: 6, alignItems: 'center', padding: '7px 11px', fontVariantNumeric: 'tabular-nums', minHeight: 44 }}>
         <span style={{ display: 'flex', flexDirection: 'column' }}>
           <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{w.label}</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: P_ACC }}>{dRange(w.from, w.to)}</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: P_ACC }}>{dRange(w.from, w.to, timeZone)}</span>
         </span>
         <span style={{ display: 'flex', flexDirection: 'column' }}>
           <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>{money(w.carryIn)} → <span style={{ fontWeight: W_CELL, color: P_TX }}>{money(w.carryOut)}</span></span>
@@ -1156,8 +1156,8 @@ export default function Performance() {
         agentGet('/state/accounts').catch(() => null),
         agentGet(`/state/trades${q}`).catch(() => null),
         agentGet(`/state/positions${q}`).catch(() => null),
-        agentGet(populationUrl).catch(() => null),
-        agentGet(`/state/account-analytics?account=${encodeURIComponent(acct)}`).catch(() => null),
+        readPerformanceReport(populationUrl).catch(() => null),
+        readPerformanceReport(`/state/account-analytics?account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
       if (generation !== loadGeneration.current) return
       setPopulationReport(populations?.status === 'complete' ? populations : null)
@@ -1174,11 +1174,10 @@ export default function Performance() {
 
       setPositions(positionRows || [])
       setPosScope({ accountId: positionRows ? acct : null, legacyRows: p?.legacyRows ?? 0 })
-      // Two bounded history workers at a time. Current money refreshes
-      // independently; no seven-fold rerun of the same close population.
+      // History reads share a queue with the chart; current money is independent.
       const [pm, dd, rf] = await Promise.all([
-        agentGet(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
-        agentGet(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
+        readPerformanceReport(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
+        readPerformanceReport(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
         acct === 'all' ? null : agentGet(`/state/risk-full?account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
       if (generation !== loadGeneration.current) return
@@ -1954,7 +1953,7 @@ export default function Performance() {
                 )
               })}
             </div>
-            {windows.map(w => <MobileWindowCard key={w.key} w={w} />)}
+            {windows.map(w => <MobileWindowCard key={w.key} w={w} timeZone={timeZone} />)}
           </>
         )}
 
@@ -2342,9 +2341,9 @@ export default function Performance() {
               all recorded closes · calendar periods in {timeZone} · rolling 1H, 4H and 12H end at the latest report · historical balances require reconciled cashflows
             </span>
             <SectionTools id="ledger" title="Timeframe Ledger table" data={windows} toText={ledgerToText}
-              render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />} />
+              render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} nowMs={loadedAt} timeZone={timeZone} />} />
           </div>
-          <LedgerBody variant="card" windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />
+          <LedgerBody variant="card" windows={windows} ledger={ledger} error={error} nowMs={loadedAt} timeZone={timeZone} />
         </Card>
 
         {/* Performance gradients — exact prototype panels (timeframe ×

@@ -86,3 +86,23 @@ Exact final combined-source gates and deployed readback remain outstanding.
 A production read at 23:14 UTC overlapped Railway's #1081 deployment and
 returned a gateway error; health subsequently confirmed b95975f running.
 That interrupted read is not counted as successful snapshot verification.
+
+Deployed verification and correction (23:29 UTC): #1083 merged as d61d84d,
+Railway deployment bea01482-72f7-4f4d-8aeb-635651380235 succeeded. Final combined
+gates passed: 5,537 backend tests, four skipped; 955 frontend tests, lint,
+build, colour gate and UI inventory. Current seven-account readings refreshed
+from broker receipts; crypto midpoint/change and upstream blockers rendered.
+Entry configuration readback matched the pre-deploy snapshot on every account.
+The protection audit still reported 32 positions with both protections.
+
+Live verification found an obsolete ledger caption and UTC date formatting,
+despite the corrected calendar computation. The follow-up passes the displayed
+timezone into both desktop and mobile labels. Concurrent historical requests
+also hit the existing two-worker limit (decisions/analytics capacity errors).
+Performance and its chart now share one bounded, coalescing read queue; current
+readings stay independent, sleeping tabs start no queued reads, and a changed
+connection cannot execute work queued under the previous credential. Server
+worker limits, report formulas and trading behaviour remain unchanged.
+Named check: report-read-queue.test.js covers coalescing, serialized starts,
+failure recovery, sleep and bounded pending work. These paths are within the
+existing report/refresh-helper scope. No new trading target is introduced.

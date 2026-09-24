@@ -1,5 +1,15 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 23:30 UTC: visible replies through
+№ 8,977, partial local corpus still not adopted. #1083 deployed d61d84d;
+seven-account current money and all-time rows, all-account Desk positions,
+crypto quotes and Sessions page were browser-read back. Entry settings
+unchanged and protection audit reports 32 protected positions. Follow-up
+corrects leftover ledger calendar labels and coordinates concurrent history
+reads after observed worker-capacity errors. Its full release gate is running.
+Partial-TP cost treatment and 24-hour expiry origin remain pending. The health
+badge reports two missing realised-P&L reconciliations; V3 is not accepted. -->
+
 <!-- Continuation ledger 2026-09-24 23:16 UTC: partial corpus, visible replies
 through № 8,968; later visible replies win. Owner merged #1081 at 23:13 UTC;
 Railway deployed b95975f successfully. Reporting PR #1083 incorporates it.
