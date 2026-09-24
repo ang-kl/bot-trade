@@ -795,3 +795,10 @@ test('the loop prints the breakdown, not the bare count', () => {
   assert.doesNotMatch(src, /\$\{gapBefore\} closed trade\(s\) still missing net_pnl/,
     'the old unqualified sentence must be gone, not merely supplemented')
 })
+
+
+test('the loop logs exact overdue P&L identities when the reconciliation heartbeat fails', () => {
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[^]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+  assert.ok(src.includes('if (unreached) log(`P&L reconciliation unreached rows:'))
+  assert.match(src, /JSON\.stringify\(detail\.unreachedRows\)/)
+})
