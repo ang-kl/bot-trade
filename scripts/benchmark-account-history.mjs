@@ -27,7 +27,7 @@ const digest = () => Object.fromEntries(['decision_log', 'risk_events'].map(tabl
 }))
 try {
   db.exec('DROP INDEX idx_decision_log_account_latest; DROP INDEX idx_risk_events_account_latest')
-  const account = db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')")
+  const account = db.prepare("INSERT INTO accounts(account_id,enabled,mode) VALUES (?,1,'active')")
   const ids = Array.from({ length: 7 }, (_, i) => String(10000000 + i))
   for (const id of ids) account.run(id)
   const decision = db.prepare("INSERT INTO decision_log(account_id,symbol,created_at,stage,decision,reason) VALUES (?,'EURUSD',?,'scan','skip','fixture')")
