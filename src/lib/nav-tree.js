@@ -46,6 +46,7 @@ export const NAV_TREE = [
         path: '/desk', label: 'Desk', icon: '🖥️',
         sections: [
           { id: 'sec-openpnl', label: 'Open Trades', kind: 'C' },
+          { id: 'sec-all-accounts', label: 'All accounts', kind: 'T' },
           { id: 'sec-chartwall', label: 'Chart Wall', kind: 'C' },
           { id: 'sec-broker', label: 'At the Broker', kind: 'T+F' },
           { id: 'sec-loss-review', label: 'Trade Lessons', kind: 'T+F' },
@@ -60,6 +61,7 @@ export const NAV_TREE = [
           { id: 'sec-whynotrades', label: 'Why No Trades?', kind: 'C' },
         ],
       },
+      { path: '/browser-sessions', label: 'Browser sessions', icon: '🌐', sections: [] },
     ],
   },
   {

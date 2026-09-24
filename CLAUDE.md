@@ -1,5 +1,23 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 23:16 UTC: partial corpus, visible replies
+through № 8,968; later visible replies win. Owner merged #1081 at 23:13 UTC;
+Railway deployed b95975f successfully. Reporting PR #1083 incorporates it.
+Before that merge: 5,535 backend checks and 955 frontend checks passed locally.
+Final combined-source/CI gates remain required. A stale broker-position source
+was identified: active Performance/Desk now share its read-only refresh.
+Partial-TP cost-reserve treatment and session-expiry origin remain pending;
+new partial execution is inactive and V3 acceptance is still open. -->
+
+<!-- Continuation ledger 2026-09-24 23:09 UTC: partial corpus remains 8,
+not adopted. Visible continuation reached № 8,964; later visible replies win.
+Local reporting build uses the owner-confirmed local Performance calendar day,
+account-owned current money for all seven accounts, read-only Desk overview,
+and browser-session/sleep corrections. Full release gates are in progress.
+No trading settings or broker positions were changed. P0/P3 remains incomplete;
+explicit carry-reserve treatment and 24-hour session-expiry origin await owner
+answers. The older #1081 test-clock fixture proposal remains unapplied. -->
+
 <!-- Continuation ledger 2026-09-24 22:10 UTC: partial local corpus (script 8);
 visible replies reached № 8,945, next № 8,946. Later visible replies win.
 #1082 is deployed ba1b16f; first loop remains 122,773 ms. Fresh authenticated

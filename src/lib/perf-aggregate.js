@@ -79,7 +79,7 @@ export function aggregateAccounts(cards) {
   const rows = Array.isArray(cards) ? cards : []
   const byCcy = new Map()
   for (const c of rows) {
-    const key = c.moneyVerified === false ? `Account ${c.id} · unverified units` : c.ccy || '—'
+    const key = c.moneyVerified === false ? (c.currentMoneyVerified ? `Account ${c.id} · ${c.ccy} current / recorded close units` : `Account ${c.id} · unverified units`) : c.ccy || '—'
     if (!byCcy.has(key)) byCcy.set(key, [])
     byCcy.get(key).push(c)
   }

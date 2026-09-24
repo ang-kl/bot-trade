@@ -34,6 +34,7 @@
 // three.
 import { useMemo } from 'react'
 import { aggregateAccounts, scopeLabel, ALL_SCOPE } from '../lib/perf-aggregate.js'
+import { currentAccountTotals } from '../lib/current-account-totals.js'
 
 // Matches the palette the Performance page already uses (passed in, so this
 // component never re-declares the theme).
@@ -42,13 +43,14 @@ const cell = { fontSize: 'var(--fs-body)', fontVariantNumeric: 'tabular-nums' }
 /**
  * @param {{acctCards: Array, palette: object, money: Function, signed: Function}} props
  */
-export default function PerfAccountScope({ acctCards, palette, money, signed, scope = ALL_SCOPE, onScopeChange }) {
+export default function PerfAccountScope({ acctCards, palette, money, signed, scope = ALL_SCOPE, onScopeChange, currentReport, timeZone }) {
   const { P_GL, P_GBD, P_MU, P_SB, P_UP, P_DN, P_ACC, P_EDG, P_WRN } = palette
   // Controlled: the page owns the scope (its `acct` filter) and every section
   // follows it. This component only reports the click.
   const setScope = (s) => { if (onScopeChange) onScopeChange(s) }
 
   const agg = useMemo(() => aggregateAccounts(acctCards), [acctCards])
+  const current = currentAccountTotals(currentReport)
   // A previously-selected account that has since left the in-play list falls
   // back to ALL rather than showing an empty detail panel for something gone.
   const known = scope === ALL_SCOPE || acctCards.some(c => String(c.id) === String(scope))
@@ -128,13 +130,13 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
             </div>
             <div style={{ ...cell, color: P_MU }}>
               {agg.accountCount} account{agg.accountCount === 1 ? '' : 's'} in play
-              {agg.mixedCurrency ? ` · ${agg.currencies.join(' + ')}` : agg.primary ? ` · ${agg.primary.ccy}` : ''}
+              {currentReport ? ` · ${current.currency || 'amounts per account'}` : agg.mixedCurrency ? ' · amounts per account' : agg.primary ? ` · ${agg.primary.ccy}` : ''}
             </div>
             {agg.primary && (
               <div style={{ ...cell, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 800 }}>{agg.primary.bal != null ? money(agg.primary.bal) : '—'}</span>
+                <span style={{ fontWeight: 800 }}>{currentReport ? money(current.balance) : !agg.mixedCurrency ? money(agg.primary.bal) : 'Totals per account'}</span>
                 <span style={{ color: agg.primary.day == null ? P_MU : agg.primary.day >= 0 ? P_UP : P_DN }}>
-                  day {agg.primary.day != null ? signed(agg.primary.day) : '—'}
+                  floating now {signed(current.openPnl)}
                 </span>
               </div>
             )}
@@ -152,7 +154,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
                 <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   {selChip(on)}
                   <span style={{ ...cell, fontWeight: 600, color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>
-                    day {a.hasToday ? signed(a.day) : '—'}
+                    realised today {a.hasToday ? signed(a.day) : '—'}
                   </span>
                 </span>
               </div>
@@ -162,11 +164,12 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
                     printed the selected account's balance instead). */}
                 <span style={{ fontWeight: 800, color: a.bal != null ? undefined : P_MU }} title={a.bal != null ? undefined : 'the broker has not answered this account\'s balance; nothing is borrowed from another account'}>{a.bal != null ? money(a.bal) : 'not read'}</span>
                 <span style={{ color: P_SB }}>equity {a.equity != null ? money(a.equity) : '—'}</span>
+                <span style={{ color: P_SB }}>floating {signed(a.live)}</span>
               </div>
               <span style={{ ...cell, color: P_MU }}>
                 loss-cap used{' '}
                 <span style={{ fontWeight: 600, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span>
-                {' '}of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop
+                {' '}of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop (broker day)
               </span>
               {/* E·3 (18-09-2026): money on this account that this system did
                   not decide — adopted positions, the broker app, another
@@ -190,6 +193,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
           </span>
           <span style={{ fontWeight: 800, color: P_ACC }}>{label}</span>
         </div>
+        <p style={cell}>Today = midnight–now{timeZone ? ` in ${timeZone}` : ''}. Floating is the current open-position amount. Historical realised amounts retain their recorded account units.</p>
 
         {active === ALL_SCOPE ? (
           agg.groups.length === 0 ? (
@@ -198,8 +202,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
             <>
               {agg.mixedCurrency && (
                 <div style={{ ...cell, color: P_WRN, marginBottom: 4 }}>
-                  These accounts hold {agg.currencies.join(' and ')}. Totals are shown per currency —
-                  adding them would invent a number, and no FX rate is available on this data.
+                  Historical close amounts remain separate by account until their original currencies are verified. Current balance and equity use broker currency evidence above.
                 </div>
               )}
               {agg.groups.map(g => (
@@ -211,10 +214,10 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
                     <Metric label="Total balance" value={g.bal != null ? money(g.bal) : '—'} palette={palette} />
                     <Metric label="Total equity" value={g.equity != null ? money(g.equity) : '—'} palette={palette}
                       hint="Only accounts whose equity the broker snapshot has reported are included." />
-                    <Metric label="Day P&L" value={g.day != null ? signed(g.day) : '—'} palette={palette}
+                    <Metric label="Realised today" value={g.day != null ? signed(g.day) : '—'} palette={palette}
                       tone={g.day == null ? null : g.day >= 0 ? P_UP : P_DN} />
-                    <Metric label="TP nett today" value={g.gw != null ? signed(g.gw) : '—'} palette={palette} tone={P_UP} />
-                    <Metric label="SL nett today" value={g.gl != null ? signed(-g.gl) : '—'} palette={palette} tone={P_DN} />
+                    <Metric label="Winning closes today" value={g.gw != null ? signed(g.gw) : '—'} palette={palette} tone={P_UP} />
+                    <Metric label="Losing closes today" value={g.gl != null ? signed(-g.gl) : '—'} palette={palette} tone={P_DN} />
                     <Metric label="30D pace" value={g.pace30d != null ? `${signed(g.pace30d)}/day` : '—'} palette={palette}
                       tone={g.pace30d == null ? null : g.pace30d >= 0 ? P_UP : P_DN}
                       hint="Σ of each account's 30-day net ÷ 30 — not an average of their individual paces." />
@@ -237,10 +240,10 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 6 }}>
               <Metric label="Balance" value={a.bal != null ? money(a.bal) : '—'} palette={palette} />
               <Metric label="Equity" value={a.equity != null ? money(a.equity) : '—'} palette={palette} />
-              <Metric label="Day P&L" value={a.hasToday ? signed(a.day) : '—'} palette={palette}
+              <Metric label="Realised today" value={a.hasToday ? signed(a.day) : '—'} palette={palette}
                 tone={!a.hasToday ? null : a.day >= 0 ? P_UP : P_DN} />
-              <Metric label="TP nett today" value={a.hasToday ? signed(a.gw) : '—'} palette={palette} tone={P_UP} />
-              <Metric label="SL nett today" value={a.hasToday ? signed(a.gl == null ? null : -a.gl) : '—'} palette={palette} tone={P_DN} />
+              <Metric label="Winning closes today" value={a.hasToday ? signed(a.gw) : '—'} palette={palette} tone={P_UP} />
+              <Metric label="Losing closes today" value={a.hasToday ? signed(a.gl == null ? null : -a.gl) : '—'} palette={palette} tone={P_DN} />
               <Metric label="30D pace" value={a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'} palette={palette}
                 tone={a.n30 == null ? null : a.n30 >= 0 ? P_UP : P_DN} />
               <Metric label="Loss-cap used"

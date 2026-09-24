@@ -7,6 +7,7 @@ import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { categorize, MARKETS, closedAtMs, dayAnchorMs, isFxWeekend } from '../shared/formulas.js'
 import { emptyPopulation, REPORT_SESSIONS } from '../shared/performance-populations.js'
 import { cupHandleFunnel } from './cup-handle-funnel.js'
+import { calendarDate, calendarDay, calendarLedgerWindows } from '../shared/performance-calendar.js'
 
 const DAY = 86400_000
 const NUMBER = v => v == null || String(v).trim() === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null
@@ -27,10 +28,11 @@ function fold(st, row) {
 }
 /** Iterate the complete recorded population. Bounds fail the report explicitly;
  * they never turn an incomplete prefix into a stated performance total. */
-export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 24000, deadlineMs = 12000 } = {}) {
-  const started = performance.now(), day0 = dayAnchorMs(now), weekend = isFxWeekend(now)
+export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 24000, deadlineMs = 12000, timeZone = null } = {}) {
+  const started = performance.now(), day0 = timeZone ? calendarDay(now, timeZone) : dayAnchorMs(now), weekend = !timeZone && isFxWeekend(now)
   const sessionFrom = weekend ? day0 - DAY : day0, sessionTo = weekend ? day0 : now
-  const defs = [...ledgerWindows(now).map(w => ({ ...w, ledger: true })),
+  const ledgerDefs = timeZone ? calendarLedgerWindows(ledgerWindows(now), now, timeZone) : ledgerWindows(now)
+  const defs = [...ledgerDefs.map(w => ({ ...w, ledger: true })),
     { key: '24h', from: now - DAY, to: now }, { key: 'day', from: day0, to: now },
     ...REPORT_SESSIONS.map(s => ({ key: `session:${s.key}`, from: sessionFrom, to: sessionTo, session: s })),
     { key: 'session:OFF', from: sessionFrom, to: sessionTo, off: true },
@@ -55,7 +57,7 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
       realRr: NUMBER(raw.realised_rr) ?? realisedRR(raw), origin: raw.origin || null,
       mismatch: raw.pnl_price_mismatch != null ? !!Number(raw.pnl_price_mismatch) : (() => { const c = checkTradeConsistency(raw); return c.decidable && !c.ok })() }
     const minute = Math.floor(t / 60000) % 1440
-    const day = new Date(t).toISOString().slice(0, 10), dailyKey = JSON.stringify([accountId, day])
+    const day = timeZone ? calendarDate(t, timeZone) : new Date(t).toISOString().slice(0, 10), dailyKey = JSON.stringify([accountId, day])
     if (!daily.has(dailyKey)) {
       if (++groups > maxGroups) throw new Error('performance_report_group_bound')
       daily.set(dailyKey, { accountId, day, stats: emptyPopulation() })
@@ -100,7 +102,7 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
     }
     return g
   }) }))
-  return { schemaVersion: 1, status: 'complete', generatedAt: new Date(now).toISOString(), asOfMs: now,
+  return { schemaVersion: 1, status: 'complete', generatedAt: new Date(now).toISOString(), asOfMs: now, timeZone,
     population: 'all_recorded_closes', currency: null, moneyPolicy: 'recorded_units_within_one_stamped_account_only',
     markets: MARKETS, coverage, windows, daily: [...daily.values()], bestByAccount: Object.fromEntries(best),
     lastCloseByAccount: Object.fromEntries([...last].map(([a, t]) => [a, new Date(t).toISOString()])),
@@ -157,7 +159,7 @@ function isolatedReport(db, kind, options = {}) {
   active.set(key, job)
   return job
 }
-export function readPerformancePopulations(db) { return isolatedReport(db, 'populations') }
+export function readPerformancePopulations(db, options) { return isolatedReport(db, 'populations', options) }
 export function readPerformanceAnalytics(db, options) { return isolatedReport(db, 'analytics', options) }
 export function readCupHandleFunnel(db, options) { return isolatedReport(db, 'cup-funnel', options) }
 export function readDecisionsDaily(db, options) { return isolatedReport(db, 'decisions-daily', options) }
@@ -167,13 +169,13 @@ export function readDecisionAudit(db, options) { return isolatedReport(db, 'deci
 export function readNodeWatchdogContract(db, options) { return isolatedReport(db, 'node-watchdog', options) }
 export function readAccountEngineering(db) { return isolatedReport(db, 'account-engineering') }
 export function readPostmortemReport(db, options) { return isolatedReport(db, 'postmortems', options) }
-export function buildDecisionsDaily(db, { days = 90, accountId = null } = {}) {
+export function buildDecisionsDaily(db, { days = 90, accountId = null, timeZone = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
   const params = [`-${safeDays} days`]
-  if (accountId != null) { clauses.push('(account_id = ? OR account_id IS NULL)'); params.push(String(accountId)) }
-  return db.prepare(
-    `SELECT substr(created_at, 1, 10) AS day,
+  if (accountId != null && accountId !== 'all') { clauses.push(timeZone ? 'account_id = ?' : '(account_id = ? OR account_id IS NULL)'); params.push(String(accountId)) }
+  const rows = db.prepare(
+    `SELECT ${timeZone ? "strftime('%Y-%m-%dT%H:%M:00Z', created_at)" : 'substr(created_at, 1, 10)'} AS day,
             SUM(approved = 1) AS approved,
             SUM(CASE WHEN approved = 1 THEN 0 ELSE COALESCE(repeat_count, 1) END) AS vetoed,
             SUM(approved != 1 OR approved IS NULL) AS vetoed_distinct
@@ -181,6 +183,16 @@ export function buildDecisionsDaily(db, { days = 90, accountId = null } = {}) {
       WHERE ${clauses.join(' AND ')}
       GROUP BY day ORDER BY day`
   ).all(...params)
+  if (!timeZone) return rows
+  const byDay = new Map()
+  for (const r of rows) {
+    if (!Number.isFinite(Date.parse(r.day))) continue
+    const day = calendarDate(Date.parse(r.day), timeZone)
+    if (!byDay.has(day)) byDay.set(day, { day, approved: 0, vetoed: 0, vetoed_distinct: 0 })
+    const b = byDay.get(day)
+    for (const k of ['approved', 'vetoed', 'vetoed_distinct']) b[k] += r[k] || 0
+  }
+  return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day))
 }
 export function buildLatestPrices(db) {
   const rows = db.prepare(`
@@ -229,7 +241,7 @@ async function buildReport(db, kind, options) {
       now: Number.isFinite(Number(options?.nowMs)) ? new Date(Number(options.nowMs)) : new Date(),
     })
   }
-  return buildPerformancePopulations(db)
+  return buildPerformancePopulations(db, options)
 }
 if (!isMainThread && workerData?.path) {
   let db

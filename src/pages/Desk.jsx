@@ -1,4 +1,7 @@
 import { viewedAccountId } from '../lib/selected-account.js'
+import { refreshBrokerOverview } from '../lib/broker-overview.js'
+import { useAccountOverview } from '../lib/use-account-overview.js'
+import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
 import { createBrokerViewGuard } from '../lib/broker-view.js'
 import ControllerRuntime from '../components/ControllerRuntime.jsx'
 import ControllerGroups from '../components/ControllerGroups.jsx'
@@ -152,6 +155,7 @@ function RiskDecisionRow({ ev }) {
 }
 
 export default function Desk() {
+  const overview = useAccountOverview()
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
   // Newest close per symbol across ALL cycles — the currency-conversion base.
@@ -280,7 +284,7 @@ export default function Desk() {
     // seconds on a cold link); everything else is a SQLite read (<100ms).
     // Paint from the fast tier immediately; the broker sections say
     // "fetching…" and fill in whenever the WS answers.
-    if (view.single) agentPost('/actions/broker-positions', { accountId: view.id })
+    if (view.single) refreshBrokerOverview()
       .then(b => {
         // Refreshes update the snapshot IN PLACE — never blank it. Setting
         // broker to null on a transient empty refresh collapsed the whole
@@ -288,7 +292,7 @@ export default function Desk() {
         // so the page jumped up/down every few seconds (owner). Keep the last
         // good snapshot; React then diffs only the changed cells (price/P&L),
         // no reflow. A real fetch failure is surfaced via brokerErr below.
-        const next = b?.accounts?.[0]
+        const next = b?.accounts?.find(a => view.matches(a))
         if (view.current() && view.matches(next)) {
           if (next.error) { setBrokerErr(next.error); return }
           view.markLive(); setBroker({ ...next, _cachedAt: b.fetchedAt }); setBrokerErr('')
@@ -493,6 +497,18 @@ export default function Desk() {
     <div className="space-y-2">
       <SectionNavFab />
       <SwitchingNote to={switchingTo} />
+      <Card id="sec-all-accounts" scope="all">
+        <h2 className="t-h3">All accounts · current positions</h2>
+        <CurrentAccountReadings report={overview} />
+        <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-(length:--fs-body)">
+          <thead><tr>{['Account', 'Instrument', 'Side', 'Lots', 'Entry', 'Stop loss', 'Take profit', 'Floating / currency'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
+          <tbody>{(overview?.accounts || []).flatMap(a => a.positions.map(p => <tr key={`${a.accountId}:${p.positionId}`} className="border-t border-[var(--color-border)]">
+            <td className="pr-3 py-2">{a.accountId}</td><td className="pr-3">{p.symbol}</td><td className="pr-3">{p.side}</td><td className="pr-3">{p.lots ?? '—'}</td>
+            <td className="pr-3">{p.entry ?? '—'}</td><td className="pr-3">{p.sl ?? '—'}</td><td className="pr-3">{p.tp ?? '—'}</td><td>{p.netPnl?.toFixed(2) ?? '—'} {a.currency}</td>
+          </tr>))}</tbody>
+        </table></div>
+        <p>Account-specific management controls remain below. These overview rows are read-only.</p>
+      </Card>
       {error && <Card className="text-(length:--fs-body)">{error}</Card>}
 
       {/* ---- Status strip — desk-style: dots + text, no pill clutter.

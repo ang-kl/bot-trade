@@ -29,7 +29,8 @@ import { performanceCurve } from '../lib/performance-curve.js'
 //  · Decisions panel answers "is the bot deciding, and what share does it
 //    refuse": approved/vetoed as stacked daily bars, which is the mark daily
 //    counts actually want, with the veto rate as the headline.
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { agentGet, pageAsleep } from '../lib/agent-api.js'
 import Card from './common/Card.jsx'
 import Segmented from './common/Segmented.jsx'
 
@@ -52,7 +53,7 @@ function fmtN(v, d = 2) {
   if (v == null || Number.isNaN(v)) return '—'
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: d })
 }
-const shortDate = (ms) => new Date(ms).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })
+const shortDate = (ms) => new Date(ms).toLocaleDateString(undefined, { day: '2-digit', month: 'short', timeZone: 'UTC' })
 const NICE = [1, 2, 5]
 function niceCeil(v) {
   if (!(v > 0)) return 1
@@ -70,12 +71,35 @@ function niceTicks(lo, hi, target = 4) {
   return out.length >= 2 ? out : [lo, hi]
 }
 
-export default function ReportChart({ populationReport, accountId = 'all', daily }) {
+export default function ReportChart({ populationReport, accountId = 'all', daily, accounts = [] }) {
   const [range, setRange] = useState('30D')
+  const [selected, setSelected] = useState(null), [decisions, setDecisions] = useState(null)
+  const chartAccount = accountId !== 'all' ? accountId : accounts.some(a => String(a.account_id) === selected)
+    ? selected : accounts[0]?.account_id || 'all'
+  const zone = populationReport?.timeZone || 'UTC'
+  useEffect(() => {
+    if (accountId !== 'all' || chartAccount === 'all') return
+    let stopped = false, running = false
+    const refresh = async () => {
+      if (stopped || running || pageAsleep()) return
+      running = true
+      try {
+        const r = await agentGet(`/state/decisions-daily?days=90&account=${encodeURIComponent(chartAccount)}&timeZone=${encodeURIComponent(zone)}`)
+        if (!stopped) setDecisions({ accountId: chartAccount, zone, rows: r.accountId === String(chartAccount) ? r.rows : null })
+      } catch { if (!stopped) setDecisions(null) }
+      finally { running = false }
+    }
+    const kick = setTimeout(refresh, 0), timer = setInterval(refresh, 60000)
+    window.addEventListener('agent-wake', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => { stopped = true; clearTimeout(kick); clearInterval(timer)
+      window.removeEventListener('agent-wake', refresh); document.removeEventListener('visibilitychange', refresh) }
+  }, [accountId, chartAccount, zone])
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
 
-  const curve = useMemo(() => performanceCurve(populationReport, accountId, daily, RANGE_DAYS[range]), [populationReport, accountId, daily, range])
+  const scopedDaily = accountId !== 'all' ? daily : decisions?.accountId === chartAccount && decisions?.zone === zone ? decisions.rows : null
+  const curve = useMemo(() => performanceCurve(populationReport, chartAccount, scopedDaily, RANGE_DAYS[range]), [populationReport, chartAccount, scopedDaily, range])
   const model = curve.rows
 
   const hasData = model.length >= 1
@@ -133,13 +157,16 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
       <div className="flex flex-wrap items-baseline gap-2 mb-1">
         <h2 className="text-(length:--fs-h) font-extrabold text-[var(--color-accent)]">Recorded realised P&amp;L · Decisions per Day chart</h2>
         <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-          top: cumulative recorded realised P&L from zero in this range · bottom: recorded daily decisions (up to 90 days)
+          top: cumulative recorded realised P&L from zero · bottom: risk decisions (upstream stops appear in the blocker report) · {zone}
         </span>
         <div className="ml-auto">
           <Segmented label="Chart range" value={range} onChange={setRange}
             options={Object.keys(RANGE_DAYS).map(r => ({ value: r, label: r }))} />
         </div>
       </div>
+      {accountId === 'all' && accounts.length > 0 && <label className="block my-2">Chart account <select value={chartAccount} onChange={e => setSelected(e.target.value)}>
+        {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.is_live ? 'Live' : 'Demo'} · {a.account_id}</option>)}
+      </select> · All {accounts.length} accounts are available individually; their historical units are not pooled.</label>}
 
       {hasData && (
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-1 text-(length:--fs-body)">
@@ -232,7 +259,7 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
         </div>
       )}
       <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
-        {curve.moneyAvailable ? 'The curve includes every priced recorded close in the selected UTC days. Its drawdown uses daily realised totals and can miss intraday moves.' : `The money curve is unavailable: ${curve.reason.replaceAll('_', ' ')}.`}
+        {curve.moneyAvailable ? `The curve includes every priced recorded close in the selected ${zone} days. Its drawdown uses daily realised totals and can miss intraday moves.` : `The money curve is unavailable: ${curve.reason.replaceAll('_', ' ')}.`}
         {' '}This is not broker balance, floating equity or a cashflow-adjusted account return. Deposits and withdrawals are excluded.
         {' '}Decision bars use the supplied daily aggregate; an unavailable daily feed is not replaced with the capped event journal.
         {curve.decisionState === 'unavailable' && ' Daily decision evidence is unavailable.'}

@@ -5,6 +5,7 @@ import { boundPosition, urlIdentity } from './cockpit/cockpit-nav.js'
 // Trade Cockpit (design_handoff_trading_dashboard) — lazy so the heavy modal
 // and GSAP never load until a ?trade=<positionId> deep link or symbol click.
 const TradeCockpit = lazy(() => import('./cockpit/TradeCockpit.jsx'))
+const BrowserSessions = lazy(() => import('./pages/BrowserSessions.jsx'))
 
 
 function CockpitHost() {
@@ -139,6 +140,7 @@ const NAV_GROUPS = [
       { to: '/tune', label: 'Tune', icon: '⚙️' },
       { to: '/accounts', label: 'Accounts', icon: '💼' },
       { to: '/connect', label: 'Connect', icon: '🔗' },
+      { to: '/browser-sessions', label: 'Browser sessions', icon: '🌐' },
     ],
   },
 ]
@@ -164,6 +166,10 @@ function AgentDownBanner() {
     if (!agentConfigured()) return undefined
     let dead = false
     const check = async () => {
+      if (pageAsleep()) {
+        sendClientPing(window.location.pathname).catch(() => {})
+        return
+      }
       try {
         const c = getAgentConn()
         const res = await fetch(`${c.base}/health`, { signal: AbortSignal.timeout(8000) })
@@ -405,6 +411,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/performance" replace />} />
             <Route path="/performance" element={<Performance />} />
             <Route path="/desk" element={<Desk />} />
+            <Route path="/browser-sessions" element={<BrowserSessions />} />
             {/* Monitor merged into Desk — old links keep working */}
             <Route path="/monitor" element={<Navigate to="/desk" replace />} />
             <Route path="/trade" element={<Trade />} />

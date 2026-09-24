@@ -323,7 +323,7 @@ export function BalanceInOut({ inModal = false }) {
  * multi-account desk the card has to name the account rather than let the
  * reader assume it follows the page's filter.
  */
-export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scopeNote = null, inModal = false }) {
+export function DataFeed({ balance, freeMargin, equity, floating = null, currency = null, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scopeNote = null, marketReadings = null, quotes = [], quoteSource = null, inModal = false }) {
   const box = { border: `1px solid ${EDG}`, borderRadius: 10, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 3 }
   const chip = { fontSize: 'var(--fs-body)', fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: ACS, border: `1px solid ${GBD}` }
   const money = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
@@ -335,30 +335,38 @@ export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct,
         {!inModal && (
           <SectionTools id="data-feed" title="Data Feed — Core Universal Essentials table"
             data={[{ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scope: scopeNote }]}
-            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} scopeNote={scopeNote} inModal />} />
+            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} floating={floating} currency={currency} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} scopeNote={scopeNote} marketReadings={marketReadings} quotes={quotes} quoteSource={quoteSource} inModal />} />
         )}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 8 }}>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>OHLCV data</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Open · High · Low · Close · Volume across multiple timeframes</span>
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
             {['1m', '15m', '1h', '4h', '1D'].map(tf => <span key={tf} style={chip}>{tf}</span>)}
           </div>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Feed freshness unavailable here; a page refresh is not a completed market-data receipt.</span>
+          <details style={{ fontSize: 'var(--fs-body)', color: MU }}><summary>{marketReadings ? `${marketReadings.filter(p => p.day).length} retained daily bars for scoped open positions` : 'Feed freshness unavailable'}</summary>
+            {(marketReadings || []).filter(p => p.day).map(p => <p key={`${p.account_id}:${p.id}`}>
+              {p.account_id} · {p.symbol} · bar starts {p.day.t ? new Date(p.day.t).toLocaleString() : 'time unavailable'}<br />
+              O {p.day.o ?? '—'} · H {p.day.h ?? '—'} · L {p.day.l ?? '—'} · C {p.day.c ?? '—'} · V {p.day.v ?? '—'}
+            </p>)}
+          </details>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Retained bars describe their stated period. Other timeframe receipts and market-feed latency are not supplied by this report.</span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Account &amp; portfolio state</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Live cash, available margin, open positions, unrealized P&amp;L</span>
           <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>cash {money(balance)} · margin avail {money(freeMargin)}</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Recorded units; currency not verified by this panel.</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>{currency ? `${currency} · broker-verified deposit currency` : 'See account readings for currencies and missing evidence.'}</span>
           {scopeNote && <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>{scopeNote}</span>}
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>{openCount ?? '—'} recorded open · unrealized <span style={{ fontWeight: 800, color: equity != null && balance != null ? (equity - balance >= 0 ? UP : DN) : MU }}>{equity != null && balance != null ? signed(equity - balance) : '—'}</span></span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>{openCount ?? '—'} recorded open · floating <span style={{ fontWeight: 800, color: floating == null ? MU : floating >= 0 ? UP : DN }}>{signed(floating)}</span></span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Execution parameters</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Bid-ask spreads, fees, latency, slippage thresholds</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>spread &amp; fees recorded per trade (forensics columns) — no live feed here</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Current crypto spreads · price-feed account {quoteSource || 'not selected'}</span>
+          {quotes.map(q => <span key={q.sym} style={{ fontSize: 'var(--fs-body)', color: MU }} title={q.quoteNote}>{q.sym} · spread {q.spread == null ? 'unavailable' : Number(q.spread.toPrecision(6))} · {q.quoteNote}</span>)}
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Fees and slippage are recorded per trade in forensics; they are not a live market quote.</span>
           <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>latency <span style={{ fontWeight: 800, color: ACC }}>—</span> · captured at entry per trade</span>
         </div>
         <div style={box}>
