@@ -500,7 +500,7 @@ test('the importer never reads strategy pins, the evidence gate or a bar-strateg
   const state = strip(readFileSync(new URL('../routes/state.js', import.meta.url), 'utf8'))
   assert.match(state, /router\.get\('\/tick-readiness'/)
   assert.match(state, /router\.get\('\/tick-signals'/)
-  assert.match(state, /tickReadinessView\(db\)/)
+  assert.match(state, /tickReadinessView\(db,\s*\{\s*includeRoutingIdentity:\s*true\s*\}\)/)
   assert.match(state, /tickSignalsView\(db/)
 })
 
