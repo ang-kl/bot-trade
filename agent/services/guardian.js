@@ -132,6 +132,8 @@ export function watchlistSymbolIds(db) {
   return ids.sort((a, b) => a.symbolId - b.symbolId)
 }
 
+import { queueScanPriority, flushScanPriority } from './scan-priority-batch.js'
+
 const SCAN_PRIORITY_STATE_KEY = 'scan_priority_symbols_json'
 const SCAN_PRIORITY_TTL_MS = 15 * 60_000 // stale if the loop never consumes it
 
@@ -152,6 +154,8 @@ export function flagScanPriority(db, symbol) {
  */
 export function takeScanPrioritySymbols(db, ttlMs = SCAN_PRIORITY_TTL_MS) {
   try {
+    // A scan sees even the hints still inside the 250ms tick-burst window.
+    if (!flushScanPriority(db)) return []
     const raw = JSON.parse(getState(db, SCAN_PRIORITY_STATE_KEY) || '{}')
     const map = raw && typeof raw === 'object' ? raw : {}
     const now = Date.now()
@@ -239,7 +243,7 @@ export function startGuardian(db, getCreds, deps = {}) {
     const prevAt = lastEvalAt.get(tick.symbolId)
     if (prevPrice != null && prevAt != null && isSpikeMove(prevPrice, prevAt, price, now, SPIKE_PCT_PER_MIN)) {
       const sym = symbolById.get(tick.symbolId)
-      if (sym) flagScanPriority(db, sym)
+      if (sym) queueScanPriority(db, sym, now)
     }
     lastEval.set(tick.symbolId, price)
     lastEvalAt.set(tick.symbolId, now)
@@ -268,7 +272,7 @@ export function startGuardian(db, getCreds, deps = {}) {
       if (key !== streamKey || (!stream && key)) {
         teardown()
         if (key) {
-          const { wsStreamSpots } = await import('../lib/ctrader-ws.js')
+          const wsStreamSpots = deps.streamSpots || (await import('../lib/ctrader-ws.js')).wsStreamSpots
           stream = await wsStreamSpots(
             creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
             watched.map(w => w.symbolId),
@@ -307,5 +311,5 @@ export function startGuardian(db, getCreds, deps = {}) {
   const t = setInterval(maintainOnce, maintMs)
   t.unref?.()
   setTimeout(maintainOnce, 3_000) // first attach shortly after boot
-  return () => { stopped = true; clearInterval(t); teardown() }
+  return () => { stopped = true; clearInterval(t); teardown(); flushScanPriority(db) }
 }
