@@ -235,7 +235,7 @@ export default function Accounts() {
           server's own record — requested vs acknowledged mode, transition,
           revision, readiness blockers — with per-account and bulk actions
           whose acknowledgements are listed one account at a time. */}
-      <EngineStatusPanel accounts={[bot, ...(others || [])].filter(Boolean)} scope={viewAcct} />
+      <EngineStatusPanel scope={viewAcct} />
 
       <div id="sec-clock"><MarketClock /></div>
 

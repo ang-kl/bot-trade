@@ -7,6 +7,25 @@
 export const MODE_LABEL = Object.freeze({ TIME_BASED: 'Time-based', TICK_MOMENTUM: 'Tick momentum', STOPPED: 'Stopped' })
 export const STALE_AFTER_MS = 60_000
 
+/** Actions require the exact identity supplied beside the engine revision. */
+export function engineAccountId(row) {
+  const id = row?.routingAccountId
+  if (typeof id !== 'string' || !/^[1-9]\d*$/.test(id)) return null
+  return row.accountId === id || row.accountId === `…${id.slice(-4)}` ? id : null
+}
+
+/** Refuse duplicate routing records, including a temporarily mixed read. */
+export function engineAccountBindings(rows) {
+  const ids = rows.map(engineAccountId)
+  return ids.map(id => id && ids.filter(other => other === id).length === 1 ? id : null)
+}
+
+export function engineReadinessFor(readinessRows, accountId) {
+  if (!accountId) return null
+  const matches = (readinessRows || []).filter(row => engineAccountId(row) === accountId)
+  return matches.length === 1 ? matches[0] : null
+}
+
 /** 'stopped' | 'active' | 'warming' | 'switching' | 'blocked' | 'unknown' */
 export function engineState(row) {
   if (!row) return 'unknown'
