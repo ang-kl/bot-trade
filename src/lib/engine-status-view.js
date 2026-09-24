@@ -7,13 +7,22 @@
 export const MODE_LABEL = Object.freeze({ TIME_BASED: 'Time-based', TICK_MOMENTUM: 'Tick momentum', STOPPED: 'Stopped' })
 export const STALE_AFTER_MS = 60_000
 
-/** Resolve a displayed identity only against the complete registered roster. */
-export function engineAccountId(accountIds, displayed) {
-  const ids = [...new Set((accountIds || []).map(String).filter(id => /^[1-9]\d*$/.test(id)))]
-  const value = String(displayed ?? '')
-  if (/^[1-9]\d*$/.test(value)) return ids.includes(value) ? value : null
-  if (!/^…\d{4}$/.test(value)) return null
-  const matches = ids.filter(id => id.endsWith(value.slice(1)))
+/** Actions require the exact identity supplied beside the engine revision. */
+export function engineAccountId(row) {
+  const id = row?.routingAccountId
+  if (typeof id !== 'string' || !/^[1-9]\d*$/.test(id)) return null
+  return row.accountId === id || row.accountId === `…${id.slice(-4)}` ? id : null
+}
+
+/** Refuse duplicate routing records, including a temporarily mixed read. */
+export function engineAccountBindings(rows) {
+  const ids = rows.map(engineAccountId)
+  return ids.map(id => id && ids.filter(other => other === id).length === 1 ? id : null)
+}
+
+export function engineReadinessFor(readinessRows, accountId) {
+  if (!accountId) return null
+  const matches = (readinessRows || []).filter(row => engineAccountId(row) === accountId)
   return matches.length === 1 ? matches[0] : null
 }
 

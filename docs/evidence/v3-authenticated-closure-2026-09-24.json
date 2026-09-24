@@ -461,10 +461,10 @@
       "unnecessarilyDisabledStops": 6,
       "ambiguousAccountMatched": true
     },
-    "fix": "Use complete existing account-phase registry keys; resolve full IDs exactly and masked IDs only if unique; block bulk mutations if any row identity is unresolved.",
+    "fix": "Authenticated engine and readiness responses include an explicit routingAccountId beside the revision. Controls and readiness join by exact ID, never by a suffix or another polling view; missing and duplicate identities fail closed. Default helper reports remain redacted.",
     "productionActionExecuted": false,
     "isolatedBrowser": {
-      "at": "2026-09-24T13:20:38.247Z",
+      "at": "2026-09-24T13:27:29.364Z",
       "origin": "isolated localhost fixture; all API responses mocked",
       "registeredAccounts": 7,
       "stopControlsEnabled": 7,
@@ -534,10 +534,24 @@
             "mode": "STOPPED",
             "expectedRevision": 2
           }
+        },
+        {
+          "path": "/actions/entry-mode",
+          "body": {
+            "accountId": "22229908",
+            "mode": "STOPPED",
+            "expectedRevision": 2
+          }
         }
       ],
-      "ambiguousControlsDisabled": true,
+      "exactCollisionAccountRequest": true,
+      "legacyMaskedControlsDisabled": true,
       "externalRequestsAllowed": false
+    },
+    "focusedValidation": {
+      "backendPassed": 34,
+      "frontendPassed": 8,
+      "fullGate": "pending final-head CI"
     }
   }
 }

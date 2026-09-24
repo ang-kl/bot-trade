@@ -682,13 +682,16 @@ export function admitEntry(db, { accountId, producerId, basis = 'bar', proposal 
 export function _resetRefusalDedupe() { refusalsSeen.clear(); retiredSeen.clear() }
 
 /** Every registry account's record, for GET /state/entry-engines. */
-export function entryEnginesView(db) {
+export function entryEnginesView(db, { includeRoutingIdentity = false } = {}) {
   let rows = []
   try { rows = db.prepare('SELECT account_id, is_live, enabled, mode FROM accounts ORDER BY is_live, account_id').all() } catch { rows = [] }
   const accounts = rows.map(r => {
     const st = engineStatusFor(db, r.account_id)
     return {
       accountId: `…${String(r.account_id).slice(-4)}`,
+      // Only the authenticated control view opts in; ordinary reports retain
+      // their redacted identity. Bind actions to this record, never its suffix.
+      ...(includeRoutingIdentity ? { routingAccountId: String(r.account_id) } : {}),
       environment: st.environment,
       registry: { enabled: Number(r.enabled) === 1, mode: r.mode },
       requestedEntryMode: st.requestedEntryMode,

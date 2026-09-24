@@ -1102,8 +1102,8 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   approved continued building; numeric partial-TP1 policy values and fresh
   authenticated release preflight remain outstanding.
 
-- 2026-09-24 13:20 UTC, Codex desktop partial-corpus continuation: visible
-  replies reached **№ 8,826**, next **№ 8,827**; later replies take precedence.
+- 2026-09-24 13:27 UTC, Codex desktop partial-corpus continuation: visible
+  replies reached **№ 8,830**, next **№ 8,831**; later replies take precedence.
   The owner restored browser authentication and merged #1070 (`80945cb`).
   Node deployment and bounded recovery were verified separately. Authenticated
   account acceptance demonstrated the P2 entry-control identity defect now

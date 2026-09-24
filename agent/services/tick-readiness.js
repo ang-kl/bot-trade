@@ -78,7 +78,7 @@ function replayTrialFor(db, prefix) {
 }
 
 /** One account's readiness: the status record plus the check list. */
-export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
+export function tickReadinessFor(db, accountId, { now = new Date(), includeRoutingIdentity = false } = {}) {
   const id = String(accountId)
   const st = engineStatusFor(db, id)
   const nowMs = now.getTime()
@@ -208,6 +208,7 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
   return {
     recorderDestination,
     accountId: `…${id.slice(-4)}`,
+    ...(includeRoutingIdentity ? { routingAccountId: id } : {}),
     environment: st.environment,
     side,
     requestedEntryMode: st.requestedEntryMode, effectiveEntryMode: st.effectiveEntryMode, transitionState: st.transitionState,
@@ -228,10 +229,10 @@ export function tickReadinessFor(db, accountId, { now = new Date() } = {}) {
 }
 
 /** Every registry account (TM-07: discovered, never enrolled by hand). */
-export function tickReadinessView(db, { now = new Date() } = {}) {
+export function tickReadinessView(db, { now = new Date(), includeRoutingIdentity = false } = {}) {
   let rows = []
   try { rows = db.prepare('SELECT account_id FROM accounts ORDER BY is_live, account_id').all() } catch { rows = [] }
-  const accounts = rows.map(r => tickReadinessFor(db, r.account_id, { now }))
+  const accounts = rows.map(r => tickReadinessFor(db, r.account_id, { now, includeRoutingIdentity }))
   return {
     at: now.toISOString(),
     accounts,

@@ -2588,7 +2588,7 @@ export default function stateRouter(db) {
   router.get('/entry-engines', async (_req, res) => {
     try {
       const { entryEnginesView } = await import('../services/entry-mode.js')
-      res.json(entryEnginesView(db))
+      res.json(entryEnginesView(db, { includeRoutingIdentity: true }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2601,8 +2601,8 @@ export default function stateRouter(db) {
   router.get('/tick-readiness', async (req, res) => {
     try {
       const { tickReadinessFor, tickReadinessView } = await import('../services/tick-readiness.js')
-      if (req.query.account) return res.json(tickReadinessFor(db, String(req.query.account)))
-      res.json(tickReadinessView(db))
+      if (req.query.account) return res.json(tickReadinessFor(db, String(req.query.account), { includeRoutingIdentity: true }))
+      res.json(tickReadinessView(db, { includeRoutingIdentity: true }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
