@@ -199,7 +199,7 @@ test('all switches ON cannot make a retired ordinary producer look tradable', ()
   const before = db.prepare('SELECT * FROM agent_state ORDER BY key').all()
   const canonical = ENTRY_PRODUCERS.find(p => p.id === 'scan_dispatch')
   assert.ok(canonical.retired, 'this regression exercises the recorded retirement, not a mock flag')
-  for (const s of STRATEGY_REGISTRY.filter(s => s.family !== 'momentum')) {
+  for (const s of STRATEGY_REGISTRY.filter(s => s.family !== 'momentum' && s.key !== 'fib_618_fade')) {
     const r = tradeGateChain(db, { accountId: ACCT, strategy: s.key })
     assert.equal(tradeStageGate(db, getState, { accountId: ACCT, strategy: s.key }).ok, true)
     assert.equal(r.configurationOpen, true)
@@ -216,6 +216,14 @@ test('all switches ON cannot make a retired ordinary producer look tradable', ()
   assert.match(admission.reason, /producer_retired/)
   assert.deepEqual(db.prepare('SELECT * FROM agent_state ORDER BY key').all(), before,
     'read-model and admission checks cannot arm a strategy or mutate state')
+})
+
+test('fib_618_fade readout includes its retired pending-order producer', () => {
+  const r = tradeGateChain(db, { accountId: ACCT, strategy: 'fib_618_fade' })
+  assert.equal(r.blockedBy, 'producer_available')
+  assert.deepEqual(r.producer.producers.map(p => p.id), ['scan_dispatch', 'pending_fib_orders'])
+  assert.equal(r.producer.producers.every(p => p.retired === true), true)
+  assert.match(r.reason, /pending_fib_orders:/)
 })
 
 test('a retired path stays visible even under an OFF master', () => {

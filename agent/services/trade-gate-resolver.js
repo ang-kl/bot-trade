@@ -80,7 +80,7 @@ export function tradeGateChain(db, { accountId, strategy } = {}) {
   // inventory fence before suggesting that the owner toggle another switch.
   // This is ONLY the automatic bar read-model; it neither changes admission
   // nor claims that a configured producer has passed risk or tick validation.
-  const producer = automaticProducerAvailability(known.family, ENTRY_PRODUCERS)
+  const producer = automaticProducerAvailability({ strategy: known.key, family: known.family }, ENTRY_PRODUCERS)
   add('producer_available', 'Automatic bar producer', producer.available, producer.reason)
 
   // --- account-level -------------------------------------------------------
