@@ -3330,6 +3330,7 @@ async function runLoop(db) {
                 const hb = await import('./services/heartbeat.js')
                 const unreached = st.unresolved >= 0 && st.neverTriedOverdue > 0
                 const detail = unreached ? { ...st, unreachedRows: pnlUnreachedRows(db) } : st
+                if (unreached) log(`P&L reconciliation unreached rows: ${JSON.stringify(detail.unreachedRows)}`)
                 hb.beat(db, 'pnl_reconcile', {
                   ok: st.unresolved >= 0 && !unreached,
                   error: st.unresolved < 0
