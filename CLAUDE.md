@@ -1,5 +1,13 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 17:28 UTC: partial local corpus;
+visible replies reached № 8,931, next № 8,932. Later visible replies win.
+#1079 merged 4472e91 after full gates; #1080 final exact-head CI is running.
+Both leave new target-policy production integration incomplete and inactive.
+Two false target-outcome regressions reproduced, then 171 focused checks
+passed. Latest completed first-loop sample 121,886 ms still fails the proposed
+60-second goal. V3 acceptance remains open; no live execution was activated. -->
+
 <!-- Continuation ledger 2026-09-24 17:07 UTC: partial local corpus (script 8);
 visible replies reached № 8,921, next № 8,922. Later visible replies win.
 #1077 merged 8bcb708 and deployed; seven accounts retain 32 protected positions

@@ -995,6 +995,66 @@ test('a partially stubbed target-restore still uses the REAL deciders', async ()
   assert.deepEqual(seen, ['111'])
 })
 
+test('deferred outcome excludes eligible positions that already hold broker targets', async () => {
+  const { _resetProtectionLineMemoryForTests } = await import('./naked-position-guard.js')
+  for (const missing of [false, true]) {
+    _resetProtectionLineMemoryForTests()
+    oneAccount()
+    if (!missing) {
+      targetlessOn(A, 'EURUSD', '111', 1.05, { current_tp: 1.12, entry_price: 1.09 })
+      targetlessOn(A, 'GBPUSD', '222', 1.25, { current_tp: 1.35, entry_price: 1.30 })
+    }
+    const position = [
+      { positionId: '111', stopLoss: 1.05, takeProfit: 1.12 },
+      { positionId: '222', stopLoss: 1.25, takeProfit: missing ? null : 1.35 },
+    ]
+    const lines = [], amends = []
+    const original = console.log
+    console.log = (...args) => lines.push(args.join(' '))
+    let out
+    try {
+      out = await runProtectionAuditAllAccounts(db, creds, {
+        exec: { reconcile: async () => ({ position }) }, tpSuggest: inertTp,
+        restoreOpts: {
+          readPosition: async f => position.find(p => p.positionId === f.positionId),
+          amend: async payload => { amends.push(payload); return { executionType: 'OK' } },
+        },
+      })
+    } finally { console.log = original }
+    assert.equal(out.targetless, missing ? 1 : 0)
+    assert.equal(amends.length, missing ? 1 : 0)
+    const outcome = lines.filter(l => /deferred to target-restore —/.test(l))
+    if (missing) {
+      assert.equal(outcome.length, 1)
+      assert.match(outcome[0], /1 deferred to target-restore — 1 restored, 0 still without a target/)
+    } else assert.deepEqual(outcome, [], 'eligible protected rows must not manufacture missing targets')
+  }
+})
+
+test('deferred outcome reports a target found on fresh recheck without claiming it remains missing', async () => {
+  const { _resetProtectionLineMemoryForTests } = await import('./naked-position-guard.js')
+  _resetProtectionLineMemoryForTests()
+  oneAccount()
+  targetlessOn(A, 'EURUSD', '111', 1.05, { current_tp: 1.12, entry_price: 1.09 })
+  const lines = [], amends = []
+  const original = console.log
+  console.log = (...args) => lines.push(args.join(' '))
+  try {
+    await runProtectionAuditAllAccounts(db, creds, {
+      exec: { reconcile: async () => ({ position: [{ positionId: '111', stopLoss: 1.05, takeProfit: null }] }) },
+      tpSuggest: inertTp,
+      restoreOpts: {
+        readPosition: async () => ({ positionId: '111', stopLoss: 1.06, takeProfit: 1.14 }),
+        amend: async payload => { amends.push(payload); return { executionType: 'OK' } },
+      },
+    })
+  } finally { console.log = original }
+  assert.deepEqual(amends, [])
+  const outcome = lines.find(l => /deferred to target-restore —/.test(l))
+  assert.match(outcome, /1 deferred to target-restore — 0 restored, 0 still without a target/)
+  assert.match(outcome, /1 already protected on fresh recheck/)
+})
+
 test('NO SWEEP TEST MAY REACH THE REAL APPLIER', async () => {
   // Without an injected tpSuggest these tests run the real suggester and
   // applier. The suggester returns null here only because

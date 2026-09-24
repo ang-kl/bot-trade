@@ -180,6 +180,10 @@ async function restorePass(db, creds, findings, rowsById, deps) {
         out.skipped.push(`${f.symbol}: position not confirmed by fresh broker read`); continue
       }
       if (num(fresh.takeProfit) > 0) {
+        // A repair from another path may have completed after the audit.
+        // Preserve its target and let the audit outcome distinguish this
+        // fresh evidence from an unresolved repair or a new amend.
+        out.alreadyProtected = (out.alreadyProtected || 0) + 1
         out.skipped.push(`${f.symbol}: broker already holds a target; preserved`); continue
       }
       if (!(num(fresh.stopLoss) > 0)) {
