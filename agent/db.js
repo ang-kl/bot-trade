@@ -1113,6 +1113,14 @@ const SEED_STATE = {
  * @returns {import('better-sqlite3').Database}
  */
 export function initDB(dbPath) {
+  const startupStart = performance.now();
+  let phaseStart = startupStart;
+  const startupPhases = [];
+  const timedPhase = (name) => {
+    const end = performance.now();
+    startupPhases.push({ name, ms: end - phaseStart });
+    phaseStart = end;
+  };
   const resolvedPath = dbPath || process.env.DB_PATH || './agent.db';
   const db = new Database(resolvedPath);
 
@@ -1141,10 +1149,12 @@ export function initDB(dbPath) {
   // SENT that the restart never sees. FULL, pinned by db-pragmas.test.js.
   db.pragma('synchronous = FULL');
   db.pragma('foreign_keys = ON');
+  timedPhase('open_and_journal');
 
   // Create schema (indexes created after migrations to avoid referencing
   // columns that don't exist yet on pre-existing DBs)
   db.exec(TABLES);
+  timedPhase('base_schema');
 
   // One-time rebuild: 'rejected' was always a valid trades.status value in
   // the APP (reconcile-trades writes it, /state/trades queries for it) but
@@ -1378,6 +1388,8 @@ export function initDB(dbPath) {
   } catch (err) {
     console.error('[db] position-id normalisation failed, continuing:', err.message);
   }
+
+  timedPhase('legacy_repairs');
 
   // Carry-cost awareness: swap rates ride along with the symbol-hours
   // refresh (same ProtoOASymbol fetch — zero extra broker calls). Stored in
@@ -1771,7 +1783,9 @@ export function initDB(dbPath) {
   }
 
   // Now that all columns exist, create indexes
+  timedPhase('column_migrations');
   db.exec(INDEXES);
+  timedPhase('indexes');
 
   // -------------------------------------------------------------------------
   // Phase-flag trace (owner 01-08: "re-code how master-switch are ironclad …
@@ -1975,6 +1989,8 @@ export function initDB(dbPath) {
   CREATE INDEX IF NOT EXISTS idx_pos_capture_due ON position_capture_queue(state, due_at_ms);
   `);
 
+  timedPhase('history_schema');
+
   // PR-AP: how many times this row was RE-ARMED to chase a verdict, as
   // distinct from `attempts`, which counts tries at building the record.
   //
@@ -2097,6 +2113,11 @@ export function initDB(dbPath) {
     }
   });
   seedTx();
+
+  timedPhase('final_migrations_and_seed');
+  db.startupTiming = { totalMs: phaseStart - startupStart, phases: startupPhases };
+  // Fixed phase names and durations only: no SQL text, state values or secrets.
+  console.log(`[boot] database initialization: ${JSON.stringify(db.startupTiming)}`);
 
   return db;
 }

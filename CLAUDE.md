@@ -1,5 +1,11 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 16:03 UTC: partial local corpus;
+visible replies reached № 8,900, next № 8,901. Later visible replies win.
+#1074 merged fac2a6d and deployed successfully. Fresh independent readings
+cover seven accounts with no missing SL/TP; database startup remains Failed.
+Partial-TP work continues separately; no live execution was activated. -->
+
 <!-- Continuation ledger 2026-09-24 15:45 UTC: partial local corpus retained;
 visible replies reached № 8,889, next № 8,890. Later visible replies win.
 ETHUSD/XRPUSD demo targets acknowledged and broker-read back with existing stops

@@ -1,0 +1,62 @@
+{
+  "generatedAt": "2026-09-24T16:01:51.580Z",
+  "purpose": "Local synthetic write amplification measurement, not production acceptance",
+  "node": "v24.14.0",
+  "platform": "darwin",
+  "arch": "x64",
+  "fixture": {
+    "events": 1000,
+    "symbols": 200,
+    "rounds": 3,
+    "journal": "WAL",
+    "synchronous": "FULL"
+  },
+  "runs": [
+    {
+      "immediate": {
+        "ms": 518.7190110000001,
+        "writes": 1000,
+        "synchronous": 2
+      },
+      "batched": {
+        "ms": 4.027552000000014,
+        "writes": 1,
+        "synchronous": 2
+      }
+    },
+    {
+      "immediate": {
+        "ms": 610.4711800000001,
+        "writes": 1000,
+        "synchronous": 2
+      },
+      "batched": {
+        "ms": 3.007579000000078,
+        "writes": 1,
+        "synchronous": 2
+      }
+    },
+    {
+      "immediate": {
+        "ms": 462.779859,
+        "writes": 1000,
+        "synchronous": 2
+      },
+      "batched": {
+        "ms": 1.9498949999999695,
+        "writes": 1,
+        "synchronous": 2
+      }
+    }
+  ],
+  "validation": {
+    "sameSymbols": true,
+    "freshTimestamps": true,
+    "noDurabilityPragmaChange": true
+  },
+  "limits": [
+    "Timers schedule a flush after 250 ms; event-loop stalls can delay it.",
+    "Only advisory scan rotation hints are batched. A crash can lose unflushed hints.",
+    "The synthetic burst is not the measured proportion of all production state writes."
+  ]
+}
