@@ -558,6 +558,7 @@ export async function wsClosePosition(host, clientId, clientSecret, accessToken,
       { send: { payloadType: PT.CLOSE_POSITION_REQ, payload }, expect: PT.EXECUTION_EVENT },
     ], timeoutMs)
     return {
+      ctidTraderAccountId: exec.ctidTraderAccountId,
       executionType: exec.executionType,
       deal: exec.deal || {},
       position: exec.position || {},
@@ -981,25 +982,30 @@ export function wsGetDailyOhlcv(host, clientId, clientSecret, accessToken, accou
  *
  * @returns {Promise<{close: () => void}>} resolves once subscribed
  */
-export function wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, symbolIds, onTick, onClose = () => {}) {
+export function wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, symbolIds, onTick, onClose = () => {}, options = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`wss://${host}:5036`)
-    let hb, settled = false, closedByUs = false
+    let hb, connectTimer, settled = false, closedByUs = false
 
     const finishClose = (reason) => {
       clearInterval(hb)
+      clearTimeout(connectTimer)
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
       if (!settled) { settled = true; reject(new Error(reason)) }
       else if (!closedByUs) onClose(reason)
     }
 
+    if (Number.isFinite(options.connectTimeoutMs) && options.connectTimeoutMs > 0) {
+      connectTimer = setTimeout(() => finishClose('spot subscription deadline exceeded'), options.connectTimeoutMs)
+    }
     const steps = [
       { send: { payloadType: PT.APP_AUTH_REQ, payload: { clientId, clientSecret } }, expect: PT.APP_AUTH_RES },
       { send: { payloadType: PT.ACCOUNT_AUTH_REQ, payload: { ctidTraderAccountId: parseInt(accountId), accessToken } }, expect: PT.ACCOUNT_AUTH_RES },
       {
         send: {
           payloadType: PT.SUBSCRIBE_SPOTS_REQ,
-          payload: { ctidTraderAccountId: parseInt(accountId), symbolId: symbolIds.map(id => parseInt(id)) },
+          payload: { ctidTraderAccountId: parseInt(accountId), symbolId: symbolIds.map(id => parseInt(id)),
+            ...(options.timestamped ? { subscribeToSpotTimestamp: true } : {}) },
         },
         expect: PT.SUBSCRIBE_SPOTS_RES,
       },
@@ -1029,6 +1035,7 @@ export function wsStreamSpots(host, clientId, clientSecret, accessToken, account
           stepIdx++
           if (stepIdx >= steps.length) {
             settled = true
+            clearTimeout(connectTimer)
             resolve({
               close: () => { closedByUs = true; clearInterval(hb); if (ws.readyState === WebSocket.OPEN) ws.close() },
             })
@@ -1046,6 +1053,7 @@ export function wsStreamSpots(host, clientId, clientSecret, accessToken, account
           bid: p.bid != null ? p.bid / POINTS_PER_PRICE : null,
           ask: p.ask != null ? p.ask / POINTS_PER_PRICE : null,
           t: Date.now(),
+          ...(options.timestamped ? { accountId: p.ctidTraderAccountId, brokerAtMs: p.timestamp } : {}),
         })
       }
     })
