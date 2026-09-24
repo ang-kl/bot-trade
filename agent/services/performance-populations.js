@@ -166,6 +166,7 @@ export function readStageMatrixStats(db) { return isolatedReport(db, 'stage-matr
 export function readDecisionAudit(db, options) { return isolatedReport(db, 'decision-audit', options) }
 export function readNodeWatchdogContract(db, options) { return isolatedReport(db, 'node-watchdog', options) }
 export function readAccountEngineering(db) { return isolatedReport(db, 'account-engineering') }
+export function readPostmortemReport(db, options) { return isolatedReport(db, 'postmortems', options) }
 export function buildDecisionsDaily(db, { days = 90, accountId = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -193,6 +194,10 @@ export function buildLatestPrices(db) {
   return prices
 }
 async function buildReport(db, kind, options) {
+  if (kind === 'postmortems') {
+    const { postmortemReport } = await import('./postmortem-report.js')
+    return db.transaction(() => postmortemReport(db, options))()
+  }
   if (kind === 'account-engineering') {
     const { engineeringView } = await import('./account-engineering.js')
     // The account panel aggregates retained decisions. Keep the coherent

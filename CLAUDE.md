@@ -1,5 +1,12 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 17:07 UTC: partial local corpus (script 8);
+visible replies reached № 8,921, next № 8,922. Later visible replies win.
+#1077 merged 8bcb708 and deployed; seven accounts retain 32 protected positions
+and unchanged entry configuration. First loop 125,069 ms leaves broader
+performance acceptance open. #1078 source passed all local/CI gates; entry
+intent/book handover is under build and does not activate partial execution. -->
+
 <!-- Continuation ledger 2026-09-24 16:52 UTC: partial local corpus (script 8);
 visible replies reached № 8,914, next № 8,915. Later visible replies win.
 #1076 merged 7ea54b6 and deployed. The first independent poll retained fresh
