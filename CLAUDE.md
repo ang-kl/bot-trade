@@ -1,5 +1,15 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-09-24 22:10 UTC: partial local corpus (script 8);
+visible replies reached № 8,945, next № 8,946. Later visible replies win.
+#1082 is deployed ba1b16f; first loop remains 122,773 ms. Fresh authenticated
+readback covers seven accounts and 32 positions with SL/TP. #1081 exact-head
+CI passed, but the interrupted combined backend run had no final summary;
+it is being rerun rather than counted as complete. New partial-policy
+production integration remains INCOMPLETE and inactive; V3 is not accepted.
+The audit work-product timestamp is request time, not completion: its gap to
+the heartbeat does not prove an outbound-notification delay. -->
+
 <!-- Continuation ledger 2026-09-24 17:44 UTC: partial local corpus;
 visible replies reached № 8,940, next № 8,941. Later visible replies win.
 #1079/#1080 deployed with seven-account settings and 32 protected positions
