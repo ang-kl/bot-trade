@@ -33,7 +33,6 @@ import { stageMatrixView, loadStageMatrix, stageOverlayKeys, accountStageTallies
 // overlay, and the shadow made the call below resolve to that array.
 import { overlayKeys as acctOverlayKeys } from '../services/account-overlay.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
-import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { accountMoney } from '../services/account-money.js'
@@ -43,7 +42,7 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering, readPostmortemReport } from '../services/performance-populations.js'
 import { reportLedger } from '../shared/performance-populations.js'
 
 /**
@@ -1015,62 +1014,16 @@ export default function stateRouter(db) {
   // GET /state/postmortems — post-loss playback: what the market did after
   // each losing trade, with replay bars + per-strategy loss-class stats.
   // -----------------------------------------------------------------------
-  router.get('/postmortems', (req, res) => {
+  router.get('/postmortems', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30))
-    // WHOSE lessons. This route answered about every account at once, so the
-    // Performance page's debrief card showed the same rows no matter which
-    // account was selected — the identical failure lib/account-scope.js was
-    // written for, in the one section that had been missed. trade_postmortems
-    // has no account_id, so the scope rides on the trade it belongs to.
     const scope = requestedAccount(db, req)
-    const acct = accountWhere(scope, 't.account_id')
-    let rows = [], stats = []
     try {
-      // Trade-Lesson field spec (owner) asks for Lot / TP1 / TP2 /
-      // Confluence-count alongside the flat lesson fields — none of those
-      // live on trade_postmortems itself, so join back to the trade (lot,
-      // TP1, confluence_count) and its analysis (TP2, laddered target).
-      // Aliased names only — never shadows pm's own snapshotted prices.
-      // trade_closed_at/trade_opened_at: pm.created_at is when the SWEEP
-      // classified this row, not when the trade happened — backfilling 90
-      // days of history in one run (or one sweep classifying several
-      // trades) stamps many rows with nearly the SAME created_at. Codex
-      // review (PR #265) caught the UI using that for its date/time column,
-      // which defeated the point of adding it. Use the trade's own timestamp.
-      rows = db.prepare(
-        `SELECT pm.*, t.volume AS lot, t.tp_price AS tp1_price, t.thesis AS setup_thesis,
-                t.confluence_count AS confluence_count, a.tp2_price AS tp2_price,
-                t.closed_at AS trade_closed_at, t.opened_at AS trade_opened_at
-         FROM trade_postmortems pm
-         LEFT JOIN trades t ON t.id = pm.trade_id
-         LEFT JOIN analyses a ON a.id = t.analysis_id
-         WHERE (t.id IS NULL OR t.status <> 'rejected')${acct.active ? ` AND ${acct.where}` : ''}
-         ORDER BY pm.id DESC LIMIT ?`
-      ).all(...acct.params, limit)
-    } catch { /* table appears on first boot after migration */ }
-    try {
-      rows = rows.map(r => ({ ...r, bars: safeParse(r.bars_json), bars_json: undefined }))
-    } catch { /* keep raw rows */ }
-    try {
-      stats = postmortemStats(db, 30, { accountId: acct.active ? scope.accountId : null })
-    } catch { /* table missing on a very old DB — stats stay empty */ }
-    // ¶D·4 — "I didn't see the lesson learnt!", twelve minutes after a NAS100
-    // short lost $1,013.08. There could not be one yet: a verdict needs 5 bars
-    // of aftermath, which on a 10-minute chart is fifty minutes away. This
-    // route only ever returned trades that already HAD a lesson, so one still
-    // in its waiting period was simply absent — and absent reads as "nothing
-    // was learned", not "not yet". Now it says which, and when.
-    let pending = { rows: [], waiting: 0, ineligible: 0 }
-    try {
-      pending = pendingLessons(db, { accountId: acct.active ? scope.accountId : null })
-    } catch { /* never block the lessons themselves on the pending list */ }
-    res.json({
-      rows, stats, pending,
-      accountId: scope.all ? 'all' : (scope.accountId ?? null),
-      scoped: acct.active,
-    })
+      res.json(await readPostmortemReport(db, { scope, limit }))
+    } catch {
+      res.status(503).json({ error: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable' })
+    }
   })
-  function safeParse(s) { try { return JSON.parse(s || 'null') } catch { return null } }
 
   // -----------------------------------------------------------------------
   // GET /state/unresolvable-plan — the dry run for the unknown-P&L write-off,

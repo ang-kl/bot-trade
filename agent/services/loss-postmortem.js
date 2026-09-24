@@ -323,7 +323,7 @@ export function sqliteMs(s) {
  *   time has passed) | 'ineligible' (no outcome can be derived — it will
  *   never get a lesson).
  */
-export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 50, minAfterBars = MIN_AFTER_BARS, accountId = null } = {}) {
+export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 50, minAfterBars = MIN_AFTER_BARS, accountId = null, strict = false } = {}) {
   // ONE CLOCK. This function already accepted an injectable `now` for the
   // elapsed-time arithmetic below, but the window used SQLite's own
   // datetime('now') — so a caller passing `now` got a row set selected by the
@@ -356,7 +356,7 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
          ${acct}
        ORDER BY t.closed_at DESC LIMIT ?
     `).all(...[cutoff, ...(accountId == null ? [] : [String(accountId)]), limit])
-  } catch { return { rows: [], waiting: 0, ineligible: 0 } }
+  } catch (error) { if (strict) throw error; return { rows: [], waiting: 0, ineligible: 0 } }
 
   // Best-effort: an unmapped or exotic symbol simply reports null rather than
   // blocking the whole list on a schedule lookup.
