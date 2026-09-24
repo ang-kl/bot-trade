@@ -218,6 +218,14 @@ test('all switches ON cannot make a retired ordinary producer look tradable', ()
     'read-model and admission checks cannot arm a strategy or mutate state')
 })
 
+test('fib_618_fade readout includes its retired pending-order producer', () => {
+  const r = tradeGateChain(db, { accountId: ACCT, strategy: 'fib_618_fade' })
+  assert.equal(r.blockedBy, 'producer_available')
+  assert.deepEqual(r.producer.producers.map(p => p.id), ['scan_dispatch', 'pending_fib_orders'])
+  assert.equal(r.producer.producers.every(p => p.retired === true), true)
+  assert.match(r.reason, /pending_fib_orders:/)
+})
+
 test('a retired path stays visible even under an OFF master', () => {
   setState(db, 'autotrade_enabled', 'false')
   const r = tradeGateChain(db, { accountId: ACCT, strategy: 'fib_confluence' })
