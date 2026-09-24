@@ -29,6 +29,7 @@
 
 import { stampRealisedAudit } from './trade-consistency.js'
 import { pageDeals } from '../lib/deal-paging.js'
+import { brokerDealLinkIdentities } from './broker-deal-link-identity.js'
 
 const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
 
@@ -120,8 +121,9 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
 
 /** Upsert shaped rows, linking only an unambiguous account+position identity. */
 export function persistDeals(db, rows) {
+  const identities = brokerDealLinkIdentities(db, rows)
   const localByIdentity = new Map()
-  const pids = [...new Set(rows.map(r => r.position_id).filter(Boolean))]
+  const pids = [...new Set([...identities.values()].map(identity => identity.positionId))]
   if (pids.length) {
     // Position IDs are broker identities only inside their account/server
     // context. Never let a row from another account win a Map overwrite, and
@@ -142,11 +144,8 @@ export function persistDeals(db, rows) {
     }
   }
   const localIdFor = (r) => {
-    if (!r.position_id) return null
-    // An unscoped imported row cannot prove which account's local position it
-    // belongs to. Leave it unmatched rather than crossing account boundaries.
-    if (r.account_id == null) return null
-    return localByIdentity.get(`${String(r.account_id)}:${String(r.position_id)}`) ?? null
+    const identity = identities.get(r)
+    return identity ? localByIdentity.get(`${identity.accountId}:${identity.positionId}`) ?? null : null
   }
 
   const up = db.prepare(`
