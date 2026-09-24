@@ -799,6 +799,6 @@ test('the loop prints the breakdown, not the bare count', () => {
 
 test('the loop logs exact overdue P&L identities when the reconciliation heartbeat fails', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[^]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
-  assert.match(src, /if \(unreached\) log\(\`P&L reconciliation unreached rows:/)
+  assert.ok(src.includes('if (unreached) log(`P&L reconciliation unreached rows:'))
   assert.match(src, /JSON\.stringify\(detail\.unreachedRows\)/)
 })
