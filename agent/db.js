@@ -1009,6 +1009,11 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_broker_deals_position   ON broker_deals(position_id);
   CREATE INDEX IF NOT EXISTS idx_decision_log_at        ON decision_log (created_at);
   CREATE INDEX IF NOT EXISTS idx_decision_log_sym_stage ON decision_log (symbol, stage, created_at);
+  -- The watchdog counts account dispatches with mixed SQLite/ISO timestamps.
+  -- Keep julianday's exact boundary semantics, but seek only this account's
+  -- dispatch receipts instead of scanning every retained scan/skip decision.
+  CREATE INDEX IF NOT EXISTS idx_decision_log_dispatch_account
+    ON decision_log(account_id, created_at) WHERE stage='dispatch' AND decision='proceed';
   CREATE INDEX IF NOT EXISTS idx_position_events_pos    ON position_events(position_id, at);
   CREATE INDEX IF NOT EXISTS idx_position_events_at     ON position_events(at);
   CREATE INDEX IF NOT EXISTS idx_scans_symbol_at        ON scans   (symbol, scanned_at);

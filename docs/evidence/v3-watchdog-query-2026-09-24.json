@@ -1,0 +1,66 @@
+{
+  "generatedAt": "2026-09-24T12:56:50.551Z",
+  "purpose": "P1/P4/P5a watchdog dispatch query correction; local synthetic evidence only",
+  "environment": {
+    "node": "v24.14.0",
+    "platform": "darwin",
+    "arch": "x64",
+    "sqlite": "3.49.2"
+  },
+  "fixture": {
+    "accounts": 7,
+    "unrelatedRetainedDecisions": 250000,
+    "dispatchReceipts": 1750,
+    "dispatchesPerAccount": 250
+  },
+  "before": {
+    "plan": [
+      {
+        "id": 3,
+        "parent": 0,
+        "notused": 216,
+        "detail": "SCAN decision_log"
+      }
+    ],
+    "firstCompleteContractMs": 731.1800149999999,
+    "completeContractSamplesMs": [
+      715.2597100000003,
+      711.1085709999998,
+      712.848634,
+      710.2471740000001,
+      710.9198149999993
+    ]
+  },
+  "after": {
+    "plan": [
+      {
+        "id": 3,
+        "parent": 0,
+        "notused": 54,
+        "detail": "SEARCH decision_log USING COVERING INDEX idx_decision_log_dispatch_account (account_id=?)"
+      }
+    ],
+    "completeContractSamplesMs": [
+      30.92496900000151,
+      29.382276999998794,
+      27.840949999999793,
+      26.932285999999294,
+      29.967681000000084
+    ],
+    "existingDatabaseReopenIncludingIndexMs": 112.23867000000064,
+    "additionalAllocatedPages": 15,
+    "pageBytes": 4096,
+    "additionalAllocatedBytes": 61440
+  },
+  "validation": {
+    "allSevenAccountContractFieldsExactlyEqual": true,
+    "existingDatabaseMigrationPassed": true,
+    "secondReopenIdempotent": true
+  },
+  "limitations": [
+    "Synthetic local database and local storage; not production load or a broker-latency measurement.",
+    "Full initDB reopen time includes other normal startup work; it is not an isolated index-build measurement.",
+    "The index retains every dispatch receipt; cost still grows with the selected account dispatch history.",
+    "First production index creation scans retained decisions once and needs a controlled Node release."
+  ]
+}

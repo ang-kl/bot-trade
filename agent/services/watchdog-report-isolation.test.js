@@ -84,3 +84,58 @@ test('a locked database leaves the event loop responsive and never becomes healt
   assert.match(failure.error.message, /locked/)
   lock.exec('ROLLBACK')
 })
+
+test('watchdog dispatch counts seek the account instead of scanning retained decision history', t => {
+  const db = fixture(t)
+  const put = db.prepare('INSERT INTO decision_log(account_id,stage,decision,created_at) VALUES (?,?,?,?)')
+  db.transaction(() => {
+    for (let i = 0; i < 10000; i++) put.run('11', 'scan', 'proceed', '2026-09-20T22:00:00Z')
+    for (const at of ['2026-09-20T21:00:00Z', '2026-09-21 00:00:00', '2026-09-21T08:00:00+08:00', '2026-09-22T06:00:00.000Z']) {
+      put.run('11', 'dispatch', 'proceed', at)
+    }
+    for (const at of ['2026-09-20T20:59:59.999Z', '2026-09-22T06:00:00.001Z', 'invalid date']) {
+      put.run('11', 'dispatch', 'proceed', at)
+    }
+    put.run('22', 'dispatch', 'proceed', '2026-09-21 00:00:00')
+    put.run(null, 'dispatch', 'proceed', '2026-09-21 00:00:00')
+    put.run('11', 'dispatch', 'skip', '2026-09-21 00:00:00')
+  })()
+  const queries = [], prepare = db.prepare
+  db.prepare = function (sql) {
+    if (/SELECT COUNT\(\*\) n FROM decision_log/.test(sql)) queries.push(sql)
+    return prepare.call(this, sql)
+  }
+  let contract
+  try { contract = nodeWatchdogContract(db, { now }) } finally { db.prepare = prepare }
+  const activity = contract.work.find(w => w.role === 'entry_activity')
+  assert.equal(activity.orderEvidence.dispatches, 4)
+  assert.equal(activity.hasRecordedOrder, true)
+  assert.equal(activity.ordersSinceOpen, null)
+  assert.equal(queries.length, 1, 'inspect the statement the actual watchdog executed')
+  const plan = db.prepare(`EXPLAIN QUERY PLAN ${queries[0]}`).all('11',
+    new Date(activity.sessionOpenedAtMs).toISOString(), new Date(now + 1).toISOString())
+  assert.ok(plan.some(row => /SEARCH decision_log .*account_id=\?/.test(row.detail)),
+    `watchdog must seek the account's dispatch records: ${JSON.stringify(plan)}`)
+  assert.ok(!plan.some(row => /SCAN decision_log/.test(row.detail)), 'unrelated retained decisions must not be scanned')
+})
+
+test('dispatch index upgrades an existing decision log without attributing its unassigned history', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-index-upgrade-')), path = join(dir, 'fixture.db')
+  let db = initDB(path)
+  t.after(() => { if (db.open) db.close(); rmSync(dir, { recursive: true, force: true }) })
+  // Recreate the prior production schema. decision_log has always declared
+  // account_id; older/global receipts may leave its value NULL.
+  db.exec('DROP INDEX idx_decision_log_dispatch_account')
+  db.prepare("INSERT INTO decision_log(stage,decision,created_at) VALUES ('dispatch','proceed','2026-09-21 00:00:00')").run()
+  db.close()
+  db = initDB(path)
+  assert.deepEqual(db.prepare('SELECT account_id,stage,decision,created_at FROM decision_log').all(), [
+    { account_id: null, stage: 'dispatch', decision: 'proceed', created_at: '2026-09-21 00:00:00' },
+  ])
+  const plan = db.prepare("EXPLAIN QUERY PLAN SELECT count(*) FROM decision_log WHERE account_id=? AND stage='dispatch' AND decision='proceed'").all('11')
+  assert.ok(plan.some(row => /SEARCH decision_log .*account_id=\?/.test(row.detail)))
+  db.close()
+  db = initDB(path)
+  assert.equal(db.prepare('SELECT count(*) n FROM decision_log WHERE account_id IS NULL').get().n, 1)
+  assert.equal(db.prepare("SELECT count(*) n FROM decision_log WHERE account_id='11'").get().n, 0)
+})
