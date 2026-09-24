@@ -3244,13 +3244,18 @@ async function runLoop(db) {
               // Kelly veto all key on realised P&L, so on every account except
               // the selected one they were blind to broker-side stop-outs —
               // exactly the losers that close at the broker.
-              let targets = [String(accountId)]
+              let targets = [{ accountId: String(accountId), isLive: !!isLive }]
               try {
                 const { getEnabledAccounts } = await import('./services/account-registry.js')
-                const same = getEnabledAccounts(db)
-                  .filter(a => (a.is_live === 1) === isLive)
-                  .map(a => String(a.account_id))
-                if (same.length) targets = [...new Set([String(accountId), ...same])]
+                const enabled = getEnabledAccounts(db).map(a => ({
+                  accountId: String(a.account_id),
+                  isLive: a.is_live === 1,
+                }))
+                if (enabled.length) {
+                  const byId = new Map([[String(accountId), { accountId: String(accountId), isLive: !!isLive }]])
+                  for (const target of enabled) byId.set(target.accountId, target)
+                  targets = [...byId.values()]
+                }
               } catch { /* registry unavailable — selected account only, as before */ }
 
               // NO SIDECAR-ROSTER GATE HERE — deliberately removed 2026-07-31.
@@ -3283,7 +3288,8 @@ async function runLoop(db) {
               // so this pass sees the flags it just wrote.
               let sweepSuspects = null
               try { ({ sweepExitPriceSuspects: sweepSuspects } = await import('./services/exit-price-suspects.js')) } catch { sweepSuspects = null }
-              for (const acct of targets) {
+              for (const target of targets) {
+                const acct = target.accountId
                 // Pacing only ever delays an account whose gap did NOT fill
                 // last time — a permanently unfillable row (closing deal
                 // older than the deal-history window) would otherwise buy a
@@ -3294,9 +3300,18 @@ async function runLoop(db) {
                     const sw = sweepSuspects(db, { accountId: acct })
                     if (sw.flagged || sw.cleared) log(`Exit-price suspects [${acct}]: ${sw.flagged} flagged, ${sw.cleared} cleared of ${sw.scanned} scanned`)
                   }
-                  const creds = { host, clientId, clientSecret, accessToken, accountId: acct }
+                  // P&L repair is a Node broker-history read, not a sidecar
+                  // operation. Resolve each enabled account's own host and
+                  // credential identity so an overdue row on the opposite
+                  // demo/live side cannot remain permanently unreached.
+                  const { getCtraderCreds } = await import('./lib/ctrader-creds.js')
+                  const creds = getCtraderCreds(db, { accountId: acct, isLive: target.isLive })
+                  const expectedHost = target.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+                  if (!creds?.ready || String(creds.accountId) !== acct || creds.host !== expectedHost) {
+                    throw new Error('account credentials unavailable or mismatched')
+                  }
                   const { backfillAccountPnl } = await import('./services/cross-side-pnl.js')
-                  const recovered = await backfillAccountPnl(db, { ...creds, ready: true }, { closeSeen })
+                  const recovered = await backfillAccountPnl(db, creds, { closeSeen })
                   if (recovered.skipped) { skipped++; continue }
                   if (recovered.error) throw new Error(recovered.error)
                   const bf = recovered.result
@@ -3355,7 +3370,8 @@ async function runLoop(db) {
                   // had asked the broker about.
                   const { pnlGapBreakdown } = await import('./services/pnl-backfill.js')
                   const g = pnlGapBreakdown(db)
-                  const tried = `after trying ${targets.length - skipped}/${targets.length} account(s) [${targets.join(', ')}]${skipped ? `, ${skipped} paced off` : ''}`
+                  const targetIds = targets.map(t => t.accountId)
+                  const tried = `after trying ${targets.length - skipped}/${targets.length} account(s) [${targetIds.join(', ')}]${skipped ? `, ${skipped} paced off` : ''}`
                   if (g.error) {
                     log(`P&L backfill: ${gapBefore} closed trade(s) missing net_pnl ${tried} — the gap could not be broken down (state unreadable), so which are still repairable is UNKNOWN`)
                   } else if (g.live === 0) {
