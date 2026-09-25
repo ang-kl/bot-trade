@@ -9,6 +9,7 @@
 import { tagLabelWithIntent } from './trade-labels.js'
 import { isAmbiguousOrderOutcome } from './exec-fallback.js'
 import { beginCall, endCall } from './inflight.js'
+import { entryAnswerVerdict } from './order-answer.js'
 
 export function execEngineMode() {
   return process.env.EXEC_ENGINE === 'cpp' ? 'cpp' : 'js'
@@ -805,10 +806,20 @@ function reserveAndRedeem(creds, p) {
   if (!L) return null
   let permit = p?.permit && p.permit.id ? p.permit : null
   if (!permit) {
+    // X1 / W3 (25-09-2026): the stored stop and target carry their UNITS. A
+    // relative leg is cTrader wire points (price distance × 100000,
+    // lot-sizing.js relativePoints); an absolute leg is a price. The column
+    // used to hold either with nothing saying which, and the reconciler fed
+    // the points to the trade plan as a price (#1686 JPM.US planned_sl
+    // 1,732,000).
+    const slRel = p.relativeStopLoss != null, tpRel = p.relativeTakeProfit != null
+    const sl = p.relativeStopLoss ?? p.stopLoss ?? null, tp = p.relativeTakeProfit ?? p.takeProfit ?? null
     const r = L.reserve({
       symbolId: p.symbolId ?? null, symbol: p.symbolName ?? p.symbol ?? null, side: p.tradeSide,
       orderType: p.orderType || 'MARKET', volume: p.volume ?? null,
-      sl: p.relativeStopLoss ?? p.stopLoss ?? null, tp: p.relativeTakeProfit ?? p.takeProfit ?? null,
+      sl, tp,
+      slUnits: sl == null ? null : slRel ? 'relative_points' : 'price',
+      tpUnits: tp == null ? null : tpRel ? 'relative_points' : 'price',
       signalRef: p.signalRef ?? null,
     })
     if (!r.ok) {
@@ -847,15 +858,24 @@ export function stripLedgerFields(p) {
   return wire
 }
 
-/** The intent's verdict from the order's own outcome. Never masks that outcome. */
-function settleIntent(creds, intentId, result, err) {
+/**
+ * The intent's verdict from the order's own outcome. Never masks that outcome.
+ *
+ * X1 (25-09-2026, owner-approved): the verdict depends on the ORDER TYPE
+ * (lib/order-answer.js). A market order settles exactly as before — FILLED
+ * when the answer names a position. A resting LIMIT / STOP is FILLED only
+ * when the answer says it filled (ORDER_FILLED / ORDER_PARTIAL_FILL, or a
+ * deal); its ORDER_ACCEPTED — which carries the broker's pre-created
+ * position id — is ACCEPTED with the order id, and the reconcile pass moves
+ * it on to FILLED, EXPIRED or RELEASED from the broker's evidence.
+ */
+function settleIntent(creds, intentId, result, err, orderType = 'MARKET') {
   const L = creds?.entryLedger
   if (!L) return
   try {
     if (!err) {
-      const positionId = result?.position?.positionId ?? result?.deal?.positionId ?? null
-      const orderId = result?.order?.orderId ?? null
-      L.resolve(intentId, { state: positionId != null ? 'FILLED' : 'ACCEPTED', positionId, brokerOrderId: orderId, source: 'response' })
+      const v = entryAnswerVerdict(orderType, result)
+      L.resolve(intentId, { state: v.state, positionId: v.positionId, brokerOrderId: v.brokerOrderId, source: 'response' })
       return
     }
     const text = String(err?.message || err)
@@ -919,12 +939,20 @@ export async function placeOrder(creds, orderPayload) {
     if (orderPayload.label) orderPayload.label = tagLabelWithIntent(orderPayload.label, intent.id)
   }
   const wire = stripLedgerFields(orderPayload)
+  // X1 / W2 (25-09-2026): the SIDECAR body keeps the two ledger fields the
+  // sidecar itself consumes (intentId, permit) and drops the Node-only ones.
+  // The sidecar's wireOrderPayload strips only intentId and permit
+  // (cpp-exec/src/engine.cpp), so symbolName — now on every producer's
+  // payload so the intent records its symbol — and signalRef would otherwise
+  // travel on to the broker. For a payload with neither field this is the
+  // same body, key for key, as before.
+  const { symbolName: _sn, signalRef: _sr, ...sidecarBody } = orderPayload
   try {
     if (intent) creds.entryLedger.markSent(intent.id, {})
     let result
     if (execEngineMode() === 'cpp') {
       result = await withFallback('order',
-        async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/order', orderPayload) },
+        async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/order', sidecarBody) },
         async () => {
           // AUDIT 11-09-2026 (plan §13 "every route must reject stale mode
           // epochs at the final admission boundary"): the JS transport has
@@ -942,10 +970,10 @@ export async function placeOrder(creds, orderPayload) {
       const m = await ws()
       result = await m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, wire)
     }
-    if (intent) settleIntent(creds, intent.id, result, null)
+    if (intent) settleIntent(creds, intent.id, result, null, orderPayload.orderType)
     return result
   } catch (err) {
-    if (intent) settleIntent(creds, intent.id, null, err)
+    if (intent) settleIntent(creds, intent.id, null, err, orderPayload.orderType)
     // A DEFINITE REJECTION RELEASES THE LOCK. loop.js already draws this line
     // for its own dedupe and draws it correctly: "a plain order_failed —
     // broker REJECTED it, provably no position — is NOT caught here, so

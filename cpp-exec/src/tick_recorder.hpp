@@ -30,10 +30,12 @@
 //
 // STORAGE POLICY (plan §10): segments seal at segmentBytes (64 MiB) by fsync
 // + close + atomic rename from ".open" to ".tks"; the spool holds at most
-// spoolCapBytes (2 GiB) of sealed + open segments and retires the OLDEST
+// spoolCapBytes (2 GiB by default, TICK_SPOOL_CAP_BYTES) of sealed + open
+// segments and retires the OLDEST
 // sealed ones first, never the open one, never a file it did not write;
 // before every write the mount's available bytes minus the write must stay
-// above the reserve (the larger of 2 GiB and 20% of the mount) — otherwise
+// above the reserve (the larger of 2 GiB and 20% of the mount by default —
+// TICK_SPOOL_RESERVE_MIN_BYTES and TICK_SPOOL_RESERVE_PCT) — otherwise
 // recording PAUSES with a gap, and resumes when space returns; a write is
 // also refused past 85% usage, and 70% is a warning in the status. A single
 // writer per spool is enforced with a lock file; a torn ".open" file from a
@@ -182,7 +184,88 @@ struct RecorderConfig {
   int stopPct = 85;
   int fsyncEveryMs = 5000;
   int budgetCheckEveryMs = 2000;
+  // GW-CAP: where spoolCapBytes / reserveMinBytes / reservePct came from —
+  // "default" (variable unset), "env" (set and accepted) or "refused" (set,
+  // refused, the default above in force). Reported on /health and
+  // /tick-status so a read-back can tell a variable that took effect from a
+  // default that happens to match; the writer never reads them.
+  std::string spoolCapSource = "default";
+  std::string reserveMinSource = "default";
+  std::string reservePctSource = "default";
+  std::vector<std::string> limitRefusals;  // one line per refused variable
 };
+
+// ---------------------------------------------------------------------------
+// GW-CAP (owner, 25-09-2026 22:03 SGT: "ensure all cpp services passed"). The
+// spool cap and the free-space reserve were compiled in — 2 GiB, about 12
+// days of raw ticks, on a 50 GB volume 5 % used. They are now read from the
+// environment next to TICK_SPOOL_PATH, with the compiled values above as the
+// defaults, so NOTHING changes until a variable is set:
+//
+//   TICK_SPOOL_CAP_BYTES          spoolCapBytes    (>= one segment)
+//   TICK_SPOOL_RESERVE_MIN_BYTES  reserveMinBytes
+//   TICK_SPOOL_RESERVE_PCT        reservePct       (0..90)
+//
+// A byte count is a whole number, optionally with ONE binary unit — KiB, MiB,
+// GiB or TiB (case-insensitive), or a bare B. Decimal units (GB, G, k) are
+// REFUSED rather than guessed: "20GB" is 20e9 to a disk vendor and 20 GiB to
+// most operators, and a cap is not a place to pick one silently. A refused
+// value keeps the default and yields one line naming the variable, what was
+// typed and why — logged at boot and reported on /tick-status — never a
+// silent fallback.
+struct SpoolLimitText {
+  std::string capBytes;         // TICK_SPOOL_CAP_BYTES ("" = unset)
+  std::string reserveMinBytes;  // TICK_SPOOL_RESERVE_MIN_BYTES
+  std::string reservePct;       // TICK_SPOOL_RESERVE_PCT
+};
+constexpr int kMaxReservePct = 90;
+
+/** A whole byte count with an optional binary unit. False with `why` otherwise. */
+bool parseByteCount(const std::string& text, uint64_t& out, std::string& why);
+/** A whole percent 0..100, optional trailing '%'. False with `why` otherwise. */
+bool parsePercent(const std::string& text, int& out, std::string& why);
+
+/**
+ * Applies the three variables over `cfg`'s current values (the defaults).
+ * Unset keeps the default. Refused: anything that does not parse, a cap below
+ * one segment (`cfg.segmentBytes` — the spool could not keep a single sealed
+ * segment), a reserve over kMaxReservePct. Sets the three *Source fields and
+ * `limitRefusals`, and returns the refusal lines (empty = all accepted).
+ * Call it after `segmentBytes` is final.
+ */
+std::vector<std::string> applySpoolLimits(RecorderConfig& cfg, const SpoolLimitText& text);
+
+/** The reserve the budget holds back on a mount of `totalBytes`: the larger of the two. */
+uint64_t effectiveReserveBytes(const RecorderConfig& cfg, uint64_t totalBytes);
+
+/**
+ * Whether the spool can grow to its cap on this mount without the mount
+ * pausing or flagging it first. The spool peaks at the cap plus the one open
+ * segment `retire()` lets past it — a segment, plus up to one queue's worth
+ * (queueRecords × kRecordBytes) the writer drains before its seal check; at
+ * that peak the mount must still keep
+ * the reserve free and stay under warnPct (WARN is not RECORDING to the
+ * keeper's tick readiness) and stopPct. Otherwise the cap never binds: the
+ * recorder pauses with gaps on disk instead of retiring its oldest segment.
+ * `spoolBytesNow` is the spool's own share of the used bytes (sealed + open),
+ * so what OTHER files hold is `used - spoolBytesNow`. Empty = fits; each
+ * line names the limit that is hit and the largest cap that would fit.
+ * `totalBytes` 0 (never probed) is one line saying the mount is unknown.
+ */
+std::vector<std::string> spoolFitProblems(const RecorderConfig& cfg, uint64_t totalBytes, uint64_t availBytes,
+                                          uint64_t spoolBytesNow);
+
+/**
+ * True when a spool full of whole segments at this cap holds more sealed
+ * segments than one GET /tick-segments listing returns (kMaxListEntries,
+ * OLDEST first) — the keeper's read path then cannot see the newest ones
+ * until older ones retire. Not a refusal (the recorder is unaffected); a
+ * boot line, so a cap past 500 × 64 MiB is chosen knowingly.
+ */
+bool capExceedsListing(const RecorderConfig& cfg);
+
+/** "21474836480 B (20.00 GiB)" — exact bytes first, so a log line is never rounded into a false value. */
+std::string describeBytes(uint64_t bytes);
 
 // Available and total bytes on the filesystem holding `dir`. Default is
 // statvfs(3); tests inject a probe to script full disks.
@@ -245,6 +328,15 @@ public:
 
   RecorderStats stats() const;
   std::string statusJson() const;
+  // GW-CAP: the limits in force, where each came from, the reserve in bytes
+  // on this mount (null until the writer's first probe) and whether the cap
+  // fits the mount (null until then). `withText` adds the refusal and fit
+  // lines — /tick-status (authenticated) has them; /health (open) carries
+  // counts only, because a refusal line quotes what the operator typed.
+  std::string limitsJson(bool withText) const;
+  // Same, from stats the caller already holds (/health has them — no second
+  // copy of the per-symbol map under its mutex).
+  std::string limitsJson(const RecorderStats& s, bool withText) const;
 
   // Block until the queue is drained and flushed (tests). Not the hot path.
   void flush();

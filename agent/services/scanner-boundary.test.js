@@ -21,6 +21,21 @@ test('extracted scanners keep the reference algorithms and transport byte-identi
     assert.equal(read(`cpp-scan-tick/src/tests/fixtures/${file}`), read(`cpp-exec/src/tests/fixtures/${file}`))
 })
 
+// V3 CV-1 (SEQUENCE PR-6): without watchPatterns Railway redeploys a service
+// on EVERY commit to main, so each Node-only merge restarted both scanners —
+// a rewarm of every tick stream and a new instance cursor each time. Each
+// scanner now watches its own directory only (matched from the repository
+// root, as cpp-verify's `cpp-verify/**` is). Whether the Railway panel
+// overrides this is read in production (runbook R0), not asserted here.
+test('each scanner redeploys only on changes to its own directory', () => {
+  for (const service of ['cpp-scan-tick', 'cpp-scan-timeframe']) {
+    const cfg = JSON.parse(read(`${service}/railway.json`))
+    assert.deepEqual(cfg.watchPatterns, [`${service}/**`], service)
+    assert.equal(cfg.build?.dockerfilePath, 'Dockerfile', `${service} builds from its own directory`)
+    assert.equal(cfg.deploy?.healthcheckPath, '/health', service)
+  }
+})
+
 test('the frozen native timeframe fixture still agrees with the actual JavaScript strategy', () => {
   const fixtures = JSON.parse(read('cpp-scan-timeframe/src/tests/fixtures/fib-parity.json'))
   let long = 0, short = 0, noSignal = 0

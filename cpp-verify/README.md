@@ -16,6 +16,8 @@ The binary links its own verifier code and vendored read-only transport:
 | `src/protection_watch.cpp` | an independent clock for open-position SL/TP checks |
 | `src/verdict.cpp` | closed-position comparison against broker deals |
 | `src/journal.cpp` | the verifier's own verdict journal |
+| `src/watchdog.cpp`, `src/watchdog_state.cpp` | the independent service watchdog: probes, incidents, outbox |
+| `src/entry_diagnostics.cpp` | the relay of Node's entry records (pure JSON; no transport) |
 | `src/main.cpp` | HTTP routes and separate history/protection sessions |
 | `src/{ws_client,http_server}.cpp` | vendored transport, pinned to cpp-exec by tests |
 
@@ -32,7 +34,38 @@ change that links the engine breaks the only claim this service makes.
 | `GET /health` | public (Railway's probe sends no headers) | sessions per host, whether `CTRADER_HOST` was set and ignored |
 | `POST /connect` | bearer `EXEC_SECRET` | `{host, clientId, clientSecret, accessToken, accountId, accountIds[]}` — opens or refreshes the session **for that host** and authorizes each account |
 | `GET /protection-status` | bearer `EXEC_SECRET` | latest independent open-position readings, account identities, errors and broker-check timestamps |
+| `GET /watchdog-status` | bearer `EXEC_SECRET` | watchdog services, incidents, outbox and policy, plus `entryDiagnostics` (below) |
 | `POST /verify` | bearer `EXEC_SECRET` | `{host, accountId, fromMs, toMs, record{…}}` → a verdict |
+
+### Entry diagnostics relay (`/watchdog-status` → `entryDiagnostics`)
+
+Node's watchdog contract, which the watchdog probes every 15 s, carries a
+bounded `entryDiagnostics` block: per registered account, the entry mode, the
+admitted bases, whether tick entries were evaluated at all (and the four tick
+evidence checks), and the dominant recorded entry refusal of the last 24 h.
+cpp-verify relays it field by field (a whitelist: at most 64 accounts, text
+cut to 200 bytes, unknown keys dropped) and labels it
+`evidence: "node_records_relayed"`, `brokerVerified: false`. **cpp-verify did
+not observe those refusals and cannot confirm them at the broker.** The only
+broker-read value in the block is each account's `independent.openCount`,
+taken from cpp-verify's own protection reconcile (ok, `broker_reconcile`,
+checked within 180 s). `stale` is judged here, against the time cpp-verify
+accepted the Node contract, so a Node outage shows as STALE rather than as
+Node's last word. Absent or invalid is `available: false` with a reason,
+never an empty list; a `watchdog_status_busy` reply carries no block.
+
+The block is held **in memory only**. The watchdog's durable state
+(`VERIFY_JOURNAL_DIR/watchdog-state.json`, fsynced on every probe) stores the
+Node contract without it, and a state file written before the relay existed
+is stripped on restore. After a restart the relay reads `available: false`
+until Node's next contract arrives.
+
+The watchdog also judges a Node work item with role `collector` — Node's
+scanner observation collector — as calendar-free liveness, like a gateway's
+reconcile, except that its stall is a warning: a stalled collector loses
+observations, not protection. cpp-scan-timeframe lists only work that is due
+(an idle cell has no deadline), so this item is the timeframe mirror's
+input-liveness signal.
 
 ### Open-position protection
 
@@ -101,19 +134,28 @@ pages correctly. The verifier must not inherit the first shape.
 
 ```
 make all     # bin/cpp-verify
-make test    # test_verdict, test_deal_paging (loopback fake broker, no network)
+make test    # every src/tests/*.cpp (loopback fake broker, no network)
 ```
 
-Both build from the repository root's perspective: the Makefile reaches into
-`../cpp-exec/src` for the transport, and the Dockerfile's build context is the
-repository root for the same reason.
+Both build from **this directory** (PR-AN). The transport (`ws_client`,
+`http_server`, `json.hpp`, `log.hpp`, and the tests' `fake_broker.hpp`) is a
+vendored, byte-identical copy of cpp-exec's under `src/`, so the Makefile and
+the Dockerfile reach nothing outside `cpp-verify/`;
+`agent/services/sidecar-pins.test.js` goes red naming any file that drifts.
+(While the build reached into `../cpp-exec/src`, its context had to be the
+repository root, where the Node service's `railway.json` and `Dockerfile`
+won: the service built the trading agent, then cpp-exec itself.)
 
 ## Railway service configuration (owner-side)
 
+`cpp-verify/railway.json` carries the builder, the Dockerfile path and the
+watch patterns (`cpp-verify/**` and cpp-exec's transport sources, matched from
+the repository root).
+
 | Setting | Value | Why |
 |---|---|---|
-| Root directory | `/` | the build needs `cpp-exec/src` |
-| Dockerfile path | `cpp-verify/Dockerfile` | |
+| Root directory | `/cpp-verify` | the build context is this directory |
+| Dockerfile path | `Dockerfile` | relative to the root directory |
 | Builder | `DOCKERFILE` | not RAILPACK |
 | Healthcheck path | `/health` | |
 | `CTRADER_HOST` | **unset** | a host pin makes one-verifier-for-both impossible |

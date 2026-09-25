@@ -25,6 +25,13 @@ a five-minute no-order notice. `WATCHDOG_POLICY_JSON` can set those documented
 fields and `repeatMs`; `accountGraceMs` provides account-specific management and
 scanner grace. Values are validated and the effective policy is exposed. These
 are observation deadlines, not changes to risk limits or strategy validation.
+Since V3 CV-1 (25-09-2026) the timeframe scanner lists only cells with a job
+queued or running, so an idle cell carries no scanner deadline; a Node work
+item with role `collector` (the scanner observation collector) is judged like a
+gateway's reconcile — calendar-free, stalled 60 seconds past its deadline — but
+as a warning, since it loses observations, not protection. `/watchdog-status`
+also relays Node's `entryDiagnostics`, labelled Node records, not
+broker-verified (cpp-verify/README.md).
 
 `GET /state/watchdog` exports Node observations through existing read-tier
 authentication. Existing monitor receipts retain their original completion and

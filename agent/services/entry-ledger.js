@@ -39,9 +39,28 @@ import { admitEntry, engineStatusFor } from './entry-mode.js'
 import { labelIntentId } from '../lib/trade-labels.js'
 import { producerBasis } from '../lib/entry-producers.js'
 import { pageDeals } from '../lib/deal-paging.js'
+import { isMarketOrderType, isFillExecution, orderDetailsVerdict } from '../lib/order-answer.js'
 
 export const INTENT_STATES = Object.freeze(['RESERVED', 'DISPATCHING', 'SENT', 'ACCEPTED', 'FILLED', 'REJECTED', 'UNKNOWN', 'RELEASED', 'EXPIRED'])
 export const OPEN_STATES = Object.freeze(['RESERVED', 'DISPATCHING', 'SENT', 'UNKNOWN'])
+// X1 (25-09-2026, owner-approved): ACCEPTED — the broker holds a resting
+// order — is not the order's outcome. The order later fills, is cancelled or
+// expires, and only the broker's evidence may say which: the reconcile
+// snapshot (a position carrying the tag), the sidecar's execution-event
+// journal, the order's own details, or its deals. ACCEPTED stays OUT of
+// OPEN_STATES on purpose: a resting order never blocked a new intent on its
+// key and never counted as exposure unless a caller asked (pendingExposure's
+// includeAccepted), and X1 changes neither.
+export const ACCEPTED_EXITS = Object.freeze(['FILLED', 'EXPIRED', 'RELEASED', 'REJECTED'])
+export const ACCEPTED_EVIDENCE = Object.freeze(['reconcile', 'event', 'order_details', 'deal_history'])
+// A resting order the snapshot no longer lists is read from the broker
+// (ProtoOAOrderDetailsReq) at most this many times, this far apart; after
+// that the row keeps ACCEPTED ("placed") with an explicit
+// "unresolved: no broker evidence" note — never a guessed outcome.
+export const ACCEPTED_MAX_READS = 6
+export const ACCEPTED_RECHECK_MS = 10 * 60 * 1000
+export const ACCEPTED_READS_PER_PASS = 5
+export const BRACKET_UNITS = Object.freeze(['price', 'relative_points'])
 const IN_FLIGHT = Object.freeze(['DISPATCHING', 'SENT'])
 export const DEFAULT_PERMIT_TTL_MS = 30_000
 export const DEFAULT_SENT_TIMEOUT_MS = 60_000
@@ -215,6 +234,10 @@ export function reserveEntry(db, {
   accountId, producerId, basis = null, symbol = null, symbolId = null, side, orderType = 'MARKET',
   volume = null, sl = null, tp = null, signalRef = null, ttlMs = DEFAULT_PERMIT_TTL_MS, now = Date.now(),
   gatewayInstance = null,
+  // X1 / W3: what `sl` and `tp` are measured in — 'price' or
+  // 'relative_points' (cTrader wire points, price distance × 100000). NULL
+  // (a caller that did not say) is "unrecorded", never guessed downstream.
+  slUnits = null, tpUnits = null,
   // THE FENCE IS INJECTABLE (20-09-2026). The VPO producer is retired in
   // lib/entry-producers.js, so its standing-permit logic is unreachable from
   // a test through the real fence. The tests used to lift the retirement mark
@@ -243,12 +266,14 @@ export function reserveEntry(db, {
     const intentId = newIntentId()
     const permitId = 'p' + newIntentId().slice(1)
     const expiresAt = iso(now + ttlMs)
+    const units = (u, v) => (v == null ? null : BRACKET_UNITS.includes(u) ? u : null)
     db.prepare(`INSERT INTO entry_intents
-      (id, account_id, environment, symbol, symbol_id, side, order_type, volume, sl, tp, producer_id, basis, signal_ref,
+      (id, account_id, environment, symbol, symbol_id, side, order_type, volume, sl, tp, sl_units, tp_units, producer_id, basis, signal_ref,
        mode_epoch, config_revision, permit_id, permit_expires_at, state, gateway_instance, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?)`)
       .run(intentId, id, st.environment, symbol ?? null, symbolId != null ? Number(symbolId) : null, sideU, orderType ?? null,
         volume != null ? Number(volume) : null, sl != null ? Number(sl) : null, tp != null ? Number(tp) : null,
+        units(slUnits, sl), units(tpUnits, tp),
         String(producerId), String(basis ?? producerBasis(producerId) ?? 'unknown'), signalRef != null ? String(signalRef) : null,
         st.modeEpoch, st.configRevision, permitId, expiresAt, gatewayInstance, iso(now), iso(now))
     return {
@@ -305,7 +330,12 @@ export function resolveIntent(db, intentId, { state, brokerOrderId = null, posit
   if (state === 'SENT' && !['ring', 'event'].includes(source)) return { ok: false, reason: 'SENT needs the sidecar\'s evidence' }
   // `from` may name RELEASED only from the ring path (a standing permit the
   // sidecar spent as the epoch moved) — never from a response or an operator.
-  if (fromOverride && !(fromOverride.length === 1 && fromOverride[0] === 'RELEASED' && source === 'ring')) return { ok: false, reason: 'bad_from' }
+  // X1: `from` may name ACCEPTED only to reach FILLED / EXPIRED / RELEASED /
+  // REJECTED on the broker's evidence (ACCEPTED_EVIDENCE) — never from the
+  // placement response, an operator or a timeout.
+  const fromRing = fromOverride?.length === 1 && fromOverride[0] === 'RELEASED' && source === 'ring'
+  const fromAccepted = fromOverride?.length === 1 && fromOverride[0] === 'ACCEPTED' && ACCEPTED_EXITS.includes(state) && ACCEPTED_EVIDENCE.includes(source)
+  if (fromOverride && !(fromRing || fromAccepted)) return { ok: false, reason: 'bad_from' }
   const from = fromOverride || (state === 'SENT' ? ['RESERVED', 'DISPATCHING'] : OPEN_STATES)
   const terminal = state !== 'UNKNOWN' && state !== 'SENT'
   const r = db.prepare(`UPDATE entry_intents SET state = ?, broker_order_id = COALESCE(?, broker_order_id), broker_position_id = COALESCE(?, broker_position_id),
@@ -317,7 +347,46 @@ export function resolveIntent(db, intentId, { state, brokerOrderId = null, posit
     const row = db.prepare('SELECT account_id, symbol, side, producer_id FROM entry_intents WHERE id = ?').get(String(intentId))
     audit(db, '/entry-intents/unknown', { intentId, ...row, errorCode, source }, row?.account_id)
   }
+  if (r.changes === 1 && fromAccepted) {
+    const row = db.prepare('SELECT * FROM entry_intents WHERE id = ?').get(String(intentId))
+    audit(db, '/entry-intents/accepted-settled', { intentId, to: state, source, errorCode, positionId, brokerOrderId }, row?.account_id)
+    noteCorrectionTerminal(db, row, { to: state, source, errorCode, positionId, brokerOrderId, now })
+  }
   return { ok: r.changes === 1 }
+}
+
+// ---------------------------------------------------------------------------
+// X1 correction log (entry_intent_corrections, db.js). The one-time
+// correction (services/intent-corrections.js) writes step 'to_accepted' for
+// every row it moves FILLED → ACCEPTED; whichever resolver later settles that
+// row writes step 'terminal' here, with the evidence — so the log carries the
+// whole before / after of each corrected row. Rows the correction never
+// touched write nothing. Best-effort: the log never fails a settle.
+// ---------------------------------------------------------------------------
+export const X1_CORRECTION_ID = 'x1-resting-filled-at-acceptance-2026-09-25'
+
+export function logCorrectionStep(db, { correctionId = X1_CORRECTION_ID, intentId, accountId = null, step, fromState = null, toState = null, before = null, after = null, evidence = null, now = Date.now() }) {
+  const r = db.prepare(`INSERT OR IGNORE INTO entry_intent_corrections
+      (correction_id, intent_id, account_id, step, from_state, to_state, before_json, after_json, evidence_json, at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(String(correctionId), String(intentId), accountId != null ? String(accountId) : null, String(step), fromState, toState,
+      before != null ? JSON.stringify(before) : null, after != null ? JSON.stringify(after) : null,
+      evidence != null ? JSON.stringify(evidence) : null, iso(now))
+  return { logged: r.changes === 1 }
+}
+
+function noteCorrectionTerminal(db, row, { to, source, errorCode, positionId, brokerOrderId, now }) {
+  if (!row) return
+  try {
+    const corrected = db.prepare(`SELECT correction_id, before_json FROM entry_intent_corrections WHERE intent_id = ? AND step = 'to_accepted' LIMIT 1`).get(String(row.id))
+    if (!corrected) return
+    logCorrectionStep(db, {
+      correctionId: corrected.correction_id, intentId: row.id, accountId: row.account_id, step: 'terminal',
+      fromState: 'ACCEPTED', toState: to, after: row,
+      evidence: { source, note: errorCode ?? null, positionId: positionId != null ? String(positionId) : null, brokerOrderId: brokerOrderId != null ? String(brokerOrderId) : null },
+      now,
+    })
+  } catch { /* the log is a record, never a reason to fail the settle */ }
 }
 
 /**
@@ -372,9 +441,11 @@ export function intentCounts(db, accountId) {
 
 /** Reserved-but-unfilled volume the margin pre-gate may count as used. PR-3: the tick feeder counts these rows against the account's ONE position budget, standing RESERVED rows excluded (a standing permit is capacity, not exposure) — `producerId` and `basis` are on the row for that. */
 export function pendingExposure(db, accountId, { includeAccepted = false } = {}) {
-  // ACCEPTED is a terminal acknowledgement in the intent ledger, so it may
-  // survive the order's later fill/cancellation. Count it only while this
-  // account's broker-order snapshot still names the order as working.
+  // ACCEPTED is an acknowledgement, not an outcome: since X1 the reconcile
+  // moves it on to FILLED / RELEASED / EXPIRED on the broker's evidence, but
+  // between the order's fill or cancel and that evidence the row still reads
+  // ACCEPTED. Count it only while this account's broker-order snapshot still
+  // names the order as working.
   // Live permit callers retain their existing state set.
   const accepted = includeAccepted ? `OR (state = 'ACCEPTED' AND EXISTS (
     SELECT 1 FROM broker_orders bo WHERE bo.order_id = entry_intents.broker_order_id
@@ -390,9 +461,24 @@ const posField = (p, key) => p?.tradeData?.[key] ?? p?.[key]
  * order whose label carries the intent tag, or the sidecar's decision ring
  * (cpp_decisions order_result / order_reject rows naming the intent). An
  * intent nothing names stays as it is.
+ *
+ * X1 (25-09-2026, owner-approved): two changes, both keyed on the intent's
+ * ORDER TYPE (lib/order-answer.js); market intents are untouched.
+ *   1. A resting (LIMIT / STOP) intent is never FILLED by a frame that only
+ *      proves ACCEPTANCE: the ring's order_result names the broker's
+ *      pre-created position for a resting order too, and an ORDER_ACCEPTED
+ *      event carries it as well. FILLED needs a fill execution
+ *      (ORDER_FILLED / ORDER_PARTIAL_FILL); a cancelled or expired resting
+ *      order is RELEASED / EXPIRED, not REJECTED.
+ *   2. ACCEPTED rows are read too, and move on only from broker evidence: a
+ *      position carrying the tag → FILLED; an execution event for the order
+ *      id — a fill → FILLED, a cancel → RELEASED, an expiry → EXPIRED, a
+ *      reject → REJECTED. An order still in the snapshot stays ACCEPTED.
+ *      ACCEPTED rows have their own counts (acceptedChecked, resting), so
+ *      `checked` / `stillOpen` keep meaning what the loop's log line says.
  */
 export function reconcileIntents(db, { accountId, positions = [], orders = [], now = Date.now() } = {}) {
-  const out = { checked: 0, resolved: [], stillOpen: 0 }
+  const out = { checked: 0, resolved: [], stillOpen: 0, acceptedChecked: 0, resting: 0 }
   // Standing VPO permits are open too: the sidecar redeems them in-process,
   // so the ring's order_submit is how the keeper learns one was sent.
   const standingSql = STANDING_PRODUCERS.map(() => '?').join(',')
@@ -409,8 +495,13 @@ export function reconcileIntents(db, { accountId, positions = [], orders = [], n
   // whose order label carries the intent tag.
   let events = null
   try { events = db.prepare(`SELECT payload_type, execution_type, order_id, position_id, error_code FROM cpp_events WHERE (? <> '' AND client_msg_id = ?) OR label LIKE ? ORDER BY id DESC LIMIT 1`) } catch { events = null }
+  // X1: a resting order's event history, newest first — a partial fill can
+  // precede its cancel, so the newest frame alone is not the answer.
+  let restingEvents = null
+  try { restingEvents = db.prepare(`SELECT payload_type, execution_type, order_id, position_id, error_code FROM cpp_events WHERE (? <> '' AND client_msg_id = ?) OR label LIKE ? ORDER BY id DESC LIMIT 50`) } catch { restingEvents = null }
   for (const it of open) {
     out.checked++
+    const market = isMarketOrderType(it.order_type)
     const hit = byTag.get(it.id)
     let r = null
     if (hit?.kind === 'position') r = resolveIntent(db, it.id, { state: 'FILLED', positionId: hit.id, source: 'reconcile', now })
@@ -429,12 +520,21 @@ export function reconcileIntents(db, { accountId, positions = [], orders = [], n
       else if (rec?.kind === 'order_result') {
         const pos = /pos=(\d+)/.exec(rec.detail || '')?.[1] ?? null
         const ord = /order=(\d+)/.exec(rec.detail || '')?.[1] ?? null
-        r = resolveIntent(db, it.id, { state: pos ? 'FILLED' : 'ACCEPTED', positionId: pos, brokerOrderId: ord, source: 'ring', now, from: it.state === 'RELEASED' ? ['RELEASED'] : null })
+        // X1: the ring logs the answer's position id for a resting order's
+        // ACCEPTANCE too (engine.cpp order_result) and carries no execution
+        // type, so for a resting intent it proves acceptance only.
+        const filled = market && pos != null
+        r = resolveIntent(db, it.id, { state: filled ? 'FILLED' : 'ACCEPTED', positionId: filled ? pos : null, brokerOrderId: ord, source: 'ring', now, from: it.state === 'RELEASED' ? ['RELEASED'] : null })
       } else if (rec?.kind === 'order_submit' && (it.state === 'RESERVED' || it.state === 'DISPATCHING' || it.state === 'RELEASED')) {
         // RACE CHECKER 11-09-2026: a fire that passed the boundary as the
         // mode switched has a RELEASED row and a real order; the ring is
         // the only thing that names it, so the row is reopened as SENT.
         r = resolveIntent(db, it.id, { state: 'SENT', source: 'ring', now, from: it.state === 'RELEASED' ? ['RELEASED'] : null })
+      } else if (restingEvents && it.state !== 'RESERVED' && !market) {
+        let evs = []
+        try { evs = restingEvents.all(it.client_msg_id || '', it.client_msg_id || '', `%|${it.id}`) } catch { evs = [] }
+        const v = restingEventVerdict(evs)
+        if (v) r = resolveIntent(db, it.id, { state: v.state, positionId: v.positionId, brokerOrderId: v.brokerOrderId, errorCode: v.errorCode, source: 'event', now })
       } else if (events && it.state !== 'RESERVED') {
         let ev = null
         try { ev = events.get(it.client_msg_id || '', it.client_msg_id || '', `%|${it.id}`) } catch { ev = null }
@@ -452,6 +552,135 @@ export function reconcileIntents(db, { accountId, positions = [], orders = [], n
     }
     if (r?.ok) out.resolved.push({ intentId: it.id, from: it.state, to: db.prepare('SELECT state FROM entry_intents WHERE id = ?').get(it.id).state })
     else out.stillOpen++
+  }
+
+  // X1: ACCEPTED rows — resting orders — settle on the broker's evidence.
+  const accepted = db.prepare(`SELECT * FROM entry_intents WHERE account_id = ? AND state = 'ACCEPTED' ORDER BY id`).all(String(accountId))
+  if (accepted.length) {
+    const workingIds = new Set(orders.map(o => o?.orderId ?? posField(o, 'orderId')).filter(v => v != null).map(normOrderId))
+    let byOrder = null
+    try { byOrder = db.prepare(`SELECT payload_type, execution_type, order_id, position_id, error_code FROM cpp_events WHERE order_id = ? AND (account_id = ? OR account_id IS NULL) ORDER BY id DESC LIMIT 50`) } catch { byOrder = null }
+    for (const it of accepted) {
+      out.acceptedChecked++
+      const hit = byTag.get(it.id)
+      let r = null
+      if (hit?.kind === 'position') {
+        r = resolveIntent(db, it.id, { state: 'FILLED', positionId: hit.id, errorCode: 'filled: a position carrying the intent tag is open at the broker', source: 'reconcile', now, from: ['ACCEPTED'] })
+      } else if (it.broker_order_id != null && byOrder) {
+        let evs = []
+        try { evs = byOrder.all(normOrderId(it.broker_order_id), String(accountId)) } catch { evs = [] }
+        const v = restingEventVerdict(evs)
+        // An order this pass's snapshot still lists is working: an error
+        // event on it (a failed cancel or amend) is not its outcome. Only a
+        // fill is believed while the order rests (checker N2, 25-09).
+        const stillWorking = hit?.kind === 'order' || workingIds.has(normOrderId(it.broker_order_id))
+        if (v && v.state !== 'ACCEPTED' && (!stillWorking || v.state === 'FILLED')) {
+          r = resolveIntent(db, it.id, { state: v.state, positionId: v.positionId, brokerOrderId: v.brokerOrderId ?? it.broker_order_id, errorCode: v.errorCode, source: 'event', now, from: ['ACCEPTED'] })
+        }
+      }
+      if (r?.ok) { out.resolved.push({ intentId: it.id, from: 'ACCEPTED', to: db.prepare('SELECT state FROM entry_intents WHERE id = ?').get(it.id).state }); continue }
+      if (hit?.kind === 'order' || (it.broker_order_id != null && workingIds.has(normOrderId(it.broker_order_id)))) out.resting++
+    }
+  }
+  return out
+}
+
+const normOrderId = (v) => String(v).replace(/^"+|"+$/g, '').replace(/\.0+$/, '')
+
+// ProtoOAExecutionType by name or number (OpenApiModelMessages.proto).
+const EXEC_NAME = { 2: 'ORDER_ACCEPTED', 3: 'ORDER_FILLED', 4: 'ORDER_REPLACED', 5: 'ORDER_CANCELLED', 6: 'ORDER_EXPIRED', 7: 'ORDER_REJECTED', 8: 'ORDER_CANCEL_REJECTED', 11: 'ORDER_PARTIAL_FILL' }
+const execName = (t) => { const s = String(t ?? '').trim().toUpperCase(); return EXEC_NAME[Number(s)] ?? s }
+
+/**
+ * X1: what a resting order's execution events (newest first) prove. Any fill
+ * wins — a position opened, whatever happened to the remainder. Otherwise the
+ * newest terminal frame: a cancel → RELEASED, an expiry → EXPIRED, a reject
+ * or an order error → REJECTED. An acceptance alone → ACCEPTED. Nothing →
+ * null. Pure, exported for its tests.
+ */
+export function restingEventVerdict(evs = []) {
+  const list = Array.isArray(evs) ? evs.filter(Boolean) : []
+  const fill = list.find(e => isFillExecution(execName(e.execution_type)))
+  if (fill) return { state: 'FILLED', positionId: fill.position_id ?? null, brokerOrderId: fill.order_id ?? null, errorCode: `filled: ${execName(fill.execution_type)} event` }
+  for (const e of list) {
+    const t = execName(e.execution_type)
+    if (t === 'ORDER_CANCELLED') return { state: 'RELEASED', positionId: null, brokerOrderId: e.order_id ?? null, errorCode: 'order_cancelled: ORDER_CANCELLED event, unfilled' }
+    if (t === 'ORDER_EXPIRED') return { state: 'EXPIRED', positionId: null, brokerOrderId: e.order_id ?? null, errorCode: 'order_expired: ORDER_EXPIRED event, unfilled' }
+    if (t === 'ORDER_REJECTED' || Number(e.payload_type) === 2132) return { state: 'REJECTED', positionId: null, brokerOrderId: e.order_id ?? null, errorCode: e.error_code || t || 'order_error' }
+  }
+  const acc = list.find(e => execName(e.execution_type) === 'ORDER_ACCEPTED' || e.order_id != null)
+  if (acc) return { state: 'ACCEPTED', positionId: null, brokerOrderId: acc.order_id ?? null, errorCode: null }
+  return null
+}
+
+/**
+ * X1: an ACCEPTED intent whose order the reconcile snapshot no longer lists is
+ * read from the broker — ProtoOAOrderDetailsReq, which answers with the
+ * order's own status and every deal it filled (lib/order-answer.js
+ * orderDetailsVerdict). A fill → FILLED with the deal's position; a cancel →
+ * RELEASED; an expiry → EXPIRED; a reject → REJECTED; all with the source
+ * 'order_details' and the broker's words in error_code.
+ *
+ * Bounded: only rows whose order is absent from `workingOrderIds` (the SAME
+ * pass's snapshot — null means no snapshot, and then nothing is read, because
+ * absence from a snapshot nobody took is not absence), at most `maxReads` per
+ * pass, each row at most ACCEPTED_MAX_READS times, ACCEPTED_RECHECK_MS apart.
+ * A read that fails or proves nothing is noted on the row; after the last
+ * read the row keeps ACCEPTED ("placed") with the note
+ * "unresolved: no broker evidence — …": the outcome is not invented.
+ * `getOrderDetails(orderId)` resolves to ProtoOAOrderDetailsRes — wsGetOrderDetails
+ * in production, a fake in tests.
+ */
+export async function settleAcceptedFromOrderDetails(db, {
+  accountId, workingOrderIds = null, getOrderDetails, now = Date.now(),
+  maxReads = ACCEPTED_READS_PER_PASS, maxAttempts = ACCEPTED_MAX_READS, recheckMs = ACCEPTED_RECHECK_MS,
+} = {}) {
+  const out = { checked: 0, read: 0, settled: [], stillResting: 0, noted: 0, unresolved: [], skipped: null }
+  const id = accountId != null ? String(accountId) : null
+  if (id == null || typeof getOrderDetails !== 'function') return { ...out, skipped: 'no_account_or_getter' }
+  if (workingOrderIds == null) return { ...out, skipped: 'no_snapshot' }
+  const working = new Set([...workingOrderIds].filter(v => v != null).map(normOrderId))
+  const rows = db.prepare(`SELECT * FROM entry_intents WHERE account_id = ? AND state = 'ACCEPTED'
+      AND COALESCE(evidence_attempts, 0) < ? AND (evidence_checked_at IS NULL OR evidence_checked_at <= ?)
+    ORDER BY created_at, id`).all(id, Number(maxAttempts), iso(now - recheckMs))
+  const note = db.prepare(`UPDATE entry_intents SET evidence_attempts = COALESCE(evidence_attempts, 0) + 1, evidence_checked_at = ?, error_code = ?, updated_at = ?
+    WHERE id = ? AND state = 'ACCEPTED'`)
+  const noteRow = (it, reason) => {
+    const attempts = Number(it.evidence_attempts || 0) + 1
+    const final = attempts >= maxAttempts
+    const text = final
+      ? `unresolved: no broker evidence — ${reason}; ${attempts} read(s), last ${iso(now)}; the order was placed and its outcome is not proven`
+      : `awaiting broker evidence — ${reason}; read ${attempts} of ${maxAttempts} at ${iso(now)}`
+    try { if (note.run(iso(now), text.slice(0, 500), iso(now), it.id).changes === 1) out.noted++ } catch { /* a note never fails the pass */ }
+    if (final) {
+      out.unresolved.push(it.id)
+      try {
+        const corrected = db.prepare(`SELECT correction_id FROM entry_intent_corrections WHERE intent_id = ? AND step = 'to_accepted' LIMIT 1`).get(String(it.id))
+        if (corrected) logCorrectionStep(db, { correctionId: corrected.correction_id, intentId: it.id, accountId: it.account_id, step: 'unresolved', fromState: 'ACCEPTED', toState: 'ACCEPTED', after: db.prepare('SELECT * FROM entry_intents WHERE id = ?').get(it.id), evidence: { note: text }, now })
+      } catch { /* the log never fails the pass */ }
+    }
+  }
+  for (const it of rows) {
+    const oid = it.broker_order_id != null ? normOrderId(it.broker_order_id) : null
+    if (oid && working.has(oid)) { out.stillResting++; continue }
+    if (out.read >= maxReads) break
+    out.checked++
+    if (!oid || !/^[1-9]\d*$/.test(oid)) { noteRow(it, 'no broker order id on the row, so the order cannot be read'); continue }
+    let res = null
+    try {
+      out.read++
+      res = await getOrderDetails(oid)
+    } catch (err) {
+      noteRow(it, `order details read failed: ${String(err?.message || err).slice(0, 160)}`)
+      continue
+    }
+    const v = orderDetailsVerdict(res)
+    if (!v) {
+      noteRow(it, `order details answered ${res?.order?.orderStatus ?? 'no order'}: no fill, cancel or expiry yet, while the snapshot no longer lists the order`)
+      continue
+    }
+    const r = resolveIntent(db, it.id, { state: v.state, positionId: v.positionId, brokerOrderId: v.brokerOrderId ?? oid, errorCode: v.note, source: 'order_details', now, from: ['ACCEPTED'] })
+    if (r.ok) out.settled.push({ intentId: it.id, to: v.state, positionId: v.positionId })
   }
   return out
 }
@@ -635,8 +864,25 @@ export function ledgerView(db, { limit = 50 } = {}) {
   }))
   const recent = db.prepare(`SELECT id, account_id, symbol, side, producer_id, state, resolution_source, error_code, resolved_at FROM entry_intents
     WHERE resolved_at IS NOT NULL ORDER BY resolved_at DESC LIMIT ?`).all(limit).map(r => ({ ...r, account_id: redact(r.account_id) }))
+  // X1: the record-correction log, readable over GET — counts per step and
+  // outcome, and the newest steps with their evidence note. Bounded.
+  let corrections = null
+  try {
+    const steps = db.prepare(`SELECT correction_id, step, to_state, COUNT(*) AS n FROM entry_intent_corrections GROUP BY correction_id, step, to_state ORDER BY correction_id, step, to_state`).all()
+    const log = db.prepare(`SELECT correction_id, intent_id, account_id, step, from_state, to_state, at, evidence_json FROM entry_intent_corrections ORDER BY id DESC LIMIT ?`).all(limit)
+      .map(r => {
+        let ev = null
+        try { ev = JSON.parse(r.evidence_json || 'null') } catch { ev = null }
+        return {
+          correctionId: r.correction_id, intentId: r.intent_id, accountId: r.account_id != null ? redact(r.account_id) : null, step: r.step,
+          from: r.from_state, to: r.to_state, at: r.at,
+          evidence: ev ? { source: ev.source ?? null, note: ev.note ?? ev.rule ?? null, found: Array.isArray(ev.found) ? ev.found.map(f => f.source) : undefined } : null,
+        }
+      })
+    corrections = { steps, recent: log, note: 'X1: each step of a record correction with the row before and after and its evidence (entry_intent_corrections); nothing is deleted.' }
+  } catch { corrections = null }
   return {
-    at: iso(Date.now()), countsByAccount: byAccount, open, recent,
+    at: iso(Date.now()), countsByAccount: byAccount, open, recent, corrections,
     note: 'P2a: every Node-placed entry is an intent with a one-use permit; UNKNOWN blocks a resend on the same account/symbol/side until the broker\'s evidence, the sidecar ring, or an operator with a reason resolves it.',
   }
 }
