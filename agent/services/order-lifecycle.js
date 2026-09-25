@@ -46,6 +46,7 @@ import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { requestedAccount, scopeReport } from '../lib/account-scope.js'
 import { RETIRED_CONTROLLERS } from '../shared/controller-groups.js'
 import { CONTROLLERS, heartbeatView } from './heartbeat.js'
+import { digestState, loadNotifyConfig } from './telegram-digest.js'
 
 export const SCHEMA_VERSION = 1
 export const SNAPSHOT_KEY = 'order_lifecycle_last_json'
@@ -973,23 +974,65 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'STK-08', key: 'outbox_backlog', version: 1, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1874', 'independent-protection.js:117', 'watchdog_state.cpp:61-65'],
+    // v2 (STK-08v2, owner 25-09-2026 21:30 SGT: no still-stuck records, no
+    // fake result). A channel SWITCHED OFF BY A SETTING is not a stuck
+    // delivery: its rows are held by that setting, by design, until it is
+    // switched on. Measured 25-09-2026 23:29 UTC: both production violations
+    // were exactly that —
+    //   Telegram: telegram_notify_json enabled=false; routeDecision queues
+    //     every message as 'notify_off' (telegram-digest.js:136-141) and
+    //     flushDecision never flushes while off (:257), so 57,750 rows sat
+    //     unsent from 2026-08-22 10:39 UTC;
+    //   watchdog: cpp-verify delivers only with its delivery switch, incident
+    //     owner and credentials on (watchdog.cpp:142, :149), and the Node
+    //     policy it relays (masterEnabled) was off — all four read false —
+    //     so its outbox held 512/512 never attempted and every new item was
+    //     dropped (watchdog_state.cpp:68-72): 1,526,163.
+    // Such a channel is class 'held_by_setting' — NOT a violation, so not in
+    // the stuck headline, and still named in this rule (classes, info, note),
+    // the goal row and the daily line with the setting, the unsent count, the
+    // oldest queued time and (watchdog) the dropped count. A channel that is
+    // ON with rows over a day old stays the defect, with the digest's last
+    // flush error when one is recorded. A setting that cannot be read is
+    // never taken as off: the defect stays and says so. The digest state is
+    // read by telegram-digest.js digestState — the reader GET
+    // /state/telegram-digest serves — pinned here with the loader it uses.
+    id: 'STK-08', key: 'outbox_backlog', version: 2, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
+    cite: ['db.js:1877-1886', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:117', 'watchdog.cpp:142', 'watchdog.cpp:182-185', 'watchdog_state.cpp:68-72'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
     params: () => [], populationLimit: 1,
-    rows(dbRows, ctx) {
-      const out = [{ kind: 'telegram', ...(dbRows[0] || { n: 0 }) }]
-      out.push({ kind: 'watchdog', status: ctx.watchdog?.status ?? null, readAt: ctx.watchdog?.readAt ?? null })
+    // The readers this rule's meaning depends on, in the pin (order-lifecycle.test.js ruleHash).
+    digest: digestState, notifyLoader: loadNotifyConfig,
+    rows(dbRows, ctx, w, db) {
+      // Throws on an unreadable outbox: the rule is then unreadable, never 0.
+      const digest = this.digest(db, { nowMs: w.nowMs })
+      const out = [{ kind: 'telegram', ...(dbRows[0] || { n: 0 }), digest }]
+      out.push({ kind: 'watchdog', status: ctx.watchdog?.status ?? null, readAt: ctx.watchdog?.readAt ?? null, nodePolicyReadable: digest.configReadable })
       return out
     },
     when: r => (r.kind === 'telegram' ? tsMs(r.queued_at) : null), subject: r => `outbox:${r.kind}`, account: () => null,
     judge(r, _ctx, w) {
       if (r.kind === 'telegram') {
         const oldest = tsMs(r.queued_at)
-        return r.n > 0 && oldest != null && oldest < w.nowMs - DAY
-          ? { missing: ['delivery'], class: 'telegram', since: iso(oldest), detail: `${r.n} unsent Telegram row(s), oldest queued ${iso(oldest).slice(0, 16)}` } : null
+        if (!(r.n > 0 && oldest != null && oldest < w.nowMs - DAY)) return null
+        const d = r.digest
+        const base = `${r.n} unsent Telegram row(s), oldest queued ${iso(oldest).slice(0, 16)}`
+        const reasons = d.reasons.rows.length
+          ? `; reasons over the ${d.reasons.complete ? `${d.reasons.of} pending row(s)` : `newest ${d.reasons.over} of ${d.reasons.of} pending rows`}: ${d.reasons.rows.map(x => `${x.reason || '(none)'} ${x.count} (oldest ${String(x.oldestQueuedAt ?? '?').slice(0, 16)})`).join(', ')}; the oldest row's reason ${d.pending.oldestReason || '(none)'}`
+          : ''
+        const flush = `; last flush ${d.lastFlushAt ?? 'never recorded'}${d.lastError ? `; last flush error: ${cut(d.lastError, 120)}` : ''}`
+        if (d.configReadable && d.enabled === false) {
+          return { violation: false, class: 'held_by_setting',
+            info: `telegram: ${base} — held by the setting ${d.configKey} enabled=false (notify OFF: queued, not dropped; nothing is flushed while it is off)${reasons}${flush}` }
+        }
+        return {
+          missing: ['delivery'], class: 'telegram', since: iso(oldest),
+          notify: { enabled: d.enabled, mode: d.mode, configReadable: d.configReadable, configError: d.configError },
+          lastFlushAt: d.lastFlushAt, lastError: d.lastError, reasons: d.reasons,
+          detail: `${base}${d.configReadable ? '' : `; ${d.configKey} unreadable, not taken as off`}${d.lastError ? `; last flush error: ${cut(d.lastError, 60)}` : ''}`,
+        }
       }
       const s = r.status
       if (!s || typeof s !== 'object') return OUT
@@ -997,8 +1040,32 @@ export const RULES = Object.freeze([
       const oldUnattempted = items.filter(i => Number(i?.attempts || 0) === 0 && Number(i?.createdAtMs) < w.nowMs - HOUR).length
       const dropped = Number(s.dropped) || 0
       if (!((items.length >= 512 && oldUnattempted > 0) || dropped > 0)) return null
+      const base = `watchdog outbox ${items.length}/512, ${oldUnattempted} never attempted and over 1 h old, dropped ${dropped}`
+      // Only a field that READS false is a setting that is off; absent or
+      // null (an older cpp-verify, a busy reply, a policy older than a day)
+      // is unknown, never off. masterEnabled is Node's own policy as relayed:
+      // the contract sends false for an UNREADABLE telegram_notify_json too
+      // (watchdog-contract.js notificationPolicy), so it counts as a setting
+      // only while Node's value is readable.
+      const settings = [
+        ['deploymentDeliveryEnabled', 'the cpp-verify delivery switch'],
+        ['incidentOwnerConfigured', 'the cpp-verify incident owner'],
+        ['deliveryCredentialsConfigured', 'WATCHDOG_TELEGRAM_TOKEN / WATCHDOG_TELEGRAM_CHAT_ID'],
+        ['masterEnabled', "Node's telegram_notify_json as cpp-verify last read it"],
+      ]
+      const off = settings.filter(([k]) => s[k] === false && (k !== 'masterEnabled' || r.nodePolicyReadable === true))
+      const delivery = Object.fromEntries([...settings.map(([k]) => k), 'effectivePolicyAllowsUrgent'].map(k => [k, s[k] ?? null]))
+      if (off.length) {
+        const created = items.map(i => Number(i?.createdAtMs)).filter(Number.isFinite)
+        return { violation: false, class: 'held_by_setting',
+          info: `watchdog: ${base}; oldest queued ${created.length ? iso(Math.min(...created)).slice(0, 16) : '?'} — held by the setting(s) ${off.map(([k, what]) => `${k}=false (${what})`).join(', ')}: cpp-verify delivers nothing while any is off; status read ${r.readAt ?? '?'}` }
+      }
       // ONE stuck mechanism, not 512 stuck items (VERIFY correction 6).
-      return { missing: ['delivery'], class: 'watchdog', detail: `watchdog outbox ${items.length}/512, ${oldUnattempted} never attempted and over 1 h old, dropped ${dropped}` }
+      return { missing: ['delivery'], class: 'watchdog', delivery, detail: base }
+    },
+    note(res) {
+      const held = res.info?.held_by_setting
+      return held?.length ? `held by a setting, not stuck (not in the stuck count) — ${held.join(' | ')}` : null
     },
   },
   {
@@ -1612,13 +1679,17 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
     // L1c: the count names its parts when any is not an account record
     // (a stalled controller, a row with no account) — the number is the whole.
     const counted = `${stageCountPhrase(s, stage)}${partialNote ? ' over the readable rules' : ''}`
+    // STK-08v2: what a setting holds is outside the count — and said beside it,
+    // so a count that fell because a channel is held never reads as delivered.
+    const held = heldBySettingOf(snapshot, stage)
     const note = !snapshot ? `no snapshot at ${SNAPSHOT_KEY} — the order_lifecycle controller has not produced one`
       : stale ? `snapshot ${ageMin} min old (limit ${maxAgeMin} min) — the controller may be failing; see /state/heartbeats`
         : !s ? `stage ${stage} missing from the snapshot`
           : s.measurable === false ? s.note
             : stage !== 'stuck' && !(s.populationNew > 0) ? `nothing new to judge since ${snapshot.acceptanceStart}: a fact about volume, not a pass; legacy ${s.legacy}${partialNote ? `; ${partialNote}` : ''}`
               : `${verdict === 'not_measurable' ? `not a pass — ${counted}` : verdict === 'off_track' && partialNote ? `at least ${counted}` : counted}` +
-                `${top.length ? ` — ${top.join(' · ')}` : ''}${stage === 'stuck' ? '' : `; legacy ${s.legacy}`}${s.notices ? `; notices ${s.notices}` : ''}${partialNote ? `; ${partialNote}` : ''}`
+                `${top.length ? ` — ${top.join(' · ')}` : ''}${stage === 'stuck' ? '' : `; legacy ${s.legacy}`}${s.notices ? `; notices ${s.notices}` : ''}` +
+                `${held.length ? `; held by a setting, not counted: ${held.join(' · ')}` : ''}${partialNote ? `; ${partialNote}` : ''}`
     return {
       id: `lifecycle_${stage}`, name: STAGE_NAMES[stage], subsystem: 'order lifecycle',
       metric: stage === 'stuck'
@@ -1630,6 +1701,12 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
       note, source: `/state/order-lifecycle?account=all (snapshot ${Number.isFinite(at) ? new Date(at).toISOString().slice(11, 16) + 'Z' : 'none'})`,
     }
   })
+}
+
+/** STK-08v2: the snapshot's rules in `stage` holding items by a setting, as "STK-08 outbox_backlog 2"; [] when none. */
+function heldBySettingOf(snapshot, stage) {
+  return (snapshot?.rules || []).filter(r => (stage == null || r.stage === stage) && Number(r.classes?.held_by_setting) > 0)
+    .map(r => `${r.id} ${r.key} ${Number(r.classes.held_by_setting)}`)
 }
 
 /** The unreadable and truncated rules of a snapshot stage, as one clause; '' when the stage's count is whole. */
@@ -1742,6 +1819,8 @@ export function lifecycleReportLines(snapshot) {
   const lines = [`Lifecycle since ${String(snapshot.acceptanceStart).slice(0, 16).replace('T', ' ')}Z (snapshot ${hhmm}Z): pre-order ${s.pre_order.new}${mark('pre_order')} new / ${s.pre_order.legacy} legacy; order ${s.order.new}${mark('order')}; close ${s.close.new}${mark('close')}; stuck ${s.stuck.new}${mark('stuck')}`]
   const top = (snapshot.rules || []).filter(r => r.severity === 'defect' && r.newViolations > 0).sort((a, b) => b.newViolations - a.newViolations).slice(0, 3)
   for (const r of top) lines.push(`  ${r.id} ${r.key}: ${r.newViolations} new`)
+  // STK-08v2: held by a setting is not stuck, and not silent either.
+  for (const h of heldBySettingOf(snapshot, null)) lines.push(`  ${h} held by a setting (not stuck; see the rule's note)`)
   // L1c: a headline that counts a controller or a row with no account says
   // so on its own line — "stuck: 20 stuck — 19 account record(s) ·
   // controllers: 1 stalled (pnl_reconcile: error)".

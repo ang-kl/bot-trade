@@ -36,6 +36,7 @@ import { runLogInspector, evalFalsifierMetric, INSPECTIONS } from './log-inspect
 import { buildDailyReport, DAILY_REPORT_MAX_CHARS } from './daily-report.js'
 import { CONTROLLERS, heartbeatView } from './heartbeat.js'
 import { scoreRefusedOpportunities } from './refusal-ledger.js'
+import { DIGEST_STATE_SQL, DIGEST_REASON_ROWS_MAX } from './telegram-digest.js'
 
 const NOW = Date.parse('2026-09-26T12:00:00Z')
 const START = loadLifecycleConfig().acceptanceStart // 2026-09-25T08:50:00.000Z (proposed)
@@ -740,6 +741,8 @@ const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS)
 // violations `beside`, summarise counts them and names controllers on their
 // own line. No rule's own hash moved.
 const PINNED_HELPERS = { [`helpers@4`]: '758feead1efec1bd' }
+// STK-08@2 (STK-08v2): held_by_setting, and the digest reader and notify
+// loader it judges by are pinned in its hash. No other rule's hash moved.
 const PINNED = {
   'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@2': '8310a4e233690cf5', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
@@ -750,7 +753,7 @@ const PINNED = {
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
   'STK-01@2': '969001ee6208e6c7', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
-  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@1': '3fecf4ac1c0a0ce3',
+  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@2': '2a4476c28e1cd826',
   'STK-09@2': '29a95b3d182e245c', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
@@ -1079,6 +1082,168 @@ test('N2: STK-08 watchdog outbox — the spec\'s known answer, 512/512 and 1,136
   const ok = initDB(':memory:')
   setState(ok, 'independent_watchdog_json', JSON.stringify({ status: { outbox: { a: { attempts: 1, createdAtMs: NOW } }, dropped: 0 }, readAt: iso(NOW) }))
   assert.equal(one(ok, 'STK-08').violations, 0)
+})
+
+// ---------------------------------------------------------------------------
+// STK-08 v2 (owner 25-09-2026 21:30 SGT): a channel switched OFF BY A SETTING
+// holds its rows — class held_by_setting, named, not counted as stuck. A
+// channel that is ON and a day behind stays the defect; a setting that cannot
+// be read is never taken as off. Production 25-09-2026 23:29 UTC: 57,750
+// Telegram rows from 2026-08-22 10:39 UTC with notify OFF; the watchdog
+// outbox 512/512, dropped 1,526,163, all four delivery settings false.
+// ---------------------------------------------------------------------------
+const TG_OLD = '2026-08-22T10:39:26.800Z'
+const outboxRow = (db, o = {}) => ins(db, 'telegram_outbox', { queued_at: TG_OLD, kind: 'alert', priority: 'normal', text: 'SECRET-TEXT do not show', reason: 'notify_off', sent_at: null, ...o })
+const watchdogStatus = (o = {}) => ({
+  outbox: Object.fromEntries(Array.from({ length: 512 }, (_, i) => [`k${i}`, { attempts: 0, createdAtMs: Date.parse('2026-09-23T09:51:26.074Z') + i }])),
+  dropped: 1_526_163, masterEnabled: false, deploymentDeliveryEnabled: false, incidentOwnerConfigured: false, deliveryCredentialsConfigured: false, effectivePolicyAllowsUrgent: false, ...o,
+})
+const WATCHDOG_ALL_ON = { masterEnabled: true, deploymentDeliveryEnabled: true, incidentOwnerConfigured: true, deliveryCredentialsConfigured: true, effectivePolicyAllowsUrgent: true }
+
+test('STK-08 v2 telegram OFF by setting: held_by_setting, named with the setting, count, oldest and reasons — not in the stuck headline', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false, mode: 'live', quiet: null, urgentBypass: true, tz: 'Asia/Singapore' }))
+  outboxRow(db)
+  outboxRow(db, { queued_at: '2026-09-25T10:00:00.000Z', reason: 'quiet_hours' })
+  outboxRow(db, { queued_at: '2026-09-26T11:00:00.000Z' })
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM telegram_outbox WHERE sent_at IS NULL').get().n, 3)
+  assert.equal(getState(db, 'telegram_notify_json').includes('"enabled":false'), true)
+  const report = build(db)
+  const r = ruleOf(report, 'STK-08')
+  assert.equal(r.version, 2)
+  assert.equal(r.violations, 0, 'held by a setting is not a stuck violation')
+  assert.equal(r.classes.held_by_setting, 1)
+  assert.equal(r.info.held_by_setting.length, 1)
+  const info = r.info.held_by_setting[0]
+  assert.match(info, /^telegram: 3 unsent Telegram row\(s\), oldest queued 2026-08-22T10:39 — held by the setting telegram_notify_json enabled=false/)
+  assert.match(info, /reasons over the 3 pending row\(s\): notify_off 2 \(oldest 2026-08-22T10:39\), quiet_hours 1 \(oldest 2026-09-25T10:00\); the oldest row's reason notify_off/)
+  assert.match(info, /last flush never recorded/)
+  assert.doesNotMatch(info, /SECRET-TEXT/, 'no message text')
+  assert.match(r.note, /^held by a setting, not stuck \(not in the stuck count\) — telegram: 3 unsent/)
+  assert.equal(report.summary.stuck.new, 0, 'the stuck headline excludes it')
+  assert.match(report.rules.find(x => x.id === 'STK-08').note, /held by the setting telegram_notify_json enabled=false/, 'visible on the flat rules the Reasons page renders')
+  // The goal row and the daily line say it beside the count, so a count that
+  // fell because a channel is held never reads as delivered.
+  const snap = compactSnapshot(report)
+  assert.equal(snap.rules.find(x => x.id === 'STK-08').classes.held_by_setting, 1)
+  const goal = lifecycleGoals(snap, DEFAULT_GOAL_TARGETS, NOW).find(g => g.id === 'lifecycle_stuck')
+  assert.equal(goal.current, 0)
+  assert.match(goal.note, /held by a setting, not counted: STK-08 outbox_backlog 1/)
+  assert.ok(lifecycleReportLines(snap).includes('  STK-08 outbox_backlog 1 held by a setting (not stuck; see the rule\'s note)'))
+})
+
+test('STK-08 v2 telegram ON and a day behind: still the defect, with the digest state on the finding', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'hourly' }))
+  outboxRow(db, { reason: 'hourly_digest' })
+  const r = one(db, 'STK-08')
+  assert.equal(r.violations, 1)
+  assert.equal(r.classes.held_by_setting, undefined)
+  const e = r.sample.find(x => x.subject === 'outbox:telegram')
+  assert.equal(e.class, 'telegram')
+  assert.equal(e.detail, '1 unsent Telegram row(s), oldest queued 2026-08-22T10:39')
+  assert.deepEqual(e.notify, { enabled: true, mode: 'hourly', configReadable: true, configError: null })
+  assert.equal(e.lastError, null)
+  assert.deepEqual(e.reasons.rows, [{ reason: 'hourly_digest', count: 1, oldestQueuedAt: TG_OLD }])
+  assert.equal(build(db).summary.stuck.new, 1)
+})
+
+test('STK-08 v2 telegram ON with a recorded flush error: the defect names the error (token redacted)', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'live' }))
+  setState(db, 'tg_digest_last_error', '2026-09-25T23:00:00.000Z error: request to https://api.telegram.org/bot123456:AAbbCC_dd-ee/sendMessage failed')
+  outboxRow(db, { reason: 'quiet_hours' })
+  const r = one(db, 'STK-08')
+  assert.equal(r.violations, 1)
+  const e = r.sample.find(x => x.subject === 'outbox:telegram')
+  assert.match(e.detail, /^1 unsent Telegram row\(s\), oldest queued 2026-08-22T10:39; last flush error: 2026-09-25T23:00:00.000Z error: /)
+  assert.match(e.lastError, /bot<redacted>\/sendMessage failed$/)
+  assert.doesNotMatch(JSON.stringify(r), /AAbbCC_dd-ee/, 'no credential anywhere in the rule')
+})
+
+test('STK-08 v2 unreadable notify config: never taken as off — the defect stays and says so', () => {
+  for (const bad of ['{not json', '[false]', 'null', '"off"']) {
+    const db = initDB(':memory:')
+    setState(db, 'telegram_notify_json', bad)
+    outboxRow(db)
+    assert.equal(getState(db, 'telegram_notify_json'), bad)
+    const r = one(db, 'STK-08')
+    assert.equal(r.violations, 1, `unreadable ${bad} must not hold`)
+    assert.equal(r.classes.held_by_setting, undefined)
+    const e = r.sample.find(x => x.subject === 'outbox:telegram')
+    assert.match(e.detail, /; telegram_notify_json unreadable, not taken as off$/)
+    assert.equal(e.notify.configReadable, false)
+  }
+  // An absent config is the loader's default — enabled — and readable: the defect stays, unmarked.
+  const none = initDB(':memory:')
+  outboxRow(none)
+  const e = one(none, 'STK-08').sample.find(x => x.subject === 'outbox:telegram')
+  assert.equal(e.detail, '1 unsent Telegram row(s), oldest queued 2026-08-22T10:39')
+  assert.equal(e.notify.enabled, true)
+})
+
+test('STK-08 v2 watchdog with its delivery settings OFF: held_by_setting naming each setting, the dropped count and the oldest item', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false }))
+  setState(db, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus(), readAt: '2026-09-25T23:33:27.475Z', error: null }))
+  const report = build(db)
+  const r = ruleOf(report, 'STK-08')
+  assert.equal(r.violations, 0)
+  assert.equal(r.classes.held_by_setting, 1)
+  const info = r.info.held_by_setting.find(x => x.startsWith('watchdog:'))
+  assert.equal(info, 'watchdog: watchdog outbox 512/512, 512 never attempted and over 1 h old, dropped 1526163; oldest queued 2026-09-23T09:51 — held by the setting(s) ' +
+    'deploymentDeliveryEnabled=false (the cpp-verify delivery switch), incidentOwnerConfigured=false (the cpp-verify incident owner), ' +
+    'deliveryCredentialsConfigured=false (WATCHDOG_TELEGRAM_TOKEN / WATCHDOG_TELEGRAM_CHAT_ID), masterEnabled=false (Node\'s telegram_notify_json as cpp-verify last read it): ' +
+    'cpp-verify delivers nothing while any is off; status read 2026-09-25T23:33:27.475Z')
+  assert.equal(report.summary.stuck.new, 0)
+  // ONE setting off is enough: cpp-verify delivers only with all of them on.
+  const one1 = initDB(':memory:')
+  setState(one1, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, deliveryCredentialsConfigured: false }), readAt: iso(NOW) }))
+  const r1 = one(one1, 'STK-08')
+  assert.equal(r1.violations, 0)
+  assert.match(r1.info.held_by_setting[0], /held by the setting\(s\) deliveryCredentialsConfigured=false \(WATCHDOG_TELEGRAM_TOKEN/)
+  // masterEnabled false relayed from an UNREADABLE Node policy is not a setting: the defect stays.
+  const unread = initDB(':memory:')
+  setState(unread, 'telegram_notify_json', '{not json')
+  setState(unread, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, masterEnabled: false }), readAt: iso(NOW) }))
+  const ru = one(unread, 'STK-08')
+  assert.equal(ru.classes.held_by_setting, undefined)
+  assert.deepEqual(ru.sample.map(e => [e.subject, e.class]), [['outbox:watchdog', 'watchdog']])
+  // A field that is absent or null is unknown, never off.
+  const nulls = initDB(':memory:')
+  setState(nulls, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ masterEnabled: null, deploymentDeliveryEnabled: undefined, incidentOwnerConfigured: undefined, deliveryCredentialsConfigured: undefined }), readAt: iso(NOW) }))
+  assert.equal(one(nulls, 'STK-08').violations, 1)
+})
+
+test('STK-08 v2 watchdog with delivery ON and still dropping: the defect, with the delivery settings on the finding', () => {
+  const db = initDB(':memory:')
+  setState(db, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus(WATCHDOG_ALL_ON), readAt: iso(NOW - 60_000) }))
+  const r = one(db, 'STK-08')
+  assert.equal(r.violations, 1)
+  assert.equal(r.classes.held_by_setting, undefined)
+  const e = r.sample.find(x => x.subject === 'outbox:watchdog')
+  assert.equal(e.class, 'watchdog')
+  assert.equal(e.detail, 'watchdog outbox 512/512, 512 never attempted and over 1 h old, dropped 1526163')
+  assert.deepEqual(e.delivery, WATCHDOG_ALL_ON)
+  // Dropping alone (an outbox not full) is still the defect when delivery is on.
+  const drop = initDB(':memory:')
+  setState(drop, 'independent_watchdog_json', JSON.stringify({ status: { ...WATCHDOG_ALL_ON, outbox: { a: { attempts: 3, createdAtMs: NOW } }, dropped: 7 }, readAt: iso(NOW) }))
+  assert.equal(one(drop, 'STK-08').violations, 1)
+})
+
+test('STK-08 v2 the digest reader reads the outbox only through idx_tg_outbox_pending and bounds the reason breakdown', () => {
+  const db = initDB(':memory:')
+  for (const [name, sql] of Object.entries(DIGEST_STATE_SQL)) {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(name === 'reasons' ? [10] : [])).map(p => p.detail).join(' | ')
+    assert.doesNotMatch(plan, /\bSCAN (TABLE )?telegram_outbox\b/, `${name}: ${plan}`)
+    assert.match(plan, /idx_tg_outbox_pending/, `${name}: ${plan}`)
+  }
+  const ins1 = db.prepare(`INSERT INTO telegram_outbox (queued_at, text, reason) VALUES (?, 'x', ?)`)
+  db.transaction(() => { for (let i = 0; i <= DIGEST_REASON_ROWS_MAX; i++) ins1.run(iso(Date.parse(TG_OLD) + i * 1000), i === 0 ? 'quiet_hours' : 'notify_off') })()
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false }))
+  const r = one(db, 'STK-08')
+  // The oldest row (quiet_hours) is outside the newest-2,000 window: the reply says so rather than presenting a prefix as the whole.
+  assert.match(r.info.held_by_setting[0], new RegExp(`reasons over the newest ${DIGEST_REASON_ROWS_MAX} of ${DIGEST_REASON_ROWS_MAX + 1} pending rows: notify_off ${DIGEST_REASON_ROWS_MAX} .*; the oldest row's reason quiet_hours`))
 })
 
 test('N2: STK-06 unverified_at_cap — the spec\'s known answer, 11 records unverified at the re-verify cap', () => {
