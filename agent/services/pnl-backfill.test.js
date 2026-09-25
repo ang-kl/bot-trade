@@ -687,7 +687,7 @@ test('a persistence failure never fails the backfill — the receipt is not the 
 // compared to zero — true unless the SQL threw — so the failure its own
 // comment described could never be reported.
 // ---------------------------------------------------------------------------
-import { pnlReconciliationState, pnlUnreachedRows } from './pnl-backfill.js'
+import { pnlReconciliationState, pnlUnreachedRows, pnlReconcileHeartbeat } from './pnl-backfill.js'
 import { readFileSync } from 'node:fs'
 
 test('pnlReconciliationState separates "never tried, just closed" from "never tried, overdue"', () => {
@@ -714,13 +714,19 @@ test('pnlUnreachedRows names only overdue, repairable, never-attempted identitie
   assert.equal(rows[0].accountId, '111')
 })
 
-test('the pnl_reconcile heartbeat can actually fail: ok keys on overdue never-tried rows (source pin, comments stripped)', () => {
+// V3 I1 (25-09-2026) moved `ok` from "no overdue never-tried rows" to "the
+// pass completed": keying on records held the controller in error for four
+// days on two rows it reached every pass. The 02-09 point still stands — the
+// beat must be ABLE to fail — and is now shown by behaviour, not by a pin on
+// the old predicate (pnl-reconcile-stall.test.js has the full contract).
+test('the pnl_reconcile heartbeat can actually fail: a pass that fails everywhere, or unreadable state (behaviour)', () => {
+  const st = { unresolved: 1, neverTriedOverdue: 1 }
+  assert.equal(pnlReconcileHeartbeat(st, { attempted: 2, completed: 0, failures: [{ accountId: '1', error: 'x' }] }).ok, false)
+  assert.equal(pnlReconcileHeartbeat({ unresolved: -1 }, { attempted: 1, completed: 1 }).ok, false)
+  assert.equal(pnlReconcileHeartbeat(st, { attempted: 2, completed: 1 }).ok, true, 'a completed pass is not a failure because a record is unpriced')
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
-  const block = src.slice(src.indexOf("hb.beat(db, 'pnl_reconcile'"), src.indexOf("hb.beat(db, 'pnl_reconcile'") + 600)
-  assert.match(block, /ok: st\.unresolved >= 0 && !unreached/)
-  assert.match(src, /const unreached = st\.unresolved >= 0 && st\.neverTriedOverdue > 0/)
-  assert.match(src, /unreachedRows: pnlUnreachedRows\(db\)/)
-  assert.doesNotMatch(block, /ok: st\.unresolved >= 0,/, 'the old predicate — a count compared to zero — must be gone')
+  assert.match(src, /verdict\.detail\.unreachedRows = pnlUnreachedRows\(db\)/, 'unreached rows are still named in the detail')
+  assert.doesNotMatch(src, /ok: st\.unresolved >= 0,/, 'the old predicate — a count compared to zero — must be gone')
 })
 
 // ---------------------------------------------------------------------------
@@ -797,8 +803,10 @@ test('the loop prints the breakdown, not the bare count', () => {
 })
 
 
-test('the loop logs exact overdue P&L identities when the reconciliation heartbeat fails', () => {
+// V3 I1: overdue never-attempted rows are a notice now, not a heartbeat
+// failure — and their identities are still logged whenever they exist.
+test('the loop logs exact overdue P&L identities whenever the reconciliation notice is raised', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[^]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
-  assert.ok(src.includes('if (unreached) log(`P&L reconciliation unreached rows:'))
-  assert.match(src, /JSON\.stringify\(detail\.unreachedRows\)/)
+  assert.match(src, /if \(verdict\.detail\.notice\) \{\s+verdict\.detail\.unreachedRows = pnlUnreachedRows\(db\)\s+log\(`P&L reconciliation not-yet-attempted rows:/)
+  assert.match(src, /JSON\.stringify\(verdict\.detail\.unreachedRows\)/)
 })

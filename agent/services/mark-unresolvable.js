@@ -41,6 +41,15 @@
 export const DEFAULT_UNRESOLVABLE_HORIZON_DAYS = 7
 
 /**
+ * The owner's write-off wording (25-09-2026 21:30 SGT, the overnight run):
+ * a stuck record that broker evidence cannot settle is marked terminal
+ * "unresolved: no broker evidence" with reason, evidence and timestamp,
+ * excluded from P&L and money totals, still shown. Every terminal reason
+ * written from now on starts with this.
+ */
+export const UNRESOLVED_NO_EVIDENCE = 'unresolved: no broker evidence'
+
+/**
  * The DURABLE half of the "we tried and gave up" evidence.
  *
  * `exhaustedAccounts()` reads pnl-backfill's in-memory backoff ladder, which is
@@ -90,7 +99,7 @@ export function findUnresolvableCandidates(db, {
   if (accts.length === 0) return []
   const placeholders = accts.map(() => '?').join(',')
   return db.prepare(`
-    SELECT id, symbol, side, account_id, closed_at, ctrader_position_id, exit_price
+    SELECT id, symbol, side, account_id, closed_at, ctrader_position_id, exit_price, pnl_attempts
       FROM trades
      WHERE status = 'closed'
        AND net_pnl IS NULL
@@ -150,7 +159,12 @@ export function sweepUnresolvable(db, {
   }
   const marked = []
   for (const c of candidates) {
-    const reason = `no broker deal history for this close: closed ${c.closed_at}, older than the ${horizonDays}-day deal-history horizon, and pnl-backfill has exhausted its retries on account ${c.account_id}`
+    // R4 (V3 I1): this used to say "older than the N-day deal-history
+    // horizon". N is this module's AGE GATE, not a broker limit — the
+    // per-position reader (old-position-pnl.js) reads a position's whole
+    // lifetime. The reason now says what was actually established, and the
+    // row's own attempt count, so a reader can weigh it.
+    const reason = `${UNRESOLVED_NO_EVIDENCE}: closed ${c.closed_at}, older than the ${horizonDays}-day age gate; the P&L repair recorded ${Number(c.pnl_attempts) || 0} attempt(s) on this row without a matching close and has exhausted its retries on account ${c.account_id}; net_pnl stays NULL, excluded from P&L, shown`
     if (markUnresolvable(db, c.id, reason)) {
       marked.push({ id: c.id, symbol: c.symbol, accountId: c.account_id, closedAt: c.closed_at })
     }
