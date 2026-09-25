@@ -2967,10 +2967,24 @@ export default function actionsRouter(db, deps = {}) {
   //      — the open-positions guard stands: a blocked compact is reported
   //      as blocked, never forced from here.
   // -----------------------------------------------------------------------
+  //
+  // V3 M2b (M2 check nit 6): the before/after measurements run on the
+  // read-only storage worker (readStorageReport), never on this event loop —
+  // the synchronous walk held it for 20.99 s, twice per purge. Both are
+  // `fresh` (never the cooldown cache; `after` is a walk started after the
+  // purge), each answered inside the storage deadline, partial and labelled
+  // when the walk is longer. A measurement that could not be made is
+  // reported as unavailable with its reason, and the purge still runs. No
+  // walk is left holding a read snapshot across the checkpoint and compact.
   router.post('/storage-purge', async (req, res) => {
     try {
-      const { storageReport } = await import('../services/storage-report.js')
-      const before = storageReport(db)
+      const { readStorageReport, stopStorageWalk, isReportUnavailable } = await import('../services/performance-populations.js')
+      const measure = () => readStorageReport(db, { fresh: true }).catch(error => {
+        if (!isReportUnavailable(error)) throw error
+        return { status: 'unavailable', reason: error.reason, ...(error.detail ? { detail: error.detail } : {}) }
+      })
+      const before = await measure()
+      await stopStorageWalk(db)
 
       const steps = {}
       const overrides = req.body?.retention
@@ -2998,7 +3012,7 @@ export default function actionsRouter(db, deps = {}) {
       const { runCompact } = await import('../services/db-compact.js')
       steps.compact = runCompact(db, { dbPath: process.env.DB_PATH })
 
-      const after = storageReport(db)
+      const after = await measure()
       console.log(`[actions] storage-purge: reports −${steps.reports.deleted} files (${(steps.reports.freedBytes / 1e6).toFixed(0)}MB), `
         + `cupHandle −${steps.operational.cupHandle} rows, outbox −${steps.outbox}, compact ${steps.compact?.ran ? 'ran' : `skipped (${steps.compact?.reason})`}`)
       res.json({ ok: true, before, steps, after })
