@@ -43,8 +43,25 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering, readPostmortemReport } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering, readPostmortemReport, readStorageReport, isReportUnavailable } from '../services/performance-populations.js'
 import { reportLedger } from '../shared/performance-populations.js'
+
+/**
+ * P1/P4 "report failures stay honest": a report worker that missed its
+ * deadline, found no free slot, or failed is an explicit 503 with a reason
+ * and a retry hint — never a 500 that reads as a bug, and never a 200 with an
+ * empty result that reads as "nothing there" (owner principle 6). Anything
+ * that is NOT a report-worker failure is left to the caller's own 500.
+ *
+ * @returns {boolean} true when the response was sent
+ */
+export function sendReportUnavailable(res, error, { message, code }) {
+  if (!isReportUnavailable(error)) return false
+  res.set('Cache-Control', 'no-store')
+  res.set('Retry-After', String(error.retryAfterSec))
+  res.status(503).json({ status: 'unavailable', error: message, code, reason: error.reason, retryAfter: error.retryAfterSec })
+  return true
+}
 
 /**
  * Factory — returns a configured Express Router.
@@ -178,6 +195,9 @@ export default function stateRouter(db) {
         const body = JSON.stringify(obj)
         const etag = `W/"${createHash('sha1').update(body).digest('base64url').slice(0, 16)}"`
         const status = res.statusCode
+        // A report 503 carries its retry hint in a header too; a parked
+        // waiter answered from the same failure gets the same hint.
+        const retryAfter = res.getHeader('retry-after')
         if (status < 400) {
           respCache.set(key, { body, etag, at: Date.now(), epoch: stateEpoch() })
           if (respCache.size > 300) { // bound: drop the oldest entry
@@ -193,6 +213,7 @@ export default function stateRouter(db) {
           w.res.status(status)
           w.res.setHeader('etag', etag)
           w.res.setHeader('x-cache', 'coalesced')
+          if (retryAfter != null) { w.res.setHeader('Retry-After', retryAfter); w.res.setHeader('Cache-Control', 'no-store') }
           if (status < 400 && w.req.headers['if-none-match'] === etag) { w.res.status(304); return w.res.end() }
           return w.res.type('application/json').send(body)
         })
@@ -2256,6 +2277,7 @@ export default function stateRouter(db) {
       const dailyLossScope = scoped && overlay && overlay.dailyLossPct !== undefined ? 'account' : 'global'
       res.json({ ...ledger, dailyLossPct, dailyLossScope })
     } catch (err) {
+      if (sendReportUnavailable(res, err, { message: 'The performance ledger is temporarily unavailable. Please retry.', code: 'perf_ledger_unavailable' })) return
       res.status(500).json({ error: err.message })
     }
   })
@@ -2274,6 +2296,7 @@ export default function stateRouter(db) {
         days: Number.isFinite(days) && days > 0 ? days : null,
       }))
     } catch (err) {
+      if (sendReportUnavailable(res, err, { message: 'Account analytics are temporarily unavailable. Please retry.', code: 'account_analytics_unavailable' })) return
       res.status(500).json({ error: err.message })
     }
   })
@@ -2477,12 +2500,12 @@ export default function stateRouter(db) {
   // market structure at scan time, which is the same for every account.
   router.get('/cup-handle-funnel', async (req, res) => {
     try {
-      const { readCupHandleFunnel } = await import('../services/performance-populations.js')
       const requestedDays = Number(req.query.days)
       const days = Number.isFinite(requestedDays) && requestedDays > 0 ? requestedDays : 7
       const bias = req.query.bias === 'long' || req.query.bias === 'short' ? req.query.bias : null
       res.json(await readCupHandleFunnel(db, { days, bias }))
     } catch (err) {
+      if (sendReportUnavailable(res, err, { message: 'The Cup & Handle funnel is temporarily unavailable. Please retry.', code: 'cup_handle_funnel_unavailable' })) return
       res.status(500).json({ error: err.message })
     }
   })
@@ -3553,7 +3576,11 @@ export default function stateRouter(db) {
       }
       const rows = await readDecisionsDaily(db, { days, accountId: acct.active ? scope.accountId : null, ...(timeZone ? { timeZone } : {}) })
       res.json({ days, rows, timeZone, accountId: scope.all ? 'all' : (scope.accountId ?? null) })
-    } catch (e) { res.status(500).json({ error: e.message }) }
+    } catch (e) {
+      // The 30,002 ms deadline at 23:39:29Z was answered as a 500 here.
+      if (sendReportUnavailable(res, e, { message: 'Daily decision counts are temporarily unavailable. Please retry.', code: 'decisions_daily_unavailable' })) return
+      res.status(500).json({ error: e.message })
+    }
   })
 
   // The day's binding cap in dollars: the TIGHTER of the two brakes that are
@@ -4362,6 +4389,7 @@ export default function stateRouter(db) {
       const scoped = loadStageMatrix(db, getState, acct)
       res.json({ ...view, ...scoped, accountId: acct, overlayKeys: stageOverlayKeys(db, getState, acct), tallies })
     } catch (e) {
+      if (sendReportUnavailable(res, e, { message: 'Stage usage counts are temporarily unavailable. Please retry.', code: 'stage_matrix_unavailable' })) return
       res.status(500).json({ error: e.message })
     }
   })
@@ -4423,12 +4451,14 @@ export default function stateRouter(db) {
   // it 1GB → 5GB): DB/WAL file sizes, per-table rows+bytes, biggest state
   // keys, volume free space. On-demand diagnostics — the full-page walk is
   // too heavy to poll, so it rides the shared state cache like every read.
+  // It runs on its own reserved read-only worker: the synchronous dbstat
+  // walk held this event loop for 20.99 s at 08:39Z (P8 disclosure).
   // -----------------------------------------------------------------------
   router.get('/storage', async (_req, res) => {
     try {
-      const { storageReport } = await import('../services/storage-report.js')
-      res.json(storageReport(db))
+      res.json(await readStorageReport(db))
     } catch (e) {
+      if (sendReportUnavailable(res, e, { message: 'The storage report is temporarily unavailable. Please retry.', code: 'storage_report_unavailable' })) return
       res.status(500).json({ error: e.message })
     }
   })
@@ -4550,11 +4580,15 @@ export default function stateRouter(db) {
     }
   })
 
+  // A worker failure used to answer 200 {prices:{}, error}: an empty map that
+  // reads as "no prices", invisible to any status-class counter. It is an
+  // explicit 503 now, and the Desk/Trade consumers say "unavailable".
   router.get('/prices', async (_req, res) => {
     try {
       res.json({ prices: await readLatestPrices(db) })
     } catch (e) {
-      res.json({ prices: {}, error: e.message })
+      if (sendReportUnavailable(res, e, { message: 'Latest prices are temporarily unavailable. Please retry.', code: 'latest_prices_unavailable' })) return
+      res.status(500).json({ error: e.message })
     }
   })
 

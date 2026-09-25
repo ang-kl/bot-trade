@@ -26,6 +26,8 @@ import { strategyLabel } from '../lib/strategy-labels.js'
 import { useSort } from '../lib/use-sort.jsx'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import Collapse from '../components/common/Collapse.jsx'
+import LatestPricesNote from '../components/LatestPricesNote.jsx'
+import { loadLatestPrices } from '../lib/latest-prices.js'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -393,6 +395,9 @@ export default function Trade() {
   const [scans, setScans] = useState([])
   // Newest close per symbol across ALL cycles — the currency-conversion base.
   const [latestPrices, setLatestPrices] = useState({})
+  // Whether that base read succeeded: an unavailable read is said, not shown
+  // as an empty map (P1/P4 M2).
+  const [pricesRead, setPricesRead] = useState(null)
   const [positions, setPositions] = useState([])
   const [positionsLoaded, setPositionsLoaded] = useState(false)
   // Which account the positions payload says these rows belong to, plus how
@@ -495,11 +500,12 @@ export default function Trade() {
         agentGet('/state/broker-orders').catch(() => null),
         agentGet('/state/config').catch(() => null),
         agentGet('/state/market-hours').catch(() => null),
-        agentGet('/state/prices').catch(() => null),
+        loadLatestPrices(agentGet),
       ])
       if (!view.current()) return
       setHealth(h)
-      setLatestPrices(px?.prices || {})
+      setLatestPrices(px.prices)
+      setPricesRead(px)
       // lastResults.scans is the CURRENT scan cycle's snapshot (one row per
       // symbol) — recentScans is the last 50 DB rows across cycles, which can
       // carry a stale non-skip row past a later skip for the same symbol, and
@@ -795,6 +801,7 @@ export default function Trade() {
           Broker snapshot: {brokerRefresh.at ? new Date(brokerRefresh.at).toLocaleTimeString() : 'not available'}
           {brokerRefresh.error ? ` · refresh failed: ${brokerRefresh.error}` : ' · refreshed on request'}
         </p>}
+        <LatestPricesNote read={pricesRead} />
         {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 

@@ -8,7 +8,9 @@
 //
 // Cost note: row counts walk each table's b-tree and dbstat walks every page,
 // so this is an ON-DEMAND diagnostics read, not something a dashboard should
-// poll. The route that serves it sits behind the normal state cache.
+// poll. GET /state/storage runs it on a reserved read-only worker
+// (performance-populations.js, kind 'storage'): run synchronously it held the
+// event loop for 20.99 s in production. The route sits behind the state cache.
 import fs from 'node:fs'
 import path from 'node:path'
 
