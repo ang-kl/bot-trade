@@ -53,4 +53,24 @@ describe('controller evidence presentation', () => {
     expect(html).toContain('Retired history')
     expect(html).toContain('Producer retired')
   })
+  it('says why a dormant controller is quiet and does not call its unmoving record stale (V3 I2)', () => {
+    const dormant = renderToStaticMarkup(<ControllerGroups controllers={[
+      { name: 'weekend_watch', label: 'Weekend watch (LLM)', status: 'idle', verdict: 'dormant', dormant: true,
+        dormant_reason: 'LLM switched off (LLM_DISABLED env var) — the weekend watch makes no model call while it is off, so it does not run' },
+      { name: 'autopilot', label: 'Strategy autopilot', status: 'ok', verdict: 'dormant', dormant: true,
+        dormant_reason: 'autopilot_mode is off — no evidence sweep is scheduled',
+        work_product: { fresh: false, summary: 'RECORD 300m OLD — past the 33m limit' } },
+    ]} />)
+    expect(dormant).toContain('Dormant: LLM switched off (LLM_DISABLED env var)')
+    expect(dormant).toContain('Dormant: autopilot_mode is off')
+    expect(dormant).toContain('not expected while dormant')
+    expect(dormant).not.toContain('STALE / UNAVAILABLE')
+    // The same aged record on a controller that is NOT dormant is still stale.
+    const live = renderToStaticMarkup(<ControllerGroups controllers={[
+      { name: 'autopilot', label: 'Strategy autopilot', status: 'warn', verdict: 'record_stale',
+        work_product: { fresh: false, summary: 'RECORD 40m OLD — past the 33m limit' } },
+    ]} />)
+    expect(live).toContain('STALE / UNAVAILABLE')
+    expect(live).not.toContain('Dormant:')
+  })
 })
