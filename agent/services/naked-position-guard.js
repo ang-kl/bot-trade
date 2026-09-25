@@ -82,6 +82,7 @@ import { recordedTargetFor } from './target-restore.js'
 import { normPosId } from '../lib/pos-id.js'
 import { protectionCallback } from './protection-account.js'
 import { protectionFailure, repairFailures, recordRepairFailure, sameRefusedTarget, retainUnresolvedRepairs } from './protection-repair-state.js'
+import { noteBudgetOverrun } from './runtime-record.js'
 
 /** Alert at most this often per position, so a persistent gap does not spam. */
 const MUTE_MS = Math.max(60_000, Number(process.env.NAKED_ALERT_MUTE_MS) || 3600_000)
@@ -1147,7 +1148,12 @@ async function waitForAccount(work, budgetMs) {
     return await Promise.race([
       work,
       new Promise((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`protection audit exceeded its ${budgetMs}ms account budget; work remains in flight`)), budgetMs)
+        timer = setTimeout(() => {
+          // V3 M1: counted per 10-minute window (runtime-record.js); the
+          // heartbeat keeps only the last error string.
+          noteBudgetOverrun('protection_audit_account', budgetMs, budgetMs)
+          reject(new Error(`protection audit exceeded its ${budgetMs}ms account budget; work remains in flight`))
+        }, budgetMs)
       }),
     ])
   } finally { clearTimeout(timer) }
