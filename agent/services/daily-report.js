@@ -59,8 +59,14 @@ async function goalsSection(db, now) {
   const { goalTable } = await import('./goal-table.js')
   const t = await goalTable(db, { now })
   const s = t.summary
-  const lines = [`Goals: ${s.on_track} on track, ${s.off_track} off track, ${s.not_measurable} not measurable (of ${t.goals.length})`]
+  // V3 M3: rows judged against limits the owner has not confirmed read
+  // 'proposed'. They are counted on their own so the four counts still add
+  // up to the table, and each one that WOULD read off track is named — the
+  // exclusion from the off-track count hides no reading.
+  const proposedPart = s.proposed ? `, ${s.proposed} proposed` : ''
+  const lines = [`Goals: ${s.on_track} on track, ${s.off_track} off track, ${s.not_measurable} not measurable${proposedPart} (of ${t.goals.length})`]
   for (const g of t.goals.filter(g => g.verdict === 'off_track')) lines.push(`  off track: ${g.id} — ${g.current ?? 'n/a'} (target ${g.target ?? 'n/a'})`)
+  for (const g of t.goals.filter(g => g.verdict === 'proposed' && g.proposedVerdict === 'off_track')) lines.push(`  would be off track (limits proposed, not confirmed): ${g.id} — ${g.current ?? 'n/a'} (target ${g.target ?? 'n/a'})`)
   return { lines, table: t }
 }
 

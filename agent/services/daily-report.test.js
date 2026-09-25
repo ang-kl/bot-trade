@@ -25,7 +25,7 @@ test('the builder on an EMPTY db: every section present, no throw, under the Tel
   assert.ok(r.chars <= DAILY_REPORT_MAX_CHARS, `${r.chars} chars`)
   assert.equal(r.truncated, false)
   assert.match(r.text, /^Daily report — 2026-09-19 21:30 UTC/)
-  assert.match(r.text, /Goals: \d+ on track, \d+ off track, \d+ not measurable \(of 24\)/)
+  assert.match(r.text, /Goals: \d+ on track, \d+ off track, \d+ not measurable \(of 28\)/)
   assert.match(r.text, /Lifecycle: no snapshot \(order_lifecycle_last_json\)/)
   assert.match(r.text, /Checkpoint 2026-12-19: not_measurable/)
   assert.match(r.text, /Equity: no nightly snapshot yet/)
@@ -209,4 +209,23 @@ test('wiring pins: the loop posts on the due rule after the equity snapshot and 
   assert.match(state, /router\.get\('\/daily-report'/)
   const db = initDB(':memory:')
   assert.ok(heartbeatView(db).some(v => v.name === 'daily_report'))
+})
+
+test('V3 M3: a P1/P4 row judged against unconfirmed limits is counted as proposed, and one that would be off track is still named', async () => {
+  const db = initDB(':memory:')
+  const bootAt = NOW - 20 * 60_000
+  setState(db, 'boot_record_json', JSON.stringify({
+    version: 1, bootId: 'b1', bootAt: new Date(bootAt).toISOString(), commit: 'abc1234',
+    listening: { sinceBootMs: 7_000 }, startupLag: { ms: 14_701, at: new Date(bootAt + 4 * 60_000).toISOString(), loopPhase: 'reconciling broker positions' },
+    startupHttp: { complete: true, routes: [] },
+    first: { band: { sinceBootMs: 77_000, ok: true, overran: false }, cleanProtectionAudit: { sinceBootMs: 77_000 } },
+    persistedAt: new Date(NOW - 60_000).toISOString(),
+  }))
+  const r = await buildDailyReport(db, { now: NOW })
+  const goals = r.sections.find(s => s.id === 'goals').lines
+  assert.match(goals[0], /^Goals: \d+ on track, \d+ off track, \d+ not measurable, 1 proposed \(of 28\)$/)
+  const [on, off, nm, prop] = goals[0].match(/\d+/g).map(Number)
+  assert.equal(on + off + nm + prop, 28, 'the four counts add up to the table')
+  assert.ok(goals.some(l => /^ {2}would be off track \(limits proposed, not confirmed\): startup_window — .*worst stall 14701 ms/.test(l)), goals.join(' | '))
+  assert.ok(!goals.some(l => /^ {2}off track: startup_window/.test(l)), 'not counted as off track')
 })

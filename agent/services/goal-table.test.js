@@ -19,7 +19,7 @@ function byId(table) { return Object.fromEntries(table.goals.map(g => [g.id, g])
 test('an empty db reports every goal, none of them as a number it did not earn', async () => {
   const db = initDB(':memory:')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 24) // Wave 3: four family rows + the momentum checkpoint; Wave 5: monitor_cadence; V3 L1: four lifecycle rows
+  assert.equal(t.goals.length, 28) // Wave 3: four family rows + the momentum checkpoint; Wave 5: monitor_cadence; V3 L1: four lifecycle rows; V3 M3: four P1/P4 rows
   const g = byId(t)
   assert.equal(g.controllers_ok.verdict, 'not_measurable', 'no controller has beaten')
   assert.equal(g.pipeline_conversion.verdict, 'not_measurable', 'no decision audit on record')
@@ -28,10 +28,12 @@ test('an empty db reports every goal, none of them as a number it did not earn',
   assert.match(g.momentum_universe_tradable.note, /not switched on/)
   assert.equal(g.close_completeness.verdict, 'on_track', 'zero incomplete closes is on track')
   for (const goal of t.goals) {
-    assert.ok(['on_track', 'off_track', 'not_measurable'].includes(goal.verdict), `${goal.id} has a verdict`)
+    assert.ok(['on_track', 'off_track', 'not_measurable', 'proposed'].includes(goal.verdict), `${goal.id} has a verdict`)
     assert.ok(goal.metric && goal.target !== undefined && goal.horizon !== undefined, `${goal.id} names metric/target/horizon`)
   }
-  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable, 24)
+  // V3 M3: with no boot record and no account, every P1/P4 row is not measurable.
+  for (const id of ['startup_window', 'event_loop_lag', 'protection_freshness', 'loop_latency']) assert.equal(g[id].verdict, 'not_measurable', id)
+  assert.equal(t.summary.on_track + t.summary.off_track + t.summary.not_measurable + t.summary.proposed, 28)
 })
 
 test('controllers_ok: reads the heartbeat verdicts, names the offenders', async () => {
@@ -108,9 +110,12 @@ test('a reader that throws becomes a not_measurable row, not a missing table', a
   const db = initDB(':memory:')
   // Break one reader's input: an unparseable momentum config must not take the table down.
   setState(db, 'momentum_account_json', '{not json')
+  // V3 M3: an unparseable boot record is an absent one, not a missing row.
+  setState(db, 'boot_record_json', '{not json')
   const t = await goalTable(db, { now: T0.getTime() })
-  assert.equal(t.goals.length, 24) // Wave 3: four family rows + the momentum checkpoint; Wave 5: monitor_cadence; V3 L1: four lifecycle rows
+  assert.equal(t.goals.length, 28) // Wave 3: four family rows + the momentum checkpoint; Wave 5: monitor_cadence; V3 L1: four lifecycle rows; V3 M3: four P1/P4 rows
   assert.ok(t.goals.every(g => g.verdict))
+  assert.equal(t.goals.find(g => g.id === 'startup_window').verdict, 'not_measurable')
 })
 
 test('every controller with a declared effect is a registered controller', () => {
@@ -335,4 +340,146 @@ test('monitor_cadence: the note carries the quotes10m window figure when the rec
   }))
   const emptyWindow = byId(await goalTable(db, { now })).monitor_cadence
   assert.equal(emptyWindow.note, baseline.note)
+})
+
+// ---------------------------------------------------------------------------
+// V3 M3 (P1/P4-3): the four P1/P4 rows. Their limits are PROPOSED until the
+// owner stamps p1p4LimitsConfirmedAt: until then a row reads 'proposed' with
+// the verdict it WOULD have, and is not counted as off track (principle 6).
+// ---------------------------------------------------------------------------
+
+const BOOT = Date.parse('2026-09-28T13:00:00Z')
+const iso = (x) => new Date(x).toISOString()
+
+function bootRecord({ persistedAt = BOOT + 16 * 60_000, listeningMs = 7_500, stallMs = 800, routes = [], complete = true, first = null, lag10m = null, mainLoop = null } = {}) {
+  return {
+    version: 1, bootId: 'boot-1', bootAt: iso(BOOT), commit: 'abc1234', startupWindowMs: 900_000,
+    listening: { at: iso(BOOT + listeningMs), sinceBootMs: listeningMs },
+    startupLag: { ms: stallMs, at: iso(BOOT + 60_000), loopPhase: 'scan' },
+    startupHttp: { complete, total: {}, first5xx: null, routes },
+    first: first ?? {
+      loop: { sinceBootMs: 70_000, ms: 62_000, ok: true },
+      band: { sinceBootMs: 20_000, ms: 3_000, overran: false, ok: true },
+      cleanProtectionAudit: { sinceBootMs: 30_000, accounts: 7 },
+      equityStop: { sinceBootMs: 72_000, ok: true },
+    },
+    latencyWindows: {
+      mainLoop: mainLoop ?? { n: 360, p50: 40_000, p95: 55_000, p99: 70_000, max: 134_000 },
+      eventLoopLag: { last10m: lag10m ?? { n: 6_000, maxMs: 400, p99LeMs: 250, worst: { ms: 400, at: iso(persistedAt - 1_000), loopPhase: 'idle' } } },
+    },
+    persistedAt: iso(persistedAt),
+  }
+}
+const withRecord = (rec) => { const db = initDB(':memory:'); setState(db, 'boot_record_json', JSON.stringify(rec)); return db }
+const confirm = (db) => setState(db, GOAL_TABLE_KEY, JSON.stringify({ targets: { p1p4LimitsConfirmedAt: '2026-09-28T12:00:00Z' } }))
+
+test('P1/P4 rows: a clean startup reads proposed/on_track, is not counted on or off track, and names the proposal', async () => {
+  const db = withRecord(bootRecord())
+  const t = await goalTable(db, { now: BOOT + 17 * 60_000 })
+  const g = byId(t).startup_window
+  assert.equal(g.verdict, 'proposed')
+  assert.equal(g.proposedVerdict, 'on_track')
+  assert.equal(g.limits, 'proposed')
+  assert.match(g.current, /listening 7.5 s · worst stall 800 ms · critical 5xx 0/)
+  assert.match(g.note, /PROPOSED, not confirmed by the owner/)
+  assert.ok(t.summary.proposed >= 1)
+  assert.equal(t.goals.filter(x => x.verdict === 'proposed').length, t.summary.proposed)
+})
+
+test('P1/P4 rows: a critical-route 5xx would be off track; excluded from the count until the owner confirms, then counted', async () => {
+  const db = withRecord(bootRecord({ routes: [{ route: '/state/heartbeats', '4xx': 0, '5xx': 2, aborted: 0 }, { route: '/state/decisions-daily', '4xx': 0, '5xx': 1, aborted: 0 }] }))
+  const now = BOOT + 17 * 60_000
+  let t = await goalTable(db, { now })
+  let g = byId(t).startup_window
+  assert.equal(g.verdict, 'proposed')
+  assert.equal(g.proposedVerdict, 'off_track', 'the reading is not hidden — it says what it would read')
+  assert.match(g.note, /2 critical-route 5xx/)
+  assert.match(g.note, /1 report-route 5xx listed, tolerance is the owner's/)
+  const offBefore = t.summary.off_track
+  confirm(db)
+  t = await goalTable(db, { now })
+  g = byId(t).startup_window
+  assert.equal(g.verdict, 'off_track', 'confirmed limits: the same reading is off track')
+  assert.equal(g.limits, 'confirmed')
+  assert.equal(t.summary.off_track, offBefore + 1)
+})
+
+test('P1/P4 rows: an open startup window is not measurable, unless a failure has already been seen', async () => {
+  const open = withRecord(bootRecord({ persistedAt: BOOT + 4 * 60_000, complete: false, first: { band: { sinceBootMs: 20_000, ms: 3_000, overran: false, ok: true } } }))
+  const g = byId(await goalTable(open, { now: BOOT + 4 * 60_000 })).startup_window
+  assert.equal(g.verdict, 'not_measurable')
+  assert.match(g.note, /still open — 11 min left/)
+  const failed = withRecord(bootRecord({ persistedAt: BOOT + 4 * 60_000, complete: false, stallMs: 7_000 }))
+  const f = byId(await goalTable(failed, { now: BOOT + 4 * 60_000 })).startup_window
+  assert.equal(f.verdict, 'proposed')
+  assert.equal(f.proposedVerdict, 'off_track', 'a failed observation stays failed')
+  // After +300 s with no band on record, the absence is itself the failure.
+  const noBand = withRecord(bootRecord({ persistedAt: BOOT + 6 * 60_000, complete: false, first: { cleanProtectionAudit: { sinceBootMs: 30_000 } } }))
+  const nb = byId(await goalTable(noBand, { now: BOOT + 6 * 60_000 })).startup_window
+  assert.equal(nb.proposedVerdict, 'off_track')
+  assert.match(nb.note, /no band by \+300 s/)
+})
+
+test('P1/P4 rows: event-loop lag — boundaries, and a stale record is not measurable', async () => {
+  const at = async (lag10m, persistedAt = BOOT + 60 * 60_000, now = BOOT + 61 * 60_000) =>
+    byId(await goalTable(withRecord(bootRecord({ lag10m, persistedAt })), { now })).event_loop_lag
+  assert.equal((await at({ n: 6_000, maxMs: 4_999, p99LeMs: 1_000 })).proposedVerdict, 'on_track')
+  assert.equal((await at({ n: 6_000, maxMs: 5_000, p99LeMs: 100 })).proposedVerdict, 'off_track')
+  assert.equal((await at({ n: 6_000, maxMs: 1_500, p99LeMs: 2_000 })).proposedVerdict, 'off_track')
+  assert.equal((await at({ n: 0, maxMs: null, p99LeMs: null })).verdict, 'not_measurable')
+  const stale = await at({ n: 6_000, maxMs: 100, p99LeMs: 50 }, BOOT + 60 * 60_000, BOOT + 71 * 60_000)
+  assert.equal(stale.verdict, 'not_measurable')
+  assert.match(stale.note, /11 min old/)
+})
+
+test('P1/P4 rows: loop latency — p95 on both sides of 60 s, under 10 loops not measurable, first loop named apart', async () => {
+  const at = async (mainLoop) => byId(await goalTable(withRecord(bootRecord({ mainLoop, persistedAt: BOOT + 60 * 60_000 })), { now: BOOT + 61 * 60_000 })).loop_latency
+  assert.equal((await at({ n: 360, p50: 1, p95: 60_000, p99: 1, max: 1 })).proposedVerdict, 'on_track')
+  const over = await at({ n: 360, p50: 1, p95: 60_001, p99: 1, max: 1 })
+  assert.equal(over.proposedVerdict, 'off_track')
+  assert.match(over.note, /first loop 62 s \(no bar set — the owner sets it\)/)
+  assert.equal((await at({ n: 9, p50: 1, p95: 1, p99: 1, max: 1 })).verdict, 'not_measurable')
+})
+
+test('P1/P4 rows: protection freshness ages every account from raw timestamps, limit on both sides', async () => {
+  const now = BOOT + 60 * 60_000
+  const db = initDB(':memory:')
+  for (const id of ['43097342', '46130058']) {
+    db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode, base_currency) VALUES (?, '1', 0, 1, 'active', 'USD')`).run(id)
+  }
+  // A disabled account is not judged (no audit, no reading, and not counted).
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode, base_currency) VALUES ('11110000', '1', 0, 0, 'paused', 'USD')`).run()
+  setState(db, 'acct:43097342:protection_audit_last_json', JSON.stringify({ at: iso(now - 120_000), checked: 3 }))
+  setState(db, 'acct:46130058:protection_audit_last_json', JSON.stringify({ at: iso(now - 121_000), checked: 1 }))
+  setState(db, 'independent_protection_json', JSON.stringify({ accounts: [
+    { accountId: '43097342', checkedAtMs: now - 120_000, openCount: 1, missingSl: 0, missingTp: 0, ok: true, source: 'broker_reconcile', host: 'demo' },
+  ] }))
+  const g = byId(await goalTable(db, { now })).protection_freshness
+  assert.equal(g.verdict, 'proposed')
+  assert.equal(g.proposedVerdict, 'off_track')
+  assert.equal(g.current, '1/2 audit · 1/2 independent')
+  assert.match(g.note, /…0058 audit 121 s/)
+  assert.match(g.note, /…0058 independent none/)
+  assert.doesNotMatch(g.note, /…7342/, 'exactly 120 s is within the limit')
+  assert.doesNotMatch(g.note, /…0000/, 'the disabled account is not judged')
+  // Both fresh: the would-be verdict flips to on_track (still proposed, not counted).
+  setState(db, 'acct:46130058:protection_audit_last_json', JSON.stringify({ at: iso(now - 5_000), checked: 1 }))
+  setState(db, 'independent_protection_json', JSON.stringify({ accounts: [
+    { accountId: '43097342', checkedAtMs: now - 120_000, openCount: 1, missingSl: 0, missingTp: 0, ok: true, source: 'broker_reconcile', host: 'demo' },
+    { accountId: '46130058', checkedAtMs: now - 1_000, openCount: 0, missingSl: 0, missingTp: 0, ok: true, source: 'broker_reconcile', host: 'demo' },
+  ] }))
+  const fresh = byId(await goalTable(db, { now })).protection_freshness
+  assert.equal(fresh.proposedVerdict, 'on_track')
+  assert.equal(fresh.current, '2/2 audit · 2/2 independent')
+})
+
+test('goalTargets: a null (owner-set) limit stays unset through a stored round trip; a boolean never becomes a number', () => {
+  const t = goalTargets({ p1p4Report5xxMax: null, p1p4FirstLoopMaxSec: true, p1p4ListeningMaxSec: '20' })
+  assert.equal(t.p1p4Report5xxMax, null, 'Number(null) is 0 — a stored null must not become a zero tolerance')
+  assert.equal(t.p1p4FirstLoopMaxSec, null, 'true is not a 1-second bar')
+  assert.equal(t.p1p4ListeningMaxSec, 20)
+  assert.equal(goalTargets({ p1p4FirstLoopMaxSec: 90 }).p1p4FirstLoopMaxSec, 90, 'the owner can set the bar')
+  assert.equal(goalTargets({ p1p4LimitsConfirmedAt: 'yes' }).p1p4LimitsConfirmedAt, '', 'only a date confirms')
+  assert.equal(goalTargets(JSON.parse(JSON.stringify(goalTargets({})))).p1p4Report5xxMax, null)
+  assert.equal(DEFAULT_GOAL_TARGETS.fastMonitorSkipMaxPct, 10, 'the existing skip target is unchanged')
 })
