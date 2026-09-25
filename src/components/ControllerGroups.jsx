@@ -9,9 +9,9 @@ function Job({ row }) {
     {row.retired || row.status === 'retired' ? <p>{row.note || 'Retired; retained for history.'}</p> : <>
       <p>Last heartbeat: {stamp(row.last_run_at)} · {row.runs ?? 0} timer/job runs · expected heartbeat: {row.expected_sec == null ? 'Unspecified' : `${row.expected_sec}s`}</p>
       <p>Completed work: {stamp(completion)}{row.detail?.checked != null ? ` · ${row.detail.checked} positions evaluated in that pass` : ''}</p>
-      {row.work_product && <p>Work evidence: {row.work_product.summary || row.verdict || 'Available in diagnostics'}{row.work_product.fresh === false ? ' · STALE / UNAVAILABLE' : ''}</p>}
+      {row.work_product && <p>Work evidence: {row.work_product.summary || row.verdict || 'Available in diagnostics'}{row.work_product.fresh === false ? (row.dormant ? ' · not expected while dormant' : ' · STALE / UNAVAILABLE') : ''}</p>}
       {row.last_error && <p>{row.error_is_current === false ? 'Previous error (resolved)' : 'Current error'}: {row.last_error}</p>}
-      {row.dormant && <p>Dormant: {row.dormant.reason || row.last_error || 'No applicable accounts'}</p>}
+      {row.dormant && <p>Dormant: {row.dormant_reason || row.dormant.reason || row.last_error || 'No applicable accounts'}</p>}
     </>}
   </li>
 }

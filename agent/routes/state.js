@@ -2762,7 +2762,17 @@ export default function stateRouter(db) {
     try {
       const { positionHistoryView } = await import('../services/position-history.js')
       const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100))
-      res.json(positionHistoryView(db, { limit, accountId: req.query.account ?? null }))
+      // THE ?account=all FALSE ZERO (LIFECYCLE-SPEC §7, measured 25-09-2026):
+      // the raw query value was passed through, so ?account=all filtered on
+      // account_id = 'all' and answered 0 complete / 0 incomplete while the
+      // same read without it answered 53 / 1,255. Scope now comes from
+      // requestedAccount like every other scoped read: an explicit account
+      // filters, `all` (any case) does not. With no ?account the route keeps
+      // the default it has always had — every account — rather than
+      // narrowing silently to the selected one; the reply says which.
+      const scope = requestedAccount(db, req)
+      const accountId = scope.explicit && !scope.all ? scope.accountId : null
+      res.json({ ...positionHistoryView(db, { limit, accountId }), scope: { accountId, all: accountId == null } })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

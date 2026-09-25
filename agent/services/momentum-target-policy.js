@@ -39,11 +39,31 @@ export function stopHeld(side, brokerStop, planStop, digits) {
 // the few-ulp error of a sum at any listed price, far below a real tick.
 const SNAP_TOLERANCE_TICKS = 1e-6
 
+// Whole ticks of a price within float residue of the grid; null when it is
+// off the grid or cannot be expressed at the digits.
+function gridTicks(price, digits) {
+  if (!finite(price) || !priceDigits(digits)) return null
+  const scaled = price * 10 ** digits, nearest = Math.round(scaled)
+  return Number.isSafeInteger(nearest) && Math.abs(scaled - nearest) < SNAP_TOLERANCE_TICKS ? nearest : null
+}
+
+/** True only for a price that can be expressed at the digits (0 to 5) and
+ * sits more than float residue away from a whole tick: an ATR-built 247.8137
+ * at 2 digits, or a multi-deal average 265.9133. A price that cannot be
+ * expressed at all returns false, so the caller's own refusal names it. */
+export function offPriceGrid(price, digits) {
+  return priceTicks(price, digits) != null && gridTicks(price, digits) == null
+}
+
 /** The original stop moved by a confirmed fill's slippage, snapped to the
  * price grid. A fill on the grid moves it a whole number of ticks exactly,
  * which is what the broker does to a relative stop. A fill off the grid (a
  * multi-deal average) rounds the stop outward, so the plan never assumes a
- * tighter stop, or a smaller risk, than the broker may hold. */
+ * tighter stop, or a smaller risk, than the broker may hold. That does not
+ * make such a fill bindable (T1b N1): the outward stop changes the risk by a
+ * fraction of a tick, the recomputed target moves by about Q + 1 times that,
+ * and how cTrader anchors a multi-deal fill's relative target is unverified.
+ * When the bracket then misses, the bind's refusal names the off-grid fill. */
 export function shiftStopToFill({ side, entry, originalStop, digits } = {}, fillEntry) {
   if ((side !== 'BUY' && side !== 'SELL') || !priceDigits(digits)
     || ![entry, originalStop, fillEntry].every(positive)) return null
@@ -59,6 +79,38 @@ function outward(price, digits, direction) {
   const integer = Math.abs(scaled - nearest) < 1e-8 ? nearest
     : direction === 1 ? Math.ceil(scaled) : Math.floor(scaled)
   return integer / factor
+}
+
+// A nonnegative distance in ticks rounded up to a whole tick, unless float
+// residue already puts it on one: outward() applied to a distance.
+function outwardTicks(scaled) {
+  const nearest = Math.round(scaled)
+  return Math.abs(scaled - nearest) < 1e-8 ? nearest : Math.ceil(scaled)
+}
+
+/** Trigger and runner target. From an entry on the grid they are whole-tick
+ * distances computed from the risk in ticks (a whole number when the stop is
+ * on the grid too), then added to the entry's ticks. Two entries with the
+ * same risk in ticks, a proposal and its slipped fill, get the same
+ * distances whatever float residue each price carries (T1b). Rounding the
+ * summed PRICE instead let that residue decide a cost reserve sitting on the
+ * rounding tolerance: BUY 2904.25/2830.44, reserve 0.4900000001 (1e-8 ticks
+ * at 2 digits), planned 3126.17 and, filled 3 ticks higher, recomputed
+ * 3126.21, a tick off the broker's target. The arithmetic is the same as
+ * outward() on the summed price whenever that sum is not within float
+ * residue of the tolerance. An entry off the grid (a multi-deal average)
+ * keeps the price rounding. */
+function targets({ entry, originalStop, risk, requiredRr, cost, digits, direction }) {
+  const entryTicks = gridTicks(entry, digits)
+  if (entryTicks == null) {
+    const trigger = outward(entry + direction * (requiredRr * risk + cost), digits, direction)
+    return { trigger, runnerTarget: outward(trigger + direction * risk, digits, direction) }
+  }
+  const factor = 10 ** digits, stopTicks = gridTicks(originalStop, digits)
+  const riskTicks = stopTicks == null ? risk * factor : direction * (entryTicks - stopTicks)
+  const triggerTicks = outwardTicks(requiredRr * riskTicks + cost * factor)
+  return { trigger: (entryTicks + direction * triggerTicks) / factor,
+    runnerTarget: (entryTicks + direction * (triggerTicks + outwardTicks(riskTicks))) / factor }
 }
 
 /** Volumes are broker cents-of-units, never lots. Cost is an explicit reserve
@@ -83,9 +135,8 @@ export function planMomentumTargets(input = {}) {
   const direction = side === 'BUY' ? 1 : -1
   const risk = direction * (entry - originalStop)
   if (!(risk > 0)) return refuse('original_stop_on_wrong_side')
-  const trigger = outward(entry + direction * (requiredRr * risk + cost), digits, direction)
+  const { trigger, runnerTarget } = targets({ entry, originalStop, risk, requiredRr, cost, digits, direction })
   const distance = direction * (trigger - entry)
-  const runnerTarget = outward(trigger + direction * risk, digits, direction)
   if (!positive(trigger) || !(distance > cost)) return refuse('target_price_invalid')
   const fraction = (risk + cost) / (distance + risk)
   const desiredVolume = Math.ceil(Math.max(volume * fraction, minVolume) / stepVolume) * stepVolume
