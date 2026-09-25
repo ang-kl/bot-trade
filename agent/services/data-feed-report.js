@@ -184,8 +184,14 @@ export function quoteFreshness(db, nowMs = Date.now()) {
 /**
  * The measurements this card is asked for that no code path records yet.
  * Named so the page can say "not measured" instead of drawing a dash.
+ *
+ * WEB-9b moved two items out: per-timeframe bar receipt times and the
+ * broker-timestamp-to-receipt latency of the timestamped spot stream are now
+ * recorded (lib/feed-receipts.js, served as `barReceipts` / `feedLatency`).
+ * What stays unmeasured is the latency of the feed the tick path trades on:
+ * the gateways' own tick stream reaches Node as receipt times and rates
+ * (/state/tick-recorder), with no broker stamp to measure against.
  */
 export const NOT_MEASURED = Object.freeze([
-  { key: 'feed_latency', label: 'market-feed latency (broker timestamp to receipt)' },
-  { key: 'timeframe_receipts', label: 'per-timeframe bar receipt times (1m, 15m, 1h, 4h)' },
+  { key: 'gateway_feed_latency', label: "market-feed latency on the gateways' tick feed (Node holds no broker timestamp for it)" },
 ])

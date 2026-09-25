@@ -22,55 +22,18 @@ import { backtestRemote } from '../lib/exec-engine.js'
 import { tfMs } from '../lib/timeframes.js'
 import { armedTimeframes } from '../lib/timeframes.js'
 import { backtestStageStrategies } from './stage-matrix.js'
-import { getActiveSessions } from '../lib/sessions.js'
 import { ARM_BAR } from './edge-bars.js'
 import { persistSweepHistogram } from './divergence.js'
 import { recordArmingChange } from './arming-log.js'
+// The cadence and the mode live in lib/autopilot-cadence.js (V3 I2) so the
+// heartbeat can judge the sweep's record by the sweep's own cadence without
+// importing this module (this → exec-engine → heartbeat would be a cycle).
+// Bodies unchanged; re-exported so every existing import keeps working.
+import { autopilotMode, isBusyWindow, autopilotIntervalMs } from '../lib/autopilot-cadence.js'
+export { autopilotMode, isBusyWindow, autopilotIntervalMs }
 
 const RUN_EVERY_MS = 22 * 3600_000 // legacy default (fallback only)
-const BUSY_MS = 10 * 60_000        // US session — the action window
-const CALM_MS = 30 * 60_000        // otherwise
 const BARS = 1000
-
-export function autopilotMode(db) {
-  const m = getState(db, 'autopilot_mode')
-  return m === 'auto' || m === 'suggest' ? m : 'off'
-}
-
-function hourInTz(tz) {
-  try {
-    return Number(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(new Date()))
-  } catch { return null }
-}
-
-/**
- * Is the clock inside an "active" window that warrants the fast cadence? Pure —
- * the caller injects the current sessions + Tokyo hour so it's unit-testable.
- * Two owner windows:
- *   · US: Chicago/NY open until Sydney opens (NY session live, or the thin
- *     NY→Sydney handover before Asia opens).
- *   · JPN225: premarket 1h + first 4 trading hours → 08:00–13:00 JST.
- */
-export function isBusyWindow(sessionLabels = [], tokyoHour = null) {
-  const nyActive = sessionLabels.includes('New York')
-  const asiaOpen = sessionLabels.includes('Sydney') || sessionLabels.includes('Tokyo') || sessionLabels.includes('Singapore')
-  const usBusy = nyActive || (sessionLabels.length === 0 && !asiaOpen)
-  const jpnBusy = tokyoHour != null && tokyoHour >= 8 && tokyoHour < 13
-  return usBusy || jpnBusy
-}
-
-/**
- * Re-run cadence. An explicit autopilot_interval_ms (≥ 5 min) overrides;
- * otherwise SESSION-ADAPTIVE (owner): every 10 min inside a busy window
- * (see isBusyWindow), every 30 min otherwise.
- */
-export function autopilotIntervalMs(db, opts = {}) {
-  const override = Number(getState(db, 'autopilot_interval_ms'))
-  if (Number.isFinite(override) && override >= 300_000) return override
-  const labels = (opts.sessions ?? getActiveSessions()).map(s => s.label)
-  const tokyoHour = opts.tokyoHour ?? hourInTz('Asia/Tokyo')
-  return isBusyWindow(labels, tokyoHour) ? BUSY_MS : CALM_MS
-}
 
 /**
  * Pure policy: compare latest verdicts with what is currently armed and

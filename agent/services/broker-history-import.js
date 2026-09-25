@@ -226,8 +226,14 @@ export function persistDeals(db, rows) {
   `)
   const before = db.prepare('SELECT COUNT(*) AS c FROM broker_deals').get().c
   const write = db.transaction(() => {
+    // V3 L2b W10: a NULL in this read keeps what is stored (keepKnownDealFields,
+    // end of file). Read inside the transaction and carried forward, so a deal
+    // that appears twice in one batch keeps what its first copy wrote.
+    const stored = storedDealFields(db, rows)
     for (const r of rows) {
-      up.run({ ...r, matched_trade_id: localIdFor(r) })
+      const merged = keepKnownDealFields(r, stored.get(String(r.deal_id)))
+      up.run({ ...merged, matched_trade_id: localIdFor(r) })
+      stored.set(String(r.deal_id), merged)
     }
   })
   write()
@@ -559,4 +565,48 @@ export async function importBrokerHistory(db, { days = 30, nowMs = Date.now(), d
   const truncation = pull.complete ? '' : ` — PULL INCOMPLETE (${pull.reason}), this is PART of the window`
   log(`${span}d: ${deals.length} deals → ${result.seen} closes · ${result.inserted} new · ${result.unmatched} with no local trade row · ${priceFix.corrected} fill prices corrected${truncation}`)
   return { days: span, from: iso(from), to: iso(nowMs), deals: deals.length, complete: pull.complete, pages: pull.pages, ...(pull.complete ? {} : { truncatedReason: pull.reason }), ...result, priceFix }
+}
+
+// ---------------------------------------------------------------------------
+// V3 L2b W10 — A LATER READ NEVER ERASES WHAT AN EARLIER ONE KNEW.
+//
+// The upsert in persistDeals replaced every field with whatever the newest
+// read carried. Two writers carry different halves of a deal: the boot seed
+// (statement-import.js) has lots and commission but no gross or swap; the API
+// writers (pnl-backfill, position-capture) had gross and swap but no lots.
+// Each boot's seed therefore blanked the gross and swap the API had stored —
+// CLS-06: 683 deals re-imported at one boot with gross, swap or lots NULL
+// beside a set net_pnl — and each API read blanked the statement's lots.
+//
+// The rule is COALESCE(new, stored), per field: a value the new read carries
+// wins, a NULL keeps what is stored. A '#<symbolId>' placeholder (a read with
+// no symbol metadata) never replaces a real name. It is applied to the row
+// before the upsert so one function states the whole rule; the identity link
+// (matched_trade_id) keeps its own rule in persistDeals — a NULL there is a
+// failed proof, not a missing value. Kept at the end of the file so the line
+// cites into persistDeals (order-lifecycle.js) still point where they did.
+// ---------------------------------------------------------------------------
+const KEEP_KNOWN_DEAL_FIELDS = Object.freeze(['side', 'lots', 'entry_price', 'close_price', 'opened_at', 'closed_at', 'gross_pnl', 'swap', 'commission', 'net_pnl'])
+
+const placeholderSymbol = (s) => s == null || String(s).trim() === '' || /^#/.test(String(s))
+
+/** The row to write: the new read, with every NULL filled from what is stored. */
+export function keepKnownDealFields(row, stored) {
+  if (!stored) return row
+  const out = { ...row }
+  for (const k of KEEP_KNOWN_DEAL_FIELDS) if (out[k] == null && stored[k] != null) out[k] = stored[k]
+  if (placeholderSymbol(out.symbol) && !placeholderSymbol(stored.symbol)) out.symbol = stored.symbol
+  return out
+}
+
+function storedDealFields(db, rows) {
+  const out = new Map()
+  const ids = [...new Set(rows.map(r => (r?.deal_id == null ? null : String(r.deal_id))).filter(Boolean))]
+  for (let i = 0; i < ids.length; i += 500) {
+    const slice = ids.slice(i, i + 500)
+    for (const s of db.prepare(
+      `SELECT deal_id, symbol, ${KEEP_KNOWN_DEAL_FIELDS.join(', ')} FROM broker_deals WHERE deal_id IN (${slice.map(() => '?').join(',')})`,
+    ).all(...slice)) out.set(String(s.deal_id), s)
+  }
+  return out
 }

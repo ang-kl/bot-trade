@@ -86,7 +86,11 @@ test('money is pooled only within one proven currency: SGD and USD are never sum
   assert.equal(r.byCurrency.USD.classes.money_disagrees.delta, -8, 'USD holds the USD account only')
   assert.equal(r.byCurrency.SGD.classes.money_disagrees.delta, 5, 'SGD holds the SGD accounts only')
   assert.equal(r.byCurrency.SGD.classes.agrees.ledgerNet, 30)
+  assert.equal(r.byCurrency.SGD.classes.agrees.ledgerNetMoneyState, 'recorded_currency_units')
   assert.deepEqual(r.unpooledAccounts, [NOCCY])
+  // The no-currency account's class is in no pool: SGD's agrees is SGD2's 30
+  // alone, never 30 + NOCCY's 1.
+  assert.ok(!Object.values(r.byCurrency).some(c => c.classes.agrees?.ledgerNet === 31 || c.classes.agrees?.ledgerNet === 41))
   assert.equal(r.accounts.find(a => a.accountId === NOCCY).currency, null)
   assert.equal(r.accounts.find(a => a.accountId === NOCCY).currencyReason, 'deposit_currency_not_recorded')
   // No top-level money field exists to sum across currencies.
@@ -142,19 +146,85 @@ test('GET /state/ledger-reconciliation: built on the worker, no SQL on the manag
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)) })
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); db.close() })
   const url = q => `http://127.0.0.1:${server.address().port}/state/ledger-reconciliation${q}`
+  // The report's single worker slot is held until the worker EXITS, which can
+  // trail its answer (the same measurement V3 L1 recorded for order-lifecycle),
+  // so a distinct read straight after another may be answered with the typed
+  // capacity 503 — explicit and transient, never an empty report (B2-m: this
+  // race failed the sequence below 3 times in 5 on the merged tree). A 503 is
+  // accepted only with that reason and a retry hint, and the read is repeated
+  // until the slot is free.
+  const read = async q => {
+    for (let i = 0; i < 100; i++) {
+      const res = await fetch(url(q))
+      if (res.status !== 503) return res
+      const busy = await res.json()
+      assert.equal(busy.reason, 'ledger_reconciliation_worker_capacity', 'the only 503 accepted is the typed capacity answer')
+      assert.ok(Number(res.headers.get('retry-after')) > 0, 'with a retry hint')
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error(`${q}: the worker slot never freed`)
+  }
   const prepare = db.prepare
   let managementReads = 0
   db.prepare = () => { managementReads++; throw new Error('ledger reconciliation used the management connection') }
   try {
-    const all = await fetch(url('?account=all'))
+    const all = await read('?account=all')
     assert.equal(all.status, 200)
     const body = await all.json()
     assert.equal(body.accounts.length, 4)
     assert.equal(all.headers.get('cache-control'), 'no-store')
-    const one = await (await fetch(url(`?account=${SGD2}`))).json()
+    const oneRes = await read(`?account=${SGD2}`)
+    assert.equal(oneRes.status, 200)
+    const one = await oneRes.json()
     assert.deepEqual(one.accounts.map(a => a.accountId), [SGD2])
-    assert.equal((await fetch(url('?account=999'))).status, 400)
-    assert.equal((await fetch(url('?account=abc'))).status, 400)
+    assert.equal((await read('?account=999')).status, 400)
+    assert.equal((await read('?account=abc')).status, 400)
   } finally { db.prepare = prepare }
   assert.equal(managementReads, 0)
+})
+
+// ---------------------------------------------------------------------------
+// B2-m (merge onto main after V3 WEB-5): the pools come from THE one pooling
+// rule (poolByCurrency → splitByCurrency → populationStats) keyed by THE one
+// currency reader (reportCurrency over depositCurrencies()), so the report
+// carries the rule's own guarantees: a partly priced pool is marked partial,
+// a class priced over no position has no figure (null, never a zero), and an
+// account whose currency evidence is not its own is in no pool.
+// ---------------------------------------------------------------------------
+test('B2-m: a partly priced pool is marked partial, and a class priced over no position is null, never a zero', t => {
+  const db = build(initDB(':memory:')); t.after(() => db.close())
+  // SGD1 gains a written-off, unpriced never_filled position; SGD2 one with a
+  // priced ledger row (a never_filled verdict beside a priced row is the
+  // fixture's shape, not a claim about production).
+  db.prepare(`INSERT INTO trades (account_id, symbol, side, status, ctrader_position_id, opened_at, closed_at, entry_price, exit_price, net_pnl, pnl_unresolvable)
+    VALUES (?, 'EURUSD', 'BUY', 'closed', '202', '2026-07-01 00:00:00', '2026-09-20 10:00:00', 1.1, 1.2, NULL, 1)`).run(SGD1)
+  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, reason, read_at)
+    VALUES (?, '202', 'never_filled', 1, 'fixture never_filled', '2026-09-25T10:00:00Z')`).run(SGD1)
+  db.prepare(`INSERT INTO trades (account_id, symbol, side, status, ctrader_position_id, opened_at, closed_at, entry_price, exit_price, net_pnl)
+    VALUES (?, 'EURUSD', 'BUY', 'closed', '302', '2026-07-01 00:00:00', '2026-09-20 10:00:00', 1.1, 1.2, 4)`).run(SGD2)
+  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, reason, read_at)
+    VALUES (?, '302', 'never_filled', 1, 'fixture never_filled', '2026-09-25T10:00:00Z')`).run(SGD2)
+  const r = buildLedgerReconciliation(db)
+  const sgd1 = r.accounts.find(a => a.accountId === SGD1).classes.never_filled
+  assert.deepEqual([sgd1.positions, sgd1.ledgerNet, sgd1.ledgerPriced, sgd1.brokerNet, sgd1.delta], [1, null, 0, null, null],
+    'one account, nothing priced: no figure, never 0')
+  const pool = r.byCurrency.SGD.classes.never_filled
+  assert.deepEqual([pool.positions, pool.rows, pool.writtenOff], [2, 2, 1])
+  assert.deepEqual([pool.ledgerNet, pool.ledgerPriced, pool.ledgerNetMoneyState], [4, 1, 'partial_recorded_currency_units'])
+  assert.deepEqual([pool.brokerNet, pool.brokerPriced, pool.brokerNetMoneyState], [null, 0, 'unavailable'])
+  const usd = r.byCurrency.USD.classes.never_filled
+  assert.deepEqual([usd.ledgerNet, usd.ledgerNetMoneyState], [null, 'unavailable'], 'USD never_filled is priced over no position')
+})
+
+test('B2-m: the currency comes from the one reader — evidence recorded on another host is no currency, and the account is pooled with nothing', t => {
+  const db = build(initDB(':memory:')); t.after(() => db.close())
+  // SGD2 is routed to the live host; its evidence now names the demo host.
+  setState(db, `acct:${SGD2}:deposit_currency_evidence_json`, JSON.stringify({ accountId: SGD2, host: 'demo.ctraderapi.com', currency: 'SGD',
+    receivedAt: 1, source: 'broker_asset_list' }))
+  const r = buildLedgerReconciliation(db)
+  const sgd2 = r.accounts.find(a => a.accountId === SGD2)
+  assert.deepEqual([sgd2.currency, sgd2.currencyReason], [null, 'deposit_currency_evidence_mismatch'])
+  assert.deepEqual(r.byCurrency.SGD.accountIds, [SGD1])
+  assert.equal(r.byCurrency.SGD.classes.agrees, undefined, "SGD2's agrees (30) is no longer in the SGD pool")
+  assert.deepEqual(r.unpooledAccounts.sort(), [SGD2, NOCCY].sort())
 })

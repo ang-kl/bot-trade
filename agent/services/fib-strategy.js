@@ -164,7 +164,7 @@ export async function getRegimeBars(creds, symbolId, { preferredTfs = ['1d', '4h
   try {
     const fetched = await wsGetTrendbarsBatch(
       creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
-      symbolId, [fallbackTf], count, 60_000,
+      symbolId, [fallbackTf], count, 60_000, 0, { purpose: 'regime' },
     )
     const bars = (fetched && fetched[fallbackTf]) || []
     if (bars.length) barCache.set(`${symbolId}|${fallbackTf}`, { bars, fetchedAt: Date.now() })
@@ -588,7 +588,9 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
       // bars/sec, so depth changes response size, never request count.
       const fetchBars = strategyFns(opts).reduce(
         (deepest, fn) => Math.max(deepest, Number(fn?.minBars) || 0), SIGNAL_BARS)
-      const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, fetchBars)
+      // WEB-9b: `purpose` labels the per-timeframe bar receipt only (the
+      // same 30 s timeout and live window as the defaults).
+      const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, fetchBars, 30_000, 0, { purpose: 'strategy_scan' })
       const now = Date.now()
       for (const tf of stale) {
         barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt: now, host, accountId })
@@ -971,7 +973,7 @@ export async function scanPendingSetups(creds, symbolMap, pendingMatrix, opts = 
     const stale = armedTfs.filter(tf => !cachedBars(symbolId, tf))
     if (stale.length > 0) {
       try {
-        const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, BAR_COUNT)
+        const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, BAR_COUNT, 30_000, 0, { purpose: 'pending_scan' })
         const fetchedAt = Date.now()
         for (const tf of stale) {
           barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt })

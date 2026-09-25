@@ -797,10 +797,17 @@ export default function Desk() {
       {/* V3 B2: only groups the broker's receipts do not show as distinct
           positions count, each extra row at its own money, and the money is
           given per currency — never one "$" figure summed across SGD and USD
-          accounts (owner default 25-09). */}
+          accounts (owner default 25-09). The server pools by the one rule
+          (poolByCurrency); an account with no recorded currency is shown in
+          its own units, and a row with no account per broker position. */}
       {(dupeTrades?.totalExtraRows ?? 0) > 0 && (() => {
         const counted = dupeTrades.groups.filter(g => g.classification !== 'broker_distinct')
-        const money = (dupeTrades.extraByCurrency ?? []).map(c => `${c.pnl >= 0 ? '+' : '−'}${Math.abs(c.pnl).toFixed(2)} ${c.currency ?? `(account ${c.accountIds.map(a => a ?? 'none').join(', ')}, currency not recorded)`}`).join(' · ')
+        const signed = v => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`
+        const money = [
+          ...(dupeTrades.extraByCurrency ?? []).map(c => c.pnl == null ? `${c.currency} not priced` : `${signed(c.pnl)} ${c.currency}`),
+          ...(dupeTrades.extraByAccount ?? []).filter(b => !b.currency).map(b => `${signed(b.pnl)} (account ${b.accountId} units, currency not recorded)`),
+          ...(dupeTrades.extraUnattributed ?? []).map(u => `${signed(u.pnl)} (${u.positionId ? `position ${u.positionId}` : `row #${u.tradeIds[0]}`}, no account, currency unknown)`),
+        ].join(' · ')
         return (
           <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
             <p className="font-semibold text-[var(--color-warning-text)]">

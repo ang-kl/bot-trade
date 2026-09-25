@@ -8,9 +8,15 @@
 //
 // MONEY IS NEVER SUMMED ACROSS CURRENCIES (owner default 25-09-2026). Every
 // money figure is one account's, in that account's deposit currency; the
-// `byCurrency` block pools only accounts whose currency is PROVEN and equal
-// (performance-populations.depositCurrencies); an account whose currency is
-// not recorded is listed, never pooled. Counts may be added; money may not.
+// `byCurrency` block pools accounts through THE one currency source and THE
+// one pooling rule on main (B2-m, after V3 WEB-5): each account's currency is
+// reportCurrency over depositCurrencies() (deposit-currencies.js), and each
+// class's money is pooled by poolByCurrency / splitByCurrency, whose
+// populationStats re-checks that every contributing account is recorded in
+// that currency and marks a partly priced pool partial. An account whose
+// currency is not recorded is listed in `unpooledAccounts`, never pooled.
+// A class with no priced position has no money figure (null), never a zero.
+// Counts may be added; money may not.
 //
 // EVERY POSITION GETS ONE CLASS, and the class says what it rests on:
 //   basis 'broker_lifecycle'  — the broker's complete position history was
@@ -34,7 +40,8 @@
 // ---------------------------------------------------------------------------
 
 import { normPosId } from '../lib/pos-id.js'
-import { depositCurrencies } from './performance-populations.js'
+import { depositCurrencies } from './deposit-currencies.js'
+import { poolByCurrency, reportCurrency } from '../shared/performance-populations.js'
 import { findDuplicateTrades } from './trade-integrity.js'
 import { VERDICTS, NO_ACCOUNT_PROBED_SQL } from './position-lifecycle-evidence.js'
 
@@ -65,7 +72,51 @@ export const CLASS_BASIS = Object.freeze({
 /** Classes that need nobody's attention: listed as counts only. */
 const QUIET = new Set(['agrees', 'filled', 'fragment_resolved', 'agrees_on_receipts'])
 
-function emptyClass() { return { positions: 0, rows: 0, writtenOff: 0, ledgerNet: 0, brokerNet: 0, delta: 0, pricedBoth: 0 } }
+// Each money figure carries the count of positions it prices (ledgerPriced,
+// brokerPriced, pricedBoth for the delta): a figure over fewer positions than
+// the class holds is partial, and one over none is null — never a zero.
+function emptyClass() {
+  return { positions: 0, rows: 0, writtenOff: 0, ledgerNet: null, ledgerPriced: 0, brokerNet: null, brokerPriced: 0, delta: null, pricedBoth: 0 }
+}
+const addMoney = (sum, v) => r2((sum ?? 0) + v)
+// The three money figures of a class and the count each is priced over.
+const CLASS_MONEY = Object.freeze([['ledgerNet', 'ledgerPriced'], ['brokerNet', 'brokerPriced'], ['delta', 'pricedBoth']])
+
+/**
+ * Per currency, per class: THE pooling rule (poolByCurrency → splitByCurrency
+ * → populationStats), once per money figure, keyed by the one currency reader
+ * `currencyOf` (reportCurrency over depositCurrencies()). Counts (positions,
+ * rows, written-off rows) are added only over the accounts the rule pooled.
+ * Accounts in no currency are returned as `unpooledAccounts`; their money
+ * stays in their own account section.
+ */
+export function poolClassesByCurrency(accounts, currencyOf) {
+  const byCurrency = {}
+  for (const s of accounts) {
+    const c = currencyOf(s.accountId)
+    if (c) (byCurrency[c] ??= { accountIds: [], classes: {} }).accountIds.push(s.accountId)
+  }
+  const unpooledAccounts = accounts.filter(s => !currencyOf(s.accountId)).map(s => s.accountId)
+  const names = [...new Set(accounts.flatMap(s => Object.keys(s.classes)))].sort()
+  for (const cls of names) {
+    const holders = accounts.filter(s => s.classes[cls])
+    for (const [net, priced] of CLASS_MONEY) {
+      const { moneyByCurrency } = poolByCurrency(holders.map(s => ({ accountId: s.accountId, recordedNet: s.classes[cls][net],
+        closedN: s.classes[cls].positions, pricedN: s.classes[cls][priced] })), currencyOf)
+      for (const pool of moneyByCurrency) {
+        const t = byCurrency[pool.currency].classes[cls] ??= (() => {
+          const inPool = holders.filter(s => pool.accountIds.includes(s.accountId))
+          return { positions: pool.closedN, rows: inPool.reduce((n, s) => n + s.classes[cls].rows, 0),
+            writtenOff: inPool.reduce((n, s) => n + s.classes[cls].writtenOff, 0) }
+        })()
+        t[net] = pool.recordedNet == null ? null : r2(pool.recordedNet)
+        t[priced] = pool.pricedN
+        t[`${net}MoneyState`] = pool.moneyState
+      }
+    }
+  }
+  return { byCurrency, unpooledAccounts }
+}
 
 /**
  * @param {import('better-sqlite3').Database} db
@@ -73,7 +124,10 @@ function emptyClass() { return { positions: 0, rows: 0, writtenOff: 0, ledgerNet
  *   'all' / null for every registered account.
  */
 export function buildLedgerReconciliation(db, { accountId = null } = {}) {
-  const currencies = depositCurrencies(db)
+  // THE one currency source (deposit-currencies.js), read once per report and
+  // through reportCurrency, as every per-currency figure on main reads it.
+  const currencies = { currencyByAccount: depositCurrencies(db) }
+  const currencyOf = id => reportCurrency(currencies, id)
   // Owner principle 1: only routing reads the demo/live flag. The report needs
   // none of it — each probe names the host it read from.
   const registered = db.prepare('SELECT account_id, enabled FROM accounts ORDER BY account_id').all()
@@ -86,23 +140,13 @@ export function buildLedgerReconciliation(db, { accountId = null } = {}) {
   try { dupes = findDuplicateTrades(db, { scope: null }) } catch { dupes = null }
 
   const accounts = wanted.map(a => accountSection(db, String(a.account_id), {
-    enabled: Number(a.enabled) === 1, currency: currencies[String(a.account_id)] ?? { currency: null },
+    enabled: Number(a.enabled) === 1, currency: currencyOf(a.account_id),
+    currencyEvidence: currencies.currencyByAccount[String(a.account_id)] ?? null,
     noAccountPids, dupes,
   }))
 
-  // Pool per PROVEN currency only.
-  const byCurrency = {}
-  const unpooled = []
-  for (const s of accounts) {
-    if (!s.currency) { unpooled.push(s.accountId); continue }
-    const c = byCurrency[s.currency] ??= { accountIds: [], classes: {} }
-    c.accountIds.push(s.accountId)
-    for (const [cls, v] of Object.entries(s.classes)) {
-      const t = c.classes[cls] ??= { positions: 0, rows: 0, ledgerNet: 0, brokerNet: 0, delta: 0 }
-      t.positions += v.positions; t.rows += v.rows
-      t.ledgerNet = r2(t.ledgerNet + v.ledgerNet); t.brokerNet = r2(t.brokerNet + v.brokerNet); t.delta = r2(t.delta + v.delta)
-    }
-  }
+  // Pool per recorded currency only, by the one pooling rule.
+  const { byCurrency, unpooledAccounts: unpooled } = poolClassesByCurrency(accounts, currencyOf)
   const counts = {}
   for (const s of accounts) for (const [cls, v] of Object.entries(s.classes)) counts[cls] = (counts[cls] || 0) + v.positions
 
@@ -110,7 +154,7 @@ export function buildLedgerReconciliation(db, { accountId = null } = {}) {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     scope: accountId == null || accountId === 'all' ? 'all' : String(accountId),
-    moneyPolicy: 'per account in its deposit currency; pooled only within one proven currency; never summed across currencies',
+    moneyPolicy: 'per account in its deposit currency; pooled only within one recorded currency by the one pooling rule (poolByCurrency); never summed across currencies; a partly priced pool is marked partial',
     receiptsSince: RECEIPTS_SINCE,
     classBasis: CLASS_BASIS,
     verdictMeaning: Object.fromEntries(Object.entries(VERDICTS).map(([k, v]) => [k, v.meaning])),
@@ -123,7 +167,7 @@ export function buildLedgerReconciliation(db, { accountId = null } = {}) {
   }
 }
 
-function accountSection(db, accountId, { enabled, currency, noAccountPids, dupes }) {
+function accountSection(db, accountId, { enabled, currency, currencyEvidence, noAccountPids, dupes }) {
   // Ledger positions: closed rows (any status but rejected/cancelled count as
   // holders; rejected twins are kept for the broker-side classes).
   const ledger = new Map()
@@ -150,9 +194,9 @@ function accountSection(db, accountId, { enabled, currency, noAccountPids, dupes
   const add = (cls, entry, { rows = 0, writtenOff = 0, ledgerNet = null, brokerNet = null } = {}) => {
     const c = classes[cls] ??= emptyClass()
     c.positions++; c.rows += rows; c.writtenOff += writtenOff
-    if (ledgerNet != null) c.ledgerNet = r2(c.ledgerNet + ledgerNet)
-    if (brokerNet != null) c.brokerNet = r2(c.brokerNet + brokerNet)
-    if (ledgerNet != null && brokerNet != null) { c.delta = r2(c.delta + ledgerNet - brokerNet); c.pricedBoth++ }
+    if (ledgerNet != null) { c.ledgerNet = addMoney(c.ledgerNet, ledgerNet); c.ledgerPriced++ }
+    if (brokerNet != null) { c.brokerNet = addMoney(c.brokerNet, brokerNet); c.brokerPriced++ }
+    if (ledgerNet != null && brokerNet != null) { c.delta = addMoney(c.delta, ledgerNet - brokerNet); c.pricedBoth++ }
     if (!QUIET.has(cls)) {
       const list = lists[cls] ??= []
       if (list.length < LIST_MAX) list.push(entry)
@@ -202,7 +246,9 @@ function accountSection(db, accountId, { enabled, currency, noAccountPids, dupes
   }
   // Duplicate candidates on this account, re-classed by broker evidence.
   let duplicates = null
-  if (dupes) {
+  // A read that failed (findDuplicateTrades's early answer carries no money
+  // split) leaves the block unavailable (null), never a zero.
+  if (Array.isArray(dupes?.extraByAccount)) {
     const mine = dupes.groups.filter(g => String(g.accountId) === accountId)
     const money = dupes.extraByAccount.find(b => String(b.accountId) === accountId)
     duplicates = {
@@ -215,8 +261,8 @@ function accountSection(db, accountId, { enabled, currency, noAccountPids, dupes
   }
   return {
     accountId, enabled,
-    currency: currency?.currency ?? null,
-    ...(currency?.currency ? { currencySource: currency.source ?? null } : { currencyReason: currency?.reason ?? 'deposit_currency_not_recorded' }),
+    currency: currency ?? null,
+    ...(currency ? { currencySource: currencyEvidence?.source ?? null } : { currencyReason: currencyEvidence?.reason ?? 'deposit_currency_not_recorded' }),
     classes,
     positions: lists,
     duplicates,

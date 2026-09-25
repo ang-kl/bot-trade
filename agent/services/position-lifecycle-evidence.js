@@ -240,13 +240,21 @@ export function recordLifecycleEvidence(db, { accountId, positionId, host = null
   return classified.verdict
 }
 
-/** Keep the validated deals as broker receipts (the one shaper and upsert). */
+/**
+ * Keep the validated deals as broker receipts (the one shaper and upsert).
+ * Like the other API deal writers since V3 L2b W10 (pnl-backfill, position
+ * capture), the symbol names carry the broker's own declared lot size from
+ * the registry (withBrokerLotSizes), so the receipt stores its lots — never a
+ * guessed divisor; an undeclared symbol stays NULL. persistDeals keeps every
+ * field an earlier read knew (keepKnownDealFields), so this read never blanks
+ * one.
+ */
 async function persistReceipts(db, response, accountId) {
-  const [{ shapeDeals, persistDeals }, { getAccountSymbolMap }] = await Promise.all([
-    import('./broker-history-import.js'), import('../lib/ctrader-creds.js')])
+  const [{ shapeDeals, persistDeals }, { getAccountSymbolMap }, { withBrokerLotSizes }] = await Promise.all([
+    import('./broker-history-import.js'), import('../lib/ctrader-creds.js'), import('../lib/lot-size-registry.js')])
   const symMeta = {}
   try { for (const [name, id] of Object.entries(getAccountSymbolMap(db, accountId)?.map ?? {})) symMeta[id] = { symbolName: name } } catch { /* receipt without a name */ }
-  const shaped = shapeDeals((response.deal ?? []).filter(executedDeal), symMeta, accountId)
+  const shaped = shapeDeals((response.deal ?? []).filter(executedDeal), withBrokerLotSizes(db, symMeta), accountId)
   return shaped.length ? persistDeals(db, shaped) : { seen: 0 }
 }
 

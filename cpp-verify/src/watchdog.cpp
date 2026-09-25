@@ -1,4 +1,5 @@
 #include "watchdog.hpp"
+#include "entry_diagnostics.hpp"
 #include "watchdog_http.hpp"
 #include <algorithm>
 #include <chrono>
@@ -20,7 +21,8 @@ std::string stamp(long long now) {
   char out[40]; std::strftime(out, sizeof out, "%Y-%m-%d %H:%M:%S SGT", &tm); return out;
 }
 std::string suffix(const std::string& id) { return id.empty() ? "unknown" : "…" + id.substr(id.size() > 4 ? id.size() - 4 : 0); }
-std::string notification(const jsn::Value& item, long long now) {
+}
+std::string watchNotificationText(const jsn::Value& item, long long now) {
   const auto& d = item.get("detail");
   std::string out = "bot-trade " + item.get("severity").asString() + " / " + item.get("transition").asString()
     + "\nService: " + d.get("service").asString() + " · account " + suffix(d.get("accountId").asString())
@@ -33,7 +35,6 @@ std::string notification(const jsn::Value& item, long long now) {
   // No raw payload, full account ID, URL, credential or exception is forwarded.
   if (out.size() > 3000) out.resize(3000);
   return out;
-}
 }
 bool watchAllowsNotification(const jsn::Value& snapshot, const jsn::Value& delivery, long long now) {
   const auto& p = snapshot.get("services").get("node").get("contract").get("notificationPolicy");
@@ -147,7 +148,7 @@ void Watchdog::run(std::stop_token stop) {
     // Telegram call cannot stop the independent ProtectionWatch thread.
     const auto token = env("WATCHDOG_TELEGRAM_TOKEN"), chat = env("WATCHDOG_TELEGRAM_CHAT_ID");
     if (!delivery.isNull() && !token.empty() && !chat.empty()) {
-      const auto body = jsn::dump(jsn::Value(jsn::Object{{"chat_id", chat}, {"text", notification(delivery, nowMs())}}));
+      const auto body = jsn::dump(jsn::Value(jsn::Object{{"chat_id", chat}, {"text", watchNotificationText(delivery, nowMs())}}));
       const auto r = watchHttp("https://api.telegram.org/bot" + token + "/sendMessage", "", body, 5000);
       const bool accepted = r.received && r.body.get("ok").asBool() && r.body.get("result").get("message_id").isNumber();
       const auto message = accepted ? jsn::dump(r.body.get("result").get("message_id")) : "";
@@ -160,12 +161,19 @@ void Watchdog::run(std::stop_token stop) {
   }
 }
 jsn::Value Watchdog::status() {
+  // Read before mutex_, never under it: ProtectionWatch's own lock is the one
+  // /protection-status takes, and a broker read never holds it.
+  const auto protection = protection_();
   // A slow volume must not hold the process health endpoint across fsync and
-  // provoke a supervisor restart of a still-working broker audit.
+  // provoke a supervisor restart of a still-working broker audit. A busy
+  // reply carries no entryDiagnostics; the website reads that as unavailable.
   std::unique_lock lock(mutex_, std::try_to_lock);
   if (!lock.owns_lock()) return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"enabled", enabled_},
     {"error", "watchdog_status_busy"}, {"observedAtMs", nowMs()}});
   auto s = state_.status(nowMs());
+  auto relay = entryDiagnosticsView(state_.nodeEntryDiagnostics(), state_.nodeEntryDiagnosticsAtMs(), protection, nowMs(), state_.serviceGraceMs());
+  if (!enabled_) relay.set("reason", "watchdog_supervision_disabled"); // nothing probes Node, so nothing can be relayed
+  s.set("entryDiagnostics", relay);
   s.set("enabled", enabled_); s.set("durable", writable_); s.set("error", error_);
   const auto snapshot = state_.snapshot();
   const auto& policy = snapshot.get("services").get("node").get("contract").get("notificationPolicy");

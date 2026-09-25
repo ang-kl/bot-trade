@@ -311,3 +311,42 @@ test('extra money is per currency: an SGD and a USD account are never summed; tw
   assert.equal(usd.totalExtraPnl, -15, 'two proven-USD accounts share one bucket')
   assert.deepEqual(usd.extraByCurrency.map(c => [c.currency, c.accountIds.sort()]), [['USD', ['46130058', '46979908']]])
 })
+
+// ---------------------------------------------------------------------------
+// B2-m (merge onto main after V3 WEB-5): the extra money is pooled by THE one
+// pooling rule (poolByCurrency) over THE one currency reader (reportCurrency
+// over depositCurrencies()). An account with no recorded currency keeps its
+// own figure and joins no pool; a row with no account is totalled only within
+// its own broker position — never across positions, whose accounts (and so
+// currencies) are unknown.
+// ---------------------------------------------------------------------------
+test('B2-m: an account with no recorded currency is shown in its own units and pooled with nothing', () => {
+  const db = initDB(':memory:')
+  currency(db, '46130058', 'USD')
+  db.prepare("INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES ('47790949',0,1,'active')").run()
+  const dup = (acct, pnl, pos) => { for (let i = 0; i < 2; i++) insertScoped(db, acct, { symbol: 'EURUSD', side: 'BUY', entry: 1.1, exit: 1.2, pnl, posId: pos }) }
+  dup('46130058', -10, '1'); dup('47790949', -7, '2')
+  const r = findDuplicateTrades(db)
+  assert.equal(r.totalExtraRows, 2)
+  assert.equal(r.totalExtraPnl, null, 'USD and an unknown currency are never one figure')
+  assert.deepEqual(r.extraByCurrency.map(c => [c.currency, c.pnl, c.rows, c.accountIds, c.moneyState]),
+    [['USD', -10, 1, ['46130058'], 'recorded_currency_units']])
+  assert.deepEqual(r.extraByAccount.map(b => [b.accountId, b.currency, b.pnl]).sort(), [['46130058', 'USD', -10], ['47790949', null, -7]])
+  // Alone, the unknown-currency account is one account's units: a figure.
+  db.prepare("DELETE FROM trades WHERE account_id = '46130058'").run()
+  const one = findDuplicateTrades(db)
+  assert.deepEqual([one.totalExtraPnl, one.extraByCurrency.length], [-7, 0])
+})
+
+test('B2-m: rows with no account are totalled within one broker position, never across positions', () => {
+  const db = initDB(':memory:')
+  // Two unattributed groups on two broker positions: their accounts, and so
+  // their currencies, are unknown — two figures, no total.
+  for (let i = 0; i < 3; i++) insertTrade(db, { symbol: 'AUDUSD', side: 'SELL', entry: 0.65, exit: 0.66, pnl: -5, posId: '900' })
+  for (let i = 0; i < 2; i++) insertTrade(db, { symbol: 'USDJPY', side: 'BUY', entry: 150, exit: 149, pnl: -8, posId: '901' })
+  const r = findDuplicateTrades(db)
+  assert.equal(r.totalExtraRows, 3)
+  assert.equal(r.totalExtraPnl, null, 'two unattributed positions are not summed')
+  assert.deepEqual(r.extraUnattributed.map(u => [u.positionId, u.rows, u.pnl]).sort(), [['900', 2, -10], ['901', 1, -8]])
+  assert.deepEqual([r.extraByAccount, r.extraByCurrency], [[], []])
+})

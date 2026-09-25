@@ -163,6 +163,29 @@ test('a money row with no receipt: read once, receipts kept and linked, verdict 
   assert.equal(again.state, 'no_candidate'); assert.equal(reads.length, 1)
 })
 
+// B2-m (merge onto main after V3 L2b W10): the sweep is an API deal writer
+// too, so its receipts store lots from the broker's own declared lot size —
+// and only from that (an undeclared symbol stays NULL, never the table guess).
+test('B2-m: the sweep\'s receipts store lots from the broker\'s declared lot size, as the other API deal writers do (L2b W10)', async t => {
+  const db = fresh(t)
+  const { rememberLotSize } = await import('../lib/lot-size-registry.js')
+  setState(db, `symbol_id_map:${DEMO}`, JSON.stringify({ builtAt: iso(NOW), map: { EURUSD: 10, XAUUSD: 11 } }))
+  rememberLotSize(db, 'EURUSD', 100)
+  trade(db, { pid: '701', net: 150 })
+  const out = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW, getPositionDeals: async () => hist(DEMO, [
+    od(7011, 701, NOW - 30 * DAY, 300), cd(7012, 701, NOW - 29 * DAY, 300, 15000)]) })
+  // The receipt is the closing deal (shapeDeals keeps closes only).
+  assert.deepEqual([out.state, out.verdict, out.receipts], ['read', 'agrees', 1])
+  const lots = db.prepare('SELECT deal_id, lots, symbol FROM broker_deals WHERE position_id = ? ORDER BY deal_id').all('701')
+  assert.deepEqual(lots.map(d => [d.deal_id, d.lots, d.symbol]), [['7012', 3, 'EURUSD']], '300 / 100 per lot')
+  // A symbol the broker never declared a lot size for stores NULL lots.
+  trade(db, { pid: '702', net: 150, symbol: 'XAUUSD' })
+  const xau = d => ({ ...d, symbolId: 11 })
+  await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + EVIDENCE_PACE_MS, getPositionDeals: async () => hist(DEMO, [
+    xau(od(7021, 702, NOW - 30 * DAY, 300)), xau(cd(7022, 702, NOW - 29 * DAY, 300, 15000))]) })
+  assert.deepEqual(db.prepare('SELECT symbol, lots FROM broker_deals WHERE position_id = ?').all('702').map(d => [d.symbol, d.lots]), [['XAUUSD', null]])
+})
+
 test('money that disagrees and a money-bearing fragment are verdicts only: the rows stay byte-identical', async t => {
   const db = fresh(t)
   const a = trade(db, { pid: '701', net: 120 })

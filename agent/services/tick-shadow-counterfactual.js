@@ -93,7 +93,10 @@ const stampMs = (at) => Date.parse(String(at || '').replace(' ', 'T') + (String(
  */
 export function asOfTrendReader(db, { gate = loadRegimeGateConfig(db), minAsOfMs, maxAsOfMs }) {
   let queries = 0
-  if (!gate?.on) return { reading: () => null, queries: () => queries }
+  // PR-Q3: `rowsFor` hands one symbol's loaded rows to a reader that has no
+  // database (the replay worker), which answers through trendReadingFromRows
+  // — the same function `reading` uses, so the two cannot drift.
+  if (!gate?.on) return { reading: () => null, queries: () => queries, rowsFor: () => [], pages: function* () {}, maxRegimeAgeMin: null }
   const bound = Number(gate.maxRegimeAgeMin === undefined ? DEFAULT_MAX_REGIME_AGE_MIN : gate.maxRegimeAgeMin)
   const hi = sqlStamp(Number(maxAsOfMs))
   const lo = bound > 0 && Number.isFinite(Number(minAsOfMs)) ? sqlStamp(Number(minAsOfMs) - bound * 60_000 - 1000) : null
@@ -103,6 +106,34 @@ export function asOfTrendReader(db, { gate = loadRegimeGateConfig(db), minAsOfMs
                         WHERE symbol = ?${lo ? ' AND computed_at >= ?' : ''} AND computed_at <= ?
                         ORDER BY computed_at, id`)
   } catch { stmt = null }
+  // PR-Q3 fix round (checker B2): the same rows as `rowsFor`, in the same
+  // order, read a page at a time, so a caller on the keeper's event loop can
+  // yield between pages. Keyset on (computed_at, id) — id is the rowid, so
+  // the pair is unique and totally ordered and the pages concatenate to
+  // exactly `rowsFor`'s answer (the test pins the two equal). The window's
+  // bounds are this reader's, never restated by the caller.
+  let pageFirst = null, pageNext = null
+  const pages = function* (symbol, { pageRows = 500 } = {}) {
+    const limit = Math.max(1, Math.floor(Number(pageRows)) || 500)
+    try {
+      pageFirst ??= db.prepare(`SELECT id, trend_direction, computed_at FROM regimes
+                                 WHERE symbol = ?${lo ? ' AND computed_at >= ?' : ''} AND computed_at <= ?
+                                 ORDER BY computed_at, id LIMIT ?`)
+      pageNext ??= db.prepare(`SELECT id, trend_direction, computed_at FROM regimes
+                                WHERE symbol = ? AND computed_at >= ? AND (computed_at > ? OR id > ?) AND computed_at <= ?
+                                ORDER BY computed_at, id LIMIT ?`)
+    } catch { return }
+    let last = null
+    for (;;) {
+      queries++
+      let raw
+      try { raw = last == null ? (lo ? pageFirst.all(symbol, lo, hi, limit) : pageFirst.all(symbol, hi, limit)) : pageNext.all(symbol, last.computed_at, last.computed_at, last.id, hi, limit) } catch { return }
+      if (!raw.length) return
+      last = raw[raw.length - 1]
+      yield raw.map(r => ({ at: String(r.computed_at), dir: r.trend_direction ?? null }))
+      if (raw.length < limit) return
+    }
+  }
   const bySymbol = new Map()
   const rowsOf = (symbol) => {
     if (!bySymbol.has(symbol)) {
@@ -116,20 +147,32 @@ export function asOfTrendReader(db, { gate = loadRegimeGateConfig(db), minAsOfMs
     return bySymbol.get(symbol)
   }
   const reading = (symbol, asOfMs) => {
-    const asOf = Number(asOfMs)
-    if (!Number.isFinite(asOf)) return null
-    const rows = rowsOf(symbol)
-    const key = sqlStamp(asOf)
-    let a = 0, b = rows.length   // the first index whose stamp is > key
-    while (a < b) { const m = (a + b) >> 1; if (rows[m].at <= key) a = m + 1; else b = m }
-    if (a === 0) return null
-    const row = rows[a - 1]
-    if (!(bound > 0)) return row.dir
-    const t = stampMs(row.at)
-    if (!Number.isFinite(t)) return null
-    return (asOf - t) / 60_000 > bound ? null : row.dir
+    if (!Number.isFinite(Number(asOfMs))) return null
+    return trendReadingFromRows(rowsOf(symbol), asOfMs, bound)
   }
-  return { reading, queries: () => queries }
+  return { reading, queries: () => queries, rowsFor: (symbol) => rowsOf(symbol), pages, maxRegimeAgeMin: bound }
+}
+
+/**
+ * The reading AS OF a moment over ONE symbol's rows ([{ at, dir }], ordered
+ * by computed_at then id, as asOfTrendReader loads them): the newest row whose
+ * stamp is <= the as-of stamp, aged under `maxRegimeAgeMin` (not > 0 = no
+ * bound), stale → null. Pure — asOfTrendReader's `reading` is this over its
+ * query, and the replay worker (PR-Q3) is this over the rows it was handed.
+ */
+export function trendReadingFromRows(rows, asOfMs, maxRegimeAgeMin) {
+  const asOf = Number(asOfMs)
+  if (!Number.isFinite(asOf) || !Array.isArray(rows)) return null
+  const key = sqlStamp(asOf)
+  let a = 0, b = rows.length   // the first index whose stamp is > key
+  while (a < b) { const m = (a + b) >> 1; if (rows[m].at <= key) a = m + 1; else b = m }
+  if (a === 0) return null
+  const row = rows[a - 1]
+  const bound = Number(maxRegimeAgeMin)
+  if (!(bound > 0)) return row.dir
+  const t = stampMs(row.at)
+  if (!Number.isFinite(t)) return null
+  return (asOf - t) / 60_000 > bound ? null : row.dir
 }
 
 /**

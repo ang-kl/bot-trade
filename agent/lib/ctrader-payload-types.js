@@ -41,6 +41,11 @@ export const PT = Object.freeze({
   DEAL_LIST_RES:           2134,
   DEAL_LIST_BY_POSITION_ID_REQ: 2179,
   DEAL_LIST_BY_POSITION_ID_RES: 2180,
+  // X1 (25-09-2026): one order's status and the deals it filled —
+  // ProtoOAOrderDetailsReq / Res, OpenApiModelMessages.proto (spotware/
+  // openapi-proto-messages, read 25-09-2026).
+  ORDER_DETAILS_REQ:       2181,
+  ORDER_DETAILS_RES:       2182,
   GET_TRENDBARS_REQ:       2137,
   GET_TRENDBARS_RES:       2138,
   CASH_FLOW_HISTORY_REQ:  2143,

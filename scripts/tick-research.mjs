@@ -20,7 +20,7 @@
 // paths cannot drift on what "a subset" means. It is the route's answer to a
 // spool over the keeper's record cap; here it is simply a smaller run.
 import { writeFileSync } from 'node:fs'
-import { listSegments, replayFiles, researchPlan, maxSegmentsFrom, includeTestRefusal, blocksRefusal } from '../agent/services/tick-research-run.js'
+import { listSegments, replayFiles, researchPlan, maxSegmentsFrom, includeTestRefusal, blocksRefusal, liveFiltersRefusal } from '../agent/services/tick-research-run.js'
 import { loadThresholds } from '../agent/services/tick-validation.js'
 import { loadRepoSchedule } from '../agent/lib/tick-cost-schedule.js'
 
@@ -43,7 +43,10 @@ const profileArg = opt('--profile')
   // Q1 FOLLOW-UP (checker B3): and the route's block cut — `--sim '{"blocks":1}'`
   // withheld nothing while the trial read as a withheld v2 run.
   const asked = { stageA, params: paramsArg, sim: simArg, profileHash: profileArg ?? undefined }
-  const refused = includeTestRefusal(asked) || blocksRefusal(asked)
+  // PR-Q3: the live filters as the route takes them — switches only, values
+  // from agent/config/tick-entry.json — and never the counter-trend filter
+  // here: it reads the keeper's regimes table, which this script has not got.
+  const refused = includeTestRefusal(asked) || blocksRefusal(asked) || liveFiltersRefusal(asked, { counterTrendAvailable: false })
   if (refused) { console.error(`${refused.body.error}: ${refused.body.where}`); process.exit(2) }
 }
 const onlySymbol = opt('--symbol') ? Number(opt('--symbol')) : null
