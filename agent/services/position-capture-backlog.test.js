@@ -213,20 +213,30 @@ test('the DEFAULT batch is small — production passes no limit', () => {
 // refactor drops it in silence — CLAUDE.md failure mode #4, the repair that
 // nothing calls. A backlog pass wired to nothing is not a cautious backlog,
 // it is a dead one.
-test('loop.js arms the backlog, and only when a verifier is configured', () => {
-  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
-    .replace(/^\s*\/\/.*$/gm, '')          // strip comments: a test must not pass by matching prose
-  assert.match(src, /enqueueVerifyBacklog/, 'the backlog pass must be imported in the loop')
-  assert.match(src, /if\s*\(verifier\)\s*\{[\s\S]{0,400}enqueueVerifyBacklog\(db,\s*\{\s*accountId\s*\}\)/,
+//
+// V3 V1 (25-09-2026): the arming moved out of loop.js's selected-account
+// block into captureAccountPass (position-capture-accounts.js), which the
+// loop runs for EVERY account
+// through runAllAccountCapture — so the pin follows it there, and the loop
+// is pinned to call the pass. The gating is also exercised behaviourally in
+// position-capture-accounts.test.js ("arms the verify backlog ONLY with a
+// verifier").
+test('the capture pass arms the backlog, and only when a verifier is configured; the loop runs the pass', () => {
+  const strip = (t) => t.replace(/^\s*\/\/.*$/gm, '')          // strip comments: a test must not pass by matching prose
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  assert.match(loop, /await runAllAccountCapture\(db, \{ log \}\)/, 'the loop runs the all-account pass')
+  const src = strip(readFileSync(new URL('./position-capture-accounts.js', import.meta.url), 'utf8'))
+  assert.match(src, /if\s*\(verifier\)\s*\{[\s\S]{0,400}enqueueVerifyBacklog\(db,\s*\{\s*accountId:\s*acct,\s*now\s*\}\)/,
     'it must be gated on a configured verifier: without one a re-capture costs broker traffic and returns no verdict')
 
-  // PR-AT: the loop must log what the PASS decided is worth saying, not only
-  // its successes. `if (backlog.armed)` is the exact line that made 18-09's
-  // zero unexplainable, so it must not come back.
-  assert.match(src, /if \(backlog\.report\) log\(/,
-    'the loop logs backlog.report — which covers the zero case')
-  assert.doesNotMatch(src, /if \(backlog\.armed\) log\(/,
+  // PR-AT: the pass must log what the BACKLOG decided is worth saying, not
+  // only its successes. `if (backlog.armed)` is the exact line that made
+  // 18-09's zero unexplainable, so it must not come back.
+  assert.match(src, /if \(backlog\.report\) say\(/,
+    'the pass logs backlog.report — which covers the zero case')
+  assert.doesNotMatch(src, /if \(backlog\.armed\) (log|say)\(/,
     'logging only on a non-zero arming is what made the silent zero undebuggable')
+  assert.doesNotMatch(loop, /if \(backlog\.armed\) log\(/)
 })
 
 // ---------------------------------------------------------------------------

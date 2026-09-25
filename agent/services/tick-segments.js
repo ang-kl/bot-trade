@@ -36,7 +36,14 @@ import { execBaseFor, EXEC_HOST_LIVE, EXEC_HOST_DEMO } from '../lib/exec-engine.
 export const MAX_CHUNK = 1 << 20
 /** The sidecar's own sealed naming — re-checked here, never assumed. */
 export const SEGMENT_NAME_RE = /^seg-[0-9]{13}-[0-9]{6}\.tks$/
-/** Bounds on one sync: the sidecar's spool cap is 2 GiB and its list cap 500. */
+/**
+ * Bounds on ONE sync, and they are the keeper's own. 2 GiB was the sidecar's
+ * spool cap when this was written; that cap is now TICK_SPOOL_CAP_BYTES on the
+ * sidecar (GW-CAP), and a larger spool is pulled across successive syncs —
+ * cached segments are skipped without charging this byte budget, and
+ * `truncated` says there is more. 500 is the sidecar's list cap
+ * (kMaxListEntries, oldest first).
+ */
 export const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024
 export const DEFAULT_MAX_SEGMENTS = 500
 export const CACHE_DIR_ENV = 'TICK_SEGMENTS_CACHE_DIR'

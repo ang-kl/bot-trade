@@ -11,6 +11,7 @@
 #include <limits.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -298,6 +299,210 @@ bool statvfsProbe(const std::string& dir, uint64_t& availBytes, uint64_t& totalB
 }
 
 // ---------------------------------------------------------------------------
+// GW-CAP: the spool limits from the environment (see the header).
+
+namespace {
+
+std::string trimmed(const std::string& s) {
+  size_t b = 0, e = s.size();
+  while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+  while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+  return s.substr(b, e - b);
+}
+
+std::string lowered(std::string s) {
+  for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+// What the operator typed, for a log line: bounded and printable only.
+std::string quoted(const std::string& s) {
+  std::string out = "\"";
+  for (size_t i = 0; i < s.size() && i < 40; ++i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    out += (c >= 0x20 && c < 0x7F && c != '"') ? static_cast<char>(c) : '?';
+  }
+  if (s.size() > 40) out += "...";
+  return out + "\"";
+}
+
+uint64_t saturatingAdd(uint64_t a, uint64_t b) { return a > UINT64_MAX - b ? UINT64_MAX : a + b; }
+
+// The largest `used` byte count whose integer usage percent stays BELOW
+// `pct` on a mount of `total` — the same floor(used * 100 / total) the
+// budget computes: floor(x) < pct  <=>  used * 100 < pct * total.
+uint64_t roomBelowPct(uint64_t total, int pct) {
+  const unsigned __int128 limit = static_cast<unsigned __int128>(total) * static_cast<unsigned __int128>(pct);
+  if (limit == 0) return 0;
+  return static_cast<uint64_t>((limit - 1) / 100);
+}
+
+} // namespace
+
+std::string describeBytes(uint64_t bytes) {
+  char buf[96];
+  const double b = static_cast<double>(bytes);
+  if (bytes >= (1ull << 30)) std::snprintf(buf, sizeof buf, "%llu B (%.2f GiB)", static_cast<unsigned long long>(bytes), b / 1073741824.0);
+  else if (bytes >= (1ull << 20)) std::snprintf(buf, sizeof buf, "%llu B (%.2f MiB)", static_cast<unsigned long long>(bytes), b / 1048576.0);
+  else std::snprintf(buf, sizeof buf, "%llu B", static_cast<unsigned long long>(bytes));
+  return buf;
+}
+
+bool parseByteCount(const std::string& text, uint64_t& out, std::string& why) {
+  const std::string t = trimmed(text);
+  size_t i = 0;
+  uint64_t n = 0;
+  while (i < t.size() && t[i] >= '0' && t[i] <= '9') {
+    const uint64_t d = static_cast<uint64_t>(t[i] - '0');
+    if (n > (UINT64_MAX - d) / 10) { why = "too large for 64 bits"; return false; }
+    n = n * 10 + d;
+    ++i;
+  }
+  if (i == 0) { why = "expected a whole number of bytes, optionally with KiB, MiB, GiB or TiB"; return false; }
+  while (i < t.size() && t[i] == ' ') ++i;
+  const std::string unit = lowered(t.substr(i));
+  uint64_t mul = 0;
+  if (unit.empty() || unit == "b") mul = 1;
+  else if (unit == "kib") mul = 1ull << 10;
+  else if (unit == "mib") mul = 1ull << 20;
+  else if (unit == "gib") mul = 1ull << 30;
+  else if (unit == "tib") mul = 1ull << 40;
+  else if (unit == "k" || unit == "kb" || unit == "m" || unit == "mb" || unit == "g" || unit == "gb" || unit == "t" || unit == "tb") {
+    why = "the unit '" + t.substr(i) + "' is ambiguous (decimal, or no base given): use KiB, MiB, GiB or TiB, or a plain byte count";
+    return false;
+  } else {
+    why = "expected a whole number of bytes, optionally with KiB, MiB, GiB or TiB";
+    return false;
+  }
+  if (n > UINT64_MAX / mul) { why = "too large for 64 bits"; return false; }
+  out = n * mul;
+  return true;
+}
+
+bool parsePercent(const std::string& text, int& out, std::string& why) {
+  std::string t = trimmed(text);
+  if (!t.empty() && t.back() == '%') { t.pop_back(); t = trimmed(t); }
+  const bool digits = !t.empty() && t.size() <= 3 &&
+      std::all_of(t.begin(), t.end(), [](char c) { return c >= '0' && c <= '9'; });
+  if (!digits || std::atoi(t.c_str()) > 100) { why = "expected a whole percent 0..100"; return false; }
+  out = std::atoi(t.c_str());
+  return true;
+}
+
+std::vector<std::string> applySpoolLimits(RecorderConfig& cfg, const SpoolLimitText& text) {
+  std::vector<std::string> refusals;
+  auto refuse = [&refusals](const char* var, const std::string& raw, const std::string& why, const std::string& kept) {
+    refusals.push_back(std::string(var) + "=" + quoted(raw) + " refused: " + why + " — the default " + kept + " stays in force");
+  };
+
+  cfg.spoolCapSource = "default";
+  if (!text.capBytes.empty()) {
+    uint64_t v = 0;
+    std::string why;
+    if (!parseByteCount(text.capBytes, v, why)) {
+      refuse("TICK_SPOOL_CAP_BYTES", text.capBytes, why, describeBytes(cfg.spoolCapBytes));
+      cfg.spoolCapSource = "refused";
+    } else if (v < cfg.segmentBytes) {
+      refuse("TICK_SPOOL_CAP_BYTES", text.capBytes,
+             "below one segment (" + describeBytes(cfg.segmentBytes) + "): the spool could not keep a single sealed segment",
+             describeBytes(cfg.spoolCapBytes));
+      cfg.spoolCapSource = "refused";
+    } else {
+      cfg.spoolCapBytes = v;
+      cfg.spoolCapSource = "env";
+    }
+  }
+
+  cfg.reserveMinSource = "default";
+  if (!text.reserveMinBytes.empty()) {
+    uint64_t v = 0;
+    std::string why;
+    if (!parseByteCount(text.reserveMinBytes, v, why)) {
+      refuse("TICK_SPOOL_RESERVE_MIN_BYTES", text.reserveMinBytes, why, describeBytes(cfg.reserveMinBytes));
+      cfg.reserveMinSource = "refused";
+    } else {
+      cfg.reserveMinBytes = v;
+      cfg.reserveMinSource = "env";
+    }
+  }
+
+  cfg.reservePctSource = "default";
+  if (!text.reservePct.empty()) {
+    int v = 0;
+    std::string why;
+    if (!parsePercent(text.reservePct, v, why)) {
+      refuse("TICK_SPOOL_RESERVE_PCT", text.reservePct, why, std::to_string(cfg.reservePct) + "%");
+      cfg.reservePctSource = "refused";
+    } else if (v > kMaxReservePct) {
+      refuse("TICK_SPOOL_RESERVE_PCT", text.reservePct,
+             "over " + std::to_string(kMaxReservePct) + "%: the reserve would leave the recorder almost no mount to write on",
+             std::to_string(cfg.reservePct) + "%");
+      cfg.reservePctSource = "refused";
+    } else {
+      cfg.reservePct = v;
+      cfg.reservePctSource = "env";
+    }
+  }
+
+  cfg.limitRefusals = refusals;
+  return refusals;
+}
+
+bool capExceedsListing(const RecorderConfig& cfg) {
+  return cfg.segmentBytes > 0 && cfg.spoolCapBytes / cfg.segmentBytes > kMaxListEntries;
+}
+
+uint64_t effectiveReserveBytes(const RecorderConfig& cfg, uint64_t totalBytes) {
+  return std::max<uint64_t>(cfg.reserveMinBytes, totalBytes / 100 * static_cast<uint64_t>(cfg.reservePct));
+}
+
+std::vector<std::string> spoolFitProblems(const RecorderConfig& cfg, uint64_t totalBytes, uint64_t availBytes,
+                                          uint64_t spoolBytesNow) {
+  std::vector<std::string> out;
+  if (totalBytes == 0) {
+    out.push_back("mount size unknown (no free-space probe yet): whether the cap fits cannot be judged");
+    return out;
+  }
+  const uint64_t used = totalBytes - std::min(availBytes, totalBytes);
+  const uint64_t others = used > spoolBytesNow ? used - spoolBytesNow : 0;
+  const uint64_t reserve = effectiveReserveBytes(cfg, totalBytes);
+  // retire() holds sealed <= cap each time a segment seals or opens; the open
+  // one then grows to a segment — and past it by up to one queue's worth,
+  // because the writer drains the whole ring before its seal check (measured
+  // 25-09-2026: the live spool's four sealed segments were 40 B over 4 × 64 MiB).
+  const uint64_t openMax = saturatingAdd(cfg.segmentBytes, static_cast<uint64_t>(cfg.queueRecords) * kRecordBytes);
+  const uint64_t peak = saturatingAdd(cfg.spoolCapBytes, openMax);
+  const uint64_t atPeak = saturatingAdd(others, peak);
+
+  const uint64_t reserveRoom = reserve >= totalBytes ? 0 : totalBytes - reserve;
+  const uint64_t warnRoom = roomBelowPct(totalBytes, cfg.warnPct);
+  const uint64_t stopRoom = roomBelowPct(totalBytes, cfg.stopPct);
+  const uint64_t room = std::min({reserveRoom, warnRoom, stopRoom});
+  const uint64_t spoolRoom = room > others ? room - others : 0;
+  const std::string largest = spoolRoom > openMax && spoolRoom - openMax >= cfg.segmentBytes
+      ? "the largest cap that fits this mount now is " + describeBytes(spoolRoom - openMax)
+      : "no cap of at least one segment fits this mount now";
+  const std::string atCap = "at its cap the spool (" + describeBytes(cfg.spoolCapBytes) + " + one open segment of up to " +
+      describeBytes(openMax) + ") plus " + describeBytes(others) + " of other files";
+
+  if (reserve >= totalBytes) {
+    out.push_back("the reserve " + describeBytes(reserve) + " is the whole mount " + describeBytes(totalBytes) +
+                  ": the recorder can never write");
+    return out;
+  }
+  if (atPeak > reserveRoom)
+    out.push_back(atCap + " would leave less than the reserve " + describeBytes(reserve) + " free on a " +
+                  describeBytes(totalBytes) + " mount: recording PAUSES with gaps before the cap retires anything; " + largest);
+  if (atPeak > warnRoom)
+    out.push_back(atCap + " would put the mount at " + std::to_string(cfg.warnPct) +
+                  "% used or more: the recorder reports WARN, which the keeper's tick readiness does not count as RECORDING; " + largest);
+  if (atPeak > stopRoom)
+    out.push_back(atCap + " would put the mount at " + std::to_string(cfg.stopPct) +
+                  "% used or more: writes are refused before the cap binds; " + largest);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 
 TickRecorder::TickRecorder(RecorderConfig cfg, FreeSpaceProbe probe)
     : cfg_(std::move(cfg)), probe_(probe ? std::move(probe) : FreeSpaceProbe(statvfsProbe)),
@@ -454,7 +659,7 @@ bool TickRecorder::budgetAllows(uint64_t nextWriteBytes, uint64_t now) {
     if (probed) {
       st_.diskAvailBytes = avail;
       st_.diskTotalBytes = total;
-      st_.reserveBytes = std::max<uint64_t>(cfg_.reserveMinBytes, total / 100 * static_cast<uint64_t>(cfg_.reservePct));
+      st_.reserveBytes = effectiveReserveBytes(cfg_, total);
       st_.usagePct = total > 0 ? static_cast<int>(((total - std::min(avail, total)) * 100) / total) : -1;
     } else {
       st_.diskAvailBytes = 0;
@@ -717,6 +922,53 @@ RecorderStats TickRecorder::stats() const {
   return s;
 }
 
+namespace {
+
+// GW-CAP: one builder for both routes, so /health and /tick-status cannot
+// disagree about the limits in force.
+jsn::Value limitsValue(const RecorderConfig& cfg, const RecorderStats& s, bool withText) {
+  jsn::Value l{jsn::Object{}};
+  l.set("spoolCapBytes", static_cast<double>(cfg.spoolCapBytes));
+  l.set("spoolCapSource", cfg.spoolCapSource);
+  l.set("reserveMinBytes", static_cast<double>(cfg.reserveMinBytes));
+  l.set("reserveMinSource", cfg.reserveMinSource);
+  l.set("reservePct", static_cast<double>(cfg.reservePct));
+  l.set("reservePctSource", cfg.reservePctSource);
+  l.set("segmentBytes", static_cast<double>(cfg.segmentBytes));
+  // The reserve in bytes exists only against a measured mount: null until
+  // the writer's first probe, never a 0 that reads as "no reserve".
+  const bool probed = s.diskTotalBytes > 0;
+  l.set("reserveBytes", probed ? jsn::Value(static_cast<double>(s.reserveBytes)) : jsn::Value(nullptr));
+  l.set("refusedCount", static_cast<double>(cfg.limitRefusals.size()));
+  // A failed probe zeroes the available bytes and sets usagePct -1
+  // (budgetAllows); judging the fit from that 0 would read "the mount is
+  // full". Unknown is null, not a verdict.
+  const bool measured = probed && s.usagePct >= 0;
+  const std::vector<std::string> fit =
+      measured ? spoolFitProblems(cfg, s.diskTotalBytes, s.diskAvailBytes, s.sealedBytes + s.openBytes)
+               : std::vector<std::string>{};
+  l.set("fitsMount", measured ? jsn::Value(fit.empty()) : jsn::Value(nullptr));
+  if (withText) {
+    jsn::Array refused;
+    for (const auto& line : cfg.limitRefusals) refused.push_back(jsn::Value(line));
+    l.set("refusals", jsn::Value(std::move(refused)));
+    jsn::Array problems;
+    for (const auto& line : fit) problems.push_back(jsn::Value(line));
+    l.set("fitProblems", jsn::Value(std::move(problems)));
+  }
+  return l;
+}
+
+} // namespace
+
+std::string TickRecorder::limitsJson(bool withText) const {
+  return jsn::dump(limitsValue(cfg_, stats(), withText));
+}
+
+std::string TickRecorder::limitsJson(const RecorderStats& s, bool withText) const {
+  return jsn::dump(limitsValue(cfg_, s, withText));
+}
+
 std::string TickRecorder::statusJson() const {
   const RecorderStats s = stats();
   const uint64_t now = nowMs();
@@ -760,6 +1012,7 @@ std::string TickRecorder::statusJson() const {
   disk.set("warnPct", static_cast<double>(cfg_.warnPct));
   disk.set("stopPct", static_cast<double>(cfg_.stopPct));
   v.set("disk", std::move(disk));
+  v.set("limits", limitsValue(cfg_, s, true));
   jsn::Value q{jsn::Object{}};
   q.set("capacityRecords", static_cast<double>(ring_.capacity()));
   q.set("recordBytes", static_cast<double>(kRecordBytes));
