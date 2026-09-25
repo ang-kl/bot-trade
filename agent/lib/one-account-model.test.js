@@ -91,6 +91,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/tick-permits.js': { reason: 'the side the feeder pushes to (plan §3.1); no environment strike since PR-B', max: { is_live: 1, isLive: 4 } },
   'agent/services/tick-readiness.js': { reason: 'sideFor (plan §3.1: tick-readiness.js:27) and registry ordering; the validation_stage check reads no environment', max: { is_live: 2, live_str: 1, environment_cmp: 1 } },
   'agent/services/tick-validation.js': { reason: 'which side\'s shadow signals to read (plan §3.1: tick-validation.js side)', max: { live_str: 1, environment_cmp: 1 } },
+  'agent/services/tick-research-run.js': { reason: 'which sidecar\'s account maps the segments\' symbol ids for the replay\'s regime lookup (routing)', max: { live_str: 1, demo_str: 1 } },
   'agent/services/tick-shadow.js': { reason: 'the side\'s accounts for the shadow book (plan §3.1: tick-shadow.js)', max: { is_live: 1 } },
   'agent/services/entry-mode.js': { reason: 'environmentOf stamps the record\'s side (routing); LEGACY_STAGE_ALIASES reads the two retired stage names back as TRADED_PASSED', max: { is_live: 4, live_str: 1, demo_str: 2, LIVE_APPROVED: 1, DEMO_PASSED: 1 } },
   'agent/services/runtime-manifest.js': { reason: 'names the two sidecar URLs in the manifest', max: { live_str: 1, demo_str: 1 } },
