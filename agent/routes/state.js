@@ -44,7 +44,7 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readCalendarCoverage, isReportUnavailable } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -205,7 +205,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -336,7 +336,26 @@ export default function stateRouter(db) {
     })
     if (!identity) return res.status(400).json({ error: 'registered account and broker symbolId are required' })
     res.setHeader('Cache-Control', 'no-store')
-    res.json(readMarketCalendar(db, identity))
+    // V3 K1: with the stored holiday rows that keep it unknown, if any.
+    res.json(readMarketCalendar(db, identity, { diagnostics: true }))
+  })
+
+  // GET /state/calendar-coverage (V3 K1) — per registered account: its own
+  // symbol map, the calendar demand by tier, OPEN/CLOSED/UNKNOWN with the
+  // reasons, watchlist symbols not demanded, the symbol_hours disagreements,
+  // the next 14 days of broker holidays, and the collector's last receipt and
+  // skip (services/calendar-coverage.js). Every demanded calendar is read, so
+  // it is built on the read-only report worker, never on this event loop; no
+  // broker call. Not cached: coverage is a current reading. A failed build is
+  // an explicit 503, never an empty (healthy-looking) body.
+  router.get('/calendar-coverage', async (_req, res) => {
+    res.set('Cache-Control', 'no-store')
+    try {
+      res.json(await readCalendarCoverage(db))
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'The calendar coverage read is temporarily unavailable. Please retry.', code: 'calendar_coverage_unavailable' })) return
+      res.status(503).json({ error: 'calendar_coverage_unavailable', code: 'calendar_coverage_failed' })
+    }
   })
 
   // -----------------------------------------------------------------------
@@ -2930,11 +2949,12 @@ export default function stateRouter(db) {
   // PR-I: the sealed-segment read path, read-only — what each sidecar side
   // has sealed (GET /tick-segments on it) against what this keeper has
   // already cached, and where the cache is. Nothing here pulls; the research
-  // action does that.
+  // action does that. V3 R1: per-segment names and bytes, and the heartbeat's
+  // segment manifest with its persistence and retention verdicts.
   router.get('/tick-segments', async (_req, res) => {
     try {
       const { tickSegmentsView } = await import('../services/tick-segments.js')
-      res.json(await tickSegmentsView())
+      res.json(await tickSegmentsView({ db }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

@@ -438,6 +438,10 @@ export function readStorageReport(db, { fresh = false } = {}) {
 export function readOrderLifecycle(db, options) { return isolatedReport(db, 'order-lifecycle', options) }
 /** GET /state/ledger-reconciliation (V3 B2): per account, native currency, off the event loop. */
 export function readLedgerReconciliation(db, options) { return isolatedReport(db, 'ledger-reconciliation', options) }
+/** GET /state/calendar-coverage (V3 K1): every demanded calendar is read, so
+ * off the event loop. No `now` from the route: the in-flight dedupe keys on
+ * the options. */
+export function readCalendarCoverage(db, options) { return isolatedReport(db, 'calendar-coverage', options) }
 export function buildDecisionsDaily(db, { days = 90, accountId = null, timeZone = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -512,6 +516,11 @@ async function buildReport(db, kind, options, hooks = {}) {
     const { buildLedgerReconciliation } = await import('./ledger-reconciliation.js')
     // One snapshot across trades, receipts and verdicts.
     return db.transaction(() => buildLedgerReconciliation(db, options))()
+  }
+  if (kind === 'calendar-coverage') {
+    const { buildCalendarCoverage } = await import('./calendar-coverage.js')
+    // One snapshot across the demand, the export and every calendar read.
+    return db.transaction(() => buildCalendarCoverage(db, options))()
   }
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })

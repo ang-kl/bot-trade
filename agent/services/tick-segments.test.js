@@ -22,7 +22,7 @@ import { encodeHeader, encodeRecord, FLAGS, KIND } from '../lib/tick-segment.js'
 import {
   listSidecarSegments, pullSegment, syncSegments, syncFromSidecars, cachedSegments,
   tickSegmentsView, segmentCacheDir, SEGMENT_NAME_RE, MAX_CHUNK, CACHE_DIR_ENV,
-  verifySegmentFile, listAllSides, recordsInBytes, syncInWorker,
+  verifySegmentFile, listAllSides, recordsInBytes, syncInWorker, cacheDurability,
 } from './tick-segments.js'
 import { startTickResearchJobWithSync, _resetTickResearchJobs, NO_SEGMENTS_ANYWHERE } from './tick-research-run.js'
 
@@ -625,4 +625,58 @@ test('PR-EX: the segment bound is shared ACROSS sides, like the byte budget — 
     const u = await syncFromSidecars(all, { sides: [{ name: 'one', base: one.base }, { name: 'two', base: two.base }], secret: SECRET })
     assert.equal(u.pulled, 4); assert.deepEqual(readdirSync(all).sort(), [NAME_A, NAME_B, NAME_C, NAME_D].sort())
   } finally { one.close(); two.close() }
+})
+
+test('V3 R1: GET /state/tick-segments names every listed segment with its bytes, and carries the heartbeat\'s manifest for the side', async () => {
+  const db = initDB(':memory:')
+  const a = makeSegment(10), b = makeSegment(20)
+  const s = await fakeSidecar({ files: new Map([[NAME_A, a], [NAME_B, b]]) })
+  // A cache directory that does not exist: the view only reads, so nothing is created.
+  const absent = join(tmpdir(), `r1-no-cache-${process.pid}-${Date.now()}`)
+  try {
+    const { reconcileSegmentManifest } = await import('./tick-segment-manifest.js')
+    const side = { name: 'cpp_exec_demo', base: s.base }
+    const log = console.log
+    console.log = () => {}
+    try {
+      await reconcileSegmentManifest(db, side, { status: { enabled: true, segments: { retired: 0, sealed: 2, spoolCapBytes: 2 * 1024 ** 3, segmentBytes: 64 * 1024 * 1024 } }, bootId: 'boot-a', nowMs: Date.parse('2026-09-26T00:00:00Z'), list: () => listSidecarSegments(dep(s)) })
+    } finally { console.log = log }
+    const before = s.calls.chunk
+    const view = await tickSegmentsView({ sides: [side], secret: SECRET, cacheDir: absent, db, nowMs: Date.parse('2026-09-26T00:01:00Z') })
+    assert.equal(existsSync(absent), false, 'the view creates nothing')
+    const v = view.sides.find(x => x.side === 'cpp_exec_demo')
+    assert.deepEqual(v.list.map(x => [x.name, x.bytes]), [[NAME_A, a.length], [NAME_B, b.length]], 'RED if the view goes back to counts only')
+    assert.deepEqual(v.manifest.segments.map(x => [x.name, x.bytes]), [[NAME_A, a.length], [NAME_B, b.length]])
+    assert.equal(v.manifest.listed, 2)
+    assert.ok(['VERIFIED', 'FAILED', 'NOT_VERIFIABLE'].includes(v.manifest.persistence.verdict))
+    assert.equal(v.manifest.retention.verdict, 'NOT_VERIFIABLE')
+    // the live side is not asked in this view, but the manifest still reports it
+    const live = view.sides.find(x => x.side === 'cpp_exec')
+    assert.equal(live, undefined, 'a side the manifest has never recorded is not invented')
+    assert.equal(s.calls.chunk, before, 'the view pulls nothing')
+    // without a database the view is what it was
+    const plain = await tickSegmentsView({ sides: [side], secret: SECRET, cacheDir: absent })
+    assert.equal(plain.sides[0].manifest, undefined)
+    assert.equal(plain.sides[0].segments, 2)
+  } finally { s.close() }
+})
+
+test('R1 (rebuild): Node\'s segment cache is labelled for what it is — under os.tmpdir() it is not kept across a redeploy, so the view never presents it as a second copy', async () => {
+  const tmp = join('/', 'container-tmp')
+  const d = cacheDurability(join(tmp, 'tick-segments'), tmp)
+  assert.equal(d.kept, false, 'RED if the tmpdir default is reported as kept (or unknown)')
+  assert.match(d.reason, /not kept across a Node redeploy, so the gateway spool is the only kept copy/)
+  assert.equal(cacheDurability(tmp, tmp).kept, false)
+  // A sibling whose name only starts like the tmpdir is not under it.
+  assert.equal(cacheDurability(`${tmp}-volume/tick-segments`, tmp).kept, null)
+  const set = cacheDurability('/data/tick-cache', tmp)
+  assert.equal(set.kept, null, 'an operator-set directory is unknown to Node, never claimed kept')
+  assert.match(set.reason, /not reported to Node/)
+  // The view carries it, from the directory it actually reads.
+  const s = await fakeSidecar({ files: new Map() })
+  try {
+    const view = await tickSegmentsView({ sides: [{ name: 'cpp_exec_demo', base: s.base }], secret: SECRET, cacheDir: join(tmpdir(), `r1b-no-cache-${process.pid}`) })
+    assert.deepEqual(view.cacheDurability, cacheDurability(view.cacheDir))
+    assert.equal(view.cacheDurability.kept, false)
+  } finally { s.close() }
 })

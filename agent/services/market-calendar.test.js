@@ -191,6 +191,67 @@ test('existing refresh captures real identified responses without extra fetches 
   assert.equal(getState(db, cacheKey(ID)), before, 'failed refresh must not stamp old data fresh')
 })
 
+// V3 K1 — two broker facts, two codes; the raw rows readable while UNKNOWN.
+const holidayRow = extra => ({ holidayDate: 20727, isRecurring: false, scheduleTimeZone: 'Asia/Hong_Kong', name: 'National Day', ...extra })
+test('omitted and present-but-invalid holiday bounds are distinct reasons, by precedence and not by row order', t => {
+  const db = fixture(t)
+  const cases = [
+    [[holidayRow({})], 'holiday_bounds_omitted'],
+    [[holidayRow({ endSecond: 36000 })], 'holiday_bounds_omitted'],
+    [[holidayRow({ startSecond: 0 })], 'holiday_bounds_omitted'],
+    [[holidayRow({ startSecond: null, endSecond: null })], 'holiday_bounds_omitted'],
+    [[holidayRow({ startSecond: 36000, endSecond: 36000 })], 'holiday_bounds_invalid'],
+    [[holidayRow({ startSecond: 0, endSecond: D + 1 })], 'holiday_bounds_invalid'],
+    [[holidayRow({ startSecond: 1.5, endSecond: 3600 })], 'holiday_bounds_invalid'],
+    [[holidayRow({}), holidayRow({ startSecond: 5, endSecond: 4 })], 'holiday_bounds_invalid'],
+    [[holidayRow({ startSecond: 5, endSecond: 4 }), holidayRow({})], 'holiday_bounds_invalid'],
+    [[holidayRow({}), { isRecurring: false }], 'calendar_holiday_invalid'],
+  ]
+  for (const [holiday, reason] of cases) {
+    write(db, spec({ holiday }))
+    const r = read(db)
+    assert.equal(r.reason, reason, JSON.stringify(holiday))
+    assert.equal(r.marketStatus, 'MARKET_STATUS_UNKNOWN', 'no boundary is invented: the whole calendar stays unknown')
+  }
+  write(db, spec({ holiday: [holidayRow({ startSecond: 0, endSecond: 36600 })] }))
+  assert.equal(read(db).marketStatus, 'OPEN', 'explicit bounds, startSecond 0 included, still resolve')
+})
+
+test('unresolvedHolidays lists the stored rows exactly: absent bounds absent, sent bounds as sent; status unchanged', t => {
+  const db = fixture(t)
+  const diag = () => readMarketCalendar(db, ID, { nowMs: NOW, diagnostics: true })
+  const bounded = holidayRow({ name: '07.09.2026 EC 20:00', holidayDate: 20703, scheduleTimeZone: 'Europe/Moscow', startSecond: 72000, endSecond: 86399 })
+  write(db, spec({ holiday: [bounded, holidayRow({ holidayId: 9, description: 'HKEX' }), holidayRow({ name: 'Late', startSecond: 0 }), holidayRow({ name: 'Bad', startSecond: 9, endSecond: 3 })] }))
+  assert.equal('unresolvedHolidays' in read(db), false, 'the status read (collector, contract) is unchanged: no diagnostic, no extra hash')
+  const r = diag()
+  assert.equal(r.marketStatus, 'MARKET_STATUS_UNKNOWN'); assert.equal(r.calendar, null)
+  assert.deepEqual(r.unresolvedHolidays, [
+    { reason: 'holiday_bounds_omitted', holidayId: 9, name: 'National Day', description: 'HKEX', holidayDate: 20727, dateIso: '2026-10-01', isRecurring: false, scheduleTimeZone: 'Asia/Hong_Kong' },
+    { reason: 'holiday_bounds_omitted', holidayId: null, name: 'Late', description: null, holidayDate: 20727, dateIso: '2026-10-01', isRecurring: false, scheduleTimeZone: 'Asia/Hong_Kong', startSecond: 0 },
+    { reason: 'holiday_bounds_invalid', holidayId: null, name: 'Bad', description: null, holidayDate: 20727, dateIso: '2026-10-01', isRecurring: false, scheduleTimeZone: 'Asia/Hong_Kong', startSecond: 9, endSecond: 3 },
+  ], 'the bounded row is not listed; no row gains a bound it was not sent')
+  write(db, spec({ holiday: [bounded] }))
+  assert.deepEqual(diag().unresolvedHolidays, [], 'a resolved calendar has none')
+  write(db, spec({ holiday: Array.from({ length: 400 }, () => holidayRow({})) }))
+  assert.equal(read(db).reason, 'calendar_holidays_invalid')
+  assert.equal(diag().unresolvedHolidays.length, 366, 'bounded at 366')
+  const saved = JSON.parse(getState(db, cacheKey(ID))); saved.latest.version = 'f'.repeat(64)
+  setState(db, cacheKey(ID), JSON.stringify(saved))
+  assert.equal(diag().unresolvedHolidays, null, 'an altered payload is not described')
+})
+
+test('a row stored under the old combined code reads as the split code its own payload implies', t => {
+  const db = fixture(t)
+  for (const [holiday, reason] of [[holidayRow({}), 'holiday_bounds_omitted'], [holidayRow({ startSecond: 7, endSecond: 7 }), 'holiday_bounds_invalid']]) {
+    write(db, spec({ holiday: [holiday] }))
+    const stored = JSON.parse(getState(db, cacheKey(ID)))
+    stored.latest.reason = 'calendar_holiday_window_unknown' // exactly what the pre-K1 collector stored
+    setState(db, cacheKey(ID), JSON.stringify(stored))
+    assert.equal(read(db).reason, reason)
+    assert.equal(read(db).open, null)
+  }
+})
+
 test('HTTP calendar consumer requires identity, has no name/global fallback and never caches current status', async t => {
   const db = fixture(t)
   db.prepare('INSERT INTO accounts (account_id, is_live) VALUES (?, ?)').run('11', 0)
