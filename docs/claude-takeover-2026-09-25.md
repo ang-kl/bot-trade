@@ -48,11 +48,20 @@ factor and win ratio.
   says otherwise.
 - The merge policy and P7's local scope in `CLAUDE.md`.
 
-## Still waiting on the owner
+## Owner decisions at the takeover (25-09 ~11:45 SGT, answered to № 9,033)
 
-- **What "active now" means for the parallel scanners.** Observation only
-  (feeds on, candidates compared, no orders), or order authority through Node
-  admission. It was asked at the takeover.
+- **"Parallel scanners active now" = TRADE AS SOON AS BUILT.** Build the
+  handoff so scanner candidates reach the two gateways through Node's own
+  admission (`admitEntry` and the risk checks), and route orders as soon as it
+  passes the gate. The observation trial that rev-3 puts first is skipped by
+  this owner order. The owner's thresholds and caps still apply.
+- **Intraday strategies: RESTORE THE POSITIVE ONES**, on all accounts:
+  `fib_confluence` (PF 2.72 over 26 closes), `rsi2_reversion` (1.13 over 31)
+  and `donchian_breakout` (1.09 over 29). The other nine stay retired. None of
+  the three meets the family evidence bar (30 closes, PF ≥ 1.5); the owner
+  chose them with that stated.
+
+## Still waiting on the owner
 - **Decisions D1–D7** in the plan: the meaning of "win factor", whether win rate
   is a pass/fail bar, what counts as "sustainable", the veto trade-off, whether
   shadow judges what live would trade, pooled replay, and the gateway redeploy.
