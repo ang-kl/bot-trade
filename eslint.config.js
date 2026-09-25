@@ -11,7 +11,7 @@ export default defineConfig([
   // third-party files copied verbatim from node_modules (GSAP, self-hosted
   // 18-09-2026 so a hanging CDN cannot blank the site) — minified library
   // code, exempt for the same reason node_modules is.
-  globalIgnores(['dist', 'design_claude', 'design_handoff_trading_dashboard', 'public/vendor']),
+  globalIgnores(['dist', 'design_claude', 'design_handoff_trading_dashboard', 'public/vendor', '.claude/worktrees']),
   {
     files: ['**/*.{js,jsx}'],
     extends: [
