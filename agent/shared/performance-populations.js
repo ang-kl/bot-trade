@@ -1,6 +1,10 @@
 // Report-only arithmetic shared by server and UI. No admission/risk consumer.
 // Money on historical trades has no verified conversion provenance. It may be
-// added within one stamped account, never across accounts or onto an identity.
+// added within one stamped account, never onto an identity, and across
+// accounts only when every contributing account's broker deposit currency is
+// recorded and identical (owner default, 25-09-2026: money per currency, never
+// summed across currencies). Nothing is ever converted.
+const CCY = /^[A-Z]{3}$/
 export const REPORT_SESSIONS = [
   { key: 'SYD (ASX)', fromMin: 0, toMin: 360 },
   { key: 'SG', fromMin: 60, toMin: 540 },
@@ -15,9 +19,9 @@ export function emptyPopulation() {
     high: null, low: null }
 }
 const SUM_FIELDS = Object.keys(emptyPopulation()).filter(k => !['high', 'low'].includes(k))
-export function populationStats(groups, { available = true, accountId = 'all' } = {}) {
+export function populationStats(groups, { available = true, accountId = 'all', currency = null, currencyOf = null } = {}) {
   if (!available) return { n: null, pricedN: null, unpricedN: null, pnl: null, wr: null, pf: null,
-    tp: null, part: null, sl: null, edge: null, state: 'unavailable', moneyState: 'unavailable' }
+    tp: null, part: null, sl: null, edge: null, state: 'unavailable', moneyState: 'unavailable', currency: null }
   const st = emptyPopulation(), ids = new Set()
   for (const g of groups) {
     if (g.stats.n) ids.add(g.accountId)
@@ -25,7 +29,12 @@ export function populationStats(groups, { available = true, accountId = 'all' } 
     if (g.stats.high != null) st.high = st.high == null ? g.stats.high : Math.max(st.high, g.stats.high)
     if (g.stats.low != null) st.low = st.low == null ? g.stats.low : Math.min(st.low, g.stats.low)
   }
-  const comparable = !ids.has(null) && ids.size <= 1 && (ids.size === 1 || accountId !== 'all')
+  // Pooled across accounts only under one named currency that every
+  // contributing account is recorded in; the caller's filter is re-checked
+  // here, so a wrong predicate cannot add two currencies together.
+  const pooled = CCY.test(currency || '') && typeof currencyOf === 'function' && !ids.has(null)
+    && [...ids].every(id => currencyOf(id) === currency)
+  const comparable = pooled || (!ids.has(null) && ids.size <= 1 && (ids.size === 1 || accountId !== 'all'))
   const hasMoney = comparable && (st.pricedN > 0 || st.n === 0)
   const rr = st.rrN ? st.rrSum / st.rrN : null
   const wr = st.pricedN ? st.wins / st.pricedN * 100 : null
@@ -44,8 +53,27 @@ export function populationStats(groups, { available = true, accountId = 'all' } 
     payoff, requiredWinPctRealised: payoff == null ? null : 100 / (1 + payoff),
     state: st.n === 0 ? 'verified_zero' : 'observed',
     moneyState: !comparable ? 'unverified_cross_account_units' : !hasMoney ? 'unavailable'
-      : st.pricedN < st.n ? 'partial_recorded_account_units' : 'recorded_account_units',
+      : pooled ? (st.pricedN < st.n ? 'partial_recorded_currency_units' : 'recorded_currency_units')
+        : st.pricedN < st.n ? 'partial_recorded_account_units' : 'recorded_account_units',
+    currency: pooled ? currency : null,
   }
+}
+/** The recorded broker deposit currency of one account in this report, or
+ * null when the report carries none for it (never a default, never a guess). */
+export function reportCurrency(report, accountId) {
+  const c = accountId == null ? null : report?.currencyByAccount?.[String(accountId)]?.currency
+  return typeof c === 'string' && CCY.test(c) ? c : null
+}
+/** Money pooled across every account recorded in `currency`, and only those.
+ * Unattributed closes and accounts without a recorded currency are excluded:
+ * they belong to no currency. */
+export function reportCurrencyStats(report, key, currency, predicate = () => true) {
+  const ccy = CCY.test(currency || '') ? currency : null
+  const currencyOf = id => reportCurrency(report, id)
+  return populationStats(reportGroups(report, key, 'all', g => ccy != null && currencyOf(g.accountId) === ccy && predicate(g)), {
+    accountId: 'all', currency: ccy, currencyOf,
+    available: ccy != null && report?.status === 'complete' && report.windows.some(w => w.key === key),
+  })
 }
 export function reportGroups(report, key, accountId = 'all', predicate = () => true) {
   return (report?.windows?.find(w => w.key === key)?.groups || [])
