@@ -49,7 +49,84 @@ export function dailyStopView(ds) {
     ds?.unitsNote || null,
     ds?.engineBlock?.reason ? `Engine verdict now: ${ds.engineBlock.reason}` : null,
   ].filter(Boolean).join(' ')
-  return { capState: effectiveCapState, cap, capCcy, used, usedState, capLoss, unitsNote: ds?.unitsNote || null, title }
+  // The rest of the SAME reading, for the Data-feed card's line (WEB-9,
+  // 8,989-A row 11): why this cap binds (the engine's own phrase), what the
+  // engine leaves of it today, whether the engine blocks entries now, and
+  // whether the account's money is in the cap's unit. Additive — every field
+  // above is unchanged — and nothing is computed: each is the server's value
+  // or null. A reading whose state is unrecognised carries none of them.
+  const inForce = effectiveCapState === 'in_force'
+  const binding = inForce && typeof ds?.binding === 'string' && ds.binding ? ds.binding : null
+  const explain = inForce && typeof ds?.explain === 'string' && ds.explain ? ds.explain : null
+  const remaining = inForce ? num(ds?.remainingUsd) : null
+  const eb = ds?.engineBlock
+  const block = effectiveCapState !== 'not_read' && eb && typeof eb === 'object'
+    ? { guard: typeof eb.guard === 'string' && eb.guard ? eb.guard : null, reason: typeof eb.reason === 'string' ? eb.reason : null }
+    : null
+  const unitsComparable = typeof ds?.unitsComparable === 'boolean' ? ds.unitsComparable : null
+  return {
+    capState: effectiveCapState, cap, capCcy, used, usedState, capLoss, unitsNote: ds?.unitsNote || null, title,
+    binding, explain, remaining, block, unitsComparable,
+  }
+}
+
+/**
+ * The Data-feed card's daily stop: the scoped account's OWN account-overview
+ * row, through the same dailyStopView the account cards use (cardStopFields).
+ * One reading for both, so the card and the account cards cannot disagree.
+ * The portfolio scope has no single daily stop — each account has its own —
+ * so it is null there.
+ *
+ * @param {{accounts?: Array<{accountId:string, dailyStop?:object}>}|null|undefined} overview
+ * @param {string|null|undefined} acct  the page's account filter ('all' or an id)
+ */
+export function feedDailyStopView(overview, acct) {
+  if (String(acct) === 'all') return null
+  const row = (overview?.accounts || []).find(r => r != null && String(r.accountId) === String(acct))
+  return dailyStopView(row?.dailyStop)
+}
+
+// Which guard in the engine's dailyLossVerdict (agent/services/risk.js)
+// raised the block the reading carries (`engineBlock.guard`). Only
+// `daily_loss_limit_hit` is the daily stop itself; the other two block
+// through the same verdict but are different facts, and printing them beside
+// the stop as a bare "entries blocked now" would read as the stop.
+const BLOCK_WORDS = {
+  daily_loss_limit_hit: 'entries blocked now: the daily stop is hit',
+  campaign_stop: 'entries blocked now by the campaign stop (not the daily stop)',
+  unknown_daily_pnl: "entries blocked now: today's P&L is unresolved (not the daily stop)",
+}
+
+/**
+ * What the Data-feed card prints after `daily stop <stop><day>`: the engine's
+ * reason the cap binds, what is left of it today, and the engine's block —
+ * every word from the same view `dailyStopWords` reads, never a second
+ * reading. `note` is the reading's own units note (a non-USD account).
+ *
+ * "Left today" is the engine's `remainingUsd` (cap − today's realised loss).
+ * It is printed only when the account's money is in the cap's unit: on a
+ * non-USD account the engine subtracts that account's own P&L from a
+ * USD-configured cap (H-P2-4), and the result is not a USD figure — the same
+ * reason the reading refuses a loss-cap percentage there.
+ *
+ * @param {ReturnType<typeof dailyStopView>|null|undefined} view
+ * @param {(n:number, d?:number) => string} money  the page's formatter
+ * @returns {{text: string, note: string|null}}  text starts with ' · ' when non-empty
+ */
+export function dailyStopDetail(view, money) {
+  const v = view || {}
+  const parts = []
+  if (v.capState === 'in_force' && v.cap != null) {
+    if (v.explain) parts.push(v.explain)
+    parts.push(v.unitsComparable === true
+      ? (v.remaining != null ? `${money(v.remaining, 0)}${v.capCcy ? ` ${v.capCcy}` : ''} left today` : 'left today not read')
+      : v.unitsComparable === false ? 'left today not comparable' : 'left today not read')
+  }
+  if (v.block) {
+    const g = v.block.guard
+    parts.push(BLOCK_WORDS[g] || (g ? `entries blocked now by ${g}` : 'entries blocked now (guard not reported)'))
+  }
+  return { text: parts.map(p => ` · ${p}`).join(''), note: v.unitsNote || null }
 }
 
 /**

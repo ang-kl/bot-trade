@@ -5,7 +5,8 @@
 // balance × dailyLossPct, never a dash that passes for "no stop".
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { dailyStopView, dailyStopWords, cardStopFields } from './daily-stop-display.js'
+import { dailyStopView, dailyStopWords, cardStopFields, feedDailyStopView, dailyStopDetail } from './daily-stop-display.js'
+import { dataFeedCardScope } from './data-feed.js'
 import { aggregateAccounts } from './perf-aggregate.js'
 import PerfAccountScope from '../components/PerfAccountScope.jsx'
 import { DataFeed } from '../components/PerfMacroSections.jsx'
@@ -88,6 +89,83 @@ describe('cardStopFields — what a Performance card carries', () => {
   })
 })
 
+describe('dailyStopView — the rest of the same reading (WEB-9m)', () => {
+  const READING = {
+    ...TIER, remainingUsd: 1079.67, unitsComparable: true,
+    engineBlock: { guard: 'campaign_stop', reason: 'campaign stop: equity below the campaign floor' },
+  }
+  it('carries why it binds, what is left, the block and the units flag — as given, nothing computed', () => {
+    expect(dailyStopView(READING)).toMatchObject({
+      binding: 'pct', explain: TIER.explain, remaining: 1079.67, unitsComparable: true,
+      block: { guard: 'campaign_stop', reason: 'campaign stop: equity below the campaign floor' },
+    })
+  })
+  it('the fields WEB-2 shipped are unchanged by the additions', () => {
+    for (const ds of [TIER, SGD, FLOAT_UNREAD, READING, undefined, { status: 'uncapped', capUsd: null }]) {
+      const v = dailyStopView(ds)
+      const was = dailyStopView(ds && { ...ds, remainingUsd: undefined, engineBlock: undefined, unitsComparable: undefined, binding: undefined, explain: ds.explain })
+      for (const k of ['capState', 'cap', 'capCcy', 'used', 'usedState', 'capLoss', 'unitsNote']) expect(v[k]).toEqual(was[k])
+    }
+  })
+  it('a reading not in force carries no binding, remainder or explanation; an unread one no block', () => {
+    const uncapped = dailyStopView({ status: 'uncapped', capUsd: null, explain: 'both daily checks are off — the day is uncapped', remainingUsd: null, engineBlock: { guard: 'unknown_daily_pnl', reason: 'x' } })
+    expect(uncapped).toMatchObject({ binding: null, explain: null, remaining: null, block: { guard: 'unknown_daily_pnl', reason: 'x' } })
+    const bad = dailyStopView({ status: 'weird', capUsd: 5, remainingUsd: 5, explain: 'x', engineBlock: { guard: 'daily_loss_limit_hit' } })
+    expect(bad).toMatchObject({ capState: 'not_read', binding: null, explain: null, remaining: null, block: null })
+  })
+})
+
+describe('feedDailyStopView', () => {
+  const overview = { accounts: [{ accountId: '46130058', dailyStop: TIER }, { accountId: '42993489', dailyStop: SGD }] }
+  it('is the scoped account\'s own row through dailyStopView — the view cardStopFields builds', () => {
+    expect(feedDailyStopView(overview, '42993489')).toEqual(dailyStopView(SGD))
+    expect(feedDailyStopView(overview, '46130058').cap).toBe(1200.17)
+    // cardStopFields over the same row carries the same stop fields.
+    const f = cardStopFields(overview.accounts[1], palette), v = feedDailyStopView(overview, '42993489')
+    expect([f.cap, f.capCcy, f.capState, f.used, f.usedState, f.stopTitle]).toEqual([v.cap, v.capCcy, v.capState, v.used, v.usedState, v.title])
+  })
+  it('the portfolio has no single stop; an absent account or overview is "not read", never another account\'s', () => {
+    expect(feedDailyStopView(overview, 'all')).toBeNull()
+    expect(feedDailyStopView(overview, '99999999').capState).toBe('not_read')
+    expect(feedDailyStopView(null, '46130058').capState).toBe('not_read')
+    // accounts.account_id is TEXT; a numeric id still finds its own row.
+    expect(feedDailyStopView({ accounts: [{ accountId: 46130058, dailyStop: TIER }] }, '46130058').cap).toBe(1200.17)
+  })
+})
+
+describe('dailyStopDetail — the Data-feed line after the stop', () => {
+  const USD = { ...TIER, remainingUsd: 1079.67, unitsComparable: true, engineBlock: null }
+  it('the engine\'s reason and what is left today, in the cap\'s currency', () => {
+    expect(dailyStopDetail(dailyStopView(USD), money)).toEqual({
+      text: ` · ${TIER.explain} · 1,080 USD left today`, note: null,
+    })
+  })
+  it('a non-USD account: no mixed-unit remainder, and the reading\'s own units note', () => {
+    const d = dailyStopDetail(dailyStopView({ ...SGD, remainingUsd: 173.4, unitsComparable: false }), money)
+    expect(d.text).toBe(' · the USD 200.00 floor binds · left today not comparable')
+    expect(d.text).not.toContain('173')
+    expect(d.note).toBe(SGD.unitsNote)
+    // Currency not read (unitsComparable null) → not read, not a figure.
+    expect(dailyStopDetail(dailyStopView({ ...USD, unitsComparable: null }), money).text).toContain('left today not read')
+  })
+  it('names the guard that blocks, so a campaign stop or unresolved P&L does not read as the daily stop', () => {
+    const at = (guard) => dailyStopDetail(dailyStopView({ ...USD, engineBlock: { guard, reason: 'r' } }), money).text
+    expect(at('daily_loss_limit_hit')).toContain('entries blocked now: the daily stop is hit')
+    expect(at('campaign_stop')).toContain('entries blocked now by the campaign stop (not the daily stop)')
+    expect(at('campaign_stop')).not.toContain('daily stop is hit')
+    expect(at('unknown_daily_pnl')).toContain("entries blocked now: today's P&L is unresolved (not the daily stop)")
+    expect(at('some_new_guard')).toContain('entries blocked now by some_new_guard')
+    expect(at(null)).toContain('entries blocked now (guard not reported)')
+    expect(dailyStopDetail(dailyStopView(USD), money).text).not.toContain('blocked')
+  })
+  it('nothing after an unread or uncapped stop but the engine\'s block; nothing at all without a view', () => {
+    expect(dailyStopDetail(dailyStopView(undefined), money)).toEqual({ text: '', note: null })
+    expect(dailyStopDetail(null, money)).toEqual({ text: '', note: null })
+    expect(dailyStopDetail(dailyStopView({ status: 'uncapped', capUsd: null, engineBlock: { guard: 'campaign_stop' } }), money).text)
+      .toBe(' · entries blocked now by the campaign stop (not the daily stop)')
+  })
+})
+
 describe('dailyStopWords', () => {
   it('prints the cap in its own currency with the FX-day anchor', () => {
     expect(dailyStopWords(dailyStopView(TIER), money)).toEqual({ stop: '−1,200 USD', used: '10%', day: ' (FX day)' })
@@ -124,8 +202,64 @@ describe('the cards render the engine reading', () => {
     const one = renderToStaticMarkup(<DataFeed dailyStop={dailyStopView(TIER)} />)
     expect(one).toMatch(/daily stop −1,200 USD \(FX day\)/)
     expect(one).not.toMatch(/3%\/day/)
-    expect(renderToStaticMarkup(<DataFeed />)).toMatch(/daily stop per account — see the account cards/)
+    expect(renderToStaticMarkup(<DataFeed allAccounts />)).toMatch(/daily stop per account — see the account cards/)
     expect(renderToStaticMarkup(<DataFeed dailyStop={dailyStopView(undefined)} />)).toMatch(/daily stop not read/)
+    // A single-account card with no reading at all is "not read" too — the
+    // portfolio phrase is said only when the scope IS the portfolio (WEB-9m).
+    expect(renderToStaticMarkup(<DataFeed />)).toMatch(/daily stop not read/)
+    expect(renderToStaticMarkup(<DataFeed />)).not.toMatch(/per account/)
+  })
+
+  // WEB-9m (the WEB-2 / WEB-9 merge): the Data-feed card and the account
+  // cards print ONE daily stop from ONE reading, so they cannot disagree.
+  it('the Data-feed daily stop and the account card\'s come from the same reading — change it and both follow', () => {
+    // The card's phrase sits in one span; the account card splits it over
+    // two spans and ends it at "· loss-cap used".
+    const pick = (text, re) => {
+      const m = text.match(re)
+      expect(m, `a daily-stop phrase matching ${re}`).not.toBeNull()
+      return m[1]
+    }
+    const feedStop = (html) => pick(html, />daily stop ([^<]*)<\/span>/)
+    const cardStop = (html) => pick(html.replace(/<[^>]+>/g, ''), /daily stop (.+?) · loss-cap used/)
+    // risk-full carries daily-loss figures of its own; the page hands the
+    // card its scoped props from them. None may become the card's stop.
+    const riskFull = {
+      risk: { scopedTo: '42993489', effective: { equityStopPct: 0.1 } },
+      account: { accountId: '42993489', depositCurrency: 'SGD' },
+      dailyPacing: { accountId: '42993489', capUsd: 150, binding: 'usd' },
+      dailyCapEnforced: { status: 'computed', accountId: '42993489', capUsd: 987.65, binding: 'usd' },
+    }
+    const both = (overview, acct) => {
+      // Exactly what Performance.jsx does: the card's view from
+      // feedDailyStopView(overview, acct); each account card from
+      // cardStopFields over the same account's overview row.
+      const feed = renderToStaticMarkup(<DataFeed {...dataFeedCardScope({ acct, riskFull })} dailyStop={feedDailyStopView(overview, acct)} />)
+      const row = overview.accounts.find(r => r.accountId === acct)
+      const cards = renderToStaticMarkup(<PerfAccountScope acctCards={[card(acct, 'Live · 1251247', row.dailyStop)]} palette={palette} money={money} signed={signed} scope="all" onScopeChange={() => {}} />)
+      return { feed: feedStop(feed), card: cardStop(cards), feedHtml: feed }
+    }
+    // Two accounts; the card is scoped to the SECOND, so a reader that took
+    // the wrong row (or the first one) would show the tier account's −1,200.
+    const overview = { accounts: [{ accountId: '46130058', dailyStop: TIER }, { accountId: '42993489', dailyStop: SGD }] }
+    const a = both(overview, '42993489')
+    expect(a.feed).toBe('−200 USD (FX day)')
+    expect(a.card).toBe(a.feed)
+    for (const other of ['987', '150', '1,200']) expect(a.feedHtml).not.toContain(other)
+
+    // The engine's reading moves (the % check now binds above the floor):
+    // both surfaces move with it, to the same words.
+    const moved = { accounts: [overview.accounts[0], { accountId: '42993489', dailyStop: { ...SGD, capUsd: 431.9, binding: 'pct' } }] }
+    const b = both(moved, '42993489')
+    expect(b.feed).toBe('−432 USD (FX day)')
+    expect(b.card).toBe(b.feed)
+
+    // The reading goes missing: both say "not read" — neither falls back to
+    // risk-full's figures or to balance × dailyLossPct.
+    const gone = { accounts: [overview.accounts[0], { accountId: '42993489', dailyStop: undefined }] }
+    const c = both(gone, '42993489')
+    expect(c.feed).toBe('not read')
+    expect(c.card).toBe(c.feed)
   })
 })
 

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
 import { modelMomentumCost } from './momentum-target-cost.js'
-import { planMomentumTargets } from './momentum-target-policy.js'
+import { planMomentumTargets, offPriceGrid } from './momentum-target-policy.js'
 
 // Pure proposal boundary. These inputs must come from the runtime's fresh,
 // account-scoped broker adapters, never symbol-only caches. Producing a
@@ -38,6 +38,16 @@ export function prepareMomentumTargetProposal(input, schedule) {
     lotSize: meta.lotSize, minVolume: meta.minVolume, digits: meta.digits,
     carryingCostReservePrice: input.carryingCostReservePrice }, schedule)
   if (!cost.ok) return refuse(cost.reason)
+  // The planned entry and stop must sit on the symbol's price grid (T1b, H1).
+  // The order sends the stop as a relative distance that relativePoints
+  // rounds to whole ticks, so an off-grid stop (ATR-built, 247.8137) is not
+  // the stop the broker holds, and the plan's risk and targets are a fraction
+  // of a tick off what the bind recomputes from the fill: those binds refuse
+  // after the order is live. Refused here instead, before anything is sent.
+  // The producer builds the stop from relativePoints exactly as sent. Not in
+  // planMomentumTargets: a bound plan's multi-deal average entry is off-grid.
+  if (offPriceGrid(input.entry, meta.digits) || offPriceGrid(input.originalStop, meta.digits))
+    return refuse('price_off_grid')
   const plan = planMomentumTargets({ side: input.side, entry: input.entry, originalStop: input.originalStop,
     requiredRr: input.requiredRr, costReservePrice: cost.costReservePrice, digits: meta.digits,
     volume: input.volume, minVolume: meta.minVolume, stepVolume: meta.stepVolume })
