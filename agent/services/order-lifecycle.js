@@ -974,9 +974,9 @@ export const RULES = Object.freeze([
     // heartbeat's OWN view (heartbeatView over the CONTROLLERS registry), so
     // this rule and /state/heartbeats cannot disagree about a controller —
     // two readings of one subsystem is CLAUDE.md failure mode #3's correction.
-    //   stalled — last run older than expected × factor (heartbeat.js:530):
+    //   stalled — last run older than expected × factor (heartbeat.js:611):
     //             pnl_reconcile last ran 09-20 with 0 failures is stuck;
-    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:183):
+    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:201):
     //             pnl_reconcile at 1,701 consecutive failures.
     // Unregistered names never reach the view (it iterates the registry), so a
     // row left behind by a removed controller cannot stay stuck for ever;
@@ -984,7 +984,7 @@ export const RULES = Object.freeze([
     // (the runner beats, its product is past its limit) and never_ran (no beat
     // on record) are NOT judged stuck: they are named as Not Verifiable here.
     id: 'STK-11', key: 'controller_failing', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['heartbeat.js:183', 'heartbeat.js:530-534', 'heartbeat.js:318-323', 'heartbeat.js:508-512', 'heartbeat.js:524-527'],
+    cite: ['heartbeat.js:201', 'heartbeat.js:611-615', 'heartbeat.js:393-399', 'heartbeat.js:584-588', 'heartbeat.js:604-608'],
     noun: 'registered controller',
     // The statement proves the table is readable (a dropped table is an
     // error, never 0); the rows are the heartbeat's own view of it.
