@@ -51,6 +51,17 @@ describe('Performance evidence availability', () => {
       expect(html).not.toContain(falseClaim)
     }
   })
+  it('the market-session card claims no bucket rule and no market status before the report says which it applied (V3 WEB-6)', () => {
+    const html = renderToStaticMarkup(<MemoryRouter><Performance /></MemoryRouter>)
+    const card = html.slice(html.indexOf('Today by market session'))
+    expect(card).toContain('session buckets arrive with the report')
+    expect(card).not.toContain('regular cash hours in its own time zone')
+    expect(card).not.toContain('approximate UTC session buckets')
+    expect(card).not.toContain('>closed<')
+    // Each row's tooltip still states the rule it will use, and the exception.
+    expect(card).toContain('TSE 09:00–11:30 and 12:30–15:30 Asia/Tokyo local time')
+    expect(card).toContain('public holidays and early closes not applied (WEB-6b)')
+  })
   it('does not hide an available journal observation or expose stale rows as available', () => {
     const props = { nowMs: Date.parse('2026-09-23T01:00:00Z'), allTrades: [
       { id: 1, symbol: 'TESTPAIR', status: 'closed', closed_at: '2026-09-23T00:30:00Z', net_pnl: 5 },
