@@ -5,9 +5,10 @@
 // Plan §17 and blocker B18: "Volume mounts, C++ UID permissions, CPU quotas,
 // deployed SQLite and service versions unknown … source changes alone cannot
 // close this item." The plan's README of 10-09 asserted an installed SQLite
-// 3.53.2; the lockfile pins better-sqlite3 11.10.0. Neither is a measurement
-// of the deployed process. This module IS the measurement, taken inside the
-// running agent, and it says "unknown" where it cannot read.
+// 3.53.2; the lockfile pinned better-sqlite3 11.10.0 (it pins 12.8.0, SQLite
+// 3.51.3, from 25-09-2026). Neither is a measurement of the deployed process.
+// This module IS the measurement, taken inside the running agent, and it says
+// "unknown" where it cannot read.
 //
 // Every item is { key, value, source, verified, note }:
 //   verified: true  — read from the process, the filesystem or the database
@@ -17,6 +18,7 @@
 
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync, statSync, statfsSync } from 'node:fs'
+import { walResetFixed, WAL_RESET_FIXED_FROM } from '../lib/sqlite-wal-reset.js'
 
 const require = createRequire(import.meta.url)
 
@@ -48,10 +50,12 @@ export function cgroupLimits(root = '/sys/fs/cgroup') {
 }
 
 export function sqliteRuntime(db) {
-  const out = { version: null, sourceId: null, journalMode: null, synchronous: null, bindingVersion: null }
+  const out = { version: null, sourceId: null, journalMode: null, lockingMode: null, synchronous: null, bindingVersion: null }
   try { out.version = db.prepare('SELECT sqlite_version() AS v').get().v } catch { /* unreadable */ }
   try { out.sourceId = db.prepare('SELECT sqlite_source_id() AS v').get().v } catch { /* unreadable */ }
   try { out.journalMode = db.pragma('journal_mode', { simple: true }) } catch { /* unreadable */ }
+  // Read-only form of the pragma: it reports the mode and changes nothing.
+  try { out.lockingMode = db.pragma('locking_mode', { simple: true }) } catch { /* unreadable */ }
   try { out.synchronous = db.pragma('synchronous', { simple: true }) } catch { /* unreadable */ }
   try { out.bindingVersion = require('better-sqlite3/package.json').version } catch { /* not resolvable */ }
   return out
@@ -129,7 +133,15 @@ export async function runtimeManifest(db, {
   const sq = sqliteRuntime(db)
   items.push(item('sqlite.version', sq.version, 'sqlite_version()', sq.version != null))
   items.push(item('sqlite.sourceId', sq.sourceId, 'sqlite_source_id()', sq.sourceId != null))
+  // sqlite.org/wal.html §11: 3.7.0–3.51.2 carry the WAL-reset race (fixed in
+  // 3.51.3; backports 3.44.6 and 3.50.7). The scanner bridge's worker is a
+  // second writing connection and is refused on an unfixed runtime.
+  const fixed = walResetFixed(sq.version)
+  items.push(item('sqlite.walResetFixed', fixed, `sqlite_version() vs sqlite.org/wal.html §11 (fixed from ${WAL_RESET_FIXED_FROM})`, fixed != null,
+    fixed === false ? 'WAL-reset race present: a second writing connection (scanner bridge) is refused' : null))
   items.push(item('sqlite.journalMode', sq.journalMode, 'PRAGMA journal_mode', sq.journalMode != null))
+  items.push(item('sqlite.lockingMode', sq.lockingMode, 'PRAGMA locking_mode', sq.lockingMode != null,
+    sq.lockingMode === 'exclusive' ? 'degraded exclusive mode (lib/wal-open.js): no second connection can open the file' : null))
   items.push(item('sqlite.synchronous', sq.synchronous, 'PRAGMA synchronous', sq.synchronous != null,
     sq.synchronous === 1 ? 'NORMAL: the last commit may not survive power loss (plan §11)' : null))
   items.push(item('sqlite.binding', sq.bindingVersion, 'better-sqlite3/package.json', sq.bindingVersion != null))

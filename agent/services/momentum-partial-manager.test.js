@@ -265,3 +265,50 @@ test('a self-consistent plan whose Q sits below the gate\'s HARD_MIN_RR cannot b
     plan: { ...q3, requiredRr: 2.9 }, evidenceId: 'fixture:7', identity }), /valid immutable partial plan/)
   assert.equal(registerPartialPlan(db, { accountId: '11', tradeId: 7, positionId: '123', plan: q3, evidenceId: 'fixture:7', identity }).state, 'ARMED')
 })
+
+// Step a double by n units in the last place: the same grid price as another
+// producer's arithmetic writes it.
+function ulps(x, n) {
+  const bits = new Float64Array([x])
+  new BigInt64Array(bits.buffer)[0] += BigInt(n)
+  return bits[0]
+}
+
+// T1b (N2): the manager's entry and take-profit checks compare in ticks, but
+// every fixture gave the broker the plan's own doubles, so switching either
+// back to a float === stayed green. Here the broker's entry and target are
+// the plan's grid prices a few ulps away: ticks match and the partial
+// confirms; a float comparison refuses; a real tick away still refuses.
+test('broker entry and target carrying float residue match the stored plan in ticks; a tick away refuses', async t => {
+  for (const [side, stop] of [['BUY', 90], ['SELL', 110]]) {
+    const residuePlan = planMomentumTargets({ side, entry: 100, originalStop: stop, requiredRr: 3,
+      costReservePrice: 0.4, digits: 2, volume: 10000, minVolume: 100, stepVolume: 100 })
+    assert.equal(residuePlan.mode, 'partial_runner')
+    const entry = ulps(100, 2), target = ulps(residuePlan.brokerTarget, -2)
+    assert.notEqual(entry, residuePlan.entry, 'the fixture must carry float residue to test anything')
+    assert.notEqual(target, residuePlan.brokerTarget, 'the fixture must carry float residue to test anything')
+    for (const [patch, expected] of [[{}, 'CONFIRMED'], [{ entry: 100.01 }, 'ARMED'],
+      [{ takeProfit: residuePlan.brokerTarget + 0.01 }, 'ARMED']]) {
+      const db = new Database(':memory:'); t.after(() => db.close())
+      registerPartialPlan(db, { accountId: '11', tradeId: 7, positionId: '123', plan: residuePlan, evidenceId: 'fixture:7',
+        identity: { host: 'demo.ctraderapi.com', accountId: '11', symbolId: '22' } })
+      let volume = 10000, calls = 0
+      const trigger = residuePlan.trigger
+      const deps = { now: () => at, maxAgeMs: 5000,
+        readOwnership: () => ({ ...owner(), side, entry: 100, initialRisk: 10 }),
+        readPosition: async () => ({ accountId: '11', positionId: '123', side, entry, volume,
+          stopLoss: side === 'BUY' ? 95 : 105, takeProfit: target, observedAtMs: at, ...patch }),
+        quote: async () => ({ accountId: '11', positionId: '123', bid: trigger, ask: trigger, observedAtMs: at }),
+        close: async (_creds, order) => {
+          calls++; volume -= order.volume
+          return { accountId: '11', positionId: '123', dealId: '999', closedVolume: order.volume, price: trigger, executedAtMs: at }
+        },
+      }
+      const label = `${side} ${JSON.stringify(patch)}`
+      const result = await runPartialPlan(db, { accountId: '11', host: 'demo.ctraderapi.com' }, 7, deps)
+      assert.equal(result.state, expected, label)
+      assert.equal(calls, expected === 'CONFIRMED' ? 1 : 0, label)
+      if (expected === 'ARMED') assert.equal(result.reason, 'broker_position_mismatch', label)
+    }
+  }
+})

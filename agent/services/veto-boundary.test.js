@@ -267,11 +267,14 @@ test('(d) campaign_stop → redirected', () => {
 
 test('(d) unknown_daily_pnl → redirected', () => {
   const db = fresh()
+  // The close must fall inside the CURRENT FX day (it opens 21:00/22:00 UTC).
+  // A close "2 hours ago" left the day at 21:00 UTC and this test went red
+  // from then until 23:00 UTC every day. Close it now, with no grace.
   db.prepare(`
     INSERT INTO trades (symbol, side, entry_price, exit_price, volume, status, opened_at, closed_at, net_pnl, account_id)
-    VALUES ('GBPUSD', 'BUY', 100, 99, 0.1, 'closed', datetime('now', '-3 hours'), datetime('now', '-2 hours'), NULL, ?)
+    VALUES ('GBPUSD', 'BUY', 100, 99, 0.1, 'closed', datetime('now', '-3 hours'), datetime('now'), NULL, ?)
   `).run(A)
-  const cfg = { ...DEFAULT_RISK_CONFIG, unknownPnl: { block: true, graceMin: 1, maxAgeMin: 100000, minAttempts: 1000 } }
+  const cfg = { ...DEFAULT_RISK_CONFIG, unknownPnl: { block: true, graceMin: 0, maxAgeMin: 100000, minAttempts: 1000 } }
   const { r, out } = tripAndPersist(db, proposalFor(A), cfg)
   assert.match(r.veto_reason, /^unknown_daily_pnl \(account\)/)
   assert.equal(out.redirected, true)

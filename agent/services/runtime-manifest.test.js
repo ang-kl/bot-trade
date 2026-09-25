@@ -65,3 +65,32 @@ test('the manifest labels every unknown, never estimates, and never prints a sec
   assert.equal(m.verified + m.unknown.length, m.items.length)
   for (const i of m.items) assert.ok('key' in i && 'value' in i && 'source' in i && typeof i.verified === 'boolean')
 })
+
+test('the manifest says whether the running SQLite carries the WAL-reset fix, and the locking mode a second connection depends on', async () => {
+  const opts = { env: {}, cgroupRoot: '/nonexistent-cgroup', fetcher: async () => { throw new Error('offline') } }
+  // The real library, through the production open.
+  const db = initDB(':memory:')
+  let byKey = Object.fromEntries((await runtimeManifest(db, opts)).items.map(i => [i.key, i]))
+  assert.equal(byKey['sqlite.walResetFixed'].value, true, `runtime ${byKey['sqlite.version'].value}`)
+  assert.equal(byKey['sqlite.walResetFixed'].verified, true)
+  assert.equal(byKey['sqlite.walResetFixed'].note, null)
+  assert.equal(byKey['sqlite.lockingMode'].value, 'normal')
+  // A connection reporting production's pre-bump runtime in the degraded mode.
+  const old = {
+    prepare: sql => ({ get: () => ({ v: /sqlite_version/.test(sql) ? '3.49.2' : 'src-id' }) }),
+    pragma: name => (name === 'locking_mode' ? 'exclusive' : name === 'journal_mode' ? 'wal' : 2),
+  }
+  byKey = Object.fromEntries((await runtimeManifest(old, opts)).items.map(i => [i.key, i]))
+  assert.equal(byKey['sqlite.version'].value, '3.49.2')
+  assert.equal(byKey['sqlite.walResetFixed'].value, false)
+  assert.equal(byKey['sqlite.walResetFixed'].verified, true)
+  assert.match(byKey['sqlite.walResetFixed'].note, /second writing connection .*refused/)
+  assert.equal(byKey['sqlite.lockingMode'].value, 'exclusive')
+  assert.match(byKey['sqlite.lockingMode'].note, /no second connection/)
+  // Unreadable is unknown, never true or false.
+  const blind = { prepare() { throw new Error('closed') }, pragma() { throw new Error('closed') } }
+  const m = await runtimeManifest(blind, opts)
+  byKey = Object.fromEntries(m.items.map(i => [i.key, i]))
+  assert.deepEqual([byKey['sqlite.walResetFixed'].value, byKey['sqlite.walResetFixed'].verified], [null, false])
+  assert.ok(m.unknown.includes('sqlite.walResetFixed') && m.unknown.includes('sqlite.lockingMode'))
+})
