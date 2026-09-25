@@ -50,7 +50,8 @@ import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 import Collapse from '../components/common/Collapse.jsx'
 import { accountNumbers } from "../lib/scope-label.js"
-import { reportStats, reportGroups, reportLedger } from '../../agent/shared/performance-populations.js'
+import { reportStats, reportGroups, reportLedger, sessionBuckets } from '../../agent/shared/performance-populations.js'
+import { SESSION_SOURCE } from '../../agent/shared/report-sessions.js'
 import { performanceGradients } from '../lib/performance-gradients.js'
 import { scopedPerformanceRows } from '../lib/performance-evidence.js'
 import { dataFeedCardScope } from '../lib/data-feed.js'
@@ -62,6 +63,8 @@ const H = 3600_000
 // DISPLAYED goes through Intl.NumberFormat in the viewer's own locale.
 const nf = (d = 2) => new Intl.NumberFormat(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
 const money = (v, d = 2) => (v == null || Number.isNaN(Number(v)) ? '—' : nf(d).format(Number(v)))
+// Copy-text figures: fixed two decimals, a dash when the value is unavailable.
+const fx2 = v => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toFixed(2))
 // Owner (2026-07-25): "I stress don't use bold for body text" — bold is
 // reserved for section TITLES and the ONE headline figure per card. Every
 // table uses only these three weights, so no data row shouts.
@@ -94,19 +97,12 @@ const sessionActive = (s, utcHour) =>
   s.from <= s.to ? utcHour >= s.from && utcHour < s.to : utcHour >= s.from || utcHour < s.to
 
 // Market-session buckets for the owner's today-by-market stats (SYD, SG,
-// HK, JPN, EUR, NY). Fixed UTC windows from each exchange's cash hours at
-// current DST offsets — documented approximations, not a tz database.
-// Windows OVERLAP (Asia trades in several at once): a trade counts in every
-// session whose window contains its CLOSE time, so rows don't sum to total.
+// HK, JPN, EUR, NY) come from the REPORT, which derives each exchange's
+// regular cash intervals in its own IANA zone (agent/shared/report-sessions.js,
+// V3 WEB-6). The page keeps no copy of the hours. Windows OVERLAP (Asia
+// trades in several at once): a trade counts in every session whose interval
+// contains its CLOSE time, so rows don't sum to total.
 // (Distinct from SESSIONS above — that's the FX session clock design spec.)
-const STAT_SESSIONS = [
-  { key: 'SYD (ASX)', hint: 'ASX cash equities 10:00–16:00 AEST — NOT the FX Sydney session (which the header clock shows opening 22:00 UTC)', fromMin: 0, toMin: 360 },
-  { key: 'SG', hint: 'SGX 09:00–17:00 SGT', fromMin: 60, toMin: 540 },
-  { key: 'HK', hint: 'HKEX 09:30–16:00 HKT', fromMin: 90, toMin: 480 },
-  { key: 'JPN', hint: 'TSE 09:00–15:00 JST', fromMin: 0, toMin: 360 },
-  { key: 'EUR', hint: 'London 08:00–16:30 BST', fromMin: 420, toMin: 930 },
-  { key: 'NY', hint: 'NYSE 09:30–16:00 EDT', fromMin: 810, toMin: 1200 },
-]
 
 // Day/weekend anchors and closedMs come from shared/formulas.js (imported
 // above) — the same DST-aware 17:00-NY FX day open the server ledger and the
@@ -801,21 +797,15 @@ function TodayTradesBody({ rows, available = false }) {
 // figure, since "average" and "mean" name the same number).
 const SESS_COLS = '58px 52px repeat(7, minmax(64px, 1fr))'
 function SessionStatsBody({ stats }) {
-  // Owner (2026-07-27): SYD and JPN show identical figures — genuinely
-  // correct, not a bug. ASX cash hours (10:00–16:00 AEST, UTC+10) and TSE
-  // cash hours (09:00–15:00 JST, UTC+9) land on the exact same UTC window
-  // this time of year — the 1h session-start gap cancels the 1h offset gap.
-  // Flag any such coincidence generically (not hardcoded to SYD/JPN) so it
-  // stays correct if the underlying windows ever change.
-  const twins = {}
-  for (const a of stats.buckets) {
-    for (const b of stats.buckets) {
-      if (a.key !== b.key && a.fromMin === b.fromMin && a.toMin === b.toMin) twins[a.key] = b.key
-    }
-  }
+  // Owner (2026-07-27) saw SYD and JPN show identical figures: the old fixed
+  // UTC table gave ASX and TSE the same 00:00–06:00 window. With real hours
+  // (TSE's lunch break and 15:30 close, ASX on AEDT from 4 Oct) they differ.
+  // A pair is still flagged generically when the REPORT's UTC intervals for
+  // today's window coincide (sessionBuckets sets `twin`), so identical
+  // figures are explained rather than left looking like a bug.
   const rows = [
     ...stats.buckets,
-    { key: 'OFF', hint: 'today’s closes outside all six windows', ...stats.off },
+    { key: 'OFF', hint: 'today’s closes outside every exchange’s regular cash hours, weekends included', ...stats.off },
     { key: 'ALL', hint: 'every closed trade today', ...stats.total },
   ]
   const cell = (v, col) => (v == null
@@ -832,10 +822,10 @@ function SessionStatsBody({ stats }) {
             <span>
               <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{s.key}</span>
               {s.open === false && (
-                <span title="market closed right now — figures are the last computed value" style={{ marginLeft: 3, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
+                <span title={`outside ${s.exchange}’s regular cash hours right now — public holidays and early closes not applied (WEB-6b); the row keeps today’s closes`} style={{ marginLeft: 3, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
               )}
-              {twins[s.key] && (
-                <span title={`Same UTC cash-hours window as ${twins[s.key]} this time of year — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={twins[s.key]}</span>
+              {s.twin && (
+                <span title={`Same UTC cash-hours intervals as ${s.twin} in today’s window — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={s.twin}</span>
               )}
             </span>
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n ?? '—'}</span>
@@ -1389,14 +1379,10 @@ export default function Performance() {
   // statistics for today: different markets (SYD, SG, HK, JPN, EUR, NY
   // time frame)"). Same day anchor + trade scope as the Today block so the
   // numbers reconcile; each trade is bucketed by its CLOSE time (when the
-  // P&L was realized).
-  const sessionStats = useMemo(() => {
-    const stat = key => { const a = reportStats(populationReport, `session:${key}`, acct)
-      return { n: a.n, pricedN: a.pricedN, pos: a.gw, neg: a.gl == null ? null : -a.gl,
-        high: a.high, low: a.low, avg: a.avg, sum: a.pnl, median: a.median }
-    }
-    return { buckets: STAT_SESSIONS.map(s => ({ ...s, ...stat(s.key) })), off: stat('OFF'), total: stat('ALL') }
-  }, [populationReport, acct])
+  // P&L was realized). Rows, intervals and the open-now reading all come from
+  // the report (V3 WEB-6), so the card cannot disagree with the server's
+  // buckets.
+  const sessionStats = useMemo(() => sessionBuckets(populationReport, acct), [populationReport, acct])
 
   // Per-account cards for the accounts detail row (prototype ACC block).
   // Real sources only: registry row + that account's ledger balance/30D +
@@ -2308,18 +2294,26 @@ export default function Performance() {
 
         {/* Today by market session — owner's stats spec (Trades #, +$, −$,
             highest, lowest, average, sum, median) across SYD / SG / HK /
-            JPN / EUR / NY exchange windows. Windows overlap, so session
-            rows exceed the ALL row by design; OFF catches everything else. */}
+            JPN / EUR / NY exchange cash hours, each in its own IANA zone
+            (V3 WEB-6). Windows overlap, so session rows exceed the ALL row
+            by design; OFF catches everything else. The caption states what
+            the REPORT says it applied, so an older server's approximate
+            buckets are never labelled as exchange hours. */}
         <Card id="sec-sessions">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
-            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>realised closes since {todayWin.label} · refreshes every minute while active · approximate UTC session buckets overlap; floating profit appears in current account readings</span>
+            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>realised closes since {todayWin.label} · {sessionStats.source === SESSION_SOURCE
+              ? 'bucketed by each exchange’s regular cash hours in its own time zone (DST applied, lunch breaks excluded) · public holidays and early closes not applied yet (WEB-6b), so a holiday’s closes still count in that exchange’s row'
+              : sessionStats.source == null ? 'session buckets arrive with the report'
+                : 'approximate UTC session buckets from an older server'} · rows overlap · refreshes every minute while active · floating profit appears in current account readings</span>
             <SectionTools id="sessions" title="Today by Market Session table" window="today"
               data={[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]}
               toText={() => ['Today by market session',
                 ...[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]
                   .map(s => s.n
-                    ? `${s.key} · ${s.n} trades · +${(s.pos ?? 0).toFixed(2)} / ${(s.neg ?? 0).toFixed(2)} · high ${s.high.toFixed(2)} · low ${s.low.toFixed(2)} · avg ${s.avg.toFixed(2)} · sum ${s.sum.toFixed(2)} · median ${s.median.toFixed(2)}`
+                    // Money is null across unverifiable account units: print a
+                    // dash, never throw on the copy and never print a zero.
+                    ? `${s.key} · ${s.n} trades · ${s.pos == null ? '—' : `+${fx2(s.pos)}`} / ${fx2(s.neg)} · high ${fx2(s.high)} · low ${fx2(s.low)} · avg ${fx2(s.avg)} · sum ${fx2(s.sum)} · median ${fx2(s.median)}`
                     : `${s.key} · no closed trades`)].join('\n')}
               render={() => <SessionStatsBody stats={sessionStats} />} />
           </div>

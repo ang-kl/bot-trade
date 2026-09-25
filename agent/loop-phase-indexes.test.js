@@ -113,9 +113,33 @@ test('the every-3s fast-monitor read of active positions uses an index', () => {
   assert.match(plan, /idx_monitored_status|idx_monitored_source/, plan)
 })
 
-test('every loop sub-phase stamps its own loop_phase — no silent windows', () => {
+// loop.js with its comments removed. The naming checks below read SOURCE — the
+// established last resort, because runLoop has no injection point — and a
+// source check that also reads comments passes on the explanation of a call
+// that is not there (CLAUDE.md failure mode #2): loop.js carries a comment
+// "The launch is recorded by phase();" beside the autopilot block. `//` after a
+// ':' (a URL inside a string) is kept.
+function loopCode() {
   const src = fs.readFileSync(new URL('./loop.js', import.meta.url), 'utf8')
-  // The blocks that used to inherit the 'monitoring N positions' label.
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n')
+  assert.ok(code.includes('async function runLoop(db)') && code.length > src.length * 0.4, 'comment stripping ate the code this test reads')
+  return code
+}
+
+/** Index of `needle` in `code`, asserting it is there exactly where named. */
+function at(code, needle) {
+  const i = code.indexOf(needle)
+  assert.ok(i >= 0, `\`${needle}\` is not in loop.js code (comments stripped)`)
+  return i
+}
+
+test('every loop sub-phase stamps its own loop_phase — no silent windows', () => {
+  const code = loopCode()
+  // The blocks that used to inherit the 'monitoring N positions' label, and
+  // (V3 M1) the three post-scan steps whose time used to land in whichever
+  // phase ran before them — the #1079 first loop's 63,914 ms post-scan bucket.
   for (const name of [
     'adaptive breaker',
     'edge watchdog',
@@ -123,9 +147,59 @@ test('every loop sub-phase stamps its own loop_phase — no silent windows', () 
     'performance breaker',
     'quant',
     'housekeeping',
+    'fx legs refresh',
+    'trade account backfill',
+    'decision audit',
   ]) {
-    assert.ok(src.includes(`phase('${name}')`), `sub-phase '${name}' does not name itself`)
+    assert.ok(code.includes(`phase('${name}')`), `sub-phase '${name}' does not name itself`)
   }
   // And the breakdown must be persisted, or naming them buys nothing.
-  assert.ok(src.includes("setState(db, 'loop_phase_ms_json'"), 'phase timings never persisted')
+  assert.ok(code.includes("setState(db, 'loop_phase_ms_json'"), 'phase timings never persisted')
+})
+
+test('V3 M1: each new phase stamp sits IMMEDIATELY BEFORE the work it names — a misplaced stamp mislabels the time', () => {
+  const code = loopCode()
+  const pending = at(code, "phase('pending signals')")
+  const fx = at(code, "phase('fx legs refresh')")
+  const fxCall = at(code, 'refreshFxLegs(db,')
+  const backfill = at(code, "phase('trade account backfill')")
+  const backfillCall = at(code, 'backfillTradeAccounts(db)')
+  const audit = at(code, "phase('decision audit')")
+  const auditCall = at(code, 'readDecisionAudit(db,')
+  const autopilot = at(code, "phase('autopilot')")
+  assert.ok(pending < fx && fx < fxCall, "phase('fx legs refresh') must come after pending signals and before refreshFxLegs(")
+  assert.ok(fxCall < backfill && backfill < backfillCall, "phase('trade account backfill') must come after the FX legs and before backfillTradeAccounts(")
+  assert.ok(backfillCall < audit && audit < auditCall, "phase('decision audit') must come after the backfill and before readDecisionAudit(")
+  assert.ok(auditCall < autopilot, 'the audit bucket must close at the autopilot phase')
+  // and the lag tap hears every phase boundary by its stable key
+  assert.ok(/const phase = \(name, key = name\) => \{[\s\S]*?markLagPhase\(key\)[\s\S]*?\n {2}\}/.test(code), 'phase() must name the phase to the lag tap')
+})
+
+test('V3 M1: the first-protection stamps are wired where the protection runs, and the loop end feeds the boot record', () => {
+  // runLoop has no injection point; the stamps are behaviourally tested in
+  // services/runtime-record.test.js, and THIS pins that loop.js calls them in
+  // the right blocks — a refactor that drops a call site would otherwise
+  // leave a boot record reading "never evaluated" forever (failure mode #4).
+  const code = loopCode()
+  const monitorCall = at(code, 'await runMonitorPhase(db, s, activePositions')
+  const slow = at(code, "stampFirst('slowMonitor'")
+  const ab = at(code, "phase('adaptive breaker')")
+  const abStamp = at(code, "stampFirst('adaptiveBreaker', { ok: true")
+  const abFail = at(code, "stampFirst('adaptiveBreaker', { ok: false")
+  const ew = at(code, "phase('edge watchdog')")
+  const es = at(code, "phase('equity stop')")
+  const esStamp = at(code, "stampFirst('equityStop', { ok: true")
+  const esFail = at(code, "stampFirst('equityStop', { ok: false")
+  const pb = at(code, "phase('performance breaker')")
+  const pbStamp = at(code, "stampFirst('performanceBreaker', { ok: true")
+  const pbFail = at(code, "stampFirst('performanceBreaker', { ok: false")
+  const quant = at(code, "phase('quant')")
+  assert.ok(monitorCall < slow && slow < ab, 'slowMonitor is stamped after the slow-monitor pass')
+  assert.ok(ab < abStamp && abStamp < abFail && abFail < ew, 'adaptiveBreaker is stamped inside its own block')
+  assert.ok(es < esStamp && esStamp < esFail && esFail < pb, 'equityStop is stamped inside its own block')
+  assert.ok(pb < pbStamp && pbStamp < pbFail && pbFail < quant, 'performanceBreaker is stamped inside its own block')
+  const close = at(code, 'const cyclePhaseMs = closePhases()')
+  const end = at(code, 'noteLoopEnd({ startedAtMs: start, ms: elapsed, phaseMs: cyclePhaseMs')
+  assert.ok(close < end, 'the loop end is recorded with the cycle\'s own phase breakdown')
+  assert.ok(code.includes('noteLoopEnd({ startedAtMs: start, ms: Date.now() - start, phaseMs: erroredPhaseMs, ok: false })'), 'a cycle that died is still recorded')
 })
