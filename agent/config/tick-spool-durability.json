@@ -1,5 +1,5 @@
 {
-  "_note": "V3 R1 (P8b): the durability policy of each gateway's tick spool, per sidecar side (heartbeat side names: cpp_exec = the live gateway cpp-acct, cpp_exec_demo = the demo gateway cpp-exec). It is an owner input, read by services/tick-segment-manifest.js to judge a restart: DURABLE means a restart must not lose a sealed segment, so any segment gone at a restart reads persistence FAILED; EPHEMERAL_LOSS_RECORDED means the spool is not kept across a restart and each loss is recorded instead (T1 grades that as a pass). An entry applies from its `from` (ISO UTC); an entry whose `from` is null is declared but not yet in force. A side with no entry in force reads persistence NOT_VERIFIABLE. This file changes a verdict, never a trade, a limit or a gateway.",
+  "_note": "V3 R1 (P8b): the durability policy of each gateway's tick spool, per sidecar side (heartbeat side names: cpp_exec = the live gateway cpp-acct, cpp_exec_demo = the demo gateway cpp-exec). It is an owner input, read by services/tick-segment-manifest.js to judge a restart: DURABLE means a restart must not lose a sealed segment, so any segment gone at a restart reads persistence FAILED; EPHEMERAL_LOSS_RECORDED means the spool is not kept across a restart and each loss is recorded instead (T1 grades that as a pass). An entry applies from its `from` (ISO UTC); an entry whose `from` is null is declared but not yet in force. A restart is judged by the boot BEFORE it: it counts under an entry when Node last listed the previous boot at or after that entry's `from`, so the spool a restart loses is judged under the policy that governed it. A side with no entry in force reads persistence NOT_VERIFIABLE. This file changes a verdict, never a trade, a limit or a gateway.",
   "sides": {
     "cpp_exec_demo": [
       {
@@ -12,16 +12,17 @@
     "cpp_exec": [
       {
         "policy": "EPHEMERAL_LOSS_RECORDED",
-        "from": "2026-09-25T13:51:00Z",
+        "from": null,
         "gateway": "cpp-acct (live)",
-        "basis": "Owner, 25-09-2026 21:51 SGT: the live spool has no volume until the X1 window, and its current history is lost at the next restart either way."
+        "basis": "Owner, 25-09-2026 21:51 SGT: the live spool has no volume until the X1 window, and its current history is lost at the next restart either way.",
+        "pending": "Owner question: those words are read as accepting the pre-volume loss, not declared as a policy, and V3 R1 says live persistence reads NOT_VERIFIABLE until declared. On the owner's yes, set `from` to 2026-09-25T13:51:00Z; the X1 restart's losses (recorded segment by segment either way) then read VERIFIED, ephemeral by declaration."
       },
       {
         "policy": "DURABLE",
         "from": null,
         "gateway": "cpp-acct (live)",
         "basis": "Owner, 25-09-2026 21:51 SGT: attach a 10 GB Railway volume at /data on cpp-acct in the X1 window, so live tick history survives redeploys.",
-        "pending": "Set `from` to the start of the first cpp-acct boot on that volume once it is read back. Until then the EPHEMERAL_LOSS_RECORDED entry above stays in force."
+        "pending": "Once the first cpp-acct boot on that volume is read back, set `from` to that boot's start or to the X1 restart's `atMs` in GET /state/tick-segments (cpp_exec.manifest.restarts), any time before that boot's next restart. The X1 restart is judged by the old boot's last listing, which precedes both, so the old ephemeral spool's loss is never read against DURABLE; every later restart on the volume is."
       }
     ]
   }

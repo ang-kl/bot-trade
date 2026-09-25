@@ -152,6 +152,41 @@ test('the policy decides what a loss means: EPHEMERAL_LOSS_RECORDED reads the re
   assert.equal(v.policy, DURABILITY.DURABLE); assert.equal(v.verdict, VERDICT.NOT_VERIFIABLE); assert.equal(v.lostRestart, 0)
 })
 
+test('fix round blocker: a restart is judged by the policy of the boot BEFORE it — DURABLE from the new boot\'s start does not read the old ephemeral spool\'s loss as FAILED', async () => {
+  const db = initDB(':memory:')
+  // The X1 window: the old live boot (no volume) holds 4 sealed segments; the
+  // first boot on the volume starts at T0 + 1 min and is first listed at
+  // T0 + 2 min with an empty spool. The `pending` note says to set DURABLE's
+  // `from` to that boot's start — always BEFORE Node's first listing of it.
+  await quiet(async () => {
+    await reconcile(db, range(1, 4), { boot: 'boot-old', sealed: 4 })
+    await reconcile(db, [], { boot: 'boot-vol', at: T0 + 2 * MIN })
+  })
+  assert.equal(Object.values(reasons(db)).filter(r => r === GONE.LOST_RESTART).length, 4, 'the loss itself is still recorded, segment by segment')
+  for (const from of [T0 + 1 * MIN, T0 + 2 * MIN]) { // the boot's start, or the X1 restart's own atMs
+    const entries = [...declared(DURABILITY.EPHEMERAL_LOSS_RECORDED), ...declared(DURABILITY.DURABLE, new Date(from).toISOString())]
+    const v = persistenceVerdict(db, SIDE.name, { entries, nowMs: T0 + 3 * MIN })
+    assert.equal(v.policy, DURABILITY.DURABLE)
+    assert.equal(v.verdict, VERDICT.NOT_VERIFIABLE, `RED if the old spool's loss is judged under DURABLE (from ${new Date(from).toISOString()}): a false, permanent FAILED`)
+    assert.deepEqual([v.restartsObserved, v.lostRestart, v.lostBytes], [0, 0, 0])
+  }
+  // The same restart under the policy that governed the old boot is still judged.
+  const eph = persistenceVerdict(db, SIDE.name, { entries: declared(DURABILITY.EPHEMERAL_LOSS_RECORDED), nowMs: T0 + 3 * MIN })
+  assert.equal(eph.verdict, VERDICT.VERIFIED); assert.equal(eph.lostRestart, 4)
+  // The next restart ON the volume is judged under DURABLE: kept → VERIFIED, lost → FAILED.
+  const durable = declared(DURABILITY.DURABLE, new Date(T0 + 1 * MIN).toISOString())
+  await quiet(async () => {
+    await reconcile(db, range(5, 7), { boot: 'boot-vol', sealed: 3, at: T0 + 10 * MIN })
+    await reconcile(db, range(5, 7), { boot: 'boot-vol-2', at: T0 + 20 * MIN })
+  })
+  const kept = persistenceVerdict(db, SIDE.name, { entries: durable, nowMs: T0 + 21 * MIN })
+  assert.equal(kept.verdict, VERDICT.VERIFIED); assert.deepEqual([kept.restartsWithSegments, kept.lostRestart], [1, 0])
+  await quiet(() => reconcile(db, range(6, 7), { boot: 'boot-vol-3', at: T0 + 30 * MIN }))
+  const lost = persistenceVerdict(db, SIDE.name, { entries: durable, nowMs: T0 + 31 * MIN })
+  assert.equal(lost.verdict, VERDICT.FAILED, 'a loss on the volume is still a failure')
+  assert.deepEqual([lost.restartsObserved, lost.lostRestart, lost.lostBytes], [2, 1, SEG])
+})
+
 test('a truncated listing keeps its oldest entries: a known name past its last entry is not classed gone', async () => {
   const db = initDB(':memory:')
   await quiet(async () => {
@@ -174,6 +209,37 @@ test('a segment listed again after it was classed gone is restored and recorded,
   const row = db.prepare('SELECT reappeared_at_ms, reappeared_from FROM tick_segment_manifest WHERE name = ?').get(name(1))
   assert.equal(row.reappeared_at_ms, T0 + 4 * MIN); assert.match(row.reappeared_from, /^lost_restart at 2026-09-26T00:02:00/)
   assert.equal(persistenceVerdict(db, SIDE.name, { entries: declared(DURABILITY.DURABLE), nowMs: T0 + 5 * MIN }).verdict, VERDICT.VERIFIED)
+  // The restart row agrees with the manifest (checker nit 2): the three are
+  // moved from lost to reappeared, and the as-observed total stays visible.
+  const d = segmentManifestView(db, { nowMs: T0 + 5 * MIN, policy: { sides: {}, errors: [] } }).sides[SIDE.name]
+  assert.equal(d.lostRestart, 0)
+  assert.deepEqual(d.restarts.map(r => [r.listedBefore, r.survived, r.retired, r.lost, r.lostBytes, r.reappeared, r.reappearedBytes]), [[3, 0, 0, 0, 0, 3, 3 * SEG]],
+    'RED if restarts[].lost still says 3 while the manifest says none are lost')
+})
+
+test('a partial reappearance moves only the restored segment on the restart row; a within-boot gone segment listed again touches no restart row', async () => {
+  const db = initDB(':memory:')
+  await quiet(async () => {
+    await reconcile(db, range(1, 3), { boot: 'boot-a', sealed: 3 })
+    await reconcile(db, [3], { boot: 'boot-b', at: T0 + 2 * MIN })            // #1, #2 lost at the restart
+    await reconcile(db, [2, 3], { boot: 'boot-b', at: T0 + 4 * MIN })         // #2 listed again
+    await reconcile(db, [2], { boot: 'boot-b', at: T0 + 6 * MIN })            // #3 gone within boot-b: unexplained
+    await reconcile(db, [2, 3], { boot: 'boot-b', at: T0 + 8 * MIN })         // #3 listed again
+  })
+  assert.deepEqual(reasons(db), { [name(1)]: GONE.LOST_RESTART })
+  const b = db.prepare('SELECT lost, lost_bytes, retired, reappeared, reappeared_bytes FROM tick_segment_boots').all()
+  assert.deepEqual(b, [{ lost: 1, lost_bytes: SEG, retired: 0, reappeared: 1, reappeared_bytes: SEG }])
+  const v = persistenceVerdict(db, SIDE.name, { entries: declared(DURABILITY.DURABLE), nowMs: T0 + 9 * MIN })
+  assert.equal(v.verdict, VERDICT.FAILED); assert.deepEqual([v.lostRestart, v.lostBytes], [1, SEG])
+})
+
+test('a listing with no sealedAtMs (listSidecarSegments sends 0) is stored as unknown, never as 1970', async () => {
+  const db = initDB(':memory:')
+  const list = async () => ({ ok: true, enabled: true, segments: [{ name: name(1), bytes: SEG, sealedAtMs: 0 }, { name: name(2), bytes: SEG }], openBytes: 0, truncated: false })
+  await quiet(() => reconcileSegmentManifest(db, SIDE, { status: status({ sealed: 2 }), bootId: 'b', nowMs: T0, list }))
+  assert.deepEqual(db.prepare('SELECT sealed_at_ms FROM tick_segment_manifest ORDER BY name').all().map(r => r.sealed_at_ms), [null, null])
+  const d = segmentManifestView(db, { nowMs: T0, policy: { sides: {}, errors: [] } }).sides[SIDE.name]
+  assert.equal(d.oldestSealedAtMs, null, 'RED if a missing mtime is stored as 0 and shown as the oldest seal')
 })
 
 test('a sealed segment listed again with different bytes is recorded and fails persistence under DURABLE', async () => {
@@ -254,12 +320,16 @@ test('the view: every segment by name and bytes, the gone ones with their class,
   assert.equal(v.sides.cpp_exec.listed, 0)
 })
 
-test('the checked-in durability policy loads clean: demo DURABLE in force, live EPHEMERAL in force with its DURABLE entry pending the volume', () => {
+test('the checked-in durability policy loads clean: demo DURABLE in force; live has NO policy in force until the owner declares one (V3 R1: live reads NOT_VERIFIABLE until declared)', () => {
   const p = loadDurabilityPolicy()
   assert.deepEqual(p.errors, [])
   const now = Date.parse('2026-09-26T00:00:00Z')
   assert.equal(policyAt(p.sides.cpp_exec_demo, now)?.policy, DURABILITY.DURABLE)
-  assert.equal(policyAt(p.sides.cpp_exec, now)?.policy, DURABILITY.EPHEMERAL_LOSS_RECORDED)
+  assert.equal(policyAt(p.sides.cpp_exec, now), null, 'an inferred EPHEMERAL declaration would read the X1 loss VERIFIED on words the owner did not declare as a policy')
   const pending = p.sides.cpp_exec.filter(e => e.fromMs == null)
-  assert.deepEqual(pending.map(e => e.policy), [DURABILITY.DURABLE], 'the owner-approved live volume is declared, not yet in force')
+  assert.deepEqual(pending.map(e => e.policy), [DURABILITY.EPHEMERAL_LOSS_RECORDED, DURABILITY.DURABLE], 'both live entries are declared and shown, neither in force')
+  const db = initDB(':memory:')
+  const v = persistenceVerdict(db, 'cpp_exec', { entries: p.sides.cpp_exec, nowMs: now })
+  assert.equal(v.verdict, VERDICT.NOT_VERIFIABLE); assert.equal(v.policy, null)
+  assert.equal(v.declaredNotInForce.length, 2)
 })

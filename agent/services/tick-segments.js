@@ -431,7 +431,7 @@ export async function tickSegmentsView({ sides = segmentSides(), fetch: fetchImp
       truncated: r.truncated,
       newest: r.segments.length ? r.segments[r.segments.length - 1].name : null,
       cached: r.segments.filter(s => cache.get(s.name) === s.bytes).length,
-      list: r.segments.map(s => ({ name: s.name, bytes: s.bytes, sealedAtMs: s.sealedAtMs })),
+      list: r.segments.map(s => ({ name: s.name, bytes: s.bytes, sealedAtMs: s.sealedAtMs || null })), // 0 = the sidecar sent no mtime
       ...(manifest?.sides?.[side.name] ? { manifest: manifest.sides[side.name] } : {}),
       ...(r.error ? { error: r.error } : {}),
       ...(r.reason ? { reason: r.reason } : {}),

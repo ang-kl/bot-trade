@@ -189,7 +189,7 @@ export async function reconcileSegmentManifest(db, side, { status = null, bootId
   }
   const listed = (Array.isArray(listing.segments) ? listing.segments : [])
     .filter(s => s && SEGMENT_NAME_RE.test(String(s.name || '')))
-    .map(s => ({ name: String(s.name), bytes: Number(s.bytes) || 0, sealedAtMs: num(s.sealedAtMs) }))
+    .map(s => ({ name: String(s.name), bytes: Number(s.bytes) || 0, sealedAtMs: num(s.sealedAtMs) || null })) // listSidecarSegments turns a missing mtime into 0: stored as unknown, not 1970
   const present = db.prepare('SELECT name, bytes FROM tick_segment_manifest WHERE side = ? AND gone_at_ms IS NULL ORDER BY name').all(side.name)
   const boot = !prev
     ? (present.length ? 'unknown' : 'first')
@@ -214,15 +214,27 @@ export async function reconcileSegmentManifest(db, side, { status = null, bootId
   const bytesChanged = []
   const reappeared = []
   db.transaction(() => {
-    const findGone = db.prepare('SELECT gone_reason, gone_at_ms FROM tick_segment_manifest WHERE side = ? AND name = ?')
+    const findGone = db.prepare('SELECT gone_reason, gone_at_ms, gone_boot_id, bytes FROM tick_segment_manifest WHERE side = ? AND name = ?')
     const insert = db.prepare(`INSERT INTO tick_segment_manifest (side, name, start_ms, bytes, first_bytes, sealed_at_ms, first_seen_ms, first_boot_id, last_seen_ms, last_boot_id)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     const back = db.prepare(`UPDATE tick_segment_manifest SET gone_at_ms = NULL, gone_boot_id = NULL, gone_reason = NULL, gone_detail = NULL,
                                reappeared_at_ms = ?, reappeared_from = ?, bytes = ? WHERE side = ? AND name = ?`)
+    // The restart row that counted it (same boot, same listing) moves it from
+    // retired / lost to reappeared, so restarts[] agrees with the manifest.
+    // A segment classed within one boot has no restart row at its listing.
+    const unLost = db.prepare(`UPDATE tick_segment_boots SET lost = MAX(0, lost - 1), lost_bytes = MAX(0, lost_bytes - ?),
+                                 reappeared = reappeared + 1, reappeared_bytes = reappeared_bytes + ? WHERE side = ? AND boot_id = ? AND at_ms = ?`)
+    const unRetired = db.prepare(`UPDATE tick_segment_boots SET retired = MAX(0, retired - 1),
+                                    reappeared = reappeared + 1, reappeared_bytes = reappeared_bytes + ? WHERE side = ? AND boot_id = ? AND at_ms = ?`)
     for (const s of c.fresh) {
       const old = findGone.get(side.name, s.name)
-      if (old) { back.run(nowMs, `${old.gone_reason} at ${new Date(Number(old.gone_at_ms)).toISOString()}`, s.bytes, side.name, s.name); reappeared.push(s.name) }
-      else insert.run(side.name, s.name, segmentStartMs(s.name), s.bytes, s.bytes, s.sealedAtMs, nowMs, cur.bootId, nowMs, cur.bootId)
+      if (old) {
+        back.run(nowMs, `${old.gone_reason} at ${new Date(Number(old.gone_at_ms)).toISOString()}`, s.bytes, side.name, s.name)
+        const was = Number(old.bytes) || 0
+        if (old.gone_boot_id != null && old.gone_reason === GONE.LOST_RESTART) unLost.run(was, was, side.name, old.gone_boot_id, old.gone_at_ms)
+        else if (old.gone_boot_id != null && old.gone_reason === GONE.RETIRED) unRetired.run(was, side.name, old.gone_boot_id, old.gone_at_ms)
+        reappeared.push(s.name)
+      } else insert.run(side.name, s.name, segmentStartMs(s.name), s.bytes, s.bytes, s.sealedAtMs, nowMs, cur.bootId, nowMs, cur.bootId)
     }
     const resize = db.prepare('UPDATE tick_segment_manifest SET bytes = ? WHERE side = ? AND name = ?')
     for (const p of present) {
@@ -259,6 +271,7 @@ export async function reconcileSegmentManifest(db, side, { status = null, bootId
   // The Railway log is the owner's read-back path: every classed segment is named.
   for (const g of c.gone.slice(0, 5)) console.log(`[tick] ${side.name} segment ${g.name} (${g.bytes} B) gone: ${g.reason} — ${g.detail}`)
   if (c.gone.length > 5) console.log(`[tick] ${side.name} … ${c.gone.length - 5} more segment(s) gone this listing (GET /state/tick-segments names them)`)
+  if (reappeared.length) console.log(`[tick] ${side.name} ${reappeared.length} segment(s) classed gone earlier are listed again and restored (${reappeared.slice(0, 3).join(', ')}${reappeared.length > 3 ? ', …' : ''})`)
   for (const b of bytesChanged) console.warn(`[tick] ${side.name} sealed segment ${b.name} changed size ${b.from} → ${b.to} B`)
   if (boot === 'changed') console.log(`[tick] ${side.name} segment manifest: restart ${prev.bootId} → ${cur.bootId}; ${c.survivors} sealed segment(s) listed again, ${c.gone.filter(g => g.reason === GONE.RETIRED).length} retired, ${c.gone.filter(g => g.reason === GONE.LOST_RESTART).length} lost`)
   return { ok: true, boot, listed: listed.length, fresh: c.fresh.length, gone: c.gone, pending: c.pending.map(p => p.name), reappeared, bytesChanged, unobserved: c.unobserved.length }
@@ -291,7 +304,20 @@ export function policyAt(entries = [], atMs = Date.now()) {
 
 const count = (db, sql, ...args) => { try { return Number(db.prepare(sql).get(...args)?.n) || 0 } catch { return 0 } }
 
-/** Persistence of one side's sealed segments across gateway restarts, judged under the policy in force. */
+/**
+ * Persistence of one side's sealed segments across gateway restarts, judged
+ * under the policy in force.
+ *
+ * A RESTART IS JUDGED BY THE BOOT BEFORE IT. What a restart loses is the OLD
+ * boot's spool, so it is judged under the policy that governed that spool:
+ * a restart counts when Node last listed the previous boot at or after the
+ * policy's `from` (tick_segment_boots.prev_listing_ms), and a lost segment
+ * counts when it was last listed at or after it (last_seen_ms). Judging by
+ * when the NEW boot was first listed read the X1 restart — the old ephemeral
+ * live spool, lost as declared — as a DURABLE failure the moment DURABLE's
+ * `from` was set to the first volume boot's start, which always precedes
+ * Node's first listing of it: FAILED, permanently and falsely (R1 checker).
+ */
 export function persistenceVerdict(db, sideName, { entries = [], state = null, nowMs = Date.now() } = {}) {
   const inForce = policyAt(entries, nowMs)
   const declared = entries.filter(e => e.fromMs == null).map(e => ({ policy: e.policy, pending: e.pending || e.basis }))
@@ -299,11 +325,11 @@ export function persistenceVerdict(db, sideName, { entries = [], state = null, n
   const base = { policy: inForce.policy, since: inForce.from, basis: inForce.basis, declaredNotInForce: declared }
   if (state && state.atMs != null && !state.bootId) return { ...base, verdict: VERDICT.NOT_VERIFIABLE, reason: 'the sidecar reports no bootId, so a restart cannot be observed' }
   let boots = []
-  try { boots = db.prepare('SELECT at_ms, prev_boot_id, boot_id, listed_before, survived, retired, lost, lost_bytes FROM tick_segment_boots WHERE side = ? AND at_ms >= ? ORDER BY at_ms').all(sideName, inForce.fromMs) } catch { boots = [] }
+  try { boots = db.prepare('SELECT at_ms, prev_boot_id, boot_id, listed_before, survived, retired, lost, lost_bytes FROM tick_segment_boots WHERE side = ? AND prev_listing_ms >= ? ORDER BY at_ms').all(sideName, inForce.fromMs) } catch { boots = [] }
   const withSegments = boots.filter(b => Number(b.listed_before) > 0)
-  const lost = count(db, "SELECT COUNT(*) AS n FROM tick_segment_manifest WHERE side = ? AND gone_reason = 'lost_restart' AND gone_at_ms >= ?", sideName, inForce.fromMs)
+  const lost = count(db, "SELECT COUNT(*) AS n FROM tick_segment_manifest WHERE side = ? AND gone_reason = 'lost_restart' AND last_seen_ms >= ?", sideName, inForce.fromMs)
   let lostBytes = 0
-  try { lostBytes = Number(db.prepare("SELECT COALESCE(SUM(bytes), 0) AS b FROM tick_segment_manifest WHERE side = ? AND gone_reason = 'lost_restart' AND gone_at_ms >= ?").get(sideName, inForce.fromMs)?.b) || 0 } catch { lostBytes = 0 }
+  try { lostBytes = Number(db.prepare("SELECT COALESCE(SUM(bytes), 0) AS b FROM tick_segment_manifest WHERE side = ? AND gone_reason = 'lost_restart' AND last_seen_ms >= ?").get(sideName, inForce.fromMs)?.b) || 0 } catch { lostBytes = 0 }
   const resized = count(db, 'SELECT COUNT(*) AS n FROM tick_segment_manifest WHERE side = ? AND bytes <> first_bytes AND last_seen_ms >= ?', sideName, inForce.fromMs)
   const facts = { restartsObserved: boots.length, restartsWithSegments: withSegments.length, lostRestart: lost, lostBytes, resized }
   if (inForce.policy === DURABILITY.DURABLE) {
@@ -338,7 +364,7 @@ export function segmentManifestView(db, { sides = MANIFEST_SIDES, nowMs = Date.n
       gone = db.prepare('SELECT name, bytes, start_ms, sealed_at_ms, first_seen_ms, last_seen_ms, gone_at_ms, gone_boot_id, gone_reason, gone_detail FROM tick_segment_manifest WHERE side = ? AND gone_at_ms IS NOT NULL ORDER BY gone_at_ms DESC, name DESC LIMIT ?').all(name, goneLimit)
     } catch { segments = []; gone = [] }
     let boots = []
-    try { boots = db.prepare('SELECT at_ms AS atMs, prev_boot_id AS prevBootId, boot_id AS bootId, prev_listing_ms AS prevListingMs, listed_before AS listedBefore, bytes_before AS bytesBefore, survived, retired, lost, lost_bytes AS lostBytes, bytes_changed AS bytesChanged FROM tick_segment_boots WHERE side = ? ORDER BY at_ms DESC LIMIT 20').all(name) } catch { boots = [] }
+    try { boots = db.prepare('SELECT at_ms AS atMs, prev_boot_id AS prevBootId, boot_id AS bootId, prev_listing_ms AS prevListingMs, listed_before AS listedBefore, bytes_before AS bytesBefore, survived, retired, lost, lost_bytes AS lostBytes, reappeared, reappeared_bytes AS reappearedBytes, bytes_changed AS bytesChanged FROM tick_segment_boots WHERE side = ? ORDER BY at_ms DESC LIMIT 20').all(name) } catch { boots = [] }
     const oldestStart = segments.reduce((m, s) => (s.start_ms != null && (m == null || s.start_ms < m) ? s.start_ms : m), null)
     const oldestSealed = segments.reduce((m, s) => (s.sealed_at_ms != null && (m == null || s.sealed_at_ms < m) ? s.sealed_at_ms : m), null)
     const byReason = (r) => count(db, 'SELECT COUNT(*) AS n FROM tick_segment_manifest WHERE side = ? AND gone_reason = ?', name, r)

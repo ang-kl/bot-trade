@@ -814,6 +814,12 @@ const TABLES = `
     lost            INTEGER NOT NULL,
     lost_bytes      INTEGER NOT NULL,
     bytes_changed   INTEGER NOT NULL,
+    -- segments this restart classed retired or lost that were LISTED AGAIN
+    -- later: moved out of retired / lost (and lost_bytes) so the row agrees
+    -- with the manifest, and counted here so the as-observed total stays
+    -- visible (retired + lost + reappeared = what the restart's listing missed).
+    reappeared       INTEGER NOT NULL DEFAULT 0,
+    reappeared_bytes INTEGER NOT NULL DEFAULT 0,
     UNIQUE(side, boot_id)
   );
   -- P6a: the shadow portfolio's closed trades, pulled from the sidecar's

@@ -288,7 +288,10 @@ test('V3 R1: GET /state/tick-segments carries the segment manifest — names, by
     // The asked side (no sidecar listens in the test) still carries its list and manifest.
     const asked = v.sides.find(x => x.side === 'cpp_exec')
     assert.deepEqual(asked.list, [])
-    assert.equal(asked.manifest.persistence.policy, 'EPHEMERAL_LOSS_RECORDED')
+    // Live has no policy in force until the owner declares one (V3 R1): both
+    // live entries are declared and shown, neither in force.
+    assert.equal(asked.manifest.persistence.policy, null)
     assert.equal(asked.manifest.persistence.verdict, 'NOT_VERIFIABLE')
+    assert.deepEqual(asked.manifest.persistence.declaredNotInForce.map(e => e.policy), ['EPHEMERAL_LOSS_RECORDED', 'DURABLE'])
   } finally { s.close() }
 })
