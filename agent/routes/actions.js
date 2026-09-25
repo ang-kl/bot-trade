@@ -2553,6 +2553,7 @@ export default function actionsRouter(db, deps = {}) {
       const exec = await execPlaceOrder(creds, {
         ctidTraderAccountId: parseInt(creds.accountId),
         symbolId: parseInt(td.symbolId),
+        ...(pos.symbolName ? { symbolName: pos.symbolName } : {}), // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: td.tradeSide === 2 || td.tradeSide === 'SELL' ? 'SELL' : 'BUY',
         volume: td.volume,
@@ -2640,6 +2641,7 @@ export default function actionsRouter(db, deps = {}) {
       const exec = await execPlaceOrder(legTwo.creds, {
         ctidTraderAccountId: parseInt(legTwo.creds.accountId),
         symbolId: parseInt(td.symbolId),
+        ...(pos.symbolName ? { symbolName: pos.symbolName } : {}), // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: wasSell ? 'BUY' : 'SELL',
         volume: td.volume,
@@ -5891,6 +5893,7 @@ export default function actionsRouter(db, deps = {}) {
       const orderPayload = {
         ctidTraderAccountId: parseInt(accountId),
         symbolId: parseInt(symbolId),
+        symbolName: analysis.symbol, // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: side,
         volume,
@@ -6080,6 +6083,7 @@ export default function actionsRouter(db, deps = {}) {
       const orderPayload = {
         ctidTraderAccountId: parseInt(creds.accountId),
         symbolId: parseInt(symbolId),
+        symbolName: symbol, // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: side,
         volume: sized.volume,
