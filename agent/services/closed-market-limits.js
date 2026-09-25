@@ -18,12 +18,12 @@
 
 import { getState } from '../db.js'
 import { admitEntry } from './entry-mode.js'
-import { encodeLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
+import { encodeLabel, convictionBucket, LABEL_VERSION, labelIntentId } from '../lib/trade-labels.js'
 import { tradePrice } from './alert-format.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { expiryMsFor } from './pending-signals.js'
 import { stopTriggerField } from '../lib/order-protection.js'
-import { recordTradePlan } from './trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
 
 export const DEFAULT_CLOSED_MARKET_LIMITS = {
   on: true, // owner: on by default — closed-market setups get locked in
@@ -63,6 +63,138 @@ export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl
 }
 
 /**
+ * V3 L2a W9 (25-09-2026): the trade a resting limit became, found by
+ * EVIDENCE — never "the first trade on this symbol since placement", the
+ * heuristic this replaces (it matched on symbol and time: an unrelated
+ * same-symbol trade was credited as the fill, and a symbol stored in a
+ * different case matched nothing).
+ *
+ * The evidence, strongest first:
+ *   1. the intent that placed the order: `pending_orders.intent_id` (written
+ *      at placement since L2a), else the entry intent whose broker_order_id is
+ *      this order on this account (exec-engine's settleIntent records it),
+ *      else the `|i<id>` tag on the broker's own copy of the order's label
+ *      (broker_orders.label — exec-engine tags the order it sends);
+ *   2. the trade that intent produced: a row naming it (trades.intent_id, or
+ *      the tag on its label_raw — an adopted fill stores the broker label), or
+ *      the row holding the position the intent was resolved with.
+ * Every candidate must also be on the row's account — or unattributed
+ * (account_id NULL), as X1's fill evidence reads it — the same symbol
+ * (case-insensitive) and not on the opposite side (an unrecorded side does
+ * not contradict the evidence). Pure DB; never throws.
+ *
+ * ONE RULE PER RECORD (V3 L2a × X1 merge, 26-09-2026). This decides the
+ * resting ROW (pending_orders.status) and nothing else. The INTENT's state is
+ * the ledger's alone: exec-engine's settleIntent (lib/order-answer.js
+ * entryAnswerVerdict) leaves a resting order ACCEPTED with its order id and
+ * NO position id, and entry-ledger.js (reconcileIntents,
+ * settleAcceptedFromOrderDetails) moves it on only from broker evidence — so
+ * the position path in (2) can only read a position id the ledger recorded
+ * on a fill (or, on a pre-X1 row not yet corrected, a pre-created id that
+ * only a real fill ever puts on a trade row). The position id is matched in
+ * both of its stored forms ('123' and '123.0'), as X1's fillEvidence
+ * (intent-corrections.js) matches it. This reads TRADES evidence only; the
+ * ledger's own evidence (execution events, order details, deals) is honoured
+ * by the sweep before it would expire a row (expireUnlessLedgerFilled).
+ *
+ * @returns {{ trade: object|null, intentId: string|null, via: string|null }}
+ */
+export function findLimitFill(db, row) {
+  const acctRow = row.account_id != null ? String(row.account_id) : null
+  const up = v => String(v ?? '').trim().toUpperCase()
+  const wantSide = Number(row.dir) < 0 ? 'SELL' : Number(row.dir) > 0 ? 'BUY' : null
+  const sideOf = v => { const u = up(v); return u === 'LONG' ? 'BUY' : u === 'SHORT' ? 'SELL' : u }
+  let intent = null, via = null
+  try {
+    if (row.intent_id) {
+      intent = db.prepare(`SELECT id, account_id, broker_position_id FROM entry_intents WHERE id = ?`).get(String(row.intent_id))
+        || { id: String(row.intent_id), account_id: acctRow, broker_position_id: null }
+      via = 'pending_orders.intent_id'
+    }
+    if (!intent && row.order_id != null) {
+      intent = db.prepare(`SELECT id, account_id, broker_position_id FROM entry_intents
+                            WHERE broker_order_id = ? AND (account_id = ? OR ? IS NULL) ORDER BY created_at DESC LIMIT 1`)
+        .get(String(row.order_id), acctRow, acctRow) || null
+      if (intent) via = 'entry_intents.broker_order_id'
+    }
+    if (!intent && row.order_id != null) {
+      const bo = db.prepare(`SELECT label FROM broker_orders WHERE order_id = ?`).get(String(row.order_id))
+      const tag = labelIntentId(bo?.label || '')
+      if (tag) {
+        intent = db.prepare(`SELECT id, account_id, broker_position_id FROM entry_intents WHERE id = ?`).get(tag)
+          || { id: tag, account_id: acctRow, broker_position_id: null }
+        via = 'broker_orders.label'
+      }
+    }
+  } catch { intent = null }
+  if (!intent?.id) return { trade: null, intentId: null, via: null }
+  const intentId = String(intent.id)
+  const acct = acctRow ?? (intent.account_id != null ? String(intent.account_id) : null)
+  const posId = intent.broker_position_id != null && String(intent.broker_position_id) !== ''
+    ? String(intent.broker_position_id).replace(/\.0+$/, '') : null
+  const posForms = posId != null ? [posId, `${posId}.0`] : [null, null]
+  let candidates = []
+  try {
+    candidates = db.prepare(`SELECT id, account_id, symbol, side, label_raw, intent_id, ctrader_position_id, status
+                               FROM trades
+                              WHERE intent_id = ? OR label_raw LIKE ? OR (? IS NOT NULL AND CAST(ctrader_position_id AS TEXT) IN (?, ?))
+                              ORDER BY id LIMIT 20`)
+      .all(intentId, `%|${intentId}`, posId, ...posForms)
+  } catch { candidates = [] }
+  const trade = candidates.find(t =>
+    (acct == null || t.account_id == null || String(t.account_id) === acct)
+    && up(t.symbol) === up(row.symbol)
+    && (wantSide == null || !up(t.side) || sideOf(t.side) === wantSide)
+    && ['open', 'closed'].includes(String(t.status || ''))
+    && (t.intent_id === intentId || labelIntentId(t.label_raw || '') === intentId
+      || (posId != null && String(t.ctrader_position_id).replace(/\.0+$/, '') === posId)),
+  ) || null
+  return { trade, intentId, via }
+}
+
+/**
+ * Stamp a linked limit fill with what the resting row knew (W9): the approval
+ * id, the strategy, the intent, and the origin — `bot_pending_fill`, because
+ * the evidence shows this system's resting order produced it — only where the
+ * row said nothing better (COALESCE; an origin other than adopted / unknown
+ * is never rewritten). Then the plan, from the resting row's own levels,
+ * when no more direct writer recorded one; a plan that fails to write is
+ * recorded (W7), never swallowed.
+ */
+function stampLimitFill(db, row, trade, intentId) {
+  const t = Number(trade.id)
+  try {
+    db.prepare(`UPDATE trades SET
+        risk_event_id = COALESCE(risk_event_id, ?),
+        strategy = COALESCE(strategy, ?),
+        intent_id = COALESCE(intent_id, ?),
+        origin_source = CASE WHEN origin IS NULL OR origin IN ('reconciler_adopted', 'unknown') THEN 'limit_link' ELSE origin_source END,
+        origin = CASE WHEN origin IS NULL OR origin IN ('reconciler_adopted', 'unknown') THEN 'bot_pending_fill' ELSE origin END
+      WHERE id = ?`).run(row.risk_event_id ?? null, row.strategy || null, intentId, t)
+    db.prepare(`UPDATE monitored_positions SET strategy = COALESCE(strategy, ?) WHERE trade_id = ?`).run(row.strategy || null, t)
+  } catch { /* lineage is provenance, never a reason to fail the sweep */ }
+  // THE PLAN, on the same moment (§7,437·B·4; measured 08-09-2026 21:32 SGT:
+  // four MSFT.US limits filled at the US open and the reconciler adopted them
+  // with no plan). The pending row IS the plan: level, stop, target,
+  // strategy, timeframe. Written only when nothing more direct has.
+  try {
+    const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(t)
+    if (!hasPlan) {
+      recordTradePlan(db, t, {
+        accountId: row.account_id ?? trade.account_id ?? null, symbol: row.symbol, side: Number(row.dir) < 0 ? 'SELL' : 'BUY',
+        strategy: row.strategy || null, timeframe: row.timeframe || null,
+        entry: row.level, sl: row.sl, tp: row.tp, source: 'closed_market_limit_fill',
+      })
+    }
+  } catch (err) {
+    recordPlanWriteFailure(db, {
+      tradeId: t, accountId: row.account_id ?? trade.account_id ?? null, symbol: row.symbol,
+      source: 'closed_market_limit_fill', stage: 'closed_market_sweep', error: err,
+    })
+  }
+}
+
+/**
  * Retire stale closed-market-limit rows independently of a fresh signal ever
  * recurring on that symbol (owner: "pending order lapse more than a day" —
  * traced to a real gap). Before this, a `pending-closed` row's ONLY exit was
@@ -78,6 +210,12 @@ export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl
  * this is a pure DB-only reconciliation against it — no network call of its
  * own. It is NOT authoritative by absence: see the `!broker` branch.
  *
+ * THE FILL IS FOUND BY EVIDENCE (V3 L2a W9): findLimitFill. Whenever the
+ * order is not resting at the broker, a fill linked by its intent settles
+ * the row as filled — including an order the broker book never showed as
+ * working (a limit that filled before the first sync recorded it), which the
+ * expiry branches below used to retire as 'expired'.
+ *
  * @returns {{ stillWorking:number, filled:number, expired:number, unknown:number }}
  *   `unknown` is the subset of stillWorking held open because the broker had
  *   nothing to say about them — worth watching, never a reason to retire a row.
@@ -90,6 +228,36 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
   let stillWorking = 0, filled = 0, expired = 0, unknown = 0
   const markFilled = db.prepare(`UPDATE pending_orders SET status = 'filled', note = ? WHERE id = ?`)
   const markExpired = db.prepare(`UPDATE pending_orders SET status = 'expired', note = ? WHERE id = ?`)
+  const settleFill = (row) => {
+    const link = findLimitFill(db, row)
+    if (!link.trade) return link
+    markFilled.run(`pending-closed: adopted as trade #${link.trade.id} (intent ${link.intentId} via ${link.via})`, row.id)
+    stampLimitFill(db, row, link.trade, link.intentId)
+    filled++
+    return link
+  }
+  const unlinked = (link) => (link.intentId
+    ? `intent ${link.intentId} (${link.via}) has no trade on this account, symbol and side`
+    : 'no intent evidence for this order')
+  // The ledger may already know the order FILLED from broker evidence (an
+  // execution event, the broker's order details, a deal) even when no trade
+  // row exists — a position that opened and closed between two reconcile
+  // passes. Expiring the row then would contradict the ledger: a false
+  // record. A FILLED intent settled from anything but the placement answer
+  // marks the row filled, naming the ledger's evidence; the placement answer
+  // alone is not fill evidence for a resting order (X1).
+  const ledgerFilled = db.prepare(`SELECT state, resolution_source, broker_position_id FROM entry_intents WHERE id = ?`)
+  const expireUnlessLedgerFilled = (row, link, note) => {
+    let it = null
+    try { it = link?.intentId ? ledgerFilled.get(String(link.intentId)) : null } catch { it = null }
+    if (it?.state === 'FILLED' && it.resolution_source && it.resolution_source !== 'response') {
+      markFilled.run(`pending-closed: filled per the entry ledger (intent ${link.intentId} FILLED from ${it.resolution_source}${it.broker_position_id != null ? `, position ${it.broker_position_id}` : ''}); no trade row on record`, row.id)
+      filled++
+      return
+    }
+    markExpired.run(note, row.id)
+    expired++
+  }
 
   for (const row of rows) {
     if (row.order_id) {
@@ -109,11 +277,13 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
       // limits on 04-08-2026, which freed the idempotency check above to place
       // a fourteenth, and a fifteenth. The orders never left the book; only our
       // record of them did. An unknown order stays working and is settled by
-      // its own expiry, exactly like an order that never returned an id.
+      // its own expiry, exactly like an order that never returned an id —
+      // unless a fill its intent produced is already on record (W9).
       if (!broker) {
+        const link = settleFill(row)
+        if (link.trade) continue
         if (row.expires_at && new Date(row.expires_at).getTime() < nowMs) {
-          markExpired.run('pending-closed: no broker record and own expiry passed', row.id)
-          expired++
+          expireUnlessLedgerFilled(row, link, 'pending-closed: no broker record and own expiry passed')
         } else {
           unknown++
           stillWorking++
@@ -122,68 +292,23 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
       }
 
       // The broker HAS a record and it is not 'working' — filled, rejected,
-      // cancelled or expired there. Best-effort check for an adopted trade on
-      // the same symbol and ACCOUNT opened since this order was placed;
-      // otherwise it never filled. (Unscoped, this credited a fill on one
-      // account to a resting order on another.)
-      const adopted = db.prepare(
-        `SELECT id FROM trades
-          WHERE symbol = ? AND opened_at >= ?
-            AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
-          ORDER BY opened_at ASC LIMIT 1`
-      ).get(row.symbol, row.placed_at || '1970-01-01', row.account_id ?? null, row.account_id ?? null)
-      if (adopted) {
-        markFilled.run('pending-closed: adopted as trade', row.id)
-        // §70.9 LINEAGE (05-08-2026). This is the ONE moment the system knows
-        // which approval produced which position on this path — the reconciler
-        // adopts the fill with no idea an order preceded it, and the approval
-        // id sits on the pending row we are about to retire. Stamping it here
-        // is the difference between a trade that can name its authorisation
-        // and one that cannot.
-        //
-        // Measured before this: 62 fib_confluence and 26 fib_618_fade opens in
-        // seven days, every one with risk_event_id NULL, while their pending
-        // rows carried ids 97150-97729.
-        //
-        // COALESCE, never overwrite: if the trade already carries an id, a
-        // more direct writer put it there and knows better than this heuristic.
-        if (row.risk_event_id != null) {
-          try {
-            db.prepare(
-              `UPDATE trades SET risk_event_id = COALESCE(risk_event_id, ?) WHERE id = ?`
-            ).run(row.risk_event_id, adopted.id)
-          } catch { /* lineage is provenance, never a reason to fail the sweep */ }
-        }
-        // THE PLAN, on the same moment (§7,437·B·4; measured 08-09-2026
-        // 21:32 SGT: four MSFT.US limits filled at the US open and the
-        // reconciler adopted them with no plan — the entry paths that write
-        // one are autoTrade, the fib pending fill and the manual route, and a
-        // closed-market limit is none of those). The pending row IS the plan:
-        // level, stop, target, strategy, timeframe. Written only when nothing
-        // more direct has written one already.
-        try {
-          const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(adopted.id)
-          if (!hasPlan) {
-            recordTradePlan(db, adopted.id, {
-              accountId: row.account_id ?? null, symbol: row.symbol, side: Number(row.dir) < 0 ? 'SELL' : 'BUY',
-              strategy: row.strategy || null, timeframe: row.timeframe || null,
-              entry: row.level, sl: row.sl, tp: row.tp, source: 'closed_market_limit_fill',
-            })
-          }
-        } catch { /* the plan is a record, never a reason to fail the sweep */ }
-        filled++
-      } else {
-        markExpired.run('pending-closed: gone at broker, no fill adopted', row.id)
-        expired++
-      }
+      // cancelled or expired there. §70.9 LINEAGE (05-08-2026): this is the
+      // one moment the system knows which approval produced which position
+      // on this path, so the fill found by evidence inherits the approval id,
+      // the strategy and the plan (stampLimitFill). No linked fill: as far as
+      // any evidence shows it never filled, and the note says which evidence.
+      const link = settleFill(row)
+      if (!link.trade) expireUnlessLedgerFilled(row, link, `pending-closed: gone at broker, no fill adopted — ${unlinked(link)}`)
       continue
     }
     // Never got an order_id back at all (placeOrder response gap, or the
     // call itself never truly succeeded) — only give up once its OWN
-    // expiry has passed; too early to judge otherwise.
+    // expiry has passed; too early to judge otherwise. An intent recorded
+    // at placement can still link a fill (W9).
+    const link = settleFill(row)
+    if (link.trade) continue
     if (row.expires_at && new Date(row.expires_at).getTime() < nowMs) {
-      markExpired.run('pending-closed: no broker order_id and expiry passed', row.id)
-      expired++
+      expireUnlessLedgerFilled(row, link, 'pending-closed: no broker order_id and expiry passed')
     } else {
       stillWorking++
     }
@@ -244,7 +369,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   // it was built from; on ACCT-LIVE-1 its ids for LLY.US and GD.US were other
   // instruments and a live limit went out at 6.56. An id that cannot be
   // verified for this account is a refusal with a reason, never a guess.
-  const { resolveSymbolId } = await import('../lib/ctrader-creds.js')
+  const { resolveSymbolId, bindEntryIntent } = await import('../lib/ctrader-creds.js')
   const resolved = await resolveSymbolId(db, creds, symbol, opts.symbolDeps || {})
   const symbolId = resolved.id
   if (!symbolId) return { skipped: 'symbol_unknown', reason: resolved.reason || null, source: resolved.source }
@@ -356,12 +481,15 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     timeframe: synth.timeframe || null,
     regime: null,
   })
-  const payload = buildLimitPayload({
-    accountId: creds.accountId, symbolId, side, volume: sized.volume,
-    entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,
-    relativePoints: sizing.relativePoints ?? ((d, dg) => Math.round(d * Math.pow(10, dg))),
-    riskCfg,
-  })
+  const payload = {
+    ...buildLimitPayload({
+      accountId: creds.accountId, symbolId, side, volume: sized.volume,
+      entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,
+      relativePoints: sizing.relativePoints ?? ((d, dg) => Math.round(d * Math.pow(10, dg))),
+      riskCfg,
+    }),
+    symbolName: symbol, // X1 / W2: ledger-only, stripped before the wire
+  }
 
   // P1b: the fence, by name — under the CALLING producer's id (see the note
   // on `producerId` above), so a retired caller is refused and a kept one
@@ -370,8 +498,13 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   // the caller's id varies, so a literal 'bar' here would misname a tick one.
   const admission = admitEntry(db, { accountId: creds.accountId, producerId })
   if (!admission.ok) return { placed: false, skipped: 'entry_mode', reason: admission.reason }
+  // V3 L2a (W5): the intent exec-engine reserves for this order carries the
+  // approval, and its id is kept for the resting row below — the link the
+  // fill sweep follows instead of "the first trade on this symbol" (W9).
+  let placedIntentId = null
+  const placeCreds = bindEntryIntent(creds, { riskEventId, onReserved: (id) => { placedIntentId = id } })
   try {
-    const ev = await exec.placeOrder(creds, payload)
+    const ev = await exec.placeOrder(placeCreds, payload)
     const orderId = ev?.order?.orderId ?? ev?.orderId ?? null
     // account_id is NOT optional. The column has existed since the M1
     // multi-account migration and this writer never filled it, so every row it
@@ -381,13 +514,13 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     // found nothing working and placed a replacement. Thirteen times on
     // DOW.US, 04-08-2026, 10:41 to 12:03.
     db.prepare(`
-      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy, risk_event_id, account_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?, ?, ?)
+      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy, risk_event_id, account_id, intent_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?, ?, ?, ?)
     `).run(
       symbol, synth.timeframe || null, orderId != null ? String(orderId) : null,
       side === 'BUY' ? 1 : -1, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
       volLots, new Date(expiresAtMs).toISOString(), synth.strategy || null, riskEventId ?? null,
-      acctKey,
+      acctKey, placedIntentId,
     )
     try {
       const { recordSubmitted } = await import('./opportunity-disposition.js')

@@ -27,8 +27,13 @@ using namespace tick;
 namespace {
 
 std::string tmpSpool() {
-  char buf[] = "/tmp/tick_spool_XXXXXX";
-  const char* d = mkdtemp(buf);
+  // Under $TMPDIR when it is set (a gate's private directory, removed after
+  // the run), /tmp otherwise — these dirs are left behind by design.
+  const char* t = std::getenv("TMPDIR");
+  std::string tmpl = std::string(t && *t ? t : "/tmp") + "/tick_spool_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* d = mkdtemp(buf.data());
   assert(d);
   return std::string(d) + "/spool";
 }
@@ -412,6 +417,299 @@ static void test_start_creates_one_level_only_and_survives_a_missing_parent() {
   ::rmdir(root);
 }
 
+// ---------------------------------------------------------------------------
+// GW-CAP: the spool cap and the reserve from the environment.
+
+namespace {
+
+// These scenarios make their spools under $TMPDIR when it is set (the
+// gate's private directory) and remove their own tree afterwards. Declared
+// FIRST in a test so it is destroyed after the recorder has stopped.
+struct Scratch {
+  std::string root, spool;
+  Scratch() {
+    const char* t = std::getenv("TMPDIR");
+    std::string tmpl = std::string(t && *t ? t : "/tmp") + "/tick_gwcap_XXXXXX";
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    const char* d = mkdtemp(buf.data());
+    assert(d);
+    root = d;
+    spool = root + "/spool";
+  }
+  ~Scratch() {
+    if (DIR* dd = ::opendir(spool.c_str())) {
+      while (dirent* e = ::readdir(dd)) {
+        const std::string n = e->d_name;
+        if (n != "." && n != "..") ::unlink((spool + "/" + n).c_str());
+      }
+      ::closedir(dd);
+    }
+    ::rmdir(spool.c_str());
+    ::rmdir(root.c_str());
+  }
+};
+
+bool contains(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
+
+} // namespace
+
+static void test_spool_limit_values_parse_exactly_and_refuse_ambiguity() {
+  uint64_t b = 0;
+  std::string why;
+  assert(parseByteCount("2147483648", b, why) && b == (2ull << 30));
+  assert(parseByteCount("20GiB", b, why) && b == (20ull << 30));
+  assert(parseByteCount(" 20 gib ", b, why) && b == (20ull << 30));   // case and spaces
+  assert(parseByteCount("512MiB", b, why) && b == (512ull << 20));
+  assert(parseByteCount("64 KiB", b, why) && b == (64ull << 10));
+  assert(parseByteCount("1TiB", b, why) && b == (1ull << 40));
+  assert(parseByteCount("4096B", b, why) && b == 4096);
+  assert(parseByteCount("0", b, why) && b == 0);                       // parses; the cap rule refuses it
+  // Decimal or base-less units are refused, not guessed — and say so.
+  for (const char* t : {"20GB", "20G", "20 gb", "5M", "10k", "1TB"}) {
+    why.clear();
+    b = 7;
+    assert(!parseByteCount(t, b, why));
+    assert(b == 7);                                                    // out untouched on refusal
+    assert(contains(why, "ambiguous"));
+  }
+  for (const char* t : {"", "   ", "-1", "+5", "1.5GiB", "twenty", "20 GiB extra", "0x10"}) {
+    why.clear();
+    assert(!parseByteCount(t, b, why));
+    assert(!why.empty());
+  }
+  // 64-bit overflow, in the digits and in the unit multiply.
+  why.clear();
+  assert(!parseByteCount("18446744073709551616", b, why) && contains(why, "64 bits"));
+  why.clear();
+  assert(!parseByteCount("16777216TiB", b, why) && contains(why, "64 bits"));
+  assert(parseByteCount("18446744073709551615", b, why) && b == UINT64_MAX);
+
+  int p = -1;
+  assert(parsePercent("20", p, why) && p == 20);
+  assert(parsePercent(" 25% ", p, why) && p == 25);
+  assert(parsePercent("0", p, why) && p == 0);
+  assert(parsePercent("100", p, why) && p == 100);
+  for (const char* t : {"101", "-5", "20.5", "x", "", "%", "1000"}) {
+    p = -1;
+    why.clear();
+    assert(!parsePercent(t, p, why));
+    assert(p == -1 && !why.empty());
+  }
+}
+
+static void test_unset_variables_keep_the_compiled_defaults() {
+  // "Nothing changes until a variable is set": the compiled values ARE the
+  // defaults, and an unset environment leaves every one of them — and says
+  // where each came from.
+  RecorderConfig c;
+  assert(c.spoolCapBytes == (2ull << 30) && c.reserveMinBytes == (2ull << 30) && c.reservePct == 20);
+  const auto refused = applySpoolLimits(c, SpoolLimitText{});
+  assert(refused.empty() && c.limitRefusals.empty());
+  assert(c.spoolCapBytes == (2ull << 30) && c.reserveMinBytes == (2ull << 30) && c.reservePct == 20);
+  assert(c.spoolCapSource == "default" && c.reserveMinSource == "default" && c.reservePctSource == "default");
+
+  // Set and accepted: every value lands, every source says env.
+  RecorderConfig e;
+  assert(applySpoolLimits(e, {"20GiB", "3GiB", "25"}).empty());
+  assert(e.spoolCapBytes == (20ull << 30) && e.reserveMinBytes == (3ull << 30) && e.reservePct == 25);
+  assert(e.spoolCapSource == "env" && e.reserveMinSource == "env" && e.reservePctSource == "env");
+  // The boundaries are accepted: exactly one segment; exactly 90 %; a zero minimum.
+  RecorderConfig edge;
+  assert(applySpoolLimits(edge, {std::to_string(edge.segmentBytes), "0", "90"}).empty());
+  assert(edge.spoolCapBytes == edge.segmentBytes && edge.reserveMinBytes == 0 && edge.reservePct == 90);
+}
+
+static void test_nonsense_values_are_refused_with_a_line_and_the_default_kept() {
+  RecorderConfig c;
+  const uint64_t below = c.segmentBytes - 1;   // one byte under one segment
+  const auto refused = applySpoolLimits(c, {std::to_string(below), "lots", "91"});
+  assert(refused.size() == 3 && c.limitRefusals == refused);
+  // Every default stays in force...
+  assert(c.spoolCapBytes == (2ull << 30) && c.reserveMinBytes == (2ull << 30) && c.reservePct == 20);
+  assert(c.spoolCapSource == "refused" && c.reserveMinSource == "refused" && c.reservePctSource == "refused");
+  // ...and each line names the variable, what was typed, why, and the default kept.
+  assert(contains(refused[0], "TICK_SPOOL_CAP_BYTES=\"" + std::to_string(below) + "\""));
+  assert(contains(refused[0], "below one segment") && contains(refused[0], "2147483648 B (2.00 GiB) stays in force"));
+  assert(contains(refused[1], "TICK_SPOOL_RESERVE_MIN_BYTES=\"lots\"") && contains(refused[1], "whole number of bytes"));
+  assert(contains(refused[2], "TICK_SPOOL_RESERVE_PCT=\"91\"") && contains(refused[2], "over 90%") &&
+         contains(refused[2], "the default 20% stays in force"));
+
+  // An ambiguous unit on the cap is refused the same way, never read as GiB.
+  RecorderConfig g;
+  const auto r2 = applySpoolLimits(g, {"20GB", "", ""});
+  assert(r2.size() == 1 && contains(r2[0], "ambiguous") && g.spoolCapBytes == (2ull << 30) && g.spoolCapSource == "refused");
+  assert(g.reserveMinSource == "default" && g.reservePctSource == "default");
+
+  // What the operator typed is quoted bounded and printable — a log line
+  // cannot be made to carry a control character or a wall of text.
+  RecorderConfig q;
+  const auto r3 = applySpoolLimits(q, {std::string("9\n9\"") + std::string(60, 'x'), "", ""});
+  assert(r3.size() == 1 && contains(r3[0], "=\"9?9?xxx") && contains(r3[0], "...\" refused") && !contains(r3[0], "\n"));
+}
+
+static void test_a_cap_from_the_environment_retires_the_oldest_at_that_cap() {
+  const Scratch sc;
+  RecorderConfig c = smallConfig(sc.spool);
+  c.segmentBytes = kHeaderBytes + 10 * kRecordBytes;   // 10 quotes per segment
+  c.fsyncEveryMs = 1;
+  // The compiled 2 GiB default would keep every one of these small segments;
+  // two segments, set through the variable, is what must bind.
+  assert(applySpoolLimits(c, {std::to_string(2 * c.segmentBytes), "", ""}).empty());
+  assert(c.spoolCapBytes == 2 * c.segmentBytes && c.spoolCapSource == "env");
+  TickRecorder rec(c, plenty());
+  assert(rec.start());
+  rec.setRecording(true);
+  for (int i = 0; i < 65; ++i) {
+    rec.onQuote(41, true, 100 + i, true, 200 + i, now(), 1);
+    if (i % 10 == 9) { rec.flush(); std::this_thread::sleep_for(std::chrono::milliseconds(15)); }
+  }
+  rec.flush();
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  const RecorderStats s = rec.stats();
+  // Six decades sealed; the cap keeps two, so the four OLDEST were retired.
+  assert(s.segmentsSealed == 6);
+  assert(s.segmentsRetired == 4);
+  const auto sealed = listFiles(sc.spool, ".tks");
+  assert(sealed.size() == 2);
+  const SegmentRead older = readSegment(sealed[0]);
+  const SegmentRead newer = readSegment(sealed[1]);
+  assert(older.headerOk && newer.headerOk && older.records.size() == 10 && newer.records.size() == 10);
+  assert(older.records.front().bid == 140 && older.records.back().bid == 149);   // quotes 40-49
+  assert(newer.records.front().bid == 150 && newer.records.back().bid == 159);   // quotes 50-59
+  // Never the open one: it holds the newest five.
+  const auto open = listFiles(sc.spool, ".tks.open");
+  assert(open.size() == 1);
+  const SegmentRead tail = readSegment(open[0]);
+  assert(tail.records.size() == 5 && tail.records.front().bid == 160);
+  // The status reports the cap that bound, and where it came from.
+  auto j = jsn::parse(rec.statusJson());
+  assert(j && j->get("segments").get("spoolCapBytes").asNumber(0) == static_cast<double>(2 * c.segmentBytes));
+  assert(j->get("limits").get("spoolCapSource").asString() == "env");
+  rec.stop();
+}
+
+static void test_fit_problems_on_the_owner_volumes() {
+  // The owner's numbers (25-09 22:03 SGT): 20 GiB on cpp-exec's 50 GB volume,
+  // 5 % used today with the 2 GiB spool on it; 5 GiB on cpp-acct's new 10 GB
+  // volume, with order telemetry beside it.
+  RecorderConfig exec;
+  assert(applySpoolLimits(exec, {"20GiB", "", ""}).empty());
+  const uint64_t execTotal = 50'000'000'000ull, execUsed = 2'500'000'000ull;
+  assert(spoolFitProblems(exec, execTotal, execTotal - execUsed, 2ull << 30).empty());
+  // And on the demo gateway's mount as it was MEASURED (GET /state/tick-recorder,
+  // 25-09-2026 14:40 UTC): 48,891,670,528 B, 47,363,852,272 B free, the spool
+  // 603,979,856 B sealed + 54,471,584 B open.
+  assert(spoolFitProblems(exec, 48'891'670'528ull, 47'363'852'272ull, 603'979'856ull + 54'471'584ull).empty());
+
+  RecorderConfig acct;
+  assert(applySpoolLimits(acct, {"5GiB", "", ""}).empty());
+  const uint64_t acctTotal = 10'000'000'000ull, telemetry = 50'000'000ull;
+  assert(spoolFitProblems(acct, acctTotal, acctTotal - telemetry, 0).empty());
+
+  // 8 GiB on the same 10 GB volume reaches the reserve, the 70 % warning
+  // band and the 85 % stop before it could ever retire a segment.
+  RecorderConfig big;
+  assert(applySpoolLimits(big, {"8GiB", "", ""}).empty());
+  const auto p = spoolFitProblems(big, acctTotal, acctTotal - telemetry, 0);
+  assert(p.size() == 3);
+  assert(contains(p[0], "less than the reserve 2147483648 B") && contains(p[0], "PAUSES"));
+  assert(contains(p[1], "70% used") && contains(p[1], "WARN"));
+  assert(contains(p[2], "85% used"));
+  // The largest cap that fits: the 70 % band binds first — 6,999,999,999 B
+  // of room, less 50,000,000 B of telemetry and the open segment at its
+  // largest: 64 MiB plus one queue's worth (262,144 records × 40 B), since
+  // the writer drains the ring before it checks for a seal.
+  const uint64_t openMax = (64ull << 20) + (1ull << 18) * kRecordBytes;
+  const uint64_t largest = 6'999'999'999ull - telemetry - openMax;
+  assert(largest == 6'872'405'375ull);
+  for (const auto& line : p) assert(contains(line, "largest cap that fits this mount now is " + std::to_string(largest) + " B"));
+  // ...and it is exact: that cap fits, one byte more does not.
+  RecorderConfig atLargest, overLargest;
+  assert(applySpoolLimits(atLargest, {std::to_string(largest), "", ""}).empty());
+  assert(applySpoolLimits(overLargest, {std::to_string(largest + 1), "", ""}).empty());
+  assert(spoolFitProblems(atLargest, acctTotal, acctTotal - telemetry, 0).empty());
+  const auto one = spoolFitProblems(overLargest, acctTotal, acctTotal - telemetry, 0);
+  assert(one.size() == 1 && contains(one[0], "70% used"));
+
+  // The spool's own bytes are not "other files": the same mount, the same
+  // cap, whether today's 2 GiB spool is on it or not.
+  assert(spoolFitProblems(exec, execTotal, execTotal - execUsed, 2ull << 30).empty());
+  assert(!spoolFitProblems(acct, acctTotal, acctTotal - 5'000'000'000ull, 0).empty());   // 5 GB of OTHER files
+  assert(spoolFitProblems(acct, acctTotal, acctTotal - 5'000'000'000ull, 5'000'000'000ull).empty()); // 5 GB of spool
+
+  // A reserve that is the whole mount: the recorder can never write.
+  RecorderConfig huge;
+  assert(applySpoolLimits(huge, {"", "20GiB", ""}).empty());
+  const auto never = spoolFitProblems(huge, acctTotal, acctTotal, 0);
+  assert(never.size() == 1 && contains(never[0], "can never write"));
+  // An unmeasured mount is unknown, not "fits".
+  const auto unknown = spoolFitProblems(exec, 0, 0, 0);
+  assert(unknown.size() == 1 && contains(unknown[0], "unknown"));
+
+  // Past 500 whole segments the keeper's listing cannot reach the newest.
+  RecorderConfig list;
+  assert(!capExceedsListing(list));                                          // 2 GiB = 32 segments
+  assert(applySpoolLimits(list, {std::to_string(500 * list.segmentBytes), "", ""}).empty());
+  assert(!capExceedsListing(list));                                          // exactly 500: all listed
+  assert(applySpoolLimits(list, {std::to_string(501 * list.segmentBytes), "", ""}).empty());
+  assert(capExceedsListing(list));
+  RecorderConfig twenty;
+  assert(applySpoolLimits(twenty, {"20GiB", "", ""}).empty() && !capExceedsListing(twenty));  // 320 segments
+}
+
+static void test_status_reports_limits_their_sources_and_the_fit() {
+  const Scratch sc;
+  RecorderConfig c = smallConfig(sc.spool);
+  c.reserveMinBytes = 2ull << 30;
+  assert(applySpoolLimits(c, {"20GiB", "", "95"}).size() == 1);
+  std::atomic<bool> probeOk{true};
+  TickRecorder rec(c, [&probeOk](const std::string&, uint64_t& a, uint64_t& t) {
+    if (!probeOk.load()) return false;
+    a = 40ull << 30; t = 50ull << 30; return true;
+  });
+  assert(rec.start());
+
+  // Before the writer has probed the mount: the reserve in bytes and the fit
+  // are unknown — null, never a 0 that reads as "no reserve" or a verdict.
+  auto j = jsn::parse(rec.statusJson());
+  assert(j);
+  const jsn::Value& l0 = j->get("limits");
+  assert(l0.get("spoolCapBytes").asNumber(0) == static_cast<double>(20ull << 30) && l0.get("spoolCapSource").asString() == "env");
+  assert(l0.get("reservePct").asNumber(0) == 20 && l0.get("reservePctSource").asString() == "refused");
+  assert(l0.get("reserveMinBytes").asNumber(0) == static_cast<double>(2ull << 30) && l0.get("reserveMinSource").asString() == "default");
+  assert(l0.get("reserveBytes").isNull() && l0.get("fitsMount").isNull());
+  assert(l0.get("refusedCount").asNumber(-1) == 1);
+  assert(l0.get("refusals").asArray().size() == 1 && contains(l0.get("refusals").asArray()[0].asString(), "TICK_SPOOL_RESERVE_PCT=\"95\""));
+  assert(l0.get("fitProblems").asArray().empty());
+  // The open-route form carries the numbers and the count, not the typed text.
+  auto open = jsn::parse(rec.limitsJson(false));
+  assert(open && open->get("refusedCount").asNumber(-1) == 1 && open->get("refusals").isNull() && open->get("fitProblems").isNull());
+  assert(open->get("spoolCapSource").asString() == "env");
+
+  // After the first write the mount is measured: 20 % of 50 GiB is the reserve,
+  // and 20 GiB + one segment on a mount with 10 GiB used fits.
+  rec.setRecording(true);
+  for (int i = 0; i < 3; ++i) rec.onQuote(41, true, 100 + i, true, 200 + i, now(), 1);
+  rec.flush();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  j = jsn::parse(rec.statusJson());
+  const jsn::Value& l1 = j->get("limits");
+  assert(l1.get("reserveBytes").asNumber(0) == static_cast<double>(10ull << 30));
+  assert(l1.get("fitsMount").isBool() && l1.get("fitsMount").asBool() == true);
+  assert(jsn::parse(rec.limitsJson(false))->get("fitsMount").asBool() == true);
+
+  // A failed probe zeroes the free bytes; that is "unknown", not "full".
+  probeOk.store(false);
+  for (int i = 0; i < 3; ++i) rec.onQuote(41, true, 110 + i, true, 210 + i, now(), 1);
+  rec.flush();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  j = jsn::parse(rec.statusJson());
+  assert(j->get("limits").get("fitsMount").isNull());
+  assert(j->get("limits").get("reserveBytes").asNumber(0) == static_cast<double>(10ull << 30));   // from the last good probe
+  rec.stop();
+}
+
 int main() {
   test_format_round_trips_and_detects_corruption();
   test_records_carry_the_raw_observation_and_its_flags();
@@ -424,6 +722,12 @@ int main() {
   test_a_torn_tail_is_quarantined_and_reported_as_a_gap();
   test_switching_off_seals_the_open_segment_with_a_gap();
   test_start_creates_one_level_only_and_survives_a_missing_parent();
+  test_spool_limit_values_parse_exactly_and_refuse_ambiguity();
+  test_unset_variables_keep_the_compiled_defaults();
+  test_nonsense_values_are_refused_with_a_line_and_the_default_kept();
+  test_a_cap_from_the_environment_retires_the_oldest_at_that_cap();
+  test_fit_problems_on_the_owner_volumes();
+  test_status_reports_limits_their_sources_and_the_fit();
   std::puts("test_tick_recorder: all passed");
   return 0;
 }

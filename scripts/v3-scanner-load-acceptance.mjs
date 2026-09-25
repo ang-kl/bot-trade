@@ -94,27 +94,38 @@ async function trial(service) {
         assert.ok(accepted, 'bounded retry budget'); latency.push(performance.now() - at)
       }
     }))
+    // V3 CV-1: the tick scanner lists one work row per stream; the timeframe
+    // scanner lists only cells with a job queued or running (an idle cell has
+    // no deadline) and counts every cell in `cells`.
+    const retained = s => isTick ? s.work.length : s.cells.count
+    const capacity = isTick ? 512 : 1024
     let state
     for (let i = 0; i < 500; i++) {
       state = (await request('/watchdog')).body
-      if (state.work.length === streams && state.work.every(w => w.state !== 'queued')) break
+      if (retained(state) === streams && state.work.every(w => w.state !== 'queued')) break
       await delay(10)
     }
     const elapsedMs = performance.now() - started
-    assert.equal(state.work.length, streams)
-    assert.ok(state.work.every(w => w.state !== 'queued' && w.lastCompletedAtMs > 0))
+    assert.equal(retained(state), streams)
+    if (isTick) assert.ok(state.work.every(w => w.state !== 'queued' && w.lastCompletedAtMs > 0))
+    else assert.ok(state.work.length === 0 && state.cells.lastCompletedAtMs > 0 && state.cells.capacity === capacity)
     assert.equal(state.orderAuthority, false)
     if (isTick) {
       assert.equal(acceptedRecords + droppedRecords, streams * tick.events.length, 'every input is accounted for')
       assert.equal(state.processed, acceptedRecords); assert.equal(state.dropped, droppedRecords)
     }
-    // Fill the documented 512-stream bound; the 513th identity must fail closed.
-    for (let index = streams; index < 512; index++) assert.equal((await request(path, job(index))).status, 202)
-    const overflow = await request(path, job(512))
+    // Fill the documented bound (512 streams / 1024 cells); with nothing stale
+    // the next new identity must fail closed.
+    for (let index = streams; index < capacity; index++) {
+      let status
+      for (let attempt = 0; attempt < 100; attempt++) { status = (await request(path, job(index))).status; if (status !== 429) break; await delay(5) }
+      assert.equal(status, 202)
+    }
+    const overflow = await request(path, job(capacity))
     assert.equal(overflow.status, 429)
     const output = (await request(isTick ? '/comparisons?after=0' : '/candidates?after=0')).body
     const finalState = (await request('/watchdog')).body
-    assert.equal(finalState.work.length, 512)
+    assert.equal(retained(finalState), capacity)
     if (isTick) assert.equal(output.gap, true, 'undrained bounded comparison ring reports its overwrite gap')
     const unauthenticated = await fetch(`${url}/watchdog`, { signal: AbortSignal.timeout(5000) })
     assert.equal(unauthenticated.status, 401)
@@ -126,8 +137,8 @@ async function trial(service) {
       concurrentHealthLatencyMs: distribution(healthLatency), peakRssMiB: Math.round(peakRssMiB * 100) / 100,
       backpressureResponses: backpressure, acceptedRecords: isTick ? acceptedRecords : null,
       droppedInputRecords: isTick ? droppedRecords : null, losslessInput: !isTick || droppedRecords === 0,
-      completedStreams: state.work.length,
-      stream513Status: overflow.status, retainedStreams: finalState.work.length,
+      completedStreams: retained(state), capacity,
+      overflowStatus: overflow.status, retainedStreams: retained(finalState),
       undrainedOutputGap: output.gap, latestOutputCursor: output.latestCursor,
       orderAuthority: false, unauthenticatedStatus: unauthenticated.status }
   } finally {

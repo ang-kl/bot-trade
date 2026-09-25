@@ -441,7 +441,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
             const volStart = mono()
             try {
               const byTf = await ws.wsGetTrendbarsBatch(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId, ['1m'], 21, 15_000, 0,
-                { onTokenWait: (ms) => { tokenWaitMs = (tokenWaitMs ?? 0) + (Number(ms) || 0) } })
+                { onTokenWait: (ms) => { tokenWaitMs = (tokenWaitMs ?? 0) + (Number(ms) || 0) }, purpose: 'fast_monitor_volume' })
               relVol = relVolFromBars(byTf['1m'] || [])
             } catch { /* unknown volume → middle pace */ }
             const volMs = Math.round(mono() - volStart)

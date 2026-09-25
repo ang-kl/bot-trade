@@ -5,6 +5,11 @@ steady-state latency of every boot. It grades nothing. The limits in §6 are
 proposals until the owner confirms them (closure:205). Until then, no reading
 below may be called Passed or Failed against them.
 
+M3 adds the grading (`docs/v3-p1p4-harness-2026-09-25.md`): four goal rows
+marked `proposed`, and a read-only harness that prints Passed / Failed /
+Not Verifiable against the **proposed** limits. It labels every grade as
+proposed, and none of it is acceptance until the owner confirms the limits.
+
 ## 1. Why
 
 The last two boots were read by hand, late:

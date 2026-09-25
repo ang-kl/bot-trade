@@ -134,6 +134,19 @@ test('V3 M5: amend latency is served in the authenticated body, and its record i
   assert.match(CODE, /import \{ startAmendLatencyRecord, amendLatencySummary \} from '\.\/services\/protection-latency\.js'/)
 })
 
+// The M5 / WEB-9b merge (25-09-2026) resolved a conflict on these exact lines:
+// both records start in the listen callback, and dropping either side leaves
+// a record that is never seeded from its stored copy nor written again.
+test('V3 M5 + WEB-9b: the listen callback starts BOTH persisted records — amend latency and the feed receipts', () => {
+  const listen = CODE.indexOf("server.listen(port, '0.0.0.0'")
+  const end = CODE.indexOf('[agent] listening on', listen)
+  assert.ok(listen > 0 && end > listen, "the listen callback's anchors are gone")
+  const cb = CODE.slice(listen, end)
+  assert.equal(cb.split('startAmendLatencyRecord(db)').length - 1, 1, 'the amend-latency record starts exactly once, before the listening line')
+  assert.equal(cb.split('startFeedReceiptsRecord(db)').length - 1, 1, 'the feed-receipts record starts exactly once, before the listening line')
+  assert.match(CODE, /import \{ startFeedReceiptsRecord \} from '\.\/services\/feed-receipts-record\.js'/)
+})
+
 test('the early return comes BEFORE the full payload, so new fields default to authenticated', () => {
   const h = healthHandler()
   const guard = h.indexOf('if (!authed)')

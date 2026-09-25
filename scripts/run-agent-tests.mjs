@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { spawnSync } from 'node:child_process'
-import { privateTmpDir, childTestEnv, leftovers, describeLeftovers } from '../agent/test-support/tmp-guard.js'
+import { privateTmpDir } from '../agent/test-support/tmp-guard.js'
+import { runAgentGate } from './agent-gate.mjs'
 
 const files = []
 function walk(directory) {
@@ -33,24 +33,13 @@ const labels = ['isolated latency acceptance', 'isolated test hygiene', 'remaini
 // be empty: a test that leaves a fixture directory behind fails the gate here,
 // by name, instead of filling the disk (25-09-2026: 279 directories and
 // 190,865,902 B left by one run; ~25 GB in a day). Fixtures come from
-// agent/test-support/temp-dir.js, which removes them at process exit.
+// agent/test-support/temp-dir.js, which removes them at process exit. The
+// gate first proves a child's temp directory lands there (the canary in
+// scripts/agent-gate.mjs), so a runner that lost the env fails, not passes.
 const tmp = privateTmpDir()
-const env = childTestEnv(tmp)
-let failed = false
+let failed = true
 try {
-  for (const [index, group] of groups.entries()) {
-    console.log(`[agent-gate] ${labels[index]}: ${group.length} files`)
-    const result = spawnSync(process.execPath, ['--test', '--test-concurrency=2', ...group], { stdio: 'inherit', env })
-    if (result.error) throw result.error
-    if (result.status !== 0) failed = true
-  }
-  const left = leftovers(tmp)
-  if (left.length) {
-    failed = true
-    console.error(`[agent-gate] test hygiene FAILED: ${describeLeftovers(left)}\n[agent-gate] make test fixtures with agent/test-support/temp-dir.js (mkdtempSync / tempDir), which removes them at exit`)
-  } else {
-    console.log('[agent-gate] test hygiene: the private TMPDIR is empty after the full suite')
-  }
+  failed = runAgentGate({ groups, labels, tmp }).failed
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }

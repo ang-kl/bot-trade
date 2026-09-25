@@ -11,6 +11,29 @@ test('unavailable and empty reports never claim there were no signals', () => {
   expect(html).toContain('Unassigned records in the window: 3')
 })
 
+test('V3 WEB-1: roster-wide stops are shown under an account, labelled roster-wide, outside its totals; a server that does not report them is never a zero', () => {
+  const summary = Object.fromEntries(['upstream_stop', 'risk_refusal', 'post_approval_failure', 'tick_refusal', 'approved', 'placement_receipt', 'other_stop'].map(k => [k, { records: 0 }]))
+  const base = { totalRecords: 1, offset: 0, unattributedRecordsInWindow: 0, summary,
+    records: [{ recordId: 'decision_log:9', kind: 'upstream_stop', stage: 'stage_matrix', accountId: '22', attribution: 'account', unsplitHistory: true,
+      symbol: 'EURUSD', at: '2026-09-22 11:30:00', firstBlocker: { reason: 'off', status: 'recorded' }, recordedEvaluations: 1, diagnostics: [] }],
+    unsplitRecordsInWindow: 1, unsplitNote: 'Records written before the attribution fix cannot be split.' }
+  const report = { ...base, rosterWide: { records: 9970, includedInTotals: false, note: 'They apply to every account and are charged to none.',
+    byStage: [{ kind: 'upstream_stop', stage: 'armed_scope_prefilter', records: 5970, recordedAgainstAnAccount: 5970, lastReason: 'no armed timeframe' }] } }
+  const html = renderToStaticMarkup(<BlockerReading report={report} />)
+  expect(html).toContain('Roster-wide stops (every account, charged to none): 9970 records')
+  expect(html).toContain('Not included in this account&#x27;s totals above.')
+  expect(html).toContain('armed_scope_prefilter (Upstream stops) ×5970 — 5970 stored by an older build against the then-selected account')
+  expect(html).toContain('1 of these records cannot be split.')
+  expect(html).toContain('22 (recorded before the attribution fix; may not be this account&#x27;s)')
+  const all = renderToStaticMarkup(<BlockerReading report={{ ...report, rosterWide: { ...report.rosterWide, includedInTotals: true },
+    records: [{ ...base.records[0], accountId: null, attribution: 'roster', unsplitHistory: false }] }} />)
+  expect(all).toContain('Included in the totals above.')
+  expect(all).toContain('Roster-wide (every account) / EURUSD')
+  const older = renderToStaticMarkup(<BlockerReading report={base} />)
+  expect(older).toContain('Roster-wide stops: not reported by this agent version.')
+  expect(older).not.toContain('Roster-wide stops (every account, charged to none): 0')
+})
+
 test('placement receipts are labelled as placements and never as new risk approvals or fills', () => {
   const report = {
     totalRecords: 1, offset: 0, unattributedRecordsInWindow: 0,

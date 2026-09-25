@@ -371,8 +371,8 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
 
     // Same eligibility test the sweep uses. A trade that fails it will never
     // produce a lesson, and saying "pending" about it would be a false promise.
-    const eligible = (t.net_pnl != null && Number(t.net_pnl) !== 0)
-      || (t.net_pnl == null && t.exit_price != null && t.entry_price != null)
+    const eligible = !postmortemExemption(t) && (t.net_pnl != null // V3 L2b W16: the one exemption definition
+      || (t.net_pnl == null && t.exit_price != null && t.entry_price != null))
 
     const tf = t.timeframe || '1h'
     const barMs = tfMs(tf) || 3_600_000
@@ -464,7 +464,7 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id
     WHERE t.status = 'closed' AND pm.id IS NULL
       AND (
-        (t.net_pnl IS NOT NULL AND t.net_pnl != 0)
+        (t.net_pnl IS NOT NULL AND t.net_pnl != 0) -- net 0 = postmortemExemption (end of file), V3 L2b W16
         -- P&L not backfilled yet (broker-closed): infer the outcome from the
         -- prices instead of skipping the trade forever — this is why only a
         -- couple of lessons appeared against dozens of closed trades.
@@ -607,4 +607,29 @@ export function postmortemStats(db, windowDays = 30, { accountId = null } = {}) 
     GROUP BY COALESCE(pm.strategy, 'unlabelled'), pm.classification
     ORDER BY strategy, n DESC
   `).all(`-${windowDays} days`, String(accountId))
+}
+
+/**
+ * V3 L2b W16 — THE POSTMORTEM EXEMPTION, WRITTEN DOWN (CLS-05).
+ *
+ * A close whose broker net P&L is exactly 0 has no outcome to learn from:
+ * the sweep's query skips it (`t.net_pnl != 0` in runLossPostmortems) and
+ * always has. That rule lived only as a SQL predicate, so every other reader
+ * that asked "does this close have its postmortem?" — the close_completeness
+ * goal, the Telegram stuck-close alert — counted flat closes as missing one,
+ * for ever. This is the rule stated once: pendingLessons reads it, and
+ * close-completeness.js countFlatExemptCloses counts what it covers.
+ *
+ * A NULL net P&L is NOT exempt — it is unknown, and the sweep infers the
+ * outcome from the prices instead. Returns null when nothing exempts the close.
+ *
+ * @returns {{key:'flat_zero_pnl', reason:string}|null}
+ */
+export const POSTMORTEM_EXEMPT_FLAT = 'flat_zero_pnl'
+export function postmortemExemption(trade) {
+  const v = trade?.net_pnl
+  if (v == null) return null
+  return Number(v) === 0
+    ? { key: POSTMORTEM_EXEMPT_FLAT, reason: 'closed exactly flat (net P&L 0) — there is no outcome to learn from, so no postmortem is owed' }
+    : null
 }

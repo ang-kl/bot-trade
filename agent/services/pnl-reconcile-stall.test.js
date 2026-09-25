@@ -103,10 +103,24 @@ test('the production shape (#372/#774 AVY.US, #373/#775 GEV.US) no longer stalls
   // original once, and then had nothing left to do.
   assert.equal(states.at(-1), 'no_old_gap')
   assert.equal(reads.filter(p => p === '299683664').length, 6, 'GEV read exactly the bounded number of times')
-  // The written-off originals kept their write-off, with the reason corrected
+  // #372 is shown by the broker's complete lifecycle to be a FALSE close (V3
+  // B1): closed locally 53 days ago while the broker held the position until
+  // the close 16 days ago. It is marked rejected with that evidence — kept,
+  // not deleted, its write-off and old reason untouched — and #774 holds the
+  // lifecycle. Before B1 it stayed a closed, unpriced, written-off record of a
+  // close that never happened.
+  const avy = db.prepare('SELECT status, close_reason, pnl_unresolvable, pnl_unresolvable_reason FROM trades WHERE id = 372').get()
+  assert.equal(avy.status, 'rejected')
+  assert.ok(avy.close_reason.endsWith(` | false close: broker position 517869182 open until ${new Date(NOW - 16 * DAY).toISOString()}; lifecycle on #774`))
+  assert.ok(avy.close_reason.startsWith('stale reconcile:'), 'the original close reason is kept')
+  assert.equal(avy.pnl_unresolvable, 1); assert.equal(avy.pnl_unresolvable_reason, LEGACY)
+  const falseClose = db.prepare(`SELECT body FROM action_log WHERE method = 'PNL_FALSE_CLOSE'`).all().map(a => JSON.parse(a.body))
+  assert.equal(falseClose.length, 1); assert.deepEqual(falseClose[0].rejected, [372]); assert.equal(falseClose[0].lifecycleOn, 774)
+  // The written-off GEV original kept its write-off, with the reason corrected
   // to the evidence (R4) and the old reason preserved — on the row AND in an
-  // audit row (checker N1: the rewrite is a write, and is logged).
-  for (const id of [372, 373]) {
+  // audit row (checker N1: the rewrite is a write, and is logged). The broker
+  // has no GEV history, so nothing proves #373 a false close.
+  for (const id of [373]) {
     const r = trade(db, id)
     assert.equal(r.pnl_unresolvable, 1)
     assert.match(r.pnl_unresolvable_reason, / re-read .*duplicate-row decision is left to an operator/)
@@ -117,16 +131,12 @@ test('the production shape (#372/#774 AVY.US, #373/#775 GEV.US) no longer stalls
     assert.equal(audits[0].oldReason, LEGACY)
     assert.equal(audits[0].changed, 1)
   }
-  // The label follows the evidence (checker N2): AVY's close IS on file
-  // (deal 336389481), so #372 is not "no broker evidence"; GEV has none.
-  assert.match(trade(db, 372).pnl_unresolvable_reason, /^broker deal on file, not settleable: re-read /)
+  // The label follows the evidence (checker N2): GEV has none.
   assert.match(trade(db, 373).pnl_unresolvable_reason, /^unresolved: no broker evidence: re-read /)
-  assert.match(trade(db, 372).pnl_unresolvable_reason, /already booked on #774/)
-  // The local deal is named as evidence. Its old link to #774 is gone: the
-  // settling read re-persisted the deal, and persistDeals (unchanged) refuses
-  // to link an account+position the ledger holds twice.
-  assert.match(trade(db, 372).pnl_unresolvable_reason, /local closing deal\(s\): 336389481 net 1\.23;/)
-  assert.equal(db.prepare(`SELECT matched_trade_id m FROM broker_deals WHERE deal_id = '336389481'`).get().m, null)
+  // The receipt is linked to the ONE row that holds the position: the settling
+  // read re-persisted it after #372 was marked a false close, and persistDeals
+  // counts only rows that can hold a position (V3 B1).
+  assert.equal(db.prepare(`SELECT matched_trade_id m FROM broker_deals WHERE deal_id = '336389481'`).get().m, 774)
   assert.equal(trade(db, 373).pnl_attempts, 78, 'the GEV attempts stamped #775 only; #373 gained its one re-read')
 })
 
@@ -186,8 +196,12 @@ test('row-scoped settlement never books a position twice, never pays an earlier 
   const scoped = tradeId => backfillClosedPnl(db, creds, { accountId: ACCT, positionId: '517869182', tradeId,
     strictAccount: true, now: NOW, isCurrent: () => true, getPositionDeals: read })
   await assert.rejects(scoped(372), e => e.code === POSITION_LEDGER_IDENTITY && /other claimant\(s\) #774:closed/.test(e.message))
-  assert.equal((await scoped(774)).backfilled, 1)
-  await assert.rejects(scoped(372), e => e.code === POSITION_LEDGER_IDENTITY && /already booked on #774/.test(e.message))
+  const settled = await scoped(774)
+  assert.equal(settled.backfilled, 1)
+  // V3 B1: the complete lifecycle ended 16 days ago, 37 days after #372's
+  // recorded close — #372 was a false close and is marked rejected, not paid.
+  assert.deepEqual(settled.falseCloses, [372])
+  await assert.rejects(scoped(372), e => e.code === POSITION_LEDGER_IDENTITY && /row #372 is rejected/.test(e.message))
   await assert.rejects(scoped(774), /already carries P&L/)
   assert.deepEqual([trade(db, 372).net_pnl, trade(db, 774).net_pnl], [null, 1.23])
   // The broker closed GEV before #775 opened: that money may be #373's.
@@ -249,8 +263,11 @@ test('a broker history that arrives and cannot be settled is an attempt; a read 
   // #774 alone on its position (no duplicate), GEV out of the way.
   db.prepare("UPDATE trades SET ctrader_position_id = '9517869182' WHERE id = 372").run()
   db.prepare("UPDATE trades SET status = 'rejected' WHERE id IN (373, 775)").run()
+  // A closing deal whose closed volume disagrees with its filled volume. (A
+  // nonzero pnlConversionFee refused here before V3 B1; it is now excluded
+  // from net on every path, so it no longer makes a history unsettleable.)
   const unsupported = () => {
-    const h = brokerHistory('517869182'); h.deal[1].closePositionDetail.pnlConversionFee = 5; return h
+    const h = brokerHistory('517869182'); h.deal[1].closePositionDetail.closedVolume = 9; return h
   }
   const pass = (n, reader) => recoverOldPositionPnl(db, creds, { now: NOW + n * 16 * MIN, isCurrent: () => true, getPositionDeals: reader })
   const failed = await pass(0, async () => { throw new Error('broker unavailable') })
@@ -275,8 +292,11 @@ test('N2: with no closing deal on file, the same refusal is "unresolved: no brok
   db.prepare("UPDATE trades SET ctrader_position_id = '9517869182' WHERE id = 372").run()
   db.prepare("UPDATE trades SET status = 'rejected' WHERE id IN (373, 775)").run()
   db.prepare(`DELETE FROM broker_deals WHERE deal_id = '336389481'`).run()
+  // A closing deal whose closed volume disagrees with its filled volume. (A
+  // nonzero pnlConversionFee refused here before V3 B1; it is now excluded
+  // from net on every path, so it no longer makes a history unsettleable.)
   const unsupported = () => {
-    const h = brokerHistory('517869182'); h.deal[1].closePositionDetail.pnlConversionFee = 5; return h
+    const h = brokerHistory('517869182'); h.deal[1].closePositionDetail.closedVolume = 9; return h
   }
   for (let n = 0; n < OLD_POSITION_MAX_ATTEMPTS; n++) {
     await recoverOldPositionPnl(db, creds, { now: NOW + n * 16 * MIN, isCurrent: () => true, getPositionDeals: async () => unsupported() })

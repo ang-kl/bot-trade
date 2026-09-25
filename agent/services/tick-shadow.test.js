@@ -34,8 +34,10 @@ test('the pull inserts new trades once, advances the cursor, re-reads the whole 
   const r2 = await pullTickShadow(db, exec, side)
   assert.equal(r2.inserted, 0); assert.deepEqual(calls[1], { after: 3, bootId: 'boot-1', base: 'http://demo:8081' })
   // a restart: new bootId, seq restarts at 1 — rows are distinct by boot
-  // the last status read said two shadow trades were open on this side: the restart took them
-  setState(db, 'cpp_exec_demo_tick_json', JSON.stringify({ at: 'x', status: { shadowPortfolio: { open: 2 } } }))
+  // the last status read said two shadow trades were open on this side: the restart took them.
+  // V3 Q0: the status names its boot — the sidecar has sent shadowPortfolio.bootId
+  // since #892 — and only a count observed FOR boot-1 is boot-1's loss.
+  setState(db, 'cpp_exec_demo_tick_json', JSON.stringify({ at: 'x', status: { shadowPortfolio: { bootId: 'boot-1', open: 2 } } }))
   reply = { bootId: 'boot-2', latestSeq: 1, total: 1, trades: [trade(1, { netR: 2, grossR: 2 })] }
   const r3 = await pullTickShadow(db, exec, side)
   assert.equal(r3.inserted, 1)

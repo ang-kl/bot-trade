@@ -1,11 +1,49 @@
 import { getState, setState } from '../db.js'
 import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { readMarketCalendar } from './market-calendar.js'
-import { projectCalendar } from '../lib/calendar-intervals.js'
+import { projectCalendar, contractCalendar } from '../lib/calendar-intervals.js'
 import { blockerReport, ENTRY_STOP_KINDS } from './blocker-report.js'
 import { watchdogCalendarDemand } from './watchdog-calendar-refresh.js'
 import { marketIdentityKey } from '../lib/market-identity.js'
 import { tickEntryReceipts } from './tick-entry-work.js'
+import { SCANNER_PROFILE_LIMIT } from '../lib/scanner-bounds.js'
+
+/**
+ * Liveness of Node's scanner observation collector (V3 CV-1), for cpp-verify.
+ *
+ * cpp-scan-timeframe lists only work that is DUE: an idle cell has no
+ * deadline (Node's rotation and one-bar cache made a per-bar deadline pass
+ * cpp-verify's grace with nothing wrong). So nothing native notices when
+ * Node's bridge worker dies or stops polling — this item does. The collector
+ * records each round (at most once a second) in `scanner_bridge_poll_json`;
+ * its next round is due COLLECTOR_DUE_MS later (the bridge rebuilds a failed
+ * worker after 30 s, checked every 60 s, so 120 s is a real stop).
+ *
+ * Emitted only while the bridge's own gate is open (scanner-feed.js
+ * approvedProfiles: the flag, a file database, 1..SCANNER_PROFILE_LIMIT
+ * registered profiles), so an unconfigured bridge is not reported as stalled.
+ * A round recorded before this process started is not evidence for it: the
+ * deadline runs from the later of the two. Role 'collector' is cpp-verify's
+ * calendar-free liveness role (a stall there is a warning, not urgent).
+ */
+export const COLLECTOR_DUE_MS = 120_000
+export function scannerCollectorWork(db, now, { env = process.env, startedAtMs = now - Math.round(process.uptime() * 1000) } = {}) {
+  if (env.SCANNER_BRIDGE_ENABLED !== '1' || !db.name || db.name === ':memory:') return []
+  let profiles, round
+  try { profiles = JSON.parse(getState(db, 'scanner_mirror_profiles_json') || 'null') } catch { profiles = null }
+  if (!Array.isArray(profiles) || !profiles.length || profiles.length > SCANNER_PROFILE_LIMIT) return []
+  try { round = JSON.parse(getState(db, 'scanner_bridge_poll_json') || 'null') } catch { round = null }
+  const readAt = Number.isSafeInteger(round?.readAtMs) && round.readAtMs > 0 && round.readAtMs <= now ? round.readAtMs : null
+  const current = readAt != null && readAt >= startedAtMs
+  // lastError rides every later record, so only a recent one is named.
+  const recentError = round?.lastError && now - round.lastError.atMs < COLLECTOR_DUE_MS ? round.lastError.error : null
+  const blocker = !current ? 'no_collector_round_since_process_start'
+    : round.error || recentError || (round.tickBacklog ? 'tick_comparison_backlog' : null)
+  return [{ id: 'scanner-bridge:collector', role: 'collector', lastCompletedAtMs: current ? readAt : null,
+    nextDueMs: Math.max(current ? readAt : 0, startedAtMs) + COLLECTOR_DUE_MS, blocker,
+    durationMs: current && Number.isFinite(round.durationMs) ? round.durationMs : null,
+    reason: 'scanner_observation_collector_round', orderAuthority: false }]
+}
 
 export function recordScannerWork(db, { creds, scopeAccounts, symbolMap, result, completedAt, nextDue, cadenceMs = nextDue - completedAt }) {
   let previous; try { previous = JSON.parse(getState(db, 'legacy_scanner_work_json') || 'null') } catch { /* no prior receipt */ }
@@ -40,9 +78,15 @@ const clip = (value, n) => { const t = String(value); return t.length > n ? `${t
 export function entryActivityBlocker(blockers, tickPass = null) {
   const dominant = blockers?.byStage?.[0], latest = blockers?.latestEntryStop
   const stops = ENTRY_STOP_KINDS.reduce((n, k) => n + (blockers?.summary?.[k]?.records || 0), 0)
-  const base = !blockers ? 'blocker_report_unavailable' : dominant
+  // V3 WEB-1: an account report no longer carries the roster-wide stops (they
+  // were charged to the selected account); they are named after the
+  // account's own, so "no stop on this account" never hides a roster stop.
+  const roster = blockers?.rosterWide, rosterTop = roster?.byStage?.find(s => ENTRY_STOP_KINDS.includes(s.kind))
+  const rosterLine = rosterTop && !roster.includedInTotals
+    ? `; roster-wide (every account): ${rosterTop.stage} ×${rosterTop.records} of ${roster.entryStops}` : ''
+  const base = (!blockers ? 'blocker_report_unavailable' : dominant
     ? `${dominant.stage} ×${dominant.records} of ${stops} entry stops since session open; latest ${latest?.stage ?? dominant.stage}: ${latest?.reason ?? 'reason unrecorded'}`
-    : 'no_recorded_entry_stop_since_session_open'
+    : 'no_recorded_entry_stop_since_session_open') + rosterLine
   if (!tickPass) return clip(base, 240)
   const tick = tickPass.paused ? `tick permits paused: ${tickPass.paused}`
     : tickPass.firstRefusal ? `tick permits ${tickPass.permits}, first refusal: ${tickPass.firstRefusal}`
@@ -151,30 +195,65 @@ export function scannerWork(db, accounts, now) {
   return work
 }
 
-export function watchdogCalendars(db, now) {
+export const CALENDAR_EXPORT_MAX_BYTES = 96 * 1024
+
+/**
+ * The calendars Node exports to cpp-verify (watchdog_state.cpp:148-152 copies
+ * `calendars[i].calendar` onto every work item of every service whose
+ * (accountId, host, symbolId) matches `calendars[i].identity`).
+ *
+ * V3 K1: the demand arrives tier-ordered (feed, position, legacy, scope), so
+ * gateway-feed calendars — the only ones cpp-exec's quote_flow work can get —
+ * lead the 96 KiB bound; the retained cache follows as before. Each entry is
+ * the contract projection (contractCalendar: the fields the verifier reads),
+ * and nodeWatchdogContract carries each identity's calendar ONCE: a work item
+ * whose identity is exported here does not repeat it.
+ *
+ * `calendarsComplete` keeps its meaning (every demanded and retained identity
+ * exported within the bounds); `demandComplete` is the demand's own
+ * completeness and `exportComplete` the export's own (calendarsComplete is
+ * exactly both), reported apart so a truncated export and a missing account
+ * map are not the same fact.
+ */
+export function watchdogCalendars(db, now, { lead = null } = {}) {
   // Active work leads. A daily universe refresh can retain thousands of
   // calendars; alphabetic LIMIT must not crowd out a held position/feed.
   const demand = watchdogCalendarDemand(db, now)
-  const identities = new Map(demand.identities.map(id => [marketIdentityKey(id), id]))
+  // Within the bound: gateway feeds (no other carrier), then the identities
+  // Node's own work items reference (`lead`: exported, they are not repeated
+  // on the item), then the rest of the demand in tier order.
+  const tierOf = key => demand.detail.get(key)?.tier
+  const ranked = demand.identities.map((id, i) => {
+    const key = marketIdentityKey(id)
+    return { key, id, rank: tierOf(key) === 'feed' ? 0 : lead?.has(key) ? 1 : 2, i }
+  }).sort((a, b) => a.rank - b.rank || a.i - b.i)
+  const identities = new Map(ranked.map(r => [r.key, r.id]))
   const rows = db.prepare("SELECT value FROM agent_state WHERE key LIKE 'market_calendar:v1:%' ORDER BY key LIMIT 513").all()
-  let complete = demand.complete && rows.length <= 512
+  // exportComplete: the export itself (retained cache read, projection, the
+  // byte bound) apart from the demand, so a cut export stays visible while a
+  // missing account map keeps calendarsComplete false.
+  let exportComplete = rows.length <= 512
   for (const row of rows) {
     try {
       const identity = JSON.parse(row.value)?.latest?.identity, key = marketIdentityKey(identity)
-      if (!key) { complete = false; continue }
+      if (!key) { exportComplete = false; continue }
       if (!identities.has(key)) {
         if (identities.size < 512) identities.set(key, identity)
-        else complete = false
+        else exportComplete = false
       }
-    } catch { complete = false /* malformed cache is not calendar evidence */ }
+    } catch { exportComplete = false /* malformed cache is not calendar evidence */ }
   }
-  const calendars = []; let size = 0
+  // The bound is on the serialised array: brackets and separators count.
+  const calendars = []; let size = 2
   for (const identity of identities.values()) {
     const evidence = readMarketCalendar(db, identity, { nowMs: now })
-    const calendar = projectCalendar(evidence, now)
-    const entry = { identity, calendar, reason: evidence.reason }; size += Buffer.byteLength(JSON.stringify(entry))
-    if (size > 96 * 1024) { complete = false; break }
+    let calendar = null, reason = evidence.reason
+    // One calendar the projection cannot express is that calendar's unknown,
+    // never a thrown contract (cpp-verify would raise node:work_evidence).
+    try { calendar = contractCalendar(projectCalendar(evidence, now), now) } catch { calendar = null; reason = 'calendar_projection_failed'; exportComplete = false }
+    const entry = { identity, calendar, reason }; size += Buffer.byteLength(JSON.stringify(entry)) + (calendars.length ? 1 : 0)
+    if (size > CALENDAR_EXPORT_MAX_BYTES) { exportComplete = false; break }
     calendars.push(entry)
   }
-  return { calendars, calendarsComplete: complete }
+  return { calendars, calendarsComplete: demand.complete && exportComplete, exportComplete, demandComplete: demand.complete }
 }

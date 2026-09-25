@@ -29,6 +29,9 @@ async function fixture(t) {
 
 test('the disk-backed blocker report executes no SQL on the management connection', async t => {
   const { db, get, from } = await fixture(t)
+  // V3 WEB-1: a roster-wide stop (no account) rides the worker's answer
+  // beside the account's own counts, not in them.
+  db.prepare("INSERT INTO decision_log(account_id,stage,decision,reason,created_at) VALUES (NULL,'armed_scope_prefilter','skip','no armed timeframe',?)").run(new Date(Date.now() - 60_000).toISOString())
   const prepare = db.prepare
   let managementReads = 0
   db.prepare = () => { managementReads++; throw new Error('the blocker report ran on the management connection') }
@@ -41,6 +44,9 @@ test('the disk-backed blocker report executes no SQL on the management connectio
   assert.equal(body.status, 'complete'); assert.equal(body.accountId, '11'); assert.equal(body.from, from)
   assert.equal(body.summary.upstream_stop.records, 1)
   assert.equal(body.byStage[0].stage, 'stage_matrix')
+  assert.equal(body.rosterWide.records, 1); assert.equal(body.rosterWide.includedInTotals, false)
+  assert.equal(body.rosterWide.byStage[0].stage, 'armed_scope_prefilter')
+  assert.equal(body.unattributedRecordsInWindow, 0)
   assert.equal(body.tick.accounts[0].status, 'not_evaluated', 'the tick evaluation rides the same worker read')
 })
 
@@ -71,9 +77,16 @@ test('a locked database leaves the event loop responsive; a full report pool ans
   const body = await full.json()
   assert.equal(body.code, 'blocker_report_unavailable'); assert.equal(body.reason, 'performance_report_worker_capacity')
   assert.ok(ticks > 0, 'management timers progress while SQLite waits in the worker')
+  // V3 M2b (M2 check nit 5): a worker read that gave up on the lock is the
+  // same typed 503 as every other report failure — its words kept — not a
+  // 500, and still not an empty report.
   for (const response of await Promise.all(waiting)) {
-    assert.equal(response.status, 500, 'a failed worker read is a failure, not an empty report')
-    assert.equal((await response.json()).code, 'blocker_report_failed')
+    assert.equal(response.status, 503, 'a failed worker read is unavailable, not an empty report')
+    const failed = await response.json()
+    assert.equal(failed.code, 'blocker_report_unavailable')
+    assert.equal(failed.reason, 'performance_report_worker_error')
+    assert.equal(failed.detail, 'database is locked')
+    assert.equal('summary' in failed, false)
   }
   lock.exec('ROLLBACK')
 })

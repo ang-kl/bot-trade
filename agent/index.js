@@ -25,6 +25,7 @@ import { startLagMonitor } from './services/event-loop-lag.js';
 import { routeTimingMiddleware } from './services/route-timing.js';
 import { noteDbStartup, noteListening, noteHttpStatus, startRuntimeRecord, runtimeRecordSnapshot, latencyWindows, readBootRecords } from './services/runtime-record.js';
 import { startAmendLatencyRecord, amendLatencySummary } from './services/protection-latency.js';
+import { startFeedReceiptsRecord } from './services/feed-receipts-record.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -1193,6 +1194,9 @@ async function start() {
     // V3 M5: seed the amend-latency rings from the stored copy (so natural
     // amends accumulate across restarts), then persist at most every 30 s.
     startAmendLatencyRecord(db);
+    // V3 WEB-9b: the Data-feed card's per-timeframe bar receipts and last
+    // feed-latency window, seeded from the previous process and kept.
+    startFeedReceiptsRecord(db);
     console.log(`[agent] listening on 0.0.0.0:${port}`);
     console.log(`[agent] CORS origin: ${FRONTEND_URL || '*'}`);
     console.log(`[agent] DB path: ${DB_PATH || './agent.db'}`);
@@ -1253,6 +1257,13 @@ async function start() {
     const { startWatchdogCalendarRefresh } = await import('./services/watchdog-calendar-refresh.js');
     startWatchdogCalendarRefresh(db);
   } catch (err) { console.warn('[agent] watchdog calendar refresh unavailable:', err.message); }
+
+  // V3 K2: each registered account's own symbol map, read daily (one bounded
+  // symbol-list read per pass) whether or not the account ever trades.
+  try {
+    const { startAccountSymbolMapRefresh } = await import('./services/account-symbol-maps.js');
+    startAccountSymbolMapRefresh(db);
+  } catch (err) { console.warn('[agent] account symbol map refresh unavailable:', err.message); }
 
   // Self-link cTrader when credentials exist (env-seeded or pushed earlier)
   // but the symbol map or balance is missing — so setting

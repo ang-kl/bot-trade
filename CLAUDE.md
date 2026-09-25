@@ -1272,6 +1272,22 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   The next reply is `№ 9,060`. A later re-measure that reads below this line is
   missing these, not correcting them.
 
+- 2026-09-25 23:19 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the script reads this container's transcript only and was
+  refused as a reading. From `№ 9,060` the replies ran on by count to the
+  reply stamped **`№ 9,232`** (14:31 UTC). The container restarted ~15:50 UTC;
+  the transcript here then captures **187** text replies after `№ 9,232`, all
+  unstamped status lines of the owner's overnight order (25-09 21:30 SGT:
+  auto-merge on green, flags only, report at 08:00 SGT): the harvest of the
+  stopped lanes, the X1 window (22:35 UTC: cpp-acct volume, gateway variables,
+  GW-CAP, X1, scanner activation with 796 profiles), and the merges #1107–#1125
+  (I2, T1b, the veto-boundary fixture, I3, CV-1, GW-CAP, X1, L1c, WEB-3, V1, T2,
+  WEB-9b, WEB-1, B1, L2b, WEB-5, M2b, WEB-4, L2a). The last reply before this
+  ledger is **`№ 9,420`**, so the next stamped reply is **`№ 9,421`** plus any
+  unstamped line made after it. The count is by replies, not by stamps. A
+  later re-measure that reads below this line is missing these, not correcting
+  them.
+
 - 2026-09-25 13:21 UTC, **same remote container, PARTIAL corpus**: from
   `№ 9,060` the replies ran on by count through the V3 build waves, the
   roadmap v1 (20:37 SGT), the 8,989-A verification, the "are you certain?"

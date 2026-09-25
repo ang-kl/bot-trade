@@ -115,6 +115,38 @@ export function attachEntryFence(db, creds, { producerId, basis = null }) {
 }
 
 /**
+ * V3 L2a (W5/W6, 25-09-2026): bind ONE order's context to the intent the
+ * send reserves. exec-engine.placeOrder reserves the intent itself (through
+ * `creds.entryLedger.reserve`), so the producer never sees its id and the
+ * row it writes cannot name it. This wraps `reserve` for one order only:
+ *   - `riskEventId` is written onto the intent row (entry_intents.risk_event_id),
+ *     the approval the producer holds in hand;
+ *   - `onReserved(intentId)` runs once the reservation succeeded, BEFORE
+ *     anything is sent, so the caller can stamp the id on its own row.
+ * A throwing `onReserved` never blocks the order: the link is a record, the
+ * order is money. Creds with no ledger (no producerId, a test double) are
+ * returned unchanged — exactly the order path they had.
+ */
+export function bindEntryIntent(creds, { riskEventId = null, onReserved = null } = {}) {
+  const L = creds?.entryLedger
+  if (!L || typeof L.reserve !== 'function') return creds
+  const rid = riskEventId != null && Number.isFinite(Number(riskEventId)) ? Number(riskEventId) : null
+  return {
+    ...creds,
+    entryLedger: {
+      ...L,
+      reserve: (o = {}) => {
+        const r = L.reserve(rid != null ? { ...o, riskEventId: rid } : o)
+        if (r?.ok && r.intentId && typeof onReserved === 'function') {
+          try { onReserved(r.intentId, r) } catch { /* the link never blocks the send */ }
+        }
+        return r
+      },
+    },
+  }
+}
+
+/**
  * Parse the stored symbol→symbolId map. Returns {} on missing or corrupt
  * state instead of throwing (a bad write must not take down every consumer).
  *
@@ -187,18 +219,33 @@ export function getAccountSymbolMap(db, accountId) {
   } catch { return null }
 }
 
-/** Fetch the account's own symbol list and persist it. Throws on a failed fetch. */
+/**
+ * Fetch the account's own symbol list and persist it. Throws on a failed fetch.
+ *
+ * V3 K2 — the one writer of `symbol_id_map:<accountId>` reads THIS account's
+ * list (`perAccount`: never the host-shared cache, which answers with whichever
+ * account on the host was read first) and refuses a response that names
+ * another account: nothing is written, the stored map stays as it was. The
+ * record carries `accountId` — proof it came from that account's own read —
+ * so a map written before K2 is recognisable and re-read once
+ * (services/account-symbol-maps.js). `deps.now` (epoch ms, as resolveSymbolId
+ * already takes it) dates `builtAt`; absent, the wall clock, as before.
+ */
 export async function fetchAccountSymbolMap(db, creds, deps = {}) {
   const list = deps.wsGetSymbolsList ?? (await import('./ctrader-ws.js')).wsGetSymbolsList
   const { host, clientId, clientSecret, accessToken, accountId } = creds
-  const data = await list(host, clientId, clientSecret, accessToken, accountId)
+  const data = await list(host, clientId, clientSecret, accessToken, accountId, undefined, { perAccount: true })
+  if (data?.ctidTraderAccountId != null && String(data.ctidTraderAccountId) !== String(accountId)) {
+    throw new Error(`account_identity_mismatch: the symbol list for …${String(accountId).slice(-4)} names …${String(data.ctidTraderAccountId).slice(-4)}`)
+  }
   const map = {}
   for (const s of (data?.symbol || [])) {
     if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
   }
   if (Object.keys(map).length > 0) {
     const { setState } = await import('../db.js')
-    setState(db, accountSymbolMapKey(accountId), JSON.stringify({ builtAt: new Date().toISOString(), map }))
+    const builtAt = new Date(Number.isFinite(deps.now) ? deps.now : Date.now()).toISOString()
+    setState(db, accountSymbolMapKey(accountId), JSON.stringify({ builtAt, accountId: String(accountId), map }))
   }
   return map
 }
