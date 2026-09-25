@@ -1,4 +1,4 @@
-import { performanceCurve } from '../lib/performance-curve.js'
+import { performanceCurve, defaultChartAccount, DECISION_FEED_DAYS } from '../lib/performance-curve.js'
 // ReportChart — rebuilt 2026-07-25 after the owner asked whether the old
 // control set made sense to a reader. My answer was no, and this is the
 // consequence.
@@ -75,8 +75,11 @@ function niceTicks(lo, hi, target = 4) {
 export default function ReportChart({ populationReport, accountId = 'all', daily, accounts = [] }) {
   const [range, setRange] = useState('30D')
   const [selected, setSelected] = useState(null), [decisions, setDecisions] = useState(null)
-  const chartAccount = accountId !== 'all' ? accountId : accounts.some(a => String(a.account_id) === selected)
-    ? selected : accounts[0]?.account_id || 'all'
+  // WEB-10: unpicked, the All view opens on an account whose curve it can
+  // draw — not simply the first registered one, which may hold unpriced closes.
+  const fallbackAccount = useMemo(() => defaultChartAccount(populationReport, accounts), [populationReport, accounts])
+  const picked = accounts.some(a => String(a.account_id) === selected)
+  const chartAccount = accountId !== 'all' ? accountId : picked ? selected : fallbackAccount
   const zone = populationReport?.timeZone || 'UTC'
   useEffect(() => {
     if (accountId !== 'all' || chartAccount === 'all') return
@@ -85,7 +88,7 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
       if (stopped || running || pageAsleep()) return
       running = true
       try {
-        const r = await readPerformanceReport(`/state/decisions-daily?days=90&account=${encodeURIComponent(chartAccount)}&timeZone=${encodeURIComponent(zone)}`)
+        const r = await readPerformanceReport(`/state/decisions-daily?days=${DECISION_FEED_DAYS}&account=${encodeURIComponent(chartAccount)}&timeZone=${encodeURIComponent(zone)}`)
         if (!stopped) setDecisions({ accountId: chartAccount, zone, rows: r.accountId === String(chartAccount) ? r.rows : null })
       } catch { if (!stopped) setDecisions(null) }
       finally { running = false }
@@ -115,28 +118,43 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
     const eLo = Math.min(0, ...model.map(r => r.equity))
     const eHi = Math.max(1e-9, ...model.map(r => r.peak))
     const Ye = v => PT + (1 - (v - eLo) / ((eHi - eLo) || 1)) * (EQ_H - PT - PB)
-    const dMax = niceCeil(Math.max(1, ...model.map(r => r.approved + r.vetoed)))
+    const dMax = niceCeil(Math.max(1, ...model.map(r => (r.approved ?? 0) + (r.vetoed ?? 0))))
     const decTop = EQ_H + 6
     const decBase = decTop + DEC_H - PB
     const barH = v => ((v / dMax) * (DEC_H - PB - 6))
     const step = (W - PL - PR) / Math.max(1, model.length)
     const barW = Math.max(2, Math.min(18, step * 0.62))
-    const line = (get) => model.map((r, i) => `${i ? 'L' : 'M'}${X(r.t).toFixed(1)},${Ye(get(r)).toFixed(1)}`).join(' ')
+    // WEB-10: a day holding a close with no recorded price starts a new
+    // stretch. The line is never bridged across it (that would draw the close
+    // as zero); each stretch is its own subpath and a one-day stretch a dot.
+    const stretches = []
+    for (const r of model) { if (!stretches.length || r.gap) stretches.push([]); stretches[stretches.length - 1].push(r) }
+    const joined = stretches.filter(s => s.length > 1)
+    const line = (rows, get) => rows.map((r, i) => `${i ? 'L' : 'M'}${X(r.t).toFixed(1)},${Ye(get(r)).toFixed(1)}`).join(' ')
+    // No-price markers, labelled where they do not collide with the last label.
+    let lastLabel = -Infinity
+    const gapMarks = model.filter(r => r.unpricedN > 0).map(r => {
+      const x = X(r.t), label = x - lastLabel > 52
+      if (label) lastLabel = x
+      return { r, x, label }
+    })
     return {
       X, Ye, eLo, eHi, dMax, decTop, decBase, barH, barW, x0, x1,
-      eqPath: line(r => r.equity),
-      peakPath: line(r => r.peak),
-      // Drawdown band: along the peak, back along equity.
-      ddArea: `${line(r => r.peak)} ${[...model].reverse().map(r => `L${X(r.t).toFixed(1)},${Ye(r.equity).toFixed(1)}`).join(' ')} Z`,
+      eqPath: joined.map(s => line(s, r => r.equity)).join(' '),
+      peakPath: joined.map(s => line(s, r => r.peak)).join(' '),
+      // Drawdown band per stretch: along the peak, back along equity.
+      ddArea: joined.map(s => `${line(s, r => r.peak)} ${[...s].reverse().map(r => `L${X(r.t).toFixed(1)},${Ye(r.equity).toFixed(1)}`).join(' ')} Z`).join(' '),
+      singles: stretches.filter(s => s.length === 1).map(s => s[0]),
+      gapMarks,
       ticksE: niceTicks(eLo, eHi).map(v => ({ y: Ye(v), label: fmtN(v, 0), zero: v === 0 })),
       ticksX: model.filter((_, i) => i % Math.max(1, Math.ceil(model.length / 8)) === 0),
     }
   }, [model, hasData])
 
   const totals = useMemo(() => {
-    const appr = model.reduce((s, r) => s + r.approved, 0)
-    const veto = model.reduce((s, r) => s + r.vetoed, 0)
-    const maxDd = model.reduce((m, r) => Math.min(m, r.dd), 0)
+    const appr = model.reduce((s, r) => s + (r.approved ?? 0), 0)
+    const veto = model.reduce((s, r) => s + (r.vetoed ?? 0), 0)
+    const maxDd = model.reduce((m, r) => Math.min(m, r.dd ?? 0), 0)
     return { appr, veto, decisions: appr + veto, vetoPct: appr + veto ? Math.round((veto / (appr + veto)) * 100) : null, maxDd }
   }, [model])
 
@@ -158,7 +176,7 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
       <div className="flex flex-wrap items-baseline gap-2 mb-1">
         <h2 className="text-(length:--fs-h) font-extrabold text-[var(--color-accent)]">Recorded realised P&amp;L · Decisions per Day chart</h2>
         <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-          top: cumulative recorded realised P&L from zero · bottom: risk decisions (upstream stops appear in the blocker report) · {zone}
+          top: cumulative recorded realised P&L from zero · bottom: risk-engine decisions only — upstream stops are not counted here (see the blocker report) · {zone}
         </span>
         <div className="ml-auto">
           <Segmented label="Chart range" value={range} onChange={setRange}
@@ -167,12 +185,14 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
       </div>
       {accountId === 'all' && accounts.length > 0 && <label className="block my-2">Chart account <select value={chartAccount} onChange={e => setSelected(e.target.value)}>
         {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.is_live ? 'Live' : 'Demo'} · {a.account_id}</option>)}
-      </select> · All {accounts.length} accounts are available individually; their historical units are not pooled.</label>}
+      </select> · All {accounts.length} accounts are available individually; their historical units are not pooled.
+        {!picked && ' Opened on the first account whose curve can be drawn.'}</label>}
 
       {hasData && (
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-1 text-(length:--fs-body)">
-          <span className="text-[var(--color-text-sub)]">daily realised-P&L drawdown in range <span className="tabular-nums" style={{ color: 'var(--color-down)' }}>{curve.moneyAvailable ? fmtN(totals.maxDd) : '—'}</span></span>
-          <span className="text-[var(--color-text-sub)]">{curve.decisionState === 'unavailable' ? 'Daily decisions unavailable' : `${totals.decisions} recorded decisions · ${totals.vetoPct == null ? '—' : totals.vetoPct + '% vetoed'}`}</span>
+          <span className="text-[var(--color-text-sub)]">{curve.moneyState === 'gapped' ? 'largest drawdown within unbroken stretches' : 'daily realised-P&L drawdown in range'} <span className="tabular-nums" style={{ color: 'var(--color-down)' }}>{curve.moneyAvailable ? fmtN(totals.maxDd) : '—'}</span></span>
+          {curve.unpricedN > 0 && <span style={{ color: 'var(--color-warning-text)' }}>{curve.unpricedN} {curve.unpricedN === 1 ? 'close has' : 'closes have'} no recorded price ({curve.unpricedDays} {curve.unpricedDays === 1 ? 'day' : 'days'}, marked “no price”) — never drawn as zero</span>}
+          <span className="text-[var(--color-text-sub)]">{curve.decisionState === 'unavailable' ? 'Daily decisions unavailable' : `${totals.decisions} risk-engine decisions · ${totals.vetoPct == null ? '—' : totals.vetoPct + '% vetoed'} · upstream stops not counted`}</span>
         </div>
       )}
 
@@ -208,14 +228,22 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
             {curve.moneyAvailable && !sparse && <path d={geom.ddArea} fill="url(#rcDd)" />}
             {curve.moneyAvailable && !sparse && <path d={geom.peakPath} fill="none" stroke="var(--color-text-sub)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8" />}
             {curve.moneyAvailable && !sparse && <path d={geom.eqPath} fill="none" stroke="var(--color-accent)" strokeWidth="2.4" strokeLinejoin="round" />}
-            {curve.moneyAvailable && sparse && model.map(r => <circle key={r.t} cx={geom.X(r.t)} cy={geom.Ye(r.equity)} r="4" fill="var(--color-accent)" />)}
+            {curve.moneyAvailable && (sparse ? model : geom.singles).map(r => <circle key={r.t} cx={geom.X(r.t)} cy={geom.Ye(r.equity)} r="4" fill="var(--color-accent)" />)}
+            {geom.gapMarks.map(({ r, x, label }) => (
+              <g key={`g${r.t}`} data-gap-day={r.day}>
+                <title>{`${r.unpricedN} ${r.unpricedN === 1 ? 'close' : 'closes'} with no recorded price — not in the line, not zero`}</title>
+                <line x1={x} x2={x} y1={PT} y2={EQ_H - PB} stroke="var(--color-warning-text)" strokeWidth="1" strokeDasharray="2 3" opacity="0.8" />
+                <path d={`M${x.toFixed(1)},${PT - 1} l4,5 l-4,5 l-4,-5 Z`} fill="none" stroke="var(--color-warning-text)" strokeWidth="1.2" />
+                {label && <text x={x + 6} y={PT + 8} fontSize="9" fill="var(--color-warning-text)">no price</text>}
+              </g>
+            ))}
             <line x1={PL} x2={PL} y1={PT} y2={EQ_H - PB} stroke="var(--color-text-sub)" strokeWidth="1" />
             <line x1={PL} x2={W - PR} y1={EQ_H - PB} y2={EQ_H - PB} stroke="var(--color-text-sub)" strokeWidth="1" />
             <text x={PL - 44} y={PT + (EQ_H - PT - PB) / 2} fontSize="10" textAnchor="middle" fill="var(--color-text-sub)"
               transform={`rotate(-90 ${PL - 44} ${PT + (EQ_H - PT - PB) / 2})`}>Realised P&L</text>
 
             {/* ---- decisions panel ---- */}
-            {curve.decisionState !== 'unavailable' && model.map(r => {
+            {curve.decisionState !== 'unavailable' && model.filter(r => r.decisionsKnown).map(r => {
               const ah = geom.barH(r.approved), vh = geom.barH(r.vetoed)
               const x = geom.X(r.t) - geom.barW / 2
               return (
@@ -233,7 +261,7 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
             <text x={PL - 7} y={geom.decBase + 4} fontSize="10" textAnchor="end" fill="var(--color-text-sub)">0</text>
             <text x={PL - 7} y={geom.decTop + 10} fontSize="10" textAnchor="end" fill="var(--color-text-sub)">{fmtN(geom.dMax, 0)}</text>
             <text x={PL - 44} y={geom.decTop + (DEC_H - PB) / 2} fontSize="10" textAnchor="middle" fill="var(--color-text-sub)"
-              transform={`rotate(-90 ${PL - 44} ${geom.decTop + (DEC_H - PB) / 2})`}>Decisions</text>
+              transform={`rotate(-90 ${PL - 44} ${geom.decTop + (DEC_H - PB) / 2})`}>Risk decisions</text>
             {geom.ticksX.map(r => (
               <g key={`x${r.t}`}>
                 <line x1={geom.X(r.t)} x2={geom.X(r.t)} y1={geom.decBase} y2={geom.decBase + 4} stroke="var(--color-text-sub)" strokeWidth="1" />
@@ -252,17 +280,23 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
             <div className="pointer-events-none absolute pos-absolute top-1 glass-panel rounded-[10px] px-3 py-1.5 text-(length:--fs-body) leading-5"
               style={{ left: `${Math.min(74, Math.max(2, (geom.X(hv.t) / W) * 100))}%` }}>
               <div>{shortDate(hv.t)}</div>
-              <div>realised P&amp;L <span className="tabular-nums">{fmtN(hv.equity)}</span></div>
+              <div>realised P&amp;L <span className="tabular-nums">{fmtN(hv.equity)}</span>{curve.moneyAvailable && hv.afterGap ? ' (priced closes only)' : ''}</div>
+              {hv.unpricedN > 0 && <div style={{ color: 'var(--color-warning-text)' }}>{hv.unpricedN} {hv.unpricedN === 1 ? 'close' : 'closes'} with no recorded price: not counted, not zero</div>}
               <div style={{ color: 'var(--color-down)' }}>drawdown <span className="tabular-nums">{curve.moneyAvailable ? fmtN(hv.dd) : '—'}</span></div>
-              <div>{curve.decisionState === 'unavailable' ? 'Daily decisions unavailable' : <><span style={{ color: 'var(--color-up)' }}>●</span> {hv.approved} approved · <span style={{ color: 'var(--color-down)' }}>●</span> {hv.vetoed} vetoed</>}</div>
+              <div>{curve.decisionState === 'unavailable' ? 'Daily decisions unavailable' : !hv.decisionsKnown ? `No decision record retained (older than ${DECISION_FEED_DAYS} days)`
+                : <><span style={{ color: 'var(--color-up)' }}>●</span> {hv.approved} approved · <span style={{ color: 'var(--color-down)' }}>●</span> {hv.vetoed} vetoed{hv.vetoedDistinct != null && hv.vetoedDistinct !== hv.vetoed ? ` (${hv.vetoedDistinct} distinct)` : ''}</>}</div>
             </div>
           )}
         </div>
       )}
       <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
-        {curve.moneyAvailable ? `The curve includes every priced recorded close in the selected ${zone} days. Its drawdown uses daily realised totals and can miss intraday moves.` : `The money curve is unavailable: ${curve.reason.replaceAll('_', ' ')}.`}
+        {curve.moneyState === 'complete' ? `The curve includes every priced recorded close in the selected ${zone} days. Its drawdown uses daily realised totals and can miss intraday moves.`
+          : curve.moneyState === 'gapped' ? `The curve includes every priced recorded close in the selected ${zone} days. ${curve.unpricedN} ${curve.unpricedN === 1 ? 'close has' : 'closes have'} no recorded price: ${curve.unpricedN === 1 ? 'it is' : 'they are'} not drawn as zero — the line breaks at each such day (marked “no price”), and from the first break its level counts priced closes only. Drawdown is measured within unbroken stretches, from daily realised totals.`
+          : `The money curve is unavailable: ${curve.reason.replaceAll('_', ' ')}.`}
         {' '}This is not broker balance, floating equity or a cashflow-adjusted account return. Deposits and withdrawals are excluded.
-        {' '}Decision bars use the supplied daily aggregate; an unavailable daily feed is not replaced with the capped event journal.
+        {' '}Decision bars count risk-engine decisions only (approved and vetoed; a veto counts each repeat of the same refusal). Entries stopped upstream of the risk engine are not counted here — the blocker report counts them.
+        {' '}They use the supplied daily aggregate; an unavailable daily feed is not replaced with the capped event journal.
+        {curve.decisionDaysNotRetained > 0 && ` Decisions are retained for ${DECISION_FEED_DAYS} days: the ${curve.decisionDaysNotRetained} older ${curve.decisionDaysNotRetained === 1 ? 'day has' : 'days have'} no bar, not a zero.`}
         {curve.decisionState === 'unavailable' && ' Daily decision evidence is unavailable.'}
 
       </p>
