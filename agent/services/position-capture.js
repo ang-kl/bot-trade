@@ -33,7 +33,7 @@ import { dirname, join } from 'node:path'
 import { capturePosition, recordVerdict, accountSymbolMap } from './position-history.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { VERDICT_CONTRACT_VERSION } from '../lib/verify-contract.js'
-import { unitsPerLot, rememberVolumeMeta } from '../lib/lot-size-registry.js'
+import { unitsPerLot, rememberVolumeMeta, withBrokerLotSizes } from '../lib/lot-size-registry.js'
 
 /**
  * The record plus `lot_size`: the broker's declared lotSize for the symbol
@@ -357,7 +357,7 @@ export async function refreshDealsFor(db, { accountId, positionId, getDeals, now
   const row = db.prepare(`
     SELECT opened_at, closed_at, closed_at_ms FROM trades
      WHERE ctrader_position_id = ? AND (account_id = ? OR ? IS NULL)
-     ORDER BY id DESC LIMIT 1
+     ORDER BY (status = 'closed') DESC, id DESC LIMIT 1 -- V3 L2b W17: the closed row's life, not a newer duplicate's
   `).get(String(positionId), String(accountId), String(accountId))
 
   const openedMs = row?.opened_at ? Date.parse(String(row.opened_at).replace(' ', 'T') + (String(row.opened_at).endsWith('Z') ? '' : 'Z')) : NaN
@@ -374,7 +374,7 @@ export async function refreshDealsFor(db, { accountId, positionId, getDeals, now
     const idMap = accountSymbolMap(db, accountId) // V3 V1: THIS account's names — ids are per environment
     for (const [name, id] of Object.entries(idMap)) symMeta[id] = { symbolName: name }
   } catch { symMeta = {} }
-  const persisted = persistDeals(db, shapeDeals(pull.deals, symMeta, accountId))
+  const persisted = persistDeals(db, shapeDeals(pull.deals, withBrokerLotSizes(db, symMeta), accountId)) // V3 L2b W10: lots stored
   return { ok: pull.complete, complete: pull.complete, reason: pull.complete ? null : pull.reason, deals: pull.deals.length, persisted: persisted?.seen || 0 }
 }
 

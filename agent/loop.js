@@ -3490,8 +3490,8 @@ async function runLoop(db) {
             // plans against their execution (DB only). Both are records,
             // neither touches a decision.
             try {
-              const { scoreRefusedOpportunities } = await import('./services/refusal-ledger.js')
-              await scoreRefusedOpportunities(db, pmFetch, { maxPerCycle: 6, log })
+              const { scoreRefusedOpportunities, rescoreNoBarsRefusals } = await import('./services/refusal-ledger.js')
+              await scoreRefusedOpportunities(db, pmFetch, { maxPerCycle: 6, log }); await rescoreNoBarsRefusals(db, pmFetch, { maxFetches: 2, log }).catch(err => log(`Refusal ledger re-score failed (non-fatal): ${err.message}`)) // V3 L2b W13: the no_bars rows corrected, two bar reads a cycle, never at boot
             } catch (err) { log(`Refusal ledger failed (non-fatal): ${err.message}`) }
             try {
               const { scoreClosedPlans } = await import('./services/trade-plans.js')
