@@ -10,7 +10,7 @@ export function createScannerCollector(db, deps = {}) {
   const tick = deps.reader ?? new TickComparisonReader(), env = deps.env ?? process.env
   const now = deps.now ?? Date.now, request = deps.request ?? scannerRequest
   const mirrors = deps.mirrors ?? (options => pollScannerMirrors(db, options))
-  let running = false, lastRetention = null
+  let running = false, lastRetention = null, lastWrite = null, lastError = null
   return async function collect() {
     if (running) return { skipped: 'in_flight', delayMs: 100 }
     running = true
@@ -37,7 +37,15 @@ export function createScannerCollector(db, deps = {}) {
     } catch { out.error = 'comparison_read_or_contract_failed'; out.delayMs = 1000 }
     finally { running = false }
     out.tickCursor = tick.after; out.durationMs = now() - started
-    setState(db, 'scanner_bridge_poll_json', JSON.stringify(out))
+    // The round record is written at most once a second. Rounds run every
+    // 10-100 ms, and each write takes the SQLite write lock that the main
+    // thread (busy_timeout 5000, synchronous) waits on. An error in a skipped
+    // round is not lost: the latest one rides every later record.
+    if (out.error) lastError = { error: out.error, atMs: started }
+    if (lastError) out.lastError = lastError
+    if (lastWrite == null || started - lastWrite >= 1000) {
+      setState(db, 'scanner_bridge_poll_json', JSON.stringify(out)); lastWrite = started
+    }
     return out
   }
 }

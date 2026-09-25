@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { EventEmitter } from 'node:events'
+import Database from 'better-sqlite3'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -14,6 +18,7 @@ import { nodeWatchdogContract } from './watchdog-contract.js'
 import { recordMarketCalendar } from './market-calendar.js'
 import { STRATEGY_REGISTRY } from './strategies.js'
 import { nativeProfileHash } from './scanner-profiles.js'
+import { scannerProfileRegistry } from './scanner-profile-registry.js'
 
 const feed = { provider: 'ctrader', host: 'demo.ctraderapi.com', accountId: '11', symbolId: '7' }
 const fixture = name => JSON.parse(readFileSync(new URL(`../../${name}`, import.meta.url)))
@@ -231,4 +236,40 @@ test('tick expiry is checked against registered TTL and cannot hide an incorrect
   assert.deepEqual(db.prepare('SELECT state,detail FROM scanner_comparisons ORDER BY rowid').all().map(r => [r.state, JSON.parse(r.detail).differences]), [
     ['mismatch', ['expiry']], ['native_expired', []], ['mismatch', ['expiry']],
   ])
+})
+
+test('refused inputs are recorded with their reason instead of vanishing in the worker', async t => {
+  const job = fibJob(), db = database(t, [policy(job)])
+  const options = { env: { SCANNER_TIMEFRAME_URL: 'http://scanner.test', SCANNER_TIMEFRAME_SECRET: 'fixture' }, fetchImpl: async () => { throw new Error('offline') } }
+  const partial = { ...job, bars: [...job.bars.slice(0, -1), { ...job.bars.at(-1), t: Date.now() }] }
+  await assert.rejects(() => publishTimeframeEvaluation(db, partial, options), /bar_input_invalid/)
+  assert.deepEqual(comparisonStatus(db).populations.map(p => [p.source, p.state, p.records]), [['cpp-scan-timeframe', 'input_refused', 1]])
+  // The same forming bar refused again is the same input, not a second one.
+  await assert.rejects(() => publishTimeframeEvaluation(db, partial, options), /bar_input_invalid/)
+  await assert.rejects(() => publishTimeframeEvaluation(db, { ...job, bars: [], receivedAtMs: undefined }, options), /bar_input_invalid/)
+  await assert.rejects(() => publishTimeframeEvaluation(db, { ...job, bars: job.bars.map((b, i) => i === 3 ? { ...b, h: b.l / 2 } : b) }, options), /bar_input_invalid/)
+  // A closed bar re-sent with a different reference result is a conflict, now recorded.
+  await assert.rejects(() => publishTimeframeEvaluation(db, job, options), /offline/)
+  await assert.rejects(() => publishTimeframeEvaluation(db, { ...job, reference: { ...job.reference, tp1: 1 } }, options), /reference_identity_conflict/)
+  assert.deepEqual(comparisonStatus(db).inputRefused.map(r => [r.error, r.reason, r.records]).sort(), [
+    ['bar_input_invalid', 'bars_empty', 1], ['bar_input_invalid', 'last_bar_partial', 1], ['bar_input_invalid', 'ohlc_invalid', 1],
+    ['reference_identity_conflict', 'reference_identity_conflict', 1]])
+  assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)
+})
+
+test('600 registered profiles are live at every site that used to stop at 512', async t => {
+  const many = Array.from({ length: 600 }, (_, i) => ({ source: 'cpp-scan-timeframe', feed, strategy: 'fib_618_fade', timeframe: '1h',
+    configVersion: `v${i}`, profileHash: FIB_PROFILE, candidateTtlMs: 60000 }))
+  const db = database(t, many)
+  assert.equal(matchingProfile(db, 'cpp-scan-timeframe', { feed, strategy: 'fib_618_fade', timeframe: '1h', configVersion: 'v599', profileHash: FIB_PROFILE })?.configVersion, 'v599')
+  assert.equal((await pollScannerMirrors(db, { env: {} })).configured, true)
+  assert.equal(scannerProfileRegistry(db).valid, true)
+  assert.equal(scannerProfileRegistry(db).profiles.length, 600)
+  // The bridge gate needs a file database; the worker is a stub.
+  const dir = mkdtempSync(join(tmpdir(), 'scanner-limit-')), fileDb = new Database(join(dir, 'limit.db'))
+  t.after(() => { fileDb.close(); rmSync(dir, { recursive: true, force: true }) })
+  fileDb.exec('CREATE TABLE agent_state (key TEXT PRIMARY KEY, value TEXT)')
+  fileDb.prepare('INSERT INTO agent_state VALUES (?,?)').run('scanner_mirror_profiles_json', JSON.stringify(many))
+  const stub = () => Object.assign(new EventEmitter(), { postMessage() {}, terminate() {}, unref() {} })
+  assert.equal(typeof scannerObserver(fileDb, { host: feed.host, accountId: 11 }, { SCANNER_BRIDGE_ENABLED: '1' }, { createWorker: stub }), 'function')
 })

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { compareTimeframeResult, comparisonStatus } from './scanner-comparison.js'
 import { scannerBridgeStatus } from './scanner-feed.js'
+import { SCANNER_PROFILE_LIMIT } from '../lib/scanner-bounds.js'
 
 const SOURCES = new Set(['cpp-scan-tick', 'cpp-scan-timeframe'])
 const ID = /^[1-9][0-9]{0,18}$/
@@ -146,14 +147,19 @@ export function recordScannerMirrorPage(db, source, page, { policies = [], now =
   }).immediate()
 }
 
+// The collector's own round record (readAtMs, durationMs, tickPages,
+// tickRecords, tickBacklog, error, delayMs), written by the worker. The
+// activation read-back needs it to show the collector keeps up without
+// starving Node; before this nothing read the key.
 export function scannerMirrorStatus(db, { now = Date.now() } = {}) {
+  const collector = read(db, 'scanner_bridge_poll_json')
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scanner_mirror_cursors'").get())
-    return { observedAtMs: now, status: 'unavailable', sources: [], orderAuthority: false, reason: 'no_scanner_observation', comparison: comparisonStatus(db), bridge: scannerBridgeStatus(db) }
+    return { observedAtMs: now, status: 'unavailable', sources: [], orderAuthority: false, reason: 'no_scanner_observation', comparison: comparisonStatus(db), bridge: scannerBridgeStatus(db), collector }
   return { observedAtMs: now, orderAuthority: false, mode: 'mirror', retentionDays: 7, capacity: MAX_ROWS,
     sources: db.prepare('SELECT * FROM scanner_mirror_cursors ORDER BY source').all(),
     outcomes: db.prepare('SELECT source,outcome,reason,count(*) AS count FROM scanner_mirror_outcomes GROUP BY source,outcome,reason').all(),
     candidates: db.prepare('SELECT source,account_id,host,strategy,count(*) AS count FROM scanner_mirror_candidates GROUP BY source,account_id,host,strategy').all(),
-    comparison: comparisonStatus(db), bridge: scannerBridgeStatus(db) }
+    comparison: comparisonStatus(db), bridge: scannerBridgeStatus(db), collector }
 }
 
 async function scannerPage(url, secret, after, fetchImpl) {
@@ -175,7 +181,7 @@ async function scannerPage(url, secret, after, fetchImpl) {
 /** Call from the isolated collector process; never a protection callback. */
 export async function pollScannerMirrors(db, { env = process.env, fetchImpl = fetch, now = Date.now } = {}) {
   const policies = read(db, 'scanner_mirror_profiles_json')
-  if (!Array.isArray(policies) || !policies.length || policies.length > 512) return { configured: false, reason: 'comparison_profiles_unconfigured', orderAuthority: false }
+  if (!Array.isArray(policies) || !policies.length || policies.length > SCANNER_PROFILE_LIMIT) return { configured: false, reason: 'comparison_profiles_unconfigured', orderAuthority: false }
   schema(db)
   const outcomes = []
   for (const [source, prefix] of [['cpp-scan-tick', 'SCANNER_TICK'], ['cpp-scan-timeframe', 'SCANNER_TIMEFRAME']]) {

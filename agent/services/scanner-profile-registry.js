@@ -5,6 +5,8 @@ import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
 import { DEFAULT_PARAMS, profileHash } from '../lib/tick-strategy.js'
 import { tfMs } from '../lib/timeframes.js'
 import { nativeProfileHash } from './scanner-profiles.js'
+import { SCANNER_PROFILE_LIMIT, SCANNER_REGISTRATION_BYTES } from '../lib/scanner-bounds.js'
+export { SCANNER_PROFILE_LIMIT, SCANNER_REGISTRATION_BYTES }
 const canonical = v => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object'
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v
 const digest = v => createHash('sha256').update(JSON.stringify(canonical(v))).digest('hex')
@@ -14,7 +16,7 @@ const integer = (v, lo, hi) => Number.isSafeInteger(v) && v >= lo && v <= hi
 export function scannerProfileRegistry(db) {
   const raw = getState(db, 'scanner_mirror_profiles_json')
   let profiles = []; try { profiles = JSON.parse(raw || '[]') } catch { return { valid: false, revision: digest(raw), profiles: [], orderAuthority: false } }
-  if (!Array.isArray(profiles) || profiles.length > 512) return { valid: false, revision: digest(raw), profiles: [], orderAuthority: false }
+  if (!Array.isArray(profiles) || profiles.length > SCANNER_PROFILE_LIMIT) return { valid: false, revision: digest(raw), profiles: [], orderAuthority: false }
   return { valid: true, revision: digest(profiles), profiles, orderAuthority: false }
 }
 function validate(db, p) {
@@ -40,8 +42,11 @@ function validate(db, p) {
 }
 export function registerScannerProfiles(db, input, { env = process.env, now = Date.now() } = {}) {
   if (env.SCANNER_BRIDGE_ENABLED === '1') fail('stop_observation_bridge_before_profile_change', 409)
-  if (!fields(input, ['expectedRevision', 'profiles']) || !Array.isArray(input.profiles) || input.profiles.length > 512
-    || Buffer.byteLength(JSON.stringify(input)) > 256 * 1024) fail('registration_bound')
+  // Over HTTP the scoped parser (index.js, same byte limit on the raw body)
+  // refuses an oversized body first; this byte check is for direct callers.
+  // The profile count bound is reachable over HTTP (1025 small profiles).
+  if (!fields(input, ['expectedRevision', 'profiles']) || !Array.isArray(input.profiles) || input.profiles.length > SCANNER_PROFILE_LIMIT
+    || Buffer.byteLength(JSON.stringify(input)) > SCANNER_REGISTRATION_BYTES) fail('registration_bound')
   const profiles = input.profiles.map(p => validate(db, p)), unique = new Set()
   for (const p of profiles) {
     const key = JSON.stringify([p.source, marketIdentityKey(p.feed), p.strategy, p.timeframe || ''])

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState } from '../db.js'
 import { createScannerCollector, startScannerCollector } from './scanner-collector.js'
+import { scannerMirrorStatus } from './scanner-candidates.js'
 const env = { SCANNER_TICK_URL: 'http://fixture', SCANNER_TICK_SECRET: 'fixture' }
 function fixture(t) { const db = initDB(':memory:'); t.after(() => db.close()); return db }
 const page = (after, latest = 12, instanceId = 'a'.repeat(64)) => ({ instanceId, orderAuthority: false, oldestCursor: 1, latestCursor: latest, gap: false, candidates: after < latest ? [{ cursor: after + 1 }] : [] })
@@ -30,6 +31,25 @@ test('slow or unavailable input cannot overlap or spin; restart requests replay 
   await restart(); epoch = 'b'.repeat(64); await restart()
   assert.deepEqual(requests, ['/comparisons?after=0', '/comparisons?after=3', '/comparisons?after=0'])
   assert.ok(db.prepare("SELECT COUNT(*) n FROM scanner_comparisons WHERE state='input_gap'").get().n >= 2)
+})
+test('the collector round is readable from the status route; its record is written at most once a second', async t => {
+  const db = fixture(t); let clock = 1_800_000_000_000, fail = false
+  const collect = createScannerCollector(db, { env, now: () => clock, mirrors: async () => ({ outcomes: [] }),
+    request: async () => { if (fail) throw new Error('down'); return page(0, 0) } })
+  const first = await collect()
+  let collector = scannerMirrorStatus(db).collector
+  assert.equal(collector.readAtMs, first.readAtMs); assert.equal(collector.error, undefined)
+  assert.equal(collector.orderAuthority, false); assert.equal(typeof collector.durationMs, 'number')
+  clock += 200; fail = true
+  const failed = await collect()
+  assert.equal(failed.error, 'comparison_read_or_contract_failed')
+  assert.equal(scannerMirrorStatus(db).collector.readAtMs, first.readAtMs, 'a round 200 ms later must not write')
+  clock += 1000; fail = false
+  const recovered = await collect()
+  collector = scannerMirrorStatus(db).collector
+  assert.equal(collector.readAtMs, recovered.readAtMs); assert.equal(collector.error, undefined)
+  // The skipped round's error is not lost: it rides the next record.
+  assert.deepEqual(collector.lastError, { error: 'comparison_read_or_contract_failed', atMs: failed.readAtMs })
 })
 test('continuous timer uses completion delay, stops cleanly and is wired into the worker', async t => {
   const db = fixture(t), scheduled = []; let cleared

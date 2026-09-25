@@ -2,6 +2,7 @@ import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { TickMomentumOracle, profileHash, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
+import { SCANNER_PROFILE_LIMIT } from '../lib/scanner-bounds.js'
 
 const canonical = v => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object'
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v
@@ -13,7 +14,11 @@ function trimOne(db, table) {
   if (db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n > CAP)
     db.prepare(`DELETE FROM ${table} WHERE rowid=(SELECT rowid FROM ${table} ORDER BY observed_ms,rowid LIMIT 1)`).run()
 }
+// The schema is created once per connection, not re-parsed for every row. A
+// creation inside a transaction is not remembered: a rollback would undo it.
+const schemaReady = new WeakSet()
 function schema(db) {
+  if (schemaReady.has(db)) return
   db.exec(`CREATE TABLE IF NOT EXISTS scanner_references (
     id TEXT PRIMARY KEY, payload TEXT NOT NULL, observed_ms INTEGER NOT NULL,
     delivery_state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0);
@@ -21,7 +26,10 @@ function schema(db) {
     id TEXT PRIMARY KEY, source TEXT NOT NULL, state TEXT NOT NULL,
     detail TEXT NOT NULL, observed_ms INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS scanner_reference_age ON scanner_references(observed_ms);
-    CREATE INDEX IF NOT EXISTS scanner_comparison_age ON scanner_comparisons(observed_ms);`)
+    CREATE INDEX IF NOT EXISTS scanner_comparison_age ON scanner_comparisons(observed_ms);
+    CREATE INDEX IF NOT EXISTS scanner_comparison_source_state ON scanner_comparisons(source, state, observed_ms);
+    CREATE INDEX IF NOT EXISTS scanner_comparison_source_age ON scanner_comparisons(source, observed_ms);`)
+  if (!db.inTransaction) schemaReady.add(db)
 }
 const basis = v => hash([v.feed, v.feedEpoch, v.configVersion, v.profileHash, v.timeframe, v.barCloseAtMs ?? v.sourceSequence])
 export function comparisonRecord(db, id, source, state, detail, now = Date.now()) {
@@ -29,14 +37,32 @@ export function comparisonRecord(db, id, source, state, detail, now = Date.now()
   // Evidence is append-only by identity; replay cannot inflate a population.
   const payload = JSON.stringify(detail)
   if (Buffer.byteLength(payload) > 16000) throw new Error('comparison_detail_bound')
+  // No per-row trim: a COUNT per insert held the page transaction's write
+  // lock while the main thread busy-waited on it. retainComparisons bounds
+  // the table instead, per source, on the collector's 60 s cadence (so the
+  // overshoot is at most one minute of rows).
   db.prepare('INSERT OR IGNORE INTO scanner_comparisons VALUES (?,?,?,?,?)').run(id, source, state, payload, now)
-  trimOne(db, 'scanner_comparisons')
 }
-export function retainComparisons(db, now = Date.now()) {
+// Each source keeps its own newest `cap` rows. With one shared cap the tick
+// stream (about 100 rows/s) evicted every timeframe comparison in about 17
+// minutes, so timeframe parity could never be read back.
+// The write lock is held only for deletions: the edge (the cap-th newest row
+// of a source) is found by a read, which in WAL mode does not block the main
+// thread's writes, and the rows older than it are deleted in bounded chunks.
+// Every statement walks an index; none sorts the table.
+export function retainComparisons(db, now = Date.now(), { cap = CAP, chunk = 2000 } = {}) {
   schema(db)
-  for (const table of ['scanner_references', 'scanner_comparisons']) {
-    db.prepare(`DELETE FROM ${table} WHERE observed_ms < ?`).run(now - RETAIN)
-    db.prepare(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} ORDER BY observed_ms DESC,rowid DESC LIMIT -1 OFFSET ?)`).run(CAP)
+  db.prepare('DELETE FROM scanner_references WHERE observed_ms < ?').run(now - RETAIN)
+  db.prepare('DELETE FROM scanner_references WHERE rowid IN (SELECT rowid FROM scanner_references ORDER BY observed_ms DESC,rowid DESC LIMIT -1 OFFSET ?)').run(cap)
+  db.prepare('DELETE FROM scanner_comparisons WHERE observed_ms < ?').run(now - RETAIN)
+  const first = db.prepare('SELECT MIN(source) source FROM scanner_comparisons')
+  const next = db.prepare('SELECT MIN(source) source FROM scanner_comparisons WHERE source > ?')
+  const edge = db.prepare('SELECT observed_ms at, rowid id FROM scanner_comparisons WHERE source=? ORDER BY observed_ms DESC,rowid DESC LIMIT 1 OFFSET ?')
+  const drop = db.prepare(`DELETE FROM scanner_comparisons WHERE rowid IN (SELECT rowid FROM scanner_comparisons
+    WHERE source=? AND (observed_ms<? OR (observed_ms=? AND rowid<?)) ORDER BY observed_ms,rowid LIMIT ?)`)
+  for (let source = first.get().source; source != null; source = next.get(source).source) {
+    const kept = edge.get(source, cap - 1)
+    if (kept) while (drop.run(source, kept.at, kept.at, kept.id, chunk).changes === chunk) { /* next bounded chunk */ }
   }
 }
 export function recordReference(db, body, reference, now = Date.now()) {
@@ -87,18 +113,62 @@ export function compareTimeframeResult(db, row, now = Date.now()) {
 }
 export function comparisonStatus(db) {
   if (!exists(db)) return { status: 'unavailable', reason: 'no_comparison_observation', orderAuthority: false }
-  return { status: 'observed', orderAuthority: false, retentionDays: 7, capacity: CAP,
+  // Both reads use the (source, state, observed_ms) index, which covers the
+  // populations read (about 40-55 ms at 200,000 rows, measured locally): this
+  // runs on the main thread for every /state/scanner-mirrors and heartbeat read.
+  return { status: 'observed', orderAuthority: false, retentionDays: 7, capacity: CAP, capacityPer: 'source',
     populations: db.prepare('SELECT source,state,count(*) records,MAX(observed_ms) lastObservedAtMs FROM scanner_comparisons GROUP BY source,state').all(),
+    inputRefused: db.prepare(`SELECT json_extract(detail,'$.error') error,json_extract(detail,'$.reason') reason,count(*) records
+      FROM scanner_comparisons WHERE source='cpp-scan-timeframe' AND state='input_refused' GROUP BY 1,2`).all(),
     note: 'Retained comparisons are observations, not independent research samples. Gaps, missing references and unsupported profiles prevent a complete parity claim.' }
 }
 export function comparisonProfiles(db) {
-  try { const p = JSON.parse(getState(db, 'scanner_mirror_profiles_json') || 'null'); return Array.isArray(p) && p.length <= 512 ? p : [] } catch { return [] }
+  try { const p = JSON.parse(getState(db, 'scanner_mirror_profiles_json') || 'null'); return Array.isArray(p) && p.length <= SCANNER_PROFILE_LIMIT ? p : [] } catch { return [] }
 }
-export function matchingProfile(db, source, value) {
+// One memo serves one comparison page. Without it every row re-parsed the
+// registry and the account's symbol map and hashed every profile: 1.806 ms a
+// row, so a 128-row page held the write lock 146-248 ms (measured) while the
+// main thread busy-waited on it (db.js busy_timeout 5000).
+export const comparisonMemo = () => ({ accounts: new Map(), profiles: null })
+const feedKey = (source, feed) => JSON.stringify([source, canonical(feed)])
+// Routing only: the broker host a registered account's feed must carry, or
+// null for an unregistered account. One lookup for both paths below.
+function registeredHost(db, accountId) {
+  const account = db.prepare('SELECT is_live FROM accounts WHERE account_id=?').get(accountId)
+  return account ? (account.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com') : null
+}
+function memoAccount(db, memo, accountId) {
+  if (!memo.accounts.has(accountId)) {
+    const host = registeredHost(db, accountId), map = host ? getAccountSymbolMap(db, accountId)?.map : null
+    memo.accounts.set(accountId, { host, symbols: map ? new Set(Object.values(map).map(String)) : null })
+  }
+  return memo.accounts.get(accountId)
+}
+function memoProfiles(db, memo) {
+  if (!memo.profiles) {
+    memo.profiles = new Map()
+    for (const p of comparisonProfiles(db)) {
+      if (!p || typeof p !== 'object' || !p.feed || typeof p.feed !== 'object') continue
+      const key = feedKey(p.source, p.feed)
+      if (memo.profiles.has(key)) memo.profiles.get(key).push(p); else memo.profiles.set(key, [p])
+    }
+  }
+  return memo.profiles
+}
+export function matchingProfile(db, source, value, memo = null) {
   const f = value.feed
   if (!f || f.provider !== 'ctrader' || !/^[1-9]\d*$/.test(f.accountId) || !/^[1-9]\d*$/.test(f.symbolId)) return null
-  const account = db.prepare('SELECT is_live FROM accounts WHERE account_id=?').get(f.accountId)
-  if (!account || f.host !== (account.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')) return null
+  if (memo) {
+    // Same rules as below: the registered host, the symbol in the account's own
+    // map, the canonical feed identity, then the exact profile fields in order.
+    const account = memoAccount(db, memo, f.accountId)
+    if (!account.host || f.host !== account.host || !account.symbols?.has(f.symbolId)) return null
+    return (memoProfiles(db, memo).get(feedKey(source, f)) || []).find(p => p.strategy === value.strategy
+      && p.configVersion === value.configVersion && p.profileHash === value.profileHash
+      && (p.timeframe || '') === (value.timeframe || '')) || null
+  }
+  const host = registeredHost(db, f.accountId)
+  if (!host || f.host !== host) return null
   const map = getAccountSymbolMap(db, f.accountId)?.map
   if (!map || !Object.values(map).some(id => String(id) === f.symbolId)) return null
   return comparisonProfiles(db).find(p => p.source === source && hash(p.feed) === hash(f)
@@ -123,6 +193,7 @@ export class TickComparisonReader {
       || page.oldestCursor < 1 || page.oldestCursor > page.latestCursor + 1
       || typeof page.gap !== 'boolean'
       || !Array.isArray(page.candidates) || page.candidates.length > 128) throw new Error('comparison_page_invalid')
+    const memo = comparisonMemo()
     if (this.instance !== page.instanceId) { this.after = 0; this.streams.clear(); this.instance = page.instanceId }
     if (page.gap || this.after < page.oldestCursor - 1) {
       this.streams.clear()
@@ -139,7 +210,7 @@ export class TickComparisonReader {
       }
       const id = hash([page.instanceId, row.cursor]), q = row.quote
       let state = 'contract_rejected', differences = []
-      const policy = matchingProfile(db, 'cpp-scan-tick', row)
+      const policy = matchingProfile(db, 'cpp-scan-tick', row, memo)
       if (policy && Number.isSafeInteger(policy.candidateTtlMs) && policy.candidateTtlMs >= 1 && policy.candidateTtlMs <= 3600000 && row.profile && Object.keys(DEFAULT_PARAMS).every(k => Object.hasOwn(row.profile, k))
         && profileHash(row.profile) === row.profileHash
         && ['candidate', 'no_signal', 'expired'].includes(row.outcome) && (row.outcome === 'candidate') === !!row.signal
@@ -147,8 +218,13 @@ export class TickComparisonReader {
         && q && Number.isSafeInteger(q.seq) && q.seq > 0 && Number.isSafeInteger(q.recvMs) && q.recvMs <= row.completedAtMs
         && ['bid', 'ask'].every(k => q[k] === null || (Number.isSafeInteger(q[k]) && q[k] > 0))
         && ['snapshot', 'crossed', 'changed'].every(k => typeof q[k] === 'boolean')) {
-        const key = hash([row.feed, row.feedEpoch, row.configVersion, row.profileHash])
-        if (!this.streams.has(key) && this.streams.size < 512) this.streams.set(key, { oracle: new TickMomentumOracle(row.profile), known: q.snapshot, last: 0 })
+        // Streams are keyed without the feed epoch: each gateway feed restart
+        // used to add 53 streams until the 512 bound turned every row into
+        // 'reference_capacity'. A new epoch replaces its stream with a fresh
+        // oracle, which rewarms from the next snapshot.
+        const key = hash([row.feed, row.configVersion, row.profileHash])
+        if (this.streams.has(key) && this.streams.get(key).epoch !== row.feedEpoch) this.streams.delete(key)
+        if (!this.streams.has(key) && this.streams.size < 512) this.streams.set(key, { oracle: new TickMomentumOracle(row.profile), known: q.snapshot, last: 0, epoch: row.feedEpoch })
         const stream = this.streams.get(key)
         if (stream && q.seq > stream.last) {
           // A native reset recovers the economic state, while the gap record
