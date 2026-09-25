@@ -1,4 +1,5 @@
 import { REGIME_BLOCK_STAGE, EVIDENCE_GATE_STAGE, PRODUCER_RETIRED_STAGE } from './gate-skips.js'
+import { ROSTER_ONLY_STAGES, ROSTER_STAGES, ATTRIBUTION_MARKED_STAGES, ACCOUNT_ATTRIBUTION_MARK } from './decision-log.js'
 import { getState } from '../db.js'
 import { engineStatusFor, basesFor } from './entry-mode.js'
 import { tickReadinessFor } from './tick-readiness.js'
@@ -72,7 +73,13 @@ export function blockerEvidence(row) {
   const tick = row.kind === 'tick_refusal'
   return {
     recordId: `${row.source}:${row.id}`, source: row.source, id: row.id,
-    accountId: row.account_id, symbol: row.symbol, strategy: row.strategy,
+    // V3 WEB-1: accountId is the account the stop is CHARGED to (null for a
+    // roster-wide or unattributed record); storedAccountId is what the row
+    // holds, kept as evidence where an older build stamped a roster stop.
+    accountId: row.account_id, attribution: row.scope || (row.account_id == null ? 'unattributed' : 'account'),
+    storedAccountId: row.stored_account_id === undefined ? row.account_id : row.stored_account_id,
+    unsplitHistory: row.unsplit === 1,
+    symbol: row.symbol, strategy: row.strategy,
     timeframe: row.timeframe, at: row.created_at, lastAt: row.last_at || row.created_at,
     kind: row.kind, stage: row.stage, reason,
     firstBlocker: approved || receipt ? null : { stage: row.stage, reason, status: reason ? 'recorded' : 'reason_unrecorded' },
@@ -115,17 +122,62 @@ const RECEIPT = `approved = 1 AND EXISTS (
     SELECT 1 FROM json_each(CASE WHEN json_valid(checks_json) THEN checks_json ELSE '{}' END)
     WHERE key GLOB '*_placed' AND type = 'true'
   )`
+// V3 WEB-1 (8,989-A row 2): WHOSE STOP A decision_log ROW IS. Until this fix
+// recordDecision stamped every row that named no account with the SELECTED
+// account, so the roster-level gates charged all their stops to one account
+// (9,970 of 9,970 upstream stops on 46130058 over 24 h, 25-09) and every
+// other account read "0 upstream stops". Per row:
+//   roster       — an account-independent gate (decision-log.js
+//                  ROSTER_ONLY_STAGES, including the older rows the fallback
+//                  stamped with an account; or a stage_matrix row with no
+//                  account, the roster union's). It applies to every account
+//                  and is charged to none: its effective account_id is NULL
+//                  and stored_account_id keeps what was written.
+//   unattributed — no account and not a roster gate.
+//   account      — the stored account. `unsplit` flags an older row of a
+//                  stage whose fallback row and real per-account row are
+//                  identical (ATTRIBUTION_MARKED_STAGES without the mark):
+//                  counted as recorded, and said so, never silently moved.
+const sqlList = list => list.map(s => `'${s}'`).join(',')
+const ROSTER_ONLY_SQL = sqlList(ROSTER_ONLY_STAGES)
+const ROSTER_FILTER = `AND (stage IN (${ROSTER_ONLY_SQL}) OR (account_id IS NULL AND stage IN (${sqlList(ROSTER_STAGES)})))`
+const DECISION_SCOPE = `CASE WHEN stage IN (${ROSTER_ONLY_SQL}) OR (account_id IS NULL AND stage IN (${sqlList(ROSTER_STAGES)})) THEN 'roster'
+      WHEN account_id IS NULL THEN 'unattributed' ELSE 'account' END`
+const DECISION_UNSPLIT = `CASE WHEN account_id IS NOT NULL AND stage IN (${sqlList(ATTRIBUTION_MARKED_STAGES)})
+      AND (CASE WHEN json_valid(detail_json) THEN json_extract(detail_json, '$.attribution') END) IS NOT '${ACCOUNT_ATTRIBUTION_MARK}' THEN 1 ELSE 0 END`
+export const ROSTER_WIDE_NOTE = 'Roster-wide stops come from account-independent gates (the armed-scope pre-filter, the stage-matrix union, the horizon, style, watchlist, regime and weekend gates). They apply to every account and are charged to none; records an older build stored against the then-selected account are counted here, not under that account.'
+export const UNSPLIT_NOTE = 'Records written before the attribution fix in stage_matrix (the roster union and the account\'s own gate wrote identical rows) and lesson_decay (stamped with the selected account, not the order\'s) cannot be split: they are counted as recorded, under the account they were stored against.'
+
+// The decision_log arm: the same nineteen columns as population()'s other arms
+// (named, because rosterWideStops reads it on its own).
+function decisionArm(filter) {
+  return `SELECT 'decision_log' source, id, CASE WHEN scope = 'roster' THEN NULL ELSE account_id END account_id,
+      account_id stored_account_id, scope, unsplit, symbol, created_at, created_at last_at,
+      CASE WHEN stage = 'gate_redirect' THEN 'risk_refusal'
+           WHEN stage IN ('submission_dedupe', 'symbol_position_cap') THEN 'post_approval_failure'
+           WHEN stage IN (${UPSTREAM.map(s => `'${s}'`).join(',')}) OR stage GLOB 'account_pregate:*' THEN 'upstream_stop'
+           ELSE 'other_stop' END kind,
+      stage, reason, NULL checks_json, detail_json, NULL disposition, NULL opportunity_key, 1 reps, strategy, timeframe
+    FROM (SELECT *, ${DECISION_SCOPE} scope, ${DECISION_UNSPLIT} unsplit FROM decision_log
+      WHERE created_at >= @floor AND julianday(created_at) >= julianday(@from)
+        AND julianday(created_at) < julianday(@to) AND decision IN ('skip', 'veto') ${filter})`
+}
+
 // One population for every count, page and ranking. Each arm lists the same
-// sixteen columns IN ORDER — a positional UNION with a missing or misordered
+// nineteen columns IN ORDER — a positional UNION with a missing or misordered
 // column does not fail, it puts values in the wrong fields:
-//   source, id, account_id, symbol, created_at, last_at, kind, stage, reason,
-//   checks_json, detail_json, disposition, opportunity_key, reps, strategy, timeframe
+//   source, id, account_id, stored_account_id, scope, unsplit, symbol,
+//   created_at, last_at, kind, stage, reason, checks_json, detail_json,
+//   disposition, opportunity_key, reps, strategy, timeframe
 // cpp_decisions.at is datetime('now') text ('YYYY-MM-DD HH:MM:SS', db.js), the
 // same shape as @floor, so the string prefilter holds; the julianday bounds
-// are the actual window.
-function population(scope) {
+// are the actual window. An account scope takes that account's rows only:
+// roster rows (NULL, or relabelled history) are reported beside it.
+function population(accountScoped) {
+  const scope = accountScoped ? 'AND account_id = @account' : ''
   return `WITH records AS (
-    SELECT 'risk_events' source, id, account_id, symbol, created_at, last_at,
+    SELECT 'risk_events' source, id, account_id, account_id stored_account_id,
+      CASE WHEN account_id IS NULL THEN 'unattributed' ELSE 'account' END scope, 0 unsplit, symbol, created_at, last_at,
       CASE WHEN ${RECEIPT} THEN 'placement_receipt'
            WHEN symbol = 'PORTFOLIO' AND approved IS NOT 1 THEN 'upstream_stop'
            WHEN approved = 1 THEN 'approved'
@@ -143,16 +195,10 @@ function population(scope) {
     FROM risk_events WHERE created_at >= @floor AND julianday(created_at) >= julianday(@from)
       AND julianday(created_at) < julianday(@to) ${scope}
     UNION ALL
-    SELECT 'decision_log', id, account_id, symbol, created_at, created_at,
-      CASE WHEN stage = 'gate_redirect' THEN 'risk_refusal'
-           WHEN stage IN ('submission_dedupe', 'symbol_position_cap') THEN 'post_approval_failure'
-           WHEN stage IN (${UPSTREAM.map(s => `'${s}'`).join(',')}) OR stage GLOB 'account_pregate:*' THEN 'upstream_stop'
-           ELSE 'other_stop' END,
-      stage, reason, NULL, detail_json, NULL, NULL, 1, strategy, timeframe
-    FROM decision_log WHERE created_at >= @floor AND julianday(created_at) >= julianday(@from)
-      AND julianday(created_at) < julianday(@to) AND decision IN ('skip', 'veto') ${scope}
+    ${decisionArm(accountScoped ? `${scope} AND stage NOT IN (${ROSTER_ONLY_SQL})` : '')}
     UNION ALL
-    SELECT 'cpp_decisions', cpp_decisions.id, cpp_decisions.account_id,
+    SELECT 'cpp_decisions', cpp_decisions.id, cpp_decisions.account_id, cpp_decisions.account_id,
+      CASE WHEN cpp_decisions.account_id IS NULL THEN 'unattributed' ELSE 'account' END, 0,
       CASE WHEN cpp_decisions.symbol_id IS NULL THEN NULL ELSE 'symbolId ' || cpp_decisions.symbol_id END,
       cpp_decisions.at, cpp_decisions.at, 'tick_refusal',
       CASE cpp_decisions.kind WHEN 'fire_refused' THEN 'tick_fire:' || COALESCE(NULLIF(cpp_decisions.code, ''), 'unrecorded')
@@ -178,11 +224,11 @@ export function blockerReport(db, options = {}) {
   const { accountId, from, to, limit, offset } = validateBlockerRequest(options)
   const now = options.now ?? Date.now()
   if (accountId !== 'all' && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(accountId)) throw new RangeError('account not registered')
-  const scope = accountId === 'all' ? '' : 'AND account_id = @account'
+  const all = accountId === 'all'
   const params = windowParams(accountId, from, to)
   // Read retained rows in one unit. No LIMIT is applied to the population or
   // totals. Only details are paged. ISO and SQLite timestamps share UTC.
-  const records = population(scope)
+  const records = population(!all)
   const groups = db.prepare(`${records} SELECT kind, COUNT(*) records, SUM(reps) recordedEvaluations FROM records GROUP BY kind`).all(params)
   const summary = Object.fromEntries(SUMMARY_KINDS.map(kind => {
     const g = groups.find(g => g.kind === kind)
@@ -191,35 +237,71 @@ export function blockerReport(db, options = {}) {
   const totalRecords = groups.reduce((n, g) => n + g.records, 0)
   const rows = db.prepare(`${records} SELECT * FROM records ORDER BY julianday(created_at) DESC, source, id DESC LIMIT @limit OFFSET @offset`)
     .all({ ...params, limit, offset })
-  const counts = db.prepare(`${records} SELECT account_id accountId, kind, COUNT(*) records FROM records GROUP BY account_id, kind ORDER BY account_id, kind`).all(params)
+  // accountId is the EFFECTIVE account: NULL for roster-wide and unattributed
+  // rows, which `scope` tells apart. unsplitRecords: see UNSPLIT_NOTE.
+  const counts = db.prepare(`${records} SELECT account_id accountId, scope, kind, COUNT(*) records, SUM(unsplit) unsplitRecords
+    FROM records GROUP BY account_id, scope, kind ORDER BY account_id, scope, kind`).all(params)
   const entryKinds = ENTRY_STOP_KINDS.map(k => `'${k}'`).join(',')
   const stop = db.prepare(`${records} SELECT * FROM records WHERE kind IN (${entryKinds}) ORDER BY julianday(created_at) DESC, source, id DESC LIMIT 1`).get(params)
   // The dominant entry stops per account: up to five (kind, stage) groups,
   // most records first. lastReason is the bare column of the row holding the
   // group's single MAX() — SQLite's documented bare-column rule — so it is the
   // NEWEST record's reason. Approvals, receipts and other stops are not stops
-  // of an entry and are not ranked.
+  // of an entry and are not ranked. Roster-wide and unattributed rows (both
+  // account NULL) rank in their own partitions, never under an account.
   const byStage = db.prepare(`${records}, grouped AS (
-      SELECT account_id, kind, stage, COUNT(*) records, SUM(reps) recordedEvaluations,
+      SELECT account_id, scope, kind, stage, COUNT(*) records, SUM(reps) recordedEvaluations, SUM(unsplit) unsplitRecords,
         MAX(julianday(created_at)) lastJd, reason lastReason
-      FROM records WHERE kind IN (${entryKinds}) GROUP BY account_id, kind, stage
+      FROM records WHERE kind IN (${entryKinds}) GROUP BY account_id, scope, kind, stage
     ), ranked AS (
-      SELECT *, ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY records DESC, stage, kind) rn FROM grouped
-    ) SELECT * FROM ranked WHERE rn <= 5 ORDER BY account_id, rn`).all(params)
-    .map(r => ({ accountId: r.account_id, kind: r.kind, stage: r.stage, records: r.records, recordedEvaluations: r.recordedEvaluations,
-      lastAt: julianToIso(r.lastJd), lastReason: clip(r.lastReason) }))
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY account_id, scope ORDER BY records DESC, stage, kind) rn FROM grouped
+    ) SELECT * FROM ranked WHERE rn <= 5 ORDER BY account_id, scope, rn`).all(params)
+    .map(r => ({ accountId: r.account_id, scope: r.scope, kind: r.kind, stage: r.stage, records: r.records, recordedEvaluations: r.recordedEvaluations,
+      unsplitRecords: r.unsplitRecords, lastAt: julianToIso(r.lastJd), lastReason: clip(r.lastReason) }))
+  // Unattributed: no account AND not a roster gate — a roster stop is
+  // attributed (to the roster), not unassigned.
   const unattributed = db.prepare(`SELECT
     (SELECT COUNT(*) FROM risk_events WHERE account_id IS NULL AND created_at >= @floor AND julianday(created_at) >= julianday(@from) AND julianday(created_at) < julianday(@to)) +
-    (SELECT COUNT(*) FROM decision_log WHERE account_id IS NULL AND created_at >= @floor AND julianday(created_at) >= julianday(@from) AND julianday(created_at) < julianday(@to) AND decision IN ('skip','veto')) +
+    (SELECT COUNT(*) FROM decision_log WHERE account_id IS NULL AND stage NOT IN (${sqlList(ROSTER_STAGES)}) AND created_at >= @floor AND julianday(created_at) >= julianday(@from) AND julianday(created_at) < julianday(@to) AND decision IN ('skip','veto')) +
     (SELECT COUNT(*) FROM cpp_decisions WHERE account_id IS NULL AND component = 'tick' AND kind IN (${TICK_KINDS_SQL}) AND at >= @floor AND julianday(at) >= julianday(@from) AND julianday(at) < julianday(@to)) n`).get(params).n
   return {
     status: 'complete', accountId, from, to, generatedAt: new Date(now).toISOString(),
     summary, totalRecords, perAccount: counts, byStage, unattributedRecordsInWindow: unattributed,
+    rosterWide: rosterWideStops(db, params, all),
+    unsplitRecordsInWindow: counts.reduce((n, c) => n + (c.unsplitRecords || 0), 0), unsplitNote: UNSPLIT_NOTE,
     latestEntryStop: stop ? blockerEvidence(stop) : null,
     records: rows.map(blockerEvidence), offset, limit, hasMore: offset + rows.length < totalRecords,
     nextOffset: offset + rows.length < totalRecords ? offset + rows.length : null,
     countBasis: 'Complete retained records first created in the requested window. The same event may appear in both logs. Repeated risk refusals share a record; recordedEvaluations covers that record’s lifetime, not exact attempts within the window. Records are not distinct opportunities or orders. Placement receipts are retained separately from risk approvals. Other stops include management records whose entry phase is unrecorded. Tick sidecar refusals are the ring records Node pulled (the sidecar keeps only its newest ~256; any overwritten between pulls are not counted) and are dated at the pull.',
-    scopeNote: accountId === 'all' ? 'Unassigned records stay explicitly unattributed.' : 'Only this registered account is included. Unassigned records are excluded and counted separately.',
+    scopeNote: all
+      ? 'Every retained record is included. Roster-wide stops are grouped as roster-wide (account NULL), never under an account; records with no account that are not roster-wide stay explicitly unattributed and are counted separately.'
+      : 'Only records stored against this registered account are counted here. Roster-wide stops apply to every account and are reported beside these counts, not in them; unassigned records are excluded and counted separately.',
+  }
+}
+
+/**
+ * V3 WEB-1: the roster-wide stops in the window — the same records under
+ * EVERY account scope, charged to none. `includedInTotals` says whether the
+ * report's own summary already counts them (the all-accounts scope) or not
+ * (an account scope). `recordedAgainstAnAccount` counts the older rows the
+ * selected-account fallback stamped with an account: shown, never hidden.
+ * Bounded: one group per (kind, stage) of the roster stage set.
+ */
+function rosterWideStops(db, params, includedInTotals) {
+  const records = `WITH records AS (${decisionArm(ROSTER_FILTER)})`
+  const stages = db.prepare(`${records} SELECT kind, stage, COUNT(*) records,
+      SUM(CASE WHEN stored_account_id IS NULL THEN 0 ELSE 1 END) recordedAgainstAnAccount,
+      MAX(julianday(created_at)) lastJd, reason lastReason
+    FROM records GROUP BY kind, stage ORDER BY records DESC, stage, kind`).all(params)
+  const sum = (list, key = 'records') => list.reduce((n, s) => n + s[key], 0)
+  return {
+    records: sum(stages),
+    entryStops: sum(stages.filter(s => ENTRY_STOP_KINDS.includes(s.kind))),
+    summary: Object.fromEntries(SUMMARY_KINDS.map(kind => [kind, { records: sum(stages.filter(s => s.kind === kind)) }])),
+    byStage: stages.map(s => ({ kind: s.kind, stage: s.stage, records: s.records, recordedAgainstAnAccount: s.recordedAgainstAnAccount,
+      lastAt: julianToIso(s.lastJd), lastReason: clip(s.lastReason) })),
+    recordedAgainstAnAccount: sum(stages, 'recordedAgainstAnAccount'),
+    includedInTotals, note: ROSTER_WIDE_NOTE,
   }
 }
 
@@ -339,7 +421,13 @@ export function entryDiagnostics(db, { now = Date.now() } = {}) {
   const stops = new Map(), dominant = new Map()
   for (const r of report.perAccount) if (ENTRY_STOP_KINDS.includes(r.kind)) stops.set(String(r.accountId), (stops.get(String(r.accountId)) || 0) + r.records)
   for (const r of report.byStage) if (!dominant.has(String(r.accountId))) dominant.set(String(r.accountId), r)
-  const head = { schemaVersion: 1, source: 'node_records', observedAtMs: now, windowFromMs: from, windowToMs: to }
+  // V3 WEB-1: roster-wide stops are in no account's entryStopsInWindow; they
+  // ride beside the accounts once, labelled, so a zero on an account is that
+  // account's zero and not a roster stop gone missing.
+  const rosterTop = report.rosterWide.byStage.find(s => ENTRY_STOP_KINDS.includes(s.kind))
+  const head = { schemaVersion: 1, source: 'node_records', observedAtMs: now, windowFromMs: from, windowToMs: to,
+    rosterWide: { entryStopsInWindow: report.rosterWide.entryStops,
+      dominantStop: rosterTop ? { stage: rosterTop.stage, kind: rosterTop.kind, records: rosterTop.records, lastAt: rosterTop.lastAt, lastReason: rosterTop.lastReason } : null } }
   // A readiness read that failed for an account is not a complete block.
   const out = { ...head, complete: !tick.accountsTruncated && !tick.accounts.some(a => a.readiness.unavailable), accounts: tick.accounts.map(a => {
     const d = dominant.get(a.accountId)
