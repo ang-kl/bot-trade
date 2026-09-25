@@ -1063,6 +1063,66 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
 // while recording, so the spool's growth and the mount's free bytes are on
 // record without a token.
 export const TICK_STATUS_LOG_EVERY_MS = 30 * 60_000
+
+// V3 Q0: the shadow portfolio's LAST OBSERVED open count, per sidecar boot.
+// This record's status is replaced on every probe, and pullTickShadow runs
+// AFTER pullTickStatus on the same probe — so on the probe that sees a
+// restart, status.shadowPortfolio already describes the NEW boot (a fresh
+// boot: open 0) and the open trades the restart took were counted from it:
+// 0 lost on each of 100 demo and 35 live boots (production, 25-09-2026), the
+// "resets ≤ 20 %" check unable to fail. The count the restart took is what
+// the status last said for the OLD boot, so every write carries that forward
+// here, keyed by the shadow ledger's bootId (the same id the /tick-shadow
+// cursor holds). The few most recent boots are kept, so a shadow pull that
+// misses the boundary probe still finds the old boot on a later one.
+export const SHADOW_OPEN_BOOTS_KEPT = 8
+function shadowOpenObservation(sp, at) {
+  if (!sp || typeof sp !== 'object') return null
+  const bootId = typeof sp.bootId === 'string' && sp.bootId ? sp.bootId : null
+  const open = Number(sp.open)
+  if (!bootId || sp.open == null || !Number.isFinite(open) || open < 0) return null
+  const latestSeq = Number(sp.latestSeq)
+  return [bootId, { open: Math.floor(open), latestSeq: sp.latestSeq != null && Number.isFinite(latestSeq) ? latestSeq : null, at: at ?? null }]
+}
+export function foldShadowOpenByBoot(prev, status, at) {
+  const map = {}
+  const carried = prev?.shadowOpenByBoot && typeof prev.shadowOpenByBoot === 'object' ? prev.shadowOpenByBoot : {}
+  for (const [bootId, v] of Object.entries(carried)) {
+    if (v && typeof v === 'object' && v.open != null && Number.isFinite(Number(v.open))) map[bootId] = v
+  }
+  // The previous record's own observation: a record written before Q0 has no
+  // map, and on the first probe after a sidecar restart it is the only place
+  // the old boot's count still exists.
+  const before = shadowOpenObservation(prev?.status?.shadowPortfolio, prev?.at)
+  if (before && !map[before[0]]) map[before[0]] = before[1]
+  const now = shadowOpenObservation(status?.shadowPortfolio, at)
+  if (now) map[now[0]] = now[1]
+  const newest = Object.entries(map)
+    .sort((a, b) => String(b[1].at ?? '').localeCompare(String(a[1].at ?? '')))
+    .slice(0, SHADOW_OPEN_BOOTS_KEPT)
+  return newest.length ? Object.fromEntries(newest) : null
+}
+
+/**
+ * The shadow's last observed open count for one boot of one side, or null
+ * when that boot's count was never observed — which is UNKNOWN, not 0.
+ */
+export function shadowOpenObservedFor(db, sideName, bootId) {
+  if (!bootId) return null
+  let rec = null
+  try { rec = JSON.parse(getState(db, `${sideName}_tick_json`) || 'null') } catch { rec = null }
+  const seen = rec?.shadowOpenByBoot?.[bootId]
+  if (seen && seen.open != null && Number.isFinite(Number(seen.open))) {
+    return { open: Math.max(0, Math.floor(Number(seen.open))), latestSeq: seen.latestSeq ?? null, at: seen.at ?? null }
+  }
+  // A record written before Q0 (no map) counts only when its status NAMES
+  // this boot; a status of another boot, or one that names none, says
+  // nothing about what this boot had open.
+  const own = shadowOpenObservation(rec?.status?.shadowPortfolio, rec?.at)
+  if (own && own[0] === bootId) return { open: own[1].open, latestSeq: own[1].latestSeq, at: own[1].at }
+  return null
+}
+
 export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
   const status = await exec.sidecarTickStatus(side.base ? { base: side.base } : {})
   if (!status) return null
@@ -1070,6 +1130,8 @@ export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
   let prev = null
   try { prev = JSON.parse(getState(db, key) || 'null') } catch { prev = null }
   const record = { at: new Date(nowMs).toISOString(), side: side.name, status, lastLoggedAt: prev?.lastLoggedAt ?? null }
+  const shadowOpenByBoot = foldShadowOpenByBoot(prev, status, record.at)
+  if (shadowOpenByBoot) record.shadowOpenByBoot = shadowOpenByBoot
   const changed = !prev || prev.status?.state !== status.state || prev.status?.recording !== status.recording
   const due = !record.lastLoggedAt || nowMs - Date.parse(record.lastLoggedAt) >= TICK_STATUS_LOG_EVERY_MS
   if (status.enabled !== false && (changed || (status.recording && due))) {
@@ -1166,19 +1228,30 @@ export async function pullTickShadow(db, exec, side) {
       num(t.commissionWirePerSide), num(t.commissionBpsPerSide), num(t.slippageWirePerSide), num(t.slippageBpsPerSide))
     inserted += r.changes
   }
+  let restart = null
   if (cur.bootId && pulled.bootId !== cur.bootId) {
     // A restart loses every open shadow trade with it. They are written as
     // 'lost_restart' rows (no result) so the evidence counts what vanished
     // instead of pretending it never traded (Statistics auditor, 11-09-2026).
-    let lostOpen = 0
-    try { lostOpen = Number(JSON.parse(getState(db, `${side.name}_tick_json`) || 'null')?.status?.shadowPortfolio?.open) || 0 } catch { lostOpen = 0 }
+    // V3 Q0: the count is the OLD boot's last observed open count, carried by
+    // pullTickStatus — never the current status, which on this probe is
+    // already the new boot's.
+    const seen = shadowOpenObservedFor(db, side.name, cur.bootId)
+    const lostOpen = seen ? seen.open : 0
     for (let i = 0; i < lostOpen; i++) ins.run(side.name, cur.bootId, 1_000_000_000 + i, null, null, null, null, null, null, null, null, null, null, null, 'lost_restart', null, null, null, Date.now(), null, null, null, null, null, null, null)
-    console.log(`[tick] ${side.name} shadow ledger restarted (boot ${cur.bootId} → ${pulled.bootId}); ${pulled.trades.length} trade(s) re-read, ${lostOpen} open trade(s) lost`)
+    // Trades the old boot closed after that observation and this cursor
+    // pulled: some may have been among the open ones. Reported, not netted.
+    const closedAfter = seen && seen.latestSeq != null && Number(cur.lastSeq) > seen.latestSeq ? Number(cur.lastSeq) - seen.latestSeq : 0
+    restart = { fromBoot: cur.bootId, toBoot: pulled.bootId, lost: seen ? lostOpen : null, observedAt: seen?.at ?? null, closedAfterObservation: closedAfter }
+    console.log(`[tick] ${side.name} shadow ledger restarted (boot ${cur.bootId} → ${pulled.bootId}); ${pulled.trades.length} trade(s) re-read, ` +
+      (seen
+        ? `${lostOpen} open trade(s) lost (the old boot's open count as observed ${seen.at ?? 'at an unknown time'}${closedAfter ? `; ${closedAfter} trade(s) closed after that observation` : ''})`
+        : `the old boot's open count was NEVER observed — the trades lost are UNKNOWN, not 0; nothing written`))
   }
   if (inserted > 0) console.log(`[tick] ${side.name} shadow portfolio: ${inserted} closed trade(s) recorded (ledger seq ${pulled.latestSeq}, ${pulled.total} this boot)`)
   cursors[side.name] = { bootId: pulled.bootId, lastSeq: pulled.latestSeq }
   setState(db, TICK_SHADOW_CURSOR_KEY, JSON.stringify(cursors))
-  return { inserted, latestSeq: pulled.latestSeq, bootId: pulled.bootId }
+  return { inserted, latestSeq: pulled.latestSeq, bootId: pulled.bootId, restart }
 }
 
 /**
