@@ -2768,11 +2768,14 @@ export default function stateRouter(db) {
   // The capture queue behind the record: what is waiting, what was captured,
   // and — the part worth reading — what this system GAVE UP on, named with
   // the reason. Those rows are closed trades it could not describe.
+  // V3 V1: plus `accounts` — per account, its closes, captures and verdicts
+  // and a status (silent / stalled / verify_failing / ok / no_closes) judged
+  // at read time — so one silent account can no longer hide in the totals.
   router.get('/position-capture', async (_req, res) => {
     try {
-      const { captureQueueView } = await import('../services/position-capture.js')
+      const { positionCaptureView } = await import('../services/position-capture-accounts.js')
       const { verifierStatus } = await import('../lib/verify-client.js')
-      res.json({ ...captureQueueView(db), verifier: verifierStatus() })
+      res.json({ ...positionCaptureView(db), verifier: verifierStatus() })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

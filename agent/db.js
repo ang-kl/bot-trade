@@ -5,6 +5,9 @@ import { resetReverifyAttempts } from './services/reverify-reset.js';
 // Leaf module — imports nothing, takes `db` as a parameter — so this cannot
 // cycle back into db.js. See closeTradeRow for why the stamp lives here.
 import { stampRealisedAudit } from './services/trade-consistency.js';
+// Leaf module too (imports nothing). V3 V1 / LIFECYCLE-SPEC §7 W11: every
+// close queues its capture here, at the one seam all close writers share.
+import { queueCaptureForClosedTrade } from './services/close-capture.js';
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -2100,6 +2103,14 @@ export function initDB(dbPath) {
     if (!cols.has('reverify_attempts')) {
       db.exec('ALTER TABLE position_capture_queue ADD COLUMN reverify_attempts INTEGER NOT NULL DEFAULT 0');
     }
+    // V3 V1: WHICH PATH queued the capture — 'close' (the close seam in
+    // closeTradeRow), 'reconcile' / 'cross_side' (a detected close whose
+    // trade row was already closed), 'sweep' (the bounded 7-day sweep) or
+    // 'verify_backlog'. NULL on rows written before the column: unknown, not
+    // guessed. Attribution only — nothing branches on it.
+    if (!cols.has('source')) {
+      db.exec('ALTER TABLE position_capture_queue ADD COLUMN source TEXT');
+    }
   }
 
   // PR-AY: the verdict's contract version, for DBs created before the column.
@@ -2455,6 +2466,20 @@ export function closeTradeRow(db, tradeId, {
   // (trade-consistency.js stampRealisedAudit); until 02-09-2026 one of them
   // did not, and 10 of 12 bot closes carried no R for life.
   if (info.changes > 0) stampRealisedAudit(db, tradeId);
+
+  // V3 V1 / LIFECYCLE-SPEC §7 W11 — EVERY CLOSE QUEUES ITS CAPTURE, HERE.
+  // Until 25-09-2026 the only enqueue sat behind the SELECTED account's
+  // reconcile result in loop.js, so a close on any other account — and every
+  // close the bot made itself (the position manager's FULL_EXIT and its two
+  // already-closed paths, which also close the monitored row, so the
+  // reconciler never sees them) — was never queued, and the capture queue
+  // read "0 pending" as if nothing had closed. This is the one function all
+  // five close writers call, so the capture cannot be forgotten by a sixth.
+  // Only on a real open → closed transition, deduplicated by (account,
+  // position) inside the queue, and it never throws: the close is the fact,
+  // the capture is its record, and a failed enqueue is counted and shown on
+  // /state/position-capture instead of failing the close.
+  if (info.changes > 0) queueCaptureForClosedTrade(db, tradeId, { now: closedAtMs });
   return { changed: info.changes > 0, holdDurationMs };
 }
 
