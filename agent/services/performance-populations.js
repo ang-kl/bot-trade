@@ -5,7 +5,8 @@ import { ledgerWindows, classifyOutcome, plannedRr } from './perf-ledger.js'
 import { realisedRR, checkTradeConsistency } from './trade-consistency.js'
 import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { categorize, MARKETS, closedAtMs, dayAnchorMs, isFxWeekend } from '../shared/formulas.js'
-import { emptyPopulation, REPORT_SESSIONS } from '../shared/performance-populations.js'
+import { emptyPopulation } from '../shared/performance-populations.js'
+import { REPORT_SESSIONS, SESSION_SOURCE, SESSION_EXCEPTIONS, sessionIntervals, sessionOpenAt, inIntervals } from '../shared/report-sessions.js'
 import { cupHandleFunnel } from './cup-handle-funnel.js'
 import { calendarDate, calendarDay, calendarLedgerWindows } from '../shared/performance-calendar.js'
 
@@ -53,9 +54,14 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
   const started = performance.now(), day0 = timeZone ? calendarDay(now, timeZone) : dayAnchorMs(now), weekend = !timeZone && isFxWeekend(now)
   const sessionFrom = weekend ? day0 - DAY : day0, sessionTo = weekend ? day0 : now
   const ledgerDefs = timeZone ? calendarLedgerWindows(ledgerWindows(now), now, timeZone) : ledgerWindows(now)
+  // V3 WEB-6: each exchange's regular cash intervals for THIS window, derived
+  // in its own IANA zone (DST applied, lunch breaks excluded, weekends in local
+  // time). A close is in a session when its instant falls inside one of them.
+  const sessions = REPORT_SESSIONS.map(s => ({ key: s.key, exchange: s.exchange, tz: s.tz, hours: s.hours,
+    intervals: sessionIntervals(s, sessionFrom, sessionTo), openNow: sessionOpenAt(s, now) }))
   const defs = [...ledgerDefs.map(w => ({ ...w, ledger: true })),
     { key: '24h', from: now - DAY, to: now }, { key: 'day', from: day0, to: now },
-    ...REPORT_SESSIONS.map(s => ({ key: `session:${s.key}`, from: sessionFrom, to: sessionTo, session: s })),
+    ...sessions.map(s => ({ key: `session:${s.key}`, from: sessionFrom, to: sessionTo, session: s })),
     { key: 'session:OFF', from: sessionFrom, to: sessionTo, off: true },
     { key: 'session:ALL', from: sessionFrom, to: sessionTo, all: true }]
   const maps = defs.map(() => new Map()), best = new Map(), last = new Map(), daily = new Map()
@@ -77,7 +83,6 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
       market: categorize(raw.symbol), out: classifyOutcome(raw), rr: plannedRr(raw),
       realRr: NUMBER(raw.realised_rr) ?? realisedRR(raw), origin: raw.origin || null,
       mismatch: raw.pnl_price_mismatch != null ? !!Number(raw.pnl_price_mismatch) : (() => { const c = checkTradeConsistency(raw); return c.decidable && !c.ok })() }
-    const minute = Math.floor(t / 60000) % 1440
     const day = timeZone ? calendarDate(t, timeZone) : new Date(t).toISOString().slice(0, 10), dailyKey = JSON.stringify([accountId, day])
     if (!daily.has(dailyKey)) {
       if (++groups > maxGroups) throw new Error('performance_report_group_bound')
@@ -86,8 +91,8 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
     fold(daily.get(dailyKey).stats, r)
     for (let i = 0; i < defs.length; i++) {
       const w = defs[i]
-      if (t < w.from || t >= w.to || (w.session && !(minute >= w.session.fromMin && minute < w.session.toMin))
-        || (w.off && REPORT_SESSIONS.some(s => minute >= s.fromMin && minute < s.toMin))) continue
+      if (t < w.from || t >= w.to || (w.session && !inIntervals(t, w.session.intervals))
+        || (w.off && sessions.some(s => inIntervals(t, s.intervals)))) continue
       const session = w.key.startsWith('session:')
       const key = JSON.stringify(session ? [accountId] : [accountId, r.sym, r.strat])
       let g = maps[i].get(key)
@@ -131,7 +136,7 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
     markets: MARKETS, coverage, windows, daily: [...daily.values()], bestByAccount: Object.fromEntries(best),
     lastCloseByAccount: Object.fromEntries([...last].map(([a, t]) => [a, new Date(t).toISOString()])),
     openByAccount: db.prepare('SELECT account_id,count(*) AS n FROM monitored_positions WHERE status=\'active\' GROUP BY account_id').all(),
-    sessionWindow: { from: sessionFrom, to: sessionTo, weekend, source: 'fixed_UTC_reporting_buckets_not_market_status' } }
+    sessionWindow: { from: sessionFrom, to: sessionTo, weekend, source: SESSION_SOURCE, exceptions: SESSION_EXCEPTIONS } }
 }
 
 // A report that could not be produced is UNAVAILABLE, never empty (owner

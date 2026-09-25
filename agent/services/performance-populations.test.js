@@ -7,7 +7,7 @@ import { initDB } from '../db.js'
 import { buildPerformancePopulations, readPerformancePopulations, buildDecisionsDaily, buildLatestPrices, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readDecisionAudit } from './performance-populations.js'
 import { stageMatrixStats } from './stage-matrix.js'
 import { getState } from '../db.js'
-import { reportStats, reportLedger, reportCurrency, reportCurrencyStats, populationStats, emptyPopulation } from '../shared/performance-populations.js'
+import { reportStats, reportLedger, reportCurrency, reportCurrencyStats, populationStats, emptyPopulation, sessionBuckets } from '../shared/performance-populations.js'
 import { recordDepositCurrency } from './account-money.js'
 import { accountAnalytics } from './account-analytics.js'
 import { auditDecisions } from './decision-audit.js'
@@ -193,4 +193,70 @@ test('post-decision audit preserves the synchronous verdict in a read-only worke
   assert.deepEqual(isolated, direct)
   assert.equal(isolated.verdict, 'blocked')
   assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)
+})
+
+// V3 WEB-6: session buckets are each exchange's regular cash hours in its own
+// zone. Every close below lands in a different bucket under the old fixed UTC
+// table, so these go red if the report falls back to minute-of-day ranges.
+test('session buckets follow ASX onto AEDT and keep TSE lunch out (Mon 5 Oct 2026, SGT day)', t => {
+  const { db, add } = setup(t)
+  const now = Date.parse('2026-10-05T04:00:00Z')   // 12:00 SGT/HKT, 15:00 AEDT, 13:00 JST
+  add({ pnl: 5, at: Date.parse('2026-10-04T23:30:00Z') })   // Mon 10:30 AEDT: ASX only (old table: OFF)
+  add({ pnl: -2, at: Date.parse('2026-10-05T02:45:00Z') })  // 13:45 AEDT, 10:45 SGT/HKT, 11:45 JST lunch
+  add({ pnl: 1, at: Date.parse('2026-10-04T18:00:00Z') })   // Sunday in London/New York, pre-open Monday in Asia: OFF
+  const r = buildPerformancePopulations(db, { now, timeZone: 'Asia/Singapore' })
+  const n = key => reportStats(r, `session:${key}`, '11').n
+  assert.deepEqual(['SYD (ASX)', 'SG', 'HK', 'JPN', 'EUR', 'NY', 'OFF', 'ALL'].map(n), [2, 1, 1, 0, 0, 0, 1, 3])
+  assert.equal(reportStats(r, 'session:SYD (ASX)', '11').pnl, 3)
+  const w = key => r.windows.find(x => x.key === `session:${key}`).session
+  assert.deepEqual(w('SYD (ASX)').intervals, [{ date: '2026-10-05', from: Date.parse('2026-10-04T23:00:00Z'), to: Date.parse('2026-10-05T05:00:00Z') }])
+  // 04:00 UTC is 12:00 HKT, HKEX's lunch; TSE's afternoon opened at 12:30 JST.
+  assert.deepEqual(['SYD (ASX)', 'SG', 'HK', 'JPN', 'EUR', 'NY'].map(k => w(k).openNow), [true, true, false, true, false, false])
+  assert.deepEqual(r.sessionWindow, { from: Date.parse('2026-10-04T16:00:00Z'), to: now, weekend: false,
+    source: 'exchange_cash_hours_iana_dst', exceptions: 'holidays_and_early_closes_not_applied' })
+})
+
+test('session buckets follow London and New York off summer time (Mon 2 Nov 2026, New York day)', t => {
+  const { db, add } = setup(t)
+  const now = Date.parse('2026-11-02T21:30:00Z')
+  add({ at: Date.parse('2026-11-02T14:00:00Z') })   // 14:00 GMT, 09:00 EST: London only (old table: both)
+  add({ at: Date.parse('2026-11-02T16:45:00Z') })   // 16:45 GMT, 11:45 EST: New York only
+  add({ at: Date.parse('2026-11-02T20:30:00Z') })   // 15:30 EST: New York (old table: OFF)
+  const r = buildPerformancePopulations(db, { now, timeZone: 'America/New_York' })
+  const n = key => reportStats(r, `session:${key}`, '11').n
+  assert.deepEqual(['EUR', 'NY', 'OFF', 'ALL'].map(n), [1, 2, 0, 3])
+  assert.equal(r.windows.find(x => x.key === 'session:NY').session.openNow, false, '16:30 EST is after the close')
+})
+
+test('the card rows come from the report: open-now, intervals, hints, and nothing invented without them', t => {
+  const { db, add } = setup(t)
+  add({ pnl: 5, at: Date.parse('2026-10-04T23:30:00Z') })
+  add({ account: '22', pnl: 7, at: Date.parse('2026-10-04T23:40:00Z') })
+  const r = buildPerformancePopulations(db, { now: Date.parse('2026-10-05T04:00:00Z'), timeZone: 'Asia/Singapore' })
+  const rows = sessionBuckets(r, '11')
+  assert.equal(rows.source, 'exchange_cash_hours_iana_dst')
+  assert.equal(rows.exceptions, 'holidays_and_early_closes_not_applied')
+  const syd = rows.buckets.find(b => b.key === 'SYD (ASX)'), ny = rows.buckets.find(b => b.key === 'NY')
+  assert.equal(syd.n, 1); assert.equal(syd.sum, 5); assert.equal(syd.open, true); assert.equal(ny.open, false)
+  assert.match(syd.hint, /2026-10-05 23:00–05:00 UTC/)
+  assert.deepEqual(rows.buckets.map(b => b.twin), [null, null, null, null, null, null])
+  // Across two accounts the count stands and the money is withheld, not zeroed.
+  const all = sessionBuckets(r, 'all').buckets.find(b => b.key === 'SYD (ASX)')
+  assert.equal(all.n, 2); assert.equal(all.sum, null); assert.equal(all.high, null)
+  // No report, or a report from a server without intervals: no open reading.
+  const none = sessionBuckets(null)
+  assert.equal(none.source, null)
+  assert.deepEqual(none.buckets.map(b => [b.open, b.intervals, b.n]), Array(6).fill([null, null, null]))
+  const legacy = { ...r, windows: r.windows.map(x => x.session ? { ...x, session: { key: x.session.key } } : x),
+    sessionWindow: { ...r.sessionWindow, source: 'fixed_UTC_reporting_buckets_not_market_status' } }
+  const old = sessionBuckets(legacy, '11')
+  assert.deepEqual(old.buckets.map(b => b.open), Array(6).fill(null))
+  assert.equal(old.source, 'fixed_UTC_reporting_buckets_not_market_status')
+  // Identical intervals are flagged as a pair, in both directions.
+  const sydIntervals = r.windows.find(y => y.key === 'session:SYD (ASX)').session.intervals
+  const twinned = { ...r, windows: r.windows.map(x => x.key === 'session:JPN'
+    ? { ...x, session: { ...x.session, intervals: sydIntervals } } : x) }
+  const tw = sessionBuckets(twinned, '11').buckets
+  assert.equal(tw.find(b => b.key === 'JPN').twin, 'SYD (ASX)'); assert.equal(tw.find(b => b.key === 'SYD (ASX)').twin, 'JPN')
+  assert.equal(tw.find(b => b.key === 'NY').twin, null)
 })
