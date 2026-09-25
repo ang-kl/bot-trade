@@ -2125,7 +2125,41 @@ export function initDB(dbPath) {
     if (cols.size && !cols.has('risk_event_id')) {
       db.exec('ALTER TABLE entry_intents ADD COLUMN risk_event_id INTEGER');
     }
+    // X1 (25-09-2026, owner-approved). W3: the stop and target are stored in
+    // the units the order carried them — 'price' or 'relative_points' (wire
+    // points, price distance × 100000). NULL on every older row reads as
+    // "unrecorded", and no reader converts an unrecorded value. W4: an
+    // ACCEPTED (resting) intent is read from the broker a bounded number of
+    // times (entry-ledger.js settleAcceptedFromOrderDetails); the count and
+    // the last read are kept on the row. All additive.
+    if (cols.size && !cols.has('sl_units')) db.exec('ALTER TABLE entry_intents ADD COLUMN sl_units TEXT');
+    if (cols.size && !cols.has('tp_units')) db.exec('ALTER TABLE entry_intents ADD COLUMN tp_units TEXT');
+    if (cols.size && !cols.has('evidence_attempts')) db.exec('ALTER TABLE entry_intents ADD COLUMN evidence_attempts INTEGER NOT NULL DEFAULT 0');
+    if (cols.size && !cols.has('evidence_checked_at')) db.exec('ALTER TABLE entry_intents ADD COLUMN evidence_checked_at TEXT');
   }
+
+  // X1: the correction log — one row per step of a record correction, with
+  // the row before and after and the evidence that decided it. Rows are
+  // never deleted; a step is written once (UNIQUE), so a re-run is a no-op.
+  // And the event journal is read by order id for resting orders.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS entry_intent_corrections (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      correction_id TEXT NOT NULL,
+      intent_id     TEXT NOT NULL,
+      account_id    TEXT,
+      step          TEXT NOT NULL,      -- to_accepted | kept_filled | terminal | unresolved
+      from_state    TEXT,
+      to_state      TEXT,
+      before_json   TEXT,
+      after_json    TEXT,
+      evidence_json TEXT,
+      at            TEXT NOT NULL,
+      UNIQUE(correction_id, intent_id, step)
+    );
+    CREATE INDEX IF NOT EXISTS idx_entry_intent_corrections_intent ON entry_intent_corrections(intent_id);
+    CREATE INDEX IF NOT EXISTS idx_cpp_events_order ON cpp_events(order_id);
+  `);
 
   // PR-AU: give back the attempts spent against a verifier that could not
   // answer. Measured 18-09-2026 04:08 UTC — "0 armed of 18 unverified, 0

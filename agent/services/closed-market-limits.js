@@ -356,12 +356,15 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     timeframe: synth.timeframe || null,
     regime: null,
   })
-  const payload = buildLimitPayload({
-    accountId: creds.accountId, symbolId, side, volume: sized.volume,
-    entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,
-    relativePoints: sizing.relativePoints ?? ((d, dg) => Math.round(d * Math.pow(10, dg))),
-    riskCfg,
-  })
+  const payload = {
+    ...buildLimitPayload({
+      accountId: creds.accountId, symbolId, side, volume: sized.volume,
+      entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,
+      relativePoints: sizing.relativePoints ?? ((d, dg) => Math.round(d * Math.pow(10, dg))),
+      riskCfg,
+    }),
+    symbolName: symbol, // X1 / W2: ledger-only, stripped before the wire
+  }
 
   // P1b: the fence, by name — under the CALLING producer's id (see the note
   // on `producerId` above), so a retired caller is refused and a kept one
