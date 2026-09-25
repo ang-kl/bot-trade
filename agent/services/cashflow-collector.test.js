@@ -155,7 +155,9 @@ test('a dated reconciled portion never becomes the full-window result or hides u
   assert.equal(read().externalFlowAdjustedChange, null)
   assert.deepEqual(read().reconciledSpan, { from: T - 120_000, to: T - 60_000, currency: 'USD',
     equityChange: 520, externalNet: 0, externalFlowAdjustedChange: 520, pendingObservations: 1 })
-  assert.equal(accountHistory(db, '11', { from: T - 3600_000, to: T + 60_001, limit: 1 }).reconciledSpan, null)
+  // V3 B3: the reconciled portion is the whole window's, so a one-row page
+  // reports the same dated portion instead of none.
+  assert.deepEqual(accountHistory(db, '11', { from: T - 3600_000, to: T + 60_001, limit: 1 }).reconciledSpan, read().reconciledSpan)
   recordCashflowWindow(db, { accountId: '11', host, currency: 'USD', from: T - 120_000, to: T, receivedAt: T,
     response: response('11', [{ balanceHistoryId: '9', changeBalanceTimestamp: T - 90_000, operationType: 999, delta: 100, moneyDigits: 2 }]) })
   assert.equal(read().reconciledSpan, null)

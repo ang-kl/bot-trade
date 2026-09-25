@@ -37,13 +37,19 @@ test('cashflow events deduplicate, conflict atomically, and preserve fees as adj
   assert.throws(() => cashflows([], { response: { ctidTraderAccountId: '22' } }), /response_invalid/)
 })
 
-test('unknown classification, currency changes, source errors and pagination cannot yield a complete return', t => {
+test('unknown classification, currency changes and source errors cannot yield a complete return; a page cannot change it', t => {
   const { point, cashflows, event, read } = fixture(t)
   point(T - 60_000, 100); point(T, 120)
   cashflows([event('1', 2000, 999)])
   assert.equal(read().cashflows.reason, 'cashflow_classification_unknown')
   assert.equal(read().externalFlowAdjustedChange, null)
-  assert.equal(read({ limit: 1 }).summaryComplete, false)
+  // V3 B3: the summary is the whole window's, so a one-row page reads the
+  // same summary (it used to read "incomplete" and report nothing).
+  const page = read({ limit: 1 }), full = read()
+  assert.equal(page.points.length, 1); assert.equal(page.hasMore, true)
+  assert.equal(page.summaryComplete, true); assert.equal(page.summaryObservations, 2)
+  assert.equal(page.equityChange, 20); assert.equal(page.cashflows.reason, 'cashflow_classification_unknown')
+  assert.deepEqual({ ...page, points: null, hasMore: null, nextBefore: null }, { ...full, points: null, hasMore: null, nextBefore: null })
   point(T - 120_000, 50, { currency: 'EUR' })
   assert.equal(read().currency, null)
   assert.equal(read().sampledDrawdown, null)

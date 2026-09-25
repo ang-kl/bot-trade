@@ -1,4 +1,4 @@
-import { getState, setState } from '../db.js'
+import { getState, setState, ACCOUNT_HISTORY_SUMMARY_EXPRS } from '../db.js'
 import { brokerReadObservationStatus } from '../lib/broker-read-observer.js'
 
 export const ACCOUNT_HISTORY_RETENTION_DAYS = 90
@@ -60,56 +60,129 @@ export function cashflowCoverage(db, { accountId, host, currency, from, to }) {
     otherAdjustments: rows.filter(r => r.kind === 'adjustment').reduce((n, r) => n + r.delta, 0), events: rows.length }
 }
 
+// V3 B3 (P5d-1). The summary covers the whole requested window, never the
+// page. Paging at 2,000 rows used to decide it: a busy account's 24 h window
+// held more than one page, so it reported a coverage gap that was really this
+// defect, and a 7-day window (at least 10,080 points) could never complete.
+// Buckets are aligned to UTC multiples of their width; at most this many.
+export const MAX_HISTORY_BUCKETS = 400
+const BUCKET_WIDTHS = [1, 5, 15, 30, 60, 120, 240, 360, 720, 1440].map(m => m * 60_000)
+export function historyBucketMs(from, to) {
+  return BUCKET_WIDTHS.find(w => Math.ceil((to - Math.floor(from / w) * w) / w) <= MAX_HISTORY_BUCKETS) ?? BUCKET_WIDTHS.at(-1)
+}
+
+// One ordered pass over the narrow summary index (db.js). The valued rule is
+// the one the page used: equity present, currency present, no error.
+export const HISTORY_SUMMARY_SQL = `SELECT id, received_ms, host, ${ACCOUNT_HISTORY_SUMMARY_EXPRS.join(', ')}
+  FROM account_history INDEXED BY idx_account_history_summary
+  WHERE account_id = ? AND received_ms >= ? AND received_ms < ? ORDER BY received_ms, id`
+function aggregateWindow(db, accountId, from, to) {
+  const bucketMs = historyBucketMs(from, to), start = Math.floor(from / bucketMs) * bucketMs
+  const buckets = []
+  for (let at = start; at < to; at += bucketMs) buckets.push({ from: Math.max(at, from), to: Math.min(at + bucketMs, to),
+    observations: 0, equityObservations: 0, currency: null, host: null, mixedUnits: false, first: null, last: null, min: null, max: null })
+  const rows = db.prepare(HISTORY_SUMMARY_SQL).raw()
+  let observations = 0, latestObservationAt = null, first = null, last = null, sameUnits = true, peak = -Infinity, drawdown = 0
+  const times = [], equities = []
+  for (const [, at, host, currency, equity, error] of rows.iterate(String(accountId), from, to)) {
+    observations++; latestObservationAt = at
+    const b = buckets[Math.floor((at - start) / bucketMs)]
+    b.observations++
+    if (equity == null || !currency || error) continue
+    if (!b.equityObservations) { b.currency = currency; b.host = host; b.first = { at, equity }; b.min = equity; b.max = equity }
+    else if (b.currency !== currency || b.host !== host) b.mixedUnits = true
+    b.equityObservations++; b.last = { at, equity }; b.min = Math.min(b.min, equity); b.max = Math.max(b.max, equity)
+    first ??= { at, equity, currency, host }
+    if (currency !== first.currency || host !== first.host) sameUnits = false
+    last = { at, equity }
+    peak = Math.max(peak, equity); drawdown = Math.max(drawdown, peak - equity)
+    times.push(at); equities.push(equity)
+  }
+  // A bucket holding two currencies or hosts has no single equity range.
+  for (const b of buckets) if (b.mixedUnits) Object.assign(b, { currency: null, host: null, first: null, last: null, min: null, max: null })
+  return { bucketMs, buckets, observations, latestObservationAt, first, last, sameUnits, drawdown, times, equities }
+}
+
+// Cashflow sums per bucket over (lo, hi], the bucket clipped to the comparable
+// equity span, so the buckets partition exactly the span the full-window
+// coverage reads. An uncovered bucket is a gap (null), never a zero.
+function bucketCashflows(db, accountId, w) {
+  const { first, last } = w, key = [String(accountId), first.host, first.currency]
+  const windows = db.prepare(`SELECT from_ms, to_ms FROM account_cashflow_windows WHERE account_id = ? AND host = ? AND currency = ?
+    AND to_ms >= ? AND from_ms <= ? ORDER BY from_ms`).all(...key, first.at, last.at)
+  const merged = []
+  for (const x of windows) {
+    const tail = merged.at(-1)
+    if (tail && x.from_ms <= tail[1]) tail[1] = Math.max(tail[1], x.to_ms)
+    else merged.push([x.from_ms, x.to_ms])
+  }
+  const events = db.prepare(`SELECT at_ms, kind, delta FROM account_cashflows WHERE account_id = ? AND host = ? AND currency = ?
+    AND at_ms > ? AND at_ms <= ?`).all(...key, first.at, last.at)
+  for (const b of w.buckets) {
+    const lo = Math.max(b.from, first.at), hi = Math.min(b.to, last.at)
+    if (hi <= lo) { b.cashflows = null; continue }
+    const inside = events.filter(e => e.at_ms > lo && e.at_ms <= hi)
+    const covered = merged.some(([a, z]) => a <= lo && z >= hi)
+    const unclassified = inside.filter(e => e.kind === 'unclassified').length
+    const sum = kind => inside.filter(e => e.kind === kind).reduce((n, e) => n + e.delta, 0)
+    b.cashflows = { from: lo, to: hi, covered, events: covered ? inside.length : null, unclassified: covered ? unclassified : null,
+      external: covered && !unclassified ? sum('external') : null, adjustments: covered ? sum('adjustment') : null }
+  }
+}
+
 export function accountHistory(db, accountId, { from, to = Date.now(), limit = 2000, before = null } = {}) {
   if (!idOk(accountId) || !Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from >= to
     || to - from > ACCOUNT_HISTORY_RETENTION_DAYS * DAY || !Number.isSafeInteger(limit) || limit < 1 || limit > 5000
     || (before != null && (!Number.isSafeInteger(before) || before < 1))) throw new RangeError('invalid history window or page')
+  // The page: raw observations for the table, newest first, `limit` at a time.
   const rows = db.prepare(`SELECT id, observation_json FROM account_history WHERE account_id = ?
     AND received_ms >= ? AND received_ms < ? ${before != null ? 'AND id < ?' : ''} ORDER BY id DESC LIMIT ?`)
     .all(String(accountId), from, to, ...(before != null ? [before] : []), limit + 1)
   const hasMore = rows.length > limit
   const points = rows.slice(0, limit).map(r => ({ ...JSON.parse(r.observation_json), rowId: r.id }))
     .sort((a, b) => a.receivedAt - b.receivedAt || a.rowId - b.rowId)
-  const valued = points.filter(p => p.equity != null && p.currency && !p.error)
-  const first = valued[0], last = valued.at(-1)
-  const sameUnits = first && last && valued.every(p => p.currency === first.currency && p.host === first.host)
-  const comparable = sameUnits && first.receivedAt < last.receivedAt
+  // The summary: every retained observation in [from, to), whatever the page.
+  const w = aggregateWindow(db, accountId, from, to)
+  const { first, last, sameUnits } = w
+  const comparable = first != null && sameUnits && first.at < last.at
   const coverage = comparable ? cashflowCoverage(db, { accountId, host: first.host, currency: first.currency,
-    from: first.receivedAt, to: last.receivedAt }) : { complete: false, reason: 'comparable_equity_unavailable', externalNet: null }
+    from: first.at, to: last.at }) : { complete: false, reason: 'comparable_equity_unavailable', externalNet: null }
+  if (comparable) bucketCashflows(db, accountId, w)
+  else for (const b of w.buckets) b.cashflows = null
   const change = comparable ? last.equity - first.equity : null
   // Collection can trail the latest observation by one bounded polling round.
   // Show a proven, dated subset separately; never relabel the whole window.
   let reconciledSpan = null, collection = null
-  if (comparable && !hasMore && before == null && !coverage.complete && coverage.coveredThrough != null) {
-    const end = valued.findLast(p => p.receivedAt <= coverage.coveredThrough)
-    if (end && end.receivedAt > first.receivedAt) {
-      const covered = cashflowCoverage(db, { accountId, host: first.host, currency: first.currency, from: first.receivedAt, to: end.receivedAt })
-      if (covered.complete) reconciledSpan = { from: first.receivedAt, to: end.receivedAt, currency: first.currency,
-        equityChange: end.equity - first.equity, externalNet: covered.externalNet,
-        externalFlowAdjustedChange: end.equity - first.equity - covered.externalNet,
-        pendingObservations: valued.filter(p => p.receivedAt > end.receivedAt).length }
+  if (comparable && !coverage.complete && coverage.coveredThrough != null) {
+    const end = w.times.findLastIndex(at => at <= coverage.coveredThrough)
+    if (end >= 0 && w.times[end] > first.at) {
+      const covered = cashflowCoverage(db, { accountId, host: first.host, currency: first.currency, from: first.at, to: w.times[end] })
+      if (covered.complete) reconciledSpan = { from: first.at, to: w.times[end], currency: first.currency,
+        equityChange: w.equities[end] - first.equity, externalNet: covered.externalNet,
+        externalFlowAdjustedChange: w.equities[end] - first.equity - covered.externalNet,
+        pendingObservations: w.times.length - end - 1 }
     }
   }
   try {
     const status = JSON.parse(getState(db, `acct:${accountId}:cashflow_collection_json`) || 'null')
     if (status?.accountId === String(accountId)) collection = status
   } catch { /* no collector evidence */ }
-  let peak = -Infinity, sampledDrawdown = null
-  if (comparable && !hasMore && before == null) {
-    sampledDrawdown = 0
-    for (const p of valued) { peak = Math.max(peak, p.equity); sampledDrawdown = Math.max(sampledDrawdown, peak - p.equity) }
-  }
   return { accountId: String(accountId), from, to, points, hasMore,
     recording: brokerReadObservationStatus(),
-    latestObservationAt: points.at(-1)?.receivedAt ?? null,
-    latestEquityAt: last?.receivedAt ?? null,
+    latestObservationAt: w.latestObservationAt,
+    latestEquityAt: last?.at ?? null,
     nextBefore: hasMore ? Math.min(...points.map(p => p.rowId)) : null,
     retentionDays: ACCOUNT_HISTORY_RETENTION_DAYS, sampling: 'latest observation per source per minute; no interpolation',
-    summaryComplete: !hasMore && before == null, currency: sameUnits ? first.currency : null,
+    summaryScope: 'full_window', summaryComplete: true,
+    summaryObservations: w.observations, summaryEquityObservations: w.times.length,
+    currency: first && sameUnits ? first.currency : null,
     equityChange: change, cashflows: coverage, cashflowCollection: collection, reconciledSpan,
-    observationSpan: comparable ? { from: first.receivedAt, to: last.receivedAt } : null,
-    externalFlowAdjustedChange: !hasMore && before == null && coverage.complete && change != null ? change - coverage.externalNet : null,
-    sampledDrawdown, drawdownBasis: 'unadjusted observed equity; includes cashflows; not exact intraminute drawdown',
+    observationSpan: comparable ? { from: first.at, to: last.at } : null,
+    externalFlowAdjustedChange: coverage.complete && change != null ? change - coverage.externalNet : null,
+    sampledDrawdown: comparable ? w.drawdown : null,
+    drawdownBasis: 'unadjusted observed equity; includes cashflows; not exact intraminute drawdown',
+    bucketMs: w.bucketMs, buckets: w.buckets,
+    bucketBasis: 'UTC-aligned buckets over the whole window; first, last, min and max of comparable equity; cashflows over the bucket clipped to the comparable equity span; a bucket with no observation is a gap, not a zero',
     note: 'External-flow-adjusted equity change is not a time-weighted return or closed-trade P&L. Gaps and missing currencies remain unknown.' }
 }
 
