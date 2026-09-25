@@ -40,10 +40,14 @@ export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS } = {}) {
     ORDER BY received_ms DESC, id DESC`)
   const valued = `AND source <> 'broker_reconcile' AND ${field('balance')} IS NOT NULL AND ${field('currency')} IS NOT NULL AND ${field('error')} IS NULL
     AND ${field('balanceReceivedAt')} IS NOT NULL`
+  // No fixed LIMIT: the SQL filter already keeps only valued rows, so the scan
+  // stops at the first row the JS check accepts (and, for the first stored
+  // balance, the write-skew window after it). A fixed LIMIT would read "not
+  // stored" if that many valued rows in a row failed the JS check.
   const firstSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history WHERE account_id = ? AND host = ? ${valued}
-    ORDER BY received_ms, id LIMIT 8`)
+    ORDER BY received_ms, id`)
   const latestSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history WHERE account_id = ? AND host = ? ${valued}
-    ORDER BY received_ms DESC, id DESC LIMIT 8`)
+    ORDER BY received_ms DESC, id DESC`)
   // Floating rows are exactly the rows with an equity value (balance + broker
   // P&L), which the covering summary index already carries; only those are
   // read from the table.
@@ -64,13 +68,13 @@ export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS } = {}) {
     let historyStartsAt = null, currency = null
     if (host) {
       let first = null
-      for (const r of firstSql.all(id, host)) {
+      for (const r of firstSql.iterate(id, host)) {
         if (!balanceOk(r)) continue
         if (first == null) first = r
         else if (r.receivedMs > first.receivedMs + WRITE_SKEW_MS) break
         historyStartsAt = historyStartsAt == null ? r.balanceAt : Math.min(historyStartsAt, r.balanceAt)
       }
-      currency = latestSql.all(id, host).find(balanceOk)?.currency ?? null
+      for (const r of latestSql.iterate(id, host)) if (balanceOk(r)) { currency = r.currency; break }
     }
     const out = { accountId: id, host, registered: host != null, currency, historyStartsAt }
     meta.set(id, out)

@@ -65,6 +65,32 @@ test('unusable observations never become a balance: error, no currency, unknown 
   assert.equal(edge.at, T - 14 * MIN)
 })
 
+test('a row received inside the window whose balance was READ before it is not an observation at the edge', t => {
+  const { db } = fixture(t)
+  // Received one minute before the edge, but the broker balance it carries was
+  // read twenty minutes before it: older than the tolerance, so it cannot
+  // answer for the edge even though the SQL window (by received time) holds it.
+  recordAccountHistory(db, { accountId: '11', host: DEMO, source: 'broker_snapshot', receivedAt: T - 1 * MIN,
+    currency: 'USD', balance: 777, balanceReceivedAt: T - 20 * MIN })
+  const r = balanceReader(db)
+  assert.equal(r.account('11').historyStartsAt, T - 20 * MIN, 'storage covers the edge, so the gap is not "before history"')
+  assert.deepEqual(r.at('11', T), { status: 'not_stored', reason: 'no_observation_near_edge', maxAgeMs: BALANCE_EDGE_MAX_AGE_MS })
+})
+
+test('valued rows that fail the read check never hide a usable balance behind them, first or latest', t => {
+  const { db } = fixture(t)
+  // Ten rows the SQL filter accepts (balance, currency, a non-null read time)
+  // but whose read time is not an integer, on each side of one usable read.
+  const bad = at => recordAccountHistory(db, { accountId: '11', host: DEMO, source: 'broker_snapshot', receivedAt: at,
+    currency: 'USD', balance: 1, balanceReceivedAt: 'not-a-time' })
+  for (let i = 0; i < 10; i++) bad(T - 60 * MIN + i * MIN)
+  recordAccountHistory(db, { accountId: '11', host: DEMO, source: 'broker_trader', receivedAt: T - 30 * MIN, currency: 'USD', balance: 4321 })
+  for (let i = 0; i < 10; i++) bad(T - 20 * MIN + i * MIN)
+  const r = balanceReader(db)
+  assert.deepEqual(r.account('11'), { accountId: '11', host: DEMO, registered: true, currency: 'USD', historyStartsAt: T - 30 * MIN })
+  assert.equal(r.at('11', T - 20 * MIN).value, 4321)
+})
+
 test('the hourly card carries observed open/close balance and the last floating reading of each hour', t => {
   const { db, trader, equity } = fixture(t)
   for (let at = T - 26 * H; at <= T; at += 3 * MIN) trader('11', at, 1000 + Math.floor((at - (T - 26 * H)) / H))
@@ -111,6 +137,9 @@ test('all accounts: per currency, summed only when every account of the currency
   const usd = late.groups.find(g => g.currency === 'USD')
   assert.equal(usd.value, null, 'one USD account unread at the edge: no USD total')
   assert.equal(usd.observedAccounts, 1); assert.equal(usd.reason, 'no_observation_near_edge')
+  assert.deepEqual(usd.missingAccounts, ['22'], 'the account holding the USD total open is named')
+  assert.deepEqual(late.unknownAccounts, ['44'], 'the account with no stored currency is named')
+  assert.deepEqual(late.groups.find(g => g.currency === 'SGD').missingAccounts, [])
   assert.equal(late.groups.find(g => g.currency === 'SGD').value, 50)
 })
 

@@ -28,11 +28,16 @@ describe('observed balances are shown per currency and a missing edge is never a
     const lines = balanceLines(currencyGroups([seen('11', 'USD', 100), gap('22', 'USD', 'no_observation_near_edge'), seen('33', 'SGD', 50)]))
     expect(lines.map(l => l.text)).toEqual(['SGD 50.00', 'USD no broker read near edge (1/2 accounts read)'])
     expect(lines.some(l => l.text.includes('100'))).toBe(false)
+    // The tooltip names the account that holds the USD total open (e.g. one
+    // disabled later), not only the count.
+    expect(lines[1].title).toContain('Not read: account 22.')
+    expect(lines[0].title).not.toContain('Not read')
   })
   it('an account with no stored currency is named, and blocks a single total', () => {
     const set = currencyGroups([seen('11', 'USD', 100), { accountId: '44', currency: null, evidence: { status: 'not_stored', reason: 'no_balance_stored' } }])
     expect(set.total).toBeNull()
     expect(balanceLines(set).map(l => l.text)).toEqual(['100.00', '1 acct not stored'])
+    expect(balanceLines(set)[1].title).toContain('Not read: account 44.')
   })
   it('a malformed or absent server payload reads as unavailable', () => {
     expect(balanceLines(null)[0]).toMatchObject({ text: '—', missing: true })
@@ -45,6 +50,9 @@ describe('floating per hour', () => {
     expect(floatingText(currencyGroups([seen('11', 'USD', -2.25)]))).toMatchObject({ text: '(-2.25 float)' })
     expect(floatingText(currencyGroups([seen('11', 'USD', -164.9), seen('33', 'SGD', 1.7)])).text).toBe('(SGD +1.70 · USD -164.90 float)')
     expect(floatingText(currencyGroups([gap('11', 'USD', 'no_floating_reading')]))).toBeNull()
+    const partial = floatingText(currencyGroups([seen('33', 'SGD', 1.7), seen('11', 'USD', -1), gap('22', 'USD', 'no_floating_reading')]))
+    expect(partial.text).toBe('(SGD +1.70 float)')
+    expect(partial.title).toContain('USD no floating read (1/2 accounts read) Not read: account 22.')
   })
 })
 

@@ -7,6 +7,9 @@
 // currency has an observation at the edge; otherwise the total is null and
 // the reason is kept. An account whose currency was never stored could belong
 // to any currency, so while one exists no all-accounts total is stated.
+// The accounts that were NOT read are named (missingAccounts / unknownAccounts)
+// so a gap that keeps a total open — an account disabled later, say — says
+// which account it is instead of only "n/m accounts read".
 const REASON_ORDER = ['before_balance_history', 'no_balance_stored', 'no_observation_near_edge', 'no_floating_reading']
 const firstReason = reasons => REASON_ORDER.find(r => reasons.has(r)) ?? [...reasons][0] ?? null
 
@@ -16,15 +19,16 @@ const firstReason = reasons => REASON_ORDER.find(r => reasons.has(r)) ?? [...rea
 export function currencyGroups(entries) {
   const groups = new Map()
   let unknownCurrencyAccounts = 0
-  const unknownReasons = new Set()
+  const unknownReasons = new Set(), unknownAccounts = []
   for (const e of entries || []) {
     const ev = e?.evidence
     const observed = ev?.status === 'observed' && typeof ev.value === 'number' && Number.isFinite(ev.value)
       && typeof ev.currency === 'string' && /^[A-Z]{3}$/.test(ev.currency)
     const currency = observed ? ev.currency : typeof e?.currency === 'string' && /^[A-Z]{3}$/.test(e.currency) ? e.currency : null
-    if (!currency) { unknownCurrencyAccounts++; unknownReasons.add(ev?.reason || 'not_stored'); continue }
+    const id = e?.accountId != null ? String(e.accountId) : null
+    if (!currency) { unknownCurrencyAccounts++; unknownReasons.add(ev?.reason || 'not_stored'); if (id) unknownAccounts.push(id); continue }
     if (!groups.has(currency)) groups.set(currency, { currency, accounts: 0, observed: 0, sum: 0, oldestAt: null, newestAt: null,
-      storedFrom: null, storedFromKnown: true, sources: new Set(), reasons: new Set() })
+      storedFrom: null, storedFromKnown: true, sources: new Set(), reasons: new Set(), missing: [] })
     const g = groups.get(currency)
     g.accounts++
     if (Number.isSafeInteger(e.storedFrom)) g.storedFrom = g.storedFrom == null ? e.storedFrom : Math.max(g.storedFrom, e.storedFrom)
@@ -36,18 +40,18 @@ export function currencyGroups(entries) {
         g.newestAt = g.newestAt == null ? ev.at : Math.max(g.newestAt, ev.at)
       }
       if (ev.source) g.sources.add(ev.source)
-    } else g.reasons.add(ev?.reason || 'not_stored')
+    } else { g.reasons.add(ev?.reason || 'not_stored'); if (id) g.missing.push(id) }
   }
   const list = [...groups.values()].sort((a, b) => a.currency.localeCompare(b.currency)).map(g => {
     const complete = g.observed === g.accounts
     return { currency: g.currency, accounts: g.accounts, observedAccounts: g.observed,
       value: complete ? g.sum : null, oldestAt: complete ? g.oldestAt : null, newestAt: complete ? g.newestAt : null,
       sources: [...g.sources].sort(), storedFrom: g.storedFromKnown ? g.storedFrom : null,
-      reason: complete ? null : firstReason(g.reasons) }
+      reason: complete ? null : firstReason(g.reasons), missingAccounts: [...g.missing].sort() }
   })
   const single = list.length === 1 && unknownCurrencyAccounts === 0 ? list[0] : null
   return { total: single ? single.value : null, currency: single ? single.currency : null,
-    groups: list, unknownCurrencyAccounts, unknownReason: firstReason(unknownReasons) }
+    groups: list, unknownCurrencyAccounts, unknownAccounts: unknownAccounts.sort(), unknownReason: firstReason(unknownReasons) }
 }
 
 /** Ledger carry for one scope from report.balanceEdges (server-built). */

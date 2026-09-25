@@ -1373,9 +1373,9 @@ export default function Performance() {
     // floating reading come from the server (V3 WEB-3); never carried or
     // reconstructed here. See hourRowEvidence.
     const withBal = slots.map(s => ({ ...s, ...hourRowEvidence(openings, s) }))
-    // Newest first for reading. The reversal happens AFTER the carry above,
-    // which must run oldest-to-newest; see hourly-order.js for why touching the
-    // order before it would invert every balance on the page.
+    // Newest first for reading. Each row's balances are the server's observed
+    // edges for that row's own window (matched by from/to above), so the order
+    // is display-only: no client-side carry depends on it any more.
     //
     // `hourNow`, not `loadedAt`: the labels, the buckets and the NOW marker all
     // follow the WALL CLOCK, so they move on the tick instead of waiting for

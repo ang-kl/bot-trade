@@ -56,6 +56,7 @@ export const ALLOWLIST = Object.freeze({
   'src/components/CurrentAccountReadings.jsx': { reason: 'broker account badge in the read-only seven-account table', max: { isLive: 1, live_str: 1, demo_str: 1 } },
   'src/components/ReportChart.jsx': { reason: 'account badge in the historical-chart selector, no policy gate', max: { is_live: 1, live_str: 1, demo_str: 1 } },
   'agent/services/scanner-comparison.js': { reason: 'verify the registered broker host for comparison evidence; identical profile rules for every account', max: { is_live: 2 } },
+  'agent/services/balance-edges.js': { reason: 'host routing: which gateway host an account\'s stored observations belong to (plan §3.1 routing); no policy distinction', max: { is_live: 2 } },
   'agent/services/scanner-work.js': { reason: 'select each registered account host for calendar identity; identical activity and deadline rules for every account', max: { is_live: 1 } },
   'agent/services/scanner-candidates.js': { reason: 'verify registered account/feed routing for mirror observations only; no eligibility gate', max: { is_live: 2 } },
   // ---- schema and env ------------------------------------------------------
@@ -144,7 +145,7 @@ export const ALLOWLIST = Object.freeze({
   'src/pages/Accounts.jsx': { reason: 'LIVE/DEMO badge', max: { isLive: 2, live_str: 1, demo_str: 1 } },
   'src/pages/Connect.jsx': { reason: 'LIVE/DEMO badge; the isLive field the select route needs; no typed-word prompt since PR-B', max: { isLive: 5, live_str: 2, demo_str: 2 } },
   'src/pages/Desk.jsx': { reason: 'LIVE/DEMO label on the broker session', max: { isLive: 2, demo_str: 1 } },
-  'src/pages/Performance.jsx': { reason: 'Live/Demo labels in the account filters; `isLive` on the hourly row means the running window', max: { is_live: 5, isLive: 5, live_str: 4, demo_str: 4 } },
+  'src/pages/Performance.jsx': { reason: 'Live/Demo labels in the account filters; `isLive` on the hourly row means the running window', max: { is_live: 5, isLive: 6, live_str: 4, demo_str: 4 } },
   'src/pages/Risk.jsx': { reason: 'LIVE/DEMO/UNVERIFIED badge; unknown evidence is not labelled demo', max: { isLive: 2, demo_str: 1 } },
   'src/pages/Trade.jsx': { reason: 'LIVE/DEMO label on the broker session and in the validation-fill confirm text', max: { isLive: 3, demo_str: 2 } },
   'src/pages/Tune.jsx': { reason: 'LIVE/DEMO label on the account row', max: { isLive: 2, live_str: 1, demo_str: 1 } },
