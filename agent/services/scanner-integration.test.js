@@ -201,6 +201,11 @@ test('actual scan receipt and complete account records supply no-order context; 
   db.prepare("INSERT INTO decision_log(account_id,stage,decision,reason,created_at) VALUES ('11','margin_pool','skip','free margin exhausted',?)").run(new Date(now - 1000).toISOString())
   let reading = nodeWatchdogContract(db, { now }), activity = reading.work.find(w => w.role === 'entry_activity')
   assert.equal(activity.ordersSinceOpen, 0); assert.equal(activity.firstRecordedBlocker.reason, 'free margin exhausted')
+  // V3 C4 (WP-C PR-C1): cpp-verify's no_orders notice reads `blocker` as a
+  // STRING (watchdog.cpp notification, watchdog_state.cpp status); the object
+  // above printed as an empty blocker on all 20 production incidents.
+  assert.equal(activity.blocker, 'margin_pool ×1 of 1 entry stops since session open; latest margin_pool: free margin exhausted')
+  assert.equal(activity.basis, 'bar')
   assert.equal(reading.calendars[0].calendar.observedAtMs, now - 1000)
   assert.equal(nodeWatchdogContract(db, { now: now + 500 }).work.find(w => w.role === 'scanner').lastCompletedAtMs, now - 500)
   db.prepare(`INSERT INTO entry_intents(id,account_id,environment,side,producer_id,basis,mode_epoch,permit_id,permit_expires_at,state,updated_at,created_at)
@@ -209,6 +214,8 @@ test('actual scan receipt and complete account records supply no-order context; 
   assert.equal(activity.ordersSinceOpen, null); assert.equal(activity.orderEvidence.intents, 1)
   recordScannerWork(db, { ...input, result: { ...input.result, deadlineHit: true } })
   assert.equal(nodeWatchdogContract(db, { now }).work.find(w => w.role === 'entry_activity').activityComplete, false)
+  db.prepare("DELETE FROM decision_log WHERE stage = 'margin_pool'").run()
+  assert.equal(nodeWatchdogContract(db, { now }).work.find(w => w.role === 'entry_activity').blocker, 'no_recorded_entry_stop_since_session_open', 'no stop recorded is said, not left blank')
 })
 
 test('rotating scan batches retain unvisited work and its original deadline', t => {

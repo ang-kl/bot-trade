@@ -38,13 +38,16 @@ import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { accountMoney } from '../services/account-money.js'
 import { accountOverview } from '../services/account-overview.js'
 import { accountHistory } from '../services/account-history.js'
-import { blockerReport } from '../services/blocker-report.js'
+import { validateBlockerRequest } from '../services/blocker-report.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering, readPostmortemReport, readStorageReport, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, isReportUnavailable } from '../services/performance-populations.js'
 import { reportLedger } from '../shared/performance-populations.js'
+// V3 C4: the blocker report's request refusals, recognised by message when
+// they come back from the report worker (the worker loses the RangeError type).
+const BLOCKER_REQUEST_ERRORS = new Set(['account not registered', 'explicit account or all required', 'invalid reporting window or page'])
 
 /**
  * P1/P4 "report failures stay honest": a report worker that missed its
@@ -106,15 +109,29 @@ export default function stateRouter(db) {
       res.status(503).json({ error: 'Momentum target status is temporarily unavailable.', code: 'momentum_target_status_unavailable' })
     }
   })
-  router.get('/blocker-report', (req, res) => {
+  // V3 C4 (WP-C PR-C1): the report runs in the isolated report worker, not on
+  // the event loop the protection sweeps share. The request is validated here
+  // first (no SQL); "account not registered" is a SQL read, so it comes back
+  // from the worker by message — a worker error loses its RangeError type.
+  router.get('/blocker-report', async (req, res) => {
     res.set('Cache-Control', 'no-store')
+    let request
     try {
-      res.json(blockerReport(db, { accountId: req.query.account,
+      request = validateBlockerRequest({ accountId: req.query.account,
         from: Number(req.query.from), to: Number(req.query.to),
         limit: req.query.limit == null ? 50 : Number(req.query.limit),
-        offset: req.query.offset == null ? 0 : Number(req.query.offset) }))
+        offset: req.query.offset == null ? 0 : Number(req.query.offset) })
     } catch (error) {
-      res.status(error instanceof RangeError ? 400 : 500).json({ error: error.message })
+      return res.status(400).json({ error: error.message })
+    }
+    try {
+      res.json(await readBlockerReport(db, request))
+    } catch (error) {
+      const message = String(error?.message || error)
+      if (BLOCKER_REQUEST_ERRORS.has(message)) return res.status(400).json({ error: message })
+      if (/worker_capacity|report_deadline|worker_exit/.test(error?.reason || '')
+        && sendReportUnavailable(res, error, { message: 'The blocker report is temporarily unavailable. Please retry.', code: 'blocker_report_unavailable' })) return
+      res.status(500).json({ error: 'The blocker report failed.', code: 'blocker_report_failed', reason: error?.reason ?? null })
     }
   })
   router.get('/watchdog', async (_req, res) => {

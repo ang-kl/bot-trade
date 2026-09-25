@@ -161,3 +161,40 @@ test('malformed retained calendars make completeness false even without active d
   setState(db, 'market_calendar:v1:broken', '{"latest":{"identity":{}}}')
   assert.equal(watchdogCalendars(db, now).calendarsComplete, false)
 })
+
+// V3 C4 (WP-B B2e): a tick account's entry_activity is judged on its OWN
+// (account, symbolId) calendar, so a fresh tick permit receipt demands it.
+const tickReceipt = (db, accounts, symbols, completedAt = now - 10_000) => setState(db, 'tick_entry_work_json', JSON.stringify({ cpp_exec_demo: {
+  side: 'cpp_exec_demo', completedAt, nextDue: completedAt + 120_000, complete: true, pushed: true, symbols,
+  accounts: accounts.map(accountId => ({ accountId, reached: true, permits: 0, paused: null, firstRefusal: null, refused: [] })) } }))
+
+test('a fresh tick receipt demands each tick account\'s own calendar identity; a stale one demands nothing', t => {
+  const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
+  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 1234 } }))
+  setState(db, 'symbol_id_map:22', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 99 } }))
+  tickReceipt(db, ['11', '22'], ['EURUSD'])
+  const demand = watchdogCalendarDemand(db, now)
+  assert.deepEqual(demand.identities.map(i => [i.accountId, i.symbolId]), [['11', '1234'], ['22', '99']], 'RED if the tick block is removed')
+  assert.equal(demand.complete, true)
+  tickReceipt(db, ['11', '22'], ['EURUSD'], now - 360_000)
+  assert.deepEqual(watchdogCalendarDemand(db, now).identities, [], 'RED if freshness is ignored')
+  // a name missing from an account's own map is missing coverage, never an empty demand
+  tickReceipt(db, ['11'], ['GBPUSD'])
+  assert.equal(watchdogCalendarDemand(db, now).complete, false)
+})
+
+test('the identity cap truncates the tick demand symbol-major, so every tick account keeps coverage', t => {
+  const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
+  const names = Array.from({ length: 200 }, (_, i) => `SYM${i}`)
+  const accounts = ['11', '22', '33']
+  db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,1)').run('33')
+  for (const [n, id] of accounts.entries()) {
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: new Date(now).toISOString(), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
+  }
+  tickReceipt(db, accounts, names)
+  const demand = watchdogCalendarDemand(db, now)
+  assert.equal(demand.identities.length, 512)
+  assert.equal(demand.complete, false, '600 wanted > 512 cap')
+  for (const id of accounts) assert.ok(demand.identities.filter(i => i.accountId === id).length >= 170, `account ${id} keeps coverage (RED if the loop is account-major: the third account gets none)`)
+  assert.equal(demand.identities.find(i => i.accountId === '33').host, 'live.ctraderapi.com', 'the account\'s own host')
+})

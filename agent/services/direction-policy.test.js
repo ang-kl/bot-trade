@@ -202,9 +202,14 @@ test('a watchlist override_bias with no override_reason is REFUSED (direction_ov
   assert.ok(loop.indexOf("synth.direction_reason = `override:${overrideReason}`") < loop.indexOf('const rg = checkRegimeGate(db, synth.strategy, synth.consensus_bias, sym)'), 'the override block sits above the regime gate')
 })
 
-test('the quant phase computes regimes for the momentum universe as well as the scanned symbols (comment-stripped pin; checker MAJOR 2)', () => {
+test('the quant phase computes regimes for the momentum universe and the tick universe as well as the scanned symbols (comment-stripped pin; checker MAJOR 2, V3 C4 B3)', () => {
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
-  assert.match(loop, /const regimeSymbols = \[\.\.\.new Set\(\[\.\.\.recentScans\.map\(r => String\(r\.symbol\)\.toUpperCase\(\)\), \.\.\.regimeUniverse\(db\)\]\)\]/)
+  // MAJOR 2 intent kept: the momentum universe stays a regime source. V3 C4
+  // adds the tick universe (the tick permit feeder's direction filter reads
+  // the same rows). The union is regime.js regimeSymbols, whose behaviour is
+  // pinned in regime.test.js and loop-regime-symbols.test.js.
+  assert.match(loop, /const regimeSymbols = unionRegimeSymbols\(\{ scanned: recentScans\.map\(r => r\.symbol\), universe: regimeUniverse\(db\), tick: tickSymbolNames\(db\) \}\)\.map\(symbol => \(\{ symbol \}\)\)/)
+  assert.match(loop, /const \{ regimeSymbols: unionRegimeSymbols, computeRegime \} = await import\('\.\/services\/regime\.js'\)/, 'the helper is imported under another name (a same-name const is a TDZ throw)')
   assert.match(loop, /for \(const \{ symbol \} of regimeSymbols\) \{/)
   assert.ok(!/for \(const \{ symbol \} of recentScans\)/.test(loop), 'the old scanned-only loop is gone')
 })

@@ -1,7 +1,7 @@
 // node --test agent/services/regime.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { adx, computeRegime } from './regime.js'
+import { adx, computeRegime, regimeSymbols } from './regime.js'
 
 const bar = (c, halfRange) => ({ o: c, h: c + halfRange, l: c - halfRange, c })
 
@@ -65,6 +65,13 @@ test('a recent volatility contraction reads as quiet', () => {
   const r = computeRegime(bars)
   assert.ok(r.regime === 'quiet' || r.regime === 'ranging', `got ${r.regime}`)
   assert.ok(r.volRatio <= 0.9, `volRatio ${r.volRatio} should show contraction`)
+})
+
+test('V3 C4 B3: regimeSymbols is the union of scanned, momentum-universe and tick names — upper-cased, trimmed, deduplicated, tick appended', () => {
+  assert.deepEqual(regimeSymbols({ scanned: ['eurusd'], universe: ['AAPL.US'], tick: ['XAUUSD', 'EURUSD'] }), ['EURUSD', 'AAPL.US', 'XAUUSD'])
+  assert.deepEqual(regimeSymbols({ scanned: [' gbpusd ', null, ''], tick: ['US500'] }), ['GBPUSD', 'US500'], 'blank and null names are not symbols')
+  assert.deepEqual(regimeSymbols({ tick: ['NAS100'] }), ['NAS100'], 'RED if the tick list is ignored')
+  assert.deepEqual(regimeSymbols(), [])
 })
 
 test('insufficient bars → unknown, never a fabricated regime', () => {

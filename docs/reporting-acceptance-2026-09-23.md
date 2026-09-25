@@ -13,6 +13,33 @@ after a known entry stop are not evaluated. Approval does not prove submission
 or fill. Repeated refusal counters cover a row's lifetime, not exact attempts in
 the selected window; duplicate observations across logs are not unique signals.
 
+V3 C4 (25-09-2026, SEQUENCE PR-4) adds the tick side to the same report, and
+moves it off the protection event loop into the isolated report worker
+(`readBlockerReport`; a full report pool answers 503 with a retry hint, a
+failed worker read 500, a malformed or unregistered request 400):
+
+- `tick_refusal` is its own kind: the sidecar's ring rows `fire_refused`
+  (the stopping check in `code`, `fire_stale` included), `fire_reject` and
+  `fire_abandoned` from `cpp_decisions`. Each row is marked at the permit, the
+  sidecar's own checks and the broker, never at the bar risk gate; rows are
+  dated when Node pulled them (the sidecar's clock is in the detail), and a
+  ring record overwritten between pulls is not counted.
+- `byStage` ranks up to five entry stops per account (upstream, risk,
+  after-approval and tick refusals), with the newest record's reason.
+- `tick` says whether tick entries were evaluated at all, per registry
+  account: `evaluated` only when a permit-feed pass pushed to the sidecar in
+  the last six minutes with the account listed, `admitted_not_pushed`, or
+  `not_evaluated` with the reason (on 25-09 every account is bar-only, so
+  every account reads `not_evaluated — basis_not_admitted`). Zero tick
+  refusals on such an account is not a pass.
+
+The same records feed the watchdog contract: each `entry_activity` item now
+carries `blocker` as a string (the no_orders notice printed an empty blocker
+from the object before), tick-only and dual accounts get `entry_activity` from
+the tick permit feeder's own receipt (`tick_entry_work_json`), and a bounded
+`entryDiagnostics` block (Node records, never broker-verified) rides the
+contract for cpp-verify to relay once CV-1 lands.
+
 Account history requires two comparable observations at different times before
 reporting change or sampled drawdown. A single reading remains monetary evidence
 without becoming a zero return. Page change explicitly names its observation

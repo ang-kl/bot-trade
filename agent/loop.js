@@ -5463,9 +5463,15 @@ async function runLoop(db) {
         // book's alignment was decorative for most of the universe. They get
         // a regime on the same cadence, through the same code path.
         const { momentumUniverseSymbols: regimeUniverse } = await import('./services/momentum-account.js')
-        const regimeSymbols = [...new Set([...recentScans.map(r => String(r.symbol).toUpperCase()), ...regimeUniverse(db)])].map(symbol => ({ symbol }))
+        // V3 C4 (WP-B B3): the tick universe is a regime source too — the tick
+        // permit feeder's direction filter reads these rows. The helper is
+        // imported under ANOTHER name: `const regimeSymbols = regimeSymbols(…)`
+        // would throw a TDZ ReferenceError here and the outer catch would
+        // silently skip the regime writes and the automatic entry-mode switch.
+        const { regimeSymbols: unionRegimeSymbols, computeRegime } = await import('./services/regime.js')
+        const { tickSymbolNames } = await import('./services/exec-guard-sync.js')
+        const regimeSymbols = unionRegimeSymbols({ scanned: recentScans.map(r => r.symbol), universe: regimeUniverse(db), tick: tickSymbolNames(db) }).map(symbol => ({ symbol }))
 
-        const { computeRegime } = await import('./services/regime.js')
         const { getRegimeBars } = await import('./services/fib-strategy.js')
         const clientId = ctraderEnv('clientId')
         const clientSecret = ctraderEnv('clientSecret')
@@ -5493,7 +5499,7 @@ async function runLoop(db) {
             regimeWritten++
           } catch { /* one symbol's fetch must not sink the quant phase */ }
         }
-        log(`Regime (ADX/ATR) computed for ${regimeWritten}/${recentScans.length} scanned symbols`)
+        log(`Regime (ADX/ATR) computed for ${regimeWritten}/${regimeSymbols.length} symbols (scanned, momentum universe and tick names)`)
 
         // PR-G (owner principle 2): the AUTOMATIC entry-mode switch, on the
         // same cadence as the regime. Only accounts under policy `auto` are

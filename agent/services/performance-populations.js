@@ -204,6 +204,11 @@ export function readLatestPrices(db) { return isolatedReport(db, 'latest-prices'
 export function readStageMatrixStats(db) { return isolatedReport(db, 'stage-matrix-stats') }
 export function readDecisionAudit(db, options) { return isolatedReport(db, 'decision-audit', options) }
 export function readNodeWatchdogContract(db, options) { return isolatedReport(db, 'node-watchdog', options) }
+/** V3 C4 (WP-C PR-C1): GET /state/blocker-report, off the protection event
+ * loop — up to 90 days of three logs plus the tick arm. Pass no `now`: the
+ * in-flight dedupe keys on the options, and a millisecond clock would give
+ * every dashboard request its own worker slot. */
+export function readBlockerReport(db, options) { return isolatedReport(db, 'blocker-report', options) }
 export function readAccountEngineering(db) { return isolatedReport(db, 'account-engineering') }
 export function readPostmortemReport(db, options) { return isolatedReport(db, 'postmortems', options) }
 /** GET /state/storage: the dbstat page walk and per-table COUNT(*) run on a
@@ -261,6 +266,11 @@ async function buildReport(db, kind, options) {
     // All account/work/calendar reads describe one database snapshot. The
     // builder retains its original receipt times; completion is not freshness.
     return db.transaction(() => nodeWatchdogContract(db, options))()
+  }
+  if (kind === 'blocker-report') {
+    const { blockerReport, tickEntryEvaluation } = await import('./blocker-report.js')
+    // One snapshot for the population and the tick evaluation beside it.
+    return db.transaction(() => ({ ...blockerReport(db, options), tick: tickEntryEvaluation(db, options) }))()
   }
   if (kind === 'storage') {
     const { storageReport } = await import('./storage-report.js')

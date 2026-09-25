@@ -4,6 +4,7 @@ import { credsForRegisteredAccount, getAccountSymbolMap } from '../lib/ctrader-c
 import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
 import { readMarketCalendar, recordMarketCalendar } from './market-calendar.js'
 import { disarmReason } from '../lib/env-disarm.js'
+import { tickEntryReceipts } from './tick-entry-work.js'
 
 const read = (db, key) => { try { return JSON.parse(getState(db, key) || 'null') } catch { return null } }
 const fresh = (at, now) => Number.isFinite(Date.parse(at)) && now >= Date.parse(at) && now - Date.parse(at) < 360_000
@@ -11,6 +12,8 @@ const MAX_IDENTITIES = 512, BATCH = 25
 export function watchdogCalendarDemand(db, now) {
   const accounts = new Map(db.prepare('SELECT account_id,is_live FROM accounts').all().map(a => [String(a.account_id), a]))
   const wanted = new Map(), maps = new Map(); let complete = true
+  // Routing only: the registered account's own broker host (owner principle 1).
+  const hostOf = accountId => accounts.get(accountId)?.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   const add = input => {
     const id = marketIdentity(input), account = accounts.get(id?.accountId)
     if (!id || !account || id.host !== (account.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')) { complete = false; return }
@@ -22,9 +25,9 @@ export function watchdogCalendarDemand(db, now) {
   const positions = db.prepare("SELECT account_id,symbol FROM monitored_positions WHERE status='active' AND paused IS NOT 1 AND source IS NOT 'external' ORDER BY account_id,id LIMIT 513").all()
   if (positions.length > 512) complete = false
   for (const p of positions.slice(0, 512)) {
-    const accountId = String(p.account_id), account = accounts.get(accountId)
+    const accountId = String(p.account_id)
     if (!maps.has(accountId)) maps.set(accountId, getAccountSymbolMap(db, accountId)?.map)
-    add({ accountId, host: account?.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', symbolId: maps.get(accountId)?.[p.symbol.toUpperCase()] })
+    add({ accountId, host: hostOf(accountId), symbolId: maps.get(accountId)?.[p.symbol.toUpperCase()] })
   }
   const scan = read(db, 'legacy_scanner_work_json')
   if (Number.isFinite(scan?.completedAt) && now >= scan.completedAt && now - scan.completedAt < 360_000 && Array.isArray(scan.instruments)) {
@@ -44,6 +47,20 @@ export function watchdogCalendarDemand(db, now) {
     }
     for (const symbolId of tick.subscribed.slice(0, 512)) add({ host, accountId: tick.feedAccountId, symbolId })
     if (tick.subscribed.length > 512) complete = false
+  }
+  // V3 C4 (WP-B B2e): a tick account's entry_activity is judged on its OWN
+  // (account, symbolId) calendar, so each fresh tick permit receipt demands
+  // them — SYMBOL-MAJOR, so the identity cap truncates across every account
+  // instead of starving the last one. A name missing from an account's own
+  // map is missing coverage (complete false), never an empty demand.
+  for (const receipt of tickEntryReceipts(db, now)) {
+    const ids = receipt.accounts.map(a => String(a?.accountId))
+    for (const name of receipt.symbols) {
+      for (const accountId of ids) {
+        if (!maps.has(accountId)) maps.set(accountId, getAccountSymbolMap(db, accountId)?.map)
+        add({ accountId, host: hostOf(accountId), symbolId: maps.get(accountId)?.[String(name).toUpperCase()] })
+      }
+    }
   }
   return { identities: [...wanted.values()], complete }
 }

@@ -1006,6 +1006,10 @@ let lastTickEntryPush = new Map() // side.name → count pushed
 export async function feedTickPermits(db, exec, side, nowMs = Date.now()) {
   const { tickEntryAccountsFor, runTickPermitFeeder, takeTickRepush, peekTickRepush } = await import('./tick-permits.js')
   const want = tickEntryAccountsFor(db, side)
+  // V3 C4: the side's tick work receipt goes as soon as no account on the side
+  // admits tick, so an old receipt never keeps emitting entry_activity items
+  // (the pass below may still run once to clear the sidecar).
+  if (!want.length) { try { (await import('./tick-entry-work.js')).clearTickEntryWork(db, side.name) } catch { /* observation only */ } }
   let reported = null
   try { reported = JSON.parse(getState(db, `${side.name}_tick_json`) || 'null')?.status?.entry?.accounts ?? null } catch { reported = null }
   // PR-3: a bar fill on an account of this side marks it for a re-push
@@ -1018,6 +1022,11 @@ export async function feedTickPermits(db, exec, side, nowMs = Date.now()) {
   const repush = creds?.ready ? takeTickRepush(want) : []
   const r = await runTickPermitFeeder(db, side, { creds, now: nowMs })
   lastTickEntryPush.set(side.name, want.length)
+  // V3 C4 (WP-B B2c): the receipt is written by the pass that did the work,
+  // with the full ids it served. Observation never controls the feeder.
+  if (want.length) {
+    try { (await import('./tick-entry-work.js')).recordTickEntryWork(db, { side, creds, accounts: want, result: r, completedAt: nowMs }) } catch (err) { console.warn(`[heartbeat] ${side.name}: tick work receipt not recorded — ${err.message}`) }
+  }
   if (r.pushed) console.warn(`[heartbeat] ${side.name}: tick permits pushed${repush.length ? ` (re-push after a bar fill on ${repush.map(id => `…${id.slice(-4)}`).join(', ')})` : ''} — ${r.accounts.length} account(s) placing [${r.accounts.join(', ')}], ${r.permits} permit(s), ${r.refused.length} refused${r.paused.length ? `, paused ${r.paused.map(p => `${p.accountId} (${p.reason})`).join('; ')}` : ''}`)
   else if (r.error) console.warn(`[heartbeat] ${side.name}: tick permit push FAILED — ${r.error}`)
   for (const x of r.refused.slice(0, 5)) console.warn(`[heartbeat] ${side.name}: tick permit refused ${x.accountId} ${x.symbol}: ${x.reason}`)
