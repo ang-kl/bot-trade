@@ -16,6 +16,7 @@
 
 import { getSymbolMap } from '../lib/ctrader-creds.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
+import { measureAmend } from './protection-latency.js'
 import { recordPositionEvent } from './position-events.js'
 
 /**
@@ -191,14 +192,15 @@ async function tradeGuardsPass(db, creds, deps = {}) {
       if (acts.moveSlTo != null) {
         const sl = roundToDigits(acts.moveSlTo, meta.digits)
         try {
-          await exec.amendPosition(creds, {
+          // V3 M5: timed on the way through; the payload is untouched.
+          await measureAmend({ path: 'trade_guard', source: 'trade_guard', accountId: r.account_id ?? accountId ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: sl,
             ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
             // THE be_moved=1 CASE. Failure mode #7 predicted that a position
             // moved to break-even would read tp=None, and it held on both
             // cases available to test — this is the amend that did it.
             takeProfit: Number(bp?.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
-          })
+          }))
           updSl.run(sl, acts.beMoved ? 1 : 0, acts.beMoved ? 'guard_break_even' : 'guard_trail', r.id)
           summary.slMoves++
           notify(`🛡 ${r.symbol}: SL moved to ${sl} (${acts.beMoved ? 'break-even' : 'trailing'})`)

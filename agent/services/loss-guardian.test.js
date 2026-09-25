@@ -96,3 +96,30 @@ test('Wave 2 (§K·6): the loss guardian skips a momentum-book row (no time_cap_
   assert.equal(out.checked, 0)
   assert.deepEqual(closes, [], 'nothing was closed')
 })
+
+test('V3 M5: the stop the guardian puts on a naked position is timed in the amend-latency ring', async () => {
+  const { runLossGuardian } = await import('./loss-guardian.js')
+  const { _resetAmendLatencyForTests, _amendLatencyStateForTests } = await import('./protection-latency.js')
+  _resetAmendLatencyForTests()
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status, account_id, opened_at) VALUES ('NATGAS', 'BUY', '9102', 'open', '1', datetime('now'))`).run()
+  const tradeId = db.prepare(`SELECT id FROM trades WHERE ctrader_position_id = '9102'`).get().id
+  db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, status, source, trade_id, account_id) VALUES ('NATGAS', 'BUY', 2.9, NULL, 'active', 'autopilot', ?, '1')`).run(tradeId)
+  const sent = []
+  const out = await runLossGuardian(db, { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }, {
+    exec: {
+      reconcile: async () => ({ position: [{ positionId: 9102, price: 2.9, takeProfit: 3.1, tradeData: { symbolId: 1, volume: 10000, tradeSide: 1 } }] }),
+      amendPosition: async (_c, args) => { sent.push(args); return { executionType: 'ORDER_REPLACED' } },
+    },
+    ws: { wsGetLastCloses: async () => ({ 1: 2.85 }), wsGetTrendbarsBatch: async () => ({}) },
+    sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3 }) },
+    notify: () => {},
+  })
+  assert.equal(out.stops, 1, JSON.stringify(out))
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].takeProfit, 3.1, 'the payload is what it always was')
+  const { amends } = _amendLatencyStateForTests()
+  assert.equal(amends.length, 1, 'one amend sent, one amend timed')
+  assert.deepEqual([amends[0].path, amends[0].source, amends[0].positionId, amends[0].account, amends[0].outcome],
+    ['loss_guardian', 'loss_guardian', '9102', '…1', 'ok'])
+})

@@ -206,10 +206,13 @@ Grading rules:
 
 - **Container start → process start.** Needs platform deploy timestamps.
 - **Broker-confirmed protection latency (p95/p99).** Node-side amend timing is
-  M5. Native trail-engine amends are not visible to Node.
-- **Due-to-evaluated lateness as a composite with the amend round trip.** The
-  receipts give the lateness side (`nextDueAt` vs `lastCompletedAt`). The
-  round-trip side is M5.
+  recorded from M5 on (§9). It stays Not Verifiable until enough natural amends
+  accumulate (p95 needs 20, p99 needs 100); none is ever forced. Native
+  trail-engine amends are not visible to Node.
+- **Due-to-evaluated lateness as a composite with the amend round trip.**
+  Recorded from M5 on for fast-monitor amends (§9). The slow monitor, the band
+  controllers and the routes have no due time, so only their round trip is
+  recorded.
 - **Non-pooled token wait.** The token wait is reported by both request paths.
   Only the pooled path (`CTRADER_WS_POOL=1`) is exercised by a test, because
   the non-pooled `wsRun` opens a real TLS socket and has no test seam.
@@ -228,3 +231,78 @@ Grading rules:
 - **Restarts:** Node only. No change under `cpp-*/**` or
   `agent/lib/exec-engine.*`. Behaviour of trading, risk and protection is
   unchanged.
+
+## 9. Amend latency (M5, P1/P4-6)
+
+Measurement only. No amend payload, retry or decision changed. Code:
+`agent/services/protection-latency.js`. Read it on **authenticated** `/health`
+as `amendLatency`.
+
+### 9.1 The amend paths
+
+Every Node path that sends an amend is timed. Each has its own `path` label and
+its own test.
+
+| `path` | Where | `source` |
+|---|---|---|
+| `broker_action.move_sl` | `loop.js` `executeBrokerAction` MOVE_SL | the caller: `fast_monitor`, `position_manager`, `session_open_guard`, … |
+| `broker_action.runner_leg` | `executeBrokerAction` PARTIAL_EXIT, the runner leg's stop | as above |
+| `book_stop` | `book-stop-amend.js` `amendBookStop` (momentum book trail) | `momentum_book` |
+| `loss_guardian` | `loss-guardian.js`, a stop on a naked position | `loss_guardian` |
+| `profit_keeper` | `profit-keeper.js`, the SL ratchet | `profit_keeper` |
+| `trade_guard` | `trade-guard.js`, break-even and trailing | `trade_guard` |
+| `position_protect` | `position-protect.js`: POST `/actions/position-protect` and the Telegram Set-TP button | `manual`, `telegram` |
+| `target_restore` | `target-restore.js`, a missing target put back | `target_restore` |
+| `tp_suggest` | `tp-suggest.js`, a target on an adopted position | `naked_position_guard` |
+| `restrategize` | `restrategize.js`, SL/TP after an owner reversal | `restrategize` |
+
+### 9.2 What one amend records
+
+- `sentAtMs`, `ackAtMs` (wall clock) and `ms`, the round trip on the monotonic
+  clock. For the gateway's `/amend` the answer is the broker's execution event.
+- `outcome`: `ok`, `refused`, `already_closed`, `empty`, `timeout` or `error`,
+  plus the broker's upper-case code when there is one (`TRADING_BAD_STOPS`).
+  **No message text is kept**, because broker messages quote prices.
+- The account **suffix** (`…1234`) and the position id. No credentials.
+- **Fast monitor only:** `dueAtMs` (the receipt's `nextDueAt`), `evaluatedAtMs`,
+  `latenessMs` (due → evaluated), `preSendMs` (evaluated → sent) and
+  `compositeMs` = lateness + pre-send + round trip. This is due → broker answer,
+  the figure a Node-managed exit is graded on.
+- **`book_stop` only:** the read-back the adapter already did, timed as the
+  broker's confirmation: `confirm`, `confirmMs` (sent → a fresh read holding the
+  stop) and `readbackMs`.
+
+### 9.3 The lateness term on its own
+
+Every fast-monitor evaluation also puts its due → evaluated lateness into a
+512-sample ring (`dueLateness`, with `all` and `last10m`). So the lateness term
+has a distribution even while amends are rare.
+
+A sample is kept only when the previous attempt on that position was itself an
+evaluation. These gaps are counted under `excluded` instead:
+
+- after a no-quote pass (a closed market; a weekend would otherwise read as 48 h
+  late);
+- a first sighting;
+- a pass that was switched off or unmapped.
+
+### 9.4 Read it with these points in mind
+
+- `roundTripMs` counts **broker-answered** amends only. Refusals, timeouts and
+  throws are counted in `outcomes`, and `attemptMaxMs` keeps the slowest attempt.
+- `p95Verifiable` needs 20 answered amends and `p99Verifiable` needs 100. No
+  amend is ever forced to fill the sample.
+- `notVerifiable` always names the native trail engine (`cpp_trail_engine`).
+  Its amends are made inside the gateway and never pass through Node.
+- Nothing is graded: no limit is owner-confirmed.
+
+### 9.5 Cost
+
+- Recording touches memory only.
+- `amend_latency_json` holds 256 amends as short positional tuples, plus the
+  lateness ring. It stays under 64 KB (tested).
+- It is written at most once per 30 s, and only when an amend arrived.
+  Lateness alone rides a 5-minute write.
+- On boot the stored copy seeds the rings, so natural amends accumulate across
+  restarts. Each entry keeps the `boot` that made it.
+- Node restart only. `agent/lib/exec-engine.*` and `cpp-*/**` are untouched.

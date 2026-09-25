@@ -24,6 +24,7 @@ import { getState, setState } from '../db.js'
 import { singleFlight } from './acting-layer.js'
 import { isOurs, SOURCES } from '../lib/trade-labels.js'
 import { protectionFailure, repairFailures, recordRepairFailure, sameRefusedTarget } from './protection-repair-state.js'
+import { measureAmend } from './protection-latency.js'
 
 /** How long before the same position may be retried after a failed restore. */
 const RETRY_AFTER_MS = 30 * 60_000
@@ -193,12 +194,13 @@ async function restorePass(db, creds, findings, rowsById, deps) {
       // same reason the target is re-sent alongside a stop everywhere else:
       // amend replaces. Sending the TP alone would clear the stop and turn a
       // targetless position into a naked one — this defect, inverted.
-      const result = await amend(creds, {
+      // V3 M5: timed on the way through; the payload is untouched.
+      const result = await measureAmend({ path: 'target_restore', source: 'target_restore', accountId: row.account_id ?? creds?.accountId, positionId: f.positionId }, () => amend(creds, {
         positionId: parseInt(f.positionId),
         stopLoss: Number(fresh.stopLoss),
         takeProfit: plan.tp,
         ctidTraderAccountId: row.account_id ?? creds?.accountId ?? undefined,
-      })
+      }))
       if (result?.error || result?.rawError || result?.alreadyClosed) {
         const failure = protectionFailure(result.error || result.rawError || result.reason || 'position already closed', { retryableUnknown: false })
         recordRepairFailure(db, creds?.accountId, f, plan.tp, failure, nowMs)

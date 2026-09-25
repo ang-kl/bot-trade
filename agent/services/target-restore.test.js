@@ -250,3 +250,21 @@ test('only bot-owned recorded entry targets may fill a missing current target', 
     assert.equal(planTargetRestore({ ...row, source, current_tp: 0 }, { brokerSl: 1.09 }).action, 'skip')
   }
 })
+
+test('V3 M5: a restore amend is timed in the amend-latency ring, and a refused one is recorded as refused', async () => {
+  const { _resetAmendLatencyForTests, _amendLatencyStateForTests } = await import('./protection-latency.js')
+  _resetAmendLatencyForTests()
+  const db = db0()
+  const amend = spyAmend()
+  const out = await restoreMissingTargets(db, { accountId: 'A' }, [finding], rows(db), { amend: amend.fn })
+  assert.equal(out.restored, 1, JSON.stringify(out))
+  const db2 = db0()
+  const refused = await restoreMissingTargets(db2, { accountId: 'A' }, [finding], rows(db2),
+    { amend: async () => ({ alreadyClosed: true, reason: 'POSITION_NOT_FOUND' }) })
+  assert.equal(refused.restored, 0)
+  const got = _amendLatencyStateForTests().amends.map(e => [e.path, e.source, e.positionId, e.account, e.outcome, e.errorCode])
+  assert.deepEqual(got, [
+    ['target_restore', 'target_restore', '111', '…A', 'ok', null],
+    ['target_restore', 'target_restore', '111', '…A', 'already_closed', 'POSITION_NOT_FOUND'],
+  ])
+})

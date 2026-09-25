@@ -604,3 +604,19 @@ test('Wave 2: a position the momentum book holds (by trade id) is skipped by the
   assert.equal(b.checked, 1)
   assert.equal(b.bookSkipped, 0)
 })
+
+test('V3 M5: the keeper\'s SL ratchet is timed in the amend-latency ring, payload unchanged', async () => {
+  const { _resetAmendLatencyForTests, _amendLatencyStateForTests } = await import('./protection-latency.js')
+  _resetAmendLatencyForTests()
+  const db = mkKeeperDb()
+  const deps = keeperDeps()
+  const sent = []
+  deps.exec.amendPosition = async (_c, args) => { sent.push(args); return { executionType: 'ORDER_REPLACED' } }
+  const out = await runProfitKeeper(db, CREDS, deps)
+  assert.equal(out.slMoves, 1, JSON.stringify(out))
+  assert.equal(sent[0].takeProfit, 1.8, 'the broker target is re-sent, as before')
+  const { amends } = _amendLatencyStateForTests()
+  assert.equal(amends.length, 1, 'one amend sent, one amend timed')
+  assert.deepEqual([amends[0].path, amends[0].source, amends[0].positionId, amends[0].account, amends[0].outcome],
+    ['profit_keeper', 'profit_keeper', '9001', '…1', 'ok'])
+})

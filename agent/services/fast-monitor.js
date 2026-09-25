@@ -34,6 +34,7 @@ import { BoundedMap } from '../lib/bounded-map.js'
 import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { performance } from 'node:perf_hooks'
 import { stampFirst, noteBudgetOverrun } from './runtime-record.js'
+import { noteDueLateness, latenessEligibility } from './protection-latency.js'
 
 // ---------------------------------------------------------------------------
 // PER-POSITION RECEIPT TIMINGS (V3 M1, P1/P4-1). A pass that re-prices a due
@@ -549,11 +550,21 @@ export async function runFastMonitor(db, creds, deps = {}) {
           pos.id,
         )
         checked++
+        // V3 M5: the due time this evaluation answers — the carried
+        // nextDueAt, read before it is re-armed below.
+        const dueAtMs = Date.parse(receipt.nextDueAt ?? '')
         receipt.state = 'evaluated'
         receipt.lastOutcome = 'evaluated'
         receipt.action = eval_.action
         receipt.lastCompletedAt = new Date(now()).toISOString()
         receipt.nextDueAt = new Date(now() + receipt.cadenceMs).toISOString()
+        // Due → evaluated lateness, kept only when the gap began with an
+        // evaluation (latenessEligibility); the amend below carries it too,
+        // so its round trip is recorded as one composite.
+        const evaluatedAtMs = Date.parse(receipt.lastCompletedAt)
+        const lateOk = latenessEligibility(prior)
+        noteDueLateness({ dueAtMs, evaluatedAtMs, ...lateOk })
+        const dueTiming = lateOk.eligible ? { dueAtMs, evaluatedAtMs } : { dueAtMs: null, evaluatedAtMs }
         if (eval_.action === 'HOLD') {
           // Same truthfulness fix as the main loop's monitor phase (owner:
           // "why are you not monitoring") — a HOLD verdict used to write
@@ -564,7 +575,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
           loopMod.stampExitMarks(s, pos, eval_, null)
           continue
         }
-        const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor')
+        const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor', dueTiming)
         // PR-J stamps from the OUTCOME, same helper as the slow monitor.
         loopMod.stampExitMarks(s, pos, eval_, outcome)
         acted++

@@ -8,6 +8,7 @@
 import { recordPositionEvent } from './position-events.js'
 import { normPosId } from '../lib/pos-id.js'
 import { protectionPositionId } from './protection-account.js'
+import { measureAmend } from './protection-latency.js'
 
 /** Pre-amend read timeout. See readLiveProtection for why the 25s default is wrong here. */
 const PROTECT_READ_TIMEOUT_MS = Math.max(2_000, Number(process.env.PROTECT_READ_TIMEOUT_MS) || 8_000)
@@ -108,7 +109,9 @@ export async function protectPosition(db, creds, { positionId, sl, tp, source = 
       else args.clearTakeProfit = true
     }
   }
-  const sent = await amend(creds, args)
+  // V3 M5: timed on the way through (manual route, Telegram button); the
+  // payload and every check below are untouched.
+  const sent = await measureAmend({ path: 'position_protect', source, accountId, positionId }, () => amend(creds, args))
   if (sent?.error || sent?.rawError || sent?.alreadyClosed || sent?.ok === false) {
     throw new Error(`protection amendment not accepted: ${sent.error || sent.rawError || 'position unavailable'}`)
   }

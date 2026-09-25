@@ -138,3 +138,34 @@ test('BA: runTradeGuards journals a partial take-profit as scale_out with the po
   assert.equal(ev[0].to_value, 0.01); assert.equal(ev[0].price_at, 1.1025)
   assert.match(ev[0].reason, /^partial take-profit TP1: closed 0\.01 lot\(s\)$/)
 })
+
+test('V3 M5: the guard\'s trailing stop move is timed in the amend-latency ring, payload unchanged', async () => {
+  const { initDB, setState } = await import('../db.js')
+  const { runTradeGuards } = await import('./trade-guard.js')
+  const { _resetAmendLatencyForTests, _amendLatencyStateForTests } = await import('./protection-latency.js')
+  _resetAmendLatencyForTests()
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1 }))
+  const tradeId = db.prepare(`INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, account_id)
+     VALUES ('EURUSD', 'BUY', 1.1000, 0.02, '8', 'autopilot', 'open', datetime('now'), '42')`).run().lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status, account_id, guard_json)
+     VALUES ('EURUSD', ?, 'long', 1.1000, 1.0950, 1.1200, 't', 1, 'autopilot', 'active', '42', ?)`)
+    .run(tradeId, JSON.stringify({ trailing: { on: true, distancePips: 5 } }))
+  const sent = []
+  const summary = await runTradeGuards(db, { accountId: '42', host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't' }, {
+    exec: {
+      reconcile: async () => ({ position: [{ positionId: 8, price: 1.1000, stopLoss: 1.0950, takeProfit: 1.1200 }] }),
+      closePosition: async () => ({}),
+      amendPosition: async (_c, args) => { sent.push(args); return { executionType: 'ORDER_REPLACED' } },
+    },
+    ws: { wsGetLastCloses: async () => ({ 1: 1.1025 }) },
+    sizing: { getVolumeMeta: async () => ({ pipPosition: 4, digits: 5, lotSize: 100000 }) },
+    notify: () => {},
+  })
+  assert.equal(summary.slMoves, 1, JSON.stringify(summary))
+  assert.equal(sent[0].takeProfit, 1.12, 'the broker target is re-sent, as before')
+  const { amends } = _amendLatencyStateForTests()
+  assert.equal(amends.length, 1, 'one amend sent, one amend timed')
+  assert.deepEqual([amends[0].path, amends[0].source, amends[0].positionId, amends[0].account, amends[0].outcome],
+    ['trade_guard', 'trade_guard', '8', '…42', 'ok'])
+})

@@ -121,6 +121,26 @@ test('BOTH legs given: no read at all, and both are sent as asked', async () => 
   assert.equal(sent[0].takeProfit, 1950)
 })
 
+test('V3 M5: the protect amend is timed with its caller as source; a refused one is recorded and still throws', async () => {
+  const { _resetAmendLatencyForTests, _amendLatencyStateForTests } = await import('./protection-latency.js')
+  _resetAmendLatencyForTests()
+  const db = ppDb()
+  ppSeed(db, '708', 'ETHUSD', { current_sl: 1700, current_tp: 1900 })
+  const sent = []
+  await protectPosition(db, PP_CREDS, { positionId: '708', sl: 1750, tp: 1950, source: 'telegram' }, {
+    amend: async (_c, args) => { sent.push(args); return {} },
+  })
+  assert.deepEqual(sent, [{ positionId: 708, stopLoss: 1750, takeProfit: 1950 }], 'the payload is what it always was')
+  await assert.rejects(protectPosition(db, PP_CREDS, { positionId: '708', sl: 1760, tp: 1950 }, {
+    amend: async () => ({ error: 'TRADING_BAD_STOPS' }),
+  }), /not accepted/)
+  const got = _amendLatencyStateForTests().amends.map(e => [e.path, e.source, e.positionId, e.account, e.outcome, e.errorCode])
+  assert.deepEqual(got, [
+    ['position_protect', 'telegram', '708', '…A', 'ok', null],
+    ['position_protect', 'manual', '708', '…A', 'refused', 'TRADING_BAD_STOPS'],
+  ])
+})
+
 test('a carried-through leg is not journalled as a move; a requested one is', async () => {
   const db = ppDb()
   ppSeed(db, '706', 'ETHUSD', { current_sl: 1723.26, current_tp: null })

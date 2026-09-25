@@ -181,3 +181,23 @@ test('one uncontradicted account stamp identifies a legacy linked row without cl
     assert.equal(out.did, 'risk_audit')
   }
 })
+
+test('V3 M5: the recalibration amend is timed in the amend-latency ring; a thrown amend is recorded and still reported', async () => {
+  const { _resetAmendLatencyForTests, _amendLatencyStateForTests } = await import('./protection-latency.js')
+  _resetAmendLatencyForTests()
+  const change = { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'short', to: 'long' }
+  const db = initDB(':memory:')
+  seed(db, { side: 'long' })
+  const ok = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, change, {
+    fetchBars: async () => risingBars, amend: async () => ({ ok: true }),
+  })
+  assert.equal(ok.did, 'recalibrated')
+  const db2 = initDB(':memory:')
+  seed(db2, { side: 'long' })
+  const bad = await restrategizeAfterTamper(db2, { host: 'h', accountId: '11' }, change, {
+    fetchBars: async () => risingBars, amend: async () => { throw new Error('amend timed out after 15000 ms') },
+  })
+  assert.equal(bad.did, 'error', 'the caller still sees the failure')
+  const got = _amendLatencyStateForTests().amends.map(e => [e.path, e.source, e.positionId, e.account, e.outcome])
+  assert.deepEqual(got, [['restrategize', 'restrategize', '42', '…11', 'ok'], ['restrategize', 'restrategize', '42', '…11', 'timeout']])
+})

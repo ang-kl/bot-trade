@@ -1,5 +1,7 @@
 // Apply the book's existing stop rule against fresh broker protection, then
 // read it back. Missing TP remains an incident but cannot disable a safer SL.
+import { recordAmend, classifyAmendResult, classifyAmendError, errorCodeOf } from './protection-latency.js'
+
 export const BOOK_PROTECTION_MAX_READ_MS = 5000
 
 export function freshBookProtection(p, nowMs = Date.now()) {
@@ -45,9 +47,31 @@ export async function amendBookStop(creds, { positionId, stopLoss, side }, {
   const before = await read()
   const atLeastAsTight = sl => sl > 0 && (short ? sl <= stopLoss : sl >= stopLoss)
   if (atLeastAsTight(before.stopLoss)) return { protection: { ...before, verified: true, confirmation: 'already_tighter_snapshot' }, unchanged: true }
-  const sent = await amend(creds, { positionId, stopLoss, takeProfit: before.takeProfit })
-  if (sent?.error || sent?.rawError || sent?.alreadyClosed || sent?.ok === false) throw new Error(`book protection amendment refused: ${sent.error || sent.rawError || 'position unavailable'}`)
-  const after = await read()
+  // V3 M5: the amend's round trip, and the read-back above timed again as the
+  // broker's confirmation (sent → a fresh read holding the stop). Recorded,
+  // never acted on: the checks below are unchanged.
+  const meta = { path: 'book_stop', source: 'momentum_book', accountId: creds?.accountId, positionId }
+  const sentAtMs = now(), began = clock()
+  let sent
+  try {
+    sent = await amend(creds, { positionId, stopLoss, takeProfit: before.takeProfit })
+  } catch (err) {
+    recordAmend({ ...meta, sentAtMs, ackAtMs: now(), ms: clock() - began, outcome: classifyAmendError(err), errorCode: errorCodeOf(err?.message) })
+    throw err
+  }
+  const answered = { ...meta, sentAtMs, ackAtMs: now(), ms: clock() - began, outcome: classifyAmendResult(sent),
+    errorCode: errorCodeOf(sent?.error, sent?.rawError, sent?.reason) }
+  if (sent?.error || sent?.rawError || sent?.alreadyClosed || sent?.ok === false) {
+    recordAmend(answered)
+    throw new Error(`book protection amendment refused: ${sent.error || sent.rawError || 'position unavailable'}`)
+  }
+  let after
+  try { after = await read() } catch (err) {
+    recordAmend({ ...answered, confirm: 'readback_failed' })
+    throw err
+  }
+  recordAmend({ ...answered, confirm: atLeastAsTight(after.stopLoss) ? 'readback_confirmed' : 'readback_mismatch',
+    confirmMs: after.checkedAtMs - sentAtMs, readbackMs: after.readDurationMs })
   if (!atLeastAsTight(after.stopLoss)) throw new Error('book stop not confirmed by broker read-back')
   if (before.takeProfit != null && after.takeProfit == null) throw new Error('broker target missing after book stop amendment')
   return { protection: { ...after, verified: true, confirmation: 'amend_readback' }, unchanged: false }
