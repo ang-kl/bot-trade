@@ -3,7 +3,7 @@
 // either an observed amount with its currency and read time, or the reason it
 // is missing. Nothing here computes, carries or fills a balance, and a missing
 // edge is never drawn as zero.
-import { missingBalanceLabel, utcStamp } from '../../agent/shared/balance-carry.js'
+import { missingBalanceLabel, unknownCurrencyLabel, utcStamp } from '../../agent/shared/balance-carry.js'
 
 const fixed = v => Number(v).toFixed(2)
 const plus = v => `${v > 0 ? '+' : ''}${fixed(v)}`
@@ -34,10 +34,14 @@ export function balanceLines(set, { money = fixed, withCurrency = false, unavail
     ? { key: g.currency, text: `${set.groups.length > 1 || withCurrency ? `${g.currency} ` : ''}${money(g.value)}`, title: readTitle(g), missing: false, currency: g.currency, value: g.value }
     : { key: g.currency, text: `${set.groups.length > 1 || withCurrency ? `${g.currency} ` : ''}${missingBalanceLabel(g)}`,
       title: `${g.currency}: ${missingBalanceLabel(g)}.${notRead(g.missingAccounts)} A missing broker balance is not zero and is never estimated.`, missing: true, currency: g.currency, value: null })
-  if (set.unknownCurrencyAccounts > 0) lines.push({ key: 'unknown', missing: true,
-    text: lines.length ? `${set.unknownCurrencyAccounts} acct not stored`
-      : set.unknownCurrencyAccounts === 1 ? 'not stored' : `not stored (${set.unknownCurrencyAccounts} accounts)`,
-    title: `${set.unknownCurrencyAccounts} account${set.unknownCurrencyAccounts === 1 ? ' has' : 's have'} no stored broker balance, so its currency is unknown and it is in no total.${notRead(set.unknownAccounts)}` })
+  // Accounts in no currency group (V3 WEB-3m): no recorded broker deposit
+  // currency, so no balance of theirs is added to any currency's total.
+  if (set.unknownCurrencyAccounts > 0) {
+    const n = set.unknownCurrencyAccounts, label = unknownCurrencyLabel(set.unknownReason)
+    lines.push({ key: 'unknown', missing: true,
+      text: lines.length ? `${n} acct ${label}` : n === 1 ? label : `${label} (${n} accounts)`,
+      title: `${n} account${n === 1 ? ' has' : 's have'} ${set.unknownReason === 'account_not_registered' ? 'no registration' : 'no recorded broker deposit currency'}, so ${n === 1 ? 'it is' : 'they are'} in no currency total.${notRead(set.unknownAccounts)}` })
+  }
   if (!lines.length) return [{ key: 'none', text: '—', title: 'No registered account in this scope', missing: true }]
   return lines
 }
@@ -51,7 +55,7 @@ export function floatingText(set, { signed = plus } = {}) {
   const lone = set.groups.length === 1 && !set.unknownCurrencyAccounts
   const text = shown.map(g => `${lone ? '' : `${g.currency} `}${signed(g.value)}`).join(' · ')
   const missing = set.groups.filter(g => g.value == null).map(g => `${g.currency} ${missingBalanceLabel(g)}${notRead(g.missingAccounts)}`)
-  const title = [...shown.map(g => readTitle(g, 'floating P&L')), ...missing, set.unknownCurrencyAccounts ? `${set.unknownCurrencyAccounts} account(s) with no stored reading.${notRead(set.unknownAccounts)}` : null]
+  const title = [...shown.map(g => readTitle(g, 'floating P&L')), ...missing, set.unknownCurrencyAccounts ? `${set.unknownCurrencyAccounts} account(s) ${unknownCurrencyLabel(set.unknownReason)}, in no currency.${notRead(set.unknownAccounts)}` : null]
     .filter(Boolean).join(' · ')
   return { text: `(${text} float)`, title: `Last broker floating (unrealised) P&L reading in this hour; not in the realised figure or the balance columns. ${title}` }
 }

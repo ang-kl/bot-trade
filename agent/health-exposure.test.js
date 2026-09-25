@@ -87,10 +87,37 @@ test('the sensitive fields are NOT in the unauthenticated branch', () => {
     'loopCpuProfile',
     'historicalRate',
     'llmTiers',
+    // V3 M1: internal timing detail, authenticated only.
+    'bootRecord',
+    'latencyWindows',
   ]) {
     assert.ok(!new RegExp(`\\b${field}\\b`).test(publicBlock),
       `${field} must not be in the public liveness body`)
   }
+})
+
+test('V3 M1: the boot record and latency windows ARE in the authenticated body (and only there)', () => {
+  const h = healthHandler()
+  const code = h.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n')
+  const full = code.indexOf('authenticated: true')
+  assert.ok(full > 0)
+  const authedBody = code.slice(full)
+  assert.match(authedBody, /bootRecord: \(\(\) => \{[\s\S]*?runtimeRecordSnapshot\(\)[\s\S]*?readBootRecords\(db\)\.previous/)
+  assert.match(authedBody, /latencyWindows: \(\(\) => \{[\s\S]*?latencyWindows\(\)/)
+  assert.match(authedBody, /lastTiming: t\.lastTiming \?\? null/)
+})
+
+test('V3 M1: the request timer is mounted BEFORE the auth middleware (a 401 is counted) and feeds the startup window; the boot record is fed at db open and at listen', () => {
+  const timer = CODE.indexOf('app.use(routeTimingMiddleware({')
+  const auth = CODE.indexOf('app.use(authMiddleware)')
+  assert.ok(timer > 0 && auth > timer, 'routeTimingMiddleware must be mounted, and before authMiddleware')
+  assert.match(CODE, /app\.use\(routeTimingMiddleware\(\{[^\n]*onStatus: noteHttpStatus/)
+  const init = CODE.indexOf('const db = initDB(resolvedDbPath)')
+  const dbNote = CODE.indexOf('noteDbStartup(db.startupTiming)')
+  assert.ok(init > 0 && dbNote > init, 'the database timing is recorded right after initDB')
+  const listen = CODE.indexOf("server.listen(port, '0.0.0.0'")
+  assert.ok(listen > 0 && CODE.indexOf('noteListening()', listen) > listen && CODE.indexOf('startRuntimeRecord(db)', listen) > listen,
+    'listening is stamped and the record starts persisting inside the listen callback')
 })
 
 test('the early return comes BEFORE the full payload, so new fields default to authenticated', () => {

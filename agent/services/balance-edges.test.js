@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { recordAccountHistory } from './account-history.js'
+import { recordDepositCurrency } from './account-money.js'
 import { balanceReader, BALANCE_EDGE_MAX_AGE_MS } from './balance-edges.js'
 import { hourlyActivity } from './hourly-activity.js'
 import { buildPerformancePopulations } from './performance-populations.js'
@@ -14,11 +15,17 @@ const MIN = 60_000, H = 3600_000
 const T = Math.floor(Date.now() / H) * H
 const DEMO = 'demo.ctraderapi.com', LIVE = 'live.ctraderapi.com'
 
-function fixture(t, accounts = [['11', 0], ['22', 0], ['33', 1]]) {
+// Each account's RECORDED deposit currency, written by the production writer
+// (recordDepositCurrency) — the evidence WEB-7's pools read. 44 has none.
+const RECORDED = { 11: 'USD', 22: 'USD', 33: 'SGD', 44: null }
+function fixture(t, accounts = [['11', 0], ['22', 0], ['33', 1]], recorded = RECORDED) {
   const db = initDB(':memory:'); t.after(() => db.close())
   setState(db, 'account_history_pruned_ms', String(Date.now()))
   for (const [id, live] of accounts) db.prepare('INSERT INTO accounts (account_id, is_live, enabled) VALUES (?, ?, 1)').run(id, live)
   const hostOf = id => accounts.find(a => a[0] === id)?.[1] ? LIVE : DEMO
+  for (const [id] of accounts) {
+    if (recorded[id]) assert.equal(recordDepositCurrency(db, { accountId: id, host: hostOf(id), depositAssetId: recorded[id] === 'SGD' ? 7 : 1, currency: recorded[id], receivedAt: T - 30 * H }), true)
+  }
   const trader = (id, at, balance, currency = 'USD', extra = {}) => recordAccountHistory(db,
     { accountId: id, host: hostOf(id), source: 'broker_trader', receivedAt: at, currency, balance, ...extra })
   const equity = (id, at, balance, openPnl, currency = 'USD', extra = {}) => recordAccountHistory(db,
@@ -77,7 +84,7 @@ test('a row received inside the window whose balance was READ before it is not a
   assert.deepEqual(r.at('11', T), { status: 'not_stored', reason: 'no_observation_near_edge', maxAgeMs: BALANCE_EDGE_MAX_AGE_MS })
 })
 
-test('valued rows that fail the read check never hide a usable balance behind them, first or latest', t => {
+test('valued rows that fail the read check never hide a usable balance behind them', t => {
   const { db } = fixture(t)
   // Ten rows the SQL filter accepts (balance, currency, a non-null read time)
   // but whose read time is not an integer, on each side of one usable read.
@@ -87,7 +94,8 @@ test('valued rows that fail the read check never hide a usable balance behind th
   recordAccountHistory(db, { accountId: '11', host: DEMO, source: 'broker_trader', receivedAt: T - 30 * MIN, currency: 'USD', balance: 4321 })
   for (let i = 0; i < 10; i++) bad(T - 20 * MIN + i * MIN)
   const r = balanceReader(db)
-  assert.deepEqual(r.account('11'), { accountId: '11', host: DEMO, registered: true, currency: 'USD', historyStartsAt: T - 30 * MIN })
+  // The currency is the RECORDED deposit currency (V3 WEB-3m), not read off a stored balance.
+  assert.deepEqual(r.account('11'), { accountId: '11', host: DEMO, registered: true, currency: 'USD', currencyReason: null, historyStartsAt: T - 30 * MIN })
   assert.equal(r.at('11', T - 20 * MIN).value, 4321)
 })
 
@@ -128,7 +136,7 @@ test('all accounts: per currency, summed only when every account of the currency
     trader('33', at, 50, 'SGD')
     if (at <= T - 3 * H) trader('22', at, 200) // stops being read 3 h ago
   }
-  // 44 has never stored a balance, so its currency is unknown.
+  // 44 has no recorded deposit currency, so it is in no currency group.
   const r = hourlyActivity(db, { all: true, explicit: true }, { to: T, nowMs: T })
   const early = r.rows[10].balance.close, late = r.rows[23].balance.close
   assert.equal(r.rows[10].closeBal, null, 'two currencies and an unknown account: no single total')
@@ -138,7 +146,8 @@ test('all accounts: per currency, summed only when every account of the currency
   assert.equal(usd.value, null, 'one USD account unread at the edge: no USD total')
   assert.equal(usd.observedAccounts, 1); assert.equal(usd.reason, 'no_observation_near_edge')
   assert.deepEqual(usd.missingAccounts, ['22'], 'the account holding the USD total open is named')
-  assert.deepEqual(late.unknownAccounts, ['44'], 'the account with no stored currency is named')
+  assert.deepEqual(late.unknownAccounts, ['44'], 'the account with no recorded currency is named')
+  assert.equal(late.unknownReason, 'deposit_currency_not_recorded')
   assert.deepEqual(late.groups.find(g => g.currency === 'SGD').missingAccounts, [])
   assert.equal(late.groups.find(g => g.currency === 'SGD').value, 50)
 })
@@ -167,15 +176,80 @@ test('ledger carry in / carry out come from the observed balances at the window 
 })
 
 test('no stored balance leaves every carry null with a reason; a failed read is unavailable, not zero', t => {
-  const { db } = fixture(t)
+  const { db } = fixture(t, [['11', 0], ['44', 0]])
   const report = buildPerformancePopulations(db, { now: T })
   const w = reportLedger(report, '11').windows.find(x => x.key === '4h')
   assert.equal(w.carryIn, null); assert.equal(w.carryOut, null)
-  // Its currency was never stored either, so it is in no currency group.
-  assert.deepEqual(w.carry.in.groups, [])
-  assert.equal(w.carry.in.unknownCurrencyAccounts, 1)
-  assert.equal(w.carry.in.unknownReason, 'no_balance_stored')
+  // 11 has a recorded currency but no stored balance: its USD group says so.
+  assert.deepEqual(w.carry.in.groups.map(g => [g.currency, g.value, g.reason]), [['USD', null, 'no_balance_stored']])
+  assert.equal(w.carry.in.unknownCurrencyAccounts, 0)
+  // 44 has no recorded deposit currency: in no group, and the reason says why.
+  const none = reportLedger(report, '44').windows.find(x => x.key === '4h')
+  assert.deepEqual(none.carry.in.groups, [])
+  assert.equal(none.carry.in.unknownCurrencyAccounts, 1)
+  assert.equal(none.carry.in.unknownReason, 'deposit_currency_not_recorded')
   const broken = reportLedger({ ...report, balanceEdges: { status: 'unavailable', reason: 'balance_history_read_failed' } }, '11').windows[0]
   assert.equal(broken.carryIn, null)
   assert.deepEqual(broken.carry, { status: 'unavailable', reason: 'balance_history_read_failed', in: null, out: null })
+})
+
+// V3 WEB-3m: the balance columns and the carry use the SAME currency evidence
+// and pooling rule as WEB-7's pools — the recorded deposit currency
+// (currencyByAccount / reportCurrency) — and a two-currency All view never
+// sums across currencies in any WEB-3 row.
+test('two currencies on All: every hourly and ledger row keeps SGD and USD apart, keyed on the recorded currency, never a stamp', t => {
+  const { db, trader, equity } = fixture(t, [['11', 0], ['22', 0], ['33', 1]])
+  for (let at = T - 26 * H; at <= T; at += 3 * MIN) {
+    trader('11', at, 100)
+    trader('22', at, 200)
+    trader('33', at, 50, 'SGD')
+  }
+  for (let at = T - 24 * H + 30 * MIN; at < T; at += H) {
+    equity('11', at, 100, -5)
+    equity('22', at, 200, -2)
+    equity('33', at, 50, 1.7, 'SGD')
+  }
+  const r = hourlyActivity(db, { all: true, explicit: true }, { to: T, nowMs: T })
+  const report = buildPerformancePopulations(db, { now: T })
+  const ledger = reportLedger(report, 'all').windows.filter(w => w.carry?.status === 'observed_broker_balance')
+  assert.equal(r.rows.length, 24); assert.ok(ledger.length >= 4, 'the rolling ledger windows are covered')
+  // The currency every row keys on is the report's own recorded currency.
+  assert.deepEqual(r.balanceHistory.accounts.map(a => [a.accountId, a.currency]), Object.entries(report.currencyByAccount).map(([id, c]) => [id, c.currency]))
+  const crossSums = [150, 250, 350, -3.3, -0.3, -5.3]
+  const sets = [...r.rows.flatMap(h => [h.balance.open, h.balance.close, h.balance.floating]),
+    ...ledger.flatMap(w => [w.carry.in, w.carry.out]).filter(set => set.groups.every(g => g.value != null))]
+  assert.ok(sets.length > 60)
+  for (const set of sets) {
+    assert.equal(set.total, null, 'no single total across two currencies')
+    for (const g of set.groups) assert.ok(!crossSums.some(x => Math.abs(x - g.value) < 1e-9), `${g.currency} ${g.value} is a cross-currency sum`)
+  }
+  assert.deepEqual(r.rows[23].balance.close.groups.map(g => [g.currency, g.value, g.accounts]), [['SGD', 50, 1], ['USD', 300, 2]])
+  assert.deepEqual(r.rows[22].balance.floating.groups.map(g => [g.currency, g.value]), [['SGD', 1.7], ['USD', -7]])
+  assert.deepEqual(ledger.find(w => w.key === '1h').carry.out.groups.map(g => [g.currency, g.value]), [['SGD', 50], ['USD', 300]])
+
+  // A read stamped in another currency than the account's recorded one never
+  // moves the account into that currency: 22 is recorded USD, so a stray
+  // SGD-stamped read neither joins the SGD total (the old stamp-keyed rule
+  // would have made it 250) nor counts as USD.
+  // At this edge 11 and 33 have fresh reads, and 22's only read inside the
+  // tolerance is the stray SGD-stamped one (its USD reads are 19 min old).
+  trader('22', T + 5 * MIN, 999, 'SGD')
+  trader('11', T + 15 * MIN, 100); trader('33', T + 15 * MIN, 50, 'SGD')
+  const edge = T + 19 * MIN
+  assert.deepEqual(balanceReader(db).at('22', edge), { status: 'not_stored', reason: 'observation_currency_mismatch', maxAgeMs: BALANCE_EDGE_MAX_AGE_MS })
+  const later = hourlyActivity(db, { all: true, explicit: true }, { to: edge, nowMs: edge }).rows[23].balance.close
+  assert.deepEqual(later.groups.map(g => [g.currency, g.value, g.reason]), [['SGD', 50, null], ['USD', null, 'observation_currency_mismatch']])
+  assert.deepEqual(later.groups.find(g => g.currency === 'USD').missingAccounts, ['22'])
+})
+
+test('the carry\'s currency is the report\'s currencyByAccount: without it nothing is pooled (the wiring)', t => {
+  const { db, trader } = fixture(t, [['11', 0], ['33', 1]])
+  for (let at = T - 3 * H; at <= T; at += 3 * MIN) { trader('11', at, 100); trader('33', at, 50, 'SGD') }
+  const report = buildPerformancePopulations(db, { now: T })
+  assert.deepEqual(reportLedger(report, 'all').windows.find(w => w.key === '1h').carry.in.groups.map(g => [g.currency, g.value]), [['SGD', 50], ['USD', 100]])
+  // The same edges with no recorded currencies: every account is in no group.
+  const bare = reportLedger({ ...report, currencyByAccount: {} }, 'all').windows.find(w => w.key === '1h')
+  assert.deepEqual(bare.carry.in.groups, [])
+  assert.equal(bare.carry.in.unknownCurrencyAccounts, 2)
+  assert.equal(bare.carryIn, null)
 })

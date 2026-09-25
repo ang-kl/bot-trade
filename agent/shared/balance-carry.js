@@ -5,16 +5,27 @@
 // Money is per deposit currency and never summed across currencies (8,989-A
 // default WEB-5). A currency total exists only when EVERY account of that
 // currency has an observation at the edge; otherwise the total is null and
-// the reason is kept. An account whose currency was never stored could belong
-// to any currency, so while one exists no all-accounts total is stated.
-// The accounts that were NOT read are named (missingAccounts / unknownAccounts)
-// so a gap that keeps a total open — an account disabled later, say — says
-// which account it is instead of only "n/m accounts read".
-const REASON_ORDER = ['before_balance_history', 'no_balance_stored', 'no_observation_near_edge', 'no_floating_reading']
+// the reason is kept. The accounts that were NOT read are named
+// (missingAccounts / unknownAccounts) so a gap that keeps a total open — an
+// account disabled later, say — says which account it is instead of only
+// "n/m accounts read".
+//
+// ONE POOLING RULE (V3 WEB-3m): an account's currency group is its RECORDED
+// broker deposit currency — the populations report's currencyByAccount, the
+// map WEB-7's pools read through reportCurrency — passed in as the entry's
+// `currency`. An observation's own stamp never chooses the group: it is
+// re-checked against the recorded currency, and a read stamped in another
+// currency is not summed (observation_currency_mismatch), as populationStats
+// re-checks every contributing account. An account with no recorded currency
+// belongs to no currency, so while one exists no all-accounts total is stated.
+const CCY = /^[A-Z]{3}$/
+const REASON_ORDER = ['before_balance_history', 'no_balance_stored', 'no_observation_near_edge', 'observation_currency_mismatch',
+  'no_floating_reading', 'account_not_registered', 'deposit_currency_evidence_mismatch', 'deposit_currency_not_recorded']
 const firstReason = reasons => REASON_ORDER.find(r => reasons.has(r)) ?? [...reasons][0] ?? null
 
-/** entries: [{ accountId, currency, storedFrom, evidence }], evidence being
- * { status: 'observed', value, currency, at, source } or
+/** entries: [{ accountId, currency, currencyReason?, storedFrom, evidence }],
+ * `currency` being the account's RECORDED deposit currency (null when none),
+ * evidence { status: 'observed', value, currency, at, source } or
  * { status: 'not_stored', reason }. */
 export function currencyGroups(entries) {
   const groups = new Map()
@@ -22,11 +33,17 @@ export function currencyGroups(entries) {
   const unknownReasons = new Set(), unknownAccounts = []
   for (const e of entries || []) {
     const ev = e?.evidence
-    const observed = ev?.status === 'observed' && typeof ev.value === 'number' && Number.isFinite(ev.value)
-      && typeof ev.currency === 'string' && /^[A-Z]{3}$/.test(ev.currency)
-    const currency = observed ? ev.currency : typeof e?.currency === 'string' && /^[A-Z]{3}$/.test(e.currency) ? e.currency : null
+    const read = ev?.status === 'observed' && typeof ev.value === 'number' && Number.isFinite(ev.value)
+      && typeof ev.currency === 'string' && CCY.test(ev.currency)
+    const currency = typeof e?.currency === 'string' && CCY.test(e.currency) ? e.currency : null
+    const observed = read && ev.currency === currency
     const id = e?.accountId != null ? String(e.accountId) : null
-    if (!currency) { unknownCurrencyAccounts++; unknownReasons.add(ev?.reason || 'not_stored'); if (id) unknownAccounts.push(id); continue }
+    if (!currency) {
+      unknownCurrencyAccounts++
+      unknownReasons.add(ev?.status === 'not_stored' && ev.reason ? ev.reason : e?.currencyReason || 'deposit_currency_not_recorded')
+      if (id) unknownAccounts.push(id)
+      continue
+    }
     if (!groups.has(currency)) groups.set(currency, { currency, accounts: 0, observed: 0, sum: 0, oldestAt: null, newestAt: null,
       storedFrom: null, storedFromKnown: true, sources: new Set(), reasons: new Set(), missing: [] })
     const g = groups.get(currency)
@@ -40,7 +57,7 @@ export function currencyGroups(entries) {
         g.newestAt = g.newestAt == null ? ev.at : Math.max(g.newestAt, ev.at)
       }
       if (ev.source) g.sources.add(ev.source)
-    } else { g.reasons.add(ev?.reason || 'not_stored'); if (id) g.missing.push(id) }
+    } else { g.reasons.add(read ? 'observation_currency_mismatch' : ev?.reason || 'not_stored'); if (id) g.missing.push(id) }
   }
   const list = [...groups.values()].sort((a, b) => a.currency.localeCompare(b.currency)).map(g => {
     const complete = g.observed === g.accounts
@@ -54,15 +71,20 @@ export function currencyGroups(entries) {
     groups: list, unknownCurrencyAccounts, unknownAccounts: unknownAccounts.sort(), unknownReason: firstReason(unknownReasons) }
 }
 
-/** Ledger carry for one scope from report.balanceEdges (server-built). */
-export function ledgerCarry(balanceEdges, windowKey, accountId = 'all') {
+/** Ledger carry for one scope from report.balanceEdges (server-built).
+ * `currencyOf(accountId)` names the account's recorded deposit currency:
+ * reportLedger passes `id => reportCurrency(report, id)`, WEB-7's reader of the
+ * report's currencyByAccount. Without it no account has a currency, so no
+ * carry is pooled (never a guess, never a second reader). */
+export function ledgerCarry(balanceEdges, windowKey, accountId = 'all', currencyOf = null) {
   const unavailable = reason => ({ carryIn: null, carryOut: null, carryCurrency: null,
     carry: { status: 'unavailable', reason, in: null, out: null } })
   if (!balanceEdges || balanceEdges.status !== 'complete' || !balanceEdges.windows) return unavailable(balanceEdges?.reason || 'balance_history_unavailable')
   const accounts = (balanceEdges.accounts || []).filter(a => accountId === 'all' || a.accountId === String(accountId))
   if (!accounts.length) return unavailable('account_not_registered')
   const edges = balanceEdges.windows[windowKey] || {}
-  const side = k => currencyGroups(accounts.map(a => ({ accountId: a.accountId, currency: a.currency,
+  const recorded = id => { const c = typeof currencyOf === 'function' ? currencyOf(id) : null; return typeof c === 'string' && CCY.test(c) ? c : null }
+  const side = k => currencyGroups(accounts.map(a => ({ accountId: a.accountId, currency: recorded(a.accountId),
     storedFrom: a.historyStartsAt, evidence: edges[a.accountId]?.[k] ?? { status: 'not_stored', reason: 'no_balance_stored' } })))
   const inside = side('in'), outside = side('out')
   return { carryIn: inside.total, carryOut: outside.total, carryCurrency: inside.currency ?? outside.currency,
@@ -84,6 +106,14 @@ export function missingBalanceLabel(group) {
     ? ` (${group.observedAccounts}/${group.accounts} accounts read)` : ''
   if (group.reason === 'before_balance_history' && group.storedFrom != null) return `not stored before ${utcStamp(group.storedFrom)}${partial}`
   if (group.reason === 'no_observation_near_edge') return `no broker read near edge${partial}`
+  if (group.reason === 'observation_currency_mismatch') return `read not in ${group.currency || 'the recorded currency'}${partial}`
   if (group.reason === 'no_floating_reading') return `no floating read${partial}`
   return `not stored${partial}`
+}
+
+/** Short label for accounts in no currency group (V3 WEB-3m), by reason. */
+export function unknownCurrencyLabel(reason) {
+  if (reason === 'account_not_registered') return 'not registered'
+  if (reason === 'deposit_currency_evidence_mismatch') return 'currency evidence not for this host'
+  return 'currency not recorded'
 }

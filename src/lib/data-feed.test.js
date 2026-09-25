@@ -1,0 +1,145 @@
+import { describe, it, expect } from 'vitest'
+import { dailyBarAge, dailyBarNote, dailyBarsSummary, latencyLine, costLines, quoteFreshnessLine, dataFeedCardScope } from './data-feed.js'
+
+const OPEN = Date.parse('2026-09-24T21:00:00Z') // current broker day open
+const NOW = Date.parse('2026-09-25T12:00:00Z')
+
+describe('dailyBarAge', () => {
+  it('names a bar from before the current broker-day open as an earlier day', () => {
+    const a = dailyBarAge(Date.parse('2026-09-23T21:00:00Z'), OPEN, NOW)
+    expect(a).toEqual({ status: 'earlier', ageHours: 39, days: 1 })
+    expect(dailyBarNote(a)).toBe("previous broker day, started 39 h ago — not today's forming bar")
+    expect(dailyBarNote(dailyBarAge(Date.parse('2026-09-21T21:00:00Z'), OPEN, NOW))).toMatch(/^3 broker days back/)
+  })
+  it('names the current day as current', () => {
+    const a = dailyBarAge(OPEN, OPEN, NOW)
+    expect(a.status).toBe('current')
+    expect(dailyBarNote(a)).toBe('current broker day')
+  })
+  it('a bar starting up to 2 h before the anchor is unverified with the offset named, never "previous broker day"', () => {
+    // After US DST ends (01-11) the anchor moves to 22:00Z; if the broker's
+    // D1 bars stay at 21:00Z, the forming bar starts 1 h before the anchor.
+    const winterOpen = Date.parse('2026-11-02T22:00:00Z')
+    const winterNow = Date.parse('2026-11-03T12:00:00Z')
+    const a = dailyBarAge(Date.parse('2026-11-02T21:00:00Z'), winterOpen, winterNow)
+    expect(a).toEqual({ status: 'unverified', ageHours: 15, days: null, anchorOffsetHours: 1 })
+    expect(dailyBarNote(a)).toBe("broker day unverified — bar boundary 1 h before the gate's 17:00 New York day open")
+    expect(dailyBarNote(a)).not.toMatch(/previous broker day/)
+    expect(dailyBarAge(winterOpen - 2 * 3_600_000, winterOpen, winterNow).status).toBe('unverified')
+    // Past the band it is an earlier day again — the previous 21:00Z bar
+    // starts 25 h before the anchor.
+    const prev = dailyBarAge(Date.parse('2026-11-01T21:00:00Z'), winterOpen, winterNow)
+    expect(prev).toMatchObject({ status: 'earlier', days: 1 })
+    expect(dailyBarAge(winterOpen - 3 * 3_600_000, winterOpen, winterNow).status).toBe('earlier')
+    expect(dailyBarsSummary([{ day: { t: Date.parse('2026-11-02T21:00:00Z') } }], winterOpen, winterNow))
+      .toBe('1 retained daily bar for scoped open positions · 1 with the day unverified')
+  })
+  it('does not guess a day when the anchor or the bar time is missing', () => {
+    expect(dailyBarAge(OPEN, null, NOW).status).toBe('unverified')
+    expect(dailyBarAge(null, OPEN, NOW).status).toBe('unverified')
+    expect(dailyBarNote(dailyBarAge(OPEN, null, NOW))).toBe('broker day unverified')
+  })
+  it('summarises how many retained bars are from an earlier day', () => {
+    const rows = [{ day: { t: Date.parse('2026-09-23T21:00:00Z') } }, { day: { t: OPEN } }, { day: null }]
+    expect(dailyBarsSummary(rows, OPEN, NOW)).toBe('2 retained daily bars for scoped open positions · 1 from an earlier broker day')
+    expect(dailyBarsSummary(null, OPEN, NOW)).toBe('Feed freshness unavailable')
+    expect(dailyBarsSummary([], OPEN, NOW)).toBe('No retained daily bars for scoped open positions')
+    expect(dailyBarsSummary(rows, null, NOW)).toContain('2 with the day unverified')
+  })
+})
+
+describe('latencyLine', () => {
+  it('prints the measured percentiles with their coverage', () => {
+    expect(latencyLine({ measured: 154, of: 300, p50Ms: 312, p90Ms: 1480 }))
+      .toBe('entry latency p50 312 ms · p90 1,480 ms · measured on 154 of 300 closes (submit → execution event)')
+  })
+  it('says not measured instead of printing a dash or a zero', () => {
+    expect(latencyLine({ measured: 0, of: 12, p50Ms: null, p90Ms: null })).toBe('entry latency not measured on any of the latest 12 closes')
+    expect(latencyLine(null)).toMatch(/unavailable/)
+    expect(latencyLine({ measured: 0, of: 0 })).toMatch(/no recorded closes/)
+  })
+})
+
+describe('costLines', () => {
+  it('prints one line per currency and never a cross-currency total', () => {
+    const lines = costLines({ window: { closes: 5 }, costs: [
+      { currency: 'SGD', closes: 2, commissionKnown: 2, commission: -7, swapKnown: 1, swap: 0.5 },
+      { currency: 'USD', closes: 2, commissionKnown: 2, commission: -1234.5, swapKnown: 0, swap: null },
+      { currency: null, closes: 1, commissionKnown: 1, commission: -1, swapKnown: 1, swap: -1 },
+    ] })
+    expect(lines).toEqual([
+      'SGD · commission -7.00 (2/2 recorded) · swap 0.50 (1/2 recorded)',
+      'USD · commission -1,234.50 (2/2 recorded) · swap not recorded on 2 closes',
+      'currency unverified · commission -1.00 (1/1 recorded) · swap -1.00 (1/1 recorded)',
+    ])
+    expect(lines.join(' ')).not.toMatch(/-1,242/)
+  })
+  it('says unavailable or empty instead of drawing zeros', () => {
+    expect(costLines(null)).toEqual(['fees and swap unavailable — the data-feed report did not load'])
+    expect(costLines({ window: { closes: 0 }, costs: [] })).toEqual(['fees and swap: no recorded closes in this scope'])
+  })
+})
+
+describe('quoteFreshnessLine', () => {
+  it('prints the 10-minute quote sources with the record age', () => {
+    expect(quoteFreshnessLine({ status: 'measured', ageMs: 4_400, window10m: { passes: 12, fromSidecar: 4, fromBroker: 31, stale: 31 } }))
+      .toBe('quotes, last 10 min (12 priced passes): sidecar 4 · broker 31 (stale 31) · record 4 s old')
+  })
+  it('names the missing record', () => {
+    expect(quoteFreshnessLine({ status: 'unavailable', reason: 'no fast-monitor pass record' })).toBe('quote freshness not recorded (no fast-monitor pass record)')
+    expect(quoteFreshnessLine({ status: 'no_priced_pass', ageMs: 1000, window10m: null })).toBe('quote freshness: no priced pass in the last 10 min · record 1 s old')
+    expect(quoteFreshnessLine(null)).toMatch(/did not load/)
+  })
+})
+
+describe('dataFeedCardScope', () => {
+  // The state an account switch leaves behind: acct already moved to B,
+  // feedReport and riskFull still A's until the new load finishes.
+  const feedA = { accountId: 'A', execution: { latency: { measured: 1, of: 1, p50Ms: 5, p90Ms: 5 } } }
+  // risk-full also carries daily-loss figures of its own (`dailyPacing`, and
+  // a gate figure WEB-9 once added). None of them may reach the card: its
+  // daily stop is the account-overview reading the account cards print.
+  const riskA = {
+    risk: { scopedTo: 'A', effective: { equityStopPct: 0.15 } },
+    account: { accountId: 'A', depositCurrency: 'SGD' },
+    dailyPacing: { accountId: 'A', capUsd: 150, binding: 'usd' },
+    dailyCapEnforced: { status: 'computed', accountId: 'A', capUsd: 100 },
+  }
+  it('passes every figure through when the responses belong to the account on screen', () => {
+    expect(dataFeedCardScope({ acct: 'A', feedReport: feedA, riskFull: riskA })).toEqual({
+      feedReport: feedA,
+      allAccounts: false,
+      equityStopPct: 0.15,
+      equityStopArmed: true,
+    })
+  })
+  it("never hands the previous account's figures to the new account", () => {
+    expect(dataFeedCardScope({ acct: 'B', feedReport: feedA, riskFull: riskA })).toEqual({
+      feedReport: null,
+      allAccounts: false,
+      equityStopPct: null,
+      equityStopArmed: null,
+    })
+  })
+  it('carries no daily-loss figure and no second currency reading from risk-full', () => {
+    const s = dataFeedCardScope({ acct: 'A', feedReport: feedA, riskFull: riskA })
+    const flat = JSON.stringify(s)
+    for (const n of ['150', '100', 'SGD']) expect(flat).not.toContain(n)
+    for (const k of ['dailyCap', 'dailyStop', 'dailyPacing', 'depositCurrency']) expect(s).not.toHaveProperty(k)
+  })
+  it('the all-accounts view carries no single-account figure', () => {
+    const s = dataFeedCardScope({ acct: 'all', feedReport: feedA, riskFull: riskA })
+    expect(s.allAccounts).toBe(true)
+    expect(s.feedReport).toBeNull()
+    expect(s.equityStopArmed).toBeNull()
+    const own = { ...feedA, accountId: 'all' }
+    expect(dataFeedCardScope({ acct: 'all', feedReport: own, riskFull: null }).feedReport).toBe(own)
+  })
+  it('an error body, a page error or a numeric id are handled without guessing', () => {
+    expect(dataFeedCardScope({ acct: 'A', feedReport: { ...feedA, error: 'timeout' } }).feedReport).toBeNull()
+    expect(dataFeedCardScope({ acct: 'A', riskFull: riskA, error: 'agent down' }).equityStopArmed).toBeNull()
+    // accounts.account_id is TEXT; a numeric id in a body still matches its string.
+    expect(dataFeedCardScope({ acct: '46130058', feedReport: { ...feedA, accountId: 46130058 } }).feedReport).not.toBeNull()
+    expect(dataFeedCardScope({ acct: 'A', riskFull: { ...riskA, risk: { ...riskA.risk, effective: { equityStopPct: null } } } }).equityStopArmed).toBe(false)
+  })
+})

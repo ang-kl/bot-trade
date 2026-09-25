@@ -33,11 +33,22 @@ describe('observed balances are shown per currency and a missing edge is never a
     expect(lines[1].title).toContain('Not read: account 22.')
     expect(lines[0].title).not.toContain('Not read')
   })
-  it('an account with no stored currency is named, and blocks a single total', () => {
-    const set = currencyGroups([seen('11', 'USD', 100), { accountId: '44', currency: null, evidence: { status: 'not_stored', reason: 'no_balance_stored' } }])
+  it('an account with no recorded deposit currency is named, and blocks a single total', () => {
+    const set = currencyGroups([seen('11', 'USD', 100), { accountId: '44', currency: null, evidence: { status: 'not_stored', reason: 'deposit_currency_not_recorded' } }])
     expect(set.total).toBeNull()
-    expect(balanceLines(set).map(l => l.text)).toEqual(['100.00', '1 acct not stored'])
+    expect(balanceLines(set).map(l => l.text)).toEqual(['100.00', '1 acct currency not recorded'])
+    expect(balanceLines(set)[1].title).toContain('no recorded broker deposit currency')
     expect(balanceLines(set)[1].title).toContain('Not read: account 44.')
+    expect(balanceLines(currencyGroups([{ accountId: '44', currency: null, evidence: { status: 'not_stored', reason: 'deposit_currency_not_recorded' } }]))[0].text).toBe('currency not recorded')
+  })
+  // V3 WEB-3m: the group is the RECORDED currency passed in, never the stamp
+  // an observation carries (WEB-7's one pooling rule).
+  it('a read stamped in another currency is never summed into that currency, and holds its own open', () => {
+    const stray = { accountId: '22', currency: 'USD', storedFrom: AT, evidence: { status: 'observed', value: 200, currency: 'SGD', at: AT, source: 'broker_trader' } }
+    const set = currencyGroups([seen('11', 'USD', 100), stray, seen('33', 'SGD', 50)])
+    expect(set.groups.map(g => [g.currency, g.value, g.accounts])).toEqual([['SGD', 50, 1], ['USD', null, 2]])
+    expect(set.groups[1]).toMatchObject({ reason: 'observation_currency_mismatch', missingAccounts: ['22'], observedAccounts: 1 })
+    expect(balanceLines(set).map(l => l.text)).toEqual(['SGD 50.00', 'USD read not in USD (1/2 accounts read)'])
   })
   it('a malformed or absent server payload reads as unavailable', () => {
     expect(balanceLines(null)[0]).toMatchObject({ text: '—', missing: true })
@@ -61,10 +72,17 @@ describe('ledger carry text', () => {
     accounts: [{ accountId: '11', currency: 'USD', historyStartsAt: AT }],
     windows: { '1h': { 11: { in: seen('11', 'USD', 1019).evidence, out: seen('11', 'USD', 1020).evidence } },
       '30d': { 11: { in: gap('11', 'USD').evidence, out: seen('11', 'USD', 1020).evidence } } } }
+  const usd = id => (id === '11' ? 'USD' : null)
   it('reads the observed edges, and labels the edge before storage', () => {
-    expect(carryText(ledgerCarry(edges, '1h', '11'), 'in')).toBe('1019.00')
-    expect(carryText(ledgerCarry(edges, '30d', '11'), 'in')).toBe('not stored before 22-09 17:26 UTC')
-    expect(ledgerCarry(edges, '30d', '11').carryIn).toBeNull()
-    expect(carryText(ledgerCarry({ status: 'unavailable', reason: 'balance_history_read_failed' }, '1h', '11'), 'out')).toBe('—')
+    expect(carryText(ledgerCarry(edges, '1h', '11', usd), 'in')).toBe('1019.00')
+    expect(carryText(ledgerCarry(edges, '30d', '11', usd), 'in')).toBe('not stored before 22-09 17:26 UTC')
+    expect(ledgerCarry(edges, '30d', '11', usd).carryIn).toBeNull()
+    expect(carryText(ledgerCarry({ status: 'unavailable', reason: 'balance_history_read_failed' }, '1h', '11', usd), 'out')).toBe('—')
+  })
+  it('takes the currency from the reader it is given, and with none pools nothing', () => {
+    expect(ledgerCarry(edges, '1h', '11', usd).carryCurrency).toBe('USD')
+    const bare = ledgerCarry(edges, '1h', '11')
+    expect(bare.carryIn).toBeNull()
+    expect(carryText(bare, 'in')).toBe('currency not recorded')
   })
 })

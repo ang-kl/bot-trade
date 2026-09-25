@@ -117,6 +117,21 @@ export function compareTimeframeResult(db, row, now = Date.now()) {
   return state
 }
 export const REFUSAL_WINDOW_MS = 3_600_000
+// The hour is a time bound, not a row bound: 1024 profiles on 1m can put ~61k
+// refusals in it (re-checker N-a, 130 ms). The newest REFUSAL_ROW_LIMIT rows are
+// read; `inputRefusedTruncated` says when the breakdown is a sample.
+export const REFUSAL_ROW_LIMIT = 5000
+function refusalBreakdown(db, now) {
+  const rows = db.prepare(`SELECT json_extract(detail,'$.error') error,json_extract(detail,'$.reason') reason,count(*) records
+    FROM (SELECT detail FROM scanner_comparisons WHERE source='cpp-scan-timeframe' AND state='input_refused' AND observed_ms>=?
+          ORDER BY observed_ms DESC LIMIT ?) GROUP BY 1,2`).all(now - REFUSAL_WINDOW_MS, REFUSAL_ROW_LIMIT + 1)
+  const read = rows.reduce((n, r) => n + r.records, 0)
+  if (read <= REFUSAL_ROW_LIMIT) return { inputRefusedLastHour: rows, inputRefusedTruncated: false }
+  // One extra row was read only to detect truncation: re-read exactly the limit.
+  return { inputRefusedLastHour: db.prepare(`SELECT json_extract(detail,'$.error') error,json_extract(detail,'$.reason') reason,count(*) records
+    FROM (SELECT detail FROM scanner_comparisons WHERE source='cpp-scan-timeframe' AND state='input_refused' AND observed_ms>=?
+          ORDER BY observed_ms DESC LIMIT ?) GROUP BY 1,2`).all(now - REFUSAL_WINDOW_MS, REFUSAL_ROW_LIMIT), inputRefusedTruncated: true }
+}
 export function comparisonStatus(db, { now = Date.now() } = {}) {
   if (!exists(db)) return { status: 'unavailable', reason: 'no_comparison_observation', orderAuthority: false }
   // This runs on the main thread for every /state/scanner-mirrors and
@@ -129,8 +144,7 @@ export function comparisonStatus(db, { now = Date.now() } = {}) {
   return { status: 'observed', orderAuthority: false, retentionDays: 7, capacity: CAP, capacityPer: 'source',
     populations: db.prepare('SELECT source,state,count(*) records,MAX(observed_ms) lastObservedAtMs FROM scanner_comparisons GROUP BY source,state').all(),
     inputRefusedWindowMs: REFUSAL_WINDOW_MS,
-    inputRefusedLastHour: db.prepare(`SELECT json_extract(detail,'$.error') error,json_extract(detail,'$.reason') reason,count(*) records
-      FROM scanner_comparisons WHERE source='cpp-scan-timeframe' AND state='input_refused' AND observed_ms>=? GROUP BY 1,2`).all(now - REFUSAL_WINDOW_MS),
+    ...refusalBreakdown(db, now),
     note: 'Retained comparisons are observations, not independent research samples. Gaps, missing references and unsupported profiles prevent a complete parity claim.' }
 }
 export function comparisonProfiles(db) {

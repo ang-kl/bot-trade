@@ -37,7 +37,8 @@ describe('rolling 24 hours: balance and floating per hour', () => {
   it('all accounts: balances per currency and the live floating subtotal per currency', () => {
     const live = { ...past, isLive: true, balance: { open: currencyGroups([seen('USD', 300), seen('SGD', 50)]),
       close: currencyGroups([seen('USD', 301), seen('SGD', 51)]), floating: currencyGroups([]) } }
-    const groups = currentTotalsByCurrency({ accounts: [{ accountId: '11', currency: 'USD', openPnl: -164.9 }, { accountId: '33', currency: 'SGD', openPnl: 1.7 }] })
+    const groups = currentTotalsByCurrency({ accounts: [{ accountId: '11', currency: 'USD', openPnl: -164.9 }, { accountId: '33', currency: 'SGD', openPnl: 1.7 }] },
+      'all', id => ({ 11: 'USD', 33: 'SGD' })[id])
     const html = text(renderToStaticMarkup(<TodayHourlyBody rows={[live]} floatingNow={null} floatingNowGroups={groups} />))
     expect(html).toContain('SGD 50.00'); expect(html).toContain('USD 300.00')
     expect(html).toContain('(SGD +1.70 · USD -164.90 float)')
@@ -60,11 +61,14 @@ describe('rolling 24 hours: balance and floating per hour', () => {
 
 describe('timeframe ledger: carry in / carry out', () => {
   const edges = { status: 'complete', maxAgeMs: 900000,
-    accounts: [{ accountId: '11', currency: 'USD', historyStartsAt: START }, { accountId: '33', currency: 'SGD', historyStartsAt: START }],
+    // No currency here: the server ships none on the edges (V3 WEB-3m); the
+    // carry takes it from the report's currencyByAccount (reportCurrency).
+    accounts: [{ accountId: '11', historyStartsAt: START }, { accountId: '33', historyStartsAt: START }],
     windows: { '12h': { 11: { in: seen('USD', 1018).evidence, out: seen('USD', 1029).evidence }, 33: { in: seen('SGD', 50).evidence, out: seen('SGD', 51).evidence } },
       '30d': { 11: { in: before('USD').evidence, out: seen('USD', 1029).evidence }, 33: { in: before('SGD').evidence, out: seen('SGD', 51).evidence } } } }
+  const recorded = id => ({ 11: 'USD', 33: 'SGD' })[id]
   const win = (key, accountId) => ({ key, label: key.toUpperCase(), from: new Date(NOW - 12 * H).toISOString(), to: new Date(NOW).toISOString(),
-    trades: 0, net: 0, markets: {}, lastTradeAt: null, ...ledgerCarry(edges, key, accountId) })
+    trades: 0, net: 0, markets: {}, lastTradeAt: null, ...ledgerCarry(edges, key, accountId, recorded) })
   it('one account: observed carries, and "not stored before" where the window starts before storage', () => {
     const html = text(renderToStaticMarkup(<table><tbody><LedgerRow w={win('12h', '11')} nowMs={NOW} timeZone="UTC" /><LedgerRow w={win('30d', '11')} nowMs={NOW} timeZone="UTC" /></tbody></table>))
     expect(html).toContain('1,018.00'); expect(html).toContain('1,029.00')
@@ -74,5 +78,16 @@ describe('timeframe ledger: carry in / carry out', () => {
     const html = text(renderToStaticMarkup(<MobileWindowCard w={win('12h', 'all')} timeZone="UTC" />))
     expect(html).toContain('SGD 50.00 · USD 1,018.00')
     expect(html).not.toContain('1,068')
+  })
+  // The WEB-3 / WEB-7 merge: one row carries the observed carry AND the
+  // partial-money marking on its net, on desktop and phone.
+  it('a partial net keeps WEB-7\'s "n of m priced" beside the observed carry', () => {
+    const w = { ...win('12h', '11'), trades: 4, pricedTrades: 2, net: -5.32, winPct: 50, pf: 0.5, tp: 1, part: 0, sl: 1, manual: 0, edge: null,
+      moneyState: 'partial_recorded_account_units' }
+    for (const html of [text(renderToStaticMarkup(<table><tbody><LedgerRow w={w} nowMs={NOW} timeZone="UTC" /></tbody></table>)),
+      text(renderToStaticMarkup(<MobileWindowCard w={w} timeZone="UTC" />))]) {
+      expect(html).toContain('partial · 2 of 4 priced')
+      expect(html).toContain('1,018.00'); expect(html).toContain('1,029.00')
+    }
   })
 })

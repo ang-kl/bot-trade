@@ -51,6 +51,59 @@ export function shouldRunPnlBackfill(result) {
     || (result?.dupsClosed || []).length > 0
 }
 
+/** Code on the local identity refusal: deterministic, never a transport failure. */
+export const POSITION_LEDGER_IDENTITY = 'POSITION_LEDGER_IDENTITY'
+
+function identityRefusal(message, count, rows) {
+  return Object.assign(new Error(message), { code: POSITION_LEDGER_IDENTITY, count, rows })
+}
+
+// Ledger timestamps come in both 'YYYY-MM-DD HH:MM:SS' (UTC) and ISO forms.
+const ledgerMs = v => {
+  if (v == null || v === '') return NaN
+  const raw = String(v).replace(' ', 'T')
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`)
+}
+
+/**
+ * Why ONE ledger row may not take its broker position's whole P&L, or null
+ * when it may, plus the row's opening time for the post-read check. The
+ * position's money must land on exactly one row, and only on a reason, never
+ * on the order rows happened to be reached in:
+ *   - nothing else on the position may already carry money (double count);
+ *   - nothing else may still claim the position. An open or in-flight row
+ *     does. So does another unpriced close, UNLESS its whole lifetime ended at
+ *     or before this row opened: then it is an earlier, superseded record of
+ *     the same position (#372 closed 08-03 by a false "stale reconcile", #774
+ *     re-adopted it 08-05; the broker closed it 09-09). Overlapping rows are
+ *     true duplicates and are refused both ways — whether a row is written
+ *     off does not decide it, or the first write-off would pick the winner.
+ * The read then must show every closing deal at or after this row opened
+ * (backfillClosedPnl), or the money may belong to the earlier record.
+ * Which duplicate is the "real" one stays an operator's decision; this only
+ * refuses to guess.
+ */
+function rowScopeRefusal(db, acct, positionId, positionScopeSql, tradeId, count) {
+  if (count > 6) return { refusal: `${count} ledger rows share the position` }
+  const peers = db.prepare(`SELECT id, status, net_pnl, opened_at, closed_at, COALESCE(pnl_unresolvable, 0) AS written_off
+    FROM trades WHERE account_id = ? ${positionScopeSql} ORDER BY id LIMIT 7`).all(acct, positionId)
+  const target = peers.find(r => Number(r.id) === tradeId)
+  if (!target) return { refusal: `row #${tradeId} is not on this account and position` }
+  if (target.status !== 'closed') return { refusal: `row #${tradeId} is ${target.status}` }
+  if (target.net_pnl != null) return { refusal: `row #${tradeId} already carries P&L` }
+  const openedMs = ledgerMs(target.opened_at)
+  if (!Number.isFinite(openedMs)) return { refusal: `row #${tradeId} has no readable opening time` }
+  const others = peers.filter(r => r !== target)
+  const booked = others.filter(r => r.net_pnl != null)
+  if (booked.length) return { refusal: `position P&L already booked on ${booked.map(r => `#${r.id}`).join(',')}` }
+  const claimants = others.filter(r => !['rejected', 'cancelled'].includes(r.status)
+    && !(r.status === 'closed' && ledgerMs(r.closed_at) <= openedMs))
+  if (claimants.length) {
+    return { refusal: `other claimant(s) ${claimants.map(r => `#${r.id}:${r.status}${Number(r.written_off) === 1 ? '(written off)' : ''}`).join(',')}` }
+  }
+  return { refusal: null, openedMs }
+}
+
 /**
  * Backfill net_pnl / gross_pnl for closed trades that have none, from the
  * broker's deal history. Realised money fields live on each closing deal's
@@ -94,23 +147,41 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   if (strictAccount && (!/^[1-9]\d*$/.test(acct || '') || String(creds.accountId) !== acct)) {
     throw new Error('backfill account identity required')
   }
+  // ROW-SCOPED SETTLEMENT (V3 I1, LIFECYCLE-SPEC R3). `tradeId` narrows every
+  // write below to ONE ledger row. It exists only for a position the ledger
+  // holds more than once (production 25-09: #372/#774 AVY.US and #373/#775
+  // GEV.US on …3489), and only on the strict per-position reader.
+  const tradeId = opts.tradeId == null ? null : Number(opts.tradeId)
+  if (tradeId != null && (positionId == null || !Number.isSafeInteger(tradeId) || tradeId <= 0)) {
+    throw new Error('row-scoped backfill requires a position history reader and a trade id')
+  }
   const includeNull = !strictAccount && (acct == null || acct === selected)
   const accountScopeSql = acct == null
     ? ''
     : includeNull ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
   const positionScopeSql = positionId == null ? '' : 'AND CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)'
-  const scopeSql = `${accountScopeSql} ${positionScopeSql}`
-  const scopeParams = [...(acct == null ? [] : [acct]), ...(positionId == null ? [] : [positionId])]
+  const rowScopeSql = tradeId == null ? '' : 'AND id = ?'
+  const scopeSql = `${accountScopeSql} ${positionScopeSql} ${rowScopeSql}`
+  const scopeParams = [...(acct == null ? [] : [acct]), ...(positionId == null ? [] : [positionId]), ...(tradeId == null ? [] : [tradeId])]
+  let rowOpenedMs = null
   if (positionId != null) {
     const rows = db.prepare(`SELECT id,status,symbol,opened_at,closed_at FROM trades WHERE account_id = ? ${positionScopeSql} ORDER BY id LIMIT 6`).all(acct, positionId)
     const count = db.prepare(`SELECT COUNT(*) n FROM trades WHERE account_id = ? ${positionScopeSql}`).get(acct, positionId)?.n ?? rows.length
-    if (count !== 1 || rows[0]?.status !== 'closed') {
+    if (tradeId == null && (count !== 1 || rows[0]?.status !== 'closed')) {
       // Bounded identity detail is safe operational evidence: it contains only
       // local trade IDs/status/timestamps already in the ledger, never broker
       // credentials or prices. Production 24-09-2026 exposed two old positions
       // that were repeatedly reached but could not explain why identity proof
       // failed. Keep the refusal; make its exact local contradiction observable.
-      throw new Error(`position ledger identity ambiguous or not closed: count=${count}; rows=${JSON.stringify(rows)}`)
+      // The code lets the caller tell this LOCAL, deterministic refusal from a
+      // failed broker read: it recurs on every pass until an operator acts, so
+      // it is an attempt at the row, not a transport failure (V3 I1).
+      throw identityRefusal(`position ledger identity ambiguous or not closed: count=${count}; rows=${JSON.stringify(rows)}`, count, rows)
+    }
+    if (tradeId != null) {
+      const scope = rowScopeRefusal(db, acct, positionId, positionScopeSql, tradeId, count)
+      if (scope.refusal) throw identityRefusal(`row-scoped settlement refused: ${scope.refusal}; count=${count}; rows=${JSON.stringify(rows)}`, count, rows)
+      rowOpenedMs = scope.openedMs
     }
   }
 
@@ -131,7 +202,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   const from = now - days * 24 * 3_600_000
   const lifetimeSql = strictAccount && positionId == null ? 'AND julianday(opened_at) >= julianday(?) AND julianday(opened_at) <= julianday(?)' : ''
   const lifetimeParams = lifetimeSql ? [new Date(from).toISOString(), new Date(now).toISOString()] : []
-  const gapScopeSql = `${acct == null ? '' : strictAccount ? 'AND account_id = ?' : 'AND (account_id = ? OR account_id IS NULL)'} ${positionScopeSql}`
+  const gapScopeSql = `${acct == null ? '' : strictAccount ? 'AND account_id = ?' : 'AND (account_id = ? OR account_id IS NULL)'} ${positionScopeSql} ${rowScopeSql}`
   const gap = db.prepare(
     `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql}`
   ).get(...scopeParams)
@@ -330,6 +401,14 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     throw new Error(!pull.complete ? `deal history incomplete: ${pull.reason}` : 'backfill deadline elapsed')
   }
   const deals = pull.deals
+  if (tradeId != null) {
+    // Row-scoped: the broker must have closed the position inside THIS row's
+    // lifetime. A close before it opened may be the earlier record's money.
+    const early = deals.find(d => d.closePositionDetail && Number(d.executionTimestamp) < rowOpenedMs)
+    if (early) {
+      throw identityRefusal(`row-scoped settlement refused: closing deal ${early.dealId} precedes row #${tradeId}'s opening`, null, [])
+    }
+  }
   const uncoveredPositions = new Set()
   if (strictAccount && positionId == null) {
     // A completed 14-day query is not a complete lifetime P&L for a position
@@ -587,7 +666,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // is made at. Rows that just filled are excluded — their net_pnl is no
   // longer NULL, so the UPDATE below cannot reach them.
   noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString(), includeUnattributed: !strictAccount,
-    positionId, eligibleSince: lifetimeSql ? new Date(from).toISOString() : null, eligibleThrough: lifetimeSql ? new Date(now).toISOString() : null })
+    positionId, tradeId, eligibleSince: lifetimeSql ? new Date(from).toISOString() : null, eligibleThrough: lifetimeSql ? new Date(now).toISOString() : null })
 
   return { backfilled, attributed, exitsRepaired, exitsFilled, dealsPersisted, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap,
     ...(strictAccount ? { lifetimeSkipped: uncoveredPositions.size } : {}) }
@@ -718,7 +797,7 @@ export function exhaustedAccounts() {
  * history, so every pass genuinely did try it.
  */
 export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOString(), includeUnattributed = true,
-  eligibleSince = null, eligibleThrough = null, positionId = null } = {}) {
+  eligibleSince = null, eligibleThrough = null, positionId = null, tradeId = null } = {}) {
   try {
     const scope = accountId == null ? '' : includeUnattributed ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
     const args = accountId == null ? [at] : [at, String(accountId)]
@@ -726,11 +805,15 @@ export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOS
     if (lifetime) args.push(eligibleSince, eligibleThrough)
     const position = positionId == null ? '' : 'AND CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)'
     if (positionId != null) args.push(String(positionId))
+    // One row only: a position the ledger holds twice must not stamp the
+    // sibling that was not the one asked about (V3 I1).
+    const row = tradeId == null ? '' : 'AND id = ?'
+    if (tradeId != null) args.push(Number(tradeId))
     return db.prepare(`
       UPDATE trades
          SET pnl_attempts = COALESCE(pnl_attempts, 0) + 1,
              pnl_last_attempt_at = ?
-       WHERE status = 'closed' AND net_pnl IS NULL ${scope} ${lifetime} ${position}
+       WHERE status = 'closed' AND net_pnl IS NULL ${scope} ${lifetime} ${position} ${row}
     `).run(...args).changes
   } catch { return 0 }
 }
@@ -842,6 +925,129 @@ export function pnlUnreachedRows(db, { overdueMin = 15, limit = 20 } = {}) {
        LIMIT ?
     `).all(`-${Math.max(0, Number(overdueMin) || 0)} minutes`, Math.max(1, Math.min(100, Number(limit) || 20)))
   } catch { return [] }
+}
+
+/**
+ * The pnl_reconcile heartbeat, decided from the PASS, not from the records.
+ *
+ * V3 I1 (production 25-09-2026): the beat was `ok` only while no unpriced
+ * close was "never attempted" 15+ minutes after closing. Two rows the repair
+ * reached on every pass but whose refusal it never counted (#774/#775) kept it
+ * in error for four days — 1,776 consecutive failures, "have never been
+ * attempted" — while the pass itself ran every time. A stuck RECORD is shown
+ * where records are judged (order-lifecycle STK-05, the ledger's written-off
+ * notice); this heartbeat now says whether the CONTROLLER did its job, on
+ * EVERY account it covers:
+ *   ok    — the state was readable and no account the pass tried failed
+ *           (skipped and paced accounts are not failures);
+ *   error — the state could not be read, or the repair failed on ANY account
+ *           it tried, on either session: the selected session's accounts
+ *           (`pass`) and the other session's, which loop.js repairs through
+ *           backfillCrossSidePnl after this beat and hands to the NEXT beat
+ *           (`opts.crossSide`, consume-once).
+ * CORRECTED (checker B1, 25-09-2026): the first version beat ok while any
+ * account completed, and read only the selected session's accounts — so with
+ * a demo account selected, the live account holding #774/#775 could fail on
+ * every pass and the beat stayed ok. Owner principle 1: the beat vouches for
+ * every account or says which one it cannot vouch for. One failed pass is the
+ * heartbeat's own `warn`; three in a row are its `error` (heartbeat.js).
+ * Rows not yet attempted stay in the detail as a notice with their count, so
+ * nothing is hidden; they are no longer reported as a controller failure.
+ *
+ * @param {{unresolved:number,neverTriedOverdue?:number}} st pnlReconciliationState
+ * @param {{attempted?:number,completed?:number,skipped?:number,failures?:Array<{accountId:string,error:string}>,skippedFor?:Array<{accountId:string,reason:string}>}} pass
+ *   the selected session's pass, normally pnlPassSummary(results)
+ * @param {{crossSide?: {state:'pending'}|{state:'awaited',since:string|null,lastReportedAt:string|null}|({state:'reported',at:string|null}&object)}} [opts]
+ *   the other session's last pass: 'pending' before its first run this
+ *   process, 'reported' with a pnlPassSummary, 'awaited' once a beat has read
+ *   it (pnlCrossSideAwaited) — still 'awaited' at the next beat means the
+ *   cross-side repair did not run in between, which is a failure.
+ */
+export function pnlReconcileHeartbeat(st, pass = {}, { crossSide = null } = {}) {
+  const own = normalisedPass(pass)
+  let cross = { attempted: 0, completed: 0, skipped: 0, failures: [], skippedFor: [] }, crossView = null
+  if (crossSide?.state === 'reported') {
+    cross = normalisedPass(crossSide)
+    crossView = { state: 'reported', at: crossSide.at ?? null, attempted: cross.attempted, completed: cross.completed, skipped: cross.skipped }
+  } else if (crossSide?.state === 'awaited') {
+    const last = crossSide.lastReportedAt ? `last report ${crossSide.lastReportedAt}` : 'no report this process'
+    cross.failures = [{ accountId: 'cross-side', error: `the cross-side P&L repair has not reported since ${crossSide.since ?? 'the previous beat'} (${last})` }]
+    crossView = { state: 'awaited', since: crossSide.since ?? null, lastReportedAt: crossSide.lastReportedAt ?? null }
+  } else if (crossSide) crossView = { state: String(crossSide.state ?? 'pending') }
+  const attempted = own.attempted + cross.attempted, completed = own.completed + cross.completed
+  const failures = [...own.failures, ...cross.failures], skippedFor = [...own.skippedFor, ...cross.skippedFor]
+  const tried = Math.max(attempted, failures.length + completed)
+  const unreadable = !st || !(Number(st.unresolved) >= 0)
+  const overdue = unreadable ? 0 : Number(st.neverTriedOverdue) || 0
+  const notice = overdue > 0
+    ? `${overdue} closed trade(s) with no realised P&L not yet attempted by the repair (15+ min after close); a record notice, not a controller failure`
+    : null
+  const listed = failures.slice(0, 3).map(f => `${f.accountId}: ${f.error}`).join('; ') + (failures.length > 3 ? `; +${failures.length - 3} more` : '')
+  return {
+    ok: !unreadable && failures.length === 0,
+    error: unreadable
+      ? 'pnl reconciliation state could not be read'
+      : failures.length === 0
+        ? null
+        : completed === 0
+          ? `the P&L repair pass failed on every account it tried (${failures.length}/${tried}): ${listed}`
+          : `the P&L repair failed on ${failures.length} of ${tried} account(s) it tried: ${listed}`,
+    detail: {
+      ...(st || {}),
+      pass: {
+        attempted, completed, skipped: own.skipped + cross.skipped,
+        failed: failures.slice(0, 7).map(f => ({ accountId: f.accountId, error: f.error.slice(0, 120) })),
+        ...(skippedFor.length ? { skippedFor: skippedFor.slice(0, 7) } : {}),
+        ...(crossView ? { crossSide: crossView } : {}),
+      },
+      ...(notice ? { notice } : {}),
+    },
+  }
+}
+
+function normalisedPass(p) {
+  return {
+    attempted: Math.max(0, Number(p?.attempted) || 0),
+    completed: Math.max(0, Number(p?.completed) || 0),
+    skipped: Math.max(0, Number(p?.skipped) || 0),
+    failures: (Array.isArray(p?.failures) ? p.failures : [])
+      .map(f => ({ accountId: String(f?.accountId ?? ''), error: String(f?.error ?? 'unknown error').slice(0, 160) })),
+    skippedFor: (Array.isArray(p?.skippedFor) ? p.skippedFor : [])
+      .map(s => ({ accountId: String(s?.accountId ?? ''), reason: String(s?.reason ?? '').slice(0, 60) })),
+  }
+}
+
+/**
+ * One session's per-account P&L repair outcomes, counted the way the
+ * heartbeat reads them. Each entry is what backfillAccountPnl returns (or the
+ * loop's own pacing skip): `result` completed, `skipped` skipped, anything
+ * else a FAILURE with its account id — an entry that says neither is not
+ * counted as done. Non-pacing skips (token refused, a read still in flight)
+ * are listed by account so a skip that recurs every pass can be seen.
+ */
+export function pnlPassSummary(results, { at = null } = {}) {
+  let completed = 0, skipped = 0
+  const failures = [], skippedFor = []
+  for (const r of Array.isArray(results) ? results : []) {
+    const accountId = String(r?.accountId ?? '?')
+    if (r?.result) completed++
+    else if (r?.skipped) {
+      skipped++
+      if (r.skipped !== 'paced') skippedFor.push({ accountId, reason: String(r.skipped).slice(0, 60) })
+    } else failures.push({ accountId, error: String(r?.error ?? 'no result recorded').slice(0, 160) })
+  }
+  return { at, attempted: completed + failures.length, completed, skipped, failures, skippedFor }
+}
+
+/**
+ * What a beat leaves behind for the next one: the cross-side summary it just
+ * read, marked read. If the next beat still finds it 'awaited', the cross-side
+ * repair did not report in between, and pnlReconcileHeartbeat says so instead
+ * of carrying an old ok forward.
+ */
+export function pnlCrossSideAwaited(crossSide, at) {
+  const lastReportedAt = crossSide?.state === 'reported' ? (crossSide.at ?? null) : (crossSide?.lastReportedAt ?? null)
+  return { state: 'awaited', since: at ?? null, lastReportedAt }
 }
 
 export function pnlReconciliationState(db, { accountId = null, overdueMin = 15 } = {}) {

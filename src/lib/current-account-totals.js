@@ -13,22 +13,34 @@ export function currentAccountTotals(report, accountId = 'all') {
 
 // V3 WEB-3 / 8,989-A WEB-5: the all-accounts view shows current money per
 // deposit currency, never summed across currencies. A currency's field is a
-// total only when every account of that currency has a value; an account with
-// no currency reading could belong to any currency and is counted apart.
-export function currentTotalsByCurrency(report, accountId = 'all') {
+// total only when every account of that currency has a value.
+//
+// ONE CURRENCY SOURCE (V3 WEB-3m): the group is the account's RECORDED broker
+// deposit currency, `currencyOf(accountId)` — the page passes
+// `id => reportCurrency(populationReport, id)`, the reader WEB-7's pools use.
+// The overview row's own currency is only a re-check: a reading in another
+// currency (or with none) is not summed and holds its currency's total open,
+// named. An account with no recorded currency is in no subtotal. Without
+// `currencyOf`, no account has a currency and nothing is subtotalled.
+export function currentTotalsByCurrency(report, accountId = 'all', currencyOf = null) {
   const rows = (report?.accounts || []).filter(a => accountId === 'all' || a.accountId === String(accountId))
+  const recorded = id => { const c = typeof currencyOf === 'function' ? currencyOf(id) : null; return typeof c === 'string' && /^[A-Z]{3}$/.test(c) ? c : null }
   const groups = new Map()
-  let unknownCurrencyAccounts = 0
+  const unknownAccounts = []
   for (const a of rows) {
-    if (typeof a.currency !== 'string' || !/^[A-Z]{3}$/.test(a.currency)) { unknownCurrencyAccounts++; continue }
-    if (!groups.has(a.currency)) groups.set(a.currency, [])
-    groups.get(a.currency).push(a)
+    const currency = recorded(a.accountId)
+    if (!currency) { unknownAccounts.push(String(a.accountId)); continue }
+    if (!groups.has(currency)) groups.set(currency, [])
+    groups.get(currency).push(a)
   }
-  const sum = (list, field) => list.every(a => Number.isFinite(a[field])) ? list.reduce((n, a) => n + a[field], 0) : null
+  const counted = (a, currency, field) => a.currency === currency && Number.isFinite(a[field])
+  const sum = (list, currency, field) => list.every(a => counted(a, currency, field)) ? list.reduce((n, a) => n + a[field], 0) : null
   return {
     groups: [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([currency, list]) => ({
-      currency, accounts: list.length, balance: sum(list, 'balance'), equity: sum(list, 'equity'), openPnl: sum(list, 'openPnl'),
-      withOpenPnl: list.filter(a => Number.isFinite(a.openPnl)).length })),
-    unknownCurrencyAccounts,
+      currency, accounts: list.length, balance: sum(list, currency, 'balance'), equity: sum(list, currency, 'equity'),
+      openPnl: sum(list, currency, 'openPnl'),
+      withOpenPnl: list.filter(a => counted(a, currency, 'openPnl')).length,
+      missingOpenPnl: list.filter(a => !counted(a, currency, 'openPnl')).map(a => String(a.accountId)).sort() })),
+    unknownCurrencyAccounts: unknownAccounts.length, unknownAccounts: unknownAccounts.sort(),
   }
 }
