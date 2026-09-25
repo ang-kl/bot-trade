@@ -565,12 +565,13 @@ export default function actionsRouter(db, deps = {}) {
       const { wsGetDeals } = await import('../lib/ctrader-ws.js')
       const toMs = (v) => Date.parse(String(v).includes('T') ? v : String(v).replace(' ', 'T') + 'Z')
       const from = Math.min(...rows.map(r => toMs(r.opened_at))) - 3_600_000
-      const WEEK = 7 * 24 * 3_600_000
-      const deals = []
-      for (let t0 = from; t0 < Date.now(); t0 += WEEK) {
-        const chunk = await wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, Math.min(t0 + WEEK, Date.now()))
-        deals.push(...(chunk.deal || []))
-      }
+      // PAGED, AND ITS COMPLETENESS DECIDES WHAT MAY BE REJECTED (V3 B1). The
+      // old week walk never read `hasMore`: a truncated page could miss an
+      // in-flight row's fill and reject a live position. The judgement below
+      // rejects nothing unless this walk finished.
+      const { pageDeals } = await import('../lib/deal-paging.js')
+      const pull = await pageDeals((t0, t1) => wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1), from, Date.now())
+      const deals = pull.deals
 
       const map = await ensureSymbolMap(db, creds)
       // The judgement lives in broker-history-import.js so it can be tested
@@ -579,8 +580,8 @@ export default function actionsRouter(db, deps = {}) {
       // re-stamps R. (trades schema calls it close_reason — exit_reason once
       // crashed the whole reconcile, leaving fills stuck UNCONFIRMED.)
       const { judgeTradesAgainstDeals } = await import('../services/broker-history-import.js')
-      const out = judgeTradesAgainstDeals(db, { rows, deals, symbolMap: map })
-      res.json({ checked: rows.length, ...out, dealsSeen: deals.length, ranAt: new Date().toISOString() })
+      const out = judgeTradesAgainstDeals(db, { rows, deals, symbolMap: map, complete: pull.complete })
+      res.json({ checked: rows.length, ...out, dealsSeen: deals.length, dealWalk: { complete: pull.complete, reason: pull.reason, pages: pull.pages }, ranAt: new Date().toISOString() })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
@@ -1959,10 +1960,9 @@ export default function actionsRouter(db, deps = {}) {
   // (every closing deal, bot-placed or manual), with realised NET P&L
   // (gross + swap + commission) exactly as cTrader's History tab shows it.
   // Body: { days? } (default 7, max 190 — covers 7d/30d/3mo/6mo, owner:
-  // "should also include 30 days and 3+6 months"). Side effect: backfills
-  // net_pnl/gross_pnl/exit_price onto local trades rows matched by
-  // positionId, so performance stats and the Tune timeframe table use
-  // broker-true numbers.
+  // "should also include 30 days and 3+6 months"). No side effect on the
+  // ledger since V3 B1: it displays the broker's deals and never writes
+  // trades money (pnl-backfill.js records it from whole lifecycles).
   // -----------------------------------------------------------------------
   // COALESCE + short TTL — same reason as /broker-positions above: this route
   // opens several fresh WS connections per call (wsGetDeals per 7-day chunk,
@@ -1983,13 +1983,12 @@ export default function actionsRouter(db, deps = {}) {
       const { host, clientId, clientSecret, accessToken, accountId } = creds
       const { wsGetDeals, wsSymbolsByIds, wsGetSymbolsList, wsGetTrader, wsGetAssets } = deps.brokerHistoryTransport ?? await import('../lib/ctrader-ws.js')
 
-      const WEEK = 7 * 24 * 3_600_000
-      const from = Date.now() - days * 24 * 3_600_000
-      const deals = []
-      for (let t0 = from; t0 < Date.now(); t0 += WEEK) {
-        const chunk = await wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, Math.min(t0 + WEEK, Date.now()))
-        deals.push(...(chunk.deal || []))
-      }
+      // Paged (hasMore followed), and the payload says whether the walk
+      // finished: a history cut short must not look whole (principle 6).
+      const { pageDeals } = await import('../lib/deal-paging.js')
+      const pull = await pageDeals((t0, t1) => wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1),
+        Date.now() - days * 24 * 3_600_000, Date.now())
+      const deals = pull.deals
 
       // Only deals that CLOSE (part of) a position carry realised P&L.
       const closing = deals.filter(d => d.closePositionDetail)
@@ -2089,26 +2088,15 @@ export default function actionsRouter(db, deps = {}) {
         }
       }).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
 
-      // Backfill broker-true realised P&L onto local trades rows. Partial
-      // closes aggregate per position. Only rows the reconciler has already
-      // marked closed are touched — a partially-closed position stays open.
-      const byPosition = new Map()
-      for (const r of rows) {
-        if (!r.positionId) continue
-        const agg = byPosition.get(r.positionId) || { net: 0, gross: 0, last: r }
-        agg.net += r.netPnl || 0
-        agg.gross += r.grossProfit || 0
-        if ((r.closedAt || 0) >= (agg.last.closedAt || 0)) agg.last = r
-        byPosition.set(r.positionId, agg)
-      }
-      // NULL-only, account-scoped, re-stamped — see applyBrokerHistoryMoney.
-      // This route used to overwrite every closed row's money on every Desk
-      // load with no audit stamp (codebase audit 02-09-2026).
-      const { applyBrokerHistoryMoney } = await import('../services/broker-history-import.js')
-      const { backfilled } = applyBrokerHistoryMoney(db, byPosition, { accountId })
-
+      // DISPLAY ONLY (V3 B1, PR-1(f)). This route used to write the rows'
+      // realised money on every Desk load: every unpriced closed row of a
+      // position got the window's sum, rows with no account were claimed,
+      // there was no lifetime check, and rows still flagged pnl_unresolvable
+      // were filled. A partial window is not a lifecycle. Money is written by
+      // pnl-backfill.js alone, from one whole, unique broker lifecycle.
       const realized = Math.round(rows.reduce((s, r) => s + (r.netPnl || 0), 0) * 100) / 100
-      const payload = { ok: true, accountId: String(accountId), days, rows, realized, backfilled, fetchedAt: new Date().toISOString() }
+      const payload = { ok: true, accountId: String(accountId), days, rows, realized, complete: pull.complete,
+        ...(pull.complete ? {} : { incompleteReason: pull.reason }), fetchedAt: new Date().toISOString() }
       // Cache the latest history so the Desk can paint instantly next visit
       // (GET /state/broker-cache) while the live fetch refreshes behind.
       try { setState(db, `acct:${accountId}:broker_history_cache_json`, JSON.stringify(payload)) } catch { /* cache is best-effort */ }

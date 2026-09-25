@@ -13,6 +13,44 @@ const positive = value => integer(value) && Number(value) > 0
 export const POSITION_HISTORY_REFUSED = 'POSITION_HISTORY_REFUSED'
 const refused = message => Object.assign(new Error(message), { code: POSITION_HISTORY_REFUSED })
 
+// V3 B1 (P5b-1): money needs one whole, unique broker lifecycle. The opening
+// and closing volume walk of ONE position over the deals given, shared by the
+// strict position reader below and the 14-day window path in pnl-backfill.js.
+// A window that holds only the tail of a position (its opening deal fell
+// before the window, or a partial close did) must not become the position's
+// realised money: probe-p5bd case 2 wrote 50 against a lifetime of 150.
+//
+// Pure. Deals of other positions are ignored; a deal whose dealStatus is not
+// FILLED (2) or PARTIALLY_FILLED (3) did not execute and moves no volume.
+// Opening deals count `filledVolume`, closing deals `closePositionDetail.
+// closedVolume`; a missing or non-integer volume proves nothing and the walk
+// is unbalanced. `finalCloseMs` is the closing deal at which closed volume
+// reaches opened volume: the end of the lifecycle, which the false-close rule
+// compares a recorded close against (a partial close earlier in the life is
+// not the end — checker correction on PR-1(d)).
+export function lifecycleBalance(deals, positionId) {
+  const pid = String(positionId)
+  const own = (Array.isArray(deals) ? deals : [])
+    .filter(d => d && String(d.positionId) === pid && [2, 3].includes(d.dealStatus))
+    .sort((a, b) => Number(a.executionTimestamp) - Number(b.executionTimestamp) || Number(a.dealId) - Number(b.dealId))
+  let opened = 0, closed = 0, finalCloseMs = null, reason = null
+  for (const d of own) {
+    if (finalCloseMs != null) { reason = 'deals after the lifecycle closed'; break }
+    const c = d.closePositionDetail
+    const volume = c ? c.closedVolume : d.filledVolume
+    if (!positive(volume)) { reason = c ? 'closing volume unknown' : 'opening volume unknown'; break }
+    if (c) {
+      closed += Number(volume)
+      if (closed > opened) { reason = 'opening not among the deals'; break }
+      if (closed === opened) finalCloseMs = Number(d.executionTimestamp)
+    } else opened += Number(volume)
+    if (!Number.isSafeInteger(opened) || !Number.isSafeInteger(closed)) { reason = 'volume overflow'; break }
+  }
+  const balanced = reason == null && opened > 0 && closed === opened && Number.isFinite(finalCloseMs)
+  if (!balanced && reason == null) reason = opened === 0 ? 'opening not among the deals' : 'position not closed within the deals'
+  return { opened, closed, hasOpening: opened > 0, balanced, finalCloseMs: balanced ? finalCloseMs : null, reason: balanced ? null : reason }
+}
+
 export function verifiedPositionHistory(response, { accountId, positionId, now }) {
   if (!response || String(response.ctidTraderAccountId) !== String(accountId) || response.error || response.errorCode
     || response.hasMore !== false || (response.deal != null && !Array.isArray(response.deal))) {
@@ -31,10 +69,16 @@ export function verifiedPositionHistory(response, { accountId, positionId, now }
     ids.add(String(d.dealId)); symbols.add(String(d.symbolId))
     const c = d.closePositionDetail
     if (c) {
+      // pnlConversionFee: ONE treatment on every path (V3 B1). Realised money
+      // is gross + swap + commission — what the window path, the loop's close
+      // and cTrader's history net have always recorded — and the fee is not
+      // part of it. The fee must still be an integer, or the deal is not
+      // evidence; a nonzero fee no longer refuses a whole lifecycle that the
+      // window path would have settled (AVY/GEV on SGD account 42993489).
       if (!Number.isInteger(c.moneyDigits) || c.moneyDigits < 0 || c.moneyDigits > 10
         || ![c.grossProfit, c.swap ?? 0, c.commission ?? 0].every(integer) || !positive(c.closedVolume)
         || Number(c.closedVolume) !== Number(d.filledVolume)
-        || !integer(c.pnlConversionFee ?? 0) || Number(c.pnlConversionFee ?? 0) !== 0) {
+        || !integer(c.pnlConversionFee ?? 0)) {
         throw refused('position closing money or volume unsupported')
       }
       closed += Number(c.closedVolume)
@@ -50,5 +94,5 @@ export function verifiedPositionHistory(response, { accountId, positionId, now }
   if (deals.length && closed !== opened) {
     throw Object.assign(refused(`broker shows position still open: opened volume ${opened}, closed volume ${closed}`), { openAtBroker: true })
   }
-  return { deals, complete: true, pages: 1 }
+  return { deals, complete: true, pages: 1, lifecycle: lifecycleBalance(ordered, positionId) }
 }

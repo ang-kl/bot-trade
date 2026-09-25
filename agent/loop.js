@@ -2060,6 +2060,11 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         return { closedRemotely: true, summary: 'already_closed' }
       }
       let volumeUnits = brokerPositionVolume(snap.positions, ctx.positionId)
+      // What the broker held just before this close — only from the snapshot.
+      // A volume reconverted from ledger lots is not evidence of the opened
+      // volume (the crypto 100× case below), so money then waits for the
+      // backfill's whole lifecycle (V3 B1).
+      const heldVolume = volumeUnits
       if (volumeUnits == null) {
         const meta = await volumeMeta()
         volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
@@ -2083,11 +2088,19 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // null means closeTradeRow's COALESCE leaves the column alone, and the
       // row is marked pnl_price_mismatch if what remains disagrees with the money.
       const closePrice = res.deal?.executionPrice ?? null
-      const cpd = res.deal?.closePositionDetail || {}
-      const grossPnl = typeof cpd.grossProfit === 'number' ? cpd.grossProfit / 100 : null
-      const netPnl = cpd.grossProfit != null
-        ? ((cpd.grossProfit || 0) - Math.abs(cpd.commission || 0) - Math.abs(cpd.swap || 0)) / 100
-        : null
+      // MONEY ONLY FROM A WHOLE LIFECYCLE (V3 B1, P5b-1). This used to stamp
+      // (gross − |commission| − |swap|)/100 from this one deal: two money
+      // digits assumed, a positive swap booked as a cost, and every earlier
+      // partial close's money lost (#714 NZDUSD: 2.91 recorded, 202.71 at the
+      // broker). A deal that closes less than the position opened writes NULL,
+      // and the backfill records the lifecycle total (lib/deal-money.js).
+      const { fullCloseMoney, openedVolumeOnRecord } = await import('./lib/deal-money.js')
+      const openedVolume = openedVolumeOnRecord(db, { accountId, positionId: ctx.positionId, tradeId: pos.trade_id ?? null,
+        monitoredId: pos.id ?? null, heldVolume })
+      const { money: closeMoney, reason: moneyDeferred } = fullCloseMoney(res.deal, { openedVolume })
+      const grossPnl = closeMoney ? closeMoney.gross : null
+      const netPnl = closeMoney ? closeMoney.net : null
+      if (!closeMoney && pos.trade_id) log(`FULL_EXIT ${pos.symbol}: money left to the backfill — ${moneyDeferred}`)
       if (pos.trade_id) {
         closeTradeRow(db, pos.trade_id, { exitPrice: closePrice, closeReason: eval_.reason || 'position_manager', grossPnl, netPnl })
       }
