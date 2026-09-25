@@ -12,16 +12,52 @@
 // when it was not. Violations are not failures of this controller — they
 // belong to the goal rows. A failed pass keeps the previous snapshot, whose
 // own `at` then ages past the heartbeat's effect limit (never re-stamped).
+//
+// V3 I3: THE PASS ALSO RESOLVES. Before the snapshot is built, the stuck
+// resolver (stuck-resolver.js) settles stuck records from broker evidence or
+// writes them off under the owner's rule — on this timer, off the trading
+// loop, bounded per pass. It writes on this (management) connection; the
+// snapshot that follows reads the result on the worker. A resolver pass that
+// fails does NOT withhold the snapshot, but it fails the beat (ok: false,
+// "stuck resolver: …"), so a resolver that stopped working is a failing
+// controller on /state/heartbeats and in STK-11, never a silent one. Its last
+// result is kept at agent_state `stuck_resolver_last_json`; agent_state
+// `stuck_resolver_enabled` = 'false' switches it off (said in the beat).
 // ---------------------------------------------------------------------------
 
-import { setState } from '../db.js'
+import { getState, setState } from '../db.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
 import { readOrderLifecycle } from './performance-populations.js'
 import { compactSnapshot, SNAPSHOT_KEY, SNAPSHOT_OPTIONS, TICK_MS } from './order-lifecycle.js'
+import { runStuckResolver, ENABLED_KEY as RESOLVER_ENABLED_KEY, LAST_KEY as RESOLVER_LAST_KEY } from './stuck-resolver.js'
+
+/** The resolver half of the pass. Never throws: its failure is its result. */
+export function runResolverStep(db, resolve = runStuckResolver, nowMs = Date.now()) {
+  let result
+  try {
+    result = getState(db, RESOLVER_ENABLED_KEY) === 'false'
+      ? { at: new Date(nowMs).toISOString(), ok: true, skipped: `switched off (agent_state ${RESOLVER_ENABLED_KEY} = 'false')` }
+      : resolve(db, { nowMs })
+  } catch (err) {
+    result = { at: new Date(nowMs).toISOString(), ok: false, error: String(err?.message || err).slice(0, 200) }
+  }
+  try { setState(db, RESOLVER_LAST_KEY, JSON.stringify(result)) } catch { /* the beat still carries it */ }
+  return result
+}
+
+/** The resolver's counts and its first error, small enough for the beat. */
+function resolverBrief(r) {
+  if (!r) return null
+  const kinds = ['trades', 'resting', 'captures', 'targetless']
+  const counts = Object.fromEntries(kinds.filter(k => r[k] && typeof r[k] === 'object').map(k => [k, Object.fromEntries(Object.entries(r[k]).filter(([, v]) => typeof v === 'number'))]))
+  const errors = [r.error, ...kinds.flatMap(k => [r[k]?.error, ...(r[k]?.errors || [])])].filter(Boolean)
+  return { ok: r.ok !== false && errors.length === 0, ...(r.skipped ? { skipped: r.skipped } : {}), counts, errors: errors.slice(0, 3) }
+}
 
 /** One pass. Never throws: the result carries ok / error, and the heartbeat records it. */
-export async function runOrderLifecyclePass(db, { read = readOrderLifecycle, heartbeat = null } = {}) {
+export async function runOrderLifecyclePass(db, { read = readOrderLifecycle, heartbeat = null, resolve = runStuckResolver } = {}) {
   const hb = heartbeat ?? await import('./heartbeat.js')
+  const resolver = resolverBrief(runResolverStep(db, resolve))
   try {
     const report = await read(db, SNAPSHOT_OPTIONS)
     const snap = compactSnapshot(report)
@@ -31,12 +67,18 @@ export async function runOrderLifecyclePass(db, { read = readOrderLifecycle, hea
     // only clears on a write it saw (daily-report.js does the same).
     invalidateStateCache()
     const counts = Object.fromEntries(Object.entries(snap.summary).map(([k, v]) => [k, { new: v.new, legacy: v.legacy }]))
-    hb.beat(db, 'order_lifecycle', { ok: true, detail: { at: snap.at, bytes: json.length, samplesPerRule: snap.samplesPerRule, summary: counts } })
-    return { ok: true, at: snap.at, bytes: json.length }
+    const detail = { at: snap.at, bytes: json.length, samplesPerRule: snap.samplesPerRule, summary: counts, resolver }
+    if (!resolver.ok) {
+      const error = `stuck resolver: ${resolver.errors[0] ?? 'failed'}`
+      hb.beat(db, 'order_lifecycle', { ok: false, error, detail })
+      return { ok: false, error, at: snap.at, bytes: json.length, resolver }
+    }
+    hb.beat(db, 'order_lifecycle', { ok: true, detail })
+    return { ok: true, at: snap.at, bytes: json.length, resolver }
   } catch (err) {
     const error = err?.reason && err.reason !== err.message ? `${err.reason}: ${err.message}` : String(err?.message || err)
-    try { hb.beat(db, 'order_lifecycle', { ok: false, error }) } catch { /* the result still carries the error */ }
-    return { ok: false, error }
+    try { hb.beat(db, 'order_lifecycle', { ok: false, error, detail: { resolver } }) } catch { /* the result still carries the error */ }
+    return { ok: false, error, resolver }
   }
 }
 
