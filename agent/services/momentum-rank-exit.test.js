@@ -32,6 +32,10 @@ function fixture(t, state = 'ARMED', full = false) {
     rankReconcile: async () => ({ ctidTraderAccountId: '11', position: volume ? [{ positionId: '33',
       positionStatus: 'POSITION_STATUS_OPEN', price: 100, stopLoss: 95, takeProfit: 140.4,
       tradeData: { symbolId: '22', tradeSide: 'BUY', volume } }] : [] }),
+    // T2: an unresolved rank attempt reads its deal history. This fixture's
+    // history is empty (no closing deal proven), which keeps every test
+    // below on its original assertions and off the network default.
+    rankDeals: async () => ({ ctidTraderAccountId: '11', deal: [], hasMore: false }),
     close: async (c, order) => {
       assert.equal(c.accountId, '11'); assert.equal(order.positionId, '33'); assert.equal(order.volume, volume)
       calls++; const closedVolume = volume; volume = 0

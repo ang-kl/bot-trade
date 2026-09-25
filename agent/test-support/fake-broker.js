@@ -49,6 +49,32 @@
 // Both strings are chosen to match what loop.js substring-matches on, so a test
 // written against this fake exercises the same branches production takes.
 //
+// THE CLOSE LIFECYCLE (T2, V3 P0-1b). A close is modelled the way the broker
+// and the gateway actually answer it, because a fake that only ever answers
+// ORDER_FILLED makes every close-recovery test pass by construction:
+//   * A close carries a VOLUME. Less than the position's volume is a partial
+//     close: the position stays open with the rest, and the fill is recorded
+//     as a closing DEAL (orderId, dealId, closePositionDetail with the
+//     position's entry and the closed volume) in the account's deal history.
+//   * The gateway answers with the FIRST execution event carrying its request
+//     id. For a market close that can be ORDER_ACCEPTED — an order id and no
+//     deal — with the ORDER_FILLED that follows dropped as a late frame
+//     (cpp-exec engine.cpp dispatchFrame). closeAnswer({ reply: 'accepted' })
+//     answers exactly that while the fill is real at the broker.
+//   * The gateway can give up (reply 'timeout': its TIMEOUT error body) while
+//     the broker fills now, later (fill 'deferred', applied by fillDeferred()
+//     at a virtual time of the test's choosing) or never.
+//   * Relative SL/TP on an entry are turned into absolute prices on the
+//     symbol's grid (its digits), as the broker does.
+//   * Deal history is served per position with hasMore: a history longer
+//     than dealPageSize answers the first page and hasMore: true.
+//   * A manual (external) partial or close is externalClose(): a fill with an
+//     order id the caller never saw.
+// Reads a keeper makes over its own WebSocket (reconcile, deal history,
+// spot) are methods, not HTTP routes: the real sidecar serves none of them
+// here, and the shapes are the broker's (RECONCILE_RES,
+// DEAL_LIST_BY_POSITION_ID_RES, a spot event).
+//
 // DETERMINISM. No timers and no wall clock anywhere:
 //   * Slow calls use GATES, not sleeps. hold(op) parks the next response for
 //     that op; arrived(op) resolves once the request has landed and been
@@ -71,8 +97,14 @@ const ID_BASE = 1000
  *   accounts — the ids the BROKER will accept an auth for. Anything outside
  *   this list is refused, the way an unauthorised ctidTraderAccountId would be.
  */
-export async function startFakeBroker({ accounts = ['4001', '4002'], startMs = 1_700_000_000_000 } = {}) {
+export async function startFakeBroker({ accounts = ['4001', '4002'], startMs = 1_700_000_000_000, symbols = {}, dealPageSize = Infinity } = {}) {
   const known = accounts.map(String)
+  /** symbolId → { digits } (5 when not given): the grid relative SL/TP land on. */
+  const digitsOf = symbolId => Number.isInteger(symbols[String(symbolId)]?.digits) ? symbols[String(symbolId)].digits : 5
+  const onGrid = (price, symbolId) => { const f = 10 ** digitsOf(symbolId); return Math.round(price * f) / f }
+  const oppositeSide = s => s === 'BUY' || s === 1 ? 'SELL' : 'BUY'
+  /** symbolId → { bid, ask }: the price an entry fills at and a close executes at. */
+  const quotes = new Map()
 
   /** @type {Map<string, {positions: Map<number, any>, nextId: number, balance: number}>} */
   const ledgers = new Map(known.map((id, i) => [id, {
@@ -81,7 +113,11 @@ export async function startFakeBroker({ accounts = ['4001', '4002'], startMs = 1
     // id in a failure report therefore names its own account.
     nextId: ID_BASE * (i + 1),
     balance: 10_000,
+    /** Every deal on this account, oldest first — the broker's own record. */
+    deals: [],
   }]))
+  // Order and deal ids are broker-wide, like cTrader's.
+  let nextOrderId = 50_000, nextDealId = 90_000
 
   const session = {
     connected: false,
@@ -108,6 +144,54 @@ export async function startFakeBroker({ accounts = ['4001', '4002'], startMs = 1
     parked: new Map(),
     /** op → resolve fn for arrived(op) waiters. */
     arrivals: new Map(),
+    /** How the next closes are answered and filled, oldest first. */
+    closeAnswers: [],
+    /** Closes the broker accepted and has not filled yet. */
+    deferred: [],
+  }
+
+  /** A position as the broker lists it. tradeData follows every volume change. */
+  function openPosition(account, body) {
+    const led = ledgers.get(account)
+    const positionId = led.nextId++
+    const side = body?.tradeSide ?? null
+    const q = quotes.get(String(body?.symbolId))
+    const price = Number.isFinite(body?.price) ? body.price : q ? (side === 'SELL' || side === 2 ? q.bid : q.ask) : null
+    const dir = side === 'SELL' || side === 2 ? -1 : 1
+    const relative = (rel, sign) => price != null && Number.isFinite(rel) ? onGrid(price + sign * dir * rel / 100000, body?.symbolId) : null
+    const pos = {
+      positionId,
+      ctidTraderAccountId: Number(account),
+      symbolId: body?.symbolId ?? null,
+      tradeSide: side,
+      volume: body?.volume ?? 0,
+      stopLoss: body?.stopLoss ?? relative(body?.relativeStopLoss, -1),
+      takeProfit: body?.takeProfit ?? relative(body?.relativeTakeProfit, 1),
+      price,
+      positionStatus: 1,
+      tradeData: { symbolId: body?.symbolId ?? null, tradeSide: side, volume: body?.volume ?? 0 },
+    }
+    led.positions.set(positionId, pos)
+    const orderId = nextOrderId++
+    led.deals.push({ dealId: nextDealId++, orderId, positionId, symbolId: pos.symbolId, tradeSide: side,
+      volume: pos.volume, filledVolume: pos.volume, executionPrice: price, executionTimestamp: state.nowMs, dealStatus: 2 })
+    return pos
+  }
+
+  /** Execute a close at the broker: a closing deal, and the position reduced or gone. */
+  function fillClose(account, pos, volume, orderId) {
+    const led = ledgers.get(account)
+    const q = quotes.get(String(pos.symbolId))
+    const price = q ? (pos.tradeSide === 'SELL' || pos.tradeSide === 2 ? q.ask : q.bid) : pos.price
+    const deal = { dealId: nextDealId++, orderId, positionId: pos.positionId, symbolId: pos.symbolId,
+      tradeSide: oppositeSide(pos.tradeSide), volume, filledVolume: volume, executionPrice: price,
+      executionTimestamp: state.nowMs, dealStatus: 2,
+      closePositionDetail: { entryPrice: pos.price, closedVolume: volume, moneyDigits: 2, grossProfit: 0, swap: 0, commission: 0 } }
+    led.deals.push(deal)
+    pos.volume -= volume
+    pos.tradeData.volume = pos.volume
+    if (pos.volume <= 0) led.positions.delete(pos.positionId)
+    return deal
   }
 
   function notifyArrival(op) {
@@ -207,18 +291,8 @@ export async function startFakeBroker({ accounts = ['4001', '4002'], startMs = 1
     const led = ledgers.get(account)
 
     if (op === 'order') {
-      const positionId = led.nextId++
-      const pos = {
-        positionId,
-        ctidTraderAccountId: Number(account),
-        symbolId: body?.symbolId ?? null,
-        tradeSide: body?.tradeSide ?? null,
-        volume: body?.volume ?? 0,
-        stopLoss: body?.stopLoss ?? null,
-        takeProfit: body?.takeProfit ?? null,
-      }
-      led.positions.set(positionId, pos)
-      record(op, account, resolvedBy, body, `filled ${positionId}`)
+      const pos = openPosition(account, body)
+      record(op, account, resolvedBy, body, `filled ${pos.positionId}`)
       return { status: 200, body: JSON.stringify({ ok: true, executionType: 'ORDER_FILLED', position: pos }) }
     }
 
@@ -232,9 +306,32 @@ export async function startFakeBroker({ accounts = ['4001', '4002'], startMs = 1
         return { status: 404, body: `POSITION_NOT_FOUND: position ${pid} unknown` }
       }
       if (op === 'close') {
-        led.positions.delete(pid)
-        record(op, account, resolvedBy, body, `closed ${pid}`)
-        return { status: 200, body: JSON.stringify({ ok: true, executionType: 'ORDER_FILLED', closedPositionId: pid }) }
+        const volume = Number.isSafeInteger(body?.volume) && body.volume > 0 ? body.volume : pos.volume
+        if (volume > pos.volume) {
+          record(op, account, resolvedBy, body, 'TRADING_BAD_VOLUME')
+          return { status: 502, body: JSON.stringify({ errorCode: 'TRADING_BAD_VOLUME', description: `close volume ${volume} exceeds position volume ${pos.volume}` }) }
+        }
+        const answer = state.closeAnswers.shift() ?? { reply: 'filled', fill: 'now' }
+        const orderId = nextOrderId++
+        const snapshot = { ...pos, tradeData: { ...pos.tradeData } }
+        let deal = null
+        if (answer.fill === 'deferred') state.deferred.push({ account, positionId: pid, volume, orderId })
+        else if (answer.fill !== 'never') deal = fillClose(account, pos, volume, orderId)
+        record(op, account, resolvedBy, body, `${answer.reply} ${pid} fill=${answer.fill} volume=${volume} order=${orderId}`)
+        if (answer.reply === 'timeout') {
+          // The gateway gave up on its own wait (engine.cpp request TIMEOUT).
+          return { status: 502, body: JSON.stringify({ errorCode: 'TIMEOUT', description: 'no payloadType 2126 within 20000ms' }) }
+        }
+        if (answer.reply === 'accepted') {
+          // The first execution event for the request: an order, no deal.
+          // The ORDER_FILLED after it is dropped as a late frame.
+          return { status: 200, body: JSON.stringify({ ok: true, ctidTraderAccountId: Number(account), executionType: 'ORDER_ACCEPTED',
+            order: { orderId, positionId: pid, orderType: 1, orderStatus: 1, closingOrder: true,
+              tradeData: { symbolId: snapshot.symbolId, tradeSide: oppositeSide(snapshot.tradeSide), volume } },
+            position: snapshot }) }
+        }
+        return { status: 200, body: JSON.stringify({ ok: true, ctidTraderAccountId: Number(account), executionType: 'ORDER_FILLED',
+          closedPositionId: pid, deal, position: led.positions.get(pid) ?? { ...snapshot, volume: 0, positionStatus: 2 } }) }
       }
       if (body?.stopLoss !== undefined) pos.stopLoss = body.stopLoss
       if (body?.takeProfit !== undefined) pos.takeProfit = body.takeProfit
@@ -377,6 +474,53 @@ export async function startFakeBroker({ accounts = ['4001', '4002'], startMs = 1
 
     /** Advance the virtual clock. Nothing here reads Date.now(). */
     tick(ms) { state.nowMs += ms },
+    /** The virtual clock: broker deal and quote timestamps. */
+    get nowMs() { return state.nowMs },
+
+    /** The price an entry fills at and a close executes at, for a symbol. */
+    setQuote(symbolId, { bid, ask }) { quotes.set(String(symbolId), { bid, ask }) },
+    /** Open a position on an account without HTTP (the same fill as /order). */
+    open(account, body) { return openPosition(String(account), body) },
+    /**
+     * How the next close is answered and filled.
+     * reply: 'filled' (ORDER_FILLED with the deal) | 'accepted' (ORDER_ACCEPTED,
+     * no deal) | 'timeout' (the gateway's TIMEOUT error).
+     * fill: 'now' | 'deferred' (applied by fillDeferred()) | 'never'.
+     */
+    closeAnswer({ reply = 'filled', fill = 'now' } = {}) { state.closeAnswers.push({ reply, fill }) },
+    /** The broker executes the closes it accepted earlier, at the current virtual time. */
+    fillDeferred() {
+      const done = []
+      for (const d of state.deferred.splice(0)) {
+        const pos = ledgers.get(d.account)?.positions.get(d.positionId)
+        if (pos && d.volume <= pos.volume) done.push(fillClose(d.account, pos, d.volume, d.orderId))
+      }
+      return done
+    },
+    /** A close the keeper never sent (manual, or a stop): its own order id. */
+    externalClose(account, positionId, volume) {
+      const pos = ledgers.get(String(account))?.positions.get(Number(positionId))
+      if (!pos) throw new Error(`no position ${positionId} on ${account}`)
+      return fillClose(String(account), pos, volume ?? pos.volume, nextOrderId++)
+    },
+    /** RECONCILE_RES for one account: its open positions, as the broker lists them. */
+    reconcile(account) {
+      return { ctidTraderAccountId: Number(account), position: this.positions(account).map(p => ({ ...p, tradeData: { ...p.tradeData } })) }
+    },
+    /** DEAL_LIST_BY_POSITION_ID_RES: one position's deals, paged by dealPageSize. */
+    positionDeals(account, positionId, { toTimestamp = Infinity } = {}) {
+      const all = (ledgers.get(String(account))?.deals ?? [])
+        .filter(d => String(d.positionId) === String(positionId) && d.executionTimestamp <= toTimestamp)
+      const page = all.slice(0, dealPageSize)
+      return { ctidTraderAccountId: Number(account), deal: page.map(d => ({ ...d })), hasMore: all.length > page.length }
+    },
+    /** A spot event for a symbol at the current virtual time (prices in 1/100000). */
+    spot(account, symbolId) {
+      const q = quotes.get(String(symbolId))
+      if (!q) return null
+      return { ctidTraderAccountId: Number(account), symbolId: Number(symbolId),
+        bid: Math.round(q.bid * 100000), ask: Math.round(q.ask * 100000), timestamp: state.nowMs }
+    },
 
     reset() {
       state.calls = []

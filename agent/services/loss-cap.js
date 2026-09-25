@@ -27,6 +27,7 @@ import { loadWithOverlay } from './account-overlay.js'
 import { getAccountBalance } from './risk.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, sameSideAccountIds } from './acting-layer.js'
 import { deriveUnrealizedMap } from './unrealized-pnl.js'
+import { competingExitRefusal, IN_FLIGHT_EXIT_STATES } from './momentum-exit-coordination.js'
 
 export const DEFAULT_LOSS_CAP = {
   on: true,
@@ -184,6 +185,11 @@ async function lossCapPass(db, creds, deps = {}) {
     if (net > -cap) continue
 
     out.breaches++
+    // T2: a momentum partial or rank close already in flight on this
+    // position. Deferred for this pass only (the key below is not stamped),
+    // so the cap acts on the next pass once that request has ended.
+    const inFlight = cfg.action === 'close' ? competingExitRefusal(db, { accountId, positionId: pid, states: IN_FLIGHT_EXIT_STATES }) : null
+    if (inFlight) { out.errors.push(`loss cap deferred: ${inFlight}`); continue }
     // Once-per-breach with a bounded retry: a close that failed (or an
     // alert-only breach) re-fires after retryMinutes, never every minute.
     const key = `loss_cap_fired_${pid}`

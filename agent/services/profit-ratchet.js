@@ -40,6 +40,7 @@ import { loadWithOverlay } from './account-overlay.js'
 import { getAccountBalance } from './risk.js'
 import { singleFlight, sameSideAccountIds } from './acting-layer.js'
 import { recordPositionEvent } from './position-events.js'
+import { competingExitRefusal, IN_FLIGHT_EXIT_STATES } from './momentum-exit-coordination.js'
 
 export const DEFAULT_PROFIT_RATCHET = {
   on: true,
@@ -351,6 +352,11 @@ async function ratchetOneAccount(db, creds, accountId, cfg, { exec, ws, notify, 
         brokerVol = Object.fromEntries((rec.position || []).map(p => [String(p.positionId), p.tradeData?.volume]))
       } catch { /* volume unknown → still attempt close without it */ }
       for (const r of rows) {
+        // T2: a momentum partial or rank close in flight on this position is
+        // not doubled. The position keeps its broker SL/TP and is reported
+        // as not flattened, so the notice below says to check it.
+        const inFlight = competingExitRefusal(db, { accountId, positionId: r.pid, states: IN_FLIGHT_EXIT_STATES })
+        if (inFlight) { res.errors.push(`${r.symbol}: flatten skipped — ${inFlight}`); continue }
         try {
           await exec.closePosition(creds, { positionId: parseInt(r.pid), volume: brokerVol[String(r.pid)] })
           res.closes++
