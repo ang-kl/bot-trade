@@ -28,6 +28,8 @@ import { auditControllerEvent } from './phase-audit.js'
 import { checkProtectionFreshness, protectionFreshnessFrom } from './protection-freshness.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { independentWatchdogOwns } from './watchdog-ownership.js'
+import { autopilotRecordCadenceSec, autopilotDormantReason } from '../lib/autopilot-cadence.js'
+import { llmDisabledReason } from '../lib/llm-switch.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
@@ -74,7 +76,17 @@ export const CONTROLLERS = {
   trade_guards:     { label: 'Trade guards',           expectedSec: 60,   factor: 4 },
   profit_keeper:    { label: 'Profit keeper',          expectedSec: 60,   factor: 4 },
   adaptive_breaker: { label: 'Adaptive breaker',       tiedToLoop: true,  factor: 3 },
-  autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3, effect: { key: 'autopilot_last_run_ms', kind: 'ms' } },
+  // THE RECORD'S OWN CADENCE (V3 I2, measured 25-09-2026). The runner beat is
+  // the per-cycle scheduling beat, so the runner stays loop-tied; the RECORD
+  // (autopilot_last_run_ms, stamped at each sweep's launch) is written every
+  // 10 min busy / 30 min calm (lib/autopilot-cadence.js). Judged by the loop's
+  // 180 s it read record_stale 27 of every 30 minutes (7 of 10 busy) while action_log showed
+  // a clean /evaluate every 10–11 / 30–32 min. `cadenceSec` makes the limit
+  // that cadence plus the scheduler's own grace (expected × factor), so a
+  // sweep that hangs — the in-flight guard then never relaunches it and the
+  // stamp stops moving — still reads stale within one grace window of being
+  // due. autopilot_mode 'off' is dormant by design, with its reason.
+  autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3, effect: { key: 'autopilot_last_run_ms', kind: 'ms', cadenceSec: autopilotRecordCadenceSec }, dormantWhen: autopilotDormantReason },
   hours_refresh:    { label: 'Market-hours refresh',   expectedSec: 86_400, factor: 2 },
   // Daily per-account budget planner (§7,437·B·3, 08-09-2026): one account
   // rebuilt per loop cycle when its record is a day old, so the beat lands
@@ -135,6 +147,10 @@ export const CONTROLLERS = {
   // observing one) and §43 asks for exactly that: its own path, its own light.
   minute_review: { label: 'Per-minute review', expectedSec: 60, factor: 4 },
   cashflow_collection: { label: 'Account cashflow collection', expectedSec: 30, factor: 4 },
+  // V3 WEB-4: the server's own account readings, once a minute on their own
+  // ticker (broker-readings.js). The record's `at` is the last round that
+  // recorded an account; a failed round never renews it.
+  broker_readings: { label: 'Account readings (server, 60s)', expectedSec: 60, factor: 4, effect: { key: 'broker_readings_last_json', kind: 'json', maxAgeSec: 300 } },
   // §70.9. The P&L repair had NO heartbeat, so a backfill that stopped was
   // invisible until the daily-loss veto fired hours later on a total it could
   // no longer trust — the "silence is not health" shape this repo has now hit
@@ -147,7 +163,13 @@ export const CONTROLLERS = {
   // above, again). It only runs when closed-market positions exist and the
   // LLM is available, so its expectation is a week rather than a cadence:
   // absence is normal, a FAILED beat is the thing to see.
-  weekend_watch: { label: 'Weekend watch (LLM)', expectedSec: 7 * 86_400, factor: 2 },
+  // DORMANT WHILE THE LLM IS SWITCHED OFF (V3 I2, 25-09-2026). loop.js runs
+  // this phase only when llmBlocked() is false, and production has
+  // LLM_DISABLED set (GET /state/llm-monitor-health: off, offBy "LLM_DISABLED
+  // env var"), so it has never run and read a bare never_ran with no reason.
+  // The standing switch is the reason; the daily spend cap is not (it clears
+  // at midnight UTC, and a phase blocked by it is not dormant by design).
+  weekend_watch: { label: 'Weekend watch (LLM)', expectedSec: 7 * 86_400, factor: 2, dormantWhen: weekendWatchDormantReason },
   // The two phases that CLOSE positions and DISARM accounts on their own
   // authority had no row at all (blueprint audit, 02-09-2026). Each is a
   // try/catch in loop.js whose failure was a log line per cycle — a phase
@@ -178,9 +200,44 @@ export const CONTROLLERS = {
   // rows, the inspector and the daily report read; a stale one also shows in
   // records_fresh.
   order_lifecycle:     { label: 'Order lifecycle flags',      expectedSec: 600, factor: 3, effect: { key: 'order_lifecycle_last_json', kind: 'json', maxAgeSec: 1800 } },
+  // V3 V1 (owner order 25-09-2026): the all-account position capture pass —
+  // sweep, verify backlog and drain, per account with its own credentials —
+  // at the end of loop.js's every-3rd-cycle reconcile block. It beats FAILED
+  // when any account is silent (a close with no capture record past the
+  // grace), stalled (rows due and no successful drain of that account) or
+  // refused by the verifier on its last asks, naming the accounts; the
+  // per-account counts ride in the beat's detail. Before this there was no
+  // row at all, and the capture queue read "0 pending" while six of seven
+  // accounts had never queued a close.
+  position_capture:    { label: 'Position capture (every account)', tiedToLoop: true, loopMultiplier: 3, factor: 4, effect: { key: 'position_capture_last_json' } },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
+
+// ---------------------------------------------------------------------------
+// DORMANT BY DESIGN (V3 I2). A registry entry may name `dormantWhen(db)`,
+// returning the reason nothing is expected from the controller right now, or
+// null. A dormant controller is labelled, not judged: heartbeatView reports
+// verdict 'dormant' with `dormant_reason`, its record is not called stale,
+// and the goal table leaves it out of both controller populations, as it
+// already does for a dormant sidecar side. Only a standing owner decision
+// qualifies (a switch or a mode); a fault that stops the controller — missing
+// credentials, a spend cap for the day — is not dormancy and stays judged.
+// A reader that throws counts as "not dormant": failing open here would hide
+// a real stall behind an error.
+// ---------------------------------------------------------------------------
+function weekendWatchDormantReason(db) {
+  const why = llmDisabledReason(db, getState)
+  return why ? `LLM switched off (${why}) — the weekend watch makes no model call while it is off, so it does not run` : null
+}
+
+function dormantReasonOf(db, def, nowMs) {
+  if (typeof def?.dormantWhen !== 'function') return null
+  try {
+    const why = def.dormantWhen(db, { nowMs })
+    return typeof why === 'string' && why ? why : null
+  } catch { return null }
+}
 
 // Last exec-guard sync failure, {at, side, error}; null once a push succeeds.
 // Written by the probe below and by loop.js's equity-stop push; read by
@@ -260,12 +317,20 @@ function expectedSecFor(def, loopSec) {
 // failure mode #3): a ticker beating every 50 seconds beside a record that
 // had not moved in a week. protection-freshness.js answered that for ONE
 // controller; this generalises it. A registry entry may name an `effect`:
-//   { key, kind?: 'json' | 'ms' | 'protection', maxAgeSec? }
+//   { key, kind?: 'json' | 'ms' | 'protection', maxAgeSec?, cadenceSec? }
 // `json` (default) reads `{at}` from the agent_state JSON at `key`; `ms`
 // reads a millisecond string; `protection` delegates to the per-account
 // merge in protection-freshness.js. The freshness limit defaults to the same
 // window the stall check uses (expected × factor) so "record stale" and
 // "runner stalled" cannot disagree about what "too old" means.
+//
+// `cadenceSec(db, { nowMs, recordAtMs })` is for a record written on its own
+// cadence, slower than the runner's beat (V3 I2: the autopilot beats every
+// loop cycle and sweeps every 10 or 30 minutes). The limit is then that
+// cadence PLUS the stall window: the record is due one cadence after it was
+// written, and the scheduler has the usual grace to launch it. A cadence
+// reader that throws falls back to the plain window — too tight is a visible
+// false alarm, too loose would be a silent one.
 //
 // The verdict is computed AT READ TIME from the record's own timestamp.
 // Nothing here is stamped by the writer, so a writer that stops cannot leave
@@ -276,7 +341,10 @@ function effectAtMs(db, effect) {
   try {
     const raw = getState(db, effect.key)
     if (raw == null || raw === '') return NaN
-    if (effect.kind === 'ms') return Number(raw)
+    // A stamp of 0 is not a date: POST /actions/autopilot runNow writes '0'
+    // to request a sweep, and reading it as 1970 printed a record 29 million
+    // minutes old. It is "no dated record" until the sweep launches.
+    if (effect.kind === 'ms') { const n = Number(raw); return n > 0 ? n : NaN }
     return Date.parse(JSON.parse(raw)?.at || '')
   } catch { return NaN }
 }
@@ -290,21 +358,39 @@ export function effectRecord(db, name, { nowMs = Date.now(), loopSec = null, pro
   const def = CONTROLLERS[name]
   if (!def?.effect) return null
   const expected = expectedSecFor(def, effectiveLoopSec(db, loopSec))
-  const maxAgeSec = Number.isFinite(def.effect.maxAgeSec) ? def.effect.maxAgeSec : expected * def.factor
   if (def.effect.kind === 'protection') {
     const p = protection || protectionFreshnessFrom(db, { nowMs })
     return { hasRecord: p.hasReading, at: p.at, ageSec: p.ageSec, maxAgeSec: p.maxAgeSec, fresh: p.fresh, key: def.effect.key, summary: p.summary }
   }
   const t = effectAtMs(db, def.effect)
   const hasRecord = Number.isFinite(t)
+  const graceSec = expected * def.factor
+  const cadenceSec = cadenceSecOf(db, def.effect, nowMs, hasRecord ? t : null)
+  const maxAgeSec = Number.isFinite(def.effect.maxAgeSec)
+    ? def.effect.maxAgeSec
+    : (cadenceSec ?? 0) + graceSec
   const ageSec = hasRecord ? Math.max(0, Math.round((nowMs - t) / 1000)) : null
   const fresh = hasRecord && ageSec <= maxAgeSec
+  const limitText = cadenceSec != null && !Number.isFinite(def.effect.maxAgeSec)
+    ? `${Math.round(maxAgeSec / 60)}m: a ${Math.round(cadenceSec / 60)}m cadence + ${Math.round(graceSec / 60)}m grace`
+    : `${Math.round(maxAgeSec / 60)}m`
   const summary = !hasRecord
     ? `no record at ${def.effect.key} — the controller may beat, but nothing it produced can be dated`
     : fresh
-      ? `record ${Math.round(ageSec / 60)}m old (limit ${Math.round(maxAgeSec / 60)}m)`
-      : `RECORD ${Math.round(ageSec / 60)}m OLD — past the ${Math.round(maxAgeSec / 60)}m limit; the runner may be beating, its product is not current`
-  return { hasRecord, at: hasRecord ? new Date(t).toISOString() : null, ageSec, maxAgeSec, fresh, key: def.effect.key, summary }
+      ? `record ${Math.round(ageSec / 60)}m old (limit ${limitText})`
+      : `RECORD ${Math.round(ageSec / 60)}m OLD — past the ${limitText} limit; the runner may be beating, its product is not current`
+  return {
+    hasRecord, at: hasRecord ? new Date(t).toISOString() : null, ageSec, maxAgeSec, fresh, key: def.effect.key, summary,
+    ...(cadenceSec != null ? { cadenceSec } : {}),
+  }
+}
+
+function cadenceSecOf(db, effect, nowMs, recordAtMs) {
+  if (typeof effect?.cadenceSec !== 'function') return null
+  try {
+    const s = Number(effect.cadenceSec(db, { nowMs, recordAtMs }))
+    return Number.isFinite(s) && s > 0 ? s : null
+  } catch { return null }
 }
 
 /**
@@ -313,11 +399,15 @@ export function effectRecord(db, name, { nowMs = Date.now(), loopSec = null, pro
  *   never_ran     — no beat on record
  *   stalled/error — the runner itself
  *   record_stale  — the runner is fine, its product is past the limit (or absent)
+ *   dormant       — nothing is expected by design (registry `dormantWhen`);
+ *                   only an idle or ok runner reads dormant: a stalled,
+ *                   failing or warning runner keeps its own word
  *   warn/ok       — as status
  */
-export function verdictOf(status, product) {
-  if (status === 'idle') return 'never_ran'
+export function verdictOf(status, product, dormant = false) {
+  if (status === 'idle') return dormant ? 'dormant' : 'never_ran'
   if (status === 'stalled' || status === 'error') return status
+  if (dormant) return status === 'ok' ? 'dormant' : status
   if (product && !product.fresh) return 'record_stale'
   return status
 }
@@ -515,6 +605,10 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
     // Every controller with a declared effect gets its record dated here —
     // the protection audit's per-account merge is one kind among several.
     const product = def.effect ? effectRecord(db, name, { nowMs: now.getTime(), loopSec: lsec, protection }) : null
+    // Dormant by design (registry `dormantWhen`), with the reason. Only a
+    // row whose VERDICT is dormant carries `dormant: true` — a stalled or
+    // failing runner outranks it and stays in every judged population.
+    const dormantReason = dormantReasonOf(db, def, now.getTime())
     if (!row) {
       // IDLE, AND THE REASON WHY. Two very different things arrive here: a
       // controller that has never run (burn-in on a box that never armed it),
@@ -522,8 +616,9 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
       // used to arrive as ERROR with a climbing failure count; it must not now
       // arrive as a bare "idle" the operator has to interpret.
       const dormant = EXEC_SIDE_NAMES.has(name) ? dormancyOf(db, name, now.getTime()) : null
-      return { name, label: def.label, status: 'idle', verdict: verdictOf('idle', product), expected_sec: expected, runs: 0,
+      return { name, label: def.label, status: 'idle', verdict: verdictOf('idle', product, !!dormantReason), expected_sec: expected, runs: 0,
         ...(dormant ? { dormant: true, last_error: dormant.reason, error_is_current: false } : {}),
+        ...(dormantReason ? { dormant: true, dormant_reason: dormantReason } : {}),
         ...(product ? { work_product: product } : {}) }
     }
     const age = ageSecOf(row, now)
@@ -540,13 +635,17 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
     // Generalised 08-09-2026: any controller whose record is past its limit
     // prints `warn`, not just the protection audit (`enabled` was the audit's
     // own opt-out; a plain record has none).
-    if (product && product.enabled !== false && !product.fresh && status === 'ok') status = 'warn'
+    // A dormant controller's record is not expected to move, so its age is
+    // not a warning (V3 I2).
+    if (product && product.enabled !== false && !product.fresh && status === 'ok' && !dormantReason) status = 'warn'
+    const verdict = verdictOf(status, product, !!dormantReason)
     return {
       ...(product ? { work_product: product } : {}),
       name,
       label: def.label,
       status,
-      verdict: verdictOf(status, product),
+      verdict,
+      ...(verdict === 'dormant' ? { dormant: true, dormant_reason: dormantReason } : {}),
       expected_sec: expected,
       age_sec: Number.isFinite(age) ? Math.round(age) : null,
       last_run_at: row.last_run_at,
@@ -976,7 +1075,10 @@ export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
   if (status.enabled !== false && (changed || (status.recording && due))) {
     const ev = status.events || {}, seg = status.segments || {}, disk = status.disk || {}
     const gb = (n) => (Number(n) / 1e9).toFixed(2)
-    console.log(`[tick] ${side.name} recorder ${status.state}${status.recording ? '' : ' (switch off)'}: ${ev.total ?? 0} events (${ev.changed ?? 0} changed, ${ev.dropped ?? 0} dropped, ${ev.gaps ?? 0} gaps), ${seg.sealed ?? 0} segments sealed (${gb(seg.sealedBytes)} GB) + ${gb(seg.openBytes)} GB open, mount ${gb(disk.availBytes)} GB free of ${gb(disk.totalBytes)} GB (${disk.usagePct ?? '?'}% used, reserve ${gb(disk.reserveBytes)} GB)${status.reason ? ` — ${status.reason}` : ''}`)
+    // GW-CAP: the cap the sidecar reports it is holding, when it reports one
+    // (TICK_SPOOL_CAP_BYTES or the 2 GiB default) — never a number it did not send.
+    const cap = Number(seg.spoolCapBytes) > 0 ? ` under a ${gb(seg.spoolCapBytes)} GB cap` : ''
+    console.log(`[tick] ${side.name} recorder ${status.state}${status.recording ? '' : ' (switch off)'}: ${ev.total ?? 0} events (${ev.changed ?? 0} changed, ${ev.dropped ?? 0} dropped, ${ev.gaps ?? 0} gaps), ${seg.sealed ?? 0} segments sealed (${gb(seg.sealedBytes)} GB) + ${gb(seg.openBytes)} GB open${cap}, mount ${gb(disk.availBytes)} GB free of ${gb(disk.totalBytes)} GB (${disk.usagePct ?? '?'}% used, reserve ${gb(disk.reserveBytes)} GB)${status.reason ? ` — ${status.reason}` : ''}`)
     record.lastLoggedAt = new Date(nowMs).toISOString()
   }
   try { setState(db, key, JSON.stringify(record)) } catch { /* best effort */ }
@@ -1084,14 +1186,21 @@ export async function pullTickShadow(db, exec, side) {
  * samples: events/sec, bytes/day at the recorder's 40 B record, and the
  * projection against the plan's 2 GiB spool. Null fields when fewer than
  * two samples exist — a rate from one point is a guess, not a measurement.
+ *
+ * GW-CAP: the cap is configurable on the sidecar now (TICK_SPOOL_CAP_BYTES),
+ * so the 2 GiB figure is no longer the retention. `spoolCapBytes` is the cap
+ * the sidecar REPORTS (its /tick-status segments.spoolCapBytes), and
+ * `spoolHoursAtCap` the same projection against it — null when the sidecar
+ * reported no cap, never a guess at one. `spoolHoursAt2GiB` is kept as is.
  */
-export function tickRate24h(db, side, nowMs = Date.now()) {
+export function tickRate24h(db, side, nowMs = Date.now(), spoolCapBytes = null) {
+  const cap = Number(spoolCapBytes) > 0 ? Number(spoolCapBytes) : null
   let rows = []
   try {
     rows = db.prepare('SELECT at_ms, events, bytes_written, dropped, gaps, symbols FROM tick_status_samples WHERE side = ? AND at_ms >= ? ORDER BY at_ms')
       .all(side, nowMs - 24 * 3_600_000)
   } catch { rows = [] }
-  if (rows.length < 2) return { side, samples: rows.length, eventsPerSec: null, bytesPerDay: null, spoolHoursAt2GiB: null, dropped: null, gaps: null }
+  if (rows.length < 2) return { side, samples: rows.length, eventsPerSec: null, bytesPerDay: null, spoolHoursAt2GiB: null, spoolCapBytes: cap, spoolHoursAtCap: null, dropped: null, gaps: null }
   // Counters reset on a sidecar restart: sum only the non-negative deltas.
   let events = 0, bytes = 0, dropped = 0, gaps = 0
   for (let i = 1; i < rows.length; i++) {
@@ -1105,6 +1214,8 @@ export function tickRate24h(db, side, nowMs = Date.now()) {
     side, samples: rows.length, spanHours: +(spanS / 3600).toFixed(2), symbols: rows[rows.length - 1].symbols,
     eventsPerSec: +eventsPerSec.toFixed(3), bytesPerDay: Math.round(bytesPerDay),
     spoolHoursAt2GiB: bytesPerDay > 0 ? +((2 * 1024 ** 3) / bytesPerDay * 24).toFixed(1) : null,
+    spoolCapBytes: cap,
+    spoolHoursAtCap: bytesPerDay > 0 && cap ? +(cap / bytesPerDay * 24).toFixed(1) : null,
     dropped, gaps,
     model: 'docs/tick-momentum/storage-capacity.csv: 20 symbols × 5/20/100 events/s × 96 B = 0.83 / 3.3 / 16.6 GB/day; this recorder writes 40 B per event',
   }
@@ -1609,4 +1720,18 @@ export function checkAccountAuthorization(db, {
     try { setState(db, AUTH_WATCH_KEY, JSON.stringify(next)) } catch { /* watch state is best-effort */ }
   }
   return { events, roster, fresh }
+}
+
+/**
+ * The expected interval of one registered controller, in seconds, measured
+ * the same way the watchdog and the panel measure it (loop-tied controllers
+ * follow the loop's OBSERVED period, times their loopMultiplier). Null for a
+ * name that is not registered. For a controller that judges its own lag —
+ * V3 V1's position capture scales "stalled" with it, so a slow configured
+ * loop cannot read as a stalled pass between two on-schedule ones.
+ */
+export function expectedIntervalSec(db, name, { loopSec = null } = {}) {
+  const def = CONTROLLERS[name]
+  if (!def) return null
+  return expectedSecFor(def, effectiveLoopSec(db, loopSec))
 }

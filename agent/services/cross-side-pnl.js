@@ -57,7 +57,11 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
         return response
       },
     })
-    const oldHistory = await recoverOldPositionPnl(db, creds, { now: started, isCurrent,
+    // V3 B1: positions the window pass could not settle by construction — a
+    // lifecycle it cannot see whole, or a ledger identity it will not guess —
+    // are handed to the per-position reader in the same pass.
+    const handoff = [...(result.deferredPositions ?? []), ...(result.ambiguousPositions ?? []).map(a => a.positionId)]
+    const oldHistory = await recoverOldPositionPnl(db, creds, { now: started, isCurrent, handoff,
       getPositionDeals: positionId => boundedRead(timeout => readPosition(host, creds.clientId, creds.clientSecret,
         creds.accessToken, accountId, positionId, started, timeout)),
     })
@@ -66,6 +70,8 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
       for (const field of ['backfilled', 'scanned', 'closingDeals', 'dealsPersisted', 'exitsRepaired', 'exitsFilled']) {
         result[field] = (result[field] || 0) + (oldHistory.result[field] || 0)
       }
+      // Same account, same currency: the fee the reader's fill excluded joins the window's.
+      result.conversionFeeExcluded = Math.round(((result.conversionFeeExcluded || 0) + (oldHistory.result.conversionFeeExcluded || 0)) * 100) / 100
     }
     noteBackfillAttempt(accountId, result, clock())
     return { accountId, result }

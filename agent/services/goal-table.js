@@ -242,8 +242,11 @@ async function recordsGoal(db, targets, nowMs) {
   const { heartbeatView } = await import('./heartbeat.js')
   const view = heartbeatView(db, { now: new Date(nowMs) })
   // Only controllers that have RUN are judged on their record: a controller
-  // that never beat is the controllers_ok goal's finding, not this one's.
-  const withRecord = view.filter(v => v.work_product && v.verdict !== 'never_ran')
+  // that never beat is the controllers_ok goal's finding, not this one's. A
+  // dormant controller (heartbeat `dormantWhen`, V3 I2) is expected to leave
+  // its record unwritten, so its age is not staleness — the same exclusion
+  // controllers_ok already makes.
+  const withRecord = view.filter(v => v.work_product && v.verdict !== 'never_ran' && !v.dormant)
   const fresh = withRecord.filter(v => v.work_product.fresh)
   const stale = withRecord.filter(v => !v.work_product.fresh).map(v => `${v.name} (${v.work_product.summary})`)
   const current = pct(fresh.length, withRecord.length)
@@ -323,10 +326,10 @@ export async function vetoGoal(db, targets, nowMs = Date.now()) {
 }
 
 async function closesGoal(db, targets, nowMs) {
-  const { findIncompleteCloses } = await import('./close-completeness.js')
+  const { findIncompleteCloses, countFlatExemptCloses } = await import('./close-completeness.js')
   const rows = findIncompleteCloses(db, { windowHours: targets.incompleteCloseWindowHours, now: nowMs })
-  const pnl = rows.filter(r => r.missingPnl).length
-  const pm = rows.filter(r => r.missingPostmortem).length
+  const pnl = rows.filter(r => r.missingPnl).length, flat = countFlatExemptCloses(db, { windowHours: targets.incompleteCloseWindowHours, now: nowMs })
+  const pm = rows.filter(r => r.missingPostmortem).length, flatNote = flat ? `; ${flat} closed exactly flat carry no postmortem — exempt, there is no outcome to classify (V3 L2b W16)` : flat == null ? '; flat-close exemption count unavailable (read failed)' : ''
   return goal('close_completeness', {
     name: 'Closes recorded complete', subsystem: 'record',
     // The sweep's window is a GRACE period: a close is only incomplete once
@@ -335,7 +338,7 @@ async function closesGoal(db, targets, nowMs) {
     metric: `closed trades older than ${targets.incompleteCloseWindowHours}h still missing P&L or a postmortem`, target: `≤ ${targets.incompleteClosesMax}`,
     horizon: `${targets.incompleteCloseWindowHours}h grace`, current: rows.length,
     verdict: rows.length <= targets.incompleteClosesMax ? 'on_track' : 'off_track',
-    note: rows.length ? `${pnl} missing P&L, ${pm} missing a postmortem` : 'every close in the window carries P&L and a postmortem',
+    note: (rows.length ? `${pnl} missing P&L, ${pm} missing a postmortem` : flat !== 0 ? 'every close in the window carries P&L, and a postmortem unless exempt' : 'every close in the window carries P&L and a postmortem') + flatNote,
     source: 'close-completeness',
   })
 }

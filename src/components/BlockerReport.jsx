@@ -29,6 +29,25 @@ export function TickEvaluation({ tick }) {
   </section>
 }
 
+// V3 WEB-1: roster-wide stops (account-independent gates) are the same
+// records under every account, charged to none. An account scope's counts
+// above do not include them; the all-accounts scope's do. A server that does
+// not report them says so — never a zero it did not measure.
+export function RosterWideStops({ report }) {
+  const roster = report.rosterWide
+  if (!roster) return <p>Roster-wide stops: not reported by this agent version.</p>
+  return <section aria-label="Roster-wide stops" className="my-2">
+    <h3 className="font-semibold">Roster-wide stops (every account, charged to none): {roster.records} records</h3>
+    <p>{roster.includedInTotals ? 'Included in the totals above.' : 'Not included in this account\'s totals above.'} {roster.note}</p>
+    {roster.byStage.length > 0 && <ul>{roster.byStage.map(s => <li key={`${s.kind}|${s.stage}`}>
+      {s.stage} ({LABELS[s.kind] || s.kind}) ×{s.records}{s.recordedAgainstAnAccount ? ` — ${s.recordedAgainstAnAccount} stored by an older build against the then-selected account` : ''}; latest: {s.lastReason || 'reason not recorded'}
+    </li>)}</ul>}
+  </section>
+}
+
+const accountCell = row => row.attribution === 'roster' ? 'Roster-wide (every account)'
+  : `${row.accountId || 'Unattributed'}${row.unsplitHistory ? ' (recorded before the attribution fix; may not be this account\'s)' : ''}`
+
 export function BlockerReading({ report, error }) {
   if (!report) return <p role="status">Blocker report unavailable{error ? `: ${error}` : '.'}</p>
   return <>
@@ -37,12 +56,14 @@ export function BlockerReading({ report, error }) {
     <dl className="flex flex-wrap gap-4 my-2">{Object.entries(LABELS).map(([key, label]) => <div key={key}>
       <dt>{label}</dt><dd className="font-semibold">{report.summary[key]?.records ?? 'Not recorded'} records</dd>
     </div>)}</dl>
+    {report.unsplitRecordsInWindow > 0 && <p>{report.unsplitRecordsInWindow} of these records cannot be split. {report.unsplitNote}</p>}
+    <RosterWideStops report={report} />
     {report.records.length === 0 ? <p>No retained decision records in this window. This does not prove that scanning ran or found no signals.</p>
       : <div className="overflow-x-auto"><table className="w-full text-left text-(length:--fs-body)">
         <thead><tr>{['Recorded time', 'Account / instrument', 'Observed result', 'First recorded blocker', 'Evidence'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
         <tbody>{report.records.map(row => <tr key={row.recordId} className="border-t border-[var(--color-border)]">
           <td className="pr-3 py-2">{row.at}</td>
-          <td className="pr-3">{row.accountId || 'Unattributed'} / {row.symbol || 'Account-wide'}</td>
+          <td className="pr-3">{accountCell(row)} / {row.symbol || 'Account-wide'}</td>
           <td className="pr-3">{LABELS[row.kind]}<br />{row.stage}</td>
           <td className="pr-3 max-w-md whitespace-normal">{row.firstBlocker ? row.firstBlocker.reason || 'Reason not recorded' : row.kind === 'placement_receipt' ? 'None recorded; placement does not prove a fill' : 'None recorded; approval does not prove a fill'}</td>
           <td><details><summary>Recorded checks</summary>
@@ -83,7 +104,7 @@ export default function BlockerReport({ accountId }) {
   return <Card className="my-3 text-(length:--fs-body)" aria-label="Recorded entry blockers" scope={accountId}>
     <h2 className="font-semibold">Recorded entry blockers</h2>
     <p className="font-semibold">Report scope: {accountId === 'all' ? 'All registered accounts' : `Account ${accountId}`}</p>
-    {report && <p>Through {new Date(report.to).toLocaleString()}{windowEnd ? ' · browsing a fixed history window' : ' · updates every minute while active'}. Counts apply only to this account scope.</p>}
+    {report && <p>Through {new Date(report.to).toLocaleString()}{windowEnd ? ' · browsing a fixed history window' : ' · updates every minute while active'}. Counts apply only to this account scope; roster-wide stops are listed separately.</p>}
     <label>Decision window <select value={hours} onChange={e => { setHours(Number(e.target.value)); setOffset(0); setWindowEnd(null) }}>
       <option value={6}>6 hours</option><option value={24}>24 hours</option><option value={72}>72 hours</option>
     </select></label>

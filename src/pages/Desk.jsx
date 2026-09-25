@@ -1040,7 +1040,7 @@ export default function Desk() {
         title="Closed at the broker"
         summary={(() => {
           if (brokerHistory?.realized == null) return null
-          let s2 = `realised ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals`
+          let s2 = `${brokerHistory.complete === false ? `INCOMPLETE walk (${brokerHistory.incompleteReason || 'cut short'}) — realised so far` : 'realised'} ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals`
           // Best/worst contributor — the read a CTO wants before the rows.
           const rows2 = (brokerHistory.rows || []).filter(d => d.netPnl != null)
           if (rows2.length >= 2) {

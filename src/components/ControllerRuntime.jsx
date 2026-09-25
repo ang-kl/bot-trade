@@ -2,6 +2,35 @@ import { useTableClock } from '../lib/table-clock.js'
 const onOff = value => value === true ? 'ON' : value === false ? 'OFF' : 'UNVERIFIED'
 const count = value => value == null ? 'Unverified' : String(value)
 const stamp = value => value ? new Date(value).toLocaleString() : 'No reading'
+const ENTRY_RELAY_CAPTION = 'Entry refusals — Node records relayed by cpp-verify (not broker-verified)'
+
+// Node's own entry records, relayed by cpp-verify on /watchdog-status. They
+// are NOT verified: only the open-position count is cpp-verify's own broker
+// read. A missing block is unavailable, never an empty clean table: a busy
+// status reply carries none, and an older cpp-verify build relays none.
+function EntryRelay({ status }) {
+  const relay = status?.entryDiagnostics
+  if (!relay || relay.available !== true) {
+    const reason = relay?.reason || (status?.error === 'watchdog_status_busy' ? 'watchdog_status_busy' : 'not relayed by this cpp-verify build')
+    return <p><strong>{ENTRY_RELAY_CAPTION}</strong>: unavailable: {reason}.</p>
+  }
+  return <div className="overflow-x-auto">
+    <p>{relay.note} Node records as of {stamp(relay.nodeObservedAtMs)}{relay.stale ? ' · STALE' : ''}{relay.complete ? '' : ` · INCOMPLETE${relay.reason ? `: ${relay.reason}` : ''}`}.</p>
+    <table className="w-full text-left">
+      <caption className="text-left font-semibold">{ENTRY_RELAY_CAPTION}</caption>
+      <thead><tr>{['Account', 'Entry mode (Node)', 'Tick entries (Node)', 'Dominant refusal, 24 h (Node)', 'Open positions (cpp-verify broker read)'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
+      <tbody>{(relay.accounts || []).map(a => <tr key={a.accountId}>
+        <td className="pr-3">{a.accountId} ({a.environment || 'environment unrecorded'})</td>
+        <td className="pr-3">{a.entryMode?.effective || 'UNVERIFIED'} (admits {a.bases?.length ? a.bases.join(' + ') : 'nothing'})</td>
+        <td className="pr-3">{a.tick?.status ? a.tick.status.replaceAll('_', ' ') : 'UNVERIFIED'}{a.tick?.because ? ` — ${a.tick.because}` : ''}
+          {a.tick?.blockedReasons?.length > 0 && <div>Blocked: {a.tick.blockedReasons.join(', ')}</div>}</td>
+        <td className="pr-3">{a.dominantRefusal ? `${a.dominantRefusal.stage} ×${count(a.dominantRefusal.records)}; latest: ${a.dominantRefusal.lastReason || 'reason unrecorded'}` : 'No recorded entry stop'}
+          {' '}({count(a.entryStopsInWindow)} entry stops)</td>
+        <td className="pr-3">{a.independent?.available ? `${a.independent.openCount} open, read ${stamp(a.independent.checkedAtMs)}` : `UNVERIFIED: ${a.independent?.reason || 'no broker read'}`}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>
+}
 
 export default function ControllerRuntime({ runtime }) {
   const now = useTableClock(1000)
@@ -53,8 +82,10 @@ export default function ControllerRuntime({ runtime }) {
             {i.severity}: {i.detail?.service} — {id.includes(':no_orders:') ? 'no recorded orders' : id.split(':').at(-1).replaceAll('_', ' ')}; {i.detail?.reason || i.detail?.role || 'evidence unavailable'};
             {' '}account …{String(i.detail?.accountId || '').slice(-4)}{i.detail?.symbolId != null ? `; symbol ID ${i.detail.symbolId}` : ''};
             {' '}market {i.detail?.marketStatus || 'unverified'}; work completed {stamp(i.detail?.lastCompletedAtMs)}; next due {stamp(i.detail?.nextDueMs)};
-            {' '}opened {stamp(i.openedAtMs)}; last observed {stamp(i.lastObservedAtMs)}.
+            {' '}opened {stamp(i.openedAtMs)}; last observed {stamp(i.lastObservedAtMs)}
+            {id.includes(':no_orders:') ? `; blocker: ${i.detail?.blocker || 'not recorded'}` : ''}.
           </li>)}</ul>
+          <EntryRelay status={runtime.watchdog.status} />
         </> : <p>Independent watchdog evidence unavailable or stale.</p>}
       </details>
       <div className="overflow-x-auto">

@@ -15,6 +15,8 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev
           make -C cpp-scan-tick CXX=g++ -j2 all test
           make -C cpp-scan-timeframe CXX=g++ -j2 all test
+      - name: Tick stream turnover under ThreadSanitizer
+        run: make -C cpp-scan-tick CXX=g++ -j2 tsan
       - name: No broker or order authority in scanner binaries
         run: |
           for binary in cpp-scan-tick/bin/cpp-scan-tick cpp-scan-timeframe/bin/cpp-scan-timeframe; do

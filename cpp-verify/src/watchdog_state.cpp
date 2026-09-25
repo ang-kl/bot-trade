@@ -48,6 +48,13 @@ bool WatchState::restore(const jsn::Value& s) {
       || s.get("services").asObject().size() > 5 || s.get("incidents").asObject().size() > 2048
       || s.get("outbox").asObject().size() > 512 || jsn::dump(s).size() > 4 * 1024 * 1024) return false;
   services_ = copy(s.get("services")).asObject();
+  // A build before the relay persisted Node's entryDiagnostics with the
+  // contract; drop it so the next persist is the stripped shape. Diagnostics
+  // restored from disk would be relayed as if current.
+  if (auto node = services_.find("node"); node != services_.end() && node->second.get("contract").isObject()) {
+    auto contract = node->second.get("contract").asObject(); contract.erase("entryDiagnostics");
+    node->second.set("contract", jsn::Value(std::move(contract)));
+  }
   incidents_ = copy(s.get("incidents")).asObject();
   outbox_ = copy(s.get("outbox")).asObject();
   dropped_ = number(s.get("dropped"));
@@ -122,7 +129,14 @@ void WatchState::probe(const std::string& service, bool reachable, const jsn::Va
       for (const auto& [key, value] : incidents_) if (key.starts_with(prefix) && value.get("active").asBool()) resolved.push_back(key);
       for (const auto& key : resolved) incident(key, false, "info", detail(service, "work_no_longer_in_complete_inventory"), now);
     }
-    s.set("contract", copy(contract)); s.set("lastContractAtMs", now);
+    auto stored = copy(contract);
+    if (service == "node") {
+      // Persist-strip: the relay keeps Node's entryDiagnostics in memory; the
+      // durable state (fsynced every probe) keeps only what supervision needs.
+      nodeEntryDiagnostics_ = copy(contract.get("entryDiagnostics")); nodeEntryDiagnosticsAtMs_ = now;
+      auto fields = stored.asObject(); fields.erase("entryDiagnostics"); stored = jsn::Value(std::move(fields));
+    }
+    s.set("contract", stored); s.set("lastContractAtMs", now);
   }
   s.set("validContract", valid);
 }
@@ -162,10 +176,15 @@ void WatchState::evaluate(long long now) {
       const auto completed = number(w.get("lastCompletedAtMs"));
       incident(key + ":clock", completed > now, "warning", d, now);
       if (completed > now) continue;
-      if (role == "gateway") {
+      // Calendar-free liveness: a gateway's reconcile, and Node's scanner
+      // observation collector (it polls around the clock, and it is the
+      // liveness signal for the timeframe mirror, whose idle cells carry no
+      // deadline). A stalled collector loses observations, not protection,
+      // so its stall is a warning.
+      if (role == "gateway" || role == "collector") {
         const auto due = number(w.get("nextDueMs"));
         incident(key + ":deadline_unknown", due == 0, "warning", d, now);
-        if (due > 0) incident(key + ":stalled", now >= due + policy_.serviceGraceMs, "urgent", d, now);
+        if (due > 0) incident(key + ":stalled", now >= due + policy_.serviceGraceMs, role == "gateway" ? "urgent" : "warning", d, now);
         continue;
       }
       if (role == "intent") {
