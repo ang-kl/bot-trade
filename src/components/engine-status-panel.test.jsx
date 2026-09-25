@@ -72,6 +72,7 @@ describe('EngineRow — WP-A selections', () => {
     const warming = row({ admittedBases: ['bar', 'tick'], bases: [] })
     const html = renderToStaticMarkup(<EngineRow row={warming} readiness={ready} fullId="46979908" busy={false} onMode={() => {}} at={Date.now()} />)
     expect(html).toMatch(/Time \+ tick · warming/)
+    expect(html, 'checker nit 5: the requested text names the selection the badge names, not "Time-based"').toMatch(/requested <b>Time \+ tick<\/b> · effective <b>Stopped<\/b>/)
     expect(html).toMatch(/admits <b>nothing<\/b>/)
     expect(button(html, 'Time + tick')).toMatch(/disabled=""/)
     expect(button(html, 'Time-based')).not.toMatch(/disabled=""/)

@@ -45,7 +45,7 @@ import Collapse from './common/Collapse.jsx'
 import EntryModePolicySwitch from './EntryModePolicySwitch.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { useEngineStatus, refreshEngineStatus } from '../lib/use-engine-status.js'
-import { engineAccountBindings, engineReadinessFor, engineReading, blockerGroups, tickBlockedReason, tickSelectionNote, ackLine, mixedSummary, requestedSelection, selectionBody, basesLabel, SELECTION_LABEL, MODE_LABEL } from '../lib/engine-status-view.js'
+import { engineAccountBindings, engineReadinessFor, engineReading, blockerGroups, tickBlockedReason, tickSelectionNote, ackLine, mixedSummary, requestedSelection, requestedLabel, bulkSkips, selectionBody, basesLabel, SELECTION_LABEL, MODE_LABEL } from '../lib/engine-status-view.js'
 import { unknownRows, resolveUnknownIntent, runOriginBackfill, backfillSummary, RESOLVE_STATES, MIN_REASON_LEN } from '../lib/unknown-intents.js'
 
 function ageLabel(at) {
@@ -84,7 +84,7 @@ export function EngineRow({ row, readiness, fullId, busy, onMode, at }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-semibold tabular-nums">{row.environment === 'live' ? 'LIVE' : 'DEMO'} {fullId || row.accountId}</span>
         <Badge tone={reading.tone} title={reading.detail}>{reading.label}</Badge>
-        <span className="text-[var(--color-text-sub)]">requested <b>{MODE_LABEL[row.requestedEntryMode] || row.requestedEntryMode}</b> · effective <b>{MODE_LABEL[row.effectiveEntryMode] || row.effectiveEntryMode}</b> · {row.transitionState}{Array.isArray(row.bases) && <> · admits <b>{basesLabel(row.bases)}</b></>}</span>
+        <span className="text-[var(--color-text-sub)]">requested <b>{requestedLabel(row)}</b> · effective <b>{MODE_LABEL[row.effectiveEntryMode] || row.effectiveEntryMode}</b> · {row.transitionState}{Array.isArray(row.bases) && <> · admits <b>{basesLabel(row.bases)}</b></>}</span>
         <span className="text-[var(--color-text-sub)] tabular-nums">rev {row.configRevision} · epoch {row.modeEpoch}</span>
         <span className="text-[var(--color-text-sub)]">observation <b>{row.tickObservation}</b> · stage <b>{row.validationStage}</b></span>
         {row.entryCounts && <span className="text-[var(--color-text-sub)] tabular-nums">resting {row.entryCounts.resting ?? 0} · in flight {row.entryCounts.inFlight ?? 0} · unknown {row.entryCounts.unknown ?? 0}</span>}
@@ -237,7 +237,7 @@ export default function EngineStatusPanel({ scope = 'all' }) {
     const out = []
     try {
       for (const [index, row] of rows.entries()) {
-        if (requestedSelection(row) === key) { out.push({ accountId: row.accountId, selection: key, skipped: true }); continue }
+        if (bulkSkips(row, key)) { out.push({ accountId: row.accountId, selection: key, skipped: true }); continue }
         out.push(await setMode(accountIds[index], key, row.configRevision))
       }
       setAcks(out)

@@ -262,9 +262,18 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
     // throw a 500. Refused with a named reason instead, before anything is
     // written: remove tick through POST /actions/entry-mode first. Nothing is
     // cleared behind the owner's back — the admitted set is the owner's.
+    // The contract (entry-contracts.js) counts tick as admitted whenever the
+    // effective mode is TICK_MOMENTUM, whatever the set says — so a
+    // TICK_MOMENTUM account narrowed through the overlay to ['bar'] (basesFor
+    // then answers bar alone) is refused on the MODE too, here, rather than
+    // thrown out of writeEngineStatus as a 500 (checker nit 1, 25-09-2026).
+    // The requested mode is asked as well: a WARMING TICK_MOMENTUM request
+    // would write an effective tick mode at its ack.
     const admitted = [...new Set([...basesFor(cur), ...basesFor({ ...cur, effectiveEntryMode: cur.requestedEntryMode }), ...(Array.isArray(cur.admittedBases) ? cur.admittedBases : [])])]
-    if (admitted.includes('tick')) {
-      return { ok: false, reason: `tick_admitted: the account admits ${admitted.join('+')} (requested ${cur.requestedEntryMode}); remove tick through POST /actions/entry-mode (Time-based or Stop) before resetting its evidence`, bases: admitted }
+    const tickMode = cur.effectiveEntryMode === 'TICK_MOMENTUM' || cur.requestedEntryMode === 'TICK_MOMENTUM'
+    if (admitted.includes('tick') || tickMode) {
+      const modeNote = tickMode && !admitted.includes('tick') ? `; effective ${cur.effectiveEntryMode}, and the contract counts TICK_MOMENTUM as admitting tick whatever the set` : ''
+      return { ok: false, reason: `tick_admitted: the account admits ${admitted.join('+') || 'nothing'} (requested ${cur.requestedEntryMode}${modeNote}); remove tick through POST /actions/entry-mode (Time-based or Stop) before resetting its evidence`, bases: admitted }
     }
     record.evidence = { reason: String(evidence.reason) }
     next.validationStage = 'UNVALIDATED'

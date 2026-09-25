@@ -769,6 +769,23 @@ test('WP-A (review): one record whose ack write throws does not stop the account
   assert.equal(engineStatusFor(db, DEMO).transitionState, 'WARMING', 'the bad one is left as it was, visibly not bound')
 })
 
+test('WP-A follow-up (checker nit 6): a skipped ack is visible — one ACK_REFUSED action_log row names the account, the echoed epoch, the source and the contract\'s reason; a bound ack writes none', () => {
+  const db = fresh()
+  engineModule.writeEngineStatus(db, { ...engineStatusFor(db, DEMO), requestedEntryMode: 'TICK_MOMENTUM', effectiveEntryMode: 'STOPPED', transitionState: 'WARMING', modeEpoch: 1, configRevision: 1 })
+  const back = requestEntryMode(db, LIVE, 'TIME_BASED'); assert.equal(back.status.transitionState, 'WARMING')
+  acknowledgeEntryEpochs(db, { [DEMO]: 1, [LIVE]: back.status.modeEpoch }, { source: 'push' })
+  const refused = db.prepare(`SELECT method, path, body, account_id FROM action_log WHERE method = 'ACK_REFUSED'`).all()
+  assert.equal(refused.length, 1, 'RED without the ACK_REFUSED row: the refusal was only a console line')
+  assert.equal(refused[0].path, '/entry-mode/ack'); assert.equal(refused[0].account_id, DEMO)
+  const body = JSON.parse(refused[0].body)
+  assert.equal(body.accountId, DEMO); assert.equal(body.epoch, 1); assert.equal(body.source, 'push')
+  assert.match(body.reason, /engine status invalid: .*validationStage: admitting tick needs at least SHADOW_PASSED/, 'the contract\'s own reason, not a generic "skipped"')
+  assert.equal(engineStatusFor(db, DEMO).transitionState, 'WARMING', 'the record itself is untouched — the row is the only write')
+  // the account that bound gets its ordinary ACK row, never an ACK_REFUSED one
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE method = 'ACK_REFUSED' AND account_id = ?`).get(LIVE).n, 0)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE method = 'ACK' AND account_id = ?`).get(LIVE).n, 1)
+})
+
 test('WP-A: POST /actions/entry-mode carries admittedBases WITH a mode through the ack protocol, and a refusal answers 400 with the named reason in `error`', async () => {
   const { default: express } = await import('express')
   const { default: actionsRouter } = await import('../routes/actions.js')
@@ -805,5 +822,45 @@ test('WP-A: POST /actions/entry-mode carries admittedBases WITH a mode through t
     assert.equal(engineStatusFor(db, LIVE).configRevision, before); assert.deepEqual(calls2, [])
     const conflict = await post({ accountId: LIVE, mode: 'STOPPED', expectedRevision: before + 7 })
     assert.equal(conflict.status, 409); assert.equal((await conflict.json()).error, 'revision_conflict')
+  })
+})
+
+// Checker nit 3 (WP-A follow-up, 25-09-2026): the MODE-LESS overlay branch of
+// POST /actions/entry-mode (PR-3's path, kept for API compatibility) had only
+// a source-string pin; disabling it left every test green, and WP-A's new
+// `error: r.reason` in it was untested. Exercised here through the real router.
+test('WP-A follow-up: POST /actions/entry-mode with admittedBases and NO mode takes the overlay path — [bar] answers 200 with the epoch unchanged and no gateway call; [bar, tick] on an unevidenced account answers 400 with error tick_not_ready…', async () => {
+  const { default: express } = await import('express')
+  const { default: actionsRouter } = await import('../routes/actions.js')
+  const db = fresh()
+  const serve = async (router, fn) => {
+    const app = express(); app.use(express.json()); app.use('/actions', router)
+    const s = await new Promise(r => { const x = app.listen(0, () => r(x)) })
+    const post = (body) => fetch(`http://127.0.0.1:${s.address().port}/actions/entry-mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    try { await fn(post) } finally { s.close() }
+  }
+  const gatewayCalls = []
+  // production readiness (no deps.tickReadiness): both accounts are unevidenced
+  await serve(actionsRouter(db, { entryModeGateway: async (...a) => { gatewayCalls.push(a); return { gateway: {}, status: engineStatusFor(db, String(a[1])) } } }), async (post) => {
+    const before = engineStatusFor(db, DEMO)
+    const res = await post({ accountId: DEMO, admittedBases: ['bar'], expectedRevision: before.configRevision })
+    const j = await res.json()
+    assert.equal(res.status, 200, `RED when the mode-less branch is gone ("accountId and mode are required"): ${JSON.stringify(j)}`)
+    assert.equal(j.ok, true); assert.deepEqual(j.bases, ['bar']); assert.deepEqual(j.status.admittedBases, ['bar'])
+    assert.equal(j.status.modeEpoch, before.modeEpoch, 'the overlay path moves the revision, never the epoch')
+    const after = engineStatusFor(db, DEMO)
+    assert.equal(after.modeEpoch, before.modeEpoch); assert.equal(after.configRevision, before.configRevision + 1)
+    assert.equal(after.transitionState, before.transitionState, 'no ack protocol on the overlay path')
+    assert.deepEqual(gatewayCalls, [], 'the overlay path binds no gateway')
+
+    const live = engineStatusFor(db, LIVE)
+    const refused = await post({ accountId: LIVE, admittedBases: ['bar', 'tick'], expectedRevision: live.configRevision })
+    assert.equal(refused.status, 400)
+    const rj = await refused.json()
+    assert.match(rj.error ?? '', /^tick_not_ready: /, 'RED without `error: r.reason` in the overlay branch: the website would show "400"')
+    assert.equal(rj.reason, rj.error)
+    assert.equal(engineStatusFor(db, LIVE).configRevision, live.configRevision, 'nothing written on the refusal')
+    assert.equal(engineStatusFor(db, LIVE).admittedBases, null)
+    assert.deepEqual(gatewayCalls, [])
   })
 })
