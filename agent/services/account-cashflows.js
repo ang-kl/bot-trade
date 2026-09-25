@@ -31,13 +31,17 @@ export function recordCashflowWindow(db, { accountId, host, currency, from, to, 
   let balanceConflicts = 0
   db.transaction(() => {
     // An event already stored keeps every field it had (DO NOTHING before
-    // WEB-8); only a missing balance is filled, from this read.
+    // WEB-8); only a missing balance is filled, from this read. The WHERE
+    // leaves every other stored row unwritten: the collector polls and the
+    // nightly equity snapshot re-reads 7 days, and a row whose balance is
+    // stored (or whose API read already said "none given") has nothing to
+    // gain from a rewrite. A pre-WEB-8 row (source NULL) is stamped once
+    // with the read that found no balance.
     const insert = db.prepare(`INSERT INTO account_cashflows (account_id,host,event_id,at_ms,currency,delta,operation_type,kind,received_ms,
         balance,balance_version,balance_source)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,'broker_api') ON CONFLICT(account_id,host,event_id) DO UPDATE SET
-        balance = COALESCE(account_cashflows.balance, excluded.balance),
-        balance_version = CASE WHEN account_cashflows.balance IS NULL THEN excluded.balance_version ELSE account_cashflows.balance_version END,
-        balance_source = CASE WHEN account_cashflows.balance IS NULL THEN excluded.balance_source ELSE account_cashflows.balance_source END`)
+        balance = excluded.balance, balance_version = excluded.balance_version, balance_source = excluded.balance_source
+      WHERE account_cashflows.balance IS NULL AND (excluded.balance IS NOT NULL OR account_cashflows.balance_source IS NULL)`)
     for (const r of rows) {
       const old = db.prepare('SELECT at_ms,currency,delta,operation_type,balance FROM account_cashflows WHERE account_id=? AND host=? AND event_id=?').get(String(accountId),host,r.id)
       if (old && (old.at_ms !== r.at || old.currency !== currency || old.delta !== r.delta || old.operation_type !== r.type)) throw new Error('cashflow_duplicate_conflict')

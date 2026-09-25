@@ -162,9 +162,37 @@ test('a balance is proven at an edge when the next close reconciles to the cent,
     { status: 'not_stored', reason: 'before_first_stored_event', storedFrom: T0 + 999 })
   assert.deepEqual(pick(r.at(A, T0 + 5 * H), ['status', 'reason']), { status: 'not_stored', reason: 'after_last_stored_event' })
   // The close time is stored to the second: an edge inside that second may
-  // fall before or after the close.
+  // fall before the close or at/after it. Windows are [from, to), so an edge
+  // at the second's last millisecond is still inside it, and the first edge
+  // after the second is the first one the close is provably before.
   assert.deepEqual(pick(r.at(A, T0 + 500), ['status', 'reason']), { status: 'not_stored', reason: 'edge_inside_event_time' })
-  assert.equal(r.at(A, T0 + 999).status, 'observed')
+  assert.deepEqual(pick(r.at(A, T0 + 999), ['status', 'reason']), { status: 'not_stored', reason: 'edge_inside_event_time' })
+  assert.deepEqual(pick(r.at(A, T0 + 1000), ['status', 'value']), { status: 'observed', value: 1000 })
+  // A close stamped to a second that STARTS at the edge is provably at or
+  // after the edge: it belongs to the window starting there, so the balance
+  // at the edge is the one before it — not "inside the event's time".
+  assert.deepEqual(pick(r.at(A, T0 + 2 * H), ['status', 'value', 'event', 'nextEvent']),
+    { status: 'observed', value: 1000, event: { kind: 'deal', id: '1' }, nextEvent: { kind: 'deal', id: '2' } })
+  assert.deepEqual(pick(r.at(A, T0), ['status', 'reason']), { status: 'not_stored', reason: 'before_first_stored_event' })
+})
+
+test('an event timed exactly at an edge belongs to the window that starts there, as the ledger counts it ([from, to))', t => {
+  const db = fixture(t)
+  storeApi(db, [
+    apiDeal({ dealId: 1, at: T0, gross: 1000, balance: 100_000 }),                  // 1,000.00 after
+    apiDeal({ dealId: 2, at: T0 + 2 * H, gross: 500, balance: 160_500 }),           // +5.00 on 1,600.00
+  ])
+  // A deposit the broker times to the millisecond, exactly at the edge.
+  recordCashflowWindow(db, { accountId: A, host: HOST, currency: 'USD', from: T0, to: T0 + 2 * H, receivedAt: T0 + 3 * H,
+    response: cashflowResponse([deposit({ id: '77', at: T0 + H, delta: 60_000, balance: 160_000 })]) })
+  const r = reader(db)
+  // Carry out of [.., E) and carry in of [E, ..) are the same figure: the
+  // balance before the deposit the window starting at E counts.
+  assert.deepEqual(pick(r.at(A, T0 + H), ['status', 'value', 'event', 'nextEvent', 'provenUntil']),
+    { status: 'observed', value: 1000, event: { kind: 'deal', id: '1' }, nextEvent: { kind: 'cashflow', id: '77' }, provenUntil: T0 + H })
+  assert.deepEqual(pick(r.at(A, T0 + H + 1), ['status', 'value', 'event']),
+    { status: 'observed', value: 1600, event: { kind: 'cashflow', id: '77' } })
+  assert.deepEqual(pick(r.at(A, T0 + H - 1), ['status', 'value']), { status: 'observed', value: 1000 })
 })
 
 test('a stored cashflow carrying its balance closes the gap an unrecorded deposit opened', t => {
@@ -288,6 +316,35 @@ test('the cashflow balance is kept, a missing one is filled on a re-read, and ne
   ])
   // The delta rule is untouched: a disagreeing delta still refuses the window.
   assert.throws(() => window([deposit({ id: '1', at: T0 + 60_000, delta: 1, balance: 110_000 })]), /cashflow_duplicate_conflict/)
+})
+
+test('a re-read writes only the row it fills: a stored balance, or an API read that already found none, is not rewritten', t => {
+  const db = fixture(t)
+  db.exec(`CREATE TABLE cashflow_row_writes (event_id TEXT);
+    CREATE TRIGGER cashflow_row_written AFTER UPDATE ON account_cashflows
+    BEGIN INSERT INTO cashflow_row_writes VALUES (NEW.event_id); END;`)
+  const writes = () => db.prepare('SELECT event_id FROM cashflow_row_writes ORDER BY rowid').all().map(r => r.event_id)
+  const window = (items) => recordCashflowWindow(db, { accountId: A, host: HOST, currency: 'USD',
+    from: T0, to: T0 + 2 * H, receivedAt: T0 + 3 * H, response: cashflowResponse(items) })
+  // Event 3 as a pre-WEB-8 writer stored it: no balance, no source.
+  db.prepare(`INSERT INTO account_cashflows (account_id, host, event_id, at_ms, currency, delta, operation_type, kind, received_ms)
+    VALUES (?, ?, '3', ?, 'USD', 20, 0, 'external', ?)`).run(A, HOST, T0 + 180_000, T0 + H)
+  const items = [
+    deposit({ id: '1', at: T0 + 60_000, delta: 10_000, balance: 110_000, version: 5 }),
+    deposit({ id: '2', at: T0 + 120_000, delta: 5000 }),
+    deposit({ id: '3', at: T0 + 180_000, delta: 2000 }),
+  ]
+  window(items)
+  assert.deepEqual(writes(), ['3'], 'only the pre-WEB-8 row is stamped with the read that found no balance')
+  const before = db.prepare('SELECT * FROM account_cashflows ORDER BY event_id').all()
+  window(items)
+  window(items)
+  assert.deepEqual(writes(), ['3'], 'the same read again rewrites nothing')
+  assert.deepEqual(db.prepare('SELECT * FROM account_cashflows ORDER BY event_id').all(), before)
+  window([items[0], deposit({ id: '2', at: T0 + 120_000, delta: 5000, balance: 115_000, version: 6 }), items[2]])
+  assert.deepEqual(writes(), ['3', '2'], 'a read carrying the missing balance fills exactly that row')
+  assert.deepEqual(db.prepare(`SELECT balance, balance_version, balance_source FROM account_cashflows WHERE event_id = '2'`).get(),
+    { balance: 1150, balance_version: 6, balance_source: 'broker_api' })
 })
 
 test('event times are the interval the stored text is known to within', () => {

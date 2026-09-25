@@ -14,9 +14,13 @@
 // (persistDeals, parseStatement, recordCashflowWindow).
 //
 // NEVER INVENTED. A balance is read at a window edge E only when the stored
-// events PROVE it held at E:
-//   A = the last stored event (closing deal or cashflow) at or before E,
-//   B = the first stored event after E,
+// events PROVE it held at E. The ledger's windows are [from, to)
+// (performance-populations.js: `t < w.from || t >= w.to`), so an event timed
+// exactly at E belongs to the window that STARTS at E, and the balance at E
+// is the one before it — carry out of one window and carry in of the next
+// read the same figure:
+//   A = the last stored event (closing deal or cashflow) strictly before E,
+//   B = the first stored event at or after E,
 //   and B's stored balance equals A's balance plus B's own money to the cent
 //   (and, where both carry the broker's balanceVersion, B's is A's + 1).
 // Then nothing else changed the balance between A and B, so it was A's at E.
@@ -34,7 +38,10 @@
 //
 // The evidence shape matches the ledger carry's edge evidence ({status,
 // value, currency, at, source} or {status: 'not_stored', reason}), so an
-// edge before account_history begins can be answered from here.
+// edge before account_history begins can be answered from here. The ledger's
+// carry does not call this reader yet: that fallback (when its own reader
+// returns before_balance_history) is a follow-up on WEB-3; until then this
+// serves GET /state/deal-balances only.
 // ---------------------------------------------------------------------------
 
 const HOSTS = { 0: 'demo.ctraderapi.com', 1: 'live.ctraderapi.com' }
@@ -167,16 +174,18 @@ export function dealBalanceReader(db, { currencyByAccount } = {}) {
     const withBalance = ev.filter(e => e.balance != null)
     if (!withBalance.length) return { status: 'not_stored', reason: 'no_balance_evidence_stored' }
     const storedFrom = withBalance[0].latest, storedThrough = withBalance.at(-1).earliest
-    let j = ev.findIndex(e => e.earliest > atMs)
+    // [from, to): an event that may be at E or later is on B's side.
+    let j = ev.findIndex(e => e.earliest >= atMs)
     if (j < 0) j = ev.length
     const A = ev[j - 1], B = ev[j]
     if (!A) return { status: 'not_stored', reason: 'before_first_stored_event', storedFrom }
     // The edge falls inside the second a whole-second close time names: that
-    // close may be just before or just after it, so which balance held at the
-    // edge is not known. Any event that may end after the edge counts, not
-    // only the last one.
+    // close may be just before the edge or at/after it, so which balance held
+    // at the edge is not known. Any event that may be at or after the edge
+    // counts, not only the last one. (A close stamped to a second that STARTS
+    // at the edge is provably at/after it, so it is B, not ambiguous.)
     for (let k = j - 1; k >= 0 && ev[k].earliest > atMs - 1000; k--) {
-      if (ev[k].latest > atMs) return { status: 'not_stored', reason: 'edge_inside_event_time', event: ref(ev[k]) }
+      if (ev[k].latest >= atMs) return { status: 'not_stored', reason: 'edge_inside_event_time', event: ref(ev[k]) }
     }
     if (!B) return { status: 'not_stored', reason: 'after_last_stored_event', storedThrough }
     const link = linkProof(A, B, a.currency)
@@ -237,7 +246,7 @@ export function dealBalanceReport(db, { accountId = null, edges = [], currencyBy
   const ids = accountId == null ? reader.accountIds() : [String(accountId)]
   return {
     basis: 'broker_post_event_balance_reconciled_to_next_event',
-    rule: 'A balance is read at an edge only when the next stored event after it reconciles to the cent with the last one before it (and its balanceVersion is the next one, where both carry it). Anything else is a labelled gap.',
+    rule: 'Windows are [from, to): the balance at an edge is the one before any event at the edge. It is read only when the first stored event at or after the edge reconciles to the cent with the last one before it (and its balanceVersion is the next one, where both carry it). Anything else is a labelled gap.',
     labels: BALANCE_GAP_LABELS,
     accounts: ids.map(id => ({
       ...reader.coverage(id),

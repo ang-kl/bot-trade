@@ -87,9 +87,13 @@ export function makeCashflowCollector(db, { getCreds = credsForRegisteredAccount
         || money.status !== 'fresh' || money.observation.host !== host || money.observation.currency !== currency
         || tokenRefusedAccounts(db).has(accountId)) throw new Error('cashflow_identity_changed')
       const result = recordCashflowWindow(db, { accountId, host, currency, ...window, response, receivedAt: clock() })
-      state = { ...state, status: 'success', lastSuccessAt: clock(), completed: window, events: result.events }
+      // balanceConflicts (V3 WEB-8): events whose stored broker balance this
+      // read disagreed with. The first stays stored; the count is kept and
+      // logged so the disagreement is visible, not silent.
+      state = { ...state, status: 'success', lastSuccessAt: clock(), completed: window, events: result.events,
+        balanceConflicts: result.balanceConflicts }
       save(accountId, state)
-      log(`[cashflow-collector] account=${accountId} host=${host} currency=${currency} from=${window.from} to=${window.to} events=${result.events}`)
+      log(`[cashflow-collector] account=${accountId} host=${host} currency=${currency} from=${window.from} to=${window.to} events=${result.events} balanceConflicts=${result.balanceConflicts}`)
       return { accountId, ...result }
     } catch (error) {
       // Never copy a transport error that might contain request credentials.
