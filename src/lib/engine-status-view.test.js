@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { engineState, engineReading, mixedSummary, blockerGroups, tickBlockedReason, ackLine, STALE_AFTER_MS } from './engine-status-view.js'
+import { engineState, engineReading, mixedSummary, mixedCounts, basesFor, blockerGroups, tickBlockedReason, tickSelectionNote, ackLine, requestedSelection, selectionBody, basesLabel, SELECTION_LABEL, STALE_AFTER_MS } from './engine-status-view.js'
 
 const row = (o = {}) => ({ accountId: '…9908', requestedEntryMode: 'TIME_BASED', effectiveEntryMode: 'TIME_BASED', transitionState: 'STABLE', configRevision: 3, modeEpoch: 2, entryCounts: { resting: 0, unknown: 0 }, ...o })
 
@@ -63,5 +63,64 @@ describe('mixedSummary / blockerGroups / tickBlockedReason / ackLine', () => {
     expect(ackLine({ error: 'revision_conflict' })).toMatch(/refused: revision_conflict/)
     expect(ackLine({ status: { transitionState: 'BLOCKED' }, gateway: { pushed: false, error: 'no credentials' } })).toMatch(/NOT acknowledged — no credentials/)
     expect(ackLine({ status: { transitionState: 'STABLE', effectiveEntryMode: 'STOPPED' }, gateway: { side: 'cpp_exec_demo', pushed: true, acked: [1, 2] } })).toBe('cpp_exec_demo acknowledged 2 epochs → STABLE / effective Stopped')
+  })
+})
+
+// WP-A (dual admission, 25-09-2026): four selections, read from the REQUESTED
+// bases (order-insensitive), never the mode string first.
+describe('WP-A selections', () => {
+  it('requestedSelection reads the requested bases as a set; an absent admittedBases is the mode\'s own basis', () => {
+    expect(requestedSelection(row({ requestedEntryMode: 'STOPPED', effectiveEntryMode: 'STOPPED' }))).toBe('stopped')
+    expect(requestedSelection(row())).toBe('time')
+    expect(requestedSelection(row({ admittedBases: null }))).toBe('time')
+    expect(requestedSelection(row({ requestedEntryMode: 'TICK_MOMENTUM', admittedBases: null }))).toBe('tick')
+    expect(requestedSelection(row({ admittedBases: ['bar', 'tick'] }))).toBe('time+tick')
+    expect(requestedSelection(row({ admittedBases: ['tick', 'bar'] }))).toBe('time+tick')
+    expect(requestedSelection(row({ admittedBases: ['tick'] }))).toBe('tick')
+    expect(requestedSelection(row({ requestedEntryMode: 'TICK_MOMENTUM', admittedBases: ['bar', 'tick'] }))).toBe('time+tick')
+    expect(requestedSelection(row({ requestedEntryMode: 'STOPPED', admittedBases: ['bar', 'tick'] }))).toBe('stopped')
+  })
+  it('selectionBody is the exact POST body for each selection', () => {
+    expect(selectionBody('time+tick', '46979908', 4)).toEqual({ accountId: '46979908', mode: 'TIME_BASED', admittedBases: ['bar', 'tick'], expectedRevision: 4 })
+    expect(selectionBody('time', '46979908', 4)).toEqual({ accountId: '46979908', mode: 'TIME_BASED', expectedRevision: 4 })
+    expect(selectionBody('tick', '46979908', 4)).toEqual({ accountId: '46979908', mode: 'TICK_MOMENTUM', expectedRevision: 4 })
+    expect(selectionBody('stopped', '46979908', 4)).toEqual({ accountId: '46979908', mode: 'STOPPED', expectedRevision: 4 })
+    expect(() => selectionBody('bogus', '1', 0)).toThrow()
+    expect(SELECTION_LABEL['time+tick']).toBe('Time + tick')
+  })
+  it('engineReading labels a STABLE dual row from its bases, falls back to the mode when bases are absent, and labels a warming dual request by its selection', () => {
+    expect(engineReading(row({ admittedBases: ['bar', 'tick'], bases: ['bar', 'tick'] })).label).toBe('Time + tick entries')
+    expect(engineReading(row()).label).toBe('Time-based entries')
+    expect(engineReading(row({ bases: ['bar'] })).label).toBe('Time-based entries')
+    const w = engineReading(row({ admittedBases: ['bar', 'tick'], effectiveEntryMode: 'STOPPED', transitionState: 'WARMING', bases: [] }))
+    expect(w.label).toBe('Time + tick · warming')
+  })
+  it('ackLine names the bases the server reports; basesLabel reads a set', () => {
+    expect(ackLine({ status: { transitionState: 'STABLE', effectiveEntryMode: 'TIME_BASED' }, bases: ['bar', 'tick'], gateway: { side: 'cpp_exec_demo', pushed: true, acked: [1] } })).toBe('cpp_exec_demo acknowledged 1 epoch → STABLE / effective Time-based (admits bar + tick)')
+    expect(basesLabel([])).toBe('nothing'); expect(basesLabel(undefined)).toBe('unknown')
+  })
+  it('tickSelectionNote: BLOCKED only on the server\'s ready:false, unknown while unanswered, nothing when ready', () => {
+    expect(tickSelectionNote({ ready: false, blockedReasons: ['validation_stage', 'recorder_status_fresh'] })).toBe('tick BLOCKED — 2 blockers: validation_stage, recorder_status_fresh')
+    expect(tickSelectionNote(null)).toBe('tick status unknown — readiness not answered')
+    expect(tickSelectionNote({ ready: true, blockedReasons: [] })).toBe(null)
+  })
+})
+
+describe('WP-A: basesFor mirror and mixed counts', () => {
+  it('requestedSelection goes through basesFor on the REQUESTED mode; an unknown mode is no selection', () => {
+    expect(basesFor({ effectiveEntryMode: 'STOPPED', admittedBases: ['bar'] })).toEqual([])
+    expect(basesFor({ effectiveEntryMode: 'TIME_BASED' })).toEqual(['bar'])
+    expect(basesFor({ effectiveEntryMode: 'TIME_BASED', admittedBases: [] })).toEqual(['bar'])
+    expect(requestedSelection(row({ requestedEntryMode: 'BOGUS' }))).toBe(null)
+    // a WARMING dual request: effective STOPPED, requested Time + tick
+    expect(requestedSelection(row({ effectiveEntryMode: 'STOPPED', transitionState: 'WARMING', admittedBases: ['bar', 'tick'] }))).toBe('time+tick')
+  })
+  it('mixedCounts counts ACTIVE accounts whose effective bases include tick; a warming tick request is not counted', () => {
+    const dual = row({ admittedBases: ['bar', 'tick'], bases: ['bar', 'tick'] })
+    const warming = row({ admittedBases: ['bar', 'tick'], effectiveEntryMode: 'STOPPED', transitionState: 'WARMING', bases: [] })
+    const c = mixedCounts([dual, warming, row({ bases: ['bar'] })])
+    expect(c.tick).toBe(1); expect(c.active).toBe(2); expect(c.warming).toBe(1)
+    expect(mixedSummary([dual, warming])).toBe('1 active · 1 warming · 1 admitting tick')
+    expect(mixedCounts([row()]).tick).toBe(0)
   })
 })

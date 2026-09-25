@@ -164,7 +164,11 @@ test('wiring pin: autoTrade asks the fence with the proposal in hand, before the
   const ask = src.indexOf('const retired = admitEntry(db, {')
   assert.ok(ask > 0, 'autoTrade asks admitEntry by name')
   const block = src.slice(ask, ask + 900)
-  assert.ok(block.includes('accountId, producerId, basis: \'bar\','), 'asked for THIS account and THIS producer')
+  // WP-A: asked with NO basis — admitEntry derives it from the registered
+  // producer, so a tick producer here is never judged as 'bar'
+  // (behaviour: entry-basis-callers.test.js).
+  assert.match(block, /accountId, producerId,\s*proposal: \{/, 'asked for THIS account and THIS producer')
+  assert.ok(!block.includes("basis: 'bar'"), 'no hardcoded basis beside a variable producer')
   assert.ok(block.includes('proposal: {'), 'with the proposal')
   for (const field of ['entry: synth.entry', 'sl: synth.sl', 'tp1: synth.tp1', 'strategy: synth.strategy']) {
     assert.ok(block.includes(field), `the proposal carries ${field}`)

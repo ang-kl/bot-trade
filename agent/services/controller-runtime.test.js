@@ -47,4 +47,7 @@ test('runtime reports effective pipeline permission separately from tick validat
   assert.equal(account.phases.autotrade, true, 'tick readiness is not the scheduled-entry master switch')
   assert.equal(account.phases.scan, false)
   assert.equal(account.phases.source.scan, 'account')
+  // WP-A (principle 6): the row carries the admitted bases beside the mode,
+  // so a Time + tick account is not shown as bare TIME_BASED.
+  assert.equal(account.entryMode, 'TIME_BASED'); assert.deepEqual(account.entryBases, ['bar'])
 })

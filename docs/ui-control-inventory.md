@@ -60,7 +60,7 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `fb01702` · 120 action call sites · 97 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `fbdabbc` · 120 action call sites · 97 state routes read.
 
 Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -77,7 +77,7 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 9 | `src/components/AccountSwitcher.jsx:114` | Arm autotrade on | `/actions/registry-account` | via setAccountEnabled(db, …), executes | reload (heuristic) | WIRED |
 | 10 | `src/components/AccountSwitcher.jsx:132` | (inline) | `/actions/account-phases` | via setAccountPhases(db, …) | reload (heuristic) | WIRED |
 | 11 | `src/components/common/AccountScopeFab.jsx:117` | (inline) | `/actions/ctrader-select-account` | `ctrader_account_id` ✓, `ctrader_is_live` ✓, `ctrader_account_roles_json` ✓, `ctrader_trader_login` ✓, `symbol_id_map` ✓, `account_balance_usd` ✓, `account_leverage` ✓, via sweepMonitoredPositionsForAccounts(db, …), setState(db, …), recordAccountMoney(db, …), setAccountState(db, …), executes | `/state/health`, `/state/accounts`, `/state/watchlists`, `/state/config`, `/state/risk-config`, `/state/broker-cache`, `/state/risk-full`, `/state/symbol-map` | WIRED |
-| 12 | `src/components/EngineStatusPanel.jsx:203` | setMode | `/actions/entry-mode` | via requestAdmittedBases(db, …), markTickRepush(db, …), requestEntryMode(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 12 | `src/components/EngineStatusPanel.jsx:220` | setMode | `/actions/entry-mode` | via requestAdmittedBases(db, …), markTickRepush(db, …), requestEntryMode(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 13 | `src/components/LlmSwitch.jsx:47` | flip | `/actions/llm-switch` | `llm_disabled` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 14 | `src/components/OrderLedger.jsx:101` | pendingMs | `/actions/queued-cancel` | executes | reload (heuristic) | WIRED |
 | 15 | `src/components/OrderLedger.jsx:115` | veto | `/actions/queued-veto` | `risk_config_json` ✓, via setState(db, …), executes | reload (heuristic) | WIRED |

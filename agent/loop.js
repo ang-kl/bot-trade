@@ -353,7 +353,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // the path here; every other verdict is left to the boundary, unchanged.
   {
     const retired = admitEntry(db, {
-      accountId, producerId, basis: 'bar',
+      // WP-A: no basis named — admitEntry takes it from the registered
+      // producer, so a tick producer here reads entry_mode_basis, never a
+      // producer_basis_conflict against a hardcoded 'bar'.
+      accountId, producerId,
       proposal: {
         symbol, side, entry: synth.entry ?? null, sl: synth.sl ?? null,
         tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null, requestedVolume: requestedVol,

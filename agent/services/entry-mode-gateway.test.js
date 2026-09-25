@@ -89,3 +89,22 @@ test('pin: the human route binds through bindEntryModeGateway and no longer inli
   // and entry-mode-auto.test.js asserts the calls through a stub.
   assert.match(auto, /const bound = await gateway\(db, id, mode, \{ epoch: r\.status\.modeEpoch \}\)/)
 })
+
+// WP-A (dual admission, 25-09-2026): the VPO disarm above is keyed on the
+// MODE STRING (`want !== 'TIME_BASED'`), not on the account's bases. That is
+// inert only because vpo_cpp_direct is retired (admitEntry refuses it first).
+// A "time + tick" account is TIME_BASED, so this line would leave a
+// re-enabled VPO tier armed beside tick. This pin fails the moment the
+// producer is un-retired while the disarm is still keyed on the mode string
+// — re-key it on basesFor in the same change. Comments stripped (failure
+// mode #2), so a comment naming the line cannot satisfy it.
+test('pin: vpo_cpp_direct stays retired while the VPO disarm is keyed on the mode string, not on basesFor', async () => {
+  const { ENTRY_PRODUCERS } = await import('../lib/entry-producers.js')
+  const vpo = ENTRY_PRODUCERS.find(p => p.id === 'vpo_cpp_direct')
+  assert.ok(vpo, 'vpo_cpp_direct is still in the registry')
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const src = strip(readFileSync(new URL('./entry-mode-gateway.js', import.meta.url), 'utf8'))
+  const modeKeyed = src.includes("if (want !== 'TIME_BASED') {")
+  if (modeKeyed) assert.ok(vpo.retired, 'vpo_cpp_direct was un-retired but the VPO disarm is still keyed on the mode string — re-key entry-mode-gateway.js on basesFor first (a TIME_BASED + [bar, tick] account would keep VPO armed)')
+  else assert.match(src, /basesFor\(/, 'the disarm was re-keyed: it must read the bases')
+})

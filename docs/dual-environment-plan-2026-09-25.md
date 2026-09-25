@@ -92,6 +92,38 @@ checklist (scanner `orderAuthority`, retirement fence, producer-derived basis,
 - The PR body must say "manual review required", because it restarts
   gateways.
 
+*P0 status, 25-09-2026 — WP-A (PR-2 "Dual admission", branch
+`claude/pr1-dual-admission`, built, not merged).* Node-only: nothing under
+`cpp-exec/**` or `agent/lib/exec-engine.*` is touched, so this PR restarts no
+gateway. What it does:
+- One `POST /actions/entry-mode {mode:'TIME_BASED', admittedBases:['bar','tick']}`
+  sets "Time + tick" and takes the ack protocol (epoch, WARMING, echo,
+  STABLE). The route no longer drops `admittedBases` beside a mode.
+- **Promotion adds tick next to bar** (`TIME_BASED` + `['bar','tick']`); it no
+  longer replaces bar with tick. Demotion reaches every account whose
+  requested bases include tick. A human's override records the bases chosen,
+  and a human change of the admitted set now binds the automatic pass too.
+- The readiness gate follows the TARGET bases; the evidence rules are asked
+  on the record the ack will write; a set must hold its mode's own basis.
+- `admitEntry` takes the basis from the registered producer; a caller naming
+  another basis is refused `producer_basis_conflict`. The `basis: 'bar'`
+  literals at `loop.js` (autoTrade's retired-producer ask) and
+  `closed-market-limits.js` (the fence) are gone. Manual intents are recorded
+  under their family (`manual` / `manual_assisted`), not `bar`.
+- The website offers Stop / Time-based / Tick momentum / Time + tick, chosen
+  by the requested bases; the tick half shows "tick BLOCKED — <checks>"
+  while readiness is false.
+
+Risks carried (named, not fixed): every add or remove of tick bumps the epoch,
+so `releaseOldEpoch` releases every RESERVED intent of the old epoch — bar and
+manual ones included — and bar entries pause through WARMING for the push
+round trip. On an `auto` dual account a transient tick-readiness failure
+therefore also pauses bar entries (principle 7). `producer_basis_conflict` has
+no production caller that can trigger it today (every explicit caller matches
+the registry); only the unit test fires it. The P6 combined-risk gaps stay open,
+so dual admission remains ask-first per account. Today every Time + tick
+request is refused `tick_not_ready` on all 7 accounts.
+
 **P1 — Measurement (CODE, no behaviour change).**
 - Record the entry basis on each closed trade (join `entry_intents`; reuse
   `tradedTickEvidence`, `tick-validation.js:88-113`).

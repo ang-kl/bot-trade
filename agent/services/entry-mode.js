@@ -151,11 +151,64 @@ export function writeAutoState(db, accountId, st) {
 }
 
 /**
- * Owner-facing mode change. Refuses a stale revision, refuses TICK_MOMENTUM
- * until the tick engine exists, otherwise bumps configRevision and modeEpoch
- * and acknowledges (Node is the gateway for Node producers in this phase).
+ * PR-3 / WP-A: the shape rules of an admitted set, shared by both writers
+ * (requestAdmittedBases and requestEntryMode). An array of SIGNAL_BASES, no
+ * duplicates, never empty — or null for the mode's own basis. Asked FIRST,
+ * before anything reads the set (a non-array must not reach `.includes`).
  */
-export function requestEntryMode(db, accountId, mode, { expectedRevision = null, actor = 'owner', now = new Date(), readiness = null, detail = null } = {}) {
+function admittedBasesShapeRefusal(cur, want) {
+  if (want == null) return null
+  if (!Array.isArray(want)) return { ok: false, reason: 'admitted_bases_invalid: an array of bases or null', current: cur.configRevision }
+  const { stored, invalid, ...clean } = cur // eslint-disable-line no-unused-vars
+  const probe = validateEngineStatus({ ...clean, admittedBases: want })
+  const errs = probe.errors.filter(e => e.startsWith('admittedBases'))
+  if (errs.length) return { ok: false, reason: `admitted_bases_invalid: ${errs.join('; ')}`, current: cur.configRevision }
+  for (const b of want) if (!SIGNAL_BASES.includes(b)) return { ok: false, reason: `admitted_bases_invalid: '${b}' not in [${SIGNAL_BASES.join(', ')}]`, current: cur.configRevision }
+  return null
+}
+
+/**
+ * PR-3 / WP-A: the contract's evidence rules (entry-contracts.js: a pinned
+ * profile and SHADOW_PASSED while tick is admitted) asked as a REFUSAL, on
+ * the record the write — or, for a mode switch, the ACK — will produce, so
+ * a record the contract would reject is never stored to fail later inside
+ * writeEngineStatus. Only the evidence and set errors count here; the
+ * transition rules belong to the write itself.
+ */
+function evidenceRefusal(cur, shape, label) {
+  const { stored, invalid, ...clean } = cur // eslint-disable-line no-unused-vars
+  const full = validateEngineStatus({ ...clean, ...shape })
+  const errs = full.errors.filter(e => e.startsWith('profileHash') || e.startsWith('validationStage') || e.startsWith('admittedBases'))
+  if (!errs.length) return null
+  return { ok: false, reason: `${label}: ${errs.join('; ')}`, current: cur.configRevision, errors: errs }
+}
+
+/** The readiness gate, one body for both writers. Null when ready. */
+function readinessRefusal(db, id, cur, readiness, what) {
+  if (typeof readiness !== 'function') return { ok: false, reason: `tick_readiness_unavailable: ${what} needs the readiness check the route supplies`, current: cur.configRevision }
+  let rd = null
+  try { rd = readiness(db, id) } catch (err) { return { ok: false, reason: `tick_readiness_error: ${err?.message || err}`, current: cur.configRevision } }
+  if (!rd || rd.ready !== true) {
+    const blocked = Array.isArray(rd?.blockedReasons) && rd.blockedReasons.length ? rd.blockedReasons.join(', ') : 'readiness did not report ready'
+    return { ok: false, reason: `tick_not_ready: ${blocked}`, current: cur.configRevision, blockedReasons: rd?.blockedReasons || [] }
+  }
+  return null
+}
+
+/**
+ * Owner-facing mode change. Refuses a stale revision; refuses any target
+ * that admits tick unless readiness is clean and the evidence is pinned;
+ * otherwise bumps configRevision and modeEpoch and waits for the gateway's
+ * echo (WARMING → STABLE).
+ *
+ * WP-A (dual admission, 25-09-2026): `admittedBases` may ride on the switch
+ * — one request sets the mode AND its bases (TIME_BASED + ['bar','tick'] is
+ * "time + tick") and gets the whole ack protocol. Omitted (undefined) or
+ * null is the mode's own basis, exactly as before. The set must contain the
+ * mode's own basis (TIME_BASED ⇒ bar, TICK_MOMENTUM ⇒ tick) and STOPPED
+ * takes none.
+ */
+export function requestEntryMode(db, accountId, mode, { expectedRevision = null, actor = 'owner', now = new Date(), readiness = null, detail = null, admittedBases = undefined } = {}) {
   const id = String(accountId)
   if (!ENTRY_MODES.includes(mode)) return { ok: false, reason: `unknown_mode: ${mode}` }
   const cur = engineStatusFor(db, id)
@@ -169,7 +222,22 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
   if (String(actor).startsWith('auto:') && cur.entryModePolicy !== 'auto') {
     return { ok: false, reason: 'policy_manual', current: cur.configRevision, policy: cur.entryModePolicy }
   }
-  // P6b (plan §3 P6b): TICK_MOMENTUM is admitted ONLY on an account whose
+  // WP-A: the set's SHAPE is checked before anything reads it — a malformed
+  // body is a 400 with a named reason, never a TypeError.
+  const want = admittedBases === undefined ? null : admittedBases
+  const shape = admittedBasesShapeRefusal(cur, want)
+  if (shape) return shape
+  if (want != null) {
+    if (mode === 'STOPPED') return { ok: false, reason: 'admitted_bases_invalid: STOPPED admits nothing', current: cur.configRevision }
+    // The review's B1: a set without the mode's own basis (TICK_MOMENTUM +
+    // ['bar']) would skip the readiness gate below yet be stored as
+    // TICK_MOMENTUM, and the ack would then write an effective tick mode
+    // the contract refuses. Refused here, in the writer.
+    if (!want.includes(MODE_BASIS[mode])) return { ok: false, reason: `admitted_bases_invalid: ${mode} must admit its own basis '${MODE_BASIS[mode]}'`, current: cur.configRevision }
+  }
+  const after = mode === 'STOPPED' ? [] : (want ?? basesFor({ effectiveEntryMode: mode, admittedBases: null }))
+  // P6b (plan §3 P6b): a target that admits TICK — TICK_MOMENTUM, or any
+  // mode whose set carries 'tick' — is admitted ONLY on an account whose
   // readiness (tick-readiness.js: registry, halt, record, horizon,
   // observation, recorder, disk, feed, pinned profile, replay evidence,
   // validation stage) is clean at the moment of the request. The readiness
@@ -181,20 +249,28 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
   // environment test that used to sit here (`tick_live_refused`, demo only
   // until a typed live approval) is gone — an account is only how much is
   // inside it, and the evidence bar is the same on every account.
-  if (mode === 'TICK_MOMENTUM') {
-    if (typeof readiness !== 'function') return { ok: false, reason: 'tick_readiness_unavailable: TICK_MOMENTUM needs the readiness check the route supplies', current: cur.configRevision }
-    let rd = null
-    try { rd = readiness(db, id) } catch (err) { return { ok: false, reason: `tick_readiness_error: ${err?.message || err}`, current: cur.configRevision } }
-    if (!rd || rd.ready !== true) {
-      const blocked = Array.isArray(rd?.blockedReasons) && rd.blockedReasons.length ? rd.blockedReasons.join(', ') : 'readiness did not report ready'
-      return { ok: false, reason: `tick_not_ready: ${blocked}`, current: cur.configRevision, blockedReasons: rd?.blockedReasons || [] }
-    }
+  if (mode === 'TICK_MOMENTUM' || after.includes('tick')) {
+    const refused = readinessRefusal(db, id, cur, readiness, mode === 'TICK_MOMENTUM' ? 'TICK_MOMENTUM' : 'admitting tick')
+    if (refused) return refused
   }
+  // WP-A (review B1): the evidence rules asked on the record the ACK will
+  // write (requested = effective = mode, STABLE, this set) — asked AFTER the
+  // readiness gate so the reason a caller sees is the readiness one when both
+  // would refuse, and BEFORE releaseOldEpoch so a refusal writes and
+  // releases nothing.
+  const evidence = evidenceRefusal(cur, { requestedEntryMode: mode, effectiveEntryMode: mode, transitionState: 'STABLE', admittedBases: want }, want != null ? 'admitted_bases_refused' : 'tick_evidence_refused')
+  if (evidence) return evidence
   const resting = countResting(db, id)
   const nextEpoch = cur.modeEpoch + 1
   // P2a (plan §3 step 1): RESERVED intents of the old epoch are never sent;
   // DISPATCHING / SENT ones stay in flight (step 2) and UNKNOWN ones keep the
   // state RECONCILING (step 4) until the broker's evidence resolves them.
+  // WP-A RISK (named, not fixed here): adding or removing tick now bumps the
+  // epoch too, so EVERY add/remove of tick releases every RESERVED intent of
+  // the old epoch — bar and manual ones included, not only tick's — and bar
+  // entries pause through WARMING for the push round trip. That is the
+  // mode-switch behaviour applied to dual toggles; the overlay-only path
+  // (requestAdmittedBases) releases only the removed basis.
   let ledger = { unsent: 0, inFlight: 0, unknown: 0 }
   try { releaseOldEpoch(db, id, nextEpoch, { now: now.getTime() }); ledger = intentCounts(db, id) } catch { /* ledger table absent on an old schema */ }
   const unknown = Math.max(cur.entryCounts.unknown, ledger.unknown)
@@ -222,11 +298,11 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
     transitionState,
     configRevision: cur.configRevision + 1,
     modeEpoch: nextEpoch,
-    // PR-3: a mode switch is a fresh declaration of ONE basis. The dual-basis
-    // overlay does not ride across it — it is asked again, through the same
-    // readiness gate, once the new mode is acknowledged. (The old epoch's
-    // RESERVED rows of every basis were released just above.)
-    admittedBases: null,
+    // WP-A: a mode switch is a fresh declaration of its bases — the set
+    // given with it (gated above), or null for the mode's own basis. An old
+    // overlay never rides across a switch that does not restate it. (The old
+    // epoch's RESERVED rows of every basis were released just above.)
+    admittedBases: want == null ? null : [...want],
     // The ack is the sidecar's echo of THIS epoch, not our own write. Kept
     // as it was until then, so a reader can see the fence is not yet bound.
     fenceAckEpoch: cur.fenceAckEpoch,
@@ -236,16 +312,18 @@ export function requestEntryMode(db, accountId, mode, { expectedRevision = null,
   const saved = writeEngineStatus(db, next)
   try {
     db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
-      .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, from: cur.effectiveEntryMode, to: mode, revision: saved.configRevision, epoch: saved.modeEpoch, resting: saved.entryCounts.resting, transition: saved.transitionState, actor, ...(detail && typeof detail === 'object' ? { detail } : {}) }), id)
+      .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, from: cur.effectiveEntryMode, to: mode, bases: { from: basesFor({ ...cur, effectiveEntryMode: cur.requestedEntryMode }), to: after }, revision: saved.configRevision, epoch: saved.modeEpoch, resting: saved.entryCounts.resting, transition: saved.transitionState, actor, ...(detail && typeof detail === 'object' ? { detail } : {}) }), id)
   } catch { /* audit best-effort */ }
   // PR-G: a HUMAN's switch zeroes the bot's streak and is remembered as an
   // override — the pass never promotes past it until the human acts again
   // or the cooldown lapses (entry-mode-auto.js). The bot's own switches
   // leave the streak to the pass.
   if (!String(actor).startsWith('auto:')) {
-    try { writeAutoState(db, id, { ...readAutoState(db, id), readyStreak: 0, blockedCycles: 0, humanOverride: { mode, at: now.toISOString(), epoch: saved.modeEpoch, actor: String(actor) } }) } catch { /* memory best-effort */ }
+    try { writeAutoState(db, id, { ...readAutoState(db, id), readyStreak: 0, blockedCycles: 0, humanOverride: { mode, bases: after, at: now.toISOString(), epoch: saved.modeEpoch, actor: String(actor) } }) } catch { /* memory best-effort */ }
   }
-  return { ok: true, status: saved, changed: cur.requestedEntryMode !== mode || cur.effectiveEntryMode !== saved.effectiveEntryMode }
+  const changed = cur.requestedEntryMode !== mode || cur.effectiveEntryMode !== saved.effectiveEntryMode ||
+    JSON.stringify(cur.admittedBases ?? null) !== JSON.stringify(saved.admittedBases ?? null)
+  return { ok: true, status: saved, changed, bases: after }
 }
 
 /**
@@ -274,24 +352,13 @@ export function requestAdmittedBases(db, accountId, bases, { expectedRevision = 
     return { ok: false, reason: 'policy_manual', current: cur.configRevision, policy: cur.entryModePolicy }
   }
   const want = bases == null ? null : bases
-  if (want != null) {
-    if (!Array.isArray(want)) return { ok: false, reason: 'admitted_bases_invalid: an array of bases or null', current: cur.configRevision }
-    const { stored, invalid, ...clean } = cur // eslint-disable-line no-unused-vars
-    const probe = validateEngineStatus({ ...clean, admittedBases: want })
-    const errs = probe.errors.filter(e => e.startsWith('admittedBases'))
-    if (errs.length) return { ok: false, reason: `admitted_bases_invalid: ${errs.join('; ')}`, current: cur.configRevision }
-    for (const b of want) if (!SIGNAL_BASES.includes(b)) return { ok: false, reason: `admitted_bases_invalid: '${b}' not in [${SIGNAL_BASES.join(', ')}]`, current: cur.configRevision }
-  }
+  const shape = admittedBasesShapeRefusal(cur, want)
+  if (shape) return shape
   const before = basesFor(cur)
   const after = want == null ? basesFor({ ...cur, admittedBases: null }) : want
   if (after.includes('tick') && !before.includes('tick')) {
-    if (typeof readiness !== 'function') return { ok: false, reason: 'tick_readiness_unavailable: admitting tick needs the readiness check the route supplies', current: cur.configRevision }
-    let rd = null
-    try { rd = readiness(db, id) } catch (err) { return { ok: false, reason: `tick_readiness_error: ${err?.message || err}`, current: cur.configRevision } }
-    if (!rd || rd.ready !== true) {
-      const blocked = Array.isArray(rd?.blockedReasons) && rd.blockedReasons.length ? rd.blockedReasons.join(', ') : 'readiness did not report ready'
-      return { ok: false, reason: `tick_not_ready: ${blocked}`, current: cur.configRevision, blockedReasons: rd?.blockedReasons || [] }
-    }
+    const refused = readinessRefusal(db, id, cur, readiness, 'admitting tick')
+    if (refused) return refused
   }
   // PR-3 (checker, 21-09-2026): the contract's own evidence rules bind the
   // admitted set too (entry-contracts.js: a pinned profile and SHADOW_PASSED
@@ -299,9 +366,8 @@ export function requestAdmittedBases(db, accountId, bases, { expectedRevision = 
   // caller sees is the readiness one when both would refuse, and asked as a
   // refusal rather than left to writeEngineStatus's throw.
   if (want != null) {
-    const { stored: st2, invalid: iv2, ...clean2 } = cur // eslint-disable-line no-unused-vars
-    const full = validateEngineStatus({ ...clean2, admittedBases: want })
-    if (!full.ok) return { ok: false, reason: `admitted_bases_refused: ${full.errors.join('; ')}`, current: cur.configRevision, errors: full.errors }
+    const evidence = evidenceRefusal(cur, { admittedBases: want }, 'admitted_bases_refused')
+    if (evidence) return evidence
   }
   const removed = before.filter(b => !after.includes(b))
   let released = 0
@@ -312,6 +378,13 @@ export function requestAdmittedBases(db, accountId, bases, { expectedRevision = 
     db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
       .run('POST', '/actions/entry-mode', JSON.stringify({ accountId: id, admittedBases: { from: cur.admittedBases ?? null, to: saved.admittedBases ?? null }, effective: { from: before, to: basesFor(saved) }, released, revision: saved.configRevision, epoch: saved.modeEpoch, actor }), id)
   } catch { /* audit best-effort */ }
+  // WP-A (PR-G C-1): a HUMAN's change of the admitted set binds the bot's
+  // pass the way a mode switch does — the streak is zeroed and the override
+  // records the bases the human chose, so the pass never re-adds (or keeps
+  // re-adding) tick past the human's word inside the cooldown.
+  if (!String(actor).startsWith('auto:')) {
+    try { writeAutoState(db, id, { ...readAutoState(db, id), readyStreak: 0, blockedCycles: 0, humanOverride: { mode: saved.requestedEntryMode, bases: basesFor({ ...saved, effectiveEntryMode: saved.requestedEntryMode }), at: now.toISOString(), epoch: saved.modeEpoch, actor: String(actor) } }) } catch { /* memory best-effort */ }
+  }
   const changed = JSON.stringify(cur.admittedBases ?? null) !== JSON.stringify(saved.admittedBases ?? null)
   return { ok: true, status: saved, changed, bases: basesFor(saved), removed, released }
 }
@@ -330,27 +403,36 @@ export function acknowledgeEntryEpochs(db, epochs, { now = new Date(), source = 
   const changed = []
   if (!epochs || typeof epochs !== 'object') return changed
   for (const [rawId, rawEpoch] of Object.entries(epochs)) {
-    const id = String(rawId), epoch = Number(rawEpoch)
-    if (!Number.isFinite(epoch)) continue
-    const cur = engineStatusFor(db, id)
-    if (cur.invalid || cur.stored === false) continue        // nothing requested here, nothing to bind
-    if (epoch !== cur.modeEpoch) continue                    // an older epoch echoed: the fence is not bound yet
-    if (cur.fenceAckEpoch === epoch && cur.transitionState !== 'WARMING' && cur.transitionState !== 'BLOCKED') continue
-    let unknown = cur.entryCounts.unknown
-    try { unknown = Math.max(unknown, intentCounts(db, id).unknown) } catch { /* ledger absent */ }
-    const next = { ...cur, fenceAckEpoch: epoch, updatedAt: now.toISOString() }
-    if ((cur.transitionState === 'WARMING' || cur.transitionState === 'BLOCKED') && unknown === 0) {
-      next.transitionState = 'STABLE'
-      next.effectiveEntryMode = cur.requestedEntryMode
-    } else if (cur.transitionState === 'BLOCKED') {
-      next.transitionState = 'RECONCILING'                   // the fence is bound; the unknown still holds activation
-    }
-    const saved = writeEngineStatus(db, next)
-    changed.push({ accountId: id, epoch, transitionState: saved.transitionState, effectiveEntryMode: saved.effectiveEntryMode })
+    // WP-A (review): one bad record must not stop every later account's
+    // fence from binding — a dual record re-validates its evidence at this
+    // write, and a throw here used to leave the loop (swallowed upstream by
+    // syncExecGuard), so every account after it in the echoed map stayed
+    // WARMING. Logged and skipped instead.
     try {
-      db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
-        .run('ACK', '/entry-mode/ack', JSON.stringify({ accountId: id, epoch, source, transition: saved.transitionState, effective: saved.effectiveEntryMode }), id)
-    } catch { /* audit best-effort */ }
+      const id = String(rawId), epoch = Number(rawEpoch)
+      if (!Number.isFinite(epoch)) continue
+      const cur = engineStatusFor(db, id)
+      if (cur.invalid || cur.stored === false) continue        // nothing requested here, nothing to bind
+      if (epoch !== cur.modeEpoch) continue                    // an older epoch echoed: the fence is not bound yet
+      if (cur.fenceAckEpoch === epoch && cur.transitionState !== 'WARMING' && cur.transitionState !== 'BLOCKED') continue
+      let unknown = cur.entryCounts.unknown
+      try { unknown = Math.max(unknown, intentCounts(db, id).unknown) } catch { /* ledger absent */ }
+      const next = { ...cur, fenceAckEpoch: epoch, updatedAt: now.toISOString() }
+      if ((cur.transitionState === 'WARMING' || cur.transitionState === 'BLOCKED') && unknown === 0) {
+        next.transitionState = 'STABLE'
+        next.effectiveEntryMode = cur.requestedEntryMode
+      } else if (cur.transitionState === 'BLOCKED') {
+        next.transitionState = 'RECONCILING'                   // the fence is bound; the unknown still holds activation
+      }
+      const saved = writeEngineStatus(db, next)
+      changed.push({ accountId: id, epoch, transitionState: saved.transitionState, effectiveEntryMode: saved.effectiveEntryMode })
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+          .run('ACK', '/entry-mode/ack', JSON.stringify({ accountId: id, epoch, source, transition: saved.transitionState, effective: saved.effectiveEntryMode }), id)
+      } catch { /* audit best-effort */ }
+    } catch (err) {
+      console.warn(`[entry-mode] ack …${String(rawId).slice(-4)} skipped: ${err?.message || err}`)
+    }
   }
   return changed
 }
@@ -623,12 +705,18 @@ function retiredRefusalIsDue(key, nowMs) {
  * The fence. Automatic producers are admitted only when the account's
  * effective mode has the producer's basis; manual families always pass here.
  */
-export function admitEntry(db, { accountId, producerId, basis = 'bar', proposal = null, now = Date.now() }) {
+export function admitEntry(db, { accountId, producerId, basis = null, proposal = null, now = Date.now() }) {
   const id = accountId != null ? String(accountId) : null
   const producer = ENTRY_PRODUCERS.find(p => p.id === producerId)
   if (!producer) return { ok: false, reason: `unknown_producer: ${producerId}`, modeEpoch: null }
   if (id == null) return { ok: false, reason: 'no_account', modeEpoch: null }
   const st = engineStatusFor(db, id)
+  // WP-A (25-09-2026): the basis is the REGISTERED producer's, not a 'bar'
+  // default — a caller that names none is admitted under what the producer
+  // is, and one that names a different basis is refused below
+  // (producer_basis_conflict). Manual families declare no basis.
+  const declared = producer.basis ?? null
+  const asked = basis ?? declared
   // RETIRED PRODUCERS (owner order 20-09-2026: "retire the intraday paths,
   // keep momentum only"). ONE structural fence, and it is FIRST — before the
   // mode and basis checks, so the reason a reader sees is the true one and
@@ -652,11 +740,11 @@ export function admitEntry(db, { accountId, producerId, basis = 'bar', proposal 
     const due = proposal ? retiredRefusalIsDue(key, now) : !refusalsSeen.has(key)
     if (due) {
       if (!proposal) refusalsSeen.set(key, true)
-      try { recordProducerRetired(db, { accountId: id, producerId, reason, basis, proposal }) } catch { /* best effort */ }
+      try { recordProducerRetired(db, { accountId: id, producerId, reason, basis: asked, proposal }) } catch { /* best effort */ }
     }
     return { ok: false, reason, retired: true, modeEpoch: st.modeEpoch, mode: st.effectiveEntryMode, family: producer.family }
   }
-  if (producer.family !== 'automatic') return { ok: true, reason: null, modeEpoch: st.modeEpoch, mode: st.effectiveEntryMode, family: producer.family }
+  if (producer.family !== 'automatic') return { ok: true, reason: null, modeEpoch: st.modeEpoch, mode: st.effectiveEntryMode, family: producer.family, basis: asked }
   const mode = st.effectiveEntryMode
   let reason = null
   // AUDIT 11-09-2026 (plan §3.4): a transition in progress admits nothing
@@ -664,18 +752,24 @@ export function admitEntry(db, { accountId, producerId, basis = 'bar', proposal 
   // unacknowledged fence (WARMING) or a failed push (BLOCKED) each hold the
   // engine off, and the reason names the state so a reader can tell "stopped
   // by the owner" from "stopped until the broker's evidence arrives".
-  if (st.transitionState !== 'STABLE') reason = `entry_mode_transition: ${st.transitionState}`
+  //
+  // WP-A: a caller that declares a basis other than the registry's is
+  // refused FIRST — a tick producer asked as 'bar' must not pass a bar-only
+  // account. (Every explicit caller in the repo matches the registry today,
+  // so this fires only on a new mislabelled caller.)
+  if (basis != null && declared != null && basis !== declared) reason = `producer_basis_conflict: ${producerId} is ${declared}, asked as ${basis}`
+  else if (st.transitionState !== 'STABLE') reason = `entry_mode_transition: ${st.transitionState}`
   else if (mode === 'STOPPED') reason = 'entry_mode_stopped'
-  else if (!basesFor(st).includes(basis)) reason = `entry_mode_basis: ${mode} admits ${basesFor(st).join('+')} producers, ${producerId} is ${basis}`
+  else if (!basesFor(st).includes(asked)) reason = `entry_mode_basis: ${mode} admits ${basesFor(st).join('+')} producers, ${producerId} is ${asked}`
   if (reason) {
     const key = `${id}:${producerId}:${st.modeEpoch}`
     if (!refusalsSeen.has(key)) {
       refusalsSeen.set(key, true)
-      try { recordDecision(db, { accountId: id, stage: 'entry_mode', decision: 'skip', reason, detail: { producerId, basis, mode, epoch: st.modeEpoch } }) } catch { /* best effort */ }
+      try { recordDecision(db, { accountId: id, stage: 'entry_mode', decision: 'skip', reason, detail: { producerId, basis: asked, mode, epoch: st.modeEpoch } }) } catch { /* best effort */ }
     }
-    return { ok: false, reason, modeEpoch: st.modeEpoch, mode }
+    return { ok: false, reason, modeEpoch: st.modeEpoch, mode, basis: asked }
   }
-  return { ok: true, reason: null, modeEpoch: st.modeEpoch, mode, family: producer.family }
+  return { ok: true, reason: null, modeEpoch: st.modeEpoch, mode, family: producer.family, basis: asked }
 }
 
 /** Test seam: forget the per-epoch refusal dedupe. */
@@ -712,7 +806,7 @@ export function entryEnginesView(db, { includeRoutingIdentity = false } = {}) {
   return {
     at: new Date().toISOString(),
     accounts,
-    note: 'Node producers are fenced by admitEntry (P1b) and the VPO tier by its permits at the sidecar\'s send (P2a); on STOPPED the account\'s resting entry orders are cancelled by stored id and the state settles QUIESCING → RECONCILING → STABLE (P1c); an ACTIVE mode takes effect only after the sidecar echoes the new epoch (WARMING → STABLE) and never while an entry outcome is UNKNOWN (11-09-2026 audit); TICK_MOMENTUM is admitted only on a demo account whose readiness (tick-readiness.js) is clean at the request and only through the route that supplies that check (P6b); live stays refused until P7.',
+    note: 'Node producers are fenced by admitEntry (P1b) and the VPO tier by its permits at the sidecar\'s send (P2a); on STOPPED the account\'s resting entry orders are cancelled by stored id and the state settles QUIESCING → RECONCILING → STABLE (P1c); an ACTIVE mode takes effect only after the sidecar echoes the new epoch (WARMING → STABLE) and never while an entry outcome is UNKNOWN (11-09-2026 audit); tick — alone (TICK_MOMENTUM) or beside bar (TIME_BASED with admittedBases [bar, tick]) — is admitted on any account whose readiness (tick-readiness.js) is clean and whose evidence is pinned at the request, with the same bar for demo and live (P6b, PR-B), and only through the route that supplies that check; `bases` is what the Node fence admits now, and the sidecar places tick only for STABLE accounts it is sent in tickEntryAccounts.',
     // No account may be armed by omission: a record that is absent reads OFF.
     globalHalt: (() => { try { return JSON.parse(getState(db, 'exec_guard_json') || '{}')?.halt === true } catch { return false } })(),
   }

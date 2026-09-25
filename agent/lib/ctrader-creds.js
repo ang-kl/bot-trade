@@ -23,7 +23,7 @@ export function credsForRegisteredAccount(db, accountId) {
  * @param {{accountId?: string|number, isLive?: boolean}} [accountOverride]
  * @returns {{host: string, clientId: string|undefined, clientSecret: string|undefined, accessToken: string|null, accountId: string|null, ready: boolean}}
  */
-export function getCtraderCreds(db, accountOverride, { producerId = null, basis = 'bar' } = {}) {
+export function getCtraderCreds(db, accountOverride, { producerId = null, basis = null } = {}) {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
@@ -86,7 +86,10 @@ export function getCtraderCreds(db, accountOverride, { producerId = null, basis 
 // process redeemed a permit, so a restart between redeem and send is legible.
 export const GATEWAY_INSTANCE = `node:${process.pid}:${Date.now().toString(36)}`
 
-function entryFenceFor(db, accountId, { producerId, basis = 'bar' }) {
+// WP-A (25-09-2026): `basis` defaults to null — admitEntry and reserveEntry
+// derive it from the registered producer (lib/entry-producers.js), so a tick
+// producer is never admitted as 'bar' by omission.
+function entryFenceFor(db, accountId, { producerId, basis = null }) {
   const id = accountId != null ? String(accountId) : null
   return {
     producerId,
@@ -106,7 +109,7 @@ function entryFenceFor(db, accountId, { producerId, basis = 'bar' }) {
  * hand-built creds object without this cannot place an entry once the
  * sidecar requires permits.
  */
-export function attachEntryFence(db, creds, { producerId, basis = 'bar' }) {
+export function attachEntryFence(db, creds, { producerId, basis = null }) {
   if (!producerId) return creds
   return { ...creds, ...entryFenceFor(db, creds?.accountId, { producerId, basis }) }
 }

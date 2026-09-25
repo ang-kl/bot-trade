@@ -35,11 +35,18 @@ test('an account with no record is TIME_BASED / OFF, environment from the regist
 test('STOPPED refuses every automatic producer and admits manual ones; TIME_BASED refuses a tick-basis producer; epochs are monotonic', () => {
   const db = fresh()
   _resetRefusalDedupe()
-  for (const p of automaticProducers()) assert.equal(admitEntry(db, { accountId: DEMO, producerId: p.id, basis: 'bar' }).ok, true, p.id)
+  // WP-A: no basis named — the fence derives it from the registry. Bar
+  // producers pass a TIME_BASED account; the tick producer does not (the
+  // old 'bar' default admitted it: this loop used to assert ok for it).
+  for (const p of automaticProducers()) {
+    const a = admitEntry(db, { accountId: DEMO, producerId: p.id })
+    if (p.basis === 'bar') assert.equal(a.ok, true, p.id)
+    else { assert.equal(a.ok, false, p.id); assert.match(a.reason, /^entry_mode_basis: TIME_BASED admits bar producers, tick_momentum is tick/) }
+  }
   const r = requestEntryMode(db, DEMO, 'STOPPED', { expectedRevision: 0 })
   assert.equal(r.ok, true); assert.equal(r.status.configRevision, 1); assert.equal(r.status.modeEpoch, 1); assert.equal(r.changed, true)
   for (const p of automaticProducers()) {
-    const a = admitEntry(db, { accountId: DEMO, producerId: p.id, basis: 'bar' })
+    const a = admitEntry(db, { accountId: DEMO, producerId: p.id })
     assert.equal(a.ok, false, p.id); assert.equal(a.reason, 'entry_mode_stopped'); assert.equal(a.modeEpoch, 1)
   }
   for (const id of ['route_manual_order', 'route_position_double', 'route_position_reverse', 'route_trade_now']) {
@@ -48,7 +55,7 @@ test('STOPPED refuses every automatic producer and admits manual ones; TIME_BASE
   assert.equal(admitEntry(db, { accountId: LIVE, producerId: 'daily_momentum_account' }).ok, true, 'the other account is untouched')
   // one decision_log row per (account, producer, epoch), not per call
   const rows = db.prepare(`SELECT COUNT(*) AS n FROM decision_log WHERE stage = 'entry_mode' AND account_id = ?`).get(DEMO).n
-  assert.equal(rows, automaticProducers().length)
+  assert.equal(rows, automaticProducers().length + 1, 'every producer under STOPPED at epoch 1, plus the tick producer\'s basis refusal at epoch 0')
   // back to TIME_BASED: epoch 2 — WARMING with entries still stopped until
   // the gateway echoes the epoch (11-09-2026 audit, plan §3.6); acknowledged
   // → STABLE and effective; tick producers still refused there
@@ -64,7 +71,7 @@ test('STOPPED refuses every automatic producer and admits manual ones; TIME_BASE
   assert.equal(engineStatusFor(db, DEMO).fenceAckEpoch, 2)
   assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'bar' }).ok, true)
   const tick = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', basis: 'tick' })
-  assert.equal(tick.ok, false); assert.match(tick.reason, /^entry_mode_basis: TIME_BASED admits bar/)
+  assert.equal(tick.ok, false); assert.equal(tick.reason, 'producer_basis_conflict: daily_momentum_account is bar, asked as tick', 'WP-A: a caller naming a basis other than the registry\'s is refused on that, first')
   assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'nope' }).ok, false)
   assert.equal(admitEntry(db, { accountId: null, producerId: 'daily_momentum_account' }).reason, 'no_account')
 })
@@ -177,7 +184,9 @@ test('wiring pins (comments stripped): the fence is called at every Node produce
   assert.ok(!/\bexecPlaceOrder\(\{ host,/.test(src('../loop.js')), 'no bare hand-built creds reach placeOrder')
   assert.match(src('../lib/ctrader-creds.js'), /entryLedger: \{[\s\S]{0,400}reserve: \(o = \{\}\) => reserveEntry\(db/, 'the ledger rides with the credentials')
   assert.match(src('./closed-market-limits.js'), /const producerId = opts\.producerId \|\| 'closed_market_limits'/, 'fail-closed: an unnamed caller is the retired producer')
-  assert.match(src('./closed-market-limits.js'), /admitEntry\(db, \{ accountId: creds\.accountId, producerId, basis: 'bar' \}\)/)
+  // WP-A: no basis literal — admitEntry takes it from the registered producer
+  // (behaviour: entry-basis-callers.test.js).
+  assert.match(src('./closed-market-limits.js'), /admitEntry\(db, \{ accountId: creds\.accountId, producerId \}\)/)
   // pending-orders and vpo-feeder take the fence as an injectable dependency
   // (their producers are retired, so their own tests cannot reach the logic
   // through the real one) — the DEFAULT is admitEntry itself.
@@ -414,7 +423,7 @@ test('PR-G: the policy defaults to manual, is exposed by the view, and requestEn
   assert.equal(engineStatusFor(db, DEMO).entryModePolicy, 'manual', 'absent field → manual, never auto by omission')
 })
 
-test('PR-G: an actor auto:* is refused on a manual account (policy_manual) and admitted on an auto one; a human is admitted on both', () => {
+test('PR-G: an actor auto:* is refused on a manual account (policy_manual) and admitted on an auto one; a human is admitted on both', async () => {
   const db = fresh()
   const ready = () => ({ ready: true, blockedReasons: [], side: 'cpp_exec_demo' })
   const refused = requestEntryMode(db, DEMO, 'STOPPED', { actor: 'auto:readiness' })
@@ -423,6 +432,11 @@ test('PR-G: an actor auto:* is refused on a manual account (policy_manual) and a
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE path = '/actions/entry-mode'`).get().n, 0)
   assert.equal(requestEntryMode(db, DEMO, 'STOPPED', { actor: 'owner' }).ok, true, 'the human is admitted on a manual account')
   engineModule.requestEntryModePolicy(db, LIVE, 'auto')
+  // WP-A (review B1): ready but unevidenced is refused on the record the ack
+  // would write — never stored to wedge WARMING at the ack's throw.
+  const unevidenced = requestEntryMode(db, LIVE, 'TICK_MOMENTUM', { actor: 'auto:readiness', readiness: ready })
+  assert.equal(unevidenced.ok, false); assert.match(unevidenced.reason, /^tick_evidence_refused: profileHash: required while tick entries are admitted/)
+  await pinTickEvidence(db, LIVE)
   const tick = requestEntryMode(db, LIVE, 'TICK_MOMENTUM', { actor: 'auto:readiness', readiness: ready, detail: { tickShadow: 3, timeApprovals: 1 } })
   assert.equal(tick.ok, true); assert.equal(tick.status.requestedEntryMode, 'TICK_MOMENTUM')
   const row = JSON.parse(db.prepare(`SELECT body FROM action_log WHERE path = '/actions/entry-mode' AND account_id = ? ORDER BY id DESC LIMIT 1`).get(LIVE).body)
@@ -487,13 +501,14 @@ test('PR-G (checker minor 9): a content change re-applies only the ids whose dec
   assert.deepEqual(r3.applied, [`…${DEMO.slice(-4)}:manual`], '_all changed: the id under _all is re-applied, the keyed id is not')
 })
 
-test('PR-G (checker blocker 1): a HUMAN requestEntryMode zeroes the bot\'s streak and records the override; the bot\'s own does not', () => {
+test('PR-G (checker blocker 1): a HUMAN requestEntryMode zeroes the bot\'s streak and records the override; the bot\'s own does not', async () => {
   const db = fresh()
   engineModule.writeAutoState(db, DEMO, { readyStreak: 5, blockedCycles: 1 })
   const h = requestEntryMode(db, DEMO, 'STOPPED', { actor: 'owner', now: new Date('2026-09-11T06:00:00Z') })
   assert.equal(h.ok, true)
-  assert.deepEqual(engineModule.readAutoState(db, DEMO), { readyStreak: 0, lastEval: null, lastAction: null, blockedCycles: 0, humanOverride: { mode: 'STOPPED', at: '2026-09-11T06:00:00.000Z', epoch: 1, actor: 'owner' } })
+  assert.deepEqual(engineModule.readAutoState(db, DEMO), { readyStreak: 0, lastEval: null, lastAction: null, blockedCycles: 0, humanOverride: { mode: 'STOPPED', bases: [], at: '2026-09-11T06:00:00.000Z', epoch: 1, actor: 'owner' } })
   engineModule.requestEntryModePolicy(db, DEMO, 'auto')
+  await pinTickEvidence(db, DEMO)
   engineModule.writeAutoState(db, DEMO, { readyStreak: 3 })
   const ready = () => ({ ready: true, blockedReasons: [], side: 'cpp_exec' })
   assert.equal(requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { actor: 'auto:readiness', readiness: ready }).ok, true)
@@ -592,4 +607,203 @@ test('PR-3 wiring pin (comments stripped): POST /actions/entry-mode routes admit
   const hb = strip(readFileSync(new URL('./heartbeat.js', import.meta.url), 'utf8'))
   assert.ok(hb.includes('!peekTickRepush(want).length) return null'), 'the heartbeat runs the feeder for a marked account, peeking at the mark')
   assert.ok(/const creds = await sideCreds\(db, side\)\s*const repush = creds\?\.ready \? takeTickRepush\(want\) : \[\]/.test(hb), 'the mark is TAKEN only once the credentials resolved — a no_creds pass must not lose it')
+})
+
+// ---------------------------------------------------------------------------
+// WP-A (dual admission, 25-09-2026): one request sets both bases; the basis
+// comes from the registered producer; the auto pass and the website work on
+// bases. The review's blockers and missing items ported as regressions.
+// ---------------------------------------------------------------------------
+const readyFn = () => ({ ready: true, blockedReasons: [] })
+const notReadyFn = () => ({ ready: false, blockedReasons: ['profile_pinned', 'validation_stage'] })
+async function seedBarReservation(db, id) {
+  const { reserveEntry } = await import('./entry-ledger.js')
+  const r = reserveEntry(db, { accountId: id, producerId: 'daily_momentum_account', symbol: 'EURUSD', symbolId: 1, side: 'BUY', volume: 1000 })
+  assert.equal(r.ok, true, r.reason)
+  return r.intentId
+}
+const intentState = (db, intentId) => db.prepare('SELECT state FROM entry_intents WHERE id = ?').get(intentId).state
+
+test('WP-A: one request sets both bases — TIME_BASED + [bar, tick] bumps the epoch, goes WARMING, and after the echo admits BOTH producers', async () => {
+  const db = fresh()
+  _resetRefusalDedupe()
+  const rev = await pinTickEvidence(db, DEMO)
+  const r = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: rev, readiness: readyFn, admittedBases: ['bar', 'tick'] })
+  assert.equal(r.ok, true, r.reason)
+  assert.deepEqual(r.status.admittedBases, ['bar', 'tick'], 'RED if the switch still writes admittedBases: null')
+  assert.deepEqual(r.bases, ['bar', 'tick'])
+  assert.equal(r.status.modeEpoch, 1); assert.equal(r.status.transitionState, 'WARMING'); assert.equal(r.status.effectiveEntryMode, 'STOPPED')
+  assert.equal(r.changed, true)
+  const row = JSON.parse(db.prepare(`SELECT body FROM action_log WHERE path = '/actions/entry-mode' AND account_id = ? ORDER BY id DESC LIMIT 1`).get(DEMO).body)
+  assert.deepEqual(row.bases, { from: ['bar'], to: ['bar', 'tick'] })
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account' }).ok, false, 'WARMING admits nothing')
+  acknowledgeEntryEpochs(db, { [DEMO]: 1 })
+  const st = engineStatusFor(db, DEMO)
+  assert.equal(st.transitionState, 'STABLE'); assert.equal(st.effectiveEntryMode, 'TIME_BASED'); assert.deepEqual(engineModule.basesFor(st), ['bar', 'tick'])
+  _resetRefusalDedupe()
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account' }).ok, true, 'bar admitted')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum' }).ok, true, 'tick admitted beside it')
+  // a switch WITHOUT the set is a single-basis declaration and clears it
+  const back = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: st.configRevision })
+  assert.equal(back.ok, true); assert.equal(back.status.admittedBases, null); assert.deepEqual(back.bases, ['bar'])
+})
+
+test('WP-A: the readiness gate follows the TARGET bases — a not-ready account is refused Time + tick exactly as TICK_MOMENTUM, and nothing is written or released', async () => {
+  const db = fresh()
+  const rev = await pinTickEvidence(db, DEMO)
+  const intentId = await seedBarReservation(db, DEMO)
+  const r = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: rev, readiness: notReadyFn, admittedBases: ['bar', 'tick'] })
+  assert.equal(r.ok, false); assert.equal(r.reason, 'tick_not_ready: profile_pinned, validation_stage', 'RED if the gate is keyed on mode === TICK_MOMENTUM (the contract passes on this pinned fixture; only readiness refuses)')
+  assert.deepEqual(r.blockedReasons, ['profile_pinned', 'validation_stage'])
+  const st = engineStatusFor(db, DEMO)
+  assert.equal(st.configRevision, rev); assert.equal(st.modeEpoch, 0); assert.equal(st.admittedBases, null)
+  assert.equal(intentState(db, intentId), 'RESERVED', 'the old epoch\'s reservation was not released by a refusal')
+  const none = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: rev, admittedBases: ['bar', 'tick'] })
+  assert.match(none.reason, /^tick_readiness_unavailable: admitting tick/, 'no readiness function, no path into tick')
+})
+
+test('WP-A (review B1 + corrections): an unevidenced account RETURNS admitted_bases_refused (never throws); TICK_MOMENTUM + [bar] and STOPPED + a set are refused; a malformed set is a named refusal, not a TypeError; nothing written or released', async () => {
+  const db = fresh()
+  const intentId = await seedBarReservation(db, LIVE)
+  const cur = engineStatusFor(db, LIVE)
+  const r = requestEntryMode(db, LIVE, 'TIME_BASED', { readiness: readyFn, admittedBases: ['bar', 'tick'] })
+  assert.equal(r.ok, false); assert.match(r.reason, /^admitted_bases_refused: .*profileHash: required while tick entries are admitted/)
+  assert.match(r.reason, /validationStage: admitting tick needs at least SHADOW_PASSED/)
+  // B1: TICK_MOMENTUM with a set that leaves tick out would have skipped
+  // readiness and been stored; the ack would then have thrown for ever.
+  const b1 = requestEntryMode(db, LIVE, 'TICK_MOMENTUM', { readiness: readyFn, admittedBases: ['bar'] })
+  assert.equal(b1.ok, false); assert.equal(b1.reason, "admitted_bases_invalid: TICK_MOMENTUM must admit its own basis 'tick'")
+  const b1b = requestEntryMode(db, LIVE, 'TIME_BASED', { readiness: readyFn, admittedBases: ['tick'] })
+  assert.equal(b1b.ok, false); assert.match(b1b.reason, /^admitted_bases_invalid: TIME_BASED must admit its own basis 'bar'/)
+  // and TICK_MOMENTUM alone on this unevidenced account: refused on the ack's record
+  const tm = requestEntryMode(db, LIVE, 'TICK_MOMENTUM', { readiness: readyFn })
+  assert.equal(tm.ok, false); assert.match(tm.reason, /^tick_evidence_refused: profileHash/)
+  const stop = requestEntryMode(db, LIVE, 'STOPPED', { admittedBases: ['bar'] })
+  assert.equal(stop.ok, false); assert.equal(stop.reason, 'admitted_bases_invalid: STOPPED admits nothing')
+  for (const bad of [[], ['bar', 'bar'], ['candle'], 'tick', { bar: true }]) {
+    let out = null
+    assert.doesNotThrow(() => { out = requestEntryMode(db, LIVE, 'TIME_BASED', { readiness: readyFn, admittedBases: bad }) }, JSON.stringify(bad))
+    assert.equal(out.ok, false, JSON.stringify(bad)); assert.match(out.reason, /^admitted_bases_invalid/, JSON.stringify(bad))
+  }
+  const after = engineStatusFor(db, LIVE)
+  assert.equal(after.configRevision, cur.configRevision); assert.equal(after.modeEpoch, 0); assert.equal(after.stored, false, 'nothing was written')
+  assert.equal(intentState(db, intentId), 'RESERVED', 'RED if the evidence probe runs after releaseOldEpoch')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE path = '/actions/entry-mode'`).get().n, 0)
+})
+
+test('WP-A: humanOverride carries the bases — requestEntryMode records the target set; a human requestAdmittedBases zeroes the streak and records its set; an auto actor writes none', async () => {
+  const db = fresh()
+  const rev = await pinTickEvidence(db, DEMO)
+  const h = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: rev, readiness: readyFn, admittedBases: ['bar', 'tick'], actor: 'owner' })
+  assert.equal(h.ok, true, h.reason)
+  assert.deepEqual(engineModule.readAutoState(db, DEMO).humanOverride.bases, ['bar', 'tick'])
+  acknowledgeEntryEpochs(db, { [DEMO]: h.status.modeEpoch })
+  engineModule.writeAutoState(db, DEMO, { ...engineModule.readAutoState(db, DEMO), readyStreak: 2 })
+  const n = engineModule.requestAdmittedBases(db, DEMO, ['bar'], { actor: 'owner', now: new Date('2026-09-25T04:00:00Z') })
+  assert.equal(n.ok, true, n.reason)
+  const mem = engineModule.readAutoState(db, DEMO)
+  assert.equal(mem.readyStreak, 0, 'RED if requestAdmittedBases writes no override')
+  assert.deepEqual(mem.humanOverride, { mode: 'TIME_BASED', bases: ['bar'], at: '2026-09-25T04:00:00.000Z', epoch: h.status.modeEpoch, actor: 'owner' })
+  engineModule.requestEntryModePolicy(db, DEMO, 'auto') // clears the memory
+  engineModule.writeAutoState(db, DEMO, { readyStreak: 2 })
+  const a = engineModule.requestAdmittedBases(db, DEMO, ['bar', 'tick'], { actor: 'auto:readiness', readiness: readyFn })
+  assert.equal(a.ok, true, a.reason)
+  assert.equal(engineModule.readAutoState(db, DEMO).humanOverride, null); assert.equal(engineModule.readAutoState(db, DEMO).readyStreak, 2)
+})
+
+test('WP-A: admitEntry derives the basis from the registered producer — no \'bar\' default; a conflicting basis is refused producer_basis_conflict; manual declares none; the retired fence still comes first', () => {
+  const db = fresh()
+  _resetRefusalDedupe()
+  const t = admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum' })
+  assert.equal(t.ok, false); assert.match(t.reason, /^entry_mode_basis/, 'RED if the default reverts to bar (the tick producer passed a bar-only account)'); assert.equal(t.basis, 'tick')
+  const c = admitEntry(db, { accountId: LIVE, producerId: 'tick_momentum', basis: 'bar' })
+  assert.equal(c.ok, false); assert.equal(c.reason, 'producer_basis_conflict: tick_momentum is tick, asked as bar')
+  const d = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account' })
+  assert.equal(d.ok, true); assert.equal(d.basis, 'bar')
+  assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'route_manual_order', basis: 'bar' }).ok, true, 'a manual producer declares no basis: no conflict')
+  const retired = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'tick' })
+  assert.equal(retired.ok, false); assert.match(retired.reason, /^producer_retired/, 'the retired fence is first, whatever basis is asked')
+  const row = db.prepare(`SELECT reason FROM decision_log WHERE stage = 'entry_mode' AND account_id = ? AND reason LIKE 'producer_basis_conflict%'`).get(LIVE)
+  assert.ok(row, 'the conflict leaves one decision_log row')
+})
+
+test('WP-A: the ledger records a manual intent under its family, not bar — narrowing to [tick] releases the bar reservation and leaves the manual one', async () => {
+  const { reserveEntry, releaseRemovedBases } = await import('./entry-ledger.js')
+  const { producerBasis } = await import('../lib/entry-producers.js')
+  assert.equal(producerBasis('route_manual_order'), 'manual'); assert.equal(producerBasis('route_trade_now'), 'manual_assisted')
+  assert.equal(producerBasis('tick_momentum'), 'tick'); assert.equal(producerBasis('cross_sectional_book'), 'bar'); assert.equal(producerBasis('nope'), null)
+  const db = fresh()
+  const m = reserveEntry(db, { accountId: DEMO, producerId: 'route_manual_order', symbol: 'GBPUSD', symbolId: 2, side: 'SELL', volume: 1000 })
+  const b = reserveEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account', symbol: 'EURUSD', symbolId: 1, side: 'BUY', volume: 1000 })
+  assert.equal(m.ok, true, m.reason); assert.equal(b.ok, true, b.reason)
+  const basisOf = (id) => db.prepare('SELECT basis FROM entry_intents WHERE id = ?').get(id).basis
+  assert.equal(basisOf(m.intentId), 'manual', 'RED if reserveEntry keeps basis = \'bar\'')
+  assert.equal(basisOf(b.intentId), 'bar')
+  const rel = releaseRemovedBases(db, DEMO, ['bar'])
+  assert.equal(rel.released, 1)
+  assert.equal(intentState(db, b.intentId), 'RELEASED'); assert.equal(intentState(db, m.intentId), 'RESERVED', 'the manual reservation is not a bar signal')
+})
+
+test('WP-A: attachEntryFence builds a fence that derives the basis — a tick producer is refused on a TIME_BASED account', async () => {
+  const { attachEntryFence } = await import('../lib/ctrader-creds.js')
+  const db = fresh()
+  _resetRefusalDedupe()
+  const creds = attachEntryFence(db, { accountId: DEMO }, { producerId: 'tick_momentum' })
+  const a = creds.entryAdmission()
+  assert.equal(a.ok, false); assert.match(a.reason, /^entry_mode_basis: TIME_BASED admits bar producers, tick_momentum is tick/, 'RED if attachEntryFence keeps basis = \'bar\'')
+  assert.equal(attachEntryFence(db, { accountId: DEMO }, { producerId: 'daily_momentum_account' }).entryAdmission().ok, true)
+})
+
+test('WP-A (review): one record whose ack write throws does not stop the accounts after it from binding', () => {
+  const db = fresh()
+  // A record that validates while WARMING but whose ack (effective
+  // TICK_MOMENTUM, no evidence) the contract refuses — stored directly, as
+  // an old record or a racing evidence reset could leave it.
+  engineModule.writeEngineStatus(db, { ...engineStatusFor(db, DEMO), requestedEntryMode: 'TICK_MOMENTUM', effectiveEntryMode: 'STOPPED', transitionState: 'WARMING', modeEpoch: 1, configRevision: 1 })
+  const w = requestEntryMode(db, LIVE, 'STOPPED'); assert.equal(w.ok, true)
+  const back = requestEntryMode(db, LIVE, 'TIME_BASED'); assert.equal(back.status.transitionState, 'WARMING')
+  let acked = null
+  assert.doesNotThrow(() => { acked = acknowledgeEntryEpochs(db, { [DEMO]: 1, [LIVE]: back.status.modeEpoch }) }, 'RED without the per-account try/catch')
+  assert.deepEqual(acked.map(a => a.accountId), [LIVE])
+  assert.equal(engineStatusFor(db, LIVE).transitionState, 'STABLE', 'the later account still bound')
+  assert.equal(engineStatusFor(db, DEMO).transitionState, 'WARMING', 'the bad one is left as it was, visibly not bound')
+})
+
+test('WP-A: POST /actions/entry-mode carries admittedBases WITH a mode through the ack protocol, and a refusal answers 400 with the named reason in `error`', async () => {
+  const { default: express } = await import('express')
+  const { default: actionsRouter } = await import('../routes/actions.js')
+  const db = fresh()
+  const rev = await pinTickEvidence(db, DEMO)
+  const calls = []
+  const gatewayStub = async (d, id, mode, { epoch }) => { calls.push({ id, mode, epoch }); acknowledgeEntryEpochs(d, { [id]: epoch }); return { gateway: { pushed: true, acked: [id] }, status: engineStatusFor(d, id) } }
+  const serve = async (router, fn) => {
+    const app = express(); app.use(express.json()); app.use('/actions', router)
+    const s = await new Promise(r => { const x = app.listen(0, () => r(x)) })
+    const post = (body) => fetch(`http://127.0.0.1:${s.address().port}/actions/entry-mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    try { await fn(post) } finally { s.close() }
+  }
+  await serve(actionsRouter(db, { tickReadiness: readyFn, entryModeGateway: gatewayStub }), async (post) => {
+    const res = await post({ accountId: DEMO, mode: 'TIME_BASED', admittedBases: ['bar', 'tick'], expectedRevision: rev })
+    const j = await res.json()
+    assert.equal(res.status, 200, JSON.stringify(j))
+    assert.deepEqual(j.status.admittedBases, ['bar', 'tick'], 'RED on the old route, which dropped admittedBases when a mode was present')
+    assert.deepEqual(j.bases, ['bar', 'tick']); assert.deepEqual(j.requestedBases, ['bar', 'tick'])
+    assert.equal(j.status.transitionState, 'STABLE')
+    assert.match(j.note, /places tick once the heartbeat feeder pushes/)
+    assert.deepEqual(calls, [{ id: DEMO, mode: 'TIME_BASED', epoch: 1 }], 'the gateway is bound once with the new epoch')
+    const bad = await post({ accountId: DEMO, mode: 'TIME_BASED', admittedBases: { bar: true }, expectedRevision: j.status.configRevision })
+    assert.equal(bad.status, 400); assert.match((await bad.json()).error, /^admitted_bases_invalid/, 'a malformed set is a 400, not a 500')
+  })
+  // the real readiness on an unevidenced account: refused on readiness first, nothing written, no gateway call
+  const before = engineStatusFor(db, LIVE).configRevision
+  const calls2 = []
+  await serve(actionsRouter(db, { entryModeGateway: async (...a) => { calls2.push(a); return { gateway: {}, status: engineStatusFor(db, LIVE) } } }), async (post) => {
+    const res = await post({ accountId: LIVE, mode: 'TIME_BASED', admittedBases: ['bar', 'tick'], expectedRevision: before })
+    assert.equal(res.status, 400)
+    const j = await res.json()
+    assert.match(j.error, /^tick_not_ready: /); assert.equal(j.reason, j.error)
+    assert.equal(engineStatusFor(db, LIVE).configRevision, before); assert.deepEqual(calls2, [])
+    const conflict = await post({ accountId: LIVE, mode: 'STOPPED', expectedRevision: before + 7 })
+    assert.equal(conflict.status, 409); assert.equal((await conflict.json()).error, 'revision_conflict')
+  })
 })

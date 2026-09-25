@@ -759,3 +759,28 @@ test('PR-L: REPLAY_PASSED refuses a trial replayed at ZERO cost, or one charged 
   const ok = trial(db, { trialId: 'charged' })
   assert.equal(importTickValidation(db, { accountId: DEMO, stage: 'REPLAY_PASSED', evidence: { trialId: ok }, thresholds: TH }).ok, true)
 })
+
+// WP-A (dual admission, 25-09-2026): a reset on an account that admits tick
+// (TICK_MOMENTUM, or TIME_BASED + [bar, tick]) would write a record the
+// contract refuses and answer 500. Refused by name instead, nothing written;
+// once tick is removed the same reset goes through.
+test('WP-A: resetting evidence on a Time + tick account is a named refusal (tick_admitted), not a 500; after tick is removed the reset applies', async () => {
+  const { writeEngineStatus, requestEntryMode, acknowledgeEntryEpochs } = await import('./entry-mode.js')
+  const db = fresh()
+  const cur = engineStatusFor(db, DEMO)
+  writeEngineStatus(db, { ...cur, profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', configRevision: 1, updatedAt: new Date().toISOString() })
+  const dual = requestEntryMode(db, DEMO, 'TIME_BASED', { readiness: () => ({ ready: true, blockedReasons: [] }), admittedBases: ['bar', 'tick'] })
+  assert.equal(dual.ok, true, dual.reason)
+  acknowledgeEntryEpochs(db, { [DEMO]: dual.status.modeEpoch })
+  const before = engineStatusFor(db, DEMO)
+  let r = null
+  assert.doesNotThrow(() => { r = importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'profile changed' }, thresholds: TH }) }, 'RED: writeEngineStatus threw on the contract')
+  assert.equal(r.ok, false); assert.match(r.reason, /^tick_admitted: the account admits bar\+tick/)
+  assert.deepEqual(r.bases, ['bar', 'tick'])
+  const after = engineStatusFor(db, DEMO)
+  assert.equal(after.validationStage, 'SHADOW_PASSED'); assert.equal(after.configRevision, before.configRevision, 'nothing written')
+  const time = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: after.configRevision })
+  acknowledgeEntryEpochs(db, { [DEMO]: time.status.modeEpoch })
+  const ok = importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'profile changed' }, thresholds: TH })
+  assert.equal(ok.ok, true, ok.reason); assert.equal(engineStatusFor(db, DEMO).validationStage, 'UNVALIDATED')
+})

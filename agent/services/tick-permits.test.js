@@ -484,8 +484,10 @@ test('PR-3 (checker blocker, parity): importTickValidation REVOKING the stage un
   // (a) the overlay
   const db = fresh()
   dual(db, DEMO)
-  assert.throws(() => importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'the shadow evidence was withdrawn' } }),
-    /engine status invalid: .*admitting tick needs at least SHADOW_PASSED/)
+  // WP-A: refused with a NAMED reason (tick_admitted) before anything is
+  // written — it used to throw out of writeEngineStatus as a 500.
+  const refusedA = importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'the shadow evidence was withdrawn' } })
+  assert.equal(refusedA.ok, false); assert.match(refusedA.reason, /^tick_admitted: the account admits bar\+tick/)
   let st = engineStatusFor(db, DEMO)
   assert.equal(st.validationStage, 'SHADOW_PASSED', 'nothing was written'); assert.deepEqual(st.admittedBases, ['bar', 'tick'])
   assert.deepEqual(tickEntryAccountsFor(db, side), [DEMO], 'still armed, because the revocation did not land')
@@ -493,8 +495,8 @@ test('PR-3 (checker blocker, parity): importTickValidation REVOKING the stage un
   // overlay is now at parity with (this is what main does today)
   const db2 = fresh()
   switchOn(db2, DEMO)
-  assert.throws(() => importTickValidation(db2, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'x' } }),
-    /engine status invalid: .*admitting tick needs at least SHADOW_PASSED/, 'ONE rule, one message, for the mode and the overlay alike')
+  const refusedB = importTickValidation(db2, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'x' } })
+  assert.equal(refusedB.ok, false); assert.match(refusedB.reason, /^tick_admitted: the account admits tick /, 'ONE rule, one reason, for the mode and the overlay alike')
   st = engineStatusFor(db2, DEMO)
   assert.equal(st.validationStage, 'SHADOW_PASSED'); assert.equal(st.effectiveEntryMode, 'TICK_MOMENTUM')
   assert.deepEqual(tickEntryAccountsFor(db2, side), [DEMO])

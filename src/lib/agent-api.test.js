@@ -26,3 +26,24 @@ test('getAgentConn: the old full-privilege vars are never read, even if still se
 test('getAgentConn: no env vars set at all → empty secret, never throws', () => {
   expect(getAgentConn().secret).toBe('')
 })
+
+// WP-A (dual admission, 25-09-2026): POST /actions/entry-mode answers a
+// refusal with `error` = the server's named reason, and the client surfaces
+// THAT — the engine panel's acknowledgement shows "tick_not_ready: …", not
+// "POST /actions/entry-mode 400".
+test('agentPost: a 400 refusal throws the server\'s named reason from `error`', async () => {
+  vi.stubEnv('VITE_AGENT_SECRET_READ', 'read-only-value')
+  const reason = 'tick_not_ready: profile_pinned, profile_matches_sidecar, replay_evidence, validation_stage'
+  const fetchStub = vi.fn(async () => new Response(JSON.stringify({ ok: false, reason, error: reason }), { status: 400, headers: { 'content-type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetchStub)
+  vi.doMock('sonner', () => ({ toast: { error: () => {} } }))
+  try {
+    const { agentPost } = await import('./agent-api.js')
+    await expect(agentPost('/actions/entry-mode', { accountId: '46979908', mode: 'TIME_BASED', admittedBases: ['bar', 'tick'], expectedRevision: 2 })).rejects.toThrow(reason)
+    const sent = JSON.parse(fetchStub.mock.calls[0][1].body)
+    expect(sent.admittedBases).toEqual(['bar', 'tick'])
+  } finally {
+    vi.unstubAllGlobals()
+    vi.doUnmock('sonner')
+  }
+})

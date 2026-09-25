@@ -26,7 +26,7 @@ export default function EntryModePolicySwitch({ row, fullId, busy = false, post 
     }
   }
   return (
-    <label className="inline-flex items-center gap-1 text-(length:--fs-body)" title={!fullId ? 'the full account id is not on this page yet' : 'manual: only a human throws the entry-mode switch; auto: the bot promotes after consecutive ready evaluations with tick opportunity ≥ the time path and demotes on one failing check'}>
+    <label className="inline-flex items-center gap-1 text-(length:--fs-body)" title={!fullId ? 'the full account id is not on this page yet' : 'manual: only a human throws the entry-mode switch; auto: the bot adds tick next to time after consecutive ready evaluations with tick opportunity ≥ the time path, and removes tick on one failing check'}>
       <span className="text-[var(--color-text-sub)]">switch policy</span>
       <select data-testid={`entry-mode-policy-${row?.accountId}`} value={value} disabled={disabled} onChange={onChange} className="rounded border border-[var(--glass-edge)] bg-transparent px-1">
         {ENTRY_MODE_POLICIES.map(p => <option key={p} value={p}>{POLICY_LABEL[p]}</option>)}
