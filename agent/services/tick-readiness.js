@@ -15,7 +15,7 @@
 // only when `ready` is true. Nothing here changes a mode.
 // ---------------------------------------------------------------------------
 import { getState } from '../db.js'
-import { engineStatusFor } from './entry-mode.js'
+import { engineStatusFor, basesFor } from './entry-mode.js'
 import { intentCounts } from './entry-ledger.js'
 import { loadAccountHorizon, horizonAdmits } from './account-horizon.js'
 import { tickSymbolNames } from './exec-guard-sync.js'
@@ -212,6 +212,8 @@ export function tickReadinessFor(db, accountId, { now = new Date(), includeRouti
     environment: st.environment,
     side,
     requestedEntryMode: st.requestedEntryMode, effectiveEntryMode: st.effectiveEntryMode, transitionState: st.transitionState,
+    // WP-A: the bases, so a Time + tick account never reads as bare TIME_BASED.
+    admittedBases: st.admittedBases ?? null, bases: basesFor(st),
     tickObservation: st.tickObservation, validationStage: st.validationStage,
     configRevision: st.configRevision, modeEpoch: st.modeEpoch,
     profileId: st.profileId ?? null, profileHash: pinned, sidecarProfileHash: reported,
@@ -241,7 +243,7 @@ export function tickReadinessView(db, { now = new Date(), includeRoutingIdentity
     // account shadow today". `readyCount` stays what it was — the accounts
     // cleared to TRADE — and is still the only figure any gate reads.
     shadowReadyCount: accounts.filter(a => a.shadowReady).length,
-    note: 'P5: derived on every read from the stored records and the last pulled sidecar status; a failing check names its class and remedy. TICK_MOMENTUM is refused until P6 reads `ready` here; no check lowers a risk limit. `shadowReady` / `shadowBlockers` are a DERIVED read of the same checks (SHADOW_CHECKS) plus the observation_is_shadow requirement, and gate nothing: they answer "is the shadow running on this account", not "may it trade". The three PAUSE_CHECKS and the evidence checks left out of them still block trading, and `ready` is unchanged.',
+    note: 'P5: derived on every read from the stored records and the last pulled sidecar status; a failing check names its class and remedy. Any request that admits tick — TICK_MOMENTUM, or Time + tick (TIME_BASED with admittedBases [bar, tick]) — is refused unless `ready` is true here at the request (P6b, WP-A); no check lowers a risk limit. `shadowReady` / `shadowBlockers` are a DERIVED read of the same checks (SHADOW_CHECKS) plus the observation_is_shadow requirement, and gate nothing: they answer "is the shadow running on this account", not "may it trade". The three PAUSE_CHECKS and the evidence checks left out of them still block trading, and `ready` is unchanged.',
   }
 }
 

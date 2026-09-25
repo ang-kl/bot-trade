@@ -57,7 +57,7 @@ export function controllerRuntimeView(db, { nowMs = Date.now() } = {}) {
     }
     return {
       accountId: id, environment: row.is_live ? 'live' : 'demo', enabled: !!row.enabled,
-      entryMode: tick.effectiveEntryMode, shadowReady: tick.shadowReady,
+      entryMode: tick.effectiveEntryMode, entryBases: tick.bases ?? null, shadowReady: tick.shadowReady,
       phases: effectivePhases(db, id),
       entryReady: tick.ready, tradingBlockers: tick.tradingBlockers,
       shadowBlockers: tick.shadowBlockers,

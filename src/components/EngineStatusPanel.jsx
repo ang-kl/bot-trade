@@ -9,17 +9,25 @@
 // component renders /state/entry-engines and /state/tick-readiness and the
 // age of that answer.
 //
-// Actions: Stop entries / Time-based per account (POST /actions/entry-mode
-// with expectedRevision — a 409 means someone changed it first; the panel
-// reloads and says so). Tick momentum is a button that is DISABLED with the
-// server's blocker list as its title until the live readiness predicate
-// (/state/tick-readiness `ready`) holds; enabled, it posts the same route and
-// the server re-checks readiness at the request — the UI can never grant
-// what the record refuses (PR-G). Beside it the switch POLICY (manual |
-// auto, EntryModePolicySwitch) says whether the bot's readiness pass may
-// throw the switch too. Bulk Stop / Time-based run per account and list each
-// account's own acknowledgement (TM-33): one executor offline shows as that
-// account NOT acknowledged, never as an all-stopped success.
+// Actions (WP-A, 25-09-2026): four selections per account — Stop entries,
+// Time-based, Tick momentum, Time + tick — each the exact body of POST
+// /actions/entry-mode with expectedRevision (a 409 means someone changed it
+// first; the panel reloads and says so). "Time + tick" is TIME_BASED with
+// admittedBases ['bar','tick']; each button is disabled when it IS the
+// account's requested selection (read from the requested bases, not the
+// mode string, so a Time + tick account can go back to Time-based). The two
+// tick selections are DISABLED until the live readiness predicate
+// (/state/tick-readiness `ready`) holds, with VISIBLE text beside them —
+// "tick BLOCKED — <the server's failing checks>", or "tick status unknown"
+// while readiness has not answered; enabled, they post the same route and
+// the server re-checks readiness and evidence at the request — the UI can
+// never grant what the record refuses (PR-G). A refusal shows the server's
+// named reason. Beside them the switch POLICY (manual | auto,
+// EntryModePolicySwitch) says whether the bot's readiness pass may add or
+// remove tick too. Bulk Stop / Time-based run per account (Time-based all
+// removes tick where it is admitted) and list each account's own
+// acknowledgement (TM-33): one executor offline shows as that account NOT
+// acknowledged, never as an all-stopped success.
 //
 // Unknowns (PR-E, owner principle 4, 11-09-2026): the UNKNOWN intents from
 // GET /state/entry-intents — account last-4, symbol, side, age, error — each
@@ -37,7 +45,7 @@ import Collapse from './common/Collapse.jsx'
 import EntryModePolicySwitch from './EntryModePolicySwitch.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { useEngineStatus, refreshEngineStatus } from '../lib/use-engine-status.js'
-import { engineAccountBindings, engineReadinessFor, engineReading, blockerGroups, tickBlockedReason, ackLine, mixedSummary, MODE_LABEL } from '../lib/engine-status-view.js'
+import { engineAccountBindings, engineReadinessFor, engineReading, blockerGroups, tickBlockedReason, tickSelectionNote, ackLine, mixedSummary, requestedSelection, selectionBody, basesLabel, SELECTION_LABEL, MODE_LABEL } from '../lib/engine-status-view.js'
 import { unknownRows, resolveUnknownIntent, runOriginBackfill, backfillSummary, RESOLVE_STATES, MIN_REASON_LEN } from '../lib/unknown-intents.js'
 
 function ageLabel(at) {
@@ -66,23 +74,28 @@ export function EngineRow({ row, readiness, fullId, busy, onMode, at }) {
   const reading = engineReading(row, { at })
   const groups = blockerGroups(readiness)
   const tickWhy = tickBlockedReason(readiness)
+  const tickNote = tickSelectionNote(readiness)
   const disabledAll = busy || !fullId
   const why = !fullId ? 'the full account id is not on this page yet or the displayed identity is ambiguous' : null
+  const current = requestedSelection(row)
+  const tickReady = readiness?.ready === true
   return (
     <div className="border-b border-[var(--glass-edge)] py-2 last:border-b-0" data-testid={`engine-row-${row.accountId}`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-semibold tabular-nums">{row.environment === 'live' ? 'LIVE' : 'DEMO'} {fullId || row.accountId}</span>
         <Badge tone={reading.tone} title={reading.detail}>{reading.label}</Badge>
-        <span className="text-[var(--color-text-sub)]">requested <b>{MODE_LABEL[row.requestedEntryMode] || row.requestedEntryMode}</b> · effective <b>{MODE_LABEL[row.effectiveEntryMode] || row.effectiveEntryMode}</b> · {row.transitionState}</span>
+        <span className="text-[var(--color-text-sub)]">requested <b>{MODE_LABEL[row.requestedEntryMode] || row.requestedEntryMode}</b> · effective <b>{MODE_LABEL[row.effectiveEntryMode] || row.effectiveEntryMode}</b> · {row.transitionState}{Array.isArray(row.bases) && <> · admits <b>{basesLabel(row.bases)}</b></>}</span>
         <span className="text-[var(--color-text-sub)] tabular-nums">rev {row.configRevision} · epoch {row.modeEpoch}</span>
         <span className="text-[var(--color-text-sub)]">observation <b>{row.tickObservation}</b> · stage <b>{row.validationStage}</b></span>
         {row.entryCounts && <span className="text-[var(--color-text-sub)] tabular-nums">resting {row.entryCounts.resting ?? 0} · in flight {row.entryCounts.inFlight ?? 0} · unknown {row.entryCounts.unknown ?? 0}</span>}
         {readiness && <Badge tone={readiness.ready ? 'on' : 'off'} title={tickWhy || 'every readiness check holds'}>{readiness.ready ? 'tick-ready' : `${readiness.blockedReasons.length} blocker${readiness.blockedReasons.length === 1 ? '' : 's'}`}</Badge>}
       </div>
       <div className="mt-1 flex flex-wrap gap-1">
-        <Button size="sm" variant="danger" disabled={disabledAll || row.requestedEntryMode === 'STOPPED'} title={why || 'stop every automatic entry on this account; resting entry orders are cancelled by id; manual orders stay admitted'} onClick={() => onMode(fullId, 'STOPPED', row.configRevision)}>Stop entries</Button>
-        <Button size="sm" variant="primary" disabled={disabledAll || row.requestedEntryMode === 'TIME_BASED'} title={why || 'bar-based entries; the executor must echo the new epoch before entries resume (WARMING → STABLE)'} onClick={() => onMode(fullId, 'TIME_BASED', row.configRevision)}>Time-based</Button>
-        <Button size="sm" variant="ghost" disabled={disabledAll || !readiness?.ready || row.requestedEntryMode === 'TICK_MOMENTUM'} title={why || (tickWhy ? `Tick momentum is refused: ${tickWhy}` : 'tick-basis entries; every readiness check holds — the server re-checks at the request and the executor must echo the new epoch before entries begin (WARMING → STABLE)')} onClick={() => onMode(fullId, 'TICK_MOMENTUM', row.configRevision)}>Tick momentum</Button>
+        <Button size="sm" variant="danger" disabled={disabledAll || current === 'stopped'} title={why || 'stop every automatic entry on this account; resting entry orders are cancelled by id; manual orders stay admitted'} onClick={() => onMode(fullId, 'stopped', row.configRevision)}>Stop entries</Button>
+        <Button size="sm" variant="primary" disabled={disabledAll || current === 'time'} title={why || 'bar-based entries only (tick removed where admitted); the executor must echo the new epoch before entries resume (WARMING → STABLE)'} onClick={() => onMode(fullId, 'time', row.configRevision)}>Time-based</Button>
+        <Button size="sm" variant="ghost" disabled={disabledAll || !tickReady || current === 'tick'} title={why || (tickWhy ? `Tick momentum is refused: ${tickWhy}` : 'tick-basis entries; every readiness check holds — the server re-checks at the request and the executor must echo the new epoch before entries begin (WARMING → STABLE)')} onClick={() => onMode(fullId, 'tick', row.configRevision)}>Tick momentum</Button>
+        <Button size="sm" variant="ghost" disabled={disabledAll || !tickReady || current === 'time+tick'} title={why || (tickWhy ? `Time + tick is refused: ${tickWhy}` : 'bar AND tick entries on this account; every readiness check holds — the server re-checks readiness and evidence at the request and the executor must echo the new epoch before entries begin (WARMING → STABLE)')} onClick={() => onMode(fullId, 'time+tick', row.configRevision)}>Time + tick</Button>
+        {tickNote && <span className="text-[var(--color-text-sub)]" data-testid={`tick-note-${row.accountId}`}>{tickNote}</span>}
         <EntryModePolicySwitch row={row} fullId={fullId} busy={busy} />
       </div>
       {groups.length > 0 && (
@@ -197,31 +210,35 @@ export default function EngineStatusPanel({ scope = 'all' }) {
   const allIdentified = rows.length > 0 && accountIds.every(Boolean)
   const bulkWhy = allIdentified ? null : 'Every displayed account must have one unambiguous registered identity before a bulk change.'
 
-  async function setMode(fullId, mode, expectedRevision) {
-    if (!fullId) return { accountId: fullId, error: 'no full account id' }
+  // `key` is a selection (engine-status-view SELECTIONS); the body is built
+  // from it, so "Time + tick" posts TIME_BASED with both bases. A refusal's
+  // message is the server's named reason (agent-api reads the reply's
+  // `error`), never a bare status code.
+  async function setMode(fullId, key, expectedRevision) {
+    if (!fullId) return { accountId: fullId, selection: key, error: 'no full account id' }
     try {
-      const r = await agentPost('/actions/entry-mode', { accountId: fullId, mode, expectedRevision })
-      return { accountId: `…${String(fullId).slice(-4)}`, mode, ...r }
+      const r = await agentPost('/actions/entry-mode', selectionBody(key, fullId, expectedRevision))
+      return { accountId: `…${String(fullId).slice(-4)}`, selection: key, ...r }
     } catch (e) {
       const msg = e?.message || String(e)
-      return { accountId: `…${String(fullId).slice(-4)}`, mode, error: /409|revision/.test(msg) ? 'revision_conflict — changed elsewhere, reloaded' : msg }
+      return { accountId: `…${String(fullId).slice(-4)}`, selection: key, error: /^revision_conflict|\b409\b/.test(msg) ? 'revision_conflict — changed elsewhere, reloaded' : msg }
     }
   }
-  async function onMode(fullId, mode, rev) {
+  async function onMode(fullId, key, rev) {
     setBusy(true)
     try {
-      const r = await setMode(fullId, mode, rev)
+      const r = await setMode(fullId, key, rev)
       setAcks([r])
     } finally { setBusy(false); refreshEngineStatus() }
   }
-  async function onBulk(mode) {
+  async function onBulk(key) {
     if (!allIdentified) return
     setBusy(true)
     const out = []
     try {
       for (const [index, row] of rows.entries()) {
-        if (row.requestedEntryMode === mode) { out.push({ accountId: row.accountId, mode, skipped: true }); continue }
-        out.push(await setMode(accountIds[index], mode, row.configRevision))
+        if (requestedSelection(row) === key) { out.push({ accountId: row.accountId, selection: key, skipped: true }); continue }
+        out.push(await setMode(accountIds[index], key, row.configRevision))
       }
       setAcks(out)
     } finally { setBusy(false); refreshEngineStatus() }
@@ -235,8 +252,8 @@ export default function EngineStatusPanel({ scope = 'all' }) {
           <span className="ml-2 text-(length:--fs-body) text-[var(--color-text-sub)]">{mixedSummary(rows)} · answered {ageLabel(snap.at)}{snap.engines?.globalHalt ? ' · GLOBAL HALT' : ''}</span>
         </div>
         <div className="flex gap-1">
-          <Button size="sm" variant="danger" disabled={busy || !allIdentified} title={bulkWhy || "stop entries on EVERY account, one request each; each account's own acknowledgement is listed below"} onClick={() => onBulk('STOPPED')}>Stop all</Button>
-          <Button size="sm" variant="primary" disabled={busy || !allIdentified} title={bulkWhy || 'time-based entries on EVERY account, one request each'} onClick={() => onBulk('TIME_BASED')}>Time-based all</Button>
+          <Button size="sm" variant="danger" disabled={busy || !allIdentified} title={bulkWhy || "stop entries on EVERY account, one request each; each account's own acknowledgement is listed below"} onClick={() => onBulk('stopped')}>Stop all</Button>
+          <Button size="sm" variant="primary" disabled={busy || !allIdentified} title={bulkWhy || 'time-based entries on EVERY account, one request each — tick is removed where it is admitted'} onClick={() => onBulk('time')}>Time-based all</Button>
         </div>
       </div>
       {snap.error && <div className="mt-1 text-(length:--fs-body) text-[var(--color-down)]">{snap.error}</div>}
@@ -251,13 +268,13 @@ export default function EngineStatusPanel({ scope = 'all' }) {
         <div className="mt-2 text-(length:--fs-body)">
           <div className="font-semibold">Acknowledgements</div>
           <ul className="ml-3 list-disc">
-            {acks.map((a, i) => <li key={i}><span className="tabular-nums">{a.accountId}</span> {a.mode ? `→ ${MODE_LABEL[a.mode] || a.mode}: ` : ''}{a.skipped ? 'already requested — skipped' : ackLine(a)}</li>)}
+            {acks.map((a, i) => <li key={i}><span className="tabular-nums">{a.accountId}</span> {a.selection ? `→ ${SELECTION_LABEL[a.selection] || a.selection}: ` : ''}{a.skipped ? 'already requested — skipped' : ackLine(a)}</li>)}
           </ul>
         </div>
       )}
       <UnknownsBlock scope={scope} />
       <div className="mt-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
-        Every value here is the server's record: the effective mode is what the executor acknowledged, not what was clicked. Tick momentum is admitted only while every readiness check holds — the server re-checks at the request — and, under switch policy <b>auto</b>, the bot may promote or demote the account on the same checks.
+        Every value here is the server's record: the effective mode is what the executor acknowledged, not what was clicked. Tick — alone or as Time + tick — is admitted only while every readiness check holds and the evidence is pinned — the server re-checks at the request — and, under switch policy <b>auto</b>, the bot may add tick next to time or remove it on the same checks.
       </div>
     </Card>
   )

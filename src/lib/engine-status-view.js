@@ -7,6 +7,82 @@
 export const MODE_LABEL = Object.freeze({ TIME_BASED: 'Time-based', TICK_MOMENTUM: 'Tick momentum', STOPPED: 'Stopped' })
 export const STALE_AFTER_MS = 60_000
 
+// WP-A (dual admission, 25-09-2026): the four selections the website offers,
+// each the exact body the server's POST /actions/entry-mode takes. "Time +
+// tick" is not a mode — it is TIME_BASED with both bases admitted — so every
+// reading below goes through the bases, never the mode string alone.
+export const SELECTIONS = Object.freeze({
+  stopped: Object.freeze({ mode: 'STOPPED' }),
+  time: Object.freeze({ mode: 'TIME_BASED' }),
+  tick: Object.freeze({ mode: 'TICK_MOMENTUM' }),
+  'time+tick': Object.freeze({ mode: 'TIME_BASED', admittedBases: Object.freeze(['bar', 'tick']) }),
+})
+export const SELECTION_LABEL = Object.freeze({ stopped: 'Stopped', time: 'Time-based', tick: 'Tick momentum', 'time+tick': 'Time + tick' })
+const MODE_BASIS = Object.freeze({ TIME_BASED: 'bar', TICK_MOMENTUM: 'tick', STOPPED: null })
+
+/**
+ * The server's basesFor (agent/services/entry-mode.js), mirrored: STOPPED
+ * admits nothing; a non-empty admittedBases is the whole answer; otherwise
+ * the mode's own basis. Absent fields read as null (older fixtures and
+ * payloads carry no admittedBases).
+ */
+export function basesFor(st) {
+  if (!st || st.effectiveEntryMode === 'STOPPED') return []
+  if (Array.isArray(st.admittedBases) && st.admittedBases.length) return [...st.admittedBases]
+  const b = MODE_BASIS[st.effectiveEntryMode]
+  return b ? [b] : []
+}
+
+/** The selection a set of bases is, order-insensitive; null when it is none of the four. */
+function selectionOfBases(bases) {
+  const set = new Set(bases || [])
+  if (set.size === 0) return 'stopped'
+  if (set.size === 2 && set.has('bar') && set.has('tick')) return 'time+tick'
+  if (set.size === 1 && set.has('bar')) return 'time'
+  if (set.size === 1 && set.has('tick')) return 'tick'
+  return null
+}
+
+/**
+ * What the account was ASKED to admit, as one of the four selections — from
+ * the requested mode plus the stored set (null / absent is the mode's own
+ * basis). TIME_BASED+['tick'] reads as Tick, TICK_MOMENTUM+['bar','tick'] as
+ * Time + tick: the set is the whole answer, exactly as the server's basesFor.
+ */
+export function requestedSelection(row) {
+  if (!row) return null
+  if (!(row.requestedEntryMode in MODE_BASIS)) return null
+  return selectionOfBases(basesFor({ ...row, effectiveEntryMode: row.requestedEntryMode }))
+}
+
+/** 'bar + tick', 'bar', 'nothing' — the bases as a reader sees them. */
+export function basesLabel(bases) {
+  if (!Array.isArray(bases)) return 'unknown'
+  return bases.length ? bases.join(' + ') : 'nothing'
+}
+
+/** The POST body for a selection. */
+export function selectionBody(key, accountId, expectedRevision) {
+  const sel = SELECTIONS[key]
+  if (!sel) throw new Error(`unknown selection: ${key}`)
+  return { accountId, mode: sel.mode, ...(sel.admittedBases ? { admittedBases: [...sel.admittedBases] } : {}), expectedRevision }
+}
+
+/** The label of what is running now: from the effective bases when the server sent them, else the effective mode. */
+function effectiveLabel(row) {
+  if (Array.isArray(row.bases)) {
+    const k = selectionOfBases(row.bases)
+    if (k && k !== 'stopped') return SELECTION_LABEL[k]
+  }
+  return MODE_LABEL[row.effectiveEntryMode] || row.effectiveEntryMode
+}
+
+/** The label of what was asked. */
+function requestedLabel(row) {
+  const k = requestedSelection(row)
+  return k ? SELECTION_LABEL[k] : (MODE_LABEL[row.requestedEntryMode] || row.requestedEntryMode)
+}
+
 /** Actions require the exact identity supplied beside the engine revision. */
 export function engineAccountId(row) {
   const id = row?.routingAccountId
@@ -46,8 +122,8 @@ export const STATE_TONE = Object.freeze({ active: 'on', stopped: 'off', warming:
 export function engineReading(row, { now = Date.now(), at = null } = {}) {
   if (!row) return { state: 'unknown', label: 'engine status unknown', tone: 'neutral', detail: 'the agent has not answered /state/entry-engines yet' }
   const state = engineState(row)
-  const eff = MODE_LABEL[row.effectiveEntryMode] || row.effectiveEntryMode
-  const req = MODE_LABEL[row.requestedEntryMode] || row.requestedEntryMode
+  const eff = effectiveLabel(row)
+  const req = requestedLabel(row)
   const stale = at != null && now - at > STALE_AFTER_MS
   let label, detail
   if (row.invalid) {
@@ -75,8 +151,15 @@ export function engineReading(row, { now = Date.now(), at = null } = {}) {
 
 /** Mixed-account counts for the shared header (plan §13: "mixed-account counts"). */
 export function mixedCounts(rows = []) {
-  const c = { active: 0, stopped: 0, warming: 0, switching: 0, blocked: 0, unknown: 0, total: rows.length }
-  for (const r of rows) c[engineState(r)]++
+  // `tick` (WP-A): ACTIVE accounts whose effective bases — the server's
+  // `bases`, what the Node fence admits now — include tick, alone or as Time
+  // + tick. A tick request still WARMING is not counted: it admits nothing.
+  const c = { active: 0, stopped: 0, warming: 0, switching: 0, blocked: 0, unknown: 0, tick: 0, total: rows.length }
+  for (const r of rows) {
+    const state = engineState(r)
+    c[state]++
+    if (state === 'active' && Array.isArray(r.bases) && r.bases.includes('tick')) c.tick++
+  }
   return c
 }
 
@@ -88,6 +171,7 @@ export function mixedSummary(rows = []) {
   if (c.warming) parts.push(`${c.warming} warming`)
   if (c.switching) parts.push(`${c.switching} switching`)
   if (c.blocked) parts.push(`${c.blocked} blocked`)
+  if (c.tick) parts.push(`${c.tick} admitting tick`)
   return parts.join(' · ') || (c.total ? `${c.total} unknown` : 'no accounts')
 }
 
@@ -108,6 +192,17 @@ export function blockerGroups(readiness) {
   return [...groups.values()]
 }
 
+/**
+ * The visible line beside the tick selections (WP-A, principle 6). `BLOCKED`
+ * only on the server's own ready:false, with its failing checks; while the
+ * readiness has not answered, no verdict is claimed. Null when ready.
+ */
+export function tickSelectionNote(readiness) {
+  if (!readiness) return 'tick status unknown — readiness not answered'
+  if (readiness.ready) return null
+  return `tick BLOCKED — ${tickBlockedReason(readiness)}`
+}
+
 /** Why the Tick button is disabled, in one sentence — the server's own list, never a UI guess. */
 export function tickBlockedReason(readiness) {
   if (!readiness) return 'readiness not answered yet'
@@ -124,5 +219,6 @@ export function ackLine(r) {
   if (!g) return `${r.status?.transitionState || 'requested'} (no gateway answer)`
   if (g.error || !g.pushed) return `NOT acknowledged — ${g.error || 'push not made'} → ${r.status?.transitionState || 'BLOCKED'}`
   const acked = Array.isArray(g.acked) ? g.acked.length : 0
-  return `${g.side || 'executor'} acknowledged ${acked} epoch${acked === 1 ? '' : 's'} → ${r.status?.transitionState || '?'} / effective ${MODE_LABEL[r.status?.effectiveEntryMode] || r.status?.effectiveEntryMode || '?'}`
+  const bases = Array.isArray(r.bases) ? r.bases : Array.isArray(r.status?.bases) ? r.status.bases : null
+  return `${g.side || 'executor'} acknowledged ${acked} epoch${acked === 1 ? '' : 's'} → ${r.status?.transitionState || '?'} / effective ${MODE_LABEL[r.status?.effectiveEntryMode] || r.status?.effectiveEntryMode || '?'}${bases ? ` (admits ${basesLabel(bases)})` : ''}`
 }

@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 
 import { initDB, setState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { engineStatusFor, requestEntryMode, requestEntryModePolicy, writeEngineStatus, markEntryModeBlocked } from './entry-mode.js'
+import { engineStatusFor, requestEntryMode, requestEntryModePolicy, requestAdmittedBases, writeEngineStatus, markEntryModeBlocked, admitEntry, basesFor, writeAutoState, _resetRefusalDedupe } from './entry-mode.js'
 import { tickEntryAccountsFor } from './tick-permits.js'
 import { evaluateAutoEntryModes, opportunityCounts, readAutoState, sideHealth, AUTO_PROMOTE_CYCLES, OPPORTUNITY_WINDOW_H, MIN_TICK_SHADOW, HUMAN_OVERRIDE_COOLDOWN_H, STREAK_MAX_GAP_MS, AUTO_BLOCKED_CYCLES, AUTO_ACTOR } from './entry-mode-auto.js'
 
@@ -41,9 +41,23 @@ const gatewayStub = (calls = []) => async (db, id, mode, { epoch }) => { calls.p
 const opp = (tickShadow, timeApprovals) => () => ({ tickShadow, timeApprovals })
 const base = (over = {}) => ({ readiness: readyFn(true), opportunity: opp(3, 1), gateway: gatewayStub(), sideOf: async () => ({ name: SIDE }), health: () => ({ ok: true }), ...over })
 const actions = (db, id) => db.prepare(`SELECT body FROM action_log WHERE path = '/actions/entry-mode' AND account_id = ? ORDER BY id`).all(id).map(r => JSON.parse(r.body))
+// WP-A (25-09-2026): a promotion ADDS tick next to bar — the record stays
+// TIME_BASED and its admitted set becomes [bar, tick]. Every "promoted" /
+// "not promoted" assertion below therefore reads the SET, never the mode
+// string alone (which is TIME_BASED either way and could not go red).
+const DUAL = ['bar', 'tick']
+const requestedBases = (db, id) => { const st = engineStatusFor(db, id); return basesFor({ ...st, effectiveEntryMode: st.requestedEntryMode }) }
+function assertTimeOnly(db, id, msg) {
+  const st = engineStatusFor(db, id)
+  assert.equal(st.requestedEntryMode, 'TIME_BASED', msg); assert.equal(st.admittedBases, null, msg); assert.deepEqual(requestedBases(db, id), ['bar'], msg)
+}
+function assertDual(db, id, msg) {
+  const st = engineStatusFor(db, id)
+  assert.equal(st.requestedEntryMode, 'TIME_BASED', msg); assert.deepEqual(st.admittedBases, DUAL, msg)
+}
 async function promote(db, opts, from = 1) {
   for (let i = from; i < from + AUTO_PROMOTE_CYCLES; i++) await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + i * H) })
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TICK_MOMENTUM', 'precondition: promoted')
+  assertDual(db, A, 'precondition: promoted (tick added next to bar)')
   settle(db, A)
 }
 
@@ -55,28 +69,38 @@ test('promotion: after AUTO_PROMOTE_CYCLES ready evaluations with SHADOW_PASSED 
   for (let i = 1; i < AUTO_PROMOTE_CYCLES; i++) {
     const r = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + i * H) })
     assert.equal(r.promoted.length, 0); assert.equal(r.held.length, 1); assert.match(r.lines[0], new RegExp(`held \\(ready ${i}/${AUTO_PROMOTE_CYCLES}\\)`))
-    assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED')
+    assertTimeOnly(db, A, `cycle ${i}: not yet promoted`)
     assert.equal(readAutoState(db, A).readyStreak, i)
   }
   const r = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + AUTO_PROMOTE_CYCLES * H) })
   assert.equal(r.promoted.length, 1); assert.deepEqual(r.demoted, [])
   assert.match(r.lines[0], /^…0058 promoted \(ready 3\/3, tick 12 ≥ max\(min 1, time 9\) over 24 h\)$/)
   const st = engineStatusFor(db, A)
-  assert.equal(st.requestedEntryMode, 'TICK_MOMENTUM'); assert.equal(st.transitionState, 'WARMING'); assert.equal(st.effectiveEntryMode, 'STOPPED', 'the ack protocol applies unchanged: effective waits for the echo')
+  assert.equal(st.requestedEntryMode, 'TIME_BASED'); assert.deepEqual(st.admittedBases, DUAL, 'RED if the promotion still lands on TICK_MOMENTUM (bar replaced by tick)')
+  assert.equal(st.transitionState, 'WARMING'); assert.equal(st.effectiveEntryMode, 'STOPPED', 'the ack protocol applies unchanged: effective waits for the echo')
   const rows = actions(db, A)
   assert.equal(rows.length, 1)
-  assert.equal(rows[0].actor, AUTO_ACTOR); assert.equal(rows[0].to, 'TICK_MOMENTUM')
+  assert.equal(rows[0].actor, AUTO_ACTOR); assert.equal(rows[0].to, 'TIME_BASED'); assert.deepEqual(rows[0].bases, { from: ['bar'], to: DUAL })
   assert.deepEqual(rows[0].detail, { readyStreak: 3, tickShadow: 12, timeApprovals: 9, windowH: OPPORTUNITY_WINDOW_H, minTickShadow: MIN_TICK_SHADOW, side: SIDE })
-  assert.deepEqual(calls, [{ id: A, mode: 'TICK_MOMENTUM', epoch: st.modeEpoch }], 'the gateway is bound with the new epoch')
+  assert.deepEqual(calls, [{ id: A, mode: 'TIME_BASED', epoch: st.modeEpoch }], 'the gateway is bound with the new epoch')
+  assert.deepEqual(r.promoted[0].bases, DUAL)
   assert.equal(readAutoState(db, A).lastAction.action, 'promoted')
   assert.equal(readAutoState(db, A).humanOverride, null, 'the bot\'s own switch records no human override')
   // mid-transition (WARMING): held, nothing stacked
   const again = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + 4 * H) })
   assert.match(again.lines[0], /held \(transition WARMING\)/)
   assert.equal(actions(db, A).length, 1)
+  // after the echo: time entries KEEP running and the account is on the tick roster
+  settle(db, A)
+  _resetRefusalDedupe()
+  assert.equal(admitEntry(db, { accountId: A, producerId: 'daily_momentum_account' }).ok, true, 'bar still admitted after promotion — RED if promotion replaced bar with tick')
+  assert.equal(admitEntry(db, { accountId: A, producerId: 'tick_momentum' }).ok, true)
+  assert.ok(tickEntryAccountsFor(db, { isLive: null }).includes(A), 'the sidecar lists it for tick entries')
+  const held = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + 5 * H) })
+  assert.match(held.lines[0], /held \(already admits tick \(bar\+tick, ready \d+\)\)/)
 })
 
-test('demotion: one failing evaluation on an account in TICK_MOMENTUM switches it to TIME_BASED at once and resets the streak', async () => {
+test('demotion: one failing evaluation on an account admitting tick (promoted to Time + tick) takes it back to TIME_BASED bar only at once and resets the streak', async () => {
   const db = fresh()
   requestEntryModePolicy(db, A, 'auto'); stage(db, A)
   const calls = []
@@ -86,10 +110,10 @@ test('demotion: one failing evaluation on an account in TICK_MOMENTUM switches i
   assert.equal(r.demoted.length, 1)
   assert.match(r.lines[0], /^…0058 demoted \(not ready: recorder_status_fresh, feed_continuity\)$/)
   const st = engineStatusFor(db, A)
-  assert.equal(st.requestedEntryMode, 'TIME_BASED'); assert.equal(st.transitionState, 'WARMING')
+  assertTimeOnly(db, A, 'tick removed'); assert.equal(st.transitionState, 'WARMING')
   assert.equal(readAutoState(db, A).readyStreak, 0, 'a demotion resets the streak')
   const rows = actions(db, A)
-  assert.equal(rows.at(-1).actor, AUTO_ACTOR); assert.equal(rows.at(-1).to, 'TIME_BASED'); assert.deepEqual(rows.at(-1).detail.blockedReasons, ['recorder_status_fresh', 'feed_continuity'])
+  assert.equal(rows.at(-1).actor, AUTO_ACTOR); assert.equal(rows.at(-1).to, 'TIME_BASED'); assert.deepEqual(rows.at(-1).bases, { from: DUAL, to: ['bar'] }); assert.deepEqual(rows.at(-1).detail.blockedReasons, ['recorder_status_fresh', 'feed_continuity'])
   assert.equal(calls.at(-1).mode, 'TIME_BASED')
 })
 
@@ -104,14 +128,14 @@ test('C-1 (checker): a HUMAN demotes a promoted auto account to TIME_BASED — t
   assert.equal(h.ok, true)
   const mem = readAutoState(db, A)
   assert.equal(mem.readyStreak, 0, 'the human switch zeroes the streak')
-  assert.equal(mem.humanOverride.mode, 'TIME_BASED'); assert.equal(mem.humanOverride.epoch, h.status.modeEpoch); assert.equal(mem.humanOverride.actor, 'owner')
+  assert.equal(mem.humanOverride.mode, 'TIME_BASED'); assert.deepEqual(mem.humanOverride.bases, ['bar']); assert.equal(mem.humanOverride.epoch, h.status.modeEpoch); assert.equal(mem.humanOverride.actor, 'owner')
   settle(db, A)
   for (let i = 7; i <= 16; i++) {
     const r = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + i * H) })
     assert.equal(r.promoted.length, 0, `cycle ${i}`)
     if (i >= 9) assert.match(r.lines[0], /held \(human set TIME_BASED \d+ min ago; the bot does not promote past it for 24 h/)
   }
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED', 'the bot never undid the human')
+  assertTimeOnly(db, A, 'the bot never undid the human')
   assert.equal(actions(db, A).at(-1).actor, 'owner')
   // after HUMAN_OVERRIDE_COOLDOWN_H the override lapses — but the streak is
   // by time, so three fresh consecutive ready cycles are still needed
@@ -119,6 +143,7 @@ test('C-1 (checker): a HUMAN demotes a promoted auto account to TIME_BASED — t
   let r = null
   for (let i = 0; i < AUTO_PROMOTE_CYCLES; i++) r = await evaluateAutoEntryModes(db, { ...opts, now: new Date(later + i * H) })
   assert.equal(r.promoted.length, 1, 'the cooldown lapsed and a fresh streak promoted')
+  assertDual(db, A)
   // and a policy change is the human acting: memory starts clean under the new policy
   requestEntryModePolicy(db, A, 'manual'); requestEntryModePolicy(db, A, 'auto')
   assert.deepEqual(readAutoState(db, A), { readyStreak: 0, lastEval: null, lastAction: null, humanOverride: null, blockedCycles: 0 })
@@ -140,7 +165,7 @@ test('A-1 (checker): the streak does not advance while STOPPED, and a human STOP
   requestEntryMode(db, A, 'TIME_BASED', { actor: 'owner', now: new Date(T0 + 8 * H + 60_000) }); settle(db, A)
   const r = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + 9 * H) })
   assert.equal(r.promoted.length, 0)
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED', 'not promoted on the first evaluation after the human chose TIME_BASED')
+  assertTimeOnly(db, A, 'not promoted on the first evaluation after the human chose TIME_BASED')
   assert.equal(actions(db, A).filter(a => a.actor === AUTO_ACTOR).length, 1, 'only the original promotion is the bot\'s')
 })
 
@@ -155,7 +180,7 @@ test('A-2 (checker): a streak is consecutive by TIME — two ready evaluations a
   assert.equal(r.promoted.length, 0)
   assert.match(r.lines[0], /held \(ready 1\/3; streak reset: previous evaluation \d+ min ago\)/)
   assert.equal(readAutoState(db, A).readyStreak, 1)
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED')
+  assertTimeOnly(db, A)
   // just inside the gap keeps counting
   const db2 = fresh(); requestEntryModePolicy(db2, A, 'auto'); stage(db2, A)
   await evaluateAutoEntryModes(db2, { ...opts, now: new Date(T0) })
@@ -170,10 +195,10 @@ test('a manual account is never touched — not evaluated, no streak, no action 
   const calls = []
   const opts = base({ opportunity: opp(9, 0), gateway: gatewayStub(calls) })
   for (let i = 1; i <= AUTO_PROMOTE_CYCLES + 1; i++) await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + i * H) })
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED'); assert.equal(engineStatusFor(db, A).configRevision, 1, 'only the stage write touched the manual account')
+  assertTimeOnly(db, A); assert.equal(engineStatusFor(db, A).configRevision, 1, 'only the stage write touched the manual account')
   assert.deepEqual(readAutoState(db, A), { readyStreak: 0, lastEval: null, lastAction: null, humanOverride: null, blockedCycles: 0 })
   assert.deepEqual(actions(db, A), [])
-  assert.equal(engineStatusFor(db, B).requestedEntryMode, 'TICK_MOMENTUM', 'the auto account on the same pass was promoted')
+  assertDual(db, B, 'the auto account on the same pass was promoted')
   assert.deepEqual(calls.map(c => c.id), [B])
 })
 
@@ -186,11 +211,11 @@ test('hysteresis: alternating ready / not-ready evaluations never promote', asyn
     assert.equal(r.promoted.length, 0, `cycle ${i}`)
     assert.ok(readAutoState(db, A).readyStreak <= 1)
   }
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED')
+  assertTimeOnly(db, A)
   assert.deepEqual(actions(db, A), [])
   let t = T0 + 13 * H
   for (const v of [true, true, false, true, true]) await evaluateAutoEntryModes(db, { ...opts, readiness: readyFn(v), now: new Date(t += H) })
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED')
+  assertTimeOnly(db, A)
 })
 
 test('B-1 (checker) + opportunity: 0 ≥ 0 does NOT promote (the minimum is named); tick below time holds with both counts; equal-and-above-minimum promotes', async () => {
@@ -201,7 +226,7 @@ test('B-1 (checker) + opportunity: 0 ≥ 0 does NOT promote (the minimum is name
   for (let i = 1; i <= AUTO_PROMOTE_CYCLES; i++) r = await evaluateAutoEntryModes(db, { ...opts, opportunity: opp(0, 0), now: new Date(T0 + i * H) })
   assert.equal(r.promoted.length, 0)
   assert.match(r.lines[0], /held \(ready 3\/3 but opportunity tick 0 < max\(min 1, time 0\) over 24 h\)/)
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED', 'a quiet account is not promoted')
+  assertTimeOnly(db, A, 'a quiet account is not promoted')
   const held = await evaluateAutoEntryModes(db, { ...opts, opportunity: opp(4, 5), now: new Date(T0 + 4 * H) })
   assert.equal(held.promoted.length, 0)
   assert.match(held.lines[0], /held \(ready 4\/3 but opportunity tick 4 < max\(min 1, time 5\) over 24 h\)/)
@@ -256,7 +281,7 @@ test('R-1 (checker): an auto account that left the autopilot roster is still eva
   assert.deepEqual(tickEntryAccountsFor(db, { isLive: null }), [A], 'the sidecar still lists it for tick entries')
   const r = await evaluateAutoEntryModes(db, { ...opts, readiness: readyFn(false), now: new Date(T0 + 9 * H) })
   assert.equal(r.evaluated.length, 1); assert.equal(r.demoted.length, 1)
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED', 'demoted although off the autopilot roster')
+  assertTimeOnly(db, A, 'demoted although off the autopilot roster')
   settle(db, A)
   // back to ready off the roster: held, never promoted
   let last = null
@@ -264,7 +289,7 @@ test('R-1 (checker): an auto account that left the autopilot roster is still eva
   for (let i = 1; i <= AUTO_PROMOTE_CYCLES + 1; i++) last = await evaluateAutoEntryModes(db, { ...opts, now: new Date(later + i * H) })
   assert.equal(last.promoted.length, 0)
   assert.match(last.lines[0], /but not on the autopilot roster/)
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED')
+  assertTimeOnly(db, A)
 })
 
 test('C-2 (checker): a promotion whose push fails is taken back by the bot after AUTO_BLOCKED_CYCLES passes; a side whose last push or probe failed is not promoted at all', async () => {
@@ -274,16 +299,16 @@ test('C-2 (checker): a promotion whose push fails is taken back by the bot after
   const opts = base({ gateway: failing })
   for (let i = 1; i <= AUTO_PROMOTE_CYCLES; i++) await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + i * H) })
   let st = engineStatusFor(db, A)
-  assert.equal(st.effectiveEntryMode, 'STOPPED'); assert.equal(st.transitionState, 'BLOCKED'); assert.equal(st.requestedEntryMode, 'TICK_MOMENTUM')
+  assert.equal(st.effectiveEntryMode, 'STOPPED'); assert.equal(st.transitionState, 'BLOCKED'); assertDual(db, A)
   const promotedEpoch = st.modeEpoch
   const lines = []
   for (let i = 1; i <= AUTO_BLOCKED_CYCLES; i++) lines.push((await evaluateAutoEntryModes(db, { ...opts, gateway: gatewayStub(), now: new Date(T0 + (3 + i) * H) })).lines[0])
   assert.match(lines[0], /held \(transition BLOCKED under the bot's promotion \(1\/2\)\)/)
   assert.match(lines.at(-1), /demoted \(BLOCKED for 2 passes after the bot's promotion — taken back\)/)
   st = engineStatusFor(db, A)
-  assert.equal(st.requestedEntryMode, 'TIME_BASED'); assert.equal(st.modeEpoch, promotedEpoch + 1)
+  assertTimeOnly(db, A, 'the take-back clears the set (review: switchTo with no bases)'); assert.equal(st.modeEpoch, promotedEpoch + 1)
   const row = actions(db, A).at(-1)
-  assert.equal(row.actor, AUTO_ACTOR); assert.equal(row.to, 'TIME_BASED'); assert.equal(row.detail.why, 'blocked_after_auto_promotion')
+  assert.equal(row.actor, AUTO_ACTOR); assert.equal(row.to, 'TIME_BASED'); assert.deepEqual(row.bases.to, ['bar']); assert.equal(row.detail.why, 'blocked_after_auto_promotion')
   assert.equal(readAutoState(db, A).blockedCycles, 0); assert.equal(readAutoState(db, A).readyStreak, 0)
   // BLOCKED under a HUMAN's epoch is not the bot's to take back
   const db2 = fresh(); requestEntryModePolicy(db2, A, 'auto'); stage(db2, A)
@@ -309,6 +334,7 @@ test('C-2 (checker): a promotion whose push fails is taken back by the bot after
   setState(db3, 'cpp_exec_health_json', JSON.stringify({ ok: true, at: new Date(T0).toISOString() }))
   r3 = await evaluateAutoEntryModes(db3, { ...opts, gateway: gatewayStub(), health: sideHealth, now: new Date(T0 + 5 * H) })
   assert.equal(r3.promoted.length, 1)
+  assertDual(db3, A)
 })
 
 test('the switch it throws is the same requestEntryMode the human uses: a readiness function that says no at the request refuses the promotion and the pass reports it', async () => {
@@ -320,7 +346,7 @@ test('the switch it throws is the same requestEntryMode the human uses: a readin
   for (let i = 1; i <= AUTO_PROMOTE_CYCLES; i++) last = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + i * H) })
   assert.equal(last.promoted.length, 0)
   assert.match(last.lines[0], /held \(promotion refused: tick_not_ready: disk_reserve_clear\)/)
-  assert.equal(engineStatusFor(db, A).requestedEntryMode, 'TIME_BASED')
+  assertTimeOnly(db, A)
   assert.deepEqual(actions(db, A), [], 'nothing written')
   assert.equal(requestEntryMode(db, A, 'TICK_MOMENTUM', { actor: 'auto:readiness' }).reason.startsWith('tick_readiness_unavailable'), true, 'no unchecked path into tick trading')
 })
@@ -335,4 +361,55 @@ test('pin: loop.js runs evaluateAutoEntryModes inside the quant-cadence block an
   const quantPhase = src.indexOf("phase('quant')", quant)
   const nextPhase = src.indexOf("phase('", quantPhase + 5)
   assert.ok(nextPhase === -1 || run < nextPhase, 'the call sits inside the quant phase, not a later one')
+})
+
+// ---------------------------------------------------------------------------
+// WP-A: the pass works on bases — demotion reaches a dual account, a human's
+// dual choice is honoured, and a human's time-only choice still blocks.
+// ---------------------------------------------------------------------------
+const humanReady = () => ({ ready: true, blockedReasons: [] })
+
+test('WP-A: demotion reaches a DUAL account — a human-set Time + tick on an auto account loses tick on one failing pass', async () => {
+  const db = fresh()
+  requestEntryModePolicy(db, A, 'auto'); stage(db, A)
+  const h = requestEntryMode(db, A, 'TIME_BASED', { actor: 'owner', readiness: humanReady, admittedBases: DUAL, now: new Date(T0) })
+  assert.equal(h.ok, true, h.reason)
+  settle(db, A)
+  const calls = []
+  const r = await evaluateAutoEntryModes(db, { ...base({ gateway: gatewayStub(calls) }), readiness: readyFn(false), now: new Date(T0 + H) })
+  assert.equal(r.demoted.length, 1, `RED if demotion keys on requestedEntryMode === TICK_MOMENTUM: ${r.lines[0]}`)
+  assert.match(r.lines[0], /^…0058 demoted \(not ready: recorder_status_fresh, feed_continuity\)$/)
+  assertTimeOnly(db, A)
+  assert.deepEqual(calls, [{ id: A, mode: 'TIME_BASED', epoch: h.status.modeEpoch + 1 }])
+  settle(db, A)
+  assert.deepEqual(basesFor(engineStatusFor(db, A)), ['bar'], 'after the echo the fence admits bar only')
+  assert.ok(!tickEntryAccountsFor(db, { isLive: null }).includes(A), 'off the tick roster')
+})
+
+test('WP-A: a HUMAN dual choice is honoured — held as already admitting tick, demoted on a failure, re-promoted to [bar, tick] inside the cooldown; a human time-only choice (mode or set) still blocks; an old override with no bases does not block', async () => {
+  const db = fresh()
+  requestEntryModePolicy(db, A, 'auto'); stage(db, A)
+  const opts = base()
+  const h = requestEntryMode(db, A, 'TIME_BASED', { actor: 'owner', readiness: humanReady, admittedBases: DUAL, now: new Date(T0) })
+  assert.equal(h.ok, true, h.reason); settle(db, A)
+  let r = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + H) })
+  assert.match(r.lines[0], /held \(already admits tick \(bar\+tick, ready 1\)\)/)
+  r = await evaluateAutoEntryModes(db, { ...opts, readiness: readyFn(false), now: new Date(T0 + 2 * H) })
+  assert.equal(r.demoted.length, 1); settle(db, A)
+  for (let i = 3; i < 3 + AUTO_PROMOTE_CYCLES; i++) r = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + i * H) })
+  assert.equal(r.promoted.length, 1, `the human's own dual choice does not block the bot re-adding tick inside the cooldown — RED if the override is read by mode string: ${r.lines[0]}`)
+  assertDual(db, A)
+  // the converse: a human's time-only choice through the SET binds the pass
+  settle(db, A)
+  const n = requestAdmittedBases(db, A, ['bar'], { actor: 'owner', now: new Date(T0 + 7 * H) })
+  assert.equal(n.ok, true, n.reason)
+  for (let i = 8; i < 8 + AUTO_PROMOTE_CYCLES + 2; i++) r = await evaluateAutoEntryModes(db, { ...opts, now: new Date(T0 + i * H) })
+  assert.equal(r.promoted.length, 0); assert.match(r.lines[0], /held \(human set TIME_BASED \d+ min ago; the bot does not promote past it for 24 h/)
+  assert.deepEqual(engineStatusFor(db, A).admittedBases, ['bar'], 'the human\'s [bar] stands'); assert.deepEqual(requestedBases(db, A), ['bar'])
+  // an override stored before WP-A (no bases) whose mode admitted tick does not block
+  const db2 = fresh(); requestEntryModePolicy(db2, A, 'auto'); stage(db2, A)
+  writeAutoState(db2, A, { humanOverride: { mode: 'TICK_MOMENTUM', at: new Date(T0).toISOString(), epoch: 0, actor: 'owner' } })
+  for (let i = 1; i <= AUTO_PROMOTE_CYCLES; i++) r = await evaluateAutoEntryModes(db2, { ...opts, now: new Date(T0 + i * H) })
+  assert.equal(r.promoted.length, 1, r.lines[0])
+  assertDual(db2, A)
 })

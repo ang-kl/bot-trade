@@ -12,7 +12,15 @@
 // does not enter for is held. A `manual` account is never read for a
 // decision and never written — the human's switch is theirs.
 //
-// PROMOTE (→ TICK_MOMENTUM) needs all of these, in order:
+// WP-A (dual admission, 25-09-2026): the pass works on BASES, not on mode
+// strings. PROMOTE adds tick NEXT TO bar (TIME_BASED + ['bar','tick']) —
+// time entries keep running; tick alone is a human-only choice. DEMOTE
+// removes tick from any account whose requested bases include it (tick
+// alone or beside bar) — back to TIME_BASED, bar only. A human's override
+// records the bases chosen, so a human's own "time + tick" is not read as
+// "not tick" and does not block the bot.
+//
+// PROMOTE (tick added next to bar) needs all of these, in order:
 //   1. no HUMAN OVERRIDE standing: the human's last switch (recorded by
 //      requestEntryMode into entry_mode_auto_json.humanOverride) is never
 //      promoted past until the human acts again — a mode or policy change —
@@ -39,18 +47,22 @@
 //      (checker B-1). Both counts travel on the action_log row.
 //   5. requestEntryMode itself: the readiness re-check, the ack protocol, the
 //      drain and the action_log row are the same code the human route runs.
-// DEMOTE (→ TIME_BASED) is immediate: one evaluation that is not ready (or a
-// stage below the bar) on an account in TICK_MOMENTUM; the streak resets.
+// DEMOTE (→ TIME_BASED, bar only) is immediate: one evaluation that is not
+// ready (or a stage below the bar) on an account whose requested bases
+// include tick; the streak resets. NOTE (WP-A risk): on a dual account this
+// bumps the epoch, so bar entries also pause through WARMING and the old
+// epoch's RESERVED bar intents are released — tick infrastructure health
+// (feed, recorder) now vetoes bar entries for one round trip.
 // A promotion of the bot's own that stays BLOCKED for AUTO_BLOCKED_CYCLES
 // passes is taken back to TIME_BASED by the bot, logged (checker C-2).
-// HOLD otherwise: already in the target mode, STOPPED by a human (the bot
+// HOLD otherwise: already admitting tick, STOPPED by a human (the bot
 // never lifts a stop), or mid-transition (WARMING / QUIESCING / RECONCILING —
 // the gateway's evidence settles those). After a switch the gateway is bound
 // the way the route binds it (entry-mode-gateway.js).
 // ---------------------------------------------------------------------------
 import { getState } from '../db.js'
 import { registryAutopilotAccounts } from './account-registry.js'
-import { engineStatusFor, requestEntryMode, readAutoState, writeAutoState, AUTO_STATE_KEY } from './entry-mode.js'
+import { engineStatusFor, requestEntryMode, readAutoState, writeAutoState, AUTO_STATE_KEY, basesFor } from './entry-mode.js'
 import { tickReadinessFor } from './tick-readiness.js'
 import { bindEntryModeGateway } from './entry-mode-gateway.js'
 import { TICK_ENTRY_STAGES } from '../lib/entry-contracts.js'
@@ -148,7 +160,10 @@ export async function evaluateAutoEntryModes(db, {
     const st = engineStatusFor(db, id)
     if (st.entryModePolicy !== 'auto') { out.manual.push(id); continue } // never read for a decision, never written
     const auto = readAutoState(db, id)
-    const verdict = { accountId: tail(id), action: 'held', reason: null, readyStreak: auto.readyStreak, mode: st.requestedEntryMode, transition: st.transitionState }
+    // The REQUESTED bases — what the account is asked to admit, whether or
+    // not the ack has made it effective yet.
+    const requested = basesFor({ ...st, effectiveEntryMode: st.requestedEntryMode })
+    const verdict = { accountId: tail(id), action: 'held', reason: null, readyStreak: auto.readyStreak, mode: st.requestedEntryMode, bases: requested, transition: st.transitionState }
     const finish = (action, reason, extra = {}) => {
       verdict.action = action; verdict.reason = reason; Object.assign(verdict, extra)
       verdict.readyStreak = auto.readyStreak
@@ -158,12 +173,15 @@ export async function evaluateAutoEntryModes(db, {
       out.evaluated.push(verdict); out[action === 'held' ? 'held' : action].push(verdict)
       out.lines.push(`${verdict.accountId} ${action} (${reason})`)
     }
-    const switchTo = async (mode, reason, detail, extra) => {
-      const r = requestEntryMode(db, id, mode, { actor: AUTO_ACTOR, now, readiness, detail })
-      if (!r.ok) { finish('held', `${mode === 'TIME_BASED' ? 'demotion' : 'promotion'} refused: ${r.reason}`, extra); return false }
+    // WP-A: the action is named by the caller, not read off the mode string
+    // (a promotion now lands on TIME_BASED too). `bases` undefined is the
+    // mode's own basis — the demotion and the take-back.
+    const switchTo = async (action, mode, reason, detail, extra, bases = undefined) => {
+      const r = requestEntryMode(db, id, mode, { actor: AUTO_ACTOR, now, readiness, detail, ...(bases !== undefined ? { admittedBases: bases } : {}) })
+      if (!r.ok) { finish('held', `${action === 'demoted' ? 'demotion' : 'promotion'} refused: ${r.reason}`, extra); return false }
       auto.blockedCycles = 0
       const bound = await gateway(db, id, mode, { epoch: r.status.modeEpoch })
-      finish(mode === 'TIME_BASED' ? 'demoted' : 'promoted', reason, { ...extra, epoch: r.status.modeEpoch, pushed: !!bound?.gateway?.pushed, transition: bound?.status?.transitionState || r.status.transitionState })
+      finish(action, reason, { ...extra, epoch: r.status.modeEpoch, bases: r.bases, pushed: !!bound?.gateway?.pushed, transition: bound?.status?.transitionState || r.status.transitionState })
       return true
     }
     // A streak is consecutive by TIME: a previous evaluation older than the
@@ -183,7 +201,7 @@ export async function evaluateAutoEntryModes(db, {
       auto.blockedCycles += 1
       if (auto.blockedCycles < blockedCycles) { finish('held', `transition BLOCKED under the bot's promotion (${auto.blockedCycles}/${blockedCycles})`); continue }
       auto.readyStreak = 0
-      await switchTo('TIME_BASED', `BLOCKED for ${auto.blockedCycles} passes after the bot's promotion — taken back`, { why: 'blocked_after_auto_promotion', blockedCycles: auto.blockedCycles })
+      await switchTo('demoted', 'TIME_BASED', `BLOCKED for ${auto.blockedCycles} passes after the bot's promotion — taken back`, { why: 'blocked_after_auto_promotion', blockedCycles: auto.blockedCycles })
       continue
     }
     // Mid-transition: the gateway's evidence settles it; a new request now
@@ -196,17 +214,20 @@ export async function evaluateAutoEntryModes(db, {
     if (!ready) {
       auto.readyStreak = 0
       const why = !stageOk ? `stage ${st.validationStage} below ${TICK_ENTRY_STAGES[0]}` : `not ready: ${(rd?.blockedReasons || []).slice(0, 4).join(', ') || 'readiness did not report ready'}`
-      if (st.requestedEntryMode === 'TICK_MOMENTUM') await switchTo('TIME_BASED', why, { why, blockedReasons: rd?.blockedReasons || [] })
+      if (requested.includes('tick')) await switchTo('demoted', 'TIME_BASED', why, { why, blockedReasons: rd?.blockedReasons || [] })
       else finish('held', why)
       continue
     }
     if (st.requestedEntryMode === 'STOPPED') { finish('held', `stopped by a human; the bot never lifts a stop (streak held at ${auto.readyStreak})${gapNote}`); continue }
     auto.readyStreak += 1
-    if (st.requestedEntryMode === 'TICK_MOMENTUM') { finish('held', `already TICK_MOMENTUM (ready ${auto.readyStreak})`); continue }
+    if (requested.includes('tick')) { finish('held', `already admits tick (${requested.join('+')}, ready ${auto.readyStreak})`); continue }
     // The human's last switch stands until the human acts again or the
     // cooldown lapses — the bot never promotes past it.
+    // WP-A: the override blocks only when the human's choice did NOT admit
+    // tick — read from its bases (an override stored before WP-A has none and
+    // reads as its mode's own basis).
     const ho = auto.humanOverride
-    if (ho && ho.mode !== 'TICK_MOMENTUM') {
+    if (ho && !basesFor({ effectiveEntryMode: ho.mode, admittedBases: Array.isArray(ho.bases) && ho.bases.length ? ho.bases : null }).includes('tick')) {
       const ageMs = nowMs - (Date.parse(ho.at) || 0)
       if (ageMs < overrideCooldownH * 3_600_000) {
         finish('held', `human set ${ho.mode} ${Math.round(ageMs / 60_000)} min ago; the bot does not promote past it for ${overrideCooldownH} h (ready ${auto.readyStreak})${gapNote}`)
@@ -227,7 +248,7 @@ export async function evaluateAutoEntryModes(db, {
       finish('held', `ready ${auto.readyStreak}/${promoteCycles} but opportunity tick ${counts.tickShadow} < max(min ${minTickShadow}, time ${counts.timeApprovals}) over ${windowH} h`, counts)
       continue
     }
-    await switchTo('TICK_MOMENTUM', `ready ${auto.readyStreak}/${promoteCycles}, tick ${counts.tickShadow} ≥ max(min ${minTickShadow}, time ${counts.timeApprovals}) over ${windowH} h`, { readyStreak: auto.readyStreak, ...counts }, counts)
+    await switchTo('promoted', 'TIME_BASED', `ready ${auto.readyStreak}/${promoteCycles}, tick ${counts.tickShadow} ≥ max(min ${minTickShadow}, time ${counts.timeApprovals}) over ${windowH} h`, { readyStreak: auto.readyStreak, ...counts }, counts, [...new Set([...requested, 'bar', 'tick'])])
   }
   if (!out.evaluated.length) out.lines.push(`no account under policy auto (${out.manual.length} manual on the roster)`)
   return out

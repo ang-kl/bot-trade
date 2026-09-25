@@ -324,3 +324,17 @@ test('`ready` is byte-for-byte the OLD predicate over the OLD check list — the
   }
   assert.ok(disagreements >= 3, `the fixtures must actually separate the two gates (saw ${disagreements})`)
 })
+
+// WP-A (principle 6): the readiness record carries the account's bases, so a
+// Time + tick account never reads as bare TIME_BASED on the runtime page, and
+// the served note no longer says TICK_MOMENTUM is refused until P6.
+test('WP-A: tickReadinessFor carries admittedBases and bases; the view note names both tick requests', () => {
+  const db = fresh()
+  const cur = engineStatusFor(db, DEMO)
+  writeEngineStatus(db, { ...cur, profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', admittedBases: ['bar', 'tick'], configRevision: 1, updatedAt: NOW.toISOString() })
+  const r = tickReadinessFor(db, DEMO, { now: NOW })
+  assert.deepEqual(r.admittedBases, ['bar', 'tick']); assert.deepEqual(r.bases, ['bar', 'tick'])
+  assert.deepEqual(tickReadinessFor(db, LIVE, { now: NOW }).bases, ['bar'])
+  const note = tickReadinessView(db, { now: NOW }).note
+  assert.doesNotMatch(note, /refused until P6/); assert.match(note, /Time \+ tick/)
+})

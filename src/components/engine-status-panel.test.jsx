@@ -33,3 +33,48 @@ describe('EngineRow', () => {
     expect(noId).toMatch(/full account id is not on this page yet/)
   })
 })
+
+// WP-A (dual admission, 25-09-2026): four selections; the tick half shown as
+// BLOCKED in visible text with the server's failing checks (principle 6).
+function button(html, label) {
+  const esc = label.replace(/[+]/g, '\\+')
+  const m = html.match(new RegExp(`<button[^>]*>${esc}</button>`))
+  if (!m) throw new Error(`no ${label} button rendered`)
+  return m[0]
+}
+describe('EngineRow — WP-A selections', () => {
+  it('renders Stop / Time-based / Tick momentum / Time + tick; with readiness not ready the two tick selections are disabled and the visible text says tick BLOCKED with the failing checks', () => {
+    const html = renderToStaticMarkup(<EngineRow row={row({ effectiveEntryMode: 'TIME_BASED', transitionState: 'STABLE' })} readiness={readiness} fullId="46979908" busy={false} onMode={() => {}} at={Date.now()} />)
+    for (const l of ['Stop entries', 'Time-based', 'Tick momentum', 'Time + tick']) button(html, l)
+    expect(button(html, 'Time + tick')).toMatch(/disabled=""/)
+    expect(button(html, 'Time + tick')).toMatch(/Time \+ tick is refused: 2 blockers: validation_stage, recorder_status_fresh/)
+    expect(html).toMatch(/>tick BLOCKED — 2 blockers: validation_stage, recorder_status_fresh</)
+  })
+  it('on a STABLE Time + tick row, Time-based is NOT disabled (a human can go back to time only) and Time + tick is disabled as the current selection', () => {
+    const ready = { ready: true, blockedReasons: [], readiness: [] }
+    const dual = row({ effectiveEntryMode: 'TIME_BASED', transitionState: 'STABLE', admittedBases: ['bar', 'tick'], bases: ['bar', 'tick'] })
+    const html = renderToStaticMarkup(<EngineRow row={dual} readiness={ready} fullId="46979908" busy={false} onMode={() => {}} at={Date.now()} />)
+    expect(button(html, 'Time-based')).not.toMatch(/disabled=""/)
+    expect(button(html, 'Time + tick')).toMatch(/disabled=""/)
+    expect(button(html, 'Tick momentum')).not.toMatch(/disabled=""/)
+    expect(html).toMatch(/Time \+ tick entries/)
+    expect(html).toMatch(/admits <b>bar \+ tick<\/b>/)
+    expect(html).not.toMatch(/tick BLOCKED/)
+  })
+  it('with readiness unanswered it claims no verdict: "tick status unknown", never BLOCKED', () => {
+    const html = renderToStaticMarkup(<EngineRow row={row()} readiness={null} fullId="46979908" busy={false} onMode={() => {}} at={null} />)
+    expect(html).toMatch(/tick status unknown — readiness not answered/)
+    expect(html).not.toMatch(/tick BLOCKED/)
+    expect(button(html, 'Time + tick')).toMatch(/disabled=""/)
+  })
+  it('a WARMING Time + tick request reads as the request, admits nothing yet, and can be taken back to Time-based', () => {
+    const ready = { ready: true, blockedReasons: [], readiness: [] }
+    const warming = row({ admittedBases: ['bar', 'tick'], bases: [] })
+    const html = renderToStaticMarkup(<EngineRow row={warming} readiness={ready} fullId="46979908" busy={false} onMode={() => {}} at={Date.now()} />)
+    expect(html).toMatch(/Time \+ tick · warming/)
+    expect(html).toMatch(/admits <b>nothing<\/b>/)
+    expect(button(html, 'Time + tick')).toMatch(/disabled=""/)
+    expect(button(html, 'Time-based')).not.toMatch(/disabled=""/)
+    expect(button(html, 'Tick momentum')).not.toMatch(/disabled=""/)
+  })
+})

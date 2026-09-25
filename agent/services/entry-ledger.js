@@ -37,6 +37,7 @@
 import { randomBytes } from 'node:crypto'
 import { admitEntry, engineStatusFor } from './entry-mode.js'
 import { labelIntentId } from '../lib/trade-labels.js'
+import { producerBasis } from '../lib/entry-producers.js'
 import { pageDeals } from '../lib/deal-paging.js'
 
 export const INTENT_STATES = Object.freeze(['RESERVED', 'DISPATCHING', 'SENT', 'ACCEPTED', 'FILLED', 'REJECTED', 'UNKNOWN', 'RELEASED', 'EXPIRED'])
@@ -127,7 +128,7 @@ export function reserveVpoPermits(db, opts = {}) {
  * maxOrderVolume cap still binds. A standing row is reused only when its
  * epoch, volume and symbol id are unchanged.
  */
-export function reserveStandingPermits(db, { accountId, producerId, basis = 'bar', entries = [], sizeRequired = true, ttlMs = VPO_PERMIT_TTL_MS, now = Date.now(), admit = admitEntry } = {}) {
+export function reserveStandingPermits(db, { accountId, producerId, basis = null, entries = [], sizeRequired = true, ttlMs = VPO_PERMIT_TTL_MS, now = Date.now(), admit = admitEntry } = {}) {
   const id = String(accountId)
   if (!STANDING_PRODUCERS.includes(producerId)) throw new Error(`reserveStandingPermits: ${producerId} is not a standing producer`)
   const st = engineStatusFor(db, id)
@@ -211,7 +212,7 @@ function audit(db, path, body, accountId) {
  * account / symbol / side (whatever its producer — one entry, one owner).
  */
 export function reserveEntry(db, {
-  accountId, producerId, basis = 'bar', symbol = null, symbolId = null, side, orderType = 'MARKET',
+  accountId, producerId, basis = null, symbol = null, symbolId = null, side, orderType = 'MARKET',
   volume = null, sl = null, tp = null, signalRef = null, ttlMs = DEFAULT_PERMIT_TTL_MS, now = Date.now(),
   gatewayInstance = null,
   // THE FENCE IS INJECTABLE (20-09-2026). The VPO producer is retired in
@@ -229,6 +230,11 @@ export function reserveEntry(db, {
   if (symbolId == null && !symbol) return { ok: false, reason: 'no_symbol' }
   const sideU = String(side).toUpperCase()
   const tx = db.transaction(() => {
+    // WP-A (25-09-2026): no 'bar' default. The fence derives the basis from
+    // the registered producer (and refuses a conflicting one); the row stores
+    // the same derivation, so a manual order is recorded under its family
+    // ('manual' / 'manual_assisted'), never as a bar signal that narrowing an
+    // account to ['tick'] would release (releaseRemovedBases).
     const a = admit(db, { accountId: id, producerId, basis })
     if (!a.ok) return { ok: false, reason: a.reason, modeEpoch: a.modeEpoch }
     const st = engineStatusFor(db, id)
@@ -243,7 +249,7 @@ export function reserveEntry(db, {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?)`)
       .run(intentId, id, st.environment, symbol ?? null, symbolId != null ? Number(symbolId) : null, sideU, orderType ?? null,
         volume != null ? Number(volume) : null, sl != null ? Number(sl) : null, tp != null ? Number(tp) : null,
-        String(producerId), String(basis), signalRef != null ? String(signalRef) : null,
+        String(producerId), String(basis ?? producerBasis(producerId) ?? 'unknown'), signalRef != null ? String(signalRef) : null,
         st.modeEpoch, st.configRevision, permitId, expiresAt, gatewayInstance, iso(now), iso(now))
     return {
       ok: true, intentId,

@@ -123,6 +123,20 @@ export function automaticProducers() {
   return ENTRY_PRODUCERS.filter(p => p.family === 'automatic' && !p.retired)
 }
 
+/**
+ * WP-A (dual admission, 25-09-2026): the basis an intent is admitted and
+ * recorded under, from the registry — the one source, instead of a 'bar'
+ * default at every caller. A signal producer answers its declared basis
+ * ('bar' | 'tick'); a producer with no signal basis (manual, manual_assisted,
+ * transport) answers its FAMILY, so a manual order is never recorded as a bar
+ * signal and releaseRemovedBases(['bar']) cannot release it. Unknown → null.
+ */
+export function producerBasis(id) {
+  const p = ENTRY_PRODUCERS.find(x => x.id === id)
+  if (!p) return null
+  return p.basis ?? p.family
+}
+
 /** Producers retired by the first-principles audit (Waves 1 and 5): listed for the record, never scheduled. */
 export function retiredProducers() {
   return ENTRY_PRODUCERS.filter(p => !!p.retired)

@@ -48,7 +48,7 @@ import { readFileSync } from 'node:fs'
 
 import { getAccountState, setAccountState } from './account-registry.js'
 import { getState } from '../db.js'
-import { engineStatusFor, writeEngineStatus } from './entry-mode.js'
+import { engineStatusFor, writeEngineStatus, basesFor } from './entry-mode.js'
 import { VALIDATION_STAGES } from '../lib/entry-contracts.js'
 import { profileHashFull, normalizeParams, PROFILE_ID } from '../lib/tick-strategy.js'
 import { shadowPortfolio, sideCostSchedule } from './tick-shadow.js'
@@ -256,6 +256,16 @@ export function importTickValidation(db, { accountId, stage, evidence = {}, acto
   if (stage === 'UNVALIDATED') {
     if (from === 'UNVALIDATED') return { ok: false, reason: 'already_unvalidated' }
     if (!evidence.reason) return { ok: false, reason: 'reset_needs_reason' }
+    // WP-A (dual admission, 25-09-2026): a reset on an account that admits
+    // tick — TICK_MOMENTUM, or TIME_BASED + ['bar','tick'] — would write a
+    // record the contract refuses (tick admitted below SHADOW_PASSED) and
+    // throw a 500. Refused with a named reason instead, before anything is
+    // written: remove tick through POST /actions/entry-mode first. Nothing is
+    // cleared behind the owner's back — the admitted set is the owner's.
+    const admitted = [...new Set([...basesFor(cur), ...basesFor({ ...cur, effectiveEntryMode: cur.requestedEntryMode }), ...(Array.isArray(cur.admittedBases) ? cur.admittedBases : [])])]
+    if (admitted.includes('tick')) {
+      return { ok: false, reason: `tick_admitted: the account admits ${admitted.join('+')} (requested ${cur.requestedEntryMode}); remove tick through POST /actions/entry-mode (Time-based or Stop) before resetting its evidence`, bases: admitted }
+    }
     record.evidence = { reason: String(evidence.reason) }
     next.validationStage = 'UNVALIDATED'
   } else {

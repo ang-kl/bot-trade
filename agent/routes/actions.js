@@ -1202,24 +1202,34 @@ export default function actionsRouter(db, deps = {}) {
   // PR-3 (dual-basis arbitration): the same route carries `admittedBases`
   // — an array of signal bases (['bar','tick']) or null for the mode's own —
   // with `expectedRevision`; adding 'tick' is judged on tickReadinessFor
-  // exactly like a promotion. The revision moves, the epoch does not, and
-  // the next heartbeat re-pushes the account's permits.
+  // exactly like a promotion. Sent WITHOUT a mode (the PR-3 overlay path, kept
+  // for API compatibility) the revision moves, the epoch does not, and the
+  // next heartbeat re-pushes the account's permits.
+  // WP-A (dual admission, 25-09-2026): sent WITH a mode, `admittedBases`
+  // rides on the switch — { mode: 'TIME_BASED', admittedBases: ['bar','tick'] }
+  // is "time + tick" in one request, gated by the same readiness and evidence
+  // rules as TICK_MOMENTUM, and bound by the same ack protocol (epoch bump,
+  // WARMING, the sidecar's echo, STABLE). It used to be dropped silently.
+  // A refusal carries `error` (the reason) so the website shows the named
+  // reason, not "400". Test seams: deps.tickReadiness, deps.entryModeGateway;
+  // production passes neither.
   router.post('/entry-mode', async (req, res) => {
     try {
-      const { requestEntryMode, requestAdmittedBases } = await import('../services/entry-mode.js')
-      const { tickReadinessFor } = await import('../services/tick-readiness.js')
+      const { requestEntryMode, requestAdmittedBases, basesFor } = await import('../services/entry-mode.js')
+      const tickReadinessFor = deps.tickReadiness ?? (await import('../services/tick-readiness.js')).tickReadinessFor
       const { accountId, mode, expectedRevision = null } = req.body || {}
-      if (accountId && req.body && 'admittedBases' in req.body && !mode) {
+      const hasBases = !!req.body && typeof req.body === 'object' && 'admittedBases' in req.body
+      if (accountId && hasBases && !mode) {
         const r = requestAdmittedBases(db, String(accountId), req.body.admittedBases, { expectedRevision, actor: 'owner', readiness: tickReadinessFor })
-        if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
+        if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json({ ...r, error: r.reason })
         const { markTickRepush } = await import('../services/tick-permits.js')
         markTickRepush(db, String(accountId))
         console.log(`[actions] entry-mode admittedBases → …${String(accountId).slice(-4)} ${JSON.stringify(r.status.admittedBases)} (bases ${r.bases.join('+') || 'none'}, revision ${r.status.configRevision}, released ${r.released})`)
         return res.json({ ok: true, changed: r.changed, bases: r.bases, removed: r.removed, released: r.released, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` } })
       }
       if (!accountId || !mode) return res.status(400).json({ error: 'accountId and mode are required' })
-      const r = requestEntryMode(db, String(accountId), String(mode), { expectedRevision, actor: 'owner', readiness: tickReadinessFor })
-      if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
+      const r = requestEntryMode(db, String(accountId), String(mode), { expectedRevision, actor: 'owner', readiness: tickReadinessFor, ...(hasBases ? { admittedBases: req.body.admittedBases } : {}) })
+      if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json({ ...r, error: r.reason })
       console.log(`[actions] entry-mode → …${String(accountId).slice(-4)} ${r.status.effectiveEntryMode} (revision ${r.status.configRevision}, epoch ${r.status.modeEpoch}, resting ${r.status.entryCounts.resting}, ${r.status.transitionState})`)
       // P1c: STOPPED with resting entry orders → cancel them by stored id now,
       // with the account's own credentials; the loop's pass retries until the
@@ -1237,10 +1247,15 @@ export default function actionsRouter(db, deps = {}) {
       // silent fall-back.
       // PR-G: the post-switch block lives in entry-mode-gateway.js so the
       // bot's readiness pass binds the epoch exactly as this route does.
-      const { bindEntryModeGateway } = await import('../services/entry-mode-gateway.js')
+      const bindEntryModeGateway = deps.entryModeGateway ?? (await import('../services/entry-mode-gateway.js')).bindEntryModeGateway
       const bound = await bindEntryModeGateway(db, String(accountId), mode, { epoch: r.status.modeEpoch })
       const gateway = bound.gateway
       status = bound.status
+      // WP-A: the gateway's echo binds the EPOCH; tick placing starts only
+      // when the heartbeat's feeder pushes permits for the now-STABLE account
+      // (the reply echoes epochs, not tickEntryAccounts). No re-push mark
+      // here: the feeder already pushes on the next heartbeat
+      // (heartbeat.js), and the reply's `note` says tick is not yet placing.
       console.log(`[actions] entry-mode gateway …${String(accountId).slice(-4)}: ${gateway.pushed ? 'pushed' : 'NOT pushed'}${gateway.error ? ` (${gateway.error})` : ''} → ${status.transitionState} / effective ${status.effectiveEntryMode}`)
       if (status.transitionState === 'QUIESCING') {
         try {
@@ -1254,7 +1269,12 @@ export default function actionsRouter(db, deps = {}) {
           drain = { error: err.message }
         }
       }
-      res.json({ ok: true, changed: r.changed, status: { ...status, accountId: `…${String(accountId).slice(-4)}` }, gateway, drain: drain ? { ...drain, accountId: undefined } : null })
+      const effectiveBases = basesFor(status)
+      res.json({
+        ok: true, changed: r.changed, status: { ...status, accountId: `…${String(accountId).slice(-4)}` }, gateway, drain: drain ? { ...drain, accountId: undefined } : null,
+        bases: effectiveBases, requestedBases: r.bases,
+        note: effectiveBases.includes('tick') ? 'epoch acknowledged: the fence admits tick; the sidecar places tick once the heartbeat feeder pushes this account\'s permits' : undefined,
+      })
     } catch (err) {
       console.error('[actions/entry-mode] error:', err.message)
       res.status(500).json({ error: err.message })

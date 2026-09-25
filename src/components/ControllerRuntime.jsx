@@ -79,7 +79,7 @@ export default function ControllerRuntime({ runtime }) {
           <thead><tr>{['Account', 'Entry mode / effective switches', 'Tick shadow / tick entry readiness', 'Broker protection', 'Independent cpp-verify check'].map(h => <th key={h} className="pr-3 py-1">{h}</th>)}</tr></thead>
           <tbody>{runtime.accounts.map(a => <tr key={a.accountId}>
             <td className="pr-3 py-1">{a.accountId} ({a.environment}){a.enabled ? '' : ' - disabled'}{a.brokerAccess === 'TOKEN_REFUSED' && <div>Broker authorisation required</div>}</td>
-            <td className="pr-3">{a.entryMode}
+            <td className="pr-3">{a.entryMode}{Array.isArray(a.entryBases) && <> (admits {a.entryBases.length ? a.entryBases.join(' + ') : 'nothing'})</>}
               {a.phases && ['scan', 'analyze', 'autotrade'].map(p => <div key={p}>{p}: {onOff(a.phases[p])} ({a.phases.source?.[p] || 'unknown source'})</div>)}
               {a.entryCounts && <div>Intents: {a.entryCounts.unsent} reserved; {a.entryCounts.inFlight} in flight; {a.entryCounts.unknown} unknown</div>}</td>
             <td className="pr-3">Tick shadow: {a.shadowReady ? 'READY' : 'BLOCKED'}; tick entries: {a.entryReady ? 'READY' : 'BLOCKED'}

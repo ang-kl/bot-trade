@@ -366,7 +366,9 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   // P1b: the fence, by name — under the CALLING producer's id (see the note
   // on `producerId` above), so a retired caller is refused and a kept one
   // rests its limit exactly as before.
-  const admission = admitEntry(db, { accountId: creds.accountId, producerId, basis: 'bar' })
+  // WP-A: the basis is the registered producer's (admitEntry derives it);
+  // the caller's id varies, so a literal 'bar' here would misname a tick one.
+  const admission = admitEntry(db, { accountId: creds.accountId, producerId })
   if (!admission.ok) return { placed: false, skipped: 'entry_mode', reason: admission.reason }
   try {
     const ev = await exec.placeOrder(creds, payload)
