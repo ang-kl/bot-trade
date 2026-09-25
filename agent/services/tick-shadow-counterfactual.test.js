@@ -231,3 +231,14 @@ test('GET /state/tick-shadow-counterfactual: every side, one side, and a bad sid
     assert.equal(bad.status, 400)
   } finally { s.close() }
 })
+
+test('the memoised view is dropped after a state write (regime-gate toggle)', async () => {
+  const { invalidateStateCache } = await import('../lib/state-cache.js')
+  const db = fixture()
+  const a = shadowCounterfactualView(db, { side: 'cpp_exec_demo' })
+  assert.equal(shadowCounterfactualView(db, { side: 'cpp_exec_demo' }).memoised, true)
+  invalidateStateCache()
+  const c = shadowCounterfactualView(db, { side: 'cpp_exec_demo' })
+  assert.equal(c.memoised, false, 'RED if the memo survives a write: the view would report the old regime-gate setting')
+  assert.ok(a)
+})

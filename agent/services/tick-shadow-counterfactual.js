@@ -63,6 +63,7 @@ import { symbolNameResolver } from './tick-shadow-accounts.js'
 import { loadTickEntryConfig } from './tick-permits.js'
 import { permittedSides } from './direction-policy.js'
 import { loadRegimeGateConfig, DEFAULT_MAX_REGIME_AGE_MIN } from './regime-gate.js'
+import { stateEpoch } from '../lib/state-cache.js'
 
 export const COUNTERFACTUAL_ROW_LIMIT = 50_000
 
@@ -224,7 +225,9 @@ export function shadowCounterfactualView(db, { side = null, days = 30, now = nul
   const key = `${side ?? '*'}|${span}`
   if (live && db && typeof db === 'object') {
     const hit = memo.get(db)?.get(key)
-    if (hit && at - hit.computedMs < COUNTERFACTUAL_MEMO_MS) return { ...hit.view, memoised: true }
+    // A write on /actions/* (e.g. the regime-gate toggle) bumps stateEpoch():
+    // a view computed before it is wrong, not just old (lib/state-cache.js).
+    if (hit && hit.epoch === stateEpoch() && at - hit.computedMs < COUNTERFACTUAL_MEMO_MS) return { ...hit.view, memoised: true }
   }
   const gate = loadRegimeGateConfig(db)
   const sides = side ? [side] : SIDES
@@ -234,7 +237,7 @@ export function shadowCounterfactualView(db, { side = null, days = 30, now = nul
   }
   if (live && db && typeof db === 'object') {
     if (!memo.has(db)) memo.set(db, new Map())
-    memo.get(db).set(key, { computedMs: at, view })
+    memo.get(db).set(key, { computedMs: at, epoch: stateEpoch(), view })
   }
   return view
 }
