@@ -16,14 +16,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { tempDir } from '../test-support/temp-dir.js'
 import {
   PASSED, FAILED, NOT_VERIFIABLE, P1P4_PROPOSED_LIMITS, p1p4LimitsFromTargets, p1p4TargetDefaults,
   compactHealth, compactHeartbeats, classifyResponse, routeClass, splitBoots, gradeStartup, gradeRecovery, gradeSteady,
-  gradeRun, formatGrade, combineVerdicts, toMs,
+  gradeRun, formatGrade, combineVerdicts, toMs, compactEntryEngines,
 } from './p1p4-grade.js'
-import { runHarness, makeReader, collectEvidence, readSamples, scrub, CADENCE } from '../../scripts/v3-p1p4-acceptance.mjs'
+import { runHarness, makeReader, collectEvidence, readSamples, scrub, CADENCE, DEFAULT_MAX_JOURNALS } from '../../scripts/v3-p1p4-acceptance.mjs'
 
 const L = { ...P1P4_PROPOSED_LIMITS }
 const BOOT = Date.parse('2026-09-28T13:00:00Z')
@@ -301,13 +301,13 @@ test('recovery: absent pre-release or post-deadline samples are Not Verifiable',
 test('recovery: an SL/TP or entry-config change is allowed only when the evidence explains it', () => {
   const pre = BOOT - 60_000
   const post = BOOT + 5 * MIN + 10_000
-  const samples = (postPos, postEpoch = 0) => [
+  const samples = (postPos, postEpoch = 0, postRev = 2) => [
     health(BOOT - 90_000, { bootAt: BOOT - 3 * 3_600_000, bootId: 'boot-0' }),
     hb(pre, { accounts: [{ id: '1', indAt: pre - 20_000, pos: [['111', 1.10, 1.20]] }] }),
     ee(pre, [{ ...eeAcct(), id: '1' }]),
     health(BOOT + 20_000, { bootId: 'boot-1' }),
     hb(post, { accounts: [{ id: '1', indAt: post - 10_000, pos: postPos }] }),
-    ee(post, [{ ...eeAcct({ epoch: postEpoch }), id: '1' }]),
+    ee(post, [{ ...eeAcct({ epoch: postEpoch }), id: '1', rev: postRev }]),
   ]
   const grade = (s, evidence) => byId(gradeRecovery(bootOf(s), L, { samples: s, evidence }).criteria)['recovery.config_and_protection_unchanged']
   const moved = samples([['111', 1.15, 1.20]])
@@ -323,7 +323,74 @@ test('recovery: an SL/TP or entry-config change is allowed only when the evidenc
   assert.equal(grade(bumped, { actionLog: { ok: true, rows: [{ at: journalAt, method: 'POST', path: '/actions/entry-mode', account_id: '1', body: '{}' }] }, journals: {} }).verdict, PASSED)
   assert.equal(grade(bumped, { actionLog: { ok: true, rows: [] }, journals: {} }).verdict, FAILED)
   assert.equal(grade(bumped, null).verdict, NOT_VERIFIABLE, 'no action_log read: cannot say')
+  // Checker 25-09: a revision bump with no entry-mode path. The boot seed
+  // seedTickObservationFromConfig raises configRevision (requestTickObservation,
+  // /actions/tick-observation) whenever config/tick-observation.json changes —
+  // at the very restart being graded — and importTickValidation raises it too
+  // (/actions/tick-validation). The explaining row was read, so it is explained.
+  const revved = samples([['111', 1.10, 1.20]], 0, 3)
+  const row = (path, account = '1') => ({ actionLog: { ok: true, rows: [{ at: journalAt, method: 'POST', path, account_id: account, body: '{}' }] }, journals: {} })
+  const obs = grade(revved, row('/actions/tick-observation'))
+  assert.equal(obs.verdict, PASSED, `a tick-observation row explains rev 2→3 (RED when only /entry-mode/ paths explain): ${obs.reason}`)
+  assert.equal(obs.value.attributed, 1)
+  assert.equal(grade(revved, row('/actions/tick-validation')).verdict, PASSED, 'a tick-validation stage row explains rev 2→3')
+  assert.equal(grade(revved, row('/actions/entry-mode-policy')).verdict, PASSED, 'a policy row (the policy seed) explains it')
+  const other = grade(revved, row('/actions/tick-observation', '2'))
+  assert.equal(other.verdict, FAILED, 'another account\'s tick-observation row explains nothing here')
+  assert.match(other.reason, /unexplained: 1 rev 2→3/)
+  assert.equal(grade(revved, row('/actions/profit-keeper')).verdict, FAILED, 'a row that does not write the entry configuration explains nothing')
+  assert.equal(grade(revved, { actionLog: { ok: true, rows: [] }, journals: {} }).verdict, FAILED, 'no row at all: unexplained')
   assert.equal(toMs('2026-09-28 13:01:00'), Date.parse('2026-09-28T13:01:00Z'), 'SQLite timestamps are UTC')
+})
+
+test('recovery: the tick-observation boot seed\'s revision bump is explained by the row it writes (real writer → /state/entry-engines view → grader)', async () => {
+  // End to end on the production code path, not a hand-written row: the
+  // seed a merge of config/tick-observation.json triggers at boot, the
+  // compacted /state/entry-engines view before and after it, and the
+  // action_log row it wrote. Goes RED if the grader stops accepting the
+  // path the writer actually logs, or if the writer's path or account id
+  // changes under the grader.
+  const { initDB } = await import('../db.js')
+  const { upsertAccount } = await import('./account-registry.js')
+  const { seedTickObservationFromConfig, entryEnginesView } = await import('./entry-mode.js')
+  const ID = '46130058'
+  const db = initDB(':memory:')
+  upsertAccount(db, { accountId: ID, isLive: false })
+  const dir = tempDir('p1p4-seed-')
+  const file = join(dir, 'tick-observation.json')
+  writeFileSync(file, JSON.stringify({ accounts: { [ID]: 'SHADOW' } }))
+  const view = () => compactEntryEngines(entryEnginesView(db, { includeRoutingIdentity: true }))
+  const before = view()
+  const logged = db.prepare('SELECT COUNT(*) AS n FROM action_log').get().n
+  const seeded = seedTickObservationFromConfig(db, { file })
+  assert.deepEqual(seeded.applied, [`…${ID.slice(-4)}:SHADOW`], `the seed applied: ${JSON.stringify(seeded)}`)
+  const after = view()
+  const b = before.accounts.find(a => a.id === ID)
+  const a = after.accounts.find(x => x.id === ID)
+  assert.ok(b && a, 'the view names the account by its routing id')
+  assert.equal(a.rev, b.rev + 1, 'premise: the seed raises configRevision')
+  const written = db.prepare('SELECT method, path, body, account_id FROM action_log ORDER BY id').all().slice(logged)
+  assert.ok(written.length >= 1, 'premise: the seed wrote an action_log row')
+  const pre = BOOT - 60_000
+  const post = BOOT + 5 * MIN + 10_000
+  const at = new Date(BOOT + 30_000).toISOString().replace('T', ' ').slice(0, 19)
+  const s = [
+    health(BOOT - 90_000, { bootAt: BOOT - 3 * 3_600_000, bootId: 'boot-0' }),
+    hb(pre, { accounts: [{ id: ID, indAt: pre - 20_000, pos: [['111', 1.10, 1.20]] }] }),
+    ee(pre, before.accounts),
+    health(BOOT + 20_000, { bootId: 'boot-1' }),
+    hb(post, { accounts: [{ id: ID, indAt: post - 10_000, pos: [['111', 1.10, 1.20]] }] }),
+    ee(post, after.accounts),
+  ]
+  // The harness maps each /state/action-log row to exactly these fields (collectEvidence).
+  const rows = written.map(r => ({ at, method: r.method, path: r.path, account_id: r.account_id == null ? null : String(r.account_id), body: String(r.body ?? '').slice(0, 300) }))
+  const grade = (actionRows) => byId(gradeRecovery(bootOf(s), L, { samples: s, evidence: { actionLog: { ok: true, rows: actionRows }, journals: {} } }).criteria)['recovery.config_and_protection_unchanged']
+  const explained = grade(rows)
+  assert.equal(explained.verdict, PASSED, `the seed's own row explains the bump: ${explained.reason}`)
+  assert.equal(explained.value.attributed, 1)
+  const bare = grade([])
+  assert.equal(bare.verdict, FAILED, 'the bump is visible to the grader: with the action_log read and empty it is unexplained')
+  assert.match(bare.reason, new RegExp(`unexplained: ${ID} rev ${b.rev}→${a.rev}`))
 })
 
 test('recovery: a fast-monitor position first evaluated too late is Failed from the sample bounds', () => {
@@ -436,7 +503,7 @@ test('harness: every request is a GET with the read token in the header only; no
   assert.equal(scrub(`a ${TOKEN} b ${TOKEN}`, TOKEN), 'a [redacted] b [redacted]')
 })
 
-test('harness: a restart makes heartbeats dense, and the evidence is read once, GET-only, after the deadline', async () => {
+async function simulatedRestart(extra = {}) {
   let clock = BOOT - 2 * MIN
   let booted = false
   const calls = []
@@ -461,7 +528,13 @@ test('harness: a restart makes heartbeats dense, and the evidence is read once, 
     token: TOKEN, fetchImpl, write: (l) => writes.push(l), log: () => {}, rounds: 60,
     now: () => clock,
     sleep: async (ms) => { clock += ms; if (!booted && clock >= BOOT + 20_000) booted = true },
+    ...extra,
   })
+  return { samples, calls, writes }
+}
+
+test('harness: a restart makes heartbeats dense, and the evidence is read once, GET-only, after the deadline', async () => {
+  const { samples, calls, writes } = await simulatedRestart()
   assert.ok(calls.every(c => c.method === 'GET'))
   const hbAfter = samples.filter(s => s.kind === 'heartbeats' && s.t >= BOOT && s.t <= BOOT + 6 * MIN).map(s => s.t)
   const gaps = hbAfter.slice(1).map((t, i) => t - hbAfter[i])
@@ -474,6 +547,46 @@ test('harness: a restart makes heartbeats dense, and the evidence is read once, 
   const r = byId(g.boots[1].recovery.criteria)['recovery.config_and_protection_unchanged']
   assert.equal(r.verdict, PASSED, 'the journalled trail amend explains the SL move')
   assert.equal(writes.length, samples.length)
+})
+
+test('harness: --max-journals reaches the evidence read — 0 makes no cockpit read (no broker bar fetch), and the SL move is Not Verifiable, not unexplained', async () => {
+  // Checker 25-09: each cockpit read draws a broker bar inside the startup
+  // window being graded. The cap is the operator's lever; pin its wiring.
+  const { samples, calls } = await simulatedRestart({ maxJournals: 0 })
+  assert.equal(calls.filter(c => /\/cockpit\b/.test(c.url)).length, 0, 'no cockpit read at maxJournals 0 (RED when runHarness drops the option)')
+  const ev = samples.filter(s => s.kind === 'evidence')
+  assert.equal(ev.length, 1)
+  assert.equal(ev[0].data.journalsOk, false)
+  const r = byId(gradeRun(samples).boots[1].recovery.criteria)['recovery.config_and_protection_unchanged']
+  assert.equal(r.verdict, NOT_VERIFIABLE, r.reason)
+  const dflt = await simulatedRestart()
+  assert.equal(dflt.calls.filter(c => /\/cockpit\b/.test(c.url)).length, 1, 'by default the one changed position\'s journal is read')
+})
+
+test('evidence: cockpit journal reads stop at DEFAULT_MAX_JOURNALS; over the cap the changes are Not Verifiable, never Failed', async () => {
+  const ids = Array.from({ length: DEFAULT_MAX_JOURNALS + 2 }, (_, i) => String(1000 + i))
+  const s = [
+    health(BOOT - 90_000, { bootAt: BOOT - 3_600_000, bootId: 'b0' }),
+    hb(BOOT - 60_000, { accounts: [{ id: '1', pos: ids.map(id => [id, 1.1, 1.2]) }] }),
+    health(BOOT + 20_000, { bootId: 'b1' }),
+    hb(BOOT + 5 * MIN + 10_000, { accounts: [{ id: '1', pos: ids.map(id => [id, 1.15, 1.2]) }] }),
+  ]
+  const cockpits = []
+  const get = makeReader({ token: TOKEN, fetchImpl: async (url) => {
+    const u = new URL(url)
+    if (u.pathname === '/state/positions') return new Response(JSON.stringify({ positions: ids.map((id, i) => ({ id: i + 1, account_id: '1', ctrader_position_id: id })) }), { status: 200 })
+    if (u.pathname.endsWith('/cockpit')) { cockpits.push(u.pathname); return new Response(JSON.stringify({ journal: [] }), { status: 200 }) }
+    return new Response(JSON.stringify({ rows: [] }), { status: 200 })
+  } })
+  const ev = await collectEvidence(get, bootOf(s), s, L)
+  assert.equal(cockpits.length, DEFAULT_MAX_JOURNALS, 'no more cockpit reads (broker bar fetches) than the cap')
+  assert.equal(ev.journalsOk, false, 'over the cap the journals count as not read')
+  const r = byId(gradeRecovery(bootOf(s), L, { samples: s, evidence: ev }).criteria)['recovery.config_and_protection_unchanged']
+  assert.equal(r.verdict, NOT_VERIFIABLE, `empty journals over the cap are not "unexplained": ${r.reason}`)
+  cockpits.length = 0
+  const two = await collectEvidence(get, bootOf(s), s, L, { maxJournals: 2 })
+  assert.equal(cockpits.length, 2)
+  assert.equal(Object.keys(two.journals).length, 2)
 })
 
 test('evidence: a journal that could not be read is left unread, so the change is Not Verifiable rather than unexplained', async () => {

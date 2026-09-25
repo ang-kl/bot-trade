@@ -483,3 +483,28 @@ test('goalTargets: a null (owner-set) limit stays unset through a stored round t
   assert.equal(goalTargets(JSON.parse(JSON.stringify(goalTargets({})))).p1p4Report5xxMax, null)
   assert.equal(DEFAULT_GOAL_TARGETS.fastMonitorSkipMaxPct, 10, 'the existing skip target is unchanged')
 })
+
+test('P1/P4 rows: every measured row says load representativeness is not judged here — the harness grades a no-visible-tab window Not Verifiable', async () => {
+  // Checker 25-09: once the limits are confirmed a quiet window (no visible
+  // tab) reads on_track here while the harness grades it Not Verifiable. The
+  // row must say which of the two judgements it is not making.
+  const now = BOOT + 17 * 60_000
+  const four = ['startup_window', 'event_loop_lag', 'protection_freshness', 'loop_latency']
+  const db = withRecord(bootRecord())
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode, base_currency) VALUES ('46130058', '1', 0, 1, 'active', 'USD')`).run()
+  setState(db, 'acct:46130058:protection_audit_last_json', JSON.stringify({ at: iso(now - 5_000), checked: 1 }))
+  setState(db, 'independent_protection_json', JSON.stringify({ accounts: [
+    { accountId: '46130058', checkedAtMs: now - 1_000, openCount: 0, missingSl: 0, missingTp: 0, ok: true, source: 'broker_reconcile', host: 'demo' },
+  ] }))
+  confirm(db)
+  const g = byId(await goalTable(db, { now }))
+  for (const id of four) {
+    assert.equal(g[id].verdict, 'on_track', `${id}: confirmed limits, clean reading — ${g[id].note}`)
+    assert.match(g[id].note, /load representativeness \(whether a Desk or Performance tab was visible\) is not judged here — the acceptance harness grades it/, id)
+  }
+  const empty = byId(await goalTable(initDB(':memory:'), { now }))
+  for (const id of four) {
+    assert.equal(empty[id].verdict, 'not_measurable', id)
+    assert.doesNotMatch(empty[id].note, /load representativeness/, `${id}: no reading, nothing to qualify`)
+  }
+})

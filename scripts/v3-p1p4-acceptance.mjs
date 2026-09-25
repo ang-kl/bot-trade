@@ -23,9 +23,13 @@
 //                        synchronous main-thread block, and nothing else
 //                        reads that route (the UI reads /state/goal-tracker).
 //                        Polled every 5 min it would put a 12 s stall in every
-//                        window it grades, so it follows the review's
-//                        alternative, "read /health instead": the limits come
-//                        from /actions/goal-table (1-4 ms) and the four rows'
+//                        window it grades. The P1P4-load-recovery spec review
+//                        (V3-SPECS.json, review.corrections) offered "poll it
+//                        every 5 minutes or read /health instead"; V3-SEQUENCE
+//                        item 17 says every 5 min. Taking the second is this
+//                        build's own choice on the 12.4 s measurement, for the
+//                        owner to overrule: the limits come from
+//                        /actions/goal-table (1-4 ms) and the four rows'
 //                        inputs from /health and /state/heartbeats. When opted
 //                        in, each read is recorded and a stall overlapping it
 //                        is annotated (never removed)
@@ -34,8 +38,10 @@
 // and appends one compact JSON line per request to --out (default
 // ./v3-p1p4-acceptance.jsonl). A restart is an uptime reset, a commit change
 // or a boot-record change. After each restart's recovery deadline it reads
-// the attribution evidence once (action_log; the cockpit journal of every
-// position whose SL/TP changed) and records it. It prints each boot's grade
+// the attribution evidence once (action_log; the cockpit journal of each
+// position whose SL/TP changed, at most --max-journals of them, default
+// DEFAULT_MAX_JOURNALS — each cockpit read also fetches one broker bar, inside
+// the startup window being graded) and records it. It prints each boot's grade
 // when its startup window closes, the whole grade every hour, and again on
 // exit (Ctrl-C). The grade is agent/services/p1p4-grade.js — every limit is
 // PROPOSED until the owner confirms it, and the header says so.
@@ -65,6 +71,16 @@ export const CADENCE = Object.freeze({
   // in: the limits come from goalTargets above, which computes nothing.
   goalTable: Infinity,
 })
+/**
+ * Cockpit journal reads per restart, at most. Each read also draws one daily
+ * bar through the broker's historical limiter (state.js cockpit route,
+ * wsGetTrendbarsBatch) at about BOOT + 5–9 min — inside the startup window
+ * being graded, and blocking the sampling loop while it runs (checker 25-09).
+ * Over the cap the journals count as not read: the unexplained changes are
+ * Not Verifiable, never Failed and never Passed. --max-journals N overrides.
+ */
+export const DEFAULT_MAX_JOURNALS = 10
+
 /** After a detected restart: heartbeats and entry-engines every 30 s for this long (the recovery window plus a minute). */
 export const RECOVERY_DENSE_MS = 6 * 60_000
 const DENSE_MS = 30_000
@@ -134,7 +150,7 @@ export function readSamples(file) {
  * position whose SL/TP changed. A journal read that failed is left undefined
  * so the grader reports Not Verifiable rather than "unexplained".
  */
-export async function collectEvidence(get, boot, samples, limits, { maxJournals = 20 } = {}) {
+export async function collectEvidence(get, boot, samples, limits, { maxJournals = DEFAULT_MAX_JOURNALS } = {}) {
   const { preHb, postHb } = recoverySamples(boot, limits, samples)
   const fromMs = (preHb?.t ?? boot.bootAtMs) - 60_000
   const untilMs = (postHb?.t ?? boot.bootAtMs + limits.recoverySec * 1000) + 60_000
@@ -195,6 +211,7 @@ export async function runHarness({
   base = DEFAULT_BASE, token, out = DEFAULT_OUT, fetchImpl = globalThis.fetch, now = Date.now,
   sleep = (ms) => delay(ms), log = (line) => console.log(line), write = (line) => appendFileSync(out, `${line}\n`),
   untilMs = Infinity, rounds = Infinity, prior = [], signal = null, gradeEveryMs = 3_600_000, cadence = CADENCE,
+  maxJournals = DEFAULT_MAX_JOURNALS,
 } = {}) {
   if (!token) throw new Error('AGENT_SECRET_READ is not set: the harness reads with the read-tier token only')
   const get = makeReader({ base, token, fetchImpl, now })
@@ -246,7 +263,7 @@ export async function runHarness({
       const { postHb, deadline } = recoverySamples(b, limits, samples)
       if (!postHb && now() < deadline + 240_000) continue
       evidenceDone.add(key)
-      const ev = await collectEvidence(get, b, samples, limits)
+      const ev = await collectEvidence(get, b, samples, limits, { maxJournals })
       push({ t: now(), kind: 'evidence', route: null, status: null, cls: 'ok', ms: null, data: ev })
     }
     // Each boot's startup+recovery grade once its window has closed; the whole run hourly.
@@ -281,7 +298,7 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.flags.has('help')) {
-    console.log('usage: AGENT_SECRET_READ=… node scripts/v3-p1p4-acceptance.mjs [--base URL] [--out FILE] [--hours N] [--goal-table-every-min N] | --once | --grade FILE [--from ISO] [--to ISO] [--json]')
+    console.log('usage: AGENT_SECRET_READ=… node scripts/v3-p1p4-acceptance.mjs [--base URL] [--out FILE] [--hours N] [--goal-table-every-min N] [--max-journals N] | --once | --grade FILE [--from ISO] [--to ISO] [--json]')
     return
   }
   if (args.values.grade) {
@@ -316,7 +333,9 @@ async function main() {
   console.log(`[p1p4] sampling ${base} GET-only → ${out} (limits are PROPOSED until the owner confirms them)`)
   const every = Number(args.values['goal-table-every-min'])
   const cadence = Number.isFinite(every) && every > 0 ? { ...CADENCE, goalTable: every * 60_000 } : CADENCE
-  const samples = await runHarness({ base, token, out, prior, untilMs, cadence, signal: ac.signal, sleep: (ms) => delay(ms, undefined, { signal: ac.signal }).catch(() => {}) })
+  const mj = Number(args.values['max-journals'])
+  const maxJournals = Number.isInteger(mj) && mj >= 0 ? mj : DEFAULT_MAX_JOURNALS
+  const samples = await runHarness({ base, token, out, prior, untilMs, cadence, maxJournals, signal: ac.signal, sleep: (ms) => delay(ms, undefined, { signal: ac.signal }).catch(() => {}) })
   console.log(formatGrade(gradeRun(samples)))
 }
 

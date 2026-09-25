@@ -278,6 +278,13 @@ How the verdicts work:
   Before this change, `Number(null)` would have read as a zero limit.
 - **The skip target is unchanged.** `monitor_cadence` and its 10 %
   `fastMonitorSkipMaxPct` keep their existing Wave 5 verdict. See §9.5.
+- **Load representativeness is not judged by these rows.** The harness
+  grades a window in which no `/health` sample saw a visible browser tab Not
+  Verifiable (§9.3). The rows cannot: `/health`'s visible-tab count is live,
+  not recorded per window. So once the limits are confirmed, a quiet window
+  can read `on_track` here while the harness grades the same window Not
+  Verifiable. Every measured row's note says so ("load representativeness
+  … is not judged here — the acceptance harness grades it").
 
 All limit values live once, in `agent/services/p1p4-grade.js`
 (`P1P4_PROPOSED_LIMITS`). The goal table and the harness both read them from
@@ -325,8 +332,14 @@ What it reads:
   Polled every 5 minutes it would put a 12 s stall into every window it
   grades, and the lag criterion would record the harness, not the system.
 
-  The harness therefore follows the review's alternative ("poll it every 5
-  minutes **or read /health instead**"): it reads the limits and the owner's
+  **Where the alternative comes from, and whose choice it is.** V3-SEQUENCE
+  item 17 says `/state/goal-table` every 5 minutes. The P1P4-load-recovery
+  spec review (`V3-SPECS.json`, entry `P1P4-load-recovery`,
+  `review.corrections`) says: "Polling it every 30 s adds load to the lag
+  metric; poll it every 5 minutes **or read /health instead**." Taking the
+  second alternative is this build's own choice, made on the 12.4 s
+  measurement above; the owner may overrule it (`--goal-table-every-min 5`
+  restores the plan's cadence). The harness reads the limits and the owner's
   confirmation stamp from the targets-only route (1–4 ms), and the four
   rows' inputs from `/health` and `/state/heartbeats`, which the grader
   judges directly. The full table is read only when `--goal-table-every-min`
@@ -354,8 +367,16 @@ What it reads:
     map lives in memory (`profit-keeper.js` `lastSeenTrailSl`), so an amend
     the sidecar made while Node was down is journalled at the first keeper
     pass after boot. The cockpit route also draws bars through the broker's
-    historical limiter; the harness asks for the smallest set it accepts
-    (`timeframe=1d&lookback=1`), at most 20 positions, once per restart.
+    historical limiter (`wsGetTrendbarsBatch`); the harness asks for the
+    smallest set it accepts (`timeframe=1d&lookback=1`), once per restart.
+    **Cost:** one broker bar fetch per position read, at about BOOT + 5 to
+    9 min — inside the startup window being graded — and the sampling loop
+    waits while the reads run. So the reads are capped at
+    `DEFAULT_MAX_JOURNALS` (10) per restart; `--max-journals N` changes the
+    cap, and `0` reads no journal at all. Over the cap the journals count as
+    not read: an unexplained change is then Not Verifiable, never Failed
+    and never Passed. A read route that returns only the journal would
+    remove the broker fetch; that is a server change, not made here.
 - **Three kinds of failed request.** `app_5xx` (the application's own JSON
   5xx), `platform` (Railway's "Application failed to respond", a non-JSON 5xx
   page, a connection that failed outright) and `timeout` (the harness's own
@@ -421,7 +442,15 @@ What it prints:
   - every fast-monitor position evaluated within cadence + 60 s, bounded from
     the samples;
   - SL/TP tuples, entry mode, revision, epoch and policy equal to the
-    pre-release snapshot, plus changes the evidence explains;
+    pre-release snapshot, plus changes the evidence explains. An
+    entry-configuration change is explained by an `action_log` row for the
+    same account, in the window, from any writer of the entry-engine row
+    (`ENTRY_CONFIG_ACTION_PATH`): `/actions/entry-mode`,
+    `/actions/entry-mode-policy`, `/entry-mode/ack`, `/entry-mode/blocked`,
+    `/entry-mode/drain`, `/actions/tick-observation` and
+    `/actions/tick-validation`. The last two raise the revision without an
+    entry-mode path; the tick-observation boot seed does it at the very
+    restart that a merge of `config/tick-observation.json` causes;
   - zero unsent, in-flight or unknown intents;
   - the two sidecars' boot ids unchanged.
 

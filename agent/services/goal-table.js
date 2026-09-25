@@ -647,6 +647,14 @@ function p1p4Verdict(targets, measurable, ok) {
 }
 
 const PROPOSED_SUFFIX = ' · limits PROPOSED, not confirmed by the owner (H-P1-1): reported, not counted as off track'
+// The acceptance harness grades a window in which no /health sample saw a
+// visible browser tab Not Verifiable (p1p4-grade.js `unrepresentative`: its
+// Passed become Not Verifiable). These rows do not judge that — /health's
+// visible-tab count is live, not recorded per window — so a quiet window can
+// read on track here while the harness grades the same window Not
+// Verifiable. Said on every measured row (checker, 25-09) rather than left
+// for the reader to discover once the limits are confirmed.
+const LOAD_SCOPE = ' · load representativeness (whether a Desk or Performance tab was visible) is not judged here — the acceptance harness grades it'
 const secs = (ms) => (ms == null ? '?' : `${Math.round(ms / 100) / 10} s`)
 
 /** The record's age in minutes at `nowMs`, from its own persistedAt; null when undated. */
@@ -705,7 +713,7 @@ function startupWindowGoal(db, targets, nowMs) {
   const v = p1p4Verdict(targets, measurable, fails.length === 0)
   const note = !measurable
     ? `boot ${rec.bootAt} (${rec.commit ?? 'commit ?'}): the startup window is still open — ${Math.max(0, Math.round((limits.startupWindowMin * 60_000 - sinceBoot) / 60_000))} min left`
-    : `boot ${rec.bootAt} (${rec.commit ?? 'commit ?'}): ${fails.length ? fails.join('; ') : 'every component within the limits'}${rep5 ? `; ${rep5} report-route 5xx listed, tolerance is the owner's (H-P1-2)` : ''}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`
+    : `boot ${rec.bootAt} (${rec.commit ?? 'commit ?'}): ${fails.length ? fails.join('; ') : 'every component within the limits'}${rep5 ? `; ${rep5} report-route 5xx listed, tolerance is the owner's (H-P1-2)` : ''}${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`
   return goal('startup_window', { ...base, current, ...v, note, bootAt: rec.bootAt })
 }
 
@@ -728,7 +736,7 @@ function eventLoopLagGoal(db, targets, nowMs) {
     note: !rec ? 'no boot record (the V3 M1 build is not running yet)'
       : stale ? `the persisted record is ${age == null ? 'undated' : `${Math.round(age)} min old`} — older than ${BOOT_RECORD_MAX_AGE_MIN} min`
         : !measurable ? 'no probe in the window'
-          : `${w.n} probes; worst ${w.worst?.ms ?? w.maxMs} ms at ${w.worst?.at ?? '?'} (${w.worst?.loopPhase ?? '?'})${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
+          : `${w.n} probes; worst ${w.worst?.ms ?? w.maxMs} ms at ${w.worst?.at ?? '?'} (${w.worst?.loopPhase ?? '?'})${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
     source: '/health latencyWindows.eventLoopLag.last10m',
   })
 }
@@ -765,7 +773,7 @@ async function protectionFreshnessGoal(db, targets, nowMs) {
     target: `audit ≤ ${limits.auditAgeMaxSec} s · independent ≤ ${limits.independentAgeMaxSec} s, every enabled account`, horizon: 'now',
     current: measurable ? `${auditOk}/${ids.length} audit · ${indOk}/${ids.length} independent` : null,
     ...v,
-    note: !measurable ? 'no enabled account' : `${late.length ? late.join(', ') : 'every reading within its limit'}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
+    note: !measurable ? 'no enabled account' : `${late.length ? late.join(', ') : 'every reading within its limit'}${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
     source: '/state/heartbeats runtime.accounts (protection.at, independentProtection.checkedAtMs)',
   })
 }
@@ -790,7 +798,7 @@ function loopLatencyGoal(db, targets, nowMs) {
     note: !rec ? 'no boot record (the V3 M1 build is not running yet)'
       : stale ? `the persisted record is ${age == null ? 'undated' : `${Math.round(age)} min old`} — older than ${BOOT_RECORD_MAX_AGE_MIN} min`
         : !measurable ? `${m?.n ?? 0} loop(s) recorded — under the 10-loop floor${firstNote}`
-          : `p50 ${secs(m.p50)}, p99 ${secs(m.p99)}${firstNote}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
+          : `p50 ${secs(m.p50)}, p99 ${secs(m.p99)}${firstNote}${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
     source: '/health latencyWindows.mainLoop',
   })
 }

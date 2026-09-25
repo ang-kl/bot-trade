@@ -24,7 +24,8 @@
 //   · Recovery compares the pre-release snapshot PLUS changes attributable to
 //     position_events (the cockpit journal, which carries the native trail
 //     engine's polled amends), action_log rows (manual and automatic
-//     entry-mode changes are written there), and nothing else. A difference
+//     entry-configuration changes are written there — ENTRY_CONFIG_ACTION_PATH
+//     names every writer), and nothing else. A difference
 //     the evidence does not explain is Failed when the evidence was read, and
 //     Not Verifiable when it could not be.
 // ---------------------------------------------------------------------------
@@ -32,6 +33,27 @@
 export const PASSED = 'Passed'
 export const FAILED = 'Failed'
 export const NOT_VERIFIABLE = 'Not Verifiable'
+
+/**
+ * The action_log paths that explain a change to an account's entry
+ * configuration (mode, requested mode, revision, epoch, policy) across a
+ * restart. Every writer of the entry-engine row, by the path it logs
+ * (re-anchored 25-09 on main 87620f3):
+ *   · entry-mode.js requestEntryMode, requestAdmittedBases → /actions/entry-mode
+ *   · entry-mode.js requestEntryModePolicy (and the boot seed
+ *     seedEntryModePolicyFromConfig) → /actions/entry-mode-policy
+ *   · entry-mode.js acknowledgeEntryEpochs, markEntryModeBlocked →
+ *     /entry-mode/ack, /entry-mode/blocked; entry-drain.js → /entry-mode/drain
+ *   · entry-mode.js requestTickObservation (and the boot seed
+ *     seedTickObservationFromConfig, which runs whenever
+ *     config/tick-observation.json changes — i.e. at the very restart a
+ *     merge of that file causes) → /actions/tick-observation
+ *   · tick-validation.js importTickValidation → /actions/tick-validation
+ * The last two raise configRevision without an entry-mode path; a regex
+ * that matched only /entry-mode/ graded their revision bump "unexplained"
+ * with the explaining row in hand (checker, 25-09).
+ */
+export const ENTRY_CONFIG_ACTION_PATH = /entry-mode|tick-observation|tick-validation/
 
 /**
  * The proposed limits (owner to confirm or replace, H-P1-1 / H-P1-2). A null
@@ -695,7 +717,7 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
           if (!b) continue
           const diffs = ['mode', 'req', 'rev', 'epoch', 'policy'].filter(k => a[k] !== b[k]).map(k => `${k} ${b[k]}→${a[k]}`)
           if (!diffs.length) continue
-          const rows = (evidence?.actionLog?.rows || []).filter(r => { const t = toMs(r.at); return t != null && t >= fromMs && t <= toMsW && String(r.account_id ?? '') === a.id && /entry-mode/.test(String(r.path || '')) })
+          const rows = (evidence?.actionLog?.rows || []).filter(r => { const t = toMs(r.at); return t != null && t >= fromMs && t <= toMsW && String(r.account_id ?? '') === a.id && ENTRY_CONFIG_ACTION_PATH.test(String(r.path || '')) })
           const what = `${a.id} ${diffs.join(', ')}`
           if (rows.length) attributed.push({ change: what, evidence: rows.slice(0, 3).map(r => ({ source: 'action_log', at: r.at, kind: `${r.method} ${r.path}` })) })
           else if (actionsRead) unexplained.push(what)
@@ -736,9 +758,12 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
 
 /**
  * The harness's own requests (at least 1 s long) that were in flight at each
- * stall time. It reads /state/goal-table, which answered in 13,271 ms (route-timings) on
- * 25-09 — a stall it caused is still a stall (any Desk reader of that route
- * causes it too), so this annotates a failure and never removes one.
+ * stall time. The slow one it can make is the full /state/goal-table (12,520
+ * and 13,271 ms on 25-09, route-timings), which it reads only when
+ * --goal-table-every-min opts in — off by default, the limits come from the
+ * targets-only GET /actions/goal-table. A stall it caused is still a stall
+ * (any reader of that route causes it too), so this annotates a failure and
+ * never removes one.
  */
 export function harnessOverlap(stallTimes, ownRequests) {
   const out = []
