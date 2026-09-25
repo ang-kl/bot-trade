@@ -1,7 +1,7 @@
 import { getState, setState } from '../db.js'
 import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { readMarketCalendar } from './market-calendar.js'
-import { projectCalendar } from '../lib/calendar-intervals.js'
+import { projectCalendar, contractCalendar } from '../lib/calendar-intervals.js'
 import { blockerReport, ENTRY_STOP_KINDS } from './blocker-report.js'
 import { watchdogCalendarDemand } from './watchdog-calendar-refresh.js'
 import { marketIdentityKey } from '../lib/market-identity.js'
@@ -189,30 +189,65 @@ export function scannerWork(db, accounts, now) {
   return work
 }
 
-export function watchdogCalendars(db, now) {
+export const CALENDAR_EXPORT_MAX_BYTES = 96 * 1024
+
+/**
+ * The calendars Node exports to cpp-verify (watchdog_state.cpp:148-152 copies
+ * `calendars[i].calendar` onto every work item of every service whose
+ * (accountId, host, symbolId) matches `calendars[i].identity`).
+ *
+ * V3 K1: the demand arrives tier-ordered (feed, position, legacy, scope), so
+ * gateway-feed calendars — the only ones cpp-exec's quote_flow work can get —
+ * lead the 96 KiB bound; the retained cache follows as before. Each entry is
+ * the contract projection (contractCalendar: the fields the verifier reads),
+ * and nodeWatchdogContract carries each identity's calendar ONCE: a work item
+ * whose identity is exported here does not repeat it.
+ *
+ * `calendarsComplete` keeps its meaning (every demanded and retained identity
+ * exported within the bounds); `demandComplete` is the demand's own
+ * completeness and `exportComplete` the export's own (calendarsComplete is
+ * exactly both), reported apart so a truncated export and a missing account
+ * map are not the same fact.
+ */
+export function watchdogCalendars(db, now, { lead = null } = {}) {
   // Active work leads. A daily universe refresh can retain thousands of
   // calendars; alphabetic LIMIT must not crowd out a held position/feed.
   const demand = watchdogCalendarDemand(db, now)
-  const identities = new Map(demand.identities.map(id => [marketIdentityKey(id), id]))
+  // Within the bound: gateway feeds (no other carrier), then the identities
+  // Node's own work items reference (`lead`: exported, they are not repeated
+  // on the item), then the rest of the demand in tier order.
+  const tierOf = key => demand.detail.get(key)?.tier
+  const ranked = demand.identities.map((id, i) => {
+    const key = marketIdentityKey(id)
+    return { key, id, rank: tierOf(key) === 'feed' ? 0 : lead?.has(key) ? 1 : 2, i }
+  }).sort((a, b) => a.rank - b.rank || a.i - b.i)
+  const identities = new Map(ranked.map(r => [r.key, r.id]))
   const rows = db.prepare("SELECT value FROM agent_state WHERE key LIKE 'market_calendar:v1:%' ORDER BY key LIMIT 513").all()
-  let complete = demand.complete && rows.length <= 512
+  // exportComplete: the export itself (retained cache read, projection, the
+  // byte bound) apart from the demand, so a cut export stays visible while a
+  // missing account map keeps calendarsComplete false.
+  let exportComplete = rows.length <= 512
   for (const row of rows) {
     try {
       const identity = JSON.parse(row.value)?.latest?.identity, key = marketIdentityKey(identity)
-      if (!key) { complete = false; continue }
+      if (!key) { exportComplete = false; continue }
       if (!identities.has(key)) {
         if (identities.size < 512) identities.set(key, identity)
-        else complete = false
+        else exportComplete = false
       }
-    } catch { complete = false /* malformed cache is not calendar evidence */ }
+    } catch { exportComplete = false /* malformed cache is not calendar evidence */ }
   }
-  const calendars = []; let size = 0
+  // The bound is on the serialised array: brackets and separators count.
+  const calendars = []; let size = 2
   for (const identity of identities.values()) {
     const evidence = readMarketCalendar(db, identity, { nowMs: now })
-    const calendar = projectCalendar(evidence, now)
-    const entry = { identity, calendar, reason: evidence.reason }; size += Buffer.byteLength(JSON.stringify(entry))
-    if (size > 96 * 1024) { complete = false; break }
+    let calendar = null, reason = evidence.reason
+    // One calendar the projection cannot express is that calendar's unknown,
+    // never a thrown contract (cpp-verify would raise node:work_evidence).
+    try { calendar = contractCalendar(projectCalendar(evidence, now), now) } catch { calendar = null; reason = 'calendar_projection_failed'; exportComplete = false }
+    const entry = { identity, calendar, reason }; size += Buffer.byteLength(JSON.stringify(entry)) + (calendars.length ? 1 : 0)
+    if (size > CALENDAR_EXPORT_MAX_BYTES) { exportComplete = false; break }
     calendars.push(entry)
   }
-  return { calendars, calendarsComplete: complete }
+  return { calendars, calendarsComplete: demand.complete && exportComplete, exportComplete, demandComplete: demand.complete }
 }

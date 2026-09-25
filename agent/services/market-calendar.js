@@ -33,6 +33,25 @@ function validZone(zone) {
   try { formatterFor(zone); return true } catch { return false }
 }
 
+// V3 K1: the one code 'calendar_holiday_window_unknown' used to cover two
+// different broker facts, so a reason histogram could not tell them apart:
+//   holiday_bounds_omitted — a holiday whose startSecond and/or endSecond the
+//     broker did not send (the API reference does not define what an omitted
+//     bound means; K3 asks the owner before giving it one);
+//   holiday_bounds_invalid — both bounds sent, but out of range or start >= end.
+// Both keep the WHOLE calendar unknown, exactly as before: no boundary is
+// invented here. Rows stored under the old code are mapped on read (below).
+export const HOLIDAY_BOUNDS_OMITTED = 'holiday_bounds_omitted'
+export const HOLIDAY_BOUNDS_INVALID = 'holiday_bounds_invalid'
+const LEGACY_HOLIDAY_WINDOW_UNKNOWN = 'calendar_holiday_window_unknown'
+const present = value => value !== undefined && value !== null
+function holidayBoundsReason(h) {
+  if (!present(h.startSecond) || !present(h.endSecond)) return HOLIDAY_BOUNDS_OMITTED
+  if (!integer(h.startSecond, 0, DAY - 1) || !integer(h.endSecond, 1, DAY)
+    || h.startSecond >= h.endSecond) return HOLIDAY_BOUNDS_INVALID
+  return null
+}
+
 // Validate the full message. Silently dropping an invalid interval can turn
 // incomplete broker evidence into a false CLOSED/OPEN result.
 function validateCalendar(raw) {
@@ -45,17 +64,68 @@ function validateCalendar(raw) {
   // Repeated fields may be omitted in protobuf JSON; absence means no holiday
   // entries in this full symbol response. Explicit null/malformed is unknown.
   if (!Array.isArray(raw.holiday) || raw.holiday.length > 366) return 'calendar_holidays_invalid'
+  // Precedence, independent of holiday order: a structurally broken holiday,
+  // then present-but-invalid bounds, then omitted bounds. So a calendar reads
+  // holiday_bounds_omitted only when omitted bounds are its ONLY defect.
+  let omitted = false, invalid = false
   for (const h of raw.holiday) {
     if (!h || !validZone(h.scheduleTimeZone) || !integer(h.holidayDate, 0, 2932896)
       || typeof h.isRecurring !== 'boolean') return 'calendar_holiday_invalid'
     // The API reference does not define the business meaning of omitted
     // optional holiday boundaries. Keep these unknown rather than invent a
     // full-day closure or ignore the holiday. Explicit broker bounds work.
-    if (!integer(h.startSecond, 0, DAY - 1) || !integer(h.endSecond, 1, DAY)
-      || h.startSecond >= h.endSecond) return 'calendar_holiday_window_unknown'
+    const bounds = holidayBoundsReason(h)
+    if (bounds === HOLIDAY_BOUNDS_OMITTED) omitted = true
+    else if (bounds === HOLIDAY_BOUNDS_INVALID) invalid = true
   }
+  if (invalid) return HOLIDAY_BOUNDS_INVALID
+  if (omitted) return HOLIDAY_BOUNDS_OMITTED
   if (raw.tradingMode !== null && !MODES.includes(raw.tradingMode)) return 'calendar_trading_mode_invalid'
   return null
+}
+
+const clipText = value => typeof value === 'string' ? value.slice(0, 200) : value == null ? null : String(value).slice(0, 200)
+/**
+ * V3 K1 diagnostic: the broker's own holiday rows that keep this calendar
+ * unknown (omitted or invalid bounds), read from the STORED latest
+ * observation — the payload no GET could show before, because an unknown
+ * calendar is returned with `calendar: null`. At most 366 entries (the
+ * validator's own holiday bound). A bound the broker did not send is ABSENT
+ * here, never filled in; a bound it sent is copied as sent. Changes no status.
+ */
+function holidayRows(calendar, unresolvedOnly) {
+  if (!calendar || typeof calendar !== 'object' || !Array.isArray(calendar.holiday)) return null
+  const out = []
+  for (const h of calendar.holiday) {
+    if (out.length >= 366) break
+    if (!h || typeof h !== 'object') continue
+    const reason = holidayBoundsReason(h)
+    if (unresolvedOnly && !reason) continue
+    const date = integer(h.holidayDate, 0, 2932896) ? new Date(h.holidayDate * DAY * 1000).toISOString().slice(0, 10) : null
+    out.push({ reason, holidayId: h.holidayId ?? null, name: clipText(h.name), description: clipText(h.description),
+      holidayDate: h.holidayDate ?? null, dateIso: date, isRecurring: h.isRecurring ?? null, scheduleTimeZone: clipText(h.scheduleTimeZone),
+      ...('startSecond' in h ? { startSecond: h.startSecond } : {}), ...('endSecond' in h ? { endSecond: h.endSecond } : {}) })
+  }
+  return out
+}
+const unresolvedHolidays = calendar => holidayRows(calendar, true)
+
+/**
+ * V3 K1 (the coverage read): EVERY holiday row of the stored latest
+ * observation, bounded or not, each with its bounds reason (null = explicit
+ * valid bounds) — so a question such as "does the broker list 1 October for
+ * this instrument" can be answered whether or not the calendar resolved.
+ * Only an intact payload (stored version matches) is described; else null.
+ */
+export function storedHolidays(db, input) {
+  const identity = marketIdentity(input)
+  if (!identity) return null
+  let envelope
+  try { envelope = JSON.parse(getState(db, keyFor(identity)) || 'null') } catch { return null }
+  const snapshot = envelope?.latest
+  if (!snapshot || marketIdentityKey(snapshot.identity) !== marketIdentityKey(identity)
+    || snapshot.calendar == null || snapshot.version !== hash(snapshot.calendar)) return null
+  return { observedAt: typeof snapshot.observedAt === 'string' ? snapshot.observedAt : null, holidays: holidayRows(snapshot.calendar, false) }
 }
 
 function calendarFields(symbol) {
@@ -117,14 +187,21 @@ export function calendarAt(calendar, now) {
   return { open, reason: open ? null : 'broker_schedule_closed' }
 }
 
-/** Account/feed-specific evidence; never consults the symbol-name legacy cache. */
-export function readMarketCalendar(db, input, { nowMs = Date.now(), maxAgeMs = CALENDAR_MAX_AGE_MS } = {}) {
+/**
+ * Account/feed-specific evidence; never consults the symbol-name legacy cache.
+ * `diagnostics: true` (the identity read, GET /state/market-calendar) adds
+ * `unresolvedHolidays`. Off by default: the collector reads every demanded
+ * calendar each minute on the main thread and needs only the status, and the
+ * diagnostic costs a payload hash on every unknown row.
+ */
+export function readMarketCalendar(db, input, { nowMs = Date.now(), maxAgeMs = CALENDAR_MAX_AGE_MS, diagnostics = false } = {}) {
   const identity = marketIdentity(input)
   const result = {
     identity, marketStatus: 'MARKET_STATUS_UNKNOWN', open: null, reason: null,
     observedAt: null, sourceTimestamp: null, ageMs: null, maxAgeMs,
     expiresAt: null, source: null, version: null, calendar: null,
     tradingMode: null, entryPermissionKnown: false, lastVerified: null,
+    ...(diagnostics ? { unresolvedHolidays: null } : {}),
   }
   const unknown = reason => ({ ...result, reason })
   if (!identity) return unknown('identity_required')
@@ -154,12 +231,20 @@ export function readMarketCalendar(db, input, { nowMs = Date.now(), maxAgeMs = C
     && !validateCalendar(last.calendar) && last.version === hash(last.calendar)) {
     result.lastVerified = { observedAt: last.observedAt, version: last.version, calendar: last.calendar }
   }
+  // Only a payload whose stored version still matches is described. Hashed
+  // at most once, and only when something needs it.
+  let intactMemo = null
+  const intact = () => (intactMemo ??= snapshot.calendar != null && snapshot.version === hash(snapshot.calendar))
+  if (diagnostics && intact()) result.unresolvedHolidays = unresolvedHolidays(snapshot.calendar)
   if (result.ageMs < 0) return unknown('observation_time_future')
+  // A row recorded before the split carries the old combined code; its own
+  // stored payload says which of the two it was.
+  if (snapshot.reason === LEGACY_HOLIDAY_WINDOW_UNKNOWN && intact()) return unknown(validateCalendar(snapshot.calendar) ?? snapshot.reason)
   if (snapshot.reason) return unknown(snapshot.reason)
   if (result.ageMs >= maxAgeMs) return unknown('calendar_stale')
   const invalid = validateCalendar(snapshot.calendar)
   if (invalid) return unknown(invalid)
-  if (snapshot.version !== hash(snapshot.calendar)) return unknown('calendar_version_mismatch')
+  if (!intact()) return unknown('calendar_version_mismatch')
   const state = calendarAt(snapshot.calendar, new Date(nowMs))
   return {
     ...result, ...state, marketStatus: state.open ? 'OPEN' : 'CLOSED', calendar: snapshot.calendar,
