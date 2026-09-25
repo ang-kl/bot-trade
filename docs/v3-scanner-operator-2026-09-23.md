@@ -68,6 +68,17 @@ authority (`scannerMirrorAdmission` refuses everything; PR-7 owns admission).
 - **Comparison load.** One memo per tick comparison page (the registry and
   each account map are read once, not per row). Oracle streams are keyed
   without the feed epoch; a new epoch replaces its stream and rewarms.
+- **Native tables (V3 CV-1).** Both C++ scanners now key without the feed
+  epoch too, so a Node or gateway restart no longer consumes capacity:
+  cpp-scan-timeframe holds 1024 cells (`/watchdog` → `cells`), cpp-scan-tick
+  512 streams (`streams`), each evicting a stale entry (unfed for an hour)
+  only to admit a new one. cpp-scan-timeframe's `/watchdog` work lists only
+  cells with a job queued or running; the timeframe input's liveness is the
+  Node contract's `scanner-bridge:collector` item (role `collector`, due
+  120 s after the collector's last recorded round; cpp-verify raises a
+  warning 60 s after that). Each scanner's `railway.json` watches only its
+  own directory, so Node-only merges stop restarting the scanners — whether
+  the Railway panel overrides that is read at R0.
 - **Retention.** 100,000 rows per source, not shared, trimmed by
   `retainComparisons` on the collector's 60 s cadence (no per-row count on
   insert). The trim finds its edge with a read and deletes in chunks of 2,000;

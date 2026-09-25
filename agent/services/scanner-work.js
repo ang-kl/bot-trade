@@ -6,6 +6,44 @@ import { blockerReport, ENTRY_STOP_KINDS } from './blocker-report.js'
 import { watchdogCalendarDemand } from './watchdog-calendar-refresh.js'
 import { marketIdentityKey } from '../lib/market-identity.js'
 import { tickEntryReceipts } from './tick-entry-work.js'
+import { SCANNER_PROFILE_LIMIT } from '../lib/scanner-bounds.js'
+
+/**
+ * Liveness of Node's scanner observation collector (V3 CV-1), for cpp-verify.
+ *
+ * cpp-scan-timeframe lists only work that is DUE: an idle cell has no
+ * deadline (Node's rotation and one-bar cache made a per-bar deadline pass
+ * cpp-verify's grace with nothing wrong). So nothing native notices when
+ * Node's bridge worker dies or stops polling — this item does. The collector
+ * records each round (at most once a second) in `scanner_bridge_poll_json`;
+ * its next round is due COLLECTOR_DUE_MS later (the bridge rebuilds a failed
+ * worker after 30 s, checked every 60 s, so 120 s is a real stop).
+ *
+ * Emitted only while the bridge's own gate is open (scanner-feed.js
+ * approvedProfiles: the flag, a file database, 1..SCANNER_PROFILE_LIMIT
+ * registered profiles), so an unconfigured bridge is not reported as stalled.
+ * A round recorded before this process started is not evidence for it: the
+ * deadline runs from the later of the two. Role 'collector' is cpp-verify's
+ * calendar-free liveness role (a stall there is a warning, not urgent).
+ */
+export const COLLECTOR_DUE_MS = 120_000
+export function scannerCollectorWork(db, now, { env = process.env, startedAtMs = now - Math.round(process.uptime() * 1000) } = {}) {
+  if (env.SCANNER_BRIDGE_ENABLED !== '1' || !db.name || db.name === ':memory:') return []
+  let profiles, round
+  try { profiles = JSON.parse(getState(db, 'scanner_mirror_profiles_json') || 'null') } catch { profiles = null }
+  if (!Array.isArray(profiles) || !profiles.length || profiles.length > SCANNER_PROFILE_LIMIT) return []
+  try { round = JSON.parse(getState(db, 'scanner_bridge_poll_json') || 'null') } catch { round = null }
+  const readAt = Number.isSafeInteger(round?.readAtMs) && round.readAtMs > 0 && round.readAtMs <= now ? round.readAtMs : null
+  const current = readAt != null && readAt >= startedAtMs
+  // lastError rides every later record, so only a recent one is named.
+  const recentError = round?.lastError && now - round.lastError.atMs < COLLECTOR_DUE_MS ? round.lastError.error : null
+  const blocker = !current ? 'no_collector_round_since_process_start'
+    : round.error || recentError || (round.tickBacklog ? 'tick_comparison_backlog' : null)
+  return [{ id: 'scanner-bridge:collector', role: 'collector', lastCompletedAtMs: current ? readAt : null,
+    nextDueMs: Math.max(current ? readAt : 0, startedAtMs) + COLLECTOR_DUE_MS, blocker,
+    durationMs: current && Number.isFinite(round.durationMs) ? round.durationMs : null,
+    reason: 'scanner_observation_collector_round', orderAuthority: false }]
+}
 
 export function recordScannerWork(db, { creds, scopeAccounts, symbolMap, result, completedAt, nextDue, cadenceMs = nextDue - completedAt }) {
   let previous; try { previous = JSON.parse(getState(db, 'legacy_scanner_work_json') || 'null') } catch { /* no prior receipt */ }

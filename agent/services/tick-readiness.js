@@ -157,8 +157,9 @@ export function tickReadinessFor(db, accountId, { now = new Date(), includeRouti
   // `recorder_recording`, `disk_reserve_clear` and `feed_continuity` are
   // DELIBERATELY excluded from the shadow set. They are the PAUSE_CHECKS
   // (tick-permits.js); they gate TRADING, not shadowing. A container
-  // filesystem below the 2 GiB reserve parks the recorder at PAUSED_RESERVE
-  // (tick_recorder.hpp reserveMinBytes), which stops writeRecord and nothing
+  // filesystem below the reserve (2 GiB or 20 % by default, configurable on
+  // the sidecar since GW-CAP: tick_recorder.hpp reserveMinBytes /
+  // reservePct) parks the recorder at PAUSED_RESERVE, which stops writeRecord and nothing
   // else — the shadow strategy runs on unaffected (tick_tap.cpp). That
   // parking is a FAIL-SAFE: it withholds tick permits, so an arming attempt
   // is refused while the disk is short. It stays in `ready`, and a shadow

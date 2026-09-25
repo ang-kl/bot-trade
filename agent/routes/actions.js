@@ -33,6 +33,7 @@ import { loadManagedExit, MANAGED_EXIT_DEFAULTS } from '../services/managed-exit
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
+import { competingExitRefusal, MANUAL_REFUSED_EXIT_STATES } from '../services/momentum-exit-coordination.js'
 import { clearErrorLog } from '../services/error-log.js'
 import { desiredGuardFor } from '../services/exec-guard-sync.js'
 
@@ -2443,6 +2444,11 @@ export default function actionsRouter(db, deps = {}) {
       // names the account (credsForPosition, as double/reverse already do)
       // and the reply says which source chose it.
       const creds = req.body?.account ? { ...credsForAccountId(db, req.body.account), accountSource: 'body' } : credsForPosition(db, positionId)
+      // T2: a momentum partial or rank close in flight or unresolved on this
+      // position is not doubled by a manual close or partial. Refused before
+      // any broker call; /actions/close-all remains the owner's flatten.
+      const competing = competingExitRefusal(db, { accountId: creds.accountId, positionId, states: MANUAL_REFUSED_EXIT_STATES })
+      if (competing) return res.status(409).json({ error: competing })
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const pos = await findLivePosition(creds, positionId)
       if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker (already closed?)` })
@@ -2557,6 +2563,7 @@ export default function actionsRouter(db, deps = {}) {
       const exec = await execPlaceOrder(creds, {
         ctidTraderAccountId: parseInt(creds.accountId),
         symbolId: parseInt(td.symbolId),
+        ...(pos.symbolName ? { symbolName: pos.symbolName } : {}), // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: td.tradeSide === 2 || td.tradeSide === 'SELL' ? 'SELL' : 'BUY',
         volume: td.volume,
@@ -2600,6 +2607,8 @@ export default function actionsRouter(db, deps = {}) {
     try {
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
       const creds = credsForPosition(db, positionId, { producerId: 'route_position_reverse' })
+      const competing = competingExitRefusal(db, { accountId: creds.accountId, positionId, states: MANUAL_REFUSED_EXIT_STATES })
+      if (competing) return res.status(409).json({ error: competing })
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
 
       const guards = loadManualGuards(db)
@@ -2644,6 +2653,7 @@ export default function actionsRouter(db, deps = {}) {
       const exec = await execPlaceOrder(legTwo.creds, {
         ctidTraderAccountId: parseInt(legTwo.creds.accountId),
         symbolId: parseInt(td.symbolId),
+        ...(pos.symbolName ? { symbolName: pos.symbolName } : {}), // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: wasSell ? 'BUY' : 'SELL',
         volume: td.volume,
@@ -5910,6 +5920,7 @@ export default function actionsRouter(db, deps = {}) {
       const orderPayload = {
         ctidTraderAccountId: parseInt(accountId),
         symbolId: parseInt(symbolId),
+        symbolName: analysis.symbol, // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: side,
         volume,
@@ -6099,6 +6110,7 @@ export default function actionsRouter(db, deps = {}) {
       const orderPayload = {
         ctidTraderAccountId: parseInt(creds.accountId),
         symbolId: parseInt(symbolId),
+        symbolName: symbol, // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: side,
         volume: sized.volume,
