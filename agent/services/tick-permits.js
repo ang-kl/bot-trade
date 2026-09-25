@@ -41,6 +41,7 @@ import { tickSymbolNames, resolveTickSymbolIds } from './exec-guard-sync.js'
 import { scanRates, loadRiskConfig, accountMarginPool } from './risk.js'
 import { accountPregateVerdict } from './account-pregate.js'
 import { permittedSides, trendReadingFor } from './direction-policy.js'
+import { inflightLiveSql } from '../lib/stuck-resolutions.js'
 
 export const TICK_ENTRY_FILE = new URL('../config/tick-entry.json', import.meta.url)
 export const DEFAULT_OVERSHOOT_FRACTION = 0.25
@@ -80,12 +81,16 @@ export function loadTickEntryConfig(file = TICK_ENTRY_FILE) {
 export function openPositionsFor(db, accountId) {
   const symbols = new Map()
   const bump = (sym) => { const k = String(sym || '').toUpperCase(); if (k) symbols.set(k, (symbols.get(k) || 0) + 1) }
-  try { for (const r of db.prepare(`SELECT symbol FROM trades WHERE account_id = ? AND status IN ('open', 'submitting', 'unconfirmed')`).all(String(accountId))) bump(r.symbol) } catch { /* table absent */ }
+  // V3 I3: an in-flight row the stuck resolver ended (settled onto the row
+  // that carries its fill, or written off with no broker evidence) is not a
+  // position — it stops taking a slot here, as in the symbol cap.
+  const live = inflightLiveSql(db)
+  try { for (const r of db.prepare(`SELECT symbol FROM trades WHERE account_id = ? AND status IN ('open', 'submitting', 'unconfirmed')${live}`).all(String(accountId))) bump(r.symbol) } catch { /* table absent */ }
   try {
     for (const r of db.prepare(`SELECT symbol, ctrader_position_id FROM monitored_positions WHERE account_id = ? AND status = 'active'`).all(String(accountId))) {
       // a monitored row for a position the trades table already counts is the same position
       let dup = false
-      try { dup = r.ctrader_position_id != null && !!db.prepare(`SELECT 1 FROM trades WHERE account_id = ? AND ctrader_position_id = ? AND status IN ('open', 'submitting', 'unconfirmed')`).get(String(accountId), String(r.ctrader_position_id)) } catch { dup = false }
+      try { dup = r.ctrader_position_id != null && !!db.prepare(`SELECT 1 FROM trades WHERE account_id = ? AND ctrader_position_id = ? AND status IN ('open', 'submitting', 'unconfirmed')${live}`).get(String(accountId), String(r.ctrader_position_id)) } catch { dup = false }
       if (!dup) bump(r.symbol)
     }
   } catch { /* table absent */ }
