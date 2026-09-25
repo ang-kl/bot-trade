@@ -106,7 +106,7 @@ export default function Reasons() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-baseline gap-2">
         <h1 className="text-(length:--fs-title) font-extrabold tracking-tight">Reasons</h1>
-        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">twelve attribution reads, each shown with the agent's own fields — nothing computed here</span>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">thirteen attribution reads, each shown with the agent's own fields — nothing computed here</span>
         <Button size="sm" variant="subtle" className="ml-auto" disabled={busy} onClick={load}>{busy ? 'reading…' : 'Re-read'}</Button>
       </div>
       {REASON_ENDPOINTS.map(d => <ReasonsBlock key={d.key} def={d} result={results[d.key]} at={at} />)}

@@ -487,6 +487,10 @@ const TABLES = `
     note            TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_refusal_scores_reason ON refusal_scores(reason_key, scored_at);
+  -- V3 L1: the order-lifecycle PRE-02 read by scored_at (the index above
+  -- leads with reason_key, so a scored_at range was a full scan of a table
+  -- measured at 35,395 rows / 13.6 MB on 25-09-2026).
+  CREATE INDEX IF NOT EXISTS idx_refusal_scores_scored ON refusal_scores(scored_at, outcome, account_id);
 
   -- Account Registry (multi-account migration plan, Phase 1 R1 / milestone
   -- M0). Single source of truth for which cTrader accounts exist and which

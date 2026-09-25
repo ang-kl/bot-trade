@@ -43,7 +43,8 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering, readPostmortemReport, readStorageReport, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, isReportUnavailable } from '../services/performance-populations.js'
+import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 
 /**
@@ -2701,6 +2702,31 @@ export default function stateRouter(db) {
       res.json(positionHistoryView(db, { limit, accountId: req.query.account ?? null }))
     } catch (err) {
       res.status(500).json({ error: err.message })
+    }
+  })
+  // ORDER LIFECYCLE (V3 L1, owner order 25-09-2026 16:50 SGT): pre-order,
+  // order and close records that failed to store or are incomplete, and
+  // anything stuck — per account, each rule versioned and cited
+  // (services/order-lifecycle.js). Every rule runs on the read-only worker
+  // (performance-populations kind 'order-lifecycle'); this thread only
+  // validates the query and serialises the bounded answer. Scope comes from
+  // the query through requestedAccount inside the worker — never the raw
+  // ?account= passed through (the /position-history false zero above). A
+  // failed or timed-out build is an explicit 503 naming the last snapshot,
+  // never an empty or zero body (owner principle 6).
+  router.get('/order-lifecycle', async (req, res) => {
+    let options
+    try { options = normaliseLifecycleOptions(req.query) } catch (err) {
+      return res.status(400).json({ error: err instanceof RangeError ? err.message : 'bad request' })
+    }
+    try {
+      res.json(await readOrderLifecycle(db, options))
+    } catch (err) {
+      res.set('Cache-Control', 'no-store')
+      if (isReportUnavailable(err)) res.set('Retry-After', String(err.retryAfterSec))
+      let lastSnapshotAt = null
+      try { lastSnapshotAt = JSON.parse(getState(db, ORDER_LIFECYCLE_SNAPSHOT_KEY) || 'null')?.at ?? null } catch { lastSnapshotAt = null }
+      res.status(503).json({ error: 'order_lifecycle_unavailable', code: err?.reason ?? 'order_lifecycle_worker_error', lastSnapshotAt })
     }
   })
   // The capture queue behind the record: what is waiting, what was captured,
