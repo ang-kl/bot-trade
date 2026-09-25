@@ -102,11 +102,24 @@ describe('shapeBody / blockState', () => {
   })
 })
 
-describe('the twelve endpoints', () => {
-  it('are the twelve the plan names, and each is served by agent/routes/state.js', () => {
-    expect(REASON_ENDPOINTS.map(d => d.key)).toEqual(['entry-intents', 'trade-plans', 'unknown-pnl', 'unresolvable-plan', 'trade-consistency', 'attribution', 'refusal-cost', 'exit-counterfactual', 'exit-price-suspects', 'open-duplicates', 'go-live-readiness', 'phase-audit'])
+describe('the thirteen endpoints', () => {
+  it('are the twelve the plan names plus V3 L1 order-lifecycle, and each is served by agent/routes/state.js', () => {
+    expect(REASON_ENDPOINTS.map(d => d.key)).toEqual(['entry-intents', 'trade-plans', 'unknown-pnl', 'unresolvable-plan', 'trade-consistency', 'attribution', 'refusal-cost', 'exit-counterfactual', 'exit-price-suspects', 'open-duplicates', 'go-live-readiness', 'phase-audit', 'order-lifecycle'])
     const routes = readFileSync(new URL('../../agent/routes/state.js', import.meta.url), 'utf8').replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1')
-    for (const d of REASON_ENDPOINTS) expect(routes, d.path).toContain(`router.get('${d.path.replace('/state', '')}'`)
+    // The query string is the read's scope (?account=all), not part of the route.
+    for (const d of REASON_ENDPOINTS) expect(routes, d.path).toContain(`router.get('${d.path.replace('/state', '').split('?')[0]}'`)
+  })
+  it('order-lifecycle: rules[] and accounts[] render as tables, scope reads all, and a 503 is an error, not zeros', () => {
+    const body = { schemaVersion: 1, scope: { account: 'all', explicit: true }, summary: { stuck: { new: 2 } },
+      rules: [{ id: 'STK-01', key: 'resting_record_orphaned', violations: 6, newViolations: 6 }], accounts: [{ account: '46130058', stage: 'stuck', new: 2 }] }
+    expect(reasonScope(def('order-lifecycle'), { ok: true, body })).toBe('all')
+    const html = renderToStaticMarkup(<ReasonsBlock def={def('order-lifecycle')} result={{ ok: true, body }} />)
+    for (const c of ['id', 'key', 'violations', 'newViolations', 'account', 'stage']) expect(html).toMatch(new RegExp(`<th[^>]*>${c}</th>`))
+    expect(html).toContain('resting_record_orphaned')
+    const failed = renderToStaticMarkup(<ReasonsBlock def={def('order-lifecycle')} result={{ ok: false, error: 'HTTP 503 order_lifecycle_unavailable' }} />)
+    expect(failed).toMatch(/data-status="error"/)
+    expect(failed).toContain('not read — HTTP 503 order_lifecycle_unavailable')
+    expect(failed).not.toMatch(/<table/)
   })
   it('the page is routed and in the navigation', () => {
     const app = readFileSync(new URL('../App.jsx', import.meta.url), 'utf8')

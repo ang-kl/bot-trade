@@ -28,6 +28,7 @@
 
 import { getState, setState } from '../db.js'
 import { guardName } from './decision-audit.js'
+import { readSnapshot, inspectLifecycleRegression, lifecycleRuleRecurs } from './order-lifecycle.js'
 
 export const INSPECTOR_DEFAULTS = {
   on: true,
@@ -349,12 +350,21 @@ function inspectSilentGap(db, cfg, nowMs) {
   }]
 }
 
+// V3 L1: a lifecycle rule producing NEW defective records (after the
+// acceptance start) whose fix is a writer or resolver change — one proposed
+// code_change finding per rule@version, read from the order_lifecycle
+// snapshot only (no rule runs here).
+function inspectLifecycleRegressionRun(db, _cfg, nowMs) {
+  return inspectLifecycleRegression(readSnapshot(getState, db), nowMs)
+}
+
 export const INSPECTIONS = [
   { key: 'assertion_vs_effect', run: inspectAssertionVsEffect },
   { key: 'broken_commissive', run: inspectBrokenCommissive },
   { key: 'refusal_at_scale', run: inspectRefusalAtScale },
   { key: 'unheeded_directive', run: inspectUnheededDirective },
   { key: 'silent_gap', run: inspectSilentGap },
+  { key: 'lifecycle_regression', run: inspectLifecycleRegressionRun },
 ]
 
 // ---------------------------------------------------------------------------
@@ -416,6 +426,10 @@ export function evalFalsifierMetric(db, metric) {
         const r = db.prepare(`SELECT COUNT(*) AS n FROM risk_events WHERE disposition = 'dropped' AND disposition_at >= ?`).get(sinceIso)
         return (r?.n || 0) > 0 // more drops → recurring-defect reading confirmed
       }
+      case 'lifecycle_rule_recurs':
+        // A newer violation of the rule after the finding → the live-defect
+        // reading is CONFIRMED; none → falsified; no snapshot → expired.
+        return lifecycleRuleRecurs(readSnapshot(getState, db), metric)
       default:
         return null
     }

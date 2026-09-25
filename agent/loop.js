@@ -6221,6 +6221,12 @@ export function startLoop(db) {
   import('./services/minute-review.js')
     .then(m => m.startMinuteReview(db))
     .catch(err => log('minute-review failed to start:', err.message))
+  // Order-lifecycle flags (V3 L1): every 10 minutes on its own ticker, built
+  // on the read-only report worker; writes one compact snapshot row and beats
+  // order_lifecycle. Reads only — reports, never repairs.
+  import('./services/order-lifecycle-ticker.js')
+    .then(m => m.startOrderLifecycle(db))
+    .catch(err => log('order-lifecycle failed to start:', err.message))
   // Tick-driven guardian — live spot subscription on symbols with open
   // positions; guard sweeps fire on price movement, the loop stays the
   // guaranteed backstop (owner: attention proportional to risk).

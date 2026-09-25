@@ -21,6 +21,9 @@ export const REASON_ENDPOINTS = [
   { key: 'open-duplicates', path: '/state/open-duplicates', title: 'Open duplicates', why: 'more than one open row for one broker position' },
   { key: 'go-live-readiness', path: '/state/go-live-readiness', title: 'Go-live readiness', why: 'the evidence checks, each with its own verdict' },
   { key: 'phase-audit', path: '/state/phase-audit', title: 'Phase audit', why: 'the viewed account\'s phase switches against what the loop actually did' },
+  // V3 L1: every account (the body's scope.account says 'all'); a 503 is
+  // shown as the error it is, never as zero flags.
+  { key: 'order-lifecycle', path: '/state/order-lifecycle?account=all', title: 'Order lifecycle', why: 'pre-order, order and close records that failed to store or are incomplete, and anything stuck with no resolver' },
 ]
 
 const isScalar = v => v == null || ['string', 'number', 'boolean'].includes(typeof v)

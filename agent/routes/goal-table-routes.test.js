@@ -29,12 +29,12 @@ const post = (h, path, body) => fetch(h.url(path), {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 }).then(r => r.json())
 
-test('GET /state/goal-table returns twenty goals with verdicts and a summary', async () => {
+test('GET /state/goal-table returns twenty-four goals with verdicts and a summary', async () => {
   const h = await server()
   try {
     const r = await fetch(h.url('/state/goal-table')).then(x => x.json())
-    assert.equal(r.goals.length, 20) // PR-C veto_rate + PR-E trade_reasons + Wave 3 four family rows and the momentum checkpoint + Wave 5 monitor_cadence
-    assert.ok(r.summary.on_track + r.summary.off_track + r.summary.not_measurable === 20)
+    assert.equal(r.goals.length, 24) // V3 L1 four lifecycle rows + PR-C veto_rate + PR-E trade_reasons + Wave 3 four family rows and the momentum checkpoint + Wave 5 monitor_cadence
+    assert.ok(r.summary.on_track + r.summary.off_track + r.summary.not_measurable === 24)
     assert.ok(r.goals.every(g => ['on_track', 'off_track', 'not_measurable'].includes(g.verdict)))
     assert.equal(r.targets.pipelineConversionMin, 0.5)
   } finally { h.close() }

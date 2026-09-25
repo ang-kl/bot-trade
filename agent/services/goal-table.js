@@ -113,6 +113,14 @@ export const DEFAULT_GOAL_TARGETS = Object.freeze({
   // or older than fastMonitorRecordMaxAgeMin.
   fastMonitorSkipMaxPct: 10,
   fastMonitorRecordMaxAgeMin: 5,
+  // V3 L1 (owner order 25-09-2026): order-lifecycle records made since the
+  // acceptance start (agent/config/order-lifecycle.json) that failed to store
+  // or are incomplete — pre-order, order, close — and records stuck now,
+  // counted as distinct records. Read from the order_lifecycle snapshot; not
+  // measurable when it is older than lifecycleSnapshotMaxAgeMin.
+  lifecycleNewDefectsMax: 0,
+  lifecycleStuckMax: 0,
+  lifecycleSnapshotMaxAgeMin: 30,
 })
 
 export function goalTargets(raw) {
@@ -589,12 +597,19 @@ async function momentumCheckpointGoal(db, targets, now) {
   })
 }
 
+/** V3 L1: pre-order / order / close / stuck, from order_lifecycle_last_json (order-lifecycle.js lifecycleGoals). */
+export async function lifecycleGoalRows(db, targets, now, { read = null } = {}) {
+  const { lifecycleGoals, readSnapshot } = await import('./order-lifecycle.js')
+  const snapshot = read ? read(db) : readSnapshot(getState, db)
+  return lifecycleGoals(snapshot, targets, now)
+}
+
 /**
  * The table. Every goal is attempted; one that throws reports not_measurable
  * with the error, so a broken reader is visible as a row rather than as a
  * 500 that hides the other rows.
  */
-export async function goalTable(db, { now = Date.now() } = {}) {
+export async function goalTable(db, { now = Date.now(), lifecycleRead = null } = {}) {
   const cfg = loadGoalTable(db)
   const t = cfg.targets
   const readers = [
@@ -625,6 +640,11 @@ export async function goalTable(db, { now = Date.now() } = {}) {
     try { goals.push(await read()) } catch (err) {
       goals.push(goal(id, { name: id, subsystem: 'goal table', metric: 'unreadable', target: null, horizon: null, current: null, verdict: 'not_measurable', note: `reader failed: ${err?.message || err}`, source: null }))
     }
+  }
+  // V3 L1: the four order-lifecycle rows come as a group, read from ONE
+  // snapshot row; a failed reader is four not_measurable rows, not one.
+  try { goals.push(...await lifecycleGoalRows(db, t, now, { read: lifecycleRead })) } catch (err) {
+    for (const stage of ['pre_order', 'order', 'close', 'stuck']) goals.push(goal(`lifecycle_${stage}`, { name: `lifecycle_${stage}`, subsystem: 'goal table', metric: 'unreadable', target: null, horizon: null, current: null, verdict: 'not_measurable', note: `reader failed: ${err?.message || err}`, source: null }))
   }
   const summary = { on_track: 0, off_track: 0, not_measurable: 0 }
   for (const g of goals) summary[g.verdict] = (summary[g.verdict] || 0) + 1
