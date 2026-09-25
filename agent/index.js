@@ -1247,6 +1247,13 @@ async function start() {
     startWatchdogCalendarRefresh(db);
   } catch (err) { console.warn('[agent] watchdog calendar refresh unavailable:', err.message); }
 
+  // V3 K2: each registered account's own symbol map, read daily (one bounded
+  // symbol-list read per pass) whether or not the account ever trades.
+  try {
+    const { startAccountSymbolMapRefresh } = await import('./services/account-symbol-maps.js');
+    startAccountSymbolMapRefresh(db);
+  } catch (err) { console.warn('[agent] account symbol map refresh unavailable:', err.message); }
+
   // Self-link cTrader when credentials exist (env-seeded or pushed earlier)
   // but the symbol map or balance is missing — so setting
   // CTRADER_ACCESS_TOKEN + CTRADER_ACCOUNT_ID (+ CTRADER_IS_LIVE) in the
