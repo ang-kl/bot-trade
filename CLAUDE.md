@@ -1246,3 +1246,17 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   no installer, permissions, hooks or approval records were changed. The eight
   groups and pending partial-TP1 policy values remain unchanged. This local
   write-back is for the next code PR, not a documentation-only Node restart.
+
+- 2026-09-25 03:40 UTC (11:40 SGT), **Codex → Claude Code takeover**, remote
+  container, PARTIAL corpus. Owner: *"record this date and time that codex
+  runs out of token to build. claude code to take over the complete the latest
+  assessment plan. the goal of parallel scanners both tick and time should be
+  active now"*. Codex's last visible reply was **№ 9,006** (25-09 08:40 SGT);
+  its dual-entry build was local and unpushed and is not on any remote ref at
+  the 03:40 UTC fetch, so Claude rebuilds it from `origin/main` `83c94e6` and
+  assumes nothing from it. Claude's replies in this container continued from
+  **№ 9,007** to **№ 9,031** (the takeover acknowledgement); the next reply is
+  `№ 9,032`. Claude Code is now the single implementation session. The record
+  is `docs/claude-takeover-2026-09-25.md`; the plan it completes is
+  `docs/dual-environment-plan-2026-09-25.md`. A later re-measure that reads
+  below this line is missing these, not correcting them.
