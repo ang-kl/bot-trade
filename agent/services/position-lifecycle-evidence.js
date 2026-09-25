@@ -33,13 +33,22 @@
 import { getState, setState } from '../db.js'
 import { normPosId } from '../lib/pos-id.js'
 import {
-  verifiedPositionHistory, executedDeal, dealStatusName, notExecutedDeal, dealStatusSummary,
+  verifiedPositionHistory, executedDeal, dealStatusName, notExecutedDeal, dealStatusSummary, ownPositionDeal,
   FALSE_CLOSE_TOLERANCE_MS, POSITION_HISTORY_REFUSED,
 } from '../lib/position-deal-history.js'
 import { closeDealMoney } from '../lib/deal-money.js'
 
 export const EVIDENCE_PACE_MS = 30_000
 export const EVIDENCE_RETRY_MS = 15 * 60_000
+/**
+ * THE RULES A VERDICT WAS JUDGED UNDER (B2 checker N3). A final verdict is
+ * final only under the rules that produced it: every row stores this version,
+ * and a final verdict stored under an older one is read ONCE more (at the
+ * usual 15-minute spacing) when the rules change — e.g. when the owner answers
+ * how a history with no deals, or a mixed rejected/executed one, is judged.
+ * Bump it with any change to classifyPositionHistory's outcomes.
+ */
+export const EVIDENCE_RULES = 1
 const BOUNDED_DEALS = 500
 const MONEY_TOLERANCE = 0.01
 
@@ -61,8 +70,8 @@ export const VERDICTS = Object.freeze({
   empty_at_broker: { final: true, meaning: 'complete answer with no deal: the broker holds nothing for this position on this account' },
   never_filled: { final: true, meaning: 'every deal the broker holds for the position was rejected, internally rejected, errored or missed' },
   opening_not_retained: { final: true, meaning: 'the broker returns closing deal(s) without the opening deal: the start of the lifecycle is not retained' },
-  permanently_unsupported: { final: true, meaning: 'the broker answer cannot be settled by any rule here (bounded response exceeded, unsupported status or money)' },
-  unreadable: { final: false, meaning: 'no complete answer (error, timeout, another account, a partial page): nothing is known; retried, never an attempt' },
+  permanently_unsupported: { final: true, meaning: 'the broker answer cannot be settled by any rule here (a paged answer or more than 500 deals, an unsupported status, invalid deal identity or money)' },
+  unreadable: { final: false, meaning: 'no complete answer (error, timeout, another account, no hasMore:false and no deals): nothing is known; retried, never an attempt' },
 })
 const FINAL = new Set(Object.entries(VERDICTS).filter(([, v]) => v.final).map(([k]) => k))
 
@@ -99,14 +108,34 @@ export function classifyPositionHistory(response, { accountId, positionId, now =
   if (!response || typeof response !== 'object') return out('unreadable', 'no response')
   if (String(response.ctidTraderAccountId) !== acct) return out('unreadable', `response names account ${response.ctidTraderAccountId ?? '(none)'}, not ${acct}`)
   if (response.error || response.errorCode) return out('unreadable', `broker error ${response.errorCode ?? ''} ${response.description ?? ''}`.trim())
-  if (response.hasMore !== false) return out('unreadable', `response not complete (hasMore ${String(response.hasMore)})`)
   if (response.deal != null && !Array.isArray(response.deal)) return out('unreadable', 'deal list malformed')
+  // A PAGED ANSWER IS THE BOUNDED RESPONSE EXCEEDED (B2 checker N4). The
+  // by-position read asks for the whole history (fromTimestamp 0) and reads
+  // ONE response; the broker pages rather than return more than it will at
+  // once, so `hasMore: true` with deals is how "more than one bounded
+  // response" actually arrives — the >500 check below cannot see it. A
+  // position's deals never shrink, so the next read pages the same way:
+  // final, under these rules (a reader that follows pages bumps
+  // EVIDENCE_RULES). An answer without hasMore:false and without deals says
+  // nothing: unreadable.
+  if (response.hasMore === true && Array.isArray(response.deal) && response.deal.length) {
+    return out('permanently_unsupported', `the broker paged the history of position ${pid} (hasMore after ${response.deal.length} deal(s)): more than one bounded response, and this reader reads one`,
+      { deals: response.deal.length, executed: response.deal.filter(executedDeal).length })
+  }
+  if (response.hasMore !== false) return out('unreadable', `response not complete (hasMore ${String(response.hasMore)})`)
   const deals = response.deal ?? []
   const counts = { deals: deals.length, executed: deals.filter(executedDeal).length }
   if (deals.length === 0) return out('empty_at_broker', `the broker's complete answer holds no deal for position ${pid} on account ${acct}`, counts)
   if (deals.length > BOUNDED_DEALS) return out('permanently_unsupported', `${deals.length} deals exceed the bounded response of ${BOUNDED_DEALS}`, counts)
   const unknown = deals.filter(d => dealStatusName(d) == null)
   if (unknown.length) return out('permanently_unsupported', `deal status unsupported: ${dealStatusSummary(unknown)}`, counts)
+  // Every deal must be THIS position's, with a deal id, before its statuses
+  // say anything about the position (B2 checker N5): a rejected deal of
+  // another position is not evidence that this one never filled.
+  const foreign = deals.filter(d => !ownPositionDeal(d, pid))
+  if (foreign.length) {
+    return out('permanently_unsupported', `position deal evidence invalid: ${foreign.length} deal(s) without a deal id or naming a position other than ${pid}`, counts)
+  }
   if (deals.every(notExecutedDeal)) {
     return out('never_filled', `the broker holds ${deals.length} deal(s) for position ${pid} on account ${acct} and none executed: ${dealStatusSummary(deals)}`, counts)
   }
@@ -189,12 +218,12 @@ export function recordLifecycleEvidence(db, { accountId, positionId, host = null
   const rows = JSON.stringify(ledgerRows.slice(0, 8).map(r => ({ id: r.id, status: r.status, net: r.net_pnl ?? null, writtenOff: Number(r.written_off) === 1 })))
   const b = classified.broker
   const unreadable = classified.verdict === 'unreadable'
-  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, host, verdict, final, reason, source, deals, executed, symbol_id,
-      opening_side, opened_ms, final_close_ms, broker_net, broker_gross, broker_swap, broker_commission, conversion_fee, ledger_net, ledger_rows,
-      trade_ids, read_at, reads, last_error, last_error_at)
-    VALUES (@acct, @pid, @host, @verdict, @final, @reason, @source, @deals, @executed, @symbolId, @side, @openedMs, @closeMs, @net, @gross, @swap,
-      @commission, @fee, @ledgerNet, @rows, @tradeIds, @at, 1, @err, @errAt)
-    ON CONFLICT(account_id, position_id) DO UPDATE SET host = excluded.host, verdict = excluded.verdict, final = excluded.final,
+  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, host, verdict, final, rules, reason, source, deals, executed,
+      symbol_id, opening_side, opened_ms, final_close_ms, broker_net, broker_gross, broker_swap, broker_commission, conversion_fee, ledger_net,
+      ledger_rows, trade_ids, read_at, reads, last_error, last_error_at)
+    VALUES (@acct, @pid, @host, @verdict, @final, @rules, @reason, @source, @deals, @executed, @symbolId, @side, @openedMs, @closeMs, @net, @gross,
+      @swap, @commission, @fee, @ledgerNet, @rows, @tradeIds, @at, 1, @err, @errAt)
+    ON CONFLICT(account_id, position_id) DO UPDATE SET host = excluded.host, verdict = excluded.verdict, final = excluded.final, rules = excluded.rules,
       reason = excluded.reason, source = excluded.source, deals = excluded.deals, executed = excluded.executed, symbol_id = excluded.symbol_id,
       opening_side = excluded.opening_side, opened_ms = excluded.opened_ms, final_close_ms = excluded.final_close_ms,
       broker_net = excluded.broker_net, broker_gross = excluded.broker_gross, broker_swap = excluded.broker_swap,
@@ -202,7 +231,7 @@ export function recordLifecycleEvidence(db, { accountId, positionId, host = null
       ledger_rows = excluded.ledger_rows, trade_ids = COALESCE(excluded.trade_ids, position_lifecycle_evidence.trade_ids),
       read_at = excluded.read_at, reads = position_lifecycle_evidence.reads + 1,
       last_error = excluded.last_error, last_error_at = excluded.last_error_at`)
-    .run({ acct, pid, host, verdict: classified.verdict, final: classified.final ? 1 : 0, reason: String(classified.reason ?? '').slice(0, 900),
+    .run({ acct, pid, host, verdict: classified.verdict, final: classified.final ? 1 : 0, rules: EVIDENCE_RULES, reason: String(classified.reason ?? '').slice(0, 900),
       source, deals: classified.deals, executed: classified.executed, symbolId: classified.symbolId, side: classified.openingSide,
       openedMs: classified.openedMs, closeMs: classified.finalCloseMs, net: b?.net ?? null, gross: b?.gross ?? null, swap: b?.swap ?? null,
       commission: b?.commission ?? null, fee: b?.conversionFee ?? null, ledgerNet, rows,
@@ -259,13 +288,24 @@ export function recordReaderEvidence(db, { accountId, host = null, capture, outc
 // reads the account pass records as verdicts too.
 // ---------------------------------------------------------------------------
 export const SWEEP_CLASSES = Object.freeze(['receipt', 'differs', 'no_account'])
+/**
+ * The rows with no account that are probed — and exactly the rows the
+ * reconciliation report lists (ledger-reconciliation.js), so the report's
+ * `probing` means a probe is still due, never "for ever" (B2 checker N9).
+ * Every status but rejected/cancelled: an open row with no account is a stuck
+ * record too, and the probe names the account that holds (or closed) it.
+ * Alias `t`. The sweep additionally needs a position id; the report lists a
+ * row without one as `no_position_id`.
+ */
+export const NO_ACCOUNT_PROBED_SQL = "t.account_id IS NULL AND t.status NOT IN ('rejected','cancelled')"
 const PID_SQL = col => `CAST(CAST(${col} AS INTEGER) AS TEXT)`
+// A final verdict counts as final only under the current rules (N3).
 const NOT_RECENT = pidExpr => `NOT EXISTS (SELECT 1 FROM position_lifecycle_evidence e WHERE e.account_id = @acct AND e.position_id = ${pidExpr}
-      AND (e.final = 1 OR MAX(julianday(e.read_at), COALESCE(julianday(e.last_error_at), 0)) > julianday(@since)))`
+      AND ((e.final = 1 AND e.rules = @rules) OR MAX(julianday(e.read_at), COALESCE(julianday(e.last_error_at), 0)) > julianday(@since)))`
 
 /** The next position of one class for this account, or null. */
 export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
-  const params = { acct: String(accountId), since: new Date(now - EVIDENCE_RETRY_MS).toISOString() }
+  const params = { acct: String(accountId), since: new Date(now - EVIDENCE_RETRY_MS).toISOString(), rules: EVIDENCE_RULES }
   if (cls === 'receipt') {
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
       WHERE t.account_id = @acct AND t.status = 'closed' AND t.net_pnl IS NOT NULL AND CAST(t.ctrader_position_id AS INTEGER) > 0
@@ -283,7 +323,7 @@ export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
   }
   if (cls === 'no_account') {
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
-      WHERE t.account_id IS NULL AND t.status = 'closed' AND CAST(t.ctrader_position_id AS INTEGER) > 0
+      WHERE ${NO_ACCOUNT_PROBED_SQL} AND CAST(t.ctrader_position_id AS INTEGER) > 0
         AND ${NOT_RECENT(PID_SQL('t.ctrader_position_id'))}
       ORDER BY t.id LIMIT 1`).get(params) ?? null
   }
@@ -294,6 +334,15 @@ function readCursor(db, key) {
   try { const v = JSON.parse(getState(db, key) || '{}'); return v && typeof v === 'object' ? v : {} } catch { return {} }
 }
 const recentRead = (cursor, now) => Number.isSafeInteger(cursor.lastReadAt) && cursor.lastReadAt <= now && now - cursor.lastReadAt < EVIDENCE_PACE_MS
+/**
+ * Has the sweep read a position history on this account in the last 30 s?
+ * The old-position reader asks before it reads (B2 checker N1), so the shared
+ * pacing holds in BOTH directions: one position-history read per account per
+ * 30 s across the two readers, whatever the pass cadence.
+ */
+export function sweepReadRecently(db, accountId, now = Date.now()) {
+  return recentRead(readCursor(db, `position_lifecycle_sweep:${String(accountId)}`), now)
+}
 
 /**
  * One sweep step for one account: at most one position-history read, and

@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import express from 'express'
 import { join } from 'node:path'
 import { tempDir } from '../test-support/temp-dir.js'
-import { initDB, setState } from '../db.js'
+import { initDB, getState, setState } from '../db.js'
 import { buildLedgerReconciliation, CLASS_BASIS } from './ledger-reconciliation.js'
 import { readLedgerReconciliation } from './performance-populations.js'
 import stateRouter from '../routes/state.js'
@@ -91,6 +91,35 @@ test('money is pooled only within one proven currency: SGD and USD are never sum
   assert.equal(r.accounts.find(a => a.accountId === NOCCY).currencyReason, 'deposit_currency_not_recorded')
   // No top-level money field exists to sum across currencies.
   for (const key of Object.keys(r)) assert.ok(!/net|pnl|delta/i.test(key), `top-level ${key} is not money`)
+})
+
+test('owner principle 1: the report reads no demo/live flag — flipping every account\'s flag changes nothing in it (checker B1)', t => {
+  const db = build(initDB(':memory:')); t.after(() => db.close())
+  const strip = r => ({ ...r, generatedAt: null })
+  const before = strip(buildLedgerReconciliation(db))
+  for (const a of before.accounts) assert.ok(!Object.keys(a).some(k => /live/i.test(k)), `${a.accountId} carries no live/demo field`)
+  // Flip the flag, and move the currency evidence to the host the flag now
+  // routes to (routing may read the flag; the deposit-currency proof checks
+  // the evidence came from the account's own host). Only the flag changed.
+  db.prepare('UPDATE accounts SET is_live = 1 - is_live').run()
+  for (const { account_id: id, is_live: live } of db.prepare('SELECT account_id, is_live FROM accounts').all()) {
+    const key = `acct:${id}:deposit_currency_evidence_json`
+    const value = getState(db, key)
+    if (value) setState(db, key, JSON.stringify({ ...JSON.parse(value), host: live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com' }))
+  }
+  assert.deepEqual(strip(buildLedgerReconciliation(db)), before)
+})
+
+test('a no_ledger_row verdict on a position the ledger now holds has its basis and says the ledger changed since the read (checker N9)', t => {
+  const db = build(initDB(':memory:')); t.after(() => db.close())
+  db.prepare(`INSERT INTO trades (account_id, symbol, side, status, ctrader_position_id, opened_at, closed_at, entry_price, exit_price, net_pnl)
+    VALUES (?, 'EURUSD', 'BUY', 'closed', '112', '2026-07-01 00:00:00', '2026-09-20 10:00:00', 1.1, 1.2, 6)`).run(USD)
+  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, reason, broker_net, read_at)
+    VALUES (?, '112', 'no_ledger_row', 1, 'fixture no_ledger_row', 6, '2026-09-25T10:00:00Z')`).run(USD)
+  const usd = buildLedgerReconciliation(db, { accountId: USD }).accounts[0]
+  assert.equal(usd.classes.no_ledger_row.positions, 1)
+  assert.equal(CLASS_BASIS.no_ledger_row, 'broker_lifecycle')
+  assert.equal(usd.positions.no_ledger_row[0].ledgerChangedSinceRead, true)
 })
 
 test('one account in scope; an unregistered account is refused', t => {

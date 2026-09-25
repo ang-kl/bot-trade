@@ -71,6 +71,15 @@ export const BROKER_POSITION_STILL_OPEN = 'broker shows position still open, not
  * label only.
  */
 export const BROKER_NEVER_FILLED = 'broker shows the order never filled'
+/**
+ * V3 B2 checker N2: the broker's complete position history for this account
+ * ARRIVED and was refused by the settling reader (e.g. non-executed deals
+ * beside executed ones, closing money or volume it cannot read, a lifecycle
+ * that does not balance) and no closing deal is on file locally. That is
+ * broker evidence too — "no broker evidence" would be false. Same exclusion:
+ * net_pnl stays NULL, excluded from P&L, still shown.
+ */
+export const BROKER_HISTORY_NOT_SETTLEABLE = 'broker history read, not settleable'
 
 /**
  * The DURABLE half of the "we tried and gave up" evidence.

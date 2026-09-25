@@ -10,14 +10,22 @@
 //     classes fairly, and a reply after the deadline writes nothing;
 //   - a row with no account is probed on BOTH hosts (a demo and a live
 //     account's pass), and the report names the one account that holds it.
+// Fix round (checker N1, N3, N4, N5, N9): the pacing holds in both
+// directions; a final verdict is final only under the current rules; a paged
+// answer is final; "never filled" needs this position's own deals; an open
+// row with no account is probed like a closed one.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
+import { join } from 'node:path'
+import Database from 'better-sqlite3'
+import { tempDir } from '../test-support/temp-dir.js'
 import {
-  classifyPositionHistory, sweepLifecycleEvidence, VERDICTS, EVIDENCE_PACE_MS, EVIDENCE_RETRY_MS,
+  classifyPositionHistory, sweepLifecycleEvidence, VERDICTS, EVIDENCE_PACE_MS, EVIDENCE_RETRY_MS, EVIDENCE_RULES,
 } from './position-lifecycle-evidence.js'
 import { verifiedPositionHistory, POSITION_HISTORY_REFUSED } from '../lib/position-deal-history.js'
 import { backfillAccountPnl } from './cross-side-pnl.js'
+import { recoverOldPositionPnl } from './old-position-pnl.js'
 import { resetBackfillPacing } from './pnl-backfill.js'
 import { BROKER_NEVER_FILLED, UNRESOLVED_NO_EVIDENCE } from './mark-unresolvable.js'
 import { buildLedgerReconciliation } from './ledger-reconciliation.js'
@@ -88,6 +96,34 @@ test('every answer shape gets its verdict; final ones are the ones nothing at th
   for (const [v, spec] of Object.entries(VERDICTS)) assert.equal(typeof spec.final, 'boolean', v)
 })
 
+test('a paged answer (hasMore with deals) is the bounded response exceeded: final; hasMore with no deal says nothing (checker N4)', () => {
+  const c = response => classifyPositionHistory(response, { accountId: DEMO, positionId: '700', now: NOW })
+  const paged = c(hist(DEMO, [od(1, 700, NOW - 2 * DAY), cd(2, 700, NOW - DAY, 100, 150)], { hasMore: true }))
+  assert.deepEqual([paged.verdict, paged.final, paged.persistable, paged.deals], ['permanently_unsupported', true, false, 2])
+  assert.match(paged.reason, /paged the history of position 700 \(hasMore after 2 deal\(s\)\)/)
+  // Still unreadable: hasMore with nothing in it, and an answer with no hasMore flag at all.
+  assert.equal(c(hist(DEMO, [], { hasMore: true })).verdict, 'unreadable')
+  assert.equal(c({ ctidTraderAccountId: DEMO, deal: [od(1, 700, NOW - DAY)] }).verdict, 'unreadable')
+  // Another account's paged answer is another account's: unreadable, never final.
+  assert.equal(c(hist(LIVE, [od(1, 700, NOW - DAY)], { hasMore: true })).verdict, 'unreadable')
+})
+
+test('"never filled" needs every deal to be this position\'s, with a deal id (checker N5)', () => {
+  const at = response => ({ c: classifyPositionHistory(response, { accountId: DEMO, positionId: '700', now: NOW }), response })
+  const foreign = hist(DEMO, [rejected(1, 999, 4), rejected(2, 999, 4)])
+  const noId = hist(DEMO, [{ ...rejected(1, 700, 4), dealId: undefined }, rejected(2, 700, 4)])
+  const mixed = hist(DEMO, [rejected(1, 700, 4), rejected(2, 999, 'MISSED')])
+  for (const { c, response } of [at(foreign), at(noId), at(mixed)]) {
+    assert.equal(c.verdict, 'permanently_unsupported')
+    assert.match(c.reason, /position deal evidence invalid/)
+    // The settling reader: the pre-B2 refusal, not "never filled".
+    assert.throws(() => verifiedPositionHistory(response, { accountId: DEMO, positionId: '700', now: NOW }),
+      e => e.code === POSITION_HISTORY_REFUSED && e.neverFilled !== true && e.message === 'position deal evidence invalid')
+  }
+  // This position's own rejected deals are still "never filled".
+  assert.equal(at(hist(DEMO, [rejected(1, 700, 4), rejected(2, '700', 'MISSED')])).c.verdict, 'never_filled')
+})
+
 test('money verdicts: agrees, disagrees, and the two fragment shapes (309/310, two priced rows) — verdict only', () => {
   const rows = (...r) => r.map((x, i) => ({ id: i + 1, status: 'closed', net_pnl: null, closed_at: iso(NOW - 29 * DAY), ...x }))
   const c = ledgerRows => classifyPositionHistory(life(DEMO, 700, 15000), { accountId: DEMO, positionId: '700', now: NOW, ledgerRows })
@@ -155,6 +191,80 @@ test('pacing is shared with the old-position reader: one read per account per 30
   // 31 s after the reader's read and 71 s after the sweep's: due again.
   assert.equal((await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + 71_000, getPositionDeals: read })).state, 'read')
   assert.equal(reads, 2)
+})
+
+test('the other direction (checker N1): a sweep read 10 s ago paces the old-position reader on the same account', async t => {
+  const db = fresh(t, [[DEMO, 0], [DEMO2, 0]])
+  trade(db, { pid: '700', net: 150 })
+  let reads = 0
+  const swept = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW, getPositionDeals: async () => { reads++; return life(DEMO, 700, 15000) } })
+  assert.equal(swept.state, 'read')
+  // The checker's reproduction: a new unpriced row, and a reader pass 10 s later.
+  const unpriced = trade(db, { pid: '701' })
+  const reader = (acct, at) => recoverOldPositionPnl(db, { ready: true, host: HOST[acct], accountId: acct }, { now: at, isCurrent: () => true,
+    getPositionDeals: async pid => { reads++; return life(acct, Number(pid), 2000) } })
+  assert.equal((await reader(DEMO, NOW + 10_000)).state, 'paced')
+  assert.equal(reads, 1, 'two position-history reads in 10 s on one account is what the shared pacing forbids')
+  assert.equal(rowSnap(db, unpriced).net_pnl, null)
+  // Another account is not paced by this account's sweep.
+  trade(db, { acct: DEMO2, pid: '702' })
+  assert.equal((await reader(DEMO2, NOW + 10_000)).state, 'recovered')
+  assert.equal(reads, 2)
+  // 30 s after the sweep's read the reader is due again and fills the row.
+  assert.equal((await reader(DEMO, NOW + EVIDENCE_PACE_MS)).state, 'recovered')
+  assert.equal(reads, 3); assert.equal(rowSnap(db, unpriced).net_pnl, 20)
+})
+
+test('a final verdict is final only under the current rules: one judged under older rules is read once more (checker N3)', async t => {
+  const db = fresh(t)
+  trade(db, { pid: '700', net: 150 })
+  let reads = 0
+  const read = async () => { reads++; return hist(DEMO, []) }
+  await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW, getPositionDeals: read })
+  assert.deepEqual([evidence(db, DEMO, 700).verdict, evidence(db, DEMO, 700).final, evidence(db, DEMO, 700).rules], ['empty_at_broker', 1, EVIDENCE_RULES])
+  assert.equal((await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + EVIDENCE_RETRY_MS + MIN, getPositionDeals: read })).state, 'no_candidate')
+  // The rules change (the owner answers how an empty history is judged).
+  db.prepare('UPDATE position_lifecycle_evidence SET rules = ?').run(EVIDENCE_RULES - 1)
+  const again = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + EVIDENCE_RETRY_MS + 2 * MIN, getPositionDeals: read })
+  assert.deepEqual([again.state, again.positionId, reads], ['read', '700', 2])
+  assert.equal(evidence(db, DEMO, 700).rules, EVIDENCE_RULES)
+  // Judged under the current rules again: never read again.
+  assert.equal((await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + 3 * DAY, getPositionDeals: read })).state, 'no_candidate')
+  assert.equal(reads, 2)
+})
+
+test('a table created before the rules column gains it, and its rows count as older rules (checker N3)', t => {
+  const path = join(tempDir('lifecycle-evidence-rules-'), 'old.db')
+  const old = new Database(path)
+  old.exec(`CREATE TABLE position_lifecycle_evidence (account_id TEXT NOT NULL, position_id TEXT NOT NULL, host TEXT, verdict TEXT NOT NULL,
+    final INTEGER NOT NULL DEFAULT 0, reason TEXT, source TEXT, deals INTEGER, executed INTEGER, symbol_id TEXT, opening_side TEXT, opened_ms INTEGER,
+    final_close_ms INTEGER, broker_net REAL, broker_gross REAL, broker_swap REAL, broker_commission REAL, conversion_fee REAL, ledger_net REAL,
+    ledger_rows TEXT, trade_ids TEXT, read_at TEXT NOT NULL, reads INTEGER NOT NULL DEFAULT 1, last_error TEXT, last_error_at TEXT,
+    PRIMARY KEY (account_id, position_id))`)
+  old.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, read_at) VALUES ('${DEMO}', '700', 'empty_at_broker', 1, ?)`).run(iso(NOW))
+  old.close()
+  const db = initDB(path); t.after(() => db.close())
+  assert.ok(db.prepare('PRAGMA table_info(position_lifecycle_evidence)').all().some(c => c.name === 'rules'))
+  assert.equal(evidence(db, DEMO, 700).rules, 0)
+  assert.notEqual(EVIDENCE_RULES, 0, 'a pre-column row is never "current"')
+})
+
+test('an open row with no account is probed too, so the report never reads "probing" for ever (checker N9)', async t => {
+  const db = fresh(t)
+  const orphan = trade(db, { acct: null, pid: '231100001', status: 'open' })
+  const noPid = trade(db, { acct: null, pid: null, status: 'open' })
+  const before = rowSnap(db, orphan)
+  const brokerOn = { [DEMO]: hist(DEMO, [od(1, 231100001, NOW - DAY)]), [LIVE]: hist(LIVE, []) }
+  for (const acct of [DEMO, LIVE]) {
+    const out = await sweepLifecycleEvidence(db, creds(acct), { now: NOW, getPositionDeals: async () => brokerOn[acct] })
+    assert.deepEqual([out.state, out.class, out.positionId], ['read', 'no_account', '231100001'], acct)
+  }
+  const rows = buildLedgerReconciliation(db).noAccount.rows
+  const row = rows.find(r => r.tradeId === orphan)
+  assert.deepEqual([row.status, row.verdict, row.heldBy.accountId, row.heldBy.verdict], ['open', 'held_by_one_account', DEMO, 'open_at_broker'])
+  // A row with no position id is listed, not hidden, and not "probing".
+  assert.equal(rows.find(r => r.tradeId === noPid).verdict, 'no_position_id')
+  assert.deepEqual(rowSnap(db, orphan), before, 'nothing is written to the row')
 })
 
 test('an unreadable answer is retried after 15 minutes, never sooner, and never replaces a verdict', async t => {

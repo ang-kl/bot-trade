@@ -2071,6 +2071,7 @@ export function initDB(dbPath) {
     host              TEXT,
     verdict           TEXT NOT NULL,
     final             INTEGER NOT NULL DEFAULT 0,
+    rules             INTEGER NOT NULL DEFAULT 0,
     reason            TEXT,
     source            TEXT,
     deals             INTEGER,
@@ -2095,6 +2096,14 @@ export function initDB(dbPath) {
   );
   CREATE INDEX IF NOT EXISTS idx_lifecycle_evidence_position ON position_lifecycle_evidence(position_id);
   `);
+  // `rules`: the classification rules a verdict was judged under (B2 checker
+  // N3). A final verdict is final only under the current rules; 0 (a row
+  // written before the column) is re-read once. Guarded like the migrations
+  // above, for a table created before the column existed.
+  const lifecycleEvidenceCols = new Set(db.prepare('PRAGMA table_info(position_lifecycle_evidence)').all().map(c => c.name));
+  if (!lifecycleEvidenceCols.has('rules')) {
+    db.exec('ALTER TABLE position_lifecycle_evidence ADD COLUMN rules INTEGER NOT NULL DEFAULT 0');
+  }
 
   timedPhase('history_schema');
 

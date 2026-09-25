@@ -41,6 +41,12 @@ export function dealStatusSummary(deals) {
   for (const d of deals) { const k = dealStatusName(d) ?? `unknown(${String(d?.dealStatus)})`; n.set(k, (n.get(k) || 0) + 1) }
   return [...n].map(([k, c]) => `${k}×${c}`).join(', ')
 }
+/**
+ * The deal is THIS position's and carries a deal id (B2 checker N5). A
+ * history's statuses say something about a position only when every deal in
+ * it passes this; the full validation below checks the rest.
+ */
+export const ownPositionDeal = (d, positionId) => positive(d?.dealId) && String(d?.positionId) === String(positionId)
 
 /** Two ledger/broker times closer than this are the same moment (clock skew, the reconciler's pass). */
 export const FALSE_CLOSE_TOLERANCE_MS = 120_000
@@ -106,8 +112,10 @@ export function verifiedPositionHistory(response, { accountId, positionId, now }
   // This used to fall into 'position deal evidence invalid' below, the wording
   // for a malformed deal, and a bounded write-off then labelled broker
   // evidence as "no broker evidence". Still a refusal (nothing to settle, an
-  // attempt at the row); now it says what the broker shows.
-  if (deals.length && deals.every(notExecutedDeal)) {
+  // attempt at the row); now it says what the broker shows. Only when every
+  // deal is this position's with a deal id (checker N5): otherwise the answer
+  // falls through to 'position deal evidence invalid', as before B2.
+  if (deals.length && deals.every(d => notExecutedDeal(d) && ownPositionDeal(d, positionId))) {
     throw Object.assign(refused(`broker shows no executed deal for position ${positionId} (never filled): ${dealStatusSummary(deals)}`), { neverFilled: true })
   }
   let opened = 0, closed = 0

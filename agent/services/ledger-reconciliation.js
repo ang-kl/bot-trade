@@ -36,7 +36,7 @@
 import { normPosId } from '../lib/pos-id.js'
 import { depositCurrencies } from './performance-populations.js'
 import { findDuplicateTrades } from './trade-integrity.js'
-import { VERDICTS } from './position-lifecycle-evidence.js'
+import { VERDICTS, NO_ACCOUNT_PROBED_SQL } from './position-lifecycle-evidence.js'
 
 /** Before this, deal receipts were written only by the manual import. */
 export const RECEIPTS_SINCE = '2026-07-28T00:00:00Z'
@@ -50,7 +50,10 @@ const ms = v => {
 }
 
 export const CLASS_BASIS = Object.freeze({
-  ...Object.fromEntries(Object.keys(VERDICTS).filter(v => v !== 'unreadable' && v !== 'no_ledger_row').map(v => [v, 'broker_lifecycle'])),
+  // Every verdict but `unreadable` (not a verdict about the position). This
+  // includes `no_ledger_row`: a position read under it may have gained a
+  // ledger row since, and the report says so (ledgerChangedSinceRead).
+  ...Object.fromEntries(Object.keys(VERDICTS).filter(v => v !== 'unreadable').map(v => [v, 'broker_lifecycle'])),
   agrees_on_receipts: 'retained_receipts',
   differs_on_receipts: 'retained_receipts',
   unpriced_with_receipts: 'retained_receipts',
@@ -71,7 +74,9 @@ function emptyClass() { return { positions: 0, rows: 0, writtenOff: 0, ledgerNet
  */
 export function buildLedgerReconciliation(db, { accountId = null } = {}) {
   const currencies = depositCurrencies(db)
-  const registered = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY account_id').all()
+  // Owner principle 1: only routing reads the demo/live flag. The report needs
+  // none of it — each probe names the host it read from.
+  const registered = db.prepare('SELECT account_id, enabled FROM accounts ORDER BY account_id').all()
     .filter(a => /^[1-9]\d*$/.test(String(a.account_id)))
   const wanted = accountId == null || accountId === 'all' ? registered : registered.filter(a => String(a.account_id) === String(accountId))
   if (!wanted.length) throw new RangeError('account not registered')
@@ -81,7 +86,7 @@ export function buildLedgerReconciliation(db, { accountId = null } = {}) {
   try { dupes = findDuplicateTrades(db, { scope: null }) } catch { dupes = null }
 
   const accounts = wanted.map(a => accountSection(db, String(a.account_id), {
-    isLive: Number(a.is_live) === 1, enabled: Number(a.enabled) === 1, currency: currencies[String(a.account_id)] ?? { currency: null },
+    enabled: Number(a.enabled) === 1, currency: currencies[String(a.account_id)] ?? { currency: null },
     noAccountPids, dupes,
   }))
 
@@ -118,7 +123,7 @@ export function buildLedgerReconciliation(db, { accountId = null } = {}) {
   }
 }
 
-function accountSection(db, accountId, { isLive, enabled, currency, noAccountPids, dupes }) {
+function accountSection(db, accountId, { enabled, currency, noAccountPids, dupes }) {
   // Ledger positions: closed rows (any status but rejected/cancelled count as
   // holders; rejected twins are kept for the broker-side classes).
   const ledger = new Map()
@@ -184,7 +189,9 @@ function accountSection(db, accountId, { isLive, enabled, currency, noAccountPid
     const entry = { positionId: p.pid, tradeIds: closed.map(r => r.id), ledgerNet, brokerNet,
       delta: ledgerNet != null && brokerNet != null ? r2(ledgerNet - brokerNet) : null, writtenOff,
       ...(why ? { reason: String(why).slice(0, 300), readAt } : {}),
-      ...(ev && ev.verdict !== 'unreadable' && ev.ledger_net != null && ledgerNet != null && Math.abs(Number(ev.ledger_net) - ledgerNet) > TOL
+      ...(ev && ev.verdict !== 'unreadable' && ((ev.ledger_net != null && ledgerNet != null && Math.abs(Number(ev.ledger_net) - ledgerNet) > TOL)
+        // Read when no row on this account held the position; one does now.
+        || ev.verdict === 'no_ledger_row')
         ? { ledgerChangedSinceRead: true } : {}) }
     add(cls, entry, { rows: closed.length, writtenOff, ledgerNet, brokerNet })
   }
@@ -207,7 +214,7 @@ function accountSection(db, accountId, { isLive, enabled, currency, noAccountPid
     }
   }
   return {
-    accountId, isLive, enabled,
+    accountId, enabled,
     currency: currency?.currency ?? null,
     ...(currency?.currency ? { currencySource: currency.source ?? null } : { currencyReason: currency?.reason ?? 'deposit_currency_not_recorded' }),
     classes,
@@ -219,12 +226,14 @@ function accountSection(db, accountId, { isLive, enabled, currency, noAccountPid
 /**
  * Rows with no account: each position probed on every enabled account (demo
  * and live hosts). Money is listed per row and never totalled — the row has
- * no account, so it has no currency.
+ * no account, so it has no currency. The rows listed here are exactly the
+ * rows the sweep probes (NO_ACCOUNT_PROBED_SQL, shared), so a row reads
+ * `probing` only while a probe is still due, never for ever.
  */
 function noAccountSection(db, registered) {
   const enabled = registered.filter(a => Number(a.enabled) === 1).map(a => String(a.account_id))
-  const rows = db.prepare(`SELECT id, status, symbol, side, net_pnl, opened_at, closed_at, ctrader_position_id AS pid FROM trades
-    WHERE account_id IS NULL AND status NOT IN ('rejected','cancelled') ORDER BY id LIMIT 200`).all()
+  const rows = db.prepare(`SELECT id, status, symbol, side, net_pnl, opened_at, closed_at, ctrader_position_id AS pid FROM trades t
+    WHERE ${NO_ACCOUNT_PROBED_SQL} ORDER BY id LIMIT 200`).all()
   const probe = db.prepare('SELECT account_id, verdict, reason, host, broker_net, symbol_id, opening_side, read_at FROM position_lifecycle_evidence WHERE position_id = ?')
   const out = rows.map(r => {
     const pid = normPosId(r.pid)

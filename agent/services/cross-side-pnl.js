@@ -80,9 +80,11 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
       if (verdict) result.positionHistory = { ...result.positionHistory, verdict }
     } catch (error) { result.lifecycleEvidenceError = error?.message || String(error) }
     // The evidence sweep (receipts for money rows, receipts that disagree, rows
-    // with no account) shares the reader's pacing: it reads only when neither
-    // has read on this account in the last 30 s, so a pass still makes at most
-    // one position-history read.
+    // with no account) shares the reader's pacing in both directions: each of
+    // the two reads only when neither has read on this account in the last
+    // 30 s (sweepLifecycleEvidence checks the reader's cursor, the reader
+    // checks the sweep's), so a pass makes at most one position-history read
+    // and two passes 10 s apart make one between them.
     if (!capture && isCurrent()) {
       try {
         const evidence = await sweepLifecycleEvidence(db, creds, { now: started, isCurrent, getPositionDeals: readPositionBounded })
