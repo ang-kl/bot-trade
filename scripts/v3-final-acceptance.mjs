@@ -17,7 +17,11 @@
 //   freeze    --start DIR [--fields F.json] [--end DIR --end-fields F.json] [--changes C.json]   (T0)
 //             fields file: { originMainSha, railwayDeployments: { cpp-exec, cpp-acct, cpp-verify,
 //             cpp-scan-tick, cpp-scan-timeframe }, partialTpPolicyVersion, caps: { maxOpenPositions, bookMax },
-//             tickValidationSha256 } — the sha is computed from this checkout when not given
+//             tickValidationSha256 }. The sha of agent/config/tick-validation.json is computed from
+//             this checkout ONLY for a start-only freeze (labelled "computed at evaluation <ISO>");
+//             with --end the start value comes from the start fields file and nothing else — save
+//             the start run's --out and carry its manifest.start.fields.tickValidationSha256 into
+//             the start fields file, or the drift in it reads NOT_VERIFIABLE (not captured)
 //   drill     --before DIR --after DIR [--side cpp_exec_demo|cpp_exec]                           (T1, T1b)
 //   retention --samples DIR [--side …] [--allow-open-segment-over-cap]                         (T2)
 //   capacity  --samples DIR --stage STAGE.json                                                   (T3)
@@ -95,7 +99,14 @@ function tickValidationSha() {
   return createHash('sha256').update(readFileSync(join(ROOT, 'agent/config/tick-validation.json'))).digest('hex')
 }
 
-function freezeSide(dirOpt, fieldsOpt, label) {
+/**
+ * One side of a freeze. `computeSha`: whether the tick-validation sha may be
+ * read from this checkout when the fields file does not carry it. Never for
+ * the START of a start-and-end evaluation: the checkout is read now, at the
+ * end, so a start value computed from it equals the end value by
+ * construction and a change during the trial would be hidden.
+ */
+function freezeSide(dirOpt, fieldsOpt, { computeSha, evaluatedAt, side }) {
   const { routes } = loadDir(dirOpt)
   const fromBodies = fa.freezeFieldsFromBodies({
     runtimeManifest: last(routes['/state/runtime-manifest']), entryEngines: last(routes['/state/entry-engines']), tickRecorder: last(routes['/state/tick-recorder']),
@@ -111,15 +122,18 @@ function freezeSide(dirOpt, fieldsOpt, label) {
     merged[k] = v
     sources[k] = 'operator fields file'
   }
-  if (merged.tickValidationSha256 == null) { merged.tickValidationSha256 = tickValidationSha(); sources.tickValidationSha256 = `computed from this checkout's agent/config/tick-validation.json at ${label}` }
+  if (merged.tickValidationSha256 == null) {
+    if (computeSha) { merged.tickValidationSha256 = tickValidationSha(); sources.tickValidationSha256 = `computed at evaluation ${evaluatedAt} from this checkout's agent/config/tick-validation.json` }
+    else sources.tickValidationSha256 = `not captured: the ${side} fields file carries no tickValidationSha256, and it is never computed from the checkout at evaluation time for the ${side} of a start-and-end freeze`
+  }
   return { fields: merged, sources, conflicts }
 }
 
-export function runStep(o) {
+export function runStep(o, { evaluatedAt = new Date().toISOString() } = {}) {
   switch (o.step) {
     case 'freeze': {
-      const start = freezeSide(o.start, o.fields, 'the start')
-      const end = o.end ? freezeSide(o.end, o.endFields, 'the end') : null
+      const start = freezeSide(o.start, o.fields, { computeSha: !o.end, evaluatedAt, side: 'start' })
+      const end = o.end ? freezeSide(o.end, o.endFields, { computeSha: true, evaluatedAt, side: 'end' }) : null
       const changes = o.changes ? readJson(o.changes) : []
       const r = fa.freezeManifest(start.fields, { end: end?.fields ?? null, changes: Array.isArray(changes) ? changes : changes?.changes ?? [] })
       return { ...r, manifest: { start, end } }
@@ -178,7 +192,8 @@ function main() {
       console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').filter(l => l.startsWith('//')).map(l => l.slice(3)).join('\n'))
       return
     }
-    const result = { evaluatorVersion: fa.EVALUATOR_VERSION, evaluatedAt: new Date().toISOString(), ...runStep(o) }
+    const evaluatedAt = new Date().toISOString()
+    const result = { evaluatorVersion: fa.EVALUATOR_VERSION, evaluatedAt, ...runStep(o, { evaluatedAt }) }
     const text = `${JSON.stringify(result, null, 2)}\n`
     if (o.out) writeFileSync(o.out, text)
     process.stdout.write(text)

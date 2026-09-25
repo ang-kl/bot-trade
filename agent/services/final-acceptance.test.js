@@ -10,20 +10,23 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { tempDir } from '../test-support/temp-dir.js'
 import { initDB } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { reserveEntry, redeemPermit, resolveIntent, ledgerView } from './entry-ledger.js'
+import { reserveEntry, redeemPermit, resolveIntent, ledgerView, STANDING_PRODUCERS } from './entry-ledger.js'
 import { _resetRefusalDedupe } from './entry-mode.js'
 import {
   VERDICT, fold, check, freezeManifest, freezeFieldsFromBodies, recorderDrill, retentionCheck, capacityStage,
   e2eTrace, soakVerdict, finalReport, isStorageBody, assertNotStorage, StorageBodyRefused, wilson, toMs, E2E_SOURCES,
+  STANDING_SIGNAL_PRODUCERS,
 } from './final-acceptance.js'
-import { defaultFaultPlan, sourceHashes, SOAK_SOURCES } from '../../scripts/tick-recorder-soak.mjs'
+import { defaultFaultPlan, sourceHashes, SOAK_SOURCES, soakArgs } from '../../scripts/tick-recorder-soak.mjs'
+import { runStep } from '../../scripts/v3-final-acceptance.mjs'
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 const { PASS, FAIL, NOT_VERIFIABLE: NV } = VERDICT
@@ -293,11 +296,16 @@ function intent(o = {}) {
     broker_order_id: 'o1', broker_position_id: 'p1', signal_ref: null, ...o,
   }
 }
+// The oldest row of each saved newest-first list, BEFORE the window start: a
+// production ledger and decision log reach back past any trial window, and
+// only a list that does is read as complete (a smaller ?limit cuts it).
+const OLDER_INTENT = intent({ id: 'i0', symbol: 'MSFT.US', symbol_id: 10096, state: 'REJECTED', error_code: 'max_positions', resolution_source: 'admission', created_at: iso(T - 2 * H), resolved_at: iso(T - 2 * H + 1000), broker_order_id: null, broker_position_id: null })
+const OLDER_DECISION = { id: 9, account_id: ACCT, symbol: 'MSFT.US', stage: 'risk_gate', decision: 'veto', reason: 'max_positions: 5/5 open', created_at: sqlite(T - 2 * H) }
 function e2eBodies({ intents = [intent()], dealsNet = [8, 4.5], phNet = 12.5, decisions = null } = {}) {
   const deals = dealsNet.map((n, i) => ({ deal_id: `d${i + 1}`, position_id: 'p1', account_id: ACCT, net_pnl: n, closed_at: sqlite(T + (3 + i) * H) }))
   return {
-    '/state/entry-intents': intentsBody(T + 6 * H, intents, { '…0058': { FILLED: 1 } }),
-    '/state/decisions': decisions ?? { decisions: [{ id: 11, account_id: ACCT, symbol: 'AAPL.US', stage: 'dispatch', decision: 'proceed', reason: 'order dispatched: BUY 1 lots (risk event 5)', created_at: sqlite(T + H - 3000) }] },
+    '/state/entry-intents': intentsBody(T + 6 * H, [...intents, OLDER_INTENT], { '…0058': { FILLED: 1 } }),
+    '/state/decisions': decisions ?? { decisions: [{ id: 11, account_id: ACCT, symbol: 'AAPL.US', stage: 'dispatch', decision: 'proceed', reason: 'order dispatched: BUY 1 lots (risk event 5)', created_at: sqlite(T + H - 3000) }, OLDER_DECISION] },
     '/state/scanner-mirrors': { observedAtMs: T + 6 * H, status: 'unavailable', reason: 'no_scanner_observation' },
     '/state/momentum-targets': { accountId: 'all', rows: [{ accountId: ACCT, tradeId: 7, positionId: 'p1', evidenceValid: true, evidenceId: 'ev1', partialState: 'CONFIRMED' }], truncated: false },
     '/state/protection-audit': [audit(T + H + 40_000, { checked: 5 }), audit(T + 6 * H, { checked: 4 })],
@@ -369,7 +377,7 @@ test('T4: a position still open at the end leaves its exits NOT_VERIFIABLE, not 
   assert.match(e2eTrace(oneDeal, OPTS).reason, /exits: the partial TP1 is CONFIRMED but the broker shows 1 closing deal/)
 })
 
-test('T4: naked or targetless positions, duplicate intents, a refusal with no reason, an unknown close reason and unexplained recorder gaps each fail', () => {
+test('T4: naked or targetless positions, duplicate intents, a refusal with no reason, an unknown close reason and an unexplained segment loss each fail; gaps over reconnects are not verifiable', () => {
   const naked = e2eBodies(); naked['/state/protection-audit'][1] = audit(T + 5 * H, { targetless: 2 })
   assert.match(e2eTrace(naked, OPTS).reason, /^nakedOrTargetless: audit .* 0 naked, 2 targetless/)
   const dup = e2eBodies({ intents: [intent(), intent({ id: 'i2', created_at: iso(T + 2 * H), resolved_at: iso(T + 2 * H) })] })
@@ -379,10 +387,68 @@ test('T4: naked or targetless positions, duplicate intents, a refusal with no re
   assert.match(e2eTrace(refusal, OPTS).reason, /^refusalReasons: decision 12 \(risk_gate\) veto with no reason/)
   const unknown = e2eBodies(); unknown['/state/position-history'].recent[0].close_reason = 'unknown'
   assert.match(e2eTrace(unknown, OPTS).reason, /pnl: unknown close reason/)
+  // A keeper switch-off writes GAP_SWITCHED_OFF with no reconnect, and the GET
+  // body counts gaps without reasons: more gaps than reconnects is not proof of
+  // loss (drops and reserve refusals fail on their own counters). T3 agrees.
   const gaps = e2eBodies(); gaps['/state/tick-recorder'].sides[1].status.events.gaps = 4
-  assert.match(e2eTrace(gaps, OPTS).reason, /^recorderGaps: recorder\.cpp_exec_demo\.counters: 3 gap\(s\) inside the window against 0 reconnect/)
+  const g = e2eTrace(gaps, OPTS)
+  assert.equal(g.verdict, NV, g.reason)
+  assert.match(g.reason, /^recorderGaps: recorder\.cpp_exec_demo\.counters: 3 gap\(s\) inside the window against 0 reconnect\(s\): the rest are not explained by these counters \(a keeper switch-off writes a gap with no reconnect/)
+  const refused = e2eBodies(); refused['/state/tick-recorder'].sides[1].status.events.gaps = 4; refused['/state/tick-recorder'].sides[1].status.events.pausedDrops = 7
+  assert.match(e2eTrace(refused, OPTS).reason, /^recorderGaps: recorder\.cpp_exec_demo\.counters: 7 event\(s\) dropped or refused by the reserve inside the window/, 'a gap with refused events still fails')
   const lost = e2eBodies(); lost['/state/tick-segments'].sides[0].manifest.unexplained = 1
   assert.match(e2eTrace(lost, OPTS).reason, /^recorderGaps: recorder\.cpp_exec\.manifest: 1 unexplained/)
+})
+
+test('T4 and T1: two sequential tick fills sharing one standing permit key are two entries, not a duplicate; two in flight at once are', () => {
+  // tick-permits.js keys every permit for a symbol `tick:<symbolId>` and the
+  // ledger stores that key as signal_ref, so it recurs on every fill.
+  const tick = (o) => intent({ producer_id: 'tick_momentum', basis: 'tick', symbol: 'EURUSD', symbol_id: 5, signal_ref: 'tick:5', ...o })
+  const seq = [
+    tick({ id: 't1', broker_position_id: '111', created_at: iso(T + H), resolved_at: iso(T + H + 2000) }),
+    tick({ id: 't2', broker_position_id: '222', created_at: iso(T + 4 * H), resolved_at: iso(T + 4 * H + 2000) }),
+  ]
+  const r = e2eTrace(e2eBodies({ intents: seq }), OPTS)
+  const dup = r.checks.find(c => c.name === 'duplicateIntents')
+  assert.equal(dup.verdict, PASS, dup.reason)
+  const overlap = [
+    tick({ id: 't1', broker_position_id: '111', created_at: iso(T + H), resolved_at: iso(T + 2 * H) }),
+    tick({ id: 't2', broker_position_id: '222', created_at: iso(T + 1.5 * H), resolved_at: iso(T + 1.5 * H + 2000) }),
+  ]
+  const o = e2eTrace(e2eBodies({ intents: overlap }), OPTS)
+  assert.equal(o.verdict, FAIL); assert.match(o.reason, /^duplicateIntents: permit key tick:5 on …0058: t1 and t2 in flight at once/)
+  const undated = [tick({ id: 't1', broker_position_id: '111', created_at: null }), tick({ id: 't2', broker_position_id: '222', created_at: null, resolved_at: iso(T + 4 * H) })]
+  const u = e2eTrace(e2eBodies({ intents: undated }), OPTS).checks.find(c => c.name === 'duplicateIntents')
+  assert.equal(u.verdict, NV, 'a standing pair with no created time cannot be judged either way'); assert.match(u.reason, /carry no created time, so overlap cannot be judged: permit key tick:5 on …0058/)
+  // A bar producer's signal is one signal: two reached intents on it stay a duplicate however far apart.
+  const bar = [intent({ id: 'b1', signal_ref: 'sig-9', broker_position_id: '111' }), intent({ id: 'b2', signal_ref: 'sig-9', broker_position_id: '222', created_at: iso(T + 4 * H), resolved_at: iso(T + 4 * H) })]
+  assert.match(e2eTrace(e2eBodies({ intents: bar }), OPTS).reason, /^duplicateIntents: signal sig-9 on …0058/)
+  // T1 reads every recent[] row, not only a window: the same sequential pair passes there, the overlap fails.
+  const drill = drillPair()
+  drill.after['/state/entry-intents'] = intentsBody(T + 3 * 60_000, seq)
+  assert.equal(recorderDrill(drill.before, drill.after, drill.opts).checks.find(c => c.name === 'intents').verdict, PASS)
+  drill.after['/state/entry-intents'] = intentsBody(T + 3 * 60_000, overlap)
+  assert.match(recorderDrill(drill.before, drill.after, drill.opts).reason, /^intents: duplicate intents: permit key tick:5 on …0058: t1 and t2 in flight at once/)
+  assert.deepEqual([...STANDING_SIGNAL_PRODUCERS].sort(), [...STANDING_PRODUCERS].sort(), 'pinned to the ledger\'s own standing producers')
+})
+
+test('T4: a list saved with a small ?limit is not read as complete — only one reaching back past the window start is', () => {
+  // Ten rows, all inside the window, fewer than the default page of 50: the old
+  // rule read that as complete. The body does not state its ?limit.
+  const tenIn = Array.from({ length: 10 }, (_, i) => intent({ id: `r${i}`, state: 'REJECTED', error_code: 'max_positions', broker_order_id: null, broker_position_id: null, created_at: iso(T + (i + 1) * 60_000), resolved_at: iso(T + (i + 1) * 60_000 + 500) }))
+  const cut = e2eBodies({ intents: tenIn })
+  cut['/state/entry-intents'].recent = cut['/state/entry-intents'].recent.filter(x => x.id !== OLDER_INTENT.id)
+  const c = e2eTrace(cut, OPTS).checks.find(x => x.name === 'coverage.intents')
+  assert.equal(c.verdict, NV); assert.match(c.reason, /does not reach back to the window start/)
+  assert.equal(e2eTrace(e2eBodies({ intents: tenIn }), OPTS).checks.find(x => x.name === 'coverage.intents').verdict, PASS, 'the same rows with one older than the window start: complete')
+  // Five decisions, none a dispatch for i1 and none before the window: not proof there was no admission.
+  const five = { decisions: Array.from({ length: 5 }, (_, i) => ({ id: 20 + i, account_id: ACCT, symbol: 'MSFT.US', stage: 'risk_gate', decision: 'skip', reason: 'spread', created_at: sqlite(T + 2 * H + i * 1000) })) }
+  const a = e2eTrace(e2eBodies({ decisions: five }), OPTS)
+  const adm = a.entries[0].checks.find(x => x.name === 'admission')
+  assert.equal(adm.verdict, NV, adm.reason); assert.match(adm.reason, /does not reach back to this intent/)
+  assert.equal(a.checks.find(x => x.name === 'refusalReasons').verdict, NV)
+  const none = e2eBodies({ intents: [] }); none['/state/entry-intents'].recent = []
+  assert.equal(e2eTrace(none, OPTS).checks.find(x => x.name === 'coverage.intents').verdict, PASS, 'an empty page is the whole table (?limit is at least 1)')
 })
 
 test('T4: the entry gate is read at the start — missing, late or failing gate bodies are named', () => {
@@ -457,6 +523,16 @@ test('soak: records counted as written but unreadable on disk fail; a fault that
   assert.match(unmet.reason, /fault\.probe_low@5s: applied, but no call the fault breaks happened inside its window/)
   const root = soakVerdict(soakReport({ faults: [{ atS: 5, kind: 'chmod_ro', applied: false, note: 'running as root' }] }), { rssBoundMiB: 128 })
   assert.equal(root.verdict, NV); assert.match(root.reason, /fault\.chmod_ro@5s: not applied: running as root/)
+  // An unwritable spool that ends the fault PAUSED_RESERVE is a write failure
+  // reported as a full disk (the 60 s smoke run: writeErrors +8,260 and
+  // pausedDrops +8,260). A full disk read as a reserve pause is right.
+  const misread = soakVerdict(soakReport({ faults: [{ atS: 23, kind: 'unwritable', applied: true, hits: 8260, moved: { writeErrors: 8260, pausedDrops: 8260 }, stateAtEnd: 'PAUSED_RESERVE' }] }), { rssBoundMiB: 128 })
+  assert.equal(misread.verdict, FAIL)
+  assert.match(misread.reason, /^fault\.unwritable@23s: writeErrors \+8260, but the recorder ended the fault PAUSED_RESERVE: the unwritable fault is reported as a free-space pause and 8260 event\(s\) were counted as reserve refusals/)
+  const counted = soakVerdict(soakReport({ faults: [{ atS: 23, kind: 'unwritable', applied: true, hits: 50, moved: { writeErrors: 50, pausedDrops: 0 }, stateAtEnd: 'RECORDING' }] }), { rssBoundMiB: 128 })
+  assert.equal(counted.checks.find(x => x.name === 'fault.unwritable@23s').verdict, PASS)
+  const full = soakVerdict(soakReport({ faults: [{ atS: 23, kind: 'enospc_write', applied: true, hits: 50, moved: { writeErrors: 50, pausedDrops: 9 }, stateAtEnd: 'PAUSED_RESERVE' }] }), { rssBoundMiB: 128 })
+  assert.equal(full.checks.find(x => x.name === 'fault.enospc_write@23s').verdict, PASS, 'ENOSPC is a full disk: a reserve pause is the right reading')
   const cumul = soakReport({ pausedDrops: 10 }); cumul.final.disk.gapBids.reservePause = 16
   assert.match(soakVerdict(cumul, { rssBoundMiB: 128 }).reason, /^gaps\.reserve: GAP_RESERVE_PAUSE records on disk count 16 refused event\(s\); the counter says 10/)
 })
@@ -485,6 +561,10 @@ test('soak runner: the default fault plan places every fault inside the run and 
   const h = sourceHashes(ROOT)
   assert.match(h.sourceSha256, /^[0-9a-f]{64}$/)
   assert.deepEqual(h.files.map(f => f.file), [...SOAK_SOURCES])
+  // --keep without --dir would keep nothing (the temp dir is removed at exit): refused, not ignored.
+  assert.throws(() => soakArgs(['--keep']), /--keep needs --dir DIR/)
+  assert.equal(soakArgs(['--keep', '--dir', '/x']).keep, true)
+  assert.equal(soakArgs([]).keep, false)
 })
 
 // ---------------------------------------------------------------------------
@@ -542,4 +622,39 @@ test('CLI: the drill step grades saved bodies from two directories (PASS exit 0,
   const e2e = cli('e2e', '--dir', join(tmp, 'b1'), '--from', WINDOW.from, '--to', WINDOW.to)
   assert.equal(e2e.status, 3, 'no natural entry in these bodies: NOT_VERIFIABLE, exit 3')
   assert.equal(cli('nonsense').status, 2)
+})
+
+test('CLI freeze: the tick-validation sha is never computed from the checkout for the START of a start-and-end freeze, so a change during the trial cannot be hidden', () => {
+  const tmp = tempDir('final-acceptance-freeze-')
+  const bodies = {
+    'runtime-manifest.json': { at: iso(T), items: [{ key: 'node.commit', value: 'b'.repeat(40) }] },
+    'entry-engines.json': engines(),
+    'tick-recorder.json': { at: iso(T), sides: ['cpp_exec', 'cpp_exec_demo'].map(side => ({ side, at: iso(T), status: recStatus() })) },
+  }
+  writeDir(join(tmp, 'start'), bodies); writeDir(join(tmp, 'end'), bodies)
+  const { tickValidationSha256, nodeCommit, accounts, tickProfileHash, ...operator } = FROZEN
+  assert.ok(tickValidationSha256 && nodeCommit && accounts && tickProfileHash, 'the operator file carries only what no GET body does')
+  writeDir(tmp, { 'fields.json': operator })
+  const checkout = createHash('sha256').update(readFileSync(join(ROOT, 'agent/config/tick-validation.json'))).digest('hex')
+  const at = '2026-10-02T09:00:00.000Z'
+  const drift = (r) => r.checks.find(c => c.name === 'drift.tickValidationSha256')
+  // Start only: the capture IS the evaluation, so the sha is computed — and labelled as such.
+  const s0 = runStep({ step: 'freeze', start: join(tmp, 'start'), fields: join(tmp, 'fields.json') }, { evaluatedAt: at })
+  assert.equal(s0.manifest.start.fields.tickValidationSha256, checkout)
+  assert.equal(s0.manifest.start.sources.tickValidationSha256, `computed at evaluation ${at} from this checkout's agent/config/tick-validation.json`)
+  // Start and end, no sha in the start fields file: not captured, so its drift is NOT_VERIFIABLE — never "identical".
+  const both = runStep({ step: 'freeze', start: join(tmp, 'start'), fields: join(tmp, 'fields.json'), end: join(tmp, 'end'), endFields: join(tmp, 'fields.json') }, { evaluatedAt: at })
+  assert.equal(both.manifest.start.fields.tickValidationSha256, undefined)
+  assert.match(both.manifest.start.sources.tickValidationSha256, /^not captured: the start fields file carries no tickValidationSha256/)
+  assert.equal(both.manifest.end.fields.tickValidationSha256, checkout)
+  assert.match(both.manifest.end.sources.tickValidationSha256, /^computed at evaluation 2026-10-02T09:00:00\.000Z/)
+  assert.equal(drift(both).verdict, NV); assert.match(drift(both).reason, /start value not captured/)
+  assert.equal(both.checks.find(c => c.name === 'start.tickValidationSha256').verdict, NV)
+  // The sha recorded at the start differs from the file now: the change is seen.
+  writeDir(tmp, { 'fields-start.json': { ...operator, tickValidationSha256: '0'.repeat(64) } })
+  const changed = runStep({ step: 'freeze', start: join(tmp, 'start'), fields: join(tmp, 'fields-start.json'), end: join(tmp, 'end'), endFields: join(tmp, 'fields.json') }, { evaluatedAt: at })
+  assert.equal(changed.verdict, FAIL); assert.equal(drift(changed).verdict, FAIL); assert.match(drift(changed).reason, /changed during the trial and not recorded/)
+  writeDir(tmp, { 'fields-same.json': { ...operator, tickValidationSha256: checkout } })
+  const same = runStep({ step: 'freeze', start: join(tmp, 'start'), fields: join(tmp, 'fields-same.json'), end: join(tmp, 'end'), endFields: join(tmp, 'fields.json') }, { evaluatedAt: at })
+  assert.equal(drift(same).verdict, PASS)
 })

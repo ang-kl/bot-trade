@@ -35,7 +35,7 @@
 import { automaticProducers } from '../lib/entry-producers.js'
 
 export const VERDICT = Object.freeze({ PASS: 'PASS', FAIL: 'FAIL', NOT_VERIFIABLE: 'NOT_VERIFIABLE' })
-export const EVALUATOR_VERSION = 'v3-r2-1'
+export const EVALUATOR_VERSION = 'v3-r2-2'
 const { PASS, FAIL, NOT_VERIFIABLE: NV } = VERDICT
 
 /** The two recorder sides, by the heartbeat's side names. */
@@ -224,8 +224,26 @@ function bootOf(bodies, side) {
   return b ? String(b) : null
 }
 
+/**
+ * The standing producers (entry-ledger.js STANDING_PRODUCERS; pinned equal by
+ * a test). Their signal_ref is the PERMIT KEY — `tick:<symbolId>` for the tick
+ * producer (tick-permits.js), one key per symbol — so it recurs on every
+ * permit a symbol is ever issued: two sequential fills sharing it are two
+ * entries, not one entry sent twice.
+ */
+export const STANDING_SIGNAL_PRODUCERS = Object.freeze(['vpo_cpp_direct', 'tick_momentum'])
+
+/**
+ * Duplicate intents: two intents on one broker position, or two reached
+ * intents on one signal. For a standing producer the signal key recurs by
+ * design, so a duplicate is two intents on one key IN FLIGHT AT ONCE — the
+ * later created before the earlier resolved (the ledger's own rule: one open
+ * standing intent per account / symbol / side, entry-ledger.js openConflict).
+ * A standing pair whose created or resolved time is missing cannot be judged
+ * and is returned as `undetermined`, never as a duplicate and never as clear.
+ */
 function duplicateIntents(intents) {
-  const dups = []
+  const dups = [], undetermined = []
   const byPos = new Map()
   for (const it of intents) {
     if (empty(it.brokerPositionId)) continue
@@ -235,13 +253,33 @@ function duplicateIntents(intents) {
   }
   const reached = new Set(['SENT', 'ACCEPTED', 'FILLED', 'UNKNOWN', 'DISPATCHING'])
   const bySignal = new Map()
+  const standingBySignal = new Map()
   for (const it of intents) {
     if (empty(it.signalRef) || !reached.has(it.state)) continue
     const k = `${it.account}:${it.symbolId ?? it.symbol}:${it.side}:${it.signalRef}`
+    if (STANDING_SIGNAL_PRODUCERS.includes(it.producerId)) {
+      const sk = `${it.producerId}:${k}`
+      if (!standingBySignal.has(sk)) standingBySignal.set(sk, [])
+      standingBySignal.get(sk).push(it)
+      continue
+    }
     if (bySignal.has(k)) dups.push({ key: `signal ${it.signalRef} on …${it.account}`, intents: [bySignal.get(k), it.id] })
     else bySignal.set(k, it.id)
   }
-  return dups
+  for (const list of standingBySignal.values()) {
+    if (list.length < 2) continue
+    const timed = list.filter(it => it.createdAtMs != null)
+    if (timed.length < list.length) { undetermined.push({ key: `permit key ${list[0].signalRef} on …${list[0].account}`, intents: list.map(it => it.id), missing: 'created_at' }); continue }
+    timed.sort((a, b) => a.createdAtMs - b.createdAtMs)
+    // The in-flight interval of each: created → resolved (unresolved = still in flight).
+    let prev = timed[0]
+    for (const it of timed.slice(1)) {
+      const prevEnd = prev.resolvedAtMs ?? Infinity
+      if (it.createdAtMs < prevEnd) dups.push({ key: `permit key ${it.signalRef} on …${it.account}: ${prev.id} and ${it.id} in flight at once`, intents: [prev.id, it.id] })
+      if ((it.resolvedAtMs ?? Infinity) > prevEnd) prev = it
+    }
+  }
+  return { dups, undetermined }
 }
 
 /**
@@ -359,9 +397,10 @@ export function recorderDrill(before = {}, after = {}, { sides = Object.keys(SID
   if (!ai) checks.push(check('intents', NV, 'no GET /state/entry-intents after the restart'))
   else {
     const unknown = Object.entries(ai.countsByAccount || {}).filter(([, c]) => (num(c?.UNKNOWN) ?? 0) > 0)
-    const dups = duplicateIntents(intentsOf(ai))
+    const { dups, undetermined } = duplicateIntents(intentsOf(ai))
     if (unknown.length) checks.push(check('intents', FAIL, `UNKNOWN intents after the restart on ${unknown.map(([a, c]) => `${a} (${c.UNKNOWN})`).join(', ')}`))
     else if (dups.length) checks.push(check('intents', FAIL, `duplicate intents: ${dups.map(d => d.key).join('; ')}`, { dups }))
+    else if (undetermined.length) checks.push(check('intents', NV, `standing intents sharing a permit key carry no created time, so overlap cannot be judged: ${undetermined.map(d => d.key).join('; ')}`, { undetermined }))
     else checks.push(check('intents', PASS, 'no UNKNOWN and no duplicate intent after the restart'))
   }
   const be = before['/state/entry-engines'], ae = after['/state/entry-engines']
@@ -561,17 +600,25 @@ export function wilson(wins, n, z = 1.959963984540054) {
   return [Math.max(0, +(centre - half).toFixed(4)), Math.min(1, +(centre + half).toFixed(4))]
 }
 
+/**
+ * Whether a saved newest-first list covers everything since `fromMs`. The
+ * routes cut the list at the request's ?limit, and the body does not say what
+ * that limit was — so fewer rows than the DEFAULT page (50 intents, 100
+ * decisions) is no proof: a body saved with ?limit=10 is cut the same way. A
+ * list covers the window only when its oldest row is at or before `fromMs`
+ * (every newer row is then in it), or when it is empty (the routes clamp
+ * ?limit to at least 1, so an empty page is the whole table).
+ */
+function reachesBack(rows, timeOf, fromMs) {
+  if (!rows.length) return true
+  const oldest = Math.min(...rows.map(r => timeOf(r) ?? Infinity))
+  return oldest <= fromMs
+}
 function truncatedIntents(body, fromMs) {
-  const rec = arr(body?.recent)
-  if (rec.length < 50) return false
-  const oldest = Math.min(...rec.map(r => toMs(r.resolved_at) ?? Infinity))
-  return !(oldest <= fromMs)
+  return !reachesBack(arr(body?.recent), r => toMs(r.resolved_at), fromMs)
 }
 function truncatedDecisions(body, fromMs) {
-  const d = arr(body?.decisions)
-  if (d.length < 100) return false
-  const oldest = Math.min(...d.map(r => toMs(r.created_at) ?? Infinity))
-  return !(oldest <= fromMs)
+  return !reachesBack(arr(body?.decisions), r => toMs(r.created_at), fromMs)
 }
 
 function traceEntry(e, ctx) {
@@ -744,8 +791,10 @@ export function e2eTrace(bodies = {}, { window = {}, gate = null, deadlineMs = n
     checks.push(check('coverage.intents', trunc || undated ? NV : PASS, trunc ? 'the saved /state/entry-intents recent[] does not reach back to the window start (save ?limit=200; a window with more resolutions needs a shorter window)' : undated ? `${undated} intent(s) carry no time and cannot be placed in or out of the window` : 'the saved intents reach back past the window start'))
     const unknownNow = Object.entries(intentsBody.countsByAccount || {}).filter(([, c]) => (num(c?.UNKNOWN) ?? 0) > 0)
     checks.push(check('unknownIntents', unknownNow.length ? FAIL : PASS, unknownNow.length ? `UNKNOWN intents at the end on ${unknownNow.map(([a, c]) => `${a} (${c.UNKNOWN})`).join(', ')}` : 'no UNKNOWN intent at the end'))
-    const dups = duplicateIntents(windowIntents)
-    checks.push(check('duplicateIntents', dups.length ? FAIL : PASS, dups.length ? dups.map(d => d.key).join('; ') : 'no two intents share a broker position or a signal'))
+    const { dups, undetermined } = duplicateIntents(windowIntents)
+    checks.push(check('duplicateIntents', dups.length ? FAIL : undetermined.length ? NV : PASS, dups.length ? dups.map(d => d.key).join('; ')
+      : undetermined.length ? `standing intents sharing a permit key carry no created time, so overlap cannot be judged: ${undetermined.map(d => d.key).join('; ')}`
+        : 'no two intents share a broker position or a signal, and no two standing intents on one permit key were in flight at once'))
   }
   const refusalProblems = []
   for (const i of windowIntents) {
@@ -778,7 +827,11 @@ export function e2eTrace(bodies = {}, { window = {}, gate = null, deadlineMs = n
     const lost = d('events', 'dropped') + d('events', 'pausedDrops')
     const gapsN = d('events', 'gaps'), gens = (num(b.generation) ?? 0) - (num(a.generation) ?? 0)
     if (lost > 0) gapChecks.push(check(`recorder.${side}.counters`, FAIL, `${lost} event(s) dropped or refused by the reserve inside the window`))
-    else if (gapsN > gens) gapChecks.push(check(`recorder.${side}.counters`, FAIL, `${gapsN} gap(s) inside the window against ${gens} reconnect(s): unexplained recorder gaps`))
+    // Drops and reserve refusals already failed above, so what is left over the
+    // reconnects is not proven lost: a keeper switch-off writes GAP_SWITCHED_OFF
+    // with no reconnect (cpp-exec tick_recorder.cpp writerLoop), and the GET body
+    // counts gaps without their reasons. T3 grades the same condition this way.
+    else if (gapsN > gens) gapChecks.push(check(`recorder.${side}.counters`, NV, `${gapsN} gap(s) inside the window against ${gens} reconnect(s): the rest are not explained by these counters (a keeper switch-off writes a gap with no reconnect; the reasons are in the segment records)`))
     else gapChecks.push(check(`recorder.${side}.counters`, PASS, `${gapsN} gap(s), each a reconnect`))
   }
   checks.push(fold('recorderGaps', gapChecks))
@@ -824,6 +877,13 @@ export const FAULT_COUNTERS = Object.freeze({
   enospc_write: 'writeErrors', eio_fsync: 'writeErrors', rename_fail: 'writeErrors', unlink_fail: 'writeErrors',
   unwritable: 'writeErrors', chmod_ro: 'writeErrors', fill: 'pausedDrops', exhaust_inodes: 'writeErrors', reconnect: 'gaps', slow: null,
 })
+/**
+ * Write faults that are NOT a shortage of space: the recorder must not end
+ * them in PAUSED_RESERVE, the free-space pause, or an unwritable spool is
+ * reported as a full disk. ENOSPC and inode exhaustion are left out — a full
+ * disk read as a reserve pause is the right reading.
+ */
+export const NOT_A_SPACE_FAULT = Object.freeze(['eio_write', 'short_write', 'eio_fsync', 'rename_fail', 'unlink_fail', 'unwritable', 'chmod_ro'])
 
 /**
  * Grades a scripts/tick-recorder-soak-driver.cpp report. The driver measures;
@@ -881,6 +941,7 @@ export function soakVerdict(report, { requiredSeconds = SOAK_FULL_SECONDS, rssBo
     if (counter === null) { checks.push(check(name, num(f.hits) > 0 ? PASS : NV, num(f.hits) > 0 ? `applied to ${f.hits} call(s) (${f.note || 'no counter expected'})` : 'applied, but the driver reported no calls it met', { moved: f.moved ?? null })); continue }
     const moved = num(f.moved?.[counter])
     if (moved == null) checks.push(check(name, NV, `the driver did not report ${counter} across the fault window`))
+    else if (moved > 0 && NOT_A_SPACE_FAULT.includes(f.kind) && f.stateAtEnd === 'PAUSED_RESERVE') checks.push(check(name, FAIL, `${counter} +${moved}, but the recorder ended the fault PAUSED_RESERVE: the ${f.kind} fault is reported as a free-space pause${num(f.moved?.pausedDrops) > 0 ? ` and ${f.moved.pausedDrops} event(s) were counted as reserve refusals` : ''}`, { moved: f.moved, hits: f.hits ?? null, stateAtEnd: f.stateAtEnd }))
     else checks.push(check(name, moved > 0 ? PASS : FAIL, moved > 0 ? `${counter} +${moved} during the fault` : `the fault was applied${num(f.hits) > 0 ? ` and failed ${f.hits} call(s)` : ''}, and ${counter} did not move: the recorder did not count it`, { moved: f.moved, hits: f.hits ?? null }))
   }
   const unacc = num(fin.unaccountedLoss)

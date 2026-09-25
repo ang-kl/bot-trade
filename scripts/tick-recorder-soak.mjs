@@ -33,6 +33,8 @@
 //     [--segment-bytes 67108864] [--cap-bytes 2147483648] [--fsync-every-ms 5000] [--budget-every-ms 2000]
 //     [--probe scripted|real] [--faults "atS:kind,..."]
 //     [--no-shim] [--mount-size BYTES] [--mount-inodes N] [--rss-bound-mib N] [--keep]
+//   --keep needs --dir: without --dir the work directory is a temp dir removed at exit, so
+//   --keep alone is refused (exit 2) rather than silently ignored.
 // Exit: 0 PASS, 1 FAIL, 3 NOT_VERIFIABLE (a run shorter than 24 h is at best NOT_VERIFIABLE), 2 setup error.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -51,7 +53,7 @@ export const SOAK_SOURCES = Object.freeze([
 ])
 const EXIT = { [VERDICT.PASS]: 0, [VERDICT.FAIL]: 1, [VERDICT.NOT_VERIFIABLE]: 3 }
 
-function args(argv) {
+export function soakArgs(argv) {
   const o = { duration: SOAK_FULL_SECONDS, symbols: 20, rate: 100, burstFactor: 10, burstEvery: 60, burstLen: 5,
     segmentBytes: 64 * 1024 * 1024, capBytes: 2 * 1024 ** 3, probe: 'scripted', shim: true, keep: false,
     // The recorder's production intervals (RecorderConfig): the fault holds are sized from them.
@@ -81,6 +83,7 @@ function args(argv) {
     else if (a === '--help' || a === '-h') o.help = true
     else throw new Error(`unknown option ${a}`)
   }
+  if (o.keep && !o.dir) throw new Error('--keep needs --dir DIR: without it the work directory is a temp dir removed at exit, so nothing would be kept')
   return o
 }
 
@@ -137,7 +140,7 @@ function run(cmd, argv, opts = {}) {
 
 async function main() {
   let o
-  try { o = args(process.argv.slice(2)) } catch (e) { console.error(e.message); process.exitCode = 2; return }
+  try { o = soakArgs(process.argv.slice(2)) } catch (e) { console.error(e.message); process.exitCode = 2; return }
   if (o.help) { console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').filter(l => l.startsWith('//')).map(l => l.slice(3)).join('\n')); return }
   const work = o.dir ? join(o.dir, `soak-${Date.now()}`) : tempDir('tick-soak-')
   mkdirSync(work, { recursive: true })
