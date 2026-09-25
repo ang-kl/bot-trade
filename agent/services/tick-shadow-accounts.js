@@ -95,7 +95,7 @@ const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null }
 const priceOf = (wire) => (Number.isFinite(Number(wire)) ? Number(wire) / WIRE_PER_PRICE : null)
 
 /** symbolId → NAME, from the account's own map first, then the global one. */
-function symbolNameResolver(db, accountId) {
+export function symbolNameResolver(db, accountId) {
   const inv = new Map()
   const add = (obj) => {
     if (!obj || typeof obj !== 'object') return

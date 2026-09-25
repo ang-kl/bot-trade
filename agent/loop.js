@@ -53,6 +53,7 @@ import { housekeepingDue, LAST_RUN_KEY } from './services/housekeeping-due.js'
 import { recordFxRates } from './services/fx-rates.js'
 import { roundToDigits } from './services/trade-guard.js'
 import { cachedAtrForSymbol } from './services/profit-keeper.js'
+import { writePerformanceSnapshots } from './services/performance-snapshots.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
 
@@ -5506,34 +5507,9 @@ async function runLoop(db) {
           log(`[entry-mode] auto: evaluation failed (${err.message})`)
         }
 
-        // Performance snapshot from closed trades
-        const stats = db.prepare(
-          `SELECT COUNT(*) as total,
-                  SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) as wins,
-                  SUM(CASE WHEN net_pnl <= 0 THEN 1 ELSE 0 END) as losses,
-                  SUM(net_pnl) as total_pnl,
-                  AVG(CASE WHEN net_pnl > 0 THEN net_pnl END) as avg_win,
-                  AVG(CASE WHEN net_pnl <= 0 THEN net_pnl END) as avg_loss
-           FROM trades WHERE status = 'closed'`
-        ).get()
-
-        if (stats && stats.total > 0) {
-          const winRate = stats.wins / stats.total
-          // TRUE profit factor = gross win / gross loss. The old formula was
-          // |avg_win / avg_loss| — the PAYOFF ratio, which ignores how OFTEN
-          // you win, so at a 19% win rate it overstated PF ~4x (a real 0.15
-          // showed as ~0.64). Reconstruct the gross sums from the averages ×
-          // counts. Same null-on-no-losses convention as performance-breaker.
-          const grossWin = (stats.avg_win || 0) * stats.wins
-          const grossLoss = Math.abs((stats.avg_loss || 0) * stats.losses)
-          const profitFactor = grossLoss > 0
-            ? Math.round((grossWin / grossLoss) * 100) / 100
-            : (grossWin > 0 ? null : 0)
-          db.prepare(
-            `INSERT INTO performance_snapshots (total_trades, winning_trades, losing_trades, win_rate, profit_factor, total_pnl, avg_win, avg_loss, computed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
-          ).run(stats.total, stats.wins, stats.losses, winRate, profitFactor, stats.total_pnl, stats.avg_win, stats.avg_loss)
-        }
+        // Performance snapshot from closed trades — one row per account plus
+        // the pooled row (plan P1, services/performance-snapshots.js).
+        writePerformanceSnapshots(db)
 
         // Live correlation matrix (owner: "I want the live-computed
         // version") — held positions + watchlist, correlated on recent 1h

@@ -1260,3 +1260,14 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   is `docs/claude-takeover-2026-09-25.md`; the plan it completes is
   `docs/dual-environment-plan-2026-09-25.md`. A later re-measure that reads
   below this line is missing these, not correcting them.
+
+- 2026-09-25 08:24 UTC, **same remote container, PARTIAL corpus**: from the
+  takeover line above, the replies ran on by count through the 13:10 SGT daily
+  report `№ 9,041`, the status/flags reply `№ 9,048`, the cancel-and-continue
+  reply `№ 9,052`, the 15-minute update `№ 9,054` and the #1085 read-back
+  `№ 9,059` (the unstamped status lines between them counted by replies). #1085
+  (dual admission, WP-A) was merged by the owner at 08:21 UTC and read back:
+  `1b54c1f` live, all 7 accounts TIME_BASED/STABLE/bar, 0 errors, 32 positions
+  protected. The owner cancelled CADJPY and GBPJPY on …0058 (gone 07:47:42 UTC).
+  The next reply is `№ 9,060`. A later re-measure that reads below this line is
+  missing these, not correcting them.

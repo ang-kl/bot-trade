@@ -35,6 +35,23 @@ test('the builder on an EMPTY db: every section present, no throw, under the Tel
   for (const s of r.sections) assert.ok(!s.lines.some(l => /unreadable/.test(l)), `${s.id} read cleanly: ${s.lines.join(' | ')}`)
 })
 
+test('the family section prints a Tick basis line once a tick close exists, and none before (plan P1: tick is in no family)', async () => {
+  const db = initDB(':memory:')
+  const none = await buildDailyReport(db, { now: NOW })
+  assert.doesNotMatch(none.text, /Tick basis:/)
+  const at = NOW - 86_400_000
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, exit_price, sl_price, net_pnl, realised_rr, label_raw, source, account_id, closed_at, closed_at_ms)
+                          VALUES ('EURUSD', 'BUY', 'closed', 1.1, 1.12, 1.09, ?, ?, ?, 'autopilot', '47790949', ?, ?)`)
+  ins.run(40, 2, 'tick:abc', new Date(at).toISOString(), at)
+  ins.run(-20, -1, 'tick:abc', new Date(at + 1000).toISOString(), at + 1000)
+  const r = await buildDailyReport(db, { now: NOW })
+  const fam = r.sections.find(s => s.id === 'family').lines
+  const line = fam.find(l => l.startsWith('Tick basis:'))
+  assert.ok(line, fam.join(' | '))
+  assert.match(line, /^Tick basis: 2 close\(s\), PF 2(\.0+)?, /)
+  assert.ok(!fam.some(l => /unattributed/.test(l)), 'the tick closes are not counted as unattributed')
+})
+
 test('the builder reads real rows: an off_track goal is named with its current, equity shows the night change, open positions are counted per account', async () => {
   const db = initDB(':memory:')
   // Two nights of equity for one account.

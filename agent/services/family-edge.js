@@ -30,6 +30,7 @@
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { familyOf, STRATEGY_FAMILIES } from './strategies.js'
 import { realisedRR } from './trade-consistency.js'
+import { basisOfTrade, intentMaps } from './trade-basis.js'
 
 /** Closes beyond this many R count toward the tail share. */
 export const TAIL_R = 2
@@ -107,6 +108,7 @@ function finalize(st) {
  * @param {string|null} [opts.since]      ISO lower bound overriding `days`
  * @returns {{at:string, since:string|null, accountId:string|null,
  *            families:Object<string, ReturnType<typeof finalize>>,
+ *            byBasis:{tick: ReturnType<typeof finalize>},
  *            unattributed:number}}
  */
 export function familyEdgeReport(db, { days = 90, now = Date.now(), accountId = null, since = null } = {}) {
@@ -123,8 +125,9 @@ export function familyEdgeReport(db, { days = 90, now = Date.now(), accountId = 
   }
   if (accountId != null) { where.push('account_id = ?'); params.push(String(accountId)) }
   const rows = db.prepare(
-    `SELECT id, side, entry_price, exit_price, sl_price, broker_sl_initial, net_pnl,
-            closed_at, closed_at_ms, realised_rr, ${strategyAttrSql()} AS strat
+    `SELECT id, account_id, side, entry_price, exit_price, sl_price, broker_sl_initial, net_pnl,
+            closed_at, closed_at_ms, realised_rr, label_raw, source, ctrader_position_id,
+            ${strategyAttrSql()} AS strat
        FROM trades
       WHERE ${where.join(' AND ')}
       ORDER BY id`,
@@ -138,11 +141,20 @@ export function familyEdgeReport(db, { days = 90, now = Date.now(), accountId = 
 
   const stats = Object.fromEntries(STRATEGY_FAMILIES.map(f => [f, emptyStats()]))
   const curves = Object.fromEntries(STRATEGY_FAMILIES.map(f => [f, { r: 0, peakR: 0, usd: 0, peakUsd: 0 }]))
+  // Plan P1 (25-09-2026): a TICK entry is counted by its basis, not its
+  // strategy — a tick fill's label carries none (trade-labels.js), so under
+  // familyOf alone every one landed in `unattributed`. It is reported in its
+  // OWN block beside `families` (byBasis.tick), never as a family key:
+  // familyOf / STRATEGY_FAMILIES also drive managed-exit.js, account-horizon.js
+  // and exit-chain.js, and the goal table and daily report iterate families.
+  const { byPos, byId } = intentMaps(db)
+  const tickStats = emptyStats(), tickCurve = { r: 0, peakR: 0, usd: 0, peakUsd: 0 }
   let unattributed = 0
   for (const r of rows) {
+    const rr = r.realised_rr != null && Number.isFinite(Number(r.realised_rr)) ? Number(r.realised_rr) : realisedRR(r)
+    if (basisOfTrade(r, byPos, byId).basis === 'tick') { fold(tickStats, Number(r.net_pnl) || 0, rr, tickCurve); continue }
     const fam = r.strat ? familyOf(r.strat) : null
     if (!fam || !stats[fam]) { unattributed += 1; continue }
-    const rr = r.realised_rr != null && Number.isFinite(Number(r.realised_rr)) ? Number(r.realised_rr) : realisedRR(r)
     fold(stats[fam], Number(r.net_pnl) || 0, rr, curves[fam])
   }
   const families = Object.fromEntries(STRATEGY_FAMILIES.map(f => [f, finalize(stats[f])]))
@@ -151,6 +163,7 @@ export function familyEdgeReport(db, { days = 90, now = Date.now(), accountId = 
     since: sinceIso,
     accountId: accountId != null ? String(accountId) : null,
     families,
+    byBasis: { tick: finalize(tickStats) },
     unattributed,
     note: `R is realised_rr (the broker's first stop) or its recomputation; closes it cannot answer for are counted undecidable, not guessed. Tail share = closes beyond +${TAIL_R}R over decidable closes. Drawdown is peak-to-trough on the cumulative R curve (and USD on net P&L) in close order.`,
   }

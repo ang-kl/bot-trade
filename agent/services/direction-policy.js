@@ -96,10 +96,20 @@ export function permittedSides(trendDirection) {
  * rather than gated on a table the owner has turned off. Stale → null.
  */
 export function trendReadingFor(db, symbol) {
+  return trendReadingAt(db, symbol, null)
+}
+
+/**
+ * The same reading AS OF a past moment (plan P2, 25-09-2026): the newest
+ * regime row at or before `asOfMs`, aged against `asOfMs` under the same
+ * gate config. `asOfMs` null is exactly trendReadingFor. Report-only
+ * callers (the shadow counterfactual) use it; no entry path does.
+ */
+export function trendReadingAt(db, symbol, asOfMs) {
   try {
     const cfg = loadRegimeGateConfig(db)
     if (!cfg.on) return null
-    const row = latestRegime(db, symbol, { maxAgeMin: cfg.maxRegimeAgeMin })
+    const row = latestRegime(db, symbol, { maxAgeMin: cfg.maxRegimeAgeMin, asOfMs })
     return row && !row.stale ? (row.trend_direction ?? null) : null
   } catch { return null }
 }

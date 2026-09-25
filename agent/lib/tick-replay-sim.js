@@ -226,6 +226,25 @@ export function expectancyLowerR(rs, { resamples = 1000, seed = 7, pct = 0.05 } 
   return +means[Math.min(means.length - 1, Math.floor(pct * means.length))].toFixed(4)
 }
 
+/**
+ * The Wilson score interval for a win rate (plan D2, 25-09-2026: win rate is
+ * REPORTED with its interval, never judged against a pass/fail bar). k wins
+ * of n trades, z = 1.96 for 95 %. Returns percentages to 2 dp, or null when
+ * there are no trades. Wilson, not the normal approximation: the latter
+ * collapses to [0, 0] at k = 0 and goes below 0 at k = 1 of 10, which is a
+ * confident wrong interval exactly where a small sample needs an honest one.
+ */
+export function wilsonInterval(k, n, z = 1.96) {
+  const K = Number(k), N = Number(n)
+  if (!(N > 0) || !Number.isFinite(K) || K < 0 || K > N) return null
+  const p = K / N, z2 = z * z
+  const denom = 1 + z2 / N
+  const centre = (p + z2 / (2 * N)) / denom
+  const half = (z * Math.sqrt(p * (1 - p) / N + z2 / (4 * N * N))) / denom
+  const pct = (x) => +(100 * x).toFixed(2)
+  return { pct: pct(p), lo: pct(Math.max(0, centre - half)), hi: pct(Math.min(1, centre + half)) }
+}
+
 export function summarize(trades) {
   const n = trades.length
   const wins = trades.filter(t => t.netR > 0), losses = trades.filter(t => t.netR <= 0)

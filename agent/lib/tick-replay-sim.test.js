@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { simulate, summarize, blockSummaries, resolveLatency } from './tick-replay-sim.js'
+import { simulate, summarize, blockSummaries, resolveLatency, wilsonInterval } from './tick-replay-sim.js'
 import { buildFixture } from './tick-strategy.test.js'
 
 function series(spec) {
@@ -101,4 +101,18 @@ test('AUDIT 11-09-2026 (plan §7): latency may be MEASURED samples — the fill 
   const params = { rangeEvents: 64, momentumEvents: 16, minEfficiency: 0.4, spreadBufferMult: 0.5, confirmations: 2, stopVolMult: 2, minStopPrice: 1, priceIncrement: 1, maxSpread: 200, maxQuoteAgeMs: 60_000 }
   const r = simulate(events, params, { latencyMs: [40, 60, 55, 500], minTargetToCost: 1 })
   assert.equal(r.sim.latencyMs, 500); assert.equal(r.sim.latencySource, 'measured p90 of 4 samples')
+})
+
+// Plan D2 (25-09-2026): win rate is reported WITH its Wilson interval. Pins
+// that a normal approximation cannot pass: at k = 1 of 10 it gives a lower
+// bound of −8.6 %, and at k = 0 it collapses to [0, 0] where Wilson's upper
+// bound is 27.75 %.
+test('wilsonInterval: null on no trades; Wilson (not normal) bounds at k = 0, 1, 5 of 10; bounded in [0, 100]', () => {
+  assert.equal(wilsonInterval(0, 0), null)
+  assert.deepEqual(wilsonInterval(5, 10), { pct: 50, lo: 23.66, hi: 76.34 })
+  assert.deepEqual(wilsonInterval(0, 10), { pct: 0, lo: 0, hi: 27.75 })
+  assert.deepEqual(wilsonInterval(1, 10), { pct: 10, lo: 1.79, hi: 40.42 })
+  assert.deepEqual(wilsonInterval(12, 30), { pct: 40, lo: 24.59, hi: 57.68 })
+  const full = wilsonInterval(10, 10)
+  assert.equal(full.hi, 100); assert.ok(full.lo >= 0 && full.lo < 100)
 })
