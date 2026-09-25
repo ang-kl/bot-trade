@@ -11,8 +11,11 @@ export const SESSIONS = [
   { id: 'nyse',      label: 'New York',  open: 14, close: 21, tz: 'America/New_York' },
 ]
 
-export function getActiveSessions() {
-  const utcHour = new Date().getUTCHours()
+// `now` is optional and defaults to the clock, so every existing caller reads
+// exactly what it read before. The heartbeat passes an instant so it can ask
+// which sessions were open when a record was written (lib/autopilot-cadence.js).
+export function getActiveSessions(now = new Date()) {
+  const utcHour = now.getUTCHours()
   return SESSIONS.filter(s => {
     if (s.open < s.close) return utcHour >= s.open && utcHour < s.close
     return utcHour >= s.open || utcHour < s.close
