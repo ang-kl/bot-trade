@@ -1,0 +1,152 @@
+// V3 WEB-3 (8,989-A rows 5 and 7): balance and floating per hour, and ledger
+// carry in / carry out, from OBSERVED broker balances only.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { initDB, setState } from '../db.js'
+import { recordAccountHistory } from './account-history.js'
+import { balanceReader, BALANCE_EDGE_MAX_AGE_MS } from './balance-edges.js'
+import { hourlyActivity } from './hourly-activity.js'
+import { buildPerformancePopulations } from './performance-populations.js'
+import { reportLedger } from '../shared/performance-populations.js'
+
+const MIN = 60_000, H = 3600_000
+// Relative to the real clock: recordAccountHistory prunes by Date.now().
+const T = Math.floor(Date.now() / H) * H
+const DEMO = 'demo.ctraderapi.com', LIVE = 'live.ctraderapi.com'
+
+function fixture(t, accounts = [['11', 0], ['22', 0], ['33', 1]]) {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  setState(db, 'account_history_pruned_ms', String(Date.now()))
+  for (const [id, live] of accounts) db.prepare('INSERT INTO accounts (account_id, is_live, enabled) VALUES (?, ?, 1)').run(id, live)
+  const hostOf = id => accounts.find(a => a[0] === id)?.[1] ? LIVE : DEMO
+  const trader = (id, at, balance, currency = 'USD', extra = {}) => recordAccountHistory(db,
+    { accountId: id, host: hostOf(id), source: 'broker_trader', receivedAt: at, currency, balance, ...extra })
+  const equity = (id, at, balance, openPnl, currency = 'USD', extra = {}) => recordAccountHistory(db,
+    { accountId: id, host: hostOf(id), source: 'broker_equity', receivedAt: at, currency, balance, openPnl,
+      equity: balance + openPnl, balanceReceivedAt: at, pnlReceivedAt: at, ...extra })
+  return { db, trader, equity }
+}
+
+test('an edge is the latest broker balance at or before it, within the tolerance, never one read after it', t => {
+  const { db, trader } = fixture(t)
+  trader('11', T - 20 * MIN, 100)
+  trader('11', T - 10 * MIN, 110)
+  trader('11', T + 30_000, 120) // read AFTER the edge: must not answer for it
+  const r = balanceReader(db)
+  assert.deepEqual(r.at('11', T), { status: 'observed', value: 110, currency: 'USD', at: T - 10 * MIN, source: 'broker_trader', ageMs: 10 * MIN })
+  // The newest read (T+30 s) is one minute older than the tolerance at this
+  // edge: a stated gap, not the older read carried forward.
+  assert.deepEqual(balanceReader(db).at('11', T + 30_000 + BALANCE_EDGE_MAX_AGE_MS + MIN),
+    { status: 'not_stored', reason: 'no_observation_near_edge', maxAgeMs: BALANCE_EDGE_MAX_AGE_MS })
+  assert.equal(balanceReader(db).at('11', T + 30_000 + BALANCE_EDGE_MAX_AGE_MS).value, 120, 'exactly at the tolerance still counts')
+  // Before the first stored balance: named as such, with where storage begins.
+  assert.deepEqual(balanceReader(db).at('11', T - 21 * MIN), { status: 'not_stored', reason: 'before_balance_history', storedFrom: T - 20 * MIN })
+  // An account that never stored a balance.
+  assert.deepEqual(balanceReader(db).at('22', T), { status: 'not_stored', reason: 'no_balance_stored' })
+})
+
+test('a balance read before the edge but written just after it answers for the edge; its read time is what counts', t => {
+  const { db, equity } = fixture(t)
+  // broker_equity rows are written up to 60 s after the trader read.
+  equity('11', T + 40_000, 500, 3, 'USD', { balanceReceivedAt: T - 5_000 })
+  const edge = balanceReader(db).at('11', T)
+  assert.equal(edge.status, 'observed'); assert.equal(edge.value, 500); assert.equal(edge.at, T - 5_000)
+})
+
+test('unusable observations never become a balance: error, no currency, unknown read time, wrong host', t => {
+  const { db, trader } = fixture(t)
+  trader('11', T - 14 * MIN, 900) // the only usable one
+  trader('11', T - 4 * MIN, 1, 'USD', { error: 'broker 502' })
+  trader('11', T - 3 * MIN, 2, null)
+  recordAccountHistory(db, { accountId: '11', host: DEMO, source: 'broker_snapshot', receivedAt: T - 2 * MIN, currency: 'USD', balance: 3, balanceReceivedAt: null })
+  recordAccountHistory(db, { accountId: '11', host: LIVE, source: 'broker_trader', receivedAt: T - 1 * MIN, currency: 'USD', balance: 4 })
+  const edge = balanceReader(db).at('11', T)
+  assert.equal(edge.value, 900)
+  assert.equal(edge.at, T - 14 * MIN)
+})
+
+test('the hourly card carries observed open/close balance and the last floating reading of each hour', t => {
+  const { db, trader, equity } = fixture(t)
+  for (let at = T - 26 * H; at <= T; at += 3 * MIN) trader('11', at, 1000 + Math.floor((at - (T - 26 * H)) / H))
+  equity('11', T - 2 * H + 10 * MIN, 1024, -7.5)
+  equity('11', T - 2 * H + 50 * MIN, 1024, -2.25) // the later reading in the hour wins
+  const r = hourlyActivity(db, { all: false, accountId: '11', explicit: true }, { to: T, nowMs: T })
+  assert.equal(r.balanceReconstruction, 'observed_broker_balance_at_edges')
+  assert.equal(r.balanceHistory.status, 'complete')
+  const last = r.rows[23], prev = r.rows[22]
+  // Hour [T-1h, T): opened at the balance read at T-1h, closed at the read at T.
+  assert.equal(last.openBal, 1025); assert.equal(last.closeBal, 1026)
+  assert.equal(last.balance.close.groups[0].oldestAt, T)
+  for (let i = 1; i < 24; i++) assert.equal(r.rows[i].openBal, r.rows[i - 1].closeBal, `hour ${i} opens where hour ${i - 1} closed`)
+  assert.equal(prev.floating, -2.25)
+  assert.equal(prev.balance.floating.groups[0].oldestAt, T - 2 * H + 50 * MIN)
+  assert.equal(last.floating, null, 'no floating reading in the hour is not a zero')
+  assert.equal(last.balance.floating.groups[0].reason, 'no_floating_reading')
+})
+
+test('hours before the stored balance history say so, with the time storage begins', t => {
+  const { db, trader } = fixture(t)
+  for (let at = T - 5 * H - 17 * MIN; at <= T; at += 3 * MIN) trader('11', at, 50)
+  const r = hourlyActivity(db, { all: false, accountId: '11', explicit: true }, { to: T, nowMs: T })
+  const early = r.rows[0].balance.open.groups[0]
+  assert.equal(r.rows[0].openBal, null)
+  assert.equal(early.reason, 'before_balance_history')
+  assert.equal(early.storedFrom, T - 5 * H - 17 * MIN)
+  assert.equal(r.rows[23].closeBal, 50)
+})
+
+test('all accounts: per currency, summed only when every account of the currency was read, never across currencies', t => {
+  const { db, trader } = fixture(t, [['11', 0], ['22', 0], ['33', 1], ['44', 0]])
+  for (let at = T - 26 * H; at <= T; at += 3 * MIN) {
+    trader('11', at, 100)
+    trader('33', at, 50, 'SGD')
+    if (at <= T - 3 * H) trader('22', at, 200) // stops being read 3 h ago
+  }
+  // 44 has never stored a balance, so its currency is unknown.
+  const r = hourlyActivity(db, { all: true, explicit: true }, { to: T, nowMs: T })
+  const early = r.rows[10].balance.close, late = r.rows[23].balance.close
+  assert.equal(r.rows[10].closeBal, null, 'two currencies and an unknown account: no single total')
+  assert.deepEqual(early.groups.map(g => [g.currency, g.value, g.accounts]), [['SGD', 50, 1], ['USD', 300, 2]])
+  assert.equal(early.unknownCurrencyAccounts, 1)
+  const usd = late.groups.find(g => g.currency === 'USD')
+  assert.equal(usd.value, null, 'one USD account unread at the edge: no USD total')
+  assert.equal(usd.observedAccounts, 1); assert.equal(usd.reason, 'no_observation_near_edge')
+  assert.equal(late.groups.find(g => g.currency === 'SGD').value, 50)
+})
+
+test('ledger carry in / carry out come from the observed balances at the window edges', t => {
+  const { db, trader } = fixture(t, [['11', 0], ['33', 1]])
+  const start = T - 20 * H
+  for (let at = start; at <= T; at += 3 * MIN) {
+    trader('11', at, 1000 + Math.floor((at - start) / H))
+    trader('33', at, 70, 'SGD')
+  }
+  const report = buildPerformancePopulations(db, { now: T })
+  assert.equal(report.balanceEdges.status, 'complete')
+  const one = Object.fromEntries(reportLedger(report, '11').windows.map(w => [w.key, w]))
+  assert.equal(one['1h'].carryIn, 1019); assert.equal(one['1h'].carryOut, 1020); assert.equal(one['1h'].carryCurrency, 'USD')
+  assert.equal(one['12h'].carryIn, 1008)
+  // 30D starts before storage: no carry in, and the reason names the start.
+  assert.equal(one['30d'].carryIn, null)
+  assert.equal(one['30d'].carry.in.groups[0].reason, 'before_balance_history')
+  assert.equal(one['30d'].carry.in.groups[0].storedFrom, start)
+  assert.equal(one['30d'].carryOut, 1020)
+  // All accounts: SGD and USD stay apart.
+  const all = reportLedger(report, 'all').windows.find(w => w.key === '1h')
+  assert.equal(all.carryIn, null)
+  assert.deepEqual(all.carry.out.groups.map(g => [g.currency, g.value]), [['SGD', 70], ['USD', 1020]])
+})
+
+test('no stored balance leaves every carry null with a reason; a failed read is unavailable, not zero', t => {
+  const { db } = fixture(t)
+  const report = buildPerformancePopulations(db, { now: T })
+  const w = reportLedger(report, '11').windows.find(x => x.key === '4h')
+  assert.equal(w.carryIn, null); assert.equal(w.carryOut, null)
+  // Its currency was never stored either, so it is in no currency group.
+  assert.deepEqual(w.carry.in.groups, [])
+  assert.equal(w.carry.in.unknownCurrencyAccounts, 1)
+  assert.equal(w.carry.in.unknownReason, 'no_balance_stored')
+  const broken = reportLedger({ ...report, balanceEdges: { status: 'unavailable', reason: 'balance_history_read_failed' } }, '11').windows[0]
+  assert.equal(broken.carryIn, null)
+  assert.deepEqual(broken.carry, { status: 'unavailable', reason: 'balance_history_read_failed', in: null, out: null })
+})

@@ -8,6 +8,7 @@ import { categorize, MARKETS, closedAtMs, dayAnchorMs, isFxWeekend } from '../sh
 import { emptyPopulation, REPORT_SESSIONS } from '../shared/performance-populations.js'
 import { cupHandleFunnel } from './cup-handle-funnel.js'
 import { calendarDate, calendarDay, calendarLedgerWindows } from '../shared/performance-calendar.js'
+import { ledgerBalanceEdges } from './balance-edges.js'
 
 const DAY = 86400_000
 const NUMBER = v => v == null || String(v).trim() === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null
@@ -102,7 +103,14 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
     }
     return g
   }) }))
+  // V3 WEB-3: carry in / carry out are the broker balances OBSERVED at each
+  // ledger window's edges (account_history), per registered account. A failed
+  // read leaves every carry explicitly unavailable; the populations still stand.
+  let balanceEdges
+  try { balanceEdges = ledgerBalanceEdges(db, ledgerDefs) }
+  catch { balanceEdges = { status: 'unavailable', reason: 'balance_history_read_failed' } }
   return { schemaVersion: 1, status: 'complete', generatedAt: new Date(now).toISOString(), asOfMs: now, timeZone,
+    balanceEdges,
     population: 'all_recorded_closes', currency: null, moneyPolicy: 'recorded_units_within_one_stamped_account_only',
     markets: MARKETS, coverage, windows, daily: [...daily.values()], bestByAccount: Object.fromEntries(best),
     lastCloseByAccount: Object.fromEntries([...last].map(([a, t]) => [a, new Date(t).toISOString()])),

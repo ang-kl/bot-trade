@@ -1,3 +1,4 @@
+import { ledgerCarry } from './balance-carry.js'
 // Report-only arithmetic shared by server and UI. No admission/risk consumer.
 // Money on historical trades has no verified conversion provenance. It may be
 // added within one stamped account, never across accounts or onto an identity.
@@ -67,7 +68,10 @@ export function reportLedger(report, accountId = 'all') {
       edgeRealised: s.wr != null && s.requiredWinPctRealised != null ? s.wr - s.requiredWinPctRealised : null,
       pnlPriceMismatch: s.mismatch, moneyState: s.moneyState })
     return { key: w.key, label: w.label, from: new Date(w.from).toISOString(), to: new Date(w.to).toISOString(),
-      ...shape(st), carryIn: null, carryOut: null, balanceHistoryState: 'requires_cashflow_reconciled_history',
+      // Carry is the OBSERVED broker balance at each edge (V3 WEB-3), per
+      // currency in the all-accounts scope; an edge without one stays null
+      // with its reason. It is never reconstructed from recorded P&L.
+      ...shape(st), ...ledgerCarry(report.balanceEdges, w.key, accountId),
       lastTradeAt: report.lastCloseByAccount[accountId] || null,
       markets: Object.fromEntries(report.markets.map(m => [m, shape(reportStats(report, w.key, accountId, g => g.market === m))])),
       external: { n: st.externalN, net: st.externalNet, unattributed: st.unattributedN, byOrigin: {} } }
