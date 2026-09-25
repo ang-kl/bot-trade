@@ -7,7 +7,10 @@ import express from 'express'
 import { initDB, setState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
-import { shadowCounterfactual, stopFloorWire } from './tick-shadow-counterfactual.js'
+import { shadowCounterfactual, shadowCounterfactualView, stopFloorWire, asOfTrendReader, splitStats, MAX_COUNTERFACTUAL_DAYS } from './tick-shadow-counterfactual.js'
+import { trendReadingAt } from './direction-policy.js'
+import { loadRegimeGateConfig } from './regime-gate.js'
+import { portfolioStats } from './tick-shadow.js'
 
 const DEMO = '46979908'
 const T0 = Date.parse('2026-09-20T12:00:00Z')
@@ -78,9 +81,137 @@ test('shadowCounterfactual: the gate switched off means no reading — nothing r
   assert.equal(r.noRegimeReading, 8)
 })
 
-test('shadowCounterfactual: an explicit row limit is honoured and reported as truncated', () => {
-  const r = shadowCounterfactual(fixture(), { side: 'cpp_exec_demo', now: NOW, limit: 3 })
-  assert.equal(r.rows, 3); assert.equal(r.truncated, true)
+test('shadowCounterfactual: an explicit row limit is honoured, reported as truncated, and keeps the NEWEST rows in exit order', () => {
+  const db = fixture()
+  const r = shadowCounterfactual(db, { side: 'cpp_exec_demo', now: NOW, limit: 3 })
+  assert.equal(r.rows, 3); assert.equal(r.truncated, true); assert.equal(r.truncation, 'the newest rows are kept')
+  // rows 6, 7 and 8 exit last (exit_ms = entry + 60 s + seq): 6 and 7 kept (+2 R net), 8 removed by both
+  assert.equal(r.population.trades, 3); assert.equal(r.population.netR, 1)
+  assert.deepEqual(r.removedBy, { stopFloor: 0, counterTrend: 0, both: 1 })
+})
+
+/** A database whose prepared statements count the regime reads and the gate-config reads. */
+function counting(db) {
+  const counts = { regimeReads: 0, gateReads: 0 }
+  const wrap = (st, kind) => new Proxy(st, {
+    get(t, prop) {
+      const v = t[prop]
+      if (typeof v !== 'function') return v
+      if (prop === 'get' || prop === 'all' || prop === 'iterate') {
+        return (...a) => { if (kind === 'regime') counts.regimeReads++; else if (a[0] === 'regime_gate_json') counts.gateReads++; return v.apply(t, a) }
+      }
+      return v.bind(t)
+    },
+  })
+  const pdb = new Proxy(db, {
+    get(t, prop) {
+      if (prop === 'prepare') {
+        return (sql) => {
+          const st = t.prepare(sql)
+          if (/\bFROM regimes\b/.test(sql)) return wrap(st, 'regime')
+          if (/\bFROM agent_state\b/.test(sql)) return wrap(st, 'state')
+          return st
+        }
+      }
+      const v = t[prop]
+      return typeof v === 'function' ? v.bind(t) : v
+    },
+  })
+  return { pdb, counts }
+}
+
+test('asOfTrendReader answers exactly as trendReadingAt, row for row — every gate shape, ties, stale gaps, before the first row', () => {
+  const db = initDB(':memory:')
+  const ins = db.prepare('INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES (?, ?, ?, ?)')
+  const dirs = ['long', 'short', 'flat', null]
+  let k = 0
+  for (let m = 0; m < 3 * 24 * 60; m += 37) {
+    if (m > 20 * 60 && m < 26 * 60) continue          // a six-hour gap: past the 240-minute bound
+    ins.run('EURUSD', 'trending', dirs[k++ % 4], fmt(T0 + m * 60_000))
+  }
+  ins.run('EURUSD', 'trending', 'long', fmt(T0 + 600 * 60_000))    // a tie on a stamp: two rows, the later id
+  ins.run('EURUSD', 'trending', 'short', fmt(T0 + 600 * 60_000))
+  const asOfs = []
+  for (let ms = T0 - 3_600_000; ms < T0 + 3 * 86_400_000 + 3_600_000; ms += 7 * 60_000 + 13_457) asOfs.push(ms)
+  asOfs.push(T0 + 600 * 60_000, T0 + 600 * 60_000 + 999, T0 + 599 * 60_000 + 59_999)
+  const shapes = [{ on: true, maxRegimeAgeMin: 240 }, { on: true, maxRegimeAgeMin: 30 }, { on: true, maxRegimeAgeMin: 0 }, { on: true }, { on: false }]
+  let compared = 0, nonNull = 0
+  for (const shape of shapes) {
+    setState(db, 'regime_gate_json', JSON.stringify(shape))
+    const r = asOfTrendReader(db, { gate: loadRegimeGateConfig(db), minAsOfMs: Math.min(...asOfs), maxAsOfMs: Math.max(...asOfs) })
+    for (const ms of asOfs) {
+      const want = trendReadingAt(db, 'EURUSD', ms)
+      assert.equal(r.reading('EURUSD', ms), want, `${JSON.stringify(shape)} at ${new Date(ms).toISOString()}`)
+      compared++; if (want != null) nonNull++
+    }
+    assert.equal(r.reading('GBPUSD', T0), trendReadingAt(db, 'GBPUSD', T0))
+  }
+  assert.ok(compared > 2000 && nonNull > 500, `${compared} compared, ${nonNull} with a reading — the comparison is not vacuous`)
+})
+
+test('splitStats counts kept/removed exactly as portfolioStats does, without the bootstrap', () => {
+  const rows = [
+    { net_r: 2, reason: 'target', exit_ms: 1 }, { net_r: -1, reason: 'stop', exit_ms: 2 }, { net_r: 0, reason: 'reset', exit_ms: 3 },
+    { net_r: 1.5, reason: 'target', exit_ms: 4 }, { net_r: null, reason: 'lost_restart', exit_ms: 5 }, { net_r: 'x', reason: 'stop', exit_ms: 6 },
+    { net_r: -0.25, reason: 'stop', exit_ms: 7 },
+  ]
+  for (const set of [rows, rows.slice(0, 2), [], [rows[0]]]) {
+    const light = splitStats(set), full = portfolioStats(set)
+    for (const f of ['trades', 'wins', 'losses', 'winPct', 'netR', 'avgR', 'grossWinR', 'grossLossR', 'profitFactor', 'lost']) assert.deepEqual(light[f], full[f], f)
+    assert.equal('expectancyLowerR' in light, false)
+  }
+})
+
+test('bounded (PR #1086 blocker 3): 9,000 rows over 3 symbols — one gate read, regime reads ≤ symbols, no bootstrap on kept/removed', () => {
+  const db = initDB(':memory:')
+  upsertAccount(db, { accountId: DEMO, isLive: false })
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, GBPUSD: 2, XAUUSD: 3 }))
+  setState(db, 'regime_gate_json', JSON.stringify({ on: true, maxRegimeAgeMin: 240 }))
+  const start = NOW - 29 * 86_400_000
+  const insR = db.prepare('INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES (?, ?, ?, ?)')
+  const insT = db.prepare(`INSERT INTO tick_shadow_trades (side, boot_id, seq, symbol_id, profile_hash, trade_side, entry, stop_distance, reason, entry_ms, exit_ms, gross_r, net_r)
+                           VALUES ('cpp_exec_demo', 'b1', ?, ?, 'p1', ?, 100000, ?, ?, ?, ?, ?, ?)`)
+  db.transaction(() => {
+    for (const sym of ['EURUSD', 'GBPUSD', 'XAUUSD']) {
+      for (let ms = start - 86_400_000; ms <= NOW; ms += 15 * 60_000) insR.run(sym, 'trending', (ms / 900_000) % 3 === 0 ? 'short' : 'long', fmt(ms))
+    }
+    for (let i = 0; i < 9000; i++) {
+      const entry = start + i * 270_000
+      const r = [2, -1, -1, 1.5][i % 4]
+      insT.run(i + 1, (i % 3) + 1, i % 2 ? 'SELL' : 'BUY', i % 7 ? 200 : 10, r > 0 ? 'target' : 'stop', entry, entry + 60_000, r, r)
+    }
+  })()
+  const { pdb, counts } = counting(db)
+  const t0 = process.hrtime.bigint()
+  const view = shadowCounterfactualView(pdb, { side: 'cpp_exec_demo', now: NOW })
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6
+  const r = view.sides[0]
+  assert.equal(r.rows, 9000); assert.equal(r.truncated, false)
+  assert.equal(counts.gateReads, 1, 'the gate config is read once, not per row')
+  assert.ok(counts.regimeReads <= 3, `${counts.regimeReads} regime reads for 3 symbols — per-row reads are the regression`)
+  assert.equal(r.regimeQueries, 3)
+  assert.ok(r.removedBy.counterTrend > 0 && r.removedBy.stopFloor > 0, 'both filters fired: the reads were not vacuous')
+  assert.equal(r.kept.trades + r.removed.trades, 9000)
+  assert.equal('expectancyLowerR' in r.kept, false); assert.equal('expectancyLowerR' in r.removed, false)
+  assert.equal(typeof r.population.expectancyLowerR, 'number')
+  assert.ok(ms < 5000, `9,000 rows took ${ms.toFixed(0)} ms`)
+})
+
+test('shadowCounterfactual: days is clamped to 30 (regimes are pruned at about that age)', () => {
+  const db = fixture()
+  const r = shadowCounterfactual(db, { side: 'cpp_exec_demo', now: NOW, days: 365 })
+  assert.equal(MAX_COUNTERFACTUAL_DAYS, 30)
+  assert.equal(r.days, 30); assert.equal(r.rows, 8, 'the 40-day-old row stays outside')
+})
+
+test('shadowCounterfactualView without an explicit now is memoised per database, side and window', () => {
+  const db = fixture()
+  const a = shadowCounterfactualView(db, { side: 'cpp_exec_demo' })
+  const b = shadowCounterfactualView(db, { side: 'cpp_exec_demo' })
+  assert.equal(a.memoised, false); assert.equal(b.memoised, true); assert.equal(b.computedAt, a.computedAt)
+  assert.equal(shadowCounterfactualView(db, { side: 'cpp_exec' }).memoised, false, 'another side is its own entry')
+  assert.equal(shadowCounterfactualView(fixture(), { side: 'cpp_exec_demo' }).memoised, false, 'another database is its own entry')
+  assert.equal(shadowCounterfactualView(db, { side: 'cpp_exec_demo', now: NOW }).memoised, false, 'an explicit now is never memoised')
 })
 
 test('GET /state/tick-shadow-counterfactual: every side, one side, and a bad side is 400', async () => {
@@ -94,8 +225,8 @@ test('GET /state/tick-shadow-counterfactual: every side, one side, and a bad sid
     const all = await fetch(base).then(x => x.json())
     assert.deepEqual(all.sides.map(x => x.side), ['cpp_exec_demo', 'cpp_exec'])
     const one = await fetch(`${base}?side=cpp_exec_demo&days=3650`).then(x => x.json())
-    assert.equal(one.sides.length, 1); assert.equal(one.days, 365)
-    assert.equal(one.sides[0].population.trades, 9, 'the 40-day-old row is inside a 365-day window')
+    assert.equal(one.sides.length, 1); assert.equal(one.days, 30, 'clamped to 30: regimes are pruned at about that age')
+    assert.equal(one.sides[0].days, 30)
     const bad = await fetch(`${base}?side=nope`)
     assert.equal(bad.status, 400)
   } finally { s.close() }

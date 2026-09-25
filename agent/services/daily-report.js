@@ -99,6 +99,11 @@ async function familySection(db, now) {
     lines.push(`Family ${fam}: ${f.closes} close(s), PF ${num(f.profitFactor)}, tail ${f.tailSharePct == null ? 'n/a' : f.tailSharePct + '%'}, max DD ${num(f.maxDrawdownR, 1)}R, net ${money(f.netUsd)}`)
   }
   if (!lines.length) lines.push('Family edge: no families reported')
+  // Plan P1: a tick close is counted by its basis (family-edge.js byBasis.tick),
+  // in no family and not in `unattributed` — without this line the first
+  // tick closes would vanish from the daily report.
+  const tick = r.byBasis?.tick
+  if (tick && tick.closes > 0) lines.push(`Tick basis: ${tick.closes} close(s), PF ${num(tick.profitFactor)}, tail ${tick.tailSharePct == null ? 'n/a' : tick.tailSharePct + '%'}, max DD ${num(tick.maxDrawdownR, 1)}R, net ${money(tick.netUsd)}`)
   if (r.unattributed) lines.push(`  ${r.unattributed} close(s) unattributed to a family`)
   return lines
 }

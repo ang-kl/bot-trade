@@ -22,6 +22,15 @@
 // /state/family-edge (gross R, money PF) and from tradedTickEvidence (gross
 // R), so reconcile against those on close COUNTS and netUsd, not on R.
 //
+// UNSCORABLE, COUNTED AND NAMED (PR #1086 review): a close is not scored
+// when it has no R (no stop to measure against: `noR`), when R is 0 but the
+// money moved (a cost-only close — gross ÷ R cannot imply the risk, and
+// scoring it 0 R hid a commission loss as neither win nor loss:
+// `scratchCost`), or when exit_price_suspect = 1 (the exit price is wrong by
+// magnitude, exit-price-suspects.js, so an R built on it is not a fact:
+// `suspectExit`). Each is counted in `unscorableBy`; `unscorable` is their
+// sum, and trades + unscorable = closes.
+//
 // UNDER THE SAMPLE MINIMUM a derived figure is {status:'insufficient'}, not a
 // number (owner principle 6). The minimum is the owner-held
 // traded.minTrades (agent/config/tick-validation.json, read through
@@ -56,21 +65,24 @@ export const METRIC_DEFINITION = Object.freeze({
   order: 'close order (closed_at_ms, else closed_at), then id',
   window: '[fromMs, toMs) on the close stamp',
   sampleMinimum: 'traded.minTrades from agent/config/tick-validation.json',
+  unscorable: 'counted, never scored: no R (noR); R = 0 with a non-zero net (scratchCost); exit_price_suspect = 1 (suspectExit)',
 })
 
 const insufficient = (status, trades, needed) => ({ status, trades, needed })
 
 function netRof(r) {
+  if (Number(r.exit_price_suspect) === 1) return { netR: null, rBasis: null, unscorableAs: 'suspectExit' }
   const stamped = r.realised_rr != null && Number.isFinite(Number(r.realised_rr)) ? Number(r.realised_rr) : null
   const rr = stamped ?? realisedRR(r)
-  if (rr == null || !Number.isFinite(rr)) return { netR: null, rBasis: null }
+  if (rr == null || !Number.isFinite(rr)) return { netR: null, rBasis: null, unscorableAs: 'noR' }
   const net = r.net_pnl == null ? NaN : Number(r.net_pnl)
   const gross = r.gross_pnl == null ? NaN : Number(r.gross_pnl)
+  if (rr === 0 && Number.isFinite(net) && net !== 0) return { netR: null, rBasis: null, unscorableAs: 'scratchCost' }
   const signsAgree = Math.sign(rr) === Math.sign(gross)
   if (Number.isFinite(net) && Number.isFinite(gross) && gross !== 0 && rr !== 0 && Number(r.pnl_price_mismatch) !== 1 && signsAgree) {
-    return { netR: rr * net / gross, rBasis: 'net' }
+    return { netR: rr * net / gross, rBasis: 'net', unscorableAs: null }
   }
-  return { netR: rr, rBasis: 'gross' }
+  return { netR: rr, rBasis: 'gross', unscorableAs: null }
 }
 
 /**
@@ -79,7 +91,7 @@ function netRof(r) {
  * @param {object} db
  * @param {{accountId?: string|null, fromMs?: number|null, toMs?: number|null}} [opts]
  */
-export function closedTradesWithBasis(db, { accountId = null, fromMs = null, toMs = null } = {}) {
+function closedWhere({ accountId = null, fromMs = null, toMs = null } = {}) {
   const where = ["status = 'closed'"]
   const params = []
   const bound = (op, ms) => {
@@ -89,11 +101,47 @@ export function closedTradesWithBasis(db, { accountId = null, fromMs = null, toM
   if (fromMs != null) bound('>=', fromMs)
   if (toMs != null) bound('<', toMs)
   if (accountId != null) { where.push('account_id = ?'); params.push(String(accountId)) }
+  return { where, params }
+}
+
+/**
+ * The reconciliation count, written INDEPENDENTLY of closedWhere (PR #1086
+ * review: `reconciled` compared the rows against themselves and could not go
+ * false). The legacy closed_at branch is read as a TIME (julianday, which
+ * honours a 'Z' or '+08:00' suffix) against the bound floored to the second
+ * — the precision closedWhere's string compare works at — instead of as a
+ * string. A read that failed (closedTradesWithBasis answers [] on an error),
+ * or a close stamp the string compare places in a different window than its
+ * time does, makes the two disagree. `noCloseStamp` counts the closed rows
+ * in scope with neither stamp: no window can contain them.
+ */
+function independentCloseCount(db, { accountId = null, fromMs = null, toMs = null } = {}) {
+  const where = ["status = 'closed'"]
+  const params = []
+  const legacyMs = "CAST(ROUND((julianday(closed_at) - 2440587.5) * 86400000.0) AS INTEGER)"
+  const bound = (op, ms) => {
+    where.push(`((closed_at_ms IS NOT NULL AND closed_at_ms ${op} ?) OR (closed_at_ms IS NULL AND ${legacyMs} ${op} ?))`)
+    params.push(Number(ms), Math.floor(Number(ms) / 1000) * 1000)
+  }
+  if (fromMs != null) bound('>=', fromMs)
+  if (toMs != null) bound('<', toMs)
+  if (accountId != null) { where.push('account_id = ?'); params.push(String(accountId)) }
+  try {
+    const n = Number(db.prepare(`SELECT COUNT(*) AS n FROM trades WHERE ${where.join(' AND ')}`).get(...params)?.n)
+    const scope = accountId != null ? ' AND account_id = ?' : ''
+    const noStamp = Number(db.prepare(`SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND closed_at_ms IS NULL AND closed_at IS NULL${scope}`)
+      .get(...(accountId != null ? [String(accountId)] : []))?.n)
+    return { count: Number.isFinite(n) ? n : null, noCloseStamp: Number.isFinite(noStamp) ? noStamp : null }
+  } catch { return { count: null, noCloseStamp: null } }
+}
+
+export function closedTradesWithBasis(db, { accountId = null, fromMs = null, toMs = null } = {}) {
+  const { where, params } = closedWhere({ accountId, fromMs, toMs })
   let rows = []
   try {
     rows = db.prepare(
       `SELECT id, account_id, side, entry_price, exit_price, sl_price, broker_sl_initial,
-              gross_pnl, net_pnl, realised_rr, pnl_price_mismatch, label_raw, source,
+              gross_pnl, net_pnl, realised_rr, pnl_price_mismatch, exit_price_suspect, label_raw, source,
               closed_at, closed_at_ms, ctrader_position_id
          FROM trades WHERE ${where.join(' AND ')}`,
     ).all(...params)
@@ -101,8 +149,8 @@ export function closedTradesWithBasis(db, { accountId = null, fromMs = null, toM
   const { byPos, byId } = intentMaps(db)
   const out = rows.map(r => {
     const b = basisOfTrade(r, byPos, byId)
-    const { netR, rBasis } = netRof(r)
-    return { ...r, ...b, netR, rBasis, closedAtMs: closedAtMs(r) }
+    const { netR, rBasis, unscorableAs } = netRof(r)
+    return { ...r, ...b, netR, rBasis, unscorableAs, closedAtMs: closedAtMs(r) }
   })
   out.sort((a, b) => ((a.closedAtMs ?? -Infinity) - (b.closedAtMs ?? -Infinity)) || (a.id - b.id))
   return out
@@ -116,9 +164,12 @@ export function basisStats(rows, minTrades) {
   for (const r of rows) basisSources[r.basisSource] = (basisSources[r.basisSource] || 0) + 1
   let netUsd = 0
   for (const r of rows) { const p = Number(r.net_pnl); if (Number.isFinite(p)) netUsd += p }
+  const unscorableBy = { noR: 0, scratchCost: 0, suspectExit: 0 }
+  for (const r of rows) if (!(r.netR != null && Number.isFinite(r.netR))) unscorableBy[r.unscorableAs ?? 'noR'] += 1
   const counts = {
     trades: st.trades, wins: st.wins, losses: st.losses, netR: st.netR,
     unscorable: rows.length - scored.length,
+    unscorableBy,
     grossOnly: scored.filter(r => r.rBasis === 'gross').length,
     closes: rows.length, netUsd: +netUsd.toFixed(2),
     maxDrawdownR: st.maxDrawdownR,
@@ -180,6 +231,7 @@ export function basisPerformanceReport(db, { accountId = null, days = 90, fromMs
     return { accountId: a, closes, byBasis }
   })
   const sumBasis = accounts.reduce((s, a) => s + Object.values(a.byBasis).reduce((t, b) => t + b.trades + b.unscorable, 0), 0)
+  const independent = independentCloseCount(db, { accountId, fromMs: from, toMs: to })
   return {
     at: new Date(now).toISOString(),
     metricDefinition: METRIC_DEFINITION.id,
@@ -188,8 +240,9 @@ export function basisPerformanceReport(db, { accountId = null, days = 90, fromMs
     accountId: accountId != null ? String(accountId) : null,
     sampleMinimum: { trades: minTrades, source: 'agent/config/tick-validation.json traded.minTrades' },
     closedTrades: rows.length,
-    reconciled: sumBasis === rows.length,
+    reconciled: sumBasis === rows.length && independent.count === rows.length,
+    reconciliation: { basisSum: sumBasis, independentCount: independent.count, noCloseStamp: independent.noCloseStamp },
     accounts,
-    note: 'Net R, win = net R > 0 (r-net-v1). /state/family-edge uses gross R and money PF, and tradedTickEvidence gross R: reconcile on close counts and netUsd, not R. Under the sample minimum a derived figure reads insufficient, never a number. A tick row stays empty until the first closed tick trade exists; it fills from the entry ledger (entry_intents basis) or the tick: label.',
+    note: 'Net R, win = net R > 0 (r-net-v1). /state/family-edge uses gross R and money PF, and tradedTickEvidence gross R: reconcile on close counts and netUsd, not R. Under the sample minimum a derived figure reads insufficient, never a number. A tick row stays empty until the first closed tick trade exists; it fills from the entry ledger (entry_intents basis) or the tick: label. A closed window is fixed against LATER trades only: a correction to a row inside it (the pnl backfill of net/gross, a realised_rr, mismatch or exit-suspect stamp, a late intent link) still moves its figures — persisting closed-window results is plan P8.',
   }
 }

@@ -18,9 +18,14 @@
 // stamp. The formula is moved here unchanged.
 //
 // GROWTH: the table has no prune (the only DELETE is POST /actions/reset-data,
-// routes/actions.js), so a per-account row multiplies its write volume by the
-// number of accounts with closed trades (about 8× today). A prune is a
-// separate owner decision, not added here.
+// routes/actions.js), so a per-account row multiplied its write volume by the
+// number of accounts with closed trades (about 8× today, ~432 rows a day). A
+// row is therefore written only when its series CHANGED: an account (or the
+// pooled series) whose total_trades and total_pnl equal its last row's gets
+// no new row — nothing closed since, so every figure in it is the same. The
+// latest row stays the current reading; only its computed_at is older, which
+// is when it was last true-and-changed. A prune stays a separate owner
+// decision.
 // ---------------------------------------------------------------------------
 
 const AGG = `SELECT COUNT(*) as total,
@@ -30,8 +35,21 @@ const AGG = `SELECT COUNT(*) as total,
                     AVG(CASE WHEN net_pnl > 0 THEN net_pnl END) as avg_win,
                     AVG(CASE WHEN net_pnl <= 0 THEN net_pnl END) as avg_loss`
 
+/** The series' last row equals this pass's totals (same trades, same money). */
+function unchanged(db, stats, accountId) {
+  try {
+    const last = accountId == null
+      ? db.prepare('SELECT total_trades, total_pnl FROM performance_snapshots WHERE account_id IS NULL ORDER BY computed_at DESC, id DESC LIMIT 1').get()
+      : db.prepare('SELECT total_trades, total_pnl FROM performance_snapshots WHERE account_id = ? ORDER BY computed_at DESC, id DESC LIMIT 1').get(accountId)
+    if (!last) return false
+    const money = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 100))
+    return Number(last.total_trades) === Number(stats.total) && money(last.total_pnl) === money(stats.total_pnl)
+  } catch { return false }
+}
+
 function insertRow(db, stats, accountId) {
   if (!stats || !(stats.total > 0)) return false
+  if (unchanged(db, stats, accountId)) return false
   const winRate = stats.wins / stats.total
   // TRUE profit factor = gross win / gross loss. The old formula was
   // |avg_win / avg_loss| — the PAYOFF ratio, which ignores how OFTEN
@@ -52,9 +70,10 @@ function insertRow(db, stats, accountId) {
 
 /**
  * Write this pass's snapshot rows: one per account with closed trades, then
- * the pooled (account_id NULL) row.
+ * the pooled (account_id NULL) row — each only when its totals changed since
+ * that series' last row.
  *
- * @returns {{accounts: number, pooled: boolean}}
+ * @returns {{accounts: number, pooled: boolean}}  rows actually written
  */
 export function writePerformanceSnapshots(db) {
   const perAccount = db.prepare(`${AGG}, account_id FROM trades WHERE status = 'closed' AND account_id IS NOT NULL GROUP BY account_id ORDER BY account_id`).all()

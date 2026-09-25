@@ -2886,16 +2886,17 @@ export default function stateRouter(db) {
     }
   })
 
-  // Plan P2 (25-09-2026): the shadow book's last ?days= (default 30) of
-  // trades re-scored with the live stop floor and counter-trend filter —
-  // kept vs removed PF and WR, and what each veto removed. Report only.
+  // Plan P2 (25-09-2026): the shadow book's last ?days= (default 30, at most
+  // 30 — regimes are pruned at about that age) of trades re-scored with the
+  // live stop floor and counter-trend filter — kept vs removed PF and WR, and
+  // what each veto removed. Report only; memoised 60 s.
   router.get('/tick-shadow-counterfactual', async (req, res) => {
     try {
-      const { shadowCounterfactualView } = await import('../services/tick-shadow-counterfactual.js')
+      const { shadowCounterfactualView, MAX_COUNTERFACTUAL_DAYS } = await import('../services/tick-shadow-counterfactual.js')
       const { SIDES } = await import('../services/tick-shadow.js')
       const side = req.query.side != null && String(req.query.side).trim() !== '' ? String(req.query.side).trim() : null
       if (side && !SIDES.includes(side)) return res.status(400).json({ error: `side must be one of ${SIDES.join(', ')}` })
-      const days = req.query.days != null ? Math.min(365, Math.max(1, Number(req.query.days) || 30)) : 30
+      const days = req.query.days != null ? Math.min(MAX_COUNTERFACTUAL_DAYS, Math.max(1, Number(req.query.days) || 30)) : 30
       res.json(shadowCounterfactualView(db, { side, days }))
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -3759,8 +3760,16 @@ export default function stateRouter(db) {
         `SELECT * FROM performance_snapshots WHERE computed_at >= ? AND ${snap.where}
          ORDER BY computed_at ASC, id ASC`
       ).all(since, ...snap.params)
+      // The writer adds a row only when a series CHANGED (performance-
+      // snapshots.js), so a window with no close in it has no row: the value
+      // in force at its start is the last row before it, served as `opening`.
+      const opening = db.prepare(
+        `SELECT * FROM performance_snapshots WHERE computed_at < ? AND ${snap.where}
+         ORDER BY computed_at DESC, id DESC LIMIT 1`
+      ).get(since, ...snap.params) || null
       res.json({
         snapshots: rows,
+        opening,
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: snap.scoped,
         scope: scopeReport(scope, snapshotCoverage(db, snap, 'computed_at >= ?', [since])),

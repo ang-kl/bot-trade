@@ -29,6 +29,21 @@ test('writePerformanceSnapshots: one row per account with its own account_id and
   ])
 })
 
+test('writePerformanceSnapshots: a series whose totals are unchanged since its last row gets no new row; a changed one does', () => {
+  const db = initDB(':memory:')
+  close(db, A, 100); close(db, B, -10)
+  assert.deepEqual(writePerformanceSnapshots(db), { accounts: 2, pooled: true })
+  assert.deepEqual(writePerformanceSnapshots(db), { accounts: 0, pooled: false }, 'nothing closed: no row')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM performance_snapshots').get().n, 3)
+  close(db, A, 25)
+  assert.deepEqual(writePerformanceSnapshots(db), { accounts: 1, pooled: true }, 'A and the pooled series changed; B did not')
+  const rows = db.prepare('SELECT account_id, total_trades, total_pnl FROM performance_snapshots ORDER BY id').all().map(x => ({ ...x }))
+  assert.deepEqual(rows.slice(3), [{ account_id: A, total_trades: 2, total_pnl: 125 }, { account_id: null, total_trades: 3, total_pnl: 115 }])
+  // the same count with different money is a change (a backfilled net_pnl)
+  db.prepare("UPDATE trades SET net_pnl = -12 WHERE account_id = ?").run(B)
+  assert.deepEqual(writePerformanceSnapshots(db), { accounts: 1, pooled: true })
+})
+
 test('writePerformanceSnapshots: no closed trades writes nothing', () => {
   const db = initDB(':memory:')
   assert.deepEqual(writePerformanceSnapshots(db), { accounts: 0, pooled: false })
@@ -81,8 +96,10 @@ test('GET /state/metrics/history is strict and keeps the rows of the cutoff\'s o
     const h = await fetch(`${base}/metrics/history?account=${A}&days=1`).then(x => x.json())
     assert.deepEqual(h.snapshots.map(s => s.total_trades), [1, 2])
     assert.equal(h.scope.coverage.total, 2)
+    assert.equal(h.opening.total_trades, 4, 'the value in force at the window\'s start: the last row before it, this account\'s')
     const all = await fetch(`${base}/metrics/history?account=all&days=1`).then(x => x.json())
     assert.deepEqual(all.snapshots.map(s => s.total_trades), [3])
+    assert.equal(all.opening, null, 'no pooled row before the window')
   })
 })
 

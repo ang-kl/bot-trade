@@ -33,12 +33,17 @@ import { costSensitivity, loadRepoSchedule, rowChargedUnder, rowIsCosted, schedu
 
 export const SIDES = Object.freeze(['cpp_exec_demo', 'cpp_exec'])
 
-function rows(db, { side, profilePrefix = null, sinceMs = null, limit = 5000 } = {}) {
+function rows(db, { side, profilePrefix = null, sinceMs = null, limit = 5000, newest = false } = {}) {
   const where = ['side = ?']; const params = [side]
   if (profilePrefix) { where.push("(profile_hash = ? OR reason = 'lost_restart')"); params.push(profilePrefix) }
   if (sinceMs != null) { where.push('exit_ms >= ?'); params.push(Number(sinceMs)) }
+  const cap = Math.max(1, Math.min(50_000, limit))
   try {
-    return db.prepare(`SELECT * FROM tick_shadow_trades WHERE ${where.join(' AND ')} ORDER BY exit_ms, id LIMIT ?`).all(...params, Math.max(1, Math.min(50_000, limit)))
+    // `newest` (the P2 counterfactual): when the window holds more than the
+    // cap, keep the NEWEST rows — still returned in exit order. The default
+    // keeps the oldest, as every existing caller has always had it.
+    if (newest) return db.prepare(`SELECT * FROM tick_shadow_trades WHERE ${where.join(' AND ')} ORDER BY exit_ms DESC, id DESC LIMIT ?`).all(...params, cap).reverse()
+    return db.prepare(`SELECT * FROM tick_shadow_trades WHERE ${where.join(' AND ')} ORDER BY exit_ms, id LIMIT ?`).all(...params, cap)
   } catch { return [] }
 }
 
