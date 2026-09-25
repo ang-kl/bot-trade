@@ -17,13 +17,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
 import { initDB } from '../db.js'
 import { runLossPostmortems } from './loss-postmortem.js'
 
-const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'volctx-')), 'agent.db'))
+const tmpDb = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'volctx-')), 'agent.db'))
 
 const HOUR = 3600_000
 const NOW = Date.parse('2026-07-29T00:00:00.000Z')

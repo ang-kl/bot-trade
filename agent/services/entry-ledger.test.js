@@ -2,12 +2,12 @@
 // its one-use permits.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { initDB } from '../db.js'
 import { upsertAccount } from './account-registry.js'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 
 // ---------------------------------------------------------------------------
 // A RETIRED PRODUCER IS REFUSED AT THE FENCE (20-09-2026, owner: "retire the

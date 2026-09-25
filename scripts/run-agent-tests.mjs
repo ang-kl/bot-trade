@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { readdirSync } from 'node:fs'
+import { readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { privateTmpDir, childTestEnv, leftovers, describeLeftovers } from '../agent/test-support/tmp-guard.js'
 
 const files = []
 function walk(directory) {
@@ -16,16 +17,41 @@ walk('agent')
 files.sort()
 const latency = 'agent/routes/tick-readiness-routes.test.js'
 if (!files.includes(latency)) throw new Error('Required latency acceptance suite is missing')
+// The hygiene test runs the latency file again in a nested `node --test`, so
+// it gets its own group too: it must not compete with the latency file's
+// isolated run, and its nested run must not compete with the rest.
+const hygiene = 'agent/test-hygiene.test.js'
+if (!files.includes(hygiene)) throw new Error('Required test hygiene suite is missing')
 // These tests deliberately measure the production handler against a 100 ms
 // limit. Competing test processes are not part of that workload. Run the
-// whole latency file first, then every other agent test exactly once.
-const groups = [[latency], files.filter(path => path !== latency)]
-if (!groups[1].length) throw new Error('Agent test inventory is empty')
+// whole latency file first, then the hygiene file, then every other agent
+// test exactly once.
+const groups = [[latency], [hygiene], files.filter(path => path !== latency && path !== hygiene)]
+if (!groups[2].length) throw new Error('Agent test inventory is empty')
+const labels = ['isolated latency acceptance', 'isolated test hygiene', 'remaining agent suite']
+// Every test process gets one private TMPDIR. After the whole suite it must
+// be empty: a test that leaves a fixture directory behind fails the gate here,
+// by name, instead of filling the disk (25-09-2026: 279 directories and
+// 190,865,902 B left by one run; ~25 GB in a day). Fixtures come from
+// agent/test-support/temp-dir.js, which removes them at process exit.
+const tmp = privateTmpDir()
+const env = childTestEnv(tmp)
 let failed = false
-for (const [index, group] of groups.entries()) {
-  console.log(`[agent-gate] ${index === 0 ? 'isolated latency acceptance' : 'remaining agent suite'}: ${group.length} files`)
-  const result = spawnSync(process.execPath, ['--test', '--test-concurrency=2', ...group], { stdio: 'inherit' })
-  if (result.error) throw result.error
-  if (result.status !== 0) failed = true
+try {
+  for (const [index, group] of groups.entries()) {
+    console.log(`[agent-gate] ${labels[index]}: ${group.length} files`)
+    const result = spawnSync(process.execPath, ['--test', '--test-concurrency=2', ...group], { stdio: 'inherit', env })
+    if (result.error) throw result.error
+    if (result.status !== 0) failed = true
+  }
+  const left = leftovers(tmp)
+  if (left.length) {
+    failed = true
+    console.error(`[agent-gate] test hygiene FAILED: ${describeLeftovers(left)}\n[agent-gate] make test fixtures with agent/test-support/temp-dir.js (mkdtempSync / tempDir), which removes them at exit`)
+  } else {
+    console.log('[agent-gate] test hygiene: the private TMPDIR is empty after the full suite')
+  }
+} finally {
+  rmSync(tmp, { recursive: true, force: true })
 }
 process.exitCode = failed ? 1 : 0

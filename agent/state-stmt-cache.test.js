@@ -6,13 +6,13 @@
 // account id, the arm state and every risk toggle.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
+import { mkdtempSync } from './test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
 import { initDB, getState, setState } from './db.js'
 
-const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'stmt-')), 'agent.db'))
+const tmpDb = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'stmt-')), 'agent.db'))
 
 test('reads and writes still round-trip', () => {
   const db = tmpDb()

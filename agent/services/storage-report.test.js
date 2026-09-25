@@ -1,7 +1,7 @@
 // node --test agent/services/storage-report.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -9,7 +9,7 @@ import { initDB } from '../db.js'
 import { storageReport } from './storage-report.js'
 
 const tmpDb = () => {
-  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'storage-')), 'agent.db')
+  const p = path.join(mkdtempSync(path.join(os.tmpdir(), 'storage-')), 'agent.db')
   return { db: initDB(p), p }
 }
 

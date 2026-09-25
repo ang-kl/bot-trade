@@ -2,7 +2,8 @@
 // because the route needs a token that has answered 401 since 07-09.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 

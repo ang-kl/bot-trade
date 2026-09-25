@@ -8,14 +8,14 @@
 // unattributed changes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
 import { initDB, getState, setState } from '../db.js'
 import { setPhaseFlag, phaseTraceView } from './phase-audit.js'
 
-const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'phasetrace-')), 'agent.db'))
+const tmpDb = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'phasetrace-')), 'agent.db'))
 const traceRows = (db, key) =>
   db.prepare('SELECT * FROM phase_flag_trace WHERE key = ? ORDER BY id').all(key)
 const rawRows = (db) =>

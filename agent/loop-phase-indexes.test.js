@@ -20,6 +20,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from './test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -29,7 +30,7 @@ const STRATEGIES = ['rsi2', 'fib', 'ema', 'brk', 'cup', 'inv_cup', 'fibc', 'vwap
 
 // One seeded DB shared by the plan tests — building it is the expensive part.
 const db = (() => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'idxplan-')), 'agent.db')
+  const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'idxplan-')), 'agent.db')
   const d = initDB(file)
   const ins = d.prepare(
     `INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at, opened_at, ctrader_position_id)

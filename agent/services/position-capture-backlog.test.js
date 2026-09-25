@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import { enqueueVerifyBacklog, MAX_REVERIFY, REVERIFY_BATCH, resetBacklogReports } from './position-capture.js'
 import { VERDICT_CONTRACT_VERSION } from '../lib/verify-contract.js'
 import { initDB as realInitDB } from '../db.js'
@@ -360,7 +361,7 @@ test('B1: a record rebuilt BEFORE its last ask stays capped — the rebuild was 
 })
 
 test('B1: the migration backfills rebuilt_at only for records that HAD a verdict and were reset (unverified + verifier_version)', () => {
-  const { mkdtempSync } = require('node:fs'); const { tmpdir } = require('node:os'); const { join } = require('node:path')
+  const { tmpdir } = require('node:os'); const { join } = require('node:path')
   const file = join(mkdtempSync(join(tmpdir(), 'b1-')), 'agent.db')
   let real = realInitDB(file)
   const cols = () => real.prepare(`PRAGMA table_info(position_history)`).all().map(c => c.name)

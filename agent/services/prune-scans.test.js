@@ -9,6 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -16,7 +17,7 @@ import { initDB } from '../db.js'
 import { pruneScans, heldByAnalyses, DEFAULT_BATCH } from './prune-scans.js'
 
 function realDb() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prunescans-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'prunescans-'))
   const db = initDB(path.join(dir, 'agent.db'))
   return { db, dir, cleanup: () => { db.close(); fs.rmSync(dir, { recursive: true, force: true }) } }
 }

@@ -7,6 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import express from 'express'
 import { initDB, getState } from '../db.js'
 import { horizonOfTimeframe, horizonAdmits, setAccountHorizon, loadAccountHorizon, anyAccountAdmits, normalizeHorizon, HORIZON_KEY } from './account-horizon.js'
@@ -82,7 +83,7 @@ test('wiring pin: the loop filters candidates before the analysis slots and skip
 
 test('the repo declaration is applied at boot, idempotently, and overrides a differing stored value', async () => {
   const { seedAccountHorizonsFromConfig } = await import('./account-horizon.js')
-  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { writeFileSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { tmpdir } = await import('node:os')
   const db = initDB(':memory:')

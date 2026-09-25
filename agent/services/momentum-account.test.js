@@ -7,6 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import { initDB, getState, setState } from '../db.js'
 import {
   momentumAccountConfig, loadMomentumAccount, isMomentumAccount, momentumAccountIds, momentumAccountStateKey, migrateLegacyPassCursor, ALL_ACCOUNTS, MOMENTUM_ACCOUNT_KEY, MOMENTUM_ACCOUNT_STATE_KEY, MOMENTUM_UNIVERSE_KEY,
@@ -368,7 +369,7 @@ test('scope: a shadow row for a momentum-universe name is NOT taken by a row-cur
 test('the repo declaration switches the momentum account on at boot, idempotently, and overrides a differing stored value', async () => {
   const { seedMomentumAccountFromConfig, loadMomentumAccount, MOMENTUM_ACCOUNT_KEY } = await import('./momentum-account.js')
   const { initDB, setState } = await import('../db.js')
-  const { readFileSync, writeFileSync, mkdtempSync } = await import('node:fs')
+  const { readFileSync, writeFileSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { tmpdir } = await import('node:os')
   const db = initDB(':memory:')
@@ -458,7 +459,7 @@ test('a FUNDED live account goes through the daily pass: its autoTrade call carr
 
 test('boot migrates the previously named account\'s global pass cursor to its per-account key once, then clears the legacy key', async () => {
   const { seedMomentumAccountFromConfig } = await import('./momentum-account.js')
-  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { writeFileSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { tmpdir } = await import('node:os')
   const db = initDB(':memory:')

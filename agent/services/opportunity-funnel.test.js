@@ -1,7 +1,7 @@
 // node --test agent/services/opportunity-funnel.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 import { initDB } from '../db.js'
@@ -9,7 +9,7 @@ import { opportunityFunnel, silentOpportunities, funnelLine, sinceIso } from './
 import { opportunityKey } from './opportunity-identity.js'
 
 const NOW = Date.parse('2026-08-05T06:00:00.000Z')
-const fresh = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'funnel-')), 'a.db'))
+const fresh = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'funnel-')), 'a.db'))
 
 const P = (over = {}) => ({ symbol: 'TXT.US', side: 'SELL', strategy: 'vwap_trend', ...over })
 

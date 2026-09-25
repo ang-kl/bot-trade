@@ -1,10 +1,10 @@
 // agent/services/entry-mode.test.js — the per-account entry fence (P1b).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 
 import { initDB, getState, setState } from '../db.js'
 import { upsertAccount, syncSelectedAccount, ensureAccountRegistry, getAccountState, setAccountState } from './account-registry.js'

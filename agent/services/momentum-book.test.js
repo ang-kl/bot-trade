@@ -14,6 +14,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import { initDB, getState, setState } from '../db.js'
 import { setStage } from './stage-matrix.js'
 import {
@@ -1775,7 +1776,7 @@ test('B3: an OPEN row whose trade is in flight (submitting / unconfirmed) is NOT
 })
 
 test('Wave 1 (19-09-2026): the book\'s master switch boots from agent/config/momentum-book.json — only the named keys are patched, diff-by-value, idempotent; the checked-in file enables the book; index.js runs the seed', async () => {
-  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { writeFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const { seedMomentumBookFromConfig, loadMomentumBook, MOMENTUM_BOOK_CONFIG_KEY } = await import('./momentum-book.js')
