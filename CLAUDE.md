@@ -1255,8 +1255,8 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   its dual-entry build was local and unpushed and is not on any remote ref at
   the 03:40 UTC fetch, so Claude rebuilds it from `origin/main` `83c94e6` and
   assumes nothing from it. Claude's replies in this container continued from
-  **№ 9,007** to **№ 9,031** (the takeover acknowledgement); the next reply is
-  `№ 9,032`. Claude Code is now the single implementation session. The record
+  **№ 9,007** to **№ 9,033** (the takeover acknowledgement; two unstamped status lines, № 9,031–9,032, preceded it); the next reply is
+  `№ 9,034`. Claude Code is now the single implementation session. The record
   is `docs/claude-takeover-2026-09-25.md`; the plan it completes is
   `docs/dual-environment-plan-2026-09-25.md`. A later re-measure that reads
   below this line is missing these, not correcting them.
