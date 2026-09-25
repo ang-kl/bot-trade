@@ -2058,6 +2058,29 @@ export function initDB(dbPath) {
     PRIMARY KEY (account_id, position_id)
   );
   CREATE INDEX IF NOT EXISTS idx_pos_capture_due ON position_capture_queue(state, due_at_ms);
+
+  -- V3 I3 (owner 25-09-2026, the write-off rule): how a stuck record ENDED.
+  -- One row per record the stuck resolver settled from broker evidence
+  -- ('settled') or wrote off ('unresolved', with reason and evidence). The
+  -- stuck record itself is never deleted or rewritten into a status it did
+  -- not reach; this row is what makes it terminal (lib/stuck-resolutions.js).
+  CREATE TABLE IF NOT EXISTS stuck_resolutions (
+    subject          TEXT PRIMARY KEY,     -- trade:<id> | pending:<id> | capture:<acct>:<pid> | target:<acct>:<pid>
+    kind             TEXT NOT NULL,        -- trade_inflight | resting_order | capture | targetless
+    rule_id          TEXT NOT NULL,        -- the lifecycle rule that flagged it (STK-03, STK-01, ORD-10, STK-06, STK-09)
+    account_id       TEXT,
+    trade_id         INTEGER,
+    position_id      TEXT,                 -- the broker position a settlement claimed, if any
+    outcome          TEXT NOT NULL CHECK(outcome IN ('settled', 'unresolved')),
+    verdict          TEXT NOT NULL,
+    reason           TEXT NOT NULL,
+    evidence_json    TEXT NOT NULL,
+    prior_state      TEXT,
+    resolver_version INTEGER NOT NULL,
+    resolved_at      TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_stuck_resolutions_trade ON stuck_resolutions(trade_id);
+  CREATE INDEX IF NOT EXISTS idx_stuck_resolutions_position ON stuck_resolutions(account_id, position_id);
   `);
 
   timedPhase('history_schema');

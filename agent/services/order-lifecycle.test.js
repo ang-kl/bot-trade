@@ -348,9 +348,10 @@ const FIXTURES = {
   'STK-09': {
     red(db) {
       const id = trade(db, { ctrader_position_id: '6601' })
-      for (const at of ['2026-09-26 06:00:00', '2026-09-26 09:00:00']) ins(db, 'action_log', { method: 'POSITION_NO_TARGET', path: '/protection-audit', at, body: JSON.stringify({ positionId: '6601', symbol: 'EURUSD' }) })
+      // v2 (I3): still reported — the newest row inside two log-mute windows.
+      for (const at of ['2026-09-26 06:00:00', '2026-09-26 09:00:00', '2026-09-26 11:30:00']) ins(db, 'action_log', { method: 'POSITION_NO_TARGET', path: '/protection-audit', at, body: JSON.stringify({ positionId: '6601', symbol: 'EURUSD' }) })
       assert.ok(id)
-      return { ids: [`position:${A}:6601`], present: () => assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE method = 'POSITION_NO_TARGET'`).get().n, 2) }
+      return { ids: [`position:${A}:6601`], present: () => assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE method = 'POSITION_NO_TARGET'`).get().n, 3) }
     },
     green: db => {
       trade(db, { ctrader_position_id: '6602' })
@@ -380,6 +381,19 @@ const FIXTURES = {
       }
     },
     green: db => { ins(db, 'controller_heartbeats', { name: 'pnl_reconcile', last_run_at: iso(NOW - 60_000), last_ok_at: iso(NOW - 60_000), consecutive_failures: 0, runs: 9000 }) },
+  },
+  'STK-12': {
+    // V3 I3: a written-off stuck record is a NOTICE naming it; a settled one is not.
+    red(db) {
+      const id = trade(db, { id: 1466, symbol: 'SUGAR', status: 'unconfirmed', ctrader_position_id: null, opened_at: '2026-09-07 10:35:37' })
+      ins(db, 'stuck_resolutions', { subject: `trade:${id}`, kind: 'trade_inflight', rule_id: 'STK-03', account_id: A, trade_id: id, outcome: 'unresolved', verdict: 'unresolved: no broker evidence', reason: 'no deal', evidence_json: '{}', prior_state: 'unconfirmed', resolver_version: 1, resolved_at: NEW })
+      return { ids: [`trade:${id}`], present: () => assert.equal(db.prepare(`SELECT outcome FROM stuck_resolutions WHERE subject = 'trade:1466'`).get().outcome, 'unresolved') }
+    },
+    green(db) {
+      const id = trade(db, { status: 'unconfirmed', ctrader_position_id: null, opened_at: '2026-09-07 10:35:37' })
+      ins(db, 'stuck_resolutions', { subject: `trade:${id}`, kind: 'trade_inflight', rule_id: 'STK-03', account_id: A, trade_id: id, outcome: 'settled', verdict: 'duplicate of trade #1', reason: 'adopted', evidence_json: '{}', prior_state: 'unconfirmed', resolver_version: 1, resolved_at: NEW })
+    },
+    emptyGreen: true, // a settled record is not in the notice's population: the whole population is the write-offs
   },
 }
 
@@ -440,7 +454,9 @@ test('known answer: the six orphaned resting rows, one classification each (#669
   assert.equal(by['pending:669'].class, 'filled_unlinked')
   assert.equal(by['pending:661'].class, 'filled_unlinked', '#661 filled: not also counted as expired')
   assert.equal(by['pending:663'].class, 'order_gone')
-  for (const e of r.sample) assert.equal(e.resolverExists, false, 'pending-fib has no resolver (loop.js:114)')
+  // v2 (I3): pending-fib rows now have a resolver (the stuck resolver, R1);
+  // the six classifications above are unchanged from v1.
+  for (const e of r.sample) { assert.equal(e.resolverExists, true); assert.equal(e.resolver, 'stuck resolver R1') }
   assert.equal(build(db).summary.stuck.new, 6)
 })
 
@@ -710,7 +726,7 @@ test('bounded: samples page at 25 (200 with one rule), counts never shrink', () 
 const src = v => (typeof v === 'function' ? v.toString() : JSON.stringify(v))
 const ruleHash = r => createHash('sha256').update(Object.keys(r).filter(k => !['id', 'version', 'cite', 'noun'].includes(k)).sort().map(k => `${k}=${src(r[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
 const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS).sort().map(k => `${k}=${src(JUDGE_HELPERS[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
-const PINNED_HELPERS = { [`helpers@2`]: '0a3dba7780ffbc63' }
+const PINNED_HELPERS = { [`helpers@3`]: '99e6e8786e41d413' }
 const PINNED = {
   'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@1': '1d3934917924fe6a', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
@@ -720,9 +736,9 @@ const PINNED = {
   'CLS-01@1': 'd1c6f94d5d127f9b', 'CLS-02@1': '1f3a45c656e2f94b', 'CLS-03@1': '40b74e5ba9111a98', 'CLS-04@1': '4313b95a7b55beb1',
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
-  'STK-01@1': 'b7c8a96e077092aa', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@1': '9e6eef34c7fcf44e', 'STK-04@2': '30b119a04d39ebc5',
-  'STK-05@1': 'fd6653d6850b9006', 'STK-06@1': '221e983558ccd9be', 'STK-07@2': 'c45c7a3d5678fc13', 'STK-08@1': '3fecf4ac1c0a0ce3',
-  'STK-09@1': '9006966342612525', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6',
+  'STK-01@2': '969001ee6208e6c7', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
+  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@2': 'c45c7a3d5678fc13', 'STK-08@1': '3fecf4ac1c0a0ce3',
+  'STK-09@2': '29a95b3d182e245c', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
   const now = Object.fromEntries(RULES.map(r => [`${r.id}@${r.version}`, ruleHash(r)]))
@@ -858,7 +874,7 @@ test('B1: a stuck rule\'s finding asks whether it is STILL stuck at the deadline
   assert.equal(finding(dead).status, 'expired')
   // The metric itself: an unreadable rule and a truncated zero are no evidence either.
   const snap = readSnapshot(getState, stuck)
-  const m = { ruleId: 'STK-01', version: 1, sinceMs: NOW }
+  const m = { ruleId: 'STK-01', version: RULES.find(r => r.id === 'STK-01').version, sinceMs: NOW }
   assert.equal(lifecycleRulePersists(snap, m), true)
   assert.equal(lifecycleRulePersists({ ...snap, rules: snap.rules.map(r => (r.id === 'STK-01' ? { ...r, violations: 0, truncated: true } : r)) }, m), null)
   assert.equal(lifecycleRulePersists({ ...snap, rules: snap.rules.map(r => (r.id === 'STK-01' ? { ...r, measurable: false } : r)) }, m), null)

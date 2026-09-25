@@ -7,8 +7,9 @@ import { projectCalendar } from '../lib/calendar-intervals.js'
 import { matchingProfile, recordReference, comparisonRecord, claimReferenceDelivery, markReferenceDelivery } from './scanner-comparison.js'
 import { nativeProfileHash } from './scanner-profiles.js'
 import { SCANNER_PROFILE_LIMIT } from '../lib/scanner-bounds.js'
+import { secondWriterRefusal, readSqliteVersion, WAL_RESET_FIXED_FROM } from '../lib/sqlite-wal-reset.js'
 
-const bridges = new WeakMap(), restarts = new WeakMap(), epoch = randomUUID()
+const bridges = new WeakMap(), restarts = new WeakMap(), refusals = new WeakMap(), epoch = randomUUID()
 const hash = text => createHash('sha256').update(text).digest('hex')
 
 // HTTP belongs to the isolated observation worker. No credential can be sent
@@ -155,10 +156,24 @@ function buildBridge(db, env, createWorker, now) {
  * { bridge, profiles }. A bridge whose worker errored, exited or failed to
  * construct is terminated and rebuilt, at most once per REBUILD_MIN_MS
  * whichever caller reaches it first; a failed send() never triggers this.
+ *
+ * The worker is a second WRITING connection on the database file, in another
+ * thread. It is not built while the running SQLite predates the WAL-reset fix
+ * (sqlite.org/wal.html §11: 3.7.0–3.51.2 can corrupt a WAL database when two
+ * such connections write or checkpoint at the same instant) or while db.js is
+ * in its degraded exclusive-locking mode, where no second connection can use
+ * the file. The refusal is kept for scannerBridgeStatus, not swallowed.
  */
-export function ensureScannerBridge(db, env = process.env, { createWorker = newWorker, now = Date.now() } = {}) {
+export function ensureScannerBridge(db, env = process.env, { createWorker = newWorker, now = Date.now(), readVersion = readSqliteVersion } = {}) {
   const profiles = approvedProfiles(db, env)
   if (!profiles) return null
+  const refusal = secondWriterRefusal(db, { readVersion })
+  if (refusal) {
+    if (!refusals.has(db)) console.warn(`[scanner-bridge] refused: ${refusal.reason} (SQLite ${refusal.sqliteVersion ?? 'unreadable'}; the WAL-reset fix is in ${WAL_RESET_FIXED_FROM}+). No second connection is opened.`)
+    refusals.set(db, { ...refusal, atMs: now })
+    return null
+  }
+  refusals.delete(db)
   let record = bridges.get(db)
   if (record?.bridge.status().failed && now - record.builtAtMs >= REBUILD_MIN_MS) {
     try { Promise.resolve(record.worker?.terminate()).catch(() => {}) } catch { /* already gone */ }
@@ -211,5 +226,10 @@ export function scannerObserver(db, creds, env = process.env, deps = {}) {
 }
 export const scannerBridgeStatus = db => {
   const record = bridges.get(db)
-  return record ? { ...record.bridge.status(), restarts: restarts.get(db) || 0, builtAtMs: record.builtAtMs } : { enabled: false, orderAuthority: false }
+  if (record) return { ...record.bridge.status(), restarts: restarts.get(db) || 0, builtAtMs: record.builtAtMs }
+  // Approved but refused (SQLite without the WAL-reset fix, or the degraded
+  // exclusive mode): say so, rather than reading like a bridge nobody enabled.
+  const refused = refusals.get(db)
+  if (refused) return { enabled: false, orderAuthority: false, refused: refused.reason, sqliteVersion: refused.sqliteVersion, refusedAtMs: refused.atMs }
+  return { enabled: false, orderAuthority: false }
 }
