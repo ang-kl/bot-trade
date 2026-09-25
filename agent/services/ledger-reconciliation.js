@@ -48,6 +48,10 @@ import { VERDICTS, NO_ACCOUNT_PROBED_SQL } from './position-lifecycle-evidence.j
 /** Before this, deal receipts were written only by the manual import. */
 export const RECEIPTS_SINCE = '2026-07-28T00:00:00Z'
 const LIST_MAX = 50
+/** The duplicate audit reads closes in this window only (findDuplicateTrades's
+ * own default, passed explicitly and echoed on each account's block), while
+ * the rest of the report covers all time. */
+export const DUPLICATES_WINDOW_DAYS = 90
 const TOL = 0.011
 const r2 = v => v == null ? null : Math.round(v * 100) / 100
 const ms = v => {
@@ -137,7 +141,7 @@ export function buildLedgerReconciliation(db, { accountId = null } = {}) {
   const noAccountPids = new Set(db.prepare(`SELECT ctrader_position_id AS pid FROM trades WHERE account_id IS NULL AND ctrader_position_id IS NOT NULL`)
     .all().map(r => normPosId(r.pid)).filter(Boolean))
   let dupes = null
-  try { dupes = findDuplicateTrades(db, { scope: null }) } catch { dupes = null }
+  try { dupes = findDuplicateTrades(db, { scope: null, windowDays: DUPLICATES_WINDOW_DAYS }) } catch { dupes = null }
 
   const accounts = wanted.map(a => accountSection(db, String(a.account_id), {
     enabled: Number(a.enabled) === 1, currency: currencyOf(a.account_id),
@@ -252,6 +256,8 @@ function accountSection(db, accountId, { enabled, currency, currencyEvidence, no
     const mine = dupes.groups.filter(g => String(g.accountId) === accountId)
     const money = dupes.extraByAccount.find(b => String(b.accountId) === accountId)
     duplicates = {
+      // Closes in the last `windowDays` only — not all time like the classes.
+      windowDays: dupes.windowDays,
       groups: mine.length,
       byClassification: mine.reduce((o, g) => ({ ...o, [g.classification]: (o[g.classification] || 0) + 1 }), {}),
       extraRows: money?.rows ?? 0,

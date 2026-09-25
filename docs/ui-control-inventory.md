@@ -60,7 +60,7 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `29a1f6e` · 120 action call sites · 99 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `8754556` · 120 action call sites · 99 state routes read.
 
 Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -109,10 +109,10 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 41 | `src/pages/Connect.jsx:101` | cTrader connected — now tap the account the bot should trade | `/actions/ctrader-token` | `ctrader_access_token` ✓, `ctrader_refresh_token` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 42 | `src/pages/Connect.jsx:151` | loadAccounts | `/actions/ctrader-token` | `ctrader_access_token` ✓, `ctrader_refresh_token` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 43 | `src/pages/Connect.jsx:165` | selectAccount | `/actions/ctrader-select-account` | `ctrader_account_id` ✓, `ctrader_is_live` ✓, `ctrader_account_roles_json` ✓, `ctrader_trader_login` ✓, `symbol_id_map` ✓, `account_balance_usd` ✓, `account_leverage` ✓, via sweepMonitoredPositionsForAccounts(db, …), setState(db, …), recordAccountMoney(db, …), setAccountState(db, …), executes | `/state/health`, `/state/accounts`, `/state/watchlists`, `/state/config`, `/state/risk-config`, `/state/broker-cache`, `/state/risk-full`, `/state/symbol-map` | WIRED |
-| 44 | `src/pages/Desk.jsx:310` | (inline) | `/actions/broker-history` | dynamic key(s) — per-account/overlay write, via setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 45 | `src/pages/Desk.jsx:849` | (inline) | `/actions/postmortem-sweep` | via runLossPostmortems(db, …), refreshLessonTuning(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 46 | `src/pages/Desk.jsx:1240` | (inline) | `/actions/llm-budget` | `llm_daily_cost_alert_usd` ✓, `llm_spend_alerted_day` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 47 | `src/pages/Desk.jsx:1286` | (inline) | `/actions/backfill-label-strategy` | via backfillLabelStrategy(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 44 | `src/pages/Desk.jsx:311` | (inline) | `/actions/broker-history` | dynamic key(s) — per-account/overlay write, via setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 45 | `src/pages/Desk.jsx:847` | (inline) | `/actions/postmortem-sweep` | via runLossPostmortems(db, …), refreshLessonTuning(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 46 | `src/pages/Desk.jsx:1238` | (inline) | `/actions/llm-budget` | `llm_daily_cost_alert_usd` ✓, `llm_spend_alerted_day` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 47 | `src/pages/Desk.jsx:1284` | (inline) | `/actions/backfill-label-strategy` | via backfillLabelStrategy(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 48 | `src/pages/Risk.jsx:351` | saveRisk | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
 | 49 | `src/pages/Risk.jsx:354` | saveRisk | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 50 | `src/pages/Risk.jsx:361` | clearOverlay | `/actions/close-all` | via recordPositionEvent(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |

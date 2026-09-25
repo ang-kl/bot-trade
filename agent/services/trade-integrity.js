@@ -162,8 +162,11 @@ export function findDuplicateTrades(db, { windowDays = 90, scope = null } = {}) 
   // number only when every extra row falls in ONE such unit — one currency
   // pool, one account, or one unattributed position — otherwise null, and the
   // parts are the answer (a mixed SGD+USD figure is a fake result).
-  let currencyByAccount = null
-  try { currencyByAccount = depositCurrencies(db) } catch { currencyByAccount = null }
+  // A currency read that FAILED is not a currency that is not recorded: every
+  // account then falls into its own units, and `currencyRead: 'unavailable'`
+  // says why, so the card reads "currency not read", never "not recorded".
+  let currencyByAccount = null, currencyRead = 'read'
+  try { currencyByAccount = depositCurrencies(db) } catch { currencyByAccount = null; currencyRead = 'unavailable' }
   const currencies = { currencyByAccount }
   const currencyOf = id => reportCurrency(currencies, id)
   const round2 = v => Math.round(v * 100) / 100
@@ -200,6 +203,8 @@ export function findDuplicateTrades(db, { windowDays = 90, scope = null } = {}) 
     extraByAccount,
     extraByCurrency,
     extraUnattributed,
+    currencyRead,
+    windowDays,
     moneyPolicy: 'per account in its deposit currency; pooled only within one recorded currency by the one pooling rule (poolByCurrency); an account with no recorded currency in its own units; a row with no account only within its own broker position; never summed across currencies',
     // Groups the broker's own receipts show are distinct positions: listed,
     // never counted as extra.

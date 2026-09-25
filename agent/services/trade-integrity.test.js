@@ -350,3 +350,26 @@ test('B2-m: rows with no account are totalled within one broker position, never 
   assert.deepEqual(r.extraUnattributed.map(u => [u.positionId, u.rows, u.pnl]).sort(), [['900', 2, -10], ['901', 1, -8]])
   assert.deepEqual([r.extraByAccount, r.extraByCurrency], [[], []])
 })
+
+// B2-m checker N2: a currency read that FAILED is not a currency that is not
+// recorded. The accounts still fall into their own units (nothing is pooled
+// on a failed read), and the result says the read was unavailable.
+test('B2-m: a failed currency read says so (currencyRead unavailable), never "not recorded"; the window is echoed', () => {
+  const db = initDB(':memory:')
+  currency(db, '46130058', 'USD')
+  for (let i = 0; i < 2; i++) insertScoped(db, '46130058', { symbol: 'EURUSD', side: 'BUY', entry: 1.1, exit: 1.2, pnl: -10, posId: '1' })
+  const ok = findDuplicateTrades(db)
+  assert.deepEqual([ok.currencyRead, ok.windowDays, ok.extraByAccount[0].currency, ok.totalExtraPnl], ['read', 90, 'USD', -10])
+  // The same database, with the deposit-currency evidence read failing.
+  const failing = new Proxy(db, { get(target, key) {
+    if (key === 'prepare') return sql => { if (/agent_state/.test(sql)) throw new Error('evidence read failed'); return target.prepare(sql) }
+    const v = target[key]
+    return typeof v === 'function' ? v.bind(target) : v
+  } })
+  const r = findDuplicateTrades(failing, { windowDays: 30 })
+  assert.equal(r.currencyRead, 'unavailable')
+  assert.equal(r.windowDays, 30)
+  assert.deepEqual(r.extraByAccount.map(b => [b.accountId, b.currency, b.pnl]), [['46130058', null, -10]])
+  assert.deepEqual(r.extraByCurrency, [], 'nothing is pooled on a failed read')
+  assert.equal(r.totalExtraPnl, -10, 'one account alone is still one unit')
+})

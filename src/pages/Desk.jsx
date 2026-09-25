@@ -42,6 +42,7 @@ import SplitFlapClock from '../components/common/SplitFlapClock.jsx'
 import Segmented from '../components/common/Segmented.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
+import { duplicateMoneyParts } from '../lib/duplicate-money.js'
 import { describeRiskCriteria } from '../lib/risk-criteria.js'
 import { useSort } from '../lib/use-sort.jsx'
 // Short strategy tags — shared so Desk and the Std trade table never drift.
@@ -799,15 +800,12 @@ export default function Desk() {
           given per currency — never one "$" figure summed across SGD and USD
           accounts (owner default 25-09). The server pools by the one rule
           (poolByCurrency); an account with no recorded currency is shown in
-          its own units, and a row with no account per broker position. */}
+          its own units ("currency not read" when the read itself failed),
+          and a row with no account per broker position
+          (lib/duplicate-money.js). */}
       {(dupeTrades?.totalExtraRows ?? 0) > 0 && (() => {
         const counted = dupeTrades.groups.filter(g => g.classification !== 'broker_distinct')
-        const signed = v => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`
-        const money = [
-          ...(dupeTrades.extraByCurrency ?? []).map(c => c.pnl == null ? `${c.currency} not priced` : `${signed(c.pnl)} ${c.currency}`),
-          ...(dupeTrades.extraByAccount ?? []).filter(b => !b.currency).map(b => `${signed(b.pnl)} (account ${b.accountId} units, currency not recorded)`),
-          ...(dupeTrades.extraUnattributed ?? []).map(u => `${signed(u.pnl)} (${u.positionId ? `position ${u.positionId}` : `row #${u.tradeIds[0]}`}, no account, currency unknown)`),
-        ].join(' · ')
+        const money = duplicateMoneyParts(dupeTrades).join(' · ')
         return (
           <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
             <p className="font-semibold text-[var(--color-warning-text)]">

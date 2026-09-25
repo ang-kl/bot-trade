@@ -14,7 +14,7 @@ import express from 'express'
 import { join } from 'node:path'
 import { tempDir } from '../test-support/temp-dir.js'
 import { initDB, getState, setState } from '../db.js'
-import { buildLedgerReconciliation, CLASS_BASIS } from './ledger-reconciliation.js'
+import { buildLedgerReconciliation, CLASS_BASIS, DUPLICATES_WINDOW_DAYS } from './ledger-reconciliation.js'
 import { readLedgerReconciliation } from './performance-populations.js'
 import stateRouter from '../routes/state.js'
 
@@ -227,4 +227,22 @@ test('B2-m: the currency comes from the one reader — evidence recorded on anot
   assert.deepEqual(r.byCurrency.SGD.accountIds, [SGD1])
   assert.equal(r.byCurrency.SGD.classes.agrees, undefined, "SGD2's agrees (30) is no longer in the SGD pool")
   assert.deepEqual(r.unpooledAccounts.sort(), [SGD2, NOCCY].sort())
+})
+
+test('B2-m checker N1: the duplicates block says it covers the last 90 days, while the classes cover all time', t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  db.prepare("INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(USD)
+  // One position recorded twice closed 10 days ago, and another closed 120
+  // days ago: both are ledger positions, only the first is inside the window.
+  const twice = (pid, age) => { for (let i = 0; i < 2; i++) {
+    db.prepare(`INSERT INTO trades (account_id, symbol, side, status, ctrader_position_id, opened_at, closed_at, entry_price, exit_price, net_pnl)
+      VALUES (?, 'EURUSD', 'BUY', 'closed', ?, datetime('now', ?), datetime('now', ?), 1.1, 1.2, -5)`).run(USD, pid, `-${age + 1} days`, `-${age} days`)
+  } }
+  twice('601', 10); twice('602', 120)
+  const usd = buildLedgerReconciliation(db).accounts[0]
+  const positions = Object.values(usd.classes).reduce((s, c) => s + c.positions, 0)
+  assert.equal(positions, 2, 'the classes read every close, however old')
+  assert.equal(DUPLICATES_WINDOW_DAYS, 90)
+  assert.deepEqual([usd.duplicates.windowDays, usd.duplicates.groups, usd.duplicates.extraRows, usd.duplicates.extraNet], [90, 1, 1, -5],
+    'the 120-day-old pair is outside the audit window, and the block says so')
 })
