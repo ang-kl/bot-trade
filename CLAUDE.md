@@ -1271,3 +1271,15 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   protected. The owner cancelled CADJPY and GBPJPY on …0058 (gone 07:47:42 UTC).
   The next reply is `№ 9,060`. A later re-measure that reads below this line is
   missing these, not correcting them.
+
+- 2026-09-25 13:21 UTC, **same remote container, PARTIAL corpus**: from
+  `№ 9,060` the replies ran on by count through the V3 build waves, the
+  roadmap v1 (20:37 SGT), the 8,989-A verification, the "are you certain?"
+  answer `№ 9,172`, the roadmap v2 with planned vs actual `№ 9,184` and the
+  L1 read-back `№ 9,186` (21:13 SGT); #1089–#1095 merged (M2, A1, T1, Q1, B3,
+  Q4b, L1 — L1 by the owner at 13:09 UTC with its three checker blockers
+  open, fixed by this PR). The context was then compacted; the transcript
+  captures twelve text replies after `№ 9,186`, so the next stamped reply is
+  **`№ 9,199`** plus any unstamped line made after this ledger. The count is
+  by replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.

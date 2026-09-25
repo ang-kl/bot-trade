@@ -22,8 +22,11 @@ export const REASON_ENDPOINTS = [
   { key: 'go-live-readiness', path: '/state/go-live-readiness', title: 'Go-live readiness', why: 'the evidence checks, each with its own verdict' },
   { key: 'phase-audit', path: '/state/phase-audit', title: 'Phase audit', why: 'the viewed account\'s phase switches against what the loop actually did' },
   // V3 L1: every account (the body's scope.account says 'all'); a 503 is
-  // shown as the error it is, never as zero flags.
-  { key: 'order-lifecycle', path: '/state/order-lifecycle?account=all', title: 'Order lifecycle', why: 'pre-order, order and close records that failed to store or are incomplete, and anything stuck with no resolver' },
+  // shown as the error it is, never as zero flags. 35 rules and up to four
+  // stages per account do not fit the default 25 rows, and the default cut
+  // hid STK-02..STK-11 from the page — so this block shows 64 rows, and its
+  // per-stage summary renders as a table rather than "4 fields".
+  { key: 'order-lifecycle', path: '/state/order-lifecycle?account=all', title: 'Order lifecycle', why: 'pre-order, order and close records that failed to store or are incomplete, and anything stuck with no resolver', maxRows: 64, keyedTables: ['summary'] },
 ]
 
 const isScalar = v => v == null || ['string', 'number', 'boolean'].includes(typeof v)
@@ -40,14 +43,21 @@ export function fmtCell(v) {
 
 /**
  * Split a body into renderable parts, in the body's own key order.
+ * `keyedTables` names objects whose every value is itself an object (a
+ * per-stage summary): each renders as a table, one row per key, the key in
+ * a leading `key` column — the body's own fields, reshaped, nothing computed.
  * @returns {{ scalars: Array<[string,string]>, objects: Array<{key, scalars}>, tables: Array<{key, columns:string[], rows:object[], total:number}>, lists: Array<[string,string]> }}
  */
-export function shapeBody(body, { maxRows = 25 } = {}) {
+export function shapeBody(body, { maxRows = 25, keyedTables = [] } = {}) {
   const out = { scalars: [], objects: [], tables: [], lists: [] }
   if (!isObj(body)) return out
   for (const [k, v] of Object.entries(body)) {
     if (isScalar(v)) out.scalars.push([k, fmtCell(v)])
-    else if (isObj(v)) {
+    else if (isObj(v) && keyedTables.includes(k) && Object.values(v).length && Object.values(v).every(isObj)) {
+      const rows = Object.entries(v).map(([kk, x]) => ({ key: kk, ...x }))
+      const columns = [...new Set(rows.slice(0, maxRows).flatMap(r => Object.keys(r)))]
+      out.tables.push({ key: k, columns, rows: rows.slice(0, maxRows), total: rows.length })
+    } else if (isObj(v)) {
       const scalars = Object.entries(v).filter(([, x]) => isScalar(x)).map(([kk, x]) => [kk, fmtCell(x)])
       const nested = Object.entries(v).filter(([, x]) => !isScalar(x))
       out.objects.push({ key: k, scalars, nested: nested.map(([kk, x]) => [kk, Array.isArray(x) ? `${x.length} item${x.length === 1 ? '' : 's'}` : `${Object.keys(x).length} field${Object.keys(x).length === 1 ? '' : 's'}`]) })
