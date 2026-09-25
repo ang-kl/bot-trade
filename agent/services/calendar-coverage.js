@@ -77,10 +77,12 @@ function windowDates(now) {
 }
 
 // V3 K2: the refresher's view of this account's map, beside K1's symbolMap.
+// When the map was built is symbolMap.builtAt (the measured value, whichever
+// path wrote it); lastAttemptAt/lastResult are the refresher's own attempts.
 function refreshOf(r) {
   if (!r) return null
   return { ownList: r.map?.ownList === true, due: r.due, dueReason: r.dueReason, blocked: r.blocked, notBefore: r.notBefore,
-    lastAttemptAt: r.lastAttemptAt, lastResult: r.lastResult, lastError: r.lastError, lastBuiltAt: r.lastBuiltAt,
+    lastAttemptAt: r.lastAttemptAt, lastResult: r.lastResult, lastError: r.lastError,
     consecutiveFailures: r.consecutiveFailures, readsToday: r.readsToday }
 }
 
@@ -224,7 +226,8 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
       'Advisory evidence only: entries still use the name-keyed symbol_hours gate; gateDisagreements measures that gate against the account calendar at this instant.',
       'demandedCoverage covers the demanded identities only; watchlist symbols outside the demand are listed as notDemanded, never counted as covered.',
       'A bound the broker did not send is reported as omitted; no replacement boundary is invented.',
-      'symbolMapRefresh.ownList false means the stored map is not proven to be the account\'s own symbol list (written before V3 K2); it is re-read once, and until then its ids are shown as stored.',
+      'A present map (symbolMap.status present) with symbolMapRefresh.ownList false is not proven to be the account\'s own symbol list (written before V3 K2); it is re-read once, and until then its ids are shown as stored. A missing or unreadable map also reads ownList false; symbolMap.status says which.',
+      'symbolMapRefresh.blocked names why a due map is not read yet: token_refused (the broker token was refused for this account; no read until that clears), daily_cap or backoff (until notBefore).',
     ],
   }
 }

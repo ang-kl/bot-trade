@@ -101,4 +101,10 @@ test('an account-true symbol-list read is never served from, nor stored into, th
   assert.equal(wsGetSymbolsList(host, 'cid', 'csec', 'tok', '3', 50), first, 'the per-account reads did not replace the host entry')
   const settled = await Promise.allSettled([first, own, ownAgain])
   assert.deepEqual(settled.map(s => s.status), ['rejected', 'rejected', 'rejected'])
+  // K2 fix round (B7's rule): a per-account read's failure names its account,
+  // so the reactive refresh's skip predicate can match a refused account. The
+  // host-shared promise is served to other accounts' callers, so it stays
+  // untagged exactly as before.
+  assert.deepEqual([settled[1].reason.accountId, settled[2].reason.accountId], ['2', '2'], 'RED if the per-account read\'s error is not tagged')
+  assert.equal(settled[0].reason.accountId, undefined, 'the host-shared read is unchanged: untagged')
 })

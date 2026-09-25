@@ -791,14 +791,22 @@ export function wsGetAccountsByToken(host, clientId, clientSecret, accessToken, 
  * `{ perAccount: true }` reads THIS account's list now, never served from and
  * never stored into the host-shared cache (the per-account map in the DB,
  * with its 24 h TTL, is that read's cache). Every other caller is unchanged.
+ *
+ * A per-account read's failure also names its account (tagAccount, inside the
+ * retried fn as wsGetTrader does), so B7's skip predicate can tell a refused
+ * account from a rotated token. The host-shared path stays untagged: its
+ * promise is served to callers asking for other accounts on the host.
  */
 const symbolsListCache = new Map() // host -> { at, promise }
 const SYMBOLS_LIST_TTL_MS = 6 * 60 * 60 * 1000
 export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000, { perAccount = false } = {}) {
-  const read = () => withRetry(() => wsRun(host, [
-    ...authSteps(clientId, clientSecret, accessToken, accountId),
-    { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
-  ], timeoutMs), 2, 'wsGetSymbolsList')
+  const read = () => withRetry(() => {
+    const run = wsRun(host, [
+      ...authSteps(clientId, clientSecret, accessToken, accountId),
+      { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
+    ], timeoutMs)
+    return perAccount ? run.catch((err) => { throw tagAccount(err, accountId) }) : run
+  }, 2, 'wsGetSymbolsList')
   if (perAccount) return read()
   const cached = symbolsListCache.get(host)
   if (cached && Date.now() - cached.at < SYMBOLS_LIST_TTL_MS) return cached.promise

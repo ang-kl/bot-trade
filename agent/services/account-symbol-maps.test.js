@@ -12,7 +12,9 @@
 //   - a map written before K2 (no proof it is the account's own) is re-read
 //     once, then left alone;
 //   - no read without routable credentials, a linked broker or an armed
-//     environment; the timer is wired at boot and stoppable.
+//     environment; the timer is wired at boot and stoppable;
+//   - no read for an account the broker token was refused for (B7): it waits,
+//     shown token_refused, with nothing counted, and the others are read.
 // The broker is a fake at the transport seam (fetchAccountSymbolMap's
 // wsGetSymbolsList), so the real one writer of the map runs in every test.
 import { test } from 'node:test'
@@ -57,10 +59,17 @@ test('an account that never trades gets its own map from its own list, stamped a
   const now = Date.parse('2026-09-25T14:00:00Z')
   const db = database(t, ['46130058', '43002148', '43069009'])
   ownMap(db, '46130058', now - 2 * H) // the trading account: fresh, its own
+  // K1's scope tier: the bar scan on the trading account, scoped to the two
+  // accounts that never trade (a scan receipt is fresh for 6 min, so it is
+  // re-stamped before each coverage read).
+  const scan = at => setState(db, 'legacy_scanner_work_json', JSON.stringify({ accountId: '46130058', host: DEMO, completedAt: at - 1000, nextDue: at + 300_000,
+    scopeAccounts: ['43002148', '43069009'], instruments: [{ symbol: 'EURUSD', symbolId: '1' }, { symbol: 'US30', symbolId: '2' }] }))
+  scan(now)
   const before = buildCalendarCoverage(db, { now })
   const missing = before.accounts.find(a => a.accountId === '43002148')
   assert.equal(missing.symbolMap.status, 'missing')
   assert.deepEqual([missing.symbolMapRefresh.due, missing.symbolMapRefresh.dueReason, missing.symbolMapRefresh.lastResult], [true, 'missing', null])
+  assert.deepEqual([missing.demand.byTier.scope, missing.demand.missingMap], [0, true], 'before: no scope demand, named a missing map')
 
   const fake = broker(); let at = now
   const refresh = createAccountSymbolMapRefresh(db, { env: {}, now: () => at, credentials, fetchDeps: fake })
@@ -76,10 +85,15 @@ test('an account that never trades gets its own map from its own list, stamped a
   assert.deepEqual([idle.result, idle.due], ['nothing_due', 0])
   assert.equal(fake.calls.length, 2, 'the fresh trading account was not re-read')
 
+  scan(at)
   const after = buildCalendarCoverage(db, { now: at })
   const built = after.accounts.find(a => a.accountId === '43002148')
   assert.equal(built.symbolMap.status, 'present', 'RED without the refresher: the never-trading account stays missing')
   assert.equal(built.symbolMap.size, 3)
+  // The point of the map: K1's scope tier now demands this account's OWN
+  // identities for the bar scan's names (its ids, not the feed account's).
+  assert.deepEqual([built.demand.byTier.scope, built.demand.missingMap], [2, false], "RED without the refresher: K1's scope tier stays empty for an account that never trades")
+  assert.equal(after.accounts.find(a => a.accountId === '43069009').demand.byTier.scope, 2)
   assert.deepEqual([built.symbolMapRefresh.ownList, built.symbolMapRefresh.due, built.symbolMapRefresh.lastResult, built.symbolMapRefresh.readsToday], [true, false, 'built', 1])
   assert.equal(after.symbolMapRefresher.due, 0)
   assert.equal(after.symbolMapRefresher.pass.result, 'nothing_due')
@@ -147,7 +161,7 @@ test('a failure is not forgotten on restart: the new process waits out the backo
   const fake = broker({ fail: () => true })
   assert.equal((await createAccountSymbolMapRefresh(db, { env: {}, now: () => now, credentials, fetchDeps: fake })()).outcome, 'read_failed')
   const again = await createAccountSymbolMapRefresh(db, { env: {}, now: () => now + 10 * MIN, credentials, fetchDeps: fake })()
-  assert.deepEqual([again.result, again.waiting], ['nothing_due', 1])
+  assert.deepEqual([again.result, again.due, again.waiting], ['waiting', 1, 1], 'due but waiting is labelled waiting, never nothing_due')
   assert.equal(fake.calls.length, 1)
 })
 
@@ -205,6 +219,37 @@ test('no read without routable credentials, a linked broker or an armed environm
   release()
   assert.equal((await first).result, 'refreshed')
   assert.equal(JSON.parse(getState(db, SYMBOL_MAP_RECEIPT_KEY)).pass.result, 'refreshed', 'the finished pass is the last word')
+})
+
+test('no read for an account the broker token was refused for (B7): it waits as token_refused, nothing is counted, and the others are read', async t => {
+  const now = Date.parse('2026-09-25T15:00:00Z')
+  const db = database(t, ['46130058', '43002148', '43069009'])
+  ownMap(db, '46130058', now - H)
+  // B2's record of a sidecar whose token the broker refused for 43002148.
+  setState(db, 'cpp_exec_refused_accounts_json', JSON.stringify(['43002148']))
+  const fake = broker(); let at = now
+  const refresh = createAccountSymbolMapRefresh(db, { env: {}, now: () => at, credentials, fetchDeps: fake })
+  let last = null
+  for (let i = 0; i < 12; i++, at += SYMBOL_MAP_PASS_MS) last = await refresh()
+  // Both maps are missing and never attempted, so 43002148 would lead (lowest id).
+  assert.deepEqual(fake.calls.map(c => c.accountId), ['43069009'], 'RED without the refused skip: the refused account is read, and its refusal fires the reactive token refresh')
+  assert.deepEqual([last.result, last.due, last.waiting], ['waiting', 1, 1])
+  const view = accountSymbolMapRefreshView(db, { now: at })
+  const refused = view.accounts.find(a => a.accountId === '43002148')
+  assert.deepEqual([refused.due, refused.dueReason, refused.blocked, refused.notBefore], [true, 'missing', 'token_refused', null])
+  assert.deepEqual([refused.lastAttemptAt, refused.readsToday, refused.consecutiveFailures], [null, 0, 0], 'nothing counted against its daily cap or backoff')
+  const coverage = buildCalendarCoverage(db, { now: at })
+  assert.equal(coverage.accounts.find(a => a.accountId === '43002148').symbolMapRefresh.blocked, 'token_refused')
+  assert.deepEqual([coverage.symbolMapRefresher.due, coverage.symbolMapRefresher.waiting], [1, 1])
+  // Either sidecar's record counts; once the refusal clears it is read on the next pass.
+  setState(db, 'cpp_exec_refused_accounts_json', '[]')
+  setState(db, 'cpp_exec_demo_refused_accounts_json', JSON.stringify(['43002148']))
+  assert.equal((await refresh()).result, 'waiting')
+  setState(db, 'cpp_exec_demo_refused_accounts_json', '[]')
+  at += SYMBOL_MAP_PASS_MS
+  const cleared = await refresh()
+  assert.deepEqual([cleared.result, cleared.accountId], ['refreshed', '43002148'])
+  assert.equal(fake.calls.length, 2)
 })
 
 test('the timer: one pass every 5 minutes, unref\'d and stoppable, wired at boot; disarmed, nothing arms', async t => {

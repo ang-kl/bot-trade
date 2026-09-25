@@ -32,6 +32,14 @@
 // this service's receipt. A failed read never deletes the stored map: a stale
 // map stays readable, with its age, and the failure is recorded beside it.
 //
+// No read for an account the broker token was REFUSED for (B7, #953 —
+// lib/token-refused.js), like every other periodic per-account broker reader:
+// each such read answers CH_ACCESS_TOKEN_INVALID, and an auth error fires the
+// reactive OAuth refresh, which re-pushes credentials to both sidecars and
+// tears the live broker session down (measured 18-09-2026). The account stays
+// due, shown `blocked: 'token_refused'`, nothing is counted against its daily
+// cap, and it is read on the first pass after the refusal clears.
+//
 // Owner principle 1: the account roster and each host come from
 // registeredCalendarAccounts (routing only); every account gets the same rule.
 // ---------------------------------------------------------------------------
@@ -39,6 +47,7 @@ import { getState, setState } from '../db.js'
 import { accountSymbolMapKey, credsForRegisteredAccount, fetchAccountSymbolMap, ACCOUNT_SYMBOL_MAP_TTL_MS } from '../lib/ctrader-creds.js'
 import { registeredCalendarAccounts } from './watchdog-calendar-refresh.js'
 import { disarmReason } from '../lib/env-disarm.js'
+import { tokenRefusedAccounts } from '../lib/token-refused.js'
 
 export const SYMBOL_MAP_RECEIPT_KEY = 'account_symbol_map_refresh_json'
 export const SYMBOL_MAP_PASS_MS = 5 * 60_000
@@ -111,21 +120,24 @@ function registered(db) {
 
 /**
  * The refresher's view per registered account: the stored map, whether and
- * why it is due, whether it must wait, and the last attempt's outcome. Pure
- * reads; the coverage read (calendar-coverage.js) shows it per account.
+ * why it is due, whether it must wait (a refused token, the daily cap or the
+ * backoff) and the last attempt's outcome. Pure reads; the coverage read
+ * (calendar-coverage.js) shows it per account.
  */
 export function accountSymbolMapRefreshView(db, { now = Date.now() } = {}) {
   const receipt = readJson(db, SYMBOL_MAP_RECEIPT_KEY)
+  const refused = tokenRefusedAccounts(db)
   const accounts = registered(db).map(({ accountId, host }) => {
     const record = accountSymbolMapRecord(db, accountId, now)
     const state = receipt?.accounts?.[accountId] ?? null
     const dueReason = symbolMapDueReason(record)
-    const wait = dueReason ? waitFor(state, now) : null
+    // A refused token has no known end: no notBefore, re-checked every pass.
+    const wait = !dueReason ? null : refused.has(accountId) ? { blocked: 'token_refused', notBefore: null } : waitFor(state, now)
     return {
       accountId, host, map: record, due: dueReason != null, dueReason,
-      blocked: wait?.blocked ?? null, notBefore: wait ? iso(wait.notBefore) : null,
+      blocked: wait?.blocked ?? null, notBefore: wait?.notBefore != null ? iso(wait.notBefore) : null,
       lastAttemptAt: state?.lastAttemptAt ?? null, lastResult: state?.lastResult ?? null, lastError: state?.lastError ?? null,
-      lastBuiltAt: state?.lastBuiltAt ?? null, consecutiveFailures: Number(state?.consecutiveFailures) || 0,
+      consecutiveFailures: Number(state?.consecutiveFailures) || 0,
       readsToday: state?.day === utcDay(now) ? Number(state.readsToday) || 0 : 0,
     }
   })
@@ -168,7 +180,9 @@ export function createAccountSymbolMapRefresh(db, deps = {}) {
     try {
       const view = accountSymbolMapRefreshView(db, { now })
       const due = view.accounts.filter(a => a.due), ready = due.filter(a => !a.blocked)
-      if (!ready.length) return writeReceipt(db, now, { result: 'nothing_due', due: due.length, waiting: due.length })
+      // Due but every one waiting (a refused token, the cap, the backoff) is
+      // not "nothing due": the label follows the counts.
+      if (!ready.length) return writeReceipt(db, now, { result: due.length ? 'waiting' : 'nothing_due', due: due.length, waiting: due.length })
       // Never-built maps first; then the account attempted longest ago (never
       // attempted first), so one failing account cannot starve the rest.
       const pick = ready.sort((a, b) => (DUE_RANK[a.dueReason] ?? 9) - (DUE_RANK[b.dueReason] ?? 9)
@@ -196,7 +210,6 @@ export function createAccountSymbolMapRefresh(db, deps = {}) {
         dueReason: pick.dueReason,
         consecutiveFailures: built ? 0 : (Number(previous?.consecutiveFailures) || 0) + 1,
         day, readsToday: readsBefore + (brokerRead ? 1 : 0),
-        lastBuiltAt: built ? iso(now) : previous?.lastBuiltAt ?? null,
       }
       return writeReceipt(db, now, {
         result: built ? 'refreshed' : 'failed', accountId: pick.accountId, dueReason: pick.dueReason,
