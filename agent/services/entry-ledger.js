@@ -869,7 +869,10 @@ export function ledgerView(db, { limit = 50 } = {}) {
     volume: r.volume, producerId: r.producer_id, state: r.state, modeEpoch: r.mode_epoch, permitExpiresAt: r.permit_expires_at,
     createdAt: r.created_at, updatedAt: r.updated_at, errorCode: r.error_code, brokerOrderId: r.broker_order_id, brokerPositionId: r.broker_position_id,
   }))
-  const recent = db.prepare(`SELECT id, account_id, symbol, side, producer_id, state, resolution_source, error_code, resolved_at FROM entry_intents
+  // V3 R2: recent rows also carry what the P8 end-to-end trace joins on — the
+  // broker order / position ids, the created time, the symbol id (symbol is
+  // NULL on many rows), the basis and the signal — additive columns only.
+  const recent = db.prepare(`SELECT id, account_id, symbol, side, producer_id, state, resolution_source, error_code, resolved_at, created_at, symbol_id, basis, signal_ref, broker_order_id, broker_position_id FROM entry_intents
     WHERE resolved_at IS NOT NULL ORDER BY resolved_at DESC LIMIT ?`).all(limit).map(r => ({ ...r, account_id: redact(r.account_id) }))
   // X1: the record-correction log, readable over GET — counts per step and
   // outcome, and the newest steps with their evidence note. Bounded.
