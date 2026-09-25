@@ -105,7 +105,8 @@ export function normalizeMaxHoldEvents(value, rangeEvents) {
  * one block), `summary`, its `diagnostics` and the `parity` record cover ONLY
  * the events before the test block, and only trades that ENTERED and EXITED
  * there — a trade whose exit read a test-block price is test-period
- * information. `summary.scope` says which. `trades` and `rejected` stay the
+ * information. The train and validation `blocks` rows are built from the same
+ * in-scope trades. `summary.scope` says which. `trades` and `rejected` stay the
  * whole in-memory run (the C++ shadow-book fixture is pinned against them);
  * nothing persisted reads them for a withheld trial.
  */
@@ -263,7 +264,15 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   let fromMs = null, toMs = null
   for (let i = 0; i < sealedAt; i++) { const ms = events[i].recvMs; if (ms > 0) { if (fromMs == null) fromMs = ms; toMs = ms } }
   summary.window = { fromMs, toMs, events: sealedAt }
-  const blocks = blockSummaries(trades, events.length, s.blocks, purgeEvents, { includeTest: s.includeTest === true })
+  // Q1 FOLLOW-UP (checker B4): withheld, the train and validation rows are
+  // built from the SAME in-scope trades as the summary. They were built from
+  // every trade, so a trade entered before the seal and exited inside the test
+  // block (the purge window is caller-set, and a hold cap counts only tradable
+  // events) put a test-block price into the validation row's netR — measured:
+  // purgeEvents 0 on the fixture gave the train row netR -1.1375 from a trade
+  // that exited at event 260 of a test block starting at 258, while
+  // summary.trades read 0.
+  const blocks = blockSummaries(withheld ? inScope : trades, events.length, s.blocks, purgeEvents, { includeTest: s.includeTest === true })
   // PR-Q1: what the parity report compares with the sidecar's own record —
   // the scoped signals and trades, and when this replay had warmed and
   // settled (a replay that starts mid-stream is cold while the live strategy
@@ -399,7 +408,11 @@ export function blockSummaries(trades, totalEvents, blocks, purgeEvents, { inclu
     })
     const row = { name: names[b], fromIdx: lo, toIdx: hi, purged: inBlock.length - kept.length }
     row.eligibleEntryEvents = Math.max(0, hi - lo - (b > 0 ? purgeEvents : 0) - (b < blocks - 1 ? purgeEvents : 0))
-    if (b === blocks - 1 && blocks > 1 && !includeTest) { out.push({ ...row, withheld: true, trades: null }); continue }
+    // Q1 FOLLOW-UP (checker B4): a withheld row carries no count derived from
+    // its trades — `purged` counted the trades entered in the test block's
+    // first purgeEvents, which is test-period information (3 against 0
+    // depending on what the test block held).
+    if (b === blocks - 1 && blocks > 1 && !includeTest) { out.push({ ...row, purged: null, withheld: true, trades: null }); continue }
     out.push({ ...row, ...summarize(kept) })
   }
   return out

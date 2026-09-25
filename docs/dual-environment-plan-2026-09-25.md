@@ -156,16 +156,25 @@ This answers "can filtering lift both?" before anything goes live.
 - Add a newest-data or date-window segment selection with an untouched final
   holdout (`tick-research-run.js:66, :385`).
 - Count `includeTest` openings per profile, as the multiple-testing record.
-  PR-Q1 (branch `claude/v3-q1-replay-honesty`, not yet merged) records every
-  opening in `tick_test_openings` (keeper job, in-thread run, client import;
-  a dry run and a stage-A grid are refused; a second opening of the same
-  holdout is refused), and GET `/state/tick-research` counts them per profile
-  over the whole ledger. The same PR fixes the withheld-summary leak
-  (`statisticsVersion` v2; every earlier trial reads as consulted), records
-  each trial's origin and segment digests, and adds GET
-  `/state/tick-replay-parity`. Whether the replay reproduces the shadow is
-  NOT YET COMPARED until that report reads ok or mismatch on a comparable
-  window. Carrying the openings into the REPLAY_PASSED evidence stays PR-Q2.
+  PR-Q1 (#1092, merged) records every opening in `tick_test_openings`
+  (keeper job, in-thread run, client import; a dry run and a stage-A grid are
+  refused; a second opening of the same holdout is refused), and GET
+  `/state/tick-research` counts them per profile over the whole ledger. The
+  same PR fixes the withheld-summary leak (`statisticsVersion` v2; every
+  earlier trial reads as consulted), records each trial's origin and segment
+  digests, and adds GET `/state/tick-replay-parity`. Its checker's follow-up
+  (branch `claude/v3-q1-replay-honesty`, not yet merged) closes four
+  blockers: the gate counts every stored trial whose summary is not
+  `train_validation` as consulted (a pre-v2 `includeTest` row did not count);
+  every research door refuses `sim.blocks` other than 3 (`blocks: 1`
+  withheld nothing and wrote no opening); the withheld test row no longer
+  carries a `purged` count and the train/validation rows drop a trade that
+  exits in the test block; and the parity report's ring reads are indexed and
+  its profile form compares at most 20 trials per request. Whether the replay
+  reproduces the shadow is NOT YET COMPARED until that report reads ok or
+  mismatch on a comparable window; sidecar worker-queue drops are not
+  recorded per window, so a mismatch cannot rule one out. Carrying the
+  openings into the REPLAY_PASSED evidence stays PR-Q2.
 - Pooled evaluation (D6).
 - Clear the pin on a reset to UNVALIDATED, so a second candidate can be pinned
   (`tick-validation.js:270`).
