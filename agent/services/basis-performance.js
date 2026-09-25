@@ -41,7 +41,7 @@
 import { portfolioStats } from './tick-shadow.js'
 import { wilsonInterval } from '../lib/tick-replay-sim.js'
 import { loadThresholds } from './tick-validation.js'
-import { realisedRR } from './trade-consistency.js'
+import { netRof } from './pf-metrics.js'
 import { closedAtMs } from './family-edge.js'
 import { basisOfTrade, intentMaps } from './trade-basis.js'
 
@@ -69,21 +69,6 @@ export const METRIC_DEFINITION = Object.freeze({
 })
 
 const insufficient = (status, trades, needed) => ({ status, trades, needed })
-
-function netRof(r) {
-  if (Number(r.exit_price_suspect) === 1) return { netR: null, rBasis: null, unscorableAs: 'suspectExit' }
-  const stamped = r.realised_rr != null && Number.isFinite(Number(r.realised_rr)) ? Number(r.realised_rr) : null
-  const rr = stamped ?? realisedRR(r)
-  if (rr == null || !Number.isFinite(rr)) return { netR: null, rBasis: null, unscorableAs: 'noR' }
-  const net = r.net_pnl == null ? NaN : Number(r.net_pnl)
-  const gross = r.gross_pnl == null ? NaN : Number(r.gross_pnl)
-  if (rr === 0 && Number.isFinite(net) && net !== 0) return { netR: null, rBasis: null, unscorableAs: 'scratchCost' }
-  const signsAgree = Math.sign(rr) === Math.sign(gross)
-  if (Number.isFinite(net) && Number.isFinite(gross) && gross !== 0 && rr !== 0 && Number(r.pnl_price_mismatch) !== 1 && signsAgree) {
-    return { netR: rr * net / gross, rBasis: 'net', unscorableAs: null }
-  }
-  return { netR: rr, rBasis: 'gross', unscorableAs: null }
-}
 
 /**
  * Closed trades with their basis and net R, in close order.

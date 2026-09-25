@@ -122,3 +122,26 @@ test('wiring pins: the state route and the gate\'s scale combine by the smaller 
   assert.match(strip('../routes/state.js'), /router\.get\('\/strategy-verdicts'[\s\S]{0,300}?strategyVerdictsView\(db\)/)
   assert.match(strip('./risk.js'), /Math\.min\(earnedFloor\?\.riskScale \?\? 1, verdict\.state !== 'n\/a' \? verdict\.riskScale : 1\)/)
 })
+
+// V3 Q4b (PR-B1): the verdict carries PF in R (r-net-v1) beside the money PF
+// it judges (usd-net-v0). R reads 2.0 while money reads 0.91: the verdict is
+// still off — moving the verdict to R is the owner's decision (H-P6-7).
+test('PF in R rides beside the verdict, labelled, and judges nothing: money 0.91 is off even where R reads 2.0', () => {
+  const db = withAccounts(initDB(':memory:'))
+  pin(db, A, 'vwap_trend')
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, status, label_strategy, realised_rr, net_pnl, gross_pnl, closed_at, account_id, origin)
+                          VALUES ('GBPUSD','BUY',1.1,1.1,1.09,'closed','vwap_trend',?,?,?,datetime('now', ?),?,'bot_market_dispatch')`)
+  for (let i = 0; i < 30; i++) {
+    const win = Math.floor((i + 1) * 7 / 30) > Math.floor(i * 7 / 30)
+    const usd = win ? 30 : -10
+    ins.run(win ? 2 * 23 / 7 : -1, usd, usd, `-${30 - i} minutes`, A)
+  }
+  const v = strategyVerdict(db, { strategy: 'vwap_trend', accountId: A })
+  assert.equal(v.profitFactor, 0.91)
+  assert.equal(v.profitFactorR, 2, 'R: 7 × 46/7 / 23 = 2')
+  assert.equal(v.state, 'off', 'RED if the verdict reads PF in R')
+  const view = strategyVerdictsView(db)
+  assert.equal(view.accounts[A].vwap_trend.profitFactorR, 2)
+  assert.deepEqual(view.metrics, { profitFactor: 'usd-net-v0', profitFactorR: 'r-net-v1' })
+  assert.equal(strategyVerdict(db, { strategy: 'vwap_trend', accountId: B }).profitFactorR, null, 'n/a carries a null R PF')
+})

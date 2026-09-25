@@ -112,3 +112,45 @@ test('wiring pins: loop.js runs the gate after the market-hours gate, before the
   assert.ok(!block.includes('persistRiskEvent('), 'the evidence gate must not write a risk_events veto')
   assert.ok(block.includes('return null'))
 })
+
+// V3 Q4b (PR-B1): the record carries PF in R (r-net-v1) beside the money PF
+// (usd-net-v0), each labelled — and the GATE still judges money. The two
+// fixtures below disagree on purpose, so a gate that started reading R would
+// flip both verdicts.
+function closesRAndMoney(db, strategy, { winR, lossR, winUsd, lossUsd, n = 30, accountId = DEMO } = {}) {
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, status, label_strategy, realised_rr, net_pnl, gross_pnl, closed_at, account_id, origin)
+                          VALUES ('EURUSD','BUY',1.1,1.1,1.09,'closed',?,?,?,?,datetime('now','-1 days'),?,'bot_market_dispatch')`)
+  for (let i = 0; i < n; i++) {
+    const win = i % 2 === 0
+    const usd = win ? winUsd : -lossUsd
+    ins.run(strategy, win ? winR : -lossR, usd, usd, accountId)
+  }
+}
+
+test('PF in R is reported beside the money PF, labelled; the gate judges the money PF only (Q4b: nothing gates on R)', () => {
+  const db = fresh()
+  // R reads 2.0, money reads 0.5 → the gate refuses on money.
+  closesRAndMoney(db, 'vwap_trend', { winR: 2, lossR: 1, winUsd: 10, lossUsd: 20 })
+  const rec = evidenceRecord(db, { strategy: 'vwap_trend', accountId: DEMO })
+  assert.equal(rec.profitFactor, 0.5)
+  assert.equal(rec.profitFactorR, 2)
+  assert.deepEqual(rec.metrics, { profitFactor: 'usd-net-v0', profitFactorR: 'r-net-v1' })
+  assert.equal(evidenceGate(db, { strategy: 'vwap_trend', accountId: DEMO }).via, 'shadow', 'RED if the gate reads PF in R (2.0 would clear 1.5)')
+  // R reads 1.0, money reads 3.0 → the gate admits on money.
+  closesRAndMoney(db, 'va_breakout', { winR: 1, lossR: 1, winUsd: 30, lossUsd: 10 })
+  const rec2 = evidenceRecord(db, { strategy: 'va_breakout', accountId: DEMO })
+  assert.equal(rec2.profitFactor, 3); assert.equal(rec2.profitFactorR, 1)
+  assert.equal(evidenceGate(db, { strategy: 'va_breakout', accountId: DEMO }).via, 'record')
+})
+
+test('evidenceRecord: an explicit `now` reads the same window SQLite\'s clock does, and a row with no R is counted, not scored', () => {
+  const db = fresh()
+  closes(db, 'ema_pullback', 5, 60) // no prices on these rows → no R
+  const a = evidenceRecord(db, { strategy: 'ema_pullback', accountId: DEMO })
+  const b = evidenceRecord(db, { strategy: 'ema_pullback', accountId: DEMO, now: Date.now() })
+  assert.deepEqual(b, a)
+  assert.equal(a.closes, 5)
+  assert.equal(a.rScored, 0); assert.equal(a.rUnscorable, 5); assert.equal(a.profitFactorR, null)
+  // 200 days on, the rows are outside the 90-day window.
+  assert.equal(evidenceRecord(db, { strategy: 'ema_pullback', accountId: DEMO, now: Date.now() + 200 * 86_400_000 }).closes, 0)
+})

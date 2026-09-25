@@ -144,3 +144,30 @@ test('familyEdgeReport: a tick fill with no strategy is counted in byBasis.tick,
   assert.deepEqual(Object.keys(r.families).sort(), ['breakout', 'mean_reversion', 'momentum', 'trend'])
   assert.equal(familyOf('tick_momentum_breakout'), null)
 })
+
+// V3 Q4b (PR-B1; owner decision D1): the family edge reports PF in R
+// (r-net-v1) BESIDE the money PF (usd-net-v0), each labelled. The money PF is
+// unchanged — the goal table's family bar reads it — and the R PF counts its
+// unscored closes by reason instead of dropping them.
+test('familyEdgeReport: PF in R (r-net-v1) beside the unchanged money PF, labelled, with unscored closes counted', () => {
+  const db = initDB(':memory:')
+  let t = T0 - 3 * 86400_000
+  // Sized so the two disagree: money 350 / 300 = 1.17, R 6 / 3 = 2.
+  insertClose(db, { strategy: 'vwap_trend', exit: 103, pnl: 150, at: (t += 3600_000) })   // +3R, $150
+  insertClose(db, { strategy: 'vwap_trend', exit: 103, pnl: 150, at: (t += 3600_000) })   // +3R, $150
+  insertClose(db, { strategy: 'vwap_trend', exit: 99, pnl: -100, at: (t += 3600_000) })   // -1R, -$100
+  insertClose(db, { strategy: 'vwap_trend', exit: 99, pnl: -100, at: (t += 3600_000) })   // -1R, -$100
+  insertClose(db, { strategy: 'vwap_trend', exit: 99, pnl: -100, at: (t += 3600_000) })   // -1R, -$100
+  insertClose(db, { strategy: 'vwap_trend', exit: 101, pnl: 50, at: (t += 3600_000), sl: null }) // no stop: no R
+  const r = familyEdgeReport(db, { now: T0 })
+  const f = r.families.trend
+  assert.equal(f.profitFactor, 1.17, 'money PF unchanged: 350 / 300')
+  assert.equal(f.profitFactorR, 2, 'RED if PF in R is computed from money: 6R / 3R')
+  assert.equal(f.rScored, 5)
+  assert.equal(f.rUnscorable, 1)
+  assert.deepEqual(f.rUnscorableBy, { noR: 1, scratchCost: 0, suspectExit: 0 })
+  assert.equal(f.rLossless, false)
+  assert.equal(r.metrics.profitFactor, 'usd-net-v0')
+  assert.equal(r.metrics.profitFactorR, 'r-net-v1')
+  assert.equal(r.families.breakout.profitFactorR, null)
+})

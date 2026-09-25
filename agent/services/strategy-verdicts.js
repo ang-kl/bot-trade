@@ -21,11 +21,19 @@
 // judged) or is the momentum book's own. The pin itself is never rewritten —
 // the boot seed would only put it back — the verdict lives in the gate, so a
 // record that recovers reopens the strategy on its own.
+//
+// THE VERDICT JUDGES MONEY. `profitFactor` is usd-net-v0 (pf-metrics.js),
+// the evidence record's PF. `profitFactorR` (r-net-v1, owner decision D1) is
+// carried beside it on every verdict and view row, LABELLED and judged by
+// nothing (V3 Q4b / PR-B1): judging in R, or counting since the pin rather
+// than over the rolling window, changes who trades at what size and is the
+// owner's decision (H-P6-7). /state/strategy-qualification shows both.
 // ---------------------------------------------------------------------------
 import { getState } from '../db.js'
 import { isHandPinned } from './stage-matrix.js'
 import { evidenceRecord, loadEvidenceGate } from './evidence-gate.js'
 import { STRATEGY_KEYS } from './strategies.js'
+import { PF_METRICS } from './pf-metrics.js'
 
 export const STRATEGY_VERDICT_KEY = 'strategy_verdict_json'
 
@@ -69,12 +77,12 @@ export function loadStrategyVerdictConfig(db) {
 export function strategyVerdict(db, { strategy, accountId }) {
   const cfg = loadStrategyVerdictConfig(db)
   const bar = { closes: cfg.closes, fullPf: cfg.fullPf, offPf: cfg.offPf }
-  const na = (reason) => ({ state: 'n/a', riskScale: 1, closes: 0, profitFactor: null, winRate: null, net: 0, bar, reason })
+  const na = (reason) => ({ state: 'n/a', riskScale: 1, closes: 0, profitFactor: null, profitFactorR: null, winRate: null, net: 0, bar, reason })
   if (!cfg.on) return na('off')
   if (!strategy || accountId == null) return na('unscoped')
   if (!isHandPinned(db, getState, accountId, String(strategy))) return na('not_pinned')
   const record = evidenceRecord(db, { strategy, accountId, windowDays: loadEvidenceGate(db).windowDays })
-  const base = { closes: record.closes, profitFactor: record.profitFactor, winRate: record.winRate, net: record.net, bar, reason: null }
+  const base = { closes: record.closes, profitFactor: record.profitFactor, profitFactorR: record.profitFactorR, winRate: record.winRate, net: record.net, bar, reason: null }
   if (record.closes < cfg.closes) return { state: 'pending', riskScale: cfg.pendingScale, ...base }
   const pf = record.profitFactor
   // null PF = wins and no losses yet: nothing to divide by, and nothing to
@@ -97,13 +105,14 @@ export function strategyVerdictsView(db, accountIds = null) {
     for (const key of STRATEGY_KEYS) {
       if (!isHandPinned(db, getState, id, key)) continue
       const v = strategyVerdict(db, { strategy: key, accountId: id })
-      rows[key] = { state: v.state, riskScale: v.riskScale, closes: v.closes, profitFactor: v.profitFactor, winRate: v.winRate, net: v.net }
+      rows[key] = { state: v.state, riskScale: v.riskScale, closes: v.closes, profitFactor: v.profitFactor, profitFactorR: v.profitFactorR, winRate: v.winRate, net: v.net }
     }
     accounts[id] = rows
   }
   return {
     config: cfg,
-    note: 'Hand-pinned strategies only, judged on their own closes on that account (evidence-gate window). pending = under the sample, half risk; full = PF at or above fullPf; half = between; off = refused by the risk gate on this account until the record recovers.',
+    metrics: PF_METRICS,
+    note: 'Hand-pinned strategies only, judged on their own closes on that account (evidence-gate window). pending = under the sample, half risk; full = PF at or above fullPf; half = between; off = refused by the risk gate on this account until the record recovers. The verdict reads profitFactor (usd-net-v0); profitFactorR (r-net-v1) is reported beside it and judged by nothing.',
     accounts,
   }
 }

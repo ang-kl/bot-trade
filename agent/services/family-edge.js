@@ -25,12 +25,22 @@
 // closes in chronological order (and in USD on net P&L beside it). The
 // order is the close order, so two closes in the same second keep the
 // DB's order — a tie that cannot move the number by more than one trade.
+//
+// TWO PROFIT FACTORS, EACH LABELLED (V3 Q4b / PR-B1; owner decision D1 "win
+// factor = profit factor, in R"). `profitFactor` stays the money PF
+// (usd-net-v0): the goal table's family bar reads it, and moving that bar to
+// R is the owner's decision (H-P6-7), not this report's. `profitFactorR`
+// (r-net-v1, pf-metrics.js — the /state/basis-performance definition) sits
+// beside it with its unscored closes counted by reason (`rUnscorable`,
+// `rUnscorableBy`). avgR, the tail share and the R drawdown stay on GROSS R
+// (realised_rr), unchanged. `metrics` on the report names all three.
 // ---------------------------------------------------------------------------
 
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { familyOf, STRATEGY_FAMILIES } from './strategies.js'
 import { realisedRR } from './trade-consistency.js'
 import { basisOfTrade, intentMaps } from './trade-basis.js'
+import { netRof, summarizeR, PF_METRICS } from './pf-metrics.js'
 
 /** Closes beyond this many R count toward the tail share. */
 export const TAIL_R = 2
@@ -47,6 +57,7 @@ function emptyStats() {
     grossWinUsd: 0, grossLossUsd: 0, netUsd: 0,
     sumR: 0, tail: 0,
     maxDrawdownR: 0, maxDrawdownUsd: 0,
+    rNet: [],
   }
 }
 
@@ -54,8 +65,9 @@ function emptyStats() {
  * Fold one closed trade into a family's running stats. `r` may be null
  * (undecidable): the money still counts, the R-based figures do not.
  */
-function fold(st, pnl, r, curve) {
+function fold(st, pnl, r, curve, rNet = null) {
   st.closes += 1
+  if (rNet) st.rNet.push(rNet)
   st.netUsd += pnl
   if (pnl > 0) { st.wins += 1; st.grossWinUsd += pnl } else if (pnl < 0) { st.losses += 1; st.grossLossUsd += -pnl }
   curve.usd += pnl
@@ -79,6 +91,7 @@ function finalize(st) {
   // treats lossless as the PF target met.
   const lossless = st.grossLossUsd === 0 && st.grossWinUsd > 0
   const pf = st.grossLossUsd > 0 ? st.grossWinUsd / st.grossLossUsd : null
+  const rn = summarizeR(st.rNet)
   return {
     closes: st.closes,
     decidable: st.decidable,
@@ -94,6 +107,11 @@ function finalize(st) {
     tailCloses: st.tail,
     maxDrawdownR: st.decidable > 0 ? Number(st.maxDrawdownR.toFixed(2)) : null,
     maxDrawdownUsd: Number(st.maxDrawdownUsd.toFixed(2)),
+    profitFactorR: rn.profitFactor,
+    rLossless: rn.lossless,
+    rScored: rn.scored,
+    rUnscorable: rn.unscorable,
+    rUnscorableBy: rn.unscorableBy,
   }
 }
 
@@ -126,6 +144,7 @@ export function familyEdgeReport(db, { days = 90, now = Date.now(), accountId = 
   if (accountId != null) { where.push('account_id = ?'); params.push(String(accountId)) }
   const rows = db.prepare(
     `SELECT id, account_id, side, entry_price, exit_price, sl_price, broker_sl_initial, net_pnl,
+            gross_pnl, pnl_price_mismatch, exit_price_suspect,
             closed_at, closed_at_ms, realised_rr, label_raw, source, ctrader_position_id,
             ${strategyAttrSql()} AS strat
        FROM trades
@@ -152,10 +171,11 @@ export function familyEdgeReport(db, { days = 90, now = Date.now(), accountId = 
   let unattributed = 0
   for (const r of rows) {
     const rr = r.realised_rr != null && Number.isFinite(Number(r.realised_rr)) ? Number(r.realised_rr) : realisedRR(r)
-    if (basisOfTrade(r, byPos, byId).basis === 'tick') { fold(tickStats, Number(r.net_pnl) || 0, rr, tickCurve); continue }
+    const rNet = netRof(r)
+    if (basisOfTrade(r, byPos, byId).basis === 'tick') { fold(tickStats, Number(r.net_pnl) || 0, rr, tickCurve, rNet); continue }
     const fam = r.strat ? familyOf(r.strat) : null
     if (!fam || !stats[fam]) { unattributed += 1; continue }
-    fold(stats[fam], Number(r.net_pnl) || 0, rr, curves[fam])
+    fold(stats[fam], Number(r.net_pnl) || 0, rr, curves[fam], rNet)
   }
   const families = Object.fromEntries(STRATEGY_FAMILIES.map(f => [f, finalize(stats[f])]))
   return {
@@ -165,7 +185,8 @@ export function familyEdgeReport(db, { days = 90, now = Date.now(), accountId = 
     families,
     byBasis: { tick: finalize(tickStats) },
     unattributed,
-    note: `R is realised_rr (the broker's first stop) or its recomputation; closes it cannot answer for are counted undecidable, not guessed. Tail share = closes beyond +${TAIL_R}R over decidable closes. Drawdown is peak-to-trough on the cumulative R curve (and USD on net P&L) in close order.`,
+    metrics: { ...PF_METRICS, avgR: 'r-gross (realised_rr)', tailShare: 'r-gross (realised_rr)', maxDrawdownR: 'r-gross (realised_rr)' },
+    note: `R is realised_rr (the broker's first stop) or its recomputation; closes it cannot answer for are counted undecidable, not guessed. Tail share = closes beyond +${TAIL_R}R over decidable closes. Drawdown is peak-to-trough on the cumulative R curve (and USD on net P&L) in close order. profitFactor is money (usd-net-v0, what the family bar reads); profitFactorR is net R (r-net-v1) over rScored closes, reported beside it and read by no bar.`,
   }
 }
 
