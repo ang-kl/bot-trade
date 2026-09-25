@@ -4,6 +4,7 @@ import { normPosId } from '../lib/pos-id.js'
 import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 import { lotsFromUnits } from '../lib/lot-size-registry.js'
+import { recordPositionEvent } from './position-events.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -338,6 +339,25 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       }
       if (row.broker_volume_units != null && bVol != null && differs(bVol, row.broker_volume_units)) {
         manualChanges.push({ kind: 'volume', symbol: row.symbol, positionId: posId, from: row.broker_volume_units, to: bVol })
+        // A VOLUME THAT FELL IS A PARTIAL CLOSE (V3 B1 checker blocker).
+        // loop.js PARTIAL_EXIT nulls this baseline first, so a fall seen here
+        // was made by hand in cTrader or by a partial writer that does not
+        // reset the baseline (the keeper, the trade guard, the momentum
+        // partial manager — each also leaves its own evidence). Recorded as
+        // indexed evidence for the full close (lib/deal-money.js
+        // openedVolumeOnRecord): without it a manual partial left the later
+        // FULL_EXIT with held = closed volume, writing ONE deal's money for the
+        // whole position (#714's defect, by the manual route). Recorded HERE,
+        // on every account's pass — loop.js's TAMPER alert is reached by the
+        // primary pass only. A distinct kind: it moves no management state
+        // (position-events.js) and names what was observed, not who did it.
+        if (Number(bVol) < Number(row.broker_volume_units)) {
+          recordPositionEvent(db, {
+            accountId: acct, positionId: posId, tradeId: row.trade_id ?? null, symbol: row.symbol,
+            kind: 'volume_reduced', fromValue: row.broker_volume_units, toValue: bVol, source: 'reconciler',
+            reason: 'broker volume fell between reconcile passes (tamper watch): a partial close, writer not identified',
+          })
+        }
       }
       if (!updates.side) { // side flip already adopts SL/TP wholesale
         if (row.broker_sl != null && differs(bSl, row.broker_sl) && differs(bSl, row.current_sl)) {

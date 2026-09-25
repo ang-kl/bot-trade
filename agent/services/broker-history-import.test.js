@@ -371,29 +371,11 @@ test('the repair is reachable from the loop, not only the manual route', () => {
 // the shared audit stamp, now pure functions over the db.
 // ---------------------------------------------------------------------------
 
-import { applyBrokerHistoryMoney, judgeTradesAgainstDeals } from './broker-history-import.js'
+import { judgeTradesAgainstDeals } from './broker-history-import.js'
 
-test('applyBrokerHistoryMoney fills a NULL net_pnl only, on this account or an unstamped row, and re-stamps R', () => {
-  const db = initDB(':memory:')
-  const ins = (id, acct, net, exit) => db.prepare(
-    `INSERT INTO trades (id, symbol, side, status, ctrader_position_id, account_id, entry_price, exit_price, sl_price, net_pnl)
-     VALUES (?, 'NATGAS', 'BUY', 'closed', ?, ?, 2.933, ?, 2.9144642857142857, ?)`,
-  ).run(id, String(id), acct, exit, net)
-  ins(1, '47790949', null, null)        // this account, money missing → filled, exit filled, R stamped
-  ins(2, '47790949', -100, 2.9)         // this account, money present → untouched
-  ins(3, '46130058', null, null)        // ANOTHER account → untouched
-  ins(4, null, null, null)              // no account stamp → claimed and filled
-  const agg = (net, close) => ({ net, gross: net, last: { closePrice: close, closedAt: Date.parse('2026-09-01T20:06:33Z') } })
-  const by = new Map([['1', agg(-498.4, 2.919)], ['2', agg(999, 2.5)], ['3', agg(-7, 2.9)], ['4', agg(-12.5, 2.92)]])
-  const out = applyBrokerHistoryMoney(db, by, { accountId: '47790949' })
-  assert.equal(out.backfilled, 2)
-  const row = (id) => db.prepare('SELECT * FROM trades WHERE id = ?').get(id)
-  assert.equal(row(1).net_pnl, -498.4); assert.equal(row(1).exit_price, 2.919); assert.ok(row(1).realised_rr < 0)
-  assert.equal(row(2).net_pnl, -100, 'a stamped value is broker-true already — never overwritten'); assert.equal(row(2).exit_price, 2.9)
-  assert.equal(row(3).net_pnl, null, 'another account\'s row is not this account\'s to fill')
-  assert.equal(row(4).net_pnl, -12.5); assert.equal(row(4).account_id, '47790949', 'attribute-on-match')
-  assert.ok(row(4).realised_rr < 0)
-})
+// applyBrokerHistoryMoney and its test are gone (V3 B1): POST
+// /actions/broker-history is display-only, and its behaviour — trades money
+// unchanged — is exercised in pnl-lifecycle-guard.test.js.
 
 test('judgeTradesAgainstDeals rejects only in-flight rows, reports an unmatched open row, and stamps a repaired entry', () => {
   const db = initDB(':memory:')
@@ -410,7 +392,8 @@ test('judgeTradesAgainstDeals rejects only in-flight rows, reports an unmatched 
     { dealId: 'd2', positionId: '901', symbolId: 1, executionPrice: 1.1, executionTimestamp: Date.parse('2026-09-01T09:00:00Z') },
   ]
   // symbolMap deliberately EMPTY so time-window matching cannot rescue rows 2/3.
-  const out = judgeTradesAgainstDeals(db, { rows: db.prepare('SELECT * FROM trades ORDER BY id').all(), deals, symbolMap: {} })
+  // V3 B1: a rejection needs a deal walk that FINISHED; this one did.
+  const out = judgeTradesAgainstDeals(db, { rows: db.prepare('SELECT * FROM trades ORDER BY id').all(), deals, symbolMap: {}, complete: true })
   assert.deepEqual({ confirmed: out.confirmed, repaired: out.repaired, rejected: out.rejected, unmatchedOpen: out.unmatchedOpen }, { confirmed: 1, repaired: 1, rejected: 1, unmatchedOpen: 1 })
   const row = (id) => db.prepare('SELECT * FROM trades WHERE id = ?').get(id)
   assert.equal(row(1).entry_price, 1.1); assert.ok(row(1).realised_rr > 0, 'a filled entry re-stamps R')
