@@ -71,9 +71,16 @@ test('a locked database leaves the event loop responsive; a full report pool ans
   const body = await full.json()
   assert.equal(body.code, 'blocker_report_unavailable'); assert.equal(body.reason, 'performance_report_worker_capacity')
   assert.ok(ticks > 0, 'management timers progress while SQLite waits in the worker')
+  // V3 M2b (M2 check nit 5): a worker read that gave up on the lock is the
+  // same typed 503 as every other report failure — its words kept — not a
+  // 500, and still not an empty report.
   for (const response of await Promise.all(waiting)) {
-    assert.equal(response.status, 500, 'a failed worker read is a failure, not an empty report')
-    assert.equal((await response.json()).code, 'blocker_report_failed')
+    assert.equal(response.status, 503, 'a failed worker read is unavailable, not an empty report')
+    const failed = await response.json()
+    assert.equal(failed.code, 'blocker_report_unavailable')
+    assert.equal(failed.reason, 'performance_report_worker_error')
+    assert.equal(failed.detail, 'database is locked')
+    assert.equal('summary' in failed, false)
   }
   lock.exec('ROLLBACK')
 })

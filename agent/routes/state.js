@@ -58,14 +58,39 @@ const BLOCKER_REQUEST_ERRORS = new Set(['account not registered', 'explicit acco
  * empty result that reads as "nothing there" (owner principle 6). Anything
  * that is NOT a report-worker failure is left to the caller's own 500.
  *
+ * V3 M2b: a worker failure with no named code carries the driver's own words
+ * as `detail`, and is logged (at most once a minute per route and message),
+ * so a builder bug that fails every time is visible rather than dressed as a
+ * temporary outage. A report that exceeded a FIXED bound is not retryable:
+ * no Retry-After, `retryAfter: null`, `retryable: false`, and the sentence
+ * does not tell the reader to retry. `extra` carries a route's own failure
+ * fields (the watchdog's `workComplete: false`).
+ *
  * @returns {boolean} true when the response was sent
  */
-export function sendReportUnavailable(res, error, { message, code }) {
+export function sendReportUnavailable(res, error, { message, code, extra = null }) {
   if (!isReportUnavailable(error)) return false
   res.set('Cache-Control', 'no-store')
-  res.set('Retry-After', String(error.retryAfterSec))
-  res.status(503).json({ status: 'unavailable', error: message, code, reason: error.reason, retryAfter: error.retryAfterSec })
+  if (error.retryAfterSec != null) res.set('Retry-After', String(error.retryAfterSec))
+  const body = { ...extra, status: 'unavailable', error: error.retryable ? message : fixedBoundSentence(message),
+    code, reason: error.reason, retryAfter: error.retryAfterSec, retryable: error.retryable }
+  if (error.detail) {
+    body.detail = error.detail
+    logWorkerError(code, error.detail)
+  }
+  res.status(503).json(body)
   return true
+}
+const fixedBoundSentence = message =>
+  String(message).replace(/\b(is|are) temporarily unavailable\. Please retry\.$/, '$1 unavailable: the report exceeds a fixed size bound, so a retry will not help.')
+const WORKER_ERROR_LOG_EVERY_MS = 60_000
+const workerErrorLogged = new Map() // `${code}\u0000${detail}` → last logged ms
+function logWorkerError(code, detail, now = Date.now()) {
+  const key = `${code}\u0000${detail}`
+  if (now - (workerErrorLogged.get(key) ?? -Infinity) < WORKER_ERROR_LOG_EVERY_MS) return
+  if (workerErrorLogged.size >= 200) workerErrorLogged.clear() // bounded: a flood of distinct messages cannot grow it
+  workerErrorLogged.set(key, now)
+  console.warn(`[state] ${code}: report worker error — ${detail}`)
 }
 
 /**
@@ -131,8 +156,10 @@ export default function stateRouter(db) {
     } catch (error) {
       const message = String(error?.message || error)
       if (BLOCKER_REQUEST_ERRORS.has(message)) return res.status(400).json({ error: message })
-      if (/worker_capacity|report_deadline|worker_exit/.test(error?.reason || '')
-        && sendReportUnavailable(res, error, { message: 'The blocker report is temporarily unavailable. Please retry.', code: 'blocker_report_unavailable' })) return
+      // V3 M2b: every report-worker failure (a locked database included) is
+      // the same explicit 503 as the other reports, its driver words in
+      // `detail`; only a failure that is not the worker's stays a 500.
+      if (sendReportUnavailable(res, error, { message: 'The blocker report is temporarily unavailable. Please retry.', code: 'blocker_report_unavailable' })) return
       res.status(500).json({ error: 'The blocker report failed.', code: 'blocker_report_failed', reason: error?.reason ?? null })
     }
   })
@@ -140,8 +167,11 @@ export default function stateRouter(db) {
     res.set('Cache-Control', 'no-store')
     try {
       res.json(await readNodeWatchdogContract(db))
-    } catch {
+    } catch (error) {
       // Failure is unavailable evidence, never a new healthy/empty receipt.
+      // cpp-verify reads only a 2xx body; `error` and `workComplete: false`
+      // keep their pre-M2b values.
+      if (sendReportUnavailable(res, error, { message: 'watchdog_contract_unavailable', code: 'watchdog_contract_unavailable', extra: { workComplete: false } })) return
       res.status(503).json({ error: 'watchdog_contract_unavailable', workComplete: false })
     }
   })
@@ -1102,7 +1132,8 @@ export default function stateRouter(db) {
     const scope = requestedAccount(db, req)
     try {
       res.json(await readPostmortemReport(db, { scope, limit }))
-    } catch {
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable' })) return
       res.status(503).json({ error: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable' })
     }
   })
@@ -2150,7 +2181,8 @@ export default function stateRouter(db) {
     res.set('Cache-Control', 'no-store')
     try {
       res.json(await readAccountEngineering(db))
-    } catch {
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })) return
       res.status(503).json({ error: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })
     }
   })
@@ -2275,7 +2307,12 @@ export default function stateRouter(db) {
       catch { return res.status(400).json({ error: 'valid reporting timezone required' }) }
     }
     try { res.json(await readPerformancePopulations(db, timeZone ? { timeZone } : undefined)) }
-    catch (err) { res.status(503).json({ status: 'unavailable', reason: err.message }) }
+    catch (err) {
+      // V3 M2b: the typed 503 (reason code, retry hint, driver words in
+      // `detail`) instead of the raw err.message as the reason.
+      if (sendReportUnavailable(res, err, { message: 'Performance populations are temporarily unavailable. Please retry.', code: 'performance_populations_unavailable' })) return
+      res.status(500).json({ error: err.message })
+    }
   })
   router.get('/perf-ledger', async (req, res) => {
     try {
@@ -2749,7 +2786,8 @@ export default function stateRouter(db) {
       res.json(await readOrderLifecycle(db, options))
     } catch (err) {
       res.set('Cache-Control', 'no-store')
-      if (isReportUnavailable(err)) res.set('Retry-After', String(err.retryAfterSec))
+      // A fixed bound (order_lifecycle_response_bound) has no retry hint.
+      if (isReportUnavailable(err) && err.retryAfterSec != null) res.set('Retry-After', String(err.retryAfterSec))
       let lastSnapshotAt = null
       try { lastSnapshotAt = JSON.parse(getState(db, ORDER_LIFECYCLE_SNAPSHOT_KEY) || 'null')?.at ?? null } catch { lastSnapshotAt = null }
       res.status(503).json({ error: 'order_lifecycle_unavailable', code: err?.reason ?? 'order_lifecycle_worker_error', lastSnapshotAt })
