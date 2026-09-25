@@ -51,10 +51,10 @@ import { join, basename } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { randomUUID, createHash } from 'node:crypto'
 import { readSegment, toQuoteEvents, FORMAT_VERSION, HEADER_BYTES, RECORD_BYTES } from '../lib/tick-segment.js'
-import { simulate, normalizeLiveFilters, LIVE_FILTER_NAMES, LIVE_FILTER_MODELS } from '../lib/tick-replay-sim.js'
+import { simulate, normalizeLiveFilters, LIVE_FILTER_NAMES, LIVE_FILTER_MODELS, GATEWAY_LIVE_FILTERS } from '../lib/tick-replay-sim.js'
 import { normalizeParams, profileHashFull } from '../lib/tick-strategy.js'
 import { trialIdFor, importTickTrial, testOpeningsFor, recordTestOpening, settleTestOpening, HOLDOUT_UNDECLARED, RESEARCH_BLOCKS } from './tick-research.js'
-import { loadThresholds, replayChecks } from './tick-validation.js'
+import { loadThresholds, replayChecks, shadowLiveFilters } from './tick-validation.js'
 import { loadRepoSchedule, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 import { getState } from '../db.js'
 import { loadTickEntryConfig } from './tick-permits.js'
@@ -333,7 +333,7 @@ const plain = (v) => v && typeof v === 'object' && !Array.isArray(v) ? v : {}
 
 // ---- PR-Q3: the live filters -------------------------------------------------
 
-export const LIVE_FILTERS_WHERE = 'sim.liveFilters names WHICH live filters the replay applies — true for all four, or an object of booleans over counterTrend, signalTtl, priceBound, stopFloor, plus an optional model: "firer" (the default: the gateway today — the shadow book fills, the firer refuses, the refused trade holds the book) or "book" (a ShadowBook applying the filters itself, dual plan P3 / PR-Q4, not built: a refused signal frees the book). It never carries their values: minStopFraction, overshootFraction and maxFireDelayMs (as the signal TTL — a planned pending-signal expiry, not a filter the gateway runs today) are read from agent/config/tick-entry.json, the config the tick permits carry, and the counter-trend reading from the regimes table under the regime gate — so a replay cannot model a filter value the live path does not have. A filtered trial cannot pass the replay rung while agent/config/tick-shadow-sim.json carries no equal block'
+export const LIVE_FILTERS_WHERE = 'sim.liveFilters names WHICH live filters the replay applies — true for the three the gateway runs today (counterTrend, priceBound, stopFloor; the signal TTL only when named), or an object of booleans over counterTrend, signalTtl, priceBound, stopFloor, plus an optional model: "firer" (the default: the gateway today — the shadow book fills, the firer refuses, the refused trade holds the book) or "book" (a ShadowBook applying the filters itself, dual plan P3 / PR-Q4, not built: a refused signal frees the book). It never carries their values: minStopFraction, overshootFraction and maxFireDelayMs (as the signal TTL — a planned pending-signal expiry, not a filter the gateway runs today) are read from agent/config/tick-entry.json, the config the tick permits carry, and the counter-trend reading from the regimes table under the regime gate — so a replay cannot model a filter value the live path does not have. A filtered trial cannot pass the replay rung while agent/config/tick-shadow-sim.json carries no equal block'
 export const LIVE_FILTERS_NO_REGIMES_WHERE = 'the counter-trend filter reads the keeper\'s regimes table, which this door does not have (the script runs beside the spool with no keeper database): name the other filters, or replay through POST /actions/tick-research'
 /** Where the filter values come from, stamped on the block. */
 export const LIVE_FILTERS_CONFIG_SOURCE = 'agent/config/tick-entry.json (minStopFraction, overshootFraction; maxFireDelayMs as the signal TTL)'
@@ -346,7 +346,11 @@ export const LIVE_FILTERS_CONFIG_SOURCE = 'agent/config/tick-entry.json (minStop
 export function liveFiltersRequested(body = {}) {
   const raw = plain((body || {}).sim).liveFilters
   if (raw == null || raw === false) return null
-  if (raw === true) return { ...Object.fromEntries(LIVE_FILTER_NAMES.map(k => [k, true])), model: LIVE_FILTER_MODELS[0] }
+  // Fix round (checker N1): `true` is the gateway as it runs today — the
+  // three filters it applies, under the default 'firer' model. The signal TTL
+  // is a planned expiry the gateway does not run (maxFireDelayMs is a queue
+  // delay after the fill), so `true` never switches it on; it is named.
+  if (raw === true) return { ...Object.fromEntries(LIVE_FILTER_NAMES.map(k => [k, GATEWAY_LIVE_FILTERS.includes(k)])), model: LIVE_FILTER_MODELS[0] }
   if (typeof raw !== 'object' || Array.isArray(raw)) return { error: 'live_filters_shape', got: raw }
   const out = { ...Object.fromEntries(LIVE_FILTER_NAMES.map(k => [k, false])), model: LIVE_FILTER_MODELS[0] }
   for (const [k, v] of Object.entries(raw)) {
@@ -425,15 +429,124 @@ function segmentStartMs(file) {
  *     sides; each trial says so (regimeInput.rowsMayBePruned) instead.
  * The universe is tick_symbols_json at the time of the replay; a segment
  * symbol outside it reads no regime, and its trial says so.
+ *
+ * PR-Q3 fix round (checker B2, measured on a production-shaped database of
+ * 565k regime rows, 53 tick symbols): the rows were built as one object per
+ * row on the keeper's event loop and structured-cloned into the worker —
+ * 404 ms + 60 ms of blocked loop at 14 days, 1,873 ms + 159 ms at 29. Now:
+ *   - `rows[name]` is PACKED (packRegimeRows: one string and two typed
+ *     arrays per symbol), so the clone into the worker is a copy of a few
+ *     flat buffers, and the worker unpacks (unpackRegimeRows) off the loop;
+ *   - the route's door builds the context with replayTrendContextAsync,
+ *     which reads each symbol a page at a time and yields to the event loop
+ *     between pages. This synchronous form stays for the in-thread action
+ *     (tests and small runs: its replay blocks the thread anyway) and as the
+ *     job's fallback when it was handed no context that covers its segments.
+ * The two forms return the same context, value for value (pinned).
  */
-export function replayTrendContext(db, { files = [], gate = loadRegimeGateConfig(db), now = Date.now() } = {}) {
+export function replayTrendContext(db, opts = {}) {
+  const { reader, head } = trendContextFrame(db, opts)
+  const rows = {}
+  for (const name of head.names) rows[name] = packRegimeRows(reader.rowsFor(name))
+  return { ...head, rows }
+}
+
+/**
+ * Regime rows read per page by replayTrendContextAsync. Measured on the
+ * production-shaped table (565k rows, four runs at 7, 14 and 29 days): the
+ * longest loop turn 7–20 ms, p99 under 8 ms, where one pass held the loop
+ * 0.2–1.9 s. 2000 rows a page measured a p99 up to 16 ms; the smaller page
+ * costs only more yields (the wall time is within run-to-run noise).
+ */
+export const REGIME_PAGE_ROWS = 500
+const yieldLoop = () => new Promise(resolve => setImmediate(resolve))
+
+/**
+ * replayTrendContext's answer without holding the keeper's event loop: each
+ * symbol's rows are read `pageRows` at a time (asOfTrendReader.pages — the
+ * same window, the same order) and the loop is yielded to after every page.
+ * `yieldTo` is the yield (a test counts it).
+ */
+export async function replayTrendContextAsync(db, { pageRows = REGIME_PAGE_ROWS, yieldTo = yieldLoop, ...opts } = {}) {
+  const { reader, head } = trendContextFrame(db, opts)
+  const rows = {}
+  for (const name of head.names) {
+    const acc = []
+    for (const page of reader.pages(name, { pageRows })) {
+      for (const r of page) acc.push(r)
+      await yieldTo()
+    }
+    rows[name] = packRegimeRows(acc)
+  }
+  return { ...head, rows }
+}
+
+/**
+ * Whether a context built before the job (the async door) is the one the
+ * job would build: every segment the job admitted was in the set it was
+ * built over (so its window reaches back far enough and its `toMs` is after
+ * every sealed event), and the gate it read is the gate the block stamps.
+ */
+export function trendContextCovers(ctx, files, gate) {
+  if (!ctx || !Array.isArray(ctx.files) || !ctx.rows) return false
+  if (ctx.gateOn !== (gate?.on !== false) || ctx.maxRegimeAgeMin !== gateAgeBound(gate)) return false
+  const built = new Set(ctx.files)
+  return files.every(f => built.has(basename(String(f))))
+}
+
+/**
+ * One symbol's rows [{ at, dir }] packed for the worker: `at` is every
+ * stamp concatenated, `atEnd[i]` the end of row i's stamp in it, `dir[i]` 0
+ * for no direction or k for `dirValues[k − 1]`. Exact for any stamp and any
+ * direction value (no separator is assumed); unpackRegimeRows inverts it.
+ */
+export function packRegimeRows(rows) {
+  const n = rows.length
+  const parts = new Array(n)
+  const atEnd = new Uint32Array(n)
+  const dir = new Uint16Array(n)
+  const dirValues = []
+  const codeOf = new Map()
+  let end = 0
+  for (let i = 0; i < n; i++) {
+    const at = String(rows[i].at)
+    parts[i] = at
+    end += at.length
+    atEnd[i] = end
+    const d = rows[i].dir ?? null
+    if (d == null) continue
+    let code = codeOf.get(d)
+    if (code == null) {
+      if (dirValues.length >= 0xffff) throw new RangeError('more distinct regime directions than a packed row can name')
+      dirValues.push(d); code = dirValues.length; codeOf.set(d, code)
+    }
+    dir[i] = code
+  }
+  return { n, at: parts.join(''), atEnd, dir, dirValues }
+}
+
+/** packRegimeRows inverted: the rows [{ at, dir }], in order. */
+export function unpackRegimeRows(p) {
+  if (!p || !Number.isInteger(p.n) || typeof p.at !== 'string' || p.atEnd?.length !== p.n || p.dir?.length !== p.n || !Array.isArray(p.dirValues)) {
+    throw new TypeError('a regime context\'s rows are not packRegimeRows\' shape')
+  }
+  const out = new Array(p.n)
+  let start = 0
+  for (let i = 0; i < p.n; i++) {
+    const end = p.atEnd[i]
+    out[i] = { at: p.at.slice(start, end), dir: p.dir[i] === 0 ? null : p.dirValues[p.dir[i] - 1] }
+    start = end
+  }
+  return out
+}
+
+/** The context's frame — everything but the rows — and the reader the rows come from. */
+function trendContextFrame(db, { files = [], gate = loadRegimeGateConfig(db), now = Date.now() } = {}) {
   const starts = files.map(segmentStartMs).filter(Number.isFinite)
   const minAsOfMs = starts.length ? Math.min(...starts) : undefined
   const reader = asOfTrendReader(db, { gate, minAsOfMs, maxAsOfMs: now })
   const names = tickSymbolNames(db)
   const nameSet = new Set(names)
-  const rows = {}
-  for (const name of names) rows[name] = reader.rowsFor(name)
   const sides = {}
   for (const [env, side] of [['demo', 'cpp_exec_demo'], ['live', 'cpp_exec']]) {
     const accountId = sideAccounts(db, side)[0] ?? null
@@ -450,7 +563,8 @@ export function replayTrendContext(db, { files = [], gate = loadRegimeGateConfig
   }
   let retainedFrom = null
   try { retainedFrom = db.prepare('SELECT MIN(computed_at) AS at FROM regimes').get()?.at ?? null } catch { retainedFrom = null }
-  return { gateOn: gate?.on !== false, maxRegimeAgeMin: gateAgeBound(gate), names, rows, sides, fromMs: minAsOfMs ?? null, toMs: now, retainedFrom: retainedFrom == null ? null : String(retainedFrom) }
+  const head = { gateOn: gate?.on !== false, maxRegimeAgeMin: gateAgeBound(gate), names, sides, fromMs: minAsOfMs ?? null, toMs: now, retainedFrom: retainedFrom == null ? null : String(retainedFrom), files: files.map(f => basename(String(f))) }
+  return { reader, head }
 }
 
 const sqlStamp = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
@@ -477,7 +591,7 @@ export function symbolTrend(ctx, manifestBase, symbolId, list) {
   let fromMs = null, toMs = null
   for (const q of list) { const ms = q.recvMs; if (ms > 0) { if (fromMs == null || ms < fromMs) fromMs = ms; if (toMs == null || ms > toMs) toMs = ms } }
   const bound = ctx ? ctx.maxRegimeAgeMin : null
-  const all = name && ctx?.rows?.[name] ? ctx.rows[name] : []
+  const all = name && ctx?.rows?.[name] ? unpackRegimeRows(ctx.rows[name]) : []
   // The rows a signal inside [fromMs, toMs] could read: none newer than
   // toMs (the future), and — under an age bound — none older than
   // fromMs − bound, which is stale for every signal (asOfTrendReader's cut).
@@ -680,7 +794,14 @@ export function replayFiles(files, plan, replayThresholds) {
     })
   }
   const trials = runTrials(loaded, { stageA: plan.stageA, params: plan.params, sim: plan.sim, symbolClass: plan.symbolClass, trendContext: plan.trendContext ?? null })
-  return { manifest: loaded.manifestBase, trials: trials.map(t => ({ trial: t, verdict: replayChecks(t, replayThresholds) })) }
+  // Fix round (checker N3): agent/config/tick-shadow-sim.json is read ONCE
+  // per replay, not once per trial — its liveFilters block (only when a trial
+  // carries one; undefined otherwise, so replayChecks never looks) and the
+  // cost schedule replayChecks read per trial from the same file. Both are
+  // what replayChecks would have read itself, so every verdict is unchanged.
+  const schedule = loadRepoSchedule()
+  const shadowFilters = trials.some(t => t.sim?.liveFilters != null) ? shadowLiveFilters() : undefined
+  return { manifest: loaded.manifestBase, trials: trials.map(t => ({ trial: t, verdict: replayChecks(t, replayThresholds, { schedule, shadowFilters }) })) }
 }
 
 /** The main-thread half: import (unless dry) and shape the reply. */
@@ -836,7 +957,7 @@ function settle(j, patch) {
  * in-thread action returns) is on GET /state/tick-research-job?id=… once
  * `state` is `done`; the trials are in tick_trials by then.
  */
-export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null, workerCtor = null } = {}) {
+export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null, workerCtor = null, filterCtx: givenFilterCtx = null, trendContext: givenTrendContext = null } = {}) {
   if (jobs.current) {
     return { status: 409, body: { ok: false, error: 'research_running', jobId: jobs.current.jobId, startedAt: jobs.current.startedAt, where: 'one research job runs at a time; poll GET /state/tick-research-job?id=<jobId> and post again when it is done' } }
   }
@@ -846,22 +967,30 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   if (itRefused) return itRefused
   const a = withAvailable(admit(segmentsDir, { maxRecords, maxSegments: bounded.value }), segmentsAvailable)
   if (a.refuse) return a.refuse
-  const filterCtx = replayFilterContext(db)
+  const filterCtx = givenFilterCtx || replayFilterContext(db)
   const plan = researchPlan(body, { ...replayCostContext(db), ...filterCtx })
   const second = openingRefusal(db, plan)
   if (second) return second
   plan.segmentsAvailable = a.segmentsAvailable
   plan.segmentsDropped = a.segmentsDropped
   // PR-Q3: the worker has no database, so the regime rows it may read ride
-  // the plan (plain data); the job record's copy of the plan leaves them out.
-  if (plan.sim.liveFilters?.counterTrend) plan.trendContext = replayTrendContext(db, { files: a.files, gate: filterCtx.gate })
+  // the plan (packed); the job record's copy of the plan leaves them out.
+  // Fix round (checker B2): the route's door hands in the context it built
+  // off the loop (replayTrendContextAsync) with the gate it read; it is used
+  // when it covers the segments admitted here, else read here as before.
+  let regimeRead = null
+  if (plan.sim.liveFilters?.counterTrend) {
+    const prebuilt = trendContextCovers(givenTrendContext, a.files, filterCtx.gate)
+    plan.trendContext = prebuilt ? givenTrendContext : replayTrendContext(db, { files: a.files, gate: filterCtx.gate })
+    regimeRead = prebuilt ? 'handed in by the caller (the route\'s door reads it a page at a time, yielding to the event loop between pages)' : 'read in one pass on the calling thread'
+  }
   const th = thresholds || loadThresholds()
   // Checker, 20-09-2026: `segmentsFailed` was on the 202 alone, so an
   // operator who posts and then polls never learns that a segment could not
   // be pulled — the same shape as the figures that used to live only on the
   // transient response. It rides the job record too.
   const failedNote = segmentsFailed.length ? { segmentsFailed, segmentsFailedNote: `${segmentsFailed.length} listed segment(s) could not be pulled and are NOT in this replay; the replayed set is the oldest that did arrive` } : {}
-  const j = { jobId: randomUUID().slice(0, 12), state: 'running', startedAt: now.toISOString(), finishedAt: null, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, ...failedNote, plan: { stageA: plan.stageA, dryRun: plan.dryRun, params: plan.params, sim: plan.sim, onlySymbol: plan.onlySymbol, maxSegments: plan.maxSegments, noteTruncated: plan.noteTruncated }, result: null, error: null, worker: null, db, importTrial }
+  const j = { jobId: randomUUID().slice(0, 12), state: 'running', startedAt: now.toISOString(), finishedAt: null, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, ...failedNote, plan: { stageA: plan.stageA, dryRun: plan.dryRun, params: plan.params, sim: plan.sim, onlySymbol: plan.onlySymbol, maxSegments: plan.maxSegments, noteTruncated: plan.noteTruncated }, ...(regimeRead ? { regimeRead } : {}), result: null, error: null, worker: null, db, importTrial }
   // PR-Q1: the job's opening is on the ledger from the moment the worker can
   // read the test block, with the job id and the caller; the job record says
   // so too. A worker that dies before reporting showed its result to no one
@@ -931,7 +1060,18 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
  * the per-side detail of what was asked. A trial is never fabricated.
  */
 export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
-  const { cacheDir = null, sync = null, listAll = null, maxRecords = MAX_RECORDS, ...rest } = opts
+  const { cacheDir = null, sync = null, listAll = null, maxRecords = MAX_RECORDS, regimePageRows = REGIME_PAGE_ROWS, regimeYield = undefined, ...rest } = opts
+  // PR-Q3 fix round (checker B2): a counter-trend replay's regime rows are
+  // read HERE, a page at a time with the loop yielded between pages, and
+  // handed to the job with the gate they were read under — the job would
+  // otherwise read them in one synchronous pass (0.4 s at 14 days of a
+  // production-sized table, 1.9 s at 29). Only for a body that asks.
+  const counterTrendAsked = liveFiltersRequested(body)?.counterTrend === true
+  const offLoopContext = async (files) => {
+    const filterCtx = replayFilterContext(db)
+    const trendContext = await replayTrendContextAsync(db, { files, gate: filterCtx.gate, pageRows: regimePageRows, ...(regimeYield ? { yieldTo: regimeYield } : {}) })
+    return { filterCtx, trendContext }
+  }
   const segmentsDir = opts.segmentsDir ?? process.env[SEGMENTS_ENV]
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
@@ -947,17 +1087,27 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
   // pulled) — is refused before anything is listed or moved.
   if (jobs.current) return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir })
   if (syncLock) {
-    return { status: 409, body: { ok: false, error: 'research_running', jobId: syncLock.jobId, startedAt: syncLock.startedAt, where: 'a segment sync for an earlier request is still running; poll GET /state/tick-research-job and post again when it is done' } }
+    return { status: 409, body: { ok: false, error: 'research_running', jobId: syncLock.jobId, startedAt: syncLock.startedAt, where: `a ${syncLock.what || 'segment sync'} for an earlier request is still running; poll GET /state/tick-research-job and post again when it is done` } }
   }
   const local = admit(segmentsDir, { maxRecords, maxSegments })
-  if (!local.refuse) return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir })
+  if (!local.refuse) {
+    if (!counterTrendAsked) return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir })
+    // The regime read yields, so the slot is claimed first (as the sync
+    // claims it): a second POST meanwhile is refused, never doubled.
+    syncLock = { jobId: `regimes-${randomUUID().slice(0, 8)}`, startedAt: new Date().toISOString(), what: 'regime-row read (the counter-trend filter\'s context)' }
+    try {
+      return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir, ...(await offLoopContext(local.files)) })
+    } finally {
+      syncLock = null
+    }
+  }
   if (local.refuse.body.error !== 'no_segments') return local.refuse
   // CLAIMED BEFORE THE FIRST await. A check-then-act across an await is not
   // a lock: with the claim below the `await import(...)`, both callers ran
   // their synchronous prefix, both saw a null lock and both pulled the same
   // segment (measured: 48 chunk requests where one pull is 24). `admit`
   // above is synchronous, so nothing has yielded yet at this point.
-  syncLock = { jobId: `sync-${randomUUID().slice(0, 8)}`, startedAt: new Date().toISOString() }
+  syncLock = { jobId: `sync-${randomUUID().slice(0, 8)}`, startedAt: new Date().toISOString(), what: 'segment sync' }
   try {
     const { segmentCacheDir, syncInWorker, listAllSides } = await import('./tick-segments.js')
     const dest = cacheDir || segmentCacheDir()
@@ -1060,7 +1210,8 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
     // De-duplicated: a side's failure is reported both on the side and on the
     // pull as a whole, and the operator wants the SEGMENTS, not the reports.
     const failedNames = [...new Set([...(pull.failed || []), ...(pull.sides || []).flatMap(x => x.failed || [])].map(f => f?.name).filter(Boolean))]
-    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest, segmentsAvailable: listedCount, segmentsFailed: failedNames })
+    const pre = counterTrendAsked ? await offLoopContext(after.files) : {}
+    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest, segmentsAvailable: listedCount, segmentsFailed: failedNames, ...pre })
     return { status: started.status, body: { ...started.body, sync: pull } }
   } finally {
     syncLock = null

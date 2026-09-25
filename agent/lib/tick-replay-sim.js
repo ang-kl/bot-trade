@@ -148,6 +148,13 @@ export function normalizeMaxHoldEvents(value, rangeEvents) {
 export const LIVE_FILTERS_VERSION = 'live-filters-v1'
 /** The four filters, in the order a signal is judged. */
 export const LIVE_FILTER_NAMES = Object.freeze(['counterTrend', 'signalTtl', 'priceBound', 'stopFloor'])
+/**
+ * The filters the gateway RUNS today (tick_firer.cpp: permit, bound, floor).
+ * `signalTtl` is not one of them — it is the dual plan's planned expiry — so
+ * a research body's `liveFilters: true` switches on these three only, and a
+ * trial that names the TTL says in its diagnostics that it is not live.
+ */
+export const GATEWAY_LIVE_FILTERS = Object.freeze(['counterTrend', 'priceBound', 'stopFloor'])
 /** What a refusal does to the book (see above); the first is the default. */
 export const LIVE_FILTER_MODELS = Object.freeze(['firer', 'book'])
 const LIVE_FILTER_KEYS = new Set(['version', 'model', 'minStopFraction', 'overshootFraction', 'signalTtlMs', 'counterTrend', 'configSource'])
@@ -178,10 +185,17 @@ export function normalizeLiveFilters(lf) {
   let counterTrend = null
   if (ct === true || (ct && typeof ct === 'object' && !Array.isArray(ct))) {
     const age = ct === true ? null : ct.maxRegimeAgeMin
+    const gateOn = ct === true ? null : ct.gateOn
+    // Fix round (checker N2): a stamp that is not a number, or a gate flag
+    // that is not a boolean, is refused as num() refuses a value — read as
+    // null it would stamp "no age bound" on a veto meant to carry one. Null
+    // is "the gate did not say"; 0 or less is the reader's own "no bound".
+    if (age != null && !(typeof age === 'number' && Number.isFinite(age))) throw new TypeError(`sim.liveFilters.counterTrend.maxRegimeAgeMin must be a finite number or null (got ${JSON.stringify(age)})`)
+    if (gateOn != null && typeof gateOn !== 'boolean') throw new TypeError(`sim.liveFilters.counterTrend.gateOn must be true, false or null (got ${JSON.stringify(gateOn)})`)
     counterTrend = {
       asOf: 'signal_time',
-      gateOn: ct === true || ct.gateOn == null ? null : ct.gateOn === true,
-      maxRegimeAgeMin: age == null || !Number.isFinite(Number(age)) ? null : Number(age),
+      gateOn: gateOn ?? null,
+      maxRegimeAgeMin: age ?? null,
     }
   } else if (ct != null && ct !== false) {
     throw new TypeError('sim.liveFilters.counterTrend must be true, an object stamping the regime gate, or absent')
@@ -466,6 +480,10 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
     // pending at the end of the data), vetoed, or pending at the scope's cut.
     diagnostics.model = lf.model
     diagnostics.vetoes = { ...scoped.vetoes, total: vetoTotal }
+    // Fix round (checker N1): a filter this block runs that the gateway does
+    // not (the signal TTL) is named, so its vetoes are never read as trades
+    // the live path would have refused.
+    if (lf.signalTtlMs != null) diagnostics.plannedNotLive = { signalTtl: 'planned_not_live: the gateway runs no pending-signal expiry today (maxFireDelayMs is a queue delay after the fill); these vetoes remove trades the gateway would place' }
     if (lf.counterTrend) diagnostics.counterTrendNoReading = scoped.counterTrendNoReading
     diagnostics.filled = scoped.filled
     diagnostics.pendingAtScopeEnd = scoped.pending

@@ -6,7 +6,7 @@
 // as well as in-thread; a door with no regimes table refuses that filter; a
 // filtered trial cannot pass the replay rung while the shadow runs no equal
 // block; and a window the regime prune has reached says so.
-import { test } from 'node:test'
+import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -18,11 +18,15 @@ import { initDB, setState } from '../db.js'
 import { encodeHeader, encodeRecord, FLAGS, KIND } from '../lib/tick-segment.js'
 import { buildFixture } from '../lib/tick-strategy.test.js'
 import { TICK_SHADOW_SIM_FILE, loadRepoSchedule } from '../lib/tick-cost-schedule.js'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import {
   tickResearchAction, startTickResearchJob, startTickResearchJobWithSync, tickResearchJob, _resetTickResearchJobs,
   loadSegments, runTrials, replayFiles, researchPlan, replayFilterContext, replayTrendContext, symbolTrend,
   liveFiltersRefusal, liveFiltersBlock, liveFiltersRequested, simHash, LIVE_FILTERS_CONFIG_SOURCE,
+  replayTrendContextAsync, packRegimeRows, unpackRegimeRows, trendContextCovers,
 } from './tick-research-run.js'
+import { asOfTrendReader } from './tick-shadow-counterfactual.js'
 import { loadThresholds, replayChecks, shadowLiveFilters } from './tick-validation.js'
 import { loadTickEntryConfig } from './tick-permits.js'
 import { trendReadingAt, permittedSides } from './direction-policy.js'
@@ -74,7 +78,12 @@ test('PR-Q3: the filter values are the permits\' own config and the regime gate 
   const cfg = loadTickEntryConfig()
   const plan = researchPlan({ sim: { ...SIM, liveFilters: true } }, replayFilterContext(db))
   const lf = plan.sim.liveFilters
-  assert.equal(lf.minStopFraction, cfg.minStopFraction); assert.equal(lf.overshootFraction, cfg.overshootFraction); assert.equal(lf.signalTtlMs, cfg.maxFireDelayMs)
+  assert.equal(lf.minStopFraction, cfg.minStopFraction); assert.equal(lf.overshootFraction, cfg.overshootFraction)
+  // Fix round (checker N1): `true` is the gateway today — its three filters. The TTL is a planned
+  // expiry the gateway does not run, so it is on only when named, and then its value is the config's.
+  assert.equal(lf.signalTtlMs, null, 'RED if `true` switches on a filter the gateway does not run')
+  assert.deepEqual(liveFiltersRequested({ sim: { liveFilters: true } }), { counterTrend: true, signalTtl: false, priceBound: true, stopFloor: true, model: 'firer' })
+  assert.equal(researchPlan({ sim: { ...SIM, liveFilters: { signalTtl: true } } }, replayFilterContext(db)).sim.liveFilters.signalTtlMs, cfg.maxFireDelayMs)
   assert.equal(lf.configSource, LIVE_FILTERS_CONFIG_SOURCE)
   assert.equal(lf.model, 'firer', 'the default model is the gateway as it runs today')
   const gate = loadRegimeGateConfig(db)
@@ -135,7 +144,10 @@ test('PR-Q3 counter-trend end to end: the regimes AS OF the signal veto the agai
   // A down reading withholds BUY: the fixture's long (seq 118, in train) is vetoed.
   const db = keeperDb({ trend: 'short' })
   const ctx = replayTrendContext(db, { files: [file] })
-  assert.deepEqual(ctx.sides.demo, { 7: 'EURUSD' }); assert.equal(ctx.rows.EURUSD.length, 1); assert.equal(ctx.gateOn, true)
+  assert.deepEqual(ctx.sides.demo, { 7: 'EURUSD' }); assert.equal(ctx.gateOn, true)
+  // Packed for the worker (checker B2): flat buffers, never one object per row.
+  assert.equal(ctx.rows.EURUSD.n, 1); assert.ok(ctx.rows.EURUSD.atEnd instanceof Uint32Array); assert.ok(ctx.rows.EURUSD.dir instanceof Uint16Array)
+  assert.deepEqual(unpackRegimeRows(ctx.rows.EURUSD), [{ at: fmt(T0 - 10 * 60_000), dir: 'short' }])
   const body = { stageA: false, params: PARAMS, sim: { ...SIM, liveFilters: { counterTrend: true } }, dryRun: true }
   const inline = tickResearchAction(db, body, { segmentsDir: dir })
   assert.equal(inline.status, 200)
@@ -148,6 +160,7 @@ test('PR-Q3 counter-trend end to end: the regimes AS OF the signal veto the agai
   assert.equal(job.result.trials[0].summary.diagnostics.vetoes.counterTrend, 1, 'the worker judged the same veto from the rows it was handed')
   assert.equal(job.plan.sim.liveFilters.counterTrend.gateOn, true)
   assert.equal('trendContext' in job.plan, false, 'the regime rows ride the worker, not the job record')
+  assert.match(job.regimeRead, /one pass on the calling thread/, 'called directly with no context, the job reads the rows itself and says so')
   // Over every block (the owner's confirmation-run shape), an UP reading vetoes the short instead.
   const up = keeperDb({ trend: 'long' })
   const loaded = loadSegments([file])
@@ -289,4 +302,125 @@ test('PR-Q3: the script beside the spool refuses the counter-trend filter (no re
   const out = JSON.parse(ok.stdout)
   const cfg = loadTickEntryConfig()
   assert.deepEqual(out.trials[0].sim.liveFilters, { version: 'live-filters-v1', model: 'firer', minStopFraction: cfg.minStopFraction, overshootFraction: cfg.overshootFraction, signalTtlMs: cfg.maxFireDelayMs, counterTrend: null, configSource: LIVE_FILTERS_CONFIG_SOURCE })
+})
+
+// ---------------------------------------------------------------------------
+// Fix round (independent checker, 25-09-2026).
+// ---------------------------------------------------------------------------
+
+test('PR-Q3 fix round (checker B2): the paged read is rowsFor row for row — page boundaries inside ties on a stamp, every page size; the off-loop context equals the one-pass context, one yield per page; packed rows round-trip exactly', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'tick_symbols_json', JSON.stringify(['EURUSD', 'GBPUSD', 'USDJPY']))
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 7, GBPUSD: 8, USDJPY: 9 }))
+  const ins = db.prepare('INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES (?, ?, ?, ?)')
+  const dirs = ['long', 'short', 'flat', null]
+  let k = 0
+  for (let m = 0; m < 600; m += 7) {
+    ins.run('EURUSD', 'trending', dirs[k++ % 4], fmt(T0 + m * 60_000))
+    // Three rows on ONE stamp every fifth step: a page can end inside the tie.
+    if (m % 35 === 0) { ins.run('EURUSD', 'trending', 'long', fmt(T0 + m * 60_000)); ins.run('EURUSD', 'trending', 'short', fmt(T0 + m * 60_000)) }
+    if (m % 14 === 0) ins.run('GBPUSD', 'trending', dirs[k % 4], fmt(T0 + m * 60_000))
+  }
+  ins.run('EURUSD', 'trending', 'long', fmt(T0 - 3 * 86_400_000)) // older than the window's age bound: neither read takes it
+  const files = [`seg-${T0}-000001.tks`]
+  const now = T0 + 86_400_000
+  const gate = loadRegimeGateConfig(db)
+  const reader = asOfTrendReader(db, { gate, minAsOfMs: T0, maxAsOfMs: now })
+  const want = reader.rowsFor('EURUSD')
+  const ties = want.filter((r, i) => i > 0 && want[i - 1].at === r.at).length
+  assert.ok(want.length > 100 && ties >= 10, `${want.length} rows, ${ties} tied — not vacuous`)
+  for (const pageRows of [1, 2, 3, 5, 7, want.length, want.length + 1, 500]) {
+    const pages = [...reader.pages('EURUSD', { pageRows })]
+    assert.deepEqual(pages.flat(), want, `RED if a page boundary drops or repeats a tied row (pageRows ${pageRows})`)
+    assert.ok(pages.every(p => p.length > 0 && p.length <= pageRows))
+  }
+  assert.deepEqual([...reader.pages('USDJPY', { pageRows: 3 })], [], 'a symbol with no row reads no page')
+  const sync = replayTrendContext(db, { files, gate, now })
+  for (const pageRows of [1, 3, 500]) {
+    let yields = 0
+    const off = await replayTrendContextAsync(db, { files, gate, now, pageRows, yieldTo: async () => { yields++ } })
+    assert.deepEqual(off, sync, `the off-loop context is the one-pass context, value for value (pageRows ${pageRows})`)
+    const pagesRead = ['EURUSD', 'GBPUSD', 'USDJPY'].reduce((a, n) => a + Math.ceil(reader.rowsFor(n).length / pageRows), 0)
+    assert.equal(yields, pagesRead, 'the loop is yielded to after every page')
+  }
+  assert.deepEqual(unpackRegimeRows(sync.rows.EURUSD), want)
+  // Exact for any stamp and any direction: no separator is assumed.
+  const odd = [{ at: '2026-09-25 01:02:03', dir: 'long' }, { at: '2026-09-25T01:02:04Z', dir: null }, { at: '', dir: 'ß' }, { at: '2026-09-25 01:02:05.123', dir: 'long' }]
+  assert.deepEqual(unpackRegimeRows(packRegimeRows(odd)), odd)
+  assert.deepEqual(unpackRegimeRows(packRegimeRows([])), [])
+  assert.throws(() => unpackRegimeRows(want), /packRegimeRows/, 'rows in another shape are refused, never read as no rows')
+})
+
+test('PR-Q3 fix round (checker B2): the route\'s door reads the regime rows off the loop and hands them to the job — the worker judges the same veto; a second POST meanwhile is refused; a context that does not cover the job\'s segments is not used', async () => {
+  _resetTickResearchJobs()
+  const { dir, file } = segmentDir()
+  const db = keeperDb({ trend: 'short' })
+  const body = { stageA: false, params: PARAMS, sim: { ...SIM, liveFilters: { counterTrend: true } }, dryRun: true }
+  // Hold the read at its first yield: the door has claimed the slot by then.
+  let release
+  const held = new Promise(r => { release = r })
+  let yields = 0
+  const first = startTickResearchJobWithSync(db, body, { segmentsDir: dir, regimePageRows: 1, regimeYield: async () => { yields++; await held } })
+  assert.equal(yields, 1, 'the door is reading the rows, a page at a time')
+  const second = await startTickResearchJobWithSync(db, body, { segmentsDir: dir })
+  assert.equal(second.status, 409); assert.equal(second.body.error, 'research_running'); assert.match(second.body.where, /regime-row read/)
+  release()
+  const started = await first
+  assert.equal(started.status, 202, JSON.stringify(started.body))
+  const job = await waitJob(started.body.jobId)
+  assert.equal(job.state, 'done', job.error || '')
+  assert.match(job.regimeRead, /handed in by the caller/, 'RED if the job re-reads the rows on the loop')
+  assert.equal(job.result.trials[0].summary.diagnostics.vetoes.counterTrend, 1, 'the worker judged the veto from the packed rows')
+  const inline = tickResearchAction(db, body, { segmentsDir: dir })
+  assert.equal(job.result.trials[0].trialId, inline.body.trials[0].trialId, 'the same trial as the one-pass read: same rows, same digest')
+  // What the worker is handed is the packed context the door built.
+  _resetTickResearchJobs()
+  let handed = null
+  class Capture { constructor(_file, opts) { handed = opts.workerData } on() {} terminate() {} }
+  assert.equal((await startTickResearchJobWithSync(db, body, { segmentsDir: dir, workerCtor: Capture })).status, 202)
+  assert.ok(handed.plan.trendContext.rows.EURUSD.atEnd instanceof Uint32Array)
+  assert.deepEqual({ ...handed.plan.trendContext, toMs: 0 }, { ...replayTrendContext(db, { files: [file] }), toMs: 0 })
+  _resetTickResearchJobs()
+  // A handed-in context is used only when it covers the job's segments under the gate the block stamps.
+  const filterCtx = replayFilterContext(db)
+  const built = replayTrendContext(db, { files: [file], gate: filterCtx.gate })
+  assert.equal(trendContextCovers(built, [file], filterCtx.gate), true)
+  assert.equal(trendContextCovers(built, [file, join(dir, `seg-${T0 + 1}-000002.tks`)], filterCtx.gate), false, 'a segment it was not built over')
+  assert.equal(trendContextCovers(built, [file], { ...filterCtx.gate, on: false }), false, 'another gate')
+  assert.equal(trendContextCovers(built, [file], { ...filterCtx.gate, maxRegimeAgeMin: 30 }), false, 'another age bound')
+  const stale = replayTrendContext(db, { files: [`seg-${T0 + 1}-000009.tks`], gate: filterCtx.gate })
+  const s1 = startTickResearchJob(db, body, { segmentsDir: dir, filterCtx, trendContext: stale, workerCtor: Capture })
+  assert.equal(s1.status, 202); assert.notEqual(handed.plan.trendContext, stale, 'RED if a context over other segments is used')
+  assert.match(tickResearchJob(s1.body.jobId).regimeRead, /one pass/)
+  _resetTickResearchJobs()
+  const s2 = startTickResearchJob(db, body, { segmentsDir: dir, filterCtx, trendContext: built, workerCtor: Capture })
+  assert.equal(s2.status, 202); assert.equal(handed.plan.trendContext, built)
+  _resetTickResearchJobs()
+})
+
+test('PR-Q3 fix round (checker N3): a replay reads agent/config/tick-shadow-sim.json once for the live-filter block and once for the schedule — not once per trial; never for the block when no trial is filtered', () => {
+  const { file } = segmentDir()
+  const replay = loadThresholds().replay
+  const href = TICK_SHADOW_SIM_FILE.href
+  let reads = 0
+  const real = fs.readFileSync
+  const m = mock.method(fs, 'readFileSync', function (p, ...rest) { if ((p instanceof URL ? p.href : String(p)) === href) reads++; return real.call(this, p, ...rest) })
+  syncBuiltinESMExports()
+  try {
+    const grid = (liveFilters) => {
+      const plan = { ...researchPlan({ stageA: true, params: PARAMS, sim: { ...SIM, ...(liveFilters ? { liveFilters } : {}) } }), stageA: true }
+      reads = 0
+      return replayFiles([file], plan, replay)
+    }
+    const filtered = grid({ stopFloor: true })
+    assert.equal(filtered.trials.length, 12)
+    assert.ok(filtered.trials.every(t => t.verdict.failed.includes('liveFilters')), 'the block was read and the rung still refuses')
+    assert.equal(reads, 2, `RED if the file is read per trial (${reads} reads for 12 trials)`)
+    const plain = grid(null)
+    assert.equal(plain.trials.length, 12)
+    assert.equal(reads, 1, 'the schedule only')
+  } finally {
+    m.mock.restore()
+    syncBuiltinESMExports()
+  }
 })

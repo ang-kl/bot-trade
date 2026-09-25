@@ -211,7 +211,7 @@ test('PR-Q1: maxHoldEvents 0 is 4N inside simulate — the replayer given the C+
 // PR-Q3 (V3 P6/P7, 25-09-2026): the live filters as a stamped sim block.
 // ---------------------------------------------------------------------------
 import { createHash } from 'node:crypto'
-import { normalizeLiveFilters, fillVeto, liveFiltersKey, LIVE_FILTERS_VERSION } from './tick-replay-sim.js'
+import { normalizeLiveFilters, fillVeto, liveFiltersKey, LIVE_FILTERS_VERSION, GATEWAY_LIVE_FILTERS } from './tick-replay-sim.js'
 
 /** Flat wire-unit quotes (1.00000 / 1.00002), `n` events 100 ms apart, with per-index overrides [bid, ask, dt]. */
 function wireSeries(n, overrides = {}) {
@@ -413,4 +413,31 @@ test('PR-Q3: a misspelt filter, an unknown model or a bad value throws — it is
   const sig = { side: 'BUY', ask: 100_002, bid: 100_000, stopDistance: 10 }
   assert.equal(fillVeto({ signalTtlMs: 5000, overshootFraction: 0.25, minStopFraction: 0.0015 }, sig, 100_900, 5001), 'signalTtl')
   assert.equal(fillVeto({ signalTtlMs: 5000, overshootFraction: 0.25, minStopFraction: 0.0015 }, sig, 100_900, 5000), 'priceBound')
+})
+
+test('PR-Q3 fix round (checker N2): a counter-trend stamp that is not a number, or a gate flag that is not a boolean, throws — never read as "no age bound"', () => {
+  for (const age of ['abc', '240', NaN, Infinity, -Infinity, {}, true]) {
+    assert.throws(() => normalizeLiveFilters({ counterTrend: { gateOn: true, maxRegimeAgeMin: age } }), /maxRegimeAgeMin must be a finite number or null/, `RED if ${String(age)} is read as no bound`)
+  }
+  for (const gateOn of ['yes', 1, 0, 'false']) {
+    assert.throws(() => normalizeLiveFilters({ counterTrend: { gateOn, maxRegimeAgeMin: 240 } }), /gateOn must be true, false or null/, JSON.stringify(gateOn))
+  }
+  // What the doors stamp — a number or null, a boolean or null — is kept exactly.
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: { gateOn: true, maxRegimeAgeMin: 240 } }).counterTrend, { asOf: 'signal_time', gateOn: true, maxRegimeAgeMin: 240 })
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: { gateOn: false, maxRegimeAgeMin: 0 } }).counterTrend, { asOf: 'signal_time', gateOn: false, maxRegimeAgeMin: 0 })
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: { gateOn: null, maxRegimeAgeMin: null } }).counterTrend, { asOf: 'signal_time', gateOn: null, maxRegimeAgeMin: null })
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: {} }).counterTrend, { asOf: 'signal_time', gateOn: null, maxRegimeAgeMin: null })
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: true }).counterTrend, { asOf: 'signal_time', gateOn: null, maxRegimeAgeMin: null })
+})
+
+test('PR-Q3 fix round (checker N1): a block that runs the signal TTL says the gateway does not — its vetoes are trades the gateway would place; a block without it says nothing', () => {
+  const { ev, signals, lf } = allFourFixture()
+  for (const model of ['firer', 'book']) {
+    const r = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { ...lf, model } }, { signalsOverride: signals, trendSidesAt: () => ['BUY'] })
+    assert.match(r.summary.diagnostics.plannedNotLive?.signalTtl ?? '', /^planned_not_live: /, model)
+    const { signalTtlMs: _ttl, ...gateway } = lf
+    const g = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { ...gateway, model } }, { signalsOverride: signals, trendSidesAt: () => ['BUY'] })
+    assert.equal('plannedNotLive' in g.summary.diagnostics, false, `${model}: the three the gateway runs are live`)
+  }
+  assert.deepEqual([...GATEWAY_LIVE_FILTERS], ['counterTrend', 'priceBound', 'stopFloor'])
 })
