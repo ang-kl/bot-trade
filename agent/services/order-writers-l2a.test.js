@@ -488,3 +488,39 @@ test('W1: an owner-fired validation fill states the cause of its side — the op
   assert.match(route, /const synth = \{\s+consensus_bias: bias,\s+direction_reason: validationFillDirectionReason\(req\.body\?\.side\),/)
   assert.equal(typeof getState, 'function')
 })
+
+test('L2a × X1 follow-up: the sweep never expires a resting row whose intent the ledger settled FILLED from broker evidence — the row reads filled, naming the ledger; a response-only FILLED (pre-X1) is not evidence and the row still expires', () => {
+  const db = freshDb()
+  const settle = db.prepare(`UPDATE entry_intents SET resolution_source = ? WHERE id = ?`)
+  // (a) broker says gone, ledger FILLED from order details, no trade row (opened and closed between passes)
+  insertIntent(db, { id: 'iledgerfil01', state: 'FILLED', brokerOrderId: '9201', brokerPositionId: '555' })
+  settle.run('order_details', 'iledgerfil01')
+  const a = workingLimit(db, { order_id: '9201', intent_id: 'iledgerfil01' })
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status, account_id) VALUES ('9201', 'DOW.US', 'gone', ?)`).run(DEMO)
+  // (b) no broker record, own expiry passed, ledger FILLED from an execution event
+  insertIntent(db, { id: 'iledgerfil02', state: 'FILLED', brokerOrderId: '9202', brokerPositionId: '556' })
+  settle.run('event', 'iledgerfil02')
+  const b = workingLimit(db, { order_id: '9202', intent_id: 'iledgerfil02', expires_at: '2026-09-25T11:00:00Z' })
+  // (c) no order id, expiry passed, ledger FILLED from reconcile
+  insertIntent(db, { id: 'iledgerfil03', state: 'FILLED', brokerPositionId: '557' })
+  settle.run('reconcile', 'iledgerfil03')
+  const c = workingLimit(db, { order_id: null, intent_id: 'iledgerfil03', expires_at: '2026-09-25T11:00:00Z' })
+  // (d) the pre-X1 shape: FILLED by the placement answer alone — not fill evidence for a resting order
+  insertIntent(db, { id: 'iledgerres04', state: 'FILLED', brokerOrderId: '9204', brokerPositionId: '558' })
+  settle.run('response', 'iledgerres04')
+  const d = workingLimit(db, { order_id: '9204', intent_id: 'iledgerres04' })
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status, account_id) VALUES ('9204', 'DOW.US', 'gone', ?)`).run(DEMO)
+  const before = counts(db)
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: NOW })
+  const st = id => db.prepare(`SELECT status, note FROM pending_orders WHERE id = ?`).get(id)
+  for (const [id, src] of [[a, 'order_details'], [b, 'event'], [c, 'reconcile']]) {
+    assert.equal(st(id).status, 'filled', `RED if the sweep writes expired over a ledger FILLED from ${src}`)
+    assert.match(st(id).note, new RegExp(`filled per the entry ledger \\(intent iledgerfil0\\d FILLED from ${src}`))
+  }
+  assert.equal(st(d).status, 'expired', 'a FILLED from the placement answer alone is not evidence: the row expires as before')
+  assert.deepEqual([r.filled, r.expired], [3, 1])
+  for (const id of ['iledgerfil01', 'iledgerfil02', 'iledgerfil03', 'iledgerres04']) {
+    assert.equal(db.prepare(`SELECT state FROM entry_intents WHERE id = ?`).get(id).state, 'FILLED', 'the sweep never writes the intent')
+  }
+  assert.deepEqual(counts(db), before, 'nothing deleted, nothing added')
+})

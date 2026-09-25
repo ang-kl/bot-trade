@@ -93,8 +93,9 @@ export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl
  * on a fill (or, on a pre-X1 row not yet corrected, a pre-created id that
  * only a real fill ever puts on a trade row). The position id is matched in
  * both of its stored forms ('123' and '123.0'), as X1's fillEvidence
- * (intent-corrections.js) matches it, so the row and the intent read the
- * same evidence the same way.
+ * (intent-corrections.js) matches it. This reads TRADES evidence only; the
+ * ledger's own evidence (execution events, order details, deals) is honoured
+ * by the sweep before it would expire a row (expireUnlessLedgerFilled).
  *
  * @returns {{ trade: object|null, intentId: string|null, via: string|null }}
  */
@@ -238,6 +239,25 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
   const unlinked = (link) => (link.intentId
     ? `intent ${link.intentId} (${link.via}) has no trade on this account, symbol and side`
     : 'no intent evidence for this order')
+  // The ledger may already know the order FILLED from broker evidence (an
+  // execution event, the broker's order details, a deal) even when no trade
+  // row exists — a position that opened and closed between two reconcile
+  // passes. Expiring the row then would contradict the ledger: a false
+  // record. A FILLED intent settled from anything but the placement answer
+  // marks the row filled, naming the ledger's evidence; the placement answer
+  // alone is not fill evidence for a resting order (X1).
+  const ledgerFilled = db.prepare(`SELECT state, resolution_source, broker_position_id FROM entry_intents WHERE id = ?`)
+  const expireUnlessLedgerFilled = (row, link, note) => {
+    let it = null
+    try { it = link?.intentId ? ledgerFilled.get(String(link.intentId)) : null } catch { it = null }
+    if (it?.state === 'FILLED' && it.resolution_source && it.resolution_source !== 'response') {
+      markFilled.run(`pending-closed: filled per the entry ledger (intent ${link.intentId} FILLED from ${it.resolution_source}${it.broker_position_id != null ? `, position ${it.broker_position_id}` : ''}); no trade row on record`, row.id)
+      filled++
+      return
+    }
+    markExpired.run(note, row.id)
+    expired++
+  }
 
   for (const row of rows) {
     if (row.order_id) {
@@ -260,10 +280,10 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
       // its own expiry, exactly like an order that never returned an id —
       // unless a fill its intent produced is already on record (W9).
       if (!broker) {
-        if (settleFill(row).trade) continue
+        const link = settleFill(row)
+        if (link.trade) continue
         if (row.expires_at && new Date(row.expires_at).getTime() < nowMs) {
-          markExpired.run('pending-closed: no broker record and own expiry passed', row.id)
-          expired++
+          expireUnlessLedgerFilled(row, link, 'pending-closed: no broker record and own expiry passed')
         } else {
           unknown++
           stillWorking++
@@ -278,20 +298,17 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
       // the strategy and the plan (stampLimitFill). No linked fill: as far as
       // any evidence shows it never filled, and the note says which evidence.
       const link = settleFill(row)
-      if (!link.trade) {
-        markExpired.run(`pending-closed: gone at broker, no fill adopted — ${unlinked(link)}`, row.id)
-        expired++
-      }
+      if (!link.trade) expireUnlessLedgerFilled(row, link, `pending-closed: gone at broker, no fill adopted — ${unlinked(link)}`)
       continue
     }
     // Never got an order_id back at all (placeOrder response gap, or the
     // call itself never truly succeeded) — only give up once its OWN
     // expiry has passed; too early to judge otherwise. An intent recorded
     // at placement can still link a fill (W9).
-    if (settleFill(row).trade) continue
+    const link = settleFill(row)
+    if (link.trade) continue
     if (row.expires_at && new Date(row.expires_at).getTime() < nowMs) {
-      markExpired.run('pending-closed: no broker order_id and expiry passed', row.id)
-      expired++
+      expireUnlessLedgerFilled(row, link, 'pending-closed: no broker order_id and expiry passed')
     } else {
       stillWorking++
     }
