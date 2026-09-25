@@ -114,3 +114,38 @@ test('wiring pin: every bot entry path writes a plan (loop autoTrade, pending fi
   assert.match(loop, /scoreClosedPlans\(db\)/, 'the loop scores closed plans')
   assert.equal(typeof setState, 'function')
 })
+
+// ---------------------------------------------------------------------------
+// V3 X1 / W3 (25-09-2026): a plan whose stop or target is on the wrong side,
+// or whose stop is a unit error (wire points written as a price — #1686
+// JPM.US planned_sl 1,732,000 on an entry of 310.5), is refused and counted.
+// ---------------------------------------------------------------------------
+test('W3: recordTradePlan refuses a wrong-side stop or target and a stop at an absurd scale, writes no plan, and counts each refusal by reason', async () => {
+  const { planProblems, planRefusalCounts, PLAN_ABSURD_RISK_FRACTION, PLAN_REFUSAL_PATH } = await import('./trade-plans.js')
+  const { ABSURD_RISK_FRACTION } = await import('./order-lifecycle.js')
+  assert.equal(PLAN_ABSURD_RISK_FRACTION, ABSURD_RISK_FRACTION, 'the writer refuses exactly what ORD-03 flags')
+  const db = initDB(':memory:')
+  const jpm = openTrade(db, { symbol: 'JPM.US', entry: 310.5, sl: 305, tp: 320 })
+  const r = recordTradePlan(db, jpm, { accountId: 'A1', symbol: 'JPM.US', side: 'BUY', entry: 310.5, sl: 1_732_000, tp: null, source: 'reconciler_adopted_intent' })
+  assert.deepEqual(r.refused, ['sl_wrong_side', 'risk_scale'])
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM trade_plans WHERE trade_id = ?').get(jpm).n, 0, 'no plan written')
+  const short = openTrade(db, { side: 'SELL' })
+  assert.deepEqual(recordTradePlan(db, short, { symbol: 'EURUSD', side: 'SELL', entry: 1.1, sl: 1.09, tp: 1.08 }).refused, ['sl_wrong_side'])
+  const tpWrong = openTrade(db)
+  assert.deepEqual(recordTradePlan(db, tpWrong, { symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.095, tp: 1.09 }).refused, ['tp_wrong_side'])
+  const c = planRefusalCounts(db)
+  assert.equal(c.refused, 3)
+  assert.deepEqual(c.byReason, { sl_wrong_side: 2, risk_scale: 1, tp_wrong_side: 1 })
+  const logged = JSON.parse(db.prepare(`SELECT body FROM action_log WHERE method = 'PLAN' AND path = ? ORDER BY id LIMIT 1`).get(PLAN_REFUSAL_PATH).body)
+  assert.equal(logged.sl, 1_732_000); assert.equal(logged.source, 'reconciler_adopted_intent'); assert.equal(logged.tradeId, Number(jpm))
+  // sound plans are written exactly as before: a long, a short, a stopless and a targetless one
+  const ok1 = openTrade(db); assert.equal(recordTradePlan(db, ok1, { symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.095, tp: 1.11 }).plannedR, 2)
+  const ok2 = openTrade(db, { side: 'SELL' }); assert.equal(recordTradePlan(db, ok2, { symbol: 'EURUSD', side: 'short', entry: 1.1, sl: 1.105, tp: 1.09 }).plannedR, 2)
+  const ok3 = openTrade(db); assert.equal(recordTradePlan(db, ok3, { symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: null, tp: null }).refused, undefined)
+  const ok4 = openTrade(db); assert.equal(recordTradePlan(db, ok4, { symbol: 'EURUSD', side: 'long', entry: 1.1, sl: 1.095 }).refused, undefined)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM trade_plans').get().n, 4)
+  assert.equal(planRefusalCounts(db).refused, 3, 'a written plan is not a refusal')
+  assert.deepEqual(planProblems({ side: 'BUY', entry: 100, sl: 49 }), ['risk_scale'])
+  assert.deepEqual(planProblems({ side: 'BUY', entry: 100, sl: 51 }), [])
+  assert.deepEqual(planProblems({ side: 'SELL', entry: 100, sl: 100 }), ['sl_wrong_side'], 'a stop AT the entry risks nothing')
+})

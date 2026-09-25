@@ -27,6 +27,15 @@ public:
                 long long retryAfterMs, long long now);
   jsn::Value status(long long now) const;
   long long probeIntervalMs() const { return policy_.probeMs; }
+  long long serviceGraceMs() const { return policy_.serviceGraceMs; }
+  // Node's entryDiagnostics from the latest valid Node contract, for the
+  // relay on /watchdog-status. IN MEMORY ONLY: probe() strips the block from
+  // the contract it stores, so the state file fsynced on every probe never
+  // carries it (up to 32 KiB each 15 s), and restore() strips any copy an
+  // older build persisted. After a restart it is absent until Node's next
+  // contract arrives, and the relay says so.
+  const jsn::Value& nodeEntryDiagnostics() const { return nodeEntryDiagnostics_; }
+  long long nodeEntryDiagnosticsAtMs() const { return nodeEntryDiagnosticsAtMs_; }
 private:
   void incident(const std::string& id, bool bad, const std::string& severity,
                 const jsn::Value& detail, long long now, bool once = false);
@@ -34,8 +43,15 @@ private:
   WatchPolicy policy_;
   std::map<std::string, jsn::Value> services_, incidents_, outbox_;
   long long dropped_ = 0;
+  jsn::Value nodeEntryDiagnostics_;
+  long long nodeEntryDiagnosticsAtMs_ = 0;
 };
 bool watchAllowsNotification(const jsn::Value& snapshot, const jsn::Value& delivery, long long now);
+// The Telegram text for one outbox delivery. Its `blocker:` line reads the
+// incident detail's `blocker` STRING — Node's entry_activity item sends it as
+// a string (cpp-verify/src/tests/fixtures/node-entry-activity.json pins the
+// shape from both sides).
+std::string watchNotificationText(const jsn::Value& delivery, long long now);
 
 class Watchdog {
 public:

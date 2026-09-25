@@ -779,6 +779,91 @@ test('placeOrder with a ledger: a TIMEOUT from the sidecar keeps its clientMsgId
   assert.equal(rl.calls.resolved.length, 1); assert.equal(rl.calls.resolved[0].state, 'RELEASED')
 })
 
+// ---------------------------------------------------------------------------
+// V3 X1 (25-09-2026, owner-approved): the intent's verdict depends on the
+// order type. cTrader's ORDER_ACCEPTED for a RESTING order carries the
+// broker's pre-created position id; it used to settle the intent FILLED at
+// placement (i7fgue8t2rgxx CADJPY: FILLED 12-09, cancelled unfilled 25-09).
+// ---------------------------------------------------------------------------
+const ACCEPTED_BODY = '{"executionType":"ORDER_ACCEPTED","position":{"positionId":241267454},"order":{"orderId":360473873}}'
+
+test('X1: a resting LIMIT answered ORDER_ACCEPTED (with the pre-created position id) settles ACCEPTED with the order id — never FILLED, no position recorded', async () => {
+  const fx = fakeLedger()
+  nextResponse = { status: 200, body: ACCEPTED_BODY }
+  await placeOrder({ ...CREDS, producerId: 'pending_fib_orders', entryLedger: fx.ledger },
+    { ...ORDER, symbolId: 71, orderType: 'LIMIT', limitPrice: 1.1, expirationTimestamp: 1 })
+  assert.deepEqual(fx.calls.resolved, [{ id: 'i000000000001', state: 'ACCEPTED', positionId: null, brokerOrderId: 360473873, source: 'response' }])
+  assert.equal(fx.calls.reserve[0].orderType, 'LIMIT')
+})
+
+test('X1: a resting STOP and STOP_LIMIT (by name or ProtoOAOrderType number) accepted the same way settle ACCEPTED', async () => {
+  let sym = 72
+  for (const orderType of ['STOP', 'STOP_LIMIT', 2, 3, 6]) {
+    const fx = fakeLedger()
+    nextResponse = { status: 200, body: ACCEPTED_BODY }
+    await placeOrder({ ...CREDS, producerId: 'pending_fib_orders', entryLedger: fx.ledger }, { ...ORDER, symbolId: sym++, orderType, stopPrice: 1.2 })
+    assert.equal(fx.calls.resolved.length, 1, String(orderType))
+    assert.equal(fx.calls.resolved[0].state, 'ACCEPTED', String(orderType))
+    assert.equal(fx.calls.resolved[0].positionId, null, String(orderType))
+    assert.equal(fx.calls.resolved[0].brokerOrderId, 360473873, String(orderType))
+  }
+})
+
+test('X1: a resting LIMIT that fills on arrival (ORDER_FILLED, or a deal) settles FILLED with its position', async () => {
+  const fx = fakeLedger()
+  nextResponse = { status: 200, body: '{"executionType":"ORDER_FILLED","position":{"positionId":778},"order":{"orderId":556}}' }
+  await placeOrder({ ...CREDS, producerId: 'pending_fib_orders', entryLedger: fx.ledger }, { ...ORDER, symbolId: 80, orderType: 'LIMIT', limitPrice: 1.1 })
+  assert.deepEqual(fx.calls.resolved, [{ id: 'i000000000001', state: 'FILLED', positionId: 778, brokerOrderId: 556, source: 'response' }])
+  const fx2 = fakeLedger()
+  nextResponse = { status: 200, body: '{"executionType":"ORDER_PARTIAL_FILL","deal":{"dealId":1,"positionId":779},"order":{"orderId":557}}' }
+  await placeOrder({ ...CREDS, producerId: 'pending_fib_orders', entryLedger: fx2.ledger }, { ...ORDER, symbolId: 81, orderType: 'LIMIT', limitPrice: 1.1 })
+  assert.equal(fx2.calls.resolved[0].state, 'FILLED'); assert.equal(fx2.calls.resolved[0].positionId, 779)
+})
+
+test('X1: a MARKET order settles exactly as before — the cpp ORDER_ACCEPTED carrying the position is FILLED; no position is ACCEPTED', async () => {
+  const fx = fakeLedger()
+  nextResponse = { status: 200, body: ACCEPTED_BODY }
+  await placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: fx.ledger }, { ...ORDER, symbolId: 82 })
+  assert.deepEqual(fx.calls.resolved, [{ id: 'i000000000001', state: 'FILLED', positionId: 241267454, brokerOrderId: 360473873, source: 'response' }])
+  const fx2 = fakeLedger()
+  nextResponse = { status: 200, body: '{"order":{"orderId":12}}' }
+  await placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: fx2.ledger }, { ...ORDER, symbolId: 83 })
+  assert.deepEqual(fx2.calls.resolved, [{ id: 'i000000000001', state: 'ACCEPTED', positionId: null, brokerOrderId: 12, source: 'response' }])
+  const { orderType: _drop, ...noType } = ORDER
+  const fx3 = fakeLedger()
+  nextResponse = { status: 200, body: ACCEPTED_BODY }
+  await placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: fx3.ledger }, { ...noType, symbolId: 84 })
+  assert.equal(fx3.calls.resolved[0].state, 'FILLED', 'no order type reads as MARKET, as the bracket guard reads it')
+})
+
+test('X1 / W2: symbolName reaches the ledger as the intent\'s symbol and never the sidecar or the broker; intentId and permit still reach the sidecar', async () => {
+  const fx = fakeLedger()
+  nextResponse = { status: 200, body: '{"position":{"positionId":5}}' }
+  await placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: fx.ledger }, { ...ORDER, symbolId: 85, symbolName: 'CADJPY', signalRef: 'sig-1' })
+  assert.equal(fx.calls.reserve[0].symbol, 'CADJPY', 'the intent records its symbol')
+  assert.equal(fx.calls.reserve[0].signalRef, 'sig-1')
+  const sent = JSON.parse(requests.filter(q => q.url === '/order').at(-1).body)
+  assert.equal('symbolName' in sent, false, 'the sidecar forwards everything but intentId/permit to cTrader, so symbolName must not reach it')
+  assert.equal('signalRef' in sent, false)
+  assert.equal(sent.intentId, 'i000000000001'); assert.equal(sent.permit.id, 'p000000000001')
+  // without a ledger: the same strip, and an otherwise identical body
+  nextResponse = { status: 200, body: '{"position":{"positionId":6}}' }
+  await placeOrder(CREDS, { ...ORDER, symbolId: 86, symbolName: 'CADJPY' })
+  const bare = JSON.parse(requests.filter(q => q.url === '/order').at(-1).body)
+  assert.deepEqual(bare, { ...ORDER, symbolId: 86, ctidTraderAccountId: 123, volume: 100000 })
+})
+
+test('X1 / W3: the reserve records the stop and target units — relative legs as relative_points, absolute legs as price', async () => {
+  const rel = fakeLedger()
+  nextResponse = { status: 200, body: '{"position":{"positionId":7}}' }
+  await placeOrder({ ...CREDS, producerId: 'scan_dispatch', entryLedger: rel.ledger }, { ...ORDER, symbolId: 87 })
+  assert.deepEqual([rel.calls.reserve[0].sl, rel.calls.reserve[0].slUnits, rel.calls.reserve[0].tp, rel.calls.reserve[0].tpUnits], [50000, 'relative_points', 50000, 'relative_points'])
+  const abs = fakeLedger()
+  const { relativeStopLoss: _a, relativeTakeProfit: _b, ...noRel } = ORDER
+  await placeOrder({ ...CREDS, producerId: 'route_position_double', entryLedger: abs.ledger }, { ...noRel, symbolId: 88, stopLoss: 1.095, takeProfit: 1.11 })
+  assert.deepEqual([abs.calls.reserve[0].sl, abs.calls.reserve[0].slUnits, abs.calls.reserve[0].tp, abs.calls.reserve[0].tpUnits], [1.095, 'price', 1.11, 'price'])
+})
+
 test('19-09-2026 sidecarQuotes: GET /quotes with the bearer and the ids filter, parsed body back; a failing answer or js mode is null', async () => {
   nextResponse = { status: 200, body: JSON.stringify({ feed: 'up', generation: 3, count: 1, quotes: [{ symbolId: 41, bid: 1.1, ask: 1.1002, tsMs: 1, recvMs: 2 }] }) }
   const r = await sidecarQuotes(false, { ids: [41, 7, 'x', 0] })

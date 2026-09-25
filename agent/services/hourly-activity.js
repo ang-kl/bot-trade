@@ -1,5 +1,6 @@
 import { accountWhere } from '../lib/account-scope.js'
 import { hourlyOpenings } from './hourly-openings.js'
+import { hourlyBalances } from './balance-edges.js'
 
 // One bounded aggregate over all ledger rows, independent of journal paging.
 // Legacy net_pnl has no recorded currency. Never sum different accounts' units.
@@ -40,8 +41,21 @@ export function hourlyActivity(db, scope, options) {
   const closedN = rows.reduce((n, r) => n + r.closedN, 0)
   const pricedN = rows.reduce((n, r) => n + r.pricedN, 0)
   const wins = rows.reduce((n, r) => n + r.wins, 0)
+  // V3 WEB-3: the balance columns are OBSERVED broker balances at each hour's
+  // edges (account_history), never reconstructed from trade P&L. A read that
+  // fails leaves them explicitly unavailable; the activity counts still stand.
+  let balanceHistory
+  try {
+    const b = hourlyBalances(db, scope, rows, report.observedThrough)
+    rows.forEach((row, i) => Object.assign(row, b.rows[i]))
+    balanceHistory = { status: 'complete', ...b.balanceHistory }
+  } catch {
+    for (const row of rows) Object.assign(row, { openBal: null, closeBal: null, floating: null, balanceCurrency: null, balance: null })
+    balanceHistory = { status: 'unavailable', reason: 'balance_history_read_failed' }
+  }
   return { ...report, activityVersion: 1, rows, closedN, pricedN, wins, unknownCloseTimeN, moneyByAccount,
     net: closedN === 0 ? 0 : moneyByAccount.length === 1 && pricedN === closedN ? moneyByAccount[0].recordedNet : null,
     currencyStatus: 'not_recorded_in_trade_ledger', cashflowsReconciled: false,
-    balanceReconstruction: 'unavailable_without_currency_and_cashflow_reconciliation' }
+    balanceReconstruction: balanceHistory.status === 'complete' ? 'observed_broker_balance_at_edges' : 'unavailable',
+    balanceHistory }
 }

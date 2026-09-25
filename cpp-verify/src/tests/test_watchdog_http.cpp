@@ -62,7 +62,20 @@ int main() {
       assert(second.status().get("error").asString() == "watchdog_state_already_owned_or_lock_unavailable");
     }
     assert(std::filesystem::exists(std::string(path) + "/watchdog-state.json"));
-    { verify::Watchdog restored([] { return jsn::Value(jsn::Object{}); }); restored.start(); assert(restored.status().get("enabled").asBool()); }
+    {
+      verify::Watchdog restored([] { return jsn::Value(jsn::Object{}); }); restored.start();
+      const auto st = restored.status(); assert(st.get("enabled").asBool());
+      // V3 CV-1: the relay rides /watchdog-status itself. With no Node
+      // contract yet it says so — labelled, unavailable, never an empty
+      // clean list.
+      const auto& relay = st.get("entryDiagnostics");
+      assert(relay.get("evidence").asString() == "node_records_relayed" && relay.get("brokerVerified").isBool() && !relay.get("brokerVerified").asBool());
+      assert(!relay.get("available").asBool() && relay.get("reason").asString() == "no_node_contract_since_start" && relay.get("accounts").isArray());
+    }
+    {
+      verify::Watchdog off([] { return jsn::Value(jsn::Object{}); }); // never started: supervision off
+      assert(off.status().get("entryDiagnostics").get("reason").asString() == "watchdog_supervision_disabled");
+    }
     std::filesystem::remove_all(path);
   }
   std::cout << "bounded HTTP and durable exclusive watchdog state passed\n";
