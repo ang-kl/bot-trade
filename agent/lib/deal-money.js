@@ -18,9 +18,10 @@
 // Anything less — or an opened volume the caller cannot account for — writes
 // NULL, and the P&L backfill records the lifecycle total from the broker's
 // deal history (pnl-backfill.js, which needs the opening deal and balanced
-// volumes). Decided by VOLUME, not by a `scale_out` event: the momentum
-// partial manager writes no position event (momentum-partial-broker.js) and
-// manual partials in cTrader write none either (checker blocker on PR-1(e)).
+// volumes). Decided by VOLUME, not by a `scale_out` event alone: the momentum
+// partial manager writes no position event (momentum-partial-broker.js), and
+// a manual partial in cTrader is known only from the reconciler's tamper
+// watch (a `volume_reduced` event, reconciler.js).
 //
 // Kept in agent/lib so the decision is tested on behaviour, not with a source
 // pin on loop.js (failure mode #2).
@@ -72,6 +73,9 @@ export function fullCloseMoney(deal, { openedVolume } = {}) {
   return { money, reason: null }
 }
 
+/** position_events kinds that say "part of this position was closed before". */
+export const PARTIAL_CLOSE_EVENT_KINDS = Object.freeze(['scale_out', 'volume_reduced'])
+
 /**
  * The position's opened volume as the ledger can account for it at a full
  * close: the volume the broker held just before the close (`heldVolume`, from
@@ -84,12 +88,17 @@ export function fullCloseMoney(deal, { openedVolume } = {}) {
  *     the trade guard). Its `to_value` is NOT one unit across writers (the
  *     trade guard records lots, the others broker units), so it is read as
  *     "a partial happened", never summed;
+ *   - position_events `volume_reduced` (reconciler.js tamper watch): the
+ *     broker's volume fell between two reconcile passes without loop.js
+ *     PARTIAL_EXIT's baseline reset — by hand in cTrader, or by a partial
+ *     writer that does not reset it — recorded on every account's pass;
  *   - momentum_partial_plans past ARMED (the P0 partial manager: SENDING,
  *     AMBIGUOUS, RECEIVED, CONFIRMED) — a partial may have executed;
  *   - monitored_positions.scaled_out = 1 (the keeper and the trade guard).
- * A partial made by hand in cTrader leaves none of these, and neither the
- * snapshot nor the closing deal carries the opened volume: that close still
- * writes its one deal. The residual gap is named in the PR, not hidden.
+ * The residual race, named rather than hidden: a manual partial made after
+ * the last reconcile pass and before this full close has not been seen yet,
+ * and that close still writes its one deal. So does one whose evidence the
+ * journal's 90-day retention has swept.
  * Never throws: an unreadable table is an unknown (null), not "no partial".
  */
 export function openedVolumeOnRecord(db, { accountId, positionId, tradeId = null, monitoredId = null, heldVolume }) {
@@ -97,8 +106,9 @@ export function openedVolumeOnRecord(db, { accountId, positionId, tradeId = null
   try {
     // Two lookups, each on its own index (idx_position_events_trade,
     // idx_position_events_pos): this runs on the close path.
-    const byTrade = tradeId == null ? null : db.prepare(`SELECT 1 FROM position_events WHERE trade_id = ? AND kind = 'scale_out' LIMIT 1`).get(tradeId)
-    const byPosition = db.prepare(`SELECT 1 FROM position_events WHERE position_id = ? AND account_id = ? AND kind = 'scale_out' LIMIT 1`)
+    const kinds = PARTIAL_CLOSE_EVENT_KINDS.map(k => `'${k}'`).join(', ')
+    const byTrade = tradeId == null ? null : db.prepare(`SELECT 1 FROM position_events WHERE trade_id = ? AND kind IN (${kinds}) LIMIT 1`).get(tradeId)
+    const byPosition = db.prepare(`SELECT 1 FROM position_events WHERE position_id = ? AND account_id = ? AND kind IN (${kinds}) LIMIT 1`)
       .get(String(positionId), String(accountId))
     if (byTrade || byPosition) return null
   } catch { return null }

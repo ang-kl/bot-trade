@@ -3857,7 +3857,7 @@ async function runLoop(db) {
             const recovered = await backfillCrossSidePnl(db, getCtraderCreds(db), crossReconciled)
             pnlCrossSidePass = { state: 'reported', ...pnlPassSummary(recovered, { at: new Date().toISOString() }) }
             for (const r of recovered) {
-              if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read; ${r.result.lifetimeSkipped || 0} positions outside verified lifetime window`)
+              if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read; ${r.result.deferred ?? r.result.lifetimeSkipped ?? 0} unpriced position(s) without a whole lifecycle in the window, ${r.result.ambiguous || 0} ambiguous; conversion fee excluded from net ${r.result.conversionFeeExcluded ?? 0}`)
               else log(`P&L backfill [${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
               if (r.result?.positionHistory) log(`P&L position history [${r.accountId}]: ${JSON.stringify(r.result.positionHistory)}`)
             }

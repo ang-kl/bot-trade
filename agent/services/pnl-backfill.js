@@ -29,7 +29,10 @@ import { normPosId } from '../lib/pos-id.js'
 import { stampRealisedAudit } from './trade-consistency.js'
 import { DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
 import { pageDeals } from '../lib/deal-paging.js'
-import { verifiedPositionHistory, lifecycleBalance } from '../lib/position-deal-history.js'
+import { verifiedPositionHistory, lifecycleBalance, FALSE_CLOSE_TOLERANCE_MS } from '../lib/position-deal-history.js'
+
+// One tolerance, shared with the receipt linker (broker-history-import.js).
+export { FALSE_CLOSE_TOLERANCE_MS }
 
 
 /**
@@ -112,9 +115,6 @@ function rowScopeRefusal(db, acct, positionId, positionScopeSql, tradeId, count)
   // false closes of the position the target then held.
   return { refusal: null, openedMs, target, superseded: others }
 }
-
-/** Two ledger times closer than this are the same moment (clock skew, the reconciler's pass). */
-export const FALSE_CLOSE_TOLERANCE_MS = 120_000
 
 /**
  * THE FALSE-CLOSE RULE (V3 B1, PR-1(d) with the checker's correction). With
@@ -477,8 +477,12 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // window. A position whose lifecycle the window cannot show is DEFERRED to
   // the per-position reader (old-position-pnl.js), which reads its whole
   // history. `uncoveredPositions` keeps its name for the result field.
+  // Strict window calls only: the non-strict path has no production caller
+  // (cross-side-pnl.js is strict) and its merged tests are closing-deal-only
+  // fixtures; extending the rule there is a follow-up (B1 checker N6).
+  const windowPass = positionId == null
   const uncoveredPositions = new Set()
-  if (strictAccount && positionId == null) {
+  if (strictAccount && windowPass) {
     const byPid = new Map()
     for (const d of deals) {
       const pid = normPosId(d.positionId)
@@ -491,6 +495,41 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       if (!lifecycleBalance(list, pid).balanced) uncoveredPositions.add(pid)
     }
   }
+  // WHAT THIS PASS COULD WRITE AT ALL (B1 checker N1/N2). One read of the
+  // account's closed rows that a statement below could change — unpriced, or
+  // an exit price absent or flagged — in the identity scope (the writes' scope
+  // plus the rows the no-account claim may take). A position with no such row
+  // is not written, not checked for identity, not deferred and not handed
+  // off: the identity check was one CAST scan of trades per closing position
+  // (the checker measured 84 ms for 500 positions at 2,000 rows, 982 ms at
+  // 20,000, on the main thread), it
+  // warned on every pass about pairs that already carry money, and
+  // `deferredPositions` counted priced and still-open positions, which could
+  // fill the reader's 100-entry handoff before the rows that need a read.
+  const identityScope = acct == null ? '' : strictAccount ? 'AND account_id = ?' : 'AND (account_id = ? OR account_id IS NULL)'
+  const identityParams = acct == null ? [] : [acct]
+  const writable = new Set(), unpriced = new Set()
+  if (windowPass) {
+    const writableSql = flags => `SELECT ctrader_position_id AS pid, MAX(net_pnl IS NULL) AS unpriced FROM trades
+        WHERE status = 'closed' AND ctrader_position_id IS NOT NULL
+          AND (net_pnl IS NULL OR exit_price IS NULL OR ${flags}) ${identityScope}
+        GROUP BY ctrader_position_id`
+    let rows
+    // A schema without `exit_price_suspect` still reads the sign flag, as the
+    // `repairable` count above does.
+    try { rows = db.prepare(writableSql('pnl_price_mismatch = 1 OR exit_price_suspect = 1')).all(...identityParams) }
+    catch { rows = db.prepare(writableSql('pnl_price_mismatch = 1')).all(...identityParams) }
+    for (const r of rows) {
+      const pid = normPosId(r.pid)
+      if (!pid) continue
+      writable.add(pid)
+      if (Number(r.unpriced) === 1) unpriced.add(pid)
+    }
+  }
+  // Deferred = a lifecycle the window cannot show whole AND a row still owed
+  // its money. The skip below still covers every uncovered position: a
+  // partial lifecycle's volume-weighted price is not the position's exit.
+  const deferred = new Set([...uncoveredPositions].filter(pid => unpriced.has(pid)))
   if (!pull.complete) {
     console.warn(`[pnl-backfill] deal pull INCOMPLETE (${pull.reason}) after ${pull.pages} page(s) — figures below cover PART of the window`)
   }
@@ -553,7 +592,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     const m = (v) => (v == null ? 0 : v / scale)
     const gross = m(cpd.grossProfit)
     const net = gross + m(cpd.swap) + m(cpd.commission)
-    const agg = byPosition.get(positionId) || { net: 0, gross: 0, swap: 0, commission: 0, pxVol: 0, vol: 0 }
+    const agg = byPosition.get(positionId) || { net: 0, gross: 0, swap: 0, commission: 0, pxVol: 0, vol: 0, fee: 0 }
     agg.net += net
     agg.gross += gross
     // THE EXIT PRICE THE LEDGER NEVER RECORDED (go-live Phase 0, P0-1).
@@ -574,6 +613,11 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     // shows cost-per-strategy; folding them into net loses that).
     agg.swap += m(cpd.swap)
     agg.commission += m(cpd.commission)
+    // pnlConversionFee: NOT part of net (the convention on every path), but
+    // summed so what is excluded is measured (B1 checker, owner question).
+    // null once any closing deal's fee cannot be read.
+    const fee = cpd.pnlConversionFee
+    agg.fee = agg.fee == null || (fee != null && !/^-?\d+$/.test(String(fee))) ? null : agg.fee + m(fee)
     byPosition.set(positionId, agg)
   }
 
@@ -673,12 +717,15 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // per-position reader, which settles one row from the complete history or
   // labels it (old-position-pnl.js). Which duplicate is real is never guessed.
   const ambiguous = new Map()
-  if (positionId == null && byPosition.size) {
-    const identityScope = acct == null ? '' : strictAccount ? 'AND account_id = ?' : 'AND (account_id = ? OR account_id IS NULL)'
-    const identity = db.prepare(`SELECT id, status FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
+  if (windowPass && byPosition.size) {
+    // Both text forms of the id as plain values (persistDeals does the same),
+    // so idx_trades_position_id serves each lookup; only positions this pass
+    // could write are checked.
+    const identity = db.prepare(`SELECT id, status FROM trades WHERE ctrader_position_id IN (?, ?)
       AND status NOT IN ('rejected','cancelled') ${identityScope} ORDER BY id LIMIT 7`)
     for (const pid of byPosition.keys()) {
-      const rows = identity.all(pid, ...(acct == null ? [] : [acct]))
+      if (!writable.has(pid)) continue
+      const rows = identity.all(pid, `${pid}.0`, ...identityParams)
       if (rows.length > 1 || (rows.length === 1 && rows[0].status !== 'closed')) ambiguous.set(pid, rows)
     }
     for (const [pid, rows] of ambiguous) {
@@ -696,6 +743,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   let attributed = 0
   let exitsRepaired = 0
   let exitsFilled = 0
+  let feeExcluded = 0, feeUnreadable = 0
   // Re-stamp realised R and the consistency verdict on every closed row of a
   // position after any write above changed its money or its prices. One
   // helper shared with closeTradeRow and the loop's price-reconcile step, so
@@ -715,6 +763,9 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       }
     }
     for (const [positionId, agg] of entries) {
+      // Nothing on the position that a statement below could change: skip the
+      // four CAST scans (a no-op — every statement's WHERE is inside `writable`).
+      if (windowPass && !writable.has(positionId)) continue
       if (ambiguous.has(positionId)) continue
       const money = [
         Math.round(agg.net * 100) / 100,
@@ -740,6 +791,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       // not stamp R, and the exit-fill below never ran for those rows
       // because the exit was no longer NULL).
       if (moneyLanded) restampPosition(positionId)
+      if (moneyLanded) { if (agg.fee == null) feeUnreadable++; else feeExcluded += agg.fee }
       // Volume-weighted exit, only for rows already flagged as contradicting
       // themselves. Re-stamp realised R and clear the flag from the repaired
       // row rather than assuming the repair worked — if the deal price still
@@ -764,6 +816,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     try {
       db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run('PNL_FALSE_CLOSE', '/pnl-backfill', JSON.stringify({
         accountId: acct, positionId, lifecycleOn: tradeId, rejected: falseClosed, finalCloseAt: new Date(ruling.finalCloseMs).toISOString(),
+        conversionFeeExcluded: pull.lifecycle?.conversionFee ?? null,
         backfilled, source: 'broker complete position history', note: 'rows kept; status rejected with the evidence in close_reason (V3 B1)',
       }).slice(0, 2000))
     } catch { /* audit best-effort */ }
@@ -792,15 +845,23 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // its own evidence attempts on them (V3 B1).
   noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString(), includeUnattributed: !strictAccount,
     positionId, tradeId, eligibleSince: lifetimeSql ? new Date(from).toISOString() : null, eligibleThrough: lifetimeSql ? new Date(now).toISOString() : null,
-    excludePositionIds: positionId == null ? [...uncoveredPositions, ...ambiguous.keys()] : [] })
+    excludePositionIds: windowPass ? [...deferred, ...ambiguous.keys()] : [] })
 
   return { backfilled, attributed, exitsRepaired, exitsFilled, dealsPersisted, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap,
+    // `ambiguous` counts every position whose writes were withheld;
+    // `ambiguousPositions` is the handoff: only those with a row still owed
+    // its money, which is what the per-position reader can settle.
     ambiguous: ambiguous.size,
-    ...(ambiguous.size ? { ambiguousPositions: [...ambiguous].slice(0, 100).map(([pid, rows]) => ({ positionId: pid, rows: rows.map(r => r.id) })) } : {}),
+    ...(ambiguous.size ? { ambiguousPositions: [...ambiguous].filter(([pid]) => unpriced.has(pid)).slice(0, 100)
+      .map(([pid, rows]) => ({ positionId: pid, rows: rows.map(r => r.id) })) } : {}),
     ...(falseClosed.length ? { falseCloses: falseClosed } : {}),
     ...(positionId != null && backfilled ? { filledRowId: tradeId ?? filledRow } : {}),
-    ...(strictAccount ? { lifetimeSkipped: uncoveredPositions.size, deferred: uncoveredPositions.size,
-      ...(uncoveredPositions.size ? { deferredPositions: [...uncoveredPositions].slice(0, 100) } : {}) } : {}) }
+    // Excluded from net by the one convention; reported so its size is
+    // measured. Summed over the positions whose money landed in this pass.
+    conversionFeeExcluded: Math.round(feeExcluded * 100) / 100,
+    ...(feeUnreadable ? { conversionFeeUnreadable: feeUnreadable } : {}),
+    ...(strictAccount && windowPass ? { lifetimeSkipped: deferred.size, deferred: deferred.size,
+      ...(deferred.size ? { deferredPositions: [...deferred].slice(0, 100) } : {}) } : {}) }
 }
 
 // ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ import { backfillAccountPnl } from './cross-side-pnl.js'
 import { recoverOldPositionPnl } from './old-position-pnl.js'
 import { lifecycleBalance, verifiedPositionHistory } from '../lib/position-deal-history.js'
 import { fullCloseMoney } from '../lib/deal-money.js'
-import { persistDeals, shapeDeals, judgeTradesAgainstDeals } from './broker-history-import.js'
+import { persistDeals, shapeDeals, judgeTradesAgainstDeals, reconcileTradePricesToBroker } from './broker-history-import.js'
 import actionsRouter from '../routes/actions.js'
 import { upsertAccount } from './account-registry.js'
 
@@ -58,7 +58,7 @@ const strictWindow = (db, deals) => backfillClosedPnl(db, creds, { accountId: AC
 
 test('lifecycleBalance: whole, tail-only, still-open and unreadable lifecycles', () => {
   const whole = [od(1, 10), cd(2, 20, 100, 40), cd(3, 30, 50, 60)]
-  assert.deepEqual(lifecycleBalance(whole, '700'), { opened: 100, closed: 100, hasOpening: true, balanced: true, finalCloseMs: 30, reason: null })
+  assert.deepEqual(lifecycleBalance(whole, '700'), { opened: 100, closed: 100, hasOpening: true, balanced: true, finalCloseMs: 30, reason: null, conversionFee: 0 })
   // The final close is where closed volume REACHES opened volume, not the first closing deal.
   assert.equal(lifecycleBalance([...whole].reverse(), 700).finalCloseMs, 30, 'order-independent')
   const tail = lifecycleBalance([cd(3, 30, 50, 60)], '700')
@@ -197,6 +197,7 @@ test('the AVY shape with a partial before the false close: #372 rejected as a fa
   assert.match(row(db, falseRow).close_reason, new RegExp(`false close: broker position 517869182 open until ${iso(NOW - 16 * DAY)}; lifecycle on #774$`))
   const audit = JSON.parse(db.prepare(`SELECT body FROM action_log WHERE method = 'PNL_FALSE_CLOSE'`).get().body)
   assert.deepEqual([audit.rejected, audit.lifecycleOn, audit.finalCloseAt], [[372], 774, iso(NOW - 16 * DAY)])
+  assert.equal(audit.conversionFeeExcluded, 0, 'the excluded fee is measured on the audit, not Not Verifiable')
 })
 
 test('falseCloseVerdict: the final deal decides, with a 120 s tolerance, and only when the target holds the final close', () => {
@@ -264,11 +265,19 @@ test('pnlConversionFee: excluded from net on the window path and the position pa
   const deals = [od(1, NOW - 3 * DAY), cd(2, NOW - DAY, 4200, 100, 700, fee)]
   const a = fresh(t)
   const wid = seed(a, { opened: NOW - 3 * DAY, closed: NOW - DAY })
-  await strictWindow(a, deals)
+  const onWindow = await strictWindow(a, deals)
   const b = fresh(t)
   const pid = seed(b, { opened: NOW - 30 * DAY, closed: NOW - DAY })
-  await backfillClosedPnl(b, creds, { accountId: ACCT, positionId: '700', strictAccount: true, now: NOW, getPositionDeals: history(deals) })
+  const onPosition = await backfillClosedPnl(b, creds, { accountId: ACCT, positionId: '700', strictAccount: true, now: NOW, getPositionDeals: history(deals) })
   assert.deepEqual([row(a, wid).net_pnl, row(b, pid).net_pnl], [42, 42])
+  // What is excluded is measured, on both paths and on the lifecycle walk (B1 checker, owner question).
+  assert.deepEqual([onWindow.conversionFeeExcluded, onPosition.conversionFeeExcluded], [-0.07, -0.07])
+  assert.equal(lifecycleBalance(deals, '700').conversionFee, -0.07)
+  assert.equal(lifecycleBalance([od(1, 1), cd(2, 2, 1, 100, 700, { pnlConversionFee: 'x' })], '700').conversionFee, null)
+  const c = fresh(t)
+  seed(c, { opened: NOW - 3 * DAY, closed: NOW - DAY })
+  const unreadable = await strictWindow(c, [od(1, NOW - 3 * DAY), cd(2, NOW - DAY, 4200, 100, 700, { pnlConversionFee: 'x' })])
+  assert.deepEqual([unreadable.conversionFeeExcluded, unreadable.conversionFeeUnreadable], [0, 1])
   assert.throws(() => verifiedPositionHistory({ ctidTraderAccountId: ACCT, hasMore: false, deal: [od(1, 1), cd(2, 2, 1, 100, 700, { pnlConversionFee: 'x' })] },
     { accountId: ACCT, positionId: '700', now: NOW }), /closing money or volume unsupported/)
 })
@@ -420,4 +429,89 @@ test('loop.js FULL_EXIT takes its money from lib/deal-money.js, never from the o
   assert.doesNotMatch(block, /grossProfit|Math\.abs\(cpd|\/ 100/, 'no money arithmetic left in the loop')
   // heldVolume is captured from the snapshot BEFORE the ledger-lots fallback overwrites volumeUnits.
   assert.ok(block.indexOf('const heldVolume = volumeUnits') < block.indexOf('volumeUnits = Math.round('))
+})
+
+// ---------------------------------------------------------------------------
+// Fix round (independent checker): N1 cost, N2 handoff, N3 status names,
+// N5 receipt links
+// ---------------------------------------------------------------------------
+
+test('N2: only positions still owed money are deferred and handed off — a priced tail and a still-open position are not', async t => {
+  const db = fresh(t)
+  const owed = seed(db, { opened: NOW - 3 * DAY, closed: NOW - DAY, pos: '700' })
+  const priced = seed(db, { opened: NOW - 3 * DAY, closed: NOW - DAY, pos: '701', net: 12 })
+  seed(db, { opened: NOW - 3 * DAY, closed: null, status: 'open', pos: '702' })
+  const deals = [cd(2, NOW - DAY, 5000, 50, 700), cd(3, NOW - DAY, 1200, 50, 701), od(4, NOW - 2 * DAY, 100, 702), cd(5, NOW - DAY, 100, 50, 702)]
+  const w = await strictWindow(db, deals)
+  assert.deepEqual(w.deferredPositions, ['700'], 'the code before the fix round listed 700, 701 and 702')
+  assert.deepEqual([w.deferred, w.lifetimeSkipped], [1, 1])
+  assert.equal(row(db, owed).net_pnl, null)
+  // Still skipped for writing: a tail's volume-weighted price is not the exit.
+  assert.equal(db.prepare('SELECT exit_price FROM trades WHERE id = ?').get(priced).exit_price, null)
+  assert.equal(row(db, priced).net_pnl, 12)
+})
+
+test('N1: a pair that already carries its money and prices is not an identity question — no warning, not ambiguous', async t => {
+  const db = fresh(t)
+  seed(db, { opened: NOW - 5 * DAY, closed: NOW - 4 * DAY, net: 100 })
+  seed(db, { opened: NOW - 3 * DAY, closed: NOW - DAY, net: 50 })
+  db.prepare('UPDATE trades SET exit_price = 101').run()
+  const other = seed(db, { opened: NOW - 3 * DAY, closed: NOW - DAY, pos: '703' })   // makes the pass read the broker
+  const warns = []
+  const original = console.warn
+  console.warn = (...m) => { warns.push(m.join(' ')) }
+  t.after(() => { console.warn = original })
+  const w = await strictWindow(db, [od(1, NOW - 5 * DAY), cd(2, NOW - 2 * DAY, 10000), cd(3, NOW - DAY, 5000),
+    od(4, NOW - 3 * DAY, 100, 703), cd(5, NOW - DAY, 700, 100, 703)])
+  console.warn = original
+  assert.equal(w.ambiguous, 0, 'the code before the fix round called the priced pair ambiguous on every pass')
+  assert.deepEqual(warns.filter(s => /ledger identity ambiguous/.test(s)), [])
+  assert.equal(row(db, other).net_pnl, 7)
+})
+
+test('N1: the identity check still sees a float-formatted twin, without a CAST', async t => {
+  const db = fresh(t)
+  const a = seed(db, { opened: NOW - 5 * DAY, closed: NOW - 4 * DAY, pos: '700.0' })
+  const b = seed(db, { opened: NOW - 3 * DAY, closed: NOW - DAY, pos: '700' })
+  const w = await strictWindow(db, [od(1, NOW - 5 * DAY), cd(2, NOW - 2 * DAY, 10000), cd(3, NOW - DAY, 5000)])
+  assert.deepEqual(w.ambiguousPositions, [{ positionId: '700', rows: [a, b] }])
+  assert.deepEqual([row(db, a).net_pnl, row(db, b).net_pnl], [null, null])
+})
+
+test('N3: a deal status carried by NAME is an executed deal on the window and position paths', async t => {
+  const named = d => ({ ...d, dealStatus: d.closePositionDetail ? 'FILLED' : 'partially_filled' })
+  const deals = [od(1, NOW - 3 * DAY), cd(2, NOW - 2 * DAY, 10000), cd(3, NOW - DAY, 5000)].map(named)
+  assert.equal(lifecycleBalance(deals, '700').balanced, true)
+  assert.equal(lifecycleBalance([{ ...od(1, 10), dealStatus: 'REJECTED' }, cd(2, 20, 1, 100)], '700').balanced, false, 'a rejected deal still opens nothing')
+  const a = fresh(t)
+  const wid = seed(a, { opened: NOW - 3 * DAY, closed: NOW - DAY })
+  const w = await strictWindow(a, deals)
+  assert.equal(w.deferred, 0, 'the code before the fix round deferred every position whose statuses came by name')
+  assert.equal(row(a, wid).net_pnl, 150)
+  const b = fresh(t)
+  const pid = seed(b, { opened: NOW - 30 * DAY, closed: NOW - DAY })
+  await backfillClosedPnl(b, creds, { accountId: ACCT, positionId: '700', strictAccount: true, now: NOW, getPositionDeals: history(deals) })
+  assert.equal(row(b, pid).net_pnl, 150)
+})
+
+test('N5: a receipt does not link to a row that closed while the broker still held the position (the NATGAS #309 shape)', () => {
+  const db = initDB(':memory:')
+  const T = Date.parse('2026-09-10T10:00:00Z')
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, closed_at, net_pnl, entry_price, exit_price)
+    VALUES ('NATGAS', 'BUY', ?, ?, ?, ?, ?, 2.5, 2.6)`)
+  // #309: carries money, recorded closed an hour before the first closing deal; #310, the true row, is rejected.
+  const early = Number(ins.run('closed', ACCT, '1700', '2026-09-10 10:00:00', 5).lastInsertRowid)
+  ins.run('rejected', ACCT, '1700', null, null)
+  // A row closed 5 minutes AFTER its deal (the reconciler's lag) and one 60 s before it (inside the tolerance).
+  const lagged = Number(ins.run('closed', ACCT, '1701', iso(T + 5 * MIN), 7).lastInsertRowid)
+  const skewed = Number(ins.run('closed', ACCT, '1702', iso(T - 60_000), 8).lastInsertRowid)
+  const deals = [{ ...cd(1, T + 60 * MIN, 500, 50, 1700), tradeSide: 2 }, { ...cd(2, T + 120 * MIN, 500, 50, 1700), tradeSide: 2 },
+    { ...cd(3, T, 700, 100, 1701), tradeSide: 2 }, { ...cd(4, T, 800, 100, 1702), tradeSide: 2 }]
+  const before = db.prepare('SELECT * FROM trades WHERE id = ?').get(early)
+  persistDeals(db, shapeDeals(deals, {}, ACCT))
+  const link = id => db.prepare('SELECT matched_trade_id m FROM broker_deals WHERE deal_id = ?').get(id).m
+  assert.deepEqual([link('1'), link('2')], [null, null], 'the branch before the fix round linked both deals to #309')
+  assert.deepEqual([link('3'), link('4')], [lagged, skewed])
+  reconcileTradePricesToBroker(db)
+  assert.deepEqual(db.prepare('SELECT * FROM trades WHERE id = ?').get(early), before, 'the false close is not rewritten to look real')
 })

@@ -31,6 +31,14 @@ import { stampRealisedAudit } from './trade-consistency.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { brokerDealLinkIdentities } from './broker-deal-link-identity.js'
 import { normPosId } from '../lib/pos-id.js'
+import { FALSE_CLOSE_TOLERANCE_MS } from '../lib/position-deal-history.js'
+
+// Ledger timestamps come in both 'YYYY-MM-DD HH:MM:SS' (UTC) and ISO forms.
+const ledgerMs = v => {
+  if (v == null || v === '') return NaN
+  const raw = String(v).replace(' ', 'T')
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`)
+}
 
 const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
 
@@ -144,19 +152,41 @@ export function persistDeals(db, rows) {
       const placeholders = forms.map(() => '?').join(',')
       const grouped = new Map()
       for (const t of db.prepare(
-        `SELECT id, account_id, ctrader_position_id FROM trades WHERE ctrader_position_id IN (${placeholders})
+        `SELECT id, account_id, ctrader_position_id, status, closed_at FROM trades WHERE ctrader_position_id IN (${placeholders})
           AND status NOT IN ('rejected','cancelled')`,
       ).all(...forms)) {
         const key = `${t.account_id ?? ''}:${normPosId(t.ctrader_position_id)}`
         const list = grouped.get(key) || []
-        list.push(t.id); grouped.set(key, list)
+        list.push(t); grouped.set(key, list)
       }
-      for (const [key, ids] of grouped) if (ids.length === 1) localByIdentity.set(key, ids[0])
+      for (const [key, list] of grouped) if (list.length === 1) localByIdentity.set(key, list[0])
     }
   }
-  const localIdFor = (r) => {
+  const identityKey = (r) => {
     const identity = identities.get(r)
-    return identity ? localByIdentity.get(`${identity.accountId}:${normPosId(identity.positionId)}`) ?? null : null
+    return identity ? `${identity.accountId}:${normPosId(identity.positionId)}` : null
+  }
+  // A ROW THAT CLOSED WHILE THE BROKER STILL HELD THE POSITION IS NOT ITS
+  // RECORD (B1 checker N5). The one identity row may be a false close whose
+  // true twin is rejected: production …0058 NATGAS #309 carries money and
+  // closed before BOTH broker deals, while #310, the row that held the
+  // position, is rejected. Linked, the price reconciler would rewrite #309's
+  // entry, exit, close time and volume to the deals' — a false close made to
+  // look real. So when the position's latest closing deal in this batch
+  // executed more than the tolerance after the row's recorded close, the row
+  // gets no receipt (as before B1, when the rejected twin blocked the link).
+  const lastCloseMs = new Map()
+  for (const r of rows) {
+    const key = identityKey(r), ms = ledgerMs(r.closed_at)
+    if (key != null && Number.isFinite(ms)) lastCloseMs.set(key, Math.max(lastCloseMs.get(key) ?? -Infinity, ms))
+  }
+  const localIdFor = (r) => {
+    const key = identityKey(r)
+    const t = key == null ? null : localByIdentity.get(key)
+    if (!t) return null
+    const rowClosedMs = t.status === 'closed' ? ledgerMs(t.closed_at) : NaN
+    if (Number.isFinite(rowClosedMs) && lastCloseMs.get(key) > rowClosedMs + FALSE_CLOSE_TOLERANCE_MS) return null
+    return t.id
   }
 
   const up = db.prepare(`

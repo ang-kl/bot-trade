@@ -70,6 +70,8 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
       for (const field of ['backfilled', 'scanned', 'closingDeals', 'dealsPersisted', 'exitsRepaired', 'exitsFilled']) {
         result[field] = (result[field] || 0) + (oldHistory.result[field] || 0)
       }
+      // Same account, same currency: the fee the reader's fill excluded joins the window's.
+      result.conversionFeeExcluded = Math.round(((result.conversionFeeExcluded || 0) + (oldHistory.result.conversionFeeExcluded || 0)) * 100) / 100
     }
     noteBackfillAttempt(accountId, result, clock())
     return { accountId, result }
