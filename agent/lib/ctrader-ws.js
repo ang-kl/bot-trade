@@ -33,7 +33,7 @@ import { emitBrokerRead } from './broker-read-observer.js'
 // are unaffected.
 export { PT } from './ctrader-payload-types.js'
 import { PT } from './ctrader-payload-types.js'
-import { poolEnabled, pooledRun, poolStatus } from './ctrader-session.js'
+import { poolEnabled, pooledRun, poolStatus, noteTokenWait } from './ctrader-session.js'
 import { beginCall, endCall, describeSteps } from './inflight.js'
 
 // ProtoOATrendbarPeriod enum codes + bar durations, one table so a period
@@ -217,6 +217,7 @@ function wsRunInner(host, steps, timeoutMs = 20_000, collectAll = false) {
       // would put the very load back on the broker we are pacing away.
       if (HISTORICAL_PAYLOADS.has(step.send.payloadType)) {
         const waited = await takeHistoricalToken()
+        noteTokenWait(step, waited)
         if (ws.readyState !== WebSocket.OPEN) return // closed while queued
         if (waited > 0) {
           clearTimeout(timer)
@@ -700,9 +701,11 @@ export function decodeTrendbars(payload) {
  * the whole batch, instead of one per period).
  *
  * @param {string[]} periods - TRENDBAR_PERIODS keys, e.g. ['1d','4h','1h']
+ * @param {{onTokenWait?: (ms: number) => void}} [opts] - V3 M1: called once
+ *   per trendbar step (per attempt) with its historical token-bucket wait
  * @returns {Promise<Record<string, Array<{t,o,h,l,c,v}>>>} bars keyed by period
  */
-export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, periods, count = 150, timeoutMs = 30_000, endTime = 0) {
+export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, periods, count = 150, timeoutMs = 30_000, endTime = 0, opts = {}) {
   // endTime anchors the window's right edge for HISTORICAL charts (a past
   // trade's period); 0/omitted = now, exactly as before.
   const now = endTime || Date.now()
@@ -735,6 +738,7 @@ export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, a
       },
     },
     expect: PT.GET_TRENDBARS_RES,
+    ...(typeof opts?.onTokenWait === 'function' ? { onTokenWait: opts.onTokenWait } : {}),
   }))
 
   return withRetry(async () => {

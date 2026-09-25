@@ -41,7 +41,8 @@ import { accountPregate, proposalPregate, invalidateAccountPregate } from './ser
 import { markTickRepush } from './services/tick-permits.js'
 import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
-import { startLagMonitor, sampleLag } from './services/event-loop-lag.js'
+import { startLagMonitor, sampleLag, markLagPhase } from './services/event-loop-lag.js'
+import { noteLoopEnd, stampFirst } from './services/runtime-record.js'
 import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes, armedScopeGate } from './lib/timeframes.js'
@@ -2681,6 +2682,10 @@ export function prepareStatements(db) {
 // ---------------------------------------------------------------------------
 
 async function runLoop(db) {
+  // V3 M1: the work before the cycle's mutex (Telegram poll, the local price
+  // reconcile, the digest flush) is labelled for the lag tap — unless a cycle
+  // is still running, whose own phase label must not be overwritten.
+  if (!loopRunning) markLagPhase('pre-cycle')
   // Owner's travel console — handle /status /pause /resume /killall from
   // Telegram BEFORE any phase runs, so a pause lands this cycle, not next.
   try {
@@ -2771,6 +2776,7 @@ async function runLoop(db) {
       }
     }
     setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), CIRCUIT_BREAKER_RESET_MS)
+    markLagPhase('idle')
     return
   }
 
@@ -2866,6 +2872,8 @@ async function runLoop(db) {
     stopPhaseProfile(takeProfile)
     phaseName = key
     phaseStart = now
+    // V3 M1: the lag tap's stall record names the phase by its stable key.
+    markLagPhase(key)
     setState(db, 'loop_phase', name)
     startPhaseProfile(key)
   }
@@ -2885,8 +2893,13 @@ async function runLoop(db) {
       .filter(([, l]) => l.maxMs != null)
       .sort((a, b) => b[1].maxMs - a[1].maxMs)
     setState(db, 'loop_phase_lag_json', JSON.stringify(Object.fromEntries(byLag)))
+    // Between cycles: a stall the tap sees from here on happened while the
+    // loop slept — an HTTP handler or a ticker, not a loop phase.
+    markLagPhase('idle')
+    return Object.fromEntries(ordered)
   }
 
+  markLagPhase('starting')
   setState(db, 'loop_phase', 'starting')
   setState(db, 'loop_started_at', new Date().toISOString())
 
@@ -2923,6 +2936,9 @@ async function runLoop(db) {
     setState(db, 'errors_reset_date', todayUTC)
   }
 
+  // V3 M1: whether this cycle's main block threw, for the boot record's loop
+  // entries (the counter below is reset after the catch, so it cannot say).
+  let cycleErrored = false
   try {
     const s = prepareStatements(db)
 
@@ -4772,6 +4788,10 @@ async function runLoop(db) {
       // not for conversion rates; leaving the rates to it is what broke.
       // Cheap by construction: only legs older than six hours are fetched,
       // capped per cycle, so the steady state is zero broker calls.
+      // V3 M1: named, so its time stops landing in whichever phase ran before
+      // it — the #1079 first loop's 63,914 ms post-scan bucket could not be
+      // attributed. Same for the backfill and the decision audit below.
+      phase('fx legs refresh')
       try {
         const creds = getCtraderCreds(db)
         if (creds.ready && !cycleOverBudget()) {
@@ -5023,6 +5043,7 @@ async function runLoop(db) {
       // including the one labelled LIVE — because every closed trade had a
       // NULL account_id and the scoped-read convention hands NULL rows to
       // whoever asks. Bounded per pass; idempotent once drained.
+      phase('trade account backfill')
       try {
         const { backfillTradeAccounts } = await import('./services/trade-account-backfill.js')
         const bf = backfillTradeAccounts(db)
@@ -5045,6 +5066,7 @@ async function runLoop(db) {
       // That is the shape of #170 and of the protection audit reading "idle",
       // and this closes it for the entry path.
       // ---------------------------------------------------------------
+      phase('decision audit')
       try {
         const [{ shouldAlert, toText: auditText }, { readDecisionAudit }] = await Promise.all([
           import('./services/decision-audit.js'),
@@ -5213,6 +5235,9 @@ async function runLoop(db) {
         const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
         return heldPrices[String(pos.symbol).toUpperCase()] ?? scanRow?.price ?? null
       }, client, skipLlmMonitor)
+      // V3 M1: the first slow-monitor pass after boot (memory only; the boot
+      // record persists it on its own 30-second cadence).
+      stampFirst('slowMonitor', { positions: activePositions.length })
 
       // ---------------------------------------------------------------------
       // 4a-bis. ADAPTIVE BREAKER — the machine response to a loss streak:
@@ -5227,9 +5252,11 @@ async function runLoop(db) {
         })
         if (ab.actions?.length) log(`Adaptive breaker: ${ab.actions.map(a => `${a.strategy}→${a.did}`).join(', ')}`)
         await hbeat(db, 'adaptive_breaker')
+        stampFirst('adaptiveBreaker', { ok: true, actions: ab.actions?.length ?? 0 })
       } catch (err) {
         log(`Adaptive breaker failed (non-fatal): ${err.message}`)
         await hbeat(db, 'adaptive_breaker', false, err.message)
+        stampFirst('adaptiveBreaker', { ok: false, error: err.message })
       }
 
       // ---------------------------------------------------------------------
@@ -5446,9 +5473,13 @@ async function runLoop(db) {
         // status. Beaten at the END so a phase that keeps throwing shows as
         // failing, not resting.
         await hbeat(db, 'equity_stop')
+        // V3 M1: the equity stop runs ONLY here, so its first evaluation after
+        // a boot waits for the whole first loop — the boot record says when.
+        stampFirst('equityStop', { ok: true, accounts: byAccount.size })
       } catch (err) {
         log('Equity stop check failed:', err.message)
         await hbeat(db, 'equity_stop', false, err.message)
+        stampFirst('equityStop', { ok: false, error: err.message })
       }
 
       // ---------------------------------------------------------------------
@@ -5467,9 +5498,11 @@ async function runLoop(db) {
         })
         if (pb.triggered) log(`Performance breaker: PF ${pb.stats.profitFactor} over ${pb.stats.trades} trades${pb.autoDisarmed ? ' — autotrade disarmed' : ''}`)
         await hbeat(db, 'performance_breaker')
+        stampFirst('performanceBreaker', { ok: true, triggered: !!pb.triggered })
       } catch (err) {
         log('Performance breaker failed (non-fatal):', err.message)
         await hbeat(db, 'performance_breaker', false, err.message)
+        stampFirst('performanceBreaker', { ok: false, error: err.message })
       }
     } // end symbolsJson
 
@@ -5620,6 +5653,7 @@ async function runLoop(db) {
 
     await hbeat(db, 'main_loop')
   } catch (err) {
+    cycleErrored = true
     console.error('[loop] error:', err.message)
     await hbeat(db, 'main_loop', false, err.message)
     consecutiveErrors++
@@ -5630,7 +5664,10 @@ async function runLoop(db) {
       log(`Self-healing: ${consecutiveErrors} consecutive errors — backing off ${Math.round(backoff / 60000)}m`)
       // Persist the breakdown on the way out too: the phase that was running
       // when a cycle died is exactly the one worth seeing.
-      closePhases()
+      const erroredPhaseMs = closePhases()
+      // V3 M1: a cycle that died still took time and, if it was the first,
+      // is still the first loop — recorded with ok: false, not skipped.
+      noteLoopEnd({ startedAtMs: start, ms: Date.now() - start, phaseMs: erroredPhaseMs, ok: false })
       loopRunning = false
       lastLoopActivityAt = Date.now()
       setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), backoff)
@@ -6136,7 +6173,10 @@ async function runLoop(db) {
   lastLoopActivityAt = Date.now()
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, loopIntervalMs(db) - elapsed)
-  closePhases()
+  const cyclePhaseMs = closePhases()
+  // V3 M1: every cycle feeds the main-loop ring (p50/p95/p99 on /health);
+  // the first one after boot is stamped with its per-phase breakdown.
+  noteLoopEnd({ startedAtMs: start, ms: elapsed, phaseMs: cyclePhaseMs, ok: !cycleErrored })
   setState(db, 'loop_phase', `sleeping ${Math.round(delay / 1000)}s`)
   console.log(`[diag] LOOP #${loopCount} end ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)

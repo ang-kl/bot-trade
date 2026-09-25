@@ -533,6 +533,106 @@ test('P4 fallback routes each position to its own account and host and records a
   }
 })
 
+// ---------------------------------------------------------------------------
+// V3 M1 (P1/P4-1): per-position receipt timings, CARRIED across not_due
+// passes. The #1085 boot's fast monitor measured 43 s passes with nothing
+// saying where the time went, and a not_due pass 3 s after a pricing pass
+// rewrote the receipt blank. Injected ws: a stale sidecar quote sends the
+// position to a broker quote that answers NULL after a real delay (the
+// closed-market 6 s timeout, shortened), and the relVol fetch reports a
+// token-bucket wait through the step callback the real library now calls.
+// ---------------------------------------------------------------------------
+test('RECEIPT CARRY-FORWARD: quote_unavailable, its pricing ms, the vol fetch ms and the token wait survive the not_due passes that follow; the next priced pass replaces them', async () => {
+  const db = mkDb()
+  addPos(db, 'EURUSD', '111')
+  const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: t, count: 1, quotes: [{ symbolId: 1, bid: 1.1, ask: 1.1002, tsMs: t - 60_000, recvMs: t - 60_000 }] }) })
+  let t = d.now()
+  d.now = () => t
+  const volOpts = []
+  d.ws.wsGetTrendbarsBatch = async (...args) => {
+    const opts = args[10]
+    volOpts.push(opts)
+    opts?.onTokenWait?.(250)          // what ctrader-session/ctrader-ws report for the parked step
+    await sleep(20)
+    return { '1m': [] }
+  }
+  d.ws.wsGetSpotOnce = async (_h, _c, _s, _t, _a, symbolId) => { d.calls.ws.push(symbolId); await sleep(40); return null }
+  const read = () => JSON.parse(getState(db, 'fast_monitor_position_work_json')).positions[0]
+
+  // pass 1 — due: stale sidecar → broker → null
+  const out1 = await runFastMonitor(db, CREDS, d)
+  const r1 = read()
+  assert.equal(r1.state, 'quote_unavailable')
+  assert.equal(r1.lastOutcome, 'quote_unavailable')
+  assert.equal(r1.lastQuoteSource, 'broker')
+  assert.equal(r1.lastQuotePick, 'stale', 'WHY the broker was asked: the sidecar had a quote, but an old one')
+  assert.ok(r1.lastPricingMs >= 30, `pricing ms must include the broker wait, got ${r1.lastPricingMs}`)
+  assert.equal(r1.lastPricedAt, new Date(t).toISOString())
+  assert.ok(r1.lastVolFetchMs >= 15, `vol fetch ms, got ${r1.lastVolFetchMs}`)
+  assert.equal(r1.lastTokenWaitMs, 250)
+  assert.equal(typeof volOpts[0]?.onTokenWait, 'function', 'the fetch is handed the token-wait callback')
+  assert.equal(out1.timing.priced, 1)
+  assert.equal(out1.timing.brokerQuotes, 1)
+  assert.equal(out1.timing.volFetches, 1)
+  assert.equal(out1.timing.tokenWaitMs, 250)
+  assert.ok(out1.timing.pricingMs >= 30)
+
+  // pass 2 — 3 s later: not due, no fetch (cache), no quote
+  t += 3_000
+  const out2 = await runFastMonitor(db, CREDS, d)
+  const r2 = read()
+  assert.equal(r2.state, 'not_due')
+  for (const k of ['lastOutcome', 'lastQuoteSource', 'lastQuotePick', 'lastPricingMs', 'lastPricedAt', 'lastVolFetchMs', 'lastVolFetchAt', 'lastTokenWaitMs']) {
+    assert.deepEqual(r2[k], r1[k], `${k} was not carried across the not_due pass`)
+  }
+  assert.equal(out2.timing.priced, 0)
+  assert.equal(d.calls.ws.length, 1, 'the not_due pass made no broker call')
+
+  // pass 3 — carried from a carried receipt
+  t += 3_000
+  await runFastMonitor(db, CREDS, d)
+  assert.equal(read().lastPricingMs, r1.lastPricingMs)
+  assert.equal(read().lastOutcome, 'quote_unavailable')
+
+  // pass 4 — ten minutes on, a FRESH sidecar quote: the priced pass replaces the receipt
+  t += 10 * 60_000
+  d.exec.sidecarQuotes = async () => ({ feed: 'up', generation: 1, accountId: '111', nowMs: t, count: 1, quotes: [fresh(t, 1)] })
+  d.ws.wsGetTrendbarsBatch = async () => ({ '1m': [] })   // no token step reached → unknown, not 0
+  await runFastMonitor(db, CREDS, d)
+  const r4 = read()
+  assert.equal(r4.state, 'evaluated')
+  assert.equal(r4.lastOutcome, 'evaluated')
+  assert.equal(r4.lastQuoteSource, 'sidecar')
+  assert.equal(r4.lastQuotePick, 'sidecar')
+  assert.equal(r4.lastPricedAt, new Date(t).toISOString())
+  assert.ok(r4.lastPricingMs < 30, `a sidecar quote costs no broker wait, got ${r4.lastPricingMs}`)
+  assert.equal(r4.lastTokenWaitMs, null, 'a fetch that never reached the historical step has an UNKNOWN token wait, not 0')
+})
+
+test('the ticker keeps the last pass that did broker work (lastTiming) in the pass record, and a pass that did nothing does not blank it', async () => {
+  const db = initDB(':memory:')
+  const hb = { beat: () => {} }
+  let simNow = 1_800_000_000_000
+  let call = 0
+  const stop = startFastMonitor(db, () => CREDS, {
+    tickMs: 5, bandMs: 10_000, heartbeat: hb, runBand: async () => {}, clock: () => simNow,
+    runTick: async () => {
+      call++
+      simNow += 6_000
+      if (call === 1) return { err: null, quotes: { fromSidecar: 0, fromBroker: 2, stale: 2 }, checked: 2, completed: true, timing: { priced: 2, pricingMs: 12_300, brokerQuotes: 2, volFetches: 1, volFetchMs: 4_100, tokenWaitMs: 3_900 } }
+      return { err: null, quotes: { fromSidecar: 0, fromBroker: 0, stale: 0 }, checked: 0, completed: true, timing: { priced: 0, pricingMs: 0, brokerQuotes: 0, volFetches: 0, volFetchMs: 0, tokenWaitMs: 0 } }
+    },
+  })
+  await sleep(60)
+  stop()
+  assert.ok(call > 1)
+  const rec = JSON.parse(getState(db, PASS_RECORD_KEY))
+  assert.equal(rec.tick.lastTiming.pricingMs, 12_300)
+  assert.equal(rec.tick.lastTiming.tokenWaitMs, 3_900)
+  assert.equal(rec.tick.lastTiming.brokerQuotes, 2)
+  assert.equal(typeof rec.tick.lastTiming.passMs, 'number')
+})
+
 test('P4 invalid or future quotes cannot complete a position check; missing map never borrows a global ID', async () => {
   const now = 1000
   for (const q of [

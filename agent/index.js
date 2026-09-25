@@ -22,7 +22,8 @@ import { readRecentErrors } from './services/error-log.js';
 import ctraderOauthRouter from './routes/ctrader-oauth.js';
 import { jsonExceptScannerRegistration, scannerRegistrationJson, SCANNER_PROFILES_PATH } from './routes/scanner-registration-body.js';
 import { startLagMonitor } from './services/event-loop-lag.js';
-import { recordRequest } from './services/route-timing.js';
+import { routeTimingMiddleware } from './services/route-timing.js';
+import { noteDbStartup, noteListening, noteHttpStatus, startRuntimeRecord, runtimeRecordSnapshot, latencyWindows, readBootRecords } from './services/runtime-record.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -118,6 +119,9 @@ if (!DB_PATH) {
   console.warn('[boot] ⚠⚠⚠ DB_PATH is NOT set — the database lives inside the container and EVERY REDEPLOY WIPES IT (account link, logins, trade history). Attach a Railway Volume at /data and set DB_PATH=/data/agent.db.');
 }
 const db = initDB(resolvedDbPath);
+// V3 M1: the boot record's first entry — the database's own phase timings and
+// when it finished opening, measured from process start (boot-clock.js).
+noteDbStartup(db.startupTiming);
 
 // Seed broker statements (owner, 21-08-2026: "load these into the agent's
 // database as the authoritative history"). Fire-and-forget and AFTER initDB:
@@ -673,19 +677,14 @@ function authMiddleware(req, res, next) {
 
 // Request footprints — every non-health call logged with outcome + timing,
 // so Railway logs read as an activity journal, not just boot lines.
-app.use((req, res, next) => {
-  if (req.path === '/health') return next();
-  const t0 = Date.now();
-  res.on('finish', () => {
-    const ms = Date.now() - t0;
-    console.log(`[http] ${req.method} ${req.path} → ${res.statusCode} (${ms}ms)`);
-    // #125: the log line above is a STREAM — reading it means having the
-    // Railway window open at the moment. This keeps the shape in memory so an
-    // episode noticed a day later still has numbers. See route-timing.js.
-    recordRequest(req.path, ms, Number(res.getHeader('content-length')) || 0);
-  });
-  next();
-});
+// #125: the log line is a STREAM — reading it means having the Railway window
+// open at the moment — so the same middleware keeps the shape in memory, and
+// an episode noticed a day later still has numbers. V3 M1: /health is now
+// timed and classed too (only its log line is skipped), every response carries
+// its status class, keys keep their mount prefix, and the startup window's
+// statuses go into the boot record. Mounted BEFORE authMiddleware so a 401 is
+// counted. See services/route-timing.js.
+app.use(routeTimingMiddleware({ log: (line) => console.log(line), onStatus: noteHttpStatus }));
 
 // ---------------------------------------------------------------------------
 // THE FRONTEND AND THE OAUTH EXCHANGE — both moved off Vercel.
@@ -1029,8 +1028,22 @@ app.get('/health', (req, res) => {
         // {fromSidecar, fromBroker, stale, at, checked} — null until a pass
         // has priced. quotes10m (20-09-2026) is the same figure summed over
         // the last 10 minutes of priced passes, plus sidecarSharePct.
-        return { everyMs: t.everyMs ?? null, lastMs: t.lastMs ?? null, max10mMs: t.max10mMs ?? null, skippedTicks: t.skippedTicks ?? null, skipShare10m: t.skipShare10m ?? null, busyShare10m: t.busyShare10m ?? null, quotes: t.quotes ?? null, quotes10m: t.quotes10m ?? null, at: rec.at ?? null }
+        // lastTiming (V3 M1): where the last pass that did broker work spent
+        // it — pricing, the relVol trendbar fetch and its token-bucket wait.
+        return { everyMs: t.everyMs ?? null, lastMs: t.lastMs ?? null, max10mMs: t.max10mMs ?? null, skippedTicks: t.skippedTicks ?? null, skipShare10m: t.skipShare10m ?? null, busyShare10m: t.busyShare10m ?? null, quotes: t.quotes ?? null, quotes10m: t.quotes10m ?? null, lastTiming: t.lastTiming ?? null, at: rec.at ?? null }
       } catch { return null }
+    })(),
+    // V3 M1 (P1/P4-1): the boot record — BOOT is process start
+    // (services/boot-clock.js) — with the first-after-boot protection stamps,
+    // the startup window's HTTP statuses and worst event-loop stall; `current`
+    // is this process, from memory, `previous` the process it replaced, from
+    // boot_record_prev_json. latencyWindows: main-loop and event-loop-lag
+    // p50/p95/p99/max over bounded windows. Both authenticated only.
+    bootRecord: (() => {
+      try { return { current: runtimeRecordSnapshot(), previous: readBootRecords(db).previous } } catch { return null }
+    })(),
+    latencyWindows: (() => {
+      try { return latencyWindows() } catch { return null }
     })(),
     // Broker pacing (incident 2026-07-28): historical requests (trendbars,
     // deals) are capped at 5/s by cTrader and we were sending 20-40/s. A
@@ -1165,6 +1178,10 @@ async function start() {
   const port = Number(PORT);
 
   server.listen(port, '0.0.0.0', async () => {
+    // V3 M1: listening, measured from process start; then the boot record's
+    // first write, which also moves the previous boot's record aside.
+    noteListening();
+    startRuntimeRecord(db);
     console.log(`[agent] listening on 0.0.0.0:${port}`);
     console.log(`[agent] CORS origin: ${FRONTEND_URL || '*'}`);
     console.log(`[agent] DB path: ${DB_PATH || './agent.db'}`);
