@@ -58,7 +58,8 @@ test('real account map envelope supplies isolated identities; native feed demand
   setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ at: new Date(now).toISOString(), ok: true, tick: { feedAccountId: 11, subscribed: [9] } }))
   setState(db, 'cpp_exec_health_json', JSON.stringify({ at: new Date(now).toISOString(), ok: true, tick: { feedAccountId: 22, subscribed: [10] } }))
   const demand = watchdogCalendarDemand(db, now)
-  assert.deepEqual(demand.identities.map(i => [i.accountId, i.symbolId]), [['11', '7'], ['22', '8'], ['11', '9']])
+  // V3 K1: the gateway feed tier now leads the positions (it meets the cap first).
+  assert.deepEqual(demand.identities.map(i => [i.accountId, i.symbolId]), [['11', '9'], ['11', '7'], ['22', '8']])
   assert.equal(demand.complete, false)
   assert.equal(watchdogCalendarDemand(db, now + 360_000).identities.length, 2)
 })
@@ -82,7 +83,8 @@ test('wrong account response and ambiguous holiday remain unknown with diagnosti
     : { symbol: [{ ...symbol(8), holiday: [{ holidayDate: 20000, isRecurring: true, scheduleTimeZone: 'UTC' }] }] } })
   assert.equal((await refresh()).recorded, 0)
   const second = await refresh(); assert.equal(second.unknown, 1)
-  assert.ok(second.errors.includes('8:calendar_holiday_window_unknown'))
+  // V3 K1: the combined code is split; this holiday sends neither bound.
+  assert.ok(second.errors.includes('8:holiday_bounds_omitted'))
   assert.equal(readMarketCalendar(db, { host, accountId: '22', symbolId: 8 }, { nowMs: now }).open, null)
 })
 test('one in-flight batch, fresh enabled observation required; muted notification policy does not suppress calendar reads', async t => {
@@ -245,4 +247,29 @@ test('a tick demand that exactly fills the cap is complete', t => {
   const demand = watchdogCalendarDemand(db, now)
   assert.equal(demand.identities.length, 512)
   assert.equal(demand.complete, true, 'RED if the cap check runs after the last pair instead of before the next one')
+})
+
+// V3 K1: a skipped pass left no trace, so an observer outage silently stopped
+// calendar coverage while the last receipt still looked current.
+test('a skipped pass persists its reason and since-when apart from the receipt, which stays the last real batch', async t => {
+  const db = fixture(t)
+  let at = now
+  const refresh = createWatchdogCalendarRefresh(db, { now: () => at, credentials, fetchSymbols: async (_c, ids) => ({ symbol: ids.map(symbol) }) })
+  assert.equal((await refresh()).recorded, 1)
+  const receipt = getState(db, 'watchdog_calendar_refresh_json')
+  assert.equal(getState(db, 'watchdog_calendar_refresh_skip_json'), null, 'a real batch writes no skip')
+  at = now + 400_000 // the observer reading (readAt = now) is now stale
+  assert.deepEqual(await refresh(), { skipped: 'observation_disabled_or_stale' })
+  let skip = JSON.parse(getState(db, 'watchdog_calendar_refresh_skip_json'))
+  assert.deepEqual(skip, { at: new Date(now + 400_000).toISOString(), skipped: 'observation_disabled_or_stale', since: new Date(now + 400_000).toISOString() })
+  at = now + 460_000
+  await refresh()
+  skip = JSON.parse(getState(db, 'watchdog_calendar_refresh_skip_json'))
+  assert.equal(skip.at, new Date(now + 460_000).toISOString())
+  assert.equal(skip.since, new Date(now + 400_000).toISOString(), 'the same skip keeps its first time')
+  assert.equal(getState(db, 'watchdog_calendar_refresh_json'), receipt, 'the receipt is untouched by skips')
+  const staging = createWatchdogCalendarRefresh(db, { env: { RAILWAY_ENVIRONMENT_NAME: 'staging' }, now: () => at })
+  await staging()
+  skip = JSON.parse(getState(db, 'watchdog_calendar_refresh_skip_json'))
+  assert.equal(skip.skipped, 'environment_disarmed'); assert.equal(skip.since, skip.at, 'a different skip starts its own since')
 })

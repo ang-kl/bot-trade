@@ -255,6 +255,10 @@ export function readPostmortemReport(db, options) { return isolatedReport(db, 'p
 export function readStorageReport(db) { return isolatedReport(db, 'storage') }
 /** GET /state/order-lifecycle and the order_lifecycle controller (V3 L1). */
 export function readOrderLifecycle(db, options) { return isolatedReport(db, 'order-lifecycle', options) }
+/** GET /state/calendar-coverage (V3 K1): every demanded calendar is read, so
+ * off the event loop. No `now` from the route: the in-flight dedupe keys on
+ * the options. */
+export function readCalendarCoverage(db, options) { return isolatedReport(db, 'calendar-coverage', options) }
 export function buildDecisionsDaily(db, { days = 90, accountId = null, timeZone = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -325,6 +329,11 @@ async function buildReport(db, kind, options) {
     // before postMessage, far below the generic 8 MB bound.
     if (Buffer.byteLength(JSON.stringify(report)) > RESPONSE_MAX_BYTES) throw new Error('order_lifecycle_response_bound')
     return report
+  }
+  if (kind === 'calendar-coverage') {
+    const { buildCalendarCoverage } = await import('./calendar-coverage.js')
+    // One snapshot across the demand, the export and every calendar read.
+    return db.transaction(() => buildCalendarCoverage(db, options))()
   }
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })
