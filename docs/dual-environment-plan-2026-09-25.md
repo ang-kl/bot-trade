@@ -58,9 +58,9 @@ owner's thresholds change.
 
 | # | Decision | Gates | Recommendation |
 |---|---|---|---|
-| D1 | "Win factor" = profit factor (or payoff ratio?) | P8 verdict | PF, in R |
-| D2 | Win rate as a pass/fail bar, or reported next to PF? A bar reverses principle A-2 as the 19-09 audit applied it, and needs #960's `edge-bars.test.js` to change **[ASK-FIRST]** | P8 verdict | Report it with its interval; do not make it a bar |
-| D3 | "Sustainable": window length, how many windows in a row, the baseline to beat, the verdict date | P8 | 3 consecutive 30-day windows, fixed in advance |
+| D1 | **DECIDED 25-09 (owner: yes):** "win factor" = profit factor, in R | P8 verdict | — |
+| D2 | **DECIDED 25-09 (owner: yes, reports in intervals):** win rate is reported with its interval (Wilson), NOT a pass/fail bar; #960's `edge-bars.test.js` stays | P8 verdict | — |
+| D3 | **DECIDED 25-09 (owner):** "sustainable" means the computation for trading is consistent and does not get confused over time, so testing is essential. Implemented as: one frozen, versioned metric definition stamped on every report; closed windows are fixed in advance and never recomputed differently later (append-only); deterministic fixture tests pin exact PF / WR / interval / lower-bound values; a regression test fails if a closed window's figures change | P1, P8 | — |
 | D4 | Filters lift PF+WR but add vetoes. Principle 7 trade-off | P3, P6 | Accept filters that shadow-match live |
 | D5 | Making shadow match live changes the population SHADOW_PASSED judges **[ASK-FIRST]** | P3 | Approve: judge what live would trade |
 | D6 | Judge replay pooled across the carried symbols, as shadow is, instead of one symbol per trial. Threshold numbers unchanged **[ASK-FIRST]** | P4 | Pooled |

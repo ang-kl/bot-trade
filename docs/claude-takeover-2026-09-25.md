@@ -61,10 +61,15 @@ factor and win ratio.
   the three meets the family evidence bar (30 closes, PF ≥ 1.5); the owner
   chose them with that stated.
 
+- **D1 yes:** win factor = profit factor (in R). **D2 yes:** win rate is
+  reported with intervals, not used as a pass/fail bar. **D3:** "sustainable"
+  means the trading computation is consistent and not confused over time;
+  testing is essential (see the plan's D3 row).
+
 ## Still waiting on the owner
-- **Decisions D1–D7** in the plan: the meaning of "win factor", whether win rate
-  is a pass/fail bar, what counts as "sustainable", the veto trade-off, whether
-  shadow judges what live would trade, pooled replay, and the gateway redeploy.
+
+- **Decisions D4–D7** in the plan: the veto trade-off, whether shadow judges
+  what live would trade, pooled replay, and the gateway redeploy.
 - **Carried from Codex:**
   - 8,991·C2;
   - overnight swap in the partial-TP cost reserve;
