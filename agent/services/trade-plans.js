@@ -44,15 +44,66 @@ export function exitRuleFor(db, { strategy = null, source = null, accountId = nu
   return 'stop_target'
 }
 
+// X1 / W3 (25-09-2026): no real stop sits half the price away. The same
+// versioned constant as order-lifecycle.js ABSURD_RISK_FRACTION (ORD-03
+// plan_invalid), pinned equal by trade-plans.test.js.
+export const PLAN_ABSURD_RISK_FRACTION = 0.5
+export const PLAN_REFUSAL_PATH = '/trade-plans/refused'
+
+/**
+ * Why a plan cannot be what was meant: a stop or target on the wrong side of
+ * the entry for the side, or a stop so far away it can only be a unit error
+ * (wire points written as a price). Mirrors ORD-03's checks. [] when sound.
+ */
+export function planProblems({ side, entry, sl, tp = null }) {
+  const e = num(entry), s = num(sl), t = num(tp)
+  const dir = isLong(side) ? 1 : /^(short|sell)$/i.test(String(side || '')) ? -1 : null
+  const out = []
+  if (dir != null && e != null) {
+    if (s != null && (dir > 0 ? s >= e : s <= e)) out.push('sl_wrong_side')
+    if (t != null && (dir > 0 ? t <= e : t >= e)) out.push('tp_wrong_side')
+  }
+  if (e != null && e > 0 && s != null && Math.abs(e - s) / e > PLAN_ABSURD_RISK_FRACTION) out.push('risk_scale')
+  return out
+}
+
+/** How many plans recordTradePlan refused, by reason — read from the action_log rows it writes. */
+export function planRefusalCounts(db, { sinceIso = null } = {}) {
+  const rows = db.prepare(`SELECT body FROM action_log WHERE method = 'PLAN' AND path = ? ${sinceIso ? 'AND at >= ?' : ''}`)
+    .all(PLAN_REFUSAL_PATH, ...(sinceIso ? [sinceIso] : []))
+  const byReason = {}
+  for (const r of rows) {
+    let b = null
+    try { b = JSON.parse(r.body) } catch { b = null }
+    for (const p of b?.problems || ['unparsed']) byReason[p] = (byReason[p] || 0) + 1
+  }
+  return { refused: rows.length, byReason }
+}
+
 /**
  * Write the plan for a trade. Idempotent per trade (INSERT OR REPLACE) so an
  * intent row promoted to open can re-record without duplicating.
+ *
+ * X1 / W3: a plan whose stop or target is on the wrong side, or whose stop
+ * is absurdly far (planProblems), is REFUSED — not written — and the refusal
+ * is counted (an action_log row, planRefusalCounts). A wrong plan is worse
+ * than none: closed-market-limits skips its own correct plan when one
+ * exists, and every score at close would be computed against it.
  */
 export function recordTradePlan(db, tradeId, {
   accountId = null, symbol, side, strategy = null, timeframe = null,
   entry, sl, tp = null, timeCapAt = null, timeCapMin = null, source = null, exitRule = null, now = Date.now(),
 } = {}) {
   const e = num(entry), s = num(sl), t = num(tp)
+  const problems = planProblems({ side, entry: e, sl: s, tp: t })
+  if (problems.length) {
+    try {
+      db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+        .run('PLAN', PLAN_REFUSAL_PATH, JSON.stringify({ tradeId: Number(tradeId), symbol: symbol ?? null, side: side ?? null, entry: e, sl: s, tp: t, source: source || null, problems }),
+          accountId != null ? String(accountId) : null)
+    } catch { /* the count is a record, never a reason to throw at the caller */ }
+    return { tradeId: Number(tradeId), refused: problems, plannedR: null, riskDist: null, plannedHoldMin: null, exitRule: null }
+  }
   const risk = e != null && s != null ? Math.abs(e - s) : null
   const plannedR = risk > 0 && t != null ? Math.round((Math.abs(t - e) / risk) * 1000) / 1000 : null
   let holdMin = num(timeCapMin)
@@ -71,6 +122,34 @@ export function recordTradePlan(db, tradeId, {
     e, s, t, plannedR, risk, holdMin, rule, source || null, new Date(now).toISOString(),
   )
   return { tradeId: Number(tradeId), plannedR, riskDist: risk, plannedHoldMin: holdMin, exitRule: rule }
+}
+
+/** action_log path of a plan that failed to write (W7). */
+export const PLAN_WRITE_FAILED_PATH = '/trade-plans/write-failed'
+
+/**
+ * V3 L2a W7 (25-09-2026): a plan that failed to write is RECORDED, not
+ * swallowed. Three writers wrapped recordTradePlan in `catch {}` or a log
+ * line (closed-market-limits' fill sweep, the reconciler's intent stamp,
+ * loop.js's dispatch), so a trade with no plan was indistinguishable from
+ * one nobody tried to plan — ORD-01 names the missing plan, this row names
+ * why. One action_log row (method LEDGER, the account on its column) plus
+ * a console line; never throws, because the plan is a record and the
+ * caller's own write is money.
+ *
+ * @returns {boolean} whether the failure row was written
+ */
+export function recordPlanWriteFailure(db, { tradeId = null, accountId = null, symbol = null, source = null, stage = null, error = null } = {}) {
+  const message = String(error?.message ?? error ?? 'unknown error').slice(0, 500)
+  console.error(`[trade-plans] plan NOT recorded for trade ${tradeId ?? '?'} (${source ?? stage ?? '?'}): ${message}`)
+  try {
+    db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)').run(
+      'LEDGER', PLAN_WRITE_FAILED_PATH,
+      JSON.stringify({ tradeId: tradeId != null ? Number(tradeId) : null, symbol: symbol ?? null, source: source ?? null, stage: stage ?? null, error: message }),
+      accountId != null ? String(accountId) : null,
+    )
+    return true
+  } catch { return false }
 }
 
 /** The exit a close reason belongs to, for matching against the plan's rule. */

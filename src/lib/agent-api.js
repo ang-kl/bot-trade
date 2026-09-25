@@ -151,14 +151,23 @@ async function request(method, path, body) {
   }
   if (!res.ok) {
     let msg = `${method} ${path} ${res.status}`
+    let reply = null
     const ct = res.headers.get('content-type') || ''
     if (ct.includes('application/json')) {
-      try { const j = await res.json(); if (j.error) msg = j.error } catch { /* keep default */ }
+      try { reply = await res.json(); if (reply.error) msg = reply.error } catch { /* keep default */ }
     }
     if (res.status === 401) {
       msg = 'Login expired — go to the Connect tab and log in again (Telegram code or secret). This happens when the agent redeploys without a persistent Volume.'
     }
-    throw new Error(msg)
+    // V3 M2b (M2 check nit 3): the reply travels with the error, so a page can
+    // say WHY a read failed — a report 503's reason code, driver detail and
+    // retry hint (all in the body: a cross-origin page cannot read the
+    // Retry-After header) — not only the route's generic sentence. The
+    // message every caller already shows is unchanged.
+    const error = new Error(msg)
+    error.status = res.status
+    error.body = reply && typeof reply === 'object' ? reply : null
+    throw error
   }
   return res.json()
 }

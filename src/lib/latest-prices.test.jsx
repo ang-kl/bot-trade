@@ -34,6 +34,37 @@ describe('loadLatestPrices', () => {
   })
 })
 
+// V3 M2b (M2 check nit 3): agentGet now throws with the reply attached
+// (error.status / error.body), and the note names the reason from it.
+const replyError = (status, body) => Object.assign(new Error(body.error), { status, body })
+const report503 = extra => ({ status: 'unavailable', error: 'Latest prices are temporarily unavailable. Please retry.',
+  code: 'latest_prices_unavailable', retryable: true, ...extra })
+
+describe('the note names WHY the read failed (M2b)', () => {
+  it('busy workers: the reason, the code, the status and the retry hint — not the route sentence twice', async () => {
+    const read = await loadLatestPrices(async () => { throw replyError(503, report503({ reason: 'performance_report_worker_capacity', retryAfter: 5 })) })
+    expect(read).toMatchObject({ status: 'unavailable', code: 'performance_report_worker_capacity', retryAfter: 5, prices: {} })
+    const note = latestPricesNote(read)
+    expect(note).toBe('Latest prices unavailable (every report worker was busy — performance_report_worker_capacity, HTTP 503, retry after 5 s). Cross-currency stop and target amounts may read "—" until the next refresh.')
+    expect(note).not.toContain('temporarily unavailable')
+  })
+  it('a worker error shows the worker\'s own words', async () => {
+    const read = await loadLatestPrices(async () => { throw replyError(503, report503({ reason: 'performance_report_worker_error', retryAfter: 30, detail: 'no such column: price' })) })
+    expect(latestPricesNote(read)).toContain('(the report worker failed: no such column: price — performance_report_worker_error, HTTP 503, retry after 30 s)')
+  })
+  it('the deadline is named as the deadline', async () => {
+    const read = await loadLatestPrices(async () => { throw replyError(503, report503({ reason: 'performance_report_deadline', retryAfter: 30 })) })
+    expect(latestPricesNote(read)).toContain('the price read ran past its time limit — performance_report_deadline')
+  })
+  it('a fixed bound offers no retry', async () => {
+    const read = await loadLatestPrices(async () => { throw replyError(503, report503({ reason: 'performance_report_response_bound', retryAfter: null, retryable: false })) })
+    const note = latestPricesNote(read)
+    expect(note).toContain('the report exceeds a fixed size bound — performance_report_response_bound, HTTP 503)')
+    expect(note).not.toMatch(/retry after/)
+    expect(read.retryAfter).toBeNull()
+  })
+})
+
 describe('LatestPricesNote', () => {
   it('says "unavailable" when the price read failed', async () => {
     const html = renderToStaticMarkup(<LatestPricesNote read={await loadLatestPrices(failing503)} />)

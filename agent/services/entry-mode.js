@@ -116,9 +116,38 @@ export function engineStatusFor(db, accountId) {
   return { ...defaultEngineStatus({ accountId: id, environment }), stored: false }
 }
 
+/**
+ * V3 L2a W14 (25-09-2026): `transitionSince` — when the record entered its
+ * current transitionState — decided HERE, in the one writer, from the stored
+ * record it is replacing, so no caller can forget it:
+ *   - STABLE: no field (a settled record needs no clock, and a record with no
+ *     unknown key still validates under a build without the field);
+ *   - the same non-STABLE state as the stored record: the stored stamp is
+ *     kept, so the per-pass `updatedAt` rewrite cannot move it; a stored
+ *     record that never had one stays without (the entry time is unknown and
+ *     is not invented — the reader keeps its lower bound);
+ *   - a different state, or no stored record: the stamp is this write's own
+ *     `updatedAt` (else now) — the moment the change was written.
+ * Pure over (next, previous).
+ */
+export function withTransitionSince(next, prev, nowMs = Date.now()) {
+  const { transitionSince: _carried, ...rest } = next
+  if (rest.transitionState === 'STABLE') return rest
+  if (prev && typeof prev === 'object' && prev.transitionState === rest.transitionState) {
+    return typeof prev.transitionSince === 'string' && Number.isFinite(Date.parse(prev.transitionSince))
+      ? { ...rest, transitionSince: prev.transitionSince }
+      : rest
+  }
+  const at = Date.parse(rest.updatedAt)
+  return { ...rest, transitionSince: new Date(Number.isFinite(at) ? at : nowMs).toISOString() }
+}
+
 /** The only writer of the record: validated, or refused with the reasons. */
 export function writeEngineStatus(db, status) {
-  const { stored, invalid, ...clean } = status // eslint-disable-line no-unused-vars
+  const { stored, invalid, ...given } = status // eslint-disable-line no-unused-vars
+  let prev = null
+  try { prev = JSON.parse(getAccountState(db, given.accountId, ENGINE_STATUS_KEY) || 'null') } catch { prev = null }
+  const clean = withTransitionSince(given, prev)
   const v = validateEngineStatus(clean)
   if (!v.ok) throw new Error(`engine status invalid: ${v.errors.join('; ')}`)
   setAccountState(db, clean.accountId, ENGINE_STATUS_KEY, JSON.stringify(clean))

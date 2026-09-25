@@ -5,6 +5,9 @@ import { resetReverifyAttempts } from './services/reverify-reset.js';
 // Leaf module — imports nothing, takes `db` as a parameter — so this cannot
 // cycle back into db.js. See closeTradeRow for why the stamp lives here.
 import { stampRealisedAudit } from './services/trade-consistency.js';
+// Leaf module too (imports nothing). V3 V1 / LIFECYCLE-SPEC §7 W11: every
+// close queues its capture here, at the one seam all close writers share.
+import { queueCaptureForClosedTrade } from './services/close-capture.js';
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -2055,6 +2058,29 @@ export function initDB(dbPath) {
     PRIMARY KEY (account_id, position_id)
   );
   CREATE INDEX IF NOT EXISTS idx_pos_capture_due ON position_capture_queue(state, due_at_ms);
+
+  -- V3 I3 (owner 25-09-2026, the write-off rule): how a stuck record ENDED.
+  -- One row per record the stuck resolver settled from broker evidence
+  -- ('settled') or wrote off ('unresolved', with reason and evidence). The
+  -- stuck record itself is never deleted or rewritten into a status it did
+  -- not reach; this row is what makes it terminal (lib/stuck-resolutions.js).
+  CREATE TABLE IF NOT EXISTS stuck_resolutions (
+    subject          TEXT PRIMARY KEY,     -- trade:<id> | pending:<id> | capture:<acct>:<pid> | target:<acct>:<pid>
+    kind             TEXT NOT NULL,        -- trade_inflight | resting_order | capture | targetless
+    rule_id          TEXT NOT NULL,        -- the lifecycle rule that flagged it (STK-03, STK-01, ORD-10, STK-06, STK-09)
+    account_id       TEXT,
+    trade_id         INTEGER,
+    position_id      TEXT,                 -- the broker position a settlement claimed, if any
+    outcome          TEXT NOT NULL CHECK(outcome IN ('settled', 'unresolved')),
+    verdict          TEXT NOT NULL,
+    reason           TEXT NOT NULL,
+    evidence_json    TEXT NOT NULL,
+    prior_state      TEXT,
+    resolver_version INTEGER NOT NULL,
+    resolved_at      TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_stuck_resolutions_trade ON stuck_resolutions(trade_id);
+  CREATE INDEX IF NOT EXISTS idx_stuck_resolutions_position ON stuck_resolutions(account_id, position_id);
   `);
 
   timedPhase('history_schema');
@@ -2076,6 +2102,14 @@ export function initDB(dbPath) {
     const cols = new Set(db.prepare('PRAGMA table_info(position_capture_queue)').all().map(c => c.name));
     if (!cols.has('reverify_attempts')) {
       db.exec('ALTER TABLE position_capture_queue ADD COLUMN reverify_attempts INTEGER NOT NULL DEFAULT 0');
+    }
+    // V3 V1: WHICH PATH queued the capture — 'close' (the close seam in
+    // closeTradeRow), 'reconcile' / 'cross_side' (a detected close whose
+    // trade row was already closed), 'sweep' (the bounded 7-day sweep) or
+    // 'verify_backlog'. NULL on rows written before the column: unknown, not
+    // guessed. Attribution only — nothing branches on it.
+    if (!cols.has('source')) {
+      db.exec('ALTER TABLE position_capture_queue ADD COLUMN source TEXT');
     }
   }
 
@@ -2125,7 +2159,59 @@ export function initDB(dbPath) {
     if (cols.size && !cols.has('risk_event_id')) {
       db.exec('ALTER TABLE entry_intents ADD COLUMN risk_event_id INTEGER');
     }
+    // X1 (25-09-2026, owner-approved). W3: the stop and target are stored in
+    // the units the order carried them — 'price' or 'relative_points' (wire
+    // points, price distance × 100000). NULL on every older row reads as
+    // "unrecorded", and no reader converts an unrecorded value. W4: an
+    // ACCEPTED (resting) intent is read from the broker a bounded number of
+    // times (entry-ledger.js settleAcceptedFromOrderDetails); the count and
+    // the last read are kept on the row. All additive.
+    if (cols.size && !cols.has('sl_units')) db.exec('ALTER TABLE entry_intents ADD COLUMN sl_units TEXT');
+    if (cols.size && !cols.has('tp_units')) db.exec('ALTER TABLE entry_intents ADD COLUMN tp_units TEXT');
+    if (cols.size && !cols.has('evidence_attempts')) db.exec('ALTER TABLE entry_intents ADD COLUMN evidence_attempts INTEGER NOT NULL DEFAULT 0');
+    if (cols.size && !cols.has('evidence_checked_at')) db.exec('ALTER TABLE entry_intents ADD COLUMN evidence_checked_at TEXT');
   }
+
+  // V3 L2a (25-09-2026, LIFECYCLE-SPEC §7 W5/W6): the entry intent a trade
+  // row and a resting-order row came from, written by the writer that has it
+  // in hand — the dispatch's write-ahead row the moment the intent is
+  // reserved (loop.js), a resting row at its placement (closed-market-limits,
+  // pending-orders), an adopted fill from the tag on its label (reconciler).
+  // Before this the only link was the `|i<id>` tag exec-engine puts on the
+  // BROKER's copy of the label, which the trade row never stored (ORD-05),
+  // and a resting row had no link at all, so its fill was found by "the first
+  // trade on this symbol since placement" (W9). Additive: every existing row
+  // keeps NULL, which reads as "not recorded", never rewritten.
+  {
+    const tc = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+    if (tc.size && !tc.has('intent_id')) db.exec('ALTER TABLE trades ADD COLUMN intent_id TEXT');
+    const pc = new Set(db.prepare('PRAGMA table_info(pending_orders)').all().map(c => c.name));
+    if (pc.size && !pc.has('intent_id')) db.exec('ALTER TABLE pending_orders ADD COLUMN intent_id TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_trades_intent ON trades(intent_id) WHERE intent_id IS NOT NULL');
+  }
+
+  // X1: the correction log — one row per step of a record correction, with
+  // the row before and after and the evidence that decided it. Rows are
+  // never deleted; a step is written once (UNIQUE), so a re-run is a no-op.
+  // And the event journal is read by order id for resting orders.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS entry_intent_corrections (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      correction_id TEXT NOT NULL,
+      intent_id     TEXT NOT NULL,
+      account_id    TEXT,
+      step          TEXT NOT NULL,      -- to_accepted | kept_filled | terminal | unresolved
+      from_state    TEXT,
+      to_state      TEXT,
+      before_json   TEXT,
+      after_json    TEXT,
+      evidence_json TEXT,
+      at            TEXT NOT NULL,
+      UNIQUE(correction_id, intent_id, step)
+    );
+    CREATE INDEX IF NOT EXISTS idx_entry_intent_corrections_intent ON entry_intent_corrections(intent_id);
+    CREATE INDEX IF NOT EXISTS idx_cpp_events_order ON cpp_events(order_id);
+  `);
 
   // PR-AU: give back the attempts spent against a verifier that could not
   // answer. Measured 18-09-2026 04:08 UTC — "0 armed of 18 unverified, 0
@@ -2398,6 +2484,20 @@ export function closeTradeRow(db, tradeId, {
   // (trade-consistency.js stampRealisedAudit); until 02-09-2026 one of them
   // did not, and 10 of 12 bot closes carried no R for life.
   if (info.changes > 0) stampRealisedAudit(db, tradeId);
+
+  // V3 V1 / LIFECYCLE-SPEC §7 W11 — EVERY CLOSE QUEUES ITS CAPTURE, HERE.
+  // Until 25-09-2026 the only enqueue sat behind the SELECTED account's
+  // reconcile result in loop.js, so a close on any other account — and every
+  // close the bot made itself (the position manager's FULL_EXIT and its two
+  // already-closed paths, which also close the monitored row, so the
+  // reconciler never sees them) — was never queued, and the capture queue
+  // read "0 pending" as if nothing had closed. This is the one function all
+  // five close writers call, so the capture cannot be forgotten by a sixth.
+  // Only on a real open → closed transition, deduplicated by (account,
+  // position) inside the queue, and it never throws: the close is the fact,
+  // the capture is its record, and a failed enqueue is counted and shown on
+  // /state/position-capture instead of failing the close.
+  if (info.changes > 0) queueCaptureForClosedTrade(db, tradeId, { now: closedAtMs });
   return { changed: info.changes > 0, holdDurationMs };
 }
 

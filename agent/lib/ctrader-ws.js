@@ -35,6 +35,7 @@ export { PT } from './ctrader-payload-types.js'
 import { PT } from './ctrader-payload-types.js'
 import { poolEnabled, pooledRun, poolStatus, noteTokenWait } from './ctrader-session.js'
 import { beginCall, endCall, describeSteps } from './inflight.js'
+import { noteBarReceipt } from './feed-receipts.js'
 
 // ProtoOATrendbarPeriod enum codes + bar durations, one table so a period
 // can never exist in one map but not the other (a missing duration would
@@ -94,7 +95,8 @@ export const TRENDBAR_PERIODS = Object.freeze({
 // concurrent ephemeral sockets all spend from the same allowance. Normal
 // requests (auth, reconcile, spot, trader) are untouched.
 // ---------------------------------------------------------------------------
-const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ, PT.DEAL_LIST_BY_POSITION_ID_REQ])
+// X1: ORDER_DETAILS_REQ is an order-HISTORY read, paced like the deal reads.
+const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ, PT.DEAL_LIST_BY_POSITION_ID_REQ, PT.ORDER_DETAILS_REQ])
 // 4/s against a documented 5/s: headroom for clock skew and for the broker
 // counting arrival rather than send time. Override for probes/tests.
 const HIST_RATE_PER_SEC = Math.max(1, Number(process.env.CTRADER_HIST_RATE_PER_SEC) || 4)
@@ -563,6 +565,11 @@ export async function wsClosePosition(host, clientId, clientSecret, accessToken,
       executionType: exec.executionType,
       deal: exec.deal || {},
       position: exec.position || {},
+      // The first execution event of a market close can be ORDER_ACCEPTED:
+      // an order and no deal. Its order id is how the close's deal is found
+      // in history afterwards (V3 T2), so this path keeps it as the gateway's
+      // answer does.
+      ...(exec.order ? { order: exec.order } : {}),
     }
   } catch (err) {
     const msg = err.message || ''
@@ -660,6 +667,27 @@ export function wsGetPositionDeals(host, clientId, clientSecret, accessToken, ac
 }
 
 /**
+ * X1 (25-09-2026): one order's details — ProtoOAOrderDetailsReq (2181) →
+ * ProtoOAOrderDetailsRes (2182) `{ ctidTraderAccountId, order, deal: [...] }`,
+ * where `order.orderStatus` is ACCEPTED 1 / FILLED 2 / REJECTED 3 /
+ * EXPIRED 4 / CANCELLED 5 and `deal` lists every deal filling it. Read-only.
+ * Used by the entry ledger to settle a resting-order intent whose order left
+ * the reconcile snapshot. No retry: the caller counts a failed read and
+ * tries again on a later pass.
+ */
+export function wsGetOrderDetails(host, clientId, clientSecret, accessToken, accountId, orderId, timeoutMs = 10_000) {
+  if (![accountId, orderId].every(v => /^[1-9]\d*$/.test(String(v)) && Number.isSafeInteger(Number(v)))) {
+    throw new Error('order details identity invalid')
+  }
+  return wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.ORDER_DETAILS_REQ, payload: {
+      ctidTraderAccountId: Number(accountId), orderId: Number(orderId),
+    } }, expect: PT.ORDER_DETAILS_RES },
+  ], timeoutMs)
+}
+
+/**
  * Resolve an array of numeric symbolIds to their metadata (symbolName, etc.)
  * via SYMBOL_BY_ID_REQ. Returns `{ symbol: [{ symbolId, symbolName, ... }] }`.
  */
@@ -701,8 +729,11 @@ export function decodeTrendbars(payload) {
  * the whole batch, instead of one per period).
  *
  * @param {string[]} periods - TRENDBAR_PERIODS keys, e.g. ['1d','4h','1h']
- * @param {{onTokenWait?: (ms: number) => void}} [opts] - V3 M1: called once
- *   per trendbar step (per attempt) with its historical token-bucket wait
+ * @param {{onTokenWait?: (ms: number) => void, purpose?: string}} [opts] - V3 M1:
+ *   onTokenWait is called once per trendbar step (per attempt) with its
+ *   historical token-bucket wait. WEB-9b: `purpose` names the caller in the
+ *   per-timeframe bar receipts (lib/feed-receipts.js); unnamed callers are
+ *   recorded as 'other'. Neither changes the request or the result.
  * @returns {Promise<Record<string, Array<{t,o,h,l,c,v}>>>} bars keyed by period
  */
 export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, periods, count = 150, timeoutMs = 30_000, endTime = 0, opts = {}) {
@@ -715,13 +746,13 @@ export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, a
   // e.g. 1,000 requested 6h bars = 6,000 1h bars → capped to 500 × 6h.
   const plans = periods.map(period => {
     const spec = TRENDBAR_PERIODS[period]
-    if (spec) return { period, code: spec.code, ms: spec.ms, fetchCount: count, factor: 1 }
+    if (spec) return { period, base: period, code: spec.code, ms: spec.ms, fetchCount: count, factor: 1 }
     const parsed = parseTimeframe(period)
     const plan = parsed && fetchPlan(parsed.ms)
     if (!plan) throw new Error(`wsGetTrendbarsBatch: unknown period "${period}"`)
     const baseSpec = TRENDBAR_PERIODS[plan.base]
     return {
-      period, code: baseSpec.code, ms: baseSpec.ms,
+      period, base: plan.base, code: baseSpec.code, ms: baseSpec.ms,
       fetchCount: Math.min(count * plan.factor, 3000), factor: plan.factor,
     }
   })
@@ -750,8 +781,13 @@ export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, a
     // last `periods.length` entries, in request order.
     const barPayloads = payloads.slice(-plans.length)
     const out = {}
+    const receivedAtMs = Date.now()
     plans.forEach((p, i) => {
       const bars = decodeTrendbars(barPayloads[i])
+      // WEB-9b: a LIVE window (right edge = now) is a receipt of the current
+      // feed, stamped under the timeframe the broker actually sent (the base
+      // of a synthesised one). A historical window (endTime set) is not.
+      if (!endTime) noteBarReceipt({ timeframe: p.base, periodMs: p.ms, bars, receivedAtMs, symbolId, accountId, host, source: opts?.purpose })
       out[p.period] = p.factor === 1 ? bars : aggregateBars(bars, p.factor).slice(-count)
     })
     return out
@@ -928,8 +964,10 @@ export function wsGetLastCloses(host, clientId, clientSecret, accessToken, accou
     ], timeoutMs, true)
     const barPayloads = payloads.slice(-symbolIds.length)
     const out = {}
+    const receivedAtMs = Date.now()
     symbolIds.forEach((id, i) => {
       const bars = decodeTrendbars(barPayloads[i])
+      noteBarReceipt({ timeframe: '1m', periodMs: spec.ms, bars, receivedAtMs, symbolId: id, accountId, host, source: 'last_close' })
       if (bars.length > 0) out[id] = bars[bars.length - 1].c
     })
     return out
@@ -967,8 +1005,10 @@ export function wsGetDailyOhlcv(host, clientId, clientSecret, accessToken, accou
     ], timeoutMs, true)
     const barPayloads = payloads.slice(-symbolIds.length)
     const out = {}
+    const receivedAtMs = Date.now()
     symbolIds.forEach((id, i) => {
       const bars = decodeTrendbars(barPayloads[i])
+      noteBarReceipt({ timeframe: '1d', periodMs: spec.ms, bars, receivedAtMs, symbolId: id, accountId, host, source: 'daily_bar' })
       if (bars.length > 0) out[id] = bars[bars.length - 1]
     })
     return out

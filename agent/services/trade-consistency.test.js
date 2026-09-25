@@ -300,16 +300,23 @@ test('restampClosedTrades corrects stale R, fills computable NULLs, and leaves o
   assert.equal(restampClosedTrades(db).changed, 0)
 })
 
-test('the two HTTP money/price writers go through the shared stamp too (codebase audit 02-09-2026)', () => {
+test('the HTTP routes write no realised money; the price writer goes through the shared stamp (codebase audit 02-09-2026; V3 B1)', () => {
+  // INVERTED DELIBERATELY (V3 B1, PR-1(f)). This pin used to REQUIRE the Desk
+  // route to call applyBrokerHistoryMoney. That writer filled every unpriced
+  // row of a position from an unpaged week walk, claimed rows with no
+  // account, had no lifetime check and filled rows still flagged
+  // pnl_unresolvable. The route is display-only now; realised money comes
+  // only from pnl-backfill.js's whole, unique broker lifecycle. The route's
+  // behaviour is exercised in pnl-lifecycle-guard.test.js; this is the source
+  // backstop, comments stripped (failure mode #2).
   const src = (p) => readFileSync(new URL(p, import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
   const actions = src('../routes/actions.js')
   assert.doesNotMatch(actions, /SET net_pnl = \?, gross_pnl = \?,/, 'broker-history must not overwrite money in the route')
   assert.doesNotMatch(actions, /UPDATE trades SET entry_price = \? WHERE id = \?/, 'reconcile-trades must not write prices in the route')
-  assert.match(actions, /applyBrokerHistoryMoney\(db, byPosition, \{ accountId \}\)/)
-  assert.match(actions, /judgeTradesAgainstDeals\(db, \{ rows, deals, symbolMap: map \}\)/)
+  assert.doesNotMatch(actions, /applyBrokerHistoryMoney/, 'the Desk route writes no money')
+  assert.match(actions, /judgeTradesAgainstDeals\(db, \{ rows, deals, symbolMap: map, complete: pull\.complete \}\)/)
   const imp = src('./broker-history-import.js')
-  assert.match(imp, /AND status = 'closed' AND net_pnl IS NULL/, 'money fill is NULL-only')
-  assert.match(imp, /if \(r\.changes\) for \(const \{ id \} of ids\.all\(positionId\)\) \{ if \(stampRealisedAudit\(db, id\)\)/)
+  assert.doesNotMatch(imp, /applyBrokerHistoryMoney|UPDATE trades\s+SET net_pnl/, 'the importer writes no trades money')
   assert.match(imp, /upEntry\.run\(px, r\.id\); stampRealisedAudit\(db, r\.id\)/)
   for (const p of ['../routes/actions.js', './broker-history-import.js']) {
     assert.doesNotMatch(src(p), /SET realised_rr = \?/, `${p} must not carry its own copy of the stamp`)

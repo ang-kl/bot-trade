@@ -294,6 +294,15 @@ export const ENGINE_STATUS_SHAPE = Object.freeze({
   readiness: { type: 'array', required: true, items: { type: 'object', shape: READINESS_CHECK_SHAPE } },
   blockedReasons: { type: 'array', required: true, items: { type: 'string' } },
   updatedAt: { type: 'string', required: true },
+  // V3 L2a W14 (25-09-2026): WHEN the record entered its current
+  // transitionState. `updatedAt` is rewritten on every drain pass
+  // (entry-drain.js), so it cannot say how long an account has been
+  // QUIESCING / RECONCILING / WARMING / BLOCKED — the stuck flag (STK-07) had
+  // to take a lower bound from the drain's action_log rows. Stamped by
+  // writeEngineStatus when it observes the state change; absent on a STABLE
+  // record and on one written before the field existed (unknown, never
+  // invented). Optional, so every record already stored still validates.
+  transitionSince: { type: 'string', required: false, nullable: true },
 })
 
 export function validateEngineStatus(obj) {

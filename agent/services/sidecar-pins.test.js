@@ -4,7 +4,7 @@
 // matching (CLAUDE.md recurring failure mode #2).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 
 const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 const src = (p) => strip(readFileSync(new URL(p, import.meta.url), 'utf8'))
@@ -166,6 +166,28 @@ test('cpp-verify links no order-writing code — the read-only guarantee is stru
     assert.doesNotMatch(sess, new RegExp(`=\\s*${type}\\s*;`),
       `${what}Req (${type}) must never appear in a read-only verifier`)
   }
+})
+
+// V3 CV-1 (SEQUENCE PR-6): the write-message ban above read ONE file. The
+// entry-diagnostics relay adds a source file, so the ban now covers every
+// cpp-verify/src/*.cpp — vendored transport included — and the relay's
+// includes are pinned exactly: it is pure JSON in, JSON out, and a transport
+// or session header appearing there is the read-only guarantee eroding.
+test('cpp-verify: no source file carries a broker write message, and the entry relay includes no transport', () => {
+  const dir = new URL('../../cpp-verify/src/', import.meta.url)
+  const files = readdirSync(dir).filter((f) => f.endsWith('.cpp')).sort()
+  for (const f of ['entry_diagnostics.cpp', 'verify_session.cpp', 'watchdog.cpp', 'watchdog_state.cpp', 'ws_client.cpp', 'http_server.cpp'])
+    assert.ok(files.includes(f), `${f} is scanned — a listing that silently shrank would scan nothing`)
+  for (const f of files) {
+    const code = src(`../../cpp-verify/src/${f}`)
+    for (const [type, what] of [['2106', 'NewOrder'], ['2108', 'CancelOrder'], ['2110', 'AmendOrder'],
+                                ['2111', 'AmendPositionSLTP'], ['2112', 'ClosePosition']])
+      assert.doesNotMatch(code, new RegExp(`=\\s*${type}\\s*;`), `${f}: ${what}Req (${type}) must never appear in a read-only verifier`)
+  }
+  const relay = src('../../cpp-verify/src/entry_diagnostics.cpp') + src('../../cpp-verify/src/entry_diagnostics.hpp')
+  const includes = [...relay.matchAll(/#include\s*[<"]([^>"]+)[>"]/g)].map((m) => m[1]).sort()
+  assert.deepEqual(includes, ['algorithm', 'entry_diagnostics.hpp', 'json.hpp'],
+    'the relay includes json.hpp and nothing that can reach a broker (ws_client, http_server, verify_session, watchdog_http)')
 })
 
 // ---------------------------------------------------------------------------

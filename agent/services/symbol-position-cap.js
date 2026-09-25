@@ -59,6 +59,8 @@
 // record being cleared while the broker order stayed alive.
 // ---------------------------------------------------------------------------
 
+import { inflightLiveSql } from '../lib/stuck-resolutions.js'
+
 /**
  * Owner-set: 2 on 05-08-2026, raised to 3 the same day.
  *
@@ -107,10 +109,16 @@ export function countForSymbol(db, accountId, symbol) {
   } catch { open = 0 }
   try {
     const marks = IN_FLIGHT_STATUSES.map(() => '?').join(',')
+    // V3 I3: an in-flight row the stuck resolver ENDED — settled onto the
+    // adopted row that carries its fill, or written off with no broker
+    // evidence of any position — is no longer "an order that may be live":
+    // the broker's deal history and the reconciler's adoptions were read and
+    // none is this order's. It keeps its status (never rewritten into one it
+    // did not reach) and stops holding the symbol's slot.
     const row = db.prepare(`
       SELECT COUNT(*) AS n FROM trades
        WHERE status IN (${marks}) AND UPPER(symbol) = ?
-         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)${inflightLiveSql(db)}
     `).get(...IN_FLIGHT_STATUSES, sym, acct, acct)
     inFlight = row?.n || 0
   } catch { inFlight = 0 }

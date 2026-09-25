@@ -24,6 +24,7 @@ import { jsonExceptScannerRegistration, scannerRegistrationJson, SCANNER_PROFILE
 import { startLagMonitor } from './services/event-loop-lag.js';
 import { routeTimingMiddleware } from './services/route-timing.js';
 import { noteDbStartup, noteListening, noteHttpStatus, startRuntimeRecord, runtimeRecordSnapshot, latencyWindows, readBootRecords } from './services/runtime-record.js';
+import { startFeedReceiptsRecord } from './services/feed-receipts-record.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -1182,6 +1183,9 @@ async function start() {
     // first write, which also moves the previous boot's record aside.
     noteListening();
     startRuntimeRecord(db);
+    // V3 WEB-9b: the Data-feed card's per-timeframe bar receipts and last
+    // feed-latency window, seeded from the previous process and kept.
+    startFeedReceiptsRecord(db);
     console.log(`[agent] listening on 0.0.0.0:${port}`);
     console.log(`[agent] CORS origin: ${FRONTEND_URL || '*'}`);
     console.log(`[agent] DB path: ${DB_PATH || './agent.db'}`);
