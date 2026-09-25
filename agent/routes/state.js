@@ -37,6 +37,7 @@ import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { accountMoney } from '../services/account-money.js'
 import { accountOverview } from '../services/account-overview.js'
+import { dailyStopReading } from '../services/daily-stop-reading.js'
 import { accountHistory } from '../services/account-history.js'
 import { validateBlockerRequest } from '../services/blocker-report.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
@@ -271,7 +272,15 @@ export default function stateRouter(db) {
   router.get('/account-overview', (_req, res) => {
     try {
       const report = accountOverview(db)
-      for (const a of report.accounts) a.dailyLossPct = loadRiskConfig(db, a.accountId)?.dailyLossPct ?? null
+      for (const a of report.accounts) {
+        a.dailyLossPct = loadRiskConfig(db, a.accountId)?.dailyLossPct ?? null
+        // WEB-2: the daily stop the risk engine ENFORCES on this account (its
+        // own dailyLossVerdict — floor, tiers and flat cap included), in the
+        // unit the config states it in, and loss-cap used from the engine's
+        // realised figure plus this row's floating P&L. The cards render this,
+        // never balance × dailyLossPct. See services/daily-stop-reading.js.
+        a.dailyStop = dailyStopReading(db, a.accountId, { nowMs: report.asOfMs, moneyCurrency: a.currency, openPnl: a.openPnl })
+      }
       res.set('Cache-Control', 'no-store').json(report)
     }
     catch { res.status(503).json({ error: 'account readings unavailable' }) }

@@ -35,6 +35,7 @@
 import { useMemo } from 'react'
 import { aggregateAccounts, scopeLabel, ALL_SCOPE } from '../lib/perf-aggregate.js'
 import { currentAccountTotals } from '../lib/current-account-totals.js'
+import { dailyStopWords } from '../lib/daily-stop-display.js'
 
 // Matches the palette the Performance page already uses (passed in, so this
 // component never re-declares the theme).
@@ -166,10 +167,15 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
                 <span style={{ color: P_SB }}>equity {a.equity != null ? money(a.equity) : '—'}</span>
                 <span style={{ color: P_SB }}>floating {signed(a.live)}</span>
               </div>
-              <span style={{ ...cell, color: P_MU }}>
-                loss-cap used{' '}
-                <span style={{ fontWeight: 600, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span>
-                {' '}of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop (broker day)
+              {/* WEB-2: the stop the risk engine enforces, in its own
+                  currency, and loss-cap used from measured realised +
+                  floating loss — or the word for why it is not shown. The
+                  tooltip carries the binding rule and the parts. */}
+              <span style={{ ...cell, color: P_MU }} title={a.stopTitle || undefined}>
+                daily stop{' '}
+                <span style={{ fontWeight: 600 }}>{dailyStopWords(a, money).stop}</span>
+                {dailyStopWords(a, money).day} · loss-cap used{' '}
+                <span style={{ fontWeight: 600, color: a.usedCol }}>{dailyStopWords(a, money).used}</span>
               </span>
               {/* E·3 (18-09-2026): money on this account that this system did
                   not decide — adopted positions, the broker app, another
@@ -223,10 +229,10 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
                       hint="Σ of each account's 30-day net ÷ 30 — not an average of their individual paces." />
                     <Metric
                       label="Loss-cap used"
-                      value={g.usedPct != null ? `${g.usedPct}% of −${money(g.cap, 0)}` : '—'}
+                      value={g.usedPct != null ? `${g.usedPct}% of −${money(g.cap, 0)}${g.capCcy ? ` ${g.capCcy}` : ''}` : g.usedState === 'not_comparable' ? 'not comparable' : 'not read'}
                       palette={palette}
                       tone={g.usedPct == null ? null : g.usedPct > 66 ? P_DN : g.usedPct > 33 ? P_WRN : P_ACC}
-                      hint="Σ of today's realised losses ÷ Σ of the daily stops. Averaging the per-account percentages would be wrong: unequal caps make the mean meaningless."
+                      hint="Σ of each account's measured realised + floating loss ÷ Σ of the daily stops the risk engine enforces, in the stops' own currency. Shown only when every account in the group has both readings. Averaging the per-account percentages would be wrong: unequal caps make the mean meaningless."
                     />
                   </div>
                 </div>
@@ -247,8 +253,8 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
               <Metric label="30D pace" value={a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'} palette={palette}
                 tone={a.n30 == null ? null : a.n30 >= 0 ? P_UP : P_DN} />
               <Metric label="Loss-cap used"
-                value={a.used != null ? `${a.used}% of −${money(a.cap, 0)}` : '—'}
-                palette={palette} tone={a.usedCol} />
+                value={a.used != null ? `${a.used}% of −${money(a.cap, 0)}${a.capCcy ? ` ${a.capCcy}` : ''}` : `${dailyStopWords(a, money).used} · daily stop ${dailyStopWords(a, money).stop}`}
+                palette={palette} tone={a.usedCol} hint={a.stopTitle || null} />
             </div>
           )
         })()}

@@ -21,7 +21,8 @@ describe('PerfAccountScope', () => {
     expect(liveCard).toMatch(/not read/)
     expect(liveCard).not.toMatch(/45,837\.59/) // the live card never shows the demo account's number
     expect(html).toMatch(/not read/)
-    expect(html).toMatch(/of −— daily stop/)
+    // WEB-2: a stop that was not read says "not read" (was a bare "−—").
+    expect(html).toMatch(/daily stop <span[^>]*>not read<\/span> · loss-cap used/)
     expect(html).toMatch(/nothing is borrowed from another account/)
   })
 })
