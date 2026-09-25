@@ -53,6 +53,30 @@ import { reportLedger } from '../shared/performance-populations.js'
  * @param {import('better-sqlite3').Database} db
  * @returns {import('express').Router}
  */
+/**
+ * Plan P1: performance_snapshots is read STRICTLY — an account's own rows,
+ * or (all / no account selected) the pooled account_id NULL rows. Never the
+ * OR-NULL convention: here a NULL row is the pooled series, not a legacy
+ * residue.
+ */
+function snapshotScope(scope) {
+  if (!scope || scope.all || scope.accountId == null) return { where: 'account_id IS NULL', params: [], scoped: false, pooled: true }
+  return { where: 'account_id = ?', params: [String(scope.accountId)], scoped: true, pooled: false }
+}
+
+/** Coverage over the strict predicate: every served row is attributable. */
+function snapshotCoverage(db, snap, extraWhere = '', extraParams = []) {
+  const out = { total: 0, attributable: 0, unstamped: 0, pct: null, scoped: snap.scoped, pooled: snap.pooled, pooledRowsExcluded: 0 }
+  try {
+    const filt = extraWhere ? ` AND (${extraWhere})` : ''
+    out.total = Number(db.prepare(`SELECT COUNT(*) AS n FROM performance_snapshots WHERE ${snap.where}${filt}`).get(...snap.params, ...extraParams)?.n || 0)
+    out.attributable = out.total
+    out.pct = 100
+    if (snap.scoped) out.pooledRowsExcluded = Number(db.prepare(`SELECT COUNT(*) AS n FROM performance_snapshots WHERE account_id IS NULL${filt}`).get(...extraParams)?.n || 0)
+  } catch { out.pct = null }
+  return out
+}
+
 export default function stateRouter(db) {
   const router = Router()
   router.get('/momentum-targets', async (req, res) => {
@@ -1861,20 +1885,26 @@ export default function stateRouter(db) {
     // win rate and profit factor pooled across a demo and a live account
     // describe neither. This is the same shape as the Go-Live card failure,
     // one table over.
+    //
+    // Plan P1 (25-09-2026): STRICT. The loop now writes one row per account
+    // plus a pooled row with account_id NULL (performance-snapshots.js), so
+    // the OR-NULL convention would serve the POOLED row as this account's
+    // own — measured: 46130058 was answered with the all-account row. A
+    // scoped read matches the account exactly; ?account=all (or no account
+    // selected) reads the pooled row. Until the first per-account pass after
+    // deploy a scoped read is null: honest, not broken.
     const scope = requestedAccount(db, req)
-    const acct = accountWhere(scope, 'account_id')
+    const snap = snapshotScope(scope)
     const row = db
-      .prepare(
-        `SELECT * FROM performance_snapshots${acct.active ? ` WHERE ${acct.where}` : ''}
-         ORDER BY computed_at DESC LIMIT 1`
-      )
-      .get(...acct.params)
+      .prepare(`SELECT * FROM performance_snapshots WHERE ${snap.where} ORDER BY computed_at DESC, id DESC LIMIT 1`)
+      .get(...snap.params)
 
     res.json({
       metrics: row || null,
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
-      scoped: acct.active,
-      scope: scopeReport(scope, scopeCoverage(db, { table: 'performance_snapshots', scope })),
+      scoped: snap.scoped,
+      definition: 'money: win = net_pnl > 0, PF = gross money won / lost (not the r-net-v1 of /state/basis-performance)',
+      scope: scopeReport(scope, snapshotCoverage(db, snap)),
     })
   })
 
@@ -2839,6 +2869,39 @@ export default function stateRouter(db) {
     }
   })
 
+  // Plan P1 (25-09-2026): closed-trade performance per account and per
+  // entry basis, on the frozen r-net-v1 definition — WR with its Wilson
+  // interval, PF in R, payoff, expectancy and its lower bounds, and
+  // 'insufficient' below the owner's sample minimum. ?account=<id>,
+  // ?days= (default 90, 0 = all time), or ?from=&to= (ms) for a closed window.
+  router.get('/basis-performance', async (req, res) => {
+    try {
+      const { basisPerformanceReport } = await import('../services/basis-performance.js')
+      const days = req.query.days != null ? Math.min(3650, Math.max(0, Number(req.query.days) || 0)) : 90
+      const accountId = req.query.account != null && String(req.query.account).trim() !== '' && String(req.query.account).trim().toLowerCase() !== 'all' ? String(req.query.account).trim() : null
+      const ms = (v) => (v != null && String(v).trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
+      res.json(basisPerformanceReport(db, { accountId, days, fromMs: ms(req.query.from), toMs: ms(req.query.to) }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // Plan P2 (25-09-2026): the shadow book's last ?days= (default 30) of
+  // trades re-scored with the live stop floor and counter-trend filter —
+  // kept vs removed PF and WR, and what each veto removed. Report only.
+  router.get('/tick-shadow-counterfactual', async (req, res) => {
+    try {
+      const { shadowCounterfactualView } = await import('../services/tick-shadow-counterfactual.js')
+      const { SIDES } = await import('../services/tick-shadow.js')
+      const side = req.query.side != null && String(req.query.side).trim() !== '' ? String(req.query.side).trim() : null
+      if (side && !SIDES.includes(side)) return res.status(400).json({ error: `side must be one of ${SIDES.join(', ')}` })
+      const days = req.query.days != null ? Math.min(365, Math.max(1, Number(req.query.days) || 30)) : 30
+      res.json(shadowCounterfactualView(db, { side, days }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // Wave 5 (§K item 16): the last daily report as posted, and whether the
   // next is due on the loop's 24 h cursor.
   router.get('/daily-report', async (_req, res) => {
@@ -3685,22 +3748,22 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/metrics/history', (req, res) => {
     const days = Math.min(365, Math.max(1, parseInt(req.query.days || '30', 10)))
-    const since = new Date(Date.now() - days * 86_400_000).toISOString()
+    // computed_at is datetime('now') ('YYYY-MM-DD HH:MM:SS'): the bound is
+    // formatted the same way. An ISO 'T' bound sorted above every row of its
+    // own calendar day and dropped up to a day from the window.
+    const since = new Date(Date.now() - days * 86_400_000).toISOString().replace('T', ' ').slice(0, 19)
     const scope = requestedAccount(db, req)
-    const acct = accountWhere(scope, 'account_id')
+    const snap = snapshotScope(scope)   // plan P1: strict, as /metrics
     try {
       const rows = db.prepare(
-        `SELECT * FROM performance_snapshots WHERE computed_at >= ?${acct.active ? ` AND ${acct.where}` : ''}
-         ORDER BY computed_at ASC`
-      ).all(since, ...acct.params)
+        `SELECT * FROM performance_snapshots WHERE computed_at >= ? AND ${snap.where}
+         ORDER BY computed_at ASC, id ASC`
+      ).all(since, ...snap.params)
       res.json({
         snapshots: rows,
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
-        scoped: acct.active,
-        scope: scopeReport(scope, scopeCoverage(db, {
-          table: 'performance_snapshots', scope,
-          extraWhere: 'computed_at >= ?', extraParams: [since],
-        })),
+        scoped: snap.scoped,
+        scope: scopeReport(scope, snapshotCoverage(db, snap, 'computed_at >= ?', [since])),
       })
     } catch {
       res.json({ snapshots: [] })

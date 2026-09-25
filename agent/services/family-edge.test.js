@@ -125,3 +125,22 @@ test('familyEdgeReport (checker F3): the window reads the ms stamp when set and 
   assert.equal(familyEdgeReport(db, { now: T0, days: 90 }).families.trend.closes, 2)
   assert.equal(familyEdgeReport(db, { now: T0, days: 0 }).families.trend.closes, 4)
 })
+
+// Plan P1 (25-09-2026): a tick entry is counted by its BASIS, in its own
+// block beside the families — never as a family key (familyOf also drives
+// managed-exit, account-horizon and exit-chain).
+test('familyEdgeReport: a tick fill with no strategy is counted in byBasis.tick, not unattributed; families and familyOf unchanged', async () => {
+  const { familyOf } = await import('./strategies.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO entry_intents (id, account_id, environment, symbol, symbol_id, side, order_type, volume, producer_id, basis, mode_epoch, config_revision, permit_id, permit_expires_at, state, broker_position_id)
+              VALUES ('itick0001', '47790949', 'demo', 'EURUSD', 1, 'BUY', 'MARKET', 1000, 'tick_momentum', 'tick', 1, 1, 'p-t1', '2026-09-10T00:00:00Z', 'FILLED', '7001')`).run()
+  insertClose(db, { strategy: null, exit: 102, pnl: 200, at: T0 - 86400_000 })
+  db.prepare("UPDATE trades SET ctrader_position_id = '7001', label_raw = 'tick:abc|||||||itick0001'").run()
+  insertClose(db, { strategy: null, exit: 99, pnl: -20, at: T0 - 3600_000 })
+  const r = familyEdgeReport(db, { now: T0 })
+  assert.equal(r.byBasis.tick.closes, 1)
+  assert.equal(r.byBasis.tick.avgR, 2)
+  assert.equal(r.unattributed, 1, 'the non-tick close with no strategy is still unattributed')
+  assert.deepEqual(Object.keys(r.families).sort(), ['breakout', 'mean_reversion', 'momentum', 'trend'])
+  assert.equal(familyOf('tick_momentum_breakout'), null)
+})

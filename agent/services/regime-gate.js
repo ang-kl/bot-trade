@@ -92,19 +92,31 @@ export function loadRegimeGateConfig(db) {
  * than silently treating it as current. Pass 0 or null to disable the bound
  * (the pre-P8 behaviour, kept for callers that only want to display it).
  */
-export function latestRegime(db, symbol, { maxAgeMin = DEFAULT_MAX_REGIME_AGE_MIN } = {}) {
+export function latestRegime(db, symbol, { maxAgeMin = DEFAULT_MAX_REGIME_AGE_MIN, asOfMs = null } = {}) {
+  // `asOfMs` (plan P2, 25-09-2026): the reading AS OF a past moment — the
+  // newest row computed at or before it, aged against that moment rather
+  // than now — so the shadow counterfactual re-scores each trade on the
+  // reading the feeder could have seen, never a later one (no look-ahead).
+  // computed_at is written by datetime('now') ('YYYY-MM-DD HH:MM:SS', UTC),
+  // so the bound is formatted the same way; an ISO 'T' string would sort
+  // every same-day row wrongly.
+  const asOf = asOfMs != null && Number.isFinite(Number(asOfMs)) ? Number(asOfMs) : null
   let row = null
   try {
-    row = db.prepare(
-      `SELECT regime, trend_direction, computed_at FROM regimes WHERE symbol = ? ORDER BY computed_at DESC LIMIT 1`
-    ).get(symbol) || null
+    row = asOf == null
+      ? db.prepare(
+        `SELECT regime, trend_direction, computed_at FROM regimes WHERE symbol = ? ORDER BY computed_at DESC LIMIT 1`
+      ).get(symbol) || null
+      : db.prepare(
+        `SELECT regime, trend_direction, computed_at FROM regimes WHERE symbol = ? AND computed_at <= ? ORDER BY computed_at DESC LIMIT 1`
+      ).get(symbol, new Date(asOf).toISOString().replace('T', ' ').slice(0, 19)) || null
   } catch { return null }
   if (!row) return null
   const bound = Number(maxAgeMin)
   if (!(bound > 0)) return row
   const t = Date.parse(String(row.computed_at || '').replace(' ', 'T') + (String(row.computed_at || '').endsWith('Z') ? '' : 'Z'))
   if (!Number.isFinite(t)) return { ...row, stale: true }
-  const ageMin = (Date.now() - t) / 60_000
+  const ageMin = ((asOf ?? Date.now()) - t) / 60_000
   return ageMin > bound ? { ...row, stale: true, ageMin: Math.round(ageMin) } : row
 }
 

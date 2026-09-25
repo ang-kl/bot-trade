@@ -100,3 +100,21 @@ test('checkRegimeGate: reads the latest regime row and honours the off switch', 
   setState(db, 'regime_gate_json', JSON.stringify({ on: false }))
   assert.equal(checkRegimeGate(db, 'fib_618_fade', 'long', 'XAUUSD').block, false)
 })
+
+// Plan P2 (25-09-2026): the reading AS OF a past moment, for the shadow
+// counterfactual. The row computed AFTER asOfMs must never answer (no
+// look-ahead), and the age bound is measured against asOfMs, not now.
+test('latestRegime asOfMs: the newest row at or before T, aged against T; the later row never answers', () => {
+  const db = initDB(':memory:')
+  const T = Date.parse('2026-09-20T12:00:00Z')
+  const fmt = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
+  db.prepare('INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES (?, ?, ?, ?)').run('EURUSD', 'trending', 'long', fmt(T - 300 * 60_000))
+  db.prepare('INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES (?, ?, ?, ?)').run('EURUSD', 'trending', 'short', fmt(T + 10 * 60_000))
+  const stale = latestRegime(db, 'EURUSD', { maxAgeMin: 240, asOfMs: T })
+  assert.equal(stale.trend_direction, 'long'); assert.equal(stale.stale, true); assert.equal(stale.ageMin, 300)
+  const fresh = latestRegime(db, 'EURUSD', { maxAgeMin: 400, asOfMs: T })
+  assert.equal(fresh.trend_direction, 'long'); assert.equal(fresh.stale, undefined)
+  assert.equal(latestRegime(db, 'EURUSD', { maxAgeMin: 0, asOfMs: T - 400 * 60_000 }), null, 'nothing computed before T - 400 m')
+  // without asOfMs, behaviour is unchanged: the newest row
+  assert.equal(latestRegime(db, 'EURUSD', { maxAgeMin: 0 }).trend_direction, 'short')
+})
