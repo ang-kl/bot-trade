@@ -157,9 +157,9 @@ export function persistDeals(db, rows) {
       @opened_at, @closed_at, @gross_pnl, @swap, @commission, @net_pnl, @matched_trade_id
     )
     ON CONFLICT(deal_id) DO UPDATE SET
-      symbol = excluded.symbol, side = excluded.side, lots = excluded.lots,
+      symbol = CASE WHEN excluded.symbol IS NULL OR (excluded.symbol LIKE '#%' AND broker_deals.symbol IS NOT NULL) THEN broker_deals.symbol ELSE excluded.symbol END, side = excluded.side, lots = COALESCE(excluded.lots, broker_deals.lots),
       entry_price = excluded.entry_price, close_price = excluded.close_price,
-      -- Never overwrite a known open time with a NULL from a narrower window.
+      -- W10: a read with no symbol metadata (NULL lots, '#id' name) never erases what is known; same for a narrower window's NULL open time.
       opened_at = COALESCE(excluded.opened_at, broker_deals.opened_at),
       closed_at = excluded.closed_at, gross_pnl = excluded.gross_pnl,
       swap = excluded.swap, commission = excluded.commission, net_pnl = excluded.net_pnl,

@@ -178,11 +178,21 @@ export function verifyClient({ env = process.env, fetchImpl = globalThis.fetch }
       // into anything else here would re-introduce the self-certification
       // this whole service exists to prevent.
       if (!body || typeof body.state !== 'string') return { state: null, skipped: 'bad_reply' }
+      // A READ THAT NEVER HAPPENED FORGETS THE SESSION (V3 V1 fix round).
+      // cpp-verify's session does not reconnect by itself: once its broker
+      // socket closes, /verify answers 200 `unverified` with fetchComplete
+      // false and a reason like "not connected" (verify_session.cpp deals(),
+      // verdict.cpp judge) — never the 409/403 that used to be the only
+      // reconnect trigger. So the host is forgotten here and the next ask
+      // opens a fresh session instead of asking a dead one for ever.
+      if (body.state === 'unverified' && body.fetchComplete !== true) authorized.delete(brokerHost)
       return {
         state: body.state,
         disputes: Array.isArray(body.disputes) ? body.disputes : [],
         host: brokerHost,
         fetchComplete: body.fetchComplete === true,
+        // The verifier's own words for an unverified answer, carried as-is.
+        reason: typeof body.reason === 'string' ? body.reason : null,
         broker: body.broker || null,
         // PR-AY: the contract the VERIFIER used, relayed unchanged. Absent
         // means an older binary that did not stamp one — which is stale, and

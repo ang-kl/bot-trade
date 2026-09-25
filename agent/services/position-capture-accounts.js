@@ -37,6 +37,7 @@ import { capturePosition, buildPositionRecord, REQUIRED_FIELDS } from './positio
 import { queueCloseCapture, closeCaptureFailures } from './close-capture.js'
 import { verifyClient } from '../lib/verify-client.js'
 import { getState, setState } from '../db.js'
+import { expectedIntervalSec } from './heartbeat.js'
 
 /**
  * Every close a RECONCILE PATH detected, queued for capture.
@@ -85,10 +86,13 @@ export function positionCaptureView(db, { now = Date.now(), env = process.env } 
     coverage: {
       windowDays: coverage.windowDays ?? null,
       since: coverage.since ?? null,
+      staleAfterMs: coverage.staleAfterMs ?? null,
       silent: (coverage.silent || []).map(a => a.accountId),
       stalled: (coverage.stalled || []).map(a => a.accountId),
       verifyFailing: (coverage.verifyFailing || []).map(a => a.accountId),
       error: coverage.error ?? null,
+      // Checker nit 8: said on the reading, not left to be inferred.
+      okMeans: 'every close in the window has a capture record (captured, pending, gave up, or refused naming its gap) and the controller is draining; NOT that it is verified — see each account\'s verified / unverified / structural counts',
     },
     lastPassAt: readPassRecord(db)?.at ?? null,
     closeSeam: closeCaptureFailures(),
@@ -108,8 +112,25 @@ export const DEFAULT_BACKFILL_DAYS = 7
 export const MAX_BACKFILL_DAYS = 30
 /** A close older than this with no capture record at all is SILENT. */
 export const UNCAPTURED_GRACE_MS = 20 * 60_000
-/** Due rows and no successful drain of the account for this long: STALLED. */
+/** Rows waiting and no successful drain of the account for this long: STALLED (the floor). */
 export const DRAIN_STALE_MS = 30 * 60_000
+/** ...or this many expected pass periods, when the loop is slow enough to exceed the floor. */
+export const DRAIN_STALE_PASSES = 3
+
+/**
+ * How long an account may go without a successful drain, while rows wait,
+ * before it reads STALLED: the larger of DRAIN_STALE_MS and
+ * DRAIN_STALE_PASSES expected pass periods. The pass period is the
+ * heartbeat's own expectation for `position_capture` (every 3rd loop, at the
+ * loop's observed period), so a loop configured up to 60 minutes — a pass
+ * every ~3 hours — does not read `stalled` between two on-schedule passes.
+ * Production (loop_interval_min 1, ~3-minute cycles) stays on the floor.
+ */
+export function drainStaleMs(db, { loopSec = null } = {}) {
+  let passSec = null
+  try { passSec = expectedIntervalSec(db, 'position_capture', { loopSec }) } catch { passSec = null }
+  return Math.max(DRAIN_STALE_MS, Number.isFinite(passSec) ? DRAIN_STALE_PASSES * passSec * 1000 : 0)
+}
 /** Consecutive unanswered verify asks for one account before it is flagged. */
 export const VERIFY_SKIP_STREAK = 3
 export const CAPTURE_PASS_KEY = 'position_capture_last_json'
@@ -302,13 +323,6 @@ export async function captureAccountPass(db, {
 }
 
 let passCounter = 0
-let verifierCache = null
-/** One verifier client per process, so its per-host sessions are reused. */
-export function sharedVerifier(env = process.env) {
-  const key = `${String(env?.VERIFY_URL || '').trim()}|${String(env?.EXEC_SECRET || '').trim() ? 1 : 0}`
-  if (!verifierCache || verifierCache.key !== key) verifierCache = { key, fn: verifyClient({ env }) }
-  return verifierCache.fn
-}
 
 /** Every account the pass must visit: registered, the primary, or with rows waiting. */
 export function captureAccounts(db) {
@@ -338,13 +352,22 @@ export function captureAccounts(db) {
  * The start account rotates each pass, so a time budget spent early never
  * starves the same account twice.
  *
+ * ONE VERIFIER CLIENT PER PASS (fix round, checker B1). A client kept for
+ * the whole process reconnected only on a 409/403 — and cpp-verify's
+ * session never re-opens its broker socket by itself, so once that socket
+ * closed every /verify answered 200 `unverified` "not connected" for ever
+ * while the account read `ok`. Built here per pass, as before V1, each pass
+ * opens a fresh session per host; within the pass every account on a host is
+ * still authorized by the union (verify-client.js). `fetchImpl` is the test
+ * seam for that client; production passes nothing.
+ *
  * Writes the pass record and beats `position_capture` with its verdict.
  */
 export async function runAllAccountCapture(db, {
   log = null, env = process.env, now = Date.now(), clock = Date.now, budgetMs = CAPTURE_PASS_BUDGET_MS,
-  verifier, credsFor = null, accounts = null, refused = null, deps = {}, beat = null,
+  verifier, credsFor = null, accounts = null, refused = null, deps = {}, beat = null, fetchImpl = null,
 } = {}) {
-  const v = verifier === undefined ? sharedVerifier(env) : verifier
+  const v = verifier !== undefined ? verifier : fetchImpl ? verifyClient({ env, fetchImpl }) : verifyClient({ env })
   const ids = accounts ?? captureAccounts(db)
   let refusedSet = refused
   if (!refusedSet) {
@@ -404,7 +427,11 @@ export function recordCapturePass(db, results, { now = Date.now(), env = process
     const p = prev[r.accountId] || {}
     const d = r.drain
     const drained = !!d && !r.error
-    const drainOk = drained && d.stopped !== 'deal_read_failed'
+    // A drain that hit the pass deadline before its first row did nothing:
+    // it is not a successful drain, or a budget-starved account would stay
+    // green while its due rows aged (checker nit 2).
+    const didNothing = !!d && d.stopped === 'pass_budget' && d.due > 0 && (d.captured || 0) + (d.incomplete || 0) === 0
+    const drainOk = drained && d.stopped !== 'deal_read_failed' && !didNothing
     let streak = Number(p.verifySkipStreak) || 0
     if (d?.answered > 0) streak = 0
     else if (d?.skipped > 0) streak += d.skipped
@@ -427,7 +454,7 @@ export function recordCapturePass(db, results, { now = Date.now(), env = process
   const coverage = captureCoverage(db, { now, env, passAccounts: accounts, verifierConfigured })
   const bad = [
     ...coverage.silent.map(a => `…${a.accountId.slice(-4)} silent (${a.uncaptured} close(s) with no capture record)`),
-    ...coverage.stalled.map(a => `…${a.accountId.slice(-4)} stalled (${a.dueNow} due, no successful drain since ${a.lastDrainOkAt ?? 'never'})`),
+    ...coverage.stalled.map(a => `…${a.accountId.slice(-4)} stalled (${a.waiting} waiting since ${a.waitingSince}, ${a.dueNow} due now, no successful drain since ${a.lastDrainOkAt ?? 'never'})`),
     ...coverage.verifyFailing.map(a => `…${a.accountId.slice(-4)} verifier refused the last ${a.verifySkipStreak} ask(s)`),
   ]
   const record = {
@@ -462,14 +489,16 @@ export function recordCapturePass(db, results, { now = Date.now(), env = process
  * queue row, no history record, no refused record, older than the grace.
  *
  *   silent          any uncaptured close
- *   stalled         rows due for DRAIN_STALE_MS and no successful drain of
- *                   the account in that time
+ *   stalled         rows waiting (due, or rescheduled after a failed read)
+ *                   for drainStaleMs() — 30 min, or 3 expected pass periods
+ *                   on a slow loop — and no successful drain of the account
+ *                   in that time
  *   verify_failing  the verifier left the account's last VERIFY_SKIP_STREAK
  *                   asks unanswered (only when a verifier is configured)
  *   ok / no_closes  otherwise — `no_closes` says there was nothing to
  *                   capture, which is not the same as captured
  */
-export function captureCoverage(db, { now = Date.now(), env = process.env, passAccounts = null, verifierConfigured = false, days = null } = {}) {
+export function captureCoverage(db, { now = Date.now(), env = process.env, passAccounts = null, verifierConfigured = false, days = null, staleMs = null } = {}) {
   const windowDays = days ?? (backfillDays(env) || DEFAULT_BACKFILL_DAYS)
   const since = now - windowDays * 86_400_000
   const pass = passAccounts ?? (readPassRecord(db)?.accounts || {})
@@ -488,10 +517,20 @@ export function captureCoverage(db, { now = Date.now(), env = process.env, passA
       LEFT JOIN position_history_incomplete i ON i.account_id = c.acct AND i.ctrader_position_id = c.pid
      LIMIT 20000
   `).all(since)
+  // Pending rows per account: how many are due now, and how long the oldest
+  // has been WAITING — the earlier of its due time and its enqueue time. A
+  // failed attempt reschedules its row 1, 2, 4… minutes ahead, so "oldest
+  // due" alone never ages for an account whose every deal read throws and
+  // which has one row queued: the stalled guard could not fire for the case
+  // it exists for (checker nit 1). The enqueue time does age.
   const due = db.prepare(`
-    SELECT account_id AS acct, COUNT(*) AS n, MIN(due_at_ms) AS oldest
-      FROM position_capture_queue WHERE state = 'pending' AND due_at_ms <= ? GROUP BY account_id
-  `).all(now)
+    SELECT account_id AS acct,
+           SUM(CASE WHEN due_at_ms <= ? THEN 1 ELSE 0 END) AS n,
+           MIN(CASE WHEN due_at_ms <= ? THEN due_at_ms END) AS oldest,
+           COUNT(*) AS waiting,
+           MIN(MIN(due_at_ms, COALESCE(CAST(strftime('%s', enqueued_at) AS INTEGER) * 1000, due_at_ms))) AS waiting_since
+      FROM position_capture_queue WHERE state = 'pending' GROUP BY account_id
+  `).all(now, now)
   const lastCaptured = db.prepare(`
     SELECT account_id AS acct, MAX(settled_at) AS at FROM position_capture_queue WHERE state = 'captured' GROUP BY account_id
   `).all()
@@ -507,7 +546,7 @@ export function captureCoverage(db, { now = Date.now(), env = process.env, passA
     accountId: id, status: 'no_closes',
     closes: 0, captured: 0, verified: 0, disputed: 0, unverified: 0, absent: 0,
     pending: 0, gaveUp: 0, incomplete: 0, structural: 0, uncaptured: 0, fresh: 0,
-    dueNow: 0, oldestDueAt: null, lastCapturedAt: null, lastVerdictAt: null,
+    dueNow: 0, oldestDueAt: null, waiting: 0, waitingSince: null, lastCapturedAt: null, lastVerdictAt: null,
     lastPassAt: pass[id]?.at ?? null, lastDrainOkAt: pass[id]?.lastDrainOkAt ?? null,
     lastSkipped: pass[id]?.skipped ?? null, verifySkipStreak: Number(pass[id]?.verifySkipStreak) || 0,
     uncapturedSample: [],
@@ -543,25 +582,29 @@ export function captureCoverage(db, { now = Date.now(), env = process.env, passA
   }
   for (const r of due) {
     const a = acc.get(String(r.acct))
-    a.dueNow = r.n
-    a.oldestDueAt = new Date(Number(r.oldest)).toISOString()
+    a.dueNow = Number(r.n) || 0
+    a.oldestDueAt = r.oldest == null ? null : new Date(Number(r.oldest)).toISOString()
+    a.waiting = Number(r.waiting) || 0
+    a.waitingSince = r.waiting_since == null ? null : new Date(Number(r.waiting_since)).toISOString()
   }
   for (const r of lastCaptured) { const a = acc.get(String(r.acct)); if (a) a.lastCapturedAt = r.at }
   for (const r of lastVerdict) { const a = acc.get(String(r.acct)); if (a) a.lastVerdictAt = r.at }
 
-  const staleBefore = now - DRAIN_STALE_MS
+  const staleAfterMs = Number.isFinite(staleMs) ? staleMs : drainStaleMs(db)
+  const staleBefore = now - staleAfterMs
   for (const a of acc.values()) {
     const drainOkMs = Date.parse(a.lastDrainOkAt || '')
-    const oldestDueMs = Date.parse(a.oldestDueAt || '')
+    const waitingMs = Date.parse(a.waitingSince || '')
     if (a.uncaptured > 0) a.status = 'silent'
-    else if (a.dueNow > 0 && oldestDueMs <= staleBefore && !(drainOkMs > staleBefore)) a.status = 'stalled'
+    else if (a.waiting > 0 && waitingMs <= staleBefore && !(drainOkMs > staleBefore)) a.status = 'stalled'
     else if (verifierConfigured && a.verifySkipStreak >= VERIFY_SKIP_STREAK) a.status = 'verify_failing'
-    else if (a.closes > 0 || a.dueNow > 0) a.status = 'ok'
+    else if (a.closes > 0 || a.waiting > 0) a.status = 'ok'
   }
   const list = [...acc.values()].sort((x, y) => x.accountId.localeCompare(y.accountId))
   return {
     windowDays,
     since: new Date(since).toISOString(),
+    staleAfterMs,
     accounts: list,
     silent: list.filter(a => a.status === 'silent'),
     stalled: list.filter(a => a.status === 'stalled'),

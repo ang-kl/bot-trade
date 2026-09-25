@@ -88,8 +88,14 @@ export function queueCaptureForClosedTrade (db, tradeId, { source = 'close', now
   }
 }
 
-/** For /state/position-capture: enqueues this process could not make. */
-export function closeCaptureFailures () { return { ...failures } }
+// The counts live in memory: a restart starts them at zero. Said on the
+// reading (`scope`, `countedSince`) so a zero after a redeploy is not read as
+// "nothing ever failed" — a lost enqueue still resurfaces as a SILENT account
+// in the coverage, which is the lasting signal.
+const COUNTED_SINCE = new Date().toISOString()
+
+/** For /state/position-capture: enqueues this process could not make, since boot. */
+export function closeCaptureFailures () { return { ...failures, scope: 'since_boot', countedSince: COUNTED_SINCE } }
 
 /** Test seam. */
 export function _resetCloseCaptureForTests () {

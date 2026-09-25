@@ -1620,3 +1620,17 @@ export function checkAccountAuthorization(db, {
   }
   return { events, roster, fresh }
 }
+
+/**
+ * The expected interval of one registered controller, in seconds, measured
+ * the same way the watchdog and the panel measure it (loop-tied controllers
+ * follow the loop's OBSERVED period, times their loopMultiplier). Null for a
+ * name that is not registered. For a controller that judges its own lag —
+ * V3 V1's position capture scales "stalled" with it, so a slow configured
+ * loop cannot read as a stalled pass between two on-schedule ones.
+ */
+export function expectedIntervalSec(db, name, { loopSec = null } = {}) {
+  const def = CONTROLLERS[name]
+  if (!def) return null
+  return expectedSecFor(def, effectiveLoopSec(db, loopSec))
+}

@@ -23,10 +23,11 @@ import { closeCaptureFailures, _resetCloseCaptureForTests, CLOSE_CAPTURE_DELAY_M
 import { symbolIdFor, accountSymbolMap } from './position-history.js'
 import { verifyClient } from '../lib/verify-client.js'
 import { enqueueCapture, dueCaptures, drainCaptureQueue, refreshDealsFor, captureQueueView, CAPTURE_DELAY_MS } from './position-capture.js'
+import { shapeDeals, persistDeals } from './broker-history-import.js'
 import {
   enqueueReconcileCloses, sweepRecentCloses, captureAccountPass, runAllAccountCapture, captureCoverage, positionCaptureView,
   recordCapturePass, backfillDays, STRUCTURAL_FIELDS, CAPTURE_FILLABLE_FIELDS,
-  UNCAPTURED_GRACE_MS, DRAIN_STALE_MS, VERIFY_SKIP_STREAK, CAPTURE_PASS_KEY,
+  UNCAPTURED_GRACE_MS, DRAIN_STALE_MS, VERIFY_SKIP_STREAK, CAPTURE_PASS_KEY, drainStaleMs, DRAIN_STALE_PASSES,
 } from './position-capture-accounts.js'
 
 const A = '43097342'   // the selected (primary) account in these fixtures
@@ -40,6 +41,10 @@ function fixture() {
   }
   setState(db, 'ctrader_account_id', A)
   setState(db, 'ctrader_is_live', 'false')
+  // Production's loop interval (1 minute): the stalled threshold sits on its
+  // 30-minute floor, as these tests were written against. Unset, the
+  // heartbeat's default 5-minute loop would put it at 3 × 15 = 45 minutes.
+  setState(db, 'loop_interval_min', '1')
   return db
 }
 
@@ -507,4 +512,202 @@ test('a 403 reconnects with the union and retries ONCE; a second 403 is reported
   const v = await verify(rec(A), { host: 'h', ...C(A) })
   assert.equal(v.skipped, 'http_403')
   assert.equal(calls.filter(c => /\/connect$/.test(c.url)).length, 2)
+})
+
+// ---------------------------------------------------------------------------
+// 6. Fix round (independent checker, 25-09-2026)
+// ---------------------------------------------------------------------------
+
+/**
+ * cpp-verify as it behaves once its broker socket has closed: /connect still
+ * answers 200, and /verify answers 200 `unverified` with fetchComplete false
+ * and "not connected" — its session has no reconnect of its own
+ * (verify_session.cpp deals(), verdict.cpp judge()).
+ */
+function verifierFetch(verdict) {
+  const calls = []
+  const fetchImpl = async (url, opts) => {
+    const body = JSON.parse(opts.body)
+    calls.push(url)
+    if (url.endsWith('/connect')) {
+      return { ok: true, status: 200, json: async () => ({ authorized: body.accountIds.length, accounts: body.accountIds.map(a => ({ accountId: a, authorized: true })) }) }
+    }
+    return { ok: true, status: 200, json: async () => verdict }
+  }
+  return {
+    fetchImpl,
+    connects: () => calls.filter(u => u.endsWith('/connect')).length,
+    verifies: () => calls.filter(u => u.endsWith('/verify')).length,
+  }
+}
+const verifyEnv = (prefix) => ({
+  VERIFY_URL: 'http://verify.internal:8080', EXEC_SECRET: 's3cret', POSITION_CAPTURE_BACKFILL_DAYS: '7',
+  DB_PATH: join(tempDir(prefix), 'agent.db'),
+})
+const readerFor = () => ({ all: { getDeals: async () => ({ deal: [], hasMore: false }), lotSizeFor: async () => null } })
+const historyRow = (db, acct, pid) =>
+  db.prepare('SELECT verification_state, verified_at, verifier_host FROM position_history WHERE account_id = ? AND ctrader_position_id = ?').get(String(acct), String(pid))
+
+test('B1: a verifier that READ NOTHING is not an answer — next pass reconnects, nothing is stored, and 3 passes turn the account verify_failing', async () => {
+  const db = fixture()
+  const t0 = Date.now()
+  seedComplete(db, { acct: B, pid: '4001', closeMs: t0 - 3600_000 })
+  const stub = verifierFetch({ state: 'unverified', fetchComplete: false, reason: 'not connected' })
+  const env = verifyEnv('v1-noread-')
+  const pass = (i) => runAllAccountCapture(db, {
+    env, now: t0 + i * 200_000, fetchImpl: stub.fetchImpl, accounts: [B], refused: new Set(),
+    credsFor: async (id) => creds(id), deps: readerFor(), beat: () => {},
+  })
+
+  const r1 = await pass(0)
+  assert.equal(stub.connects(), 1)
+  assert.equal(stub.verifies(), 1)
+  assert.equal(r1.accounts[B].drain.answered, 0, '"not connected" is a reply about the verifier, not a verdict about the record')
+  assert.equal(r1.accounts[B].drain.skippedVerify, 1)
+  assert.match(r1.accounts[B].drain.errors.join(' '), /verify 4001: no broker read \(not connected\)/)
+  assert.equal(r1.accounts[B].verifySkipStreak, 1)
+  assert.deepEqual({ ...historyRow(db, B, '4001') }, { verification_state: 'unverified', verified_at: null, verifier_host: null },
+    'nothing stamped: no verdict time on a read that never happened')
+
+  const r2 = await pass(1)
+  assert.equal(stub.connects(), 2, 'the next pass opens a fresh session — a dead one never reconnects by itself')
+  assert.equal(r2.accounts[B].verifySkipStreak, 2)
+
+  const r3 = await pass(2)
+  assert.equal(stub.connects(), 3)
+  assert.equal(r3.accounts[B].verifySkipStreak, VERIFY_SKIP_STREAK)
+  assert.equal(r3.ok, false, 'a stalled verifier cannot read healthy')
+  assert.match(r3.error, /…9908 verifier refused the last 3 ask\(s\)/)
+  const b = captureCoverage(db, { now: t0 + 400_000, days: 7, verifierConfigured: true }).accounts.find(a => a.accountId === B)
+  assert.equal(b.status, 'verify_failing')
+})
+
+test('B1: each pass opens its own verifier session (as before V1); within a pass one session serves the host', async () => {
+  const db = fixture()
+  const t0 = Date.now()
+  seedComplete(db, { acct: B, pid: '4101', closeMs: t0 - 3 * 3600_000 })
+  seedComplete(db, { acct: B, pid: '4102', closeMs: t0 - 2 * 3600_000 })
+  const stub = verifierFetch({ state: 'verified', disputes: [], fetchComplete: true, contractVersion: 3 })
+  const env = verifyEnv('v1-session-')
+  const pass = (i) => runAllAccountCapture(db, {
+    env, now: t0 + i * 200_000, fetchImpl: stub.fetchImpl, accounts: [B], refused: new Set(),
+    credsFor: async (id) => creds(id), deps: readerFor(), beat: () => {},
+  })
+  await pass(0)   // the sweep queues 4101 due now and 4102 due 20 s later: one verify
+  assert.deepEqual([stub.connects(), stub.verifies()], [1, 1])
+  await pass(1)   // 4102 is due: a new pass, a new client, a new session
+  assert.deepEqual([stub.connects(), stub.verifies()], [2, 2], 'a client kept for the process would have reused the first session')
+  assert.equal(historyRow(db, B, '4101').verification_state, 'verified')
+  assert.equal(historyRow(db, B, '4102').verification_state, 'verified')
+})
+
+test('the drain stores a verifier\'s real answers as before; only a read that never happened is refused', async () => {
+  const db = fixture()
+  const now = Date.now()
+  seedComplete(db, { acct: B, pid: '4201', closeMs: now - 3600_000 })
+  seedComplete(db, { acct: B, pid: '4202', closeMs: now - 3600_000 })
+  enqueueCapture(db, { accountId: B, positionId: '4201', now: now - 60_000 })
+  enqueueCapture(db, { accountId: B, positionId: '4202', now: now - 60_000 })
+  const replies = {
+    // An answer about the RECORD (its window, say): stored, as before.
+    4201: { state: 'unverified', fetchComplete: true, reason: 'widen it', disputes: [], host: 'h' },
+    // A verifier that does not say whether it read anything: judged as before.
+    4202: { state: 'unverified', disputes: [], host: 'h' },
+  }
+  const out = await drainCaptureQueue(db, {
+    now, accountId: B, getDeals: async () => ({ deal: [], hasMore: false }),
+    verify: async (record) => replies[record.ctrader_position_id],
+  })
+  assert.equal(out.answered, 2)
+  assert.equal(out.skipped, 0)
+  assert.ok(historyRow(db, B, '4201').verified_at, 'stored')
+  assert.ok(historyRow(db, B, '4202').verified_at, 'stored')
+})
+
+test('STALLED through the pass: an account whose deal reads keep throwing turns stalled and fails the beat', async () => {
+  const db = fixture()
+  const now = Date.now()
+  const old = iso(now - DRAIN_STALE_MS - 60_000)
+  enqueueCapture(db, { accountId: B, positionId: '5001', now: now - DRAIN_STALE_MS - 120_000, delayMs: 0 })
+  // Queued 32 minutes ago, as a real close would have been.
+  db.prepare(`UPDATE position_capture_queue SET enqueued_at = ? WHERE position_id = '5001'`).run(iso(now - DRAIN_STALE_MS - 120_000))
+  setState(db, CAPTURE_PASS_KEY, JSON.stringify({ at: old, accounts: { [B]: { lastDrainOkAt: old } } }))
+  const beats = []
+  const rec = await runAllAccountCapture(db, {
+    env: { POSITION_CAPTURE_BACKFILL_DAYS: '0' }, now, verifier: null, accounts: [B], refused: new Set(),
+    credsFor: async (id) => creds(id), deps: { all: { getDeals: async () => { throw new Error('ECONNRESET') } } },
+    beat: (_db, _name, o) => beats.push(o),
+  })
+  assert.equal(rec.accounts[B].drain.stopped, 'deal_read_failed')
+  assert.ok(queueRow(db, B, '5001').due_at_ms > now, 'the failed attempt rescheduled the row — "oldest due" alone would no longer see it')
+  assert.equal(rec.accounts[B].lastDrainOkAt, old, 'a drain whose deal read threw is not a successful drain')
+  assert.equal(rec.ok, false)
+  assert.match(rec.error, /…9908 stalled \(1 waiting since/)
+  assert.equal(beats[0].ok, false)
+})
+
+test('a drain the pass deadline stopped before its first row is not a successful drain', async () => {
+  const db = fixture()
+  const now = Date.now()
+  const old = iso(now - DRAIN_STALE_MS - 60_000)
+  enqueueCapture(db, { accountId: B, positionId: '5101', now: now - DRAIN_STALE_MS - 120_000, delayMs: 0 })
+  setState(db, CAPTURE_PASS_KEY, JSON.stringify({ at: old, accounts: { [B]: { lastDrainOkAt: old } } }))
+  const r = await captureAccountPass(db, {
+    accountId: B, creds: creds(B), verifier: null, now, env: { POSITION_CAPTURE_BACKFILL_DAYS: '0' },
+    deadline: now - 1, clock: () => now, deps: { getDeals: async () => { throw new Error('must not be read') } },
+  })
+  assert.equal(r.drain.stopped, 'pass_budget')
+  assert.equal(r.drain.due, 1)
+  assert.equal(r.drain.captured + r.drain.incomplete, 0)
+  const rec = recordCapturePass(db, [r], { now })
+  assert.equal(rec.accounts[B].lastDrainOkAt, old, 'nothing was drained: the old stamp stands, and ages')
+  assert.equal(rec.ok, false)
+  assert.match(rec.error, /…9908 stalled/)
+  // A pass-budget stop AFTER real work is still a drain that worked.
+  const worked = recordCapturePass(db, [{ ...r, drain: { ...r.drain, captured: 1 } }], { now })
+  assert.equal(worked.accounts[B].lastDrainOkAt, iso(now))
+})
+
+test('STALLED scales with a slow loop: 3 expected pass periods, never below 30 minutes', () => {
+  const db = fixture()
+  assert.equal(drainStaleMs(db), DRAIN_STALE_MS, 'a 1-minute loop stays on the floor')
+  setState(db, 'loop_interval_min', '60')
+  const passMs = 3 * 3600_000 // position_capture runs every 3rd loop
+  assert.equal(drainStaleMs(db), DRAIN_STALE_PASSES * passMs)
+  const now = Date.now()
+  enqueueCapture(db, { accountId: B, positionId: '5201', now: now - 2 * 3600_000, delayMs: 0 })
+  const pass = { [B]: { lastDrainOkAt: iso(now - 2 * 3600_000) } }
+  const statusAt = (t) => captureCoverage(db, { now: t, days: 7, passAccounts: pass }).accounts.find(a => a.accountId === B).status
+  assert.equal(statusAt(now), 'ok', 'two hours between on-schedule passes of a 60-minute loop is not a stall')
+  assert.equal(statusAt(now + 8 * 3600_000), 'stalled', 'ten hours is')
+})
+
+test('W10: a capture\'s deal refresh never erases the lots or the name the import stored', async () => {
+  const db = fixture()
+  const closeMs = Date.parse('2026-09-20T12:00:00Z')
+  seedComplete(db, { acct: L, pid: '710', closeMs, withDeal: false })
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
+                                        opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
+              VALUES ('9710', '710', ?, 'EURUSD', 'BUY', 0.1, 1.1, 1.105, ?, ?, 50, -1, -1, 48)`)
+    .run(L, iso(closeMs - 4 * 3600_000), iso(closeMs))
+  // L has no symbol list of its own: the capture's read names the deal '#5' and carries no lots.
+  const deal = { dealId: 9710, positionId: 710, symbolId: 5, volume: 10000, tradeSide: 2, executionPrice: 1.105, executionTimestamp: closeMs,
+    closePositionDetail: { entryPrice: 1.1, grossProfit: 5000, swap: -100, commission: -100, moneyDigits: 2 } }
+  await refreshDealsFor(db, { accountId: L, positionId: '710', getDeals: async () => ({ deal: [deal], hasMore: false }) })
+  const row = () => ({ ...db.prepare(`SELECT symbol, lots, net_pnl FROM broker_deals WHERE deal_id = '9710'`).get() })
+  assert.equal(row().lots, 0.1, 'the broker\'s lots are kept (W10) — before, the capture wrote NULL over them')
+  assert.equal(row().symbol, 'EURUSD', 'a placeholder never replaces a name')
+  assert.equal(row().net_pnl, 48, 'the broker\'s figures still refresh')
+  // A read that DOES know the name and the lot size still updates both.
+  persistDeals(db, shapeDeals([deal], { 5: { symbolName: 'GBPUSD', lotSize: 50000 } }, L))
+  assert.deepEqual(row(), { symbol: 'GBPUSD', lots: 0.2, net_pnl: 48 })
+})
+
+test('the view says what its counts cover: close-seam failures since boot, the stall threshold, what ok means', () => {
+  const db = fixture()
+  const v = positionCaptureView(db, { now: Date.now(), env: {} })
+  assert.equal(v.closeSeam.scope, 'since_boot')
+  assert.ok(Date.parse(v.closeSeam.countedSince) > 0)
+  assert.equal(v.coverage.staleAfterMs, DRAIN_STALE_MS)
+  assert.match(v.coverage.okMeans, /NOT that it is verified/)
 })

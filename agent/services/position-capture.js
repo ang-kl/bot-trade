@@ -434,11 +434,23 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, lo
           // no way to tell a verifier that is down from one that disagrees.
           // Failure mode #3 inside the verification path itself.
           if (v && !v.state && v.skipped) out.errors.push(`verify ${row.position_id}: skipped ${v.skipped}`)
+          // V3 V1 fix round: `unverified` with fetchComplete false is the
+          // verifier saying it READ NOTHING from the broker — "not connected"
+          // once its broker socket drops, which it never re-opens by itself
+          // (verify_session.cpp). That is a reply about the verifier, not a
+          // verdict about this record: it is counted as unanswered (so the
+          // account's verify streak can fire) and NOT stored, because storing
+          // it would stamp a verdict time on nothing and overwrite whatever
+          // the record last held — a dispute under an older contract, say.
+          // `=== false` on purpose: the client always sets the flag, and a
+          // verifier that does not say is judged as before.
+          const noRead = !!v && v.state === 'unverified' && v.fetchComplete === false
+          if (noRead) out.errors.push(`verify ${row.position_id}: no broker read (${v.reason || 'fetch incomplete'})`)
           // V3 V1: an ask the verifier did not answer is COUNTED, so a
           // verifier that keeps refusing one account shows as that account's
           // failure rather than as a quiet `0 verified`.
-          if (!v || !v.state) out.skipped++
-          if (v && v.state) {
+          if (!v || !v.state || noRead) out.skipped++
+          if (v && v.state && !noRead) {
             out.answered++
             recordVerdict(db, {
               accountId: row.account_id, positionId: row.position_id,

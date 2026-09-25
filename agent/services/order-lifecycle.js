@@ -358,7 +358,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'PRE-03', key: 'intent_incomplete', version: 1, stage: 'pre_order', severity: 'defect', fix: 'writer',
-    cite: ['exec-engine.js:809', 'loop.js:693-696', 'exec-engine.js:811', 'reconciler.js:93-98', 'db.js:2102-2114'],
+    cite: ['exec-engine.js:809', 'loop.js:693-696', 'exec-engine.js:811', 'reconciler.js:93-98', 'db.js:2113-2125'],
     noun: 'entry intent',
     sql: `SELECT id, account_id, symbol, symbol_id, side, order_type, volume, producer_id, basis, risk_event_id, created_at
             FROM entry_intents WHERE created_at >= ? OR created_at IS NULL LIMIT ?`,
@@ -436,7 +436,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'ORD-02', key: 'direction_reason_unreachable', version: 1, stage: 'order', severity: 'defect', fix: 'writer',
-    cite: ['position-history.js:77-85', 'position-history.js:99-108', 'loop.js:5664'],
+    cite: ['position-history.js:77-85', 'position-history.js:99-108', 'loop.js:5650'],
     noun: 'bot trade',
     sql: `SELECT id, account_id, symbol, side, status, origin, label_raw, risk_event_id, ctrader_position_id, opened_at FROM trades
            WHERE (status IN ('open', 'closed', 'submitting', 'unconfirmed') AND (opened_at >= ? OR opened_at IS NULL)) OR status = 'open' LIMIT ?`,
@@ -521,7 +521,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'ORD-06', key: 'position_duplicate_rows', version: 1, stage: 'order', severity: 'defect', fix: 'reporting',
-    cite: ['position-history.js:169-173', 'position-capture.js:357-361', 'broker-history-import.js:136-143', 'db.js:31'],
+    cite: ['position-history.js:169-173', 'position-capture.js:357-361', 'broker-history-import.js:136-143', 'db.js:34'],
     noun: 'broker position',
     sql: `SELECT account_id, ctrader_position_id, COUNT(*) AS n, GROUP_CONCAT(id || ':' || COALESCE(status, '?'), ',') AS rows_list,
                  GROUP_CONCAT(COALESCE(opened_at, ''), '|') AS opened_list, MAX(id) AS last_id,
@@ -710,7 +710,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'CLS-07', key: 'close_time_disagrees', version: 1, stage: 'close', severity: 'defect', fix: 'reporting',
-    cite: ['db.js:2360', 'close-completeness.js:136'],
+    cite: ['db.js:2371', 'close-completeness.js:136'],
     noun: 'close',
     sql: CLOSES_SQL, params: closedParams, when: closeMsOf, subject: byId, account: acctCol,
     judge(r) {
@@ -724,7 +724,7 @@ export const RULES = Object.freeze([
     // position_history nor position_history_incomplete — was invisible to
     // every reader (the route lists incomplete rows after its cutoff only).
     id: 'CLS-08', key: 'close_record_absent', version: 1, stage: 'close', severity: 'defect', fix: 'writer',
-    cite: ['position-history.js:578', 'position-history.js:602', 'loop.js:2087', 'loop.js:3502-3506'],
+    cite: ['position-history.js:578', 'position-history.js:602', 'loop.js:2087', 'db.js:2425', 'position-capture-accounts.js:57-67'],
     noun: 'close older than 2 h',
     sql: CLOSES_SQL, params: closedParams, when: closeMsOf, subject: byId, account: acctCol,
     inWindow: (r, w, _ctx, t) => closedOlder(t, w, 2 * HOUR),
@@ -758,7 +758,7 @@ export const RULES = Object.freeze([
   // ======================================================== (d) STUCK
   {
     id: 'STK-01', key: 'resting_record_orphaned', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['closed-market-limits.js:85-88', 'loop.js:114', 'loop.js:4600', 'entry-mode.js:82-86', 'entry-drain.js:102', 'closed-market-limits.js:276-278'],
+    cite: ['closed-market-limits.js:85-88', 'loop.js:114', 'loop.js:4586', 'entry-mode.js:82-86', 'entry-drain.js:102', 'closed-market-limits.js:276-278'],
     noun: 'working resting-order row',
     sql: `SELECT id, account_id, symbol, dir, order_id, note, placed_at, expires_at, status FROM pending_orders WHERE status = 'working' LIMIT ?`,
     params: () => [], when: r => tsMs(r.placed_at), subject: r => `pending:${r.id}`, account: acctCol,
@@ -894,7 +894,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'STK-08', key: 'outbox_backlog', version: 1, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1871', 'independent-protection.js:117', 'watchdog_state.cpp:61-65'],
+    cite: ['db.js:1874', 'independent-protection.js:117', 'watchdog_state.cpp:61-65'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
@@ -969,7 +969,7 @@ export const RULES = Object.freeze([
     // two readings of one subsystem is CLAUDE.md failure mode #3's correction.
     //   stalled — last run older than expected × factor (heartbeat.js:530):
     //             pnl_reconcile last ran 09-20 with 0 failures is stuck;
-    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:183):
+    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:193):
     //             pnl_reconcile at 1,701 consecutive failures.
     // Unregistered names never reach the view (it iterates the registry), so a
     // row left behind by a removed controller cannot stay stuck for ever;
@@ -977,7 +977,7 @@ export const RULES = Object.freeze([
     // (the runner beats, its product is past its limit) and never_ran (no beat
     // on record) are NOT judged stuck: they are named as Not Verifiable here.
     id: 'STK-11', key: 'controller_failing', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['heartbeat.js:183', 'heartbeat.js:530-534', 'heartbeat.js:318-323', 'heartbeat.js:508-512', 'heartbeat.js:524-527'],
+    cite: ['heartbeat.js:193', 'heartbeat.js:540-544', 'heartbeat.js:328-333', 'heartbeat.js:518-522', 'heartbeat.js:534-537'],
     noun: 'registered controller',
     // The statement proves the table is readable (a dropped table is an
     // error, never 0); the rows are the heartbeat's own view of it.
