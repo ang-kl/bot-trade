@@ -146,3 +146,77 @@ fourth.
 
 Production effect: none. `recordedPlans` is still 0, and no producer calls
 the proposal or the bind.
+
+## T3: the partial manager runs each loop and reports its real state (25 September)
+
+Before T3 nothing called the partial manager. A registered plan would have
+sat ARMED past its trigger with nobody watching, and the status route said
+`runtimeIntegration: INCOMPLETE` from a constant.
+
+What runs now (`agent/services/momentum-partial-runtime.js`, called from
+`agent/loop.js` once per cycle):
+- After the momentum book, outside everything that gates the book: the
+  symbols block, the scan switch, weekend quiet, `ctraderCreds.ready` and
+  the book's own `enabled`. Plans outlive all of those. It has its own
+  try/catch and its own heartbeat, `momentum_partial` (record:
+  `momentum_partial_pass_json`). It sits after the later phases of the
+  cycle (pending orders, autopilot, breakers), not directly after the book
+  call: an uncaught throw in one of those skips the pass for that cycle,
+  and the pass then reads stale, which is what the website shows.
+- Each account with a plan in ARMED, SENDING, AMBIGUOUS or RECEIVED runs
+  with its own registered credentials and a 15 s budget; accounts run
+  concurrently. An account without credentials is recorded, and the others
+  still run.
+- An ARMED plan is pre-filtered on the book's marks `{ c, at, bt }`: only a
+  mark whose PRICE is at most 15 minutes old and more than 0.25 R short of
+  the trigger skips the broker. The price's age is taken from the bar stamp
+  `bt` (the trendbar's open time, with `markAgeMs` from
+  `book-open-drawdown.js`), never from `at`: the book writes `at` on every
+  pass, but its close comes from the scan's cached daily bars, which can be
+  up to 24 hours old. A bar's close is observed at or after its open, so
+  the bar stamp can only over-state the price's age. A stale, missing,
+  unstamped (no usable `bt`) or near mark, or a ledger row that is no
+  longer open, falls through to the authoritative read. With the default
+  daily book the pre-filter therefore skips only in the first minutes after
+  a daily bar opens; every other pass reads the broker, bounded by the 60 s
+  limit and the 15 s account budget. `lastScanPrice` is not used: it has no
+  timestamp.
+- At most one authoritative check per plan per 60 s.
+- A proven partial receipt gets exactly one `scale_out` position event
+  (deal id, volume, price), marked on the plan row in the same transaction.
+  It is written as soon as the plan holds a receipt that reads as a proven
+  deal (account, position, deal id, the plan's close volume, a price and an
+  execution time; T2's `validReceipt` admitted it), whatever state the plan
+  is then in: RECEIVED, CONFIRMED, or CLOSED_EXTERNALLY / VOLUME_CHANGED
+  after the partial. The deal happened in each of those, so the journal
+  records it; the plan's state says what followed it. Plans already
+  journaled are filtered out in SQL.
+- An `AWAITING_BIND` intent (T4's deferred bind) becomes `BIND_ABANDONED`
+  once its book row is `exit_sent`/`closed`, its trade is terminal, or a
+  close is journaled. No plan is registered; the record stays visible with
+  its reason, evidence and time.
+
+What the status says (`GET /state/momentum-targets`):
+- `passHeartbeatAt` and `pass` (fresh within three loop intervals, else
+  "unavailable" with the reason), per account when scoped. `pass.available`
+  is false, with the reason, also when the pass is fresh but its last run
+  could not act on the account (no credentials, unreadable credentials, the
+  account's pass failed) or could not read its plans; each row carries
+  `passUnavailable` for its own account.
+- `wiring`: market and limit producers, both "not wired" until T4.
+  `MOMENTUM_TARGET_PRODUCERS` is pinned by a test to the production callers
+  of `recordMomentumEntry`, of which there are none.
+- `runtimeIntegration` is COMPLETE only when both producers are wired and
+  the pass is fresh, so it cannot be COMPLETE before T4. `integrationGaps`
+  names each missing part. `executionAuthorized` stays false.
+- Each row carries the partial target (trigger, runner TP, close volume) and
+  the attempt (state, reason, attempt time, order id, receipt deal id).
+
+The website shows the partial trigger, not only the runner TP: the cockpit's
+armed actions carry it as a `scale_out` from `momentum_partial_manager`, and
+the Performance page has a "Momentum partial targets (TP1)" card. When the
+pass is stale, or its last run could not act on the position's account,
+both show the trigger labelled unavailable with the reason, never armed.
+
+Production effect: none while `recordedPlans` is 0. The pass reads no
+credentials and makes no broker call; it writes its record and beats.

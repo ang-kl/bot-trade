@@ -210,6 +210,12 @@ export const CONTROLLERS = {
   // row at all, and the capture queue read "0 pending" while six of seven
   // accounts had never queued a close.
   position_capture:    { label: 'Position capture (every account)', tiedToLoop: true, loopMultiplier: 3, factor: 4, effect: { key: 'position_capture_last_json' } },
+  // V3 T3: the momentum partial-TP1 manager's pass, once per main-loop cycle
+  // whatever the scan or the book is doing (plans outlive both switches). It
+  // closes the partial volume at the trigger, so it sits with the other
+  // position writers. The record is the pass's own summary; with no plan it
+  // still runs and still writes it, so "never ran" and "nothing to do" differ.
+  momentum_partial:    { label: 'Momentum partial-TP1 manager', tiedToLoop: true, factor: 3, effect: { key: 'momentum_partial_pass_json', kind: 'json' } },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

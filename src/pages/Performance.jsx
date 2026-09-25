@@ -28,6 +28,7 @@ import { useLiveTicks } from '../lib/useLiveTicks.js'
 import { displayQuote } from '../lib/display-quote.js'
 import AllTimeAccounts from '../components/AllTimeAccounts.jsx'
 import BlockerReport from '../components/BlockerReport.jsx'
+import MomentumTargets from '../components/MomentumTargets.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { rollingHourWindows, rollingWindow, displayOrder } from '../lib/hourly-order.js'
 import { openingCountLabel } from '../lib/hourly-openings.js'
@@ -1995,6 +1996,7 @@ export default function Performance() {
         <CurrentAccountReadings report={overview} accountId={acct} history />
       </Card>
       <BlockerReport key={`blockers:${acct}`} accountId={acct} />
+      <MomentumTargets key={`momentum-targets:${acct}`} accountId={acct} />
 
       <p style={{ fontSize: 'var(--fs-body)', color: P_SB }}>
         {populationReport ? `Portfolio coverage of recorded closes as of ${populationReport.generatedAt}. ${populationReport.coverage.unpricedN} closes without P&L; ${populationReport.coverage.unknownCloseTimeN} without a usable close time; ${populationReport.coverage.unattributedAccountN} without an account.` : 'Complete performance report unavailable; missing evidence is not zero activity.'}
