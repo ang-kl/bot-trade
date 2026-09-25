@@ -3317,6 +3317,36 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/data-feed?account=<id|all>&limit=N — the Data-feed card's
+  // measured figures (8,989-A row 11, WEB-9): entry latency with its
+  // coverage, stored commission/swap per verified deposit currency over the
+  // latest N closes, the fast monitor's quote freshness with the record's
+  // age, and the current broker-day open (the same FX-day anchor the risk
+  // gate uses) so a daily bar from an earlier day can be labelled as such.
+  // Read-only. See services/data-feed-report.js.
+  // -----------------------------------------------------------------------
+  router.get('/data-feed', async (req, res) => {
+    try {
+      const { executionCosts, quoteFreshness, NOT_MEASURED, EXECUTION_WINDOW_DEFAULT } = await import('../services/data-feed-report.js')
+      const { fxDayOpenMs } = await import('../services/risk.js')
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
+      const nowMs = Date.now()
+      res.json({
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        asOfMs: nowMs,
+        brokerDayOpenMs: fxDayOpenMs(nowMs),
+        execution: executionCosts(db, { where: acct.where, params: acct.params, limit: req.query?.limit ?? EXECUTION_WINDOW_DEFAULT }),
+        quotes: quoteFreshness(db, nowMs),
+        notMeasured: NOT_MEASURED,
+      })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/strategy-asset?days=7 — where the money actually went.
   //
   // Owner 09-08-2026, auditing the week. `/state/perf-ledger`'s per-market cut
@@ -4128,6 +4158,51 @@ export default function stateRouter(db) {
               : (balance > 0 ? balance * effective.perTradeRiskPct : 0),
           })
           return { ...p, spentUsd: spent, accountId: id, balance }
+        })(),
+        // THE CAP THE GATE ENFORCES (8,989-A row 11, WEB-9). `dailyPacing`
+        // above is a DISPLAY figure: it sizes off the display balance and
+        // does not pass the owner's floor or two-tier knobs, so on
+        // 25-09-2026 it read "binding usd, cap 150" for accounts whose own
+        // risk_events recorded `daily_cap_usd 1191.42, binding pct, tier 4`
+        // — a number the gate was not holding. This is the gate's own
+        // function with the account pre-gate's own inputs
+        // (account-pregate.js: loadRiskConfig + getAccountBalance +
+        // dailyLossVerdict), so what it says binds is what binds. Pure read.
+        dailyCapEnforced: await (async () => {
+          const id = displayAccountId
+          if (!id) return { status: 'unavailable', reason: 'no account named or selected', accountId: null }
+          try {
+            const { dailyLossVerdict } = await import('../services/risk.js')
+            const cfg = loadRiskConfig(db, id)
+            const gateBalance = getAccountBalance(db, id)
+            const v = dailyLossVerdict(db, cfg, id, { balance: gateBalance })
+            const p = v.pacing
+            return {
+              status: 'computed',
+              source: 'risk.dailyLossVerdict (the gate and the account pre-gate)',
+              accountId: id,
+              capUsd: p.capUsd,
+              uncapped: p.uncapped,
+              binding: p.binding,
+              pctCapUsd: p.pctCapUsd,
+              usdCapUsd: p.usdCapUsd,
+              usdInForce: p.usdInForce,
+              floorUsd: p.floorUsd ?? null,
+              floorBinding: !!p.floorBinding,
+              tierPct: p.tierPct ?? null,
+              pct: p.pct,
+              remainingUsd: p.remainingUsd,
+              todayPnlUsd: v.todayPnl,
+              // The gate's sizing input, as the gate reads it — named so a
+              // reader can see when it differs from the display balance.
+              gateBalanceUsd: gateBalance,
+              blocked: !!v.block,
+              guard: v.block ? v.guard : null,
+              reason: v.block ? v.reason : null,
+            }
+          } catch (e) {
+            return { status: 'unavailable', reason: e.message, accountId: id }
+          }
         })(),
         guardian: {
           enabled: (getState(db, 'guardian') || 'true') !== 'false',

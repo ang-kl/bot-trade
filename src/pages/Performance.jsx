@@ -1125,6 +1125,10 @@ export default function Performance() {
   const ledgers = useMemo(() => Object.fromEntries((overview?.accounts || []).map(a => [a.accountId,
     { ...reportLedger(populationReport, a.accountId), dailyLossPct: a.dailyLossPct }])), [overview, populationReport])
   const [riskFull, setRiskFull] = useState(null)
+  // GET /state/data-feed (WEB-9): measured latency with coverage, stored
+  // fees/swap per deposit currency, quote freshness and the broker-day open
+  // for the Data-feed card. Null = not loaded, and the card says so.
+  const [feedReport, setFeedReport] = useState(null)
   const [screen, setScreen] = useState('now') // mobile pill nav
   const [error, setError] = useState('')
   // "Now" for the derived windows below — stamped at each data load so the
@@ -1141,7 +1145,7 @@ export default function Performance() {
     if (pageAsleep()) return
     const generation = ++loadGeneration.current
     if (!agentConfigured()) {
-      setPopulationReport(null); setAnalytics(null); setRiskFull(null)
+      setPopulationReport(null); setAnalytics(null); setRiskFull(null); setFeedReport(null)
       setError('Agent not connected — set it up on Connect.'); return
     }
     try {
@@ -1175,21 +1179,25 @@ export default function Performance() {
       setPositions(positionRows || [])
       setPosScope({ accountId: positionRows ? acct : null, legacyRows: p?.legacyRows ?? 0 })
       // History reads share a queue with the chart; current money is independent.
-      const [pm, dd, rf] = await Promise.all([
+      const [pm, dd, rf, df] = await Promise.all([
         readPerformanceReport(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
         readPerformanceReport(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
         acct === 'all' ? null : agentGet(`/state/risk-full?account=${encodeURIComponent(acct)}`).catch(() => null),
+        agentGet(`/state/data-feed${q}`).catch(() => null),
       ])
       if (generation !== loadGeneration.current) return
       setPostmortems(pm?.rows || pm?.postmortems || [])
       setDecisionsDaily(dd?.rows ?? null)
       setRiskFull(rf)
+      // Only a report for THIS scope is shown; an older agent without the
+      // route (or an error body) leaves the card saying "did not load".
+      setFeedReport(df && !df.error && String(df.accountId) === String(acct) ? df : null)
 
       setLoadedAt(populations?.asOfMs ?? Date.now())
       setError('')
     } catch (e) {
       if (generation === loadGeneration.current) {
-        setPopulationReport(null); setAnalytics(null); setRiskFull(null)
+        setPopulationReport(null); setAnalytics(null); setRiskFull(null); setFeedReport(null)
         setError(e.message)
       }
     }
@@ -1219,6 +1227,8 @@ export default function Performance() {
     if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
     const rf2 = acct === 'all' ? null : swrPeek(`/state/risk-full?account=${encodeURIComponent(acct)}`)
     if (rf2) setRiskFull(rf2)
+    const df2 = swrPeek(`/state/data-feed${q}`)
+    if (df2 && !df2.error && String(df2.accountId) === String(acct)) setFeedReport(df2)
     if (tradeRows) setTradeScope(acct)
     const populations = swrPeek(populationUrl)
     if (populations?.status === 'complete') {
@@ -2096,7 +2106,12 @@ export default function Performance() {
               currency={feed.currency}
               floating={feed.openPnl}
               openCount={positionsAvailable ? positions.length : null}
-              dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
+              dailyCap={String(riskFull?.dailyCapEnforced?.accountId) === String(acct) ? riskFull.dailyCapEnforced : null}
+              allAccounts={acct === 'all'}
+              depositCurrency={riskFull?.account?.depositCurrency ?? null}
+              equityStopPct={riskFull?.risk?.effective?.equityStopPct ?? null}
+              feedReport={feedReport}
+              nowMs={quoteNow}
               equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
               slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
               tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
@@ -2475,7 +2490,12 @@ export default function Performance() {
             currency={feed.currency}
             floating={feed.openPnl}
             openCount={positionsAvailable ? positions.length : null}
-            dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
+            dailyCap={String(riskFull?.dailyCapEnforced?.accountId) === String(acct) ? riskFull.dailyCapEnforced : null}
+            allAccounts={acct === 'all'}
+            depositCurrency={riskFull?.account?.depositCurrency ?? null}
+            equityStopPct={riskFull?.risk?.effective?.equityStopPct ?? null}
+            feedReport={feedReport}
+            nowMs={quoteNow}
             equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
             slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
             tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
