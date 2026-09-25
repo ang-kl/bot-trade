@@ -63,6 +63,8 @@ export const ABSURD_RISK_FRACTION = 0.5
 export const STAGES = Object.freeze(['pre_order', 'order', 'close', 'stuck'])
 export const SAMPLE_LIMIT = 25
 export const SAMPLE_LIMIT_ONE_RULE = 200
+/** V3 L1c: unattributed violations named per rule in a report scoped to one account (bounded; ?account=all names them all). */
+export const UNATTRIBUTED_SAMPLE_MAX = 5
 /**
  * A snapshot this old is not evidence about now: the goal rows' default
  * limit (lifecycleSnapshotMaxAgeMin), the controller's own record limit
@@ -129,6 +131,17 @@ function endedBy(ctx, subject) {
   if (!r) return null
   return { violation: false, class: r.outcome === 'unresolved' ? 'written_off' : 'settled' }
 }
+
+/**
+ * V3 L1c: a record key naming a registered controller (STK-11's subject,
+ * `controller:<name>`). A controller is not an account record: the stage
+ * counts it, and names it on its own line — never inside an account's count,
+ * never dropped from the headline.
+ */
+const CONTROLLER_RECORD_RE = /^controller:/
+const isControllerRecord = rec => CONTROLLER_RECORD_RE.test(String(rec ?? ''))
+/** The per-account line (`accounts[]`) the stage's controllers are counted on. */
+export const CONTROLLERS_LINE = 'controllers'
 
 /** Stop (and target) on the wrong side of the entry for the direction. */
 function sideProblems(dir, entry, stop, target) {
@@ -1147,14 +1160,25 @@ export const RULES = Object.freeze([
  * found-but-unwritten targets) and the protection audit's per-account
  * records (STK-09's positive evidence). v3 never shipped before this fix
  * round, so the fix round keeps the number.
+ *
+ * v4 (V3 L1c): the stage summaries count every violation, the unattributed
+ * ones included. A report scoped to one account now carries its NULL-account
+ * violations `beside` the account (runRule) and summarise counts them in the
+ * stage headline — the rule's own counts are unchanged and still never
+ * credit them to the account. A controller (STK-11, `controller:<name>`) is
+ * counted in the headline and named on its own line (`controllers` in the
+ * summary and in accounts[]), never as an account record. The all-accounts
+ * headline numbers are unchanged; its parts are new. No rule's own source
+ * changed, so no rule version moves.
  */
-export const HELPERS_VERSION = 3
+export const HELPERS_VERSION = 4
 export const JUDGE_HELPERS = Object.freeze({
   tsMs, blank, num, acctOf, idKey, upper, dirOf, ours, intentTag, parseJson, directionReasonOf, sideProblems, riskScaleWrong,
   botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow, endedBy,
-  loadContext, runRule, summarise, recordKeyOf, accountRegistered,
+  loadContext, runRule, summarise, recordKeyOf, accountRegistered, isControllerRecord, stageCountPhrase,
   constants: `${ABSURD_RISK_FRACTION}|${GENERIC_CLOSE_RE}|${[...LIMIT_PRODUCERS]}|${TERMINAL_INTENT}|${CLEAN_BOT_ORIGINS}|${ACTION_LOG_WINDOW_IDS}` +
-    `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${PROTECTION_LOG_MUTE_MS}|${JSON.stringify(CONTEXT_SQL)}`,
+    `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${PROTECTION_LOG_MUTE_MS}|${JSON.stringify(CONTEXT_SQL)}` +
+    `|${CONTROLLER_RECORD_RE}|${CONTROLLERS_LINE}`,
 })
 export const RULESET_VERSION = [...RULES.map(r => `${r.id}@${r.version}`), `helpers@${HELPERS_VERSION}`].join(',')
 
@@ -1256,6 +1280,15 @@ function runRule(db, rule, ctx, win, scope) {
     newestAt: null, truncated: ctx.truncated.length > 0, error: null,
   }
   const entries = []
+  // V3 L1c: a report scoped to one account keeps its NULL-account rows (a
+  // controller, an outbox, a row no writer stamped) out of the rule's own
+  // counts — never credited to the account (VERIFY correction 10) — but the
+  // stage summary counts them beside it, exactly as the all-accounts report
+  // does. Measured in production with L1b live (helpers@2), 25-09-2026: the
+  // report scoped to the selected account read summary.stuck.new = 19 while
+  // STK-11 held pnl_reconcile (unattributed 1) and, at 15:05 UTC, STK-08 an
+  // outbox (unattributed 1) — neither in any stage count.
+  const beside = { entries: [], populationNew: 0 }
   let rows
   const limit = Math.max(1, Math.min(win.populationLimit ?? Infinity, rule.populationLimit ?? DEFAULT_POPULATION_LIMIT))
   try {
@@ -1266,7 +1299,7 @@ function runRule(db, rule, ctx, win, scope) {
     if (rule.rows) rows = rule.rows(rows, ctx, win, db)
   } catch (err) {
     res.measurable = false; res.error = String(err?.message || err); res.reason = `unreadable: ${cut(res.error, 120)}`
-    return { res, entries }
+    return { res, entries, beside }
   }
   let newest = -Infinity, newestJudged = -Infinity
   for (const row of rows) {
@@ -1293,7 +1326,7 @@ function runRule(db, rule, ctx, win, scope) {
       // The newest record JUDGED at all, defective or not: what lets a
       // falsifier say "a record was made since and it was stored right".
       if (t != null && t > newestJudged) newestJudged = t
-    }
+    } else if (isNew) beside.populationNew++
     if (verdict == null) continue
     if (verdict.violation === false) {
       if (!counts) continue
@@ -1302,15 +1335,16 @@ function runRule(db, rule, ctx, win, scope) {
       continue
     }
     bucket.violations++; if (isNew) bucket.newViolations++
-    if (!counts) continue
+    const at = t ?? tsMs(verdict.since)
+    const { detail, class: cls, violation: _v, info: _i, ...extra } = verdict
+    const subject = rule.subject(row, ctx)
+    const entry = { subject, record: recordKeyOf(subject, ctx), account: acct, at: iso(at), new: isNew, ...(cls ? { class: cls } : {}), ...extra, detail: cut(detail) }
+    if (!counts) { beside.entries.push(entry); continue }
     res.violations++
     if (isNew) res.newViolations++; else res.legacyViolations++
     if (verdict.class) res.classes[verdict.class] = (res.classes[verdict.class] || 0) + 1
-    const at = t ?? tsMs(verdict.since)
     if (at != null && at > newest) newest = at
-    const { detail, class: cls, violation: _v, info: _i, ...extra } = verdict
-    const subject = rule.subject(row, ctx)
-    entries.push({ subject, record: recordKeyOf(subject, ctx), account: acct, at: iso(at), new: isNew, ...(cls ? { class: cls } : {}), ...extra, detail: cut(detail) })
+    entries.push(entry)
   }
   res.newestAt = Number.isFinite(newest) ? iso(newest) : null
   res.newestJudgedAt = Number.isFinite(newestJudged) ? iso(newestJudged) : null
@@ -1323,10 +1357,32 @@ function runRule(db, rule, ctx, win, scope) {
     res.note = `scored 0 while no_bars ${res.classes.no_bars}: the scorer is not scoring (goal-table.js:415-429 reports this as "waiting")`
   }
   if (rule.note) { const n = rule.note(res); if (n) res.note = n }
-  return { res, entries }
+  return { res, entries, beside }
 }
 
 const sortEntries = list => list.sort((a, b) => (Date.parse(b.at ?? '') || 0) - (Date.parse(a.at ?? '') || 0) || String(a.subject).localeCompare(String(b.subject)))
+
+/**
+ * V3 L1c: a stage's count as one phrase. When every counted item is an
+ * account record it reads as before ("19 stuck record(s)"); otherwise it
+ * names the parts the headline adds up — "20 stuck — 19 account record(s) ·
+ * controllers: 1 stalled (pnl_reconcile: error)". Reads a snapshot written
+ * before L1c (no parts) the old way. Pure.
+ */
+export function stageCountPhrase(s, stage) {
+  const what = stage === 'stuck' ? 'stuck' : 'new defective'
+  const ctl = Number(s?.controllers) || 0
+  const una = Number(s?.unattributed) || 0
+  if (!ctl && !una) return `${s?.new} ${what} record(s)`
+  const records = Number.isFinite(Number(s?.records)) ? Number(s.records) : Number(s?.new) - ctl - una
+  const names = Array.isArray(s?.controllerNames) && s.controllerNames.length
+    ? ` (${s.controllerNames.join(', ')}${ctl > s.controllerNames.length ? ', …' : ''})`
+    : ''
+  const parts = [`${records} account record(s)`]
+  if (una) parts.push(`${una} with no account`)
+  if (ctl) parts.push(`controllers: ${ctl} stalled${names}`)
+  return `${s?.new} ${what} — ${parts.join(' · ')}`
+}
 
 function summarise(results, win, cfg) {
   const summary = {}
@@ -1340,18 +1396,43 @@ function summarise(results, win, cfg) {
     const rs = results.filter(r => r.res.stage === stage)
     const defects = rs.filter(r => r.res.severity === 'defect')
     const newS = new Set(), legS = new Set(), noticeS = new Set()
-    for (const { res, entries } of rs) {
-      for (const e of entries) {
-        const acct = e.account ?? 'unattributed'
+    // L1c: the record keys any entry credits to an account, and each
+    // controller's class — the parts the headline is made of.
+    const attributed = new Set()
+    const controllerClass = new Map()
+    for (const { res, entries, beside } of rs) {
+      // L1c: a scoped report's unattributed violations (`beside`) count in the
+      // stage as they do in the all-accounts report; the rule's own counts
+      // stay the account's.
+      for (const e of [...entries, ...(beside?.entries ?? [])]) {
         // Distinct RECORDS (N1): a trade with a broker position counts as that position.
         const rec = e.record ?? e.subject
+        const controller = isControllerRecord(rec)
+        const acct = controller ? CONTROLLERS_LINE : (e.account ?? 'unattributed')
+        if (!controller && e.account != null) attributed.add(rec)
         if (res.severity === 'notice') { noticeS.add(rec); bump(acct, stage, 'notices', rec); continue }
-        if (e.new) { newS.add(rec); bump(acct, stage, 'new', rec) } else { legS.add(rec); bump(acct, stage, 'legacy', rec) }
+        if (e.new) {
+          newS.add(rec); bump(acct, stage, 'new', rec)
+          if (controller && !controllerClass.has(rec)) controllerClass.set(rec, e.class ?? null)
+        } else { legS.add(rec); bump(acct, stage, 'legacy', rec) }
       }
     }
     for (const s of newS) legS.delete(s)
+    const controllerKeys = [...newS].filter(isControllerRecord).sort()
+    const records = [...newS].filter(k => !isControllerRecord(k) && attributed.has(k)).length
+    const parts = {
+      records,
+      unattributed: newS.size - controllerKeys.length - records,
+      controllers: controllerKeys.length,
+      controllerNames: controllerKeys.slice(0, INFO_NAMES_MAX).map(k => {
+        const cls = controllerClass.get(k)
+        return `${String(k).replace(CONTROLLER_RECORD_RE, '')}${cls ? `: ${cls}` : ''}`
+      }),
+    }
+    const counted = stageCountPhrase({ new: newS.size, ...parts }, stage)
     const measurable = defects.some(r => r.res.measurable)
-    const populationNew = defects.reduce((m, r) => Math.max(m, r.res.populationNew), 0)
+    // L1c: a new row beside a scoped account is a new row judged in the stage.
+    const populationNew = defects.reduce((m, r) => Math.max(m, r.res.populationNew + (r.beside?.populationNew ?? 0)), 0)
     // B2: a stage whose count leaves a rule out says which, every time — the
     // goal row and the daily line read these, never a bare 0.
     const unreadable = defects.filter(r => r.res.error).map(r => ({ id: r.res.id, reason: cut(r.res.error, 100) }))
@@ -1361,11 +1442,12 @@ function summarise(results, win, cfg) {
       truncated.length ? `truncated at the population bound (counts are a lower bound): ${truncated.join(', ')}` : null,
     ].filter(Boolean).join('; ')
     const note = !measurable
-      ? `not measurable: ${defects.map(r => `${r.res.id} ${r.res.reason ?? '?'}`).slice(0, 3).join('; ')}`
+      // L1c: what WAS counted (a controller is judged whatever the account) is still said.
+      ? `not measurable: ${defects.map(r => `${r.res.id} ${r.res.reason ?? '?'}`).slice(0, 3).join('; ')}${newS.size ? `; counted: ${counted}` : ''}`
       : stage !== 'stuck' && populationNew === 0
         ? `nothing new to judge since ${cfg.acceptanceStart}: a fact about volume, not a pass${partial ? `; ${partial}` : ''}`
-        : `${newS.size} ${stage === 'stuck' ? 'stuck' : 'new defective'} record(s)${partial ? `; ${partial}` : ''}`
-    summary[stage] = { new: newS.size, legacy: stage === 'stuck' ? 0 : legS.size, notices: noticeS.size, measurable, populationNew, unreadable, truncated, note }
+        : `${counted}${partial ? `; ${partial}` : ''}`
+    summary[stage] = { new: newS.size, legacy: stage === 'stuck' ? 0 : legS.size, notices: noticeS.size, measurable, populationNew, unreadable, truncated, note, ...parts }
   }
   const accounts = [...perAccount.values()]
     .map(a => ({ account: a.account, stage: a.stage, new: a.new.size, legacy: a.stage === 'stuck' ? 0 : [...a.legacy].filter(s => !a.new.has(s)).length, notices: a.notices.size }))
@@ -1434,9 +1516,12 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
   })()
   const shown = only ? results.filter(r => r.res.id === only.id) : results
   const stages = Object.fromEntries(STAGES.map(s => [s, []]))
-  for (const { res, entries } of shown) {
+  for (const { res, entries, beside } of shown) {
     sortEntries(entries)
-    stages[res.stage].push({ ...res, sampleTotal: entries.length, sampleOffset, sample: entries.slice(sampleOffset, sampleOffset + sampleLimit) })
+    // L1c: scoped to one account, the unattributed violations the stage
+    // headline counts are named here too (a few; ?account=all has them all).
+    const named = beside?.entries?.length ? { unattributedSample: sortEntries([...beside.entries]).slice(0, UNATTRIBUTED_SAMPLE_MAX) } : {}
+    stages[res.stage].push({ ...res, sampleTotal: entries.length, sampleOffset, sample: entries.slice(sampleOffset, sampleOffset + sampleLimit), ...named })
   }
   const flat = shown.map(({ res }) => ({
     id: res.id, key: res.key, version: res.version, stage: res.stage, severity: res.severity, fix: res.fix,
@@ -1517,7 +1602,9 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
     // off_track; it can never prove on_track — that is not_measurable, named.
     const partialNote = partialOf(s)
     const verdict = !judged ? 'not_measurable' : s.new > max ? 'off_track' : partialNote ? 'not_measurable' : 'on_track'
-    const counted = `${s?.new} ${stage === 'stuck' ? 'stuck' : 'new defective'} record(s)${partialNote ? ' over the readable rules' : ''}`
+    // L1c: the count names its parts when any is not an account record
+    // (a stalled controller, a row with no account) — the number is the whole.
+    const counted = `${stageCountPhrase(s, stage)}${partialNote ? ' over the readable rules' : ''}`
     const note = !snapshot ? `no snapshot at ${SNAPSHOT_KEY} — the order_lifecycle controller has not produced one`
       : stale ? `snapshot ${ageMin} min old (limit ${maxAgeMin} min) — the controller may be failing; see /state/heartbeats`
         : !s ? `stage ${stage} missing from the snapshot`
@@ -1528,7 +1615,7 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
     return {
       id: `lifecycle_${stage}`, name: STAGE_NAMES[stage], subsystem: 'order lifecycle',
       metric: stage === 'stuck'
-        ? 'records stuck now with no terminal state (distinct records within the stage; a trade with a broker position counts as that position)'
+        ? 'records stuck now with no terminal state, plus registered controllers stalled or failing — counted in, and named on their own line (distinct records within the stage; a trade with a broker position counts as that position)'
         : `records made since ${snapshot?.acceptanceStart ?? 'the acceptance start'} that failed to store or are incomplete (distinct records within the stage; a trade with a broker position counts as that position)`,
       target: `≤ ${max}`, horizon: stage === 'stuck' ? 'now' : `since ${snapshot?.acceptanceStart ?? '?'}`,
       current: verdict === 'not_measurable' ? null : s.new,
@@ -1648,6 +1735,12 @@ export function lifecycleReportLines(snapshot) {
   const lines = [`Lifecycle since ${String(snapshot.acceptanceStart).slice(0, 16).replace('T', ' ')}Z (snapshot ${hhmm}Z): pre-order ${s.pre_order.new}${mark('pre_order')} new / ${s.pre_order.legacy} legacy; order ${s.order.new}${mark('order')}; close ${s.close.new}${mark('close')}; stuck ${s.stuck.new}${mark('stuck')}`]
   const top = (snapshot.rules || []).filter(r => r.severity === 'defect' && r.newViolations > 0).sort((a, b) => b.newViolations - a.newViolations).slice(0, 3)
   for (const r of top) lines.push(`  ${r.id} ${r.key}: ${r.newViolations} new`)
+  // L1c: a headline that counts a controller or a row with no account says
+  // so on its own line — "stuck: 20 stuck — 19 account record(s) ·
+  // controllers: 1 stalled (pnl_reconcile: error)".
+  for (const stage of STAGES) {
+    if ((Number(s[stage]?.controllers) || 0) + (Number(s[stage]?.unattributed) || 0) > 0) lines.push(`  ${stage}: ${stageCountPhrase(s[stage], stage)}`)
+  }
   for (const stage of STAGES) {
     if (s[stage]?.measurable === false || (stage !== 'stuck' && !(s[stage]?.populationNew > 0))) lines.push(`  ${stage} not measurable: ${s[stage]?.note ?? 'missing'}`)
     else if (partialOf(s[stage])) lines.push(`  ${stage}* partial — ${partialOf(s[stage])}`)

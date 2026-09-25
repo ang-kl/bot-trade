@@ -2891,7 +2891,8 @@ export default function stateRouter(db) {
       for (const name of ['cpp_exec', 'cpp_exec_demo']) {
         let rec = null
         try { rec = JSON.parse(getState(db, `${name}_tick_json`) || 'null') } catch { rec = null }
-        if (rec) sides.push({ side: name, at: rec.at, status: rec.status, rate24h: tickRate24h(db, name) })
+        // GW-CAP: the retention projection against the cap the side reports.
+        if (rec) sides.push({ side: name, at: rec.at, status: rec.status, rate24h: tickRate24h(db, name, Date.now(), rec.status?.segments?.spoolCapBytes ?? null) })
       }
       let rows = []
       try { rows = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY is_live, account_id').all() } catch { rows = [] }

@@ -1071,7 +1071,10 @@ export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
   if (status.enabled !== false && (changed || (status.recording && due))) {
     const ev = status.events || {}, seg = status.segments || {}, disk = status.disk || {}
     const gb = (n) => (Number(n) / 1e9).toFixed(2)
-    console.log(`[tick] ${side.name} recorder ${status.state}${status.recording ? '' : ' (switch off)'}: ${ev.total ?? 0} events (${ev.changed ?? 0} changed, ${ev.dropped ?? 0} dropped, ${ev.gaps ?? 0} gaps), ${seg.sealed ?? 0} segments sealed (${gb(seg.sealedBytes)} GB) + ${gb(seg.openBytes)} GB open, mount ${gb(disk.availBytes)} GB free of ${gb(disk.totalBytes)} GB (${disk.usagePct ?? '?'}% used, reserve ${gb(disk.reserveBytes)} GB)${status.reason ? ` — ${status.reason}` : ''}`)
+    // GW-CAP: the cap the sidecar reports it is holding, when it reports one
+    // (TICK_SPOOL_CAP_BYTES or the 2 GiB default) — never a number it did not send.
+    const cap = Number(seg.spoolCapBytes) > 0 ? ` under a ${gb(seg.spoolCapBytes)} GB cap` : ''
+    console.log(`[tick] ${side.name} recorder ${status.state}${status.recording ? '' : ' (switch off)'}: ${ev.total ?? 0} events (${ev.changed ?? 0} changed, ${ev.dropped ?? 0} dropped, ${ev.gaps ?? 0} gaps), ${seg.sealed ?? 0} segments sealed (${gb(seg.sealedBytes)} GB) + ${gb(seg.openBytes)} GB open${cap}, mount ${gb(disk.availBytes)} GB free of ${gb(disk.totalBytes)} GB (${disk.usagePct ?? '?'}% used, reserve ${gb(disk.reserveBytes)} GB)${status.reason ? ` — ${status.reason}` : ''}`)
     record.lastLoggedAt = new Date(nowMs).toISOString()
   }
   try { setState(db, key, JSON.stringify(record)) } catch { /* best effort */ }
@@ -1179,14 +1182,21 @@ export async function pullTickShadow(db, exec, side) {
  * samples: events/sec, bytes/day at the recorder's 40 B record, and the
  * projection against the plan's 2 GiB spool. Null fields when fewer than
  * two samples exist — a rate from one point is a guess, not a measurement.
+ *
+ * GW-CAP: the cap is configurable on the sidecar now (TICK_SPOOL_CAP_BYTES),
+ * so the 2 GiB figure is no longer the retention. `spoolCapBytes` is the cap
+ * the sidecar REPORTS (its /tick-status segments.spoolCapBytes), and
+ * `spoolHoursAtCap` the same projection against it — null when the sidecar
+ * reported no cap, never a guess at one. `spoolHoursAt2GiB` is kept as is.
  */
-export function tickRate24h(db, side, nowMs = Date.now()) {
+export function tickRate24h(db, side, nowMs = Date.now(), spoolCapBytes = null) {
+  const cap = Number(spoolCapBytes) > 0 ? Number(spoolCapBytes) : null
   let rows = []
   try {
     rows = db.prepare('SELECT at_ms, events, bytes_written, dropped, gaps, symbols FROM tick_status_samples WHERE side = ? AND at_ms >= ? ORDER BY at_ms')
       .all(side, nowMs - 24 * 3_600_000)
   } catch { rows = [] }
-  if (rows.length < 2) return { side, samples: rows.length, eventsPerSec: null, bytesPerDay: null, spoolHoursAt2GiB: null, dropped: null, gaps: null }
+  if (rows.length < 2) return { side, samples: rows.length, eventsPerSec: null, bytesPerDay: null, spoolHoursAt2GiB: null, spoolCapBytes: cap, spoolHoursAtCap: null, dropped: null, gaps: null }
   // Counters reset on a sidecar restart: sum only the non-negative deltas.
   let events = 0, bytes = 0, dropped = 0, gaps = 0
   for (let i = 1; i < rows.length; i++) {
@@ -1200,6 +1210,8 @@ export function tickRate24h(db, side, nowMs = Date.now()) {
     side, samples: rows.length, spanHours: +(spanS / 3600).toFixed(2), symbols: rows[rows.length - 1].symbols,
     eventsPerSec: +eventsPerSec.toFixed(3), bytesPerDay: Math.round(bytesPerDay),
     spoolHoursAt2GiB: bytesPerDay > 0 ? +((2 * 1024 ** 3) / bytesPerDay * 24).toFixed(1) : null,
+    spoolCapBytes: cap,
+    spoolHoursAtCap: bytesPerDay > 0 && cap ? +(cap / bytesPerDay * 24).toFixed(1) : null,
     dropped, gaps,
     model: 'docs/tick-momentum/storage-capacity.csv: 20 symbols × 5/20/100 events/s × 96 B = 0.83 / 3.3 / 16.6 GB/day; this recorder writes 40 B per event',
   }

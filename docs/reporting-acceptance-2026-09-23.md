@@ -38,7 +38,14 @@ carries `blocker` as a string (the no_orders notice printed an empty blocker
 from the object before), tick-only and dual accounts get `entry_activity` from
 the tick permit feeder's own receipt (`tick_entry_work_json`), and a bounded
 `entryDiagnostics` block (Node records, never broker-verified) rides the
-contract for cpp-verify to relay once CV-1 lands.
+contract. Since V3 CV-1 cpp-verify relays it on `/watchdog-status` labelled
+`node_records_relayed` / `brokerVerified: false`, keeps it in memory only (its
+fsynced watchdog state stores the contract without it), and the Controllers
+panel shows it as "Entry refusals — Node records relayed by cpp-verify (not
+broker-verified)", with each account's open-position count from cpp-verify's
+own broker read beside it. The no_orders notice prints the `blocker` line
+(`watchNotificationText`), pinned from both sides by
+`cpp-verify/src/tests/fixtures/node-entry-activity.json`.
 
 Two limits of C4, recorded rather than carried silently:
 

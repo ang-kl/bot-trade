@@ -15,7 +15,10 @@
 //      unattributed and never credited to the account asked for;
 //   6. bounded: no SCAN of the four large tables; a limit hit says truncated;
 //   7. a rule's meaning cannot change without a version bump (the pin);
-//   8. goal rows, inspector, daily report and the ticker read one snapshot.
+//   8. goal rows, inspector, daily report and the ticker read one snapshot;
+//   9. (L1c) a stage headline counts every violation — a scoped report's
+//      unattributed ones beside the account, a controller on its own line —
+//      so a stalled controller with no account record reads stuck > 0.
 import test, { mock } from 'node:test'
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
@@ -25,6 +28,7 @@ import {
   RULES, RULESET_VERSION, HELPERS_VERSION, JUDGE_HELPERS, CONTEXT_SQL, STAGES, SNAPSHOT_KEY, SNAPSHOT_OPTIONS, SNAPSHOT_MAX_BYTES,
   buildOrderLifecycle, compactSnapshot, lifecycleGoals, normaliseLifecycleOptions, readSnapshot,
   inspectLifecycleRegression, lifecycleRuleRecurs, lifecycleRulePersists, lifecycleReportLines, loadLifecycleConfig, GENERIC_CLOSE_RE,
+  CONTROLLERS_LINE, stageCountPhrase, UNATTRIBUTED_SAMPLE_MAX,
 } from './order-lifecycle.js'
 import { runOrderLifecyclePass, startOrderLifecycle } from './order-lifecycle-ticker.js'
 import { goalTable, DEFAULT_GOAL_TARGETS } from './goal-table.js'
@@ -726,7 +730,10 @@ test('bounded: samples page at 25 (200 with one rule), counts never shrink', () 
 const src = v => (typeof v === 'function' ? v.toString() : JSON.stringify(v))
 const ruleHash = r => createHash('sha256').update(Object.keys(r).filter(k => !['id', 'version', 'cite', 'noun'].includes(k)).sort().map(k => `${k}=${src(r[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
 const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS).sort().map(k => `${k}=${src(JUDGE_HELPERS[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
-const PINNED_HELPERS = { [`helpers@3`]: '99e6e8786e41d413' }
+// helpers@4 (V3 L1c): runRule carries a scoped report's unattributed
+// violations `beside`, summarise counts them and names controllers on their
+// own line. No rule's own hash moved.
+const PINNED_HELPERS = { [`helpers@4`]: '758feead1efec1bd' }
 const PINNED = {
   'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@1': '1d3934917924fe6a', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
@@ -1215,4 +1222,145 @@ test('N3: the loop starts the ticker (failure mode #4: a call site the module ca
   assert.ok(start > 0)
   const body = src.slice(start, start + 40_000)
   assert.match(body, /import\('\.\/services\/order-lifecycle-ticker\.js'\)\s*\.then\(m => m\.startOrderLifecycle\(db\)\)/)
+})
+
+// ---------------------------------------------------------------------------
+// 10. V3 L1c — the stage headline counts every violation. Measured in
+// production with L1b live (25-09-2026): STK-11 flagged pnl_reconcile under
+// `unattributed` (population 35, violations 1) and STK-08 an outbox, while
+// the report scoped to the selected account read summary.stuck.new = 19 —
+// the unattributed violations were in no stage count. A controller is not an
+// account record: it is counted in the headline and named on its own line.
+// ---------------------------------------------------------------------------
+const stalledController = db => {
+  ins(db, 'controller_heartbeats', { name: 'minute_review', last_run_at: iso(NOW - 3_600_000), last_ok_at: iso(NOW - 3_600_000), consecutive_failures: 0, runs: 500 })
+  assert.equal(heartbeatView(db, { now: new Date(NOW) }).find(v => v.name === 'minute_review').verdict, 'stalled', 'precondition: the heartbeat itself says stalled')
+}
+const partsAddUp = (s, label) => assert.equal(s.new, s.records + s.unattributed + s.controllers, `${label}: the headline is the sum of its named parts`)
+
+test('L1c: a stalled controller and no account records reads stuck > 0 — all accounts, the selected account and an explicit one', () => {
+  const db = initDB(':memory:')
+  stalledController(db)
+  ins(db, 'accounts', { account_id: A, enabled: 1 })
+  setState(db, 'ctrader_account_id', A)
+  for (const t of ['trades', 'pending_orders', 'entry_intents', 'risk_events', 'monitored_positions', 'telegram_outbox']) {
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n, 0, `precondition: no account record in ${t}`)
+  }
+  const reports = [['all', build(db)], ['selected', build(db, { account: null })], ['explicit', build(db, { account: A })]]
+  assert.equal(reports[1][1].scope.account, A, 'the selected account is the scope')
+  assert.equal(reports[1][1].scope.explicit, false)
+  for (const [label, report] of reports) {
+    const s = report.summary.stuck
+    assert.ok(s.new > 0, `${label}: a stalled controller is stuck, read ${s.new}`)
+    assert.equal(s.new, 1, label)
+    assert.equal(s.controllers, 1, label)
+    assert.equal(s.records, 0, label)
+    assert.equal(s.unattributed, 0, label)
+    partsAddUp(s, label)
+    assert.deepEqual(s.controllerNames, ['minute_review: stalled'], label)
+    assert.equal(s.measurable, true, label)
+    assert.equal(s.note, '1 stuck — 0 account record(s) · controllers: 1 stalled (minute_review: stalled)', label)
+    assert.deepEqual(report.accounts.filter(a => a.stage === 'stuck').map(a => [a.account, a.new]), [[CONTROLLERS_LINE, 1]], `${label}: its own line, not an account's`)
+  }
+  // The rule's own counts still never credit it to the account asked for (VERIFY correction 10) — it is named beside.
+  const scoped = ruleOf(build(db, { account: A }), 'STK-11')
+  assert.equal(scoped.violations, 0)
+  assert.equal(scoped.unattributed.violations, 1)
+  assert.deepEqual(scoped.sample, [])
+  assert.deepEqual(scoped.unattributedSample.map(e => [e.subject, e.class]), [['controller:minute_review', 'stalled']])
+  assert.equal(ruleOf(build(db), 'STK-11').unattributedSample, undefined, 'all accounts: already in the sample')
+  // The goal row and the daily line read the all-accounts snapshot: off track, the controller named.
+  withSnapshot(db, build(db))
+  const g = lifecycleGoals(readSnapshot(getState, db), DEFAULT_GOAL_TARGETS, NOW).find(r => r.id === 'lifecycle_stuck')
+  assert.equal(g.verdict, 'off_track')
+  assert.equal(g.current, 1)
+  assert.match(g.note, /^1 stuck — 0 account record\(s\) · controllers: 1 stalled \(minute_review: stalled\) — STK-11 controller_failing 1$/)
+  assert.match(g.metric, /registered controllers stalled or failing/)
+  const lines = lifecycleReportLines(readSnapshot(getState, db))
+  assert.match(lines[0], /; stuck 1$/)
+  assert.ok(lines.includes('  stuck: 1 stuck — 0 account record(s) · controllers: 1 stalled (minute_review: stalled)'), lines.join('\n'))
+})
+
+test('L1c: scoped to one account, the headline is its records plus every unattributed one beside it — never credited to it, never dropped', () => {
+  const db = initDB(':memory:')
+  stalledController(db)
+  const onA = trade(db, { account_id: A, status: 'submitting', ctrader_position_id: null, opened_at: '2026-09-26 11:00:00' })
+  const onB = trade(db, { account_id: B, status: 'submitting', ctrader_position_id: null, opened_at: '2026-09-26 11:00:00' })
+  ins(db, 'telegram_outbox', { queued_at: '2026-09-24T00:00:00.000Z', kind: 'alert', priority: 'normal', text: 'x', sent_at: null }) // STK-08: no account
+  risk(db, { account_id: A }) // a clean approval on A: the pre-order stage has something of A's to judge
+  const nullApproval = risk(db, { account_id: null, proposal_json: '{"strategy":"x"}' }) // PRE-01, new, no account
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_events WHERE account_id IS NULL').get().n, 1, 'precondition')
+  const a = build(db, { account: A })
+  const s = a.summary.stuck
+  assert.equal(s.new, 3, 'A\'s in-flight trade + the outbox + the stalled controller')
+  assert.deepEqual([s.records, s.unattributed, s.controllers], [1, 1, 1])
+  partsAddUp(s, 'scoped stuck')
+  assert.equal(s.note, '3 stuck — 1 account record(s) · 1 with no account · controllers: 1 stalled (minute_review: stalled)')
+  assert.deepEqual(a.accounts.filter(x => x.stage === 'stuck').map(x => [x.account, x.new]), [[A, 1], [CONTROLLERS_LINE, 1], ['unattributed', 1]])
+  // The rules' own counts are unchanged: A's only.
+  assert.deepEqual(subjects(ruleOf(a, 'STK-03')), [`trade:${onA}`], 'B\'s trade is not in A\'s report')
+  assert.equal(ruleOf(a, 'STK-08').violations, 0)
+  assert.equal(ruleOf(a, 'STK-08').unattributed.violations, 1)
+  assert.deepEqual(ruleOf(a, 'STK-08').unattributedSample.map(e => e.subject), ['outbox:telegram'])
+  assert.equal(ruleOf(a, 'PRE-01').violations, 0, 'the NULL-account approval is not credited to A (VERIFY correction 10)')
+  // …and the pre-order stage counts that approval beside A.
+  const p = a.summary.pre_order
+  assert.deepEqual([p.new, p.records, p.unattributed, p.controllers], [1, 0, 1, 0])
+  assert.equal(p.measurable, true)
+  assert.equal(p.note, '1 new defective — 0 account record(s) · 1 with no account')
+  assert.deepEqual(ruleOf(a, 'PRE-01').unattributedSample.map(e => e.subject), [`risk_event:${nullApproval}`])
+  // All accounts: the headline is the distinct records the samples name (the pre-L1c count), with its parts.
+  const all = build(db)
+  const st = all.summary.stuck
+  assert.equal(st.new, 4, 'B\'s trade too')
+  assert.deepEqual([st.records, st.unattributed, st.controllers], [2, 1, 1])
+  partsAddUp(st, 'all stuck')
+  const named = new Set(all.stages.stuck.filter(r => r.severity === 'defect').flatMap(r => r.sample.filter(e => e.new).map(e => e.record)))
+  assert.equal(st.new, named.size, 'all accounts: the headline is still the distinct records named')
+  assert.ok(named.has(`trade:${onB}`) && named.has('controller:minute_review') && named.has('outbox:telegram'))
+  assert.deepEqual(all.accounts.filter(x => x.stage === 'stuck').map(x => [x.account, x.new]), [[B, 1], [A, 1], [CONTROLLERS_LINE, 1], ['unattributed', 1]].sort((x, y) => String(x[0]).localeCompare(String(y[0]))))
+  for (const [label, r] of [['scoped', a], ['all', all]]) for (const stage of STAGES) partsAddUp(r.summary[stage], `${label} ${stage}`)
+  // The daily line names the parts.
+  withSnapshot(db, all)
+  assert.ok(lifecycleReportLines(readSnapshot(getState, db)).includes('  stuck: 4 stuck — 2 account record(s) · 1 with no account · controllers: 1 stalled (minute_review: stalled)'))
+})
+
+test('L1c: an explicit account nothing knows stays not measurable, and still says the controller it counted', () => {
+  const db = initDB(':memory:')
+  stalledController(db)
+  const typo = build(db, { account: '4613005' })
+  assert.equal(typo.scope.registered, false)
+  assert.equal(typo.summary.stuck.measurable, false, 'N8 still holds')
+  assert.equal(typo.summary.stuck.controllers, 1)
+  assert.match(typo.summary.stuck.note, /^not measurable: .*; counted: 1 stuck — 0 account record\(s\) · controllers: 1 stalled \(minute_review: stalled\)$/)
+})
+
+test('L1c: a new unattributed defect beside an account with only legacy rows is judged new — not "nothing new to judge"', () => {
+  const db = initDB(':memory:')
+  risk(db, { account_id: A, created_at: OLD }) // A's only approval predates the start: legacy population
+  risk(db, { account_id: null, proposal_json: '{"strategy":"x"}' }) // new, defective, no account
+  const r = build(db, { account: A })
+  assert.equal(ruleOf(r, 'PRE-01').populationNew, 0, 'precondition: nothing new of A\'s own')
+  const p = r.summary.pre_order
+  assert.equal(p.measurable, true)
+  assert.equal(p.populationNew, 1, 'the new row beside A was judged')
+  assert.equal(p.new, 1)
+  assert.equal(p.note, '1 new defective — 0 account record(s) · 1 with no account')
+})
+
+test('L1c: a snapshot written before L1c (no parts) reads as before; the unattributed sample is bounded', () => {
+  assert.equal(stageCountPhrase({ new: 19 }, 'stuck'), '19 stuck record(s)')
+  assert.equal(stageCountPhrase({ new: 0, controllers: 0, unattributed: 0 }, 'order'), '0 new defective record(s)')
+  assert.equal(stageCountPhrase({ new: 20, records: 19, unattributed: 0, controllers: 1, controllerNames: ['pnl_reconcile: error'] }, 'stuck'),
+    '20 stuck — 19 account record(s) · controllers: 1 stalled (pnl_reconcile: error)')
+  const old = { at: iso(NOW), acceptanceStart: START, summary: Object.fromEntries(STAGES.map(st => [st, { new: st === 'stuck' ? 19 : 0, legacy: 0, notices: 0, measurable: true, populationNew: 1, unreadable: [], truncated: [] }])), rules: [] }
+  assert.equal(lifecycleGoals(old, DEFAULT_GOAL_TARGETS, NOW).find(r => r.id === 'lifecycle_stuck').note, '19 stuck record(s)')
+  assert.equal(lifecycleReportLines(old).filter(l => /^ {2}stuck: /.test(l)).length, 0)
+  const db = initDB(':memory:')
+  for (let i = 0; i < UNATTRIBUTED_SAMPLE_MAX + 3; i++) risk(db, { account_id: null, proposal_json: '{}' })
+  risk(db, { account_id: A })
+  const r = build(db, { account: A })
+  assert.equal(ruleOf(r, 'PRE-01').unattributed.violations, UNATTRIBUTED_SAMPLE_MAX + 3)
+  assert.equal(ruleOf(r, 'PRE-01').unattributedSample.length, UNATTRIBUTED_SAMPLE_MAX)
+  assert.equal(r.summary.pre_order.unattributed, UNATTRIBUTED_SAMPLE_MAX + 3, 'the count is whole; only the naming is bounded')
 })

@@ -698,6 +698,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const orderPayload = {
     ctidTraderAccountId: parseInt(accountId),
     symbolId: parseInt(symbolId),
+    // X1 / W2: the intent records its symbol (entry_intents.symbol was NULL
+    // on 154 of 154). Ledger-only: exec-engine strips it before any wire.
+    symbolName: symbol,
     orderType: 'MARKET',
     tradeSide: side,
     volume,
@@ -3206,6 +3209,30 @@ async function runLoop(db) {
             } catch (err) {
               log(`Entry ledger deal-history settle failed (non-fatal): ${err.message}`)
             }
+            // X1 (25-09-2026, owner-approved): the one-time correction of the
+            // resting-order intents the old code stored FILLED at placement
+            // (DB-only; stops for good once done), then the resting orders
+            // this snapshot no longer lists are read from the broker and
+            // settled FILLED / RELEASED / EXPIRED on its answer — never
+            // guessed; a bounded number of reads, then "unresolved".
+            try {
+              const { applyX1Correction } = await import('./services/intent-corrections.js')
+              const x1 = applyX1Correction(db)
+              if (x1.corrected.length || x1.unreadable.length) {
+                log(`Entry ledger X1 correction: ${x1.corrected.length} resting intent(s) FILLED → ACCEPTED (placed, not filled)${x1.corrected.length ? ` (${x1.corrected.map(c => c.intentId).join(', ')})` : ''}, ${x1.leftFilled.length} left FILLED on fill evidence, ${x1.unreadable.length} not judged (evidence unreadable)`)
+              }
+              const { settleAcceptedFromOrderDetails } = await import('./services/entry-ledger.js')
+              const { wsGetOrderDetails } = await import('./lib/ctrader-ws.js')
+              const ad = await settleAcceptedFromOrderDetails(db, {
+                accountId, workingOrderIds: (reconcileData.order || []).map(o => o?.orderId ?? o?.tradeData?.orderId),
+                getOrderDetails: (orderId) => wsGetOrderDetails(host, clientId, clientSecret, accessToken, accountId, orderId),
+              })
+              if (ad.settled.length || ad.noted) {
+                log(`Entry ledger …${String(accountId).slice(-4)} resting orders: ${ad.read} read, ${ad.settled.length} settled${ad.settled.length ? ` (${ad.settled.map(s => `${s.intentId}→${s.to}`).join(', ')})` : ''}, ${ad.noted} noted, ${ad.unresolved.length} unresolved (no broker evidence)`)
+              }
+            } catch (err) {
+              log(`Entry ledger resting-order settle failed (non-fatal): ${err.message}`)
+            }
           } catch (err) {
             log(`Entry ledger reconcile failed (non-fatal): ${err.message}`)
           }
@@ -3712,6 +3739,16 @@ async function runLoop(db) {
                   })
                   if (dh2.filled?.length || dh2.stillUnknown) {
                     log(`Entry ledger …${String(acc.account_id).slice(-4)} deal history: ${dh2.pulled} deal(s) over ${dh2.pages} page(s)${dh2.truncated ? ' (TRUNCATED)' : ''}, ${dh2.filled.length} FILLED, ${dh2.stillUnknown} still UNKNOWN`)
+                  }
+                  // X1: this account's resting orders that left ITS snapshot.
+                  const { settleAcceptedFromOrderDetails } = await import('./services/entry-ledger.js')
+                  const { wsGetOrderDetails } = await import('./lib/ctrader-ws.js')
+                  const ad2 = await settleAcceptedFromOrderDetails(db, {
+                    accountId: acc.account_id, workingOrderIds: (rd.order || []).map(o => o?.orderId ?? o?.tradeData?.orderId),
+                    getOrderDetails: (orderId) => wsGetOrderDetails(host, clientId, clientSecret, accessToken, acc.account_id, orderId),
+                  })
+                  if (ad2.settled.length || ad2.noted) {
+                    log(`Entry ledger …${String(acc.account_id).slice(-4)} resting orders: ${ad2.read} read, ${ad2.settled.length} settled, ${ad2.noted} noted, ${ad2.unresolved.length} unresolved (no broker evidence)`)
                   }
                 } catch (err) {
                   log(`Entry ledger [${acc.account_id}] failed (non-fatal): ${err.message}`)

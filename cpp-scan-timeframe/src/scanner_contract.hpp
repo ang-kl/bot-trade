@@ -32,7 +32,12 @@ inline std::string hash(const std::string& text) {
 }
 struct Identity {
   jsn::Value feed;
-  std::string epoch, config, profile, key;
+  // `stream` names the economic stream WITHOUT the feed epoch. A producer
+  // restart mints a new epoch (Node per process, a gateway per feed start);
+  // keyed with the epoch, every restart added a new cell until the bounded
+  // table refused all input (690 timeframe cells: 512 admitted, then 0 after
+  // one Node restart). The epoch stays on every result and candidate.
+  std::string epoch, config, profile, stream;
   long long ttl = 0;
 };
 inline Identity identity(const jsn::Value& body) {
@@ -44,7 +49,7 @@ inline Identity identity(const jsn::Value& body) {
   out.epoch = version(body.get("feedEpoch")); out.config = version(body.get("configVersion")); out.profile = version(body.get("profileHash"));
   // Explicit comparison-run policy, never a silently chosen admission limit.
   out.ttl = integer(body.get("candidateTtlMs"), 1, 3600000);
-  out.key = jsn::dump(jsn::Value(jsn::Array{out.feed, out.epoch, out.config, out.profile}));
+  out.stream = jsn::dump(jsn::Value(jsn::Array{out.feed, out.config, out.profile}));
   return out;
 }
 inline jsn::Value candidate(const Identity& identity, const std::string& strategy, long long sourceSequence,
