@@ -1430,9 +1430,10 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
   // A missing tick object in /health can mean no spool path. Ask /tick-status
   // for that explicit disabled result too, so Controllers distinguish OFF
   // from an unobserved service. Shadow and permit work still require workers.
+  let tickRec = null
   try {
     if (r.ok === true && typeof exec.sidecarTickStatus === 'function') {
-      await pullTickStatus(db, exec, side, nowMs)
+      tickRec = await pullTickStatus(db, exec, side, nowMs)
     }
     if (r.ok !== undefined && r.tick && typeof r.tick === 'object' && typeof exec.sidecarTickStatus === 'function') {
       // P6a: the shadow portfolio's closed trades ride the same probe.
@@ -1447,6 +1448,19 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       try { await feedTickPermits(db, exec, side, nowMs) } catch (err) { console.warn(`[heartbeat] tick permit feeder failed (${side.name}): ${err.message}`) }
     }
   } catch { /* next probe retries */ }
+  // V3 R1 (P8b): the segment manifest. The sealed listing is read on EVERY
+  // probe, not hourly, so a segment sealed and retired inside an hour is
+  // still seen, and a name that stops being listed is classed retired /
+  // lost_restart / unexplained by oldest-first order and cap arithmetic
+  // (services/tick-segment-manifest.js). Only for a sidecar whose
+  // /tick-status just said it has a recorder; its own try, because
+  // bookkeeping never fails the beat.
+  try {
+    if (tickRec?.status && tickRec.status.enabled !== false) {
+      const { reconcileSegmentManifest } = await import('./tick-segment-manifest.js')
+      await reconcileSegmentManifest(db, side, { status: tickRec.status, bootId: r.bootId ?? null, nowMs, list: deps.listTickSegments })
+    }
+  } catch (err) { console.warn(`[heartbeat] tick segment manifest failed (${side.name}): ${err?.message || err}`) }
   // Persist what the probe learned so a READ route never has to call the
   // sidecar itself. This probe already runs every ~2 minutes; making
   // /state/account-engineering re-fetch /health on every page load would put an

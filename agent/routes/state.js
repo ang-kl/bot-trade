@@ -2869,11 +2869,12 @@ export default function stateRouter(db) {
   // PR-I: the sealed-segment read path, read-only — what each sidecar side
   // has sealed (GET /tick-segments on it) against what this keeper has
   // already cached, and where the cache is. Nothing here pulls; the research
-  // action does that.
+  // action does that. V3 R1: per-segment names and bytes, and the heartbeat's
+  // segment manifest with its persistence and retention verdicts.
   router.get('/tick-segments', async (_req, res) => {
     try {
       const { tickSegmentsView } = await import('../services/tick-segments.js')
-      res.json(await tickSegmentsView())
+      res.json(await tickSegmentsView({ db }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
